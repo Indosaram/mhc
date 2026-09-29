@@ -10,6 +10,9 @@
 //     new (module.export)(...props).render(width) -> <case>.<width>.ansi (lines joined by "\n")
 //   screen: {crate, cols, rows, writes}
 //     writes are fed to senpi's VirtualTerminal (@xterm/headless 6.0.0) -> <case>.<cols>x<rows>.json
+//   validation: {crate, checks: [[schema, value]], calls: [[parameters, arguments]]}
+//     checks -> TypeBox Compile(schema).Check/Errors (keyword, instancePath, message);
+//     calls -> senpi validateToolArguments result or thrown message -> <case>.json
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -122,6 +125,26 @@ async function renderScreen(senpi, spec) {
 	return [{ file: `${spec.name}.${spec.cols}x${spec.rows}.json`, content: `${JSON.stringify(serializeScreen(term), null, 1)}\n` }];
 }
 
+async function renderValidation(senpi, spec) {
+	const { Compile } = await importSenpi(senpi, "node_modules/typebox/build/compile/index.mjs");
+	const { validateToolArguments } = await importSenpi(senpi, "packages/ai/src/utils/validation.ts");
+	const checks = (spec.checks ?? []).map(([schema, value]) => {
+		const validator = Compile(schema);
+		const errors = [...validator.Errors(value)].map((e) => [e.keyword, e.instancePath, e.message]);
+		return { schema, value, ok: validator.Check(value), errors };
+	});
+	const calls = (spec.calls ?? []).map(([parameters, args]) => {
+		const tool = { name: "echo", description: "Echo tool", parameters };
+		const toolCall = { type: "toolCall", id: "tool-1", name: "echo", arguments: structuredClone(args) };
+		try {
+			return { parameters, arguments: args, ok: true, value: validateToolArguments(tool, toolCall) };
+		} catch (error) {
+			return { parameters, arguments: args, ok: false, error: String(error.message) };
+		}
+	});
+	return [{ file: `${spec.name}.json`, content: `${JSON.stringify({ checks, calls }, null, 1)}\n` }];
+}
+
 const args = parseArgs(process.argv.slice(2));
 const senpi = pinnedSenpiRoot();
 const names = args.all
@@ -134,7 +157,9 @@ for (const name of names) {
 			? await renderComponent(senpi, spec)
 			: spec.kind === "screen"
 				? await renderScreen(senpi, spec)
-				: usage(`case ${name}: unknown kind ${spec.kind}`);
+				: spec.kind === "validation"
+					? await renderValidation(senpi, spec)
+					: usage(`case ${name}: unknown kind ${spec.kind}`);
 	const dir = goldenDir(spec);
 	mkdirSync(dir, { recursive: true });
 	for (const { file, content } of outputs) {
