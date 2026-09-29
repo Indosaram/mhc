@@ -1,6 +1,22 @@
 [package]
 name = "maho-pty"
 version.workspace = true
-edition.workspace = true
+# Upstream senpi builds this crate as edition 2021; kept so vendored semantics do not shift.
+edition = "2021"
 publish.workspace = true
 license = "MIT"
+
+# Vendored from senpi crates/senpi-pty @ fe8c564b with the N-API binding layer removed
+# (napi, napi-derive, napi-build, build.rs, cdylib, NativePtySession wrapper).
+[dependencies]
+# senpi pins libc =0.2.189; the workspace already pins =0.2.186 and cargo allows one 0.2.x.
+libc.workspace = true
+portable-pty = "=0.9.0"
+
+# Vendored from senpi fe8c564b: this crate does not opt into `[lints] workspace = true`.
+# The table mirrors the workspace lints; "allow" entries are the lints it trips (todo 4 allow list).
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+unwrap_used = "allow"
