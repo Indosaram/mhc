@@ -1,6 +1,31 @@
 [package]
 name = "maho-grep"
 version.workspace = true
-edition.workspace = true
+# Upstream senpi builds this crate as edition 2021; kept so vendored semantics do not shift.
+edition = "2021"
 publish.workspace = true
 license = "MIT"
+
+# Vendored from senpi crates/senpi-grep @ fe8c564b with the N-API binding layer removed
+# (napi, napi-derive, napi-build, build.rs, cdylib, AbortSignal adapter, GrepTask).
+[dependencies]
+ignore = "=0.4.33"
+grep-searcher = "=0.1.17"
+grep-regex = "=0.1.14"
+regex-syntax = "=0.8.11"
+grep-matcher = "=0.1.9"
+globset = "=0.4.20"
+rayon = "=1.12.0"
+memchr = "=2.8.3"
+
+[dev-dependencies]
+# maho-only QA test (tests/qa_temp_dir.rs); version pinned by the workspace.
+tempfile.workspace = true
+
+# Vendored from senpi fe8c564b: this crate does not opt into `[lints] workspace = true`.
+# The table mirrors the workspace lints; "allow" entries are the lints it trips (todo 4 allow list).
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "allow"
