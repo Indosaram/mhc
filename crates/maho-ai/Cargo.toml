@@ -10,9 +10,16 @@ workspace = true
 
 # Dependencies for maho-ai and for the lanes that fill its declared modules
 # (todos 10-13: wire APIs over reqwest/SSE, OAuth, credential store). Exact versions.
+[build-dependencies]
+# Compiles crates/maho-ai/proto/agent.proto (vendored from senpi's
+# packages/ai/proto/cursor/agent.proto) into gen/agent_pb.rs at build time, so
+# the wire encoding stays derived from the same schema as the pinned TS client.
+prost-build = "=0.14.4"
+
 [dependencies]
 base64 = "=0.22.1"
 bytes = "=1.12.1"
+prost = "=0.14.4"
 chrono = { workspace = true, features = ["alloc"] }
 dirs = { workspace = true }
 eventsource-stream = "=0.2.3"
