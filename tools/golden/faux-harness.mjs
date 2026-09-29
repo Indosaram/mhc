@@ -1,73 +1,103 @@
 #!/usr/bin/env bun
-// Drives senpi's faux provider with a scripted turn and records the streamed events as JSON.
-//   bun tools/golden/faux-harness.mjs --scenario hello --out /tmp/faux-hello.json
-// Scripts live in tools/golden/scripts/<name>.json and are shared with maho-test-support::faux.
-// Timestamps and generated ids are normalized so the output is deterministic.
-import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { pinnedSenpiRoot } from "./pin.mjs";
-
-const here = dirname(fileURLToPath(import.meta.url));
+// Headless faux reference: runs a real senpi AgentSession against senpi's faux provider with a
+// scripted turn and records the session as golden JSON (events, entries, tool results).
+//
+//   bun tools/golden/faux-harness.mjs --scenario hello [--omo] --out /tmp/faux-hello.json
+//
+// Scripts live in tools/golden/scripts/<name>.json ({name, prompt, responses:[{content, stopReason}]})
+// and are shared with maho-test-support::faux. `--omo` also loads omo-senpi's extension from
+// OMO_SRC (pinned). The run happens under a private temp HOME; timestamps, ids and temp paths are
+// normalized so the same scenario always produces the same bytes.
+import { writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { isolateHome, loadScript, setupFaux } from "./faux-common.mjs";
 
 function usage(message) {
-	console.error(`faux-harness: ${message}\nusage: bun tools/golden/faux-harness.mjs --scenario <name> --out <file>`);
+	console.error(`faux-harness: ${message}\nusage: bun tools/golden/faux-harness.mjs --scenario <name> [--omo] --out <file>`);
 	process.exit(2);
 }
 
 let scenario;
 let out;
+let omo = false;
 const argv = process.argv.slice(2);
 for (let i = 0; i < argv.length; i++) {
 	if (argv[i] === "--scenario") scenario = argv[++i];
 	else if (argv[i] === "--out") out = argv[++i];
+	else if (argv[i] === "--omo") omo = true;
 	else usage(`unknown argument ${argv[i]}`);
 }
-if (!scenario || !/^[a-z0-9][a-z0-9-]*$/.test(scenario)) usage("--scenario <name> required");
 if (!out) usage("--out <file> required");
+const script = loadScript(scenario, usage);
+out = resolve(out);
 
-let script;
+const home = isolateHome();
+const faux = await setupFaux(script, { omo });
+const { load, registration, model, providerConfig } = faux;
+const sdk = await load("packages/coding-agent/src/core/sdk.ts");
+const { SessionManager } = await load("packages/coding-agent/src/core/session-manager.ts");
+const { SettingsManager } = await load("packages/coding-agent/src/core/settings-manager.ts");
+const { AuthStorage } = await load("packages/coding-agent/src/core/auth-storage.ts");
+const { ModelRegistry } = await load("packages/coding-agent/src/core/model-registry.ts");
+const { DefaultResourceLoader } = await load("packages/coding-agent/src/core/resource-loader.ts");
+
+const agentDir = process.env.SENPI_CODING_AGENT_DIR;
+const authStorage = AuthStorage.inMemory();
+const modelRegistry = ModelRegistry.inMemory(authStorage);
+modelRegistry.registerProvider(model.provider, providerConfig);
+const settingsManager = SettingsManager.inMemory({});
+const resourceLoader = new DefaultResourceLoader({ cwd: home, agentDir, settingsManager, extensionFactories: faux.extensions });
+await resourceLoader.reload();
+const { session, extensionsResult } = await sdk.createAgentSession({
+	cwd: home,
+	agentDir,
+	authStorage,
+	modelRegistry,
+	model,
+	settingsManager,
+	sessionManager: SessionManager.inMemory(),
+	resourceLoader,
+	autoTitleSessions: false,
+});
 try {
-	script = JSON.parse(readFileSync(join(here, "scripts", `${scenario}.json`), "utf8"));
-} catch (error) {
-	usage(`cannot read scenario ${scenario}: ${error.message}`);
-}
-
-const senpi = pinnedSenpiRoot();
-const ai = await import(pathToFileURL(resolve(senpi, "packages/ai/src/compat.ts")).href);
-const faux = await import(pathToFileURL(resolve(senpi, "packages/ai/src/providers/faux.ts")).href);
-
-// A fixed api id and a fixed token size remove faux.ts's two random inputs (randomId and
-// splitStringByTokenSize), so the same scenario always streams the same events.
-const registration = ai.registerFauxProvider({ api: "faux-golden", tokenSize: { min: 3, max: 3 } });
-try {
-	registration.setResponses(
-		script.responses.map((r) => faux.fauxAssistantMessage(r.content, { stopReason: r.stopReason ?? "stop", timestamp: 0 })),
-	);
-	const model = registration.models[0];
-	const context = { messages: [{ role: "user", content: script.prompt, timestamp: 0 }] };
-	const events = [];
-	for (let turn = 0; turn < script.responses.length; turn++) {
-		for await (const event of ai.streamSimple(model, context)) events.push(normalize(event));
-	}
-	if (events.length === 0) {
-		console.error("faux-harness: provider streamed no events");
+	if (extensionsResult.errors.length > 0) {
+		for (const e of extensionsResult.errors) console.error(`faux-harness: extension error: ${e.path ?? ""} ${String(e.error)}`);
 		process.exit(1);
 	}
-	writeFileSync(out, `${JSON.stringify({ scenario, model: model.id, events }, null, 1)}\n`);
-	console.log(`faux-harness: ${scenario}: ${events.length} events -> ${out}`);
+	const events = [];
+	session.subscribe((event) => events.push(normalize(event)));
+	await session.prompt(script.prompt);
+	if (registration.getPendingResponseCount() !== 0) {
+		console.error(`faux-harness: ${registration.getPendingResponseCount()} scripted responses were not consumed`);
+		process.exit(1);
+	}
+	if (events.length === 0) {
+		console.error("faux-harness: session emitted no events");
+		process.exit(1);
+	}
+	const entries = session.sessionManager.getEntries().map(normalize);
+	const toolResults = entries.filter((e) => e.type === "message" && e.message?.role === "toolResult");
+	const doc = { scenario: script.name, omo, model: `${model.provider}/${model.id}`, events, entries, toolResults };
+	writeFileSync(out, `${JSON.stringify(doc, null, 1)}\n`);
+	console.log(`faux-harness: ${script.name}${omo ? " (omo)" : ""}: ${events.length} events, ${entries.length} entries -> ${out}`);
 } finally {
+	session.dispose();
 	registration.unregister();
 }
 
-function normalize(value) {
-	if (Array.isArray(value)) return value.map(normalize);
+// Replaces run-dependent values: wall-clock fields, generated ids and the temp HOME path.
+function normalize(value, key) {
+	if (typeof value === "string") {
+		if (key !== undefined && /^(id|parentId|sessionId|entryId|responseId|toolCallId|turnKey)$/.test(key)) return "<id>";
+		return value.split(home).join("<home>");
+	}
+	if (typeof value === "number" && key !== undefined && /^(timestamp|createdAt|updatedAt|startedAt|endedAt|durationMs|elapsedMs)$/.test(key)) return 0;
+	if (Array.isArray(value)) return value.map((v) => normalize(v));
 	if (value && typeof value === "object") {
 		const result = {};
-		for (const [key, inner] of Object.entries(value)) {
-			if (key === "timestamp") result[key] = 0;
-			else if (key === "id" && typeof inner === "string") result[key] = "<id>";
-			else result[key] = normalize(inner);
+		for (const [k, inner] of Object.entries(value)) {
+			if (typeof inner === "function") continue;
+			result[k] = k === "timestamp" && typeof inner === "string" ? "<time>" : normalize(inner, k);
 		}
 		return result;
 	}
