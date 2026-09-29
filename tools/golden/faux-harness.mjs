@@ -31,7 +31,7 @@ if (!out) usage("--out <file> required");
 const script = loadScript(scenario, usage);
 out = resolve(out);
 
-const home = isolateHome();
+const home = await isolateHome();
 const faux = await setupFaux(script, { omo });
 const { load, registration, model, providerConfig } = faux;
 const sdk = await load("packages/coding-agent/src/core/sdk.ts");
@@ -40,6 +40,7 @@ const { SettingsManager } = await load("packages/coding-agent/src/core/settings-
 const { AuthStorage } = await load("packages/coding-agent/src/core/auth-storage.ts");
 const { ModelRegistry } = await load("packages/coding-agent/src/core/model-registry.ts");
 const { DefaultResourceLoader } = await load("packages/coding-agent/src/core/resource-loader.ts");
+const { emitSessionShutdownEvent } = await load("packages/coding-agent/src/core/extensions/runner.ts");
 
 const agentDir = process.env.SENPI_CODING_AGENT_DIR;
 const authStorage = AuthStorage.inMemory();
@@ -81,6 +82,9 @@ try {
 	writeFileSync(out, `${JSON.stringify(doc, null, 1)}\n`);
 	console.log(`faux-harness: ${script.name}${omo ? " (omo)" : ""}: ${events.length} events, ${entries.length} entries -> ${out}`);
 } finally {
+	// Same teardown as senpi's AgentSessionRuntime.dispose(): extensions get session_shutdown (omo's
+	// eager ast-grep MCP server is stopped there) before the session is disposed.
+	await emitSessionShutdownEvent(session.extensionRunner, { type: "session_shutdown", reason: "quit" });
 	session.dispose();
 	registration.unregister();
 }

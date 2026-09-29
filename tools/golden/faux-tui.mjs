@@ -10,7 +10,8 @@
 //     --command "bun tools/golden/faux-tui.mjs --script hello" --input "Say hello." --input "{Enter}" \
 //     --cols 100 --rows 30 --evidence-dir <dir>
 // It runs under a private temp HOME in offline mode, so the real ~/.senpi and ~/.omo are never
-// read or written and no update check or tool download happens.
+// read or written and no update check or tool download happens. senpi starts in that temp home,
+// so the caller's directory (and any AGENTS.md above it) never enters the session.
 import { isolateHome, loadScript, setupFaux } from "./faux-common.mjs";
 
 function usage(message) {
@@ -32,7 +33,7 @@ for (let i = 0; i < argv.length; i++) {
 }
 const script = loadScript(name, usage);
 
-isolateHome();
+await isolateHome({ terminal: true });
 const faux = await setupFaux(script, { omo });
 const { main } = await faux.load("packages/coding-agent/src/main.ts");
 await main(["--offline", "--provider", faux.model.provider, "--model", faux.model.id, ...extra], {
