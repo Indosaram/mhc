@@ -2,5 +2,22 @@
 name = "maho-mcp-stdio-core"
 version.workspace = true
 edition.workspace = true
-publish.workspace = true
 license = "LicenseRef-SUL-1.0"
+publish.workspace = true
+description = "JSON-RPC stdio framing and dispatch primitives for MCP servers"
+
+[lib]
+name = "mcp_stdio_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+
+# Imported from COMP 93b78ac: this crate does not opt into `[lints] workspace = true`.
+# The table mirrors the workspace lints; "allow" entries are the lints it trips (todo 2 allow list).
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+unwrap_used = "deny"

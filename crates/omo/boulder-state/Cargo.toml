@@ -2,5 +2,26 @@
 name = "maho-boulder-state"
 version.workspace = true
 edition.workspace = true
-publish.workspace = true
 license = "LicenseRef-SUL-1.0"
+publish.workspace = true
+
+[lib]
+name = "boulder_state"
+path = "src/lib.rs"
+
+[dependencies]
+
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+tempfile.workspace = true
+
+# Imported from COMP 93b78ac: this crate does not opt into `[lints] workspace = true`.
+# The table mirrors the workspace lints; "allow" entries are the lints it trips (todo 2 allow list).
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"

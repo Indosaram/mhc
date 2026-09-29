@@ -2,5 +2,33 @@
 name = "maho-lsp-daemon"
 version.workspace = true
 edition.workspace = true
-publish.workspace = true
 license = "LicenseRef-SUL-1.0"
+publish.workspace = true
+
+[lib]
+name = "lsp_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lsp-daemon"
+path = "src/main.rs"
+
+[dependencies]
+libc.workspace = true
+maho-lsp-core.workspace = true
+maho-mcp-stdio-core.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+tempfile.workspace = true
+
+# Imported from COMP 93b78ac: this crate does not opt into `[lints] workspace = true`.
+# The table mirrors the workspace lints; "allow" entries are the lints it trips (todo 2 allow list).
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+unwrap_used = "allow"

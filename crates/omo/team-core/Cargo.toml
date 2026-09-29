@@ -2,5 +2,33 @@
 name = "maho-team-core"
 version.workspace = true
 edition.workspace = true
-publish.workspace = true
 license = "LicenseRef-SUL-1.0"
+publish.workspace = true
+
+[lib]
+name = "team_core"
+path = "src/lib.rs"
+
+[dependencies]
+maho-tmux-core.workspace = true
+maho-utils.workspace = true
+dirs.workspace = true
+libc.workspace = true
+regex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+filetime.workspace = true
+pretty_assertions.workspace = true
+tempfile.workspace = true
+
+# Imported from COMP 93b78ac: this crate does not opt into `[lints] workspace = true`.
+# The table mirrors the workspace lints; "allow" entries are the lints it trips (todo 2 allow list).
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+unwrap_used = "deny"

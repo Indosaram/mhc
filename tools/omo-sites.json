@@ -1,0 +1,132 @@
+{
+  "comment": "Source-code \".omo\" literal sites in the 16 imported crates (non-test *.rs under src/, test files excluded by the filter). keep = project-level .omo paths or matchers; rename = user home config dir (~/.omo -> ~/.maho). Inventory taken from COMP 93b78ac. Pattern: \"\\.omo(\"|/)",
+  "comp_commit": "93b78ac1cc8d488d124da7ed1d19f678e93fb0fd",
+  "filter": {
+    "roots": [
+      "mcp-stdio-core/src",
+      "boulder-state/src",
+      "model-core/src",
+      "memory-core/src",
+      "utils/src",
+      "omo-config-core/src",
+      "lsp-core/src",
+      "lsp-daemon/src",
+      "comment-checker-core/src",
+      "delegate-core/src",
+      "telemetry-core/src",
+      "tmux-core/src",
+      "team-core/src",
+      "config-migration/src",
+      "ast-grep-mcp/src",
+      "senpi-task/src"
+    ],
+    "exclude_regex": "(_tests?|_test_support)\\.rs$|/(tests|manager_tests|rpc_tests)/"
+  },
+  "expected_totals": {
+    "comp": 34,
+    "keep": 17,
+    "rename": 17
+  },
+  "sites": [
+    {
+      "file": "boulder-state/src/constants.rs",
+      "keep": 4,
+      "rename": 0
+    },
+    {
+      "file": "config-migration/src/discovery.rs",
+      "keep": 0,
+      "rename": 1
+    },
+    {
+      "file": "config-migration/src/migration_plans.rs",
+      "keep": 3,
+      "rename": 3
+    },
+    {
+      "file": "lsp-daemon/src/paths.rs",
+      "keep": 0,
+      "rename": 1
+    },
+    {
+      "file": "lsp-daemon/src/proxy.rs",
+      "keep": 1,
+      "rename": 0
+    },
+    {
+      "file": "memory-core/src/identity/layout.rs",
+      "keep": 0,
+      "rename": 1
+    },
+    {
+      "file": "memory-core/src/reflection/worktree_integration.rs",
+      "keep": 1,
+      "rename": 0
+    },
+    {
+      "file": "omo-config-core/src/loader/paths.rs",
+      "keep": 1,
+      "rename": 1
+    },
+    {
+      "file": "omo-config-core/src/migration/commit.rs",
+      "keep": 1,
+      "rename": 1
+    },
+    {
+      "file": "omo-config-core/src/migration/journal.rs",
+      "keep": 0,
+      "rename": 1
+    },
+    {
+      "file": "omo-config-core/src/migration/lock.rs",
+      "keep": 0,
+      "rename": 2
+    },
+    {
+      "file": "omo-config-core/src/writer/writer.rs",
+      "keep": 1,
+      "rename": 0
+    },
+    {
+      "file": "senpi-task/src/store/types.rs",
+      "keep": 1,
+      "rename": 0
+    },
+    {
+      "file": "team-core/src/team_registry/paths.rs",
+      "keep": 2,
+      "rename": 1
+    },
+    {
+      "file": "utils/src/ast_grep/candidates.rs",
+      "keep": 0,
+      "rename": 1
+    },
+    {
+      "file": "utils/src/codegraph/exclusion.rs",
+      "keep": 2,
+      "rename": 0
+    },
+    {
+      "file": "utils/src/codegraph/paths.rs",
+      "keep": 0,
+      "rename": 1
+    },
+    {
+      "file": "utils/src/codegraph/provision.rs",
+      "keep": 0,
+      "rename": 1
+    },
+    {
+      "file": "utils/src/codegraph/resolve.rs",
+      "keep": 0,
+      "rename": 1
+    },
+    {
+      "file": "utils/src/process_sweep/lsp_daemon_family.rs",
+      "keep": 0,
+      "rename": 1
+    }
+  ]
+}

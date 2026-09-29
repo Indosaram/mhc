@@ -114,6 +114,55 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+[workspace.dependencies]
+# Imported omo core crates (todo 2); package names are maho-<dir>, lib names unchanged.
+maho-mcp-stdio-core = { path = "crates/omo/mcp-stdio-core" }
+maho-boulder-state = { path = "crates/omo/boulder-state" }
+maho-model-core = { path = "crates/omo/model-core" }
+maho-memory-core = { path = "crates/omo/memory-core" }
+maho-utils = { path = "crates/omo/utils" }
+maho-omo-config-core = { path = "crates/omo/omo-config-core" }
+maho-lsp-core = { path = "crates/omo/lsp-core" }
+maho-lsp-daemon = { path = "crates/omo/lsp-daemon" }
+maho-comment-checker-core = { path = "crates/omo/comment-checker-core" }
+maho-delegate-core = { path = "crates/omo/delegate-core" }
+maho-telemetry-core = { path = "crates/omo/telemetry-core" }
+maho-tmux-core = { path = "crates/omo/tmux-core" }
+maho-team-core = { path = "crates/omo/team-core" }
+maho-config-migration = { path = "crates/omo/config-migration" }
+maho-ast-grep-mcp = { path = "crates/omo/ast-grep-mcp" }
+maho-senpi-task = { path = "crates/omo/senpi-task" }
+# Third-party deps of the imported crates, pinned to COMP 93b78ac Cargo.lock versions.
+chrono = { version = "=0.4.43", default-features = false }
+dirs = "=6.0.0"
+fancy-regex = "=0.16.2"
+filetime = "=0.2.27"
+flate2 = "=1.1.8"
+futures = "=0.3.34"
+gethostname = "=1.1.0"
+hex = "=0.4.3"
+iana-time-zone = "=0.1.65"
+indexmap = "=2.14.0"
+jiff = "=0.2.23"
+libc = "=0.2.186"
+percent-encoding = "=2.3.2"
+pretty_assertions = "=1.4.1"
+regex = "=1.12.3"
+reqwest = { version = "=0.12.28", default-features = false }
+serde = "=1.0.228"
+serde_json = "=1.0.149"
+serde_yaml = "=0.9.34"
+sha2 = "=0.10.9"
+sys-locale = "=0.3.2"
+tempfile = "=3.27.0"
+thiserror = "=2.0.18"
+tokio = "=1.52.3"
+unicode-general-category = "=1.1.0"
+unicode-normalization = "=0.1.25"
+unicode-width = "=0.2.1"
+url = "=2.5.8"
+uuid = "=1.20.0"
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

@@ -1,0 +1,11 @@
+pub const DEFAULT_MAX_REFERENCES: usize = 200;
+pub const DEFAULT_MAX_SYMBOLS: usize = 200;
+pub const DEFAULT_MAX_DIAGNOSTICS: usize = 200;
+pub const DEFAULT_MAX_DIRECTORY_FILES: usize = 50;
+
+pub const REQUEST_TIMEOUT_MS: u64 = 15_000;
+pub const INIT_TIMEOUT_MS: u64 = 60_000;
+pub const IDLE_TIMEOUT_MS: u64 = 5 * 60_000;
+pub const REAPER_INTERVAL_MS: u64 = 60_000;
+pub const STOP_HARD_KILL_TIMEOUT_MS: u64 = 5_000;
+pub const STOP_SIGKILL_GRACE_MS: u64 = 1_000;

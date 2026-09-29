@@ -1,1 +1,82 @@
+//! Rust port of the `@oh-my-opencode/utils` package (SUL-1.0, internal use only).
 
+pub mod archive_entry_validator;
+pub mod ast_grep;
+pub mod atomic_write;
+pub mod classify_path_environment;
+pub mod codegraph;
+pub mod command_executor;
+pub mod config_merge;
+pub mod config_section_parser;
+pub mod contains_path;
+pub mod deep_merge;
+pub mod env_expansion;
+pub mod extract_semver;
+pub mod file_utils;
+pub mod format_duration;
+pub mod frontmatter;
+pub mod git_worktree;
+pub mod internal_initiator_marker;
+pub mod jsonc_parser;
+pub mod logger;
+pub mod logging;
+pub mod migration;
+pub mod omo_config;
+pub mod port_utils;
+pub mod process_stream_reader;
+pub mod process_sweep;
+pub mod process_tree;
+pub mod prompt_async_gate;
+pub mod prompt_failure_classifier;
+pub mod record_type_guard;
+pub mod replace_tool_args;
+pub mod runtime;
+pub mod session_idle_settle;
+pub mod shell_command_escape;
+pub mod skill_path_resolver;
+pub mod snake_case;
+pub mod tool_name;
+pub mod xdg_data_dir;
+pub mod zip_entry_listing;
+
+pub use archive_entry_validator::*;
+pub use ast_grep::*;
+pub use atomic_write::*;
+pub use classify_path_environment::*;
+pub use codegraph::*;
+pub use command_executor::*;
+pub use config_merge::*;
+pub use config_section_parser::*;
+pub use contains_path::{contains_path, is_within_project};
+pub use deep_merge::*;
+pub use env_expansion::*;
+pub use extract_semver::*;
+pub use file_utils::*;
+pub use format_duration::*;
+pub use frontmatter::*;
+pub use git_worktree::*;
+pub use internal_initiator_marker::*;
+pub use jsonc_parser::*;
+pub use logger::*;
+pub use logging::*;
+pub use migration::*;
+pub use omo_config::*;
+pub use port_utils::*;
+pub use process_stream_reader::*;
+pub use process_tree::{
+    ProcessTreeRunOptions, ProcessTreeRunResult, ProcessTreeSignalAttempt,
+    ProcessTreeSignalOutcome, ProcessTreeSignalTarget, ProcessTreeTerminationReport, TreeSignal,
+    run_process_with_tree_timeout,
+};
+pub use prompt_async_gate::*;
+pub use prompt_failure_classifier::*;
+pub use record_type_guard::*;
+pub use replace_tool_args::*;
+pub use runtime::*;
+pub use session_idle_settle::*;
+pub use shell_command_escape::*;
+pub use skill_path_resolver::*;
+pub use snake_case::*;
+pub use tool_name::*;
+pub use xdg_data_dir::*;
+pub use zip_entry_listing::*;
