@@ -1,0 +1,40 @@
+[
+ {
+  "export": "wrapTextWithAnsi",
+  "args": [
+   "中文👨‍💻汉字🇯🇵表情😀测试 abc 界🙂",
+   7
+  ],
+  "result": [
+   "中文👨‍💻",
+   "汉字🇯🇵",
+   "表情😀",
+   "测试",
+   "abc 界",
+   "🙂"
+  ]
+ },
+ {
+  "export": "wrapTextWithAnsi",
+  "args": [
+   "\u001b[31m中文👨‍💻汉字🇯🇵表情😀测试 abc 界🙂\u001b[0m",
+   7
+  ],
+  "result": [
+   "\u001b[31m中文👨‍💻",
+   "\u001b[31m汉字🇯🇵",
+   "\u001b[31m表情😀",
+   "\u001b[31m测试",
+   "\u001b[31mabc 界",
+   "\u001b[31m🙂\u001b[0m"
+  ]
+ },
+ {
+  "export": "truncateToWidth",
+  "args": [
+   "中文👨‍💻汉字🇯🇵表情😀测试 abc 界🙂",
+   7
+  ],
+  "result": "中文\u001b[0m...\u001b[0m"
+ }
+]

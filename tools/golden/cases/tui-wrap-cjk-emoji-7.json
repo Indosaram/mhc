@@ -1,0 +1,29 @@
+{
+	"name": "tui-wrap-cjk-emoji-7",
+	"kind": "function",
+	"crate": "maho-tui",
+	"module": "packages/tui/src/utils.ts",
+	"calls": [
+		{
+			"export": "wrapTextWithAnsi",
+			"args": [
+				"中文👨‍💻汉字🇯🇵表情😀测试 abc 界🙂",
+				7
+			]
+		},
+		{
+			"export": "wrapTextWithAnsi",
+			"args": [
+				"\u001b[31m中文👨‍💻汉字🇯🇵表情😀测试 abc 界🙂\u001b[0m",
+				7
+			]
+		},
+		{
+			"export": "truncateToWidth",
+			"args": [
+				"中文👨‍💻汉字🇯🇵表情😀测试 abc 界🙂",
+				7
+			]
+		}
+	]
+}
