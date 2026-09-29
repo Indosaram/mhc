@@ -1,0 +1,18 @@
+{
+	"name": "tui-text-basic",
+	"kind": "component",
+	"crate": "maho-tui",
+	"module": "packages/tui/src/components/text.ts",
+	"export": "Text",
+	"props": [
+		"Hello, world. This line is long enough to wrap at forty columns.",
+		1,
+		1
+	],
+	"widths": [
+		40,
+		80,
+		120
+	],
+	"theme": "dark"
+}

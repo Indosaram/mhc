@@ -1,0 +1,655 @@
+{
+ "cols": 20,
+ "rows": 5,
+ "cursor": {
+  "x": 8,
+  "y": 4
+ },
+ "viewport": [
+  "plain",
+  "bold red it",
+  "rgb bg inv",
+  "wide:中文 dim b",
+  "x256 end"
+ ],
+ "cells": [
+  [
+   {
+    "ch": "p",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "l",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "a",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "i",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "n",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   }
+  ],
+  [
+   {
+    "ch": "b",
+    "fg": "default",
+    "bg": "default",
+    "attrs": [
+     "bold"
+    ]
+   },
+   {
+    "ch": "o",
+    "fg": "default",
+    "bg": "default",
+    "attrs": [
+     "bold"
+    ]
+   },
+   {
+    "ch": "l",
+    "fg": "default",
+    "bg": "default",
+    "attrs": [
+     "bold"
+    ]
+   },
+   {
+    "ch": "d",
+    "fg": "default",
+    "bg": "default",
+    "attrs": [
+     "bold"
+    ]
+   },
+   {
+    "ch": " ",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "r",
+    "fg": "p1",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "e",
+    "fg": "p1",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "d",
+    "fg": "p1",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": " ",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "i",
+    "fg": "default",
+    "bg": "default",
+    "attrs": [
+     "italic",
+     "underline"
+    ]
+   },
+   {
+    "ch": "t",
+    "fg": "default",
+    "bg": "default",
+    "attrs": [
+     "italic",
+     "underline"
+    ]
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   }
+  ],
+  [
+   {
+    "ch": "r",
+    "fg": "#010203",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "g",
+    "fg": "#010203",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "b",
+    "fg": "#010203",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": " ",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "b",
+    "fg": "default",
+    "bg": "p2",
+    "attrs": []
+   },
+   {
+    "ch": "g",
+    "fg": "default",
+    "bg": "p2",
+    "attrs": []
+   },
+   {
+    "ch": " ",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "i",
+    "fg": "default",
+    "bg": "default",
+    "attrs": [
+     "inverse"
+    ]
+   },
+   {
+    "ch": "n",
+    "fg": "default",
+    "bg": "default",
+    "attrs": [
+     "inverse"
+    ]
+   },
+   {
+    "ch": "v",
+    "fg": "default",
+    "bg": "default",
+    "attrs": [
+     "inverse"
+    ]
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   }
+  ],
+  [
+   {
+    "ch": "w",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "i",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "d",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "e",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": ":",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "中",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "文",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": " ",
+    "fg": "default",
+    "bg": "default",
+    "attrs": [
+     "dim"
+    ]
+   },
+   {
+    "ch": "d",
+    "fg": "default",
+    "bg": "default",
+    "attrs": [
+     "dim"
+    ]
+   },
+   {
+    "ch": "i",
+    "fg": "default",
+    "bg": "default",
+    "attrs": [
+     "dim"
+    ]
+   },
+   {
+    "ch": "m",
+    "fg": "default",
+    "bg": "default",
+    "attrs": [
+     "dim"
+    ]
+   },
+   {
+    "ch": " ",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "b",
+    "fg": "p13",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   }
+  ],
+  [
+   {
+    "ch": "x",
+    "fg": "p200",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "2",
+    "fg": "p200",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "5",
+    "fg": "p200",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "6",
+    "fg": "p200",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": " ",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "e",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "n",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "d",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   },
+   {
+    "ch": "",
+    "fg": "default",
+    "bg": "default",
+    "attrs": []
+   }
+  ]
+ ]
+}

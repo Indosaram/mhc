@@ -1,0 +1,10 @@
+{
+	"name": "hello",
+	"prompt": "Say hello.",
+	"responses": [
+		{
+			"content": "Hello from the faux provider.",
+			"stopReason": "stop"
+		}
+	]
+}

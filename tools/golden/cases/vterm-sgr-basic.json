@@ -1,0 +1,15 @@
+{
+	"name": "vterm-sgr-basic",
+	"kind": "screen",
+	"crate": "maho-test-support",
+	"cols": 20,
+	"rows": 5,
+	"writes": [
+		"\u001b[?2004h",
+		"plain\r\n",
+		"\u001b[1mbold\u001b[0m \u001b[31mred\u001b[0m \u001b[3;4mit\u001b[0m\r\n",
+		"\u001b[38;2;1;2;3mrgb\u001b[0m \u001b[42mbg\u001b[0m \u001b[7minv\u001b[0m\r\n",
+		"wide:中文\u001b[2m dim\u001b[0m \u001b[95mb\u001b[0m\r\n",
+		"\u001b[38;5;200mx256\u001b[0m end"
+	]
+}

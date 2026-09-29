@@ -4,6 +4,27 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license = "MIT"
+description = "Test support for maho-code: byte-exact golden compare, vt100-backed VirtualTerminal, faux scripted turns."
 
 [lints]
 workspace = true
+
+[features]
+default = []
+# In-crate faux harness (faux_session module + faux-harness bin). Bodies are written by todo 21
+# against the maho-core SDK. maho-core never enables this feature, so its dev-dependency on
+# maho-test-support stays acyclic.
+sdk = ["dep:maho-core", "dep:maho-ext-host"]
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["std"] }
+similar = { version = "=2.7.0", default-features = false, features = ["text"] }
+vt100 = { version = "=0.16.2", default-features = false }
+maho-core = { path = "../maho-core", optional = true }
+maho-ext-host = { path = "../maho-ext-host", optional = true }
+
+[[bin]]
+name = "faux-harness"
+path = "src/bin/faux-harness.rs"
+required-features = ["sdk"]

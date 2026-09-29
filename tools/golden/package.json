@@ -1,0 +1,13 @@
+{
+  "name": "maho-golden",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Generates golden fixtures from pinned senpi source; never hand-edit outputs.",
+  "scripts": {
+    "golden": "bun run.mjs"
+  },
+  "dependencies": {
+    "@xterm/headless": "6.0.0"
+  }
+}
