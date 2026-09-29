@@ -1,0 +1,3 @@
+# maho code
+
+maho code (`mhc`) is a native Rust port of the senpi coding agent and its terminal interface, with the oh-my-openagent (omo) features ported on top. It aims to look, type and behave exactly like omo on senpi today: senpi is the only upstream, ported file-for-file so upstream changes stay a mechanical translation, and golden fixtures generated from senpi itself prove the output is identical. The engine contains no codex-rs code, extensions are native Rust crates registered statically, and configuration lives in `~/.maho/agent` (`mhc import-omo` copies an existing `~/.omo` setup). Source pins are in [PINS.md](PINS.md), contributor and agent conventions in [AGENTS.md](AGENTS.md), and licenses in [LICENSES/](LICENSES/).

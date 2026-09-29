@@ -1,0 +1,6 @@
+# Pin the same toolchain as the FORK. Without this, COMP builds the FORK crates with the
+# machine default rustc (1.92.0), which several locked dependencies reject (e.g. sqlx 0.9 needs
+# 1.94). The FORK pins 1.95.0 in its own rust-toolchain.toml.
+[toolchain]
+channel = "1.95.0"
+components = ["clippy", "rustfmt", "rust-src"]

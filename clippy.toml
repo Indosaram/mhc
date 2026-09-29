@@ -1,0 +1,2 @@
+# clippy::unwrap_used is denied workspace-wide for opted-in crates, but allowed in tests.
+allow-unwrap-in-tests = true

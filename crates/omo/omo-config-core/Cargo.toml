@@ -1,0 +1,6 @@
+[package]
+name = "maho-omo-config-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "LicenseRef-SUL-1.0"

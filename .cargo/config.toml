@@ -1,0 +1,2 @@
+# Intentionally no `build.target-dir`: every lane sets its own cache with
+# CARGO_TARGET_DIR=$HOME/.cargo-target/maho-code/lane-<N>.

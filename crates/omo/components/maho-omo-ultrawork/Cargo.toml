@@ -1,0 +1,9 @@
+[package]
+name = "maho-omo-ultrawork"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "LicenseRef-SUL-1.0"
+
+[lints]
+workspace = true

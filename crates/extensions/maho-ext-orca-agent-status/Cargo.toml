@@ -1,0 +1,9 @@
+[package]
+name = "maho-ext-orca-agent-status"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "MIT"
+
+[lints]
+workspace = true
