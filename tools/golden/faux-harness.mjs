@@ -37,7 +37,9 @@ const senpi = pinnedSenpiRoot();
 const ai = await import(pathToFileURL(resolve(senpi, "packages/ai/src/compat.ts")).href);
 const faux = await import(pathToFileURL(resolve(senpi, "packages/ai/src/providers/faux.ts")).href);
 
-const registration = ai.registerFauxProvider();
+// A fixed api id and a fixed token size remove faux.ts's two random inputs (randomId and
+// splitStringByTokenSize), so the same scenario always streams the same events.
+const registration = ai.registerFauxProvider({ api: "faux-golden", tokenSize: { min: 3, max: 3 } });
 try {
 	registration.setResponses(
 		script.responses.map((r) => faux.fauxAssistantMessage(r.content, { stopReason: r.stopReason ?? "stop", timestamp: 0 })),
