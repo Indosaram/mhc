@@ -7,8 +7,7 @@ use maho_agent::agent_loop::{agent_loop, agent_loop_continue, run_agent_loop};
 use maho_agent::{
     AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, AgentToolResult, StreamFn,
     ToolExecutionMode, identity_convert_to_llm,
-};
-use maho_ai::types::{
+};use maho_ai::types::{
     AssistantMessage, AssistantMessageEvent, ContentBlock, Message, StopReason, ThinkingContent, ToolResultMessage,
 };
 use maho_ai::utils::abort::AbortController;
@@ -637,6 +636,136 @@ async fn continues_from_existing_context_without_emitting_user_message_events() 
     let events = collect_with_timeout(&stream).await;
     assert_eq!(events.first().map(support::event_name), Some("agent_start"));
     assert_eq!(events.last().map(support::event_name), Some("agent_end"));
+}
+
+#[tokio::test]
+async fn two_sequential_tool_calls_produce_the_senpi_event_sequence() {
+    let first = result_tool("weather", AgentToolResult::text("weather:Seoul"));
+    let second = result_tool("forecast", AgentToolResult::text("forecast:Seoul"));
+    let stream = agent_loop(
+        vec![user_message("Weather?")],
+        context_with(vec![first, second]),
+        AgentLoopConfig::new(test_model(), identity_convert_to_llm()),
+        None,
+        Some(scripted_stream_fn(vec![
+            assistant(vec![tool_call("call-1", "weather", json!({ "city": "Seoul" }))], StopReason::ToolUse),
+            assistant(vec![tool_call("call-2", "forecast", json!({ "city": "Seoul" }))], StopReason::ToolUse),
+            assistant(vec![text_block("done")], StopReason::Stop),
+        ])),
+    );
+    let events = collect_with_timeout(&stream).await;
+
+    assert_eq!(
+        event_names(&events),
+        vec![
+            "agent_start",
+            "turn_start",
+            "message_start",
+            "message_end",
+            "message_start",
+            "message_end",
+            "tool_execution_start",
+            "tool_execution_end",
+            "message_start",
+            "message_end",
+            "turn_end",
+            "turn_start",
+            "message_start",
+            "message_end",
+            "tool_execution_start",
+            "tool_execution_end",
+            "message_start",
+            "message_end",
+            "turn_end",
+            "turn_start",
+            "message_start",
+            "message_end",
+            "turn_end",
+            "agent_end",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn stops_before_polling_steering_when_a_tool_aborts_the_run() {
+    let controller = AbortController::new();
+    let signal = controller.signal();
+    let execute: support::ToolExecuteFn = Arc::new(move |_id, _args, tool_signal, _on_update| {
+        let tool_signal = tool_signal.unwrap_or_else(|| signal.clone());
+        Box::pin(async move {
+            tool_signal.cancelled().await;
+            AgentToolResult { is_error: Some(true), ..AgentToolResult::text("Operation aborted") }
+        })
+    });
+    let wait_tool = AgentTool {
+        label: "Wait".to_owned(),
+        prepare_arguments: None,
+        execute,
+        replay: None,
+        execution_mode: None,
+        tool: maho_ai::types::Tool {
+            name: "wait".to_owned(),
+            description: "Wait for abort".to_owned(),
+            parameters: json!({ "type": "object", "properties": { "value": { "type": "string" } } }),
+            freeform: None,
+            constrained_sampling: None,
+        },
+    };
+
+    let steering_polls = Arc::new(AtomicUsize::new(0));
+    let polls = Arc::clone(&steering_polls);
+    let delivered = Arc::new(std::sync::Mutex::new(false));
+    let delivered_sink = Arc::clone(&delivered);
+    let steering_signal = controller.signal();
+    let mut config = AgentLoopConfig::new(test_model(), identity_convert_to_llm());
+    config.get_steering_messages = Some(Arc::new(move || {
+        polls.fetch_add(1, Ordering::SeqCst);
+        let mut delivered = delivered_sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !steering_signal.aborted() || *delivered {
+            return Box::pin(async { Vec::new() });
+        }
+        *delivered = true;
+        Box::pin(async { vec![user_message("queued after abort")] })
+    }));
+
+    let stream = agent_loop(
+        vec![user_message("start")],
+        context_with(vec![wait_tool]),
+        config,
+        Some(controller.signal()),
+        Some(scripted_stream_fn(vec![
+            assistant(vec![tool_call("tool-1", "wait", json!({ "value": "abort" }))], StopReason::ToolUse),
+            assistant(vec![text_block("processed queued")], StopReason::Stop),
+        ])),
+    );
+
+    let mut events = Vec::new();
+    while let Some(event) = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+        .await
+        .expect("terminates")
+        .expect("stream ok")
+    {
+        if matches!(event, AgentEvent::ToolExecutionStart { .. }) {
+            controller.abort(None);
+        }
+        events.push(event);
+    }
+    let messages = stream.result().await.expect("result");
+
+    let user_texts: Vec<String> = messages
+        .iter()
+        .filter_map(|message| match message {
+            AgentMessage::Llm(Message::User(user)) => match &user.content {
+                maho_ai::types::UserContent::Text(text) => Some(text.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(user_texts, vec!["start".to_owned()]);
+    assert_eq!(events.iter().filter(|event| matches!(event, AgentEvent::TurnStart)).count(), 1);
+    assert_eq!(events.iter().filter(|event| matches!(event, AgentEvent::AgentEnd { .. })).count(), 1);
+    assert_eq!(steering_polls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
