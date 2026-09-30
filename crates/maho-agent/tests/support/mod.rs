@@ -13,9 +13,9 @@ use maho_agent::{
 };
 use maho_ai::model::Model;
 use maho_ai::types::{
-    Api, AssistantMessage, AssistantMessageEvent, BoxFuture, ContentBlock, Context, DoneReason, ErrorReason,
-    InputModality, Message, ModelCost, ProviderId, StopReason, TextContent, Tool, ToolCall, ToolResultMessage,
-    Usage, UserContent, UserMessage,
+    Api, AssistantMessage, AssistantMessageEvent, AssistantStopDetails, BoxFuture, ContentBlock, Context, DoneReason,
+    ErrorReason, InputModality, Message, ModelCost, ProviderId, StopReason, TextContent, Tool, ToolCall,
+    ToolResultMessage, Usage, UserContent, UserMessage,
 };
 use maho_ai::utils::abort::AbortSignal;
 use maho_ai::utils::event_stream::AssistantMessageEventStream;
@@ -68,6 +68,76 @@ pub fn assistant(content: Vec<ContentBlock>, stop_reason: StopReason) -> Assista
 
 pub fn text_block(text: impl Into<String>) -> ContentBlock {
     ContentBlock::Text(TextContent { text: text.into(), audience: None, text_signature: None })
+}
+
+/// An assistant message carrying the extra terminal fields the TS fixtures spread in.
+pub fn assistant_with(
+    content: Vec<ContentBlock>,
+    stop_reason: StopReason,
+    error_message: Option<String>,
+    stop_details: Option<AssistantStopDetails>,
+) -> AssistantMessage {
+    AssistantMessage {
+        error_message,
+        stop_details,
+        ..assistant(content, stop_reason)
+    }
+}
+
+/// A tool that returns `result` verbatim, recording nothing.
+pub fn result_tool(name: &str, result: AgentToolResult) -> AgentTool {
+    let execute: Arc<
+        dyn Fn(String, Value, Option<AbortSignal>, Option<AgentToolUpdateCallback>) -> BoxFuture<'static, AgentToolResult>
+            + Send
+            + Sync,
+    > = Arc::new(move |_id, _args, _signal, _on_update| {
+        let result = result.clone();
+        Box::pin(async move { result })
+    });
+    AgentTool {
+        label: name.to_owned(),
+        prepare_arguments: None,
+        execute,
+        replay: None,
+        execution_mode: None,
+        tool: Tool {
+            name: name.to_owned(),
+            description: name.to_owned(),
+            parameters: json!({ "type": "object", "properties": {} }),
+            freeform: None,
+            constrained_sampling: None,
+        },
+    }
+}
+
+/// A tool whose `execute` returns `result`, counting its invocations.
+pub fn counting_result_tool(name: &str, result: AgentToolResult) -> (AgentTool, Arc<std::sync::atomic::AtomicUsize>) {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    let execute: Arc<
+        dyn Fn(String, Value, Option<AbortSignal>, Option<AgentToolUpdateCallback>) -> BoxFuture<'static, AgentToolResult>
+            + Send
+            + Sync,
+    > = Arc::new(move |_id, _args, _signal, _on_update| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        let result = result.clone();
+        Box::pin(async move { result })
+    });
+    let tool = AgentTool {
+        label: name.to_owned(),
+        prepare_arguments: None,
+        execute,
+        replay: None,
+        execution_mode: None,
+        tool: Tool {
+            name: name.to_owned(),
+            description: name.to_owned(),
+            parameters: json!({ "type": "object", "properties": {} }),
+            freeform: None,
+            constrained_sampling: None,
+        },
+    };
+    (tool, calls)
 }
 
 pub fn tool_call(id: &str, name: &str, arguments: Value) -> ContentBlock {
