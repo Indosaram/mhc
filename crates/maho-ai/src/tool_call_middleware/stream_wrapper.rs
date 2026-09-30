@@ -1,10 +1,10 @@
 //! Port of senpi packages/ai/src/tool-call-middleware/stream-wrapper.ts.
 
-use crate::types::{AssistantMessage, AssistantMessageEvent, DoneReason, StopReason, Tool};
+use crate::types::{AssistantMessageEvent, DoneReason, StopReason, Tool};
 use crate::utils::event_stream::{AssistantMessageEventStream, StreamError};
 
 use super::stream_wrapper_shared::{StreamMessageProjection, StreamMessageProjectionOptions};
-use super::types::{StreamParser, ToolCallProtocol};
+use super::types::ToolCallProtocol;
 
 pub fn wrap_stream_with_tool_call_middleware(
     inner_stream: AssistantMessageEventStream,
@@ -75,7 +75,6 @@ pub fn wrap_stream_with_tool_call_middleware(
                             let result = projection.project_parser_events(&parser.finish());
                             saw_tool_call = saw_tool_call || result.saw_tool_call;
                             projection.finish_text();
-                            parser_has_pending_input = false;
                         }
                         projection.finalize_dangling_tool_calls();
                         let final_message = projection.finalize(&message, saw_tool_call);
@@ -100,7 +99,6 @@ pub fn wrap_stream_with_tool_call_middleware(
                             let result = current_projection.project_parser_events(&parser.finish());
                             saw_tool_call = saw_tool_call || result.saw_tool_call;
                             current_projection.finish_text();
-                            parser_has_pending_input = false;
                         }
                         current_projection.finalize_dangling_tool_calls();
                         let message = current_projection.finalize(&error, saw_tool_call);

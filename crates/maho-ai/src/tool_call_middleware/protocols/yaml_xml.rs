@@ -431,3 +431,518 @@ pub fn create_yaml_xml_stream_parser(tools: Vec<Tool>, options: Option<ParserOpt
     let tool_names = tools.iter().map(|tool| tool.name.clone()).collect();
     Box::new(YamlXmlStreamParser { tools, tool_names, options, buffer: String::new(), current_tool_state: None, next_tool_call_index: 0 })
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool_call_middleware::types::StreamParserEvent;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    fn tool(name: &str, description: &str, parameters: Value) -> Tool {
+        Tool { name: name.into(), description: description.into(), parameters, freeform: None, constrained_sampling: None }
+    }
+
+    fn weather_tool() -> Tool {
+        tool(
+            "get_weather",
+            "Get weather for a location",
+            json!({"type": "object", "required": ["city"], "properties": {"city": {"type": "string"}, "unit": {"type": "string"}}}),
+        )
+    }
+
+    fn write_file_tool() -> Tool {
+        tool(
+            "write_file",
+            "Write a file",
+            json!({"type": "object", "required": ["file_path", "contents"], "properties": {"file_path": {"type": "string"}, "contents": {"type": "string"}}}),
+        )
+    }
+
+    fn get_location_tool() -> Tool {
+        tool("get_location", "Get location", json!({"type": "object", "properties": {}}))
+    }
+
+    fn fixture_tools() -> Vec<Tool> {
+        vec![
+            tool("get_weather", "Get weather", json!({"type": "object", "required": ["city"], "properties": {"city": {"type": "string"}, "days": {"type": "integer"}}})),
+            tool(
+                "todowrite",
+                "Write todos",
+                json!({"type": "object", "required": ["todos"], "properties": {"todos": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["content", "status", "priority"], "properties": {"content": {"type": "string"}, "status": {"type": "string"}, "priority": {"type": "string"}}}}}}),
+            ),
+            get_location_tool(),
+        ]
+    }
+
+    fn error_collector() -> (Arc<Mutex<Vec<String>>>, impl Fn(&str, Option<&HashMap<String, Value>>) + Send + Sync + 'static) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let handler = move |message: &str, _metadata: Option<&HashMap<String, Value>>| {
+            sink.lock().expect("error sink").push(message.to_string());
+        };
+        (seen, handler)
+    }
+
+    fn options_with(emit_raw: bool, handler: impl Fn(&str, Option<&HashMap<String, Value>>) + Send + Sync + 'static) -> ParserOptions {
+        ParserOptions { emit_raw_tool_call_text_on_error: emit_raw, on_error: Some(Arc::new(handler)) }
+    }
+
+    fn text_of(events: &[StreamParserEvent]) -> String {
+        events.iter().filter_map(|event| if let StreamParserEvent::Text { text } = event { Some(text.as_str()) } else { None }).collect()
+    }
+
+    fn is_toolcall_event(event: &StreamParserEvent) -> bool {
+        matches!(event, StreamParserEvent::ToolcallStart { .. } | StreamParserEvent::ToolcallDelta { .. } | StreamParserEvent::ToolcallEnd { .. })
+    }
+
+    fn feed_all(parser: &mut Box<dyn StreamParser + Send>, input: &str) -> Vec<StreamParserEvent> {
+        let mut events = parser.feed(input);
+        events.extend(parser.finish());
+        events
+    }
+
+    fn end_of(events: &[StreamParserEvent]) -> Option<&StreamParserEvent> {
+        events.iter().find(|event| matches!(event, StreamParserEvent::ToolcallEnd { .. }))
+    }
+
+    fn arg<'a>(call: &'a ParsedToolCall, key: &str) -> Option<&'a Value> {
+        call.arguments.get(key)
+    }
+
+    // Deterministic chunking that mirrors the TS randomChunkSplit helper.
+    fn random_chunk_split(text: &str, min_size: usize, max_size: usize, seed: u64) -> Vec<String> {
+        let mut current = seed;
+        let mut chunks = Vec::new();
+        let chars: Vec<char> = text.chars().collect();
+        let mut index = 0usize;
+        while index < chars.len() {
+            current = (current * 9301 + 49_297) % 233_280;
+            let size = ((current as f64 / 233_280.0) * (max_size - min_size + 1) as f64).floor() as usize + min_size;
+            let end = (index + size).min(chars.len());
+            chunks.push(chars[index..end].iter().collect());
+            index = end;
+        }
+        chunks
+    }
+
+    #[test]
+    fn formats_object_arguments_as_yaml_inside_an_xml_tag() {
+        let mut args = Map::new();
+        args.insert("city".to_string(), Value::String("Seoul".into()));
+        args.insert("unit".to_string(), Value::String("celsius".into()));
+        let formatted = yaml_xml_format_tool_call("get_weather", &args);
+        assert!(formatted.contains("<get_weather>"));
+        assert!(formatted.contains("city: Seoul"));
+        assert!(formatted.contains("unit: celsius"));
+        assert!(formatted.contains("</get_weather>"));
+    }
+
+    #[test]
+    fn parses_a_yaml_mapping_wrapped_in_an_xml_tool_tag() {
+        let calls = parse_yaml_xml_generated_text("<get_weather>\ncity: Seoul\nunit: celsius\n</get_weather>", &[weather_tool()], None);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(arg(&calls[0], "city"), Some(&Value::String("Seoul".into())));
+        assert_eq!(arg(&calls[0], "unit"), Some(&Value::String("celsius".into())));
+    }
+
+    #[test]
+    fn parses_yaml_multiline_blocks() {
+        let text = "<write_file>\nfile_path: /tmp/example.txt\ncontents: |\n  First line\n  Second line\n</write_file>";
+        let calls = parse_yaml_xml_generated_text(text, &[write_file_tool()], None);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(arg(&calls[0], "file_path"), Some(&Value::String("/tmp/example.txt".into())));
+        assert_eq!(arg(&calls[0], "contents"), Some(&Value::String("First line\nSecond line\n".into())));
+    }
+
+    #[test]
+    fn treats_self_closing_tags_as_empty_argument_objects() {
+        let calls = parse_yaml_xml_generated_text("<get_weather />", &[weather_tool()], None);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "get_weather");
+        assert!(calls[0].arguments.is_empty());
+    }
+
+    #[test]
+    fn parses_self_closing_tags_with_surrounding_text() {
+        let calls = parse_yaml_xml_generated_text("Getting your location now... <get_location/> Done!", &[get_location_tool()], None);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "get_location");
+        assert!(calls[0].arguments.is_empty());
+    }
+
+    #[test]
+    fn does_not_parse_tool_tags_that_appear_inside_a_yaml_block_scalar_body() {
+        let text = "<write_file>\nfile_path: /tmp/test.txt\ncontents: |\n  The text contains <get_location/> tag\n</write_file>";
+        let calls = parse_yaml_xml_generated_text(text, &[write_file_tool(), get_location_tool()], None);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "write_file");
+        assert_eq!(arg(&calls[0], "contents"), Some(&Value::String("The text contains <get_location/> tag\n".into())));
+    }
+
+    #[test]
+    fn parses_multiple_tool_calls_where_the_second_starts_after_the_first_ends() {
+        let text = "<write_file>\nfile_path: test.txt\ncontents: normal content\n</write_file>\n<get_weather>\nlocation: Seoul\n</get_weather>";
+        let calls = parse_yaml_xml_generated_text(text, &[write_file_tool(), weather_tool()], None);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "write_file");
+        assert_eq!(arg(&calls[0], "file_path"), Some(&Value::String("test.txt".into())));
+        assert_eq!(calls[1].name, "get_weather");
+        assert_eq!(arg(&calls[1], "location"), Some(&Value::String("Seoul".into())));
+    }
+
+    #[test]
+    fn reports_invalid_yaml_through_on_error() {
+        let (seen, handler) = error_collector();
+        let options = options_with(false, handler);
+        let calls = parse_yaml_xml_generated_text("<get_weather>\n[invalid: yaml:\n</get_weather>", &[weather_tool()], Some(&options));
+        assert!(calls.is_empty());
+        assert!(!seen.lock().expect("errors").is_empty());
+    }
+
+    #[test]
+    fn emits_toolcall_events_when_a_yaml_xml_call_completes() {
+        let mut parser = create_yaml_xml_stream_parser(vec![weather_tool()], None);
+        assert_eq!(
+            feed_all(&mut parser, "<get_weather>\ncity: Seoul\n</get_weather>"),
+            vec![
+                StreamParserEvent::ToolcallStart { index: 0, name: "get_weather".into(), id: "yaml-xml-tool-0".into() },
+                StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: r#"{"city":"Seoul"}"#.into() },
+                StreamParserEvent::ToolcallEnd {
+                    index: 0,
+                    name: "get_weather".into(),
+                    id: "yaml-xml-tool-0".into(),
+                    arguments: json!({"city": "Seoul"}).as_object().expect("object").clone(),
+                    incomplete: false,
+                    error_message: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_self_closing_tags_with_surrounding_text_in_the_stream() {
+        let mut parser = create_yaml_xml_stream_parser(vec![get_location_tool()], None);
+        assert_eq!(
+            feed_all(&mut parser, "prefix <get_location /> suffix"),
+            vec![
+                StreamParserEvent::Text { text: "prefix ".into() },
+                StreamParserEvent::ToolcallStart { index: 0, name: "get_location".into(), id: "yaml-xml-tool-0".into() },
+                StreamParserEvent::ToolcallEnd {
+                    index: 0,
+                    name: "get_location".into(),
+                    id: "yaml-xml-tool-0".into(),
+                    arguments: Map::new(),
+                    incomplete: false,
+                    error_message: None,
+                },
+                StreamParserEvent::Text { text: " suffix".into() },
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_tool_calls_split_across_multiple_chunks() {
+        let mut parser = create_yaml_xml_stream_parser(vec![weather_tool()], None);
+        let mut events = Vec::new();
+        for chunk in ["<get_wea", "ther>\n", "location: Ber", "lin\n", "</get_weather>"] {
+            events.extend(parser.feed(chunk));
+        }
+        events.extend(parser.finish());
+        let StreamParserEvent::ToolcallEnd { name, arguments, .. } = end_of(&events).expect("toolcall end") else { unreachable!() };
+        assert_eq!(name, "get_weather");
+        assert_eq!(arguments.get("location"), Some(&Value::String("Berlin".into())));
+    }
+
+    #[test]
+    fn parses_self_closing_tags_split_across_multiple_chunks() {
+        let mut parser = create_yaml_xml_stream_parser(vec![get_location_tool()], None);
+        let mut events = parser.feed("<get_loca");
+        events.extend(parser.feed("tion/>"));
+        events.extend(parser.finish());
+        assert_eq!(
+            events,
+            vec![
+                StreamParserEvent::ToolcallStart { index: 0, name: "get_location".into(), id: "yaml-xml-tool-0".into() },
+                StreamParserEvent::ToolcallEnd {
+                    index: 0,
+                    name: "get_location".into(),
+                    id: "yaml-xml-tool-0".into(),
+                    arguments: Map::new(),
+                    incomplete: false,
+                    error_message: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_multiline_yaml_values_split_across_multiple_chunks() {
+        let mut parser = create_yaml_xml_stream_parser(vec![write_file_tool()], None);
+        let mut events = Vec::new();
+        for chunk in ["<write_file>\n", "file_path: /tmp/test.txt\n", "contents: |\n", "  Line one\n", "  Line two\n", "</write_file>"] {
+            events.extend(parser.feed(chunk));
+        }
+        events.extend(parser.finish());
+        let StreamParserEvent::ToolcallEnd { name, arguments, .. } = end_of(&events).expect("toolcall end") else { unreachable!() };
+        assert_eq!(name, "write_file");
+        assert_eq!(arguments.get("file_path"), Some(&Value::String("/tmp/test.txt".into())));
+        assert_eq!(arguments.get("contents"), Some(&Value::String("Line one\nLine two\n".into())));
+    }
+
+    #[test]
+    fn suppresses_invalid_yaml_tool_markup_by_default_and_reports_on_error() {
+        let (seen, handler) = error_collector();
+        let mut parser = create_yaml_xml_stream_parser(vec![weather_tool()], Some(options_with(false, handler)));
+        assert_eq!(
+            feed_all(&mut parser, "prefix <get_weather>\n[invalid: yaml:\n</get_weather> suffix"),
+            vec![StreamParserEvent::Text { text: "prefix ".into() }, StreamParserEvent::Text { text: " suffix".into() }]
+        );
+        assert!(!seen.lock().expect("errors").is_empty());
+    }
+
+    #[test]
+    fn emits_invalid_yaml_tool_markup_when_raw_fallback_is_enabled() {
+        let mut parser = create_yaml_xml_stream_parser(vec![weather_tool()], Some(ParserOptions { emit_raw_tool_call_text_on_error: true, on_error: None }));
+        assert_eq!(
+            feed_all(&mut parser, "prefix <get_weather>\n[invalid: yaml:\n</get_weather> suffix"),
+            vec![
+                StreamParserEvent::Text { text: "prefix ".into() },
+                StreamParserEvent::Text { text: "<get_weather>\n[invalid: yaml:\n</get_weather>".into() },
+                StreamParserEvent::Text { text: " suffix".into() },
+            ]
+        );
+    }
+
+    #[test]
+    fn force_completes_unfinished_yaml_tool_calls_at_finish_only_when_the_arguments_validate() {
+        let mut parser = create_yaml_xml_stream_parser(vec![weather_tool()], None);
+        assert_eq!(
+            feed_all(&mut parser, "<get_weather>\ncity: Seoul"),
+            vec![
+                StreamParserEvent::ToolcallStart { index: 0, name: "get_weather".into(), id: "yaml-xml-tool-0".into() },
+                StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: r#"{"city":"Seoul"}"#.into() },
+                StreamParserEvent::ToolcallEnd {
+                    index: 0,
+                    name: "get_weather".into(),
+                    id: "yaml-xml-tool-0".into(),
+                    arguments: json!({"city": "Seoul"}).as_object().expect("object").clone(),
+                    incomplete: false,
+                    error_message: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn flags_unfinished_invalid_yaml_tool_calls_at_finish_by_default() {
+        let (seen, handler) = error_collector();
+        let mut parser = create_yaml_xml_stream_parser(vec![weather_tool()], Some(options_with(false, handler)));
+        assert_eq!(
+            feed_all(&mut parser, "<get_weather>\n[invalid: yaml:"),
+            vec![
+                StreamParserEvent::ToolcallStart { index: 0, name: "get_weather".into(), id: "yaml-xml-tool-0".into() },
+                StreamParserEvent::ToolcallEnd {
+                    index: 0,
+                    name: "get_weather".into(),
+                    id: "yaml-xml-tool-0".into(),
+                    arguments: Map::new(),
+                    incomplete: true,
+                    error_message: Some("Tool call was truncated mid-arguments".into()),
+                },
+            ]
+        );
+        assert_eq!(seen.lock().expect("errors").as_slice(), ["Could not complete streaming YAML XML tool call at finish."]);
+    }
+
+    #[test]
+    fn never_emits_raw_unfinished_yaml_tool_markup_at_finish_when_raw_fallback_is_enabled() {
+        let mut parser = create_yaml_xml_stream_parser(vec![weather_tool()], Some(ParserOptions { emit_raw_tool_call_text_on_error: true, on_error: None }));
+        assert_eq!(
+            feed_all(&mut parser, "<get_weather>\n[invalid: yaml:"),
+            vec![
+                StreamParserEvent::ToolcallStart { index: 0, name: "get_weather".into(), id: "yaml-xml-tool-0".into() },
+                StreamParserEvent::ToolcallEnd {
+                    index: 0,
+                    name: "get_weather".into(),
+                    id: "yaml-xml-tool-0".into(),
+                    arguments: Map::new(),
+                    incomplete: true,
+                    error_message: Some("Tool call was truncated mid-arguments".into()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn handles_a_truncation_fixture_with_a_parseable_yaml_mapping_and_the_closing_tag_missing() {
+        let (seen, handler) = error_collector();
+        let mut parser = create_yaml_xml_stream_parser(fixture_tools(), Some(options_with(true, handler)));
+        let input = "<get_weather>\ncity: Seoul";
+        let events = feed_all(&mut parser, input);
+        let ends: Vec<_> = events.iter().filter(|e| matches!(e, StreamParserEvent::ToolcallEnd { .. })).collect();
+        assert_eq!(ends.len(), 1);
+        let StreamParserEvent::ToolcallEnd { name, arguments, incomplete, .. } = ends[0] else { unreachable!() };
+        assert_eq!(name, "get_weather");
+        assert_eq!(arguments.get("city"), Some(&Value::String("Seoul".into())));
+        assert!(!*incomplete);
+        assert!(!text_of(&events).contains(input));
+        assert!(seen.lock().expect("errors").is_empty());
+    }
+
+    #[test]
+    fn handles_a_truncation_fixture_with_an_empty_yaml_body_that_validates_empty_arguments() {
+        let (seen, handler) = error_collector();
+        let mut parser = create_yaml_xml_stream_parser(fixture_tools(), Some(options_with(true, handler)));
+        let input = "<get_location>\n";
+        let events = feed_all(&mut parser, input);
+        let ends: Vec<_> = events.iter().filter(|e| matches!(e, StreamParserEvent::ToolcallEnd { .. })).collect();
+        assert_eq!(ends.len(), 1);
+        let StreamParserEvent::ToolcallEnd { name, arguments, incomplete, .. } = ends[0] else { unreachable!() };
+        assert_eq!(name, "get_location");
+        assert!(arguments.is_empty());
+        assert!(!*incomplete);
+        assert!(!text_of(&events).contains(input));
+        assert!(seen.lock().expect("errors").is_empty());
+    }
+
+    #[test]
+    fn handles_a_truncation_fixture_with_an_invalid_yaml_mapping() {
+        let (seen, handler) = error_collector();
+        let mut parser = create_yaml_xml_stream_parser(fixture_tools(), Some(options_with(true, handler)));
+        let input = "<get_weather>\n[invalid: yaml:";
+        let events = feed_all(&mut parser, input);
+        let ends: Vec<_> = events.iter().filter(|e| matches!(e, StreamParserEvent::ToolcallEnd { .. })).collect();
+        assert_eq!(ends.len(), 1);
+        let StreamParserEvent::ToolcallEnd { name, incomplete, .. } = ends[0] else { unreachable!() };
+        assert_eq!(name, "get_weather");
+        assert!(*incomplete);
+        assert!(!text_of(&events).contains(input));
+        assert!(!seen.lock().expect("errors").iter().any(|message| message.contains(input)));
+    }
+
+    #[test]
+    fn handles_a_truncation_fixture_with_parseable_yaml_that_violates_todowrite_min_items() {
+        let (seen, handler) = error_collector();
+        let mut parser = create_yaml_xml_stream_parser(fixture_tools(), Some(options_with(true, handler)));
+        let input = "<todowrite>\ntodos: []";
+        let events = feed_all(&mut parser, input);
+        let ends: Vec<_> = events.iter().filter(|e| matches!(e, StreamParserEvent::ToolcallEnd { .. })).collect();
+        assert_eq!(ends.len(), 1);
+        let StreamParserEvent::ToolcallEnd { name, incomplete, .. } = ends[0] else { unreachable!() };
+        assert_eq!(name, "todowrite");
+        assert!(*incomplete);
+        assert!(!text_of(&events).contains(input));
+        assert!(!seen.lock().expect("errors").iter().any(|message| message.contains(input)));
+    }
+
+    #[test]
+    fn handles_a_truncation_fixture_with_an_unknown_yaml_xml_tag_that_remains_ordinary_text() {
+        let (_seen, handler) = error_collector();
+        let mut parser = create_yaml_xml_stream_parser(fixture_tools(), Some(options_with(true, handler)));
+        let input = "<unknown_tool>\ncity: Seoul";
+        let events = feed_all(&mut parser, input);
+        assert!(!events.iter().any(is_toolcall_event));
+        assert!(text_of(&events).contains(input));
+    }
+
+    #[test]
+    fn flags_eof_immediately_after_an_opening_tag_when_required_arguments_are_missing() {
+        let mut parser = create_yaml_xml_stream_parser(fixture_tools(), None);
+        assert_eq!(
+            feed_all(&mut parser, "<get_weather>"),
+            vec![
+                StreamParserEvent::ToolcallStart { index: 0, name: "get_weather".into(), id: "yaml-xml-tool-0".into() },
+                StreamParserEvent::ToolcallEnd {
+                    index: 0,
+                    name: "get_weather".into(),
+                    id: "yaml-xml-tool-0".into(),
+                    arguments: Map::new(),
+                    incomplete: true,
+                    error_message: Some("Tool call was truncated mid-arguments".into()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn recovers_eof_immediately_after_an_opening_tag_when_empty_arguments_validate() {
+        let mut parser = create_yaml_xml_stream_parser(fixture_tools(), None);
+        assert_eq!(
+            feed_all(&mut parser, "<get_location>"),
+            vec![
+                StreamParserEvent::ToolcallStart { index: 0, name: "get_location".into(), id: "yaml-xml-tool-0".into() },
+                StreamParserEvent::ToolcallEnd {
+                    index: 0,
+                    name: "get_location".into(),
+                    id: "yaml-xml-tool-0".into(),
+                    arguments: Map::new(),
+                    incomplete: false,
+                    error_message: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn ends_a_started_malformed_complete_call_as_incomplete_without_changing_its_raw_text_policy() {
+        let mut parser = create_yaml_xml_stream_parser(vec![weather_tool()], Some(ParserOptions { emit_raw_tool_call_text_on_error: true, on_error: None }));
+        let mut events = parser.feed("<get_weather>\ncity: Seoul\n");
+        events.extend(parser.feed("[invalid: yaml:\n</get_weather>"));
+        events.extend(parser.finish());
+        assert!(events.contains(&StreamParserEvent::ToolcallEnd {
+            index: 0,
+            name: "get_weather".into(),
+            id: "yaml-xml-tool-0".into(),
+            arguments: Map::new(),
+            incomplete: true,
+            error_message: Some("Tool call arguments could not be parsed".into()),
+        }));
+        assert!(events.contains(&StreamParserEvent::Text { text: "<get_weather>\ncity: Seoul\n[invalid: yaml:\n</get_weather>".into() }));
+    }
+
+    #[test]
+    fn keeps_yaml_xml_parsing_stable_across_random_chunk_splits() {
+        for seed in [0u64, 1, 7, 13, 21] {
+            let mut parser = create_yaml_xml_stream_parser(vec![weather_tool()], None);
+            let input = "Checking... <get_weather>\nlocation: NYC\nunit: celsius\n</get_weather> found!";
+            let mut events = Vec::new();
+            for chunk in random_chunk_split(input, 1, 8, seed) {
+                events.extend(parser.feed(&chunk));
+            }
+            events.extend(parser.finish());
+            let StreamParserEvent::ToolcallEnd { name, arguments, .. } = end_of(&events).expect("toolcall end") else { unreachable!() };
+            assert_eq!(name, "get_weather", "seed {seed}");
+            assert_eq!(arguments.get("location"), Some(&Value::String("NYC".into())), "seed {seed}");
+            assert_eq!(arguments.get("unit"), Some(&Value::String("celsius".into())), "seed {seed}");
+            let text = text_of(&events);
+            assert!(text.contains("Checking..."), "seed {seed}");
+            assert!(text.contains("found!"), "seed {seed}");
+            assert!(!text.contains("<get_weather>"), "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn preserves_text_boundaries_around_tool_calls_in_the_parser_stream() {
+        let mut parser = create_yaml_xml_stream_parser(vec![weather_tool()], None);
+        assert_eq!(
+            feed_all(&mut parser, "Before <get_weather>\nlocation: SF\n</get_weather> After"),
+            vec![
+                StreamParserEvent::Text { text: "Before ".into() },
+                StreamParserEvent::ToolcallStart { index: 0, name: "get_weather".into(), id: "yaml-xml-tool-0".into() },
+                StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: r#"{"location":"SF"}"#.into() },
+                StreamParserEvent::ToolcallEnd {
+                    index: 0,
+                    name: "get_weather".into(),
+                    id: "yaml-xml-tool-0".into(),
+                    arguments: json!({"location": "SF"}).as_object().expect("object").clone(),
+                    incomplete: false,
+                    error_message: None,
+                },
+                StreamParserEvent::Text { text: " After".into() },
+            ]
+        );
+    }
+}

@@ -32,53 +32,76 @@ fn named_marker_action_and_name(marker: &str) -> (Option<&str>, Option<&str>) {
     (Some(action), name)
 }
 
-fn recover_thinking_content(input: &str) -> RecoveredThinking {
-    let mut mask = create_recovery_code_mask();
-    let mut channel = OutputChannel::Thinking;
-    let mut thinking = String::new();
-    let mut response = String::new();
-    let mut changed = false;
-    let mut recovered_response = false;
+struct ThinkingRecoveryState {
+    channel: OutputChannel,
+    thinking: String,
+    response: String,
+    changed: bool,
+    recovered_response: bool,
+}
 
-    let mut append = |channel: &OutputChannel, text: &str, thinking: &mut String, response: &mut String| match channel {
-        OutputChannel::Response => response.push_str(text),
-        OutputChannel::Thinking => thinking.push_str(text),
-    };
+impl ThinkingRecoveryState {
+    fn append(&mut self, text: &str) {
+        match self.channel {
+            OutputChannel::Response => self.response.push_str(text),
+            OutputChannel::Thinking => self.thinking.push_str(text),
+        }
+    }
+}
 
-    let mut scan = |text: &str| {
-        let mut offset = 0usize;
-        loop {
-            let Some(marker) = match_xtml_channel_marker(&text[offset..]) else { break };
-            if marker.is_empty() {
-                break;
-            }
-            append(&channel, &text[offset..offset], &mut thinking, &mut response);
+fn scan_thinking_segment(state: &mut ThinkingRecoveryState, text: &str) {
+    let mut offset = 0usize;
+    let mut last = 0usize;
+    while offset < text.len() {
+        if let Some(marker) = match_xtml_channel_marker(&text[offset..])
+            && !marker.is_empty()
+        {
+            state.append(&text[last..offset]);
             let (action, name) = named_marker_action_and_name(&marker);
-            changed = true;
+            state.changed = true;
             match (action, name) {
                 (Some("open"), Some("response")) => {
-                    channel = OutputChannel::Response;
-                    recovered_response = true;
+                    state.channel = OutputChannel::Response;
+                    state.recovered_response = true;
                 }
-                (Some("open"), Some("think")) => channel = OutputChannel::Thinking,
-                (Some("close"), Some("response")) => channel = OutputChannel::Thinking,
+                (Some("open"), Some("think")) => state.channel = OutputChannel::Thinking,
+                (Some("close"), Some("response")) => state.channel = OutputChannel::Thinking,
                 _ => {}
             }
             offset += marker.len();
+            last = offset;
+            continue;
         }
-        append(&channel, &text[offset..], &mut thinking, &mut response);
+        offset += text[offset..].chars().next().map(char::len_utf8).unwrap_or(1);
+    }
+    state.append(&text[last..]);
+}
+
+fn recover_thinking_content(input: &str) -> RecoveredThinking {
+    let mut mask = create_recovery_code_mask();
+    let mut state = ThinkingRecoveryState {
+        channel: OutputChannel::Thinking,
+        thinking: String::new(),
+        response: String::new(),
+        changed: false,
+        recovered_response: false,
     };
 
     let segments: Vec<_> = mask.feed(input, None).into_iter().chain(mask.finish()).collect();
     for segment in segments {
         if segment.scan {
-            scan(&segment.text);
+            scan_thinking_segment(&mut state, &segment.text);
         } else {
-            append(&channel, &segment.text, &mut thinking, &mut response);
+            state.append(&segment.text);
         }
     }
 
-    RecoveredThinking { thinking, response, changed, recovered_response }
+    RecoveredThinking {
+        thinking: state.thinking,
+        response: state.response,
+        changed: state.changed,
+        recovered_response: state.recovered_response,
+    }
 }
 
 fn stripped_visible_text(input: &str) -> (String, bool) {
@@ -158,7 +181,7 @@ pub fn recover_kimi_xtml_thinking(message: &AssistantMessage) -> AssistantMessag
         let mut diagnostics = result.diagnostics.unwrap_or_default();
         diagnostics.push(AssistantMessageDiagnostic {
             kind: "kimi_xtml_thinking_recovery".to_string(),
-            timestamp: crate::utils::now_millis(),
+            timestamp: crate::utils::diagnostics::now_ms(),
             error: None,
             details: Some(serde_json::Map::from_iter([("recoveredResponse".to_string(), serde_json::Value::Bool(recovered_response))])),
         });
@@ -171,6 +194,7 @@ pub fn recover_kimi_xtml_thinking(message: &AssistantMessage) -> AssistantMessag
 mod tests {
     use super::*;
     use crate::types::{StopReason, TextContent, Usage};
+    use serde_json::Value;
 
     fn message(content: Vec<ContentBlock>) -> AssistantMessage {
         AssistantMessage {
@@ -227,4 +251,50 @@ mod tests {
             other => panic!("expected text block, got {other:?}"),
         }
     }
+    fn thinking_text(message: &AssistantMessage) -> String {
+        message.content.iter().filter_map(|block| if let ContentBlock::Thinking(t) = block { Some(t.thinking.as_str()) } else { None }).collect()
+    }
+
+    fn visible_text(message: &AssistantMessage) -> String {
+        message.content.iter().filter_map(|block| if let ContentBlock::Text(t) = block { Some(t.text.as_str()) } else { None }).collect()
+    }
+
+    fn rendered_content(message: &AssistantMessage) -> String {
+        message.content.iter().map(|block| serde_json::to_string(block).expect("serializable")).collect()
+    }
+
+    #[test]
+    fn strips_tools_channel_and_unnamed_markers_from_thinking() {
+        let msg = message(vec![ContentBlock::Thinking(ThinkingContent { thinking: "private<|close|>tools<|sep|> reasoning<|close|><|sep|> remains<|sep|>".into(), ..ThinkingContent::default() })]);
+        let recovered = recover_kimi_xtml_thinking(&msg);
+        assert_eq!(thinking_text(&recovered), "private reasoning remains");
+        assert_eq!(visible_text(&recovered), "");
+        assert!(!rendered_content(&recovered).contains("<|"));
+        let diagnostic = recovered.diagnostics.as_ref().and_then(|d| d.last()).expect("diagnostic");
+        assert_eq!(diagnostic.kind, "kimi_xtml_thinking_recovery");
+        assert_eq!(diagnostic.details.as_ref().and_then(|d| d.get("recoveredResponse")), Some(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn still_promotes_response_content_while_stripping_adjacent_tools_markers() {
+        let msg = message(vec![ContentBlock::Thinking(ThinkingContent {
+            thinking: "private<|close|>think<|sep|><|close|>tools<|sep|><|open|>response<|sep|>visible<|close|>response<|sep|>".into(),
+            ..ThinkingContent::default()
+        })]);
+        let recovered = recover_kimi_xtml_thinking(&msg);
+        assert_eq!(thinking_text(&recovered), "private");
+        assert_eq!(visible_text(&recovered), "visible");
+        assert!(!rendered_content(&recovered).contains("<|"));
+    }
+
+    #[test]
+    fn preserves_tools_and_unnamed_marker_literals_inside_fenced_code() {
+        let literal = "Example:\n\u{60}\u{60}\u{60}text\n<|close|>tools<|sep|><|close|><|sep|>\n\u{60}\u{60}\u{60}";
+        let msg = message(vec![ContentBlock::Thinking(ThinkingContent { thinking: literal.into(), ..ThinkingContent::default() })]);
+        let recovered = recover_kimi_xtml_thinking(&msg);
+        assert_eq!(recovered.content, msg.content);
+        assert_eq!(thinking_text(&recovered), literal);
+        assert!(recovered.diagnostics.is_none());
+    }
+
 }

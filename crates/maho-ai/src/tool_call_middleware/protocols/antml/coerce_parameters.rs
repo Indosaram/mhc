@@ -183,19 +183,82 @@ fn coerce_unknown_value(raw_value: &str) -> Value {
     }
 }
 
+/// TypeBox `minLength`/`maxLength`/`minItems`/`maxItems` equivalents.
+fn length_within(schema: &Value, length: usize) -> bool {
+    if let Some(minimum) = schema.get("minLength").and_then(Value::as_u64)
+        && (length as u64) < minimum
+    {
+        return false;
+    }
+    if let Some(maximum) = schema.get("maxLength").and_then(Value::as_u64)
+        && (length as u64) > maximum
+    {
+        return false;
+    }
+    if let Some(minimum) = schema.get("minItems").and_then(Value::as_u64)
+        && (length as u64) < minimum
+    {
+        return false;
+    }
+    if let Some(maximum) = schema.get("maxItems").and_then(Value::as_u64)
+        && (length as u64) > maximum
+    {
+        return false;
+    }
+    true
+}
+
+/// TypeBox `minimum`/`maximum` equivalents.
+fn number_within(schema: &Value, number: f64) -> bool {
+    if let Some(minimum) = schema.get("minimum").and_then(Value::as_f64)
+        && number < minimum
+    {
+        return false;
+    }
+    if let Some(maximum) = schema.get("maximum").and_then(Value::as_f64)
+        && number > maximum
+    {
+        return false;
+    }
+    true
+}
+
+/// TypeBox `const`/`enum` equivalents.
+fn matches_keyword_constraints(schema: &Value, value: &Value) -> bool {
+    if let Some(constant) = schema.get("const")
+        && constant != value
+    {
+        return false;
+    }
+    if let Some(options) = schema.get("enum").and_then(Value::as_array)
+        && !options.contains(value)
+    {
+        return false;
+    }
+    true
+}
+
 fn schema_accepts(schema: &Value, value: &Value) -> bool {
+    if !matches_keyword_constraints(schema, value) {
+        return false;
+    }
     let Some(schema_type) = schema_type(schema) else { return true };
     match schema_type {
-        "string" => value.is_string(),
-        "number" => value.is_number(),
-        "integer" => value.as_f64().is_some_and(|n| n.fract() == 0.0),
+        "string" => value.as_str().is_some_and(|text| length_within(schema, text.chars().count())),
+        "number" => value.as_f64().is_some_and(|number| number_within(schema, number)),
+        "integer" => value.as_f64().is_some_and(|number| number.fract() == 0.0 && number_within(schema, number)),
         "boolean" => value.is_boolean(),
         "null" => value.is_null(),
         "array" => match value.as_array() {
-            Some(items) => match schema.get("items") {
-                Some(item_schema) if item_schema.is_object() => items.iter().all(|item| schema_accepts(item_schema, item)),
-                _ => true,
-            },
+            Some(items) => {
+                if !length_within(schema, items.len()) {
+                    return false;
+                }
+                match schema.get("items") {
+                    Some(item_schema) if item_schema.is_object() => items.iter().all(|item| schema_accepts(item_schema, item)),
+                    _ => true,
+                }
+            }
             None => false,
         },
         "object" => {

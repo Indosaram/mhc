@@ -34,3 +34,6 @@ pub mod tool_call_middleware;
 pub mod types;
 pub mod utils;
 pub mod wire_identity;
+
+// index.ts re-exports (tool-call middleware activation helpers), owned by todo 12.
+pub use tool_call_middleware::{get_tool_call_format, has_kimi_text_tool_call_recovery, should_recover_text_tool_calls, wrap_stream_with_model_recovery};

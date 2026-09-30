@@ -9,14 +9,15 @@ use crate::types::{AssistantMessageDiagnostic, ToolCall};
 pub fn append_recovery_diagnostic(projection: &mut StreamMessageProjection, tool_call: &ToolCall, protocol: ToolCallFormat) {
     let mut details = Map::new();
     details.insert("protocol".to_string(), Value::String(protocol.as_str().to_string()));
-    details.insert("toolCallId".to_string(), Value::String(tool_call.id.clone()));
-    details.insert("toolCallName".to_string(), Value::String(tool_call.name.clone()));
-    if tool_call.incomplete.unwrap_or(false) {
-        details.insert("incomplete".to_string(), Value::Bool(true));
-    }
+    details.insert("toolName".to_string(), Value::String(tool_call.name.clone()));
+    details.insert("id".to_string(), Value::String(tool_call.id.clone()));
+    details.insert(
+        "status".to_string(),
+        Value::String(if tool_call.incomplete == Some(true) { "incomplete" } else { "complete" }.to_string()),
+    );
     projection.append_diagnostic(AssistantMessageDiagnostic {
-        kind: "text_tool_call_recovered".to_string(),
-        timestamp: crate::utils::now_millis(),
+        kind: "text_tool_call_recovery".to_string(),
+        timestamp: crate::utils::diagnostics::now_ms(),
         error: None,
         details: Some(details),
     });
@@ -54,23 +55,25 @@ mod tests {
     #[test]
     fn records_protocol_and_tool_call_identity() {
         let stream = AssistantMessageEventStream::assistant();
-        let mut projection = StreamMessageProjection::new(stream, message(), StreamMessageProjectionOptions::default());
+        let mut projection = StreamMessageProjection::new(stream, message(), StreamMessageProjectionOptions { preserve_source_metadata: true });
         let tool_call = ToolCall { id: "id-1".into(), name: "get_weather".into(), arguments: Map::new(), incomplete: None, error_message: None, thought_signature: None, namespace: None };
         append_recovery_diagnostic(&mut projection, &tool_call, ToolCallFormat::Antml);
         let diagnostic = projection.message.diagnostics.as_ref().and_then(|d| d.last()).expect("diagnostic recorded");
-        assert_eq!(diagnostic.kind, "text_tool_call_recovered");
+        assert_eq!(diagnostic.kind, "text_tool_call_recovery");
         let details = diagnostic.details.as_ref().expect("details present");
         assert_eq!(details.get("protocol"), Some(&Value::String("antml".into())));
-        assert_eq!(details.get("toolCallId"), Some(&Value::String("id-1".into())));
+        assert_eq!(details.get("toolName"), Some(&Value::String("get_weather".into())));
+        assert_eq!(details.get("id"), Some(&Value::String("id-1".into())));
+        assert_eq!(details.get("status"), Some(&Value::String("complete".into())));
     }
 
     #[test]
     fn flags_incomplete_tool_calls() {
         let stream = AssistantMessageEventStream::assistant();
-        let mut projection = StreamMessageProjection::new(stream, message(), StreamMessageProjectionOptions::default());
+        let mut projection = StreamMessageProjection::new(stream, message(), StreamMessageProjectionOptions { preserve_source_metadata: true });
         let tool_call = ToolCall { id: "id-2".into(), name: "get_weather".into(), arguments: Map::new(), incomplete: Some(true), error_message: None, thought_signature: None, namespace: None };
         append_recovery_diagnostic(&mut projection, &tool_call, ToolCallFormat::Antml);
         let diagnostic = projection.message.diagnostics.as_ref().and_then(|d| d.last()).expect("diagnostic recorded");
-        assert_eq!(diagnostic.details.as_ref().unwrap().get("incomplete"), Some(&Value::Bool(true)));
+        assert_eq!(diagnostic.details.as_ref().unwrap().get("status"), Some(&Value::String("incomplete".into())));
     }
 }

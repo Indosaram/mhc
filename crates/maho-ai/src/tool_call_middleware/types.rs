@@ -73,11 +73,14 @@ impl ToolResultContent {
     }
 }
 
+/// `onError?: (message: string, metadata?: Record<string, unknown>) => void`.
+pub type ParserErrorHandler = std::sync::Arc<dyn Fn(&str, Option<&HashMap<String, Value>>) + Send + Sync>;
+
 #[derive(Clone, Default)]
 pub struct ParserOptions {
     pub emit_raw_tool_call_text_on_error: bool,
     /// `onError?: (message: string, metadata?: Record<string, unknown>) => void`.
-    pub on_error: Option<std::sync::Arc<dyn Fn(&str, Option<&HashMap<String, Value>>) + Send + Sync>>,
+    pub on_error: Option<ParserErrorHandler>,
 }
 
 impl std::fmt::Debug for ParserOptions {
@@ -132,7 +135,7 @@ pub trait StreamParser {
 
 /// Protocol interface for formatting and parsing tool calls in different formats.
 /// Implementations handle the specifics of each tool call format (Hermes, XML, etc.)
-pub trait ToolCallProtocol {
+pub trait ToolCallProtocol: Send + Sync {
     /// Format tools into a system prompt that instructs the model how to use tools.
     fn format_tools_system_prompt(&self, tools: &[Tool]) -> String;
 

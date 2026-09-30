@@ -9,8 +9,7 @@ use crate::types::Tool;
 // registered snake_case tool name.
 fn strip_cc_mcp_prefix(name: &str) -> String {
     let mut result = name;
-    loop {
-        let Some(rest) = result.strip_prefix("mcp__") else { break };
+    while let Some(rest) = result.strip_prefix("mcp__") {
         match rest.find("__") {
             Some(idx) => result = &rest[idx + 2..],
             None => break,

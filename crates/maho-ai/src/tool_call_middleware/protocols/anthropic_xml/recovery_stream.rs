@@ -25,7 +25,7 @@ enum RecoveryState {
     Idle { tag: String },
     Wrapper { scanner: RecoveryWrapperState<WrapperResolver> },
     Active {
-        tool: Tool,
+        tool: Box<Tool>,
         index: usize,
         id: String,
         close_matcher: Box<dyn StreamBoundaryMatcher>,
@@ -78,7 +78,7 @@ impl InvokeRecoveryStreamParser {
         let id = format!("recovered-antml-{index}");
         events.push(StreamParserEvent::ToolcallStart { index, name: tool.name.clone(), id: id.clone() });
         let close_matcher = create_pending_fragment(PendingFragmentKind::Invoke, opening).matcher;
-        self.state = RecoveryState::Active { tool, index, id, close_matcher, wrapper, source: opening.to_string() };
+        self.state = RecoveryState::Active { tool: Box::new(tool), index, id, close_matcher, wrapper, source: opening.to_string() };
     }
 
     fn restore_after_active(&mut self, wrapper: Option<RecoveryWrapperState<WrapperResolver>>) {
@@ -96,7 +96,7 @@ impl InvokeRecoveryStreamParser {
         let opening = find_invoke_open_tag(&source, 0).expect("active state always starts from a matched invoke open tag");
         let block = scan_invoke_block(&source, &opening);
         let arguments_record = if block.as_ref().is_some_and(|b| b.end == source.len()) {
-            block.unwrap().parameters.and_then(|p| (self.config.coerce)(&p, &tool))
+            block.and_then(|b| b.parameters).and_then(|p| (self.config.coerce)(&p, &tool))
         } else {
             None
         };
@@ -176,42 +176,38 @@ impl InvokeRecoveryStreamParser {
     }
 
     fn feed_idle_character(&mut self, events: &mut Vec<StreamParserEvent>, character: char) {
-        let RecoveryState::Idle { tag } = &mut self.state else { unreachable!() };
+        let RecoveryState::Idle { tag } = &self.state else { unreachable!() };
+        let mut tag = tag.clone();
         if tag.is_empty() && character != '<' {
             super::invoke_stream_helpers::emit_text(events, &character.to_string());
             return;
         }
         if character == '<' && !tag.is_empty() {
-            let old_tag = std::mem::take(tag);
-            super::invoke_stream_helpers::emit_text(events, &old_tag);
-            let RecoveryState::Idle { tag } = &mut self.state else { unreachable!() };
-            tag.push('<');
+            super::invoke_stream_helpers::emit_text(events, &tag);
+            self.state = RecoveryState::Idle { tag: "<".to_string() };
             return;
         }
         if exceeds_retained_limit(tag.len(), character.len_utf8()) {
             let tag_len = tag.len();
             self.report_overflow(tag_len);
-            let old_tag = std::mem::take(tag);
-            super::invoke_stream_helpers::emit_text(events, &old_tag);
+            super::invoke_stream_helpers::emit_text(events, &tag);
             self.state = RecoveryState::Idle { tag: String::new() };
             self.feed_idle_character(events, character);
             return;
         }
         tag.push(character);
         if character == '>' {
-            let RecoveryState::Idle { tag } = std::mem::replace(&mut self.state, RecoveryState::Idle { tag: String::new() }) else {
-                unreachable!()
-            };
             self.handle_idle_tag(events, tag);
         } else if tag.len() == ANTHROPIC_XML_MAX_RETAINED_FRAGMENT_LENGTH {
             let tag_len = tag.len();
             self.report_overflow(tag_len);
-            let old_tag = std::mem::take(tag);
-            super::invoke_stream_helpers::emit_text(events, &old_tag);
+            super::invoke_stream_helpers::emit_text(events, &tag);
             self.state = RecoveryState::Idle { tag: String::new() };
-        } else if tag.len() <= MAX_PARTIAL_TAG_VALIDATION_LENGTH && !is_potential_protocol_start(tag) {
-            let old_tag = std::mem::take(tag);
-            super::invoke_stream_helpers::emit_text(events, &old_tag);
+        } else if tag.len() <= MAX_PARTIAL_TAG_VALIDATION_LENGTH && !is_potential_protocol_start(&tag) {
+            super::invoke_stream_helpers::emit_text(events, &tag);
+            self.state = RecoveryState::Idle { tag: String::new() };
+        } else {
+            self.state = RecoveryState::Idle { tag };
         }
     }
 
@@ -229,7 +225,7 @@ impl InvokeRecoveryStreamParser {
                 }
                 RecoveryWrapperAction::Known { text_before, opening, tool } => {
                     super::invoke_stream_helpers::emit_text(events, &text_before);
-                    let tool = tool.clone();
+                    let tool = (*tool).clone();
                     let RecoveryState::Wrapper { scanner } = std::mem::replace(&mut self.state, RecoveryState::Finished) else {
                         unreachable!()
                     };
@@ -337,6 +333,11 @@ mod tests {
     use crate::tool_call_middleware::protocols::anthropic_xml::invoke_protocol::ANTHROPIC_XML_INVOKE_CONFIG;
     use serde_json::json;
 
+    /// senpi emits one text event per idle character, so tests assert on the concatenation.
+    fn text_of(events: &[StreamParserEvent]) -> String {
+        events.iter().filter_map(|event| if let StreamParserEvent::Text { text } = event { Some(text.as_str()) } else { None }).collect()
+    }
+
     fn tool(name: &str) -> Tool {
         Tool {
             name: name.into(),
@@ -374,7 +375,9 @@ mod tests {
         let mut parser = create_invoke_recovery_stream_parser(tools, &ANTHROPIC_XML_INVOKE_CONFIG, None);
         let mut events = parser.feed("hello world");
         events.extend(parser.finish());
-        assert_eq!(events, vec![StreamParserEvent::Text { text: "hello world".into() }]);
+        // senpi's idle path emits one text event per character; the concatenation is what callers see.
+        assert_eq!(text_of(&events), "hello world");
+        assert!(events.iter().all(|event| matches!(event, StreamParserEvent::Text { .. })));
     }
 
     #[test]

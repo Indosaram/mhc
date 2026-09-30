@@ -30,8 +30,7 @@ pub fn emit_text(events: &mut Vec<StreamParserEvent>, text: &str) {
 
 fn find_function_calls_tag(closing: bool, text: &str, from_index: usize) -> Option<FunctionCallsTag> {
     let haystack = &text[from_index.min(text.len())..];
-    let mut chars = haystack.char_indices().peekable();
-    while let Some((start, c)) = chars.next() {
+    for (start, c) in haystack.char_indices() {
         if c != '<' {
             continue;
         }
@@ -53,7 +52,7 @@ fn find_function_calls_tag(closing: bool, text: &str, from_index: usize) -> Opti
         let name_end = cursor + ns_len + "function_calls".len();
         let after_ws3: String = after_name.chars().take_while(|ch| ch.is_whitespace()).collect();
         let close_pos = name_end + after_ws3.len();
-        if haystack[close_pos..].chars().next() != Some('>') {
+        if !haystack[close_pos..].starts_with('>') {
             continue;
         }
         let end = close_pos + 1;

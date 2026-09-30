@@ -109,4 +109,71 @@ mod tests {
         let formatted = kimi_xtml_format_tool_response("get_weather", "id-1", &content);
         assert_eq!(formatted, "## Return of get_weather\nsunny");
     }
+    #[test]
+    fn renders_a_call_in_the_k3_xtml_channel_syntax() {
+        let mut args = Map::new();
+        args.insert("city".into(), json!("Seoul"));
+        args.insert("count".into(), json!(3));
+        assert_eq!(
+            kimi_xtml_format_tool_call("get_weather", &args),
+            concat!(
+                "<|open|>tools<|sep|>",
+                "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>",
+                "<|open|>argument key=\"city\" type=\"string\"<|sep|>Seoul<|close|>argument<|sep|>",
+                "<|open|>argument key=\"count\" type=\"number\"<|sep|>3<|close|>argument<|sep|>",
+                "<|close|>call<|sep|>",
+                "<|close|>tools<|sep|>"
+            )
+        );
+    }
+
+    #[test]
+    fn serializes_object_and_array_arguments_as_json() {
+        let mut args = Map::new();
+        args.insert("filters".into(), json!({"a": 1}));
+        args.insert("tags".into(), json!(["x", "y"]));
+        let rendered = kimi_xtml_format_tool_call("search", &args);
+        assert!(rendered.contains("<|open|>argument key=\"filters\" type=\"object\"<|sep|>{\"a\":1}<|close|>argument<|sep|>"));
+        assert!(rendered.contains("<|open|>argument key=\"tags\" type=\"array\"<|sep|>[\"x\",\"y\"]<|close|>argument<|sep|>"));
+    }
+
+    #[test]
+    fn round_trips_through_the_parser() {
+        let mut args = Map::new();
+        args.insert("city".into(), json!("Seoul"));
+        args.insert("count".into(), json!(3));
+        args.insert("flag".into(), json!(true));
+        args.insert("filters".into(), json!({"a": 1}));
+        args.insert("tags".into(), json!(["x"]));
+        let parsed = crate::tool_call_middleware::protocols::kimi_xtml::parse::parse_kimi_xtml_generated_text(
+            &kimi_xtml_format_tool_call("get_weather", &args),
+            &[tool("get_weather")],
+            None,
+        );
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "get_weather");
+        assert_eq!(parsed[0].arguments.get("city"), Some(&json!("Seoul")));
+        assert_eq!(parsed[0].arguments.get("count").and_then(Value::as_f64), Some(3.0));
+        assert_eq!(parsed[0].arguments.get("flag"), Some(&json!(true)));
+        assert_eq!(parsed[0].arguments.get("filters"), Some(&json!({"a": 1})));
+        assert_eq!(parsed[0].arguments.get("tags"), Some(&json!(["x"])));
+    }
+
+    #[test]
+    fn renders_results_with_the_kimi_family_return_convention() {
+        let content = vec![ToolResultContent::Text(crate::types::TextContent { text: "sunny, 31C".into(), audience: None, text_signature: None })];
+        assert_eq!(kimi_xtml_format_tool_response("get_weather", "kimi-xtml-tool-0", &content), "## Return of get_weather\nsunny, 31C");
+    }
+
+    #[test]
+    fn teaches_the_exact_xtml_emission_syntax_with_the_tool_schemas() {
+        let prompt = kimi_xtml_format_tools_system_prompt(&[tool("get_weather")]);
+        assert!(prompt.contains("get_weather"));
+        assert!(prompt.contains("<|open|>tools<|sep|>"));
+        assert!(prompt.contains("<|open|>call tool=\""));
+        assert!(prompt.contains("<|open|>argument key=\""));
+        assert!(prompt.contains("<|close|>call<|sep|>"));
+        assert!(prompt.contains("<|close|>tools<|sep|>"));
+    }
+
 }

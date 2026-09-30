@@ -75,8 +75,8 @@ pub fn anthropic_xml_format_tool_response(tool_name: &str, _tool_call_id: &str, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::TextContent;
-    use serde_json::json;
+    use crate::types::{ImageContent, TextContent};
+    use serde_json::{json, Value};
 
     fn tool(name: &str) -> Tool {
         Tool { name: name.into(), description: "d".into(), parameters: json!({"type": "object"}), freeform: None, constrained_sampling: None }
@@ -123,4 +123,99 @@ mod tests {
         assert!(formatted.contains("<tool_name>get_weather</tool_name>"));
         assert!(formatted.contains("<stdout>sunny</stdout>"));
     }
+    #[test]
+    fn renders_json_tool_definitions_and_a_bare_invoke_example() {
+        let tool = Tool {
+            name: "get_weather".into(),
+            description: "Get weather for a city".into(),
+            parameters: json!({"type": "object", "required": ["city"], "properties": {"city": {"type": "string"}, "unit": {"type": "string"}}}),
+            freeform: None,
+            constrained_sampling: None,
+        };
+        let prompt = anthropic_xml_format_tools_system_prompt(&[tool.clone()]);
+        let start = prompt.rfind("<tools>").expect("tools open") + "<tools>".len();
+        let end = prompt.rfind("</tools>").expect("tools close");
+        let parsed: Value = serde_json::from_str(&prompt[start..end]).expect("tool json");
+        assert_eq!(
+            parsed,
+            json!([{"name": tool.name, "description": tool.description, "parameters": tool.parameters}])
+        );
+        assert!(prompt.contains(r#"<invoke name="get_weather"><parameter name="city">Seoul</parameter></invoke>"#));
+        assert!(prompt.contains("exactly one"));
+        assert!(!prompt.contains("<function_calls>"));
+    }
+
+    #[test]
+    fn formats_scalar_values_verbatim_and_nested_values_as_compact_json() {
+        let mut args = Map::new();
+        args.insert("city".into(), json!("Seoul"));
+        args.insert("includeForecast".into(), json!(true));
+        args.insert("days".into(), json!(2));
+        args.insert("filters".into(), json!({"temperature": "mild"}));
+        args.insert("tags".into(), json!(["today", "local"]));
+        let formatted = anthropic_xml_format_tool_call("get_weather", &args);
+        assert_eq!(
+            formatted,
+            "<invoke name=\"get_weather\">\n\
+             <parameter name=\"city\">Seoul</parameter>\n\
+             <parameter name=\"includeForecast\">true</parameter>\n\
+             <parameter name=\"days\">2</parameter>\n\
+             <parameter name=\"filters\">{\"temperature\":\"mild\"}</parameter>\n\
+             <parameter name=\"tags\">[\"today\",\"local\"]</parameter>\n\
+             </invoke>"
+        );
+        assert!(!formatted.contains("<function_calls>"));
+    }
+
+    #[test]
+    fn escapes_xml_sensitive_tool_parameter_and_scalar_values() {
+        let mut args = Map::new();
+        args.insert("query<&\"".into(), json!("<unsafe> & \"value\""));
+        let formatted = anthropic_xml_format_tool_call("search<&\"", &args);
+        assert_eq!(
+            formatted,
+            "<invoke name=\"search&lt;&amp;&quot;\">\n\
+             <parameter name=\"query&lt;&amp;&quot;\">&lt;unsafe&gt; &amp; \"value\"</parameter>\n\
+             </invoke>"
+        );
+    }
+
+    #[test]
+    fn extracts_text_content_into_anthropic_style_function_results() {
+        let content = vec![
+            ToolResultContent::Text(TextContent { text: "first line".into(), audience: None, text_signature: None }),
+            ToolResultContent::Image(ImageContent { data: "ignored".into(), mime_type: "image/png".into() }),
+            ToolResultContent::Text(TextContent { text: "second line".into(), audience: None, text_signature: None }),
+        ];
+        let formatted = anthropic_xml_format_tool_response("run_command", "call-1", &content);
+        assert_eq!(
+            formatted,
+            "<function_results>\n\
+             <result>\n\
+             <tool_name>run_command</tool_name>\n\
+             <stdout>first line\nsecond line</stdout>\n\
+             </result>\n\
+             </function_results>"
+        );
+    }
+
+    #[test]
+    fn escapes_xml_sensitive_tool_names_and_stdout_content() {
+        let content = vec![ToolResultContent::Text(TextContent {
+            text: "line </stdout> & <result> \"output\"".into(),
+            audience: None,
+            text_signature: None,
+        })];
+        let formatted = anthropic_xml_format_tool_response("tool</tool_name>&\"", "call-2", &content);
+        assert_eq!(
+            formatted,
+            "<function_results>\n\
+             <result>\n\
+             <tool_name>tool&lt;/tool_name&gt;&amp;\"</tool_name>\n\
+             <stdout>line &lt;/stdout&gt; &amp; &lt;result&gt; \"output\"</stdout>\n\
+             </result>\n\
+             </function_results>"
+        );
+    }
+
 }

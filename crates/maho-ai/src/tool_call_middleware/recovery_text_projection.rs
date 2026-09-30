@@ -1,5 +1,7 @@
 //! Port of senpi packages/ai/src/tool-call-middleware/recovery-text-projection.ts.
 
+use std::sync::Arc;
+
 use crate::tool_call_middleware::protocols::anthropic_xml::recovery_stream::RecoveryStreamParser;
 use crate::tool_call_middleware::protocols::antml::recovery_stream::create_antml_invoke_recovery_stream_parser;
 use crate::tool_call_middleware::recovery_code_mask::{create_recovery_code_mask, RecoveryCodeMask, RecoveryCodeMaskFeedOptions, RecoveryCodeMaskSegment};
@@ -9,7 +11,7 @@ use crate::tool_call_middleware::stream_wrapper_shared::StreamMessageProjection;
 use crate::tool_call_middleware::types::{ParserOptions, StreamParserEvent, ToolCallFormat};
 use crate::types::{AssistantMessage, Tool};
 
-type CreateParserFn = Box<dyn Fn(Vec<Tool>) -> Box<dyn RecoveryStreamParser + Send> + Send>;
+type CreateParserFn = Arc<dyn Fn(Vec<Tool>) -> Box<dyn RecoveryStreamParser + Send> + Send + Sync>;
 
 pub struct RecoveryTextProjectionOptions {
     pub create_parser: Option<CreateParserFn>,

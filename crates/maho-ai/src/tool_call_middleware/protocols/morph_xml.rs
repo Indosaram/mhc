@@ -177,8 +177,10 @@ fn summarize_type(schema: Option<&JsonSchema>) -> String {
         base_type = "any".to_string();
     }
 
-    if base_type == "array" {
-        if let Some(items) = schema.get("items") {
+    if base_type == "array"
+        && let Some(items) = schema.get("items")
+    {
+        {
             let item_type = match items {
                 Value::Array(list) => list.iter().map(|item| summarize_type(normalize_schema(item).as_ref())).collect::<Vec<_>>().join(" | "),
                 other => summarize_type(normalize_schema(other).as_ref()),
@@ -862,7 +864,7 @@ fn parse_xml_root(xml: &str) -> Option<XmlNode> {
         }
 
         if is_closing_tag {
-            let Some(completed_node) = stack.pop() else { return None };
+            let completed_node = stack.pop()?;
             if completed_node.name != tag_name {
                 return None;
             }
@@ -1021,10 +1023,11 @@ fn coerce_xml_value(raw_value: &str, schema: Option<&JsonSchema>) -> Value {
     let trimmed_value = decoded_value.trim();
     let types = get_schema_types(schema);
 
-    if types.iter().any(|t| t == "integer") && is_integer_literal(trimmed_value) {
-        if let Ok(n) = trimmed_value.parse::<i64>() {
-            return Value::from(n);
-        }
+    if types.iter().any(|t| t == "integer")
+        && is_integer_literal(trimmed_value)
+        && let Ok(n) = trimmed_value.parse::<i64>()
+    {
+        return Value::from(n);
     }
     if types.iter().any(|t| t == "number") && is_number_literal(trimmed_value)
         && let Ok(n) = trimmed_value.parse::<f64>()

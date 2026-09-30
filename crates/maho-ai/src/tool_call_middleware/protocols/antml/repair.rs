@@ -94,7 +94,7 @@ pub fn repair_strings_deep(value: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     #[test]
     fn repairs_broken_unicode_escapes_but_keeps_valid_ones() {
@@ -118,4 +118,55 @@ mod tests {
         let repaired = repair_strings_deep(value);
         assert_eq!(repaired, json!({"a": ["\u{FFFD}", {"b": "\u{FFFD}"}]}));
     }
+    #[test]
+    fn escapes_a_broken_unicode_sequence_so_json_parse_succeeds() {
+        let broken_json = r#"{"text":"bad\uZZZZescape"}"#;
+        assert!(serde_json::from_str::<Value>(broken_json).is_err());
+        let repaired = repair_unicode_escapes(broken_json);
+        assert_eq!(serde_json::from_str::<Value>(&repaired).expect("repaired"), json!({"text": r"bad\uZZZZescape"}));
+    }
+
+    #[test]
+    fn escapes_a_truncated_unicode_sequence_with_fewer_than_four_hex_digits() {
+        let broken_json = r#"{"text":"cut\u12"}"#;
+        let repaired = repair_unicode_escapes(broken_json);
+        assert_eq!(serde_json::from_str::<Value>(&repaired).expect("repaired"), json!({"text": r"cut\u12"}));
+    }
+
+    #[test]
+    fn leaves_valid_unicode_escapes_untouched() {
+        let valid_json = r#"{"text":"ok\u0041"}"#;
+        let repaired = repair_unicode_escapes(valid_json);
+        assert_eq!(repaired, valid_json);
+        assert_eq!(serde_json::from_str::<Value>(&repaired).expect("repaired"), json!({"text": "okA"}));
+    }
+
+    #[test]
+    fn leaves_an_escaped_backslash_before_u_untouched() {
+        let valid_json = r#"{"path":"C:\\users"}"#;
+        let repaired = repair_unicode_escapes(valid_json);
+        assert_eq!(repaired, valid_json);
+        assert_eq!(serde_json::from_str::<Value>(&repaired).expect("repaired"), json!({"path": r"C:\users"}));
+    }
+
+    #[test]
+    fn replaces_lone_high_and_low_surrogates_with_the_replacement_character() {
+        let lone_high = format!("bad{}end", String::from_utf16_lossy(&[0xD800]));
+        let lone_low = format!("bad{}end", String::from_utf16_lossy(&[0xDC00]));
+        assert_eq!(repair_lone_surrogates(&lone_high), "bad\u{FFFD}end");
+        assert_eq!(repair_lone_surrogates(&lone_low), "bad\u{FFFD}end");
+    }
+
+    #[test]
+    fn keeps_valid_surrogate_pairs_intact() {
+        let emoji = "ok\u{1F600}done";
+        assert_eq!(repair_lone_surrogates(emoji), emoji);
+    }
+
+    #[test]
+    fn replaces_a_reversed_surrogate_pair_entirely() {
+        let reversed = format!("x{}{}y", String::from_utf16_lossy(&[0xDC00]), String::from_utf16_lossy(&[0xD800]));
+        assert_eq!(repair_lone_surrogates(&reversed), "x\u{FFFD}\u{FFFD}y");
+    }
+
 }

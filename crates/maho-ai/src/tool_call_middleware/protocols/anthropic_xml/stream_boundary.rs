@@ -88,7 +88,7 @@ impl StreamBoundaryMatcher for InvokeBoundaryMatcher {
                 }
             }
 
-            let tag = self.tag_chars.take().unwrap();
+            let tag = self.tag_chars.take().expect("tag_chars is Some when a tag just closed");
             if is_invoke_open_tag(&tag) {
                 self.invoke_depth += 1;
                 continue;
@@ -147,7 +147,7 @@ impl StreamBoundaryMatcher for ClosingTagMatcher {
                     }
                     buf.push(character);
                     if character == '>' {
-                        let tag = self.tag_chars.take().unwrap();
+                        let tag = self.tag_chars.take().expect("tag_chars is Some inside the Some arm");
                         matched = matched || tag_matches(&tag, self.tag_name, true);
                     }
                 }

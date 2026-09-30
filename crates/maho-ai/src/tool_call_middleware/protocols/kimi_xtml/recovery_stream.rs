@@ -305,6 +305,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::tool_call_middleware::types::StreamParserEvent;
 
     fn tool(name: &str) -> Tool {
         Tool { name: name.into(), description: "d".into(), parameters: json!({"type": "object"}), freeform: None, constrained_sampling: None }
@@ -341,10 +342,94 @@ mod tests {
     }
 
     #[test]
-    fn interrupt_flushes_buffered_text() {
+    fn interrupt_restores_a_dangling_partial_marker_as_plain_text() {
         let mut parser = create_xtml_recovery_stream_parser(vec![tool("get_weather")], None);
-        parser.feed("partial text");
-        let events = parser.interrupt();
-        assert_eq!(events, vec![StreamParserEvent::Text { text: "partial text".into() }]);
+        let mut events = parser.feed("hello<|op");
+        events.extend(parser.interrupt());
+        let text: String = events.iter().filter_map(|e| if let StreamParserEvent::Text { text } = e { Some(text.as_str()) } else { None }).collect();
+        assert_eq!(text, "hello<|op");
     }
+    fn text_of(events: &[StreamParserEvent]) -> String {
+        events.iter().filter_map(|event| if let StreamParserEvent::Text { text } = event { Some(text.as_str()) } else { None }).collect()
+    }
+
+    fn leaked_block() -> &'static str {
+        concat!(
+            "<|open|>tools<|sep|>",
+            "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>",
+            "<|open|>argument key=\"city\" type=\"string\"<|sep|>Seoul<|close|>argument<|sep|>",
+            "<|close|>call<|sep|>",
+            "<|close|>tools<|sep|>"
+        )
+    }
+
+    fn end_of(events: &[StreamParserEvent]) -> Option<&StreamParserEvent> {
+        events.iter().find(|event| matches!(event, StreamParserEvent::ToolcallEnd { .. }))
+    }
+
+    #[test]
+    fn recovers_a_leaked_xtml_tools_block_into_tool_call_events() {
+        let mut parser = create_xtml_recovery_stream_parser(vec![tool("get_weather")], None);
+        let mut events = parser.feed(&format!("One moment. {} Done.", leaked_block()));
+        events.extend(parser.finish());
+        let StreamParserEvent::ToolcallEnd { name, arguments, .. } = end_of(&events).expect("toolcall end") else { unreachable!() };
+        assert_eq!(name, "get_weather");
+        assert_eq!(arguments.get("city"), Some(&json!("Seoul")));
+        assert!(events.iter().any(|event| matches!(event, StreamParserEvent::ToolcallStart { name, .. } if name == "get_weather")));
+        let text = text_of(&events);
+        assert!(text.contains("One moment."));
+        assert!(text.contains("Done."));
+        assert!(!text.contains("<|"));
+    }
+
+    #[test]
+    fn strips_leaked_channel_transition_markers_from_visible_text() {
+        let mut parser = create_xtml_recovery_stream_parser(vec![tool("get_weather")], None);
+        let mut events = parser.feed("reasoning about the weather<|close|>think<|sep|><|open|>response<|sep|>The answer is 31C.");
+        events.extend(parser.finish());
+        assert_eq!(text_of(&events), "reasoning about the weatherThe answer is 31C.");
+    }
+
+    #[test]
+    fn strips_a_leaked_message_close_marker_sequence() {
+        let mut parser = create_xtml_recovery_stream_parser(vec![tool("get_weather")], None);
+        let mut events = parser.feed("final answer<|close|>response<|sep|><|close|>message<|sep|>");
+        events.extend(parser.finish());
+        assert_eq!(text_of(&events), "final answer");
+    }
+
+    #[test]
+    fn strips_an_unnamed_close_marker_across_every_chunk_split() {
+        let marker = "<|close|><|sep|>";
+        let marker_chars: Vec<char> = marker.chars().collect();
+        let mut outputs = Vec::new();
+        for split in 1..marker_chars.len() {
+            let head: String = marker_chars[..split].iter().collect();
+            let tail: String = marker_chars[split..].iter().collect();
+            let mut parser = create_xtml_recovery_stream_parser(vec![tool("get_weather")], None);
+            let mut events = parser.feed(&format!("before{head}"));
+            events.extend(parser.feed(&format!("{tail}after")));
+            events.extend(parser.finish());
+            outputs.push(text_of(&events));
+        }
+        assert_eq!(outputs, vec!["beforeafter"; marker_chars.len() - 1]);
+    }
+
+    #[test]
+    fn reassembles_markers_split_across_chunks() {
+        let mut parser = create_xtml_recovery_stream_parser(vec![tool("get_weather")], None);
+        let tools_open_length = "<|open|>tools<|sep|>".len();
+        let leaked = leaked_block();
+        let mut events = parser.feed("One moment. <|op");
+        events.extend(parser.feed("en|>tools<|se"));
+        events.extend(parser.feed("p|>"));
+        events.extend(parser.feed(&leaked[tools_open_length..]));
+        events.extend(parser.feed(" Done."));
+        events.extend(parser.finish());
+        let StreamParserEvent::ToolcallEnd { name, arguments, .. } = end_of(&events).expect("toolcall end") else { unreachable!() };
+        assert_eq!(name, "get_weather");
+        assert_eq!(arguments.get("city"), Some(&json!("Seoul")));
+        assert!(!text_of(&events).contains("<|"));
+    }
+
 }

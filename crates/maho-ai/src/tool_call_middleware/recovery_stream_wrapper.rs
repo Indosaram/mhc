@@ -4,10 +4,12 @@
 //! from the inner stream's own terminal events (`done`/`error`) or exhaustion/failure;
 //! `RecoveryAssistantMessageEventStream`'s cancellation plumbing has no caller here.
 
+use std::sync::Arc;
+
 use crate::tool_call_middleware::protocols::anthropic_xml::recovery_stream::RecoveryStreamParser;
 use crate::tool_call_middleware::protocols::antml::recovery_stream::create_antml_invoke_recovery_stream_parser;
 use crate::types::{AssistantMessage, AssistantMessageEvent, DoneReason, ErrorReason, Tool};
-use crate::utils::event_stream::{AssistantMessageEventStream, StreamError};
+use crate::utils::event_stream::AssistantMessageEventStream;
 
 use super::recovery_content_lifecycle::{RecoveryContentKind, RecoveryContentLifecycle};
 use super::recovery_native_projection::{ProjectNativeStartResult, RecoveryNativeProjection};
@@ -17,7 +19,7 @@ use super::recovery_text_projection::{RecoveryTextProjection, RecoveryTextProjec
 use super::stream_wrapper_shared::{StreamMessageProjection, StreamMessageProjectionOptions};
 use super::types::ToolCallFormat;
 
-type CreateParserFn = Box<dyn Fn(Vec<Tool>) -> Box<dyn RecoveryStreamParser + Send> + Send>;
+type CreateParserFn = Arc<dyn Fn(Vec<Tool>) -> Box<dyn RecoveryStreamParser + Send> + Send + Sync>;
 
 pub struct InvokeRecoveryOptions {
     pub create_parser: Option<CreateParserFn>,
@@ -54,7 +56,7 @@ pub fn wrap_stream_with_invoke_recovery(
     let outer_stream = AssistantMessageEventStream::assistant();
     let outer_for_task = outer_stream.clone();
     let protocol = options.protocol;
-    let create_parser: CreateParserFn = options.create_parser.unwrap_or_else(|| Box::new(|tools| create_antml_invoke_recovery_stream_parser(tools, None)));
+    let create_parser: CreateParserFn = options.create_parser.unwrap_or_else(|| Arc::new(|tools| create_antml_invoke_recovery_stream_parser(tools, None)));
 
     tokio::spawn(async move {
         let mut projection: Option<StreamMessageProjection> = None;
@@ -65,19 +67,21 @@ pub fn wrap_stream_with_invoke_recovery(
         let mut terminal = RecoveryStreamTerminal::new(outer_for_task.clone());
 
         macro_rules! finish_text {
-            () => {
+            () => {{
+                let mut finished_with_tool_call = false;
                 if let Some(mut current_text) = text_projection.take() {
-                    if let (Some(projection), Some(native_projection)) = (&mut projection, &mut native_projection) {
-                        saw_tool_call = current_text.finish(projection, native_projection) || saw_tool_call;
+                    if let (Some(current_projection), Some(current_native)) = (&mut projection, &mut native_projection) {
+                        finished_with_tool_call = current_text.finish(current_projection, current_native);
                     }
                 }
-            };
+                finished_with_tool_call
+            }};
         }
 
         macro_rules! terminate_for_failure {
             ($source:expr, $failure:expr) => {{
+                let _ = finish_text!();
                 let Some(current_projection) = &mut projection else { return };
-                finish_text!();
                 terminate_recovery_stream_for_failure(&outer_for_task, current_projection, TerminateRecoveryStreamOptions { source: $source, failure: $failure, protocol });
                 return;
             }};
@@ -85,17 +89,16 @@ pub fn wrap_stream_with_invoke_recovery(
 
         macro_rules! prepare_content_event {
             ($source:expr, $content_index:expr) => {{
-                let (Some(current_projection), Some(current_native)) = (&mut projection, &mut native_projection) else { return false };
-                if $content_index >= $source.content.len() {
-                    false
-                } else {
-                    current_projection.sync($source.clone());
-                    current_native.reserve_visible_ids($source);
-                    if current_native.synchronize_lower($source, $content_index) {
-                        true
-                    } else {
+                if let (Some(current_projection), Some(current_native)) = (&mut projection, &mut native_projection) {
+                    if $content_index >= $source.content.len() {
                         false
+                    } else {
+                        current_projection.sync($source.clone());
+                        current_native.reserve_visible_ids($source);
+                        current_native.synchronize_lower($source, $content_index)
                     }
+                } else {
+                    false
                 }
             }};
         }
@@ -119,10 +122,7 @@ pub fn wrap_stream_with_invoke_recovery(
                             terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
                         }
                         let (Some(current_projection), Some(current_native)) = (&mut projection, &mut native_projection) else { return };
-                        let mut next_text = RecoveryTextProjection::new(tools.clone(), content_index, RecoveryTextProjectionOptions { create_parser: Some(Box::new({
-                            let create_parser = &create_parser;
-                            move |t: Vec<Tool>| create_parser(t)
-                        })), protocol });
+                        let next_text = RecoveryTextProjection::new(tools.clone(), content_index, RecoveryTextProjectionOptions { create_parser: Some(Arc::clone(&create_parser)), protocol });
                         if !next_text.start(current_projection, current_native, &partial) {
                             terminate_for_failure!(&partial, RecoveryStreamFailure::InvalidNativeEventOrder);
                         }
@@ -146,7 +146,7 @@ pub fn wrap_stream_with_invoke_recovery(
                         if !prepare_content_event!(&partial, content_index) {
                             terminate_for_failure!(&partial, RecoveryStreamFailure::Collision);
                         }
-                        finish_text!();
+                        saw_tool_call = finish_text!() || saw_tool_call;
                         content_lifecycle.end(content_index, RecoveryContentKind::Text);
                     }
                     AssistantMessageEvent::ThinkingStart { content_index, partial } => {
@@ -255,12 +255,12 @@ pub fn wrap_stream_with_invoke_recovery(
                     }
                 },
                 Ok(None) => {
-                    finish_text!();
+                    let _ = finish_text!();
                     terminal.exhausted(projection.as_mut());
                     return;
                 }
                 Err(error) => {
-                    finish_text!();
+                    let _ = finish_text!();
                     terminal.iterator_failure(projection.as_mut(), error);
                     return;
                 }

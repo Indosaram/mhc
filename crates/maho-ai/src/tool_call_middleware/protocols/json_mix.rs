@@ -329,14 +329,13 @@ fn extract_json_value_slice(chars: &[char], value_start: usize) -> Option<JsonVa
                 continue;
             }
 
-            if character == '}' || character == ']' {
-                if let Some(open_character) = stack.last() {
-                    if (*open_character == '{' && character == '}') || (*open_character == '[' && character == ']') {
-                        stack.pop();
-                        if stack.is_empty() {
-                            return Some(JsonValueSlice { text: chars[value_start..index + 1].iter().collect(), complete: true });
-                        }
-                    }
+            if (character == '}' || character == ']')
+                && let Some(open_character) = stack.last()
+                && ((*open_character == '{' && character == '}') || (*open_character == '[' && character == ']'))
+            {
+                stack.pop();
+                if stack.is_empty() {
+                    return Some(JsonValueSlice { text: chars[value_start..index + 1].iter().collect(), complete: true });
                 }
             }
             index += 1;

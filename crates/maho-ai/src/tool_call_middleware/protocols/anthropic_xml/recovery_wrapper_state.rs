@@ -7,7 +7,7 @@ use crate::types::Tool;
 
 pub enum RecoveryWrapperAction {
     Text { text: String },
-    Known { text_before: String, opening: String, tool: Tool },
+    Known { text_before: String, opening: String, tool: Box<Tool> },
     Closed { text: String },
     Overflow { text: String, retained_length: usize, retains_wrapper: bool, next_character: Option<char> },
 }
@@ -61,7 +61,7 @@ where
         {
             let text_before = std::mem::take(&mut self.before_known);
             self.recovered = true;
-            return vec![RecoveryWrapperAction::Known { text_before, opening: tag, tool }];
+            return vec![RecoveryWrapperAction::Known { text_before, opening: tag, tool: Box::new(tool) }];
         }
         let close = find_function_calls_close_tag(&tag, 0);
         if let Some(close) = &close
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn recognizes_a_known_invoke_and_emits_known_action() {
-        let tools = vec![tool("get_weather")];
+        let tools = [tool("get_weather")];
         let resolver = move |name: &str| tools.iter().find(|t| t.name == name).cloned();
         let mut state = RecoveryWrapperState::new("<function_calls>", resolver);
         let events = feed_str(&mut state, "<invoke name=\"get_weather\">");
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn closing_tag_after_recovery_emits_closed_with_empty_text() {
-        let tools = vec![tool("t")];
+        let tools = [tool("t")];
         let resolver = move |name: &str| tools.iter().find(|t| t.name == name).cloned();
         let mut state = RecoveryWrapperState::new("<function_calls>", resolver);
         feed_str(&mut state, "<invoke name=\"t\">");

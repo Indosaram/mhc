@@ -5,11 +5,13 @@ use super::invoke_tag_syntax::InvokeParameter;
 use crate::types::Tool;
 use serde_json::{Map, Value};
 
+pub type CoerceParametersFn = fn(&[InvokeParameter], &Tool) -> Option<Map<String, Value>>;
+
 pub struct InvokeProtocolConfig {
     pub protocol: &'static str,
     pub label: &'static str,
     pub id_prefix: &'static str,
-    pub coerce: fn(&[InvokeParameter], &Tool) -> Option<Map<String, Value>>,
+    pub coerce: CoerceParametersFn,
 }
 
 pub const ANTHROPIC_XML_INVOKE_CONFIG: InvokeProtocolConfig =

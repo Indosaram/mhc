@@ -239,6 +239,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::tool_call_middleware::types::StreamParserEvent;
 
     fn tool(name: &str) -> Tool {
         Tool { name: name.into(), description: "d".into(), parameters: json!({"type": "object"}), freeform: None, constrained_sampling: None }
@@ -282,4 +283,152 @@ mod tests {
         events.extend(parser.finish());
         assert!(!events.iter().any(|e| matches!(e, StreamParserEvent::ToolcallStart{..})));
     }
+    fn weather_tool_with_count() -> Tool {
+        Tool {
+            name: "get_weather".into(),
+            description: "Get weather for a city".into(),
+            parameters: json!({"type": "object", "required": ["city"], "properties": {"city": {"type": "string"}, "count": {"type": "number"}}}),
+            freeform: None,
+            constrained_sampling: None,
+        }
+    }
+
+    fn full_block() -> &'static str {
+        concat!(
+            "<|open|>tools<|sep|>",
+            "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>",
+            "<|open|>argument key=\"city\" type=\"string\"<|sep|>Seoul<|close|>argument<|sep|>",
+            "<|open|>argument key=\"count\" type=\"number\"<|sep|>3<|close|>argument<|sep|>",
+            "<|close|>call<|sep|>",
+            "<|close|>tools<|sep|>"
+        )
+    }
+
+    fn text_of(events: &[StreamParserEvent]) -> String {
+        events.iter().filter_map(|event| if let StreamParserEvent::Text { text } = event { Some(text.as_str()) } else { None }).collect()
+    }
+
+    fn feed_chunks(chunks: &[&str]) -> Vec<StreamParserEvent> {
+        let mut parser = create_kimi_xtml_stream_parser(vec![weather_tool_with_count()], None);
+        let mut events = Vec::new();
+        for chunk in chunks {
+            events.extend(parser.feed(chunk));
+        }
+        events.extend(parser.finish());
+        events
+    }
+
+    fn end_of(events: &[StreamParserEvent]) -> Option<&StreamParserEvent> {
+        events.iter().find(|event| matches!(event, StreamParserEvent::ToolcallEnd { .. }))
+    }
+
+    // Deterministic chunking that mirrors the TS randomChunkSplit helper.
+    fn random_chunk_split(text: &str, min_size: usize, max_size: usize, seed: u64) -> Vec<String> {
+        let mut current = seed;
+        let chars: Vec<char> = text.chars().collect();
+        let mut chunks = Vec::new();
+        let mut index = 0usize;
+        while index < chars.len() {
+            current = (current * 9301 + 49_297) % 233_280;
+            let size = ((current as f64 / 233_280.0) * (max_size - min_size + 1) as f64).floor() as usize + min_size;
+            let end = (index + size).min(chars.len());
+            chunks.push(chars[index..end].iter().collect());
+            index = end;
+        }
+        chunks
+    }
+
+    #[test]
+    fn emits_start_argument_deltas_and_end_for_a_single_full_feed() {
+        let events = feed_chunks(&[full_block()]);
+        let kinds: Vec<&str> = events
+            .iter()
+            .map(|event| match event {
+                StreamParserEvent::Text { .. } => "text",
+                StreamParserEvent::ToolcallStart { .. } => "toolcall_start",
+                StreamParserEvent::ToolcallDelta { .. } => "toolcall_delta",
+                StreamParserEvent::ToolcallEnd { .. } => "toolcall_end",
+            })
+            .collect();
+        assert!(kinds.contains(&"toolcall_start"));
+        assert!(kinds.contains(&"toolcall_delta"));
+        assert!(kinds.contains(&"toolcall_end"));
+        let StreamParserEvent::ToolcallEnd { index, name, id, arguments, .. } = end_of(&events).expect("toolcall end") else { unreachable!() };
+        assert_eq!((*index, name.as_str(), id.as_str()), (0, "get_weather", "kimi-xtml-tool-0"));
+        assert_eq!(arguments.get("city"), Some(&json!("Seoul")));
+        assert_eq!(arguments.get("count").and_then(Value::as_f64), Some(3.0));
+    }
+
+    #[test]
+    fn passes_narrative_text_through_and_never_leaks_xtml_markers_as_text() {
+        let events = feed_chunks(&[&format!("Checking now. {} Done waiting.", full_block())]);
+        let text = text_of(&events);
+        assert!(text.contains("Checking now."));
+        assert!(text.contains("Done waiting."));
+        assert!(!text.contains("<|open|>"));
+        assert!(!text.contains("<|close|>"));
+        assert!(!text.contains("<|sep|>"));
+    }
+
+    #[test]
+    fn reassembles_markers_split_across_random_chunk_boundaries() {
+        for seed in [1u64, 7, 42, 1337] {
+            let chunks = random_chunk_split(full_block(), 1, 8, seed);
+            let chunk_refs: Vec<&str> = chunks.iter().map(String::as_str).collect();
+            let events = feed_chunks(&chunk_refs);
+            let StreamParserEvent::ToolcallEnd { name, arguments, .. } = end_of(&events).expect("toolcall end") else { unreachable!() };
+            assert_eq!(name, "get_weather", "seed {seed}");
+            assert_eq!(arguments.get("city"), Some(&json!("Seoul")), "seed {seed}");
+            assert_eq!(arguments.get("count").and_then(Value::as_f64), Some(3.0), "seed {seed}");
+            assert!(!text_of(&events).contains("<|"), "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn handles_a_marker_split_exactly_mid_token() {
+        let events = feed_chunks(&[
+            "<|op",
+            "en|>tools<|se",
+            "p|>",
+            "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>",
+            "<|open|>argument key=\"city\" type=\"string\"<|sep|>Seoul<|close|>argument<|sep|>",
+            "<|close|>call<|sep|>",
+            "<|close|>tools<|sep|>",
+        ]);
+        let StreamParserEvent::ToolcallEnd { name, arguments, .. } = end_of(&events).expect("toolcall end") else { unreachable!() };
+        assert_eq!(name, "get_weather");
+        assert_eq!(arguments.get("city"), Some(&json!("Seoul")));
+    }
+
+    #[test]
+    fn finalizes_an_unterminated_call_as_incomplete_with_the_arguments_parsed_so_far() {
+        let partial = concat!(
+            "<|open|>tools<|sep|>",
+            "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>",
+            "<|open|>argument key=\"city\" type=\"string\"<|sep|>Seoul<|close|>argument<|sep|>"
+        );
+        let events = feed_chunks(&[partial]);
+        let StreamParserEvent::ToolcallEnd { name, arguments, incomplete, .. } = end_of(&events).expect("toolcall end") else { unreachable!() };
+        assert_eq!(name, "get_weather");
+        assert_eq!(arguments.get("city"), Some(&json!("Seoul")));
+        assert!(*incomplete);
+    }
+
+    #[test]
+    fn recovers_text_flow_after_a_closed_tools_block() {
+        let events = feed_chunks(&[full_block(), "after the call"]);
+        let kinds: Vec<&str> = events
+            .iter()
+            .map(|event| match event {
+                StreamParserEvent::Text { .. } => "text",
+                StreamParserEvent::ToolcallStart { .. } => "toolcall_start",
+                StreamParserEvent::ToolcallDelta { .. } => "toolcall_delta",
+                StreamParserEvent::ToolcallEnd { .. } => "toolcall_end",
+            })
+            .collect();
+        assert_eq!(kinds.last().copied(), Some("text"));
+        let last_text = events.iter().rev().find_map(|event| if let StreamParserEvent::Text { text } = event { Some(text.as_str()) } else { None });
+        assert_eq!(last_text, Some("after the call"));
+    }
+
 }

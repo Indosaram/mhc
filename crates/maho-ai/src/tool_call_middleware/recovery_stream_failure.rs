@@ -48,7 +48,7 @@ pub struct TerminateRecoveryStreamOptions<'a> {
 
 pub fn terminate_recovery_stream_for_failure(stream: &AssistantMessageEventStream, projection: &mut StreamMessageProjection, options: TerminateRecoveryStreamOptions<'_>) {
     let details = failure_details(options.failure);
-    projection.sync(options.source);
+    projection.sync(options.source.clone());
     let mut message = projection.finalize(options.source, false);
     message.content.retain(|block| !matches!(block, ContentBlock::ToolCall(_)));
     message.stop_reason = StopReason::Error;
@@ -58,7 +58,7 @@ pub fn terminate_recovery_stream_for_failure(stream: &AssistantMessageEventStrea
     let mut detail_map = Map::new();
     detail_map.insert("protocol".to_string(), Value::String(options.protocol.as_str().to_string()));
     detail_map.insert("status".to_string(), Value::String(details.status.to_string()));
-    diagnostics.push(crate::types::AssistantMessageDiagnostic { kind: details.diagnostic_type.to_string(), timestamp: crate::utils::now_millis(), error: None, details: Some(detail_map) });
+    diagnostics.push(crate::types::AssistantMessageDiagnostic { kind: details.diagnostic_type.to_string(), timestamp: crate::utils::diagnostics::now_ms(), error: None, details: Some(detail_map) });
     message.diagnostics = Some(diagnostics);
 
     stream.push(AssistantMessageEvent::Error { reason: ErrorReason::Error, error: message.clone() });

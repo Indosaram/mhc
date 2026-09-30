@@ -380,7 +380,7 @@ pub fn gemma4_parse_generated_text(text: &str, _tools: &[Tool], _options: Option
     extract_tool_calls(text.to_string()).into_iter().map(|extract| ParsedToolCall { name: extract.name, arguments: parse_gemma4_args(&extract.raw_args, false) }).collect()
 }
 
-struct Gemma4ArgsComplete {
+pub struct Gemma4ArgsComplete {
     raw_args: String,
 }
 
@@ -744,3 +744,288 @@ pub fn gemma4_create_stream_parser(tools: Vec<Tool>, options: Option<ParserOptio
         current_arguments_json: String::new(),
     })
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool_call_middleware::types::StreamParserEvent;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    fn tool(name: &str, description: &str, parameters: Value) -> Tool {
+        Tool { name: name.into(), description: description.into(), parameters, freeform: None, constrained_sampling: None }
+    }
+
+    fn weather_tool() -> Tool {
+        tool(
+            "get_weather",
+            "Get weather for a city",
+            json!({"type": "object", "required": ["city"], "properties": {"city": {"type": "string"}, "count": {"type": "number"}, "flag": {"type": "boolean"}}}),
+        )
+    }
+
+    fn search_tool() -> Tool {
+        let price = json!({"type": "object", "required": ["min", "max"], "properties": {"min": {"type": "number"}, "max": {"type": "number"}}});
+        let filters = json!({"type": "object", "required": ["category", "price"], "properties": {"category": {"type": "string"}, "price": price}});
+        let tags = json!({"type": "array", "items": {"type": "string"}});
+        tool(
+            "search_catalog",
+            "Search a nested catalog",
+            json!({"type": "object", "required": ["filters", "tags"], "properties": {"filters": filters, "tags": tags}}),
+        )
+    }
+
+    fn fixture_tools() -> Vec<Tool> {
+        vec![
+            tool("get_weather", "Get weather", json!({"type": "object", "required": ["city"], "properties": {"city": {"type": "string"}, "days": {"type": "integer"}}})),
+            tool(
+                "todowrite",
+                "Write todos",
+                json!({"type": "object", "required": ["todos"], "properties": {"todos": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["content", "status", "priority"], "properties": {"content": {"type": "string"}, "status": {"type": "string"}, "priority": {"type": "string"}}}}}}),
+            ),
+            tool("get_location", "Get location", json!({"type": "object", "properties": {}})),
+        ]
+    }
+
+    fn error_collector() -> (Arc<Mutex<Vec<String>>>, impl Fn(&str, Option<&HashMap<String, Value>>) + Send + Sync + 'static) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let handler = move |message: &str, _metadata: Option<&HashMap<String, Value>>| {
+            sink.lock().expect("error sink").push(message.to_string());
+        };
+        (seen, handler)
+    }
+
+    fn options_with(handler: impl Fn(&str, Option<&HashMap<String, Value>>) + Send + Sync + 'static) -> ParserOptions {
+        ParserOptions { emit_raw_tool_call_text_on_error: false, on_error: Some(Arc::new(handler)) }
+    }
+
+    fn text_of(events: &[StreamParserEvent]) -> String {
+        events.iter().filter_map(|event| if let StreamParserEvent::Text { text } = event { Some(text.as_str()) } else { None }).collect()
+    }
+
+    fn is_toolcall_event(event: &StreamParserEvent) -> bool {
+        matches!(event, StreamParserEvent::ToolcallStart { .. } | StreamParserEvent::ToolcallDelta { .. } | StreamParserEvent::ToolcallEnd { .. })
+    }
+
+    fn feed_all(parser: &mut Box<dyn StreamParser + Send>, input: &str) -> Vec<StreamParserEvent> {
+        let mut events = parser.feed(input);
+        events.extend(parser.finish());
+        events
+    }
+
+    fn arg<'a>(call: &'a ParsedToolCall, key: &str) -> Option<&'a Value> {
+        call.arguments.get(key)
+    }
+
+    #[test]
+    fn parses_a_single_gemma4_tool_call_with_string_delimiters() {
+        let calls = gemma4_parse_generated_text(r#"<|tool_call>call:get_weather{city:<|"|>Seoul<|"|>}<tool_call|>"#, &[weather_tool()], None);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "get_weather");
+        assert_eq!(arg(&calls[0], "city"), Some(&Value::String("Seoul".into())));
+    }
+
+    #[test]
+    fn parses_bare_numbers_and_booleans_with_their_native_types() {
+        let calls = gemma4_parse_generated_text("<|tool_call>call:get_weather{count:42,flag:true}<tool_call|>", &[weather_tool()], None);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(arg(&calls[0], "count"), Some(&json!(42)));
+        assert_eq!(arg(&calls[0], "flag"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn parses_nested_objects_and_arrays_in_gemma4_argument_syntax() {
+        let text = concat!(
+            "<|tool_call>call:search_catalog{",
+            r#"filters:{category:<|"|>books<|"|>,price:{min:10,max:20}},"#,
+            r#"tags:[<|"|>fiction<|"|>,<|"|>award<|"|>]"#,
+            "}<tool_call|>"
+        );
+        let calls = gemma4_parse_generated_text(text, &[search_tool()], None);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            arg(&calls[0], "filters"),
+            Some(&json!({"category": "books", "price": {"min": 10, "max": 20}}))
+        );
+        assert_eq!(arg(&calls[0], "tags"), Some(&json!(["fiction", "award"])));
+    }
+
+    #[test]
+    fn parses_tool_calls_between_text_segments_and_accepts_the_turn_fallback_end_tag() {
+        let text = concat!(
+            "Before tool call. ",
+            r#"<|tool_call>call:get_weather{city:<|"|>Seoul<|"|>}<turn|>"#,
+            " After tool call."
+        );
+        let calls = gemma4_parse_generated_text(text, &[weather_tool()], None);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(arg(&calls[0], "city"), Some(&Value::String("Seoul".into())));
+    }
+
+    #[test]
+    fn streams_gemma4_tool_calls_with_accumulate_parse_diff_and_split_special_tokens() {
+        let mut parser = gemma4_create_stream_parser(vec![weather_tool()], None);
+        assert_eq!(parser.feed("Before <|tool"), vec![StreamParserEvent::Text { text: "Before ".into() }]);
+        assert_eq!(
+            parser.feed(r#"_call>call:get_weather{city:<|"|>Seo"#),
+            vec![
+                StreamParserEvent::ToolcallStart { index: 0, name: "get_weather".into(), id: "gemma4-tool-0".into() },
+                StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: r#"{"city":"Seo"#.into() },
+            ]
+        );
+        assert_eq!(parser.feed(r#"ul<|"|>,count:4"#), vec![StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: "ul".into() }]);
+        assert_eq!(
+            parser.feed("2,flag:true}<tool_"),
+            vec![StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: r#"","count":42"#.into() }]
+        );
+        assert_eq!(
+            parser.feed("call|> after"),
+            vec![
+                StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: r#","flag":true}"#.into() },
+                StreamParserEvent::ToolcallEnd {
+                    index: 0,
+                    name: "get_weather".into(),
+                    id: "gemma4-tool-0".into(),
+                    arguments: json!({"city": "Seoul", "count": 42, "flag": true}).as_object().expect("object").clone(),
+                    incomplete: false,
+                    error_message: None,
+                },
+                StreamParserEvent::Text { text: " after".into() },
+            ]
+        );
+        assert!(parser.finish().is_empty());
+    }
+
+    #[test]
+    fn recovers_a_balanced_arguments_payload_with_the_terminator_missing() {
+        let (seen, handler) = error_collector();
+        let mut parser = gemma4_create_stream_parser(fixture_tools(), Some(options_with(handler)));
+        let events = feed_all(&mut parser, r#"<|tool_call>call:get_weather{city:<|"|>Seoul<|"|>}"#);
+        let ends: Vec<_> = events.iter().filter(|e| matches!(e, StreamParserEvent::ToolcallEnd { .. })).collect();
+        assert_eq!(ends.len(), 1);
+        let StreamParserEvent::ToolcallEnd { name, arguments, incomplete, .. } = ends[0] else { unreachable!() };
+        assert_eq!(name, "get_weather");
+        assert_eq!(arguments.get("city"), Some(&Value::String("Seoul".into())));
+        assert!(!*incomplete);
+        assert!(seen.lock().expect("errors").is_empty());
+    }
+
+    #[test]
+    fn flags_an_unbalanced_argument_object_as_incomplete() {
+        let (seen, handler) = error_collector();
+        let mut parser = gemma4_create_stream_parser(fixture_tools(), Some(options_with(handler)));
+        let events = feed_all(&mut parser, r#"<|tool_call>call:get_weather{city:<|"|>Seoul<|"|>"#);
+        let ends: Vec<_> = events.iter().filter(|e| matches!(e, StreamParserEvent::ToolcallEnd { .. })).collect();
+        assert_eq!(ends.len(), 1);
+        let StreamParserEvent::ToolcallEnd { incomplete, .. } = ends[0] else { unreachable!() };
+        assert!(*incomplete);
+        assert!(!text_of(&events).contains("<|tool_call>"));
+        assert_eq!(seen.lock().expect("errors").as_slice(), ["Could not complete Gemma4 tool call at finish."]);
+    }
+
+    #[test]
+    fn flags_balanced_arguments_that_violate_todowrite_min_items() {
+        let (seen, handler) = error_collector();
+        let mut parser = gemma4_create_stream_parser(fixture_tools(), Some(options_with(handler)));
+        let events = feed_all(&mut parser, "<|tool_call>call:todowrite{todos:[]}");
+        let ends: Vec<_> = events.iter().filter(|e| matches!(e, StreamParserEvent::ToolcallEnd { .. })).collect();
+        assert_eq!(ends.len(), 1);
+        let StreamParserEvent::ToolcallEnd { incomplete, .. } = ends[0] else { unreachable!() };
+        assert!(*incomplete);
+        assert!(!text_of(&events).contains("<|tool_call>"));
+        assert_eq!(seen.lock().expect("errors").as_slice(), ["Could not complete Gemma4 tool call at finish."]);
+    }
+
+    #[test]
+    fn drops_a_nameless_call_prefix() {
+        let (seen, handler) = error_collector();
+        let mut parser = gemma4_create_stream_parser(fixture_tools(), Some(options_with(handler)));
+        let events = feed_all(&mut parser, "<|tool_call>call:");
+        assert!(!events.iter().any(is_toolcall_event));
+        assert!(!text_of(&events).contains("<|tool_call>"));
+        assert_eq!(seen.lock().expect("errors").as_slice(), ["Gemma4 tool call dropped"]);
+    }
+
+    #[test]
+    fn drops_an_unknown_gemma_tool() {
+        let (seen, handler) = error_collector();
+        let mut parser = gemma4_create_stream_parser(fixture_tools(), Some(options_with(handler)));
+        let events = feed_all(&mut parser, r#"<|tool_call>call:unknown_tool{city:<|"|>Seoul<|"|>}"#);
+        assert!(!events.iter().any(is_toolcall_event));
+        assert!(!text_of(&events).contains("<|tool_call>"));
+        assert_eq!(seen.lock().expect("errors").as_slice(), ["Gemma4 tool call dropped"]);
+    }
+
+    #[test]
+    fn requires_an_explicit_outer_closing_brace_before_recovering() {
+        assert!(scan_gemma4_args_complete(r#"get_weather{city:<|"|>Seoul<|"|>"#).is_none());
+        assert_eq!(
+            scan_gemma4_args_complete(r#"get_weather{city:<|"|>Seoul<|"|>}"#).map(|complete| complete.raw_args),
+            Some(r#"city:<|"|>Seoul<|"|>"#.to_string())
+        );
+    }
+
+    #[test]
+    fn flags_a_split_string_delimiter_at_eof_without_leaking_markup() {
+        let mut parser = gemma4_create_stream_parser(fixture_tools(), None);
+        let events = feed_all(&mut parser, r#"<|tool_call>call:get_weather{city:<|""#);
+        assert!(events.iter().any(|event| matches!(event, StreamParserEvent::ToolcallEnd { incomplete: true, name, .. } if name == "get_weather")));
+        assert!(!events.iter().any(|event| matches!(event, StreamParserEvent::Text { text } if text.contains("<|tool_call>"))));
+    }
+
+    #[test]
+    fn recovers_a_partial_terminator_after_balanced_arguments() {
+        let mut parser = gemma4_create_stream_parser(fixture_tools(), None);
+        let events = feed_all(&mut parser, r#"<|tool_call>call:get_weather{city:<|"|>Seoul<|"|>}<tool_c"#);
+        assert!(events.iter().any(|event| matches!(event, StreamParserEvent::ToolcallEnd { name, arguments, incomplete: false, .. } if name == "get_weather" && arguments.get("city") == Some(&Value::String("Seoul".into())))));
+        assert!(!events.iter().any(|event| matches!(event, StreamParserEvent::ToolcallEnd { incomplete: true, .. })));
+    }
+
+    #[test]
+    fn drops_a_terminated_call_with_an_unknown_name() {
+        let (seen, handler) = error_collector();
+        let mut parser = gemma4_create_stream_parser(fixture_tools(), Some(options_with(handler)));
+        let events = feed_all(&mut parser, r#"<|tool_call>call:unknown_tool{city:<|"|>Seoul<|"|>}<tool_call|>"#);
+        assert!(events.is_empty());
+        assert_eq!(seen.lock().expect("errors").len(), 1);
+        assert_eq!(seen.lock().expect("errors").as_slice(), ["Gemma4 tool call dropped"]);
+    }
+
+    #[test]
+    fn finishes_a_started_truncated_call_exactly_once_with_consistent_ids() {
+        let mut parser = gemma4_create_stream_parser(fixture_tools(), None);
+        let mut events = parser.feed(r#"<|tool_call>call:get_weather{city:<|"|>Seo"#);
+        events.extend(parser.finish());
+        assert!(events.iter().any(|event| matches!(event, StreamParserEvent::ToolcallStart { id, .. } if id == "gemma4-tool-0")));
+        assert!(events.iter().any(|event| matches!(event, StreamParserEvent::ToolcallDelta { .. })));
+        let ends: Vec<_> = events.iter().filter(|e| matches!(e, StreamParserEvent::ToolcallEnd { .. })).collect();
+        assert_eq!(ends.len(), 1);
+        assert!(matches!(ends[0], StreamParserEvent::ToolcallEnd { id, incomplete: true, .. } if id == "gemma4-tool-0"));
+    }
+
+    #[test]
+    fn reports_sanitized_metadata_for_incomplete_known_calls_with_unbalanced_arguments() {
+        let (seen, handler) = error_collector();
+        let mut parser = gemma4_create_stream_parser(fixture_tools(), Some(options_with(handler)));
+        let raw_fragment = r#"call:get_weather{city:<|"|>Seo"#;
+        let events = feed_all(&mut parser, &format!("<|tool_call>{raw_fragment}"));
+        assert!(events.iter().any(|event| matches!(event, StreamParserEvent::ToolcallEnd { incomplete: true, .. })));
+        assert_eq!(seen.lock().expect("errors").as_slice(), ["Could not complete Gemma4 tool call at finish."]);
+        assert!(!seen.lock().expect("errors").iter().any(|message| message.contains(raw_fragment)));
+    }
+
+    #[test]
+    fn reports_sanitized_metadata_for_incomplete_known_calls_with_arguments_that_fail_validation() {
+        let (seen, handler) = error_collector();
+        let mut parser = gemma4_create_stream_parser(fixture_tools(), Some(options_with(handler)));
+        let raw_fragment = "call:get_weather{}";
+        let events = feed_all(&mut parser, &format!("<|tool_call>{raw_fragment}"));
+        assert!(events.iter().any(|event| matches!(event, StreamParserEvent::ToolcallEnd { incomplete: true, .. })));
+        assert_eq!(seen.lock().expect("errors").as_slice(), ["Could not complete Gemma4 tool call at finish."]);
+        assert!(!seen.lock().expect("errors").iter().any(|message| message.contains(raw_fragment)));
+    }
+}
+

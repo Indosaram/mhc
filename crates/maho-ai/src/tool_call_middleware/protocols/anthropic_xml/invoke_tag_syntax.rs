@@ -145,12 +145,12 @@ fn byte_to_char_index(text: &str, byte_index: usize) -> usize {
 }
 
 pub fn find_invoke_open_tag(text: &str, from_index: usize) -> Option<InvokeOpenTagMatch> {
-    let char_from = byte_to_char_index(text, from_index.max(0));
+    let char_from = byte_to_char_index(text, from_index);
     find_invoke_open_tag_from(text, char_from)
 }
 
 pub fn find_incomplete_invoke_open_tag(text: &str, from_index: usize) -> Option<InvokeOpenTagMatch> {
-    let index = from_index.max(0);
+    let index = from_index;
     let candidate = &text[index.min(text.len())..];
     let chars: Vec<char> = candidate.chars().collect();
     let mut cursor = 0usize;
@@ -413,6 +413,22 @@ pub fn find_parameter_open_tag_at(text: &str, char_index: usize) -> Option<Param
     Some(ParameterOpenTagMatch { index: char_index, length: cursor - char_index, name: decode_xml_entities(&name_raw) })
 }
 
+/// Forward search for a full parameter open tag (name attribute plus closing `>`),
+/// matching senpi's `findTag(PARAMETER_OPEN_TAG, ...)` inside `findParameterBoundary`.
+fn find_parameter_open_tag_from(text: &str, from_char: usize) -> Option<(usize, usize)> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = from_char;
+    while i < chars.len() {
+        if chars[i] == '<'
+            && let Some(found) = find_parameter_open_tag_at(text, i)
+        {
+            return Some((found.index, found.length));
+        }
+        i += 1;
+    }
+    None
+}
+
 pub fn find_parameter_boundary(text: &str, from_char: usize) -> Option<ParameterBoundary> {
     let mut cursor = from_char;
     let mut nested_invoke_depth = 0i64;
@@ -432,12 +448,12 @@ pub fn find_parameter_boundary(text: &str, from_char: usize) -> Option<Parameter
             && idx == next_index
         {
             let next_parameter_close = find_parameter_close_tag(text, idx + len);
-            let nested_parameter_open = find_parameter_markup(text, idx + len);
+            let nested_parameter_open = find_parameter_open_tag_from(text, idx + len);
             let nested_invoke_close = find_invoke_close_tag(text, idx + len);
             let should_skip_as_self_closing = match nested_invoke_close {
                 None => true,
                 Some((close_idx, _)) => {
-                    (nested_parameter_open.is_none() || nested_parameter_open.unwrap().0 > close_idx)
+                    nested_parameter_open.is_none_or(|(idx, _)| idx > close_idx)
                         && next_parameter_close.is_some_and(|(pc_idx, _)| close_idx > pc_idx)
                 }
             };
@@ -500,7 +516,7 @@ pub fn scan_invoke_block(text: &str, opening_tag: &InvokeOpenTagMatch) -> Option
             });
         }
 
-        let (p_idx, _) = parameter_markup.unwrap();
+        let (p_idx, _) = parameter_markup.expect("the guard above returns when parameter_markup is None");
         let Some(parameter_open) = find_parameter_open_tag_at(text, p_idx) else {
             return Some(InvokeBlockMatch {
                 content_end: char_index_to_byte(text, invoke_close.0),
@@ -510,9 +526,7 @@ pub fn scan_invoke_block(text: &str, opening_tag: &InvokeOpenTagMatch) -> Option
         };
 
         let value_start = parameter_open.index + parameter_open.length;
-        let Some(boundary) = find_parameter_boundary(text, value_start) else {
-            return None;
-        };
+        let boundary = find_parameter_boundary(text, value_start)?;
 
         match boundary {
             ParameterBoundary::InvokeClose(m) => {
@@ -553,7 +567,7 @@ fn is_attribute_prefix(remainder: &str) -> bool {
         return true;
     }
 
-    let quote = value_prefix.chars().next().unwrap();
+    let quote = value_prefix.chars().next().expect("value_prefix is non-empty");
     if quote != '"' && quote != '\'' {
         return false;
     }

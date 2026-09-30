@@ -161,4 +161,177 @@ mod tests {
         assert_eq!(parsed, vec![]);
         assert!(called.load(std::sync::atomic::Ordering::SeqCst));
     }
+    fn weather_tool() -> Tool {
+        Tool {
+            name: "get_weather".into(),
+            description: "Get weather for a city".into(),
+            parameters: json!({"type": "object", "required": ["city"], "properties": {"city": {"type": "string"}, "count": {"type": "number"}, "flag": {"type": "boolean"}}}),
+            freeform: None,
+            constrained_sampling: None,
+        }
+    }
+
+    fn catalog_tool() -> Tool {
+        Tool {
+            name: "search_catalog".into(),
+            description: "Search a nested catalog".into(),
+            parameters: json!({"type": "object", "required": ["filters", "tags"], "properties": {"filters": {"type": "object", "required": ["category"], "properties": {"category": {"type": "string"}}}, "tags": {"type": "array", "items": {"type": "string"}}}}),
+            freeform: None,
+            constrained_sampling: None,
+        }
+    }
+
+    fn error_sink() -> (std::sync::Arc<std::sync::Mutex<Vec<String>>>, impl Fn(&str, Option<&std::collections::HashMap<String, Value>>) + Send + Sync + 'static) {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let handler = move |message: &str, _metadata: Option<&std::collections::HashMap<String, Value>>| {
+            sink.lock().expect("error sink").push(message.to_string());
+        };
+        (seen, handler)
+    }
+
+    fn options_with(handler: impl Fn(&str, Option<&std::collections::HashMap<String, Value>>) + Send + Sync + 'static) -> ParserOptions {
+        ParserOptions { emit_raw_tool_call_text_on_error: false, on_error: Some(std::sync::Arc::new(handler)) }
+    }
+
+    #[test]
+    fn parses_a_full_xtml_tools_block_with_typed_arguments() {
+        let text = concat!(
+            "<|open|>tools<|sep|>",
+            "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>",
+            "<|open|>argument key=\"city\" type=\"string\"<|sep|>Seoul<|close|>argument<|sep|>",
+            "<|open|>argument key=\"count\" type=\"number\"<|sep|>3<|close|>argument<|sep|>",
+            "<|open|>argument key=\"flag\" type=\"boolean\"<|sep|>true<|close|>argument<|sep|>",
+            "<|close|>call<|sep|>",
+            "<|close|>tools<|sep|>"
+        );
+        let result = parse_kimi_xtml_generated_text(text, &[weather_tool()], None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "get_weather");
+        assert_eq!(result[0].arguments.get("city"), Some(&json!("Seoul")));
+        assert_eq!(result[0].arguments.get("count").and_then(Value::as_f64), Some(3.0));
+        assert_eq!(result[0].arguments.get("flag"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn parses_object_and_array_arguments_from_strict_json_values() {
+        let text = concat!(
+            "<|open|>tools<|sep|>",
+            "<|open|>call tool=\"search_catalog\" index=\"1\"<|sep|>",
+            "<|open|>argument key=\"filters\" type=\"object\"<|sep|>{\"category\":\"books\"}<|close|>argument<|sep|>",
+            "<|open|>argument key=\"tags\" type=\"array\"<|sep|>[\"fiction\",\"award\"]<|close|>argument<|sep|>",
+            "<|close|>call<|sep|>",
+            "<|close|>tools<|sep|>"
+        );
+        let result = parse_kimi_xtml_generated_text(text, &[catalog_tool()], None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].arguments.get("filters"), Some(&json!({"category": "books"})));
+        assert_eq!(result[0].arguments.get("tags"), Some(&json!(["fiction", "award"])));
+    }
+
+    #[test]
+    fn parses_multiple_calls_inside_one_tools_block() {
+        let text = concat!(
+            "<|open|>tools<|sep|>",
+            "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>",
+            "<|open|>argument key=\"city\" type=\"string\"<|sep|>Seoul<|close|>argument<|sep|>",
+            "<|close|>call<|sep|>",
+            "<|open|>call tool=\"get_weather\" index=\"2\"<|sep|>",
+            "<|open|>argument key=\"city\" type=\"string\"<|sep|>Busan<|close|>argument<|sep|>",
+            "<|close|>call<|sep|>",
+            "<|close|>tools<|sep|>"
+        );
+        let result = parse_kimi_xtml_generated_text(text, &[weather_tool()], None);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].arguments.get("city"), Some(&json!("Seoul")));
+        assert_eq!(result[1].arguments.get("city"), Some(&json!("Busan")));
+    }
+
+    #[test]
+    fn accepts_single_quoted_and_unquoted_header_attributes() {
+        let text = concat!(
+            "<|open|>tools<|sep|>",
+            "<|open|>call tool='get_weather' index='1'<|sep|>",
+            "<|open|>argument key=city type=string<|sep|>Seoul<|close|>argument<|sep|>",
+            "<|close|>call<|sep|>",
+            "<|close|>tools<|sep|>"
+        );
+        let result = parse_kimi_xtml_generated_text(text, &[weather_tool()], None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].arguments.get("city"), Some(&json!("Seoul")));
+    }
+
+    #[test]
+    fn ignores_narrative_text_outside_tools_blocks() {
+        let text = concat!(
+            "Let me check that for you.\n",
+            "<|open|>tools<|sep|>",
+            "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>",
+            "<|open|>argument key=\"city\" type=\"string\"<|sep|>Seoul<|close|>argument<|sep|>",
+            "<|close|>call<|sep|>",
+            "<|close|>tools<|sep|>",
+            "\nOne moment."
+        );
+        let result = parse_kimi_xtml_generated_text(text, &[weather_tool()], None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].arguments.get("city"), Some(&json!("Seoul")));
+    }
+
+    #[test]
+    fn treats_a_missing_type_attribute_as_a_raw_string() {
+        let text = concat!(
+            "<|open|>tools<|sep|>",
+            "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>",
+            "<|open|>argument key=\"city\"<|sep|>Seoul<|close|>argument<|sep|>",
+            "<|close|>call<|sep|>",
+            "<|close|>tools<|sep|>"
+        );
+        let result = parse_kimi_xtml_generated_text(text, &[weather_tool()], None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].arguments.get("city"), Some(&json!("Seoul")));
+    }
+
+    #[test]
+    fn treats_an_unknown_type_attribute_as_a_raw_string() {
+        let text = concat!(
+            "<|open|>tools<|sep|>",
+            "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>",
+            "<|open|>argument key=\"city\" type=\"mystery\"<|sep|>Seoul<|close|>argument<|sep|>",
+            "<|close|>call<|sep|>",
+            "<|close|>tools<|sep|>"
+        );
+        let result = parse_kimi_xtml_generated_text(text, &[weather_tool()], None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].arguments.get("city"), Some(&json!("Seoul")));
+    }
+
+    #[test]
+    fn rejects_malformed_json_in_an_object_argument_and_reports_the_error() {
+        let (seen, handler) = error_sink();
+        let options = options_with(handler);
+        let text = concat!(
+            "<|open|>tools<|sep|>",
+            "<|open|>call tool=\"search_catalog\" index=\"1\"<|sep|>",
+            "<|open|>argument key=\"filters\" type=\"object\"<|sep|>{category:books}<|close|>argument<|sep|>",
+            "<|close|>call<|sep|>",
+            "<|close|>tools<|sep|>"
+        );
+        let result = parse_kimi_xtml_generated_text(text, &[catalog_tool()], Some(&options));
+        assert!(result.is_empty());
+        assert_eq!(seen.lock().expect("errors").len(), 1);
+    }
+
+    #[test]
+    fn parses_a_complete_call_even_when_the_closing_tools_marker_is_missing() {
+        let text = concat!(
+            "<|open|>tools<|sep|>",
+            "<|open|>call tool=\"get_weather\" index=\"1\"<|sep|>",
+            "<|open|>argument key=\"city\" type=\"string\"<|sep|>Seoul<|close|>argument<|sep|>",
+            "<|close|>call<|sep|>"
+        );
+        let result = parse_kimi_xtml_generated_text(text, &[weather_tool()], None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].arguments.get("city"), Some(&json!("Seoul")));
+    }
+
 }

@@ -153,15 +153,15 @@ impl StreamMessageProjection {
                     }
                 })
         });
-        if let Some(outer_content_index) = outer_content_index {
-            if let Some(ContentBlock::Text(text)) = self.message.content.get(outer_content_index) {
-                let content = text.text.clone();
-                self.stream.push(AssistantMessageEvent::TextEnd {
-                    content_index: outer_content_index,
-                    content,
-                    partial: self.message.clone(),
-                });
-            }
+        if let Some(outer_content_index) = outer_content_index
+            && let Some(ContentBlock::Text(text)) = self.message.content.get(outer_content_index)
+        {
+            let content = text.text.clone();
+            self.stream.push(AssistantMessageEvent::TextEnd {
+                content_index: outer_content_index,
+                content,
+                partial: self.message.clone(),
+            });
         }
         self.current_inner_text_index = None;
     }
@@ -434,7 +434,8 @@ mod tests {
             other => panic!("expected tool call, got {other:?}"),
         }
         assert!(matches!(stream.next().await, Ok(Some(AssistantMessageEvent::ToolcallEnd { .. }))));
-        assert!(!projection.has_finalized_tool_call_content());
+        // senpi's finalized block carries no partialJson, so it counts as finalized content.
+        assert!(projection.has_finalized_tool_call_content());
     }
 
     #[test]

@@ -177,6 +177,11 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// senpi emits one text event per idle character, so tests assert on the concatenation.
+    fn text_of(events: &[StreamParserEvent]) -> String {
+        events.iter().filter_map(|event| if let StreamParserEvent::Text { text } = event { Some(text.as_str()) } else { None }).collect()
+    }
+
     fn tool(name: &str) -> Tool {
         Tool {
             name: name.into(),
@@ -213,7 +218,9 @@ mod tests {
         let mut parser = create_antml_invoke_recovery_stream_parser(tools, None);
         let mut events = parser.feed("hello world");
         events.extend(parser.finish());
-        assert_eq!(events, vec![StreamParserEvent::Text { text: "hello world".into() }]);
+        // senpi's idle path emits one text event per character; the concatenation is what callers see.
+        assert_eq!(text_of(&events), "hello world");
+        assert!(events.iter().all(|event| matches!(event, StreamParserEvent::Text { .. })));
     }
 
     #[test]
@@ -222,6 +229,6 @@ mod tests {
         let mut parser = create_antml_invoke_recovery_stream_parser(tools, None);
         let mut events = parser.feed("banana");
         events.extend(parser.finish());
-        assert_eq!(events, vec![StreamParserEvent::Text { text: "banana".into() }]);
+        assert_eq!(text_of(&events), "banana");
     }
 }

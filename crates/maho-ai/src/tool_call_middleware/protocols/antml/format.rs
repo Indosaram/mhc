@@ -28,7 +28,7 @@ pub fn antml_format_tool_response(tool_name: &str, tool_call_id: &str, content: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{json, Map};
+    use serde_json::{json, Map, Value};
 
     fn tool(name: &str) -> Tool {
         Tool { name: name.into(), description: "d".into(), parameters: json!({"type": "object"}), freeform: None, constrained_sampling: None }
@@ -62,4 +62,58 @@ mod tests {
         let formatted = antml_format_tool_response("get_weather", "id-1", &content);
         assert!(formatted.contains("sunny"));
     }
+    #[test]
+    fn renders_json_tool_definitions_and_a_function_calls_wrapped_example() {
+        let tool = Tool {
+            name: "get_weather".into(),
+            description: "Get weather for a city".into(),
+            parameters: json!({"type": "object", "required": ["city"], "properties": {"city": {"type": "string"}, "unit": {"type": "string"}}}),
+            freeform: None,
+            constrained_sampling: None,
+        };
+        let prompt = antml_format_tools_system_prompt(&[tool.clone()]);
+        let start = prompt.rfind("<tools>").expect("tools open") + "<tools>".len();
+        let end = prompt.rfind("</tools>").expect("tools close");
+        let parsed: Value = serde_json::from_str(&prompt[start..end]).expect("tool json");
+        assert_eq!(parsed, json!([{"name": tool.name, "description": tool.description, "parameters": tool.parameters}]));
+        assert!(prompt.contains("<function_calls>"));
+        assert!(prompt.contains(r#"<invoke name="get_weather">"#));
+        assert!(prompt.contains("</function_calls>"));
+    }
+
+    #[test]
+    fn returns_an_empty_prompt_without_tools() {
+        assert_eq!(antml_format_tools_system_prompt(&[]), "");
+    }
+
+    #[test]
+    fn wraps_the_canonical_invoke_serialization_in_a_function_calls_block() {
+        let mut args = Map::new();
+        args.insert("city".into(), json!("Seoul"));
+        args.insert("tags".into(), json!(["today", "local"]));
+        assert_eq!(
+            antml_format_tool_call("get_weather", &args),
+            "<function_calls>\n\
+             <invoke name=\"get_weather\">\n\
+             <parameter name=\"city\">Seoul</parameter>\n\
+             <parameter name=\"tags\">[\"today\",\"local\"]</parameter>\n\
+             </invoke>\n\
+             </function_calls>"
+        );
+    }
+
+    #[test]
+    fn formats_tool_output_as_anthropic_style_function_results() {
+        let content = vec![ToolResultContent::Text(crate::types::TextContent { text: "sunny".into(), audience: None, text_signature: None })];
+        assert_eq!(
+            antml_format_tool_response("get_weather", "call-1", &content),
+            "<function_results>\n\
+             <result>\n\
+             <tool_name>get_weather</tool_name>\n\
+             <stdout>sunny</stdout>\n\
+             </result>\n\
+             </function_results>"
+        );
+    }
+
 }
