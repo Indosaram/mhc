@@ -1359,6 +1359,7 @@ dependencies = [
  "chrono",
  "futures",
  "hex",
+ "indexmap",
  "maho-agent",
  "maho-ai",
  "regex",

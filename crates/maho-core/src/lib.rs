@@ -24,10 +24,14 @@ pub mod diagnostics;
 pub mod event_bus;
 pub mod exec;
 pub mod lockfile_policy;
+pub mod output_guard;
+pub mod resolve_config_value;
 pub mod messages;
 pub mod nearest_parent_config;
 pub mod paths;
 pub mod session_manager;
+pub mod session_resident_store;
+pub mod trust_manager;
 pub mod text;
 
 pub use brand::{BRAND_ENV_VAR, BrandProfile, brand_profile, env_value, parse_brand_profile};
@@ -37,6 +41,8 @@ pub use messages::{
     BRANCH_SUMMARY_PREFIX, BRANCH_SUMMARY_SUFFIX, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX,
     convert_to_llm, convert_to_llm_for_transport, elide_old_images,
 };
+pub use session_resident_store::{RESIDENT_STRING_PREFIX, ResidentStringStore, ResidentStringStoreOptions, ResidentStoreStats};
+pub use trust_manager::{ProjectTrustDecision, ProjectTrustStore, ProjectTrustUpdate};
 pub use session_manager::{
     CURRENT_SESSION_VERSION, NewSessionOptions, SessionContext, SessionManager, SessionTreeNode,
     UsageTotals, assert_valid_session_id, build_context_entries, build_session_context, build_session_path,
