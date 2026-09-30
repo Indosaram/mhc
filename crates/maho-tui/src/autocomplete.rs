@@ -513,10 +513,10 @@ impl CombinedAutocompleteProvider {
     }
 
     fn extract_at_prefix(&self, text: &str) -> Option<String> {
-        if let Some(quoted) = extract_quoted_prefix(text) {
-            if quoted.starts_with("@\"") {
-                return Some(quoted);
-            }
+        if let Some(quoted) = extract_quoted_prefix(text)
+            && quoted.starts_with("@\"")
+        {
+            return Some(quoted);
         }
 
         let token_start = match find_last_delimiter(text) {
@@ -603,14 +603,7 @@ impl CombinedAutocompleteProvider {
             || raw_prefix == "/"
             || (parsed.is_at_prefix && raw_prefix.is_empty());
 
-        let (search_dir, search_prefix) = if is_root_prefix {
-            let search_dir = if raw_prefix.starts_with('~') || expanded_prefix.starts_with('/') {
-                expanded_prefix.clone()
-            } else {
-                join_posix(&[self.base_path.as_str(), expanded_prefix.as_str()])
-            };
-            (search_dir, String::new())
-        } else if raw_prefix.ends_with('/') {
+        let (search_dir, search_prefix) = if is_root_prefix || raw_prefix.ends_with('/') {
             let search_dir = if raw_prefix.starts_with('~') || expanded_prefix.starts_with('/') {
                 expanded_prefix.clone()
             } else {
@@ -644,10 +637,10 @@ impl CombinedAutocompleteProvider {
                 .file_type()
                 .map(|file_type| file_type.is_dir())
                 .unwrap_or(false);
-            if !is_directory {
-                if let Ok(metadata) = std::fs::metadata(entry.path()) {
-                    is_directory = metadata.is_dir();
-                }
+            if !is_directory
+                && let Ok(metadata) = std::fs::metadata(entry.path())
+            {
+                is_directory = metadata.is_dir();
             }
 
             let display_prefix = raw_prefix.as_str();
@@ -892,17 +885,15 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
                 let token_start = text_before_cursor
                     .char_indices()
                     .rev()
-                    .find(|(_, ch)| !ch.is_whitespace())
-                    .map(|(index, _)| index);
-                let current_token = match token_start {
-                    Some(index) => text_before_cursor[index..].to_string(),
-                    None => String::new(),
-                };
+                    .find(|(_, ch)| ch.is_whitespace())
+                    .map(|(index, _)| index + 1)
+                    .unwrap_or(0);
+                let current_token = text_before_cursor
+                    .get(token_start..)
+                    .unwrap_or("")
+                    .to_string();
                 if current_token.starts_with("/skill:") {
-                    let before = match token_start {
-                        Some(index) => &text_before_cursor[..index],
-                        None => "",
-                    };
+                    let before = text_before_cursor.get(..token_start).unwrap_or("");
                     if self.is_leading_known_skill_command_run(before) {
                         let skill_commands: Vec<CommandSpec> = self
                             .commands
@@ -927,17 +918,9 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
                 let command = self
                     .commands
                     .iter()
-                    .find(|command| command.name() == command_name);
-                let Some(command) = command else {
-                    return None;
-                };
-                let Some(get_argument_completions) = command.argument_completions() else {
-                    return None;
-                };
-                let argument_suggestions = get_argument_completions(argument_text);
-                let Some(argument_suggestions) = argument_suggestions else {
-                    return None;
-                };
+                    .find(|command| command.name() == command_name)?;
+                let get_argument_completions = command.argument_completions()?;
+                let argument_suggestions = get_argument_completions(argument_text)?;
                 if argument_suggestions.is_empty() {
                     return None;
                 }

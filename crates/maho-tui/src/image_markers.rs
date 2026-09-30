@@ -13,7 +13,7 @@ use regex::Regex;
 pub static IMAGE_MARKER_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[Image #([1-9][0-9]*)\]").expect("valid image marker regex"));
 
-static IMAGE_MARKER_SINGLE: LazyLock<Regex> =
+pub static IMAGE_MARKER_SINGLE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\[Image #([1-9][0-9]*)\]$").expect("valid image marker regex"));
 
 /// Registry state for transfer between editor instances; ids only, never image bytes.

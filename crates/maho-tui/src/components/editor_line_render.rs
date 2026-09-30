@@ -80,10 +80,11 @@ pub fn render_editor_line(input: EditorLineRenderInput<'_>) -> EditorLineRenderR
     for index in 0..points.len().saturating_sub(1) {
         let from = points[index];
         let to = points[index + 1];
-        if let Some(cursor) = cursor {
-            if cursor_in_text && from == cursor.pos {
-                out.push_str(&cursor.marker);
-            }
+        if let Some(cursor) = cursor
+            && cursor_in_text
+            && from == cursor.pos
+        {
+            out.push_str(&cursor.marker);
         }
         let segment = &text[from..to];
         let is_glyph = cursor_glyph.is_some_and(|glyph| from == glyph.start);
@@ -101,16 +102,16 @@ pub fn render_editor_line(input: EditorLineRenderInput<'_>) -> EditorLineRenderR
         }
     }
 
-    if let Some(cursor) = cursor {
-        if !cursor_in_text {
-            out.push_str(&cursor.marker);
-            if cursor.draw_fake_cursor {
-                out.push_str(FAKE_CURSOR_END);
-                return EditorLineRenderResult {
-                    text: out,
-                    cursor_appended: true,
-                };
-            }
+    if let Some(cursor) = cursor
+        && !cursor_in_text
+    {
+        out.push_str(&cursor.marker);
+        if cursor.draw_fake_cursor {
+            out.push_str(FAKE_CURSOR_END);
+            return EditorLineRenderResult {
+                text: out,
+                cursor_appended: true,
+            };
         }
     }
     EditorLineRenderResult {

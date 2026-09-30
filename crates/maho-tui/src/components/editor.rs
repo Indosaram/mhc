@@ -126,10 +126,10 @@ fn word_wrap_ascii_line(line: &str, max_width: usize) -> Vec<TextChunk> {
                 }
                 i -= 1;
             }
-            if let Some(index) = break_at {
-                if index > chunk_start {
-                    chunk_end = index;
-                }
+            if let Some(index) = break_at
+                && index > chunk_start
+            {
+                chunk_end = index;
             }
         }
 
@@ -236,14 +236,6 @@ pub fn word_wrap_line(line: &str, max_width: usize, pre_segmented: Option<&[Mark
                 });
                 chunk_start = char_index;
                 current_width = 0;
-            } else if chunk_start < char_index {
-                chunks.push(TextChunk {
-                    text: line[chunk_start..char_index].to_string(),
-                    start_index: chunk_start,
-                    end_index: char_index,
-                });
-                chunk_start = char_index;
-                current_width = 0;
             }
             wrap_opp_index = None;
         }
@@ -272,20 +264,20 @@ pub fn word_wrap_line(line: &str, max_width: usize, pre_segmented: Option<&[Mark
 
         let next = segments.get(i + 1);
         if is_ws {
-            if let Some(next) = next {
-                if is_atomic_marker(&next.segment) || !is_whitespace_char(&next.segment) {
-                    wrap_opp_index = Some(next.index);
-                    wrap_opp_width = current_width;
-                }
+            if let Some(next) = next
+                && (is_atomic_marker(&next.segment) || !is_whitespace_char(&next.segment))
+            {
+                wrap_opp_index = Some(next.index);
+                wrap_opp_width = current_width;
             }
-        } else if let Some(next) = next {
-            if !is_whitespace_char(&next.segment) {
-                let is_cjk = !is_atomic_marker(&grapheme) && is_cjk_break(&grapheme);
-                let next_is_cjk = !is_atomic_marker(&next.segment) && is_cjk_break(&next.segment);
-                if is_cjk || next_is_cjk {
-                    wrap_opp_index = Some(next.index);
-                    wrap_opp_width = current_width;
-                }
+        } else if let Some(next) = next
+            && !is_whitespace_char(&next.segment)
+        {
+            let is_cjk = !is_atomic_marker(&grapheme) && is_cjk_break(&grapheme);
+            let next_is_cjk = !is_atomic_marker(&next.segment) && is_cjk_break(&next.segment);
+            if is_cjk || next_is_cjk {
+                wrap_opp_index = Some(next.index);
+                wrap_opp_width = current_width;
             }
         }
     }
@@ -338,6 +330,13 @@ struct LayoutLine {
 }
 
 pub type StyleFn = Rc<dyn Fn(&str) -> String>;
+/// senpi's `terminalSocketExists` option.
+pub type TerminalSocketExists = Rc<dyn Fn(&str) -> bool>;
+pub type SubmitCallback = Box<dyn FnMut(&str)>;
+pub type ChangeCallback = Box<dyn FnMut(&str)>;
+pub type ImageMarkersChangedCallback = Box<dyn FnMut(&[u64])>;
+pub type SnapshotAttachmentCallback = Box<dyn Fn() -> Option<AttachmentState>>;
+pub type RestoreAttachmentCallback = Box<dyn FnMut(&AttachmentState)>;
 
 pub struct EditorTheme {
     pub border_color: StyleFn,
@@ -359,7 +358,7 @@ pub struct EditorOptions {
     pub autocomplete_max_visible: Option<usize>,
     pub terminal_environment: Option<Env>,
     pub terminal_platform: Option<String>,
-    pub terminal_socket_exists: Option<Rc<dyn Fn(&str) -> bool>>,
+    pub terminal_socket_exists: Option<TerminalSocketExists>,
 }
 
 const SLASH_COMMAND_MIN_PRIMARY_COLUMN_WIDTH: usize = 12;
@@ -458,7 +457,7 @@ pub struct Editor {
     padding_x: usize,
     terminal_environment: Env,
     terminal_platform: Option<String>,
-    terminal_socket_exists: Option<Rc<dyn Fn(&str) -> bool>>,
+    terminal_socket_exists: Option<TerminalSocketExists>,
     state: EditorState,
     focused: bool,
     last_width: usize,
@@ -489,15 +488,15 @@ pub struct Editor {
     snapped_from_cursor_col: Option<usize>,
     undo_stack: UndoStack<EditorSnapshot>,
     wrapped_line_cache: Vec<Option<CachedWrappedLine>>,
-    pub on_submit: Option<Box<dyn FnMut(&str)>>,
-    pub on_change: Option<Box<dyn FnMut(&str)>>,
+    pub on_submit: Option<SubmitCallback>,
+    pub on_change: Option<ChangeCallback>,
     /// Fired whenever image markers are added, removed, pruned or renumbered, with the
     /// PRE-renumber ids in reading order.
-    pub on_image_markers_changed: Option<Box<dyn FnMut(&[u64])>>,
+    pub on_image_markers_changed: Option<ImageMarkersChangedCallback>,
     /// Owner hook: capture the attachment payloads keyed by marker id so an undo can restore them.
-    pub snapshot_attachment_state: Option<Box<dyn Fn() -> Option<AttachmentState>>>,
+    pub snapshot_attachment_state: Option<SnapshotAttachmentCallback>,
     /// Owner hook: restore the attachment payloads captured by `snapshot_attachment_state`.
-    pub restore_attachment_state: Option<Box<dyn FnMut(&AttachmentState)>>,
+    pub restore_attachment_state: Option<RestoreAttachmentCallback>,
     pub disable_submit: bool,
 }
 
@@ -804,13 +803,14 @@ impl Editor {
             .get(line_index)
             .cloned()
             .unwrap_or_default();
-        if let Some(Some(cached)) = self.wrapped_line_cache.get(line_index) {
-            if cached.line_ref == line && cached.content_width == content_width {
-                return WrappedLine {
-                    chunks: cached.chunks.clone(),
-                    width: cached.width,
-                };
-            }
+        if let Some(Some(cached)) = self.wrapped_line_cache.get(line_index)
+            && cached.line_ref == line
+            && cached.content_width == content_width
+        {
+            return WrappedLine {
+                chunks: cached.chunks.clone(),
+                width: cached.width,
+            };
         }
 
         let width = if is_printable_ascii_text(&line) {
@@ -997,15 +997,15 @@ impl Editor {
         result.push(self.render_bottom_border(width, lines_below));
 
         self.rendered_autocomplete_height = 0;
-        if self.autocomplete_state.is_some() {
-            if let Some(list) = self.autocomplete_list.as_mut() {
-                let autocomplete_result = list.render(content_width);
-                self.rendered_autocomplete_height = autocomplete_result.len();
-                for line in autocomplete_result {
-                    let line_width = visible_width(&line);
-                    let line_padding = " ".repeat(content_width.saturating_sub(line_width));
-                    result.push(format!("{left_padding}{line}{line_padding}{right_padding}"));
-                }
+        if self.autocomplete_state.is_some()
+            && let Some(list) = self.autocomplete_list.as_mut()
+        {
+            let autocomplete_result = list.render(content_width);
+            self.rendered_autocomplete_height = autocomplete_result.len();
+            for line in autocomplete_result {
+                let line_width = visible_width(&line);
+                let line_padding = " ".repeat(content_width.saturating_sub(line_width));
+                result.push(format!("{left_padding}{line}{line_padding}{right_padding}"));
             }
         }
 
@@ -1466,9 +1466,9 @@ impl Editor {
                     .get(..self.state.cursor_col.min(current_line.len()))
                     .unwrap_or("")
                     .to_string();
-                if self.is_in_slash_command_context(&text_before_cursor) {
-                    self.try_trigger_autocomplete(false);
-                } else if self.autocomplete_trigger_pattern.is_match(&text_before_cursor) {
+                if self.is_in_slash_command_context(&text_before_cursor)
+                    || self.autocomplete_trigger_pattern.is_match(&text_before_cursor)
+                {
                     self.try_trigger_autocomplete(false);
                 }
             }
@@ -1692,9 +1692,9 @@ impl Editor {
                 .get(..self.state.cursor_col.min(current_line.len()))
                 .unwrap_or("")
                 .to_string();
-            if self.is_in_slash_command_context(&text_before_cursor) {
-                self.try_trigger_autocomplete(false);
-            } else if self.autocomplete_trigger_pattern.is_match(&text_before_cursor) {
+            if self.is_in_slash_command_context(&text_before_cursor)
+                || self.autocomplete_trigger_pattern.is_match(&text_before_cursor)
+            {
                 self.try_trigger_autocomplete(false);
             }
         }
@@ -2122,9 +2122,9 @@ impl Editor {
                 .get(..self.state.cursor_col.min(current_line.len()))
                 .unwrap_or("")
                 .to_string();
-            if self.is_in_slash_command_context(&text_before_cursor) {
-                self.try_trigger_autocomplete(false);
-            } else if self.autocomplete_trigger_pattern.is_match(&text_before_cursor) {
+            if self.is_in_slash_command_context(&text_before_cursor)
+                || self.autocomplete_trigger_pattern.is_match(&text_before_cursor)
+            {
                 self.try_trigger_autocomplete(false);
             }
         }
@@ -2376,10 +2376,13 @@ impl Editor {
 
             self.state.lines[self.state.cursor_line] = format!("{before}{}", lines[0]);
 
-            for i in 1..lines.len().saturating_sub(1) {
-                self.state
-                    .lines
-                    .insert(self.state.cursor_line + i, lines[i].clone());
+            for (offset, line) in lines
+                .iter()
+                .enumerate()
+                .take(lines.len().saturating_sub(1))
+                .skip(1)
+            {
+                self.state.lines.insert(self.state.cursor_line + offset, line.clone());
             }
 
             let last_line_index = self.state.cursor_line + lines.len() - 1;
@@ -2488,10 +2491,10 @@ impl Editor {
         self.state = snapshot.state.clone();
         self.paste_markers.restore(&snapshot.paste_state);
         self.image_markers.restore(&snapshot.image_state);
-        if let Some(attachment_state) = &snapshot.attachment_state {
-            if let Some(callback) = self.restore_attachment_state.as_mut() {
-                callback(attachment_state);
-            }
+        if let Some(attachment_state) = &snapshot.attachment_state
+            && let Some(callback) = self.restore_attachment_state.as_mut()
+        {
+            callback(attachment_state);
         }
         self.last_action = None;
         self.preferred_visual_col = None;
@@ -2818,10 +2821,9 @@ impl Editor {
 
         if let Some(best_match_index) =
             Self::get_best_autocomplete_match_index(&suggestions.items, &suggestions.prefix)
+            && let Some(list) = self.autocomplete_list.as_mut()
         {
-            if let Some(list) = self.autocomplete_list.as_mut() {
-                list.set_selected_index(best_match_index);
-            }
+            list.set_selected_index(best_match_index);
         }
 
         self.autocomplete_state = Some(state);

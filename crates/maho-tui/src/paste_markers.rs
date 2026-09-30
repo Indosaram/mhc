@@ -247,10 +247,10 @@ pub fn segment_with_markers(
     // Nested/overlapping literals would desync the single-pass walk below; keep the outermost.
     let mut markers: Vec<(usize, usize)> = Vec::new();
     for range in found {
-        if let Some(previous) = markers.last() {
-            if range.0 < previous.1 {
-                continue;
-            }
+        if let Some(previous) = markers.last()
+            && range.0 < previous.1
+        {
+            continue;
         }
         markers.push(range);
     }
