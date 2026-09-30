@@ -10,7 +10,7 @@ pub fn huggingface_provider() -> Arc<dyn Provider> {
         name: Some("Hugging Face".into()),
         base_url: Some("https://router.huggingface.co/v1".into()),
         headers: None,
-        models: super::huggingface::huggingface_models(),
+        models: super::huggingface_models::huggingface_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,

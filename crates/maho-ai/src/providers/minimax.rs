@@ -10,7 +10,7 @@ pub fn minimax_provider() -> Arc<dyn Provider> {
         name: Some("MiniMax".into()),
         base_url: Some("https://api.minimax.io/anthropic".into()),
         headers: None,
-        models: super::minimax::minimax_models(),
+        models: super::minimax_models::minimax_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,

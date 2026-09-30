@@ -10,7 +10,7 @@ pub fn together_provider() -> Arc<dyn Provider> {
         name: Some("Together".into()),
         base_url: Some("https://api.together.ai/v1".into()),
         headers: None,
-        models: super::together::together_models(),
+        models: super::together_models::together_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,

@@ -10,7 +10,7 @@ pub fn groq_provider() -> Arc<dyn Provider> {
         name: Some("Groq".into()),
         base_url: Some("https://api.groq.com/openai/v1".into()),
         headers: None,
-        models: super::groq::groq_models(),
+        models: super::groq_models::groq_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,

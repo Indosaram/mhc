@@ -10,7 +10,7 @@ pub fn zai_provider() -> Arc<dyn Provider> {
         name: Some("Z.AI".into()),
         base_url: Some("https://api.z.ai/api/coding/paas/v4".into()),
         headers: None,
-        models: super::zai::zai_models(),
+        models: super::zai_models::zai_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,

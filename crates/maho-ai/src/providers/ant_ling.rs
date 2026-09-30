@@ -10,7 +10,7 @@ pub fn ant_ling_provider() -> Arc<dyn Provider> {
         name: Some("Ant Ling".into()),
         base_url: Some("https://api.ant-ling.com/v1".into()),
         headers: None,
-        models: super::ant_ling::ant_ling_models(),
+        models: super::ant_ling_models::ant_ling_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,

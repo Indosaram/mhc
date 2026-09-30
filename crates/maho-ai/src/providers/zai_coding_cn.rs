@@ -10,7 +10,7 @@ pub fn zai_coding_cn_provider() -> Arc<dyn Provider> {
         name: Some("Z.AI Coding CN".into()),
         base_url: Some("https://open.bigmodel.cn/api/coding/paas/v4".into()),
         headers: None,
-        models: super::zai_coding_cn::zai_coding_cn_models(),
+        models: super::zai_coding_cn_models::zai_coding_cn_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,

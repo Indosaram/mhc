@@ -10,7 +10,7 @@ pub fn azure_openai_responses_provider() -> Arc<dyn Provider> {
         name: Some("Azure OpenAI".into()),
         base_url: None,
         headers: None,
-        models: super::azure_openai_responses::azure_openai_responses_models(),
+        models: super::azure_openai_responses_models::azure_openai_responses_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,

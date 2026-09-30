@@ -10,7 +10,7 @@ pub fn opengateway_provider() -> Arc<dyn Provider> {
         name: Some("OpenGateway".into()),
         base_url: Some("https://apis.opengateway.ai/v1".into()),
         headers: None,
-        models: super::opengateway::opengateway_models(),
+        models: super::opengateway_models::opengateway_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,

@@ -10,7 +10,7 @@ pub fn qwen_token_plan_provider() -> Arc<dyn Provider> {
         name: Some("Qwen Token Plan".into()),
         base_url: Some("https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1".into()),
         headers: None,
-        models: super::qwen_token_plan::qwen_token_plan_models(),
+        models: super::qwen_token_plan_models::qwen_token_plan_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,

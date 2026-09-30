@@ -10,7 +10,7 @@ pub fn deepseek_provider() -> Arc<dyn Provider> {
         name: Some("DeepSeek".into()),
         base_url: Some("https://api.deepseek.com".into()),
         headers: None,
-        models: super::deepseek::deepseek_models(),
+        models: super::deepseek_models::deepseek_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,

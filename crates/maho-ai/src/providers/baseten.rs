@@ -10,7 +10,7 @@ pub fn baseten_provider() -> Arc<dyn Provider> {
         name: Some("Baseten".into()),
         base_url: Some("https://inference.baseten.co/v1".into()),
         headers: None,
-        models: super::baseten::baseten_models(),
+        models: super::baseten_models::baseten_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,

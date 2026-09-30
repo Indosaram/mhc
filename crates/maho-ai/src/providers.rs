@@ -1,9 +1,16 @@
 //! Module directory for senpi packages/ai/src/providers/.
 
 use crate::api_registry::get_builtin_api_provider;
+use crate::env_api_keys::get_env_api_key;
+use crate::image_models_generated::IMAGE_MODELS;
+use crate::images_models::ResolveImagesAuth;
 use crate::model_catalog::flatten_model_catalog;
+use crate::models::{AuthResolution, ProviderAuthResult};
 use crate::models_generated::get_builtin_provider_models;
-use crate::types::{AssistantMessageEventStream, Context, DeferredFetchOptions, DeferredHandle, Model, ProviderStreams, SimpleStreamOptions, StreamOptions};
+use crate::types::{
+    AssistantMessageEventStream, Context, DeferredFetchOptions, DeferredHandle, ImagesModel, Model, ProviderStreams,
+    SimpleStreamOptions, StreamOptions,
+};
 use crate::utils::lazy::error_stream;
 use indexmap::IndexMap;
 use std::sync::Arc;
@@ -187,3 +194,32 @@ pub fn flatten_provider_models(provider: &str) -> IndexMap<String, Model> {
     groups.insert(provider.to_owned(), builtin_provider_models(provider).into_iter().map(|m| (m.id.clone(), m)).collect());
     flatten_model_catalog(provider, &groups)
 }
+
+/// Ports an images `*.models.ts` read: `Object.values(IMAGE_MODELS[provider])`.
+pub fn builtin_images_provider_models(provider: &str) -> Vec<ImagesModel> {
+    IMAGE_MODELS
+        .get(provider)
+        .unwrap_or_else(|| panic!("embedded image-models.json is missing provider {provider}"))
+        .values()
+        .cloned()
+        .collect()
+}
+
+/// `envApiKeyAuth(name, envVars)` (auth/helpers.ts, todo 13) as the images-side resolver: the
+/// provider's known env vars are the seam todo 5 ported in `env_api_keys`.
+pub fn env_api_key_images_auth(provider_id: &'static str) -> ResolveImagesAuth {
+    Arc::new(move |overrides| {
+        let api_key = overrides.api_key.clone();
+        let env = overrides.env.clone();
+        Box::pin(async move {
+            let resolved = api_key.or_else(|| get_env_api_key(provider_id, env.as_ref()));
+            Ok(resolved.map(|api_key| AuthResolution {
+                auth: ProviderAuthResult { api_key: Some(api_key), ..ProviderAuthResult::default() },
+                env,
+            }))
+        })
+    })
+}
+
+#[cfg(test)]
+mod tests;

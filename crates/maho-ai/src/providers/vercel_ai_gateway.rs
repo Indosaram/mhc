@@ -10,7 +10,7 @@ pub fn vercel_ai_gateway_provider() -> Arc<dyn Provider> {
         name: Some("Vercel AI Gateway".into()),
         base_url: Some("https://ai-gateway.vercel.sh".into()),
         headers: None,
-        models: super::vercel_ai_gateway::vercel_ai_gateway_models(),
+        models: super::vercel_ai_gateway_models::vercel_ai_gateway_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,

@@ -10,7 +10,7 @@ pub fn xiaomi_token_plan_sgp_provider() -> Arc<dyn Provider> {
         name: Some("Xiaomi Token Plan SGP".into()),
         base_url: Some("https://token-plan-sgp.xiaomimimo.com/v1".into()),
         headers: None,
-        models: super::xiaomi_token_plan_sgp::xiaomi_token_plan_sgp_models(),
+        models: super::xiaomi_token_plan_sgp_models::xiaomi_token_plan_sgp_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,

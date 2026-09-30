@@ -10,7 +10,7 @@ pub fn nvidia_provider() -> Arc<dyn Provider> {
         name: Some("NVIDIA".into()),
         base_url: Some("https://integrate.api.nvidia.com/v1".into()),
         headers: None,
-        models: super::nvidia::nvidia_models(),
+        models: super::nvidia_models::nvidia_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,

@@ -10,7 +10,7 @@ pub fn xiaomi_provider() -> Arc<dyn Provider> {
         name: Some("Xiaomi".into()),
         base_url: Some("https://api.xiaomimimo.com/v1".into()),
         headers: None,
-        models: super::xiaomi::xiaomi_models(),
+        models: super::xiaomi_models::xiaomi_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,

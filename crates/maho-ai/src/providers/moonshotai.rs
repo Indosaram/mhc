@@ -10,7 +10,7 @@ pub fn moonshotai_provider() -> Arc<dyn Provider> {
         name: Some("Moonshot AI".into()),
         base_url: Some("https://api.moonshot.ai/v1".into()),
         headers: None,
-        models: super::moonshotai::moonshotai_models(),
+        models: super::moonshotai_models::moonshotai_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,

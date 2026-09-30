@@ -10,7 +10,7 @@ pub fn venice_provider() -> Arc<dyn Provider> {
         name: Some("Venice AI".into()),
         base_url: Some("https://api.venice.ai/api/v1".into()),
         headers: None,
-        models: super::venice::venice_models(),
+        models: super::venice_models::venice_models(),
         fetch_models: None,
         restore_models: None,
         filter_models: None,
