@@ -18,7 +18,9 @@
 //!   compaction_settings_resolver, http_dispatcher, and the rest of the senpi core tree.
 
 pub mod brand;
+pub mod auth_storage;
 pub mod config;
+pub mod credential_accounts;
 pub mod credential_pool;
 pub mod defaults;
 pub mod diagnostics;
@@ -31,6 +33,7 @@ pub mod messages;
 pub mod nearest_parent_config;
 pub mod paths;
 pub mod session_manager;
+pub mod session_title_generator;
 pub mod settings_manager;
 pub mod session_resident_store;
 pub mod trust_manager;
