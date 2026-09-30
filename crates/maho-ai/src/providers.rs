@@ -1,5 +1,19 @@
 //! Module directory for senpi packages/ai/src/providers/.
-// ported by todo 13
+
+use crate::api_registry::get_builtin_api_provider;
+use crate::env_api_keys::get_env_api_key;
+use crate::image_models_generated::IMAGE_MODELS;
+use crate::images_models::ResolveImagesAuth;
+use crate::model_catalog::flatten_model_catalog;
+use crate::models::{AuthResolution, ProviderAuthResult};
+use crate::models_generated::get_builtin_provider_models;
+use crate::types::{
+    AssistantMessageEventStream, Context, DeferredFetchOptions, DeferredHandle, ImagesModel, Model, ProviderStreams,
+    SimpleStreamOptions, StreamOptions,
+};
+use crate::utils::lazy::error_stream;
+use indexmap::IndexMap;
+use std::sync::Arc;
 
 pub mod alibaba_token_plan;
 pub mod alibaba_token_plan_models;
@@ -108,3 +122,104 @@ pub mod zai;
 pub mod zai_coding_cn;
 pub mod zai_coding_cn_models;
 pub mod zai_models;
+
+/// Port of `../api/lazy.ts` `lazyApi()`'s error-terminated-stream fallback, specialized to the
+/// builtin api-registry: a provider factory here names its api by string id (todos 10-12's wire
+/// modules), and this adapter resolves that id through `api_registry::get_builtin_api_provider`
+/// at call time so provider construction never depends on another node's module being linked.
+/// An unregistered api id yields the same shape of setup-error stream `lazyStream` produces for a
+/// failed dynamic import.
+struct BuiltinApiStreams {
+    api_id: &'static str,
+}
+
+impl ProviderStreams for BuiltinApiStreams {
+    fn stream(&self, model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
+        match get_builtin_api_provider(self.api_id) {
+            Some(provider) => provider.streams().stream(model, context, options),
+            None => error_stream(model, &format!("No API provider registered for api: {}", self.api_id)),
+        }
+    }
+
+    fn stream_simple(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<SimpleStreamOptions>,
+    ) -> AssistantMessageEventStream {
+        match get_builtin_api_provider(self.api_id) {
+            Some(provider) => provider.streams().stream_simple(model, context, options),
+            None => error_stream(model, &format!("No API provider registered for api: {}", self.api_id)),
+        }
+    }
+
+    fn fetch_deferred(
+        &self,
+        model: &Model,
+        handle: &DeferredHandle,
+        options: Option<DeferredFetchOptions>,
+    ) -> Option<AssistantMessageEventStream> {
+        get_builtin_api_provider(self.api_id)?.streams().fetch_deferred(model, handle, options)
+    }
+
+    fn supports_deferred(&self) -> bool {
+        get_builtin_api_provider(self.api_id).is_some_and(|provider| provider.streams().supports_deferred())
+    }
+}
+
+/// A `ProviderStreams` that resolves `api_id` through the builtin api registry on every call,
+/// mirroring how each `providers/*.ts` factory names its api (e.g. `openAICompletionsApi()`)
+/// without a hard link to the wire module that eventually registers it.
+pub fn builtin_api_streams(api_id: &'static str) -> Arc<dyn ProviderStreams> {
+    Arc::new(BuiltinApiStreams { api_id })
+}
+
+/// Ports a `*.models.ts` shard: the generated catalog (`models_generated::MODELS`) is already
+/// flattened per provider by `tools/golden/gen-models.mjs`, so this simply reads that provider's
+/// slice back out in senpi's declared order. Panics only if the embedded catalog is missing the
+/// provider, which would mean the generator itself is broken (same invariant TS relies on via
+/// `Object.values` on a statically known import).
+pub fn builtin_provider_models(provider: &str) -> Vec<Model> {
+    get_builtin_provider_models(provider)
+        .unwrap_or_else(|error| panic!("embedded models.json is missing provider {provider}: {error}"))
+        .into_iter()
+        .cloned()
+        .collect()
+}
+
+/// `ModelGroups`-shaped re-export for a provider's own `*_models.rs`, kept for parity with
+/// `flattenModelCatalog`'s call shape even though `models_generated::MODELS` is pre-flattened.
+pub fn flatten_provider_models(provider: &str) -> IndexMap<String, Model> {
+    let mut groups = IndexMap::new();
+    groups.insert(provider.to_owned(), builtin_provider_models(provider).into_iter().map(|m| (m.id.clone(), m)).collect());
+    flatten_model_catalog(provider, &groups)
+}
+
+/// Ports an images `*.models.ts` read: `Object.values(IMAGE_MODELS[provider])`.
+pub fn builtin_images_provider_models(provider: &str) -> Vec<ImagesModel> {
+    IMAGE_MODELS
+        .get(provider)
+        .unwrap_or_else(|| panic!("embedded image-models.json is missing provider {provider}"))
+        .values()
+        .cloned()
+        .collect()
+}
+
+/// `envApiKeyAuth(name, envVars)` (auth/helpers.ts, todo 13) as the images-side resolver: the
+/// provider's known env vars are the seam todo 5 ported in `env_api_keys`.
+pub fn env_api_key_images_auth(provider_id: &'static str) -> ResolveImagesAuth {
+    Arc::new(move |overrides| {
+        let api_key = overrides.api_key.clone();
+        let env = overrides.env.clone();
+        Box::pin(async move {
+            let resolved = api_key.or_else(|| get_env_api_key(provider_id, env.as_ref()));
+            Ok(resolved.map(|api_key| AuthResolution {
+                auth: ProviderAuthResult { api_key: Some(api_key), ..ProviderAuthResult::default() },
+                env,
+            }))
+        })
+    })
+}
+
+#[cfg(test)]
+mod tests;

@@ -1,0 +1,205 @@
+[
+	{
+		"type": "start",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "Hello, world!"
+				}
+			],
+			"api": "openai-completions",
+			"provider": "test-replay",
+			"model": "gpt-4o-mini",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0
+		}
+	},
+	{
+		"type": "text_start",
+		"contentIndex": 0,
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "Hello, world!"
+				}
+			],
+			"api": "openai-completions",
+			"provider": "test-replay",
+			"model": "gpt-4o-mini",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "chatcmpl-basic"
+		}
+	},
+	{
+		"type": "text_delta",
+		"contentIndex": 0,
+		"delta": "Hello",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "Hello, world!"
+				}
+			],
+			"api": "openai-completions",
+			"provider": "test-replay",
+			"model": "gpt-4o-mini",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "chatcmpl-basic"
+		}
+	},
+	{
+		"type": "text_delta",
+		"contentIndex": 0,
+		"delta": ", world!",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "Hello, world!"
+				}
+			],
+			"api": "openai-completions",
+			"provider": "test-replay",
+			"model": "gpt-4o-mini",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "chatcmpl-basic"
+		}
+	},
+	{
+		"type": "text_end",
+		"contentIndex": 0,
+		"content": "Hello, world!",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "Hello, world!"
+				}
+			],
+			"api": "openai-completions",
+			"provider": "test-replay",
+			"model": "gpt-4o-mini",
+			"usage": {
+				"input": 5,
+				"output": 3,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"reasoning": 0,
+				"totalTokens": 8,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "stop",
+			"timestamp": 0,
+			"responseId": "chatcmpl-basic",
+			"rawStopReason": "stop"
+		}
+	},
+	{
+		"type": "done",
+		"reason": "stop",
+		"message": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "Hello, world!"
+				}
+			],
+			"api": "openai-completions",
+			"provider": "test-replay",
+			"model": "gpt-4o-mini",
+			"usage": {
+				"input": 5,
+				"output": 3,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"reasoning": 0,
+				"totalTokens": 8,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "stop",
+			"timestamp": 0,
+			"responseId": "chatcmpl-basic",
+			"rawStopReason": "stop"
+		}
+	}
+]

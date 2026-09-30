@@ -1,0 +1,174 @@
+[
+	{
+		"type": "start",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "partial",
+					"thinkingSignature": "reasoning_content"
+				}
+			],
+			"api": "openai-completions",
+			"provider": "test-replay",
+			"model": "gpt-4o-mini",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0
+		}
+	},
+	{
+		"type": "thinking_start",
+		"contentIndex": 0,
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "partial",
+					"thinkingSignature": "reasoning_content"
+				}
+			],
+			"api": "openai-completions",
+			"provider": "test-replay",
+			"model": "gpt-4o-mini",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "chatcmpl-truncated"
+		}
+	},
+	{
+		"type": "thinking_delta",
+		"contentIndex": 0,
+		"delta": "partial",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "partial",
+					"thinkingSignature": "reasoning_content"
+				}
+			],
+			"api": "openai-completions",
+			"provider": "test-replay",
+			"model": "gpt-4o-mini",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "chatcmpl-truncated"
+		}
+	},
+	{
+		"type": "thinking_end",
+		"contentIndex": 0,
+		"content": "partial",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "partial",
+					"thinkingSignature": "reasoning_content"
+				}
+			],
+			"api": "openai-completions",
+			"provider": "test-replay",
+			"model": "gpt-4o-mini",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "error",
+			"timestamp": 0,
+			"responseId": "chatcmpl-truncated",
+			"errorMessage": "Stream ended without finish_reason"
+		}
+	},
+	{
+		"type": "error",
+		"reason": "error",
+		"error": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "partial",
+					"thinkingSignature": "reasoning_content"
+				}
+			],
+			"api": "openai-completions",
+			"provider": "test-replay",
+			"model": "gpt-4o-mini",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "error",
+			"timestamp": 0,
+			"responseId": "chatcmpl-truncated",
+			"errorMessage": "Stream ended without finish_reason"
+		}
+	}
+]

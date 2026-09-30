@@ -1,0 +1,236 @@
+[
+	{
+		"type": "start",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "call-1",
+					"name": "echo",
+					"arguments": {
+						"text": "ok"
+					}
+				}
+			],
+			"api": "openai-completions",
+			"provider": "test-replay",
+			"model": "gpt-4o-mini",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0
+		}
+	},
+	{
+		"type": "toolcall_start",
+		"contentIndex": 0,
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "call-1",
+					"name": "echo",
+					"arguments": {
+						"text": "ok"
+					}
+				}
+			],
+			"api": "openai-completions",
+			"provider": "test-replay",
+			"model": "gpt-4o-mini",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "chatcmpl-tool"
+		}
+	},
+	{
+		"type": "toolcall_delta",
+		"contentIndex": 0,
+		"delta": "",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "call-1",
+					"name": "echo",
+					"arguments": {
+						"text": "ok"
+					}
+				}
+			],
+			"api": "openai-completions",
+			"provider": "test-replay",
+			"model": "gpt-4o-mini",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "chatcmpl-tool"
+		}
+	},
+	{
+		"type": "toolcall_delta",
+		"contentIndex": 0,
+		"delta": "{\"text\":\"ok\"}",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "call-1",
+					"name": "echo",
+					"arguments": {
+						"text": "ok"
+					}
+				}
+			],
+			"api": "openai-completions",
+			"provider": "test-replay",
+			"model": "gpt-4o-mini",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "chatcmpl-tool"
+		}
+	},
+	{
+		"type": "toolcall_end",
+		"contentIndex": 0,
+		"toolCall": {
+			"type": "toolCall",
+			"id": "call-1",
+			"name": "echo",
+			"arguments": {
+				"text": "ok"
+			}
+		},
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "call-1",
+					"name": "echo",
+					"arguments": {
+						"text": "ok"
+					}
+				}
+			],
+			"api": "openai-completions",
+			"provider": "test-replay",
+			"model": "gpt-4o-mini",
+			"usage": {
+				"input": 6,
+				"output": 4,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"reasoning": 0,
+				"totalTokens": 10,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "toolUse",
+			"timestamp": 0,
+			"responseId": "chatcmpl-tool",
+			"rawStopReason": "tool_calls"
+		}
+	},
+	{
+		"type": "done",
+		"reason": "toolUse",
+		"message": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "call-1",
+					"name": "echo",
+					"arguments": {
+						"text": "ok"
+					}
+				}
+			],
+			"api": "openai-completions",
+			"provider": "test-replay",
+			"model": "gpt-4o-mini",
+			"usage": {
+				"input": 6,
+				"output": 4,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"reasoning": 0,
+				"totalTokens": 10,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "toolUse",
+			"timestamp": 0,
+			"responseId": "chatcmpl-tool",
+			"rawStopReason": "tool_calls"
+		}
+	}
+]
