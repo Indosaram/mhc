@@ -350,10 +350,10 @@ impl Component for SelectList {
             {
                 on_select(&selected_item);
             }
-        } else if kb.matches(key_data, "tui.select.cancel") {
-            if let Some(on_cancel) = &mut self.on_cancel {
-                on_cancel();
-            }
+        } else if kb.matches(key_data, "tui.select.cancel")
+            && let Some(on_cancel) = &mut self.on_cancel
+        {
+            on_cancel();
         }
     }
 

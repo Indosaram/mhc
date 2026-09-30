@@ -14,7 +14,7 @@ use crate::utils::{extract_ansi_code, get_active_background_ansi, get_grapheme_c
 
 /// OSC 133 shell-integration zone markers (A/B/C) at the start of a line; senpi strips a run of
 /// these before painting so they never occupy a terminal cell.
-fn strip_osc133_zone_prefix(line: &str) -> &str {
+pub(crate) fn strip_osc133_zone_prefix(line: &str) -> &str {
     let mut rest = line;
     loop {
         let Some(tail) = rest.strip_prefix("\x1b]133;") else {

@@ -125,6 +125,11 @@ impl ScrollView {
         self.following_end
     }
 
+    /// Whether follow-end is enabled at all (senpi's `ScrollView.followEnd`).
+    pub fn follows_end(&self) -> bool {
+        self.follow_end
+    }
+
     pub fn viewport_height(&self) -> usize {
         self.current_viewport_height
     }

@@ -24,6 +24,7 @@ rustix = { version = "=1.1.4", features = ["event", "fs", "process", "stdio", "t
 [dev-dependencies]
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+maho-test-support = { path = "../maho-test-support" }
 
 [[example]]
 name = "key-tester"

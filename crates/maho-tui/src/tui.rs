@@ -617,8 +617,8 @@ struct ViewportInsertScrollPlan {
     mutated_rows: Vec<(usize, String)>,
 }
 
-struct NormalizedLinesResult {
-    lines: Vec<String>,
+pub(crate) struct NormalizedLinesResult {
+    pub(crate) lines: Vec<String>,
     first_raw_changed: Option<usize>,
     compare_end_exclusive: usize,
     bounded: bool,
@@ -1057,6 +1057,21 @@ impl TuiBase {
         }
     }
 
+    /// Renders the mounted roots (senpi's `TuiBase.render`); the alt screen needs it for its
+    /// `afterTerminalStop` hand-back to the main screen.
+    pub(crate) fn render_mounted(&mut self, width: usize) -> Vec<String> {
+        match self.mounted_roots_override.clone() {
+            Some(roots) => {
+                let mut lines = Vec::new();
+                for root in roots {
+                    lines.extend(root.borrow_mut().render(width));
+                }
+                lines
+            }
+            None => self.container.render(width),
+        }
+    }
+
     /// Sets the mounted-roots override (senpi's `getMountedRoots` protected override).
     pub fn set_mounted_roots_override(&mut self, roots: Option<Vec<Rc<RefCell<dyn Component>>>>) {
         self.mounted_roots_override = roots;
@@ -1399,7 +1414,7 @@ impl TuiBase {
     /// `calibrateMouseAnchor`). Issues a [`crate::terminal::CursorQueryTicket`] and polls it
     /// from [`TuiBase::poll_mouse_anchor_query`] on the next tick instead of awaiting a promise.
     pub fn calibrate_mouse_anchor(&mut self, terminal: &mut dyn Terminal) {
-        let (should_query, ticket_context) = {
+        let ticket_context = {
             let state = self.state.borrow();
             if !self.mouse_capture_enabled()
                 || state.stopped
@@ -1408,35 +1423,29 @@ impl TuiBase {
                 || state.previous_lines.is_empty()
                 || state.previous_lines.iter().any(|line| crate::image_stub::is_image_line(line))
             {
-                (false, None)
-            } else if state.anchor.kind != MouseAnchorKind::Unknown
+                return;
+            }
+            if state.anchor.kind != MouseAnchorKind::Unknown
                 && state.anchor.epoch == state.placement_epoch
                 && state.anchor.rows == terminal.rows()
                 && state.anchor.columns == terminal.columns()
             {
-                (false, None)
-            } else {
-                (
-                    true,
-                    Some(MouseAnchorQueryContext {
-                        epoch: state.placement_epoch,
-                        rows: terminal.rows(),
-                        columns: terminal.columns(),
-                        hardware_cursor_row: state.hardware_cursor_row,
-                        line_count: state.previous_lines.len(),
-                    }),
-                )
+                return;
+            }
+            MouseAnchorQueryContext {
+                epoch: state.placement_epoch,
+                rows: terminal.rows(),
+                columns: terminal.columns(),
+                hardware_cursor_row: state.hardware_cursor_row,
+                line_count: state.previous_lines.len(),
             }
         };
-        if !should_query {
-            return;
-        }
         let Some(ticket) = terminal.query_cursor_position() else {
             return;
         };
         let mut state = self.state.borrow_mut();
         state.mouse_anchor_pending = true;
-        state.pending_cursor_query = Some((ticket, ticket_context.expect("should_query implies context")));
+        state.pending_cursor_query = Some((ticket, ticket_context));
     }
 
     /// Polls the in-flight [`crate::terminal::CursorQueryTicket`] from
@@ -1911,7 +1920,7 @@ impl TuiBase {
     }
 
     /// Composite all overlays into content lines (sorted by focus order, higher = on top).
-    fn composite_overlays(&mut self, lines: Vec<String>, term_width: u16, term_height: u16) -> Vec<String> {
+    pub(crate) fn composite_overlays(&mut self, lines: Vec<String>, term_width: u16, term_height: u16) -> Vec<String> {
         let has_overlays = !self.state.borrow().overlay_stack.is_empty();
         if !has_overlays {
             self.state.borrow_mut().rendered_overlay_layouts.clear();
@@ -2025,7 +2034,7 @@ impl TuiBase {
     }
 
     /// Find and extract the cursor position from rendered lines, stripping the marker.
-    fn extract_cursor_position(
+    pub(crate) fn extract_cursor_position(
         &self,
         lines: &mut [String],
         height: usize,
@@ -2079,7 +2088,7 @@ impl TuiBase {
         (normalized, true)
     }
 
-    fn apply_line_reset_result(state: &mut TuiBaseState, lines: &[String]) -> NormalizedLinesResult {
+    pub(crate) fn apply_line_reset_result(state: &mut TuiBaseState, lines: &[String]) -> NormalizedLinesResult {
         let previous_memo = std::mem::take(&mut state.normalize_memo);
         let mut next_memo = std::collections::HashMap::new();
         let mut normalized_lines = Vec::with_capacity(lines.len());

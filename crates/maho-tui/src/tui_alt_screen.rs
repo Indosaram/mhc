@@ -12,14 +12,18 @@ use std::rc::Rc;
 use crate::alt_screen_search::{
     find_alt_screen_search_matches, get_alt_screen_search_match_key, AltScreenSearchComponent, AltScreenSearchMatch,
 };
+use crate::components::alt_screen_flash::AltScreenFlashContainer;
 use crate::components::scroll_view::ScrollView;
 use crate::image_stub::{self, ImageProtocol};
 use crate::keybindings::get_keybindings;
-use crate::layout::{get_scroll_view_box, get_scroll_views_at, get_scrollbar_geometry, render_layout_frame, LayoutFrame};
+use crate::layout::{
+    get_scroll_view_box, get_scroll_views_at, get_scrollbar_geometry, render_layout_frame,
+    strip_osc133_zone_prefix, LayoutFrame,
+};
 use crate::mouse_input::{is_mouse_sequence, parse_sgr_mouse_event, parse_wheel_event, MouseTracking, SgrMouseEvent};
 use crate::terminal::Terminal;
-use crate::tui::{can_receive_keys, Component, Focusable, MouseBlocker, TuiBase};
-use crate::utils::{strip_terminal_sequences, visible_width, word_segments};
+use crate::tui::{can_receive_keys, composite_tui_line, Component, CURSOR_MARKER, Focusable, MouseBlocker, TuiBase};
+use crate::utils::{slice_by_column, strip_terminal_sequences, truncate_to_width, visible_width, word_segments};
 
 /// A double/triple-click word-selection joiner set: fullscreen owns mouse selection and
 /// mirrors common terminal word-selection behavior by keeping paths and kebab-case tokens
@@ -71,6 +75,18 @@ struct ScrollbarDrag {
 
 const KITTY_IMAGE_BYTE_BUDGET: u64 = 64 * 1024 * 1024;
 
+const ENTER_ALT_SCREEN: &str = "\x1b[?1049h";
+const EXIT_ALT_SCREEN: &str = "\x1b[?1049l";
+const DISABLE_AUTOWRAP: &str = "\x1b[?7l";
+const ENABLE_AUTOWRAP: &str = "\x1b[?7h";
+const ENABLE_ALL_MOTION_MOUSE: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1004h\x1b[?1006h";
+const ENABLE_BUTTON_MOTION_MOUSE: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+const DISABLE_MOUSE: &str = "\x1b[?1006l\x1b[?1004l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+const BEGIN_SYNCHRONIZED_OUTPUT: &str = "\x1b[?2026h";
+const END_SYNCHRONIZED_OUTPUT: &str = "\x1b[?2026l";
+const DELETE_ALL_KITTY_IMAGES: &str = "\x1b_Ga=d,d=A,q=2\x1b\\";
+const DELETE_ALL_KITTY_PLACEMENTS: &str = "\x1b_Ga=d,d=a,q=2\x1b\\";
+
 struct CachedKittyImage {
     generation: u64,
     bytes: u64,
@@ -100,6 +116,15 @@ pub struct TuiAltScreen {
     kitty_image_cache: std::collections::HashMap<u32, CachedKittyImage>,
     kitty_image_cache_generation: u64,
     kitty_image_cache_bytes: u64,
+    alt_screen_active: bool,
+    previous_screen: Vec<String>,
+    previous_screen_width: usize,
+    previous_screen_height: usize,
+    last_document: Vec<String>,
+    full_redraw_count: u64,
+    image_protocol: ImageProtocol,
+    flashes: AltScreenFlashContainer,
+    scroll_to_end_indicator: Option<Rc<dyn Fn() -> String>>,
 }
 
 pub struct MouseTrackingSupport {
@@ -131,6 +156,15 @@ impl TuiAltScreen {
             kitty_image_cache: std::collections::HashMap::new(),
             kitty_image_cache_generation: 0,
             kitty_image_cache_bytes: 0,
+            alt_screen_active: false,
+            previous_screen: Vec::new(),
+            previous_screen_width: 0,
+            previous_screen_height: 0,
+            last_document: Vec::new(),
+            full_redraw_count: 0,
+            image_protocol: ImageProtocol::None,
+            flashes: AltScreenFlashContainer::new(),
+            scroll_to_end_indicator: None,
         }
     }
 
@@ -154,12 +188,27 @@ impl TuiAltScreen {
         terminal.write(if next { MouseTracking::ALL_MOTION } else { MouseTracking::DISABLE });
     }
 
-    pub fn before_terminal_stop(&mut self, terminal: &mut dyn Terminal) {
-        terminal.write(MouseTracking::DISABLE);
-        self.tracking_enabled = false;
+    /// senpi's `beforeTerminalStop`: close search, drop transient gesture state, and hand the
+    /// mouse/autowrap modes back before the alt screen is left.
+    pub fn before_terminal_stop(&mut self, terminal: &mut dyn Terminal, mouse_enabled: bool) {
+        if self.search_visible {
+            self.toggle_search(false);
+        }
         self.clear_text_selection();
-        self.stop_scrollbar_drag();
         self.stop_scrollbar_hover();
+        self.stop_scrollbar_drag();
+        self.flashes.dispose();
+        self.tracking_enabled = false;
+        if !self.alt_screen_active {
+            return;
+        }
+        terminal.write(&format!(
+            "{BEGIN_SYNCHRONIZED_OUTPUT}{}{}{ENABLE_AUTOWRAP}{END_SYNCHRONIZED_OUTPUT}",
+            self.delete_alt_screen_kitty_images(),
+            if mouse_enabled { DISABLE_MOUSE } else { "" }
+        ));
+        self.kitty_image_cache.clear();
+        self.kitty_image_cache_bytes = 0;
     }
 
     pub fn acquire_mouse_capture(&mut self, reason: impl Into<String>, support: &MouseTrackingSupport, terminal: &mut dyn Terminal) {
@@ -240,52 +289,389 @@ impl TuiAltScreen {
         None
     }
 
-    /// Renders the full alt-screen frame (senpi's `TuiAltScreen.doRender`, which fully
-    /// replaces `TuiBase.doRender` rather than calling `super.doRender()` - the alt screen
-    /// always issues a full non-differential redraw).
-    pub fn render_frame(&mut self, terminal: &mut dyn Terminal) -> Vec<String> {
+    /// senpi's `TuiAltScreen.doRender`, which fully replaces `TuiBase.doRender` rather than
+    /// calling `super.doRender()`: the alt screen always paints a whole viewport into the
+    /// alternate buffer and diffs it against the previous frame.
+    pub fn do_render(&mut self, terminal: &mut dyn Terminal) {
+        if self.base.state.borrow().stopped || !self.alt_screen_active {
+            return;
+        }
         let width = (terminal.columns() as usize).max(1);
         let height = (terminal.rows() as usize).max(1);
-
         let Some(root) = self.layout_root.clone() else {
             self.current_layout = None;
-            return vec![String::new(); height];
+            return;
         };
 
-        let frame = render_layout_frame(&root, width, height);
-        self.refresh_search(&frame.lines);
-        let mut lines = frame.lines.clone();
-
-        if let (Some(anchor), Some(focus)) = (self.selection_anchor, self.selection_focus) {
-            apply_selection_highlight(&mut lines, Selection { anchor, focus }, width);
+        let mut next_layout = render_layout_frame(&root, width, height);
+        if self.refresh_search(&next_layout.lines) {
+            next_layout = render_layout_frame(&root, width, height);
         }
 
-        if self.search_visible
-            && let Some(search) = self.search_component.clone()
-        {
-            let search_width = width.clamp(20, 60);
-            let search_lines = search.borrow_mut().render(search_width);
-            let start_col = width.saturating_sub(search_width).saturating_sub(1);
-            for (i, search_line) in search_lines.iter().enumerate() {
-                if let Some(line) = lines.get_mut(i) {
-                    *line = overlay_line(line, search_line, start_col, width);
+        let mut screen: Vec<String> = next_layout
+            .lines
+            .iter()
+            .map(|line| strip_osc133_zone_prefix(line).to_string())
+            .collect();
+        screen = self.apply_search_highlights(screen, &next_layout);
+        screen = self.composite_scroll_to_end_indicator(screen, &next_layout, width);
+        screen = self.base.composite_overlays(screen, terminal.columns(), terminal.rows());
+        if screen.len() > height {
+            let excess = screen.len() - height;
+            screen.drain(0..excess);
+        }
+        screen = self.apply_selection(screen, &next_layout);
+        screen = self.composite_search_overlay(screen, width);
+        screen = self.composite_flashes(screen, width, height);
+
+        let cursor_pos = self.base.extract_cursor_position(&mut screen, height);
+        screen = TuiBase::apply_line_reset_result(&mut self.base.state.borrow_mut(), &screen).lines;
+        screen = screen
+            .into_iter()
+            .map(|line| {
+                if image_stub::is_image_line(&line) || visible_width(&line) <= width {
+                    line
+                } else {
+                    slice_by_column(&line, 0, width, true)
                 }
+            })
+            .collect();
+
+        let full_redraw = self.previous_screen.is_empty()
+            || self.previous_screen_width != width
+            || self.previous_screen_height != height;
+        let images_need_redraw = screen.iter().enumerate().any(|(row, line)| {
+            let previous = self.previous_screen.get(row).map(String::as_str).unwrap_or("");
+            line != previous && (image_stub::is_image_line(line) || image_stub::is_image_line(previous))
+        });
+
+        let mut buffer = String::from(BEGIN_SYNCHRONIZED_OUTPUT);
+        if full_redraw {
+            self.full_redraw_count += 1;
+            let clear_images = if self.image_protocol == ImageProtocol::Kitty && !self.kitty_image_cache.is_empty() {
+                DELETE_ALL_KITTY_PLACEMENTS.to_string()
+            } else {
+                self.delete_alt_screen_kitty_images()
+            };
+            buffer.push_str(&clear_images);
+            buffer.push_str("\x1b[2J");
+        } else if images_need_redraw {
+            if self.image_protocol == ImageProtocol::Iterm2 {
+                buffer.push_str("\x1b[2J");
+            } else if self.image_protocol == ImageProtocol::Kitty {
+                buffer.push_str(DELETE_ALL_KITTY_PLACEMENTS);
             }
         }
 
-        while lines.len() < height {
-            lines.push(String::new());
+        for row in 0..height {
+            let line = screen.get(row).map(String::as_str).unwrap_or("");
+            let previous = self.previous_screen.get(row).map(String::as_str).unwrap_or("");
+            if !full_redraw && !images_need_redraw && line == previous {
+                continue;
+            }
+            buffer.push_str(&format!("\x1b[{};1H\x1b[2K{line}", row + 1));
         }
-        lines.truncate(height);
-        self.current_layout = Some(frame);
+
+        if let Some((row, col)) = cursor_pos {
+            buffer.push_str(&format!("\x1b[{};{}H", row + 1, col.min(width) + 1));
+            buffer.push_str(if self.base.get_show_hardware_cursor() { "\x1b[?25h" } else { "\x1b[?25l" });
+        } else {
+            buffer.push_str("\x1b[?25l");
+        }
+        buffer.push_str(END_SYNCHRONIZED_OUTPUT);
+        terminal.write(&buffer);
+
+        self.previous_screen = screen;
+        self.previous_screen_width = width;
+        self.previous_screen_height = height;
+        self.current_layout = Some(next_layout);
+    }
+
+    /// senpi's `beforeTerminalStart`: enter the alternate screen, disable autowrap, enable mouse
+    /// reporting, clear, and reset the diff state.
+    pub fn before_terminal_start(&mut self, terminal: &mut dyn Terminal, mouse_enabled: bool, multiplexer: bool) {
+        self.clear_text_selection();
+        self.stop_scrollbar_hover();
+        self.stop_scrollbar_drag();
+        self.flashes.dispose();
+        self.alt_screen_active = true;
+        self.image_protocol = image_stub::get_capabilities().images;
+        self.kitty_image_cache.clear();
+        self.kitty_image_cache_bytes = 0;
+        self.reset_render_state();
+        let mouse_sequence = if multiplexer { ENABLE_BUTTON_MOTION_MOUSE } else { ENABLE_ALL_MOTION_MOUSE };
+        terminal.write(&format!(
+            "{ENTER_ALT_SCREEN}{DISABLE_AUTOWRAP}{}\x1b[2J\x1b[H\x1b[?25l",
+            if mouse_enabled { mouse_sequence } else { "" }
+        ));
+    }
+
+    /// senpi's `afterTerminalStop`: leave the alternate screen, either keeping the alt frame on
+    /// screen or repainting the alt document into the main screen's scrollback.
+    pub fn after_terminal_stop(&mut self, terminal: &mut dyn Terminal, preserve_screen: bool) {
+        if !self.alt_screen_active {
+            return;
+        }
+        self.alt_screen_active = false;
+        if preserve_screen {
+            terminal.write(&format!("{BEGIN_SYNCHRONIZED_OUTPUT}{EXIT_ALT_SCREEN}\x1b[?25h{END_SYNCHRONIZED_OUTPUT}"));
+            return;
+        }
+        let width = (terminal.columns() as usize).max(1);
+        let document_lines: Vec<String> = self
+            .base
+            .render_mounted(width)
+            .iter()
+            .map(|line| strip_osc133_zone_prefix(line).to_string())
+            .collect();
+        let without_cursor: Vec<String> = document_lines.iter().map(|line| line.replace(CURSOR_MARKER, "")).collect();
+        let normalized = TuiBase::apply_line_reset_result(&mut self.base.state.borrow_mut(), &without_cursor).lines;
+        self.last_document = normalized
+            .into_iter()
+            .map(|line| {
+                if image_stub::is_image_line(&line) || visible_width(&line) <= width {
+                    line
+                } else {
+                    slice_by_column(&line, 0, width, true)
+                }
+            })
+            .collect();
+        let mut buffer = format!("{BEGIN_SYNCHRONIZED_OUTPUT}{EXIT_ALT_SCREEN}{DISABLE_AUTOWRAP}");
+        for (row, line) in self.last_document.iter().enumerate() {
+            if row > 0 {
+                buffer.push_str("\r\n");
+            }
+            buffer.push_str(&format!("\r\x1b[2K{line}"));
+        }
+        buffer.push_str(&format!("\x1b[0m{ENABLE_AUTOWRAP}\r\n\x1b[?25h{END_SYNCHRONIZED_OUTPUT}"));
+        terminal.write(&buffer);
+    }
+
+    pub fn full_redraws(&self) -> u64 {
+        self.full_redraw_count
+    }
+
+    pub fn is_alt_screen_active(&self) -> bool {
+        self.alt_screen_active
+    }
+
+    pub fn set_image_protocol(&mut self, protocol: ImageProtocol) {
+        self.image_protocol = protocol;
+    }
+
+    pub fn set_scroll_to_end_indicator(&mut self, indicator: Option<Rc<dyn Fn() -> String>>) {
+        self.scroll_to_end_indicator = indicator;
+    }
+
+    pub fn flashes_mut(&mut self) -> &mut AltScreenFlashContainer {
+        &mut self.flashes
+    }
+
+    /// senpi's `resetRenderState`.
+    pub fn reset_render_state(&mut self) {
+        self.previous_screen.clear();
+        self.previous_screen_width = 0;
+        self.previous_screen_height = 0;
+        self.current_layout = None;
+    }
+
+    fn delete_alt_screen_kitty_images(&self) -> String {
+        if self.image_protocol == ImageProtocol::Kitty {
+            DELETE_ALL_KITTY_IMAGES.to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    fn apply_search_text_highlight(&self, text: &str, current: bool) -> String {
+        if current {
+            format!("\x1b[1;7m{text}\x1b[22;27m")
+        } else {
+            format!("\x1b[4m{text}\x1b[24m")
+        }
+    }
+
+    /// senpi's `applySearchHighlights`: underline every visible match and reverse the current one.
+    fn apply_search_highlights(&mut self, screen: Vec<String>, layout: &LayoutFrame) -> Vec<String> {
+        if !self.search_visible || self.search_selected_index < 0 || self.search_matches.is_empty() {
+            return screen;
+        }
+        let Some(scroll_view) = layout.primary_scroll_view.clone() else {
+            return screen;
+        };
+        let Some(boxed) = get_scroll_view_box(layout, &scroll_view) else {
+            return screen;
+        };
+        let scroll_top = scroll_view.borrow().scroll_top();
+        let scrollbar_column = get_scrollbar_geometry(boxed, true).map(|geometry| geometry.column);
+        let min_row = boxed.rect.y.max(boxed.clip.y).max(0);
+        let max_row = (boxed.rect.y + boxed.rect.height as i64)
+            .min(boxed.clip.y + boxed.clip.height as i64)
+            .min(screen.len() as i64);
+        let min_column = boxed.rect.x.max(boxed.clip.x).max(0);
+        let max_column = (boxed.rect.x + boxed.rect.width as i64)
+            .min(boxed.clip.x + boxed.clip.width as i64)
+            .min(scrollbar_column.unwrap_or(i64::MAX));
+
+        let mut ranges_by_row: Vec<(usize, Vec<(usize, usize, bool)>)> = Vec::new();
+        for (match_index, search_match) in self.search_matches.iter().enumerate() {
+            for segment in &search_match.segments {
+                let row = boxed.rect.y + segment.row as i64 - scroll_top as i64;
+                if row < min_row || row >= max_row {
+                    continue;
+                }
+                let start_col = min_column.max(boxed.rect.x + segment.start_col as i64);
+                let end_col = max_column.min(boxed.rect.x + segment.end_col as i64);
+                if end_col <= start_col {
+                    continue;
+                }
+                let row = row as usize;
+                let entry = match ranges_by_row.iter_mut().find(|(candidate, _)| *candidate == row) {
+                    Some((_, ranges)) => ranges,
+                    None => {
+                        ranges_by_row.push((row, Vec::new()));
+                        &mut ranges_by_row.last_mut().expect("just pushed").1
+                    }
+                };
+                entry.push((start_col as usize, end_col as usize, match_index == self.search_selected_index as usize));
+            }
+        }
+
+        let mut result = screen;
+        for (row, mut ranges) in ranges_by_row {
+            let Some(line) = result.get(row).cloned() else {
+                continue;
+            };
+            if image_stub::is_image_line(&line) {
+                continue;
+            }
+            let line_width = visible_width(&line);
+            let mut line = line;
+            ranges.sort_by(|a, b| b.0.cmp(&a.0));
+            for (start_col, end_col, current) in ranges {
+                let start_col = start_col.min(line_width);
+                let end_col = end_col.min(line_width);
+                if end_col <= start_col {
+                    continue;
+                }
+                let before = slice_by_column(&line, 0, start_col, true);
+                let highlighted = slice_by_column(&line, start_col, end_col - start_col, true);
+                let after = slice_by_column(&line, end_col, line_width.saturating_sub(end_col), true);
+                line = format!("{before}{}{after}", self.apply_search_text_highlight(&highlighted, current));
+            }
+            result[row] = line;
+        }
+        result
+    }
+
+    /// senpi's `compositeScrollToEndIndicator`.
+    fn composite_scroll_to_end_indicator(&mut self, screen: Vec<String>, layout: &LayoutFrame, width: usize) -> Vec<String> {
+        let Some(indicator) = self.scroll_to_end_indicator.clone() else {
+            return screen;
+        };
+        let Some(scroll_view) = layout.primary_scroll_view.clone() else {
+            return screen;
+        };
+        if !scroll_view.borrow().follows_end() || scroll_view.borrow().is_following_end() {
+            return screen;
+        }
+        let Some(boxed) = get_scroll_view_box(layout, &scroll_view) else {
+            return screen;
+        };
+        let clip = boxed.clip;
+        if clip.width == 0 || clip.height == 0 {
+            return screen;
+        }
+        let row = clip.y + clip.height as i64 - 1;
+        if row < 0 || row as usize >= screen.len() || image_stub::is_image_line(&screen[row as usize]) {
+            return screen;
+        }
+        let scrollbar_column = get_scrollbar_geometry(boxed, true).map(|geometry| geometry.column);
+        let available_width = ((scrollbar_column.unwrap_or(clip.x + clip.width as i64)) - clip.x).max(0) as usize;
+        let text = truncate_to_width(&indicator(), available_width, "", false);
+        let text_width = visible_width(&text);
+        if text_width == 0 {
+            return screen;
+        }
+        let column = clip.x + ((available_width.saturating_sub(text_width)) / 2) as i64;
+        let mut result = screen;
+        let base = result[row as usize].clone();
+        result[row as usize] = composite_tui_line(&base, &text, column.max(0) as usize, text_width, width);
+        result
+    }
+
+    /// senpi's `compositeFlashes`.
+    fn composite_flashes(&mut self, screen: Vec<String>, width: usize, height: usize) -> Vec<String> {
+        let rendered = self.flashes.render(width);
+        let flash_lines: Vec<String> = if rendered.len() > height {
+            rendered[rendered.len() - height..].to_vec()
+        } else {
+            rendered
+        };
+        if flash_lines.is_empty() {
+            return screen;
+        }
+        let mut result = screen;
+        while result.len() < height {
+            result.push(String::new());
+        }
+        for (row, line) in flash_lines.iter().enumerate() {
+            let flash_width = visible_width(line);
+            if flash_width == 0 {
+                continue;
+            }
+            let base = result.get(row).cloned().unwrap_or_default();
+            result[row] = composite_tui_line(&base, line, width.saturating_sub(flash_width), flash_width, width);
+        }
+        result
+    }
+
+    /// senpi's `applySelection`. The scroll-view-anchored mapping senpi performs when the
+    /// selection started inside a scroll view is not representable in this port's `Selection`
+    /// type (it carries no scroll-view reference); see `parity.d/7.md`.
+    fn apply_selection(&mut self, screen: Vec<String>, _layout: &LayoutFrame) -> Vec<String> {
+        let (Some(anchor), Some(focus)) = (self.selection_anchor, self.selection_focus) else {
+            return screen;
+        };
+        let mut lines = screen;
+        let width = self.current_layout.as_ref().map(|layout| layout.width).unwrap_or(0);
+        apply_selection_highlight(&mut lines, Selection { anchor, focus }, width);
         lines
     }
 
-    fn refresh_search(&mut self, lines: &[String]) {
+    /// senpi shows the find bar through `showOverlay`; this port composites the injected
+    /// `AltScreenSearchComponent` into the top-right corner directly (documented deviation in
+    /// `parity.d/7.md`).
+    fn composite_search_overlay(&mut self, screen: Vec<String>, width: usize) -> Vec<String> {
         if !self.search_visible {
-            return;
+            return screen;
         }
-        self.search_matches = find_alt_screen_search_matches(lines, &self.search_query);
+        let Some(search) = self.search_component.clone() else {
+            return screen;
+        };
+        let search_width = width.clamp(20, 60);
+        let search_lines = search.borrow_mut().render(search_width);
+        let start_col = width.saturating_sub(search_width).saturating_sub(1);
+        let mut lines = screen;
+        for (i, search_line) in search_lines.iter().enumerate() {
+            if let Some(line) = lines.get_mut(i) {
+                *line = overlay_line(line, search_line, start_col, width);
+            }
+        }
+        lines
+    }
+
+    fn refresh_search(&mut self, lines: &[String]) -> bool {
+        if !self.search_visible {
+            return false;
+        }
+        let matches = find_alt_screen_search_matches(lines, &self.search_query);
+        let changed = matches.len() != self.search_matches.len()
+            || matches
+                .iter()
+                .zip(self.search_matches.iter())
+                .any(|(next, previous)| get_alt_screen_search_match_key(next) != get_alt_screen_search_match_key(previous));
+        self.search_matches = matches;
         if self.search_matches.is_empty() {
             self.search_selected_index = -1;
         } else if self.search_selected_index < 0 || self.search_selected_index as usize >= self.search_matches.len() {
@@ -294,6 +680,7 @@ impl TuiAltScreen {
         if let Some(search) = &self.search_component {
             search.borrow_mut().set_result(self.search_selected_index, self.search_matches.len());
         }
+        changed
     }
 
     /// Registered via `TuiBase::add_input_listener` (senpi's `handleMouseInput`).
