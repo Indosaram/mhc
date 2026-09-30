@@ -32,11 +32,9 @@ fn in_place_normalizing_tool() -> AgentTool {
         }
         args
     });
-    let execute: Arc<
-        dyn Fn(String, Value, Option<maho_ai::utils::abort::AbortSignal>, Option<maho_agent::AgentToolUpdateCallback>) -> maho_ai::types::BoxFuture<'static, maho_agent::AgentToolResult>
-            + Send
-            + Sync,
-    > = Arc::new(|_id, _args, _signal, _on_update| Box::pin(async { maho_agent::AgentToolResult::text("") }));
+    let execute: support::ToolExecuteFn = Arc::new(|_id, _args, _signal, _on_update| {
+        Box::pin(async { maho_agent::AgentToolResult::text("") })
+    });
     AgentTool {
         label: "In-place normalizer".to_owned(),
         prepare_arguments: Some(shim),

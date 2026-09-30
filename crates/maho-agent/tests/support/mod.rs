@@ -21,6 +21,14 @@ use maho_ai::utils::abort::AbortSignal;
 use maho_ai::utils::event_stream::AssistantMessageEventStream;
 use serde_json::{Value, json};
 
+pub type ToolExecuteFn = Arc<
+    dyn Fn(String, Value, Option<AbortSignal>, Option<AgentToolUpdateCallback>) -> BoxFuture<'static, AgentToolResult>
+        + Send
+        + Sync,
+>;
+
+pub type RecordedCalls = Arc<Mutex<Vec<(Model, Context, Option<AgentStreamOptions>)>>>;
+
 pub fn test_model() -> Model {
     Model {
         id: "mock".to_owned(),
@@ -86,11 +94,7 @@ pub fn assistant_with(
 
 /// A tool that returns `result` verbatim, recording nothing.
 pub fn result_tool(name: &str, result: AgentToolResult) -> AgentTool {
-    let execute: Arc<
-        dyn Fn(String, Value, Option<AbortSignal>, Option<AgentToolUpdateCallback>) -> BoxFuture<'static, AgentToolResult>
-            + Send
-            + Sync,
-    > = Arc::new(move |_id, _args, _signal, _on_update| {
+    let execute: ToolExecuteFn = Arc::new(move |_id, _args, _signal, _on_update| {
         let result = result.clone();
         Box::pin(async move { result })
     });
@@ -114,11 +118,7 @@ pub fn result_tool(name: &str, result: AgentToolResult) -> AgentTool {
 pub fn counting_result_tool(name: &str, result: AgentToolResult) -> (AgentTool, Arc<std::sync::atomic::AtomicUsize>) {
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter = Arc::clone(&calls);
-    let execute: Arc<
-        dyn Fn(String, Value, Option<AbortSignal>, Option<AgentToolUpdateCallback>) -> BoxFuture<'static, AgentToolResult>
-            + Send
-            + Sync,
-    > = Arc::new(move |_id, _args, _signal, _on_update| {
+    let execute: ToolExecuteFn = Arc::new(move |_id, _args, _signal, _on_update| {
         counter.fetch_add(1, Ordering::SeqCst);
         let result = result.clone();
         Box::pin(async move { result })
@@ -195,7 +195,7 @@ pub fn scripted_stream_fn(messages: Vec<AssistantMessage>) -> StreamFn {
 
 /// Records every call's `(model, context, options)` and returns the next scripted message.
 pub struct RecordingStreamFn {
-    calls: Arc<Mutex<Vec<(Model, Context, Option<AgentStreamOptions>)>>>,
+    calls: RecordedCalls,
     stream: StreamFn,
 }
 
@@ -244,11 +244,7 @@ pub fn recording_tool(name: &str) -> (AgentTool, Arc<Mutex<Vec<Value>>>) {
     let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
     let tool_name = name.to_owned();
-    let execute: Arc<
-        dyn Fn(String, Value, Option<AbortSignal>, Option<AgentToolUpdateCallback>) -> BoxFuture<'static, AgentToolResult>
-            + Send
-            + Sync,
-    > = Arc::new(move |_id, args, _signal, _on_update| {
+    let execute: ToolExecuteFn = Arc::new(move |_id, args, _signal, _on_update| {
         sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(args.clone());
         let text = format!("{tool_name}:{}", args.get("city").and_then(Value::as_str).unwrap_or(""));
         Box::pin(async move { AgentToolResult::text(text) })

@@ -179,12 +179,11 @@ async fn keeps_started_at_stable_across_thinking_updates() {
     let started_ats: Vec<i64> = events
         .iter()
         .filter_map(|event| match event {
-            AgentEvent::MessageUpdate { message, assistant_message_event } => match assistant_message_event {
-                AssistantMessageEvent::ThinkingStart { .. }
-                | AssistantMessageEvent::ThinkingDelta { .. }
-                | AssistantMessageEvent::ThinkingEnd { .. } => thinking_block(message, 0).started_at,
-                _ => None,
-            },
+            AgentEvent::MessageUpdate { message, assistant_message_event: AssistantMessageEvent::ThinkingStart { .. } }
+            | AgentEvent::MessageUpdate { message, assistant_message_event: AssistantMessageEvent::ThinkingDelta { .. } }
+            | AgentEvent::MessageUpdate { message, assistant_message_event: AssistantMessageEvent::ThinkingEnd { .. } } => {
+                thinking_block(message, 0).started_at
+            }
             _ => None,
         })
         .collect();
