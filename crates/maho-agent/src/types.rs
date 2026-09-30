@@ -292,6 +292,10 @@ pub fn identity_convert_to_llm() -> ConvertToLlm {
 pub enum CustomAgentMessage {}
 
 /// AgentMessage: union of LLM messages + custom messages.
+///
+/// The size gap between the arms comes from the declaration-merged custom union being empty here;
+/// boxing the LLM arm would put an indirection the TS union does not have on every message.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AgentMessage {
@@ -493,6 +497,10 @@ pub struct AgentContext {
 }
 
 /// Events emitted by the Agent for UI updates.
+///
+/// One flat discriminated union, as in TS; boxing the streaming arm's message would change the
+/// public event shape every consumer matches on.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
 pub enum AgentEvent {

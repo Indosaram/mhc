@@ -588,7 +588,6 @@ impl Agent {
     async fn run_prompt_messages(&self, messages: Vec<AgentMessage>, options: PromptRunOptions) {
         self.run_with_lifecycle(|signal| {
             let messages = messages.clone();
-            let options = options;
             async move {
                 let context = self.create_context_snapshot();
                 let config = self.create_loop_config(options);
@@ -1093,6 +1092,10 @@ impl Agent {
 }
 
 /// `Agent.prompt(input)` accepts text (+images), a single message, or a batch.
+///
+/// The union mirrors the TS overloads; the variants differ in size only because a batch carries a
+/// `Vec`, so the enum keeps the TS shape instead of boxing one arm.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
 pub enum AgentPromptInput {
     Text { text: String, images: Vec<ImageContent> },

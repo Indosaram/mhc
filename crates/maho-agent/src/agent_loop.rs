@@ -391,11 +391,10 @@ async fn run_loop(
                 }
             }
             if signal.as_ref().is_some_and(AbortSignal::aborted) {
-                if drained_terminating_queue.is_some() {
-                    if let Some(restore) = config.restore_pending_messages.as_ref() {
-                        let queue = drained_terminating_queue.unwrap_or(PendingQueue::Steering);
-                        restore(queue, pending_messages.clone()).await;
-                    }
+                if let Some(queue) = drained_terminating_queue
+                    && let Some(restore) = config.restore_pending_messages.as_ref()
+                {
+                    restore(queue, pending_messages.clone()).await;
                 }
                 send(&emit, AgentEvent::AgentEnd { messages: new_messages.clone() }).await;
                 return;
