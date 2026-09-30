@@ -852,13 +852,31 @@ impl AssistantEventReader {
         let use_start_bound = !self.saw_first_event && self.start_timeout_ms.is_some();
         let read_timeout_ms = if use_start_bound { self.start_timeout_ms } else { self.idle_timeout_ms };
         let result = match read_timeout_ms {
-            None => self.stream.next().await.map_err(stream_error),
             Some(timeout_ms) => self.read_with_timeout(timeout_ms).await,
+            None => self.read_without_timeout().await,
         }?;
         if result.is_some() {
             self.saw_first_event = true;
         }
         Ok(result)
+    }
+
+    /// With no idle bound the read still races the abort signal, exactly as
+    /// `readNextAssistantEvent` does whenever an abort promise exists: aborting mid-stream must
+    /// tear the request down instead of waiting forever for a provider event that never comes.
+    async fn read_without_timeout(&mut self) -> Result<Option<AssistantMessageEvent>, AgentStreamError> {
+        let signal = self.signal.clone();
+        let abort_future = async move {
+            match signal {
+                Some(signal) => signal.cancelled().await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::select! {
+            biased;
+            _ = abort_future => Err(abort_error(self.signal.as_ref())),
+            result = self.stream.next() => result.map_err(stream_error),
+        }
     }
 
     async fn read_with_timeout(
