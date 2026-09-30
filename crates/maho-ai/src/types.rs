@@ -638,7 +638,7 @@ pub enum AbortSource {
     Provider,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssistantMessage {
     pub content: Vec<ContentBlock>,
@@ -668,6 +668,49 @@ pub struct AssistantMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_turn: Option<bool>,
     pub timestamp: i64,
+}
+
+/// Writes a field only when the TS optional is present (senpi omits an absent key rather than
+/// serializing `null`).
+fn serialize_optional<S: serde::ser::SerializeStruct, T: Serialize + ?Sized>(
+    state: &mut S,
+    key: &'static str,
+    value: Option<&T>,
+) -> Result<(), S::Error> {
+    match value {
+        Some(value) => state.serialize_field(key, value),
+        None => Ok(()),
+    }
+}
+
+/// senpi's `AssistantMessage` carries the literal `role: "assistant"` first, and the providers
+/// attach the optional fields as they learn them; the recorded order (role, content, api, provider,
+/// model, usage, stopReason, timestamp, then the optionals) is reproduced here so a serialized
+/// message matches the TS object key for key.
+impl Serialize for AssistantMessage {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("AssistantMessage", 18)?;
+        state.serialize_field("role", "assistant")?;
+        state.serialize_field("content", &self.content)?;
+        state.serialize_field("api", &self.api)?;
+        state.serialize_field("provider", &self.provider)?;
+        state.serialize_field("model", &self.model)?;
+        state.serialize_field("usage", &self.usage)?;
+        state.serialize_field("stopReason", &self.stop_reason)?;
+        state.serialize_field("timestamp", &self.timestamp)?;
+        serialize_optional(&mut state, "responseId", self.response_id.as_ref())?;
+        serialize_optional(&mut state, "rawStopReason", self.raw_stop_reason.as_ref())?;
+        serialize_optional(&mut state, "providerThinkingLevel", self.provider_thinking_level.as_ref())?;
+        serialize_optional(&mut state, "errorMessage", self.error_message.as_ref())?;
+        serialize_optional(&mut state, "stopDetails", self.stop_details.as_ref())?;
+        serialize_optional(&mut state, "abortSource", self.abort_source.as_ref())?;
+        serialize_optional(&mut state, "endTurn", self.end_turn.as_ref())?;
+        serialize_optional(&mut state, "responseModel", self.response_model.as_ref())?;
+        serialize_optional(&mut state, "diagnostics", self.diagnostics.as_ref())?;
+        serialize_optional(&mut state, "deferred", self.deferred.as_ref())?;
+        state.end()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

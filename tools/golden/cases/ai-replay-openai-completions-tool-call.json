@@ -1,0 +1,31 @@
+{
+	"name": "ai-replay-openai-completions-tool-call",
+	"kind": "ai-replay",
+	"api": "openai-completions",
+	"model": {
+		"id": "gpt-4o-mini",
+		"name": "gpt-4o-mini",
+		"provider": "test-replay",
+		"reasoning": false,
+		"input": ["text"],
+		"cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+		"contextWindow": 128000,
+		"maxTokens": 4096
+	},
+	"context": {
+		"messages": [{ "role": "user", "content": "Echo ok", "timestamp": 0 }],
+		"tools": [
+			{ "name": "echo", "description": "Echo text", "parameters": { "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"] } }
+		]
+	},
+	"options": { "apiKey": "test", "maxRetries": 0 },
+	"fixture": {
+		"headers": { "content-type": "text/event-stream" },
+		"events": [
+			{ "data": "{\"id\":\"chatcmpl-tool\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"echo\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}" },
+			{ "data": "{\"id\":\"chatcmpl-tool\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"text\\\":\\\"ok\\\"}\"}}]},\"finish_reason\":null}]}" },
+			{ "data": "{\"id\":\"chatcmpl-tool\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":6,\"completion_tokens\":4,\"total_tokens\":10}}" },
+			{ "data": "[DONE]" }
+		]
+	}
+}

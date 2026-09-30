@@ -1,0 +1,174 @@
+[
+	{
+		"type": "start",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "Hello",
+					"textSignature": "{\"v\":1,\"id\":\"msg_1\"}"
+				}
+			],
+			"api": "openai-responses",
+			"provider": "test-replay",
+			"model": "gpt-5",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0
+		}
+	},
+	{
+		"type": "text_start",
+		"contentIndex": 0,
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "Hello",
+					"textSignature": "{\"v\":1,\"id\":\"msg_1\"}"
+				}
+			],
+			"api": "openai-responses",
+			"provider": "test-replay",
+			"model": "gpt-5",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "resp_basic"
+		}
+	},
+	{
+		"type": "text_delta",
+		"contentIndex": 0,
+		"delta": "Hello",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "Hello",
+					"textSignature": "{\"v\":1,\"id\":\"msg_1\"}"
+				}
+			],
+			"api": "openai-responses",
+			"provider": "test-replay",
+			"model": "gpt-5",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "resp_basic"
+		}
+	},
+	{
+		"type": "text_end",
+		"contentIndex": 0,
+		"content": "Hello",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "Hello",
+					"textSignature": "{\"v\":1,\"id\":\"msg_1\"}"
+				}
+			],
+			"api": "openai-responses",
+			"provider": "test-replay",
+			"model": "gpt-5",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "resp_basic"
+		}
+	},
+	{
+		"type": "done",
+		"reason": "stop",
+		"message": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "Hello",
+					"textSignature": "{\"v\":1,\"id\":\"msg_1\"}"
+				}
+			],
+			"api": "openai-responses",
+			"provider": "test-replay",
+			"model": "gpt-5",
+			"usage": {
+				"input": 5,
+				"output": 3,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"reasoning": 0,
+				"totalTokens": 8,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "stop",
+			"timestamp": 0,
+			"responseId": "resp_basic",
+			"rawStopReason": "completed"
+		}
+	}
+]
