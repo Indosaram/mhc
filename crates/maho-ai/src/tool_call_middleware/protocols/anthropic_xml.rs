@@ -15,3 +15,7 @@ pub mod stream;
 pub mod stream_boundary;
 pub mod tool_resolver;
 pub mod xml_entities;
+
+pub use format::{anthropic_xml_format_tool_call, anthropic_xml_format_tool_response, anthropic_xml_format_tools_system_prompt};
+pub use parse::parse_anthropic_xml_generated_text;
+pub use stream::create_anthropic_xml_stream_parser;
