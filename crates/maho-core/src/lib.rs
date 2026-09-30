@@ -30,6 +30,7 @@ pub mod messages;
 pub mod nearest_parent_config;
 pub mod paths;
 pub mod session_manager;
+pub mod settings_manager;
 pub mod session_resident_store;
 pub mod trust_manager;
 pub mod text;
@@ -41,6 +42,7 @@ pub use messages::{
     BRANCH_SUMMARY_PREFIX, BRANCH_SUMMARY_SUFFIX, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX,
     convert_to_llm, convert_to_llm_for_transport, elide_old_images,
 };
+pub use settings_manager::{Settings, SettingsManager, SettingsScope, parse_settings_json};
 pub use session_resident_store::{RESIDENT_STRING_PREFIX, ResidentStringStore, ResidentStringStoreOptions, ResidentStoreStats};
 pub use trust_manager::{ProjectTrustDecision, ProjectTrustStore, ProjectTrustUpdate};
 pub use session_manager::{
