@@ -19,6 +19,7 @@
 
 pub mod brand;
 pub mod config;
+pub mod credential_pool;
 pub mod defaults;
 pub mod diagnostics;
 pub mod event_bus;
