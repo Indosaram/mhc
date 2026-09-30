@@ -23,7 +23,7 @@ impl SourceScope {
         }
     }
 
-    pub fn from_str(value: &str) -> Option<Self> {
+    pub fn parse(value: &str) -> Option<Self> {
         match value {
             "user" => Some(Self::User),
             "project" => Some(Self::Project),
@@ -51,7 +51,7 @@ impl SourceOrigin {
         }
     }
 
-    pub fn from_str(value: &str) -> Option<Self> {
+    pub fn parse(value: &str) -> Option<Self> {
         match value {
             "package" => Some(Self::Package),
             "top-level" => Some(Self::TopLevel),
@@ -148,10 +148,10 @@ mod tests {
     #[test]
     fn scope_and_origin_round_trip_through_their_wire_spellings() {
         for scope in [SourceScope::User, SourceScope::Project, SourceScope::Temporary, SourceScope::System] {
-            assert_eq!(SourceScope::from_str(scope.as_str()), Some(scope));
+            assert_eq!(SourceScope::parse(scope.as_str()), Some(scope));
         }
         for origin in [SourceOrigin::Package, SourceOrigin::TopLevel] {
-            assert_eq!(SourceOrigin::from_str(origin.as_str()), Some(origin));
+            assert_eq!(SourceOrigin::parse(origin.as_str()), Some(origin));
         }
     }
 }
