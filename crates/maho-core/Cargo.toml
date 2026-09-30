@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 maho-ai = { path = "../maho-ai" }
 maho-agent = { path = "../maho-agent" }
+maho-tui = { path = "../maho-tui" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror = { workspace = true }
@@ -19,6 +20,8 @@ tokio = { workspace = true, features = ["fs", "sync", "time", "macros", "rt", "i
 regex = { workspace = true }
 futures = { workspace = true }
 indexmap = { workspace = true }
+serde_yaml = "=0.9.34"
+ignore = "=0.4.33"
 
 [dev-dependencies]
 tempfile = { workspace = true }

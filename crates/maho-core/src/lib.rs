@@ -27,16 +27,21 @@ pub mod defaults;
 pub mod diagnostics;
 pub mod event_bus;
 pub mod exec;
+pub mod frontmatter;
+pub mod keybindings;
 pub mod lockfile_policy;
 pub mod messages;
 pub mod nearest_parent_config;
 pub mod output_guard;
+pub mod package_manager;
 pub mod paths;
+pub mod prompt_templates;
 pub mod resolve_config_value;
 pub mod session_manager;
 pub mod session_resident_store;
 pub mod session_title_generator;
 pub mod settings_manager;
+pub mod source_info;
 pub mod text;
 pub mod trust_manager;
 
@@ -68,5 +73,13 @@ pub use session_resident_store::{
     RESIDENT_STRING_PREFIX, ResidentStringStore, ResidentStringStoreOptions, ResidentStoreStats,
 };
 pub use session_title_generator::{humanize_provider_error, parse_session_title, should_skip_session_title};
+pub use prompt_templates::{
+    LoadPromptTemplatesOptions, PromptTemplate, PromptTemplateExpansion, expand_prompt_template,
+    expand_prompt_template_with_metadata, load_prompt_templates, parse_command_args, substitute_args,
+};
+pub use source_info::{
+    SourceInfo, SourceOrigin, SourceScope, SyntheticSourceInfoOptions, create_source_info,
+    create_synthetic_source_info,
+};
 pub use settings_manager::{Settings, SettingsManager, SettingsScope, parse_settings_json};
 pub use trust_manager::{ProjectTrustDecision, ProjectTrustStore, ProjectTrustUpdate};
