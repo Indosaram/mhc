@@ -8,3 +8,7 @@ pub mod recovery_stream;
 pub mod stream;
 pub mod thinking_recovery;
 pub mod thinking_recovery_stream;
+
+pub use format::{kimi_xtml_format_tool_call, kimi_xtml_format_tool_response, kimi_xtml_format_tools_system_prompt};
+pub use parse::parse_kimi_xtml_generated_text;
+pub use stream::create_kimi_xtml_stream_parser;

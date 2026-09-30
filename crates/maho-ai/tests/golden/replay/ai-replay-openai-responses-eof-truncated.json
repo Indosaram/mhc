@@ -1,0 +1,425 @@
+[
+	{
+		"type": "start",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "call_lookup|fc_lookup",
+					"name": "lookup",
+					"arguments": {
+						"value": "hello"
+					}
+				},
+				{
+					"type": "toolCall",
+					"id": "call_search|fc_search",
+					"name": "search",
+					"arguments": {
+						"q": "x"
+					}
+				}
+			],
+			"api": "openai-responses",
+			"provider": "test-replay",
+			"model": "gpt-5",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0
+		}
+	},
+	{
+		"type": "toolcall_start",
+		"contentIndex": 0,
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "call_lookup|fc_lookup",
+					"name": "lookup",
+					"arguments": {
+						"value": "hello"
+					}
+				},
+				{
+					"type": "toolCall",
+					"id": "call_search|fc_search",
+					"name": "search",
+					"arguments": {
+						"q": "x"
+					}
+				}
+			],
+			"api": "openai-responses",
+			"provider": "test-replay",
+			"model": "gpt-5",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "resp_tools"
+		}
+	},
+	{
+		"type": "toolcall_delta",
+		"contentIndex": 0,
+		"delta": "{\"value\":",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "call_lookup|fc_lookup",
+					"name": "lookup",
+					"arguments": {
+						"value": "hello"
+					}
+				},
+				{
+					"type": "toolCall",
+					"id": "call_search|fc_search",
+					"name": "search",
+					"arguments": {
+						"q": "x"
+					}
+				}
+			],
+			"api": "openai-responses",
+			"provider": "test-replay",
+			"model": "gpt-5",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "resp_tools"
+		}
+	},
+	{
+		"type": "toolcall_delta",
+		"contentIndex": 0,
+		"delta": "\"hello\"}",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "call_lookup|fc_lookup",
+					"name": "lookup",
+					"arguments": {
+						"value": "hello"
+					}
+				},
+				{
+					"type": "toolCall",
+					"id": "call_search|fc_search",
+					"name": "search",
+					"arguments": {
+						"q": "x"
+					}
+				}
+			],
+			"api": "openai-responses",
+			"provider": "test-replay",
+			"model": "gpt-5",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "resp_tools"
+		}
+	},
+	{
+		"type": "toolcall_end",
+		"contentIndex": 0,
+		"toolCall": {
+			"type": "toolCall",
+			"id": "call_lookup|fc_lookup",
+			"name": "lookup",
+			"arguments": {
+				"value": "hello"
+			}
+		},
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "call_lookup|fc_lookup",
+					"name": "lookup",
+					"arguments": {
+						"value": "hello"
+					}
+				},
+				{
+					"type": "toolCall",
+					"id": "call_search|fc_search",
+					"name": "search",
+					"arguments": {
+						"q": "x"
+					}
+				}
+			],
+			"api": "openai-responses",
+			"provider": "test-replay",
+			"model": "gpt-5",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "resp_tools"
+		}
+	},
+	{
+		"type": "toolcall_start",
+		"contentIndex": 1,
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "call_lookup|fc_lookup",
+					"name": "lookup",
+					"arguments": {
+						"value": "hello"
+					}
+				},
+				{
+					"type": "toolCall",
+					"id": "call_search|fc_search",
+					"name": "search",
+					"arguments": {
+						"q": "x"
+					}
+				}
+			],
+			"api": "openai-responses",
+			"provider": "test-replay",
+			"model": "gpt-5",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "resp_tools"
+		}
+	},
+	{
+		"type": "toolcall_delta",
+		"contentIndex": 1,
+		"delta": "{\"q\":\"x\"}",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "call_lookup|fc_lookup",
+					"name": "lookup",
+					"arguments": {
+						"value": "hello"
+					}
+				},
+				{
+					"type": "toolCall",
+					"id": "call_search|fc_search",
+					"name": "search",
+					"arguments": {
+						"q": "x"
+					}
+				}
+			],
+			"api": "openai-responses",
+			"provider": "test-replay",
+			"model": "gpt-5",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "resp_tools"
+		}
+	},
+	{
+		"type": "toolcall_end",
+		"contentIndex": 1,
+		"toolCall": {
+			"type": "toolCall",
+			"id": "call_search|fc_search",
+			"name": "search",
+			"arguments": {
+				"q": "x"
+			}
+		},
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "call_lookup|fc_lookup",
+					"name": "lookup",
+					"arguments": {
+						"value": "hello"
+					}
+				},
+				{
+					"type": "toolCall",
+					"id": "call_search|fc_search",
+					"name": "search",
+					"arguments": {
+						"q": "x"
+					}
+				}
+			],
+			"api": "openai-responses",
+			"provider": "test-replay",
+			"model": "gpt-5",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "resp_tools"
+		}
+	},
+	{
+		"type": "error",
+		"reason": "error",
+		"error": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "toolCall",
+					"id": "call_lookup|fc_lookup",
+					"name": "lookup",
+					"arguments": {
+						"value": "hello"
+					}
+				},
+				{
+					"type": "toolCall",
+					"id": "call_search|fc_search",
+					"name": "search",
+					"arguments": {
+						"q": "x"
+					}
+				}
+			],
+			"api": "openai-responses",
+			"provider": "test-replay",
+			"model": "gpt-5",
+			"usage": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 0,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "error",
+			"timestamp": 0,
+			"responseId": "resp_tools",
+			"errorMessage": "OpenAI Responses stream ended without a stop reason"
+		}
+	}
+]

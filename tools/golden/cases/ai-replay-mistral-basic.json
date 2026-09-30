@@ -1,0 +1,55 @@
+{
+	"name": "ai-replay-mistral-basic",
+	"kind": "ai-replay",
+	"api": "mistral-conversations",
+	"model": {
+		"id": "mistral-replay-model",
+		"name": "mistral replay model",
+		"provider": "test-replay",
+		"reasoning": false,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 200000,
+		"maxTokens": 8192
+	},
+	"context": {
+		"messages": [
+			{
+				"role": "user",
+				"content": "Hello",
+				"timestamp": 0
+			}
+		]
+	},
+	"options": {
+		"apiKey": "test",
+		"maxRetries": 0,
+		"timeoutMs": 10000
+	},
+	"fixture": {
+		"headers": {
+			"content-type": "text/event-stream"
+		},
+		"events": [
+			{
+				"data": "{\"id\":\"mistral_replay\",\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}"
+			},
+			{
+				"data": "{\"id\":\"mistral_replay\",\"choices\":[{\"delta\":{\"content\":\", there!\"}}]}"
+			},
+			{
+				"data": "{\"id\":\"mistral_replay\",\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":5,\"total_tokens\":17}}"
+			},
+			{
+				"data": "[DONE]"
+			}
+		]
+	}
+}

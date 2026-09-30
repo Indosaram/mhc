@@ -1,0 +1,28 @@
+{
+	"name": "ai-replay-openai-completions-basic",
+	"kind": "ai-replay",
+	"api": "openai-completions",
+	"model": {
+		"id": "gpt-4o-mini",
+		"name": "gpt-4o-mini",
+		"provider": "test-replay",
+		"reasoning": false,
+		"input": ["text"],
+		"cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+		"contextWindow": 128000,
+		"maxTokens": 4096
+	},
+	"context": {
+		"messages": [{ "role": "user", "content": "Say hello", "timestamp": 0 }]
+	},
+	"options": { "apiKey": "test", "maxRetries": 0 },
+	"fixture": {
+		"headers": { "content-type": "text/event-stream" },
+		"events": [
+			{ "data": "{\"id\":\"chatcmpl-basic\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hello\"},\"finish_reason\":null}]}" },
+			{ "data": "{\"id\":\"chatcmpl-basic\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\", world!\"},\"finish_reason\":null}]}" },
+			{ "data": "{\"id\":\"chatcmpl-basic\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3,\"total_tokens\":8}}" },
+			{ "data": "[DONE]" }
+		]
+	}
+}

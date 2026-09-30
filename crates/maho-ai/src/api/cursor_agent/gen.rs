@@ -2,3 +2,6 @@
 // ported by todo 12
 
 pub mod agent_pb;
+
+#[cfg(test)]
+mod golden_tests;
