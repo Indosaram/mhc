@@ -46,7 +46,7 @@ fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Option<O
 fn read_linux_start_identity(pid: u32) -> Option<String> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let command_end = stat.rfind(')')?;
-    let remainder = stat.get(command_end + 2)?.trim();
+    let remainder = stat.get(command_end + 2..)?.trim();
     let fields: Vec<&str> = remainder.split_whitespace().collect();
     let start_ticks = fields.get(19)?;
     Some(format!("linux-proc-start-ticks:{start_ticks}"))
