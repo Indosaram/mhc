@@ -7,3 +7,34 @@ license = "MIT"
 
 [lints]
 workspace = true
+
+# Dependencies for maho-ai and for the lanes that fill its declared modules
+# (todos 10-13: wire APIs over reqwest/SSE, OAuth, credential store). Exact versions.
+[dependencies]
+base64 = "=0.22.1"
+bytes = "=1.12.1"
+chrono = { workspace = true, features = ["alloc"] }
+dirs = { workspace = true }
+eventsource-stream = "=0.2.3"
+fancy-regex = { workspace = true }
+futures = { workspace = true }
+hex = { workspace = true }
+idna = "=1.1.0"
+indexmap = { workspace = true, features = ["serde"] }
+regex = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls", "stream", "http2"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "fs", "io-util", "net"] }
+tokio-util = "=0.7.18"
+unicode-general-category = { workspace = true }
+unicode-normalization = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true, features = ["v4", "v7"] }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "test-util"] }

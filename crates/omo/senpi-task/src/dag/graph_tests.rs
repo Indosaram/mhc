@@ -346,11 +346,39 @@ fn given_a_cyclic_three_node_graph_when_compiled_then_rejected_listing_the_exact
     assert!(!result.ok);
     assert_eq!(codes(&result), vec![DagCompileErrorCode::Cycle]);
     assert_eq!(result.errors[0].node_ids, ids(&["a", "b", "c", "a"]));
+    // QA (task 41): pinned against the value computed directly from the pinned TS
+    // `compileDag` (see .omo/evidence/task-41-cycle.txt for the TS command/output).
+    assert_eq!(
+        result.errors[0].message,
+        "dependency cycle detected: a -> b -> c -> a"
+    );
     let DagDiagnostic::RunFlag { message, at } = &result.diagnostics[0] else {
         panic!("expected run_flag");
     };
     assert_eq!(at, AT);
     assert!(message.contains("a -> b -> c -> a"));
+}
+
+#[test]
+fn given_the_identical_cycle_fixture_from_the_pinned_ts_when_compiled_then_rejected_with_the_ts_error_text()
+ {
+    // QA (task 41): the identical three-node fixture the pinned TS `compileDag` was run with; the
+    // TS command, output and rc are recorded in .omo/evidence/task-41-cycle.txt.
+    let cyclic = DagDefinition {
+        key: "cycle-fixture".to_string(),
+        name: "cyclic".to_string(),
+        nodes: vec![node("a", &["c"]), node("b", &["a"]), node("c", &["b"])],
+    };
+
+    let result = compile(&cyclic);
+
+    assert!(!result.ok);
+    assert_eq!(codes(&result), vec![DagCompileErrorCode::Cycle]);
+    assert_eq!(
+        result.errors[0].message,
+        "dependency cycle detected: a -> b -> c -> a"
+    );
+    assert_eq!(result.errors[0].node_ids, ids(&["a", "b", "c", "a"]));
 }
 
 #[test]

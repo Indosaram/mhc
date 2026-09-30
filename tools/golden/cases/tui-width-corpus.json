@@ -1,0 +1,484 @@
+{
+	"name": "tui-width-corpus",
+	"kind": "function",
+	"crate": "maho-tui",
+	"module": "packages/tui/src/utils.ts",
+	"calls": [
+		{
+			"export": "visibleWidth",
+			"args": [
+				""
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"hello"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"Hello, world!"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"tab\there"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"~!@#$%^&*()_+"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"中文"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"网络连接"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"ネットワーク"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"한국어"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"ｆｕｌｌｗｉｄｔｈ"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"半角ｶﾀｶﾅ"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"abc中文def"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"é"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"à́̂"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"čřžůú"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"שָׁלוֹם"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"بِسْمِ"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"नेटवर्क"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"र्क"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"ကို"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"กำ"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"ຳ"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"が"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"​"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"‍"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"­"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"a​b"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"👨‍👩‍👧‍👦"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"👩‍❤️‍👨"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"🧑‍🤝‍🧑"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"👨‍💻"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"🏳️‍🌈"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"🏴‍☠️"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"🐻‍❄️"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"🇯🇵"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"🇺🇸🇬🇧"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"🇨"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"🇦🇧🇨"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"🏴󠁧󠁢󠁳󠁣󠁴󠁿"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"1️⃣"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"#️⃣"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"*️⃣"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"1⃣"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"👍🏻"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"👍🏿"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"🤚🏽"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"👋🏼‍"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"🏻"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"❤️"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"❤"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"☀️"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"☀"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"✅"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"⚡"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"⚡️"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"©️"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"©"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"™️"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"↔️"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"▶️"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"🅰️"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"🈚"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"😀"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"🙂界"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"🫠"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"🪿"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"🥲"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"\u001b[31mred\u001b[0m"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"\u001b[1;38;2;1;2;3mbold中\u001b[0m"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"\u001b]8;;https://example.com\u001b\\link\u001b]8;;\u001b\\"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"\u001b]8;;https://e.x\u0007bel\u001b]8;;\u0007"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"\u001b]133;A\u0007prompt\u001b]133;B\u0007"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"\u001b_Gapc\u001b\\x"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"\u001b[?25lhidden\u001b[?25h"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"abc\u001bnot-ansi"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"\u001b[38;5;200m🙂\u001b[0m"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"args": [
+				"mixed 中文 👨‍💻 🇯🇵 é \u001b[31mred\u001b[0m"
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"codepoints": [
+				32,
+				205743
+			]
+		},
+		{
+			"export": "visibleWidth",
+			"codepoints": [
+				917504,
+				917999
+			]
+		}
+	]
+}

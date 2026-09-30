@@ -3,9 +3,17 @@
 // crate's parity ledger, that no row is still `todo`, and that ported Rust test counts are not
 // lower than the TS test-case counts (unless the row gives an N/A reason).
 //
-//   bun tools/parity-audit.mjs --crate <crate> [--only 'e1,e2,!e3']
-//   bun tools/parity-audit.mjs --all
+//   bun tools/parity-audit.mjs --crate <crate> [--only 'e1,e2,!e3'] [--repo <checkout>]
+//   bun tools/parity-audit.mjs --all [--repo <checkout>]
 //   bun tools/parity-audit.mjs --self-test
+//
+// The audited checkout is --repo, else $PARITY_REPO, else the nearest ancestor of the current
+// directory holding Cargo.toml + crates/, else the checkout this script lives in. So the script can
+// be run from one lane against another: `cd lane-4 && bun ../lane-3/tools/parity-audit.mjs ...`.
+//
+// `--crate X` without --only audits the remainder of X: its source roots minus every file an
+// `--only`-scoped todo owns per tools/parity-owners.json (plan: "Source roots" rule). `--all`
+// audits every file of every crate.
 //
 // Ledger layout: crates/<X>/parity.d/<todo>.md fragments, merged in ascending todo order; a later
 // todo's row for the same TS path replaces the earlier one. The table format is documented in
@@ -213,7 +221,7 @@ export function crateDir(repo, crate) {
  * crates): then the merged ledger rows themselves are checked (status, counts) and at least the
  * crate must exist.
  */
-export function auditCrate({ repo, senpi, crate, only, roots = SOURCE_ROOTS[crate] }) {
+export function auditCrate({ repo, senpi, crate, only, roots = SOURCE_ROOTS[crate], scopedOthers = [] }) {
 	const problems = [];
 	let ledger;
 	try {
@@ -222,7 +230,8 @@ export function auditCrate({ repo, senpi, crate, only, roots = SOURCE_ROOTS[crat
 		return { problems: [error.message], checked: 0 };
 	}
 	let checked = 0;
-	const inScope = (rel) => onlyMatches(only, rel);
+	// Without --only, files owned by --only-scoped todos belong to those todos, not to this audit.
+	const inScope = only ? (rel) => onlyMatches(only, rel) : (rel) => !scopedOthers.some((s) => onlyMatches(s, rel));
 	if (roots) {
 		const files = sourceFiles(senpi, roots);
 		for (const [rel] of files) {
@@ -262,6 +271,32 @@ function findTestFile(senpi, roots, rel) {
 		}
 	}
 	return null;
+}
+
+/**
+ * Parsed --only lists of the scoped todos for a crate (tools/parity-owners.json). Used when a crate
+ * is audited without --only, to compute the remainder owned by the crate's unscoped todo.
+ */
+export function scopedOwnerLists(owners, crate) {
+	const entry = owners?.crates?.[crate];
+	if (!entry) return [];
+	return Object.values(entry.scoped ?? {}).map((list) => parseOnly(list));
+}
+
+function loadOwners() {
+	const path = join(here, "parity-owners.json");
+	return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : { crates: {} };
+}
+
+/** --repo, then $PARITY_REPO, then the nearest workspace ancestor of cwd, then this script's checkout. */
+export function resolveRepo(explicit, cwd = process.cwd()) {
+	if (explicit) return resolve(explicit);
+	if (process.env.PARITY_REPO) return resolve(process.env.PARITY_REPO);
+	for (let dir = resolve(cwd); ; dir = dirname(dir)) {
+		if (existsSync(join(dir, "Cargo.toml")) && existsSync(join(dir, "crates"))) return dir;
+		if (dirname(dir) === dir) break;
+	}
+	return resolve(here, "..");
 }
 
 /** Every workspace crate that has a parity.d directory, plus every crate with a senpi root. */
@@ -379,6 +414,27 @@ function selfTest() {
 
 		ledger({ 10: "| TS path | Rust path | TS tests | Rust tests | status |\n|---|---|---|---|---|\n| types.ts | x | 0 | 0 | maybe |\n" });
 		check("unknown status is a parse failure", run().problems.some((p) => p.includes("is not one of")));
+
+		// Remainder: the unscoped owner audits the root minus every --only-scoped todo's files.
+		const owners = { crates: { "maho-ai": { scoped: { 10: "api/openai-", 11: "api/anthropic-" }, remainder: 5 } } };
+		const runRemainder = () => auditCrate({ repo, senpi, crate: "maho-ai", only: null, roots, scopedOthers: scopedOwnerLists(owners, "maho-ai") });
+		ledger({ 5: row("types.ts", "src/types.rs", 0, 0, "done") });
+		check("remainder passes while scoped todos' files are unmapped", runRemainder().problems.length === 0 && runRemainder().checked === 1);
+		ledger({ 5: row("api/openai-completions.ts", "src/api/openai_completions.rs", 0, 0, "done") });
+		check("remainder fails when a remainder file is unmapped", runRemainder().problems.some((p) => p.includes("unmapped: types.ts")));
+		check("remainder ignores scoped files it happens to list", !runRemainder().problems.some((p) => p.includes("openai")));
+
+		// Repo resolution from cwd: a nested directory of another checkout resolves to that checkout.
+		mkdirSync(join(repo, "crates/maho-ai/src"), { recursive: true });
+		put(join(repo, "Cargo.toml"), "[workspace]\n");
+		const saved = process.env.PARITY_REPO;
+		delete process.env.PARITY_REPO;
+		try {
+			check("repo resolves from cwd of another checkout", resolveRepo(undefined, join(repo, "crates/maho-ai/src")) === repo);
+			check("--repo overrides cwd", resolveRepo(join(tmp, "elsewhere"), join(repo, "crates")) === join(tmp, "elsewhere"));
+		} finally {
+			if (saved !== undefined) process.env.PARITY_REPO = saved;
+		}
 	} finally {
 		rmSync(tmp, { recursive: true, force: true });
 	}
@@ -395,9 +451,11 @@ if (import.meta.main) {
 	let onlyList;
 	let all = false;
 	let self = false;
+	let repoArg;
 	for (let i = 0; i < argv.length; i++) {
 		if (argv[i] === "--crate") crate = argv[++i];
 		else if (argv[i] === "--only") onlyList = argv[++i];
+		else if (argv[i] === "--repo") repoArg = argv[++i];
 		else if (argv[i] === "--all") all = true;
 		else if (argv[i] === "--self-test") self = true;
 		else usage(`unknown argument ${argv[i]}`);
@@ -405,7 +463,7 @@ if (import.meta.main) {
 	if (self) process.exit(selfTest() ? 0 : 1);
 	if (onlyList !== undefined && !crate) usage("--only needs --crate");
 	if (Boolean(crate) === all) usage("give exactly one of --crate or --all");
-	const repo = resolve(process.env.PARITY_REPO ?? join(here, ".."));
+	const repo = resolveRepo(repoArg);
 	const senpi = resolve(process.env.SENPI_SRC ?? "/Users/indo/code/senpi");
 	checkSenpiPin(senpi);
 	let only;
@@ -415,7 +473,12 @@ if (import.meta.main) {
 		usage(error.message);
 	}
 	const crates = all ? allAuditedCrates(repo) : [crate];
+	const owners = loadOwners();
 	let ok = true;
-	for (const c of crates) ok = report(c, only, auditCrate({ repo, senpi, crate: c, only })) && ok;
+	for (const c of crates) {
+		// --all checks every file; a single unscoped --crate audit checks only the remainder.
+		const scopedOthers = all || only ? [] : scopedOwnerLists(owners, c);
+		ok = report(c, only, auditCrate({ repo, senpi, crate: c, only, scopedOthers })) && ok;
+	}
 	process.exit(ok ? 0 : 1);
 }

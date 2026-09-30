@@ -11,7 +11,9 @@ use super::support::{
     base_spec, capturing_runner, fake_runner, last_options, make_tool, make_tracked_tool, strings,
     tmp, tool_names,
 };
+use crate::category::{CategoryResolutionResult, ResolveCategoryOptions, resolve_category};
 use crate::host::HostError;
+use crate::host::fake::{model, registry};
 use crate::manager::child_handle::ManagedChildHandle;
 use crate::runners::in_process::child_handle::{ChildSession, RunnerFailureKind, RunnerOutcome};
 use crate::runners::in_process::child_options::HostHandle;
@@ -515,4 +517,59 @@ fn given_an_agent_dir_with_a_marker_extension_when_a_child_boots_through_the_run
     assert!(ran.load(Ordering::SeqCst));
     assert_eq!(ManagedChildHandle::task_id(handle.as_ref()), "task-marker");
     assert_eq!(prompts.load(Ordering::SeqCst), 1);
+}
+
+/// Child-local retry settings for an explicit selected model and fallback list, through the runner.
+fn retry_settings_for_spec(
+    selected_model: Option<&str>,
+    fallbacks: Option<Vec<ResolvedModelRecord>>,
+) -> RetryFallbackSettings {
+    let dir = tmp();
+    let (runner, captured) = capturing_runner(Vec::new(), &[], None, || {
+        FakeSession::immediate("runtime-fallback-child", None)
+    });
+    let spec = ChildSpec {
+        selected_model: selected_model.map(str::to_string),
+        fallback_models: fallbacks,
+        ..base_spec(&dir.path().to_string_lossy())
+    };
+    runner.start(&spec).expect("start").wait_for_idle();
+    last_options(&captured).settings
+}
+
+#[test]
+fn given_a_builtin_category_resolving_to_a_chain_rung_when_the_child_session_is_created_then_the_remaining_chain_rungs_land_in_retry_fallback_chains()
+ {
+    let models = registry(vec![
+        model("quotio-openai", "gpt-5.6-luna-fast"),
+        model("opencode-go", "minimax-m3"),
+    ]);
+    let resolution = resolve_category(
+        "quick",
+        &json!({}),
+        &models,
+        &ResolveCategoryOptions::default(),
+    )
+    .expect("resolve");
+    let spec = match resolution {
+        CategoryResolutionResult::Resolved { spec, .. } => *spec,
+        other => panic!("Expected resolved category, got {}", other.kind()),
+    };
+    let selected_model = format!("{}/{}", spec.provider, spec.model_id);
+    assert_eq!(selected_model, "quotio-openai/gpt-5.6-luna-fast");
+    let settings = retry_settings_for_spec(Some(&selected_model), spec.fallback_models.clone());
+    assert!(settings.model_fallback);
+    assert_eq!(
+        settings.chains[&selected_model],
+        strings(&["opencode-go/minimax-m3:max"])
+    );
+}
+
+#[test]
+fn given_no_runtime_fallbacks_when_the_child_session_is_created_then_global_model_fallback_is_disabled()
+{
+    let settings = retry_settings_for_spec(None, None);
+    assert_eq!(settings, RetryFallbackSettings::default());
+    assert!(!settings.model_fallback);
+    assert!(settings.chains.is_empty());
 }

@@ -1,0 +1,6443 @@
+{
+ "checks": [
+  {
+   "schema": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "number"
+     }
+    },
+    "additionalProperties": false
+   },
+   "value": {
+    "a": 1,
+    "b": 2,
+    "c": 3
+   },
+   "ok": false,
+   "errors": [
+    [
+     "boolean",
+     "/b",
+     "schema is false"
+    ],
+    [
+     "boolean",
+     "/c",
+     "schema is false"
+    ],
+    [
+     "additionalProperties",
+     "",
+     "must not have additional properties"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "number"
+     }
+    },
+    "additionalProperties": {
+     "type": "string"
+    }
+   },
+   "value": {
+    "a": "x",
+    "b": 2
+   },
+   "ok": false,
+   "errors": [
+    [
+     "type",
+     "/b",
+     "must be string"
+    ],
+    [
+     "additionalProperties",
+     "",
+     "must not have additional properties"
+    ],
+    [
+     "type",
+     "/a",
+     "must be number"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "object",
+    "required": [
+     "a",
+     "b"
+    ],
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "value": {},
+   "ok": false,
+   "errors": [
+    [
+     "required",
+     "",
+     "must have required properties a, b"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "object",
+    "required": [
+     "a"
+    ],
+    "properties": {
+     "a": {
+      "type": "object",
+      "required": [
+       "x"
+      ],
+      "properties": {
+       "x": {
+        "type": "integer"
+       }
+      }
+     }
+    }
+   },
+   "value": {
+    "a": {}
+   },
+   "ok": false,
+   "errors": [
+    [
+     "required",
+     "/a",
+     "must have required properties x"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": [
+     "string",
+     "number"
+    ]
+   },
+   "value": true,
+   "ok": false,
+   "errors": [
+    [
+     "type",
+     "",
+     "must be either string or number"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "integer"
+   },
+   "value": 1.5,
+   "ok": false,
+   "errors": [
+    [
+     "type",
+     "",
+     "must be integer"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "number"
+     }
+    ]
+   },
+   "value": null,
+   "ok": false,
+   "errors": [
+    [
+     "type",
+     "",
+     "must be string"
+    ],
+    [
+     "type",
+     "",
+     "must be number"
+    ],
+    [
+     "anyOf",
+     "",
+     "must match a schema in anyOf"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "oneOf": [
+     {
+      "type": "number"
+     },
+     {
+      "type": "integer"
+     }
+    ]
+   },
+   "value": 1,
+   "ok": false,
+   "errors": [
+    [
+     "oneOf",
+     "",
+     "must match exactly one schema in oneOf"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "oneOf": [
+     {
+      "type": "number"
+     },
+     {
+      "type": "string"
+     }
+    ]
+   },
+   "value": true,
+   "ok": false,
+   "errors": [
+    [
+     "type",
+     "",
+     "must be number"
+    ],
+    [
+     "type",
+     "",
+     "must be string"
+    ],
+    [
+     "oneOf",
+     "",
+     "must match exactly one schema in oneOf"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "allOf": [
+     {
+      "type": "number",
+      "minimum": 5
+     },
+     {
+      "maximum": 3
+     }
+    ]
+   },
+   "value": 4,
+   "ok": false,
+   "errors": [
+    [
+     "minimum",
+     "",
+     "must be >= 5"
+    ],
+    [
+     "maximum",
+     "",
+     "must be <= 3"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "not": {
+     "type": "string"
+    }
+   },
+   "value": "x",
+   "ok": false,
+   "errors": [
+    [
+     "not",
+     "",
+     "must not be valid"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "enum": [
+     "a",
+     "b",
+     1
+    ]
+   },
+   "value": 1,
+   "ok": true,
+   "errors": []
+  },
+  {
+   "schema": {
+    "enum": [
+     "a",
+     "b"
+    ]
+   },
+   "value": "c",
+   "ok": false,
+   "errors": [
+    [
+     "enum",
+     "",
+     "must be equal to one of the allowed values"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "const": {
+     "a": [
+      1,
+      2
+     ]
+    }
+   },
+   "value": {
+    "a": [
+     1,
+     2
+    ]
+   },
+   "ok": true,
+   "errors": []
+  },
+  {
+   "schema": {
+    "const": "x"
+   },
+   "value": "y",
+   "ok": false,
+   "errors": [
+    [
+     "const",
+     "",
+     "must be equal to constant"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "string",
+    "minLength": 3,
+    "maxLength": 4,
+    "pattern": "^a"
+   },
+   "value": "b",
+   "ok": false,
+   "errors": [
+    [
+     "minLength",
+     "",
+     "must not have fewer than 3 characters"
+    ],
+    [
+     "pattern",
+     "",
+     "must match pattern \"^a\""
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "string",
+    "minLength": 2
+   },
+   "value": "😀",
+   "ok": false,
+   "errors": [
+    [
+     "minLength",
+     "",
+     "must not have fewer than 2 characters"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "string",
+    "format": "email"
+   },
+   "value": "nope",
+   "ok": false,
+   "errors": [
+    [
+     "format",
+     "",
+     "must match format \"email\""
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "string",
+    "format": "date-time"
+   },
+   "value": "2024-01-01T00:00:00Z",
+   "ok": true,
+   "errors": []
+  },
+  {
+   "schema": {
+    "type": "string",
+    "format": "date"
+   },
+   "value": "2024-02-30",
+   "ok": false,
+   "errors": [
+    [
+     "format",
+     "",
+     "must match format \"date\""
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "string",
+    "format": "uri"
+   },
+   "value": "http://a.b/c",
+   "ok": true,
+   "errors": []
+  },
+  {
+   "schema": {
+    "type": "string",
+    "format": "uuid"
+   },
+   "value": "x",
+   "ok": false,
+   "errors": [
+    [
+     "format",
+     "",
+     "must match format \"uuid\""
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "string",
+    "format": "hostname"
+   },
+   "value": "-bad.com",
+   "ok": false,
+   "errors": [
+    [
+     "format",
+     "",
+     "must match format \"hostname\""
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "string",
+    "format": "ipv4"
+   },
+   "value": "256.1.1.1",
+   "ok": false,
+   "errors": [
+    [
+     "format",
+     "",
+     "must match format \"ipv4\""
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "number",
+    "exclusiveMinimum": 1,
+    "exclusiveMaximum": 3,
+    "multipleOf": 0.5
+   },
+   "value": 3,
+   "ok": false,
+   "errors": [
+    [
+     "exclusiveMaximum",
+     "",
+     "must be < 3"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "number",
+    "multipleOf": 0.1
+   },
+   "value": 0.3,
+   "ok": true,
+   "errors": []
+  },
+  {
+   "schema": {
+    "type": "array",
+    "items": {
+     "type": "number"
+    },
+    "minItems": 3,
+    "maxItems": 1,
+    "uniqueItems": true
+   },
+   "value": [
+    1,
+    "x",
+    1
+   ],
+   "ok": false,
+   "errors": [
+    [
+     "type",
+     "/1",
+     "must be number"
+    ],
+    [
+     "maxItems",
+     "",
+     "must not have more than 1 items"
+    ],
+    [
+     "uniqueItems",
+     "",
+     "must not have duplicate items"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "array",
+    "prefixItems": [
+     {
+      "type": "string"
+     }
+    ],
+    "items": {
+     "type": "number"
+    }
+   },
+   "value": [
+    1,
+    "a"
+   ],
+   "ok": false,
+   "errors": [
+    [
+     "type",
+     "/1",
+     "must be number"
+    ],
+    [
+     "type",
+     "/0",
+     "must be string"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "array",
+    "items": [
+     {
+      "type": "string"
+     }
+    ],
+    "additionalItems": false
+   },
+   "value": [
+    "a",
+    1
+   ],
+   "ok": false,
+   "errors": [
+    [
+     "boolean",
+     "/1",
+     "schema is false"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "array",
+    "contains": {
+     "type": "string"
+    }
+   },
+   "value": [
+    1,
+    2
+   ],
+   "ok": false,
+   "errors": [
+    [
+     "contains",
+     "",
+     "must contain at least 1 valid item"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "array",
+    "contains": {
+     "type": "string"
+    },
+    "minContains": 2,
+    "maxContains": 3
+   },
+   "value": [
+    "a",
+    1
+   ],
+   "ok": false,
+   "errors": [
+    [
+     "contains",
+     "",
+     "must contain at least 1 valid item"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "array",
+    "contains": {
+     "type": "string"
+    },
+    "maxContains": 1
+   },
+   "value": [
+    "a",
+    "b"
+   ],
+   "ok": false,
+   "errors": [
+    [
+     "contains",
+     "",
+     "must contain at least 1 valid item"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "object",
+    "minProperties": 2,
+    "maxProperties": 0
+   },
+   "value": {
+    "a": 1
+   },
+   "ok": false,
+   "errors": [
+    [
+     "minProperties",
+     "",
+     "must not have fewer than 2 properties"
+    ],
+    [
+     "maxProperties",
+     "",
+     "must not have more than 0 properties"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "object",
+    "patternProperties": {
+     "^x": {
+      "type": "number"
+     }
+    }
+   },
+   "value": {
+    "xa": "s",
+    "y": 1
+   },
+   "ok": false,
+   "errors": [
+    [
+     "type",
+     "/xa",
+     "must be number"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "object",
+    "propertyNames": {
+     "pattern": "^[a-z]+$"
+    }
+   },
+   "value": {
+    "ok": 1,
+    "BAD": 2,
+    "N0": 3
+   },
+   "ok": false,
+   "errors": [
+    [
+     "pattern",
+     "/BAD",
+     "must match pattern \"^[a-z]+$\""
+    ],
+    [
+     "pattern",
+     "/N0",
+     "must match pattern \"^[a-z]+$\""
+    ],
+    [
+     "propertyNames",
+     "",
+     "property names BAD, N0 are invalid"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "object",
+    "dependentRequired": {
+     "a": [
+      "b",
+      "c"
+     ]
+    }
+   },
+   "value": {
+    "a": 1
+   },
+   "ok": false,
+   "errors": [
+    [
+     "dependentRequired",
+     "",
+     "must have properties b, c when property a is present"
+    ],
+    [
+     "dependentRequired",
+     "",
+     "must have properties b, c when property a is present"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "object",
+    "dependencies": {
+     "a": [
+      "b"
+     ],
+     "c": {
+      "required": [
+       "d"
+      ]
+     }
+    }
+   },
+   "value": {
+    "a": 1,
+    "c": 1
+   },
+   "ok": false,
+   "errors": [
+    [
+     "dependencies",
+     "",
+     "must have properties b when property a is present"
+    ],
+    [
+     "required",
+     "",
+     "must have required properties d"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "object",
+    "dependentSchemas": {
+     "a": {
+      "required": [
+       "z"
+      ]
+     }
+    }
+   },
+   "value": {
+    "a": 1
+   },
+   "ok": false,
+   "errors": [
+    [
+     "required",
+     "",
+     "must have required properties z"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "if": {
+     "type": "number"
+    },
+    "then": {
+     "minimum": 5
+    },
+    "else": {
+     "type": "string"
+    }
+   },
+   "value": 3,
+   "ok": false,
+   "errors": [
+    [
+     "if",
+     "",
+     "must match \"then\" schema"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "if": {
+     "type": "number"
+    },
+    "then": {
+     "minimum": 5
+    },
+    "else": {
+     "type": "string"
+    }
+   },
+   "value": true,
+   "ok": false,
+   "errors": [
+    [
+     "type",
+     "",
+     "must be string"
+    ],
+    [
+     "if",
+     "",
+     "must match \"else\" schema"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "number"
+     }
+    },
+    "unevaluatedProperties": false
+   },
+   "value": {
+    "a": 1,
+    "b": 2
+   },
+   "ok": false,
+   "errors": [
+    [
+     "unevaluatedProperties",
+     "",
+     "must not have unevaluated properties"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "array",
+    "prefixItems": [
+     {
+      "type": "number"
+     }
+    ],
+    "unevaluatedItems": false
+   },
+   "value": [
+    1,
+    2
+   ],
+   "ok": false,
+   "errors": [
+    [
+     "unevaluatedItems",
+     "",
+     "must not have unevaluated items"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "$defs": {
+     "n": {
+      "type": "number"
+     }
+    },
+    "type": "object",
+    "properties": {
+     "a": {
+      "$ref": "#/$defs/n"
+     }
+    }
+   },
+   "value": {
+    "a": "x"
+   },
+   "ok": false,
+   "errors": [
+    [
+     "type",
+     "/a",
+     "must be number"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "$ref": "#/missing"
+     }
+    }
+   },
+   "value": {
+    "a": 1
+   },
+   "ok": false,
+   "errors": [
+    [
+     "boolean",
+     "/a",
+     "schema is false"
+    ]
+   ]
+  },
+  {
+   "schema": false,
+   "value": 1,
+   "ok": false,
+   "errors": [
+    [
+     "boolean",
+     "",
+     "schema is false"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "object",
+    "properties": {
+     "a/b~c": {
+      "type": "number"
+     }
+    }
+   },
+   "value": {
+    "a/b~c": "x"
+   },
+   "ok": false,
+   "errors": [
+    [
+     "type",
+     "/a~1b~0c",
+     "must be number"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "array",
+    "items": {
+     "type": "number"
+    }
+   },
+   "value": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f",
+    "g",
+    "h",
+    "i",
+    "j"
+   ],
+   "ok": false,
+   "errors": [
+    [
+     "type",
+     "/0",
+     "must be number"
+    ],
+    [
+     "type",
+     "/1",
+     "must be number"
+    ],
+    [
+     "type",
+     "/2",
+     "must be number"
+    ],
+    [
+     "type",
+     "/3",
+     "must be number"
+    ],
+    [
+     "type",
+     "/4",
+     "must be number"
+    ],
+    [
+     "type",
+     "/5",
+     "must be number"
+    ],
+    [
+     "type",
+     "/6",
+     "must be number"
+    ],
+    [
+     "type",
+     "/7",
+     "must be number"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "object",
+    "required": [
+     "x"
+    ],
+    "properties": {
+     "x": {
+      "type": "number"
+     }
+    },
+    "additionalProperties": false
+   },
+   "value": {
+    "y": 1
+   },
+   "ok": false,
+   "errors": [
+    [
+     "required",
+     "",
+     "must have required properties x"
+    ],
+    [
+     "boolean",
+     "/y",
+     "schema is false"
+    ],
+    [
+     "additionalProperties",
+     "",
+     "must not have additional properties"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "anyOf": [
+     {
+      "type": "object",
+      "required": [
+       "a"
+      ]
+     },
+     {
+      "type": "object",
+      "required": [
+       "b"
+      ]
+     }
+    ]
+   },
+   "value": {},
+   "ok": false,
+   "errors": [
+    [
+     "required",
+     "",
+     "must have required properties a"
+    ],
+    [
+     "required",
+     "",
+     "must have required properties b"
+    ],
+    [
+     "anyOf",
+     "",
+     "must match a schema in anyOf"
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "string",
+    "format": "time"
+   },
+   "value": "23:59:60Z",
+   "ok": true,
+   "errors": []
+  },
+  {
+   "schema": {
+    "type": "string",
+    "format": "ipv6"
+   },
+   "value": "::1",
+   "ok": true,
+   "errors": []
+  },
+  {
+   "schema": {
+    "type": "string",
+    "format": "regex"
+   },
+   "value": "((",
+   "ok": false,
+   "errors": [
+    [
+     "format",
+     "",
+     "must match format \"regex\""
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "string",
+    "format": "json-pointer"
+   },
+   "value": "/a~2",
+   "ok": false,
+   "errors": [
+    [
+     "format",
+     "",
+     "must match format \"json-pointer\""
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "string",
+    "format": "duration"
+   },
+   "value": "P1Y2M",
+   "ok": true,
+   "errors": []
+  },
+  {
+   "schema": {
+    "type": "string",
+    "format": "url"
+   },
+   "value": "notaurl",
+   "ok": false,
+   "errors": [
+    [
+     "format",
+     "",
+     "must match format \"url\""
+    ]
+   ]
+  },
+  {
+   "schema": {
+    "type": "string",
+    "format": "idn-hostname"
+   },
+   "value": "müller.de",
+   "ok": true,
+   "errors": []
+  },
+  {
+   "schema": {
+    "type": "string",
+    "format": "hostname"
+   },
+   "value": "xn--mller-kva.de",
+   "ok": true,
+   "errors": []
+  },
+  {
+   "schema": {
+    "type": "string",
+    "format": "iri"
+   },
+   "value": "http://ü.example/ä",
+   "ok": true,
+   "errors": []
+  },
+  {
+   "schema": {
+    "type": "number",
+    "minimum": 0
+   },
+   "value": -1e+21,
+   "ok": false,
+   "errors": [
+    [
+     "minimum",
+     "",
+     "must be >= 0"
+    ]
+   ]
+  }
+ ],
+ "calls": [
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42"
+   },
+   "ok": true,
+   "value": {
+    "value": 42
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42.1"
+   },
+   "ok": true,
+   "value": {
+    "value": 42.1
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": " 7 "
+   },
+   "ok": true,
+   "value": {
+    "value": 7
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": ""
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be number\n\nReceived arguments:\n{\n  \"value\": \"\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1"
+   },
+   "ok": true,
+   "value": {
+    "value": 1
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0"
+   },
+   "ok": true,
+   "value": {
+    "value": 0
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "true"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be number\n\nReceived arguments:\n{\n  \"value\": \"true\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "false"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be number\n\nReceived arguments:\n{\n  \"value\": \"false\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "null"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be number\n\nReceived arguments:\n{\n  \"value\": \"null\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "abc"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be number\n\nReceived arguments:\n{\n  \"value\": \"abc\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0x10"
+   },
+   "ok": true,
+   "value": {
+    "value": 16
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1e3"
+   },
+   "ok": true,
+   "value": {
+    "value": 1000
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": true
+   },
+   "ok": true,
+   "value": {
+    "value": 1
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": false
+   },
+   "ok": true,
+   "value": {
+    "value": 0
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": null
+   },
+   "ok": true,
+   "value": {
+    "value": 0
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 0
+   },
+   "ok": true,
+   "value": {
+    "value": 0
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1
+   },
+   "ok": true,
+   "value": {
+    "value": 1
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 2
+   },
+   "ok": true,
+   "value": {
+    "value": 2
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1.5
+   },
+   "ok": true,
+   "value": {
+    "value": 1.5
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": -3
+   },
+   "ok": true,
+   "value": {
+    "value": -3
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": []
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be number\n\nReceived arguments:\n{\n  \"value\": []\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": [
+     "1"
+    ]
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be number\n\nReceived arguments:\n{\n  \"value\": [\n    \"1\"\n  ]\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": {}
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be number\n\nReceived arguments:\n{\n  \"value\": {}\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42"
+   },
+   "ok": true,
+   "value": {
+    "value": 42
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42.1"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be integer\n\nReceived arguments:\n{\n  \"value\": \"42.1\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": " 7 "
+   },
+   "ok": true,
+   "value": {
+    "value": 7
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": ""
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be integer\n\nReceived arguments:\n{\n  \"value\": \"\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1"
+   },
+   "ok": true,
+   "value": {
+    "value": 1
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0"
+   },
+   "ok": true,
+   "value": {
+    "value": 0
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "true"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be integer\n\nReceived arguments:\n{\n  \"value\": \"true\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "false"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be integer\n\nReceived arguments:\n{\n  \"value\": \"false\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "null"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be integer\n\nReceived arguments:\n{\n  \"value\": \"null\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "abc"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be integer\n\nReceived arguments:\n{\n  \"value\": \"abc\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0x10"
+   },
+   "ok": true,
+   "value": {
+    "value": 16
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1e3"
+   },
+   "ok": true,
+   "value": {
+    "value": 1000
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": true
+   },
+   "ok": true,
+   "value": {
+    "value": 1
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": false
+   },
+   "ok": true,
+   "value": {
+    "value": 0
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": null
+   },
+   "ok": true,
+   "value": {
+    "value": 0
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 0
+   },
+   "ok": true,
+   "value": {
+    "value": 0
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1
+   },
+   "ok": true,
+   "value": {
+    "value": 1
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 2
+   },
+   "ok": true,
+   "value": {
+    "value": 2
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1.5
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be integer\n\nReceived arguments:\n{\n  \"value\": 1.5\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": -3
+   },
+   "ok": true,
+   "value": {
+    "value": -3
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": []
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be integer\n\nReceived arguments:\n{\n  \"value\": []\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": [
+     "1"
+    ]
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be integer\n\nReceived arguments:\n{\n  \"value\": [\n    \"1\"\n  ]\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": {}
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be integer\n\nReceived arguments:\n{\n  \"value\": {}\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be boolean\n\nReceived arguments:\n{\n  \"value\": \"42\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42.1"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be boolean\n\nReceived arguments:\n{\n  \"value\": \"42.1\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": " 7 "
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be boolean\n\nReceived arguments:\n{\n  \"value\": \" 7 \"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": ""
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be boolean\n\nReceived arguments:\n{\n  \"value\": \"\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be boolean\n\nReceived arguments:\n{\n  \"value\": \"1\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be boolean\n\nReceived arguments:\n{\n  \"value\": \"0\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "true"
+   },
+   "ok": true,
+   "value": {
+    "value": true
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "false"
+   },
+   "ok": true,
+   "value": {
+    "value": false
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "null"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be boolean\n\nReceived arguments:\n{\n  \"value\": \"null\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "abc"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be boolean\n\nReceived arguments:\n{\n  \"value\": \"abc\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0x10"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be boolean\n\nReceived arguments:\n{\n  \"value\": \"0x10\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1e3"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be boolean\n\nReceived arguments:\n{\n  \"value\": \"1e3\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": true
+   },
+   "ok": true,
+   "value": {
+    "value": true
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": false
+   },
+   "ok": true,
+   "value": {
+    "value": false
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": null
+   },
+   "ok": true,
+   "value": {
+    "value": false
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 0
+   },
+   "ok": true,
+   "value": {
+    "value": false
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1
+   },
+   "ok": true,
+   "value": {
+    "value": true
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 2
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be boolean\n\nReceived arguments:\n{\n  \"value\": 2\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1.5
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be boolean\n\nReceived arguments:\n{\n  \"value\": 1.5\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": -3
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be boolean\n\nReceived arguments:\n{\n  \"value\": -3\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": []
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be boolean\n\nReceived arguments:\n{\n  \"value\": []\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": [
+     "1"
+    ]
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be boolean\n\nReceived arguments:\n{\n  \"value\": [\n    \"1\"\n  ]\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": {}
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be boolean\n\nReceived arguments:\n{\n  \"value\": {}\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42"
+   },
+   "ok": true,
+   "value": {
+    "value": "42"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42.1"
+   },
+   "ok": true,
+   "value": {
+    "value": "42.1"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": " 7 "
+   },
+   "ok": true,
+   "value": {
+    "value": " 7 "
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": ""
+   },
+   "ok": true,
+   "value": {
+    "value": ""
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1"
+   },
+   "ok": true,
+   "value": {
+    "value": "1"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0"
+   },
+   "ok": true,
+   "value": {
+    "value": "0"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "true"
+   },
+   "ok": true,
+   "value": {
+    "value": "true"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "false"
+   },
+   "ok": true,
+   "value": {
+    "value": "false"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "null"
+   },
+   "ok": true,
+   "value": {
+    "value": "null"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "abc"
+   },
+   "ok": true,
+   "value": {
+    "value": "abc"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0x10"
+   },
+   "ok": true,
+   "value": {
+    "value": "0x10"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1e3"
+   },
+   "ok": true,
+   "value": {
+    "value": "1e3"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": true
+   },
+   "ok": true,
+   "value": {
+    "value": "true"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": false
+   },
+   "ok": true,
+   "value": {
+    "value": "false"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": null
+   },
+   "ok": true,
+   "value": {
+    "value": ""
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 0
+   },
+   "ok": true,
+   "value": {
+    "value": "0"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1
+   },
+   "ok": true,
+   "value": {
+    "value": "1"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 2
+   },
+   "ok": true,
+   "value": {
+    "value": "2"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1.5
+   },
+   "ok": true,
+   "value": {
+    "value": "1.5"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": -3
+   },
+   "ok": true,
+   "value": {
+    "value": "-3"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": []
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be string\n\nReceived arguments:\n{\n  \"value\": []\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": [
+     "1"
+    ]
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be string\n\nReceived arguments:\n{\n  \"value\": [\n    \"1\"\n  ]\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": {}
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be string\n\nReceived arguments:\n{\n  \"value\": {}\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": \"42\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42.1"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": \"42.1\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": " 7 "
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": \" 7 \"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": ""
+   },
+   "ok": true,
+   "value": {
+    "value": null
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": \"1\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": \"0\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "true"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": \"true\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "false"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": \"false\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "null"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": \"null\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "abc"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": \"abc\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0x10"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": \"0x10\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1e3"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": \"1e3\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": true
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": true\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": false
+   },
+   "ok": true,
+   "value": {
+    "value": null
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": null
+   },
+   "ok": true,
+   "value": {
+    "value": null
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 0
+   },
+   "ok": true,
+   "value": {
+    "value": null
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": 1\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 2
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": 2\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1.5
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": 1.5\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": -3
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": -3\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": []
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": []\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": [
+     "1"
+    ]
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": [\n    \"1\"\n  ]\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "null"
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": {}
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be null\n\nReceived arguments:\n{\n  \"value\": {}\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42"
+   },
+   "ok": true,
+   "value": {
+    "value": "42"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42.1"
+   },
+   "ok": true,
+   "value": {
+    "value": "42.1"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": " 7 "
+   },
+   "ok": true,
+   "value": {
+    "value": " 7 "
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": ""
+   },
+   "ok": true,
+   "value": {
+    "value": ""
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1"
+   },
+   "ok": true,
+   "value": {
+    "value": "1"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0"
+   },
+   "ok": true,
+   "value": {
+    "value": "0"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "true"
+   },
+   "ok": true,
+   "value": {
+    "value": "true"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "false"
+   },
+   "ok": true,
+   "value": {
+    "value": "false"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "null"
+   },
+   "ok": true,
+   "value": {
+    "value": "null"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "abc"
+   },
+   "ok": true,
+   "value": {
+    "value": "abc"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0x10"
+   },
+   "ok": true,
+   "value": {
+    "value": "0x10"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1e3"
+   },
+   "ok": true,
+   "value": {
+    "value": "1e3"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": true
+   },
+   "ok": true,
+   "value": {
+    "value": 1
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": false
+   },
+   "ok": true,
+   "value": {
+    "value": 0
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": null
+   },
+   "ok": true,
+   "value": {
+    "value": 0
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 0
+   },
+   "ok": true,
+   "value": {
+    "value": 0
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1
+   },
+   "ok": true,
+   "value": {
+    "value": 1
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 2
+   },
+   "ok": true,
+   "value": {
+    "value": 2
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1.5
+   },
+   "ok": true,
+   "value": {
+    "value": 1.5
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": -3
+   },
+   "ok": true,
+   "value": {
+    "value": -3
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": []
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either number or string\n\nReceived arguments:\n{\n  \"value\": []\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": [
+     "1"
+    ]
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either number or string\n\nReceived arguments:\n{\n  \"value\": [\n    \"1\"\n  ]\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "number",
+       "string"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": {}
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either number or string\n\nReceived arguments:\n{\n  \"value\": {}\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42"
+   },
+   "ok": true,
+   "value": {
+    "value": 42
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42.1"
+   },
+   "ok": true,
+   "value": {
+    "value": 42.1
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": " 7 "
+   },
+   "ok": true,
+   "value": {
+    "value": 7
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": ""
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either boolean or number\n\nReceived arguments:\n{\n  \"value\": \"\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1"
+   },
+   "ok": true,
+   "value": {
+    "value": 1
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0"
+   },
+   "ok": true,
+   "value": {
+    "value": 0
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "true"
+   },
+   "ok": true,
+   "value": {
+    "value": true
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "false"
+   },
+   "ok": true,
+   "value": {
+    "value": false
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "null"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either boolean or number\n\nReceived arguments:\n{\n  \"value\": \"null\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "abc"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either boolean or number\n\nReceived arguments:\n{\n  \"value\": \"abc\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0x10"
+   },
+   "ok": true,
+   "value": {
+    "value": 16
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1e3"
+   },
+   "ok": true,
+   "value": {
+    "value": 1000
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": true
+   },
+   "ok": true,
+   "value": {
+    "value": true
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": false
+   },
+   "ok": true,
+   "value": {
+    "value": false
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": null
+   },
+   "ok": true,
+   "value": {
+    "value": false
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 0
+   },
+   "ok": true,
+   "value": {
+    "value": 0
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1
+   },
+   "ok": true,
+   "value": {
+    "value": 1
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 2
+   },
+   "ok": true,
+   "value": {
+    "value": 2
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1.5
+   },
+   "ok": true,
+   "value": {
+    "value": 1.5
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": -3
+   },
+   "ok": true,
+   "value": {
+    "value": -3
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": []
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either boolean or number\n\nReceived arguments:\n{\n  \"value\": []\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": [
+     "1"
+    ]
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either boolean or number\n\nReceived arguments:\n{\n  \"value\": [\n    \"1\"\n  ]\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "boolean",
+       "number"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": {}
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either boolean or number\n\nReceived arguments:\n{\n  \"value\": {}\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42"
+   },
+   "ok": true,
+   "value": {
+    "value": 42
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42.1"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either integer or null\n\nReceived arguments:\n{\n  \"value\": \"42.1\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": " 7 "
+   },
+   "ok": true,
+   "value": {
+    "value": 7
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": ""
+   },
+   "ok": true,
+   "value": {
+    "value": null
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1"
+   },
+   "ok": true,
+   "value": {
+    "value": 1
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0"
+   },
+   "ok": true,
+   "value": {
+    "value": 0
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "true"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either integer or null\n\nReceived arguments:\n{\n  \"value\": \"true\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "false"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either integer or null\n\nReceived arguments:\n{\n  \"value\": \"false\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "null"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either integer or null\n\nReceived arguments:\n{\n  \"value\": \"null\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "abc"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either integer or null\n\nReceived arguments:\n{\n  \"value\": \"abc\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0x10"
+   },
+   "ok": true,
+   "value": {
+    "value": 16
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1e3"
+   },
+   "ok": true,
+   "value": {
+    "value": 1000
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": true
+   },
+   "ok": true,
+   "value": {
+    "value": 1
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": false
+   },
+   "ok": true,
+   "value": {
+    "value": 0
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": null
+   },
+   "ok": true,
+   "value": {
+    "value": null
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 0
+   },
+   "ok": true,
+   "value": {
+    "value": 0
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1
+   },
+   "ok": true,
+   "value": {
+    "value": 1
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 2
+   },
+   "ok": true,
+   "value": {
+    "value": 2
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1.5
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either integer or null\n\nReceived arguments:\n{\n  \"value\": 1.5\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": -3
+   },
+   "ok": true,
+   "value": {
+    "value": -3
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": []
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either integer or null\n\nReceived arguments:\n{\n  \"value\": []\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": [
+     "1"
+    ]
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either integer or null\n\nReceived arguments:\n{\n  \"value\": [\n    \"1\"\n  ]\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": {}
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either integer or null\n\nReceived arguments:\n{\n  \"value\": {}\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either array or null\n\nReceived arguments:\n{\n  \"value\": \"42\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42.1"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either array or null\n\nReceived arguments:\n{\n  \"value\": \"42.1\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": " 7 "
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either array or null\n\nReceived arguments:\n{\n  \"value\": \" 7 \"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": ""
+   },
+   "ok": true,
+   "value": {
+    "value": null
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either array or null\n\nReceived arguments:\n{\n  \"value\": \"1\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either array or null\n\nReceived arguments:\n{\n  \"value\": \"0\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "true"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either array or null\n\nReceived arguments:\n{\n  \"value\": \"true\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "false"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either array or null\n\nReceived arguments:\n{\n  \"value\": \"false\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "null"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either array or null\n\nReceived arguments:\n{\n  \"value\": \"null\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "abc"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either array or null\n\nReceived arguments:\n{\n  \"value\": \"abc\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0x10"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either array or null\n\nReceived arguments:\n{\n  \"value\": \"0x10\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1e3"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either array or null\n\nReceived arguments:\n{\n  \"value\": \"1e3\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": true
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either array or null\n\nReceived arguments:\n{\n  \"value\": true\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": false
+   },
+   "ok": true,
+   "value": {
+    "value": null
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": null
+   },
+   "ok": true,
+   "value": {
+    "value": null
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 0
+   },
+   "ok": true,
+   "value": {
+    "value": null
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either array or null\n\nReceived arguments:\n{\n  \"value\": 1\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 2
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either array or null\n\nReceived arguments:\n{\n  \"value\": 2\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1.5
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either array or null\n\nReceived arguments:\n{\n  \"value\": 1.5\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": -3
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either array or null\n\nReceived arguments:\n{\n  \"value\": -3\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": []
+   },
+   "ok": true,
+   "value": {
+    "value": []
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": [
+     "1"
+    ]
+   },
+   "ok": true,
+   "value": {
+    "value": [
+     "1"
+    ]
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "array",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": {}
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either array or null\n\nReceived arguments:\n{\n  \"value\": {}\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42"
+   },
+   "ok": true,
+   "value": {
+    "value": "42"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42.1"
+   },
+   "ok": true,
+   "value": {
+    "value": "42.1"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": " 7 "
+   },
+   "ok": true,
+   "value": {
+    "value": " 7 "
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": ""
+   },
+   "ok": true,
+   "value": {
+    "value": ""
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1"
+   },
+   "ok": true,
+   "value": {
+    "value": "1"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0"
+   },
+   "ok": true,
+   "value": {
+    "value": "0"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "true"
+   },
+   "ok": true,
+   "value": {
+    "value": "true"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "false"
+   },
+   "ok": true,
+   "value": {
+    "value": "false"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "null"
+   },
+   "ok": true,
+   "value": {
+    "value": "null"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "abc"
+   },
+   "ok": true,
+   "value": {
+    "value": "abc"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "0x10"
+   },
+   "ok": true,
+   "value": {
+    "value": "0x10"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "1e3"
+   },
+   "ok": true,
+   "value": {
+    "value": "1e3"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": true
+   },
+   "ok": true,
+   "value": {
+    "value": "true"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": false
+   },
+   "ok": true,
+   "value": {
+    "value": "false"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": null
+   },
+   "ok": true,
+   "value": {
+    "value": null
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 0
+   },
+   "ok": true,
+   "value": {
+    "value": "0"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1
+   },
+   "ok": true,
+   "value": {
+    "value": "1"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 2
+   },
+   "ok": true,
+   "value": {
+    "value": "2"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": 1.5
+   },
+   "ok": true,
+   "value": {
+    "value": "1.5"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": -3
+   },
+   "ok": true,
+   "value": {
+    "value": "-3"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": []
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either string or null\n\nReceived arguments:\n{\n  \"value\": []\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": [
+     "1"
+    ]
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either string or null\n\nReceived arguments:\n{\n  \"value\": [\n    \"1\"\n  ]\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": {}
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - value: must be either string or null\n\nReceived arguments:\n{\n  \"value\": {}\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": "42"
+   },
+   "ok": true,
+   "value": {
+    "value": 42
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "oneOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ]
+   },
+   "arguments": {
+    "value": null
+   },
+   "ok": true,
+   "value": {
+    "value": null
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "$ref": "#/$defs/value"
+     }
+    },
+    "$defs": {
+     "value": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    }
+   },
+   "arguments": {
+    "value": null
+   },
+   "ok": true,
+   "value": {
+    "value": null
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "required": [
+     "path"
+    ],
+    "properties": {
+     "path": {
+      "type": "string"
+     },
+     "offset": {
+      "type": "number"
+     },
+     "nullable": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "metadata": {
+      "type": "object",
+      "required": [],
+      "properties": {
+       "enabled": {
+        "type": "boolean"
+       }
+      }
+     }
+    }
+   },
+   "arguments": {
+    "path": "file.txt",
+    "offset": null,
+    "nullable": null,
+    "metadata": {
+     "enabled": null
+    }
+   },
+   "ok": true,
+   "value": {
+    "path": "file.txt",
+    "nullable": null,
+    "metadata": {}
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      }
+     }
+    }
+   },
+   "arguments": {
+    "a": [
+     "1",
+     "x",
+     2
+    ]
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - a.1: must be number\n\nReceived arguments:\n{\n  \"a\": [\n    \"1\",\n    \"x\",\n    2\n  ]\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "array",
+      "items": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "boolean"
+       }
+      ]
+     }
+    }
+   },
+   "arguments": {
+    "a": [
+     "1",
+     "true",
+     "z"
+    ]
+   },
+   "ok": true,
+   "value": {
+    "a": [
+     1,
+     true,
+     "z"
+    ]
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "number"
+     }
+    },
+    "additionalProperties": {
+     "type": "integer"
+    }
+   },
+   "arguments": {
+    "a": "1",
+    "b": "2",
+    "c": "x"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - c: must be integer\n  - root: must not have additional properties\n\nReceived arguments:\n{\n  \"a\": \"1\",\n  \"b\": \"2\",\n  \"c\": \"x\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "allOf": [
+       {
+        "type": "number"
+       },
+       {
+        "minimum": 5
+       }
+      ]
+     }
+    }
+   },
+   "arguments": {
+    "a": "3"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - a: must be >= 5\n\nReceived arguments:\n{\n  \"a\": \"3\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "required": [
+     "a",
+     "b"
+    ],
+    "properties": {
+     "a": {
+      "type": "object",
+      "required": [
+       "x"
+      ],
+      "properties": {
+       "x": {
+        "type": "string"
+       }
+      }
+     }
+    }
+   },
+   "arguments": {
+    "a": {}
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - b: must have required properties b\n  - a.x: must have required properties x\n\nReceived arguments:\n{\n  \"a\": {}\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string",
+      "enum": [
+       "x",
+       "y"
+      ]
+     }
+    }
+   },
+   "arguments": {
+    "a": "z"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - a: must be equal to one of the allowed values\n\nReceived arguments:\n{\n  \"a\": \"z\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "number"
+     }
+    },
+    "additionalProperties": false
+   },
+   "arguments": {
+    "a": 1,
+    "b/c": 2
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - b~1c: schema is false\n  - root: must not have additional properties\n\nReceived arguments:\n{\n  \"a\": 1,\n  \"b/c\": 2\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string",
+      "format": "email"
+     }
+    }
+   },
+   "arguments": {
+    "a": "bad"
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - a: must match format \"email\"\n\nReceived arguments:\n{\n  \"a\": \"bad\"\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "number"
+     }
+    }
+   },
+   "arguments": "notobject",
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - root: must be object\n\nReceived arguments:\n\"notobject\""
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      }
+     }
+    }
+   },
+   "arguments": {
+    "a": [
+     "a",
+     "b",
+     "c",
+     "d",
+     "e",
+     "f",
+     "g",
+     "h",
+     "i",
+     "j"
+    ]
+   },
+   "ok": false,
+   "error": "Validation failed for tool \"echo\":\n  - a.0: must be number\n  - a.1: must be number\n  - a.2: must be number\n  - a.3: must be number\n  - a.4: must be number\n  - a.5: must be number\n  - a.6: must be number\n  - a.7: must be number\n\nReceived arguments:\n{\n  \"a\": [\n    \"a\",\n    \"b\",\n    \"c\",\n    \"d\",\n    \"e\",\n    \"f\",\n    \"g\",\n    \"h\",\n    \"i\",\n    \"j\"\n  ]\n}"
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "object",
+      "properties": {
+       "b": {
+        "type": "number"
+       }
+      }
+     }
+    }
+   },
+   "arguments": {
+    "a": {
+     "b": "5"
+    }
+   },
+   "ok": true,
+   "value": {
+    "a": {
+     "b": 5
+    }
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "s": {
+      "type": "string"
+     }
+    }
+   },
+   "arguments": {
+    "s": 1e+21
+   },
+   "ok": true,
+   "value": {
+    "s": "1e+21"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "s": {
+      "type": "string"
+     }
+    }
+   },
+   "arguments": {
+    "s": 0.000001
+   },
+   "ok": true,
+   "value": {
+    "s": "0.000001"
+   }
+  },
+  {
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "q": {
+      "type": "string",
+      "minLength": 1
+     }
+    }
+   },
+   "arguments": {
+    "q": "é😀"
+   },
+   "ok": true,
+   "value": {
+    "q": "é😀"
+   }
+  }
+ ]
+}

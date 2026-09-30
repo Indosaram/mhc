@@ -223,3 +223,85 @@ fn given_a_node_input_with_unsorted_depends_on_when_normalized_then_sorts_depend
     );
     assert_eq!(normalized.prompt, "exact prompt  as submitted");
 }
+
+// QA (task 41): cross-check against a value computed directly from the pinned TS
+// `dagDefinitionFingerprint` (see .omo/evidence/task-41-dag.txt for the TS command/output).
+
+#[test]
+fn dag_fingerprint_matches_ts_five_node_fixture() {
+    let nodes = vec![
+        DagNodeFingerprintInputV1 {
+            node_id: "a".to_string(),
+            label: "A".to_string(),
+            depends_on: Vec::new(),
+            prompt: "do a".to_string(),
+            route: DagRoute::Category {
+                category: "quick".to_string(),
+            },
+            task_summary: None,
+            description: None,
+            child_name: "a".to_string(),
+        },
+        DagNodeFingerprintInputV1 {
+            node_id: "b".to_string(),
+            label: "B".to_string(),
+            depends_on: vec!["a".to_string()],
+            prompt: "do b".to_string(),
+            route: DagRoute::Category {
+                category: "quick".to_string(),
+            },
+            task_summary: None,
+            description: None,
+            child_name: "b".to_string(),
+        },
+        DagNodeFingerprintInputV1 {
+            node_id: "c".to_string(),
+            label: "C".to_string(),
+            depends_on: vec!["a".to_string()],
+            prompt: "do c".to_string(),
+            route: DagRoute::Agent {
+                agent: "explore".to_string(),
+                model: None,
+            },
+            task_summary: None,
+            description: None,
+            child_name: "c".to_string(),
+        },
+        DagNodeFingerprintInputV1 {
+            node_id: "d".to_string(),
+            label: "D".to_string(),
+            depends_on: vec!["b".to_string(), "c".to_string()],
+            prompt: "do d".to_string(),
+            route: DagRoute::Agent {
+                agent: "explore".to_string(),
+                model: Some("claude-sonnet-5".to_string()),
+            },
+            task_summary: None,
+            description: None,
+            child_name: "d".to_string(),
+        },
+        DagNodeFingerprintInputV1 {
+            node_id: "e".to_string(),
+            label: "E".to_string(),
+            depends_on: vec!["d".to_string()],
+            prompt: "do e".to_string(),
+            route: DagRoute::Category {
+                category: "unspecified-low".to_string(),
+            },
+            task_summary: None,
+            description: None,
+            child_name: "e".to_string(),
+        },
+    ];
+
+    let fp = dag_definition_fingerprint(&DagDefinitionFingerprintInputV1 {
+        name: "fixture-5-node".to_string(),
+        scheduler: DAG_SCHEDULER_CONTRACT,
+        nodes,
+    });
+
+    assert_eq!(
+        fp,
+        "2700d97cc05dc6f2f5b8ae41977321ab4754760f0fd4d45aebcc883f9ff37d07"
+    );
+}

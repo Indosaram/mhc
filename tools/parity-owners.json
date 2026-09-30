@@ -1,0 +1,51 @@
+{
+	"//": "Per-crate senpi file ownership, extracted from the parity-audit invocations in /Users/indo/code/project/.omo/plans/omo-native-rs-tui-parity.md. `scoped` todos own what their --only list matches; the `remainder` todo owns the rest of the crate's source roots. Edit only when the plan changes.",
+	"crates": {
+		"maho-ai": {
+			"scoped": {
+				"5": "types.ts,stream.ts,model.ts,models.ts,models.generated.ts,model-catalog,models-store,env-api-keys,api-registry,images,legacy-,wire-identity,context-provenance,openai-responses-compat,compat/,utils/,session-resources,cli.ts,compat.ts,image-models,index.ts,node/,!api/,!auth/,!tool-call-middleware/,!providers/,!cursor/",
+				"10": "api/openai-completions,api/openai-responses,api/azure-openai-responses",
+				"11": "api/anthropic-,api/google",
+				"12": "api/,!api/openai-completions,!api/openai-responses,!api/azure-openai-responses,!api/anthropic-,!api/google,tool-call-middleware/,bedrock-provider,devin-provider,cursor-agent-provider",
+				"13": "auth/,oauth.ts,bun-oauth.ts,providers/,cursor/"
+			},
+			"remainder": null
+		},
+		"maho-tui": {
+			"scoped": {
+				"6": "terminal.ts,terminal-capabilities,terminal-colors,terminal-text,keys.ts,stdin-buffer,utils.ts,keybindings,native-,mux,stderr-observer,tmux-focus,tmux-cursor-query,word-navigation,fuzzy",
+				"7": "tui.ts,tui-main-screen,tui-alt-screen,alt-screen-search,layout,components/text,components/box,components/spacer,components/h-stack,components/v-stack,components/stack,components/truncated-text,components/loader,components/cancellable-loader,components/scroll-view,components/select-list,components/settings-list,components/input,components/mouse-region,components/alt-screen-flash,mouse-input,index.ts",
+				"8": "components/editor,editor-line-render,editor-component,autocomplete,slash-command-autocomplete,dollar-invocation-autocomplete,paste-markers,image-markers,kill-ring,undo-stack",
+				"9": "components/markdown,components/latex,components/image,terminal-image,tmux-image-"
+			},
+			"remainder": null
+		},
+		"maho-agent": {
+			"scoped": {
+				"14": "!harness/"
+			},
+			"remainder": 15
+		},
+		"maho-tools": {
+			"scoped": {},
+			"remainder": 18
+		},
+		"maho-core": {
+			"scoped": {
+				"16": "session-manager,messages,settings-manager,brand,auth-storage,credential-accounts,credential-pool/,trust-manager,resolve-config-value,session-resident-store,session-title-generator,defaults,event-bus,exec,diagnostics,output-guard",
+				"17": "model-runtime,model-resolver,model-registry,model-config,provider-composer,provider-api-key-auth,models-json-migration,auth-providers,auth-guidance,high-reasoning-,retry-fallback/,cache-stats",
+				"19": "dynamic-prompt/,system-prompt,skills,skill-discovery,skill-invocation,prompt-templates,resource-loader,discovered-resource-scope,compaction/,package-manager,keybindings"
+			},
+			"remainder": 21
+		},
+		"maho-interactive": {
+			"scoped": {
+				"31": "theme/,components/footer,working-status,streaming-reveal,tool-args-reveal,tool-result-reveal,tool-progress,status-indicator,tui-renderer,version-label,aborted-error-label,provider-error-presentation,session-info-format",
+				"32": "components/assistant-message,components/assistant-render-descriptors,components/user-message,components/tool-execution,components/bash-execution,components/diff,components/custom-message,components/custom-entry,components/compaction-summary-message,components/branch-summary-message,components/continuity-notice,components/exploration-,components/mermaid,components/markdown-transform,components/bordered-loader,components/dynamic-border,components/skill-invocation,components/command-invocation",
+				"33": "components/model-selector,components/favorite-models-selector,components/session-selector,components/tree-selector,components/settings-selector,components/config-selector,components/theme-,components/login-dialog,components/oauth-selector,components/keybinding-hints,components/extension-selector,components/extension-input,components/extension-editor,components/loaded-resource-section,components/countdown-timer,model-search,model-catalog-refresh",
+				"34": "components/ask-user-,components/first-time-setup,components/earendil-announcement,components/armin,components/daxnuts,grok/,tips/,assets/clankolas.png"
+			},
+			"remainder": 35
+		}
+	}
+}

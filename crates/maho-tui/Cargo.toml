@@ -7,3 +7,24 @@ license = "MIT"
 
 [lints]
 workspace = true
+
+[dependencies]
+crossterm = "=0.29.0"
+dirs = { workspace = true }
+icu_segmenter = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
+indexmap = { workspace = true }
+jiff = { workspace = true }
+regex = { workspace = true }
+unicode-segmentation = "=1.13.3"
+unicode-width = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "=1.1.4", features = ["event", "fs", "process", "stdio", "termios"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+
+[[example]]
+name = "key-tester"
+path = "examples/key-tester.rs"
