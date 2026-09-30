@@ -11,26 +11,29 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub const RAW_STDOUT_RETRY_DELAY_MS: u64 = 10;
 
 type HiddenDiagnostic = Arc<dyn Fn(&str) + Send + Sync>;
+type WriteSink = Arc<dyn Fn(&str) + Send + Sync>;
+type Observer = Arc<dyn Fn() + Send + Sync>;
+type ObserverList = Arc<Mutex<Vec<Observer>>>;
 type DiagnosticFallback = Arc<dyn Fn(&str) -> String + Send + Sync>;
 
 struct StdoutTakeover {
-    raw_stdout_write: Arc<dyn Fn(&str) + Send + Sync>,
-    raw_stderr_write: Arc<dyn Fn(&str) + Send + Sync>,
+    raw_stdout_write: WriteSink,
+    raw_stderr_write: WriteSink,
 }
 
 struct StderrTakeover {
-    original_stderr_write: Arc<dyn Fn(&str) + Send + Sync>,
+    original_stderr_write: WriteSink,
     on_hidden_diagnostic: Option<HiddenDiagnostic>,
     format_hidden_diagnostic_fallback: Option<DiagnosticFallback>,
 }
 
 struct VisibleStderrObservation {
-    original: Arc<dyn Fn(&str) + Send + Sync>,
-    writer: Arc<dyn Fn(&str) + Send + Sync>,
-    listeners: Arc<Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>>,
+    original: WriteSink,
+    writer: WriteSink,
+    listeners: ObserverList,
 }
 
-fn default_stdout_write() -> Arc<dyn Fn(&str) + Send + Sync> {
+fn default_stdout_write() -> WriteSink {
     Arc::new(|text: &str| {
         let mut out = std::io::stdout();
         let _ = out.write_all(text.as_bytes());
@@ -38,7 +41,7 @@ fn default_stdout_write() -> Arc<dyn Fn(&str) + Send + Sync> {
     })
 }
 
-fn default_stderr_write() -> Arc<dyn Fn(&str) + Send + Sync> {
+fn default_stderr_write() -> WriteSink {
     Arc::new(|text: &str| {
         let mut err = std::io::stderr();
         let _ = err.write_all(text.as_bytes());
@@ -63,7 +66,7 @@ fn state() -> &'static Mutex<OutputGuardState> {
     })
 }
 
-fn raw_stdout_write() -> Arc<dyn Fn(&str) + Send + Sync> {
+fn raw_stdout_write() -> WriteSink {
     let guard = state().lock().expect("output guard lock");
     match &guard.stdout_takeover {
         Some(takeover) => Arc::clone(&takeover.raw_stdout_write),
@@ -105,7 +108,7 @@ pub fn maho_write_stdout(text: &str) {
     sink(text);
 }
 
-fn visible_stderr_sink() -> Arc<dyn Fn(&str) + Send + Sync> {
+fn visible_stderr_sink() -> WriteSink {
     let mut guard = state().lock().expect("output guard lock");
     if let Some(observation) = &guard.visible_stderr {
         return Arc::clone(&observation.writer);
@@ -114,8 +117,8 @@ fn visible_stderr_sink() -> Arc<dyn Fn(&str) + Send + Sync> {
         Some(takeover) => Arc::clone(&takeover.original_stderr_write),
         None => default_stderr_write(),
     };
-    let listeners: Arc<Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>> = Arc::new(Mutex::new(Vec::new()));
-    let writer: Arc<dyn Fn(&str) + Send + Sync> = {
+    let listeners: ObserverList = Arc::new(Mutex::new(Vec::new()));
+    let writer: WriteSink = {
         let original = Arc::clone(&original);
         let listeners = Arc::clone(&listeners);
         Arc::new(move |text: &str| {
@@ -131,22 +134,21 @@ fn visible_stderr_sink() -> Arc<dyn Fn(&str) + Send + Sync> {
 }
 
 /// Observe the visible stderr sink; the returned handle unsubscribes when dropped.
-pub fn observe_visible_stderr_writes(listener: Arc<dyn Fn() + Send + Sync>) -> StderrObservation {
+pub fn observe_visible_stderr_writes(listener: Observer) -> StderrObservation {
     visible_stderr_sink();
     let listeners = {
         let guard = state().lock().expect("output guard lock");
         guard.visible_stderr.as_ref().map(|observation| Arc::clone(&observation.listeners))
     };
-    if let Some(listeners) = listeners {
-        if let Ok(mut listeners) = listeners.lock() {
+    if let Some(listeners) = listeners
+        && let Ok(mut listeners) = listeners.lock() {
             listeners.push(Arc::clone(&listener));
         }
-    }
     StderrObservation { listener }
 }
 
 pub struct StderrObservation {
-    listener: Arc<dyn Fn() + Send + Sync>,
+    listener: Observer,
 }
 
 impl Drop for StderrObservation {
@@ -165,11 +167,10 @@ impl Drop for StderrObservation {
             return;
         }
         let mut guard = state().lock().expect("output guard lock");
-        if let Some(takeover) = guard.stderr_takeover.as_mut() {
-            if Arc::ptr_eq(&takeover.original_stderr_write, &writer) {
+        if let Some(takeover) = guard.stderr_takeover.as_mut()
+            && Arc::ptr_eq(&takeover.original_stderr_write, &writer) {
                 takeover.original_stderr_write = original;
             }
-        }
         guard.visible_stderr = None;
     }
 }
@@ -196,10 +197,7 @@ pub fn restore_stderr() {
 pub fn maho_write_stderr(text: &str) -> bool {
     let handler = {
         let guard = state().lock().expect("output guard lock");
-        match &guard.stderr_takeover {
-            Some(takeover) => Some((takeover.on_hidden_diagnostic.clone(), takeover.format_hidden_diagnostic_fallback.clone())),
-            None => None,
-        }
+        guard.stderr_takeover.as_ref().map(|takeover| (takeover.on_hidden_diagnostic.clone(), takeover.format_hidden_diagnostic_fallback.clone()))
     };
     let Some((handler, fallback)) = handler else {
         default_stderr_write()(text);

@@ -62,17 +62,18 @@ pub struct GenerateSessionTitleOptions {
 }
 
 pub fn build_title_context(first_prompt: &str) -> Context {
-    let mut context = Context::default();
-    context.system_prompt = Some(TITLE_SYSTEM_PROMPT.to_owned());
-    context.messages = vec![maho_ai::types::Message::User(maho_ai::types::UserMessage {
-        content: maho_ai::types::UserContent::Blocks(vec![ContentBlock::Text(TextContent {
-            text: first_prompt.to_owned(),
-            audience: None,
-            text_signature: None,
-        })]),
-        timestamp: chrono::Utc::now().timestamp_millis(),
-    })];
-    context
+    Context {
+        system_prompt: Some(TITLE_SYSTEM_PROMPT.to_owned()),
+        messages: vec![maho_ai::types::Message::User(maho_ai::types::UserMessage {
+            content: maho_ai::types::UserContent::Blocks(vec![ContentBlock::Text(TextContent {
+                text: first_prompt.to_owned(),
+                audience: None,
+                text_signature: None,
+            })]),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        })],
+        ..Context::default()
+    }
 }
 
 pub fn build_title_options(options: &GenerateSessionTitleOptions) -> SimpleStreamOptions {

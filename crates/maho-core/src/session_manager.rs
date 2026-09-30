@@ -103,12 +103,11 @@ fn migrate_v1_to_v2(entries: &mut [Value]) {
         if entry_type(&entries[index]) == "compaction" {
             let first_kept_index = entries[index].get("firstKeptEntryIndex").and_then(Value::as_i64);
             if let Some(first_kept_index) = first_kept_index {
-                if let Some(target) = entries.get(first_kept_index as usize) {
-                    if entry_type(target) != "session" {
+                if let Some(target) = entries.get(first_kept_index as usize)
+                    && entry_type(target) != "session" {
                         let target_id = target.get("id").cloned().unwrap_or(Value::Null);
                         entries[index]["firstKeptEntryId"] = target_id;
                     }
-                }
                 if let Some(object) = entries[index].as_object_mut() {
                     object.shift_remove("firstKeptEntryIndex");
                 }
@@ -123,13 +122,11 @@ fn migrate_v2_to_v3(entries: &mut [Value]) {
             entry["version"] = Value::from(3);
             continue;
         }
-        if entry_type(entry) == "message" {
-            if let Some(message) = entry.get_mut("message") {
-                if message.get("role").and_then(Value::as_str) == Some("hookMessage") {
+        if entry_type(entry) == "message"
+            && let Some(message) = entry.get_mut("message")
+                && message.get("role").and_then(Value::as_str) == Some("hookMessage") {
                     message["role"] = Value::from("custom");
                 }
-            }
-        }
     }
 }
 
@@ -477,7 +474,7 @@ fn header_candidate(line: &str) -> Option<Option<Value>> {
     if line.trim().is_empty() {
         return None;
     }
-    let Some(entry) = parse_session_entry_line(line) else { return None };
+    let entry = parse_session_entry_line(line)?;
     if entry_type(&entry) != "session" || entry.get("id").and_then(Value::as_str).is_none() {
         return Some(None);
     }
@@ -511,7 +508,7 @@ pub fn find_most_recent_session(session_dir: &str, cwd: Option<&str>) -> Option<
             candidates.push((modified, path_string));
         }
     }
-    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    candidates.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
     candidates.into_iter().next().map(|(_, path)| path)
 }
 
@@ -604,8 +601,8 @@ impl SessionManager {
 
     pub fn in_memory(cwd: &str, options: Option<NewSessionOptions>, entries: Option<Vec<Value>>) -> Self {
         let mut manager = Self::build(cwd, "", None, false, options);
-        if let Some(entries) = entries {
-            if !entries.is_empty() {
+        if let Some(entries) = entries
+            && !entries.is_empty() {
                 let header = entries.iter().find(|entry| entry_type(entry) == "session").cloned();
                 if let Some(header) = header {
                     manager.file_entries = entries;
@@ -617,7 +614,6 @@ impl SessionManager {
                 }
                 manager.build_index();
             }
-        }
         manager
     }
 
@@ -1061,11 +1057,10 @@ impl SessionManager {
         };
         let mut children_by_parent: HashMap<String, Vec<String>> = HashMap::new();
         for entry in &entries {
-            if let Some(parent) = entry.get("parentId").and_then(Value::as_str) {
-                if let Some(id) = entry.get("id").and_then(Value::as_str) {
+            if let Some(parent) = entry.get("parentId").and_then(Value::as_str)
+                && let Some(id) = entry.get("id").and_then(Value::as_str) {
                     children_by_parent.entry(parent.to_owned()).or_default().push(id.to_owned());
                 }
-            }
         }
         fn build(id: &str, index: &HashMap<String, Value>, children: &HashMap<String, Vec<String>>, labels: &HashMap<String, String>, timestamps: &HashMap<String, String>) -> Option<SessionTreeNode> {
             let entry = index.get(id)?.clone();

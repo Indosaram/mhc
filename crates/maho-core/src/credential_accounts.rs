@@ -100,11 +100,10 @@ pub fn slot_blocked(slot: &Value, sidecar: Option<&crate::credential_pool::state
 
 /// The slots a stored credential carries: its accounts array, or the flat fields as one slot.
 pub fn stored_slots(credential: &Value) -> Vec<Value> {
-    if let Some(accounts) = credential.get("accounts").and_then(Value::as_array) {
-        if !accounts.is_empty() {
+    if let Some(accounts) = credential.get("accounts").and_then(Value::as_array)
+        && !accounts.is_empty() {
             return accounts.iter().filter(|slot| slot.get("name").and_then(Value::as_str).is_some_and(|name| !name.is_empty())).cloned().collect();
         }
-    }
     let pooled = CredentialSlot {
         name: crate::credential_pool::slots::DEFAULT_SLOT_NAME.to_owned(),
         key: credential.get("key").and_then(Value::as_str).map(str::to_owned),
@@ -356,11 +355,10 @@ pub fn remove_slot(credential: &Value, name: &str) -> Option<Value> {
     }
     let mut next = credential.clone();
     next["accounts"] = Value::Array(accounts);
-    if next.get("pinned").and_then(Value::as_str) == Some(name) {
-        if let Some(object) = next.as_object_mut() {
+    if next.get("pinned").and_then(Value::as_str) == Some(name)
+        && let Some(object) = next.as_object_mut() {
             object.shift_remove("pinned");
         }
-    }
     Some(next)
 }
 

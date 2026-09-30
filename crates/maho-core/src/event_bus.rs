@@ -1,6 +1,9 @@
 //! Port of senpi packages/coding-agent/src/core/event-bus.ts.
 
 use std::collections::HashMap;
+
+#[allow(clippy::type_complexity)]
+type HandlerMap = HashMap<String, Vec<(u64, EventHandler)>>;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -18,7 +21,7 @@ pub type EventHandler = Arc<dyn Fn(&Value) + Send + Sync>;
 
 #[derive(Clone, Default)]
 pub struct EventBus {
-    handlers: Arc<Mutex<HashMap<String, Vec<(u64, EventHandler)>>>>,
+    handlers: Arc<Mutex<HandlerMap>>,
     next_id: Arc<Mutex<u64>>,
 }
 

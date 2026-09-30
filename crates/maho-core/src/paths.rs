@@ -93,11 +93,10 @@ pub fn normalize_path(input: &str, options: &PathInputOptions) -> String {
     if options.normalize_unicode_spaces {
         normalized = normalized.chars().map(|c| if UNICODE_SPACES.contains(&c) { ' ' } else { c }).collect();
     }
-    if options.strip_at_prefix {
-        if let Some(stripped) = normalized.strip_prefix('@') {
+    if options.strip_at_prefix
+        && let Some(stripped) = normalized.strip_prefix('@') {
             normalized = stripped.to_owned();
         }
-    }
     if cfg!(windows) {
         normalized = normalize_windows_shell_path(&normalized);
     }
@@ -111,18 +110,16 @@ pub fn normalize_path(input: &str, options: &PathInputOptions) -> String {
         if let Some(rest) = normalized.strip_prefix("~/") {
             return join(&home, rest);
         }
-        if cfg!(windows) {
-            if let Some(rest) = normalized.strip_prefix("~\\") {
+        if cfg!(windows)
+            && let Some(rest) = normalized.strip_prefix("~\\") {
                 return join(&home, rest);
             }
-        }
     }
 
-    if normalized.starts_with("file://") {
-        if let Some(rest) = normalized.strip_prefix("file://") {
+    if normalized.starts_with("file://")
+        && let Some(rest) = normalized.strip_prefix("file://") {
             return rest.to_owned();
         }
-    }
 
     normalized
 }

@@ -478,12 +478,11 @@ impl SettingsManager {
             selected_sources.insert(SettingsScope::Global, source);
         }
         let global_load = Self::try_load_from_storage(storage.as_ref(), SettingsScope::Global, true);
-        if project_trusted {
-            if let Some(source) = storage.select_source(SettingsScope::Project) {
+        if project_trusted
+            && let Some(source) = storage.select_source(SettingsScope::Project) {
                 settings_paths.insert(SettingsScope::Project, source.path.clone());
                 selected_sources.insert(SettingsScope::Project, source);
             }
-        }
         let project_load = Self::try_load_from_storage(storage.as_ref(), SettingsScope::Project, project_trusted);
 
         let mut errors = Vec::new();
@@ -544,11 +543,10 @@ impl SettingsManager {
             }
             None
         };
-        if let Err(storage_error) = storage.with_lock(scope, &mut apply) {
-            if error.is_none() {
+        if let Err(storage_error) = storage.with_lock(scope, &mut apply)
+            && error.is_none() {
                 error = Some(storage_error);
             }
-        }
         (loaded, error)
     }
 

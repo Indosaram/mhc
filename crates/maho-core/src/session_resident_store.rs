@@ -5,7 +5,6 @@
 //! remains the authority for every entry: materialize() rehydrates from the resident map, then the
 //! blob directory, and otherwise leaves the token for the caller's JSONL recovery.
 
-use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -18,6 +17,7 @@ const DEFAULT_RESIDENT_STRING_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 pub const RESIDENT_STRING_PREFIX: &str = "\u{0}senpi-resident-string:v1:";
 
 pub type BlobsDirProvider = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+pub type MissingStringCallback<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResidentStoreStats {
@@ -123,18 +123,16 @@ impl ResidentStringStore {
         transform_json(value, &|text| self.materialize_string(text, None))
     }
 
-    pub fn materialize_with(&self, value: &Value, on_missing: Option<&dyn Fn(&str) -> Option<String>>) -> Value {
+    pub fn materialize_with(&self, value: &Value, on_missing: Option<MissingStringCallback<'_>>) -> Value {
         transform_json(value, &|text| self.materialize_string(text, on_missing))
     }
 
     pub fn externalize_in_place(&self, value: &mut Value) {
-        let mut seen = HashSet::new();
-        mutate_strings_in_place(value, &mut seen, &|text| self.externalize_string(text));
+        mutate_strings_in_place(value, &|text| self.externalize_string(text));
     }
 
     pub fn materialize_in_place(&self, value: &mut Value) {
-        let mut seen = HashSet::new();
-        mutate_strings_in_place(value, &mut seen, &|text| self.materialize_string(text, None));
+        mutate_strings_in_place(value, &|text| self.materialize_string(text, None));
     }
 
     pub fn externalize_string(&self, text: &str) -> String {
@@ -154,7 +152,7 @@ impl ResidentStringStore {
         token
     }
 
-    pub fn materialize_string(&self, text: &str, on_missing: Option<&dyn Fn(&str) -> Option<String>>) -> String {
+    pub fn materialize_string(&self, text: &str, on_missing: Option<MissingStringCallback<'_>>) -> String {
         let Some(id) = text.strip_prefix(RESIDENT_STRING_PREFIX) else { return text.to_owned() };
         {
             let mut inner = self.inner.lock().expect("resident store lock");
@@ -206,13 +204,11 @@ impl ResidentStringStore {
     fn read_blob(&self, id: &str) -> Option<String> {
         let dir = self.resolved_blobs_dir()?;
         let file = Path::new(&dir).join(format!("{id}.blob"));
-        if let Ok(content) = std::fs::read_to_string(&file) {
-            if let Ok(parsed) = serde_json::from_str::<Value>(&content) {
-                if let Some(text) = parsed.get("text").and_then(Value::as_str) {
+        if let Ok(content) = std::fs::read_to_string(&file)
+            && let Ok(parsed) = serde_json::from_str::<Value>(&content)
+                && let Some(text) = parsed.get("text").and_then(Value::as_str) {
                     return Some(text.to_owned());
                 }
-            }
-        }
         let _ = std::fs::remove_file(&file);
         None
     }
@@ -246,19 +242,19 @@ fn transform_json(value: &Value, transform: &dyn Fn(&str) -> String) -> Value {
     }
 }
 
-fn mutate_strings_in_place(value: &mut Value, seen: &mut HashSet<*const ()>, transform: &dyn Fn(&str) -> String) {
+fn mutate_strings_in_place(value: &mut Value, transform: &dyn Fn(&str) -> String) {
     match value {
         Value::String(text) => *text = transform(text),
         Value::Array(items) => {
             for item in items.iter_mut() {
-                mutate_strings_in_place(item, seen, transform);
+                mutate_strings_in_place(item, transform);
             }
         }
         Value::Object(object) => {
             let keys: Vec<String> = object.keys().cloned().collect();
             for key in keys {
                 if let Some(item) = object.get_mut(&key) {
-                    mutate_strings_in_place(item, seen, transform);
+                    mutate_strings_in_place(item, transform);
                 }
             }
         }

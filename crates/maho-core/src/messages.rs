@@ -27,7 +27,7 @@ pub fn filter_context_excluded_messages(messages: Vec<Value>) -> Vec<Value> {
 }
 
 fn backticks(count: usize) -> String {
-    std::iter::repeat(BACKTICK).take(count).collect()
+    std::iter::repeat_n(BACKTICK, count).collect()
 }
 
 pub fn bash_execution_to_text(msg: &Value) -> String {
@@ -41,16 +41,14 @@ pub fn bash_execution_to_text(msg: &Value) -> String {
     }
     if msg.get("cancelled").and_then(Value::as_bool) == Some(true) {
         text.push_str("\n\n(command cancelled)");
-    } else if let Some(exit_code) = msg.get("exitCode").and_then(Value::as_i64) {
-        if exit_code != 0 {
+    } else if let Some(exit_code) = msg.get("exitCode").and_then(Value::as_i64)
+        && exit_code != 0 {
             text.push_str(&format!("\n\nCommand exited with code {exit_code}"));
         }
-    }
-    if msg.get("truncated").and_then(Value::as_bool) == Some(true) {
-        if let Some(path) = msg.get("fullOutputPath").and_then(Value::as_str) {
+    if msg.get("truncated").and_then(Value::as_bool) == Some(true)
+        && let Some(path) = msg.get("fullOutputPath").and_then(Value::as_str) {
             text.push_str(&format!("\n\n[Output truncated. Full output: {path}]"));
         }
-    }
     text
 }
 
@@ -168,11 +166,10 @@ pub fn drop_failed_assistant_turns(messages: Vec<Value>) -> Vec<Value> {
         };
         if let Some(Value::Array(blocks)) = message.get("content") {
             for block in blocks {
-                if block.get("type").and_then(Value::as_str) == Some("toolCall") {
-                    if let Some(id) = block.get("id").and_then(Value::as_str) {
+                if block.get("type").and_then(Value::as_str) == Some("toolCall")
+                    && let Some(id) = block.get("id").and_then(Value::as_str) {
                         target.insert(id.to_owned());
                     }
-                }
             }
         }
     }

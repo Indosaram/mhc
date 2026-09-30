@@ -68,14 +68,12 @@ fn try_acquire(dir: &Path) -> std::io::Result<()> {
     match std::fs::create_dir(dir) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            if let Ok(metadata) = std::fs::metadata(dir) {
-                if let Ok(modified) = metadata.modified() {
-                    if modified.elapsed().map(|age| age.as_millis() as u64 > FILE_STORAGE_LOCK_STALE_MS).unwrap_or(false) {
+            if let Ok(metadata) = std::fs::metadata(dir)
+                && let Ok(modified) = metadata.modified()
+                    && modified.elapsed().map(|age| age.as_millis() as u64 > FILE_STORAGE_LOCK_STALE_MS).unwrap_or(false) {
                         let _ = std::fs::remove_dir_all(dir);
                         return std::fs::create_dir(dir);
                     }
-                }
-            }
             Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "ELOCKED"))
         }
         Err(error) => Err(error),

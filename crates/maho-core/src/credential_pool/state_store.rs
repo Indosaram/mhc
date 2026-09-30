@@ -131,11 +131,10 @@ pub fn slot_health(state: Option<&CredentialSlotState>, now: u64) -> SlotHealth 
         if blocked_until > now {
             return SlotHealth::Blocked;
         }
-        if let Some(lease) = &state.lease {
-            if lease.expires_at > now {
+        if let Some(lease) = &state.lease
+            && lease.expires_at > now {
                 return SlotHealth::HalfOpen;
             }
-        }
     }
     SlotHealth::Ready
 }
@@ -324,7 +323,7 @@ pub async fn acquire_half_open_lease(
     let mut lease: Option<HalfOpenLease> = None;
     repository
         .mutate_slot_state(provider_id, lane_id, slot_id, |current| {
-            let Some(current) = current else { return None };
+            let current = current?;
             let expired = current.blocked_until.map(|until| until <= now).unwrap_or(false);
             let lease_live = current.lease.as_ref().map(|lease| lease.expires_at > now).unwrap_or(false);
             if !expired || lease_live || current.block_reason == Some(BlockReason::AuthError) {

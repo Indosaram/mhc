@@ -52,11 +52,10 @@ pub fn is_available(slot: &RunSlot, now: u64) -> bool {
     if matches!(slot.block_reason.as_deref(), Some("auth_error") | Some("account_disabled")) {
         return false;
     }
-    if let Some(blocked_until) = slot.blocked_until {
-        if blocked_until > now {
+    if let Some(blocked_until) = slot.blocked_until
+        && blocked_until > now {
             return false;
         }
-    }
     true
 }
 

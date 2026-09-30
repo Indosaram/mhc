@@ -167,13 +167,12 @@ pub fn write_auth_file(path: &str, content: &str) -> Result<(), String> {
         return Err(error.to_string());
     }
     set_mode(&temporary, AUTH_FILE_MODE);
-    if Path::new(path).exists() {
-        if let Ok(metadata) = std::fs::metadata(path) {
+    if Path::new(path).exists()
+        && let Ok(metadata) = std::fs::metadata(path) {
             use std::os::unix::fs::PermissionsExt;
             let mode = metadata.permissions().mode() & 0o777;
             set_mode(&temporary, mode);
         }
-    }
     if let Err(error) = std::fs::rename(&temporary, path) {
         let _ = std::fs::remove_file(&temporary);
         return Err(error.to_string());
@@ -200,12 +199,11 @@ impl FileAuthStorageBackend {
     }
 
     fn ensure_parent_dir(&self) -> Result<(), String> {
-        if let Some(parent) = Path::new(&self.auth_path).parent() {
-            if !parent.exists() {
+        if let Some(parent) = Path::new(&self.auth_path).parent()
+            && !parent.exists() {
                 std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
                 set_mode(&parent.to_string_lossy(), 0o700);
             }
-        }
         Ok(())
     }
 
@@ -459,8 +457,8 @@ impl AuthStorage {
         if let Some(runtime) = self.runtime_overrides.get(provider) {
             return Some(runtime.clone());
         }
-        if let Some(credential) = self.get(provider) {
-            if let Some(key) = credential_key(&credential) {
+        if let Some(credential) = self.get(provider)
+            && let Some(key) = credential_key(&credential) {
                 if !is_command_config_value(key) {
                     return Some(key.to_owned());
                 }
@@ -469,7 +467,6 @@ impl AuthStorage {
                     return Some(resolved);
                 }
             }
-        }
         maho_ai::env_api_keys::get_env_api_key(provider, None)
     }
 
@@ -624,10 +621,10 @@ mod tests {
     fn reads_a_credential_under_the_canonical_then_the_legacy_key() {
         let mut data = AuthStorageData::new();
         data.insert("claude-sdk-oauth".to_owned(), api_key("legacy"));
-        assert_eq!(credential_key(&read_by_provider_id(&data, "anthropic-subscription").expect("credential")).as_deref(), Some("legacy"));
+        assert_eq!(credential_key(&read_by_provider_id(&data, "anthropic-subscription").expect("credential")), Some("legacy"));
         assert!(read_by_provider_id(&data, "missing").is_none());
         data.insert("anthropic-subscription".to_owned(), api_key("canonical"));
-        assert_eq!(credential_key(&read_by_provider_id(&data, "anthropic-subscription").expect("credential")).as_deref(), Some("canonical"));
+        assert_eq!(credential_key(&read_by_provider_id(&data, "anthropic-subscription").expect("credential")), Some("canonical"));
     }
 
     #[test]
@@ -649,7 +646,7 @@ mod tests {
         conflict.insert("chatgpt-subscription".to_owned(), api_key("canonical"));
         let (resolved, flag) = migrate_legacy_provider_keys(&conflict);
         assert!(flag);
-        assert_eq!(credential_key(&resolved["chatgpt-subscription"]).as_deref(), Some("canonical"));
+        assert_eq!(credential_key(&resolved["chatgpt-subscription"]), Some("canonical"));
         assert!(!resolved.contains_key("openai-codex"));
 
         let mut non_object = AuthStorageData::new();
