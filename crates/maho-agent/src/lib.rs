@@ -14,6 +14,17 @@ pub mod tool_arguments;
 pub mod tool_name_alias;
 pub mod types;
 
+pub use agent::{
+    Agent, AgentContinuationOptions, AgentListener, AgentOptions, AgentPromptInput, AgentSubscription,
+    PartialAgentState, PrepareNextTurnWithContext, PrepareNextTurnWithoutContext, ShouldStopAfterTurnWithSignal,
+    agent_event_sink, empty_failure_usage,
+};
+pub use agent_loop::{
+    AgentEventSink, agent_loop, agent_loop_continue, build_provider_context, run_agent_loop, run_agent_loop_continue,
+};
+pub use proxy::{
+    ProxyAssistantMessageEvent, ProxySerializableStreamOptions, ProxyStreamOptions, stream_proxy,
+};
 pub use assistant_terminal_state::{
     AgentStreamError, EMPTY_TOOL_USE_DEMOTION_DIAGNOSTIC, ProviderRetryWatchdogAbortError,
     TerminalAssistantMessageEvent, create_terminal_failure_assistant_message, demote_tool_use_without_tool_calls,
@@ -29,5 +40,5 @@ pub use tool_name_alias::{
 };
 pub use types::*;
 
-// index.ts also re-exports agent.ts, agent-loop.ts, proxy.ts and the harness surface; those are
-// wired here as their modules land.
+// index.ts also re-exports the harness surface (`harness/`, `node.ts`); those are declared as the
+// `harness` placeholder module and filled by todo 15.
