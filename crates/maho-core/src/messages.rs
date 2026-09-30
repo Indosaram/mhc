@@ -449,7 +449,7 @@ mod tests {
     #[test]
     fn create_helpers_emit_iso_timestamps_as_epoch_millis() {
         let message = create_branch_summary_message("s", "id", "2026-09-24T01:49:15.521Z");
-        assert_eq!(message["timestamp"], 1784935755521i64);
+        assert_eq!(message["timestamp"], 1790214555521i64);
         assert_eq!(message["role"], "branchSummary");
         assert_eq!(message["fromId"], "id");
         let message = create_compaction_summary_message("s", 10, "2026-09-24T01:49:15.521Z", Some(json!({ "k": 1 })));

@@ -47,6 +47,7 @@ fn lock_dir(path: &str) -> PathBuf {
     Path::new(path).with_file_name(name)
 }
 
+#[derive(Debug)]
 pub struct LockGuard {
     dir: PathBuf,
 }

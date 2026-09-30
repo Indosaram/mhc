@@ -76,6 +76,9 @@ pub fn normalize_windows_shell_path(file_path: &str) -> String {
         return file_path.to_owned();
     };
     let suffix = &rest[drive.len_utf8()..];
+    if !suffix.is_empty() && !suffix.starts_with('/') {
+        return file_path.to_owned();
+    }
     let suffix = suffix.strip_prefix('/').unwrap_or(suffix).replace('/', "\\");
     if suffix.is_empty() {
         format!("{}:\\", drive.to_ascii_uppercase())

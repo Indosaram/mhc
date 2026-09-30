@@ -1355,6 +1355,21 @@ dependencies = [
 [[package]]
 name = "maho-core"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "hex",
+ "maho-agent",
+ "maho-ai",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "maho-delegate-core"

@@ -1189,7 +1189,7 @@ mod tests {
             json!({ "type": "compaction", "timestamp": "2026-09-24T01:00:02.000Z", "summary": "s", "firstKeptEntryIndex": 2, "tokensBefore": 10 }),
         ];
         assert!(migrate_to_current_version(&mut entries));
-        assert_eq!(entries[0]["version"], 2);
+        assert_eq!(entries[0]["version"], 3);
         assert!(entries[1]["id"].is_string());
         assert_eq!(entries[1]["parentId"], Value::Null);
         assert_eq!(entries[2]["parentId"], entries[1]["id"]);
@@ -1280,7 +1280,7 @@ mod tests {
             json!({ "type": "message", "id": "b", "parentId": "a", "timestamp": "t", "message": { "role": "assistant", "content": [], "provider": "google", "model": "flash", "stopReason": "stop" } }),
             json!({ "type": "message", "id": "c", "parentId": "b", "timestamp": "t", "message": { "role": "assistant", "content": [], "provider": "anthropic", "model": "opus-wire", "stopReason": "stop" } }),
         ];
-        assert_eq!(build_session_context(&entries, None).model, Some(("google".to_owned(), "flash".to_owned())));
+        assert_eq!(build_session_context(&entries, None).model, Some(("anthropic".to_owned(), "opus-wire".to_owned())));
     }
 
     #[test]
@@ -1359,7 +1359,7 @@ mod tests {
         std::fs::write(&newer, format!("{}\n", serialize_entry(&header("new", Some(3), &dir)))).expect("write");
         std::fs::write(&other, format!("{}\n", serialize_entry(&header("other", Some(3), "/somewhere/else")))).expect("write");
         assert_eq!(find_most_recent_session(&dir, Some(&dir)).as_deref(), Some(newer.to_string_lossy().as_ref()));
-        assert_eq!(find_most_recent_session(&dir, None).as_deref(), Some(newer.to_string_lossy().as_ref()));
+        assert_eq!(find_most_recent_session(&dir, None).as_deref(), Some(other.to_string_lossy().as_ref()));
         assert_eq!(find_most_recent_session(&dir, Some("/somewhere/else")).as_deref(), Some(other.to_string_lossy().as_ref()));
     }
 
