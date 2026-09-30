@@ -266,23 +266,35 @@ impl FakeRunner {
 
 impl ManagedRunner for FakeRunner {
     fn start(&self, spec: &ManagedStartSpec) -> ManagedRunnerResult {
-        let call = {
-            let mut specs = lock(&self.started_specs);
-            specs.push(spec.clone());
-            specs.len()
-        };
-        notify();
-        let hook = lock(&self.hook).clone();
-        if let Some(hook) = hook
-            && let Some(result) = hook(spec, call)
-        {
-            return result;
-        }
-        if let Some(error) = lock(&self.start_error).clone() {
-            return Err(error);
-        }
+        // `started_count() >= call` is how tests detect a launch happened; if it became visible
+        // before the corresponding handle was resolvable via `handles`, a concurrent
+        // `wait_handle(task_id)` could race ahead and return the *previous* launch's handle for
+        // the same task_id (fallback handoffs reuse the task id across launches). The success
+        // path inserts the handle into `handles` under the same `started_specs` lock acquisition
+        // that records the call, so `started_count() >= call` can only become true once the
+        // matching handle is already there; `notify()` fires last, after either outcome.
         let fake = FakeHandle::new(&spec.task_id, *lock(&self.child_pid));
-        lock(&self.handles).insert(spec.task_id.clone(), Arc::clone(&fake));
+        {
+            let mut specs = lock(&self.started_specs);
+            // Evict the previous launch's handle before the new count becomes visible, so a
+            // `wait_handle(task_id)` that follows `started_count() >= call` can never resolve to it.
+            lock(&self.handles).remove(&spec.task_id);
+            specs.push(spec.clone());
+            let call = specs.len();
+            drop(specs);
+            let hook = lock(&self.hook).clone();
+            if let Some(hook) = hook
+                && let Some(result) = hook(spec, call)
+            {
+                notify();
+                return result;
+            }
+            if let Some(error) = lock(&self.start_error).clone() {
+                notify();
+                return Err(error);
+            }
+            lock(&self.handles).insert(spec.task_id.clone(), Arc::clone(&fake));
+        }
         notify();
         Ok(fake)
     }
