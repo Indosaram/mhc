@@ -218,6 +218,21 @@ pub trait Component {
     fn as_layout_component(&self) -> Option<&dyn crate::layout_node::LayoutComponent> {
         None
     }
+
+    /// senpi's `layout.test.ts` "paints only clipped rows from very large scroll content"
+    /// relies on JavaScript's sparse arrays: a component reports a billion rows while
+    /// materializing four. `Vec<String>` cannot be sparse, so a component whose content is
+    /// virtual declares its row count here and answers rows through
+    /// [`Component::render_virtual_row`]; the layout engine then never calls
+    /// [`Component::render`] for it and reads only the rows it paints.
+    fn virtual_line_count(&self, _width: usize) -> Option<usize> {
+        None
+    }
+
+    /// Row `index` of a component that declared [`Component::virtual_line_count`].
+    fn render_virtual_row(&mut self, _width: usize, _index: usize) -> String {
+        String::new()
+    }
 }
 
 /// Interface for components that can receive focus and display a hardware cursor.

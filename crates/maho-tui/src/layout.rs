@@ -79,10 +79,23 @@ pub struct LayoutBox {
     pub clip: LayoutRect,
     pub children: Vec<LayoutBox>,
     pub lines: Option<Vec<String>>,
+    /// Set instead of `lines` for a component that declares virtual content
+    /// ([`Component::virtual_line_count`]); rows are fetched while painting.
+    pub virtual_lines: Option<VirtualLines>,
     pub line_offset: usize,
     pub scroll_view: Option<Rc<RefCell<ScrollView>>>,
     pub scroll_content_lines: Option<Vec<String>>,
     pub layer: i64,
+}
+
+/// A box whose rows are never materialized: senpi's `layout.test.ts` "paints only clipped rows
+/// from very large scroll content" builds a sparse array of a billion lines. Rust's `Vec<String>`
+/// cannot, so the component answers [`Component::virtual_line_count`] and
+/// [`Component::render_virtual_row`] instead and the engine reads only the painted rows.
+pub struct VirtualLines {
+    pub component: Rc<RefCell<dyn Component>>,
+    pub width: usize,
+    pub count: usize,
 }
 
 pub struct LayoutFrame {
@@ -131,6 +144,9 @@ fn render_cached(context: &mut LayoutContext, component: &Rc<RefCell<dyn Compone
 }
 
 fn measure_height(context: &mut LayoutContext, component: &Rc<RefCell<dyn Component>>, width: usize) -> usize {
+    if let Some(count) = component.borrow().virtual_line_count(width.max(1)) {
+        return count;
+    }
     render_cached(context, component, width).len()
 }
 
@@ -189,6 +205,31 @@ fn layout_component(
         .map(|c| c.layout_node());
 
     let Some(node) = node else {
+        if let Some(count) = component.borrow().virtual_line_count(safe_width) {
+            let allocated_height = height.unwrap_or(count);
+            let rect = LayoutRect {
+                x,
+                y,
+                width: safe_width,
+                height: allocated_height,
+            };
+            return LayoutBox {
+                component: Rc::clone(component),
+                rect,
+                clip: intersect(clip, rect),
+                children: Vec::new(),
+                lines: None,
+                virtual_lines: Some(VirtualLines {
+                    component: Rc::clone(component),
+                    width: safe_width,
+                    count,
+                }),
+                line_offset: 0,
+                scroll_view: None,
+                scroll_content_lines: None,
+                layer: 0,
+            };
+        }
         let lines = render_cached(context, component, safe_width);
         let allocated_height = height.unwrap_or(lines.len());
         let mut line_offset = 0;
@@ -211,6 +252,7 @@ fn layout_component(
             clip: intersect(clip, rect),
             children: Vec::new(),
             lines: Some((*lines).clone()),
+            virtual_lines: None,
             line_offset,
             scroll_view: None,
             scroll_content_lines: None,
@@ -251,16 +293,23 @@ fn layout_component(
                 height: viewport_height,
             };
             let child_clip = intersect(clip, rect);
-            let scroll_content_lines = (*render_cached(context, &scroll_node.component, content_width)).clone();
+            let scroll_content_lines = if child_box.virtual_lines.is_some() {
+                // The kitty-image crop scan below reads content rows by index; a virtual
+                // component has none materialized (the image registry is todo 9's).
+                None
+            } else {
+                Some((*render_cached(context, &scroll_node.component, content_width)).clone())
+            };
             let mut boxed = LayoutBox {
                 component: Rc::clone(component),
                 rect,
                 clip: child_clip,
                 children: vec![child_box],
                 lines: None,
+                virtual_lines: None,
                 line_offset: 0,
                 scroll_view: Some(scroll_view),
-                scroll_content_lines: Some(scroll_content_lines),
+                scroll_content_lines,
                 layer: 0,
             };
             update_clips(&mut boxed.children[0], child_clip);
@@ -293,6 +342,7 @@ fn layout_component(
                         clip: intersect(clip, rect),
                         children: Vec::new(),
                         lines: None,
+                        virtual_lines: None,
                         line_offset: 0,
                         scroll_view: None,
                         scroll_content_lines: None,
@@ -342,6 +392,7 @@ fn layout_component(
                         clip: intersect(clip, rect),
                         children: Vec::new(),
                         lines: None,
+                        virtual_lines: None,
                         line_offset: 0,
                         scroll_view: None,
                         scroll_content_lines: None,
@@ -383,6 +434,7 @@ fn layout_component(
                                 },
                                 children: Vec::new(),
                                 lines: None,
+                                virtual_lines: None,
                                 line_offset: 0,
                                 scroll_view: None,
                                 scroll_content_lines: None,
@@ -536,10 +588,31 @@ fn paint_scrollbar(boxed: &LayoutBox, screen: &mut [String], total_width: usize)
     }
 }
 
+/// Paints one content row (senpi's `paintBox` inner loop body).
+fn paint_content_row(boxed: &LayoutBox, screen: &mut [String], total_width: usize, row: i64, source_line: &str) {
+    let mut line = strip_osc133_zone_prefix(source_line).to_string();
+    if let Some(rows) = get_kitty_image_metadata(&line) {
+        let clip_bottom = (boxed.clip.bottom()).min(screen.len() as i64);
+        let visible_rows = (rows as i64).min(clip_bottom - row).max(0) as usize;
+        if visible_rows < rows {
+            line = crop_kitty_image_line(&line, 0, visible_rows);
+        }
+    }
+    let row_index = row as usize;
+    if boxed.rect.x == 0
+        && boxed.rect.width >= total_width
+        && (is_image_line(&line) || screen[row_index].is_empty())
+    {
+        screen[row_index] = line;
+    } else {
+        screen[row_index] = composite_tui_line(&screen[row_index], &line, boxed.rect.x.max(0) as usize, boxed.rect.width, total_width);
+    }
+}
+
 fn paint_box(boxed: &LayoutBox, screen: &mut Vec<String>, total_width: usize) {
+    let first_row = boxed.rect.y.max(boxed.clip.y).max(0);
+    let last_row = boxed.rect.bottom().min(boxed.clip.bottom()).min(screen.len() as i64);
     if let Some(lines) = &boxed.lines {
-        let first_row = boxed.rect.y.max(boxed.clip.y).max(0);
-        let last_row = boxed.rect.bottom().min(boxed.clip.bottom()).min(screen.len() as i64);
         let mut row = first_row;
         while row < last_row {
             let source_index = boxed.line_offset as i64 + row - boxed.rect.y;
@@ -550,22 +623,19 @@ fn paint_box(boxed: &LayoutBox, screen: &mut Vec<String>, total_width: usize) {
                 row += 1;
                 continue;
             };
-            let mut line = strip_osc133_zone_prefix(source_line).to_string();
-            if let Some(rows) = get_kitty_image_metadata(&line) {
-                let clip_bottom = (boxed.clip.bottom()).min(screen.len() as i64);
-                let visible_rows = (rows as i64).min(clip_bottom - row).max(0) as usize;
-                if visible_rows < rows {
-                    line = crop_kitty_image_line(&line, 0, visible_rows);
-                }
-            }
-            let row_index = row as usize;
-            if boxed.rect.x == 0
-                && boxed.rect.width >= total_width
-                && (is_image_line(&line) || screen[row_index].is_empty())
-            {
-                screen[row_index] = line;
-            } else {
-                screen[row_index] = composite_tui_line(&screen[row_index], &line, boxed.rect.x.max(0) as usize, boxed.rect.width, total_width);
+            paint_content_row(boxed, screen, total_width, row, source_line);
+            row += 1;
+        }
+    } else if let Some(virtual_lines) = &boxed.virtual_lines {
+        let mut row = first_row;
+        while row < last_row {
+            let source_index = boxed.line_offset as i64 + row - boxed.rect.y;
+            if source_index >= 0 && (source_index as usize) < virtual_lines.count {
+                let line = virtual_lines
+                    .component
+                    .borrow_mut()
+                    .render_virtual_row(virtual_lines.width, source_index as usize);
+                paint_content_row(boxed, screen, total_width, row, &line);
             }
             row += 1;
         }

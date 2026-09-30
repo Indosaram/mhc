@@ -3,9 +3,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use super::stack::{Stack, StackChild, StackEntryOptions, StackOptions};
-use crate::layout_node::{LayoutNode, StackDirection, StackLayoutNode};
-use crate::tui::{Component, Container, TuiMouseEvent, TuiMouseEventResult};
+use super::stack::{allocate_stack_sizes, visible_stack_entries, Stack, StackChild, StackEntryOptions, StackOptions};
+use crate::layout_node::{LayoutNode, LayoutViewport, StackAlign, StackDirection, StackLayoutNode};
+use crate::tui::{composite_tui_line, Component, Container, TuiMouseEvent, TuiMouseEventResult};
+use crate::utils::visible_width;
 
 pub struct HStack {
     stack: Stack,
@@ -41,8 +42,65 @@ impl HStack {
 }
 
 impl Component for HStack {
+    /// senpi's `HStack.render`: intrinsic widths come from each child rendered at the full
+    /// width, then children are rendered again at their allocated width and composited into
+    /// a shared row buffer at `align` offsets.
     fn render(&mut self, width: usize) -> Vec<String> {
-        self.stack.render(width)
+        let safe_width = width.max(1);
+        let viewport = LayoutViewport {
+            width: safe_width,
+            height: usize::MAX,
+        };
+        let entries = visible_stack_entries(&self.stack.entries, viewport);
+        if entries.is_empty() {
+            return Vec::new();
+        }
+
+        let intrinsic_widths: Vec<usize> = entries
+            .iter()
+            .map(|entry| {
+                entry
+                    .component
+                    .borrow_mut()
+                    .render(safe_width)
+                    .iter()
+                    .map(|line| visible_width(line))
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        let widths = allocate_stack_sizes(&entries, &intrinsic_widths, Some(safe_width), self.stack.gap);
+        let rendered: Vec<Vec<String>> = entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                if widths[index] == 0 {
+                    Vec::new()
+                } else {
+                    entry.component.borrow_mut().render(widths[index])
+                }
+            })
+            .collect();
+        let height = rendered.iter().map(Vec::len).max().unwrap_or(0);
+        let mut result = vec![String::new(); height];
+        let mut x = 0usize;
+        for (index, lines) in rendered.iter().enumerate() {
+            let child_width = widths[index];
+            let offset = match self.stack.align {
+                StackAlign::Center => (height - lines.len()) / 2,
+                StackAlign::End => height - lines.len(),
+                _ => 0,
+            };
+            for (row, line) in lines.iter().enumerate() {
+                let target = row + offset;
+                if target >= result.len() {
+                    continue;
+                }
+                result[target] = composite_tui_line(&result[target], line, x, child_width, safe_width);
+            }
+            x += child_width + self.stack.gap;
+        }
+        result
     }
 
     fn handle_mouse(&mut self, event: &TuiMouseEvent) -> Option<TuiMouseEventResult> {

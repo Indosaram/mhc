@@ -92,13 +92,13 @@ fn does_not_render_fixed_basis_scroll_content_during_stack_measurement() {
     let root = vstack(
         vec![
             entry(
-                Rc::new(RefCell::new(ScrollView::new(
+                ScrollView::new(
                     transcript,
                     ScrollViewOptions {
                         follow: ScrollViewFollow::End,
                         ..ScrollViewOptions::default()
                     },
-                ))),
+                ),
                 StackEntryOptions {
                     basis: Some(StackBasis::Fixed(0)),
                     grow: Some(1),
@@ -124,13 +124,13 @@ fn paints_only_clipped_rows_from_very_large_scroll_content() {
             (999_999_999, "visible 3".to_string()),
         ],
     }));
-    let scroll_view: Rc<RefCell<dyn Component>> = Rc::new(RefCell::new(ScrollView::new(
+    let scroll_view: Rc<RefCell<dyn Component>> = ScrollView::new(
         transcript,
         ScrollViewOptions {
             follow: ScrollViewFollow::End,
             ..ScrollViewOptions::default()
         },
-    )));
+    );
     let frame = render_layout_frame(&scroll_view, 10, 3);
     assert_eq!(visible_lines(&frame.lines), vec!["visible 1", "visible 2", "visible 3"]);
 }
@@ -252,7 +252,6 @@ fn tracks_follow_end_state_and_returns_unused_scroll_delta() {
             ..ScrollViewOptions::default()
         },
     );
-    let scroll_view = Rc::new(RefCell::new(scroll_view));
     render_layout_frame(&(Rc::clone(&scroll_view) as Rc<RefCell<dyn Component>>), 10, 3);
 
     assert_eq!(scroll_view.borrow().scroll_top(), 3);
@@ -276,7 +275,7 @@ fn preserves_only_the_underlying_background_beneath_overlay_scrollbar_glyphs() {
         background: background.to_string(),
         border_foreground: border_foreground.to_string(),
     }));
-    let scroll_view = Rc::new(RefCell::new(ScrollView::new(
+    let scroll_view = ScrollView::new(
         content,
         ScrollViewOptions {
             scrollbar: ScrollViewScrollbar::Auto,
@@ -284,7 +283,7 @@ fn preserves_only_the_underlying_background_beneath_overlay_scrollbar_glyphs() {
             scrollbar_thumb_style: Rc::new(|text: &str| text.to_string()),
             ..ScrollViewOptions::default()
         },
-    )));
+    );
     render_layout_frame(&(Rc::clone(&scroll_view) as Rc<RefCell<dyn Component>>), 6, 4);
     scroll_view.borrow_mut().scroll_by(1, 0);
     let frame = render_layout_frame(&(Rc::clone(&scroll_view) as Rc<RefCell<dyn Component>>), 6, 4);
@@ -303,13 +302,13 @@ fn preserves_only_the_underlying_background_beneath_overlay_scrollbar_glyphs() {
 
 #[test]
 fn updates_reserved_scrollbar_layout_at_runtime() {
-    let scroll_view = Rc::new(RefCell::new(ScrollView::new(
+    let scroll_view = ScrollView::new(
         text("123456"),
         ScrollViewOptions {
             scrollbar: ScrollViewScrollbar::Always,
             ..ScrollViewOptions::default()
         },
-    )));
+    );
     let render = || {
         let root = hstack(
             vec![StackChild::Component(Rc::clone(&scroll_view) as Rc<RefCell<dyn Component>>)],
@@ -333,8 +332,8 @@ fn updates_reserved_scrollbar_layout_at_runtime() {
 
 #[test]
 fn measures_nested_scroll_content_from_constrained_child_geometry() {
-    let inner = Rc::new(RefCell::new(ScrollView::new(text("1\n2\n3\n4\n5\n6"), ScrollViewOptions::default())));
-    let outer = Rc::new(RefCell::new(ScrollView::new(
+    let inner = ScrollView::new(text("1\n2\n3\n4\n5\n6"), ScrollViewOptions::default());
+    let outer = ScrollView::new(
         vstack(
             vec![
                 entry(Rc::clone(&inner) as Rc<RefCell<dyn Component>>, basis(2)),
@@ -343,7 +342,7 @@ fn measures_nested_scroll_content_from_constrained_child_geometry() {
             StackOptions::default(),
         ),
         ScrollViewOptions::default(),
-    )));
+    );
     render_layout_frame(&(Rc::clone(&outer) as Rc<RefCell<dyn Component>>), 10, 2);
 
     assert_eq!(inner.borrow().viewport_height(), 2);
@@ -385,11 +384,23 @@ struct VirtualLinesComponent {
 
 impl Component for VirtualLinesComponent {
     fn render(&mut self, _width: usize) -> Vec<String> {
-        let mut lines = vec![String::new(); self.line_count];
-        for (index, value) in &self.overrides {
-            lines[*index] = value.clone();
-        }
-        lines
+        // senpi materializes only the four assigned indices of a sparse array of
+        // `line_count` entries; this port declares the count through
+        // `virtual_line_count` and answers rows through `render_virtual_row`, so the
+        // layout engine never calls `render` (see `Component::virtual_line_count`).
+        unreachable!("VirtualLinesComponent is read through the virtual-line seam")
+    }
+
+    fn virtual_line_count(&self, _width: usize) -> Option<usize> {
+        Some(self.line_count)
+    }
+
+    fn render_virtual_row(&mut self, _width: usize, index: usize) -> String {
+        self.overrides
+            .iter()
+            .find(|(row, _)| *row == index)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default()
     }
 }
 

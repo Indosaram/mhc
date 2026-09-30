@@ -133,6 +133,9 @@ pub struct MouseTrackingSupport {
     pub is_windows_without_wt: bool,
 }
 
+/// Search-highlight column ranges for one screen row: `(start_col, end_col, is_current)`.
+type SearchHighlightRanges = (usize, Vec<(usize, usize, bool)>);
+
 impl TuiAltScreen {
     pub fn new() -> Self {
         Self {
@@ -513,7 +516,7 @@ impl TuiAltScreen {
             .min(boxed.clip.x + boxed.clip.width as i64)
             .min(scrollbar_column.unwrap_or(i64::MAX));
 
-        let mut ranges_by_row: Vec<(usize, Vec<(usize, usize, bool)>)> = Vec::new();
+        let mut ranges_by_row: Vec<SearchHighlightRanges> = Vec::new();
         for (match_index, search_match) in self.search_matches.iter().enumerate() {
             for segment in &search_match.segments {
                 let row = boxed.rect.y + segment.row as i64 - scroll_top as i64;
@@ -547,7 +550,7 @@ impl TuiAltScreen {
             }
             let line_width = visible_width(&line);
             let mut line = line;
-            ranges.sort_by(|a, b| b.0.cmp(&a.0));
+            ranges.sort_by_key(|range| std::cmp::Reverse(range.0));
             for (start_col, end_col, current) in ranges {
                 let start_col = start_col.min(line_width);
                 let end_col = end_col.min(line_width);

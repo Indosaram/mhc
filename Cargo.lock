@@ -1734,6 +1734,7 @@ dependencies = [
  "icu_segmenter",
  "indexmap",
  "jiff",
+ "maho-test-support",
  "regex",
  "rustix",
  "serde_json",

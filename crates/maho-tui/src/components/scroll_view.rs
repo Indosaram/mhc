@@ -7,7 +7,7 @@
 
 use std::rc::Rc;
 
-use crate::layout_node::{LayoutNode, LayoutViewport, ScrollLayoutNode, ScrollLayoutState};
+use crate::layout_node::{LayoutComponent, LayoutNode, LayoutViewport, ScrollLayoutNode, ScrollLayoutState};
 use crate::tui::{Component, Container, TuiMouseEvent, TuiMouseEventResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +70,9 @@ pub struct ScrollToOptions {
 pub struct ScrollView {
     container: Container,
     child: Rc<std::cell::RefCell<dyn Component>>,
+    /// senpi's `state: this` in `[LAYOUT_NODE]()`: Rust cannot hand out a self-`Rc` from
+    /// `&self`, so [`ScrollView::new`] stores a weak handle and the layout node upgrades it.
+    self_handle: std::rc::Weak<std::cell::RefCell<ScrollView>>,
     follow_end: bool,
     primary: bool,
     overscroll: Overscroll,
@@ -91,30 +94,36 @@ pub struct ScrollView {
 impl ScrollView {
     /// Panics if `options.axis` would be non-vertical in senpi (this port has no `axis` field
     /// because vertical is the only supported value; senpi throws for anything else).
-    pub fn new(component: Rc<std::cell::RefCell<dyn Component>>, options: ScrollViewOptions) -> Self {
-        let mut container = Container::new();
-        container.add_child(Rc::clone(&component));
+    ///
+    /// Returns the shared handle itself (senpi's `ScrollView` is always used through a
+    /// reference, and its layout node carries `state: this`).
+    pub fn new(component: Rc<std::cell::RefCell<dyn Component>>, options: ScrollViewOptions) -> Rc<std::cell::RefCell<ScrollView>> {
         let follow_end = options.follow == ScrollViewFollow::End;
-        Self {
-            container,
-            child: component,
-            follow_end,
-            primary: options.primary,
-            overscroll: options.overscroll,
-            scrollbar_track_style: options.scrollbar_track_style,
-            scrollbar_thumb_style: options.scrollbar_thumb_style,
-            current_scrollbar: options.scrollbar,
-            scrollbar_hide_delay_ms: options.scrollbar_hide_delay_ms,
-            current_scroll_top: 0,
-            content_height: 0,
-            current_viewport_height: 0,
-            following_end: follow_end,
-            follow_suppressed_at_end: false,
-            transient_scrollbar_visible: false,
-            scrollbar_active: false,
-            hide_due_at_ms: None,
-            render_requested: false,
-        }
+        Rc::new_cyclic(|self_handle| {
+            let mut container = Container::new();
+            container.add_child(Rc::clone(&component));
+            std::cell::RefCell::new(Self {
+                container,
+                child: component,
+                self_handle: self_handle.clone(),
+                follow_end,
+                primary: options.primary,
+                overscroll: options.overscroll,
+                scrollbar_track_style: options.scrollbar_track_style,
+                scrollbar_thumb_style: options.scrollbar_thumb_style,
+                current_scrollbar: options.scrollbar,
+                scrollbar_hide_delay_ms: options.scrollbar_hide_delay_ms,
+                current_scroll_top: 0,
+                content_height: 0,
+                current_viewport_height: 0,
+                following_end: follow_end,
+                follow_suppressed_at_end: false,
+                transient_scrollbar_visible: false,
+                scrollbar_active: false,
+                hide_due_at_ms: None,
+                render_requested: false,
+            })
+        })
     }
 
     pub fn scroll_top(&self) -> usize {
@@ -363,6 +372,23 @@ impl Component for ScrollView {
     fn as_container_mut(&mut self) -> Option<&mut Container> {
         Some(&mut self.container)
     }
+
+    fn as_layout_component(&self) -> Option<&dyn LayoutComponent> {
+        Some(self)
+    }
+}
+
+impl LayoutComponent for ScrollView {
+    /// senpi's `ScrollView[LAYOUT_NODE]()`: `{ type: "scroll", component: this.child, state: this }`.
+    fn layout_node(&self) -> LayoutNode {
+        let Some(state) = self.self_handle.upgrade() else {
+            unreachable!("ScrollView is built by ScrollView::new, which stores a shared handle")
+        };
+        LayoutNode::Scroll(ScrollLayoutNode {
+            component: Rc::clone(&self.child),
+            state,
+        })
+    }
 }
 
 impl ScrollLayoutState for ScrollView {
@@ -395,14 +421,8 @@ impl ScrollLayoutState for ScrollView {
 }
 
 /// senpi's `[LAYOUT_NODE]()`.
-pub fn scroll_layout_node(
-    view: &Rc<std::cell::RefCell<ScrollView>>,
-) -> LayoutNode {
-    let child = Rc::clone(&view.borrow().child);
-    LayoutNode::Scroll(ScrollLayoutNode {
-        component: child,
-        state: Rc::clone(view),
-    })
+pub fn scroll_layout_node(view: &Rc<std::cell::RefCell<ScrollView>>) -> LayoutNode {
+    view.borrow().layout_node()
 }
 
 #[allow(unused)]

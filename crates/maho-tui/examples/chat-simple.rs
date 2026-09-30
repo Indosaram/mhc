@@ -54,65 +54,16 @@ fn main() {
     let pending_response_due_ms: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
     let pending_loader: Rc<RefCell<Option<Rc<RefCell<Loader>>>>> = Rc::new(RefCell::new(None));
 
+    // `Input::handle_input` invokes `on_submit` while the main loop holds `screen.borrow_mut()`
+    // (senpi's `editor.onSubmit` runs inside the same synchronous dispatch, where mutating
+    // `tui.children` is free). A Rust closure cannot take a second borrow of `screen`, so the
+    // handler only queues the submitted value and the main loop applies it once the dispatch
+    // borrow has been released - the same queue-and-drain idiom as `pending_input` below.
+    let pending_submits: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     {
-        let screen = Rc::clone(&screen);
-        let is_responding = Rc::clone(&is_responding);
-        let pending_response_due_ms = Rc::clone(&pending_response_due_ms);
-        let pending_loader = Rc::clone(&pending_loader);
-        let input_component_for_submit = Rc::clone(&input_component);
+        let pending_submits = Rc::clone(&pending_submits);
         input.borrow_mut().on_submit = Some(Box::new(move |value: &str| {
-            if *is_responding.borrow() {
-                return;
-            }
-            let trimmed = value.trim();
-
-            if trimmed == "/delete" {
-                let mut screen = screen.borrow_mut();
-                let len = screen.base.children().len();
-                if len > 3 {
-                    let target = screen.base.children()[len - 2].clone();
-                    screen.base.remove_child(&target);
-                }
-                screen.base.request_render(true, now_ms());
-                return;
-            }
-
-            if trimmed == "/clear" {
-                let mut screen = screen.borrow_mut();
-                let children: Vec<_> = screen.base.children().to_vec();
-                for child in children.iter().skip(2).take(children.len().saturating_sub(3)) {
-                    screen.base.remove_child(child);
-                }
-                screen.base.request_render(true, now_ms());
-                return;
-            }
-
-            if trimmed.is_empty() {
-                return;
-            }
-
-            *is_responding.borrow_mut() = true;
-            let mut screen_mut = screen.borrow_mut();
-            let user_message: Rc<RefCell<dyn Component>> = Rc::new(RefCell::new(Text::new(value)));
-            screen_mut.base.add_child(Rc::clone(&user_message));
-
-            let now = now_ms();
-            let loader = Rc::new(RefCell::new(Loader::new(
-                Rc::new(|s: &str| format!("\x1b[36m{s}\x1b[0m")),
-                Rc::new(|s: &str| format!("\x1b[2m{s}\x1b[0m")),
-                "Thinking...",
-                None,
-                now,
-            )));
-            loader.borrow_mut().start(now);
-            let loader_component: Rc<RefCell<dyn Component>> = loader.clone() as Rc<RefCell<dyn Component>>;
-            screen_mut.base.add_child(Rc::clone(&loader_component));
-            *pending_loader.borrow_mut() = Some(Rc::clone(&loader));
-            screen_mut.base.request_render(true, now);
-            drop(screen_mut);
-
-            *pending_response_due_ms.borrow_mut() = Some(now + 1000);
-            let _ = &input_component_for_submit;
+            pending_submits.borrow_mut().push(value.to_string());
         }));
     }
 
@@ -147,7 +98,16 @@ fn main() {
             }
         }
 
-        if let Some(due) = *pending_response_due_ms.borrow()
+        let submits: Vec<String> = pending_submits.borrow_mut().drain(..).collect();
+        if !submits.is_empty() {
+            let mut screen_mut = screen.borrow_mut();
+            for value in submits {
+                apply_submit(&mut screen_mut, &value, now, &is_responding, &pending_response_due_ms, &pending_loader);
+            }
+        }
+
+        let response_due = *pending_response_due_ms.borrow();
+        if let Some(due) = response_due
             && now >= due
         {
             *pending_response_due_ms.borrow_mut() = None;
@@ -183,4 +143,62 @@ fn main() {
     if let Err(error) = terminal.stop() {
         eprintln!("terminal restore failed: {error}");
     }
+}
+
+/// Body of senpi's `editor.onSubmit`, applied by the main loop after the input dispatch borrow
+/// has been released (see `pending_submits` above).
+fn apply_submit(
+    screen_mut: &mut TuiMainScreen,
+    value: &str,
+    now: u64,
+    is_responding: &Rc<RefCell<bool>>,
+    pending_response_due_ms: &Rc<RefCell<Option<u64>>>,
+    pending_loader: &Rc<RefCell<Option<Rc<RefCell<Loader>>>>>,
+) {
+    if *is_responding.borrow() {
+        return;
+    }
+    let trimmed = value.trim();
+
+    if trimmed == "/delete" {
+        let len = screen_mut.base.children().len();
+        if len > 3 {
+            let target = screen_mut.base.children()[len - 2].clone();
+            screen_mut.base.remove_child(&target);
+        }
+        screen_mut.base.request_render(true, now);
+        return;
+    }
+
+    if trimmed == "/clear" {
+        let children: Vec<_> = screen_mut.base.children().to_vec();
+        for child in children.iter().skip(2).take(children.len().saturating_sub(3)) {
+            screen_mut.base.remove_child(child);
+        }
+        screen_mut.base.request_render(true, now);
+        return;
+    }
+
+    if trimmed.is_empty() {
+        return;
+    }
+
+    *is_responding.borrow_mut() = true;
+    let user_message: Rc<RefCell<dyn Component>> = Rc::new(RefCell::new(Text::new(value)));
+    screen_mut.base.add_child(Rc::clone(&user_message));
+
+    let loader = Rc::new(RefCell::new(Loader::new(
+        Rc::new(|s: &str| format!("\x1b[36m{s}\x1b[0m")),
+        Rc::new(|s: &str| format!("\x1b[2m{s}\x1b[0m")),
+        "Thinking...",
+        None,
+        now,
+    )));
+    loader.borrow_mut().start(now);
+    let loader_component: Rc<RefCell<dyn Component>> = loader.clone() as Rc<RefCell<dyn Component>>;
+    screen_mut.base.add_child(Rc::clone(&loader_component));
+    *pending_loader.borrow_mut() = Some(Rc::clone(&loader));
+    screen_mut.base.request_render(true, now);
+
+    *pending_response_due_ms.borrow_mut() = Some(now + 1000);
 }
