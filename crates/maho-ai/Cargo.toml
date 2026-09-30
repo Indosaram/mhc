@@ -20,6 +20,12 @@ prost-build = "=0.14.4"
 base64 = "=0.22.1"
 bytes = "=1.12.1"
 prost = "=0.14.4"
+h2 = "=0.4.19"
+http = "=1.4.0"
+rustls = "=0.23.45"
+rustls-pki-types = "=1.14.0"
+tokio-rustls = "=0.26.4"
+webpki-roots = "=1.0.5"
 chrono = { workspace = true, features = ["alloc"] }
 dirs = { workspace = true }
 eventsource-stream = "=0.2.3"

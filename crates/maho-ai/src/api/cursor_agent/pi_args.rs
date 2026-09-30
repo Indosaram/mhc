@@ -11,10 +11,10 @@ pub struct PiReadArgs {
 }
 
 pub fn pi_read_args(path: &str, offset: Option<f64>, limit: Option<f64>) -> Option<PiReadArgs> {
-    if let Some(limit) = limit {
-        if limit.floor() <= 0.0 {
-            return None;
-        }
+    if let Some(limit) = limit
+        && limit.floor() <= 0.0
+    {
+        return None;
     }
     Some(PiReadArgs {
         path: path.to_string(),

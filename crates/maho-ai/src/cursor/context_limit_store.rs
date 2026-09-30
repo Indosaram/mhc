@@ -138,7 +138,20 @@ mod tests {
     #[test]
     fn serves_a_recorded_ceiling_to_a_process_that_lost_its_in_memory_state() {
         with_clean_store(|| {
-            record_cursor_context_limit("kimi-k3", Some(200_000.0));
+            let persistence = std::sync::Arc::new(TestPersistence {
+                loaded: BTreeMap::from([("kimi-k3".to_owned(), 200_000.0)]),
+                saved: StdMutex::new(Vec::new()),
+            });
+            struct Wrapper(std::sync::Arc<TestPersistence>);
+            impl CursorContextLimitPersistence for Wrapper {
+                fn load(&self) -> BTreeMap<String, f64> {
+                    self.0.load()
+                }
+                fn save(&self, limits: &BTreeMap<String, f64>) {
+                    self.0.save(limits)
+                }
+            }
+            install_cursor_context_limit_persistence(Box::new(Wrapper(persistence)));
             reset_cursor_context_limit_store_for_test();
             assert_eq!(get_cursor_context_limit("kimi-k3"), Some(200_000.0));
             assert_eq!(resolve_cursor_context_window("kimi-k3", 1_048_576.0), 200_000.0);

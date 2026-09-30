@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::types::{StreamOptions, ThinkingSelection, ToolResultMessage};
 
-use super::gen::agent_pb::{
+use super::r#gen::agent_pb::{
     DeleteArgs, DeleteResult, DiagnosticsArgs, DiagnosticsResult, GrepArgs, GrepResult, LsArgs, LsResult, McpResult,
     PiBashExecArgs, PiBashExecResult, PiEditExecArgs, PiEditExecResult, PiFindExecArgs, PiFindExecResult,
     PiGrepExecArgs, PiGrepExecResult, PiLsExecArgs, PiLsExecResult, PiReadExecArgs, PiReadExecResult,
@@ -73,6 +73,11 @@ pub struct CursorPiCall<TArgs> {
 
 pub type ExecFuture<T> = BoxFuture<'static, CursorExecHandlerResult<T>>;
 
+/// Each handler is an `Arc<dyn Fn>` over the generated protobuf shapes; the
+/// resulting nested generic is inherent to the ported contract, so the
+/// complexity lint is allowed for the whole handler table rather than by
+/// rewriting every field into a bespoke alias.
+#[allow(clippy::type_complexity)]
 #[derive(Default)]
 pub struct CursorExecHandlers {
     pub read: Option<Arc<dyn Fn(ReadArgs) -> ExecFuture<ReadResult> + Send + Sync>>,

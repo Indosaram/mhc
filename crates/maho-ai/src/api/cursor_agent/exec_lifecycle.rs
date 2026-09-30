@@ -9,6 +9,9 @@ use tokio::task::JoinHandle;
 
 pub trait ExecHeartbeatWriter: Send + Sync + 'static {
     fn is_closed(&self) -> bool;
+    /// The unit error mirrors the TS callback's error-or-null argument: it is
+    /// the write-failed signal, not a typed failure with data.
+    #[allow(clippy::result_unit_err)]
     fn write_heartbeat(&self) -> Result<(), ()>;
 }
 

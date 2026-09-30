@@ -13,15 +13,15 @@ pub fn is_usable_cursor_task_args(args: &Value) -> bool {
     if map.get("subagent_type").is_some_and(is_truthy) {
         return true;
     }
-    if let Some(Value::String(prompt)) = map.get("prompt") {
-        if !prompt.trim().is_empty() {
-            return true;
-        }
+    if let Some(Value::String(prompt)) = map.get("prompt")
+        && !prompt.trim().is_empty()
+    {
+        return true;
     }
-    if let Some(Value::Array(tasks)) = map.get("tasks") {
-        if !tasks.is_empty() {
-            return true;
-        }
+    if let Some(Value::Array(tasks)) = map.get("tasks")
+        && !tasks.is_empty()
+    {
+        return true;
     }
     false
 }

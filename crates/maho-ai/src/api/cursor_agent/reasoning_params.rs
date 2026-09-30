@@ -5,7 +5,7 @@ use crate::cursor::selection_descriptor::resolve_cursor_selection_descriptor;
 use crate::model::Model;
 use crate::types::ThinkingSelection;
 
-use super::gen::agent_pb::{RequestedModel, RequestedModelModelParameterbytes};
+use super::r#gen::agent_pb::{RequestedModel, RequestedModelModelParameterbytes};
 
 pub struct RequestedModelFields {
     pub model_id: String,
@@ -38,7 +38,7 @@ pub fn build_requested_model_fields(
         parameters: resolved
             .parameters
             .into_iter()
-            .map(|parameter| RequestedModelParameter { id: parameter.id, value: parameter.value })
+            .map(|parameter| RequestedModelParameter { id: parameter.id.to_owned(), value: parameter.value })
             .collect(),
     }
 }

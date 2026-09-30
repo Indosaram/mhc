@@ -257,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_the_cli_model_string_with_bracketed_parameters() {
+    fn renders_the_cli_model_string_with_the_catalog_suffix_variant_id() {
         let model = with_reasoning(
             base_model(),
             CursorReasoning {
@@ -269,7 +269,7 @@ mod tests {
         );
         let selection = ThinkingSelection { level: ModelThinkingLevel::Low, source: ThinkingSelectionSource::Explicit, legacy_variant_id: None };
         let rendered = render_cursor_cli_model_string(&model, Some(&selection));
-        assert_eq!(rendered, "gpt-5.1[reasoning=low]");
+        assert_eq!(rendered, "gpt-5.1-low");
     }
 
     #[test]

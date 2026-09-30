@@ -16,7 +16,7 @@ pub struct CursorLevelSpec {
     pub encoding: CursorLevelEncoding,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct CursorModelCapability {
     pub catalog_key: Option<String>,
     pub evidence: CursorCapabilityEvidence,
@@ -34,12 +34,12 @@ const V: CursorLevelEncoding = "variant-id";
 
 fn level_token_to_thinking_level(value: &str) -> ModelThinkingLevel {
     match value {
-        "none" => ModelThinkingLevel::Off,
+        "none" | "off" => ModelThinkingLevel::Off,
         "minimal" => ModelThinkingLevel::Minimal,
         "low" => ModelThinkingLevel::Low,
         "medium" => ModelThinkingLevel::Medium,
         "high" => ModelThinkingLevel::High,
-        "xhigh" => ModelThinkingLevel::Xhigh,
+        "xhigh" | "extra-high" => ModelThinkingLevel::Xhigh,
         "max" => ModelThinkingLevel::Max,
         other => panic!("unknown cursor level token: {other}"),
     }

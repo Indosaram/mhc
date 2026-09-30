@@ -19,7 +19,7 @@ pub struct CursorCatalogRawEntry {
     pub cursor_max_mode: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct CursorCatalogEntry {
     pub id: String,
     pub name: String,
@@ -148,10 +148,10 @@ fn normalize_derived_level(token: &str) -> Option<ModelThinkingLevel> {
 fn build_derived_level_map(members: &[GroupMember]) -> ThinkingLevelMap {
     let mut map: ThinkingLevelMap = ALL_LEVELS.into_iter().map(|level| (level, None)).collect();
     for member in members {
-        if let (Some(level), Some(observed_level)) = (member.alias.level, member.level.clone()) {
-            if map.get(&level) == Some(&None) {
-                map.insert(level, Some(observed_level));
-            }
+        if let (Some(level), Some(observed_level)) = (member.alias.level, member.level.clone())
+            && map.get(&level) == Some(&None)
+        {
+            map.insert(level, Some(observed_level));
         }
     }
     map
