@@ -1,0 +1,644 @@
+{
+  "models": [
+    {
+      "provider": "anthropic",
+      "id": "claude-opus-5",
+      "name": "Claude Opus 5"
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-opus-4-5",
+      "name": "Claude Opus 4.5"
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-opus-4-1",
+      "name": "Claude Opus 4.1"
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-sonnet-4-5",
+      "name": "Claude Sonnet 4.5"
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-fable-5",
+      "name": "Claude Fable 5"
+    },
+    {
+      "provider": "openrouter",
+      "id": "anthropic/claude-opus-5",
+      "name": "Anthropic: Claude Opus 5"
+    },
+    {
+      "provider": "openrouter",
+      "id": "anthropic/claude-opus-4.5",
+      "name": "Anthropic: Claude Opus 4.5"
+    },
+    {
+      "provider": "openrouter",
+      "id": "openai/gpt-5.2",
+      "name": "OpenAI: GPT-5.2"
+    },
+    {
+      "provider": "quotio-anthropic",
+      "id": "claude-opus-5",
+      "name": "Claude Opus 5"
+    },
+    {
+      "provider": "quotio-openai",
+      "id": "gpt-5.6-luna",
+      "name": "GPT-5.6 Luna"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.2",
+      "name": "GPT-5.2"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.6-sol",
+      "name": "GPT-5.6 Sol"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5-4-mini-fast",
+      "name": "GPT 5.4 Mini Fast"
+    },
+    {
+      "provider": "google",
+      "id": "gemini-3-pro-preview",
+      "name": "Gemini 3 Pro Preview"
+    },
+    {
+      "provider": "zai",
+      "id": "glm-5.2",
+      "name": "GLM-5.2"
+    },
+    {
+      "provider": "groq",
+      "id": "moonshotai/kimi-k3",
+      "name": "Kimi K3"
+    }
+  ],
+  "cases": [
+    {
+      "query": "opus",
+      "favoritesFirst": false,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "anthropic/claude-opus-5",
+        "quotio-anthropic/claude-opus-5",
+        "anthropic/claude-opus-4-5",
+        "anthropic/claude-opus-4-1",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5",
+        "anthropic/claude-sonnet-4-5"
+      ]
+    },
+    {
+      "query": "opus",
+      "favoritesFirst": true,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "quotio-anthropic/claude-opus-5",
+        "anthropic/claude-opus-5",
+        "anthropic/claude-opus-4-5",
+        "anthropic/claude-opus-4-1",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5",
+        "anthropic/claude-sonnet-4-5"
+      ]
+    },
+    {
+      "query": "opus 5",
+      "favoritesFirst": false,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "anthropic/claude-opus-5",
+        "quotio-anthropic/claude-opus-5",
+        "anthropic/claude-opus-4-5",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5",
+        "anthropic/claude-sonnet-4-5"
+      ]
+    },
+    {
+      "query": "opus 5",
+      "favoritesFirst": true,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "quotio-anthropic/claude-opus-5",
+        "anthropic/claude-opus-5",
+        "anthropic/claude-opus-4-5",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5",
+        "anthropic/claude-sonnet-4-5"
+      ]
+    },
+    {
+      "query": "claude-opus-5",
+      "favoritesFirst": false,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "anthropic/claude-opus-5",
+        "quotio-anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-5",
+        "anthropic/claude-opus-4-5",
+        "openrouter/anthropic/claude-opus-4.5"
+      ]
+    },
+    {
+      "query": "claude-opus-5",
+      "favoritesFirst": true,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "quotio-anthropic/claude-opus-5",
+        "anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-5",
+        "anthropic/claude-opus-4-5",
+        "openrouter/anthropic/claude-opus-4.5"
+      ]
+    },
+    {
+      "query": "anthropic opus",
+      "favoritesFirst": false,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "anthropic/claude-opus-5",
+        "anthropic/claude-opus-4-5",
+        "anthropic/claude-opus-4-1",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5",
+        "quotio-anthropic/claude-opus-5",
+        "anthropic/claude-sonnet-4-5"
+      ]
+    },
+    {
+      "query": "anthropic opus",
+      "favoritesFirst": true,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "quotio-anthropic/claude-opus-5",
+        "anthropic/claude-opus-5",
+        "anthropic/claude-opus-4-5",
+        "anthropic/claude-opus-4-1",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5",
+        "anthropic/claude-sonnet-4-5"
+      ]
+    },
+    {
+      "query": "anthropic/claude-opus-5",
+      "favoritesFirst": false,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-5",
+        "quotio-anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5",
+        "anthropic/claude-opus-4-5"
+      ]
+    },
+    {
+      "query": "anthropic/claude-opus-5",
+      "favoritesFirst": true,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "anthropic/claude-opus-5",
+        "quotio-anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5",
+        "anthropic/claude-opus-4-5"
+      ]
+    },
+    {
+      "query": "anthropic / claude-opus-5",
+      "favoritesFirst": false,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-5",
+        "quotio-anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5",
+        "anthropic/claude-opus-4-5"
+      ]
+    },
+    {
+      "query": "anthropic / claude-opus-5",
+      "favoritesFirst": true,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "anthropic/claude-opus-5",
+        "quotio-anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5",
+        "anthropic/claude-opus-4-5"
+      ]
+    },
+    {
+      "query": "openrouter opus",
+      "favoritesFirst": false,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5"
+      ]
+    },
+    {
+      "query": "openrouter opus",
+      "favoritesFirst": true,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5"
+      ]
+    },
+    {
+      "query": "opus5",
+      "favoritesFirst": false,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "anthropic/claude-opus-5",
+        "quotio-anthropic/claude-opus-5",
+        "anthropic/claude-opus-4-5",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5",
+        "anthropic/claude-sonnet-4-5"
+      ]
+    },
+    {
+      "query": "opus5",
+      "favoritesFirst": true,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "quotio-anthropic/claude-opus-5",
+        "anthropic/claude-opus-5",
+        "anthropic/claude-opus-4-5",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5",
+        "anthropic/claude-sonnet-4-5"
+      ]
+    },
+    {
+      "query": "gpt5",
+      "favoritesFirst": false,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "openai/gpt-5.2",
+        "openai/gpt-5.6-sol",
+        "quotio-openai/gpt-5.6-luna",
+        "openai/gpt-5-4-mini-fast",
+        "openrouter/openai/gpt-5.2"
+      ]
+    },
+    {
+      "query": "gpt5",
+      "favoritesFirst": true,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "openai/gpt-5.2",
+        "openai/gpt-5.6-sol",
+        "quotio-openai/gpt-5.6-luna",
+        "openai/gpt-5-4-mini-fast",
+        "openrouter/openai/gpt-5.2"
+      ]
+    },
+    {
+      "query": "openai/gpt 5 4 mini fast",
+      "favoritesFirst": false,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "openai/gpt-5-4-mini-fast"
+      ]
+    },
+    {
+      "query": "openai/gpt 5 4 mini fast",
+      "favoritesFirst": true,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "openai/gpt-5-4-mini-fast"
+      ]
+    },
+    {
+      "query": "",
+      "favoritesFirst": false,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "anthropic/claude-opus-5",
+        "anthropic/claude-opus-4-5",
+        "anthropic/claude-opus-4-1",
+        "anthropic/claude-sonnet-4-5",
+        "anthropic/claude-fable-5",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5",
+        "openrouter/openai/gpt-5.2",
+        "quotio-anthropic/claude-opus-5",
+        "quotio-openai/gpt-5.6-luna",
+        "openai/gpt-5.2",
+        "openai/gpt-5.6-sol",
+        "openai/gpt-5-4-mini-fast",
+        "google/gemini-3-pro-preview",
+        "zai/glm-5.2",
+        "groq/moonshotai/kimi-k3"
+      ]
+    },
+    {
+      "query": "",
+      "favoritesFirst": true,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "anthropic/claude-opus-5",
+        "anthropic/claude-opus-4-5",
+        "anthropic/claude-opus-4-1",
+        "anthropic/claude-sonnet-4-5",
+        "anthropic/claude-fable-5",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5",
+        "openrouter/openai/gpt-5.2",
+        "quotio-anthropic/claude-opus-5",
+        "quotio-openai/gpt-5.6-luna",
+        "openai/gpt-5.2",
+        "openai/gpt-5.6-sol",
+        "openai/gpt-5-4-mini-fast",
+        "google/gemini-3-pro-preview",
+        "zai/glm-5.2",
+        "groq/moonshotai/kimi-k3"
+      ]
+    },
+    {
+      "query": "   ",
+      "favoritesFirst": false,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "anthropic/claude-opus-5",
+        "anthropic/claude-opus-4-5",
+        "anthropic/claude-opus-4-1",
+        "anthropic/claude-sonnet-4-5",
+        "anthropic/claude-fable-5",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5",
+        "openrouter/openai/gpt-5.2",
+        "quotio-anthropic/claude-opus-5",
+        "quotio-openai/gpt-5.6-luna",
+        "openai/gpt-5.2",
+        "openai/gpt-5.6-sol",
+        "openai/gpt-5-4-mini-fast",
+        "google/gemini-3-pro-preview",
+        "zai/glm-5.2",
+        "groq/moonshotai/kimi-k3"
+      ]
+    },
+    {
+      "query": "   ",
+      "favoritesFirst": true,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "anthropic/claude-opus-5",
+        "anthropic/claude-opus-4-5",
+        "anthropic/claude-opus-4-1",
+        "anthropic/claude-sonnet-4-5",
+        "anthropic/claude-fable-5",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5",
+        "openrouter/openai/gpt-5.2",
+        "quotio-anthropic/claude-opus-5",
+        "quotio-openai/gpt-5.6-luna",
+        "openai/gpt-5.2",
+        "openai/gpt-5.6-sol",
+        "openai/gpt-5-4-mini-fast",
+        "google/gemini-3-pro-preview",
+        "zai/glm-5.2",
+        "groq/moonshotai/kimi-k3"
+      ]
+    },
+    {
+      "query": "zzz",
+      "favoritesFirst": false,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": []
+    },
+    {
+      "query": "zzz",
+      "favoritesFirst": true,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": []
+    },
+    {
+      "query": "OPUS",
+      "favoritesFirst": false,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "anthropic/claude-opus-5",
+        "quotio-anthropic/claude-opus-5",
+        "anthropic/claude-opus-4-5",
+        "anthropic/claude-opus-4-1",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5",
+        "anthropic/claude-sonnet-4-5"
+      ]
+    },
+    {
+      "query": "OPUS",
+      "favoritesFirst": true,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "quotio-anthropic/claude-opus-5",
+        "anthropic/claude-opus-5",
+        "anthropic/claude-opus-4-5",
+        "anthropic/claude-opus-4-1",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5",
+        "anthropic/claude-sonnet-4-5"
+      ]
+    },
+    {
+      "query": "5",
+      "favoritesFirst": false,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "openai/gpt-5.2",
+        "zai/glm-5.2",
+        "openai/gpt-5.6-sol",
+        "quotio-openai/gpt-5.6-luna",
+        "openai/gpt-5-4-mini-fast",
+        "openrouter/openai/gpt-5.2",
+        "anthropic/claude-opus-5",
+        "quotio-anthropic/claude-opus-5",
+        "anthropic/claude-fable-5",
+        "anthropic/claude-opus-4-5",
+        "anthropic/claude-sonnet-4-5",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5"
+      ]
+    },
+    {
+      "query": "5",
+      "favoritesFirst": true,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "quotio-anthropic/claude-opus-5",
+        "openai/gpt-5.2",
+        "zai/glm-5.2",
+        "openai/gpt-5.6-sol",
+        "quotio-openai/gpt-5.6-luna",
+        "openai/gpt-5-4-mini-fast",
+        "openrouter/openai/gpt-5.2",
+        "anthropic/claude-opus-5",
+        "anthropic/claude-fable-5",
+        "anthropic/claude-opus-4-5",
+        "anthropic/claude-sonnet-4-5",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5"
+      ]
+    },
+    {
+      "query": "/",
+      "favoritesFirst": false,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "openai/gpt-5.2",
+        "zai/glm-5.2",
+        "openai/gpt-5.6-sol",
+        "quotio-openai/gpt-5.6-luna",
+        "anthropic/claude-opus-5",
+        "quotio-anthropic/claude-opus-5",
+        "anthropic/claude-fable-5",
+        "openrouter/openai/gpt-5.2",
+        "anthropic/claude-opus-4-5",
+        "anthropic/claude-opus-4-1",
+        "anthropic/claude-sonnet-4-5",
+        "openai/gpt-5-4-mini-fast",
+        "groq/moonshotai/kimi-k3",
+        "google/gemini-3-pro-preview",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5"
+      ]
+    },
+    {
+      "query": "/",
+      "favoritesFirst": true,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "quotio-anthropic/claude-opus-5",
+        "openai/gpt-5.2",
+        "zai/glm-5.2",
+        "openai/gpt-5.6-sol",
+        "quotio-openai/gpt-5.6-luna",
+        "anthropic/claude-opus-5",
+        "anthropic/claude-fable-5",
+        "openrouter/openai/gpt-5.2",
+        "anthropic/claude-opus-4-5",
+        "anthropic/claude-opus-4-1",
+        "anthropic/claude-sonnet-4-5",
+        "openai/gpt-5-4-mini-fast",
+        "groq/moonshotai/kimi-k3",
+        "google/gemini-3-pro-preview",
+        "openrouter/anthropic/claude-opus-5",
+        "openrouter/anthropic/claude-opus-4.5"
+      ]
+    },
+    {
+      "query": "google gemini",
+      "favoritesFirst": false,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "google/gemini-3-pro-preview"
+      ]
+    },
+    {
+      "query": "google gemini",
+      "favoritesFirst": true,
+      "favorites": [
+        "quotio-anthropic/claude-opus-5"
+      ],
+      "expected": [
+        "google/gemini-3-pro-preview"
+      ]
+    }
+  ],
+  "text": [
+    "claude-opus-5 anthropic anthropic/claude-opus-5 anthropic claude-opus-5 Claude Opus 5",
+    "claude-opus-4-5 anthropic anthropic/claude-opus-4-5 anthropic claude-opus-4-5 Claude Opus 4.5",
+    "claude-opus-4-1 anthropic anthropic/claude-opus-4-1 anthropic claude-opus-4-1 Claude Opus 4.1",
+    "claude-sonnet-4-5 anthropic anthropic/claude-sonnet-4-5 anthropic claude-sonnet-4-5 Claude Sonnet 4.5",
+    "claude-fable-5 anthropic anthropic/claude-fable-5 anthropic claude-fable-5 Claude Fable 5",
+    "anthropic/claude-opus-5 openrouter openrouter/anthropic/claude-opus-5 openrouter anthropic/claude-opus-5 Anthropic: Claude Opus 5",
+    "anthropic/claude-opus-4.5 openrouter openrouter/anthropic/claude-opus-4.5 openrouter anthropic/claude-opus-4.5 Anthropic: Claude Opus 4.5",
+    "openai/gpt-5.2 openrouter openrouter/openai/gpt-5.2 openrouter openai/gpt-5.2 OpenAI: GPT-5.2",
+    "claude-opus-5 quotio-anthropic quotio-anthropic/claude-opus-5 quotio-anthropic claude-opus-5 Claude Opus 5",
+    "gpt-5.6-luna quotio-openai quotio-openai/gpt-5.6-luna quotio-openai gpt-5.6-luna GPT-5.6 Luna",
+    "gpt-5.2 openai openai/gpt-5.2 openai gpt-5.2 GPT-5.2",
+    "gpt-5.6-sol openai openai/gpt-5.6-sol openai gpt-5.6-sol GPT-5.6 Sol",
+    "gpt-5-4-mini-fast openai openai/gpt-5-4-mini-fast openai gpt-5-4-mini-fast GPT 5.4 Mini Fast",
+    "gemini-3-pro-preview google google/gemini-3-pro-preview google gemini-3-pro-preview Gemini 3 Pro Preview",
+    "glm-5.2 zai zai/glm-5.2 zai glm-5.2 GLM-5.2",
+    "moonshotai/kimi-k3 groq groq/moonshotai/kimi-k3 groq moonshotai/kimi-k3 Kimi K3"
+  ]
+}
