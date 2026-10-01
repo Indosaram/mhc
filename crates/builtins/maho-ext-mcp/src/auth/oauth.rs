@@ -78,7 +78,8 @@ pub async fn request_tokens(client:&reqwest::Client,info:&OAuthServerInfo,client
     let id=client_info.get("client_id").and_then(Value::as_str).ok_or_else(||OAuthRequestError::Invalid("OAuth client has no client_id".into()))?;
     form.push(("client_id".into(),id.into()));
     if let Some(secret)=client_info.get("client_secret").and_then(Value::as_str){form.push(("client_secret".into(),secret.into()));}
-    let response=client.post(endpoint).header("content-type","application/x-www-form-urlencoded").body(url::form_urlencoded::Serializer::new(String::new()).extend_pairs(&form).finish()).send().await?;
+    let body=url::form_urlencoded::Serializer::new(String::new()).extend_pairs(&form).finish();
+    let response=client.post(endpoint).header("content-type","application/x-www-form-urlencoded").body(body).send().await?;
     let status=response.status();let body=response.json::<Value>().await?;
     if !status.is_success() {
         let code=body.get("error").and_then(Value::as_str).unwrap_or("token_error");

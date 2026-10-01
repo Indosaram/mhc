@@ -14,7 +14,7 @@ pub fn create_mcp_session_connection(options:SessionConnectionOptions<'_>)->Resu
     let weak=Arc::downgrade(&entry);
     let reconnect=McpReconnect::configure(connection,Arc::new(move ||{let weak=weak.clone();let config=config.clone();Box::pin(async move {
         let Some(entry)=weak.upgrade() else{return Ok(());};let mut entry=entry.lock().await;entry.counters.reconnect_count+=1;entry.cache_refreshed_after_connect=false;
-        entry.connection.renew().await?;crate::startup_race::connect_and_refresh_mcp_catalog(&mut entry,&config).await;Ok::<_,McpError>(())
+        entry.connection.renew().await?;crate::startup_race::connect_and_refresh_mcp_catalog(&mut entry,&config).await;if let Some(error)=entry.connection.last_error(){return Err(error);}Ok::<_,McpError>(())
     })}),Arc::new(||true),Arc::new(||{let mut bytes=[0u8;8];getrandom::fill(&mut bytes).expect("OS entropy unavailable for MCP reconnect jitter");(u64::from_le_bytes(bytes)>>11) as f64 / ((1u64<<53) as f64)}));
     Ok(McpSessionConnection {entry,lifecycle,reconnect})
 }

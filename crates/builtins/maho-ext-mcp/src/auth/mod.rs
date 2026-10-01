@@ -5,3 +5,4 @@ pub mod context;
 pub mod callback;
 pub mod oauth;
 pub mod oauth_refresh;
+pub mod commands_auth;

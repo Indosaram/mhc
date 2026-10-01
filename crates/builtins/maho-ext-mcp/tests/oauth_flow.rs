@@ -39,5 +39,9 @@ async fn real_idp_authorization_persists_tokens_and_rejects_replayed_state() {
     let transient_manager=maho_ext_mcp::auth::oauth_refresh::McpRefreshManager::new(transient.clone(),client.clone());
     assert!(matches!(transient_manager.ensure_fresh().await,Err(OAuthRequestError::Flow(error)) if error.oauth_kind==maho_ext_mcp::auth::oauth_errors::OAuthFailureKind::Transient));
     assert_eq!(transient.store.read().unwrap().unwrap().refresh_token.as_deref(),Some("RT_TRANSIENT"));
+    let paste_root=tempfile::tempdir().unwrap();let paste=maho_ext_mcp::auth::commands_auth::build_provider("paste",&maho_ext_mcp::config_schema::McpServerConfig {transport:Some(maho_ext_mcp::config_schema::Transport::Http),url:Some(ready["mcpUrl"].as_str().unwrap().into()),..Default::default()},paste_root.path(),Some("http://127.0.0.1:8123/callback")).unwrap();
+    let mut pending=std::collections::BTreeMap::new();let authorization=maho_ext_mcp::auth::commands_auth::run_auth_start("paste",paste,&mut pending,&client).await.unwrap();assert!(pending.contains_key("paste"));
+    let redirect=client.get(authorization).send().await.unwrap().headers().get("location").unwrap().to_str().unwrap().to_owned();
+    maho_ext_mcp::auth::commands_auth::run_auth_complete("paste",&redirect,&mut pending,&client).await.unwrap();assert!(pending.is_empty());assert!(maho_ext_mcp::auth::commands_auth::run_auth_complete("paste",&redirect,&mut pending,&client).await.is_err());
     child.kill().await.unwrap();child.wait().await.unwrap();
 }
