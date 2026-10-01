@@ -4,4 +4,5 @@ pub mod wave_assembler;
 pub mod omo_native_eval;
 pub mod eval_cell_correlation;
 pub mod index;
+pub mod omo_native_parallel;
 pub use index::SenpiTelemetryComponent;
