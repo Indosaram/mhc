@@ -1,3 +1,6 @@
+mod extension;
+pub use extension::HerdrAgentState;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentState { Working, Blocked, Idle }
 impl AgentState {

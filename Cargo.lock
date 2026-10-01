@@ -1632,6 +1632,7 @@ version = "0.0.0"
 name = "maho-ext-ferryx-agent-state"
 version = "0.0.0"
 dependencies = [
+ "maho-ext-api",
  "serde_json",
 ]
 
@@ -1654,6 +1655,10 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-herdr-agent-state"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-history-search"
@@ -1714,6 +1719,9 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-orca-agent-status"
 version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-orca-prefill"

@@ -1,5 +1,7 @@
 use serde_json::Value;
 use std::collections::HashSet;
+mod extension;
+pub use extension::FerryxAgentState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentState { Idle, Working, Blocked }
