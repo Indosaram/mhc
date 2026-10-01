@@ -14,5 +14,8 @@ maho-omo-config-resolution = { path = "../maho-omo-config-resolution" }
 maho-omo-config-core = { path = "../../omo-config-core" }
 maho-senpi-task = { path = "../../senpi-task" }
 
+[dev-dependencies]
+tokio = { version = "=1.52.3", features = ["macros", "rt"] }
+
 [lints]
 workspace = true
