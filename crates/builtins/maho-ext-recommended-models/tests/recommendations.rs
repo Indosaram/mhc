@@ -12,3 +12,5 @@ fn explicit_defaults_respected(){for provenance in ["settings","cli","scoped"]{a
 fn implicit_defaults_switch(){for provenance in ["provider-default","first-available"]{assert!(can_auto_switch("tui",Some(provenance)));assert!(!can_auto_switch("app-server",Some(provenance)));}}
 #[test]
 fn empty_override(){assert!(recommendations_for(Some(&[])).is_empty());assert!(!recommendations_for(None).is_empty());}
+#[test]
+fn lifecycle_registered(){use maho_ext_api::*;let mut api=ExtensionApi::new(LoadedExtension::new("recommended","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());RecommendedModels.register(&mut api);assert_eq!(api.get_flag("no-recommended-models"),Some(FlagValue::Boolean(false)));assert_eq!(api.registered.handlers[&EventKind::SessionStart].len(),1);assert_eq!(api.registered.handlers[&EventKind::ModelSelect].len(),1);}

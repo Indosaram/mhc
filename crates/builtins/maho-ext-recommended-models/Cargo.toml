@@ -7,6 +7,8 @@ license = "MIT"
 
 [dependencies]
 maho-ai = { path = "../../maho-ai" }
+maho-ext-api = { path = "../../maho-ext-api" }
+maho-core = { path = "../../maho-core" }
 
 [lints]
 workspace = true
