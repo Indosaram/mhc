@@ -46,6 +46,21 @@ impl LoopRuntime {
         self.attribution.dispatched(tick); Some(prepared)
     }
     pub fn due(&mut self,id:&str,now:f64,busy:bool,delivery:DeliveryId)->DueResult { self.scheduler.on_due(id,now,busy,delivery) }
+    pub async fn dispatch_tick(&mut self,api:&maho_ext_api::ExtensionApi,ctx:&maho_ext_api::ExtensionContext,reference:&LoopStoreRef,tick:&LoopTick,home:&str)->Result<(),maho_ext_api::ExtensionFailure> {
+        let file=match self.scheduler.state.entries.get(&tick.loop_id) {
+            Some(CronEntry::Fixed { fields,.. }|CronEntry::Dynamic { fields,.. }) if matches!(fields.payload,LoopPayload::Sentinel { .. })=>{
+                match crate::loopfile::resolve_loop_file(&ctx.cwd.to_string_lossy(),home,&crate::loopfile::NodeFs).ok().flatten() {
+                    Some(file)=>crate::tick_prompt::LoopFileSnapshot::Present { path:file.path.to_string_lossy().into_owned(),content:file.content,mtime_ms:file.fingerprint.mtime_ms,size:file.fingerprint.size as f64,content_hash:file.fingerprint.content_hash },None=>crate::tick_prompt::LoopFileSnapshot::Absent,
+                }
+            },_=>crate::tick_prompt::LoopFileSnapshot::Absent,
+        };
+        let busy=!ctx.is_idle()||ctx.has_pending_messages()?;
+        let commands=api.get_commands()?;
+        let Some(prepared)=self.prepare_tick(tick,file,busy,&commands) else { return Ok(()); };
+        crate::activation::sync_schedule_wakeup_activation(api,&self.scheduler.state)?;
+        crate::index::deliver_loop_tick(api,prepared,busy)?;
+        self.persist(reference).await.map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))
+    }
     pub fn settled(&mut self,outcome:TickOutcome,now:f64,next_delivery:DeliveryId,wakeup:WakeupId)->Option<crate::attribution::AttributedSettlement> { self.attribution.settle(&mut self.scheduler,outcome,now,next_delivery,wakeup) }
     pub fn restore_anchors(&mut self,entries:&[maho_ext_api::SessionEntry]) {
         for (id,entry) in &self.scheduler.state.entries {
