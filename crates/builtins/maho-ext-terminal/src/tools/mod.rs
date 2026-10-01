@@ -1,3 +1,8 @@
 pub mod foreground_window;
 pub mod spawn;
+pub mod context;
+pub mod bash_input;
+pub mod bash_resize;
+pub mod bash_output;
+pub mod kill_bash;
 pub mod sleep_wait;
