@@ -40,7 +40,7 @@ async fn dispatch(ctx:&ExtensionContext,input:serde_json::Value)->Result<HookDis
     }
     let platform=if cfg!(windows) {"win32"} else {"linux"};
     let tool_status=matches!(input.get("event").and_then(serde_json::Value::as_str),Some("PreToolUse"|"PostToolUse"));
-    dispatch_hook_event_with_status(&state.parsed.executable_handlers,&input,&state.trust,platform,|handler| {let cwd=cwd.clone();let signal=signal.clone();let wire=wire.clone();async move {run_command_hook(&handler,&wire,CommandHookRunOptions {cwd:&cwd,env_passthrough:&[],output_policy:None,signal:signal.as_ref(),source_env:None}).await}},|running| {if tool_status && let Some(update)=&ctx.update_tool_hook_status {update(&crate::dispatcher::running_hook_handlers_status_label(running,platform));}}).await.map_err(|error|ExtensionFailure::new(error.to_string()))
+    dispatch_hook_event_with_status(&state.parsed.executable_handlers,&input,&state.trust,platform,|handler| {let cwd=cwd.clone();let signal=signal.clone();let wire=wire.clone();async move {run_command_hook(&handler,&wire,CommandHookRunOptions {cwd:&cwd,env_passthrough:&[],output_policy:None,signal:signal.as_ref(),source_env:None}).await}},|running| {if tool_status && !running.is_empty() && let Some(update)=&ctx.update_tool_hook_status {update(&crate::dispatcher::running_hook_handlers_status_label(running,platform));}}).await.map_err(|error|ExtensionFailure::new(error.to_string()))
 }
 #[derive(Default)]
 struct Pending {prompts:VecDeque<PendingPromptHookContext>,pre_tools:BTreeMap<String,Vec<String>>,stop_tracker:crate::stop_adapter::StopTurnTracker}

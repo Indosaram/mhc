@@ -50,7 +50,7 @@ pub fn running_hook_handlers_status_label(handlers:&[ExecutableHookHandler],plat
     let labels=handlers.iter().map(|handler| {
         let raw=handler.config.status_message.as_deref().unwrap_or_else(||crate::plugin_loader::select_hook_command_for_platform(handler,platform));
         let stripped=ansi.replace_all(raw,"");let replaced=stripped.replace(['\r','\n','\t']," ");
-        replaced.chars().filter(|character|!character.is_control()).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
+        replaced.chars().filter(|character|!matches!(u32::from(*character),0..=31|127)).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
     }).collect::<Vec<_>>().join(" · ");
     let units=labels.encode_utf16().collect::<Vec<_>>();if units.len()>79 {format!("{}...",String::from_utf16_lossy(&units[..76]))} else {labels}
 }
