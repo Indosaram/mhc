@@ -106,6 +106,20 @@ impl InteractiveMode {
         }
     }
 
+    pub fn footer_snapshot(&self) -> crate::components::footer::FooterSnapshot {
+        let stats = self.session.get_session_stats();
+        let model = self.session.model();
+        let usage = self.session.get_context_usage();
+        crate::components::footer::FooterSnapshot {
+            cwd: self.session.cwd(), home: std::env::var("HOME").ok(), session_name: self.session.session_name(),
+            cache_read: stats.tokens.cache_read as f64, cache_write: stats.tokens.cache_write as f64, cost: stats.cost,
+            context_window: model.context_window as f64, context_percent: usage.and_then(|usage| usage.percent),
+            context_tokens: usage.and_then(|usage| usage.tokens).map(|tokens| tokens as f64),
+            model_id: Some(model.id), provider: Some(model.provider), reasoning: model.reasoning,
+            thinking_level: Some(self.session.thinking_level().as_str().into()), ..Default::default()
+        }
+    }
+
     pub fn handle_event(&mut self, event: &AgentEvent) {
         match event {
             AgentEvent::AgentStart => { self.agent_idle = false; self.pending_tools.clear(); }
@@ -176,7 +190,15 @@ impl InteractiveMode {
 }
 
 impl Component for InteractiveMode {
-    fn render(&mut self, width: usize) -> Vec<String> { self.drain_events(); let mut lines = self.chat.render(width); lines.extend(if let Some(input) = &mut self.rename_input { input.render(width) } else { self.editor.render(width) }); lines }
+    fn render(&mut self, width: usize) -> Vec<String> {
+        self.drain_events();
+        let mut lines = self.chat.render(width);
+        lines.extend(if let Some(input) = &mut self.rename_input { input.render(width) } else { self.editor.render(width) });
+        let mut footer = crate::components::footer::FooterComponent::new(self.footer_snapshot());
+        footer.set_auto_compact_enabled(self.session.auto_compaction_enabled());
+        lines.extend(footer.render(width, &self.theme).expect("footer layout"));
+        lines
+    }
     fn handle_input(&mut self, data: &str) {
         if let Some(input) = &mut self.rename_input {
             input.handle_input(data);

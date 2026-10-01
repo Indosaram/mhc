@@ -131,3 +131,15 @@ async fn rename_without_argument_opens_real_input_and_commits_enter() {
     assert!(mode.render(80).join("\n").contains("dialog-name"));
     assert!(mode.editor.editor.get_text().is_empty());
 }
+
+#[tokio::test]
+async fn native_footer_reflects_session_name_and_selected_model() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("/name footer-name", Default::default()).await.expect("rename");
+    let snapshot = mode.footer_snapshot();
+    assert_eq!(snapshot.session_name.as_deref(), Some("footer-name"));
+    assert_eq!(snapshot.model_id.as_deref(), Some("faux-1"));
+    let lines = mode.render(120);
+    assert!(lines.last().expect("footer").contains("faux-1"));
+}
