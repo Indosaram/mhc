@@ -31,6 +31,16 @@ pub fn build_rpc_commands(extensions: &[RpcCommandInput], templates: &[RpcComman
         .chain(skills.iter().map(|command| RpcSlashCommand { command: RpcCommandInput { name: format!("skill:{}",command.name), ..command.clone() }, source: RpcCommandSource::Skill, syntax: RpcCommandSyntax::Dollar })).collect()
 }
 pub fn rpc_command_list_digest(commands: &[RpcSlashCommand]) -> Result<String,serde_json::Error> { serde_json::to_string(commands) }
+pub fn registered_extension_commands(commands:&[maho_ext_api::ResolvedCommand])->Vec<RpcCommandInput>{
+    commands.iter().map(|resolved|{
+        let info=&resolved.command.source_info;
+        let scope=match info.scope{maho_ext_api::SourceScope::User=>"user",maho_ext_api::SourceScope::Project=>"project",maho_ext_api::SourceScope::Temporary=>"temporary",maho_ext_api::SourceScope::System=>"system"};
+        let origin=match info.origin{maho_ext_api::SourceOrigin::Package=>"package",maho_ext_api::SourceOrigin::TopLevel=>"top-level"};
+        let mut source_info=serde_json::json!({"path":info.path,"source":info.source,"scope":scope,"origin":origin});
+        if let Some(base_dir)=&info.base_dir{source_info["baseDir"]=base_dir.clone().into();}
+        RpcCommandInput{name:resolved.invocation_name.clone(),description:resolved.command.description.clone(),source_info}
+    }).collect()
+}
 pub fn create_commands_changed_event(previous_digest: Option<&str>, commands: &[RpcSlashCommand]) -> Result<Option<Value>,serde_json::Error> {
     let Some(previous) = previous_digest else { return Ok(None); };
     if previous == rpc_command_list_digest(commands)? { return Ok(None); }
@@ -42,6 +52,10 @@ mod tests {
     use super::*;
     use serde_json::json;
     fn input(name: &str) -> RpcCommandInput { RpcCommandInput { name: name.into(),description:None,source_info:json!({"source":"test"}) } }
+    #[test]fn merged_command_registration_uses_resolved_invocation_and_source_metadata(){
+        let commands=vec![maho_ext_api::ResolvedCommand{invocation_name:"build:2".into(),command:maho_ext_api::RegisteredCommand{name:"build".into(),source_info:maho_ext_api::SourceInfo{path:"extension.rs".into(),source:"builtin".into(),scope:maho_ext_api::SourceScope::System,origin:maho_ext_api::SourceOrigin::Package,base_dir:None},description:Some("Build".into()),argument_hint:None,handler:std::sync::Arc::new(|_,_|Box::pin(async{Ok(())}))}}];
+        let inputs=registered_extension_commands(&commands);assert_eq!(inputs[0].name,"build:2");assert_eq!(inputs[0].source_info["scope"],"system");assert!(inputs[0].source_info.get("baseDir").is_none());
+    }
     #[test] fn command_surface_preserves_order_and_skill_syntax() {
         let commands = build_rpc_commands(&[input("hooks")], &[input("review")], &[input("debugging")]);
         assert_eq!(commands.iter().map(|c| (&*c.command.name,c.source,c.syntax)).collect::<Vec<_>>(),vec![("hooks",RpcCommandSource::Extension,RpcCommandSyntax::Slash),("review",RpcCommandSource::Prompt,RpcCommandSyntax::Slash),("skill:debugging",RpcCommandSource::Skill,RpcCommandSyntax::Dollar)]);
