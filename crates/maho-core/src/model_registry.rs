@@ -6,6 +6,7 @@ use maho_ai::models::Provider;
 use maho_ai::types::Model;
 use std::{path::PathBuf,sync::Arc};
 
+#[derive(Clone)]
 pub struct ModelRegistry {pub model_runtime:ModelRuntime,pub auth_storage:Arc<AuthStorage>}
 #[derive(Debug)]
 pub enum ResolvedRequestAuth {Resolved {auth:maho_ai::models::ProviderAuthResult,compatibility:crate::provider_composer::CompatibilityRequestConfig,env:Option<maho_ai::types::ProviderEnv>},Failed {error:String}}
