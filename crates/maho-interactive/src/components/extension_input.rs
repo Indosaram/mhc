@@ -116,8 +116,8 @@ impl Component for ExtensionInputComponent {
         lines.push(String::new());
         let hints = format!(
             "{}  {}",
-            key_hint(&self.theme, "tui.select.confirm", "submit"),
-            key_hint(&self.theme, "tui.select.cancel", "cancel")
+            key_hint("tui.select.confirm", "submit", &self.theme),
+            key_hint("tui.select.cancel", "cancel", &self.theme)
         );
         lines.extend(Text::with_padding(hints, 1, 0).render(width));
         lines.push(String::new());

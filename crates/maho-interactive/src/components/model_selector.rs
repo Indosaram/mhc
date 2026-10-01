@@ -383,7 +383,7 @@ impl ModelSelectorComponent {
     fn scope_hint_text(&self) -> String {
         format!(
             "{}{}",
-            key_hint(&self.theme, "tui.input.tab", "catalog"),
+            key_hint("tui.input.tab", "catalog", &self.theme),
             self.theme.fg(ThemeColor::Muted, " (all/narrowed)")
         )
     }
@@ -520,8 +520,8 @@ impl Component for ModelSelectorComponent {
         lines.push(String::new());
         let hints = format!(
             "{} {}",
-            key_hint(&self.theme, "tui.select.confirm", "select"),
-            key_hint(&self.theme, "app.models.toggleFavorite", "favorite")
+            key_hint("tui.select.confirm", "select", &self.theme),
+            key_hint("app.models.toggleFavorite", "favorite", &self.theme)
         );
         lines.extend(Text::with_padding(hints, 0, 0).render(width));
         lines.push(String::new());

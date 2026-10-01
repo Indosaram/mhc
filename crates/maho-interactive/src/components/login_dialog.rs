@@ -219,7 +219,7 @@ impl LoginDialogComponent {
             0,
         )));
         let hint = Text::with_padding(
-            format!("({})", key_hint(&self.theme, "tui.select.cancel", "to cancel")),
+            format!("({})", key_hint("tui.select.cancel", "to cancel", &self.theme)),
             1,
             0,
         );
@@ -246,8 +246,8 @@ impl LoginDialogComponent {
         let hint = Text::with_padding(
             format!(
                 "({} {})",
-                key_hint(&self.theme, "tui.select.cancel", "to cancel,"),
-                key_hint(&self.theme, "tui.select.confirm", "to submit")
+                key_hint("tui.select.cancel", "to cancel,", &self.theme),
+                key_hint("tui.select.confirm", "to submit", &self.theme)
             ),
             1,
             0,
@@ -297,7 +297,7 @@ impl LoginDialogComponent {
         if show_close_hint {
             self.content.push(Slot::Blank);
             let hint = Text::with_padding(
-                format!("({})", key_hint(&self.theme, "tui.select.cancel", "to close")),
+                format!("({})", key_hint("tui.select.cancel", "to close", &self.theme)),
                 1,
                 0,
             );
@@ -315,7 +315,7 @@ impl LoginDialogComponent {
             0,
         )));
         let hint = Text::with_padding(
-            format!("({})", key_hint(&self.theme, "tui.select.cancel", "to cancel")),
+            format!("({})", key_hint("tui.select.cancel", "to cancel", &self.theme)),
             1,
             0,
         );

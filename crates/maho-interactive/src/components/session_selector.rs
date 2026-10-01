@@ -215,8 +215,8 @@ impl Component for SessionSelectorHeader {
         let (hint_line1, hint_line2) = if self.confirming_delete_path.is_some() {
             let confirm_hint = format!(
                 "Delete session? {} · {}",
-                key_hint(&self.theme, "tui.select.confirm", "confirm"),
-                key_hint(&self.theme, "tui.select.cancel", "cancel")
+                key_hint("tui.select.confirm", "confirm", &self.theme),
+                key_hint("tui.select.cancel", "cancel", &self.theme)
             );
             (
                 self.theme
@@ -234,18 +234,18 @@ impl Component for SessionSelectorHeader {
             let sep = self.theme.fg(ThemeColor::Muted, " · ");
             let hint1 = format!(
                 "{}{}{}",
-                key_hint(&self.theme, "tui.input.tab", "scope"),
+                key_hint("tui.input.tab", "scope", &self.theme),
                 sep,
                 self.theme.fg(ThemeColor::Muted, "re:<pattern> regex · \"phrase\" exact")
             );
             let mut hint2_parts = vec![
-                key_hint(&self.theme, "app.session.toggleSort", "sort"),
-                key_hint(&self.theme, "app.session.toggleNamedFilter", "named"),
-                key_hint(&self.theme, "app.session.delete", "delete"),
-                key_hint(&self.theme, "app.session.togglePath", &format!("path {path_state}")),
+                key_hint("app.session.toggleSort", "sort", &self.theme),
+                key_hint("app.session.toggleNamedFilter", "named", &self.theme),
+                key_hint("app.session.delete", "delete", &self.theme),
+                key_hint("app.session.togglePath", &format!("path {path_state}"), &self.theme),
             ];
             if self.show_rename_hint {
-                hint2_parts.push(key_hint(&self.theme, "app.session.rename", "rename"));
+                hint2_parts.push(key_hint("app.session.rename", "rename", &self.theme));
             }
             let hint2 = hint2_parts.join(&sep);
             (

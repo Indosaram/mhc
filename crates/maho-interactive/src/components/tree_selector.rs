@@ -1696,8 +1696,8 @@ impl Component for LabelInput {
         lines.push(truncate_to_width(
             &format!(
                 "{indent}{}  {}",
-                key_hint(&self.theme, "tui.select.confirm", "save"),
-                key_hint(&self.theme, "tui.select.cancel", "cancel")
+                key_hint("tui.select.confirm", "save", &self.theme),
+                key_hint("tui.select.cancel", "cancel", &self.theme)
             ),
             width,
             "",

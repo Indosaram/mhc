@@ -298,17 +298,17 @@ impl Component for ConfigSelectorHeader {
         });
         let sep = self.theme.fg(ThemeColor::Muted, " · ");
         let switch_hint = if self.project_mode_available {
-            format!("{}{sep}", key_hint(&self.theme, "tui.input.tab", "switch mode"))
+            format!("{}{sep}", key_hint("tui.input.tab", "switch mode", &self.theme))
         } else {
             String::new()
         };
         let action_hint = match self.write_scope {
-            ConfigWriteScope::Project => raw_key_hint(&self.theme, "space", "cycle inherit/+/-"),
-            ConfigWriteScope::Global => raw_key_hint(&self.theme, "space", "toggle"),
+            ConfigWriteScope::Project => raw_key_hint("space", "cycle inherit/+/-", &self.theme),
+            ConfigWriteScope::Global => raw_key_hint("space", "toggle", &self.theme),
         };
         let hint = format!(
             "{switch_hint}{action_hint}{sep}{}",
-            raw_key_hint(&self.theme, "esc", "close")
+            raw_key_hint("esc", "close", &self.theme)
         );
         let spacing = width
             .saturating_sub(visible_width(&title))

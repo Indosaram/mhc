@@ -111,10 +111,10 @@ impl Component for ExtensionEditorComponent {
         lines.push(String::new());
         let hint = format!(
             "{}  {}  {}  {}",
-            key_hint(&self.theme, "tui.select.confirm", "submit"),
-            key_hint(&self.theme, "tui.input.newLine", "newline"),
-            key_hint(&self.theme, "tui.select.cancel", "cancel"),
-            key_hint(&self.theme, "app.editor.external", "external editor")
+            key_hint("tui.select.confirm", "submit", &self.theme),
+            key_hint("tui.input.newLine", "newline", &self.theme),
+            key_hint("tui.select.cancel", "cancel", &self.theme),
+            key_hint("app.editor.external", "external editor", &self.theme)
         );
         lines.extend(Text::with_padding(hint, 1, 0).render(width));
         lines.push(String::new());

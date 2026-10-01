@@ -865,7 +865,7 @@ fn keybinding_hints_format_like_senpi() {
     }
     let theme = theme();
     assert_eq!(
-        key_hint(&theme, "tui.select.confirm", "select"),
+        key_hint("tui.select.confirm", "select", &theme),
         format!(
             "{}{}",
             theme.fg(ThemeColor::Dim, "enter"),
@@ -873,7 +873,7 @@ fn keybinding_hints_format_like_senpi() {
         )
     );
     assert_eq!(
-        raw_key_hint(&theme, "↑↓", "navigate"),
+        raw_key_hint("↑↓", "navigate", &theme),
         format!(
             "{}{}",
             theme.fg(ThemeColor::Dim, "↑↓"),

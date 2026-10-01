@@ -166,9 +166,9 @@ impl Component for ExtensionSelectorComponent {
         lines.push(String::new());
         let hints = format!(
             "{}  {}  {}",
-            raw_key_hint(&self.theme, "↑↓", "navigate"),
-            key_hint(&self.theme, "tui.select.confirm", "select"),
-            key_hint(&self.theme, "tui.select.cancel", "cancel")
+            raw_key_hint("↑↓", "navigate", &self.theme),
+            key_hint("tui.select.confirm", "select", &self.theme),
+            key_hint("tui.select.cancel", "cancel", &self.theme)
         );
         lines.extend(Text::with_padding(hints, 1, 0).render(width));
         lines.push(String::new());
