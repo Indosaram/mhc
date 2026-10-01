@@ -70,6 +70,22 @@ pub fn report_denied_continuation(api:&maho_ext_api::ExtensionApi,ctx:&Extension
     fn admission(goal:&Goal)->crate::continuation::GoalContinuationInput<'_> {
         crate::continuation::GoalContinuationInput { goal:Some(goal),is_idle:true,has_pending_messages:false,path:crate::continuation::GoalContinuationPath::SessionStart,last_stop_reason:None,last_turn_was_malformed_tool_use:false,consecutive_continuations:0,last_continuation_signature:None,current_signature:Some("sig"),consecutive_length_recoveries:0,recent_normalized_output_hashes:&[],toolless_continuation_streak:0,continuation_pending:false,last_turn_stuck_on_context_overflow:false }
     }
+    #[tokio::test] async fn admitted_transport_observes_persisted_counter_and_pending_flag() {
+        use maho_ext_api::*;
+        struct Capture { reference:crate::types::GoalStoreRef,pending:std::sync::Arc<std::sync::atomic::AtomicBool>,seen:std::sync::Mutex<bool> }
+        impl ExtensionActions for Capture {
+            fn send_message(&self,_:CustomMessage,_:SendMessageOptions)->Result<(),ExtensionFailure> { assert!(self.pending.load(std::sync::atomic::Ordering::SeqCst)); assert_eq!(crate::store::read_goal(&self.reference).unwrap().unwrap().consecutive_continuations,Some(1)); *self.seen.lock().unwrap()=true; Ok(()) }
+            fn send_user_message(&self,_:UserMessageContent,_:SendUserMessageOptions)->Result<(),ExtensionFailure> { Err("unexpected user message".into()) }
+            fn append_entry(&self,_:&str,_:Option<JsonValue>)->Result<(),ExtensionFailure> { Err("unexpected entry".into()) }
+            fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure> { Ok(Vec::new()) }
+        }
+        let dir=tempfile::tempdir().unwrap(); let reference=crate::types::GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() };
+        let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap(); let pending=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let capture=std::sync::Arc::new(Capture { reference:reference.clone(),pending:pending.clone(),seen:std::sync::Mutex::new(false) }); let runtime=ExtensionRuntime::default(); runtime.bind(capture.clone());
+        let api=ExtensionApi::new(LoadedExtension::new("goal","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
+        let recorded=admit_and_queue_goal_continuation(&api,&reference,&admission(&goal),1,||pending.store(true,std::sync::atomic::Ordering::SeqCst),|_|"payload".into()).await.unwrap().unwrap();
+        assert_eq!(recorded.id,goal.id); assert!(*capture.seen.lock().unwrap());
+    }
     #[tokio::test] async fn admitted_delivery_records_before_transport_and_exempts_monitor_waits() {
         let dir=tempfile::tempdir().unwrap(); let reference=crate::types::GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() };
         let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap();
