@@ -113,3 +113,31 @@ impl Extension for FerryxAgentState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::BufRead;
+    #[test]
+    fn tcp_receives_framed_state_payload() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind fixture listener");
+        let port = listener.local_addr().expect("listener address").port();
+        let peer = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept payload");
+            stream.set_read_timeout(Some(Duration::from_secs(2))).expect("bound payload read");
+            let mut text = String::new();
+            std::io::BufReader::new(stream).read_line(&mut text).expect("read framed payload");
+            serde_json::from_str::<Value>(&text).expect("parse state payload")
+        });
+        let delivery = Delivery::new(Config { socket: None, port: Some(port), token: Some("fixture-token".into()), session_id: "fixture-session".into() });
+        let mut state = State { root_session: true, ..Default::default() };
+        delivery.send(&mut state, true, Some(json!({"key":"session_id","id":"provider-session"})));
+        let payload = peer.join().expect("join fixture peer");
+        assert_eq!(payload["type"], "agentState");
+        assert_eq!(payload["sessionId"], "fixture-session");
+        assert_eq!(payload["state"], "idle");
+        assert_eq!(payload["token"], "fixture-token");
+        assert_eq!(payload["providerSession"]["id"], "provider-session");
+        drop(delivery);
+    }
+}
