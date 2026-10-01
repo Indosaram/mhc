@@ -1,0 +1,11 @@
+[2m│ [22m[3m[3mA blockquote with [1mbold[22m[3m[3m and [33mcode[39m[3m[3m that is long enough to wrap across several    
+[2m│ [22m[3mlines at forty columns.[23m[23m                                                       
+[2m│ [22m[3m[3m[23m[23m                                                                              
+[2m│ [22m[3m[3m[36m- [39ma list inside the quote[23m[23m                                                     
+[2m│ [22m[3m[3m[36m- [39manother entry[23m[23m                                                               
+                                                                                
+After the quote.                                                                
+                                                                                
+[2m│ [22m[3m[3mnested outer[23m[23m                                                                  
+[2m│ [22m[3m[3m[23m[23m                                                                              
+[2m│ [22m[3m[3m[2m│ [22m[3m[3mnested inner[23m[23m[23m[23m                                                                

@@ -1,0 +1,41 @@
+{
+	"name": "tui-markdown",
+	"kind": "markdown",
+	"crate": "maho-tui",
+	"theme": "chalk",
+	"widths": [40, 80, 120],
+	"docs": [
+		{
+			"id": "readme",
+			"text": "# Title\n\nA paragraph with *emphasis*, **strong**, `code`, ~~struck~~ and a [link](https://example.com).\n\n## Second level\n\n### Third level\n\n- alpha\n- beta\n  - nested gamma\n  - nested delta\n- epsilon\n\n1. first\n2. second\n   1. nested first\n3. third\n\n> quoted line one\n> quoted line two\n\n```typescript\nconst value = 1;\n```\n\n---\n\n| Name | Age |\n| --- | --- |\n| Alice | 30 |\n| Bob | 25 |\n"
+		},
+		{
+			"id": "tables",
+			"text": "| Command | Description | Notes |\n| --- | --- | --- |\n| build | Compile the whole workspace from scratch | slow |\n| test | Run the nextest suite for one crate | fast |\n| audit | Check parity ledgers against the pinned sources | reads only |\n\nA table that has to wrap its cells because the terminal is narrow:\n\n| Key | Value |\n| --- | --- |\n| long-unbroken-token-value | another long value that wraps |\n"
+		},
+		{
+			"id": "lists",
+			"text": "- [ ] unchecked task\n- [x] checked task\n\n1. Lorem ipsum dolor sit amet.\n\n   Ut enim ad minim veniam.\n\n2. Duis aute irure dolor.\n\n   Excepteur sint occaecat cupidatat.\n\n3. Beep boop\n\n- a list item whose text is long enough to wrap onto a continuation line at forty columns\n  - and a nested item that also wraps because it is long\n"
+		},
+		{
+			"id": "quotes",
+			"text": "> A blockquote with **bold** and `code` that is long enough to wrap across several lines at forty columns.\n>\n> - a list inside the quote\n> - another entry\n\nAfter the quote.\n\n> nested outer\n> > nested inner\n"
+		},
+		{
+			"id": "latex",
+			"text": "Inline math $E = mc^2$ and a display block:\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\nA relational join: $R \\bowtie S \\ltimes T$ and a literal dollar price $5 and $10.\n"
+		},
+		{
+			"id": "code",
+			"text": "Paragraph before.\n\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\nParagraph after.\n\n    indented code block\n    second line\n\nEnd.\n"
+		},
+		{
+			"id": "inline",
+			"text": "Escapes: \\*not emphasis\\* and \\`not code\\`.\n\nHTML: <span>kept as text</span>.\n\nAutolink: https://example.com/path and mail me at user@example.com.\n\nA very long paragraph without any explicit break that must be wrapped by the renderer at each of the three fixture widths so wrapping is exercised properly.\n"
+		},
+		{
+			"id": "cjk",
+			"text": "# 中文标题\n\n这是一个包含中文和 emoji 🎉 的段落，用来验证宽度计算与换行。\n\n- 项目一\n- 项目二\n\n| 名称 | 数量 |\n| --- | --- |\n| 苹果 | 3 |\n"
+		}
+	]
+}

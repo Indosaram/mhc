@@ -1,0 +1,8 @@
+Escapes: *not emphasis* and `not code`.                                                                                 
+                                                                                                                        
+HTML: <span>kept as text</span>.                                                                                        
+                                                                                                                        
+Autolink: [34m[4mhttps://example.com/path[24m[39m and mail me at [34m[4muser@example.com[24m[39m.                                                     
+                                                                                                                        
+A very long paragraph without any explicit break that must be wrapped by the renderer at each of the three fixture      
+widths so wrapping is exercised properly.                                                                               

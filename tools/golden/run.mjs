@@ -86,6 +86,42 @@ async function renderComponent(senpi, spec) {
 }
 
 /**
+ * `markdown` cases render the Markdown component with a named theme from markdown-themes.mjs:
+ *
+ *   { name, kind: "markdown", crate, theme: "plain"|"chalk", widths: [...],
+ *     docs: [{ id, text, paddingX?, paddingY?, options? }] }
+ *
+ * One `<case>.<id>.<width>.ansi` fixture per document and width.
+ */
+async function renderMarkdown(senpi, spec) {
+	const { Markdown } = await importSenpi(senpi, "packages/tui/src/components/markdown.ts");
+	const { setCapabilities } = await importSenpi(senpi, "packages/tui/src/terminal-image.ts");
+	const { markdownThemes } = await import("./markdown-themes.mjs");
+	const theme = markdownThemes[spec.theme];
+	if (!theme) usage(`case ${spec.name}: unknown theme ${spec.theme}`);
+	if (!Array.isArray(spec.docs) || spec.docs.length === 0) usage(`case ${spec.name}: docs required`);
+	if (!Array.isArray(spec.widths) || spec.widths.length === 0) usage(`case ${spec.name}: widths required`);
+	// Pin capabilities so the fixture cannot depend on the terminal that generated it.
+	setCapabilities({ images: null, trueColor: false, hyperlinks: false });
+	const outputs = [];
+	for (const doc of spec.docs) {
+		for (const width of spec.widths) {
+			const markdown = new Markdown(
+				doc.text,
+				doc.paddingX ?? 0,
+				doc.paddingY ?? 0,
+				theme,
+				undefined,
+				doc.options,
+			);
+			const lines = markdown.render(width);
+			outputs.push({ file: `${spec.name}.${doc.id}.${width}.ansi`, content: lines.join("\n") });
+		}
+	}
+	return outputs;
+}
+
+/**
  * `tui-screen` cases drive senpi's own renderer over a recording VirtualTerminal and capture
  * (a) the raw ANSI byte stream the renderer wrote and (b) the resulting screen. The Rust side
  * replays the same steps and must produce the identical stream, so the fixture is both the
@@ -259,7 +295,9 @@ for (const name of names) {
 	const outputs =
 		spec.kind === "component"
 			? await renderComponent(senpi, spec)
-			: spec.kind === "screen"
+			: spec.kind === "markdown"
+				? await renderMarkdown(senpi, spec)
+				: spec.kind === "screen"
 				? await renderScreen(senpi, spec)
 				: spec.kind === "tui-screen"
 					? await renderTuiScreen(senpi, spec)

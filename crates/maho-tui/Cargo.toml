@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 crossterm = "=0.29.0"
 dirs = { workspace = true }
+fancy-regex = { workspace = true }
 icu_segmenter = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
 indexmap = { workspace = true }
 jiff = { workspace = true }
@@ -22,6 +23,7 @@ unicode-width = { workspace = true }
 rustix = { version = "=1.1.4", features = ["event", "fs", "process", "stdio", "termios"] }
 
 [dev-dependencies]
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 maho-test-support = { path = "../maho-test-support" }
