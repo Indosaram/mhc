@@ -40,6 +40,7 @@ pub mod package_manager;
 pub mod paths;
 pub mod prompt_templates;
 pub mod resolve_config_value;
+pub mod resource_loader;
 pub mod session_manager;
 pub mod session_resident_store;
 pub mod session_title_generator;
