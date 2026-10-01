@@ -116,28 +116,42 @@ impl Extension for HerdrAgentState {
             let runtime = Arc::clone(&runtime);
             let delivery = Arc::clone(&delivery);
             api.on(kind, Arc::new(move |event, ctx| {
-                {
-                    let mut runtime = runtime.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let runtime = Arc::clone(&runtime);
+                let delivery = Arc::clone(&delivery);
+                Box::pin(async move {
                     if kind == EventKind::SessionStart && ctx.mode == ExtensionMode::Tui {
-                        runtime.state.root_session = true;
-                        runtime.update_reference(ctx);
-                        if runtime.reference.is_some() {
+                        let request = {
+                            let mut runtime = runtime.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                            runtime.state.root_session = true;
+                            runtime.update_reference(ctx);
                             let reason = match event { ExtensionEvent::SessionStart(start) => Some(format!("{:?}", start.reason).to_lowercase()), _ => None };
-                            let request = runtime.request(&delivery.config, "pane.report_agent_session", reason.as_deref());
-                            delivery.config.send(&request);
+                            runtime.reference.is_some().then(|| runtime.request(&delivery.config, "pane.report_agent_session", reason.as_deref()))
+                        };
+                        if let Some(request) = request {
+                            let config = Arc::clone(&delivery.config);
+                            tokio::task::spawn_blocking(move || config.send(&request)).await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                         }
+                        let mut runtime = runtime.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         runtime.state.agent_active = !(ctx.is_idle_fn)();
                         runtime.publish(&delivery, true);
-                    } else if kind == EventKind::AgentStart && runtime.state.root_session {
+                        return Ok(EventResult::None);
+                    }
+                    let mut runtime = runtime.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if kind == EventKind::AgentStart && runtime.state.root_session {
                         runtime.update_reference(ctx);
+                        if runtime.reference.is_some() {
+                            let request = runtime.request(&delivery.config, "pane.report_agent_session", None);
+                            let config = Arc::clone(&delivery.config);
+                            tokio::task::spawn_blocking(move || config.send(&request));
+                        }
                         runtime.state.agent_active = true;
                         runtime.publish(&delivery, false);
                     } else if kind == EventKind::AgentSettled && runtime.state.root_session && (ctx.is_idle_fn)() {
                         runtime.state.agent_active = false;
                         runtime.publish(&delivery, false);
                     }
-                }
-                Box::pin(async { Ok(EventResult::None) })
+                    Ok(EventResult::None)
+                })
             }));
         }
         let subscription = api.events.on("herdr:blocked", Arc::new(move |data| {
@@ -154,4 +168,47 @@ mod tests {
     use super::*;
     #[test] fn inactive_when_falsy() { for value in [Value::Null, json!(false), json!(0), json!("")] { assert!(!truthy(Some(&value))); } assert!(!truthy(None)); }
     #[test] fn active_when_truthy() { for value in [json!(true), json!(1), json!("active"), json!([]), json!({})] { assert!(truthy(Some(&value))); } }
+    #[cfg(unix)]
+    #[test]
+    fn delivered_when_unix_peer_acknowledges() {
+        use std::io::BufRead;
+        let directory = tempfile::tempdir().expect("create socket fixture");
+        let socket = directory.path().join("herdr.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind fixture socket");
+        let peer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            stream.set_read_timeout(Some(Duration::from_secs(2))).expect("bound request read");
+            let mut text = String::new();
+            std::io::BufReader::new(stream.try_clone().expect("clone stream")).read_line(&mut text).expect("read framed request");
+            stream.write_all(b"ok\n").expect("acknowledge request");
+            text
+        });
+        let config = Config { socket: socket.to_string_lossy().into_owned(), pane: "fixture".into() };
+        assert!(config.attempt("{\"method\":\"pane.report_agent\"}\n", 500).expect("deliver request"));
+        assert_eq!(peer.join().expect("join peer"), "{\"method\":\"pane.report_agent\"}\n");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn retried_when_first_peer_closes_without_ack() {
+        use std::io::BufRead;
+        let directory = tempfile::tempdir().expect("create socket fixture");
+        let socket = directory.path().join("herdr.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind fixture socket");
+        let peer = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept retry");
+                stream.set_read_timeout(Some(Duration::from_secs(2))).expect("bound retry read");
+                let mut text = String::new();
+                std::io::BufReader::new(stream.try_clone().expect("clone stream")).read_line(&mut text).expect("read retry request");
+                requests.push(text);
+                if attempt == 1 { stream.write_all(b"ok\n").expect("acknowledge retry"); }
+            }
+            requests
+        });
+        let config = Config { socket: socket.to_string_lossy().into_owned(), pane: "fixture".into() };
+        let request = json!({"method":"pane.report_agent"});
+        config.send(&request);
+        assert_eq!(peer.join().expect("join retry peer"), vec![format!("{request}\n"); 2]);
+    }
 }
