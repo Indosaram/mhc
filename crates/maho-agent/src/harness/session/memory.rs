@@ -917,7 +917,7 @@ impl SessionRepo for MemorySessionRepo {
             let id = options
                 .id
                 .clone()
-                .unwrap_or_else(|| maho_ai::utils::uuid::uuidv7(Some(created_at)).unwrap_or_default());
+                .unwrap_or_else(|| maho_ai::utils::uuid::uuidv7(Some(created_at as f64)).unwrap_or_default());
             self.reserve_id(&id)?;
             let storage = Arc::new(MemoryStorage::new(MemoryStorageOptions {
                 now: Some(self.now.clone()),
@@ -1031,7 +1031,7 @@ impl SessionRepo for MemorySessionRepo {
             let id = options
                 .id()
                 .map(str::to_owned)
-                .unwrap_or_else(|| maho_ai::utils::uuid::uuidv7(Some(created_at)).unwrap_or_default());
+                .unwrap_or_else(|| maho_ai::utils::uuid::uuidv7(Some(created_at as f64)).unwrap_or_default());
             self.reserve_id(&id)?;
             let storage = source_record.storage.fork(&options).await;
             let result = match storage {

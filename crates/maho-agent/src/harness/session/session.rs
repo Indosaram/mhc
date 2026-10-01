@@ -126,7 +126,7 @@ pub struct StorageBackedSessionOptions {
 
 pub fn default_id_generator() -> IdGenerator {
     Arc::new(|timestamp_ms: Option<i64>| {
-        maho_ai::utils::uuid::uuidv7(timestamp_ms).unwrap_or_else(|_| uuid_like_fallback(timestamp_ms))
+        maho_ai::utils::uuid::uuidv7(timestamp_ms.map(|t| t as f64)).unwrap_or_else(|_| uuid_like_fallback(timestamp_ms))
     })
 }
 

@@ -359,7 +359,7 @@ impl JsonlSessionRepo {
         let id = options
             .id
             .clone()
-            .unwrap_or_else(|| maho_ai::utils::uuid::uuidv7(Some(created_at)).unwrap_or_default());
+            .unwrap_or_else(|| maho_ai::utils::uuid::uuidv7(Some(created_at as f64)).unwrap_or_default());
         let cwd = file_value(
             self.file_system.absolute_path(&options.cwd, context).await,
             &format!("Failed to resolve session cwd {}", options.cwd),
@@ -494,7 +494,7 @@ impl JsonlSessionRepo {
         let id = options
             .id()
             .map(str::to_owned)
-            .unwrap_or_else(|| maho_ai::utils::uuid::uuidv7(Some(created_at)).unwrap_or_default());
+            .unwrap_or_else(|| maho_ai::utils::uuid::uuidv7(Some(created_at as f64)).unwrap_or_default());
         let key = Self::session_key(&cwd, &id);
         self.reserve(&key, &id)?;
         let result = async {
