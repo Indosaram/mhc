@@ -17,6 +17,9 @@ pub struct FileHookStateStorage {global_path:PathBuf,project_path:PathBuf}
 impl FileHookStateStorage {
     pub fn new(agent_dir:&Path,cwd:&Path)->Self {Self {global_path:agent_dir.join("hooks-state.json"),project_path:cwd.join(".maho/hooks-state.json")}}
     fn path(&self,scope:HookTrustStorageScope)->&Path {match scope {HookTrustStorageScope::Global=>&self.global_path,HookTrustStorageScope::Project=>&self.project_path}}
+    pub async fn read_async(&self,scope:HookTrustStorageScope)->std::io::Result<HookTrustState> {
+        match tokio::fs::read_to_string(self.path(scope)).await {Ok(text)=>Ok(read_hook_trust_state_json(Some(&text))),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(empty_hook_trust_state()),Err(error)=>Err(error)}
+    }
     pub fn read(&self,scope:HookTrustStorageScope)->std::io::Result<HookTrustState> {
         let path=self.path(scope);let text=read_snapshot(path)?;
         if let Some(snapshot)=parse_hook_trust_state_json(text.as_deref()) {return Ok(snapshot);}
@@ -38,7 +41,8 @@ impl FileHookStateStorage {
             let mut file=tempfile::Builder::new().prefix("hooks-state.").suffix(".tmp").tempfile_in(parent)?;
             #[cfg(unix)]
             {use std::os::unix::fs::PermissionsExt;file.as_file().set_permissions(std::fs::Permissions::from_mode(mode))?;}
-            let mut serialized=serde_json::to_string_pretty(&next).map_err(std::io::Error::other)?;serialized.push('\n');file.write_all(serialized.as_bytes())?;
+            let mut serialized_state=next.clone();serialized_state.version=1;
+            let mut serialized=serde_json::to_string_pretty(&serialized_state).map_err(std::io::Error::other)?;serialized.push('\n');file.write_all(serialized.as_bytes())?;
             file.persist(path).map_err(|error|error.error)?;Ok(next)
         })();release_result(lease,result)
     }
@@ -61,6 +65,11 @@ fn release_result<T>(lease:DirectoryLease,result:std::io::Result<T>)->std::io::R
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn asynchronous_missing_and_invalid_snapshots_do_not_create_locks()->std::io::Result<()> {
+        let dir=tempfile::tempdir()?;let storage=FileHookStateStorage::new(dir.path(),dir.path());assert_eq!(storage.read_async(HookTrustStorageScope::Global).await?,empty_hook_trust_state());assert!(!dir.path().join("hooks-state.json.lock").exists());
+        std::fs::write(dir.path().join("hooks-state.json"),"invalid")?;let lease=DirectoryLease::acquire(&dir.path().join("hooks-state.json"))?;assert_eq!(storage.read_async(HookTrustStorageScope::Global).await?,empty_hook_trust_state());lease.release()
+    }
     #[test] fn memory_scopes_remain_independent() {let mut storage=InMemoryHookStateStorage::default();storage.update(HookTrustStorageScope::Global,|mut state| {state.version=2;state});assert_eq!(storage.read(HookTrustStorageScope::Global).version,2);assert_eq!(storage.read(HookTrustStorageScope::Project).version,1);}
     #[test] fn publishes_snapshot_and_releases_lock()->std::io::Result<()> {let dir=tempfile::tempdir()?;let storage=FileHookStateStorage::new(dir.path(),dir.path());assert_eq!(storage.read(HookTrustStorageScope::Global)?,empty_hook_trust_state());storage.update(HookTrustStorageScope::Global,|state|state)?;assert!(dir.path().join("hooks-state.json").is_file());assert!(!dir.path().join("hooks-state.json.lock").exists());Ok(())}
     #[test] fn valid_snapshot_read_ignores_writer_lock()->std::io::Result<()> {let dir=tempfile::tempdir()?;let storage=FileHookStateStorage::new(dir.path(),dir.path());storage.update(HookTrustStorageScope::Global,|state|state)?;let lease=DirectoryLease::acquire(&dir.path().join("hooks-state.json"))?;assert_eq!(storage.read(HookTrustStorageScope::Global)?,empty_hook_trust_state());assert!(storage.update(HookTrustStorageScope::Global,|state|state).is_err());lease.release()}
