@@ -50,7 +50,21 @@ pub async fn load_extensions_async(factories: Vec<NativeAsyncExtensionFactory>, 
         let runtime_checkpoint = runtime.registration_checkpoint();
         let events_checkpoint = events.registration_checkpoint();
         let mut api = ExtensionApi::new(LoadedExtension::new(&factory.path, cwd.to_owned(), factory.source_info), profile.clone(), events.clone(), runtime.clone());
-        match (factory.factory)(&mut api).await {
+        let outcome = {
+            let mut future = Box::pin(async { (factory.factory)(&mut api).await });
+            std::future::poll_fn(|cx| {
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| future.as_mut().poll(cx))) {
+                    Ok(poll) => poll,
+                    Err(payload) => {
+                        let message = payload.downcast_ref::<String>().cloned()
+                            .or_else(|| payload.downcast_ref::<&str>().map(|message| (*message).to_owned()))
+                            .unwrap_or_else(|| "Native extension factory panicked".into());
+                        std::task::Poll::Ready(Err(ExtensionFailure::new(message)))
+                    }
+                }
+            }).await
+        };
+        match outcome {
             Ok(()) => extensions.push(api.registered),
             Err(error) => {
                 runtime.rollback_registration(runtime_checkpoint);

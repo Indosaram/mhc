@@ -10,7 +10,7 @@ pub struct BuiltinShortcut { pub keybinding: String, pub restrict_override: bool
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShortcutDiagnostic { pub message: String, pub path: String }
 struct HookRun { event: ToolHookLifecycleEvent, state: Arc<std::sync::Mutex<(bool, String)>> }
-struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime }
+struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime, compaction_signal: std::sync::Mutex<Option<AbortSignal>> }
 impl ToolSessionManager for ContextSessionManager {
     fn session_id(&self) -> &str { self.session.session_id() }
     fn session_file(&self) -> Option<&std::path::Path> { self.session.session_file() }
@@ -49,11 +49,24 @@ impl ExtensionContextActions for ContextSessionManager {
     fn session_settings(&self) -> &dyn ExtensionSessionSettings { self.actions.session_settings() }
     fn compact(&self, options: CompactOptions) { self.actions.compact(options); }
     fn prepare_provider_request(&self, messages: Vec<AgentMessage>) -> ExtensionFuture<'_, ProviderRequestPreparation> { self.actions.prepare_provider_request(messages) }
-    fn begin_compaction(&self, options: BeginCompactionOptions) -> Option<AbortSignal> { self.actions.begin_compaction(options) }
-    fn update_compaction(&self, options: UpdateCompactionOptions) { self.actions.update_compaction(options); }
-    fn end_compaction(&self, options: EndCompactionOptions) { self.actions.end_compaction(options); }
+    fn begin_compaction(&self, options: BeginCompactionOptions) -> Option<AbortSignal> {
+        let signal = self.actions.begin_compaction(options);
+        *self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = signal.clone();
+        signal
+    }
+    fn update_compaction(&self, mut options: UpdateCompactionOptions) {
+        options.signal = options.signal.or_else(|| self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
+        self.actions.update_compaction(options);
+    }
+    fn end_compaction(&self, mut options: EndCompactionOptions) {
+        options.signal = options.signal.or_else(|| self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
+        self.actions.end_compaction(options);
+    }
     fn get_message_revision(&self) -> u64 { self.actions.get_message_revision() }
-    fn apply_compaction(&self, result: CompactionResult, options: ApplyCompactionOptions) -> ExtensionFuture<'_, ApplyCompactionResult> { self.actions.apply_compaction(result, options) }
+    fn apply_compaction(&self, result: CompactionResult, mut options: ApplyCompactionOptions) -> ExtensionFuture<'_, ApplyCompactionResult> {
+        options.signal = options.signal.or_else(|| self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
+        self.actions.apply_compaction(result, options)
+    }
     fn get_system_prompt(&self) -> String { self.actions.get_system_prompt() }
     fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { self.actions.get_system_prompt_options() }
     fn get_loaded_hook_sources(&self) -> LoadedHookSources { self.actions.get_loaded_hook_sources() }
@@ -65,11 +78,12 @@ pub struct ExtensionRunner {
     context: ExtensionContext, error_listeners: Vec<ErrorListener>, pub errors: Vec<ExtensionError>,
     pub warnings: Vec<String>, pub shutdown_warn_ms: u64, pub shutdown_timeout_ms: u64,
     hook_observer: Option<HookObserver>, warning_listener: Option<WarningListener>, next_hook_index: u64,
+    context_actions: Option<Arc<dyn ExtensionContextActions>>,
 }
 impl ExtensionRunner {
     pub fn new(extensions: Vec<LoadedExtension>, runtime: ExtensionRuntime, events: EventBus, context: ExtensionContext) -> Self {
         Self { extensions, runtime, events, context, error_listeners: Vec::new(), errors: Vec::new(), warnings: Vec::new(),
-            shutdown_warn_ms: 2000, shutdown_timeout_ms: 10000, hook_observer: None, warning_listener: None, next_hook_index: 0 }
+            shutdown_warn_ms: 2000, shutdown_timeout_ms: 10000, hook_observer: None, warning_listener: None, next_hook_index: 0, context_actions: None }
     }
     pub fn from_static(extensions: Vec<Box<dyn Extension>>, context: ExtensionContext) -> Self {
         let runtime = ExtensionRuntime::default();
@@ -93,7 +107,8 @@ impl ExtensionRunner {
         self.context.get_system_prompt_fn = Arc::new(move || prompt_actions.get_system_prompt());
         let option_actions = Arc::clone(&actions);
         self.context.get_system_prompt_options_fn = Arc::new(move || option_actions.get_system_prompt_options());
-        self.context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions, runtime: self.runtime.clone() });
+        self.context_actions = Some(Arc::clone(&actions));
+        self.context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions, runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None) });
         Ok(())
     }
     pub fn bind_providers(&mut self, actions: Arc<dyn ExtensionProviderActions>) -> Result<(), ExtensionFailure> {
@@ -167,6 +182,9 @@ impl ExtensionRunner {
     pub fn create_context(&self) -> Result<ExtensionContext, ExtensionFailure> {
         self.runtime.assert_active()?;
         let mut context = self.context.clone();
+        if let Some(actions) = &self.context_actions {
+            context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&context.session_manager), actions: Arc::clone(actions), runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None) });
+        }
         if let Some(actions) = context.session_manager.extension_context_actions() {
             actions.assert_active()?;
             context.model = actions.get_model(); context.service_tier = actions.get_service_tier();

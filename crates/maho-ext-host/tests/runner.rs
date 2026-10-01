@@ -613,6 +613,30 @@ fn protected_shortcut_is_rejected_and_extension_collision_is_reported() {
 }
 
 #[tokio::test]
+async fn panicking_async_factory_is_isolated_and_rolls_back_registration() {
+    use maho_ext_host::loader::*;
+    let failed = NativeAsyncExtensionFactory {
+        path: "panic".into(), source_info: SourceInfo::default(),
+        factory: Arc::new(|api| Box::pin(async move {
+            api.register_flag("owned", FlagType::Boolean { default: Some(true) }, None);
+            panic!("factory panic");
+        })),
+    };
+    let good = NativeAsyncExtensionFactory {
+        path: "good".into(), source_info: SourceInfo::default(),
+        factory: Arc::new(|api| Box::pin(async move {
+            api.register_flag("owned", FlagType::Boolean { default: Some(false) }, None);
+            Ok(())
+        })),
+    };
+    let loaded = load_extensions_async(vec![failed, good], Path::new("/tmp"), ExtensionSessionProfile::default()).await;
+    assert_eq!(loaded.runtime.get_flag("owned"), Some(FlagValue::Boolean(false)));
+    assert_eq!(loaded.extensions.len(), 1);
+    assert_eq!(loaded.errors.len(), 1);
+    assert_eq!(loaded.errors[0].extension_path, "panic");
+}
+
+#[tokio::test]
 async fn invocation_disposes_when_pending_execution_is_dropped() {
     let disposed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let observed = disposed.clone();
@@ -676,9 +700,13 @@ impl ExtensionContextActions for ContextActions {
     fn prepare_provider_request(&self, messages: Vec<AgentMessage>) -> ExtensionFuture<'_, ProviderRequestPreparation> {
         Box::pin(async move { Ok(ProviderRequestPreparation { messages, transform_payload: Arc::new(|payload| Box::pin(async move { Ok(payload) })), transform_headers: Arc::new(|headers| Box::pin(async move { Ok(headers) })) }) })
     }
-    fn begin_compaction(&self, _: BeginCompactionOptions) -> Option<AbortSignal> { None }
-    fn update_compaction(&self, _: UpdateCompactionOptions) {}
-    fn end_compaction(&self, _: EndCompactionOptions) {}
+    fn begin_compaction(&self, _: BeginCompactionOptions) -> Option<AbortSignal> { Some(AbortSignal::default()) }
+    fn update_compaction(&self, options: UpdateCompactionOptions) {
+        if options.signal.is_some_and(|signal| signal.is_aborted()) { self.revision.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
+    }
+    fn end_compaction(&self, options: EndCompactionOptions) {
+        if options.signal.is_some_and(|signal| signal.is_aborted()) { self.revision.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
+    }
     fn get_message_revision(&self) -> u64 { self.revision.load(std::sync::atomic::Ordering::SeqCst) }
     fn apply_compaction(&self, _: CompactionResult, options: ApplyCompactionOptions) -> ExtensionFuture<'_, ApplyCompactionResult> {
         Box::pin(async move { Ok(if options.expected_revision == Some(self.get_message_revision()) { ApplyCompactionResult::Applied } else { ApplyCompactionResult::Stale }) })
@@ -709,6 +737,21 @@ async fn before_agent_start_keeps_prompt_chaining_with_bound_live_context() {
     let mut runner = runner(vec![extension("first", EventKind::BeforeAgentStart, prompt("1")), extension("second", EventKind::BeforeAgentStart, prompt("2"))]);
     runner.bind_context_actions(actions).unwrap();
     assert_eq!(runner.emit_before_agent_start(before()).await.unwrap().unwrap().system_prompt.as_deref(), Some("base12"));
+}
+
+#[test]
+fn compaction_signal_is_inherited_within_one_context_not_across_invocations() {
+    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) });
+    let mut runner = runner(vec![]);
+    runner.bind_context_actions(actions.clone()).unwrap();
+    let first = runner.create_context().unwrap();
+    let second = runner.create_context().unwrap();
+    first.begin_compaction(BeginCompactionOptions { reason: CompactionReason::Extension }).unwrap().unwrap().abort();
+    let update = || UpdateCompactionOptions { reason: CompactionReason::Extension, signal: None, delta: None, text: None };
+    first.update_compaction(update()).unwrap();
+    second.update_compaction(update()).unwrap();
+    first.end_compaction(EndCompactionOptions { reason: CompactionReason::Extension, signal: None, aborted: None, error_message: None }).unwrap();
+    assert_eq!(actions.revision.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
