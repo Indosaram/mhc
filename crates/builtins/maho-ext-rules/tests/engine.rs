@@ -58,3 +58,11 @@ fn fingerprints_invalidate_on_rule_addition_and_reset() {
     engine.reset_session(None);
     assert!(!engine.is_dynamic_target_fingerprint_current(&first[0]));
 }
+#[test]
+fn relative_paths_cross_siblings_and_normalize_dot_segments() {
+    use std::path::Path;
+    use maho_ext_rules::rules::engine::relative_path;
+    assert_eq!(relative_path(Path::new("/tmp/project/left"), Path::new("/tmp/project/right/file.rs")), "../right/file.rs");
+    assert_eq!(relative_path(Path::new("/tmp/project"), Path::new("/tmp/project/dir/../file.rs")), "file.rs");
+    assert_eq!(relative_path(Path::new("/tmp/project"), Path::new("/tmp/project")), "");
+}

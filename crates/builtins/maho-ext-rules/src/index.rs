@@ -81,7 +81,7 @@ impl Rules {
                 engine.commit_dynamic_target_fingerprints(&fingerprints);
                 let rules: Vec<_> = loaded.rules.into_iter().filter(|rule| !cache::is_static_injected(&engine.state, rule) && !cache::is_dynamic_injected(&engine.state, "live-context", rule)).collect();
                 if rules.is_empty() { return Ok(EventResult::None); }
-                let target = pending[0].strip_prefix(&ctx.cwd).unwrap_or(&pending[0]).to_string_lossy().into_owned();
+                let target = crate::rules::engine::relative_path(&ctx.cwd, &pending[0]);
                 let block = engine.format_dynamic(&rules, &target);
                 for rule in &rules { cache::mark_dynamic_injected(&mut engine.state, "live-context", rule); }
                 append_rule_activation(&actions, &RuleActivationDetails::ProjectRules { target_path: target, rules: rules.iter().map(|rule| rule.candidate.relative_path.clone()).collect(), tool_call_id: Some(event.tool_call_id.clone()) })?;

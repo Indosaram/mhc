@@ -1,4 +1,5 @@
 pub const GLOBAL_DISTANCE: usize = 9999;
+pub const SOURCE_PRIORITY: &[(&str, usize)] = &[(".omo/rules", 0), (".claude/rules", 1), (".cursor/rules", 2), (".github/instructions", 3), (".github/copilot-instructions.md", 4), ("AGENTS.md", 5), ("CLAUDE.md", 6), ("CONTEXT.md", 7), ("~/.omo/rules", 100), ("~/.opencode/rules", 101), ("~/.claude/rules", 102), ("~/.config/opencode/AGENTS.md", 103), ("~/.claude/CLAUDE.md", 104)];
 pub const PROJECT_RULE_SUBDIRS: &[(&str, &str)] = &[(".omo", "rules"), (".claude", "rules"), (".cursor", "rules"), (".github", "instructions")];
 pub const DEFAULT_MAX_RULE_CHARS: usize = 12000;
 pub const DEFAULT_MAX_RESULT_CHARS: usize = 40000;

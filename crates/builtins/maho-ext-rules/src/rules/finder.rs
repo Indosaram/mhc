@@ -62,7 +62,7 @@ pub fn find_rule_candidates(options: FinderOptions<'_>, cache: &mut RuleDiscover
     candidates
 }
 
-fn absolute(path: &Path) -> PathBuf {
+pub(crate) fn absolute(path: &Path) -> PathBuf {
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let mut normalized = PathBuf::new();
     for component in absolute.components() {
