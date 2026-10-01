@@ -54,6 +54,7 @@ pub mod rpc_client;
 pub mod rpc_mode;
 pub mod session_registry;
 pub mod host_launch;
+pub mod host_stop;
 pub mod connection_handler;
 pub mod session_event_writer;
 pub mod host_daemon_registration;

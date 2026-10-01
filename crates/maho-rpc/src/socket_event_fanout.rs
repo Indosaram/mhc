@@ -4,6 +4,14 @@ pub const DEFAULT_QUEUE_BYTES:usize=64*1024*1024;
 pub const OVERFLOW_NOTICE:&str="{\"type\":\"overflow\",\"error\":\"overflow, resync required\"}\n";
 pub const STALL_NOTICE:&str="{\"type\":\"overflow\",\"error\":\"stalled, resync required\"}\n";
 #[derive(Debug,thiserror::Error,PartialEq,Eq)]
+#[error("socket event queue stalled: peer did not drain {pending_bytes} queued bytes within {stall_ms}ms")]
+pub struct SocketEventQueueStallError{pub pending_bytes:usize,pub stall_ms:u64}
+pub struct DrainDeadline{blocked_mark:f64,stall_ms:u64}
+impl DrainDeadline{
+    pub fn new(stall_ms:u64,blocked:&crate::loop_blocked_time::LoopBlockedTime)->Self{Self{blocked_mark:blocked.loop_blocked_mark(),stall_ms}}
+    pub fn on_deadline(&mut self,blocked:&crate::loop_blocked_time::LoopBlockedTime,pending_bytes:usize)->Result<f64,SocketEventQueueStallError>{let blocked_ms=blocked.loop_blocked_ms_since(self.blocked_mark);if blocked_ms>0.{self.blocked_mark=blocked.loop_blocked_mark();Ok(blocked_ms.min(self.stall_ms as f64))}else{Err(SocketEventQueueStallError{pending_bytes,stall_ms:self.stall_ms})}}
+}
+#[derive(Debug,thiserror::Error,PartialEq,Eq)]
 #[error("socket event queue overflow: {queued_bytes} queued + {incoming_bytes} incoming > {max_queue_bytes} (incoming: {incoming_preview})")]
 pub struct SocketEventQueueOverflowError{pub queued_bytes:usize,pub incoming_bytes:usize,pub max_queue_bytes:usize,pub incoming_preview:String}
 pub struct QueueEntry{pub line:String,pub key:Option<String>,pub demoted_line:Option<String>,pub on_written:Option<Box<dyn FnOnce()+Send>>}
@@ -31,6 +39,7 @@ impl SocketEventQueue{
 #[cfg(test)]mod tests{
     use super::*;
     fn entry(line:&str,demoted:Option<&str>)->QueueEntry{QueueEntry{line:line.into(),key:Some("text".into()),demoted_line:demoted.map(str::to_owned),on_written:None}}
+    #[test]fn deadline_rearms_for_host_blocked_time_before_cutting_peer(){let mut blocked=crate::loop_blocked_time::LoopBlockedTime::default();let mut deadline=DrainDeadline::new(30000,&blocked);blocked.record_loop_blocked_ms(60000.);assert_eq!(deadline.on_deadline(&blocked,10).unwrap(),30000.);blocked.record_loop_blocked_ms(1000.);assert_eq!(deadline.on_deadline(&blocked,20).unwrap(),1000.);assert_eq!(deadline.on_deadline(&blocked,30),Err(SocketEventQueueStallError{pending_bytes:30,stall_ms:30000}));}
     #[test]fn snapshots_demote_without_losing_deltas(){let mut queue=SocketEventQueue::default();queue.enqueue(entry("snapshot+delta",Some("delta"))).unwrap();queue.enqueue(entry("new snapshot+delta",Some("new delta"))).unwrap();assert_eq!(queue.queued_bytes(),23);let old=queue.next_write().unwrap();assert_eq!(old.line,"delta");assert!(old.key.is_none());assert_eq!(queue.next_write().unwrap().line,"new snapshot+delta");assert_eq!(queue.queued_bytes(),0);}
     #[test]fn overflow_is_utf8_bytes_and_closed_admission_is_inert(){let mut queue=SocketEventQueue::new(3);let error=queue.enqueue(entry("한글",None)).unwrap_err();assert_eq!(error.incoming_bytes,6);assert_eq!(queue.queued_bytes(),0);queue.enqueue(entry("a",None)).unwrap();assert!(queue.next_write().is_none());}
     #[test]fn undemotable_snapshots_stay_fifo(){let mut queue=SocketEventQueue::default();queue.enqueue(entry("old",None)).unwrap();queue.enqueue(entry("new",None)).unwrap();assert_eq!(queue.next_write().unwrap().line,"old");assert_eq!(queue.next_write().unwrap().line,"new");}

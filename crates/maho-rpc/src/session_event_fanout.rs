@@ -1,6 +1,23 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap,BTreeSet};
 use serde_json::Value;
 pub const RENDERED_COMPONENT_RECORD:&str="__senpiRenderedComponent";
+struct Connection{id:String,capabilities:Vec<String>,registered_capabilities:bool,sessions:BTreeSet<String>}
+#[derive(Default)]pub struct ConnectionTargets{connections:Vec<Connection>}
+impl ConnectionTargets{
+    pub fn register(&mut self,id:&str){if let Some(connection)=self.connections.iter_mut().find(|connection|connection.id==id){*connection=Connection{id:id.into(),capabilities:vec![],registered_capabilities:false,sessions:BTreeSet::new()};}else{self.connections.push(Connection{id:id.into(),capabilities:vec![],registered_capabilities:false,sessions:BTreeSet::new()});}}
+    pub fn unregister(&mut self,id:&str){self.connections.retain(|connection|connection.id!=id);}
+    pub fn attach(&mut self,id:&str,session:&str)->bool{self.connections.iter_mut().find(|connection|connection.id==id).is_some_and(|connection|connection.sessions.insert(session.into()))}
+    pub fn detach(&mut self,id:&str,session:&str){if let Some(connection)=self.connections.iter_mut().find(|connection|connection.id==id){connection.sessions.remove(session);}}
+    pub fn set_capabilities(&mut self,id:&str,capabilities:&[String])->bool{let Some(connection)=self.connections.iter_mut().find(|connection|connection.id==id)else{return false;};let was=connection.capabilities.iter().any(|capability|capability==crate::custom_capability::RENDERED_COMPONENTS_CAPABILITY);connection.capabilities=capabilities.iter().fold(vec![],|mut unique,capability|{if !unique.contains(capability){unique.push(capability.clone());}unique});connection.registered_capabilities=true;!was&&connection.capabilities.iter().any(|capability|capability==crate::custom_capability::RENDERED_COMPONENTS_CAPABILITY)}
+    pub fn capabilities(&self,id:&str)->Option<&[String]>{self.connections.iter().find(|connection|connection.id==id&&connection.registered_capabilities).map(|connection|connection.capabilities.as_slice())}
+    pub fn clear_capabilities(&mut self,id:&str){if let Some(connection)=self.connections.iter_mut().find(|connection|connection.id==id){connection.capabilities.clear();connection.registered_capabilities=false;}}
+    pub fn targets(&self,session:&str,target:Option<&str>,targeted:bool,rendered:bool,record_type:Option<&str>)->Vec<Option<String>>{
+        if targeted{return vec![target.map(str::to_owned)];}
+        if self.connections.is_empty(){return vec![None];}
+        let broadcast=record_type.is_some_and(|kind|matches!(kind,"agent_start"|"agent_settled"|"agent_idle"|"session_opened"|"session_closed"));
+        self.connections.iter().filter(|connection|broadcast||(connection.sessions.contains(session)&&(!rendered||connection.capabilities.iter().any(|capability|capability==crate::custom_capability::RENDERED_COMPONENTS_CAPABILITY)))).map(|connection|Some(connection.id.clone())).collect()
+    }
+}
 struct SnapshotRecord{line:String,placeholder_line:Option<String>,source:Option<Value>,rendered:bool}
 #[derive(Default)]pub struct SessionSnapshots{snapshots:BTreeMap<String,Vec<SnapshotRecord>>,questions:BTreeMap<String,BTreeMap<String,Value>>}
 impl SessionSnapshots{
@@ -27,6 +44,7 @@ impl SessionSnapshots{
 }
 #[cfg(test)]mod tests{
     use super::*;use serde_json::json;
+    #[test]fn targets_keep_connection_order_and_lifecycle_broadcast(){let mut targets=ConnectionTargets::default();assert_eq!(targets.targets("s",None,false,false,None),vec![None]);targets.register("z");targets.register("a");assert!(targets.attach("z","s"));assert!(!targets.attach("z","s"));assert_eq!(targets.targets("s",None,false,false,None),vec![Some("z".into())]);assert!(targets.targets("s",None,false,true,None).is_empty());assert!(targets.set_capabilities("z",&["rendered_components".into()]));assert_eq!(targets.targets("s",None,false,true,None),vec![Some("z".into())]);assert_eq!(targets.targets("s",None,false,false,Some("agent_idle")),vec![Some("z".into()),Some("a".into())]);assert_eq!(targets.targets("s",Some("unknown"),true,false,None),vec![Some("unknown".into())]);}
     #[test]fn message_end_discards_replay_and_rendered_requires_capability(){let mut snapshots=SessionSnapshots::default();let value=json!({"type":"message_start","__senpiRenderedComponent":true});snapshots.remember("s",&value,"start\n".into(),None,None);assert!(snapshots.replay("s",false,false,0.).unwrap().is_empty());assert_eq!(snapshots.replay("s",true,false,0.).unwrap(),vec!["start\n"]);snapshots.remember("s",&json!({"type":"message_end"}),"end\n".into(),None,None);assert!(snapshots.replay("s",true,false,0.).unwrap().is_empty());}
     #[test]fn question_replay_uses_updated_deadline_and_resolution_removes_it(){let mut snapshots=SessionSnapshots::default();snapshots.remember("s",&json!({"type":"extension_ui_request","method":"question","id":"q","deadlineAtMs":100}),String::new(),None,None);snapshots.remember("s",&json!({"type":"question_updated","id":"q","deadlineAtMs":200,"remainingMs":150}),String::new(),None,None);let line=snapshots.replay("s",false,false,150.).unwrap().remove(0);let value:Value=serde_json::from_str(&line).unwrap();assert_eq!(value["remainingMs"],50.);snapshots.remember("s",&json!({"type":"question_resolved","id":"q"}),String::new(),None,None);assert!(snapshots.replay("s",false,false,300.).unwrap().is_empty());}
 }
