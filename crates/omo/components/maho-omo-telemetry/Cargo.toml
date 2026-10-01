@@ -10,3 +10,11 @@ workspace = true
 
 [dependencies]
 serde_json.workspace = true
+maho-ext-api = { path = "../../../maho-ext-api" }
+maho-telemetry-core = { path = "../../telemetry-core" }
+chrono = { workspace = true, features = ["clock", "std"] }
+tokio = { workspace = true, features = ["rt", "time", "macros"] }
+futures.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
