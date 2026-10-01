@@ -2,6 +2,18 @@ use std::collections::{BTreeSet,VecDeque};
 use serde_json::Value;
 pub const MAX_PENDING_SESSION_EVENTS:usize=512;
 pub const MAX_PENDING_SESSION_EVENT_BYTES:usize=1024*1024;
+pub struct RpcSocketClient{stream:tokio::net::UnixStream,pub frames:RpcClientFrames,reader:crate::jsonl::JsonlLineReader,lines:VecDeque<crate::jsonl::LineRecord>}
+impl RpcSocketClient{
+    pub async fn connect(path:&std::path::Path)->std::io::Result<Self>{Ok(Self::from_stream(tokio::net::UnixStream::connect(path).await?))}
+    pub fn from_stream(stream:tokio::net::UnixStream)->Self{Self{stream,frames:RpcClientFrames::default(),reader:crate::jsonl::JsonlLineReader::default(),lines:VecDeque::new()}}
+    pub async fn send(&mut self,command:Value,route:bool,expect_response:bool)->std::io::Result<Value>{use tokio::io::AsyncWriteExt;let command=self.frames.command(command,route,expect_response);let line=crate::jsonl::serialize_json_line(&command)?;self.stream.write_all(line.as_bytes()).await?;Ok(command)}
+    pub async fn receive(&mut self)->std::io::Result<Option<ClientFrame>>{use tokio::io::AsyncReadExt;loop{
+        if let Some(record)=self.lines.pop_front(){if let crate::jsonl::LineRecord::Line(line)=record{return Ok(Some(self.frames.handle_line(&line)));}continue;}
+        let mut bytes=[0;8192];let count=self.stream.read(&mut bytes).await?;
+        if count==0{self.lines.extend(self.reader.finish());if self.lines.is_empty(){self.frames.reject_pending();return Ok(None);}continue;}
+        self.lines.extend(self.reader.push(&bytes[..count]));
+    }}
+}
 #[derive(Debug,PartialEq)]pub enum ClientFrame{Response(Value),Event(Value),Ignored}
 #[derive(Default)]pub struct RpcClientFrames{request_id:u64,pending:BTreeSet<String>,pub session_id:Option<String>,pub pending_open_session:bool,events:VecDeque<(String,Value,usize)>,event_bytes:usize}
 impl RpcClientFrames{
