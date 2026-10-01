@@ -1,4 +1,4 @@
-use std::{collections::{BTreeSet, VecDeque}, path::{Path, PathBuf}};
+use std::{collections::{BTreeMap, BTreeSet, VecDeque}, path::{Path, PathBuf}};
 use super::{cache, constants::PROJECT_SINGLE_FILES, finder::{FinderOptions, RuleDiscoveryCache, find_rule_candidates}, formatter::{FormatOptions, format_static_block, format_dynamic_block}, matcher::{MatcherCache, MatcherInput, hash_content}, ordering::sort_candidates, parser::parse_rule, project_root::find_project_root, types::*};
 
 pub struct LoadResult { pub rules: Vec<LoadedRule>, pub diagnostics: Vec<RuleDiagnostic> }
@@ -46,12 +46,13 @@ impl Engine {
         let mut discovery = RuleDiscoveryCache::default();
         let mut seen_targets = BTreeSet::new();
         let mut seen_rules = BTreeSet::new();
+        let mut loaded_content: BTreeMap<String, Option<(ParsedRule, String)>> = BTreeMap::new();
         for target in targets {
             if !seen_targets.insert(target) { continue; }
             let root = find_project_root(target, None);
             let candidates = find_rule_candidates(FinderOptions { project_root: root.as_deref(), target_file: Some(target), home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut discovery);
             for candidate in sort_candidates(&candidates) {
-                let Some(mut rule) = load_candidate(candidate, root.as_deref(), &mut result.diagnostics) else { continue; };
+                let Some(mut rule) = load_candidate_cached(candidate, root.as_deref(), &mut result.diagnostics, &mut loaded_content) else { continue; };
                 let basename = target.file_name().unwrap_or_default().to_string_lossy();
                 let relative = root.as_deref().map(|root| relative_path(root, target)).unwrap_or_else(|| basename.to_string());
                 let scope = if rule.candidate.is_global { None } else if rule.candidate.is_single_file { Path::new(&rule.candidate.path).parent().map(Path::to_path_buf) } else {
@@ -121,16 +122,16 @@ pub fn relative_path(base: &Path, target: &Path) -> String {
     std::iter::repeat_n("..".to_owned(), base.len() - shared).chain(target[shared..].iter().map(|component| component.as_os_str().to_string_lossy().into_owned())).collect::<Vec<_>>().join("/")
 }
 fn load_candidate(candidate: RuleCandidate, root: Option<&Path>, diagnostics: &mut Vec<RuleDiagnostic>) -> Option<LoadedRule> {
+    load_candidate_cached(candidate, root, diagnostics, &mut BTreeMap::new())
+}
+fn load_candidate_cached(candidate: RuleCandidate, root: Option<&Path>, diagnostics: &mut Vec<RuleDiagnostic>, contents: &mut BTreeMap<String, Option<(ParsedRule, String)>>) -> Option<LoadedRule> {
     let within = candidate.is_global || root.is_some_and(|root| {
         let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
         Path::new(&candidate.real_path).strip_prefix(root).is_ok_and(|relative| !relative.to_string_lossy().starts_with(".."))
     });
     if !within { diagnostics.push(RuleDiagnostic { severity: "warning".into(), source: candidate.path.clone(), message: "Rule file resolves outside project root".into() }); return None; }
-    let content = match std::fs::read_to_string(&candidate.path) {
-        Ok(content) => content,
-        Err(_) => { diagnostics.push(RuleDiagnostic { severity: "warning".into(), source: candidate.path.clone(), message: "Unable to read rule file".into() }); return None; },
-    };
-    let parsed = parse_rule(&content);
-    if let Some(message) = parsed.diagnostic { diagnostics.push(RuleDiagnostic { severity: "warning".into(), source: candidate.path.clone(), message }); }
-    Some(LoadedRule { candidate, frontmatter: parsed.frontmatter, body: parsed.body, content_hash: hash_content(&content), match_reason: MatchReason::NoMatch })
+    let loaded = contents.entry(candidate.real_path.clone()).or_insert_with(|| std::fs::read_to_string(&candidate.path).ok().map(|content| (parse_rule(&content), hash_content(&content))));
+    let Some((parsed, content_hash)) = loaded else { diagnostics.push(RuleDiagnostic { severity: "warning".into(), source: candidate.path.clone(), message: "Unable to read rule file".into() }); return None; };
+    if let Some(message) = &parsed.diagnostic { diagnostics.push(RuleDiagnostic { severity: "warning".into(), source: candidate.path.clone(), message: message.clone() }); }
+    Some(LoadedRule { candidate, frontmatter: parsed.frontmatter.clone(), body: parsed.body.clone(), content_hash: content_hash.clone(), match_reason: MatchReason::NoMatch })
 }
