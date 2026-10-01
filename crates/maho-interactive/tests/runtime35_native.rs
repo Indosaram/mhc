@@ -309,3 +309,14 @@ async fn session_command_reports_native_turn_without_starting_another() {
     assert!(mode.render(80).join("\n").contains("In-memory"));
     assert!(mode.agent_idle);
 }
+
+#[test]
+fn consecutive_extension_notifications_replace_status_not_append_it() {
+    use maho_ext_api::{ExtensionUi, NotificationType};
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.extension_ui.notify("first-status", NotificationType::Info); mode.render(80);
+    mode.extension_ui.notify("second-status", NotificationType::Info);
+    let lines = mode.render(80).join("\n");
+    assert!(!lines.contains("first-status")); assert_eq!(lines.matches("second-status").count(), 1);
+}
