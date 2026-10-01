@@ -1,38 +1,7 @@
-//! Local mirror of the parts of senpi packages/ai/src/auth/pool/slots.ts this crate consumes
-//! (deviation: maho-ai's auth pool is a stub owned by todos 13/17; these shapes are re-pointed there).
+//! Credential pool compatibility surface for the core storage callers.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
-pub const DEFAULT_SLOT_NAME: &str = "default";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum CredentialSlotSource {
-    Login,
-    Import,
-    Env,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct CredentialSlot {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<CredentialSlotSource>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub access: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refresh: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub env: Option<Value>,
-}
+pub use maho_ai::auth::pool::slots::{CredentialSlot, CredentialSlotSource, DEFAULT_SLOT_NAME};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PooledCredential {
@@ -66,7 +35,7 @@ impl PooledCredential {
                 key: self.key.clone(),
                 access: self.access.clone(),
                 refresh: self.refresh.clone(),
-                expires: self.expires,
+                expires: self.expires.and_then(|expires| expires.to_string().parse().ok()),
                 ..CredentialSlot::default()
             });
         }

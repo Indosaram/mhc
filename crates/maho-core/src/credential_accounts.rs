@@ -109,7 +109,7 @@ pub fn stored_slots(credential: &Value) -> Vec<Value> {
         key: credential.get("key").and_then(Value::as_str).map(str::to_owned),
         access: credential.get("access").and_then(Value::as_str).map(str::to_owned),
         refresh: credential.get("refresh").and_then(Value::as_str).map(str::to_owned),
-        expires: credential.get("expires").and_then(Value::as_i64),
+        expires: credential.get("expires").and_then(Value::as_f64),
         ..CredentialSlot::default()
     };
     if pooled.key.is_none() && pooled.access.is_none() {
