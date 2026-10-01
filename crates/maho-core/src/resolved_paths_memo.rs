@@ -40,7 +40,7 @@ fn stable(value: &serde_json::Value) -> String {
                 "{{{}}}",
                 pairs
                     .into_iter()
-                    .map(|(key, value)| format!("{}:{}", serde_json::Value::String(key).to_string(), value))
+                    .map(|(key, value)| format!("{}:{}", serde_json::Value::String(key), value))
                     .collect::<Vec<_>>()
                     .join(",")
             )

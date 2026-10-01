@@ -19,10 +19,12 @@ fn export_file_name() -> String {
 }
 
 /// Writes the current session branch and optional trailing export-only entries as JSONL.
+pub type CreateTrailingEntries<'a> = &'a dyn Fn(Option<&str>, &str) -> Vec<Value>;
+
 pub fn export_session_to_jsonl(
     session_manager: &dyn ExportSessionManager,
     output_path: Option<&str>,
-    create_trailing_entries: Option<&dyn Fn(Option<&str>, &str) -> Vec<Value>>,
+    create_trailing_entries: Option<CreateTrailingEntries<'_>>,
 ) -> String {
     let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| ".".to_owned());
     let file_path = resolve_path(output_path.unwrap_or(&export_file_name()), &cwd, &PathInputOptions::default());

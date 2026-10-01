@@ -52,7 +52,7 @@ pub fn parse_http_idle_timeout_ms(value: &serde_json::Value) -> Option<u64> {
             if trimmed.is_empty() {
                 return None;
             }
-            trimmed.parse::<f64>().ok().and_then(|number| parse_number(number))
+            trimmed.parse::<f64>().ok().and_then(parse_number)
         }
         serde_json::Value::Number(number) => number.as_f64().and_then(parse_number),
         _ => None,

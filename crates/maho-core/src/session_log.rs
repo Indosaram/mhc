@@ -114,9 +114,11 @@ fn write_line(file_path: &Path, line: &str, max_bytes: u64) -> std::io::Result<(
     Ok(())
 }
 
+pub type LogSink = Arc<dyn Fn(&str) + Send + Sync>;
+
 #[derive(Clone, Default)]
 pub struct SessionLoggerOptions {
-    pub sink: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    pub sink: Option<LogSink>,
     pub mirror_to_stderr: Option<bool>,
     pub max_bytes: Option<u64>,
 }

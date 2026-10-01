@@ -59,7 +59,7 @@ async fn run_command_process(command: &str, env: &[(String, String)]) -> Command
         Ok(Some(buffer)) => {
             let status = child.wait().await.ok();
             let text = String::from_utf8_lossy(&buffer).trim().to_owned();
-            let value = status.filter(|status| status.success()).and_then(|_| if text.is_empty() { None } else { Some(text) });
+            let value = if status.map(|status| status.success()).unwrap_or(false) && !text.is_empty() { Some(text) } else { None };
             CommandOutcome { executed: true, value }
         }
         Ok(None) => {

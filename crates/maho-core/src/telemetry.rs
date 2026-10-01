@@ -7,7 +7,6 @@ use crate::settings_manager::SettingsManager;
 fn is_truthy_env_flag(value: Option<&str>) -> bool {
     match value {
         None => false,
-        Some(value) if value.is_empty() => false,
         Some(value) => value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes"),
     }
 }

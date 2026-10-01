@@ -105,7 +105,7 @@ pub struct FooterDataProvider {
 
 impl FooterDataProvider {
     pub fn new(cwd: &str) -> Self {
-        let provider = Self {
+        Self {
             cwd: Mutex::new(cwd.to_owned()),
             extension_statuses: Mutex::new(BTreeMap::new()),
             cached_branch: Mutex::new(None),
@@ -113,8 +113,7 @@ impl FooterDataProvider {
             branch_change_callbacks: Mutex::new(Vec::new()),
             available_provider_count: Mutex::new(0),
             disposed: Mutex::new(false),
-        };
-        provider
+        }
     }
 
     fn lock<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

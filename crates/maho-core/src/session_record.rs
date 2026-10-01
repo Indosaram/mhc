@@ -40,9 +40,7 @@ pub fn visible_message(entry: &Value) -> Option<VisibleMessage> {
     if role != "user" && role != "assistant" {
         return None;
     }
-    if message.get("content").is_none() {
-        return None;
-    }
+    message.get("content")?;
     let message_time = message.get("timestamp").and_then(Value::as_i64);
     let entry_time = entry
         .get("timestamp")
