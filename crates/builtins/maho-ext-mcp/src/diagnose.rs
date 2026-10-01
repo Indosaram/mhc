@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap,sync::{Arc,Mutex},time::Duration,process::Stdio};
 use serde_json::{Value,json};
+use tokio::io::AsyncReadExt;
 use crate::{config_schema::{McpServerConfig,Transport},errors::{McpError,McpErrorKind},log::{McpLogger,redact_mcp_log_text}};
 pub const MCP_STDIO_DIAGNOSTIC_TIMEOUT_MS:u64=5000;
 const MAX_BYTES:usize=2048;
@@ -31,14 +32,23 @@ pub async fn diagnose_mcp_connect_failure(server:&str,config:&McpServerConfig,en
     if let Some(env)=env {merged.extend(env.clone());}merged.extend(config.env.clone().unwrap_or_default());
     let mut process=tokio::process::Command::new(command);process.args(config.args.as_deref().unwrap_or(&[])).env_clear().envs(&merged).stdin(Stdio::null()).kill_on_drop(true);
     if let Some(cwd)=&config.cwd {process.current_dir(cwd);}
-    let diagnostic=match tokio::time::timeout(Duration::from_millis(MCP_STDIO_DIAGNOSTIC_TIMEOUT_MS),process.output()).await {
+    process.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let output=async {
+        let mut child=process.spawn()?;
+        let stdout=child.stdout.take().expect("piped diagnostic stdout");let stderr=child.stderr.take().expect("piped diagnostic stderr");
+        let capture=async {let mut out=Vec::new();let mut err=Vec::new();let mut stdout=stdout.take((MAX_BYTES*4+1) as u64);let mut stderr=stderr.take((MAX_BYTES*4+1) as u64);let (stdout,stderr)=tokio::join!(stdout.read_to_end(&mut out),stderr.read_to_end(&mut err));stdout?;stderr?;Ok::<_,std::io::Error>((out,err))};
+        let (stdout,stderr)=capture.await?;
+        if stdout.len()>MAX_BYTES*4 || stderr.len()>MAX_BYTES*4 {child.kill().await?;}
+        child.wait().await?;Ok::<_,std::io::Error>((stdout,stderr))
+    };
+    let diagnostic=match tokio::time::timeout(Duration::from_millis(MCP_STDIO_DIAGNOSTIC_TIMEOUT_MS),output).await {
         Err(_)=>Some(format!("diagnostic rerun timed out after {MCP_STDIO_DIAGNOSTIC_TIMEOUT_MS}ms")),
         Ok(Err(error)) if error.kind()==std::io::ErrorKind::NotFound=>{
             let cwd=config.cwd.clone().unwrap_or_else(||std::env::current_dir().map_or_else(|_|String::new(),|path|path.display().to_string()));
             Some(meaningful_lines(&format!("command not found: {command}\ncwd: {cwd}\nPATH: {}\nInstall the command, add it to PATH, or configure an absolute command path in mcp.json.",merged.get("PATH").map_or("",String::as_str))).join("\n"))
         }
         Ok(Err(_))=>None,
-        Ok(Ok(output))=>{let lines=meaningful_lines(&format!("{}\n{}",String::from_utf8_lossy(&output.stderr),String::from_utf8_lossy(&output.stdout)));if lines.is_empty(){None}else{Some(bound(&lines))}}
+        Ok(Ok((stdout,stderr)))=>{let lines=meaningful_lines(&format!("{}\n{}",String::from_utf8_lossy(&stderr),String::from_utf8_lossy(&stdout)));if lines.is_empty(){None}else{Some(bound(&lines))}}
     };
     connect_error(server,cause,diagnostic)
 }

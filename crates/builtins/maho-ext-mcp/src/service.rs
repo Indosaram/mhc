@@ -7,9 +7,9 @@ pub enum McpServiceError {
     #[error(transparent)] Detach(#[from] crate::host_registry::RegistryDetachError),
     #[error(transparent)] Connection(#[from] crate::errors::McpError),
 }
-pub struct McpService {pub registry:Arc<HostMcpRegistry>,pub config:Option<ResolvedMcpConfig>,pub connections:BTreeMap<String,McpSessionConnection>,owner:u64,agent_dir:Option<PathBuf>}
+pub struct McpService {pub registry:Arc<HostMcpRegistry>,pub config:Option<ResolvedMcpConfig>,pub connections:BTreeMap<String,McpSessionConnection>,owner:u64,agent_dir:Option<PathBuf>,deferred:crate::startup_race::McpDeferredAttach}
 impl McpService {
-    pub fn new(registry:Arc<HostMcpRegistry>,owner:u64)->Self {Self {registry,config:None,connections:BTreeMap::new(),owner,agent_dir:None}}
+    pub fn new(registry:Arc<HostMcpRegistry>,owner:u64)->Self {Self {registry,config:None,connections:BTreeMap::new(),owner,agent_dir:None,deferred:Default::default()}}
     pub async fn attach_session(&mut self,cwd:&Path,agent_dir:&Path,env:&BTreeMap<String,String>,project_trusted:bool,declarations:&[maho_ext_api::RegisteredMcpServerDeclaration])->Result<(),McpServiceError> {
         let mut config=load_mcp_config(LoadMcpConfigOptions {cwd,agent_dir,env,project_trusted})?;
         crate::config::merge_extension_mcp_servers(&mut config,declarations)?;
@@ -26,6 +26,13 @@ impl McpService {
             let connection=create_mcp_session_connection(SessionConnectionOptions {registry:&self.registry,owner:self.owner,key:&key,name,config_hash:hash,config:server_config.clone(),agent_dir,env:Some(env.clone())})?;
             let cache=crate::catalog_cache::read_mcp_catalog_cache(agent_dir);
             if let Some(cached)=crate::catalog_cache::get_valid_cached_server(&cache,name,hash,chrono::Utc::now().timestamp_millis() as f64){connection.entry.lock().await.cached_catalog=Some(cached.clone());}
+            if crate::startup_race::should_race_mcp_startup(server_config.lifecycle.unwrap_or(crate::config_schema::Lifecycle::Lazy)) {
+                let entry=connection.entry.clone();let server_config=server_config.clone();
+                let timeout=crate::startup_race::resolve_mcp_startup_timeout_ms(server_config.startup_timeout_ms,env.get(crate::startup_race::MCP_STARTUP_TIMEOUT_ENV).map(String::as_str));
+                let (sender,mut settled)=tokio::sync::watch::channel(false);
+                self.deferred.track(async move {let mut entry=entry.lock().await;crate::startup_race::connect_and_refresh_mcp_catalog(&mut entry,&server_config).await;sender.send_replace(true);});
+                let _=tokio::time::timeout(std::time::Duration::from_secs_f64(timeout/1000.0),async {while !*settled.borrow(){if settled.changed().await.is_err(){break;}}}).await;
+            }
             self.connections.insert(name.clone(),connection);
         }
         self.agent_dir=Some(agent_dir.into());self.config=Some(config);Ok(())
@@ -39,6 +46,7 @@ impl McpService {
         Ok(())
     }
     pub async fn reconnect_server(&self,name:&str)->Result<(),McpServiceError> {if let Some(connection)=self.connections.get(name){connection.reconnect.reconnect_now().await?;}Ok(())}
+    pub async fn wait_for_deferred_attach(&self,timeout:std::time::Duration)->crate::startup_race::McpStartupRaceResult {self.deferred.wait(timeout).await}
     pub async fn server_snapshots(&self)->Vec<McpServerSnapshot> {
         let Some(config)=&self.config else{return Vec::new();};let mut snapshots=Vec::new();
         for (name,server) in &config.servers {
@@ -50,6 +58,6 @@ impl McpService {
     pub async fn dispose(&mut self)->Result<(),McpServiceError> {
         let connections=std::mem::take(&mut self.connections);
         for connection in connections.values(){dispose_entry_connection(connection,&self.registry,self.owner).await?;}
-        self.config=None;self.agent_dir=None;Ok(())
+        self.config=None;self.agent_dir=None;self.deferred.clear();Ok(())
     }
 }
