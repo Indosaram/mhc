@@ -51,3 +51,23 @@ impl Extension for LoopGuardExtension {
         }
     }
 }
+#[cfg(test)] mod tests {
+    use super::*;
+    #[test] fn registers_all_eight_real_lifecycle_hooks() {
+        let mut api=ExtensionApi::new(maho_ext_api::LoadedExtension::new("loop-guard",".".into(),Default::default()),Default::default(),Default::default(),Default::default());
+        LoopGuardExtension.register(&mut api);
+        assert_eq!(api.registered.handlers.len(),8);
+        for kind in [EventKind::SessionStart,EventKind::SessionShutdown,EventKind::Input,EventKind::ToolExecutionStart,EventKind::TurnEnd,EventKind::ToolCall,EventKind::AgentStart,EventKind::AgentSettled] { assert_eq!(api.registered.handlers[&kind].len(),1); }
+    }
+    #[test] fn wake_and_hold_emit_only_transitions_and_reset_releases_both() {
+        let events=EventBus::default(); let seen=Arc::new(Mutex::new(Vec::new()));
+        let wake=Arc::clone(&seen); let hold=Arc::clone(&seen);
+        let _wake=events.on("wake_source_state",Arc::new(move |value|wake.lock().unwrap().push(("wake",value.clone()))));
+        let _hold=events.on("continuation_hold_state",Arc::new(move |value|hold.lock().unwrap().push(("hold",value.clone()))));
+        let mut state=State::default(); state.set_wake(&events,true); state.set_wake(&events,true); state.set_hold(&events,true); state.set_hold(&events,true); state.reset(&events);
+        let seen=seen.lock().unwrap(); assert_eq!(seen.len(),4); assert_eq!(seen[0].1["activeCount"],1); assert_eq!(seen[2].1["activeCount"],0); assert_eq!(seen[3].1["active"],false);
+    }
+    #[test] fn reset_discards_pending_recovery_and_attempt_records() {
+        let mut state=State { pending_recovery_tool_name:Some("read".into()),..Default::default() }; state.tracker.record("read",None); state.reset(&EventBus::default()); assert!(state.pending_recovery_tool_name.is_none()); assert!(state.tracker.records().is_empty());
+    }
+}
