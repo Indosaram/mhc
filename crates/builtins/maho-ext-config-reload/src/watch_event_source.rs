@@ -1,0 +1,88 @@
+use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, Ordering}, mpsc}, thread};
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+
+pub type WatchEventListener = Arc<dyn Fn(&str, Option<PathBuf>) + Send + Sync>;
+pub type WatchErrorListener = Arc<dyn Fn(String, PathBuf) + Send + Sync>;
+struct Subscription { path: PathBuf, recursive: bool, active: Arc<AtomicBool>, listener: WatchEventListener, on_error: WatchErrorListener }
+enum Command { Watch(u64, Subscription), Unwatch(u64), Event(u64, notify::Result<Event>), Barrier(mpsc::Sender<()>), Shutdown }
+struct Worker { sender: mpsc::Sender<Command>, join: thread::JoinHandle<()> }
+#[derive(Default)]
+struct Registry { worker: Option<Worker>, count: usize, next_id: u64 }
+static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
+pub struct WatchSubscription { id: u64, active: Arc<AtomicBool>, closed: bool }
+impl WatchSubscription {
+    pub fn ready(&self) -> Result<(), String> {
+        let (sender, receiver) = mpsc::channel();
+        let registry = REGISTRY.get_or_init(Mutex::default).lock().map_err(|error| error.to_string())?;
+        if let Some(worker) = &registry.worker { worker.sender.send(Command::Barrier(sender)).map_err(|error| error.to_string())?; }
+        drop(registry);
+        receiver.recv_timeout(std::time::Duration::from_secs(5)).map_err(|error| error.to_string())
+    }
+    pub fn close(&mut self) -> Result<(), String> {
+        if self.closed { return Ok(()); }
+        self.closed = true;
+        self.active.store(false, Ordering::SeqCst);
+        let worker = {
+            let mut registry = REGISTRY.get_or_init(Mutex::default).lock().map_err(|error| error.to_string())?;
+            if let Some(worker) = &registry.worker { worker.sender.send(Command::Unwatch(self.id)).map_err(|error| error.to_string())?; }
+            registry.count -= 1;
+            if registry.count == 0 { registry.worker.take() } else { None }
+        };
+        if let Some(worker) = worker {
+            worker.sender.send(Command::Shutdown).map_err(|error| error.to_string())?;
+            worker.join.join().map_err(|_| "Config watcher teardown failed".to_owned())?;
+        }
+        Ok(())
+    }
+}
+impl Drop for WatchSubscription { fn drop(&mut self) { if let Err(error) = self.close() { eprintln!("{error}"); } } }
+pub fn subscribe(path: PathBuf, recursive: bool, listener: WatchEventListener, on_error: WatchErrorListener) -> Result<WatchSubscription, String> {
+    let mut registry = REGISTRY.get_or_init(Mutex::default).lock().map_err(|error| error.to_string())?;
+    if registry.worker.is_none() {
+        let (sender, receiver) = mpsc::channel();
+        let event_sender = sender.clone();
+        let join = thread::Builder::new().name("config-watch".into()).spawn(move || run_worker(receiver, event_sender)).map_err(|error| error.to_string())?;
+        registry.worker = Some(Worker { sender, join });
+    }
+    registry.next_id += 1;
+    let id = registry.next_id;
+    let active = Arc::new(AtomicBool::new(true));
+    let subscription = Subscription { path, recursive, active: Arc::clone(&active), listener, on_error };
+    if let Some(worker) = &registry.worker { worker.sender.send(Command::Watch(id, subscription)).map_err(|error| error.to_string())?; }
+    registry.count += 1;
+    Ok(WatchSubscription { id, active, closed: false })
+}
+fn run_worker(receiver: mpsc::Receiver<Command>, sender: mpsc::Sender<Command>) {
+    let mut subscriptions: BTreeMap<u64, (Subscription, RecommendedWatcher)> = BTreeMap::new();
+    while let Ok(command) = receiver.recv() {
+        match command {
+            Command::Shutdown => break,
+            Command::Barrier(sender) => { let _ = sender.send(()); },
+            Command::Unwatch(id) => { subscriptions.remove(&id); },
+            Command::Watch(id, subscription) => {
+                if !subscription.active.load(Ordering::SeqCst) { continue; }
+                let sender = sender.clone();
+                let watcher = notify::recommended_watcher(move |event| { let _ = sender.send(Command::Event(id, event)); });
+                match watcher.and_then(|mut watcher| { watcher.watch(&subscription.path, if subscription.recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive })?; Ok(watcher) }) {
+                    Ok(watcher) => { if subscription.active.load(Ordering::SeqCst) { subscriptions.insert(id, (subscription, watcher)); } },
+                    Err(error) => (subscription.on_error)(error.to_string(), subscription.path),
+                }
+            },
+            Command::Event(id, event) => {
+                if let Some((subscription, _)) = subscriptions.get(&id) {
+                    if !subscription.active.load(Ordering::SeqCst) { continue; }
+                    match &event {
+                        Err(error) => (subscription.on_error)(error.to_string(), subscription.path.clone()),
+                        Ok(event) => {
+                            let event_type = if matches!(event.kind, notify::EventKind::Create(_) | notify::EventKind::Remove(_) | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))) { "rename" } else { "change" };
+                            for path in &event.paths {
+                                if let Ok(relative) = path.strip_prefix(&subscription.path)
+                                    && (subscription.recursive || relative.components().count() <= 1) { (subscription.listener)(event_type, Some(relative.into())); }
+                            }
+                        },
+                    }
+                }
+            },
+        }
+    }
+}

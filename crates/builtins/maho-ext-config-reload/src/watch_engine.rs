@@ -1,5 +1,6 @@
 use std::{collections::{BTreeMap, BTreeSet}, path::{Path, PathBuf}, sync::Arc};
 use sha2::{Digest, Sha256};
+use super::watch_event_source::{subscribe, WatchErrorListener, WatchSubscription};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum WatchKind { Dir, DirRecursive }
@@ -10,6 +11,43 @@ pub struct RealChange { pub changed_paths: Vec<PathBuf>, pub created: Vec<PathBu
 #[derive(Default)]
 struct ScanResult { hashes: BTreeMap<PathBuf, String>, allowed_directories: BTreeSet<PathBuf>, scanned_directories: BTreeSet<PathBuf> }
 pub struct ConfigReloadWatchEngine { targets: Vec<WatchTarget>, states: Vec<ScanResult>, closed: bool }
+pub struct NativeWatchEngine { pub engine: ConfigReloadWatchEngine, subscriptions: BTreeMap<PathBuf, WatchSubscription>, receiver: std::sync::mpsc::Receiver<()>, sender: std::sync::mpsc::Sender<()>, on_error: WatchErrorListener }
+impl NativeWatchEngine {
+    pub fn new(targets: Vec<WatchTarget>, on_error: WatchErrorListener) -> Result<Self, String> {
+        let engine = ConfigReloadWatchEngine::new(targets).map_err(|error| error.to_string())?;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut state = Self { engine, subscriptions: BTreeMap::new(), receiver, sender, on_error };
+        state.reconcile()?;
+        Ok(state)
+    }
+    fn reconcile(&mut self) -> Result<(), String> {
+        let wanted = self.engine.watched_directories();
+        let removed: Vec<_> = self.subscriptions.keys().filter(|path| !wanted.contains(*path)).cloned().collect();
+        for path in removed { if let Some(mut subscription) = self.subscriptions.remove(&path) { subscription.close()?; } }
+        for path in wanted {
+            if self.subscriptions.contains_key(&path) { continue; }
+            let sender = self.sender.clone();
+            let subscription = subscribe(path.clone(), false, Arc::new(move |_, _| { let _ = sender.send(()); }), Arc::clone(&self.on_error))?;
+            subscription.ready()?;
+            self.subscriptions.insert(path, subscription);
+        }
+        Ok(())
+    }
+    pub fn next_change(&mut self, timeout: std::time::Duration) -> Result<RealChange, String> {
+        self.receiver.recv_timeout(timeout).map_err(|error| error.to_string())?;
+        while self.receiver.try_recv().is_ok() {}
+        let change = self.engine.evaluate().map_err(|error| error.to_string())?;
+        self.reconcile()?;
+        Ok(change)
+    }
+    pub fn close(&mut self) -> Result<(), String> {
+        self.engine.close();
+        let mut errors = Vec::new();
+        for (_, mut subscription) in std::mem::take(&mut self.subscriptions) { if let Err(error) = subscription.close() { errors.push(error); } }
+        if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
+    }
+}
+impl Drop for NativeWatchEngine { fn drop(&mut self) { if let Err(error) = self.close() { (self.on_error)(error, PathBuf::new()); } } }
 impl ConfigReloadWatchEngine {
     pub fn new(targets: Vec<WatchTarget>) -> Result<Self, std::io::Error> {
         let states = targets.iter().map(scan).collect::<Result<Vec<_>, _>>()?;

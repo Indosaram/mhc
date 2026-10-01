@@ -11,6 +11,7 @@ maho-ai = { path = "../../maho-ai" }
 serde_json.workspace = true
 regex.workspace = true
 sha2.workspace = true
+notify = "=8.2.0"
 chrono = { workspace = true, features = ["clock"] }
 
 [dev-dependencies]
