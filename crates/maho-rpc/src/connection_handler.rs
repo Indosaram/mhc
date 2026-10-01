@@ -69,6 +69,7 @@ pub async fn handle_session_command(session:&AgentSession,command:&RpcCommand)->
             ("get_session_stats",Ok(Some(value)))
         },
         RpcCommandBody::GetEntries{since}=>("get_entries",session.with_session_manager(|manager|{let mut entries=manager.entries();if let Some(since)=since{let index=entries.iter().position(|entry|entry["id"].as_str()==Some(since)).ok_or_else(||format!("Entry not found: {since}"))?;entries.drain(..=index);}Ok(Some(serde_json::json!({"entries":entries,"leafId":manager.leaf_id()})))})),
+        RpcCommandBody::SetLabel{entry_id,label}=>{session.with_session_manager_mut(|manager|manager.append_label(entry_id,label.as_deref()));("set_label",Ok(None))},
         _=>return None,
     };
     Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:match result{Ok(data)=>RpcResponseResult::Success{data},Err(error)=>RpcResponseResult::Error{error,error_code:None,error_data:None}}})
