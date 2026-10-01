@@ -24,6 +24,7 @@ futures = { workspace = true }
 indexmap = { workspace = true }
 serde_yaml = "=0.9.34"
 ignore = "=0.4.33"
+async-trait = "=0.1.92"
 
 [dev-dependencies]
 tempfile = { workspace = true }

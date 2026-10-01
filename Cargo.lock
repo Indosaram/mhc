@@ -1533,6 +1533,7 @@ dependencies = [
 name = "maho-core"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "futures",
  "hex",
