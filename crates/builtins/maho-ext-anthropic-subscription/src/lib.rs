@@ -1,7 +1,13 @@
 pub mod api_id;
+pub mod accounts;
+pub mod affinity;
 pub mod auth_environment;
+pub mod bounded_queue;
 pub mod custom_tools_schema;
+pub mod content_blocks;
 pub mod errors;
 pub mod prompt_directive_dedupe;
 pub mod refusal;
 pub mod session_registry_state;
+pub mod session_turn_claim;
+pub mod session_binding_store;
