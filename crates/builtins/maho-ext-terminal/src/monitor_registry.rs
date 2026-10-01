@@ -143,14 +143,17 @@ impl MonitorRegistry {
         let mut records=self.records.lock().expect("monitor records");
         let ids=ids.map(<[String]>::to_vec).unwrap_or_else(||records.keys().chain(self.files.keys()).cloned().collect());
         let mut resumed=vec![];
+        let mut pending_events=vec![];
         for id in ids {
             if let Some(dropped)=records.get_mut(&id).and_then(CommandMonitor::resume) {resumed.push((id,dropped));continue;}
             if let Some((file,_))=self.files.get(&id) {
                 let events={let mut file=file.lock().expect("file monitor");if !file.paused||file.settled {continue;}file.paused=false;file.check().unwrap_or_else(|error|file.stop(&format!("watcher error: {error}")).into_iter().collect())};
                 if let Some(snapshot)=self.file_snapshots.lock().expect("file snapshots").get_mut(&id) {snapshot.paused=false;}
-                resumed.push((id,0));for event in events {(self.emit)(event);}
+                resumed.push((id,0));pending_events.extend(events);
             }
         }
+        drop(records);
+        for event in pending_events {(self.emit)(event);}
         resumed
     }
     pub fn register(&mut self,runtime:&crate::runtime_session::TerminalRuntimeSession,mut record:CommandMonitor)->Result<(),crate::runtime_session::RuntimeError> {
@@ -188,6 +191,15 @@ impl Drop for MonitorRegistry {fn drop(&mut self) {self.dispose();}}
 #[cfg(test)]
 mod registry_tests {
     use super::*;
+    #[tokio::test]
+    async fn file_rearm_callbacks_can_read_command_records() {
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("created");
+        let mut registry=MonitorRegistry::new(|_|{});let records=registry.records.clone();
+        registry.emit=std::sync::Arc::new(move |_| {assert!(records.try_lock().is_ok());});
+        let (id,_)=registry.register_file("created",&path,crate::terminal_manifest_model::FileEvent::Create,5000).unwrap();
+        registry.pause(std::slice::from_ref(&id));std::fs::write(&path,b"ready").unwrap();
+        assert_eq!(registry.resume(Some(std::slice::from_ref(&id))),vec![(id,0)]);
+    }
     #[tokio::test]
     async fn native_file_registration_emits_once_and_releases_live_snapshot() {
         let dir=tempfile::tempdir().unwrap();let path=dir.path().join("created");
