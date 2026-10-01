@@ -45,6 +45,16 @@ impl GoalTurnAccounting {
         if self.completed_this_turn.as_deref()==Some(id) { self.completed_this_turn=None; }
     }
     pub fn clear(&mut self) { self.window=None; self.blocked_this_turn=None; self.completed_this_turn=None; }
+    pub async fn refresh_ui(&self,ticker:&mut crate::elapsed_ticker::GoalElapsedTicker,ctx:&maho_ext_api::ExtensionContext,goal:Option<&Goal>)->Result<(),maho_ext_api::ExtensionFailure> {
+        if ctx.has_ui&&let Some(goal)=goal.filter(|goal|goal.status==GoalStatus::Active)&&let Some(window)=self.window.as_ref().filter(|window|window.goal_id==goal.id) {
+            ticker.sync(ctx.clone(),goal.clone(),window.measured_from_milliseconds).await?;
+            return Ok(());
+        }
+        if let Some(worker)=ticker.stop()? {
+            match worker.await { Ok(result)=>result?,Err(error) if error.is_cancelled()=>(),Err(error)=>return Err(maho_ext_api::ExtensionFailure::new(error.to_string())) }
+        }
+        crate::ui::update_goal_ui(ctx,goal,None); Ok(())
+    }
     pub async fn account(&mut self,reference:&GoalStoreRef,mode:GoalAccountingMode,messages:Option<&[AgentMessage]>,now:f64,epoch_seconds:u64)->Result<Option<Goal>,GoalError> {
         let Some(window)=&self.window else { return crate::store::read_goal(reference); };
         let usage=match messages { Some(messages)=>self.usage.take_remaining(messages),None=>self.usage.take_pending() };
@@ -56,6 +66,14 @@ impl GoalTurnAccounting {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn footer_ticker_runs_only_for_active_matching_accounting_window() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() };
+        let mut goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap(); let mut accounting=GoalTurnAccounting::default(); accounting.begin(&goal,0.0);
+        let mut ticker=crate::elapsed_ticker::GoalElapsedTicker::new(std::sync::Arc::new(|_,_,_|Ok(())),std::sync::Arc::new(||0.0));
+        let ctx=crate::test_context::context(); accounting.refresh_ui(&mut ticker,&ctx,Some(&goal)).await.unwrap(); assert!(ticker.running());
+        goal.status=GoalStatus::Paused; accounting.refresh_ui(&mut ticker,&ctx,Some(&goal)).await.unwrap(); assert!(!ticker.running());
+        goal.status=GoalStatus::Active; goal.id="replacement".into(); accounting.refresh_ui(&mut ticker,&ctx,Some(&goal)).await.unwrap(); assert!(!ticker.running());
+    }
     #[test] fn history_counter_resets_only_at_real_user_message() {
         fn entry(kind:&str,data:serde_json::Value)->maho_ext_api::SessionEntry { maho_ext_api::SessionEntry { id:String::new(),parent_id:None,timestamp:String::new(),kind:kind.into(),data } }
         let continuation=||entry("custom_message",serde_json::json!({"customType":"goal-continuation"}));
