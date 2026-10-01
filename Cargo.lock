@@ -1827,6 +1827,7 @@ dependencies = [
  "fancy-regex",
  "globset",
  "maho-ai",
+ "maho-ext-api",
  "regex",
  "serde",
  "serde_json",
