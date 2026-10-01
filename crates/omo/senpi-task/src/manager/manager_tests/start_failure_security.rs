@@ -7,7 +7,9 @@
 
 use std::sync::Arc;
 
-use super::fakes::{FakeRunner, Harness, HarnessOptions, base_spec, make_manager};
+use serde_json::json;
+
+use super::fakes::{FakeRunner, Harness, HarnessOptions, TeamPortManager, base_spec, make_manager};
 use crate::manager::execution_mode::ExecutionMode;
 use crate::manager::types::{
     ChildPlanner, ManagedRunnerError, ManagerStartSpec, ResolvedChildPlan, StartFailure,
@@ -15,6 +17,8 @@ use crate::manager::types::{
 };
 use crate::runners::{RunnerFailure, RunnerFailureKind};
 use crate::state::{ResolvedModelRecord, ResolvedModelSource};
+use crate::team::normalize::normalize_senpi_team_spec;
+use crate::team::spawn_members::{SpawnMembersInput, spawn_team_members};
 
 const ADVERSARIAL_ERROR: &str =
     "ENOENT /Users/alice/.config/senpi/credentials.json api_key=sk-live-secret";
@@ -129,6 +133,48 @@ fn given_non_runner_error_imitating_runner_failure_when_start_fails_then_generic
 
     assert_eq!(failure.error_message, GENERIC_START_FAILURE);
     assert!(!format!("{failure:?}").contains(ADVERSARIAL_ERROR));
+}
+
+#[test]
+fn given_non_runner_error_with_secrets_when_team_member_spawn_fails_then_only_stable_classification()
+{
+    let runner = FakeRunner::new();
+    *super::fakes::lock(&runner.start_error) =
+        Some(ManagedRunnerError::Other(ADVERSARIAL_ERROR.to_string()));
+    let harness = make_manager(HarnessOptions {
+        process: Some(runner),
+        ..HarnessOptions::default()
+    });
+    let spec = normalize_senpi_team_spec(
+        &json!({
+            "members": [{ "name": "alpha", "kind": "category", "category": "quick", "prompt": "work" }]
+        }),
+        "secure-team",
+        None,
+    )
+    .expect("team spec normalizes");
+    let manager = TeamPortManager::new(harness.manager.clone());
+    let now = || 0i64;
+
+    let result = spawn_team_members(&SpawnMembersInput {
+        spec: &spec,
+        team_run_id: "team-run-secret-test",
+        manager: &manager,
+        lead_session_id: "lead-session",
+        spawn_depth: 1,
+        max_parallel: 1,
+        deadline_at: 1_000,
+        now: &now,
+        member_extension: None,
+    });
+
+    assert_eq!(result.spawned.len(), 0);
+    let failure = result.failure.expect("team spawn failure");
+    assert_eq!(
+        failure.message,
+        format!("member 'alpha' failed to start: {GENERIC_START_FAILURE}")
+    );
+    assert!(!failure.message.contains(ADVERSARIAL_ERROR));
 }
 
 #[test]

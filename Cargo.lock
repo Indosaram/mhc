@@ -1895,6 +1895,7 @@ dependencies = [
  "maho-delegate-core",
  "maho-model-core",
  "maho-omo-config-core",
+ "maho-team-core",
  "maho-utils",
  "pretty_assertions",
  "regex",

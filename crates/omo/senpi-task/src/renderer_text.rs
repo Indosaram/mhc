@@ -5,8 +5,20 @@ use unicode_width::UnicodeWidthChar;
 const DEFAULT_EXCERPT_WIDTH: usize = 120;
 pub const ELLIPSIS: &str = "...";
 
+/// pi-tui `visibleWidth`: ANSI escape sequences occupy no cells and a tab counts as 3.
 pub fn renderer_visible_width(value: &str) -> usize {
-    value.chars().map(char_width).sum()
+    let chars: Vec<char> = value.chars().collect();
+    let mut width = 0;
+    let mut index = 0;
+    while index < chars.len() {
+        if let Some(length) = crate::tools::render::ansi_code_length(&chars, index) {
+            index += length;
+            continue;
+        }
+        width += if chars[index] == '\t' { 3 } else { char_width(chars[index]) };
+        index += 1;
+    }
+    width
 }
 
 pub fn normalize_renderer_text(value: &str) -> String {
