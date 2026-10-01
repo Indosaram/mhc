@@ -15,3 +15,4 @@ pub mod session_continuity;
 pub mod tools;
 pub mod prompt_bridge;
 pub mod settings;
+pub mod system_prompt;
