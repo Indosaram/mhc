@@ -1,0 +1,16 @@
+[
+  {
+    "fn": "formatDisplayVersion",
+    "args": [
+      "1.2.3"
+    ],
+    "result": "v1.2.3"
+  },
+  {
+    "fn": "formatDisplayVersion",
+    "args": [
+      "dev"
+    ],
+    "result": "dev"
+  }
+]

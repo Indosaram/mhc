@@ -1,1 +1,36 @@
-
+//! Pinned senpi interactive foundation.
+pub mod aborted_error_label;
+pub mod chat_viewport;
+pub mod compaction_queue_transfer;
+pub mod components;
+pub mod editor_paste_transfer;
+pub mod extension_error_format;
+pub mod external_editor;
+pub mod grok;
+pub mod help_content;
+pub mod interactive_host_runtime;
+pub mod interactive_mode;
+pub mod interactive_stderr_guard;
+pub mod keybindings_command;
+pub mod loaded_resource_scopes;
+pub mod login_outcome;
+pub mod model_catalog_refresh;
+pub mod model_search;
+pub mod model_search_rank;
+pub mod provider_error_presentation;
+pub mod replay_assistant_tools;
+pub mod risky_main_model_warning;
+pub mod session_info_format;
+pub mod startup_tools;
+pub mod streaming_reveal;
+pub mod streaming_reveal_content;
+pub mod streaming_reveal_pacing;
+pub mod theme;
+pub mod tips;
+pub mod tmux_setup;
+pub mod tool_args_reveal;
+pub mod tool_progress;
+pub mod tool_result_reveal;
+pub mod tui_renderer;
+pub mod version_label;
+pub mod working_status;

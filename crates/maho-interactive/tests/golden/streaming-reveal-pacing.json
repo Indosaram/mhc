@@ -1,0 +1,56 @@
+[
+  {
+    "fn": "nextStep",
+    "args": [
+      0,
+      16,
+      90
+    ],
+    "result": 0
+  },
+  {
+    "fn": "nextStep",
+    "args": [
+      12.6,
+      16,
+      90
+    ],
+    "result": 1.44
+  },
+  {
+    "fn": "nextStep",
+    "args": [
+      1000,
+      16,
+      90
+    ],
+    "result": 11.04
+  },
+  {
+    "fn": "nextStep",
+    "args": [
+      1000,
+      0,
+      90
+    ],
+    "result": 0.69
+  },
+  {
+    "fn": "updateArrivalRate",
+    "args": [
+      90,
+      10000,
+      1
+    ],
+    "result": 157.5
+  },
+  {
+    "fn": "updateArrivalRate",
+    "args": [
+      90,
+      0,
+      20
+    ],
+    "result": 90
+  }
+]

@@ -1,0 +1,22 @@
+{
+  "cwd": "/tmp/project",
+  "home": "/home/test",
+  "branch": "main",
+  "sessionName": "parity",
+  "cacheRead": 8000,
+  "cacheWrite": 0,
+  "cost": 0.125,
+  "latestCacheHitRate": 80,
+  "contextWindow": 200000,
+  "contextPercent": 12.3,
+  "contextTokens": null,
+  "modelId": "test-model",
+  "provider": "test",
+  "reasoning": true,
+  "thinkingLevel": "high",
+  "fastMode": false,
+  "subscription": false,
+  "providerCount": 2,
+  "accountSuffix": "",
+  "extensionStatuses": {}
+}

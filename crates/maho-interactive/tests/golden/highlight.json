@@ -1,0 +1,40 @@
+[
+  {
+    "language": "rust",
+    "code": "// hello\nlet value = 42;",
+    "lines": [
+      "\u001b[38;2;106;153;85m// hello\u001b[39m",
+      "\u001b[38;2;86;156;214mlet\u001b[39m \u001b[38;2;156;220;254mvalue\u001b[39m = \u001b[38;2;181;206;168m42\u001b[39m;"
+    ]
+  },
+  {
+    "language": "python",
+    "code": "# hello\nreturn 42",
+    "lines": [
+      "\u001b[38;2;106;153;85m# hello\u001b[39m",
+      "\u001b[38;2;86;156;214mreturn\u001b[39m \u001b[38;2;181;206;168m42\u001b[39m"
+    ]
+  },
+  {
+    "language": "json",
+    "code": "{\"name\": \"hello\", \"count\": 42}",
+    "lines": [
+      "\u001b[38;2;181;189;104m{\"name\": \"hello\", \"count\": 42}\u001b[39m"
+    ]
+  },
+  {
+    "language": null,
+    "code": "plain text\n",
+    "lines": [
+      "\u001b[38;2;181;189;104mplain text\u001b[39m",
+      "\u001b[38;2;181;189;104m\u001b[39m"
+    ]
+  },
+  {
+    "language": "not-a-language",
+    "code": "plain text",
+    "lines": [
+      "\u001b[38;2;181;189;104mplain text\u001b[39m"
+    ]
+  }
+]

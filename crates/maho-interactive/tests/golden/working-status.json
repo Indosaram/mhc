@@ -1,0 +1,65 @@
+[
+  {
+    "fn": "formatWorkingElapsedSeconds",
+    "args": [
+      -1
+    ],
+    "result": "0s"
+  },
+  {
+    "fn": "formatWorkingElapsedSeconds",
+    "args": [
+      59.9
+    ],
+    "result": "59s"
+  },
+  {
+    "fn": "formatWorkingElapsedSeconds",
+    "args": [
+      60
+    ],
+    "result": "1m 00s"
+  },
+  {
+    "fn": "formatWorkingElapsedSeconds",
+    "args": [
+      3661
+    ],
+    "result": "1h 01m 01s"
+  },
+  {
+    "fn": "formatWorkingStatusMessage",
+    "args": [
+      "Working",
+      63,
+      "Esc"
+    ],
+    "result": "Working (1m 03s • Esc to interrupt)"
+  },
+  {
+    "fn": "formatToolHookStatusMessage",
+    "args": [
+      "PreToolUse",
+      "ready",
+      12
+    ],
+    "result": "Running PreToolUse hook: ready (12s)"
+  },
+  {
+    "fn": "sanitizeWorkingStatusPlainText",
+    "args": [
+      "\u001b[31m red\u001b[0m\n\t text "
+    ],
+    "result": "red text"
+  },
+  {
+    "fn": "formatActiveToolWorkingLabel",
+    "args": [
+      "bash",
+      {
+        "command": "echo hi"
+      }
+    ],
+    "result": "Running bash: echo hi"
+  }
+]
