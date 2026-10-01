@@ -1788,6 +1788,7 @@ name = "maho-ext-terminal"
 version = "0.0.0"
 dependencies = [
  "fancy-regex",
+ "serde_json",
  "sha2",
  "tempfile",
 ]
