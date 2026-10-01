@@ -1,0 +1,5 @@
+use std::cmp::Ordering;
+use super::types::RuleCandidate;
+fn source_priority(source: &str) -> usize { match source { ".omo/rules" => 0, ".claude/rules" => 1, ".cursor/rules" => 2, ".github/instructions" => 3, ".github/copilot-instructions.md" => 4, "AGENTS.md" => 5, "CLAUDE.md" => 6, "CONTEXT.md" => 7, "~/.omo/rules" => 100, "~/.opencode/rules" => 101, "~/.claude/rules" => 102, "~/.config/opencode/AGENTS.md" => 103, "~/.claude/CLAUDE.md" => 104, _ => usize::MAX } }
+pub fn compare_candidates(a: &RuleCandidate, b: &RuleCandidate) -> Ordering { a.is_global.cmp(&b.is_global).then_with(|| a.distance.cmp(&b.distance)).then_with(|| source_priority(&a.source).cmp(&source_priority(&b.source))).then_with(|| a.relative_path.encode_utf16().cmp(b.relative_path.encode_utf16())).then_with(|| a.real_path.encode_utf16().cmp(b.real_path.encode_utf16())) }
+pub fn sort_candidates(candidates: &[RuleCandidate]) -> Vec<RuleCandidate> { let mut sorted = candidates.to_vec(); sorted.sort_by(compare_candidates); sorted }
