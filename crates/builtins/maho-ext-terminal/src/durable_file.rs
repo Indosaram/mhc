@@ -11,13 +11,15 @@ pub fn classify_detached_change(saved:&TerminalManifestCheckpoint,live:&Terminal
 pub fn remaining_ms(monitor:&ManifestMonitor,now:f64)->f64 {monitor.expires_at.map_or(300_000.0,|expiry|(expiry-now).max(1.0))}
 #[cfg(unix)]
 pub fn restore_file(monitor:&ManifestMonitor,registry:&mut crate::monitor_registry::MonitorRegistry,manager:&mut crate::manager::TerminalManager,writer:Option<&mut crate::terminal_manifest::TerminalManifestWriter>,now:f64)->crate::restore::RestoreOutcome {
-    use crate::{restore::RestoreOutcome,terminal_manifest_model::{MonitorRuntimeKind,FileEvent}};
+    use crate::{restore::RestoreOutcome,terminal_manifest_model::MonitorRuntimeKind};
     if monitor.runtime_kind!=MonitorRuntimeKind::File {return RestoreOutcome::Lost;}
     let (Some(path),Some(cwd),Some(saved))=(&monitor.path,&monitor.cwd,&monitor.last_checkpoint) else {return RestoreOutcome::Lost;};
     let target=std::path::Path::new(cwd).join(path);
     if saved.present&&!target.is_file() {return RestoreOutcome::Lost;}
-    let registered=registry.register_file_with_identity(&monitor.description,&target,monitor.event.unwrap_or(FileEvent::Create),remaining_ms(monitor,now) as u64,Some(&monitor.monitor_id),monitor.approved_parent.as_deref().map(std::path::Path::new));
+    let Ok(Some(reservation))=manager.reserve() else {return RestoreOutcome::Lost;};
+    let registered=registry.restore_persistent_file(monitor,&target,now);
     let Ok((id,_))=registered else {return RestoreOutcome::Lost;};
+    registry.reserve_file_capacity(&id,reservation);
     let Some(live)=registry.file_checkpoint(&id) else {return RestoreOutcome::Lost;};
     let change=classify_detached_change(saved,&live);
     if change==Some(DetachedChange::Gone) {registry.stop_file(&id);return RestoreOutcome::Lost;}
@@ -54,8 +56,9 @@ mod filesystem_tests {
         let mut manifest=crate::restore::parse_terminal_manifest(&serde_json::json!({"monitors":[{"monitorId":"mon_saved","sessionId":"s","description":"watch","runtimeKind":"file","durabilityClass":"checkpointed-file","path":"watched","cwd":dir.path().to_string_lossy(),"event":"modify","createdAt":1,"expiresAt":null,"persistent":true,"suspended":true,"lastCheckpoint":saved,"deliveryPaused":false,"fireWindow":{"startMs":1,"count":0}}],"backgroundSessions":[],"updatedAt":1}),"s").unwrap();
         let monitor=manifest.monitors.remove(0);let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let mut registry=crate::monitor_registry::MonitorRegistry::new(move |event| {sender.send(event).unwrap();});let mut manager=crate::manager::TerminalManager::default();
         assert_eq!(restore_file(&monitor,&mut registry,&mut manager,None,2.0),crate::restore::RestoreOutcome::Restored);
+        assert_eq!(registry.snapshot()[0].expires_at,monitor.expires_at);assert_eq!(registry.snapshot()[0].persistent,Some(true));assert!(registry.snapshot()[0].deadline_ms.is_none());
         assert!(matches!(events.try_recv(),Ok(crate::monitor_registry::MonitorEvent::Line {line,..}) if line=="changed while detached: modified watched"));assert!(events.try_recv().is_err());
-        let runtime=manager.resolve_id("mon_saved").unwrap();assert_eq!(runtime,"watch_1");assert!(registry.stop_file(&runtime));Ok(())
+        let runtime=manager.resolve_id("mon_saved").unwrap();assert_eq!(runtime,"watch_1");assert_eq!(manager.active_size().unwrap(),1);assert!(registry.stop_file(&runtime));assert_eq!(manager.active_size().unwrap(),0);Ok(())
     }
     #[test]
     fn snapshot_hashes_regular_files_and_rejects_symlinks()->std::io::Result<()> {

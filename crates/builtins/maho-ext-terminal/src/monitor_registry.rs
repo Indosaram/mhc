@@ -106,6 +106,12 @@ impl MonitorRegistry {
         self.register_file_lifetime(description,path,event,(crate::shared::DURABLE_MONITOR_EXPIRY_MS,true),None,None)
     }
     #[cfg(unix)]
+    pub fn restore_persistent_file(&mut self,monitor:&crate::terminal_manifest_model::ManifestMonitor,path:&std::path::Path,now:f64)->std::io::Result<(String,String)> {
+        let registered=self.register_file_lifetime(&monitor.description,path,monitor.event.unwrap_or(crate::terminal_manifest_model::FileEvent::Create),(crate::durable_file::remaining_ms(monitor,now) as u64,true),Some(&monitor.monitor_id),monitor.approved_parent.as_deref().map(std::path::Path::new))?;
+        if let Some(snapshot)=self.file_snapshots.lock().expect("file snapshots").get_mut(&registered.0) {snapshot.expires_at=monitor.expires_at;}
+        Ok(registered)
+    }
+    #[cfg(unix)]
     fn register_file_lifetime(&mut self,description:&str,path:&std::path::Path,event:crate::terminal_manifest_model::FileEvent,lifetime:(u64,bool),monitor_id:Option<&str>,approved_parent:Option<&std::path::Path>)->std::io::Result<(String,String)> {
         let (timeout_ms,persistent)=lifetime;
         let id=format!("watch_{}",self.next_file_id+1);let monitor_id=match monitor_id {Some(id)=>id.to_owned(),None=>allocate_monitor_id()?};
