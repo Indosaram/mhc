@@ -239,6 +239,20 @@ fn assistant_text_segments_remain_on_either_side_of_tool_card() {
     assert_eq!(lines.matches("after-tool").count(), 1);
 }
 
+#[test]
+fn streamed_tool_arguments_finish_with_exact_parsed_arguments() {
+    use maho_agent::types::AgentEvent;
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let message: maho_agent::types::AgentMessage = serde_json::from_value(serde_json::json!({"role":"assistant", "content":[{"type":"toolCall","id":"arguments","name":"custom","arguments":{"value":"exact-final"}}], "api":"faux", "provider":"faux", "model":"faux-1", "usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"toolUse","timestamp":0})).expect("message");
+    mode.handle_event(&AgentEvent::AgentStart);
+    mode.handle_event(&AgentEvent::MessageStart { message:message.clone() });
+    mode.handle_event(&AgentEvent::MessageUpdate { message:message.clone(), assistant_message_event:maho_ai::types::AssistantMessageEvent::ToolcallDelta { content_index:0, delta:"{\"value\":\"partial".into(), partial:message.as_assistant().expect("assistant").clone() } });
+    mode.handle_event(&AgentEvent::MessageEnd { message });
+    mode.tick(1000.0);
+    assert!(mode.render(80).join("\n").contains("exact-final"));
+}
+
 #[tokio::test]
 async fn registered_extension_markdown_transformer_reaches_native_assistant() {
     use maho_tui::tui::Component;

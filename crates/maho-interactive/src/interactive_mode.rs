@@ -37,6 +37,8 @@ pub struct InteractiveMode {
     reveal: crate::streaming_reveal::StreamingRevealController,
     clock: std::time::Instant,
     tool_reveal: crate::tool_result_reveal::ToolResultRevealController,
+    tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController,
+    tool_partial_json: BTreeMap<String, String>,
     last_status: Option<(usize, Rc<RefCell<maho_tui::components::text::Text>>)>,
     assistant_cards: Vec<Rc<RefCell<AssistantMessageComponent>>>,
     tool_cards: Vec<Rc<RefCell<ToolExecutionComponent>>>,
@@ -64,7 +66,7 @@ impl InteractiveMode {
         editor.editor.on_submit = Some(Box::new(move |text| { if !text.trim().is_empty() { captured.borrow_mut().push_back(text.trim().into()); } }));
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(maho_ext_api::Theme { name: Some(theme.name.clone()), colors: theme.resolved_colors(), ..Default::default() });
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, question_reply:Rc::new(RefCell::new(None)) }
+        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, question_reply:Rc::new(RefCell::new(None)) }
     }
 
     pub fn use_registered_markdown_transformers(&mut self, extensions: &[maho_ext_api::LoadedExtension]) {
@@ -612,8 +614,8 @@ impl InteractiveMode {
 
     pub fn handle_event(&mut self, event: &AgentEvent) {
         match event {
-            AgentEvent::AgentStart => { self.agent_idle = false; self.pending_tools.clear(); self.working_started_ms = Some(self.clock.elapsed().as_secs_f64() * 1000.0); }
-            AgentEvent::AgentEnd { .. } => { self.agent_idle = true; self.pending_tools.clear(); self.tool_reveal.stop(); self.working_started_ms = None; }
+            AgentEvent::AgentStart => { self.agent_idle = false; self.pending_tools.clear(); self.tool_partial_json.clear(); self.tool_args_reveal.stop(); self.working_started_ms = Some(self.clock.elapsed().as_secs_f64() * 1000.0); }
+            AgentEvent::AgentEnd { .. } => { self.agent_idle = true; self.pending_tools.clear(); self.tool_partial_json.clear(); self.tool_args_reveal.stop(); self.tool_reveal.stop(); self.working_started_ms = None; }
             AgentEvent::MessageStart { message } => {
                 if message.role() == "user" {
                     let value = serde_json::to_value(message).expect("serializable agent message");
@@ -645,13 +647,22 @@ impl InteractiveMode {
             AgentEvent::MessageUpdate { message, .. } | AgentEvent::MessageEnd { message } if message.role() == "assistant" => {
                 if let Some(assistant) = message.as_assistant() {
                     let final_message = matches!(event, AgentEvent::MessageEnd { .. });
+                    if let AgentEvent::MessageUpdate { assistant_message_event: maho_ai::types::AssistantMessageEvent::ToolcallDelta { content_index, delta, .. }, .. } = event
+                        && let Some(maho_ai::types::ContentBlock::ToolCall(call)) = assistant.content.get(*content_index) {
+                        self.tool_partial_json.entry(call.id.clone()).or_default().push_str(delta);
+                    }
                     let mut start = 0;
                     for (index, content) in assistant.content.iter().enumerate() {
                         if let maho_ai::types::ContentBlock::ToolCall(call) = content {
                             self.update_assistant_segment(assistant, start, index, final_message);
                             let args = serde_json::Value::Object(call.arguments.clone());
                             let component = self.tool_component(&call.name, &call.id, args.clone());
-                            component.borrow_mut().update_args(args);
+                            if final_message { self.tool_args_reveal.finish(&call.id); self.tool_partial_json.remove(&call.id); component.borrow_mut().update_args(args); }
+                            else if let Some(partial) = self.tool_partial_json.get(&call.id) {
+                                let (handled, value) = self.tool_args_reveal.update(&call.id, Rc::as_ptr(&component) as usize, partial, self.clock.elapsed().as_secs_f64() * 1000.0);
+                                if let Some(value) = value { component.borrow_mut().update_args(value); }
+                                else if !handled { component.borrow_mut().update_args(args); }
+                            } else { component.borrow_mut().update_args(args); }
                             if matches!(event, AgentEvent::MessageEnd { .. }) { component.borrow_mut().set_args_complete(); }
                             start = index + 1;
                         }
@@ -710,6 +721,7 @@ impl InteractiveMode {
     }
 
     pub fn tick(&mut self, now_ms: f64) {
+        for (id, value) in self.tool_args_reveal.tick(now_ms) { if let Some(component) = self.pending_tools.get(&id) { component.borrow_mut().update_args(value); } }
         if let Some(question) = &mut self.question { question.tick(now_ms.max(0.0) as u64); }
         if self.question_reply.borrow().is_none() { self.question = None; }
         for component in &self.tool_cards { component.borrow_mut().tick(now_ms.max(0.0) as u64); }
