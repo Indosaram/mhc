@@ -1730,6 +1730,10 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-pi-ast-grep"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-pi-comment-checker"
@@ -1738,6 +1742,7 @@ dependencies = [
  "maho-comment-checker-core",
  "maho-ext-api",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

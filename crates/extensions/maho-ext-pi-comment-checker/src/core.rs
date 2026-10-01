@@ -1,4 +1,4 @@
-use comment_checker_core::{EditPair, HookInput, HookToolInput, get_apply_patch_metadata_files, get_string, parse_apply_patch_requests};
+use comment_checker_core::{EditPair, HookInput, HookToolInput, get_apply_patch_metadata_files, get_string};
 use maho_ext_api::{ToolContent, ToolResultEvent};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -36,12 +36,7 @@ pub fn extract_comment_check_requests(event: &ToolResultEvent) -> Vec<CommentChe
         }
         if !requests.is_empty() { return requests; }
         let Some(patch) = get_string(input, &["input", "patch"]).filter(|patch| !patch.is_empty()) else { return requests; };
-        for edit in parse_apply_patch_requests(&patch) {
-            let tool = if edit.before.is_empty() { "Write" } else { "Edit" };
-            let input = if tool == "Write" { HookToolInput { content: Some(edit.after), ..Default::default() } } else { HookToolInput { old_string: Some(edit.before), new_string: Some(edit.after), ..Default::default() } };
-            requests.push(request(&event.tool_name, tool, edit.file_path, input));
-        }
-        return requests;
+        return parse_patch_requests(&patch, &event.tool_name);
     }
     let Some(path) = get_string(input, &["filePath", "file_path", "path"]).filter(|path| !path.is_empty()) else { return Vec::new(); };
     let (tool, value) = match name.as_str() {
@@ -68,6 +63,40 @@ pub fn extract_comment_check_requests(event: &ToolResultEvent) -> Vec<CommentChe
     vec![request(&event.tool_name, tool, path, value)]
 }
 
+pub fn parse_patch_requests(patch: &str, source: &str) -> Vec<CommentCheckRequest> {
+    struct Accumulator { tool: &'static str, path: String, old: Vec<String>, new: Vec<String> }
+    fn flush(current: Option<Accumulator>, source: &str, requests: &mut Vec<CommentCheckRequest>) {
+        let Some(current) = current else { return; };
+        if current.new.is_empty() || current.tool == "Delete" { return; }
+        let new = format!("{}\n", current.new.join("\n"));
+        let old = if current.old.is_empty() { String::new() } else { format!("{}\n", current.old.join("\n")) };
+        let input = if current.tool == "Write" { HookToolInput { content: Some(new), ..Default::default() } } else { HookToolInput { old_string: Some(old), new_string: Some(new), ..Default::default() } };
+        requests.push(request(source, current.tool, current.path, input));
+    }
+    let mut current: Option<Accumulator> = None;
+    let mut requests = Vec::new();
+    for line in patch.split('\n').map(|line| line.strip_suffix('\r').unwrap_or(line)) {
+        if line == "*** Begin Patch" || line == "*** End Patch" { continue; }
+        if let Some((tool, path)) = [("*** Add File: ", "Write"), ("*** Update File: ", "Edit"), ("*** Delete File: ", "Delete")].into_iter().find_map(|(prefix, tool)| line.strip_prefix(prefix).map(|path| (tool, path))) {
+            flush(current.take(), source, &mut requests);
+            current = Some(Accumulator { tool, path: path.trim().to_owned(), old: Vec::new(), new: Vec::new() });
+            continue;
+        }
+        let Some(acc) = current.as_mut() else { continue; };
+        if let Some(path) = line.strip_prefix("*** Move to: ") {
+            if acc.tool == "Edit" { acc.path = path.trim().to_owned(); }
+            continue;
+        }
+        if line.starts_with("@@") { continue; }
+        if acc.tool != "Delete" {
+            if let Some(value) = line.strip_prefix('+') { acc.new.push(value.to_owned()); }
+            if acc.tool == "Edit" && let Some(value) = line.strip_prefix('-') { acc.old.push(value.to_owned()); }
+        }
+    }
+    flush(current, source, &mut requests);
+    requests
+}
+
 pub fn to_hook_input(request: &CommentCheckRequest, session_id: &str, cwd: &str) -> HookInput {
     HookInput { session_id: session_id.to_owned(), tool_name: request.tool_name.clone(), transcript_path: String::new(), cwd: cwd.to_owned(), hook_event_name: "PostToolUse".to_owned(), tool_input: request.tool_input.clone(), tool_response: None }
 }
@@ -87,5 +116,9 @@ mod tests {
     #[test] fn failure_when_error_prefix() { assert!(is_tool_failure_output(" ERROR invalid ")); }
     #[test] fn failure_when_embedded_error() { assert!(is_tool_failure_output("write error: denied")); }
     #[test] fn success_when_normal_output() { assert!(!is_tool_failure_output("wrote file")); }
+    #[test] fn edit_when_patch_only_adds_lines() { let requests = parse_patch_requests("*** Update File: a.ts\n@@\n+x", "apply_patch"); assert_eq!(requests[0].tool_name, "Edit"); assert_eq!(requests[0].tool_input.old_string.as_deref(), Some("")); }
+    #[test] fn write_when_patch_adds_file() { let requests = parse_patch_requests("*** Add File: a.ts\n+x", "apply_patch"); assert_eq!(requests[0].tool_input.content.as_deref(), Some("x\n")); }
+    #[test] fn moved_when_patch_updates_file() { let requests = parse_patch_requests("*** Update File: a.ts\n*** Move to: b.ts\n-x\n+y", "apply_patch"); assert_eq!(requests[0].file_path, "b.ts"); }
+    #[test] fn ignored_when_patch_deletes_file() { assert!(parse_patch_requests("*** Delete File: a.ts", "apply_patch").is_empty()); }
     #[test] fn hook_when_request_present() { let requests = extract_comment_check_requests(&event("write", json!({"path":"a.ts","content":"x"}))); let input = to_hook_input(&requests[0], "session", "/work"); assert_eq!(input.session_id, "session"); assert_eq!(input.hook_event_name, "PostToolUse"); assert_eq!(input.tool_response, None); }
 }
