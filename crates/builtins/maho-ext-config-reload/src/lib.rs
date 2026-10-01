@@ -8,3 +8,5 @@ pub mod watch_engine;
 pub mod session_scoped_callback;
 pub mod index;
 pub mod watch_event_source;
+pub mod lifecycle;
+pub use lifecycle::ConfigReload;

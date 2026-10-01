@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 maho-core = { path = "../../maho-core" }
 maho-ai = { path = "../../maho-ai" }
+maho-ext-api = { path = "../../maho-ext-api" }
 serde_json.workspace = true
 regex.workspace = true
 sha2.workspace = true
