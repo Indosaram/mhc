@@ -52,3 +52,13 @@ fn affected_scan_preserves_unobserved_siblings_until_their_event() {
     assert_eq!(engine.evaluate_affected(&std::collections::BTreeSet::from([first.clone()])).unwrap().changed_paths, [first]);
     assert_eq!(engine.evaluate().unwrap().changed_paths, [second]);
 }
+#[test]
+fn watch_roots_normalize_dot_segments_before_snapshot_keys() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("nested")).unwrap();
+    let file = root.path().join("file");
+    fs::write(&file, "fixture").unwrap();
+    let engine = ConfigReloadWatchEngine::new(vec![target(&root.path().join("nested/.."))]).unwrap();
+    assert!(engine.get_baseline_snapshot().contains_key(&file));
+    assert!(engine.watched_directories().contains(root.path()));
+}

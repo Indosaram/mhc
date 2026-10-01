@@ -81,7 +81,13 @@ impl ConfigReloadWatchEngine {
     pub fn with_error_listener(targets: Vec<WatchTarget>, on_error: WatchErrorListener) -> Result<Self, std::io::Error> {
         Self::create(targets, Some(on_error))
     }
-    fn create(targets: Vec<WatchTarget>, on_error: Option<WatchErrorListener>) -> Result<Self, std::io::Error> {
+    fn create(mut targets: Vec<WatchTarget>, on_error: Option<WatchErrorListener>) -> Result<Self, std::io::Error> {
+        for target in &mut targets {
+            let absolute = std::path::absolute(&target.path)?;
+            let mut path = PathBuf::new();
+            for component in absolute.components() { match component { std::path::Component::ParentDir => { path.pop(); }, std::path::Component::CurDir => {}, other => path.push(other.as_os_str()) } }
+            target.path = path;
+        }
         let states = targets.iter().map(|target| scan(target, on_error.as_ref())).collect::<Result<Vec<_>, _>>()?;
         Ok(Self { targets, states, closed: false, on_error })
     }
