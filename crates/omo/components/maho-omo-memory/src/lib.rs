@@ -2,6 +2,7 @@
 pub mod binding;
 pub mod context;
 pub mod dream_scoring;
+pub mod dream_selector;
 pub mod prompt;
 pub mod status_active_runs;
 pub mod supervisor;
