@@ -10,7 +10,7 @@ pub mod dollar_invocation_autocomplete; // todo 8
 pub mod editor_component; // todo 8
 pub mod fuzzy; // todo 6
 pub mod image_markers; // todo 8
-pub mod image_stub; // todo 7 (minimal shim; todo 9 replaces with the full terminal-image.ts port)
+pub mod image_stub; // todo 9 facade over terminal_image.rs, kept for the todo 7 renderer call sites
 pub mod keybindings; // todo 6
 pub mod keys; // todo 6
 pub mod kill_ring; // todo 8
