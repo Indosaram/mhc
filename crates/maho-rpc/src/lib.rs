@@ -18,3 +18,5 @@ pub mod handoff_activity;
 pub mod print_mode;
 pub mod host_crash_record;
 pub mod host_child_exit;
+pub mod child_reaper_syscalls;
+pub mod child_reaper;

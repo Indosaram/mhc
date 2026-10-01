@@ -2021,6 +2021,7 @@ dependencies = [
  "chrono",
  "maho-ai",
  "maho-core",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",
