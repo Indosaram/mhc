@@ -32,7 +32,8 @@ impl Extension for LspComponent {
             let caches=Arc::clone(&state);let home=home.clone();
             api.on(EventKind::ToolResult,Arc::new(move |event,ctx| {let caches=Arc::clone(&caches);let home=home.clone();Box::pin(async move {
                 let ExtensionEvent::ToolResult(event)=event else {return Ok(EventResult::None);};
-                if should_run_post_edit_diagnostics(event) && let Some(update)=&ctx.update_tool_hook_status {update("(OmO) Checking LSP Diagnostics");}
+                if !should_run_post_edit_diagnostics(event) {return Ok(EventResult::None);}
+                if let Some(update)=&ctx.update_tool_hook_status {update("(OmO) Checking LSP Diagnostics");}
                 let cache=caches.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_create(Some(ctx.session_manager.session_id()));
                 let context=current_senpi_request_context(&ctx.cwd,&home).map_err(|e|ExtensionFailure::new(e.to_string()))?;
                 let signal=ctx.signal.clone().unwrap_or_default();
