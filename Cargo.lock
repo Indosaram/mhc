@@ -1620,9 +1620,11 @@ version = "0.0.0"
 name = "maho-ext-compaction"
 version = "0.0.0"
 dependencies = [
+ "maho-ai",
  "maho-core",
  "maho-ext-api",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
