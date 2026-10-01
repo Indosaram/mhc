@@ -1673,6 +1673,7 @@ name = "maho-ext-herdr"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-ext-builtin-loose",
  "serde",
  "serde_json",
  "tempfile",
@@ -1730,6 +1731,11 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-model-fallback"
 version = "0.0.0"
+dependencies = [
+ "maho-core",
+ "maho-ext-api",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-nested-agents-md"
