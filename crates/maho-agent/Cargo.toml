@@ -7,3 +7,18 @@ license = "MIT"
 
 [lints]
 workspace = true
+
+[dependencies]
+maho-ai = { path = "../maho-ai" }
+futures = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls", "stream"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "io-util"] }
+tokio-util = "=0.7.18"
+
+[dev-dependencies]
+maho-test-support = { path = "../maho-test-support" }
+pretty_assertions = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "test-util"] }
