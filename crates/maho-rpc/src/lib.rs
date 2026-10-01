@@ -23,3 +23,5 @@ pub mod child_reaper;
 pub mod host_daemon_env;
 pub mod host_daemon_paths;
 pub mod host_daemon_state;
+pub mod host_process_table;
+pub mod host_process_metrics;
