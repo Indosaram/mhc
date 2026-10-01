@@ -1,8 +1,9 @@
 //! Port of `components/progressive-transcript-container.ts`.
 //!
-//! senpi warms the deferred head from `setImmediate` macrotasks; a native renderer has no such
-//! scheduler, so this port warms exactly one bounded chunk per `render` call. Work per frame stays
-//! bounded and the sequence stays deterministic, which is what the upstream chunking is for.
+//! senpi warms the deferred head from `setImmediate` macrotasks. A native renderer has no such
+//! scheduler and must not widen the frame it is about to paint, so `render` returns exactly the
+//! range senpi returns and the host drives hydration by calling [`ProgressiveTranscriptContainer::warm_next_chunk`]
+//! on its own timer — the same split the spinner and loader use.
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -92,7 +93,6 @@ impl Component for ProgressiveTranscriptContainer {
         } else {
             self.hydrated_from.min(first_visible)
         };
-        self.warm_next_chunk();
         self.render_range(self.hydrated_from, total, width)
     }
 
@@ -107,7 +107,10 @@ impl Component for ProgressiveTranscriptContainer {
 }
 
 impl ProgressiveTranscriptContainer {
-    fn warm_next_chunk(&mut self) {
+    /// One bounded hydration step: render the next chunk of the deferred head so its line caches
+    /// are warm, then move the watermark down. The host calls this off the paint path; `render`
+    /// never widens its own frame.
+    pub fn warm_next_chunk(&mut self) {
         if self.hydration_halted || self.hydrated_from == 0 {
             return;
         }
