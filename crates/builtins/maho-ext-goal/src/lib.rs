@@ -30,6 +30,7 @@ pub mod reload_reengagement;
 pub mod agent_end_continuation;
 pub mod direct_input_lifecycle;
 pub mod monitor_continuation;
+pub mod monitor_timer;
 pub mod command_registration;
 pub mod cache_warm_renderer;
 pub mod renderers;
