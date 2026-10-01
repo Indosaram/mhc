@@ -185,11 +185,6 @@ impl ToolExecutionComponent {
         self.custom.as_ref().is_none_or(|custom| custom.borrow().is_built_in())
     }
 
-    /// The renderer the card was constructed with, if any; senpi's `identity.toolDefinition`.
-    pub fn custom_renderer(&self) -> Option<Rc<RefCell<dyn ToolRenderers>>> {
-        self.custom.clone()
-    }
-
     fn request_render(&self) {
         if let Some(on_change) = &self.on_change {
             on_change();
