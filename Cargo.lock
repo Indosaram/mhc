@@ -1973,6 +1973,13 @@ version = "0.0.0"
 [[package]]
 name = "maho-omo-memory"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "maho-memory-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "maho-omo-native-badge"

@@ -1,0 +1,99 @@
+use memory_core::{compile::{cache::MemoryBlockCache, compile::{CompileError, CompileMemoryBlockOptions}, render::{RenderError, mark_memory_block, replace_memory_block}}, git::GitMemoryRepo};
+
+pub const MEMORY_PROMPT_TEMPLATE: &str = "omo-senpi:before_agent_start:v3";
+pub const MEMORY_NOTICE_CUSTOM_TYPE: &str = "omo-memory:notice";
+pub const MEMORY_NUDGE_METADATA_TOKEN: &str = "user turns since your last memory save";
+pub const MEMORY_SOUL_METADATA_TOKEN: &str = "Soul updated by";
+const MEMORY_TOOL_DISCOVERY_NOTE: &str = "The memory tools are discoverable through tool_search: run `tool_search(\"memory\")` once to activate them, then use them for every save.";
+
+pub struct MemoryPromptSession<'a> { pub id: &'a str, pub prior_message_count: usize }
+pub struct MemoryPromptInput<'a> {
+    pub system_prompt: &'a str,
+    pub session: MemoryPromptSession<'a>,
+    pub repo: &'a GitMemoryRepo,
+    pub identity: &'a str,
+    pub search_exposure: bool,
+    pub nudge_turns: Option<usize>,
+    pub soul_sha: Option<&'a str>,
+}
+#[derive(Debug)]
+pub enum MemoryPromptError { Compile(CompileError), Render(RenderError) }
+impl std::fmt::Display for MemoryPromptError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self { Self::Compile(error) => error.fmt(f), Self::Render(error) => error.fmt(f) }
+    }
+}
+impl std::error::Error for MemoryPromptError {}
+#[derive(Debug)]
+pub struct MemoryPromptNotice { pub custom_type: &'static str, pub content: String, pub display: bool }
+#[derive(Debug)]
+pub struct MemoryPromptResult { pub system_prompt: String, pub message: MemoryPromptNotice }
+
+#[derive(Default)]
+pub struct MemoryPromptHandler { pub cache: MemoryBlockCache }
+impl MemoryPromptHandler {
+    pub fn inject(&self, input: Option<&MemoryPromptInput<'_>>) -> Result<Option<MemoryPromptResult>, MemoryPromptError> {
+        let Some(input) = input else { return Ok(None); };
+        if input.session.id.is_empty() { return Ok(None); }
+        let block = self.cache.compile(input.repo, &format!("{MEMORY_PROMPT_TEMPLATE}:{}", input.identity), &CompileMemoryBlockOptions { agent_id: input.identity.to_owned() }).map_err(MemoryPromptError::Compile)?;
+        let composed = if input.search_exposure { format!("{block}\n\n{MEMORY_TOOL_DISCOVERY_NOTE}") } else { block };
+        let system_prompt = replace_memory_block(input.system_prompt, &mark_memory_block(input.identity, &composed)).map_err(MemoryPromptError::Render)?;
+        Ok(Some(MemoryPromptResult { system_prompt, message: MemoryPromptNotice { custom_type: MEMORY_NOTICE_CUSTOM_TYPE, content: render_memory_notice(input.session.prior_message_count, input.nudge_turns, input.soul_sha), display: false } }))
+    }
+}
+pub fn render_memory_notice(previous_message_count: usize, nudge_turns: Option<usize>, soul_sha: Option<&str>) -> String {
+    let mut lines = vec!["<memory_notice>".to_owned(), format!("- {previous_message_count} previous messages between you and the user are stored in recall memory")];
+    if let Some(turns) = nudge_turns { lines.push(format!("- {turns} {MEMORY_NUDGE_METADATA_TOKEN}. Save durable facts now, or decide nothing qualifies.")); }
+    if let Some(sha) = soul_sha { lines.push(format!("- {MEMORY_SOUL_METADATA_TOKEN} reflection {} since your last run", sha.chars().take(7).collect::<String>())); }
+    lines.push("</memory_notice>".to_owned());
+    lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use memory_core::git::{InitializeGitRepoOptions, GitSeedFile, GitCommitAuthor};
+    fn fixture() -> (tempfile::TempDir, GitMemoryRepo) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = GitMemoryRepo::open(dir.path().join("repo"), "prompt-agent").unwrap();
+        repo.init(Some(InitializeGitRepoOptions { seed_files: vec![GitSeedFile { relative_path: "system/persona.md".into(), content: "---\ndescription: Persona\n---\nfirst\n".into() }], ..Default::default() })).unwrap();
+        (dir, repo)
+    }
+    fn input(repo: &GitMemoryRepo) -> MemoryPromptInput<'_> {
+        MemoryPromptInput { system_prompt: "BASE PROMPT", session: MemoryPromptSession { id: "session-1", prior_message_count: 3 }, repo, identity: "prompt-agent", search_exposure: false, nudge_turns: None, soul_sha: None }
+    }
+    #[test]
+    fn template_is_machine_cache_key() { assert_eq!(MEMORY_PROMPT_TEMPLATE, "omo-senpi:before_agent_start:v3"); }
+    #[test]
+    fn unbound_passes_through() { assert!(MemoryPromptHandler::default().inject(None).unwrap().is_none()); }
+    #[test]
+    fn missing_session_passes_through() { let (_dir, repo) = fixture(); let mut input = input(&repo); input.session.id = ""; assert!(MemoryPromptHandler::default().inject(Some(&input)).unwrap().is_none()); }
+    #[test]
+    fn bound_projection_and_late_metadata() {
+        let (_dir, repo) = fixture(); let result = MemoryPromptHandler::default().inject(Some(&input(&repo))).unwrap().unwrap();
+        assert!(result.system_prompt.contains("first")); assert!(result.system_prompt.contains("<!-- senpi-memory:prompt-agent:begin -->")); assert!(!result.system_prompt.contains("previous messages")); assert_eq!(result.message.custom_type, MEMORY_NOTICE_CUSTOM_TYPE); assert!(!result.message.display);
+    }
+    #[test]
+    fn volatile_metadata_preserves_system_bytes() {
+        let (_dir, repo) = fixture(); let handler = MemoryPromptHandler::default(); let mut input = input(&repo);
+        let before = handler.inject(Some(&input)).unwrap().unwrap(); input.nudge_turns = Some(12); input.soul_sha = Some("a1b2c3d4e5"); input.session.prior_message_count = 12;
+        let after = handler.inject(Some(&input)).unwrap().unwrap(); assert_eq!(before.system_prompt, after.system_prompt); assert!(after.message.content.contains(MEMORY_NUDGE_METADATA_TOKEN)); assert!(after.message.content.contains(MEMORY_SOUL_METADATA_TOKEN));
+    }
+    #[test]
+    fn nudge_is_late_metadata() { let (_dir, repo) = fixture(); let mut input = input(&repo); input.nudge_turns = Some(2); let result = MemoryPromptHandler::default().inject(Some(&input)).unwrap().unwrap(); assert!(!result.system_prompt.contains(MEMORY_NUDGE_METADATA_TOKEN)); assert!(result.message.content.contains(MEMORY_NUDGE_METADATA_TOKEN)); }
+    #[test]
+    fn soul_notice_is_late_metadata() { let (_dir, repo) = fixture(); let mut input = input(&repo); input.soul_sha = Some("a1b2c3d4e5"); let result = MemoryPromptHandler::default().inject(Some(&input)).unwrap().unwrap(); assert!(!result.system_prompt.contains(MEMORY_SOUL_METADATA_TOKEN)); assert!(result.message.content.contains("reflection a1b2c3d ")); }
+    #[test]
+    fn foreign_prompt_survives() { let (_dir, repo) = fixture(); let mut input = input(&repo); input.system_prompt = "BASE PROMPT\n\nFOREIGN EXTENSION TEXT"; assert!(MemoryPromptHandler::default().inject(Some(&input)).unwrap().unwrap().system_prompt.contains("FOREIGN EXTENSION TEXT")); }
+    #[test]
+    fn unchanged_head_uses_cached_block() { let (_dir, repo) = fixture(); let handler = MemoryPromptHandler::default(); let first = handler.inject(Some(&input(&repo))).unwrap().unwrap(); let second = handler.inject(Some(&input(&repo))).unwrap().unwrap(); assert_eq!(first.system_prompt, second.system_prompt); assert_eq!(handler.cache.size(), 1); }
+    #[test]
+    fn changed_head_recompiles() {
+        let (_dir, repo) = fixture(); let handler = MemoryPromptHandler::default(); let first = handler.inject(Some(&input(&repo))).unwrap().unwrap();
+        std::fs::write(repo.dir.join("system/persona.md"), "---\ndescription: Persona\n---\nsecond\n").unwrap();
+        repo.commit_write(&["system/persona.md"], "update persona", &GitCommitAuthor { agent_id: "prompt-agent".into(), author_name: "Prompt Agent".into(), author_email: None }).unwrap();
+        let second = handler.inject(Some(&input(&repo))).unwrap().unwrap(); assert!(first.system_prompt.contains("first")); assert!(second.system_prompt.contains("second"));
+    }
+    #[test]
+    fn existing_block_is_replaced() { let (_dir, repo) = fixture(); let handler = MemoryPromptHandler::default(); let first = handler.inject(Some(&input(&repo))).unwrap().unwrap(); let mut input = input(&repo); input.system_prompt = &first.system_prompt; let second = handler.inject(Some(&input)).unwrap().unwrap(); assert_eq!(second.system_prompt.matches("<!-- senpi-memory:prompt-agent:begin -->").count(), 1); }
+}
