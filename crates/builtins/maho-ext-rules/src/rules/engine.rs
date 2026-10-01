@@ -47,11 +47,14 @@ impl Engine {
         let mut seen_targets = BTreeSet::new();
         let mut seen_rules = BTreeSet::new();
         let mut loaded_content: BTreeMap<String, Option<(ParsedRule, String)>> = BTreeMap::new();
+        let mut roots = BTreeMap::new();
+        let mut candidate_sets = BTreeMap::new();
         for target in targets {
             if !seen_targets.insert(target) { continue; }
-            let root = find_project_root(target, None);
-            let candidates = find_rule_candidates(FinderOptions { project_root: root.as_deref(), target_file: Some(target), home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut discovery);
-            for candidate in sort_candidates(&candidates) {
+            let directory = super::finder::absolute(target).parent().map(Path::to_path_buf).unwrap_or_default();
+            let root = roots.entry(directory.clone()).or_insert_with(|| find_project_root(target, None)).clone();
+            let candidates = candidate_sets.entry((root.clone(), directory)).or_insert_with(|| find_rule_candidates(FinderOptions { project_root: root.as_deref(), target_file: Some(target), home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut discovery));
+            for candidate in sort_candidates(candidates) {
                 let Some(mut rule) = load_candidate_cached(candidate, root.as_deref(), &mut result.diagnostics, &mut loaded_content) else { continue; };
                 let basename = target.file_name().unwrap_or_default().to_string_lossy();
                 let relative = root.as_deref().map(|root| relative_path(root, target)).unwrap_or_else(|| basename.to_string());
