@@ -398,6 +398,7 @@ struct AgentSessionState {
     hint_deadline_ms: Option<f64>,
     cumulative_hinted_wait_ms: f64,
     pending_model_switch: Option<PendingModelSwitch>,
+    compaction_abort_controller: Option<maho_ai::utils::abort::AbortController>,
 }
 
 fn name_set(names: Option<Vec<String>>) -> Option<BTreeSet<String>> {
@@ -596,6 +597,7 @@ impl AgentSession {
             hint_deadline_ms: None,
             cumulative_hinted_wait_ms: 0.0,
             pending_model_switch: None,
+            compaction_abort_controller: None,
         };
         let session = Self { inner: Arc::new(AgentSessionInner {
             agent,
@@ -849,6 +851,23 @@ impl AgentSession {
         let Some((text, images)) = self.run_input_handlers(text, options.images, options.source, None).await? else {
             return Ok(PromptDisposition::Handled);
         };
+        if self.auto_compaction_enabled() && self.pending_model_switch().is_none() {
+            let model = self.model();
+            let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
+            let settings = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
+                .transpose().map_err(|error| error.to_string())?;
+            let resolved = crate::compaction_settings_resolver::resolve_compaction_settings(settings.as_ref(), Some(
+                crate::compaction_settings_access::CompactionModelSelector { provider: &model.provider, id: &model.id },
+            ))?;
+            if self.get_context_usage().and_then(|usage| usage.tokens).is_some_and(|tokens|
+                tokens.saturating_add(text.len().div_ceil(4) as u64) > model.context_window.saturating_sub(resolved.reserve_tokens as u64)) {
+                self.compact_for_model(None, &model, "pre-prompt").await?;
+            }
+        }
+        if let Some(pending) = self.pending_model_switch() {
+            self.compact_for_model(None, &pending.model, "manual").await?;
+            self.set_model_internal(pending.model, pending.persist_default, maho_ext_api::ModelSelectSource::Set, false).await?;
+        }
         if let Some(level) = options.thinking_level {
             self.set_session_thinking_level(match level {
                 ThinkingLevel::Minimal => ModelThinkingLevel::Minimal,
@@ -917,6 +936,7 @@ impl AgentSession {
     pub async fn abort(&self) {
         self.state().user_aborted = true;
         self.abort_retry();
+        self.abort_compaction();
         let pending = !self.is_streaming() && (self.pending_message_count() > 0 || self.state().had_cleared_queued_messages);
         self.state().had_cleared_queued_messages = false;
         self.agent.suppress_queued_message_drain();
@@ -929,6 +949,137 @@ impl AgentSession {
     }
 
     pub fn is_retrying(&self) -> bool { self.state().retry_attempt > 0 }
+
+    pub fn is_compacting(&self) -> bool { self.state().compaction_abort_controller.is_some() }
+
+    pub fn abort_compaction(&self) {
+        if let Some(controller) = self.state().compaction_abort_controller.as_ref() { controller.abort(None); }
+    }
+
+    pub async fn compact(&self, instructions: Option<&str>) -> Result<crate::compaction::compaction::CompactionResult, String> {
+        self.agent.abort(None);
+        self.abort_retry();
+        self.agent.wait_for_idle().await;
+        self.compact_for_model(instructions, &self.model(), "manual").await
+    }
+
+    async fn compact_for_model(&self, instructions: Option<&str>, budget_model: &Model, reason: &str)
+        -> Result<crate::compaction::compaction::CompactionResult, String>
+    {
+        use crate::compaction::compaction::{CompactionResult, prepare_compaction};
+        let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
+        let configured = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
+            .transpose().map_err(|error| error.to_string())?;
+        let resolved = crate::compaction_settings_resolver::resolve_compaction_settings(configured.as_ref(), Some(
+            crate::compaction_settings_access::CompactionModelSelector { provider: &budget_model.provider, id: &budget_model.id },
+        ))?;
+        let entries = self.with_session_manager(|manager| manager.branch(None));
+        let preparation = prepare_compaction(&entries, &crate::compaction::settings::CompactionSettings {
+            enabled: resolved.enabled, reserve_tokens: resolved.reserve_tokens, keep_recent_tokens: resolved.keep_recent_tokens,
+            ..crate::compaction::settings::default_compaction_settings()
+        }, false, false).ok_or("Nothing to compact")?;
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let signal = controller.signal();
+        let extension_signal = maho_ext_api::AbortSignal::default();
+        self.state().compaction_abort_controller = Some(controller);
+        let compact_reason = if reason == "manual" { maho_ext_api::CompactionReason::Manual }
+            else if reason == "overflow" { maho_ext_api::CompactionReason::Overflow }
+            else if reason == "pre-prompt" { maho_ext_api::CompactionReason::PrePrompt }
+            else { maho_ext_api::CompactionReason::Threshold };
+        self.emit(AgentSessionEvent::CompactionStart { reason: compact_reason, request_id: Some(request_id.clone()) });
+        let revision = self.message_revision();
+        let execution = async {
+            let before = {
+                let mut runner = self.extension_runner.lock().await;
+                if let Some(runner) = runner.as_mut() {
+                    runner.emit(maho_ext_api::ExtensionEvent::SessionBeforeCompact(maho_ext_api::SessionBeforeCompactEvent {
+                        reason: compact_reason, will_retry: reason != "manual", request_id: request_id.clone(),
+                        preparation: maho_ext_api::CompactionPreparation {
+                            settings: maho_ext_api::CompactionSettings { enabled: resolved.enabled, reserve_tokens: resolved.reserve_tokens as u64,
+                                keep_recent_tokens: resolved.keep_recent_tokens as u64 },
+                            messages_to_summarize: preparation.messages_to_summarize.iter().cloned().map(serde_json::from_value)
+                                .collect::<Result<_, _>>().map_err(|error| error.to_string())?,
+                            turn_prefix_messages: preparation.turn_prefix_messages.iter().cloned().map(serde_json::from_value)
+                                .collect::<Result<_, _>>().map_err(|error| error.to_string())?,
+                            tokens_before: preparation.tokens_before as u64, first_kept_entry_id: preparation.first_kept_entry_id.clone(),
+                            previous_summary: preparation.previous_summary.clone(),
+                        }, branch_entries: entries.iter().cloned().map(session_entry_from_value).collect(),
+                        custom_instructions: instructions.map(str::to_owned), signal: extension_signal.clone(),
+                    }))
+                    .await.map_err(|error| error.to_string())?
+                } else { maho_ext_api::EventResult::None }
+            };
+            let (result, from_extension) = match before {
+                maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult { cancel: Some(true), .. }) => return Err("Compaction cancelled".to_owned()),
+                maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult { compaction: Some(result), .. }) => (CompactionResult {
+                    summary: result.summary, first_kept_entry_id: result.first_kept_entry_id, tokens_before: result.tokens_before as i64,
+                    details: result.details, usage: None, estimated_tokens_after: None,
+                }, true),
+                _ => {
+                    let model = self.model();
+                    let auth = self.get_summarization_request_auth(&model).await?;
+                    let mut transcript = preparation.previous_summary.clone().unwrap_or_default();
+                    for message in preparation.messages_to_summarize.iter().chain(&preparation.turn_prefix_messages) {
+                        transcript.push('\n'); transcript.push_str(&serde_json::to_string(message).map_err(|error| error.to_string())?);
+                    }
+                    let prompt = format!("{}\n\n{}\n\n{}", crate::compaction::compaction::update_summarization_prompt(),
+                        instructions.unwrap_or_default(), transcript);
+                    let AgentMessage::Llm(user) = make_user_message(&prompt, None) else { return Err("Invalid summary prompt".to_owned()); };
+                    let context = maho_ai::types::Context { system_prompt: Some("Summarize the conversation without continuing it.".to_owned()),
+                        messages: vec![user], tools: None };
+                    let response = self.model_runtime().complete(&auth.model, &context, Some(maho_ai::types::StreamOptions {
+                        request: maho_ai::types::ProviderRequestOptions { signal: Some(signal.clone()), api_key: auth.api_key,
+                            headers: auth.headers.map(|headers| headers.into_iter().map(|(key, value)| (key, Some(value))).collect()), env: auth.env,
+                            ..Default::default() },
+                        ..Default::default()
+                    })).await.map_err(|error| error.to_string())?;
+                    if let Some(error) = crate::compaction::compaction::get_summarization_failure(&response, "Compaction") { return Err(error); }
+                    let summary = maho_ai::utils::text::content_text(&response.content, "");
+                    if summary.trim().is_empty() { return Err("Compaction produced an empty summary".to_owned()); }
+                    (CompactionResult { summary, first_kept_entry_id: preparation.first_kept_entry_id.clone(),
+                        tokens_before: preparation.tokens_before, details: None, usage: Some(response.usage), estimated_tokens_after: None }, false)
+                }
+            };
+            signal.throw_if_aborted().map_err(|error| error.to_string())?;
+            if self.message_revision() != revision { return Err("Conversation changed during compaction".to_owned()); }
+            let entry = self.apply_compaction(&result)?;
+            self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Accepted {
+                reason: compact_reason, request_id: request_id.clone(), compaction_entry: session_entry_from_value(entry),
+                from_extension, will_retry: reason != "manual",
+            })).await;
+            Ok(result)
+        }.await;
+        self.state().compaction_abort_controller = None;
+        match &execution {
+            Ok(result) => {
+                let value = maho_ext_api::CompactionResult { summary: result.summary.clone(), first_kept_entry_id: result.first_kept_entry_id.clone(),
+                    tokens_before: result.tokens_before as u64, details: result.details.clone() };
+                self.emit(AgentSessionEvent::CompactionEnd { reason: compact_reason, request_id: Some(request_id), aborted: false,
+                    result: Some(value), rejection_cause: None, error_message: None, accepted: Some(true), will_retry: reason != "manual" });
+            }
+            Err(error) => self.emit(AgentSessionEvent::CompactionEnd { reason: compact_reason, request_id: Some(request_id),
+                aborted: signal.aborted(), result: None, rejection_cause: None, error_message: Some(error.clone()), accepted: Some(false), will_retry: false }),
+        }
+        execution
+    }
+
+    pub fn apply_compaction(&self, result: &crate::compaction::compaction::CompactionResult) -> Result<Value, String> {
+        let branch = self.with_session_manager(|manager| manager.branch(None));
+        if !branch.iter().any(|entry| entry.get("id").and_then(Value::as_str) == Some(result.first_kept_entry_id.as_str())) {
+            return Err("Compaction first kept entry is not on the current branch".to_owned());
+        }
+        let usage = result.usage.as_ref().map(serde_json::to_value).transpose().map_err(|error| error.to_string())?;
+        let entry = self.with_session_manager_mut(|manager| manager.append_compaction(
+            &result.summary, &result.first_kept_entry_id, result.tokens_before, result.details.clone(), usage, None,
+        ));
+        let context = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+        self.agent.set_messages(context.messages.into_iter().map(session_message_from_value).collect::<Result<_, _>>()
+            .map_err(|error| error.to_string())?);
+        let mut state = self.state();
+        state.message_revision += 1;
+        Ok(entry)
+    }
 
     pub fn retry_attempt(&self) -> u32 { self.state().retry_attempt }
 
@@ -985,10 +1136,31 @@ impl AgentSession {
     async fn finish_provider_turn(&self) -> Result<(), String> {
         use crate::retry_fallback::controller::FallbackReason;
         use maho_ai::utils::retry_hint::parse_retry_after_ms_marker;
+        let mut overflow_compacted = false;
         loop {
             self.agent.wait_for_idle().await;
             let Some(message) = self.messages().iter().rev().find_map(AgentMessage::as_assistant).cloned() else { return Ok(()); };
-            if !self.will_retry(Some(&message)).await { return Ok(()); }
+            if self.auto_compaction_enabled() && !self.state().user_aborted && !overflow_compacted
+                && maho_ai::utils::overflow::is_context_overflow(&message, Some(self.model().context_window))
+            {
+                overflow_compacted = true;
+                let execution = self.compact_for_model(None, &self.model(), "overflow").await;
+                execution?;
+                self.agent.continue_run(maho_agent::agent::AgentContinuationOptions { defer_queued_messages: Some(true), ..Default::default() }).await;
+                continue;
+            }
+            if !self.will_retry(Some(&message)).await {
+                if self.auto_compaction_enabled() && !self.state().user_aborted
+                    && !matches!(message.stop_reason, StopReason::Error | StopReason::Aborted)
+                {
+                    let model = self.model();
+                    let threshold = model.context_window.saturating_sub(16_384);
+                    if self.get_context_usage().and_then(|usage| usage.tokens).is_some_and(|tokens| tokens > threshold) {
+                        self.compact_for_model(None, &model, "threshold").await?;
+                    }
+                }
+                return Ok(());
+            }
             let settings = self.with_settings_manager(|manager| manager.get_value("retry").cloned()).unwrap_or(Value::Null);
             let max_attempts = settings.get("maxRetries").and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok()).unwrap_or(5);
             let base_delay = settings.get("baseDelayMs").and_then(Value::as_u64).unwrap_or(2_000);
@@ -1268,6 +1440,140 @@ impl AgentSession {
                 is_scoped: true, skipped_models, system_prompt_change }));
         }
         Ok(None)
+    }
+
+    async fn session_before(&self, event: maho_ext_api::ExtensionEvent) -> Result<maho_ext_api::SessionBeforeEventResult, String> {
+        let mut runner = self.extension_runner.lock().await;
+        match runner.as_mut() {
+            Some(runner) => match runner.emit(event).await.map_err(|error| error.to_string())? {
+                maho_ext_api::EventResult::SessionBefore(result) => Ok(result), _ => Ok(Default::default()),
+            },
+            None => Ok(Default::default()),
+        }
+    }
+
+    fn rebuild_session_context(&self) -> Result<(), String> {
+        let context = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+        let messages = context.messages.into_iter().map(session_message_from_value).collect::<Result<_, _>>()
+            .map_err(|error| error.to_string())?;
+        if let Some((provider, id)) = context.model
+            && let Some(model) = self.model_registry.find(&provider, &id)
+        { self.agent.set_model(model); }
+        if let Some(level) = ModelThinkingLevel::ALL.into_iter().find(|candidate| candidate.as_str() == context.thinking_level) {
+            self.set_session_thinking_level(level);
+        }
+        self.agent.set_messages(messages);
+        self.state().message_revision += 1;
+        Ok(())
+    }
+
+    async fn finish_session_replacement(&self, reason: maho_ext_api::SessionReason, previous: Option<String>) -> Result<(), String> {
+        self.clear_queue(false);
+        self.state().pending_model_switch = None;
+        self.state().retry_attempt = 0;
+        self.reset_hint_tier_state();
+        self.rebuild_session_context()?;
+        self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+            reason, initial_model_provenance: None, previous_session_file: previous,
+        })).await;
+        Ok(())
+    }
+
+    pub async fn new_session(&self, options: Option<crate::session_manager::NewSessionOptions>) -> Result<bool, String> {
+        if self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeSwitch {
+            reason: maho_ext_api::SessionReason::New, target_session_file: None,
+        }).await?.cancel == Some(true) { return Ok(false); }
+        self.abort().await;
+        let previous = self.session_file();
+        self.with_session_manager_mut(|manager| manager.new_session(options));
+        self.finish_session_replacement(maho_ext_api::SessionReason::New, previous).await?;
+        Ok(true)
+    }
+
+    pub async fn switch_session(&self, path: &str) -> Result<bool, String> {
+        let entries = crate::session_manager::load_entries_from_file(path);
+        if entries.first().and_then(|entry| entry.get("type")).and_then(Value::as_str) != Some("session") {
+            return Err(format!("Invalid session file: {path}"));
+        }
+        if self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeSwitch {
+            reason: maho_ext_api::SessionReason::Resume, target_session_file: Some(path.to_owned()),
+        }).await?.cancel == Some(true) { return Ok(false); }
+        self.abort().await;
+        let previous = self.session_file();
+        self.with_session_manager_mut(|manager| manager.set_session_file(path, None));
+        self.finish_session_replacement(maho_ext_api::SessionReason::Resume, previous).await?;
+        Ok(true)
+    }
+
+    pub async fn fork(&self, entry_id: &str, include_entry: bool) -> Result<AssistantEditResult, String> {
+        let entry = self.with_session_manager(|manager| manager.entry(entry_id)).ok_or_else(|| format!("Entry {entry_id} not found"))?;
+        let position = if include_entry { maho_ext_api::ForkPosition::At } else { maho_ext_api::ForkPosition::Before };
+        if self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeFork { entry_id: entry_id.to_owned(), position }).await?.cancel == Some(true) {
+            return Ok(AssistantEditResult { cancelled: true, ..Default::default() });
+        }
+        self.abort().await;
+        let leaf = if include_entry { Some(entry_id) } else { entry.get("parentId").and_then(Value::as_str) };
+        let entries = self.with_session_manager(|manager| if leaf.is_some() { manager.branch(leaf) } else { Vec::new() });
+        let previous = self.session_file();
+        self.with_session_manager_mut(|manager| {
+            manager.new_session(Some(crate::session_manager::NewSessionOptions { parent_session: previous.clone(), ..Default::default() }));
+            for entry in entries { manager.append_entry_raw(entry); }
+        });
+        self.finish_session_replacement(maho_ext_api::SessionReason::Fork, previous).await?;
+        Ok(AssistantEditResult { editor_text: (!include_entry).then(|| entry.get("message").and_then(|message|
+            serde_json::from_value::<AgentMessage>(message.clone()).ok()).map(|message| user_message_text(&message))).flatten(), ..Default::default() })
+    }
+
+    pub async fn navigate_tree(&self, target_id: &str, options: TreeNavigationOptions) -> Result<AssistantEditResult, String> {
+        self.navigate_tree_internal(target_id, options, None).await
+    }
+
+    pub async fn edit_assistant_message(&self, entry_id: &str, text: &str, options: TreeNavigationOptions) -> Result<AssistantEditResult, String> {
+        let entry = self.with_session_manager(|manager| manager.entry(entry_id)).ok_or_else(|| format!("Entry {entry_id} not found"))?;
+        let message: maho_ai::types::AssistantMessage = serde_json::from_value(entry["message"].clone()).map_err(|error| error.to_string())?;
+        let replacement = crate::edited_assistant_message::build_edited_assistant_message(&message, text).map_err(|error| error.to_string())?;
+        if entry["message"] == serde_json::to_value(&replacement).map_err(|error| error.to_string())? {
+            return Ok(AssistantEditResult { unchanged: Some(true), ..Default::default() });
+        }
+        self.navigate_tree_internal(entry_id, options, Some(AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(replacement))))).await
+    }
+
+    pub async fn edit_user_message(&self, entry_id: &str, text: &str, options: TreeNavigationOptions) -> Result<UserEditResult, String> {
+        let entry = self.with_session_manager(|manager| manager.entry(entry_id)).ok_or_else(|| format!("Entry {entry_id} not found"))?;
+        let message: maho_ai::types::UserMessage = serde_json::from_value(entry["message"].clone()).map_err(|error| error.to_string())?;
+        let replacement = crate::edited_user_message::build_edited_user_message(&message, text).map_err(|error| error.to_string())?;
+        self.navigate_tree_internal(entry_id, options, Some(AgentMessage::Llm(maho_ai::types::Message::User(replacement)))).await
+    }
+
+    async fn navigate_tree_internal(&self, target_id: &str, options: TreeNavigationOptions, replacement: Option<AgentMessage>) -> Result<AssistantEditResult, String> {
+        if self.is_streaming() { return Err("Cannot navigate the session tree while streaming".to_owned()); }
+        if self.is_compacting() { return Err("Cannot navigate the session tree while compacting".to_owned()); }
+        let entry = self.with_session_manager(|manager| manager.entry(target_id)).ok_or_else(|| format!("Entry {target_id} not found"))?;
+        let old_leaf = self.with_session_manager(|manager| manager.leaf_id().map(str::to_owned));
+        let signal = maho_ext_api::AbortSignal::default();
+        let before = self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeTree {
+            preparation: maho_ext_api::TreePreparation { target_id: target_id.to_owned(), old_leaf_id: old_leaf.clone(), common_ancestor_id: None,
+                entries_to_summarize: Vec::new(), user_wants_summary: options.summarize.unwrap_or(false), custom_instructions: options.custom_instructions.clone(),
+                replace_instructions: options.replace_instructions, label: options.label.clone() }, signal,
+        }).await?;
+        if before.cancel == Some(true) { return Ok(AssistantEditResult { cancelled: true, ..Default::default() }); }
+        let mut editor_text = None;
+        let leaf = if replacement.is_some() { entry.get("parentId").and_then(Value::as_str).map(str::to_owned) }
+            else if options.intent == Some(TreeNavigationIntent::Resume) { Some(target_id.to_owned()) }
+            else if entry.get("message").and_then(|message| message.get("role")).and_then(Value::as_str) == Some("user") {
+                editor_text = Some(user_message_text(&session_message_from_value(entry["message"].clone()).map_err(|error| error.to_string())?));
+                entry.get("parentId").and_then(Value::as_str).map(str::to_owned)
+            } else { Some(target_id.to_owned()) };
+        self.with_session_manager_mut(|manager| manager.set_leaf(leaf.as_deref()));
+        let replacement_entry = replacement.map(|message| serde_json::to_value(message).map(|message|
+            self.with_session_manager_mut(|manager| manager.append_message(message)))).transpose().map_err(|error| error.to_string())?;
+        let summary_entry = before.summary.and_then(|summary| summary.get("summary").and_then(Value::as_str).map(str::to_owned))
+            .map(|summary| self.with_session_manager_mut(|manager| manager.append_branch_summary(&summary, old_leaf.as_deref().unwrap_or_default(), None, None, None)));
+        if let Some(label) = options.label.as_deref() { self.with_session_manager_mut(|manager| manager.append_label(target_id, Some(label))); }
+        self.rebuild_session_context()?;
+        self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionTree { new_leaf_id: self.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)),
+            old_leaf_id: old_leaf, summary_entry: summary_entry.clone().map(session_entry_from_value), from_extension: Some(summary_entry.is_some()) }).await;
+        Ok(AssistantEditResult { editor_text, summary_entry, entry_id: replacement_entry.as_ref().and_then(|entry| entry.get("id")).and_then(Value::as_str).map(str::to_owned), ..Default::default() })
     }
 
     /// Resolve the auth a provider request needs, refusing when none is configured.
@@ -2544,6 +2850,22 @@ fn user_message_text(message: &AgentMessage) -> String {
     }
 }
 
+fn session_message_from_value(mut message: Value) -> Result<AgentMessage, serde_json::Error> {
+    if let Some(timestamp) = message.get("timestamp").and_then(Value::as_str) {
+        let millis = chrono::DateTime::parse_from_rfc3339(timestamp).map(|time| time.timestamp_millis()).unwrap_or(0);
+        message["timestamp"] = Value::from(millis);
+    }
+    use maho_agent::types::CustomAgentMessage;
+    let custom = match message.get("role").and_then(Value::as_str) {
+        Some("compactionSummary") => Some(CustomAgentMessage::CompactionSummary(serde_json::from_value(message.clone())?)),
+        Some("branchSummary") => Some(CustomAgentMessage::BranchSummary(serde_json::from_value(message.clone())?)),
+        Some("bashExecution") => Some(CustomAgentMessage::BashExecution(serde_json::from_value(message.clone())?)),
+        Some("custom") => Some(CustomAgentMessage::Custom(serde_json::from_value(message.clone())?)),
+        _ => None,
+    };
+    match custom { Some(custom) => Ok(AgentMessage::Custom(custom)), None => serde_json::from_value(message) }
+}
+
 fn queue_mode_str(mode: maho_agent::types::QueueMode) -> &'static str {
     match mode {
         maho_agent::types::QueueMode::All => "all",
@@ -3327,6 +3649,30 @@ mod tests {
         session.set_model(model).await.expect("held switch");
         assert_eq!(session.model().id, "faux-1");
         assert_eq!(session.pending_model_switch().expect("pending").model.id, "smaller");
+        assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
+    }
+
+    #[test]
+    fn compaction_application_rebuilds_only_summary_and_retained_suffix() {
+        let session = test_session();
+        session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"old","timestamp":0})));
+        let retained = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"recent","timestamp":1})));
+        session.apply_compaction(&crate::compaction::compaction::CompactionResult {
+            summary: "summary".to_owned(), first_kept_entry_id: retained["id"].as_str().expect("id").to_owned(),
+            tokens_before: 100, estimated_tokens_after: None, usage: None, details: None,
+        }).expect("apply");
+        assert_eq!(session.messages().len(), 2);
+        assert_eq!(user_message_text(&session.messages()[1]), "recent");
+        assert_eq!(session.with_session_manager(|manager| manager.entries().last().expect("entry")["type"].clone()), "compaction");
+    }
+
+    #[test]
+    fn invalid_compaction_retention_does_not_mutate_history() {
+        let session = test_session();
+        assert!(session.apply_compaction(&crate::compaction::compaction::CompactionResult {
+            summary: "summary".to_owned(), first_kept_entry_id: "missing".to_owned(), tokens_before: 100,
+            estimated_tokens_after: None, usage: None, details: None,
+        }).is_err());
         assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
     }
 }
