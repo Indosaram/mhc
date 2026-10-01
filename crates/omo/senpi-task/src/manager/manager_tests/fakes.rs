@@ -104,7 +104,13 @@ impl FakeHandle {
         })
     }
 
+    /// The data pointer the chaos barrier keys on: its settle/consume accounting is per handle.
+    fn ptr(&self) -> usize {
+        self as *const Self as usize
+    }
+
     pub fn settle(&self, outcome: RunnerOutcome) {
+        crate::manager::outcome::test_barrier::note_issue(self.ptr());
         lock(&self.settle)
             .send(outcome)
             .expect("outcome receiver alive");
@@ -212,9 +218,11 @@ impl ManagedChildHandle for FakeHandle {
     }
 
     fn wait_for_outcome(&self) -> RunnerOutcome {
-        lock(&self.outcomes)
+        let outcome = lock(&self.outcomes)
             .recv()
-            .unwrap_or(RunnerOutcome::Cancelled)
+            .unwrap_or(RunnerOutcome::Cancelled);
+        crate::manager::outcome::test_barrier::note_consume(self.ptr());
+        outcome
     }
 
     fn last_assistant_text(&self) -> Option<String> {

@@ -147,3 +147,72 @@ fn log_failure(message: &str, task_id: &str, error: &dyn std::fmt::Display) {
         Some(&json!({ "taskId": task_id, "error": error.to_string() })),
     );
 }
+
+/// Test-only settle/consume accounting that lets the chaos harness apply the TS `flushMicrotasks()`
+/// ordering to this port's outcome watcher threads. The pinned TS tracks a child outcome as a
+/// promise continuation, so a settle is applied on the microtask queue the chaos bench drains with
+/// `flushMicrotasks()`; this port hands a settle to the watcher thread through a channel, so the
+/// harness must wait for the watcher to consume it before it reads state. The pair is keyed by the
+/// handle's data pointer, and a handle is only waited on while its task is still non-terminal (a
+/// terminal task's watcher has already returned, so its later settles have no consumer).
+#[cfg(test)]
+pub(crate) mod test_barrier {
+    use std::collections::HashMap;
+    use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
+
+    #[derive(Default, Clone, Copy)]
+    struct Entry {
+        issued: u64,
+        consumed: u64,
+    }
+
+    struct State {
+        entries: Mutex<HashMap<usize, Entry>>,
+        cv: Condvar,
+    }
+
+    fn state() -> &'static State {
+        static STATE: OnceLock<State> = OnceLock::new();
+        STATE.get_or_init(|| State {
+            entries: Mutex::new(HashMap::new()),
+            cv: Condvar::new(),
+        })
+    }
+
+    fn lock() -> std::sync::MutexGuard<'static, HashMap<usize, Entry>> {
+        state()
+            .entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn note_issue(ptr: usize) {
+        lock().entry(ptr).or_default().issued += 1;
+        state().cv.notify_all();
+    }
+
+    pub(crate) fn note_consume(ptr: usize) {
+        lock().entry(ptr).or_default().consumed += 1;
+        state().cv.notify_all();
+    }
+
+    /// Drops every entry; called between chaos iterations so a reused allocation cannot inherit a
+    /// previous iteration's accounting.
+    pub(crate) fn clear() {
+        lock().clear();
+    }
+
+    /// Blocks until every settle issued for `ptr` has been consumed by its watcher.
+    pub(crate) fn wait_until_consumed(ptr: usize) {
+        let mut entries = lock();
+        while entries
+            .get(&ptr)
+            .is_some_and(|entry| entry.consumed < entry.issued)
+        {
+            entries = state()
+                .cv
+                .wait(entries)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}

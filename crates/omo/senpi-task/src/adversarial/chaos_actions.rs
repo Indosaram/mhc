@@ -455,8 +455,11 @@ pub fn apply_random_action(state: &ChaosState) {
     state.harness.lifecycle_observations.push_trace(action.name);
     (action.run)(state);
     // TS calls `flushMicrotasks()` here, gated on a coin flip, so buffered promise continuations
-    // settle before the next action reads state. This port's manager/lifecycle calls are
-    // synchronous with no microtask queue to flush, but the coin flip must still be drawn to keep
-    // this port's RandomSource draw sequence identical to the pinned TS seed's.
-    let _ = lock(&state.rng).bool(0.5);
+    // settle before the next action reads state. This port applies a child outcome on a watcher
+    // thread rather than a microtask, so the same flush point joins the watchers an action just
+    // released. The coin flip is still drawn either way, keeping this port's RandomSource draw
+    // sequence identical to the pinned TS seed's.
+    if lock(&state.rng).bool(0.5) {
+        state.harness.flush_outcomes();
+    }
 }

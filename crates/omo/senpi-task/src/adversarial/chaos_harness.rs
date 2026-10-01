@@ -14,7 +14,7 @@ use tempfile::TempDir;
 use crate::completion::{CompletionNotifierDeps, CompletionNotifierStore, ScheduledCancel, ScheduledTask, create_completion_notifier};
 use crate::lifecycle::TaskSettings;
 use crate::manager::types::ManagerConfig;
-use crate::manager::{AbortSignal, TaskManager};
+use crate::manager::{AbortSignal, ManagedChildHandle, TaskManager};
 use crate::store::{StateDirConfig, TaskRecordStore};
 
 use super::chaos_engine::{ChaosProcessTable, LifecycleChaosObservations};
@@ -244,6 +244,36 @@ impl ChaosHarness {
         });
         let _ = std::fs::write(&path, format!("{line}\n"));
         path
+    }
+
+    /// Applies the TS `flushMicrotasks()` point to this port's real outcome-watcher threads. The
+    /// pinned TS tracks a child outcome as a promise continuation, so the outcome is applied on the
+    /// microtask queue the chaos bench drains with `flushMicrotasks()`; this port hands the settle to
+    /// a watcher thread, so the harness waits for the watcher to consume it before it reads state.
+    /// Only a handle whose task is still non-terminal is waited on: a terminal task's watcher has
+    /// already returned, so its later settles have no consumer and would block forever.
+    pub fn flush_outcomes(&self) {
+        for engine in &self.engines {
+            for handle in engine.in_process_runner.all_handles() {
+                self.flush_handle_outcome(handle.as_ref());
+            }
+            for handle in engine.process_runner.all_handles() {
+                self.flush_handle_outcome(handle.as_ref());
+            }
+        }
+    }
+
+    fn flush_handle_outcome(&self, handle: &super::chaos_engine::ChaosRunnerHandle) {
+        let terminal = self
+            .store
+            .load(handle.task_id())
+            .ok()
+            .flatten()
+            .is_some_and(|record| super::observing_store::is_terminal_status(record.status));
+        if terminal {
+            return;
+        }
+        crate::manager::outcome::test_barrier::wait_until_consumed(handle as *const _ as usize);
     }
 
     pub fn observe_live_handles(&self) {

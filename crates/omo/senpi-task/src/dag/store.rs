@@ -296,6 +296,11 @@ struct LockHolder {
     content: String,
 }
 
+/// Test-only seam mirroring the TS suite's `{ ...store, writeCheckpoint: () => { throw } }` object
+/// spread: lets a test make the next checkpoint write fail once without a real I/O fault.
+#[cfg(test)]
+type CheckpointHook = Arc<dyn Fn(&Value) -> Result<(), DagStoreError> + Send + Sync>;
+
 pub struct DagFileStore {
     pub state_dir: PathBuf,
     pub paths: DagStorePaths,
@@ -308,6 +313,8 @@ pub struct DagFileStore {
     fs: Arc<dyn DagFs>,
     max_runs_per_session: usize,
     retention_days: u64,
+    #[cfg(test)]
+    checkpoint_hook: Mutex<Option<CheckpointHook>>,
 }
 
 pub fn create_dag_file_store(
@@ -335,6 +342,8 @@ pub fn create_dag_file_store(
             .and_then(|dag| dag.retention_days)
             .unwrap_or(DAG_SETTINGS_DEFAULTS.retention_days),
         paths,
+        #[cfg(test)]
+        checkpoint_hook: Mutex::new(None),
     };
     for directory in [
         &store.paths.keys,
@@ -350,6 +359,11 @@ pub fn create_dag_file_store(
 }
 
 impl DagFileStore {
+    #[cfg(test)]
+    pub(crate) fn set_checkpoint_hook(&self, hook: CheckpointHook) {
+        *guard(&self.checkpoint_hook) = Some(hook);
+    }
+
     fn clock(&self) -> &dyn Fn() -> i64 {
         &*self.now
     }
@@ -459,6 +473,10 @@ impl DagFileStore {
     ) -> Result<(), DagStoreError> {
         assert_safe_segment(run_id, "run id")?;
         let value = serde_json::to_value(checkpoint)?;
+        #[cfg(test)]
+        if let Some(hook) = guard(&self.checkpoint_hook).clone() {
+            hook(&value)?;
+        }
         assert_supported_schema(&value, &self.paths.run(run_id), Some(run_id), self.clock())?;
         self.write_checkpoint_within_session_limit(run_id, &value)
     }
