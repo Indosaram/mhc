@@ -25,7 +25,7 @@ impl FileHookStateStorage {
         if let Some(snapshot)=parse_hook_trust_state_json(text.as_deref()) {return Ok(snapshot);}
         let lease=match DirectoryLease::acquire(path) {
             Ok(lease)=>lease,
-            Err(error) if matches!(error.kind(),std::io::ErrorKind::AlreadyExists|std::io::ErrorKind::PermissionDenied)=>return Ok(empty_hook_trust_state()),
+            Err(error) if matches!(error.kind(),std::io::ErrorKind::AlreadyExists|std::io::ErrorKind::PermissionDenied)||error.raw_os_error()==Some(30)=>return Ok(empty_hook_trust_state()),
             Err(error)=>return Err(error),
         };
         let result=read_snapshot(path).map(|text|read_hook_trust_state_json(text.as_deref()));
@@ -53,9 +53,26 @@ struct DirectoryLease {path:PathBuf,held:bool}
 impl DirectoryLease {
     fn acquire(path:&Path)->std::io::Result<Self> {
         std::fs::create_dir_all(path.parent().ok_or_else(||std::io::Error::other("hook state path has no parent"))?)?;
-        let path=PathBuf::from(format!("{}.lock",path.display()));std::fs::create_dir(&path)?;Ok(Self {path,held:true})
+        let path=PathBuf::from(format!("{}.lock",path.display()));
+        retry_lock(||acquire_directory(&path,true),||std::thread::sleep(std::time::Duration::from_millis(20)))?;
+        Ok(Self {path,held:true})
     }
     fn release(mut self)->std::io::Result<()> {std::fs::remove_dir(&self.path)?;self.held=false;Ok(())}
+}
+fn retry_lock(mut acquire:impl FnMut()->std::io::Result<()>,mut delay:impl FnMut())->std::io::Result<()> {
+    for attempt in 1..=10 {match acquire() {Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists&&attempt<10=>delay(),result=>return result}}
+    unreachable!("ten attempts always return")
+}
+fn acquire_directory(path:&Path,check_stale:bool)->std::io::Result<()> {
+    match std::fs::create_dir(path) {
+        Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists&&check_stale=>{
+            let metadata=match std::fs::metadata(path) {Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return acquire_directory(path,false),result=>result?};
+            let stale=metadata.modified()?<std::time::SystemTime::now()-std::time::Duration::from_secs(10);
+            if !stale {return Err(error);}
+            match std::fs::remove_dir(path) {Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},result=>result?}
+            acquire_directory(path,false)
+        },result=>result,
+    }
 }
 impl Drop for DirectoryLease {fn drop(&mut self) {if self.held && let Err(error)=std::fs::remove_dir(&self.path) {eprintln!("hook state lock release failed: {error}");}}}
 fn release_result<T>(lease:DirectoryLease,result:std::io::Result<T>)->std::io::Result<T> {
@@ -65,6 +82,18 @@ fn release_result<T>(lease:DirectoryLease,result:std::io::Result<T>)->std::io::R
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn contention_retries_ten_attempts_but_other_errors_return_immediately() {
+        let attempts=std::cell::Cell::new(0);let delays=std::cell::Cell::new(0);
+        let error=retry_lock(|| {attempts.set(attempts.get()+1);Err(std::io::ErrorKind::AlreadyExists.into())},||delays.set(delays.get()+1)).unwrap_err();assert_eq!(error.kind(),std::io::ErrorKind::AlreadyExists);assert_eq!(attempts.get(),10);assert_eq!(delays.get(),9);
+        attempts.set(0);delays.set(0);retry_lock(|| {attempts.set(attempts.get()+1);if attempts.get()<3 {Err(std::io::ErrorKind::AlreadyExists.into())} else {Ok(())}},||delays.set(delays.get()+1)).unwrap();assert_eq!(attempts.get(),3);assert_eq!(delays.get(),2);
+        retry_lock(||Err(std::io::ErrorKind::PermissionDenied.into()),||panic!("non-contention errors must not retry")).unwrap_err();
+    }
+    #[test]
+    fn stale_lock_directory_is_reclaimed_without_waiting()->std::io::Result<()> {
+        let dir=tempfile::tempdir()?;let path=dir.path().join("state");let lock=dir.path().join("state.lock");std::fs::create_dir(&lock)?;
+        std::fs::File::open(&lock)?.set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))?;let lease=DirectoryLease::acquire(&path)?;assert!(lock.is_dir());lease.release()?;assert!(!lock.exists());Ok(())
+    }
     #[tokio::test]
     async fn asynchronous_missing_and_invalid_snapshots_do_not_create_locks()->std::io::Result<()> {
         let dir=tempfile::tempdir()?;let storage=FileHookStateStorage::new(dir.path(),dir.path());assert_eq!(storage.read_async(HookTrustStorageScope::Global).await?,empty_hook_trust_state());assert!(!dir.path().join("hooks-state.json.lock").exists());
