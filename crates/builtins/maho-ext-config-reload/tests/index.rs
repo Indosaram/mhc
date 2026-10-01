@@ -1,6 +1,23 @@
 use maho_ext_config_reload::index::*;
 use serde_json::json;
 #[test]
+fn pending_paths_deduplicate_sort_and_remove_per_registration() {
+    let mut pending = PendingChanges::default();
+    pending.add("first", &["b".into(), "a".into(), "b".into()]);
+    pending.add("second", &["c".into()]);
+    assert_eq!(pending.snapshot()[0].paths, vec![std::path::PathBuf::from("a"), "b".into()]);
+    pending.delete("first");
+    assert_eq!(pending.snapshot().len(), 1);
+    pending.clear();
+    assert!(pending.is_empty());
+}
+#[test]
+fn handoff_snapshot_diff_covers_changed_created_and_deleted_paths() {
+    let previous = std::collections::BTreeMap::from([("same".into(), "hash".into()), ("changed".into(), "old".into()), ("deleted".into(), "hash".into())]);
+    let next = std::collections::BTreeMap::from([("same".into(), "hash".into()), ("changed".into(), "new".into()), ("created".into(), "hash".into())]);
+    assert_eq!(compare_snapshots(&previous, &next), vec![std::path::PathBuf::from("changed"), "created".into(), "deleted".into()]);
+}
+#[test]
 fn handoffs_are_session_keyed_and_consumed_once() {
     let mut registry = ConfigReloadHandoffRegistry::default();
     registry.set("first".into(), 1);

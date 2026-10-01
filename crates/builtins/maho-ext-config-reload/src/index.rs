@@ -12,6 +12,20 @@ impl<T> ConfigReloadHandoffRegistry<T> {
 }
 pub struct ResolvedConfigReloadSettings { pub enabled: bool, pub debounce_ms: f64, pub watch: BTreeMap<String, bool> }
 pub struct ActiveTarget { pub registration_id: String, pub target: WatchTarget, pub rearm_on_creation: Option<PathBuf> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingChange { pub registration_id: String, pub paths: Vec<PathBuf> }
+#[derive(Default)]
+pub struct PendingChanges { changes: BTreeMap<String, std::collections::BTreeSet<PathBuf>> }
+impl PendingChanges {
+    pub fn add(&mut self, registration_id: &str, paths: &[PathBuf]) { self.changes.entry(registration_id.into()).or_default().extend(paths.iter().cloned()); }
+    pub fn delete(&mut self, registration_id: &str) { self.changes.remove(registration_id); }
+    pub fn clear(&mut self) { self.changes.clear(); }
+    pub fn is_empty(&self) -> bool { self.changes.is_empty() }
+    pub fn snapshot(&self) -> Vec<PendingChange> { self.changes.iter().map(|(id, paths)| PendingChange { registration_id: id.clone(), paths: paths.iter().cloned().collect() }).collect() }
+}
+pub fn compare_snapshots(previous: &BTreeMap<PathBuf, String>, next: &BTreeMap<PathBuf, String>) -> Vec<PathBuf> {
+    previous.keys().chain(next.keys()).filter(|path| previous.get(*path) != next.get(*path)).cloned().collect::<std::collections::BTreeSet<_>>().into_iter().collect()
+}
 pub fn significant_changed_paths(paths: &[PathBuf], snapshot: &BTreeMap<PathBuf, String>, settings_contents: &mut BTreeMap<PathBuf, String>, agent_dir: &Path, cwd: &Path, logger: &mut crate::log::ConfigReloadLogger) -> Vec<PathBuf> {
     use crate::{log::{LogEvent, LogLevel}, routine_settings::{is_settings_path, update_settings_content_snapshot, exclude_routine_only_settings_changes}};
     let watched: Vec<_> = paths.iter().filter(|path| {
