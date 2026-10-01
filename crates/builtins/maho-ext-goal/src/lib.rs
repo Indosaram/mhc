@@ -34,3 +34,4 @@ pub mod command_registration;
 pub mod cache_warm_renderer;
 pub mod renderers;
 pub mod tool_registration;
+pub mod index;
