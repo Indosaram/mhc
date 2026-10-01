@@ -7,8 +7,8 @@ fn fingerprint(d:&SenpiConfigDiagnostic)->String { let (kind,path,message)=parts
 fn config_directory(path:&Path,user:&Path)->Option<PathBuf> { if path.starts_with(user) { return Some(user.to_owned()); } path.ancestors().find(|p|p.file_name().is_some_and(|s|s==".omo")).map(Path::to_owned) }
 fn attributable(d:&SenpiConfigDiagnostic,changed:&[PathBuf],user:&Path)->bool {
     let (kind,path,_)=parts(d);if path==MERGED_OMO_CONFIG_DIAGNOSTIC_PATH||kind=="model_catalog_cycle" { return true; }
-    let path=Path::new(path);let directory=config_directory(path,user);
-    changed.iter().any(|changed|path.starts_with(changed)||(directory.is_some()&&config_directory(changed,user)==directory))
+    let path=PathBuf::from(omo_config_core::internal::posix_path::posix_resolve(&[path]));let directory=config_directory(&path,user);
+    changed.iter().any(|changed| { let changed=PathBuf::from(omo_config_core::internal::posix_path::posix_resolve(&[&changed.to_string_lossy()]));path.starts_with(&changed)||(directory.is_some()&&config_directory(&changed,user)==directory) })
 }
 pub enum ConfigWatchValidation { Ok,Rejected{errors:Vec<String>} }
 pub struct OmoConfigValidator { cwd:String,env:BTreeMap<String,String>,user:PathBuf,baseline:BTreeSet<String>,unresolved:Vec<String> }
