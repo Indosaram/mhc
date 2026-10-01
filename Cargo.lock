@@ -1796,6 +1796,7 @@ name = "maho-ext-terminal"
 version = "0.0.0"
 dependencies = [
  "fancy-regex",
+ "indexmap",
  "maho-ai",
  "maho-core",
  "maho-ext-api",

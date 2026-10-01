@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use indexmap::IndexMap;
 use maho_core::session_sidecar_store::{SidecarStore,SidecarError,CreateSidecarStoreOptions,create_sidecar_store};
 use crate::terminal_manifest_model::*;
 
@@ -11,13 +12,13 @@ pub fn create_terminal_manifest_store(session_dir:&std::path::Path,session_id:&s
 pub struct TerminalManifestWriter {
     pub store:SidecarStore,
     session_id:String,
-    entries:BTreeMap<String,ManifestMonitor>,
-    backgrounds:BTreeMap<String,ManifestBackgroundSession>,
+    entries:IndexMap<String,ManifestMonitor>,
+    backgrounds:IndexMap<String,ManifestBackgroundSession>,
     pending:BTreeMap<String,TerminalManifestCheckpoint>,
     pub persist_failure:Option<SidecarError>,
 }
 impl TerminalManifestWriter {
-    pub fn new(session_dir:&std::path::Path,session_id:&str)->Self {Self {store:create_terminal_manifest_store(session_dir,session_id),session_id:session_id.to_owned(),entries:BTreeMap::new(),backgrounds:BTreeMap::new(),pending:BTreeMap::new(),persist_failure:None}}
+    pub fn new(session_dir:&std::path::Path,session_id:&str)->Self {Self {store:create_terminal_manifest_store(session_dir,session_id),session_id:session_id.to_owned(),entries:IndexMap::new(),backgrounds:IndexMap::new(),pending:BTreeMap::new(),persist_failure:None}}
     pub async fn record_register(&mut self,registration:MonitorRegistration,now:f64) {
         let (description,runtime_kind,command,path,event,filter,cwd,approved_parent,persistent)=match registration.spec {
             MonitorSpec::Command {description,command,filter,cwd,persistent}=>(description,MonitorRuntimeKind::Command,Some(command),None,None,filter,cwd,None,persistent),
@@ -49,7 +50,7 @@ impl TerminalManifestWriter {
     pub async fn flush(&mut self,now:f64) {if !self.pending.is_empty() {self.absorb_pending();self.persist(now).await;}}
     pub async fn record_shutdown(&mut self,now:f64) {self.absorb_pending();for entry in self.entries.values_mut() {entry.suspended=true;}self.persist(now).await;}
     pub async fn record_background_start(&mut self,id:&str,command:&str,started_at_ms:f64,now:f64) {self.backgrounds.insert(id.to_owned(),ManifestBackgroundSession {id:id.to_owned(),command:command.to_owned(),started_at_ms});self.persist(now).await;}
-    pub async fn record_background_exit(&mut self,id:&str,now:f64) {if self.backgrounds.remove(id).is_some() {self.persist(now).await;}}
+    pub async fn record_background_exit(&mut self,id:&str,now:f64) {if self.backgrounds.shift_remove(id).is_some() {self.persist(now).await;}}
     async fn persist(&mut self,now:f64) {
         let state=TerminalManifest {version:TERMINAL_MANIFEST_VERSION,session_id:self.session_id.clone(),monitors:self.entries.values().cloned().collect(),background_sessions:self.backgrounds.values().cloned().collect(),updated_at:now};
         let result=match serde_json::to_value(state) {Ok(value)=>self.store.write(&value).await,Err(error)=>Err(SidecarError::Invalid(error.to_string()))};
@@ -59,6 +60,12 @@ impl TerminalManifestWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn background_records_follow_insertion_order() {
+        let dir=tempfile::tempdir().unwrap();let mut writer=TerminalManifestWriter::new(dir.path(),"s");
+        writer.record_background_start("bash_9","nine",1.0,1.0).await;writer.record_background_start("bash_2","two",2.0,2.0).await;
+        let state=crate::restore::parse_terminal_manifest(&writer.store.read().await.unwrap().unwrap(),"s").unwrap();assert_eq!(state.background_sessions.iter().map(|entry|entry.id.as_str()).collect::<Vec<_>>(),["bash_9","bash_2"]);
+    }
     #[tokio::test]
     async fn registration_checkpoint_shutdown_and_adoption_preserve_deadline() {
         let dir=tempfile::tempdir().unwrap();let mut writer=TerminalManifestWriter::new(dir.path(),"s");
