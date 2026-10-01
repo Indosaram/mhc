@@ -7,3 +7,4 @@ pub mod pattern_hints;
 pub mod binary_path;
 pub mod tools;
 pub mod downloader;
+pub mod binary_downloader;
