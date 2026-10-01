@@ -401,6 +401,8 @@ struct AgentSessionState {
     compaction_abort_controller: Option<maho_ai::utils::abort::AbortController>,
     prompt_templates: Vec<crate::prompt_templates::PromptTemplate>,
     skills: Vec<crate::skills::Skill>,
+    bash_abort_signals: BTreeMap<String, maho_ext_api::AbortSignal>,
+    pending_bash_messages: Vec<maho_agent::harness::messages::BashExecutionMessage>,
 }
 
 fn name_set(names: Option<Vec<String>>) -> Option<BTreeSet<String>> {
@@ -432,6 +434,60 @@ pub struct AgentSessionInner {
 }
 
 struct SessionFallbackDeps(std::sync::Weak<AgentSessionInner>);
+
+struct SessionExtensionActions(std::sync::Weak<AgentSessionInner>);
+
+impl SessionExtensionActions {
+    fn session(&self) -> Result<AgentSession, maho_ext_api::ExtensionFailure> {
+        self.0.upgrade().map(|inner| AgentSession { inner }).ok_or_else(|| maho_ext_api::ExtensionFailure::new("Session disposed"))
+    }
+}
+
+impl maho_ext_api::ExtensionSessionActions for SessionExtensionActions {
+    fn set_session_name(&self, name: &str) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.set_session_name(name); Ok(()) }
+    fn get_session_name(&self) -> Result<Option<String>, maho_ext_api::ExtensionFailure> { Ok(self.session()?.session_name()) }
+    fn set_label(&self, id: &str, label: Option<&str>) -> Result<(), maho_ext_api::ExtensionFailure> {
+        self.session()?.with_session_manager_mut(|manager| manager.append_label(id, label)); Ok(())
+    }
+    fn execute_tool<'a>(&'a self, name: &'a str, params: Value, options: maho_ext_api::ExecuteToolOptions) -> maho_ext_api::ExecuteToolFuture<'a> {
+        Box::pin(async move { let session = self.session().map_err(|error| maho_ext_api::ExecuteToolError {
+            code: maho_ext_api::ExecuteToolErrorCode::Blocked, tool_name: name.to_owned(), message: error.message, active_tools: Vec::new(),
+        })?;
+            session.execute_tool(name, params, ExecuteToolOptions { signal: options.signal, activate_inactive_tool: options.activate_inactive_tool }).await
+                .map_err(|error| maho_ext_api::ExecuteToolError { code: match error.code.as_str() {
+                    "unknown_tool" => maho_ext_api::ExecuteToolErrorCode::UnknownTool, "inactive_tool" => maho_ext_api::ExecuteToolErrorCode::InactiveTool,
+                    "invalid_params" => maho_ext_api::ExecuteToolErrorCode::InvalidParams, _ => maho_ext_api::ExecuteToolErrorCode::Blocked,
+                }, tool_name: error.tool_name, message: error.message, active_tools: error.active_tools })
+        })
+    }
+    fn get_active_tools(&self) -> Result<Vec<String>, maho_ext_api::ExtensionFailure> { Ok(self.session()?.get_active_tool_names()) }
+    fn set_active_tools(&self, names: Vec<String>) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.set_active_tools_by_name(names); Ok(()) }
+    fn refresh_tools(&self) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.publish_eval_only_tool_hints(); Ok(()) }
+    fn register_removed_tool_hint(&self, name: &str, hint: &str) -> Result<(), maho_ext_api::ExtensionFailure> {
+        let session = self.session()?; let mut hints = session.agent.removed_tool_hints(); hints.insert(name.to_owned(), hint.to_owned()); session.agent.set_removed_tool_hints(hints); Ok(())
+    }
+    fn register_lazy_tool_activator(&self, activator: maho_ext_api::LazyToolActivator) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.add_lazy_tool_activator(activator); Ok(()) }
+    fn get_commands(&self) -> Result<Vec<maho_ext_api::SlashCommandInfo>, maho_ext_api::ExtensionFailure> { Ok(self.session()?.get_commands()) }
+    fn set_model(&self, model: Model) -> maho_ext_api::ExtensionFuture<'_, bool> { Box::pin(async move {
+        self.session()?.set_model(model).await.map(|_| true).map_err(maho_ext_api::ExtensionFailure::new)
+    }) }
+    fn get_thinking_level(&self) -> Result<ThinkingLevel, maho_ext_api::ExtensionFailure> { Ok(thinking_level_from_model_level(self.session()?.thinking_level()).unwrap_or(ThinkingLevel::Minimal)) }
+    fn set_thinking_level(&self, level: ThinkingLevel) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.set_thinking_level(extension_thinking_level(level)); Ok(()) }
+    fn set_session_model(&self, model: Model) -> maho_ext_api::ExtensionFuture<'_, bool> { Box::pin(async move {
+        self.session()?.set_session_model(model).await.map(|_| true).map_err(maho_ext_api::ExtensionFailure::new)
+    }) }
+    fn set_session_thinking_level(&self, level: ThinkingLevel) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.set_session_thinking_level(extension_thinking_level(level)); Ok(()) }
+    fn set_session_fast_mode(&self, enabled: bool) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.set_session_fast_mode(enabled); Ok(()) }
+    fn exec<'a>(&'a self, command: &'a str, args: &'a [String], cwd: &'a std::path::Path, options: maho_ext_api::ExecOptions) -> maho_ext_api::ExtensionFuture<'a, maho_ext_api::ExecResult> {
+        Box::pin(async move {
+            let mut process = tokio::process::Command::new(command); process.args(args).current_dir(options.cwd.as_deref().unwrap_or(cwd)).kill_on_drop(true);
+            let output = if let Some(timeout) = options.timeout_ms {
+                tokio::time::timeout(std::time::Duration::from_millis(timeout), process.output()).await.map_err(|_| maho_ext_api::ExtensionFailure::new("Command timed out"))?
+            } else { process.output().await }.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+            Ok(maho_ext_api::ExecResult { stdout: String::from_utf8_lossy(&output.stdout).into_owned(), stderr: String::from_utf8_lossy(&output.stderr).into_owned(), code: output.status.code().unwrap_or(-1), killed: false })
+        })
+    }
+}
 
 impl crate::retry_fallback::controller::RetryFallbackDeps for SessionFallbackDeps {
     fn settings(&self) -> crate::retry_fallback::settings::ResolvedRetryFallbackSettings {
@@ -602,6 +658,8 @@ impl AgentSession {
             compaction_abort_controller: None,
             prompt_templates: Vec::new(),
             skills: Vec::new(),
+            bash_abort_signals: BTreeMap::new(),
+            pending_bash_messages: Vec::new(),
         };
         let session = Self { inner: Arc::new(AgentSessionInner {
             agent,
@@ -886,6 +944,8 @@ impl AgentSession {
         }
         self.agent.prompt(maho_agent::agent::AgentPromptInput::Message(make_user_message(&text, images))).await;
         self.finish_provider_turn().await?;
+        self.flush_pending_bash_messages();
+        if self.state().auto_title_sessions { self.generate_session_title_if_needed(&text).await; }
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::AgentSettled).await;
         self.emit(AgentSessionEvent::AgentSettled);
         self.emit(AgentSessionEvent::AgentIdle);
@@ -1590,6 +1650,117 @@ impl AgentSession {
 
     pub fn prompt_templates(&self) -> Vec<crate::prompt_templates::PromptTemplate> { self.state().prompt_templates.clone() }
 
+    pub async fn generate_session_title_if_needed(&self, prompt: &str) {
+        if self.session_name().is_some() || crate::session_title_generator::should_skip_session_title(prompt) { return; }
+        let session_id = self.session_id();
+        let generation = async {
+            let model = self.model();
+            let auth = self.get_summarization_request_auth(&model).await?;
+            let AgentMessage::Llm(user) = make_user_message(prompt, None) else { return Err("Invalid title prompt".to_owned()); };
+            let response = self.model_runtime().complete(&auth.model, &maho_ai::types::Context {
+                system_prompt: Some("Generate a short session title. Return only <title>title</title>; use <title>none</title> when no task is stated.".to_owned()),
+                messages: vec![user], tools: None,
+            }, Some(maho_ai::types::StreamOptions {
+                request: maho_ai::types::ProviderRequestOptions { api_key: auth.api_key,
+                    headers: auth.headers.map(|headers| headers.into_iter().map(|(key,value)| (key,Some(value))).collect()),
+                    stream_kind: Some(maho_ai::types::StreamKind::Auxiliary), env: auth.env, ..Default::default() },
+                max_tokens: Some(128), session_id: Some(session_id.clone()), ..Default::default()
+            })).await.map_err(|error| error.to_string())?;
+            if let Some(error) = crate::session_title_generator::title_error_message(&response) { return Err(error); }
+            Ok::<_, String>(crate::session_title_generator::parse_session_title(&response))
+        }.await;
+        match generation {
+            Ok(Some(title)) if self.session_id() == session_id && self.session_name().is_none() => self.set_session_name(&title),
+            Ok(_) => {}, Err(error) => self.emit(AgentSessionEvent::ContinuationError { error_message: error }),
+        }
+    }
+
+    pub async fn execute_bash(&self, command: &str, on_chunk: Option<maho_tools::bash_executor::BashChunkCallback>,
+        exclude_from_context: bool, id: Option<String>, operations: Option<Arc<dyn maho_tools::bash::BashOperations>>)
+        -> Result<maho_tools::bash_executor::BashResult, String>
+    {
+        let signal = maho_ext_api::AbortSignal::default();
+        let key = id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        self.state().bash_abort_signals.insert(key.clone(), signal.clone());
+        let prefix = self.with_settings_manager(|manager| manager.get_string("shellCommandPrefix"));
+        let shell = self.with_settings_manager(|manager| manager.get_string("shellPath")).unwrap_or_else(|| "/bin/bash".to_owned());
+        let local = maho_tools::bash::LocalShellOperations { shell_name: "bash".to_owned(), shell, args: vec!["-lc".to_owned()], prefix: String::new() };
+        let resolved = prefix.map_or_else(|| command.to_owned(), |prefix| format!("{prefix}\n{command}"));
+        let session = self.clone();
+        let cwd = self.cwd();
+        let result = maho_tools::bash_executor::execute_bash_with_operations(&resolved, std::path::Path::new(&cwd),
+            operations.as_deref().unwrap_or(&local), maho_tools::bash_executor::BashExecutorOptions {
+                signal, on_chunk: Some(Arc::new(move |chunk| {
+                    if let Some(callback) = &on_chunk { callback(chunk)?; }
+                    session.emit(AgentSessionEvent::BashExecutionUpdate { id: id.clone(), delta: chunk.to_owned() });
+                    Ok(())
+                })), on_chunk_async: None,
+            }).await.map_err(|error| error.to_string());
+        self.state().bash_abort_signals.remove(&key);
+        if let Ok(result) = &result { self.record_bash_result(command, result, exclude_from_context); }
+        result
+    }
+
+    pub fn record_bash_result(&self, command: &str, result: &maho_tools::bash_executor::BashResult, exclude_from_context: bool) {
+        let message = maho_agent::harness::messages::BashExecutionMessage {
+            role: "bashExecution".to_owned(), command: command.to_owned(), output: result.output.clone(), exit_code: result.exit_code.map(i64::from),
+            cancelled: result.cancelled, truncated: result.truncated, full_output_path: result.full_output_path.as_ref().map(|path| path.to_string_lossy().into_owned()),
+            timestamp: maho_ai::utils::diagnostics::now_ms(), exclude_from_context: Some(exclude_from_context),
+        };
+        self.state().pending_bash_messages.push(message);
+        if !self.is_streaming() { self.flush_pending_bash_messages(); }
+    }
+
+    pub fn flush_pending_bash_messages(&self) {
+        let pending = std::mem::take(&mut self.state().pending_bash_messages);
+        let mut messages = self.messages();
+        for message in pending {
+            match serde_json::to_value(&message) {
+                Ok(value) => { self.with_session_manager_mut(|manager| manager.append_message(value)); self.state().message_revision += 1; }
+                Err(error) => self.emit(AgentSessionEvent::ContinuationError { error_message: error.to_string() }),
+            }
+            messages.push(AgentMessage::Custom(maho_agent::types::CustomAgentMessage::BashExecution(message)));
+        }
+        self.agent.set_messages(messages);
+    }
+
+    pub fn is_bash_running(&self) -> bool { !self.state().bash_abort_signals.is_empty() }
+    pub fn has_pending_bash_messages(&self) -> bool { !self.state().pending_bash_messages.is_empty() }
+    pub fn abort_bash(&self) { for signal in self.state().bash_abort_signals.values() { signal.abort(); } }
+    pub async fn cleanup_bash_output(&self, path: &std::path::Path) -> Result<(), String> {
+        match tokio::fs::remove_file(path).await { Ok(()) => Ok(()), Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()), Err(error) => Err(error.to_string()) }
+    }
+
+    pub fn rebuild_system_prompt(&self) {
+        let skills = self.state().skills.clone();
+        let active = self.get_active_tool_names();
+        let base = crate::system_prompt::build_system_prompt(&crate::system_prompt::BuildSystemPromptOptions {
+            cwd: self.cwd(), selected_tools: Some(active), skills: Some(skills), ..Default::default()
+        });
+        self.state().base_system_prompt = base.clone();
+        self.agent.set_system_prompt(base);
+    }
+
+    pub async fn reload(&self) -> Result<bool, String> {
+        if self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeReload).await?.cancel == Some(true) { return Ok(false); }
+        self.abort().await;
+        self.emit_session_shutdown(maho_ext_api::SessionReason::Reload).await;
+        self.with_settings_manager_mut(|manager| manager.reload());
+        let templates = crate::prompt_templates::load_prompt_templates(&crate::prompt_templates::LoadPromptTemplatesOptions {
+            cwd: self.cwd(), agent_dir: self.agent_dir(), include_defaults: true, ..Default::default()
+        });
+        let skills = crate::skills::load_skills(&crate::skills::LoadSkillsOptions {
+            cwd: self.cwd(), agent_dir: self.agent_dir(), include_defaults: true, ..Default::default()
+        });
+        self.set_prompt_resources(templates, skills.skills);
+        self.rebuild_system_prompt();
+        self.publish_eval_only_tool_hints();
+        self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+            reason: maho_ext_api::SessionReason::Reload, initial_model_provenance: None, previous_session_file: self.session_file(),
+        })).await;
+        Ok(true)
+    }
+
     fn expand_input(&self, text: &str, templates: bool) -> Result<String, String> {
         let skills = self.state().skills.clone();
         let tokens = crate::skill_invocation::parse_skill_invocation_tokens(text, &crate::skill_invocation::ParseSkillInvocationOptions {
@@ -2152,10 +2323,20 @@ impl AgentSession {
 
     /// Bind the extension runner the tool hooks read at execution time.
     pub async fn set_extension_runner(&self, mut runner: ExtensionRunner) {
+        if let Err(error) = runner.bind_session_actions(Arc::new(SessionExtensionActions(Arc::downgrade(&self.inner)))) {
+            self.emit(AgentSessionEvent::ContinuationError { error_message: error.message });
+        }
         if let Err(error) = runner.bind_providers(Arc::new(crate::agent_session_runtime::ExtensionModelRuntimeActions(Mutex::new(self.model_runtime().clone())))) {
             self.emit(AgentSessionEvent::ContinuationError { error_message: error.message });
         }
         *self.extension_runner.lock().await = Some(runner);
+    }
+
+    pub fn get_commands(&self) -> Vec<maho_ext_api::SlashCommandInfo> {
+        self.prompt_templates().into_iter().map(|template| maho_ext_api::SlashCommandInfo {
+            name: template.name, description: Some(template.description),
+            ..Default::default()
+        }).collect()
     }
 
     pub async fn bind_extensions(&self, bindings: ExtensionBindings) {
@@ -2913,7 +3094,7 @@ fn user_message_text(message: &AgentMessage) -> String {
     }
 }
 
-fn session_message_from_value(mut message: Value) -> Result<AgentMessage, serde_json::Error> {
+pub(crate) fn session_message_from_value(mut message: Value) -> Result<AgentMessage, serde_json::Error> {
     if let Some(timestamp) = message.get("timestamp").and_then(Value::as_str) {
         let millis = chrono::DateTime::parse_from_rfc3339(timestamp).map(|time| time.timestamp_millis()).unwrap_or(0);
         message["timestamp"] = Value::from(millis);
@@ -2984,6 +3165,12 @@ fn rand_unit() -> f64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.subsec_nanos());
     f64::from(nanos % 1_000_000) / 1_000_000.0
+}
+
+fn extension_thinking_level(level: ThinkingLevel) -> ModelThinkingLevel {
+    match level { ThinkingLevel::Minimal => ModelThinkingLevel::Minimal, ThinkingLevel::Low => ModelThinkingLevel::Low,
+        ThinkingLevel::Medium => ModelThinkingLevel::Medium, ThinkingLevel::High => ModelThinkingLevel::High,
+        ThinkingLevel::Xhigh => ModelThinkingLevel::Xhigh, ThinkingLevel::Max => ModelThinkingLevel::Max }
 }
 
 #[cfg(test)]
@@ -3775,5 +3962,19 @@ mod tests {
         }], Vec::new());
         assert_eq!(session.expand_input("/review file", true).expect("expand"), "review file");
         assert_eq!(session.expand_input("/review file", false).expect("raw"), "/review file");
+    }
+
+    #[tokio::test]
+    async fn local_bash_records_native_custom_context_and_history() {
+        let session = test_session();
+        let result = session.execute_bash("printf native", None, true, None, None).await.expect("bash");
+        assert_eq!(result.output, "native");
+        assert_eq!(result.exit_code, Some(0));
+        assert!(!session.is_bash_running());
+        assert!(!session.has_pending_bash_messages());
+        assert_eq!(session.messages()[0].role(), "bashExecution");
+        let entry = session.with_session_manager(|manager| manager.entries()[0].clone());
+        assert_eq!(entry["message"]["command"], "printf native");
+        assert_eq!(entry["message"]["excludeFromContext"], true);
     }
 }
