@@ -1584,6 +1584,12 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-api"
 version = "0.0.0"
+dependencies = [
+ "maho-agent",
+ "maho-ai",
+ "maho-tools",
+ "maho-tui",
+]
 
 [[package]]
 name = "maho-ext-ask-user"
@@ -1652,6 +1658,10 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-host"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-imagegen"
