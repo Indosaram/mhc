@@ -21,3 +21,4 @@ pub mod store_ref;
 pub mod wait_progress;
 pub mod ui;
 pub mod elapsed_ticker;
+pub mod prompt;
