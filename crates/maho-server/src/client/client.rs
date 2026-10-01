@@ -14,6 +14,8 @@ use std::{
 use tokio::sync::{mpsc, oneshot, watch};
 
 type Reply = oneshot::Sender<Result<Option<Value>, ClientError>>;
+type ConnectionListener = Arc<dyn Fn(ConnectionStateChange) + Send + Sync>;
+type AttachmentListener = Arc<dyn Fn(Option<Value>) + Send + Sync>;
 struct Pending {
     reply: Option<Reply>,
     subscription: Option<String>,
@@ -34,6 +36,9 @@ struct State {
     attachment: Option<Value>,
     pending: BTreeMap<String, Pending>,
     subscriptions: BTreeMap<String, SubscriptionState>,
+    listener_sequence: u64,
+    connection_listeners: BTreeMap<u64, ConnectionListener>,
+    attachment_listeners: BTreeMap<u64, AttachmentListener>,
 }
 
 pub struct Client {
@@ -68,6 +73,9 @@ impl Client {
             attachment: None,
             pending: BTreeMap::new(),
             subscriptions: BTreeMap::new(),
+            listener_sequence: 0,
+            connection_listeners: BTreeMap::new(),
+            attachment_listeners: BTreeMap::new(),
         }));
         let (connection_events, _) = watch::channel(ConnectionStateChange {
             state: ConnectionState::Disconnected,
@@ -90,13 +98,36 @@ impl Client {
                     Ok(())
                 }),
                 on_message: Arc::new(move |message| {
-                    handle_message(&message_state, &expected, &message_attachments, message)
+                    let before = lock(&message_state).attachment.clone();
+                    handle_message(&message_state, &expected, &message_attachments, message)?;
+                    let (after, listeners) = {
+                        let state = lock(&message_state);
+                        (
+                            state.attachment.clone(),
+                            state
+                                .attachment_listeners
+                                .values()
+                                .cloned()
+                                .collect::<Vec<_>>(),
+                        )
+                    };
+                    if before != after {
+                        for listener in listeners {
+                            listener(after.clone());
+                        }
+                    }
+                    Ok(())
                 }),
                 on_state_change: Arc::new(move |change| {
                     if change.state == ConnectionState::Disconnected {
                         let mut state = lock(&change_state);
                         state.hello = None;
-                        state.attachment = None;
+                        let detached = state.attachment.take().is_some();
+                        let listeners = state
+                            .attachment_listeners
+                            .values()
+                            .cloned()
+                            .collect::<Vec<_>>();
                         let pending = std::mem::take(&mut state.pending);
                         state.subscriptions.clear();
                         for (_, request) in pending {
@@ -109,6 +140,11 @@ impl Client {
                             }
                         }
                         drop(state);
+                        if detached {
+                            for listener in listeners {
+                                listener(None);
+                            }
+                        }
                         attachment_changes.send_if_modified(|v| {
                             if v.is_some() {
                                 *v = None;
@@ -118,7 +154,15 @@ impl Client {
                             }
                         });
                     }
-                    changes.send_replace(change);
+                    changes.send_replace(change.clone());
+                    let listeners = lock(&change_state)
+                        .connection_listeners
+                        .values()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    for listener in listeners {
+                        listener(change.clone());
+                    }
                 }),
             },
             factory,
@@ -158,12 +202,49 @@ impl Client {
     pub fn attachment_changes(&self) -> watch::Receiver<Option<Value>> {
         self.attachment_events.subscribe()
     }
+    pub fn on_connection_state_change(
+        self: &Arc<Self>,
+        listener: Arc<dyn Fn(ConnectionStateChange) + Send + Sync>,
+    ) -> Result<ListenerSubscription, ClientError> {
+        let mut state = lock(&self.state);
+        if state.disposed {
+            return Err(ClientError::Disposed);
+        }
+        state.listener_sequence += 1;
+        let id = state.listener_sequence;
+        state.connection_listeners.insert(id, listener);
+        Ok(ListenerSubscription {
+            client: Arc::downgrade(self),
+            id,
+            connection: true,
+        })
+    }
+    pub fn on_attachment_change(
+        self: &Arc<Self>,
+        listener: Arc<dyn Fn(Option<Value>) + Send + Sync>,
+    ) -> Result<ListenerSubscription, ClientError> {
+        let mut state = lock(&self.state);
+        if state.disposed {
+            return Err(ClientError::Disposed);
+        }
+        state.listener_sequence += 1;
+        let id = state.listener_sequence;
+        state.attachment_listeners.insert(id, listener);
+        Ok(ListenerSubscription {
+            client: Arc::downgrade(self),
+            id,
+            connection: false,
+        })
+    }
     pub fn disconnect(&self, reason: &str) {
         self.connection.disconnect(reason);
     }
     pub fn dispose(&self) {
         lock(&self.state).disposed = true;
         self.connection.fail(ClientError::Disposed);
+        let mut state = lock(&self.state);
+        state.connection_listeners.clear();
+        state.attachment_listeners.clear();
     }
     pub async fn request(
         &self,
@@ -307,6 +388,23 @@ pub struct ServiceSubscription {
     pub updates: mpsc::UnboundedReceiver<Value>,
     client: Arc<Client>,
     disposed: bool,
+}
+pub struct ListenerSubscription {
+    client: std::sync::Weak<Client>,
+    id: u64,
+    connection: bool,
+}
+impl Drop for ListenerSubscription {
+    fn drop(&mut self) {
+        if let Some(client) = self.client.upgrade() {
+            let mut state = lock(&client.state);
+            if self.connection {
+                state.connection_listeners.remove(&self.id);
+            } else {
+                state.attachment_listeners.remove(&self.id);
+            }
+        }
+    }
 }
 impl ServiceSubscription {
     pub fn start(&self) {

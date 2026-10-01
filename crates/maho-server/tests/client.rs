@@ -19,6 +19,40 @@ use std::sync::{
 use tokio::sync::mpsc;
 
 const ID: &str = "00000000-0000-4000-8000-000000000001";
+#[tokio::test]
+async fn synchronous_listeners_preserve_every_change_and_unsubscribe() {
+    let (memory, _requests) =
+        Memory::create(json!({"type":"hello","version":8,"serverId":ID}), false);
+    let client = Client::new(ID.into(), MAX, Arc::new(MemoryFactory(memory.clone()))).unwrap();
+    let changes = Arc::new(Mutex::new(Vec::new()));
+    let captured = changes.clone();
+    let subscription = client
+        .on_connection_state_change(Arc::new(move |change| {
+            captured.lock().unwrap().push(change.state);
+        }))
+        .unwrap();
+    client.connect().await.unwrap();
+    assert_eq!(
+        *changes.lock().unwrap(),
+        vec![ConnectionState::Connecting, ConnectionState::Connected]
+    );
+    drop(subscription);
+    client.disconnect("done");
+    assert_eq!(changes.lock().unwrap().len(), 2);
+    let attachments = Arc::new(Mutex::new(Vec::new()));
+    let captured = attachments.clone();
+    let _subscription = client
+        .on_attachment_change(Arc::new(move |attachment| {
+            captured.lock().unwrap().push(attachment);
+        }))
+        .unwrap();
+    client.connect().await.unwrap();
+    memory.send(json!({"type":"attachment","attachment":{"serverId":ID,"sessionId":"s","attachmentId":"a"}}));
+    memory.send(json!({"type":"attachment","attachment":null}));
+    assert_eq!(attachments.lock().unwrap().len(), 2);
+    client.dispose();
+    assert!(client.on_attachment_change(Arc::new(|_| {})).is_err());
+}
 struct Memory {
     handlers: Mutex<Option<ByteTransportHandlers>>,
     outbound: mpsc::UnboundedSender<Value>,

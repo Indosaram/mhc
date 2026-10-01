@@ -45,8 +45,14 @@ impl RoutedServerServiceAttachment for Services {
     ) -> ServerFuture<'a, Option<Value>> {
         Box::pin(async move {
             if call["member"] == "subscribe" {
-                publish(call["args"][0].as_str().expect("subscription id").into(),json!({"type":"state","member":"value","sequence":1,"ops":[["s",["n"],1]]})).await?;
-                return Ok(Some(json!({"serviceId":"echo","mode":"singleton","instances":[{"members":[{"name":"value","kind":"state","sequence":0,"ops":[["r",{"n":0}]]}]}]})));
+                publish(
+                    call["args"][0].as_str().expect("subscription id").into(),
+                    json!({"type":"state","member":"value","sequence":1,"ops":[["s",["n"],1]]}),
+                )
+                .await?;
+                return Ok(Some(
+                    json!({"serviceId":"echo","mode":"singleton","instances":[{"members":[{"name":"value","kind":"state","sequence":0,"ops":[["r",{"n":0}]]}]}]}),
+                ));
             }
             if call["member"] == "block" {
                 context
@@ -147,15 +153,90 @@ async fn preserves_replacement_socket_on_shutdown() {
 
 #[tokio::test]
 async fn subscription_flushes_updates_after_snapshot_over_real_client() {
-    use maho_server::client::{Client,unix::UnixTransportFactory};
-    let dir=tempfile::tempdir().unwrap();let path=get_unix_socket_path(ID,dir.path()).unwrap();
-    let mut listener=UnixServer::start(Server::new(Arc::new(Host),ID.into(),Some(MAX),None).unwrap(),path.clone()).await.unwrap();
-    let client=Client::new(ID.into(),MAX,Arc::new(UnixTransportFactory::new(path,None).unwrap())).unwrap();
+    use maho_server::client::{Client, unix::UnixTransportFactory};
+    let dir = tempfile::tempdir().unwrap();
+    let path = get_unix_socket_path(ID, dir.path()).unwrap();
+    let mut listener = UnixServer::start(
+        Server::new(Arc::new(Host), ID.into(), Some(MAX), None).unwrap(),
+        path.clone(),
+    )
+    .await
+    .unwrap();
+    let client = Client::new(
+        ID.into(),
+        MAX,
+        Arc::new(UnixTransportFactory::new(path, None).unwrap()),
+    )
+    .unwrap();
     client.connect().await.unwrap();
-    let mut subscription=client.subscribe(json!({"serverId":ID}),"echo","singleton").await.unwrap();
-    assert_eq!(subscription.snapshot["instances"][0]["members"][0]["ops"],json!([["r",{"n":0}]]));
+    let mut subscription = client
+        .subscribe(json!({"serverId":ID}), "echo", "singleton")
+        .await
+        .unwrap();
+    assert_eq!(
+        subscription.snapshot["instances"][0]["members"][0]["ops"],
+        json!([["r",{"n":0}]])
+    );
     subscription.start();
-    let update=tokio::time::timeout(Duration::from_secs(3),subscription.updates.recv()).await.unwrap().unwrap();
-    assert_eq!(update["ops"],json!([["s",["n"],1]]));
-    client.dispose();drop(subscription);drop(client);listener.close().await.unwrap();
+    let update = tokio::time::timeout(Duration::from_secs(3), subscription.updates.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(update["ops"], json!([["s", ["n"], 1]]));
+    client.dispose();
+    drop(subscription);
+    drop(client);
+    listener.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn callback_service_adapter_delivers_after_activation_and_closes() {
+    use maho_server::client::{
+        Client, service_transport::ClientServiceTransport, unix::UnixTransportFactory,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = get_unix_socket_path(ID, dir.path()).unwrap();
+    let mut listener = UnixServer::start(
+        Server::new(Arc::new(Host), ID.into(), Some(MAX), None).unwrap(),
+        path.clone(),
+    )
+    .await
+    .unwrap();
+    let client = Client::new(
+        ID.into(),
+        MAX,
+        Arc::new(UnixTransportFactory::new(path, None).unwrap()),
+    )
+    .unwrap();
+    client.connect().await.unwrap();
+    let adapter =
+        ClientServiceTransport::new(client.clone(), Arc::new(|| Some(json!({"serverId":ID}))));
+    let (delivered, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let mut subscription = adapter
+        .subscribe(
+            "echo",
+            "singleton",
+            Arc::new(move |update| {
+                let delivered = delivered.clone();
+                Box::pin(async move {
+                    delivered.send(update).expect("callback receiver");
+                    Ok(())
+                })
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(received.try_recv().is_err());
+    subscription.activate();
+    let update = tokio::time::timeout(Duration::from_secs(3), received.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(update["ops"], json!([["s", ["n"], 1]]));
+    subscription.close().await.unwrap();
+    subscription.close().await.unwrap();
+    client.dispose();
+    drop(adapter);
+    drop(client);
+    listener.close().await.unwrap();
 }
