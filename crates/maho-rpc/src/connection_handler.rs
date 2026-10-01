@@ -22,6 +22,14 @@ pub async fn handle_session_command(session:&AgentSession,command:&RpcCommand)->
         RpcCommandBody::AbortRetry=>{session.abort_retry();("abort_retry",Ok(None))},
         RpcCommandBody::AbortCompaction=>{session.abort_compaction();("abort_compaction",Ok(None))},
         RpcCommandBody::AbortBash=>{session.abort_bash();("abort_bash",Ok(None))},
+        RpcCommandBody::GetAvailableThinkingLevels=>("get_available_thinking_levels",Ok(Some(serde_json::json!({"levels":session.get_available_thinking_levels()})))),
+        RpcCommandBody::CycleThinkingLevel=>("cycle_thinking_level",Ok(Some(session.cycle_thinking_level().map_or(serde_json::Value::Null,|level|serde_json::json!({"level":level}))))),
+        RpcCommandBody::SetThinkingLevel{level,scope}=>{
+            let result=serde_json::from_value::<maho_ai::types::ModelThinkingLevel>(level.clone().into()).map_err(|error|error.to_string()).and_then(|parsed|{
+                if scope.is_some(){if !session.get_available_thinking_levels().contains(&parsed){return Err(format!("Thinking level {level} is not supported by the active model."));}session.set_session_thinking_level(parsed);}else{session.set_thinking_level(parsed);}
+                Ok(None)
+            });("set_thinking_level",result)
+        },
         RpcCommandBody::Compact{custom_instructions}=>("compact",session.compact(custom_instructions.as_deref()).await.map(|result|{
             let mut value=serde_json::json!({"summary":result.summary,"firstKeptEntryId":result.first_kept_entry_id,"tokensBefore":result.tokens_before});
             if let Some(tokens)=result.estimated_tokens_after{value["estimatedTokensAfter"]=tokens.into();}
