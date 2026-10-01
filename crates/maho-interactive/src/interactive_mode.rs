@@ -180,6 +180,17 @@ impl InteractiveMode {
     }
 
     pub async fn submit(&mut self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
+        if text.trim() == "/new" {
+            if self.session.new_session(None).await? { self.rebuild_history(); self.show_status("Started new session".into()); }
+            return Ok(PromptDisposition::Handled);
+        }
+        if let Some(reference) = text.trim().strip_prefix("/model ") {
+            let (provider, id) = reference.trim().split_once('/').ok_or("Model reference requires provider/model")?;
+            let model = self.session.model_registry().find(provider, id).ok_or_else(|| format!("Model not found: {reference}"))?;
+            self.session.set_model(model).await?;
+            self.show_status(format!("Switched to {}", self.session.model().name));
+            return Ok(PromptDisposition::Handled);
+        }
         if self.dispatch_command(text)? { return Ok(PromptDisposition::Handled); }
         let session = self.session.clone();
         let prompt = session.prompt(text, options);

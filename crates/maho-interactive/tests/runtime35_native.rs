@@ -413,7 +413,7 @@ fn extension_terminal_input_transforms_consumes_and_unsubscribes() {
 #[tokio::test]
 async fn unintegrated_builtin_does_not_silently_become_provider_input() {
     let (mut mode, _directory) = native_mode();
-    for command in ["/model", "/compact", "/export session.html", "/new"] {
+    for command in ["/model", "/compact", "/export session.html"] {
         assert!(mode.submit(command, Default::default()).await.is_err());
     }
     assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0));
@@ -438,4 +438,14 @@ fn question_answer_history_uses_existing_collapsed_answer_chip() {
     let lines = mode.render(80).join("\n");
     assert!(lines.contains("request-1")); assert!(lines.contains("(no answer)"));
     assert!(!lines.contains("[Answer to question"));
+}
+
+#[tokio::test]
+async fn new_command_replaces_native_session_and_clears_transcript() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("old-message", Default::default()).await.expect("turn");
+    mode.submit("/new", Default::default()).await.expect("new");
+    assert!(!mode.render(80).join("\n").contains("old-message"));
+    assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0));
 }
