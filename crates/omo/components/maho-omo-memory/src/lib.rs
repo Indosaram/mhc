@@ -8,6 +8,7 @@ pub mod guard;
 pub mod facts_run_cleanup;
 pub mod facts_failure_recording;
 pub mod facts_launch_selection;
+pub mod facts_oversize;
 pub mod prompt;
 pub mod policy_guard;
 pub mod skills_usage_ledger;
