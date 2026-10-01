@@ -1635,6 +1635,15 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-goal"
 version = "0.0.0"
+dependencies = [
+ "maho-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "maho-ext-gpt-apply-patch"
@@ -1679,10 +1688,16 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-loop"
 version = "0.0.0"
+dependencies = [
+ "regex",
+]
 
 [[package]]
 name = "maho-ext-loop-guard"
 version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-mcp"
