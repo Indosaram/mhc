@@ -1589,6 +1589,11 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-anthropic-web-search"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "serde_json",
+ "url",
+]
 
 [[package]]
 name = "maho-ext-api"
@@ -1716,6 +1721,11 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-openai-web-search"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "serde_json",
+ "url",
+]
 
 [[package]]
 name = "maho-ext-orca-agent-status"
@@ -1813,6 +1823,16 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-video-in"
 version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "maho-ai",
+ "maho-ext-api",
+ "maho-tools",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-webfetch"
