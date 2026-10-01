@@ -101,6 +101,7 @@ pub struct ToolExecutionComponent {
     theme: Theme,
     on_change: Option<Rc<dyn Fn()>>,
     spinner_tick_ms: Option<u64>,
+    has_custom_renderers: bool,
 }
 
 struct ToolExecutionRendererIdentity {
@@ -150,6 +151,7 @@ impl ToolExecutionComponent {
             theme,
             on_change: None,
             spinner_tick_ms: None,
+            has_custom_renderers: custom.is_some(),
         };
         let initial = component.create_render_state();
         if presentation == ToolExecutionPresentation::Grok {
@@ -177,6 +179,12 @@ impl ToolExecutionComponent {
         self.on_change = callback;
     }
 
+    /// senpi compares the card's renderer functions against the built-ins; a custom renderer is
+    /// what makes them differ, so this is the whole test.
+    pub fn uses_built_in_renderers(&self) -> bool {
+        !self.has_custom_renderers
+    }
+
     fn request_render(&self) {
         if let Some(on_change) = &self.on_change {
             on_change();
@@ -194,8 +202,8 @@ impl ToolExecutionComponent {
         (self.create_render_state(), self.identity.tool_name.clone(), self.presentation)
     }
 
-    pub fn identity(&self) -> (&str, &str, &str) {
-        (&self.identity.tool_name, &self.identity.tool_call_id, &self.identity.cwd)
+    pub fn identity(&self) -> (String, String, String) {
+        (self.identity.tool_name.clone(), self.identity.tool_call_id.clone(), self.identity.cwd.clone())
     }
 
     pub fn mark_execution_started(&mut self) {

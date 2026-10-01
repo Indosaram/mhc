@@ -24,20 +24,14 @@ fn format_find_call(args: Option<&Value>, theme: &Theme) -> String {
     };
     let path_display = match &path {
         None => invalid_arg,
-        Some(path) => {
-            if path.is_empty() {
-                shorten_path(Some(&Value::String(String::from("."))))
-            } else {
-                path.clone()
-            }
-        }
+        Some(path) if path.is_empty() => shorten_path(Some(&Value::String(String::from(".")))),
+        Some(path) => path.clone(),
     };
     let mut text = format!(
-        "{} {}{}{}",
+        "{} {}{}",
         theme.fg(ThemeColor::ToolTitle, &theme.bold("find")),
         pattern_display,
-        theme.fg(ThemeColor::ToolOutput, " in "),
-        path_display
+        theme.fg(ThemeColor::ToolOutput, &format!(" in {path_display}"))
     );
     if let Some(limit) = limit {
         text += &theme.fg(ThemeColor::ToolOutput, &format!(" (limit {limit})"));

@@ -7,6 +7,7 @@ pub mod editor_paste_transfer;
 pub mod extension_error_format;
 pub mod external_editor;
 pub mod grok;
+pub mod grok_mermaid;
 pub mod help_content;
 pub mod interactive_host_runtime;
 pub mod interactive_mode;

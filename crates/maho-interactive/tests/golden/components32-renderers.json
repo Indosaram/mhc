@@ -1,0 +1,244 @@
+[
+  {
+    "name": "read",
+    "kind": "call",
+    "args": {
+      "file_path": "src/main.rs"
+    },
+    "expanded": false,
+    "lines": [
+      "\u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m"
+    ]
+  },
+  {
+    "name": "read",
+    "kind": "call",
+    "args": {
+      "file_path": "src/main.rs",
+      "offset": 3,
+      "limit": 5
+    },
+    "expanded": false,
+    "lines": [
+      "\u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m\u001b[38;5;226m:3-7\u001b[39m"
+    ]
+  },
+  {
+    "name": "ls",
+    "kind": "call",
+    "args": {
+      "path": "src",
+      "limit": 25
+    },
+    "expanded": false,
+    "lines": [
+      "\u001b[38;5;188m\u001b[1mls\u001b[22m\u001b[39m \u001b[38;5;109msrc\u001b[39m\u001b[38;5;244m (limit 25)\u001b[39m"
+    ]
+  },
+  {
+    "name": "find",
+    "kind": "call",
+    "args": {
+      "pattern": "*.rs",
+      "path": "src",
+      "limit": 5
+    },
+    "expanded": false,
+    "lines": [
+      "\u001b[38;5;188m\u001b[1mfind\u001b[22m\u001b[39m \u001b[38;5;109m*.rs\u001b[39m\u001b[38;5;244m in src\u001b[39m\u001b[38;5;244m (limit 5)\u001b[39m"
+    ]
+  },
+  {
+    "name": "grep",
+    "kind": "call",
+    "args": {
+      "pattern": "needle",
+      "path": "src"
+    },
+    "expanded": false,
+    "lines": [
+      "\u001b[38;5;188m\u001b[1mgrep\u001b[22m\u001b[39m \u001b[38;5;109m/needle/\u001b[39m\u001b[38;5;244m in \u001b[39m\u001b[38;5;109msrc\u001b[39m"
+    ]
+  },
+  {
+    "name": "bash",
+    "kind": "call",
+    "args": {
+      "command": "echo hi",
+      "timeout": 5
+    },
+    "expanded": false,
+    "lines": [
+      "\u001b[38;5;188m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;79mecho\u001b[39m hi\u001b[38;5;244m (timeout 5s)\u001b[39m"
+    ]
+  },
+  {
+    "name": "edit",
+    "kind": "call",
+    "args": {
+      "file_path": "src/main.rs"
+    },
+    "expanded": false,
+    "lines": [
+      "\u001b[48;5;17m                                                                                \u001b[49m",
+      "\u001b[48;5;17m \u001b[38;5;188m\u001b[1medit\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m                                                               \u001b[49m",
+      "\u001b[48;5;17m                                                                                \u001b[49m"
+    ]
+  },
+  {
+    "name": "write",
+    "kind": "call",
+    "args": {
+      "file_path": "src/main.rs",
+      "content": "fn main() {}\n"
+    },
+    "expanded": false,
+    "lines": [
+      "\u001b[38;5;188m\u001b[1mwrite\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m",
+      "",
+      "\u001b[48;5;22m\u001b[38;5;143m+\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;74mfn\u001b[39m \u001b[38;5;187mmain\u001b[39m() {}\u001b[49m"
+    ]
+  },
+  {
+    "name": "read",
+    "kind": "result",
+    "args": {
+      "file_path": "src/main.rs"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "fn main() {\n    let value = 42;\n}\n"
+        }
+      ]
+    },
+    "expanded": true,
+    "isError": false,
+    "lines": [
+      "",
+      "\u001b[38;5;74mfn\u001b[39m \u001b[38;5;187mmain\u001b[39m() {",
+      "    \u001b[38;5;74mlet\u001b[39m \u001b[38;5;153mvalue\u001b[39m = \u001b[38;5;151m42\u001b[39m;",
+      "}"
+    ]
+  },
+  {
+    "name": "ls",
+    "kind": "result",
+    "args": {
+      "path": "src"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "a.rs\nb.rs"
+        }
+      ],
+      "details": {
+        "entryLimitReached": 3
+      }
+    },
+    "expanded": false,
+    "isError": false,
+    "lines": [
+      "",
+      "\u001b[38;5;244ma.rs\u001b[39m",
+      "\u001b[38;5;244mb.rs\u001b[39m",
+      "\u001b[38;5;226m[Truncated: 3 entries limit]\u001b[39m"
+    ]
+  },
+  {
+    "name": "find",
+    "kind": "result",
+    "args": {
+      "pattern": "*.rs",
+      "path": "src"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "src/a.rs"
+        }
+      ],
+      "details": {
+        "resultLimitReached": 7
+      }
+    },
+    "expanded": false,
+    "isError": false,
+    "lines": [
+      "",
+      "\u001b[38;5;244msrc/a.rs\u001b[39m",
+      "\u001b[38;5;226m[Truncated: 7 results limit]\u001b[39m"
+    ]
+  },
+  {
+    "name": "grep",
+    "kind": "result",
+    "args": {
+      "pattern": "needle",
+      "path": "src"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "no matches"
+        }
+      ]
+    },
+    "expanded": false,
+    "isError": false,
+    "lines": [
+      "",
+      "\u001b[38;5;244mno matches\u001b[39m"
+    ]
+  },
+  {
+    "name": "bash",
+    "kind": "result",
+    "args": {
+      "command": "echo hi"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "hi\n"
+        }
+      ]
+    },
+    "expanded": false,
+    "isError": false,
+    "lines": [
+      "",
+      "\u001b[38;5;244mhi\u001b[39m",
+      "",
+      "\u001b[38;5;244mTook <1s\u001b[39m"
+    ]
+  },
+  {
+    "name": "write",
+    "kind": "result",
+    "args": {
+      "file_path": "src/main.rs",
+      "content": "x"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "boom"
+        }
+      ]
+    },
+    "expanded": false,
+    "isError": true,
+    "lines": [
+      "",
+      "\u001b[38;5;167mboom\u001b[39m"
+    ]
+  }
+]
