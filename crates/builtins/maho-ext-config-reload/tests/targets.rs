@@ -32,3 +32,13 @@ fn trusted_project_presence_watches_config_name() {
     assert!(presence.rearm_on_creation.is_some());
     assert_eq!(presence.target.allow_list.as_ref().unwrap().len(), 1);
 }
+#[test]
+fn symlink_resource_uses_presence_target_instead_of_following_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(outside.path(), root.path().join("prompts")).unwrap();
+    let settings = resolve_config_reload_settings(&json!({}), &json!({}));
+    let targets = build_builtin_watch_targets(root.path(), root.path(), false, &settings, &[]);
+    let prompts = targets.iter().find(|target| target.target.id == "builtin-global-prompts-presence").unwrap();
+    assert_eq!(prompts.rearm_on_creation, Some(root.path().join("prompts")));
+}

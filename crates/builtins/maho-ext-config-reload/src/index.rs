@@ -126,15 +126,15 @@ pub fn build_builtin_watch_targets(cwd: &Path, agent_dir: &Path, project_trusted
         for (index, path) in skill_paths.iter().enumerate() {
             let path = if path.is_absolute() { path.clone() } else { cwd.join(path) };
             let id = format!("builtin-skill-{index}");
-            if path.is_file() {
+            if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file()) {
                 if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) { targets.push(active(&id, parent, WatchKind::Dir, Some(vec![name.into()]), None, None)); }
             } else { add_directory(&mut targets, &id, &path, false); }
         }
     }
     if project_trusted {
         let project = crate::routine_settings::join_config_dir(cwd);
-        if settings.watch.values().any(|enabled| *enabled) { targets.push(active("builtin-project-presence", cwd, WatchKind::Dir, Some(vec![maho_core::config::config_dir_name().into()]), None, (!project.is_dir()).then(|| project.clone()))); }
-        if project.is_dir() {
+        if settings.watch.values().any(|enabled| *enabled) { targets.push(active("builtin-project-presence", cwd, WatchKind::Dir, Some(vec![maho_core::config::config_dir_name().into()]), None, (!is_existing_directory(&project)).then(|| project.clone()))); }
+        if is_existing_directory(&project) {
             if settings.watch["settings"] { targets.push(active("builtin-project-settings", &project, WatchKind::Dir, Some(vec!["settings.jsonc".into(), "settings.json".into()]), None, None)); }
             for resource in ["prompts", "skills", "extensions"] { if settings.watch[resource] { add_directory(&mut targets, &format!("builtin-project-{resource}"), &project.join(resource), resource == "extensions"); } }
         }
@@ -145,19 +145,20 @@ fn active(id: &str, path: &Path, kind: WatchKind, allow_list: Option<Vec<PathBuf
     ActiveTarget { registration_id: "builtin".into(), target: WatchTarget { id: id.into(), path: path.into(), kind, allow_list, filter }, rearm_on_creation }
 }
 fn add_directory(targets: &mut Vec<ActiveTarget>, id: &str, path: &Path, extensions: bool) {
-    if path.is_dir() {
+    if is_existing_directory(path) {
         let root = path.to_path_buf();
         let filter: Option<WatchFilter> = extensions.then(|| Arc::new(move |relative: &Path| is_loadable_extension_entry(&root, &relative.to_string_lossy()) || is_scannable_extension_directory(&root, &relative.to_string_lossy())) as WatchFilter);
         targets.push(active(id, path, WatchKind::DirRecursive, None, filter, None));
     } else {
         let mut parent = path.parent().unwrap_or(path).to_path_buf();
-        while !parent.is_dir() { let Some(next) = parent.parent() else { break; }; parent = next.into(); }
+        while !is_existing_directory(&parent) { let Some(next) = parent.parent() else { break; }; parent = next.into(); }
         if let Some(segment) = path.strip_prefix(&parent).ok().and_then(|relative| relative.components().next()) {
             let segment = PathBuf::from(segment.as_os_str());
             targets.push(active(&format!("{id}-presence"), &parent, WatchKind::Dir, Some(vec![segment.clone()]), None, Some(parent.join(segment))));
         }
     }
 }
+fn is_existing_directory(path: &Path) -> bool { std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir()) }
 pub fn resolve_config_reload_settings(global: &Value, project: &Value) -> ResolvedConfigReloadSettings {
     let global = global.get("configReload").filter(|value| value.is_object());
     let project = project.get("configReload").filter(|value| value.is_object());
