@@ -4,6 +4,7 @@ use maho_tools::definition::ToolError;
 use serde::Deserialize;
 use serde_json::json;
 use std::{path::Path, sync::Arc};
+use maho_ext_api::{EventKind,ExtensionEvent,EventResult};
 
 pub const MAX_VIDEO_BYTES: u64 = 100 * 1024 * 1024;
 const EXTENSIONS: &str = "mp4, mpeg, mpg, mov, webm, mkv, avi, flv, 3gp";
@@ -18,6 +19,14 @@ pub fn detect_video_mime_type(path: &Path) -> Option<&'static str> {
 }
 pub fn model_supports_video(model: Option<&Model>) -> bool {
     model.is_some_and(|model| model.input.contains(&maho_ai::types::InputModality::Video))
+}
+pub fn activation_change(active:&[String],model:Option<&Model>)->Option<Vec<String>>{
+    let is_active=active.iter().any(|name|name=="read_video");
+    match (model_supports_video(model),is_active){
+        (true,false)=>{let mut names=active.to_vec();names.push("read_video".into());Some(names)},
+        (false,true)=>Some(active.iter().filter(|name|name.as_str()!="read_video").cloned().collect()),
+        _=>None,
+    }
 }
 
 #[derive(Deserialize)]
@@ -50,5 +59,17 @@ impl Extension for VideoIn {
         tool.label = "Read Video".into();
         tool.prompt_snippet = Some("Attach a video file so the model can watch it (video-capable models only)".into());
         api.register_tool(tool);
+        for kind in [EventKind::SessionStart,EventKind::ModelSelect]{
+            let runtime=api.runtime.clone();
+            api.on(kind,Arc::new(move|event,ctx|{
+                let runtime=runtime.clone();
+                Box::pin(async move{
+                    let model=match event{ExtensionEvent::ModelSelect(event)=>Some(&event.model),_=>ctx.model.as_ref()};
+                    let actions=runtime.session_actions()?;
+                    if let Some(names)=activation_change(&actions.get_active_tools()?,model){actions.set_active_tools(names)?;}
+                    Ok(EventResult::None)
+                })
+            }));
+        }
     }
 }

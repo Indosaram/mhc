@@ -30,3 +30,10 @@ async fn empty_rejected() {
 }
 #[test]
 fn mime_case_insensitive() { assert_eq!(detect_video_mime_type(Path::new("clip.MOV")),Some("video/quicktime")); }
+fn video_model()->maho_ext_api::Model{serde_json::from_value(serde_json::json!({"id":"video","name":"video","provider":"faux","api":"faux","baseUrl":"","reasoning":false,"input":["video"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":4096,"maxTokens":1024})).expect("model")}
+#[test]
+fn enables_video(){let active=vec!["read".into()];assert_eq!(maho_ext_video_in::activation_change(&active,Some(&video_model())),Some(vec!["read".into(),"read_video".into()]));}
+#[test]
+fn disables_video(){assert_eq!(maho_ext_video_in::activation_change(&["read_video".into(),"read".into()],None),Some(vec!["read".into()]));}
+#[test]
+fn unchanged_activation(){assert!(maho_ext_video_in::activation_change(&["read_video".into()],Some(&video_model())).is_none());assert!(maho_ext_video_in::activation_change(&["read".into()],None).is_none());}
