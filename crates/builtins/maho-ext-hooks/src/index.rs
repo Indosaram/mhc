@@ -24,14 +24,21 @@ pub fn refresh_state(ctx:&ExtensionContext)->Result<HookRuntimeState,ExtensionFa
 }
 async fn dispatch(ctx:&ExtensionContext,input:serde_json::Value)->Result<HookDispatchResult,ExtensionFailure> {
     let mut state=refresh_state(ctx)?;let cwd=ctx.cwd.clone();let signal=ctx.signal.clone();let wire=input.clone();
+    let mut lifecycle_diagnostics=Vec::new();
     if matches!(input.get("event").and_then(serde_json::Value::as_str),Some("SessionStart"|"PreCompact"|"PostCompact"|"Notification")) {
         let platform=if cfg!(windows) {"win32"} else {"linux"};let mut selected=Vec::new();let mut trust=empty_hook_trust_state();
         for handler in state.parsed.executable_handlers {
             if Some(handler.event.as_str())!=input.get("event").and_then(serde_json::Value::as_str) {continue;}
-            if handler.event==crate::types::SupportedHookEvent::SessionStart&&input.get("reason").and_then(serde_json::Value::as_str)==Some("startup")&&handler.source.discovered_at==crate::types::HookDiscoveryTiming::Runtime {continue;}
+            if handler.event==crate::types::SupportedHookEvent::SessionStart&&input.get("reason").and_then(serde_json::Value::as_str)==Some("startup")&&handler.source.discovered_at==crate::types::HookDiscoveryTiming::Runtime {
+                lifecycle_diagnostics.push(crate::types::HookDiagnostic {source:handler.source.clone(),event:Some(handler.event.as_str().to_owned()),code:"unsupported_event".to_owned(),message:"Runtime SessionStart hooks are loaded for reload or the next session only.".to_owned(),path:"hooks.SessionStart".to_owned(),severity:crate::types::Severity::Warning});continue;
+            }
             let matcher=handler.matcher.as_deref().unwrap_or("").trim();
             let subjects=[handler.event.as_str(),input.get("reason").and_then(serde_json::Value::as_str).unwrap_or("")];
-            let matched=handler.event==crate::types::SupportedHookEvent::Notification||matcher.is_empty()||matcher=="*"||matcher.split(['|',',']).map(str::trim).any(|part|subjects.contains(&part))||fancy_regex::Regex::new(matcher).is_ok_and(|regex|subjects.iter().any(|subject|regex.is_match(subject).unwrap_or(false)));
+            let mut matched=handler.event==crate::types::SupportedHookEvent::Notification||matcher.is_empty()||matcher=="*";
+            if !matched {
+                matched=matcher.split(['|',',']).map(str::trim).filter(|part|!part.is_empty()).any(|part|subjects.contains(&part));
+                match fancy_regex::Regex::new(matcher) {Ok(regex)=>matched|=subjects.iter().any(|subject|regex.is_match(subject).unwrap_or(false)),Err(error)=>lifecycle_diagnostics.push(crate::types::HookDiagnostic {source:handler.source.clone(),event:Some(handler.event.as_str().to_owned()),code:"invalid_matcher".to_owned(),message:format!("Hook matcher is not a valid JavaScript regular expression: {error}"),path:format!("hooks.{}[{}].matcher",handler.event.as_str(),handler.group_index),severity:crate::types::Severity::Warning})}
+            }
             if !matched||!crate::trust::is_command_hook_trusted(&handler,&state.trust,platform).map_err(|error|ExtensionFailure::new(error.to_string()))? {continue;}
             let mut handler=handler;handler.matcher=None;
             trust.hooks.insert(crate::trust::hook_trust_id(&handler),crate::trust::create_hook_trust_entry(&handler,platform,"2026-06-29T00:00:00.000Z").map_err(|error|ExtensionFailure::new(error.to_string()))?);selected.push(handler);
@@ -40,7 +47,8 @@ async fn dispatch(ctx:&ExtensionContext,input:serde_json::Value)->Result<HookDis
     }
     let platform=if cfg!(windows) {"win32"} else {"linux"};
     let tool_status=matches!(input.get("event").and_then(serde_json::Value::as_str),Some("PreToolUse"|"PostToolUse"));
-    dispatch_hook_event_with_status(&state.parsed.executable_handlers,&input,&state.trust,platform,|handler| {let cwd=cwd.clone();let signal=signal.clone();let wire=wire.clone();async move {run_command_hook(&handler,&wire,CommandHookRunOptions {cwd:&cwd,env_passthrough:&[],output_policy:None,signal:signal.as_ref(),source_env:None}).await}},|running| {if tool_status && !running.is_empty() && let Some(update)=&ctx.update_tool_hook_status {update(&crate::dispatcher::running_hook_handlers_status_label(running,platform));}}).await.map_err(|error|ExtensionFailure::new(error.to_string()))
+    let mut result=dispatch_hook_event_with_status(&state.parsed.executable_handlers,&input,&state.trust,platform,|handler| {let cwd=cwd.clone();let signal=signal.clone();let wire=wire.clone();async move {run_command_hook(&handler,&wire,CommandHookRunOptions {cwd:&cwd,env_passthrough:&[],output_policy:None,signal:signal.as_ref(),source_env:None}).await}},|running| {if tool_status && !running.is_empty() && let Some(update)=&ctx.update_tool_hook_status {update(&crate::dispatcher::running_hook_handlers_status_label(running,platform));}}).await.map_err(|error|ExtensionFailure::new(error.to_string()))?;
+    lifecycle_diagnostics.extend(result.diagnostics);result.diagnostics=lifecycle_diagnostics;Ok(result)
 }
 #[derive(Default)]
 struct Pending {prompts:VecDeque<PendingPromptHookContext>,pre_tools:BTreeMap<String,Vec<String>>,stop_tracker:crate::stop_adapter::StopTurnTracker}
