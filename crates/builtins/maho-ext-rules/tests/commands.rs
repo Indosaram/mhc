@@ -10,6 +10,15 @@ fn registers_both_commands() {
     assert_eq!(names, ["rules", "reload-rules"]);
 }
 #[test]
+fn rules_extension_registers_all_lifecycle_hooks() {
+    use maho_ext_api::{Extension, EventKind};
+    let mut api = ExtensionApi::new(LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+    maho_ext_rules::Rules.register(&mut api);
+    for kind in [EventKind::SessionStart, EventKind::SessionCompact, EventKind::BeforeAgentStart, EventKind::ToolResult] { assert_eq!(api.registered.handlers[&kind].len(), 1); }
+    assert_eq!(api.registered.flags.len(), 2);
+    assert!(api.registered.entry_renderers.contains_key("rule-activation"));
+}
+#[test]
 fn rule_lookup_requires_exact_or_unique_suffix() {
     let rules: Vec<_> = ["one/r.md", "two/r.md"].into_iter().map(|path| LoadedRule {
         candidate: RuleCandidate { path: path.into(), real_path: path.into(), source: ".omo/rules".into(), distance: 0, is_global: false, is_single_file: false, relative_path: path.into() },
