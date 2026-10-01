@@ -12,6 +12,7 @@
 //! still outstanding.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use maho_agent::tool_name_alias::resolve_tool_name_alias;
@@ -20,13 +21,13 @@ use maho_agent::Agent;
 use maho_ai::model::Model;
 use maho_ai::models::models_are_equal;
 use maho_ai::types::{
-    ImageContent, ModelThinkingLevel, ProviderEnv, ProviderHeaders, ServiceTierPreference, ThinkingLevel,
-    ThinkingSelection,
+    ImageContent, ModelThinkingLevel, ProviderEnv, ProviderHeaders, ServiceTierPreference, StopReason,
+    ThinkingLevel, ThinkingSelection,
 };
 use maho_ext_api::{
-    CompactionRejectionCause, ExtensionError, ExtensionMode, ExtensionUi, FlagValue, InputSource,
-    ServiceTier, SessionReason, SessionStartEvent, SourceInfo, SourceOrigin, SourceScope, StreamingBehavior,
-    ToolCallEvent, ToolDefinition, ToolExposure, ToolInfo, normalize_tool_exposure,
+    AgentSessionEvent, CompactionRejectionCause, ExtensionError, ExtensionMode, ExtensionUi, FlagValue,
+    InputSource, ServiceTier, SessionReason, SessionStartEvent, SourceInfo, SourceOrigin, SourceScope,
+    StreamingBehavior, ToolCallEvent, ToolDefinition, ToolExposure, ToolInfo, normalize_tool_exposure,
 };
 use maho_ext_host::ExtensionRunner;
 use serde_json::{Map, Value};
@@ -36,6 +37,7 @@ use crate::event_bus::{EventBus, EventHandler, EventSubscription};
 use crate::model_registry::ModelRegistry;
 use crate::model_runtime::ModelRuntime;
 use crate::session_activity::{SessionActivitySnapshot, WakeSourceTracker, is_session_busy_snapshot};
+use crate::session_log::{SessionLogger, SessionLoggerOptions};
 use crate::session_manager::SessionManager;
 use crate::settings_manager::SettingsManager;
 
@@ -175,6 +177,23 @@ pub struct ToolDefinitionEntry {
 }
 
 pub type LazyToolActivator = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+pub type AgentSessionEventListener = Arc<dyn Fn(&AgentSessionEvent) + Send + Sync>;
+
+/// Unsubscribes its listener when dropped, matching the function `subscribe` returns in senpi.
+pub struct AgentSessionSubscription {
+    listeners: Arc<Mutex<Vec<(u64, AgentSessionEventListener)>>>,
+    id: u64,
+}
+
+impl Drop for AgentSessionSubscription {
+    fn drop(&mut self) {
+        self.listeners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(id, _)| *id != self.id);
+    }
+}
 
 #[derive(Clone, Default)]
 pub struct ExecuteToolOptions {
@@ -368,6 +387,9 @@ pub struct AgentSession {
     state: Mutex<AgentSessionState>,
     extension_runner: tokio::sync::Mutex<Option<ExtensionRunner>>,
     event_bus: EventBus,
+    event_listeners: Arc<Mutex<Vec<(u64, AgentSessionEventListener)>>>,
+    next_listener_id: Arc<AtomicU64>,
+    session_logger: SessionLogger,
     fallback_now: Arc<dyn Fn() -> f64 + Send + Sync>,
     retry_random: Arc<dyn Fn() -> f64 + Send + Sync>,
 }
@@ -412,6 +434,7 @@ impl AgentSession {
             (None, None) => return Err(MissingModelAccessError),
         };
         let agent_dir = config.agent_dir.clone().unwrap_or_else(crate::config::get_agent_dir);
+        let session_logger_dir = agent_dir.clone();
         let agent = config.agent;
         let state = AgentSessionState {
             scoped_models: config.scoped_models,
@@ -463,6 +486,9 @@ impl AgentSession {
             state: Mutex::new(state),
             extension_runner: tokio::sync::Mutex::new(None),
             event_bus: EventBus::new(),
+            event_listeners: Arc::new(Mutex::new(Vec::new())),
+            next_listener_id: Arc::new(AtomicU64::new(0)),
+            session_logger: SessionLogger::create(Some(&session_logger_dir), SessionLoggerOptions::default()),
             fallback_now: config
                 .fallback_now
                 .unwrap_or_else(|| Arc::new(|| maho_ai::utils::diagnostics::now_ms() as f64)),
@@ -1018,6 +1044,101 @@ impl AgentSession {
     pub fn emit_extension_event(&self, channel: &str, data: &Value) {
         self.event_bus.emit(channel, data);
     }
+
+    /// Append a transport-provided entry and publish it on the RPC event stream.
+    pub fn append_session_entry(&self, entry: Value) {
+        let entry_id = entry.get("id").and_then(Value::as_str).map(str::to_owned);
+        self.with_session_manager_mut(|manager| manager.append_entry_raw(entry));
+        let messages = self.with_session_manager(|manager| manager.build_context(None).messages);
+        let agent_messages: Vec<AgentMessage> =
+            messages.iter().filter_map(|message| serde_json::from_value(message.clone()).ok()).collect();
+        self.agent.set_messages(agent_messages);
+        if let Some(entry_id) = entry_id {
+            self.emit_entry_appended(&entry_id);
+        }
+    }
+
+    fn emit_entry_appended(&self, entry_id: &str) {
+        if self.state().extension_mode != ExtensionMode::Rpc {
+            return;
+        }
+        if let Some(entry) = self.with_session_manager(|manager| manager.entry(entry_id)) {
+            self.emit(AgentSessionEvent::EntryAppended { entry: session_entry_from_value(entry) });
+        }
+    }
+
+    /// Emit an event to all listeners.
+    pub fn emit(&self, event: AgentSessionEvent) {
+        self.log_session_event(&event);
+        let listeners = self.event_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        for (_, listener) in listeners {
+            listener(&event);
+        }
+    }
+
+    /// Mirror stuck-prone lifecycle transitions into logs/session.log (content-free).
+    ///
+    /// Not yet ported: the `compaction_start`/`compaction_end` attempt bookkeeping, which lands
+    /// with the compaction slice.
+    fn log_session_event(&self, event: &AgentSessionEvent) {
+        if let AgentSessionEvent::Agent(maho_agent::types::AgentEvent::MessageEnd { message }) = event
+            && let Some(message) = message.as_assistant()
+            && message.stop_reason == StopReason::Error
+        {
+            let kind = if maho_ai::utils::retry::is_provider_stream_stall_error(message) {
+                "stall"
+            } else if maho_ai::utils::retry::is_provider_timeout_error(message) {
+                "timeout"
+            } else {
+                "error"
+            };
+            let mut data = Map::new();
+            data.insert("kind".to_owned(), Value::String(kind.to_owned()));
+            if let Some(error) = &message.error_message {
+                data.insert("error".to_owned(), Value::String(error.clone()));
+            }
+            self.session_logger.warn("provider_error", Some(&data));
+        }
+    }
+
+    /// Subscribe to session events. The returned handle unsubscribes when dropped.
+    ///
+    /// Not yet ported: the resume-compaction/resume-slice replays and the settings-source replay,
+    /// which land with the compaction and settings-source slices.
+    pub fn subscribe(&self, listener: AgentSessionEventListener) -> AgentSessionSubscription {
+        let id = self.next_listener_id.fetch_add(1, Ordering::SeqCst);
+        self.event_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((id, listener));
+        AgentSessionSubscription { listeners: Arc::clone(&self.event_listeners), id }
+    }
+
+    /// Remove all listeners and release session-scoped resources.
+    ///
+    /// Not yet ported: aborting retry/compaction/branch-summary/session-title/bash, disposing tool
+    /// contexts, disconnecting the agent subscription and the wake-source unsubscribe, and the
+    /// session manager's own dispose; each lands with the slice that owns it.
+    pub async fn dispose(&self) {
+        self.agent.abort(None);
+        {
+            let mut guard = self.extension_runner.lock().await;
+            if let Some(runner) = guard.as_mut() {
+                runner.invalidate(
+                    "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
+                );
+            }
+        }
+        self.event_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+        let _ = maho_ai::session_resources::cleanup_session_resources(Some(&self.session_id()));
+    }
+}
+
+fn session_entry_from_value(entry: Value) -> maho_ext_api::SessionEntry {
+    maho_ext_api::SessionEntry {
+        id: entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned(),
+        parent_id: entry.get("parentId").and_then(Value::as_str).map(str::to_owned),
+        timestamp: entry.get("timestamp").and_then(Value::as_str).unwrap_or_default().to_owned(),
+        kind: entry.get("type").and_then(Value::as_str).unwrap_or_default().to_owned(),
+        data: entry,
+    }
 }
 
 fn empty_source_info() -> SourceInfo {
@@ -1213,6 +1334,44 @@ mod tests {
             auto_title_sessions: None,
         });
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn listeners_receive_events_until_they_unsubscribe() {
+        let session = test_session();
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&seen);
+        let subscription = session.subscribe(Arc::new(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        session.emit(AgentSessionEvent::AgentIdle);
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+        drop(subscription);
+        session.emit(AgentSessionEvent::AgentIdle);
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn dispose_clears_the_listeners() {
+        let session = test_session();
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&seen);
+        let _subscription = session.subscribe(Arc::new(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        session.dispose().await;
+        session.emit(AgentSessionEvent::AgentIdle);
+        assert_eq!(seen.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn appending_a_session_entry_stores_it() {
+        let session = test_session();
+        session.append_session_entry(serde_json::json!({
+            "id": "entry-1", "type": "message", "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": { "role": "user", "content": [{ "type": "text", "text": "hi" }], "timestamp": 0 }
+        }));
+        assert!(session.with_session_manager(|manager| manager.entry("entry-1")).is_some());
     }
 
     fn test_tool(name: &str) -> AgentTool {
