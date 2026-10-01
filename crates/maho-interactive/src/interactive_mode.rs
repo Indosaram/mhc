@@ -14,6 +14,7 @@ pub struct InteractiveMode {
     _subscription: AgentSessionSubscription,
     chat: Container,
     streaming: Option<Rc<RefCell<AssistantMessageComponent>>>,
+    assistant_segments: BTreeMap<usize, Rc<RefCell<AssistantMessageComponent>>>,
     pending_tools: BTreeMap<String, Rc<RefCell<ToolExecutionComponent>>>,
     theme: Theme,
     pub editor: CustomEditor,
@@ -44,7 +45,7 @@ impl InteractiveMode {
         let mut editor = CustomEditor::new(host, editor_theme(&theme), keys, CustomEditorOptions::default());
         editor.editor.on_submit = Some(Box::new(move |text| { if !text.trim().is_empty() { captured.borrow_mut().push_back(text.trim().into()); } }));
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(maho_ext_api::Theme { name: Some(theme.name.clone()), colors: theme.resolved_colors(), ..Default::default() });
-        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: BTreeMap::new(), terminal_title: None }
+        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: BTreeMap::new(), terminal_title: None }
     }
 
     pub async fn bind_extensions(&mut self) {
@@ -219,6 +220,7 @@ impl InteractiveMode {
                     let text = value["content"].as_array().map(|parts| parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default();
                     self.chat.add_child(Rc::new(RefCell::new(UserMessageComponent::new(text, self.theme.clone(), get_markdown_theme(&self.theme), 1, Vec::new()))));
                 } else if message.role() == "assistant" {
+                    self.assistant_segments.clear();
                     let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", 1, Vec::new(), self.theme.clone())));
                     self.chat.add_child(component.clone());
                     self.streaming = Some(component);
@@ -226,14 +228,19 @@ impl InteractiveMode {
             }
             AgentEvent::MessageUpdate { message, .. } | AgentEvent::MessageEnd { message } if message.role() == "assistant" => {
                 if let Some(assistant) = message.as_assistant() {
-                    for content in &assistant.content {
+                    let final_message = matches!(event, AgentEvent::MessageEnd { .. });
+                    let mut start = 0;
+                    for (index, content) in assistant.content.iter().enumerate() {
                         if let maho_ai::types::ContentBlock::ToolCall(call) = content {
+                            self.update_assistant_segment(assistant, start, index, final_message);
                             let args = serde_json::Value::Object(call.arguments.clone());
                             let component = self.tool_component(&call.name, &call.id, args.clone());
                             component.borrow_mut().update_args(args);
                             if matches!(event, AgentEvent::MessageEnd { .. }) { component.borrow_mut().set_args_complete(); }
+                            start = index + 1;
                         }
                     }
+                    self.update_assistant_segment(assistant, start, assistant.content.len(), final_message);
                     if matches!(event, AgentEvent::MessageEnd { .. }) && matches!(assistant.stop_reason, maho_ai::types::StopReason::Aborted | maho_ai::types::StopReason::Error) {
                         for component in self.pending_tools.values() {
                             component.borrow_mut().update_result(ToolExecutionResult { content: vec![maho_tools::definition::ToolContent::text(assistant.error_message.as_deref().unwrap_or("Error"))], details: None, is_error: true }, false);
@@ -241,11 +248,7 @@ impl InteractiveMode {
                         self.pending_tools.clear();
                     }
                 }
-                if let Some(component) = &self.streaming {
-                    let final_message = matches!(event, AgentEvent::MessageEnd { .. });
-                    component.borrow_mut().update_content(&serde_json::to_value(message).expect("serializable agent message"), Some(!final_message));
-                    if final_message { self.streaming = None; }
-                }
+                if matches!(event, AgentEvent::MessageEnd { .. }) { self.streaming = None; self.assistant_segments.clear(); }
             }
             AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
                 let component = self.tool_component(tool_name, tool_call_id, args.clone());
@@ -262,6 +265,21 @@ impl InteractiveMode {
                 self.pending_tools.remove(tool_call_id);
             }
             _ => {}
+        }
+    }
+
+    fn update_assistant_segment(&mut self, message: &maho_ai::types::AssistantMessage, start: usize, end: usize, final_message: bool) {
+        if start == end && start != 0 { return; }
+        let component = if start == 0 { self.streaming.clone() } else {
+            Some(self.assistant_segments.entry(start).or_insert_with(|| {
+                let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", 1, Vec::new(), self.theme.clone())));
+                self.chat.add_child(component.clone()); component
+            }).clone())
+        };
+        if let Some(component) = component {
+            let mut segment = message.clone(); segment.content = message.content[start..end].to_vec();
+            if end < message.content.len() { segment.error_message = None; segment.stop_reason = maho_ai::types::StopReason::ToolUse; }
+            component.borrow_mut().update_content(&serde_json::to_value(segment).expect("assistant segment"), Some(!final_message));
         }
     }
 

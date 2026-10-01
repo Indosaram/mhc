@@ -223,3 +223,18 @@ fn extension_editor_widgets_and_status_reach_native_surface() {
     mode.extension_ui.set_widget("fixture", None, Default::default());
     assert!(!mode.render(120).join("\n").contains("widget-value"));
 }
+
+#[test]
+fn assistant_text_segments_remain_on_either_side_of_tool_card() {
+    use maho_agent::types::AgentEvent;
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let message: maho_agent::types::AgentMessage = serde_json::from_value(serde_json::json!({"role":"assistant", "content":[{"type":"text","text":"before-tool"},{"type":"toolCall","id":"ordered","name":"custom","arguments":{}},{"type":"text","text":"after-tool"}], "api":"faux", "provider":"faux", "model":"faux-1", "usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"toolUse","timestamp":0})).expect("message");
+    mode.handle_event(&AgentEvent::MessageStart { message: message.clone() });
+    mode.handle_event(&AgentEvent::MessageEnd { message });
+    mode.handle_event(&AgentEvent::ToolExecutionEnd { tool_call_id:"ordered".into(), tool_name:"custom".into(), result:serde_json::json!({"content":[{"type":"text","text":"tool-output"}]}), is_error:false });
+    let lines = mode.render(80).join("\n");
+    assert!(lines.find("before-tool").expect("head") < lines.find("tool-output").expect("tool"));
+    assert!(lines.find("tool-output").expect("tool") < lines.find("after-tool").expect("tail"));
+    assert_eq!(lines.matches("after-tool").count(), 1);
+}
