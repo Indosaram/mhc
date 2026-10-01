@@ -10,5 +10,6 @@ pub mod executable;
 pub mod spawn_args;
 pub mod spawn_model;
 pub mod settings;
+pub mod session_router;
 pub mod stream_parser;
 pub mod transport;
