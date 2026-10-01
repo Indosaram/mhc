@@ -1659,6 +1659,10 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-hooks"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-host"
