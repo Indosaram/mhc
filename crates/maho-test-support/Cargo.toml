@@ -14,7 +14,7 @@ default = []
 # In-crate faux harness (faux_session module + faux-harness bin). Bodies are written by todo 21
 # against the maho-core SDK. maho-core never enables this feature, so its dev-dependency on
 # maho-test-support stays acyclic.
-sdk = ["dep:maho-core", "dep:maho-ext-host"]
+sdk = ["dep:maho-core", "dep:maho-ext-host", "dep:maho-ext-api", "dep:maho-ai", "dep:maho-agent", "dep:tokio", "dep:tempfile"]
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
@@ -23,6 +23,11 @@ similar = { version = "=2.7.0", default-features = false, features = ["text"] }
 vt100 = { version = "=0.16.2", default-features = false }
 maho-core = { path = "../maho-core", optional = true }
 maho-ext-host = { path = "../maho-ext-host", optional = true }
+maho-ext-api = { path = "../maho-ext-api", optional = true }
+maho-ai = { path = "../maho-ai", optional = true }
+maho-agent = { path = "../maho-agent", optional = true }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"], optional = true }
+tempfile = { workspace = true, optional = true }
 
 [[bin]]
 name = "faux-harness"

@@ -27,6 +27,16 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const SENPI_PIN = "fe8c564bf33a2cbbdbbba99c9bd8b45b21e37407";
 
+const BUILTIN_DIR = "packages/coding-agent/src/core/extensions/builtin";
+// The 40 senpi builtin extension directories (plan IS-5); each maps to crates/builtins/maho-ext-<dir>.
+const BUILTIN_DIRS = [
+	"account", "anthropic-bash", "anthropic-subscription", "anthropic-web-search", "ask-user", "bash-timeout", "btw", "cache-keepalive",
+	"compaction", "config-reload", "cursor-cli-oauth", "goal", "gpt-apply-patch", "help", "herdr", "history-search", "hooks", "imagegen",
+	"look-at", "loop", "loop-guard", "mcp", "model-fallback", "nested-agents-md", "openai-image-gen", "openai-web-search", "permission-system",
+	"prompt-preset", "reasoning", "recommended-models", "rule-activation", "rules", "terminal", "todotools", "tool-pair-guard", "tool-search",
+	"ttsr", "video-in", "webfetch", "websearch",
+];
+
 // Crates whose parity is measured against senpi TypeScript source roots (plan: "Source roots").
 // Paths are relative to SENPI_SRC. `exclude` entries use the same matching as --only.
 export const SOURCE_ROOTS = {
@@ -39,6 +49,26 @@ export const SOURCE_ROOTS = {
 	],
 	"maho-core": [{ root: "packages/coding-agent/src/core", exclude: ["extensions/", "tools/", "bash-executor.ts"] }],
 	"maho-interactive": [{ root: "packages/coding-agent/src/modes/interactive" }],
+	"maho-rpc": [
+		{ root: "packages/coding-agent/src/modes", files: ["print-mode.ts", "json-event.ts", "provider-native-rendering.ts"] },
+		{ root: "packages/coding-agent/src/modes/rpc", prefix: "rpc/" },
+	],
+	"maho-server": [
+		{ root: "packages/protocol/src", prefix: "packages/protocol/src/" },
+		{ root: "packages/client/src", prefix: "packages/client/src/" },
+		{ root: "packages/server/src", prefix: "packages/server/src/" },
+		{ root: "packages/session-backends", prefix: "packages/session-backends/", exclude: ["benchmark/", "scripts/", "dist/"] },
+		{ root: "packages/coding-agent/src/modes/app-server", prefix: "packages/coding-agent/src/modes/app-server/" },
+	],
+	"maho-codemode": [{ root: "packages/senpi-codemode/src" }],
+	"maho-cli": [{ root: "packages/coding-agent/src", exclude: ["core/", "modes/"] }],
+	"maho-ext-builtin-loose": [
+		{
+			root: BUILTIN_DIR,
+			files: ["account-display-name.ts", "diff.ts", "eval-only-routing.ts", "files.ts", "gpt-account.ts", "import-repro.ts", "monitor-state-event.ts", "oauth-login-interaction.ts", "prompt-url-widget.ts", "redraws.ts", "service-tier.ts", "tps.ts"],
+		},
+	],
+	...Object.fromEntries(BUILTIN_DIRS.map((name) => [`maho-ext-${name}`, [{ root: `${BUILTIN_DIR}/${name}` }]])),
 };
 
 function usage(message) {
@@ -99,7 +129,7 @@ export function sourceFiles(senpi, roots) {
 		const rootAbs = join(senpi, spec.root);
 		const candidates = spec.files ? spec.files.map((f) => join(rootAbs, f)).filter(existsSync) : walkTs(rootAbs);
 		for (const abs of candidates) {
-			const rel = relative(rootAbs, abs);
+			const rel = (spec.prefix ?? "") + relative(rootAbs, abs);
 			if (isTestFile(rel)) continue;
 			if (spec.exclude?.some((e) => entryMatches(e, rel))) continue;
 			if (!files.has(rel)) files.set(rel, abs);
@@ -265,8 +295,10 @@ export function auditCrate({ repo, senpi, crate, only, roots = SOURCE_ROOTS[crat
 
 function findTestFile(senpi, roots, rel) {
 	for (const spec of roots) {
+		const prefix = spec.prefix ?? "";
+		if (!rel.startsWith(prefix)) continue;
 		for (const base of [join(senpi, spec.root), join(senpi, spec.root, "..", "test")]) {
-			const abs = join(base, rel);
+			const abs = join(base, rel.slice(prefix.length));
 			if (existsSync(abs)) return abs;
 		}
 	}
