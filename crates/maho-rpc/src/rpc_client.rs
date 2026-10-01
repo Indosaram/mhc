@@ -7,6 +7,23 @@ impl RpcSocketClient{
     pub async fn connect(path:&std::path::Path)->std::io::Result<Self>{Ok(Self::from_stream(tokio::net::UnixStream::connect(path).await?))}
     pub fn from_stream(stream:tokio::net::UnixStream)->Self{Self{stream,frames:RpcClientFrames::default(),reader:crate::jsonl::JsonlLineReader::default(),lines:VecDeque::new()}}
     pub async fn send(&mut self,command:Value,route:bool,expect_response:bool)->std::io::Result<Value>{use tokio::io::AsyncWriteExt;let command=self.frames.command(command,route,expect_response);let line=crate::jsonl::serialize_json_line(&command)?;self.stream.write_all(line.as_bytes()).await?;Ok(command)}
+    pub async fn request(&mut self,command:Value,route:bool,mut on_event:impl FnMut(Value),on_response:impl FnOnce(&Value))->std::io::Result<Value>{
+        let kind=command["type"].as_str().unwrap_or_default().to_owned();
+        let command=self.send(command,route,true).await?;
+        let id=command["id"].as_str().expect("assigned request id").to_owned();
+        let response=tokio::time::timeout(std::time::Duration::from_secs(30),async{
+            loop{match self.receive().await?{
+                Some(ClientFrame::Response(response)) if response["id"].as_str()==Some(&id)=>return Ok(response),
+                Some(ClientFrame::Event(event))=>on_event(event),
+                Some(_)=>{},
+                None=>return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe,"RPC transport is gone")),
+            }}
+        }).await;
+        self.frames.pending.remove(&id);
+        let response=response.map_err(|_|std::io::Error::new(std::io::ErrorKind::TimedOut,format!("Timeout waiting for response to {kind}. Stderr: ")))??;
+        on_response(&response);
+        Ok(response)
+    }
     pub async fn receive(&mut self)->std::io::Result<Option<ClientFrame>>{use tokio::io::AsyncReadExt;loop{
         if let Some(record)=self.lines.pop_front(){if let crate::jsonl::LineRecord::Line(line)=record{return Ok(Some(self.frames.handle_line(&line)));}continue;}
         let mut bytes=[0;8192];let count=self.stream.read(&mut bytes).await?;
