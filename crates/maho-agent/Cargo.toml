@@ -17,6 +17,7 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "io-util"] }
 tokio-util = "=0.7.18"
+unicode-normalization = "=0.1.25"
 
 [dev-dependencies]
 maho-test-support = { path = "../maho-test-support" }
