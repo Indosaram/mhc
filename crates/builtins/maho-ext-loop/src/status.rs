@@ -1,6 +1,55 @@
 use crate::types::{CronEntry, LoopPhase, LoopState};
 pub const LOOP_STATUS_KEY: &str = "loop";
 pub const LOOP_STATUS_TICK_INTERVAL_MS: u64 = 1000;
+use std::sync::{Arc,Mutex};
+use maho_ext_api::ExtensionFailure;
+pub type LoopStatusRender=Arc<dyn Fn(&str,Option<&str>)->Result<(),ExtensionFailure>+Send+Sync>;
+pub struct LoopStatusTicker {
+    state:Arc<Mutex<(Option<LoopState>,Option<String>)>>,
+    render:LoopStatusRender,now:Arc<dyn Fn()->f64+Send+Sync>,
+    timer:Option<tokio::task::JoinHandle<Result<(),ExtensionFailure>>>,
+}
+impl LoopStatusTicker {
+    pub fn new(render:LoopStatusRender,now:Arc<dyn Fn()->f64+Send+Sync>)->Self { Self { state:Arc::new(Mutex::new((None,None))),render,now,timer:None } }
+    pub fn running(&self)->bool { self.timer.as_ref().is_some_and(|timer|!timer.is_finished()) }
+    pub async fn sync(&mut self,snapshot:LoopState)->Result<(),ExtensionFailure> {
+        self.cancel_timer().await?;
+        {
+            let mut state=self.state.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?;
+            state.0=Some(snapshot); state.1=None;
+            tick_status(&mut state,&self.render,(self.now)())?;
+        }
+        let state=Arc::clone(&self.state); let render=Arc::clone(&self.render); let now=Arc::clone(&self.now);
+        self.timer=Some(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(LOOP_STATUS_TICK_INTERVAL_MS)).await;
+                let mut state=state.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?;
+                if state.0.is_none() { return Ok(()); }
+                tick_status(&mut state,&render,now())?;
+            }
+        }));
+        Ok(())
+    }
+    async fn cancel_timer(&mut self)->Result<(),ExtensionFailure> {
+        if let Some(timer)=self.timer.take() {
+            timer.abort();
+            match timer.await { Ok(result)=>result?,Err(error) if error.is_cancelled()=>(),Err(error)=>return Err(ExtensionFailure::new(error.to_string())) }
+        }
+        Ok(())
+    }
+    pub async fn dispose(&mut self)->Result<(),ExtensionFailure> {
+        self.cancel_timer().await?;
+        *self.state.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?=(None,None);
+        (self.render)(LOOP_STATUS_KEY,None)
+    }
+}
+fn tick_status(state:&mut (Option<LoopState>,Option<String>),render:&LoopStatusRender,now:f64)->Result<(),ExtensionFailure> {
+    let Some(snapshot)=&state.0 else { return Ok(()); };
+    let text=format_loop_status(snapshot,now);
+    if text==state.1 { return Ok(()); }
+    state.1=text; render(LOOP_STATUS_KEY,state.1.as_deref())
+}
+impl Drop for LoopStatusTicker { fn drop(&mut self) { if let Some(timer)=&self.timer { timer.abort(); } } }
 fn format_duration(ms: f64) -> String {
     let seconds = (ms / 1000.0).floor().max(0.0);
     if seconds < 60.0 { return format!("{seconds}s"); }
@@ -34,4 +83,23 @@ pub fn format_noop_fold(noop_streak: f64) -> String { if noop_streak < 2.0 { Str
     #[test] fn noops_below_two_are_not_folded() { let result=format_noop_fold(0.0); assert!(result.is_empty()); }
     #[test] fn noop_streak_is_exposed() { let result=format_noop_fold(3.0); assert!(result.contains('3')); }
     #[test] fn duration_retains_day_and_hour_parts() { let result=format_duration(90000000.0); assert_eq!(result,"1d1h"); }
+    #[tokio::test(start_paused=true)] async fn ticker_updates_countdown_and_dispose_clears_status() {
+        let start=tokio::time::Instant::now();
+        let (send,mut receive)=tokio::sync::mpsc::unbounded_channel();
+        let mut ticker=LoopStatusTicker::new(Arc::new(move |key,text| { assert_eq!(key,LOOP_STATUS_KEY); send.send(text.map(str::to_owned)).unwrap(); Ok(()) }),Arc::new(move ||(tokio::time::Instant::now()-start).as_secs_f64()*1000.0));
+        let snapshot=state("waiting",60_000.0);
+        ticker.sync(snapshot.clone()).await.unwrap();
+        assert_eq!(receive.recv().await.unwrap(),format_loop_status(&snapshot,0.0));
+        let next=receive.recv();
+        let rendered=tokio::time::timeout(std::time::Duration::from_secs(2),next).await.unwrap().unwrap();
+        assert_eq!(rendered,format_loop_status(&snapshot,1000.0));
+        ticker.dispose().await.unwrap();
+        assert_eq!(receive.recv().await.unwrap(),None); assert!(!ticker.running());
+        drop(ticker); assert!(receive.recv().await.is_none());
+    }
+    #[tokio::test] async fn dispose_before_sync_clears_status_without_timer() {
+        let (send,mut receive)=tokio::sync::mpsc::unbounded_channel();
+        let mut ticker=LoopStatusTicker::new(Arc::new(move |_,text| { send.send(text.map(str::to_owned)).unwrap(); Ok(()) }),Arc::new(||0.0));
+        ticker.dispose().await.unwrap(); assert_eq!(receive.recv().await.unwrap(),None); assert!(!ticker.running());
+    }
 }

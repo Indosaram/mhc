@@ -9,3 +9,4 @@ pub mod scheduler;
 pub mod tools;
 pub mod command;
 pub mod index;
+pub mod command_registration;

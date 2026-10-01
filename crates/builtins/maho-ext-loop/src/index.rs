@@ -15,6 +15,23 @@ pub struct LoopCreateOk {
 }
 pub enum LoopCreateOutcome { Created(LoopCreateOk),Rejected { message:String } }
 pub struct LoopStoreFailure { pub end_reason:LoopEndReason,pub message:String,pub loop_ids:Vec<LoopId> }
+pub struct StartFixedRequest { pub original_args:String,pub prompt:String,pub requested_interval:crate::types::RequestedInterval }
+pub struct StartDynamicRequest { pub original_args:String,pub prompt:String }
+pub struct StartBareRequest { pub original_args:String,pub interval:Option<crate::types::RequestedInterval> }
+pub trait LoopController:Send+Sync {
+    fn start_fixed(&self,request:StartFixedRequest)->maho_ext_api::ExtensionFuture<'_,LoopCreateOutcome>;
+    fn start_dynamic(&self,request:StartDynamicRequest)->maho_ext_api::ExtensionFuture<'_,LoopCreateOutcome>;
+    fn start_bare(&self,request:StartBareRequest)->maho_ext_api::ExtensionFuture<'_,LoopCreateOutcome>;
+    fn fire_due(&self,loop_id:&str)->maho_ext_api::ExtensionFuture<'_,()>;
+    fn schedule_wakeup(&self,request:crate::scheduler::ScheduleWakeupInput)->maho_ext_api::ExtensionFuture<'_,()>;
+    fn stop(&self,target:&str,detail:&str)->maho_ext_api::ExtensionFuture<'_,Vec<LoopId>>;
+    fn pause(&self,target:&str)->maho_ext_api::ExtensionFuture<'_,Vec<LoopId>>;
+    fn resume(&self,target:&str)->maho_ext_api::ExtensionFuture<'_,Vec<LoopId>>;
+    fn get_state(&self)->crate::types::LoopState;
+    fn status_line(&self)->Option<String>;
+    fn last_store_failure(&self)->Option<LoopStoreFailure>;
+    fn is_ended_with_error(&self,loop_id:&str)->bool;
+}
 
 use std::{collections::BTreeMap,sync::{Arc,atomic::{AtomicU64,Ordering}}};
 pub struct NodeTimerPort {
