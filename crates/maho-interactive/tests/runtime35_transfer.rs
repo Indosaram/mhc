@@ -144,3 +144,46 @@ fn transfer_to_plain_editor_strips_unowned_image_markers() {
     assert!(!maho_interactive::editor_paste_transfer::transfer_editor_content(&source, &mut target));
     assert_eq!(target.text, "draft text");
 }
+
+#[tokio::test]
+async fn admission_resolves_before_turn_finishes_and_observes_later_failure() {
+    let mut tasks = tokio::task::JoinSet::new();
+    let (finish, finished) = tokio::sync::oneshot::channel();
+    let (reported, report) = tokio::sync::oneshot::channel();
+    let result = wait_for_prompt_disposition(&mut tasks, move |preflight, disposition| async move {
+        disposition(PromptDisposition::Started);
+        preflight(true);
+        finished.await.expect("finish event");
+        Err("post-accept failure")
+    }, move |error| reported.send(error).expect("failure report receiver")).await.expect("accepted");
+    assert_eq!(result, PromptDisposition::Started);
+    finish.send(()).expect("finish");
+    assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), report).await.expect("bounded report").expect("report"), "post-accept failure");
+    tasks.join_next().await.expect("task").expect("join");
+}
+
+#[tokio::test]
+async fn admission_accepts_preflight_before_disposition() {
+    let mut tasks = tokio::task::JoinSet::new();
+    let result = wait_for_prompt_disposition(&mut tasks, |preflight, disposition| async move {
+        preflight(true); disposition(PromptDisposition::Queued); Ok::<_, String>(())
+    }, |_| panic!("unexpected failure")).await.expect("accepted");
+    assert_eq!(result, PromptDisposition::Queued);
+    tasks.join_next().await.expect("task").expect("join");
+}
+
+#[tokio::test]
+async fn admission_rejects_failed_preflight_without_owning_prompt() {
+    let mut tasks = tokio::task::JoinSet::new();
+    let result = wait_for_prompt_disposition(&mut tasks, |preflight, _| async move { preflight(false); Ok::<_, String>(()) }, |_| panic!("unexpected failure")).await;
+    assert!(matches!(result, Err(PromptAdmissionError::Rejected)));
+    tasks.join_next().await.expect("task").expect("join");
+}
+
+#[tokio::test]
+async fn admission_propagates_preaccept_failure() {
+    let mut tasks = tokio::task::JoinSet::new();
+    let result = wait_for_prompt_disposition(&mut tasks, |_, _| async { Err("preflight failed") }, |_| panic!("unexpected accepted failure")).await;
+    assert!(matches!(result, Err(PromptAdmissionError::Prompt("preflight failed"))));
+    tasks.join_next().await.expect("task").expect("join");
+}
