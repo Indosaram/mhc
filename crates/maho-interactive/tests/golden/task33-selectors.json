@@ -1,0 +1,335 @@
+{
+  "models": [
+    {
+      "provider": "anthropic",
+      "id": "opus-4-5",
+      "name": "the model 4.5"
+    },
+    {
+      "provider": "anthropic",
+      "id": "opus-4-6",
+      "name": "the model 4.6"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.2",
+      "name": "GPT-5.2"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.6-sol",
+      "name": "GPT-5.6 Sol"
+    },
+    {
+      "provider": "openrouter",
+      "id": "anthropic/opus-4-5",
+      "name": "Anthropic: the model 4.5"
+    },
+    {
+      "provider": "google",
+      "id": "gemini-3-pro-preview",
+      "name": "Gemini 3 Pro Preview"
+    },
+    {
+      "provider": "zai",
+      "id": "glm-5.2",
+      "name": "GLM-5.2"
+    },
+    {
+      "provider": "groq",
+      "id": "moonshotai/kimi-k3",
+      "name": "Kimi K3"
+    }
+  ],
+  "favoriteIds": [
+    "openai/gpt-5.2"
+  ],
+  "modelSelector": [
+    {
+      "query": "opus",
+      "rows": [
+        "anthropic/opus-4-5",
+        "anthropic/opus-4-6",
+        "openrouter/anthropic/opus-4-5"
+      ]
+    },
+    {
+      "query": "gpt",
+      "rows": [
+        "openai/gpt-5.2",
+        "openai/gpt-5.6-sol"
+      ]
+    },
+    {
+      "query": "the model",
+      "rows": [
+        "anthropic/opus-4-5",
+        "anthropic/opus-4-6",
+        "openrouter/anthropic/opus-4-5"
+      ]
+    },
+    {
+      "query": "",
+      "rows": [
+        "openai/gpt-5.2",
+        "anthropic/opus-4-5",
+        "anthropic/opus-4-6",
+        "google/gemini-3-pro-preview",
+        "groq/moonshotai/kimi-k3",
+        "openai/gpt-5.6-sol",
+        "openrouter/anthropic/opus-4-5",
+        "zai/glm-5.2"
+      ]
+    },
+    {
+      "query": "openrouter",
+      "rows": [
+        "openrouter/anthropic/opus-4-5"
+      ]
+    },
+    {
+      "query": "kimi",
+      "rows": [
+        "groq/moonshotai/kimi-k3"
+      ]
+    },
+    {
+      "query": "anthropic opus",
+      "rows": [
+        "anthropic/opus-4-5",
+        "anthropic/opus-4-6",
+        "openrouter/anthropic/opus-4-5"
+      ]
+    }
+  ],
+  "searchText": [
+    "opus-4-5 anthropic anthropic/opus-4-5 anthropic opus-4-5 the model 4.5",
+    "opus-4-6 anthropic anthropic/opus-4-6 anthropic opus-4-6 the model 4.6",
+    "gpt-5.2 openai openai/gpt-5.2 openai gpt-5.2 GPT-5.2",
+    "gpt-5.6-sol openai openai/gpt-5.6-sol openai gpt-5.6-sol GPT-5.6 Sol",
+    "anthropic/opus-4-5 openrouter openrouter/anthropic/opus-4-5 openrouter anthropic/opus-4-5 Anthropic: the model 4.5",
+    "gemini-3-pro-preview google google/gemini-3-pro-preview google gemini-3-pro-preview Gemini 3 Pro Preview",
+    "glm-5.2 zai zai/glm-5.2 zai glm-5.2 GLM-5.2",
+    "moonshotai/kimi-k3 groq groq/moonshotai/kimi-k3 groq moonshotai/kimi-k3 Kimi K3"
+  ],
+  "sessions": [
+    {
+      "id": "s1",
+      "name": "alpha node cve",
+      "path": "/tmp/a.jsonl",
+      "cwd": "/work",
+      "firstMessage": "hello",
+      "allMessagesText": "hello world node cve fix",
+      "modifiedMs": 1700000300000,
+      "messageCount": 3
+    },
+    {
+      "id": "s2",
+      "name": null,
+      "path": "/tmp/b.jsonl",
+      "cwd": "/work",
+      "firstMessage": "other",
+      "allMessagesText": "unrelated text",
+      "modifiedMs": 1700000200000,
+      "messageCount": 1
+    },
+    {
+      "id": "s3",
+      "name": "beta",
+      "path": "/tmp/c.jsonl",
+      "cwd": "/other",
+      "firstMessage": "beta",
+      "allMessagesText": "beta body",
+      "modifiedMs": 1700000100000,
+      "messageCount": 2
+    }
+  ],
+  "sessionSearch": [
+    {
+      "query": "node cve",
+      "parsedError": null,
+      "recent": [
+        "s1"
+      ],
+      "relevance": [
+        "s1"
+      ],
+      "named": [
+        "s1"
+      ]
+    },
+    {
+      "query": "\"node cve\"",
+      "parsedError": null,
+      "recent": [
+        "s1"
+      ],
+      "relevance": [
+        "s1"
+      ],
+      "named": [
+        "s1"
+      ]
+    },
+    {
+      "query": "re:beta",
+      "parsedError": null,
+      "recent": [
+        "s3"
+      ],
+      "relevance": [
+        "s3"
+      ],
+      "named": [
+        "s3"
+      ]
+    },
+    {
+      "query": "re:[",
+      "parsedError": "Invalid regular expression: missing terminating ] for character class",
+      "recent": [],
+      "relevance": [],
+      "named": []
+    },
+    {
+      "query": "beta",
+      "parsedError": null,
+      "recent": [
+        "s3"
+      ],
+      "relevance": [
+        "s3"
+      ],
+      "named": [
+        "s3"
+      ]
+    },
+    {
+      "query": "",
+      "parsedError": null,
+      "recent": [
+        "s1",
+        "s2",
+        "s3"
+      ],
+      "relevance": [
+        "s1",
+        "s2",
+        "s3"
+      ],
+      "named": [
+        "s1",
+        "s3"
+      ]
+    }
+  ],
+  "favorites": {
+    "toggleFromAll": [
+      "anthropic/opus-4-5",
+      "anthropic/opus-4-6",
+      "openai/gpt-5.6-sol",
+      "openrouter/anthropic/opus-4-5",
+      "google/gemini-3-pro-preview",
+      "zai/glm-5.2",
+      "groq/moonshotai/kimi-k3"
+    ],
+    "toggleOff": [],
+    "toggleOn": [
+      "zai/glm-5.2"
+    ],
+    "favoriteAll": null,
+    "clearFiltered": [],
+    "clearAll": [],
+    "moveUp": [
+      "b",
+      "a",
+      "c"
+    ],
+    "sorted": [
+      "zai/glm-5.2",
+      "anthropic/opus-4-5",
+      "anthropic/opus-4-6",
+      "openai/gpt-5.2",
+      "openai/gpt-5.6-sol",
+      "openrouter/anthropic/opus-4-5",
+      "google/gemini-3-pro-preview",
+      "groq/moonshotai/kimi-k3"
+    ]
+  },
+  "helpers": {
+    "formatKeyText": [
+      [
+        "escape",
+        "esc",
+        "Esc"
+      ],
+      [
+        "Escape",
+        "esc",
+        "Esc"
+      ],
+      [
+        "ctrl+a/escape",
+        "ctrl+a/esc",
+        "Ctrl+A/Esc"
+      ],
+      [
+        "shift+ctrl+p",
+        "shift+ctrl+p",
+        "Shift+Ctrl+P"
+      ],
+      [
+        "alt+up",
+        "alt+up",
+        "Alt+Up"
+      ],
+      [
+        "pageUp",
+        "pageUp",
+        "PageUp"
+      ]
+    ],
+    "formatAuthSelectorProviderType": [
+      [
+        "oauth",
+        "subscription"
+      ],
+      [
+        "api_key",
+        "API key"
+      ]
+    ],
+    "hasSessionName": [
+      [
+        "s1",
+        true
+      ],
+      [
+        "s2",
+        false
+      ],
+      [
+        "s1",
+        false
+      ]
+    ],
+    "formatHttpIdleTimeoutMs": [
+      [
+        0,
+        "disabled"
+      ],
+      [
+        30000,
+        "30 sec"
+      ],
+      [
+        45000,
+        "45 sec"
+      ],
+      [
+        300000,
+        "5 min"
+      ]
+    ]
+  }
+}

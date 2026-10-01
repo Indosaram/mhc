@@ -31,6 +31,7 @@ pub mod exploration_transcript_container;
 pub mod extension_editor;
 pub mod extension_input;
 pub mod extension_selector;
+pub mod favorite_model_ids;
 pub mod favorite_models_selector;
 pub mod first_time_setup;
 pub mod footer;
