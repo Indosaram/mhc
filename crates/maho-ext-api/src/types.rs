@@ -390,7 +390,11 @@ impl ExtensionContext {
     pub fn abort(&self, source: Option<AbortSource>) -> Result<(), ExtensionFailure> { self.actions()?.abort(source); Ok(()) }
     pub fn has_pending_messages(&self) -> Result<bool, ExtensionFailure> { Ok(self.actions()?.has_pending_messages()) }
     pub async fn request_reload(&self) -> Result<(), ExtensionFailure> { self.actions()?.request_reload().await }
-    pub async fn check_reload_veto(&self) -> Result<ReloadVetoDecision, ExtensionFailure> { self.actions()?.check_reload_veto().await }
+    pub async fn check_reload_veto(&self) -> Result<ReloadVetoDecision, ExtensionFailure> {
+        let result = self.actions()?.check_reload_veto().await?;
+        self.actions()?;
+        Ok(result)
+    }
     pub fn shutdown(&self) -> Result<(), ExtensionFailure> { self.actions()?.shutdown(); Ok(()) }
     pub fn get_context_usage(&self) -> Result<Option<ContextUsage>, ExtensionFailure> { Ok(self.actions()?.get_context_usage()) }
     pub fn get_compaction_settings(&self) -> Result<CompactionSettings, ExtensionFailure> { Ok(self.actions()?.get_compaction_settings()) }
@@ -402,12 +406,20 @@ impl ExtensionContext {
     pub fn get_image_settings(&self) -> Result<ImageSettings, ExtensionFailure> { Ok(self.actions()?.get_image_settings()) }
     pub fn session_settings(&self) -> Result<&dyn ExtensionSessionSettings, ExtensionFailure> { Ok(self.actions()?.session_settings()) }
     pub fn compact(&self, options: CompactOptions) -> Result<(), ExtensionFailure> { self.actions()?.compact(options); Ok(()) }
-    pub async fn prepare_provider_request(&self, messages: Vec<AgentMessage>) -> Result<ProviderRequestPreparation, ExtensionFailure> { self.actions()?.prepare_provider_request(messages).await }
+    pub async fn prepare_provider_request(&self, messages: Vec<AgentMessage>) -> Result<ProviderRequestPreparation, ExtensionFailure> {
+        let result = self.actions()?.prepare_provider_request(messages).await?;
+        self.actions()?;
+        Ok(result)
+    }
     pub fn begin_compaction(&self, options: BeginCompactionOptions) -> Result<Option<AbortSignal>, ExtensionFailure> { Ok(self.actions()?.begin_compaction(options)) }
     pub fn update_compaction(&self, options: UpdateCompactionOptions) -> Result<(), ExtensionFailure> { self.actions()?.update_compaction(options); Ok(()) }
     pub fn end_compaction(&self, options: EndCompactionOptions) -> Result<(), ExtensionFailure> { self.actions()?.end_compaction(options); Ok(()) }
     pub fn get_message_revision(&self) -> Result<u64, ExtensionFailure> { Ok(self.actions()?.get_message_revision()) }
-    pub async fn apply_compaction(&self, result: CompactionResult, options: ApplyCompactionOptions) -> Result<ApplyCompactionResult, ExtensionFailure> { self.actions()?.apply_compaction(result, options).await }
+    pub async fn apply_compaction(&self, result: CompactionResult, options: ApplyCompactionOptions) -> Result<ApplyCompactionResult, ExtensionFailure> {
+        let result = self.actions()?.apply_compaction(result, options).await?;
+        self.actions()?;
+        Ok(result)
+    }
     pub fn get_loaded_hook_sources(&self) -> Result<LoadedHookSources, ExtensionFailure> { Ok(self.actions()?.get_loaded_hook_sources()) }
     pub fn kernel_tools(&self) -> Result<Option<&dyn ExtensionKernelTools>, ExtensionFailure> { Ok(self.actions()?.kernel_tools()) }
     pub fn is_idle(&self) -> bool { self.session_manager.extension_context_actions().map_or_else(|| (self.is_idle_fn)(), ExtensionContextActions::is_idle) }
@@ -636,12 +648,31 @@ pub trait ExtensionCommandContextActions: Send + Sync {
 pub struct ExtensionCommandContext { pub context: ExtensionContext, pub actions: Arc<dyn ExtensionCommandContextActions>, pub runtime: ExtensionRuntime }
 impl std::ops::Deref for ExtensionCommandContext { type Target = ExtensionContext; fn deref(&self) -> &Self::Target { &self.context } }
 impl ExtensionCommandContext {
-    pub async fn wait_for_idle(&self) -> Result<(), ExtensionFailure> { self.runtime.assert_active()?; self.actions.wait_for_idle().await }
+    pub async fn wait_for_idle(&self) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        self.actions.wait_for_idle().await?;
+        self.runtime.assert_active()
+    }
     pub async fn new_session(&self, options: NewSessionOptions) -> Result<SessionNavigationResult, ExtensionFailure> { self.runtime.assert_active()?; self.actions.new_session(options).await }
     pub async fn fork(&self, entry_id: &str, options: ForkOptions) -> Result<SessionNavigationResult, ExtensionFailure> { self.runtime.assert_active()?; self.actions.fork(entry_id, options).await }
-    pub async fn navigate_tree(&self, target_id: &str, options: ExtensionTreeNavigationOptions) -> Result<SessionNavigationResult, ExtensionFailure> { self.runtime.assert_active()?; self.actions.navigate_tree(target_id, options).await }
-    pub async fn edit_assistant_message(&self, entry_id: &str, text: &str, options: EditMessageOptions) -> Result<EditMessageResult, ExtensionFailure> { self.runtime.assert_active()?; self.actions.edit_assistant_message(entry_id, text, options).await }
-    pub async fn edit_user_message(&self, entry_id: &str, text: &str, options: EditMessageOptions) -> Result<EditMessageResult, ExtensionFailure> { self.runtime.assert_active()?; self.actions.edit_user_message(entry_id, text, options).await }
+    pub async fn navigate_tree(&self, target_id: &str, options: ExtensionTreeNavigationOptions) -> Result<SessionNavigationResult, ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let result = self.actions.navigate_tree(target_id, options).await?;
+        self.runtime.assert_active()?;
+        Ok(result)
+    }
+    pub async fn edit_assistant_message(&self, entry_id: &str, text: &str, options: EditMessageOptions) -> Result<EditMessageResult, ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let result = self.actions.edit_assistant_message(entry_id, text, options).await?;
+        self.runtime.assert_active()?;
+        Ok(result)
+    }
+    pub async fn edit_user_message(&self, entry_id: &str, text: &str, options: EditMessageOptions) -> Result<EditMessageResult, ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let result = self.actions.edit_user_message(entry_id, text, options).await?;
+        self.runtime.assert_active()?;
+        Ok(result)
+    }
     pub async fn switch_session(&self, path: &str, options: SwitchSessionOptions) -> Result<SessionNavigationResult, ExtensionFailure> { self.runtime.assert_active()?; self.actions.switch_session(path, options).await }
     pub async fn reload(&self) -> Result<(), ExtensionFailure> { self.runtime.assert_active()?; self.actions.reload().await }
 }
@@ -921,6 +952,17 @@ impl ExtensionApi {
     pub fn register_tool(&mut self, definition: ToolDefinition) {
         let tool = RegisteredTool { definition, source_info: self.registered.source_info.clone() };
         if let Some(existing) = self.registered.tools.iter_mut().find(|t| t.definition.name == tool.definition.name) { *existing = tool; } else { self.registered.tools.push(tool); }
+    }
+    pub fn try_register_tool(&mut self, definition: ToolDefinition) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        if definition.name == "tool_search" && self.registered.source_info.source != "builtin" {
+            return Err(ExtensionFailure::new("Tool name \"tool_search\" is reserved for the builtin tool-search extension."));
+        }
+        if !definition.parameters.is_object() {
+            return Err(ExtensionFailure::new(format!("Tool \"{}\" registered by extension \"{}\" must define an object parameter schema.", definition.name, self.registered.identity.path)));
+        }
+        self.register_tool(definition);
+        Ok(())
     }
     pub fn register_command(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandHandler) {
         let command = RegisteredCommand { name: name.into(), source_info: self.registered.source_info.clone(), description, argument_hint, handler };

@@ -118,3 +118,15 @@ fn failed_queued_provider_does_not_discard_later_registrations() {
     let errors = runtime.take_provider_errors(); assert_eq!(errors.len(), 1); assert_eq!(errors[0].extension_path, "test"); assert_eq!(errors[0].event, "register_provider");
     assert!(runtime.take_provider_errors().is_empty());
 }
+
+#[test]
+fn checked_tool_registration_rejects_reserved_name_and_nonobject_schema() {
+    let mut api = api(ExtensionRuntime::default());
+    let execute: maho_tools::definition::ToolExecutor = Arc::new(|_| Box::pin(async { Ok(ToolResult::text("ok")) }));
+    assert!(api.try_register_tool(ToolDefinition::new("tool_search", "reserved", JsonValue::Object(Default::default()), execute.clone())).is_err());
+    assert!(api.try_register_tool(ToolDefinition::new("bad", "bad schema", JsonValue::Null, execute.clone())).is_err());
+    api.try_register_tool(ToolDefinition::new("good", "valid", JsonValue::Object(Default::default()), execute.clone())).unwrap();
+    assert_eq!(api.registered.tools.len(), 1);
+    api.runtime.invalidate("replaced");
+    assert!(api.try_register_tool(ToolDefinition::new("later", "stale", JsonValue::Object(Default::default()), execute)).is_err());
+}
