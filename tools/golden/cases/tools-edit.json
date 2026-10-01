@@ -1,0 +1,15 @@
+{
+ "name": "tools-edit",
+ "kind": "function",
+ "crate": "maho-tools",
+ "module": "packages/coding-agent/src/core/tools/edit-diff.ts",
+ "calls": [
+  {"export":"generateDiffString","args":["one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve\n","ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\nTWELVE\n"]},
+  {"export":"generateUnifiedPatch","args":["sample.txt","one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve\n","ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\nTWELVE\n"]},
+  {"export":"generateDiffString","args":["a\nb\n","b\na\n"]},
+  {"export":"generateUnifiedPatch","args":["sample.txt","a","b"]},
+  {"export":"generateUnifiedPatch","args":["sample.txt","","hello\n"]},
+  {"export":"applyEditsToNormalizedContent","args":["keep  \nconst x = ‘old’;\nkeep too  \n",[{"oldText":"const x = 'old';","newText":"const x = 'new';"}],"sample.txt"]},
+  {"export":"normalizeForFuzzyMatch","args":["Ｆｏｏ\u00a0– ‘bar’  \n"]}
+ ]
+}
