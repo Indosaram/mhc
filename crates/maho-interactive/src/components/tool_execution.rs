@@ -101,6 +101,7 @@ pub struct ToolExecutionComponent {
     theme: Theme,
     on_change: Option<Rc<dyn Fn()>>,
     spinner_tick_ms: Option<u64>,
+    now_ms: f64,
     custom: Option<Rc<RefCell<dyn ToolRenderers>>>,
 }
 
@@ -151,6 +152,7 @@ impl ToolExecutionComponent {
             theme,
             on_change: None,
             spinner_tick_ms: None,
+            now_ms: 0.,
             custom: custom.clone(),
         };
         let initial = component.create_render_state();
@@ -177,6 +179,11 @@ impl ToolExecutionComponent {
 
     pub fn set_on_change(&mut self, callback: Option<Rc<dyn Fn()>>) {
         self.on_change = callback;
+    }
+
+    /// The clock the progress line reads its elapsed time from; senpi uses `Date.now()` here.
+    pub fn set_now_ms(&mut self, now_ms: f64) {
+        self.now_ms = now_ms;
     }
 
     /// senpi keeps a card out of an exploration group when its definition replaced the built-in
@@ -261,6 +268,7 @@ impl ToolExecutionComponent {
     }
 
     pub fn tick(&mut self, now_ms: u64) -> bool {
+        self.now_ms = now_ms as f64;
         let mut changed = false;
         if self.spinner_frame.is_some() {
             let due = self.spinner_tick_ms.is_none_or(|last| now_ms.saturating_sub(last) >= 80);
@@ -360,6 +368,7 @@ impl ToolExecutionComponent {
             spinner_frame: self.spinner_frame,
             result,
             is_error: self.is_error(),
+            now_ms: self.now_ms,
         }
     }
 

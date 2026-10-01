@@ -115,7 +115,7 @@ impl ToolExecutionRenderer {
             is_error: self.state.is_error,
             has_result: self.state.result.is_some(),
             spinner_frame: self.state.spinner_frame,
-            now_ms: 0.,
+            now_ms: self.state.now_ms,
             invalidate: Rc::clone(&self.on_invalidate),
         }
     }
@@ -150,7 +150,7 @@ impl ToolExecutionRenderer {
                 &self.theme,
             );
             if let Some(progress) = &progress {
-                text += &format!("\n{}", format_tool_progress_line(progress, 0., self.state.spinner_frame));
+                text += &format!("\n{}", format_tool_progress_line(progress, self.state.now_ms, self.state.spinner_frame));
             }
             self.content_text.set_text(text);
             return;
@@ -182,7 +182,7 @@ impl ToolExecutionRenderer {
             self.add_child(use_self, child);
         }
         if let Some(progress) = &progress {
-            let line = format_tool_progress_line(progress, 0., self.state.spinner_frame);
+            let line = format_tool_progress_line(progress, self.state.now_ms, self.state.spinner_frame);
             let child = Rc::new(RefCell::new(Text::with_padding(line, 0, 0))) as Rc<RefCell<dyn Component>>;
             self.add_child(use_self, child);
         }

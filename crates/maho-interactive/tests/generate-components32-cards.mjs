@@ -143,12 +143,42 @@ for (const { toolName, args, result } of toolScenarios) {
   }
 }
 
+// The progress line reads the wall clock; pin it so the elapsed time is reproducible.
+const progressCases = [];
+const realNow = Date.now;
+Date.now = () => 1_000_000;
+for (const width of [40, 80]) {
+  const component = new ToolExecutionComponent(
+    "read",
+    "call-1",
+    { file_path: "src/main.rs" },
+    { showImages: false },
+    withBuiltInRenderers("read", undefined),
+    tui,
+    cwd,
+    "classic",
+  );
+  component.markExecutionStarted();
+  component.setArgsComplete();
+  component.updateResult(
+    {
+      content: [{ type: "text", text: "partial" }],
+      isError: false,
+      details: { progress: { startedAt: 995_000, activity: "reading", maxWaitMs: 60_000 } },
+    },
+    true,
+  );
+  progressCases.push({ width, nowMs: 1_000_000, lines: trim(component.render(width)) });
+}
+Date.now = realNow;
+
 const data = {
   assistant: assistantCases,
   user: userCases,
   custom: customCases,
   exploration: explorationCases,
   tool: toolCases,
+  progress: progressCases,
 };
 writeFileSync(import.meta.dir + "/golden/components32-cards.json", JSON.stringify(data, null, 2) + "\n");
 console.log(

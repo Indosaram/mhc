@@ -190,3 +190,36 @@ fn tool_cards_match_pinned_senpi_for_every_presentation_state() {
         }
     }
 }
+
+#[test]
+fn tool_card_progress_line_matches_pinned_senpi() {
+    let theme = theme();
+    for case in fixtures()["progress"].as_array().expect("progress") {
+        let width = case["width"].as_u64().expect("width") as usize;
+        let mut component = ToolExecutionComponent::new(
+            "read",
+            "call-1",
+            serde_json::json!({ "file_path": "src/main.rs" }),
+            ToolExecutionOptions { show_images: Some(false), image_width_cells: None },
+            None,
+            "/tmp/project",
+            ToolExecutionPresentation::Classic,
+            None,
+            theme.clone(),
+        );
+        component.set_now_ms(case["nowMs"].as_f64().expect("nowMs"));
+        component.mark_execution_started();
+        component.set_args_complete();
+        component.update_result(
+            ToolExecutionResult {
+                content: vec![ToolContent::text("partial")],
+                details: Some(serde_json::json!({
+                    "progress": { "startedAt": 995_000., "activity": "reading", "maxWaitMs": 60_000. }
+                })),
+                is_error: false,
+            },
+            true,
+        );
+        assert_eq!(trim(component.render(width)), expected(case), "progress at {width}");
+    }
+}
