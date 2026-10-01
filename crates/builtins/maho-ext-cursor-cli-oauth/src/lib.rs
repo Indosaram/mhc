@@ -5,6 +5,7 @@ pub mod environment;
 pub mod guardrails;
 pub mod home_store;
 pub mod models_probe;
+pub mod models;
 pub mod errors;
 pub mod executable;
 pub mod spawn_args;
