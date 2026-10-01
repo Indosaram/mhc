@@ -93,50 +93,61 @@ mod tests {
 
     #[test]
     fn classifies_whitelisted_kimi_http_status_codes() {
-        let cases: &[(u16, RetryClassification)] = &[
-            (408, RetryClassification::Transient),
-            (409, RetryClassification::Transient),
-            (429, RetryClassification::RateLimited),
-            (500, RetryClassification::Transient),
-            (502, RetryClassification::Transient),
-            (503, RetryClassification::Transient),
-            (504, RetryClassification::Transient),
-            (529, RetryClassification::Transient),
+        // classifiers.test.ts:42 it.each "classifies whitelisted http-status %i as %s"
+        let cases: &[(&str, u16, RetryClassification)] = &[
+            ("classifies whitelisted http-status 408 as transient", 408, RetryClassification::Transient),
+            ("classifies whitelisted http-status 409 as transient", 409, RetryClassification::Transient),
+            ("classifies whitelisted http-status 429 as rate-limited", 429, RetryClassification::RateLimited),
+            ("classifies whitelisted http-status 500 as transient", 500, RetryClassification::Transient),
+            ("classifies whitelisted http-status 502 as transient", 502, RetryClassification::Transient),
+            ("classifies whitelisted http-status 503 as transient", 503, RetryClassification::Transient),
+            ("classifies whitelisted http-status 504 as transient", 504, RetryClassification::Transient),
+            ("classifies whitelisted http-status 529 as transient", 529, RetryClassification::Transient),
         ];
-        for (status_code, expected) in cases {
+        for (title, status_code, expected) in cases {
             let failure = failure(RetryFailureKind::HttpStatus, "kimi failure", Some(*status_code));
-            assert_eq!(classify_kimi_failure(&failure), *expected, "status {status_code}");
+            assert_eq!(classify_kimi_failure(&failure), *expected, "case: {title}");
         }
     }
 
     #[test]
     fn classifies_non_whitelisted_kimi_http_status_as_terminal() {
-        for status_code in [400u16, 401, 404, 422, 501] {
-            let failure = failure(RetryFailureKind::HttpStatus, "kimi failure", Some(status_code));
-            assert_eq!(classify_kimi_failure(&failure), RetryClassification::Terminal, "status {status_code}");
+        // classifiers.test.ts:53 it.each "classifies non-whitelisted http-status %i as terminal"
+        let cases: &[(&str, u16)] = &[
+            ("classifies non-whitelisted http-status 400 as terminal", 400),
+            ("classifies non-whitelisted http-status 401 as terminal", 401),
+            ("classifies non-whitelisted http-status 404 as terminal", 404),
+            ("classifies non-whitelisted http-status 422 as terminal", 422),
+            ("classifies non-whitelisted http-status 501 as terminal", 501),
+        ];
+        for (title, status_code) in cases {
+            let failure = failure(RetryFailureKind::HttpStatus, "kimi failure", Some(*status_code));
+            assert_eq!(classify_kimi_failure(&failure), RetryClassification::Terminal, "case: {title}");
         }
     }
 
     #[test]
     fn classifies_kimi_http_status_without_a_status_code_as_terminal() {
+        // classifiers.test.ts:61 it "classifies an http-status failure without a status code as terminal"
         assert_eq!(classify_kimi_failure(&kimi_failure(RetryFailureKind::HttpStatus)), RetryClassification::Terminal);
     }
 
     #[test]
     fn classifies_kimi_failure_kinds() {
-        let cases: &[(RetryFailureKind, RetryClassification)] = &[
-            (RetryFailureKind::Abort, RetryClassification::Terminal),
-            (RetryFailureKind::Refusal, RetryClassification::Terminal),
-            (RetryFailureKind::Sensitive, RetryClassification::Terminal),
-            (RetryFailureKind::Connection, RetryClassification::Transient),
-            (RetryFailureKind::Timeout, RetryClassification::Transient),
-            (RetryFailureKind::QuotaExhausted, RetryClassification::Terminal),
-            (RetryFailureKind::ImageFormat, RetryClassification::Terminal),
-            (RetryFailureKind::Provider, RetryClassification::Transient),
-            (RetryFailureKind::Unknown, RetryClassification::Terminal),
+        // classifiers.test.ts:65 it.each "classifies %s failures as %s"
+        let cases: &[(&str, RetryFailureKind, RetryClassification)] = &[
+            ("classifies abort failures as terminal", RetryFailureKind::Abort, RetryClassification::Terminal),
+            ("classifies refusal failures as terminal", RetryFailureKind::Refusal, RetryClassification::Terminal),
+            ("classifies sensitive failures as terminal", RetryFailureKind::Sensitive, RetryClassification::Terminal),
+            ("classifies connection failures as transient", RetryFailureKind::Connection, RetryClassification::Transient),
+            ("classifies timeout failures as transient", RetryFailureKind::Timeout, RetryClassification::Transient),
+            ("classifies quota-exhausted failures as terminal", RetryFailureKind::QuotaExhausted, RetryClassification::Terminal),
+            ("classifies image-format failures as terminal", RetryFailureKind::ImageFormat, RetryClassification::Terminal),
+            ("classifies provider failures as transient", RetryFailureKind::Provider, RetryClassification::Transient),
+            ("classifies unknown failures as terminal", RetryFailureKind::Unknown, RetryClassification::Terminal),
         ];
-        for (kind, expected) in cases {
-            assert_eq!(classify_kimi_failure(&kimi_failure(*kind)), *expected, "{kind:?}");
+        for (title, kind, expected) in cases {
+            assert_eq!(classify_kimi_failure(&kimi_failure(*kind)), *expected, "case: {title}");
         }
     }
 
@@ -157,28 +168,29 @@ mod tests {
 
     #[test]
     fn mirrors_is_retryable_error_message_for_senpi_assistant_failures() {
-        let cases: &[(&str, bool)] = &[
-            (APITOPIA_TOOL_SCHEMA_REJECTION, false),
-            (MOONSHOT_TOOL_SCHEMA_REJECTION, false),
-            (ANTHROPIC_INVALID_MAX_TOKENS, false),
-            ("429 quota exceeded", false),
-            (ANTHROPIC_CREDITS_REQUIRED, false),
-            (GATEWAY_MODEL_REQUEST_REJECTED, true),
-            (OPENAI_EXPLICIT_RETRY, true),
-            (OPENAI_SERVER_ERROR, true),
-            (BEDROCK_EXPLICIT_RETRY, true),
-            (NVIDIA_NIM_RESOURCE_EXHAUSTED, true),
-            (BUN_FETCH_SOCKET_CLOSED, true),
-            (OPENAI_RESPONSES_EARLY_EOF, true),
-            (WRAPPED_DNS_LOOKUP_ERROR, true),
-            (ANTHROPIC_ORPHAN_SERVER_TOOL, true),
+        // classifiers.test.ts:100 it.each "mirrors isRetryableErrorMessage: %s"
+        let cases: &[(&str, &str, bool)] = &[
+            ("mirrors isRetryableErrorMessage: apitopia tool-schema rejection in a 500 envelope", APITOPIA_TOOL_SCHEMA_REJECTION, false),
+            ("mirrors isRetryableErrorMessage: moonshot tool-schema rejection in a 500 envelope", MOONSHOT_TOOL_SCHEMA_REJECTION, false),
+            ("mirrors isRetryableErrorMessage: anthropic invalid max_tokens 400", ANTHROPIC_INVALID_MAX_TOKENS, false),
+            ("mirrors isRetryableErrorMessage: 429 quota exceeded", "429 quota exceeded", false),
+            ("mirrors isRetryableErrorMessage: anthropic credits_required 429", ANTHROPIC_CREDITS_REQUIRED, false),
+            ("mirrors isRetryableErrorMessage: canonical gateway model-request rejection", GATEWAY_MODEL_REQUEST_REJECTED, true),
+            ("mirrors isRetryableErrorMessage: openai explicit retry guidance", OPENAI_EXPLICIT_RETRY, true),
+            ("mirrors isRetryableErrorMessage: openai server_error with retry guidance", OPENAI_SERVER_ERROR, true),
+            ("mirrors isRetryableErrorMessage: bedrock explicit retry guidance", BEDROCK_EXPLICIT_RETRY, true),
+            ("mirrors isRetryableErrorMessage: nvidia nim ResourceExhausted", NVIDIA_NIM_RESOURCE_EXHAUSTED, true),
+            ("mirrors isRetryableErrorMessage: bun fetch socket drop", BUN_FETCH_SOCKET_CLOSED, true),
+            ("mirrors isRetryableErrorMessage: openai responses early EOF", OPENAI_RESPONSES_EARLY_EOF, true),
+            ("mirrors isRetryableErrorMessage: wrapped DNS lookup failure", WRAPPED_DNS_LOOKUP_ERROR, true),
+            ("mirrors isRetryableErrorMessage: anthropic orphan server-tool 400", ANTHROPIC_ORPHAN_SERVER_TOOL, true),
         ];
-        for (message, retryable) in cases {
+        for (title, message, retryable) in cases {
             let failure = failure(RetryFailureKind::Unknown, message, None);
             // Pin the fixture's expected boolean first so regex drift surfaces here too.
-            assert_eq!(is_retryable_error_message(message), *retryable, "isRetryableErrorMessage({message:?})");
+            assert_eq!(is_retryable_error_message(message), *retryable, "case: {title}");
             let expected = if *retryable { RetryClassification::Transient } else { RetryClassification::Terminal };
-            assert_eq!(classify_senpi_assistant_failure(&failure), expected, "{message:?}");
+            assert_eq!(classify_senpi_assistant_failure(&failure), expected, "case: {title}");
         }
     }
 
@@ -207,10 +219,21 @@ mod tests {
 
     #[test]
     fn retries_an_opaque_status_on_its_structured_status_alone() {
-        for status_code in [408u16, 409, 500, 502, 503, 504, 522, 524] {
-            let failure = opaque_failure(Some(status_code));
-            assert!(!is_retryable_error_message(&failure.message));
-            assert_eq!(classify_senpi_assistant_failure(&failure), RetryClassification::Transient, "status {status_code}");
+        // classifiers.test.ts:207 it.each "retries an opaque %i on its structured status alone"
+        let cases: &[(&str, u16)] = &[
+            ("retries an opaque 408 on its structured status alone", 408),
+            ("retries an opaque 409 on its structured status alone", 409),
+            ("retries an opaque 500 on its structured status alone", 500),
+            ("retries an opaque 502 on its structured status alone", 502),
+            ("retries an opaque 503 on its structured status alone", 503),
+            ("retries an opaque 504 on its structured status alone", 504),
+            ("retries an opaque 522 on its structured status alone", 522),
+            ("retries an opaque 524 on its structured status alone", 524),
+        ];
+        for (title, status_code) in cases {
+            let failure = opaque_failure(Some(*status_code));
+            assert!(!is_retryable_error_message(&failure.message), "case: {title}");
+            assert_eq!(classify_senpi_assistant_failure(&failure), RetryClassification::Transient, "case: {title}");
         }
     }
 
@@ -298,12 +321,17 @@ mod tests {
 
     #[test]
     fn treats_a_429_with_usage_limit_provider_codes_as_terminal() {
-        for code in ["usage_limit_reached", "usage_not_included"] {
+        // classifiers.test.ts:274 it.each "treats a 429 with the %s provider code as terminal"
+        let cases: &[(&str, &str)] = &[
+            ("treats a 429 with the usage_limit_reached provider code as terminal", "usage_limit_reached"),
+            ("treats a 429 with the usage_not_included provider code as terminal", "usage_not_included"),
+        ];
+        for (title, code) in cases {
             let failure = RetryFailure {
-                provider_codes: Some(vec![code.into()]),
+                provider_codes: Some(vec![(*code).into()]),
                 ..failure(RetryFailureKind::HttpStatus, "The provider could not complete this request right now", Some(429))
             };
-            assert_eq!(classify_senpi_assistant_failure(&failure), RetryClassification::Terminal, "{code}");
+            assert_eq!(classify_senpi_assistant_failure(&failure), RetryClassification::Terminal, "case: {title}");
         }
     }
 

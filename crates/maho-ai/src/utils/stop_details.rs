@@ -1,6 +1,8 @@
 //! Port of senpi packages/ai/src/utils/stop-details.ts.
 
 use crate::types::{AssistantMessage, AssistantStopDetails, StopReason};
+#[cfg(test)]
+use crate::types::Usage;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -26,14 +28,38 @@ mod tests {
 
     const ANTHROPIC_POLICY_REFUSAL: &str = "This request triggered restrictions on violative cyber content and was blocked under Anthropic's Usage Policy. To learn more, see https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback.";
 
+    /// Port of `fauxAssistantMessage("", options)` (providers/faux.ts): a plain builder over the
+    /// faux provider's zero-usage default, no wire/registration machinery involved.
     fn message(stop: StopReason, error: Option<&str>, details: Option<AssistantStopDetails>) -> AssistantMessage {
-        let model = crate::models_generated::get_builtin_model("anthropic", "claude-opus-4-8").expect("model");
-        let mut message = crate::utils::lazy::setup_error_message(model, error.unwrap_or_default());
-        message.stop_reason = stop;
-        message.error_message = error.map(str::to_owned);
-        message.stop_details = details;
-        message
+        AssistantMessage {
+            content: Vec::new(),
+            api: "faux".into(),
+            provider: "faux".into(),
+            model: "faux-1".into(),
+            response_model: None,
+            response_id: None,
+            provider_thinking_level: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: stop,
+            stop_details: details,
+            deferred: None,
+            error_message: error.map(str::to_owned),
+            abort_source: None,
+            raw_stop_reason: None,
+            end_turn: None,
+            timestamp: 0,
+        }
     }
+
+    // "maps Anthropic refusal and sensitive stops to typed error details" and
+    // "leaves successful and length-limited Anthropic stops unclassified" (stop-details.test.ts)
+    // drive `streamAnthropic(...).result()` over a faked SSE `Response` through
+    // `api/anthropic-messages.ts` end to end - real wire/SSE parsing owned by todos 10-13's api/.
+    // "passes classifier details through faux error stream events and excludes them from retry"
+    // drives `registerFauxProvider()` + `stream()` through the provider registry/dispatch in
+    // `providers/faux.ts` and `compat.ts` - owned by todos 10-13's providers/. All three are
+    // excluded here; `is_classifier_refusal`'s own logic is fully covered by the four tests below.
 
     #[test]
     fn recognizes_typed_classifier_details_on_error_and_tool_use_stops() {
@@ -76,6 +102,9 @@ mod tests {
         assert!(!is_classifier_refusal(&ordinary_policy_error));
     }
 
+    /// Covers the `isClassifierRefusal` assertions of "leaves successful and length-limited
+    /// Anthropic stops unclassified"; the `stopReason`/`stopDetails` SSE-derived assertions in
+    /// that TS case need `streamAnthropic` (api/, todos 10-13) and are excluded.
     #[test]
     fn leaves_successful_and_length_limited_stops_unclassified() {
         let completed = message(StopReason::Stop, None, None);

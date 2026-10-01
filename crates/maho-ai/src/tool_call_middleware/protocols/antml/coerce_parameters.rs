@@ -124,10 +124,70 @@ fn filter_unknown_keys_deep(value: Value, schema: &Value) -> Value {
     value
 }
 
+/// Emulates what `JSON.parse` + `repairStringsDeep` do together for a lone UTF-16 surrogate
+/// escape: `JSON.parse` accepts `"\uD800"` and yields an unpaired surrogate, which
+/// `repairStringsDeep` then replaces with U+FFFD, while `serde_json` rejects such an escape
+/// outright. Rewriting exactly those escapes to `\uFFFD` in the JSON text reaches the same value,
+/// and valid surrogate pairs and escaped backslashes are left untouched.
+fn repair_lone_surrogate_escapes(json: &str) -> String {
+    fn hex4(chars: &[char], at: usize) -> Option<u32> {
+        let mut value = 0u32;
+        for offset in 0..4 {
+            value = value * 16 + chars.get(at + offset)?.to_digit(16)?;
+        }
+        Some(value)
+    }
+
+    fn is_high(code: u32) -> bool {
+        (0xD800..=0xDBFF).contains(&code)
+    }
+
+    fn is_low(code: u32) -> bool {
+        (0xDC00..=0xDFFF).contains(&code)
+    }
+
+    let chars: Vec<char> = json.chars().collect();
+    let mut result = String::with_capacity(json.len());
+    let mut index = 0usize;
+    while index < chars.len() {
+        if chars[index] == '\\' && chars.get(index + 1) == Some(&'u') {
+            let preceding_backslashes = chars[..index].iter().rev().take_while(|c| **c == '\\').count();
+            if preceding_backslashes % 2 == 0
+                && let Some(code) = hex4(&chars, index + 2)
+            {
+                if is_high(code) {
+                    let paired = chars.get(index + 6) == Some(&'\\')
+                        && chars.get(index + 7) == Some(&'u')
+                        && hex4(&chars, index + 8).is_some_and(is_low);
+                    if paired {
+                        result.extend(&chars[index..index + 6]);
+                    } else {
+                        result.push_str("\\uFFFD");
+                    }
+                    index += 6;
+                    continue;
+                }
+                if is_low(code) {
+                    // A paired low surrogate is consumed by the high-surrogate branch above, so any
+                    // low surrogate reaching here is lone.
+                    result.push_str("\\uFFFD");
+                    index += 6;
+                    continue;
+                }
+            }
+        }
+        result.push(chars[index]);
+        index += 1;
+    }
+    result
+}
+
 fn try_parse_json_tolerant(value: &str) -> Coerced {
     for candidate in [value.to_string(), repair_unicode_escapes(value)] {
-        if let Ok(parsed) = serde_json::from_str::<Value>(&candidate) {
-            return Coerced::Ok(repair_strings_deep(parsed));
+        for variant in [candidate.clone(), repair_lone_surrogate_escapes(&candidate)] {
+            if let Ok(parsed) = serde_json::from_str::<Value>(&variant) {
+                return Coerced::Ok(repair_strings_deep(parsed));
+            }
         }
     }
     Coerced::Invalid
@@ -153,7 +213,7 @@ fn coerce_known_value(raw_value: &str, schema: &Value) -> Coerced {
             }
             match candidate.parse::<f64>() {
                 Ok(parsed) if parsed.is_finite() && !(t == "integer" && parsed.fract() != 0.0) => {
-                    Coerced::Ok(serde_json::Number::from_f64(parsed).map(Value::Number).unwrap_or(Value::Null))
+                    Coerced::Ok(crate::utils::js::json_number(parsed))
                 }
                 _ => Coerced::Invalid,
             }

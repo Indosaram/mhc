@@ -69,7 +69,7 @@ fn thrown_error(error: &Value) -> maho_ai::utils::error_body::ThrownProviderErro
         status_code: object.get("statusCode").cloned(),
         status: object.get("status").cloned(),
         body: object.get("body").cloned(),
-        error: object.get("error").cloned(),
+        error: object.get("error").cloned().map(maho_ai::utils::error_body::SdkFieldValue::Plain),
         metadata_http_status_code: object.get("metadataHttpStatusCode").cloned(),
         response_status_code: object.get("responseStatusCode").cloned(),
         response_body: object.get("responseBody").cloned().map(maho_ai::utils::error_body::SdkResponseBody::Value),

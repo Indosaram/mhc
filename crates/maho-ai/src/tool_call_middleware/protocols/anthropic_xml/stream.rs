@@ -398,17 +398,17 @@ mod tests {
         ]
     }
 
-    fn error_sink() -> (std::sync::Arc<std::sync::Mutex<Vec<String>>>, impl Fn(&str, Option<&std::collections::HashMap<String, Value>>) + Send + Sync + 'static) {
+    fn error_sink() -> (std::sync::Arc<std::sync::Mutex<Vec<String>>>, crate::tool_call_middleware::types::ParserErrorHandler) {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = seen.clone();
-        let handler = move |message: &str, _metadata: Option<&std::collections::HashMap<String, Value>>| {
+        let handler: crate::tool_call_middleware::types::ParserErrorHandler = std::sync::Arc::new(move |message: &str, _metadata: Option<&std::collections::HashMap<String, Value>>| {
             sink.lock().expect("error sink").push(message.to_string());
-        };
+        });
         (seen, handler)
     }
 
-    fn options_with(emit_raw: bool, handler: impl Fn(&str, Option<&std::collections::HashMap<String, Value>>) + Send + Sync + 'static) -> ParserOptions {
-        ParserOptions { emit_raw_tool_call_text_on_error: emit_raw, on_error: Some(std::sync::Arc::new(handler)) }
+    fn options_with(emit_raw: bool, handler: crate::tool_call_middleware::types::ParserErrorHandler) -> ParserOptions {
+        ParserOptions { emit_raw_tool_call_text_on_error: emit_raw, on_error: Some(handler) }
     }
 
     fn text_output(events: &[StreamParserEvent]) -> String {

@@ -138,7 +138,7 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "inspect");
         assert_eq!(calls[0].arguments.get("label"), Some(&Value::String("good".into())));
-        assert_eq!(calls[0].arguments.get("count"), Some(&json!(2.0)));
+        assert_eq!(calls[0].arguments.get("count"), Some(&json!(2)));
         assert_eq!(seen.lock().unwrap().as_slice(), ["Could not process anthropic-xml tool call, keeping original text."]);
     }
 

@@ -635,4 +635,126 @@ mod tests {
             );
         }
     }
+
+    /// models.dev first-party windows plus the context options Cursor offers each family.
+    #[derive(serde::Deserialize)]
+    struct FirstPartyWindow {
+        context: f64,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct WindowSsot {
+        #[serde(rename = "cursorContextEnum")]
+        cursor_context_enum: BTreeMap<String, f64>,
+        #[serde(rename = "cursorContextOptionsByFamily")]
+        cursor_context_options_by_family: BTreeMap<String, Vec<String>>,
+        #[serde(rename = "firstParty")]
+        first_party: BTreeMap<String, FirstPartyWindow>,
+        #[serde(rename = "cursorReportedWindow")]
+        cursor_reported_window: BTreeMap<String, f64>,
+    }
+
+    fn window_ssot() -> WindowSsot {
+        serde_json::from_str(include_str!(
+            "../../tests/fixtures/models-dev-first-party-windows-20260818.json"
+        ))
+        .expect("window ssot fixture")
+    }
+
+    /// Cursor only honours a window it actually offers that family, so the spec value is capped by it.
+    fn expected_window(ssot: &WindowSsot, family: &str) -> Option<f64> {
+        let options = ssot.cursor_context_options_by_family.get(family);
+        if let Some(options) = options.filter(|options| !options.is_empty()) {
+            let cap = options
+                .iter()
+                .filter_map(|option| ssot.cursor_context_enum.get(option))
+                .copied()
+                .fold(f64::NEG_INFINITY, f64::max);
+            let spec = ssot.first_party.get(family).map(|entry| entry.context);
+            return Some(spec.map_or(cap, |spec| spec.min(cap)));
+        }
+        if let Some(spec) = ssot.first_party.get(family) {
+            return Some(spec.context);
+        }
+        ssot.cursor_reported_window.get(family).copied()
+    }
+
+    #[test]
+    fn caps_each_family_at_the_largest_context_option_cursor_offers_it() {
+        let ssot = window_ssot();
+        let mut drift: Vec<String> = Vec::new();
+        for (family, capability) in CURSOR_MODEL_CAPABILITIES.iter() {
+            let Some(expected) = expected_window(&ssot, family) else { continue };            if capability.window != expected {
+                drift.push(format!("{family}: committed {} != SSOT {expected}", capability.window));
+            }
+        }
+        assert_eq!(drift, Vec::<String>::new());
+    }
+
+    #[test]
+    fn never_advertises_a_window_above_the_largest_context_option_cursor_offers() {
+        let ssot = window_ssot();
+        for (family, capability) in CURSOR_MODEL_CAPABILITIES.iter() {
+            let Some(options) = ssot.cursor_context_options_by_family.get(*family) else { continue };
+            if options.is_empty() {
+                continue;
+            }
+            let cap = options
+                .iter()
+                .filter_map(|option| ssot.cursor_context_enum.get(option))
+                .copied()
+                .fold(f64::NEG_INFINITY, f64::max);
+            assert!(capability.window <= cap, "{family} exceeds the context cursor offers it");
+        }
+    }
+
+    #[test]
+    fn keeps_families_outside_the_ssot_on_a_positive_fallback_window() {
+        let ssot = window_ssot();
+        for (family, capability) in CURSOR_MODEL_CAPABILITIES.iter() {
+            if expected_window(&ssot, family).is_some() {
+                continue;
+            }
+            assert!(capability.window > 0.0, "{family} must carry a positive window");
+        }
+    }
+
+    /// Cursor lists these through its CLI only; an unproven capability window must not appear.
+    const CLI_ONLY: &[&str] = &[
+        "claude-mythos-5",
+        "claude-sonnet-4-7",
+        "composer-2.6",
+        "composer-2.6-lite",
+        "deepseek-v4",
+        "gemini-3.5-pro",
+        "gemini-3.6-pro",
+        "gemini-3.7-pro",
+        "gpt-5.4-codex",
+    ];
+
+    #[test]
+    fn leaves_cli_only_families_without_a_capability_entry_so_they_take_the_documented_fallback() {
+        for family in CLI_ONLY {
+            assert!(
+                !CURSOR_MODEL_CAPABILITIES.contains_key(family),
+                "{family} is CLI-only and must not gain an unproven capability window"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_genuinely_small_window_families_off_the_1m_promotion() {
+        for family in ["claude-4.5-opus", "claude-haiku-4-5", "composer-2.5"] {
+            let capability = CURSOR_MODEL_CAPABILITIES.get(family).unwrap_or_else(|| panic!("missing capability for {family}"));
+            assert_eq!(capability.window, 200_000.0, "{family} must stay at its first-party 200000");
+        }
+    }
+
+    #[test]
+    fn never_lets_a_family_advertise_more_than_its_own_max_window_when_one_is_declared() {
+        for (family, capability) in CURSOR_MODEL_CAPABILITIES.iter() {
+            let Some(max_window) = capability.max_window else { continue };
+            assert!(capability.window <= max_window, "{family} window exceeds maxWindow");
+        }
+    }
 }

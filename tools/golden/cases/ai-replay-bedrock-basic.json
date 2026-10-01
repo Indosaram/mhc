@@ -1,0 +1,46 @@
+{
+	"name": "ai-replay-bedrock-basic",
+	"kind": "ai-replay",
+	"api": "bedrock-converse-stream",
+	"model": {
+		"id": "anthropic.claude-3-replay",
+		"name": "anthropic.claude-3-replay",
+		"provider": "test-replay",
+		"reasoning": false,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 200000,
+		"maxTokens": 8192
+	},
+	"context": {
+		"messages": [
+			{
+				"role": "user",
+				"content": "Hello",
+				"timestamp": 0
+			}
+		]
+	},
+	"options": {
+		"env": {
+			"AWS_ACCESS_KEY_ID": "AKIDREPLAY",
+			"AWS_SECRET_ACCESS_KEY": "replay-secret",
+			"AWS_REGION": "us-east-1",
+			"AWS_BEDROCK_FORCE_HTTP1": "1"
+		},
+		"maxRetries": 0
+	},
+	"fixture": {
+		"headers": {
+			"content-type": "application/vnd.amazon.eventstream"
+		},
+		"bodyBase64": "AAAAdgAAAFKW1freCzpldmVudC10eXBlBwAMbWVzc2FnZVN0YXJ0DTpjb250ZW50LXR5cGUHABBhcHBsaWNhdGlvbi9qc29uDTptZXNzYWdlLXR5cGUHAAVldmVudHsicm9sZSI6ImFzc2lzdGFudCJ9b6jFmQAAAJcAAABX8wvgPgs6ZXZlbnQtdHlwZQcAEWNvbnRlbnRCbG9ja0RlbHRhDTpjb250ZW50LXR5cGUHABBhcHBsaWNhdGlvbi9qc29uDTptZXNzYWdlLXR5cGUHAAVldmVudHsiY29udGVudEJsb2NrSW5kZXgiOjAsImRlbHRhIjp7InRleHQiOiJIZWxsbyJ9fWdiODEAAACaAAAAVwubJI8LOmV2ZW50LXR5cGUHABFjb250ZW50QmxvY2tEZWx0YQ06Y29udGVudC10eXBlBwAQYXBwbGljYXRpb24vanNvbg06bWVzc2FnZS10eXBlBwAFZXZlbnR7ImNvbnRlbnRCbG9ja0luZGV4IjowLCJkZWx0YSI6eyJ0ZXh0IjoiLCB0aGVyZSEifX0DMP4RAAAAfQAAAFbmaA/WCzpldmVudC10eXBlBwAQY29udGVudEJsb2NrU3RvcA06Y29udGVudC10eXBlBwAQYXBwbGljYXRpb24vanNvbg06bWVzc2FnZS10eXBlBwAFZXZlbnR7ImNvbnRlbnRCbG9ja0luZGV4IjowfbMuTTQAAAB6AAAAUcosRmULOmV2ZW50LXR5cGUHAAttZXNzYWdlU3RvcA06Y29udGVudC10eXBlBwAQYXBwbGljYXRpb24vanNvbg06bWVzc2FnZS10eXBlBwAFZXZlbnR7InN0b3BSZWFzb24iOiJlbmRfdHVybiJ9X78J/AAAALYAAABOa8FOSgs6ZXZlbnQtdHlwZQcACG1ldGFkYXRhDTpjb250ZW50LXR5cGUHABBhcHBsaWNhdGlvbi9qc29uDTptZXNzYWdlLXR5cGUHAAVldmVudHsidXNhZ2UiOnsiaW5wdXRUb2tlbnMiOjEyLCJvdXRwdXRUb2tlbnMiOjUsInRvdGFsVG9rZW5zIjoxN30sIm1ldHJpY3MiOnsibGF0ZW5jeU1zIjoxfX3gmogM"
+	}
+}

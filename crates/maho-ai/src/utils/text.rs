@@ -40,15 +40,48 @@ pub fn to_radix_36(mut value: u64) -> String {
 mod tests {
     use super::*;
 
+    /// Port of text.test.ts's shared `content` fixture (assistant content mixing thinking, text,
+    /// a tool call, and provider-native blocks).
+    fn content() -> Vec<ContentBlock> {
+        vec![
+            ContentBlock::Thinking(crate::types::ThinkingContent { thinking: "reasoning".into(), ..Default::default() }),
+            ContentBlock::text("first"),
+            ContentBlock::ToolCall(crate::types::ToolCall { id: "1".into(), name: "read".into(), ..Default::default() }),
+            ContentBlock::ProviderNative(crate::types::ProviderNativeContent {
+                subtype: "web_search_call".into(),
+                raw: serde_json::json!({ "id": "ws_1" }),
+            }),
+            ContentBlock::text("second"),
+        ]
+    }
+
     #[test]
-    fn joins_only_text_blocks() {
-        let blocks = vec![
-            ContentBlock::text("a"),
-            ContentBlock::Image(crate::types::ImageContent { data: "x".into(), mime_type: "image/png".into() }),
-            ContentBlock::text("b"),
+    fn extracts_assistant_text_blocks() {
+        assert_eq!(content_text(&content(), "\n"), "first\nsecond");
+    }
+
+    #[test]
+    fn supports_custom_separators() {
+        assert_eq!(content_text(&content(), ""), "firstsecond");
+    }
+
+    #[test]
+    fn passes_string_content_through() {
+        assert_eq!(user_content_text(&UserContent::Text("hello".into()), "\n"), "hello");
+    }
+
+    #[test]
+    fn extracts_text_from_tool_result_content() {
+        let tool_result_content = vec![
+            ContentBlock::text("first"),
+            ContentBlock::Image(crate::types::ImageContent { data: "...".into(), mime_type: "image/png".into() }),
+            ContentBlock::text("second"),
         ];
-        assert_eq!(content_text(&blocks, "\n"), "a\nb");
-        assert_eq!(user_content_text(&UserContent::Text("s".into()), "\n"), "s");
+        assert_eq!(content_text(&tool_result_content, ""), "firstsecond");
+    }
+
+    #[test]
+    fn to_radix_36_matches_number_prototype_to_string_36() {
         assert_eq!(to_radix_36(0), "0");
         assert_eq!(to_radix_36(35), "z");
         assert_eq!(to_radix_36(36), "10");

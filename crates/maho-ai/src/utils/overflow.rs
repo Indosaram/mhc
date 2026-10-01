@@ -168,38 +168,397 @@ pub fn cursor_overflow_compaction_settings<T: CursorCompactionSettings>(settings
 mod tests {
     use super::*;
 
-    fn message(stop: StopReason, error: Option<&str>, input: u64, output: u64, total: u64) -> AssistantMessage {
-        let model = crate::models_generated::get_builtin_model("anthropic", "claude-opus-4-8").expect("model");
-        let mut message = crate::utils::lazy::setup_error_message(model, error.unwrap_or_default());
-        message.stop_reason = stop;
-        message.error_message = error.map(str::to_owned);
-        message.usage.input = input;
-        message.usage.output = output;
-        message.usage.total_tokens = total;
-        message
+    /// Port of `createErrorMessage` (overflow.test.ts): an `error`-stopped faux Ollama message
+    /// with zero usage and the given error text.
+    fn error_message(error_message: &str) -> AssistantMessage {
+        AssistantMessage {
+            content: Vec::new(),
+            api: "openai-completions".into(),
+            provider: "ollama".into(),
+            model: "qwen3.5:35b".into(),
+            response_model: None,
+            response_id: None,
+            provider_thinking_level: None,
+            diagnostics: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Error,
+            stop_details: None,
+            deferred: None,
+            error_message: Some(error_message.to_owned()),
+            abort_source: None,
+            raw_stop_reason: None,
+            end_turn: None,
+            timestamp: 0,
+        }
+    }
+
+    struct LengthStopOptions {
+        input: u64,
+        cache_read: u64,
+        output: u64,
+        cache_write: u64,
+    }
+
+    /// Port of `createLengthStopMessage` (overflow.test.ts).
+    fn length_stop_message(options: LengthStopOptions) -> AssistantMessage {
+        AssistantMessage {
+            content: Vec::new(),
+            api: "openai-completions".into(),
+            provider: "test-provider".into(),
+            model: "test-model".into(),
+            response_model: None,
+            response_id: None,
+            provider_thinking_level: None,
+            diagnostics: None,
+            usage: Usage {
+                input: options.input,
+                output: options.output,
+                cache_read: options.cache_read,
+                cache_write: options.cache_write,
+                cache_write_1h: None,
+                reasoning: None,
+                total_tokens: options.input + options.cache_read + options.cache_write + options.output,
+                cost: Default::default(),
+            },
+            stop_reason: StopReason::Length,
+            stop_details: None,
+            deferred: None,
+            error_message: None,
+            abort_source: None,
+            raw_stop_reason: None,
+            end_turn: None,
+            timestamp: 0,
+        }
+    }
+
+    /// One row per `it()` in overflow.test.ts's `describe("isContextOverflow")`, title carried
+    /// verbatim. A TS case that makes several assertions contributes one row per assertion, each
+    /// row carrying that case's verbatim title; the failing row is identified by the input text
+    /// in the assertion message.
+    #[test]
+    fn is_context_overflow_matches_senpi_cases() {
+        let cases: &[(&str, AssistantMessage, Option<u64>, bool)] = &[
+            (
+                "detects the local context exhaustion guard before any provider call",
+                error_message("Context window exhausted: the conversation is estimated at 995154 of 1000000 tokens, leaving fewer than 1024 tokens for a response. Compact the conversation, enable auto-compaction, or start a new session before retrying."),
+                Some(1_000_000),
+                true,
+            ),
+            (
+                "detects explicit Ollama prompt-too-long errors",
+                error_message("400 `prompt too long; exceeded max context length by 100918 tokens`"),
+                Some(32768),
+                true,
+            ),
+            (
+                "detects Together AI context length errors",
+                error_message("400 The input (516368 tokens) is longer than the model's context length (262144 tokens)."),
+                Some(262144),
+                true,
+            ),
+            (
+                "detects LiteLLM-wrapped OpenAI maximum context length errors",
+                error_message("Error: 503 litellm.ServiceUnavailableError: litellm.MidStreamFallbackError: litellm.APIConnectionError: APIConnectionError: OpenAIException - Requested token count exceeds the model's maximum context length of 131072 tokens."),
+                Some(131072),
+                true,
+            ),
+            (
+                "detects OpenAI-compatible parenthesized maximum context length errors",
+                error_message("Error: 400 Input length (265330) exceeds model's maximum context length (262144)."),
+                Some(262144),
+                true,
+            ),
+            (
+                "detects OpenAI exceeds the model's context window wording",
+                error_message("Your input exceeds the model's context window"),
+                None,
+                true,
+            ),
+            (
+                "detects OpenAI exceeds this model's context window wording",
+                error_message("Your input exceeds this model's context window"),
+                None,
+                true,
+            ),
+            (
+                "detects OpenAI exceeds the context window wording",
+                error_message("Your input exceeds the context window of this model"),
+                None,
+                true,
+            ),
+            (
+                "detects OpenRouter Poolside maximum allowed input length errors",
+                error_message("Provider returned error: Input length 131393 exceeds the maximum allowed input length of 131040 tokens."),
+                Some(131072),
+                true,
+            ),
+            (
+                "detects DS4 configured context size errors",
+                error_message("400 Prompt has 256468 tokens, but the configured context size is 256000 tokens"),
+                Some(256000),
+                true,
+            ),
+            (
+                "detects DS4 configured context size errors",
+                error_message("Prompt has 5,958,968 tokens, but the configured context size is 256,000 tokens"),
+                Some(256000),
+                true,
+            ),
+            (
+                "detects gateway 413 body-size rejections as byte-size overflow (OpenAI-style body_too_large)",
+                error_message(r#"413: {"message":"Request body too large","type":"invalid_request_error","code":"body_too_large"}"#),
+                Some(200000),
+                true,
+            ),
+            (
+                "detects gateway 413 body-size rejections as byte-size overflow",
+                error_message(r#"413: {"message":"Request Entity Too Large","type":"AI_APICallError","param":{"error":"Request Entity Too Large","statusCode":413,"name":"AI_APICallError","message":"Request Entity Too Large","isRetryable":false,"type":"AI_APICallError"}}"#),
+                Some(200000),
+                true,
+            ),
+            (
+                "detects gateway 413 body-size rejections as byte-size overflow",
+                error_message("413 Payload Too Large"),
+                Some(200000),
+                true,
+            ),
+            (
+                "detects kiro-lb local payload guards across both route wrappers and units",
+                error_message(r#"400 {"type":"error","error":{"type":"invalid_request_error","message":"Request payload is 1095225 bytes, over the 1085435 byte limit Kiro accepts. Shorten the conversation or send fewer tools."}}"#),
+                Some(666667),
+                true,
+            ),
+            (
+                "detects kiro-lb local payload guards across both route wrappers and units (OpenAI tokens)",
+                error_message(r#"400 {"detail":"Request payload is 800001 tokens, over the 800000 token limit Kiro accepts."}"#),
+                Some(666667),
+                true,
+            ),
+            (
+                "detects Kiro upstream context overflow enhanced by kiro-lb",
+                error_message(r#"400 {"error":{"type":"kiro_api_error","message":"Model context limit reached. Conversation size exceeds model capacity."}}"#),
+                Some(666667),
+                true,
+            ),
+            (
+                "rejects malformed or unrelated Kiro-like payload-size prose",
+                error_message("Request payload is 1,,225 bytes, over the 1,085 byte limit Kiro accepts."),
+                None,
+                false,
+            ),
+            (
+                "rejects malformed or unrelated Kiro-like payload-size prose",
+                error_message("Request payload is 1,225 bytes, over the 1,085 byte limit Kiro accepts."),
+                None,
+                false,
+            ),
+            (
+                "rejects malformed or unrelated Kiro-like payload-size prose",
+                error_message("Payload 1095225 bytes exceeds the 1085435 byte limit; AUTO_TRIM_PAYLOAD is disabled"),
+                None,
+                false,
+            ),
+            (
+                "rejects malformed or unrelated Kiro-like payload-size prose",
+                error_message("Another provider reports payload size exceeded."),
+                None,
+                false,
+            ),
+            (
+                "does not treat generic non-overflow Ollama errors as overflow",
+                error_message("500 `model runner crashed unexpectedly`"),
+                Some(32768),
+                false,
+            ),
+            (
+                "does not treat Bedrock throttling 'Too many tokens' as overflow",
+                error_message("Throttling error: Too many tokens, please wait before trying again."),
+                Some(200000),
+                false,
+            ),
+            (
+                "does not treat Bedrock service unavailable as overflow",
+                error_message("Service unavailable: The service is temporarily unavailable."),
+                Some(200000),
+                false,
+            ),
+            (
+                "does not treat generic rate limit errors as overflow",
+                error_message("Rate limit exceeded, please retry after 30 seconds."),
+                Some(200000),
+                false,
+            ),
+            (
+                "does not treat HTTP 429 style errors as overflow",
+                error_message("Too many requests. Please slow down."),
+                Some(200000),
+                false,
+            ),
+            (
+                "does not treat tokens-per-minute rate limits as overflow",
+                error_message("Too many tokens per minute for this model. Retry in 20s"),
+                Some(200000),
+                false,
+            ),
+            (
+                "does not treat exceeds-the-limit tokens-per-minute messages as overflow",
+                error_message("This request exceeds the limit of 30000 tokens per minute"),
+                Some(200000),
+                false,
+            ),
+            (
+                "does not treat TPM quota wording as overflow even with overflow-looking phrasing",
+                error_message("TPM limit exceeded: too many tokens"),
+                Some(200000),
+                false,
+            ),
+            (
+                "does not treat RPM quota wording as overflow even with overflow-looking phrasing",
+                error_message("RPM limit exceeded: too many tokens"),
+                Some(200000),
+                false,
+            ),
+            (
+                "does not treat quota exceeded as overflow even with overflow-looking phrasing",
+                error_message("Quota exceeded: too many tokens in the last minute"),
+                Some(200000),
+                false,
+            ),
+            (
+                "does not treat retry-after token quota wording as overflow even with overflow-looking phrasing",
+                error_message("Too many tokens. Retry after 10 seconds"),
+                Some(200000),
+                false,
+            ),
+            (
+                "does not treat HTTP 429 prefixes as overflow even with overflow-looking phrasing",
+                error_message("429 Too many tokens"),
+                Some(200000),
+                false,
+            ),
+            (
+                "does not treat status code 429 as overflow even with overflow-looking phrasing",
+                error_message("Request failed with status code 429: too many tokens"),
+                Some(200000),
+                false,
+            ),
+            (
+                "does not treat overloaded errors as overflow even with overflow-looking phrasing",
+                error_message("The model is overloaded. Too many tokens."),
+                Some(200000),
+                false,
+            ),
+        ];
+        for (title, message, context_window, expected) in cases {
+            assert_eq!(
+                is_context_overflow(message, *context_window),
+                *expected,
+                "case: {title} :: {}",
+                message.error_message.as_deref().unwrap_or_default()
+            );
+        }
     }
 
     #[test]
-    fn detects_error_and_usage_overflow() {
-        assert!(is_context_overflow(&message(StopReason::Error, Some("prompt is too long: 250000 tokens"), 0, 0, 0), None));
-        assert!(!is_context_overflow(&message(StopReason::Error, Some("429 too many tokens"), 0, 0, 0), None));
-        assert!(is_context_overflow(&message(StopReason::Error, Some("Request payload is 5 bytes, over the 4 byte limit Kiro accepts."), 0, 0, 0), None));
-        assert!(!is_context_overflow(&message(StopReason::Error, Some("REQUEST PAYLOAD IS 5 BYTES, OVER THE 4 BYTE LIMIT KIRO ACCEPTS."), 0, 0, 0), None));
-        assert!(is_context_overflow(&message(StopReason::Error, Some("ResourceExhausted"), 0, 0, 600), Some(1000)));
-        assert!(!is_context_overflow(&message(StopReason::Error, Some("ResourceExhausted"), 0, 0, 100), Some(1000)));
-        assert!(is_context_overflow(&message(StopReason::Stop, None, 1001, 1, 0), Some(1000)));
-        assert!(is_context_overflow(&message(StopReason::Length, None, 990, 0, 0), Some(1000)));
-        assert!(!is_context_overflow(&message(StopReason::Length, None, 990, 1, 0), Some(1000)));
-        assert!(is_recoverable_length(&message(StopReason::Length, None, 0, 5, 0), 10));
+    fn does_not_treat_tiny_token_bearing_resource_exhausted_usage_as_context_overflow() {
+        let mut message = error_message("Connect error resource_exhausted");
+        message.usage.output = 12;
+        message.usage.total_tokens = 12;
+        assert!(!is_context_overflow(&message, Some(200_000)));
+    }
+
+    #[test]
+    fn treats_token_bearing_resource_exhausted_usage_near_the_context_window_as_overflow() {
+        let mut message = error_message("gRPC error 8: resource_exhausted");
+        message.usage.total_tokens = 600_000;
+        assert!(is_context_overflow(&message, Some(1_048_576)));
+    }
+
+    #[test]
+    fn preserves_legacy_token_bearing_resource_exhausted_overflow_detection_without_a_context_window() {
+        let mut message = error_message("Connect error resource_exhausted");
+        message.usage.total_tokens = 12;
+        assert!(is_context_overflow(&message, None));
+    }
+
+    #[test]
+    fn identifies_cursor_usage_pool_exhaustion_below_half_the_context_window() {
+        let mut message = error_message("Connect error resource_exhausted: Error");
+        message.usage.total_tokens = 178_626;
+        assert!(!is_context_overflow(&message, Some(1_048_576)));
+        assert!(is_cursor_quota_resource_exhausted(&CursorExhaustionProbe::from_message(&message), 1_048_576));
+    }
+
+    #[test]
+    fn does_not_identify_cursor_context_overflow_as_usage_pool_exhaustion() {
+        let mut message = error_message("Connect error resource_exhausted: Error");
+        message.usage.total_tokens = 600_000;
+        assert!(!is_cursor_quota_resource_exhausted(&CursorExhaustionProbe::from_message(&message), 1_048_576));
+    }
+
+    #[test]
+    fn does_not_identify_zero_token_or_non_resource_exhausted_errors_as_usage_pool_exhaustion() {
+        let zero_token = error_message("Connect error resource_exhausted: Error");
+        let non_resource_exhausted = error_message("Connect error unavailable");
+        assert!(!is_cursor_quota_resource_exhausted(&CursorExhaustionProbe::from_message(&zero_token), 1_048_576));
+        assert!(!is_cursor_quota_resource_exhausted(&CursorExhaustionProbe::from_message(&non_resource_exhausted), 1_048_576));
+    }
+
+    #[test]
+    fn keeps_zero_token_resource_exhausted_errors_out_of_overflow_detection() {
+        let message = error_message("Connect error resource_exhausted: quota exceeded");
+        assert!(!is_context_overflow(&message, Some(200_000)));
+    }
+
+    #[test]
+    fn detects_xiaomi_style_overflow_length_stop_with_zero_output_and_filled_context() {
+        let message = length_stop_message(LengthStopOptions { input: 58, cache_read: 1_048_512, output: 0, cache_write: 0 });
+        assert!(is_context_overflow(&message, Some(1_048_576)));
+    }
+
+    #[test]
+    fn treats_a_length_stop_below_the_desired_output_limit_as_recoverable() {
+        let message = length_stop_message(LengthStopOptions { input: 3, cache_read: 253_584, cache_write: 25_554, output: 16 });
+        assert!(is_recoverable_length(&message, 128_000));
+    }
+
+    #[test]
+    fn does_not_recover_a_length_stop_that_reached_the_desired_output_limit() {
+        let message = length_stop_message(LengthStopOptions { input: 4062, cache_read: 0, cache_write: 0, output: 1024 });
+        assert!(!is_recoverable_length(&message, 1024));
+    }
+
+    #[test]
+    fn treats_zero_output_length_stops_as_recoverable_without_context_metadata() {
+        let message = length_stop_message(LengthStopOptions { input: 100, cache_read: 0, cache_write: 0, output: 0 });
+        assert!(is_recoverable_length(&message, 128_000));
+    }
+
+    #[test]
+    fn does_not_treat_normal_length_stops_with_output_as_context_overflow() {
+        let message = length_stop_message(LengthStopOptions { input: 1000, cache_read: 0, cache_write: 0, output: 4096 });
+        assert!(!is_context_overflow(&message, Some(200_000)));
+    }
+
+    #[test]
+    fn does_not_treat_zero_output_length_stops_far_below_context_as_context_overflow() {
+        let message = length_stop_message(LengthStopOptions { input: 100, cache_read: 0, cache_write: 0, output: 0 });
+        assert!(!is_context_overflow(&message, Some(200_000)));
+    }
+
+    #[test]
+    fn get_overflow_patterns_count() {
         assert_eq!(get_overflow_patterns().len(), 29);
     }
 
     #[test]
     fn cursor_resource_exhaustion_helpers() {
-        let zero = message(StopReason::Error, Some("resource_exhausted"), 0, 0, 0);
+        let zero = error_message("resource_exhausted");
         let probe = CursorExhaustionProbe::from_message(&zero);
         assert!(is_cursor_zero_token_resource_exhausted(&probe) && is_cursor_payload_resource_exhausted(&probe, 5));
-        let quota = message(StopReason::Error, Some("resource exhausted"), 0, 0, 100);
+        let quota = error_message("resource exhausted");
+        let mut quota = quota;
+        quota.usage.total_tokens = 100;
         assert!(is_cursor_quota_resource_exhausted(&CursorExhaustionProbe::from_message(&quota), 1000));
         assert!(!is_cursor_quota_resource_exhausted(&CursorExhaustionProbe::from_message(&quota), 100));
         assert!(should_skip_provider_fallback_for_cursor_zero_re(Some(true)) && !should_skip_provider_fallback_for_cursor_zero_re(None));

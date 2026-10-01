@@ -311,4 +311,112 @@ mod tests {
         stream.end(Some(9));
         assert_eq!(stream.result().await, Ok(9));
     }
+
+    // event-stream.test.ts: "queues adjacent delta events immediately without throttling or merging"
+    #[tokio::test]
+    async fn queues_adjacent_delta_events_immediately_without_throttling_or_merging() {
+        let stream = create_assistant_message_event_stream();
+        stream.push(AssistantMessageEvent::TextDelta { content_index: 0, delta: "a".into(), partial: message(StopReason::Pending) });
+        stream.push(AssistantMessageEvent::TextDelta { content_index: 0, delta: "b".into(), partial: message(StopReason::Pending) });
+        let queue = stream.queue();
+        assert_eq!(queue.len(), 2);
+        match &queue[0] {
+            AssistantMessageEvent::TextDelta { delta, .. } => assert_eq!(delta, "a"),
+            other => panic!("expected text_delta, got {other:?}"),
+        }
+        match &queue[1] {
+            AssistantMessageEvent::TextDelta { delta, .. } => assert_eq!(delta, "b"),
+            other => panic!("expected text_delta, got {other:?}"),
+        }
+    }
+
+    // event-stream.test.ts: "preserves FIFO across the compaction boundary when more events are pushed later"
+    #[tokio::test]
+    async fn preserves_fifo_across_the_compaction_boundary_when_more_events_are_pushed_later() {
+        let stream: EventStream<i64, i64> = EventStream::new(|n| *n == -1, |n| *n);
+        let total = 3000i64;
+        for i in 0..1500 {
+            stream.push(i);
+        }
+        let mut seen = Vec::new();
+        for _ in 0..1300 {
+            let value = stream.next().await.expect("ok").expect("value");
+            seen.push(value);
+        }
+        for i in 1500..total {
+            stream.push(i);
+        }
+        stream.push(total);
+        stream.end(Some(total));
+        while let Some(value) = stream.next().await.expect("ok") {
+            seen.push(value);
+        }
+        assert_eq!(seen.len(), (total + 1) as usize);
+        for (i, value) in seen.iter().enumerate() {
+            assert_eq!(*value, i as i64);
+        }
+        assert_eq!(stream.result().await, Ok(total));
+    }
+
+    // event-stream.test.ts: "returns a defensive queue snapshot that cannot desync internal state"
+    #[tokio::test]
+    async fn returns_a_defensive_queue_snapshot_that_cannot_desync_internal_state() {
+        let stream: EventStream<i64, i64> = EventStream::new(|_| false, |n| *n);
+        for i in 0..5 {
+            stream.push(i);
+        }
+        let mut snapshot = stream.queue();
+        assert_eq!(snapshot.len(), 5);
+        snapshot.clear();
+        for i in 0..5 {
+            let value = stream.next().await.expect("ok").expect("value");
+            assert_eq!(value, i);
+        }
+        assert!(stream.queue().is_empty());
+    }
+
+    // event-stream.test.ts: "preserves order when events arrive after buffered draining starts"
+    #[tokio::test]
+    async fn preserves_order_when_events_arrive_after_buffered_draining_starts() {
+        let stream: EventStream<i64, i64> = EventStream::new(|_| false, |n| *n);
+        stream.push(1);
+        stream.push(2);
+        assert_eq!(stream.next().await, Ok(Some(1)));
+        stream.push(3);
+        assert_eq!(stream.next().await, Ok(Some(2)));
+        assert_eq!(stream.next().await, Ok(Some(3)));
+        stream.end(Some(3));
+        assert_eq!(stream.next().await, Ok(None));
+    }
+
+    // event-stream.test.ts: "delivers events to waiting consumers in registration order"
+    #[tokio::test]
+    async fn delivers_events_to_waiting_consumers_in_registration_order() {
+        let stream: EventStream<i64, i64> = EventStream::new(|_| false, |n| *n);
+        let first_consumer = stream.clone();
+        let second_consumer = stream.clone();
+        let first_task = tokio::spawn(async move { first_consumer.next().await });
+        tokio::task::yield_now().await;
+        let second_task = tokio::spawn(async move { second_consumer.next().await });
+        tokio::task::yield_now().await;
+        stream.push(1);
+        stream.push(2);
+        assert_eq!(first_task.await.expect("join"), Ok(Some(1)));
+        assert_eq!(second_task.await.expect("join"), Ok(Some(2)));
+    }
+
+    // event-stream.test.ts: "wakes all waiting consumers when ended without a result"
+    #[tokio::test]
+    async fn wakes_all_waiting_consumers_when_ended_without_a_result() {
+        let stream: EventStream<i64, i64> = EventStream::new(|_| false, |n| *n);
+        let first_consumer = stream.clone();
+        let second_consumer = stream.clone();
+        let first_task = tokio::spawn(async move { first_consumer.next().await });
+        tokio::task::yield_now().await;
+        let second_task = tokio::spawn(async move { second_consumer.next().await });
+        tokio::task::yield_now().await;
+        stream.end(None);
+        assert_eq!(first_task.await.expect("join"), Ok(None));
+        assert_eq!(second_task.await.expect("join"), Ok(None));
+    }
 }

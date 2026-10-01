@@ -10,7 +10,7 @@ maho-ai = { path = "../maho-ai" }
 maho-agent = { path = "../maho-agent" }
 maho-tui = { path = "../maho-tui" }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true, features = ["preserve_order"] }
+serde_json = { workspace = true, features = ["preserve_order", "float_roundtrip"] }
 thiserror = { workspace = true }
 chrono = { workspace = true, features = ["clock", "std", "alloc"] }
 sha2 = { workspace = true }

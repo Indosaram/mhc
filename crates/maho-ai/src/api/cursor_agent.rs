@@ -871,7 +871,7 @@ fn build_ls_result_from_tool_result(path: &str, tool_result: &ToolResultMessage)
                 children_dirs: Vec::new(),
                 children_files: Vec::new(),
                 children_were_processed: false,
-                full_subtree_extension_counts: HashMap::new(),
+                full_subtree_extension_counts: BTreeMap::new(),
                 num_files: 0,
             });
         } else {
@@ -884,7 +884,7 @@ fn build_ls_result_from_tool_result(path: &str, tool_result: &ToolResultMessage)
         children_dirs,
         children_files,
         children_were_processed: true,
-        full_subtree_extension_counts: HashMap::new(),
+        full_subtree_extension_counts: BTreeMap::new(),
         num_files,
     };
     LsResult {
@@ -1012,7 +1012,7 @@ fn build_grep_result_from_tool_result(args: &GrepArgs, tool_result: &ToolResultM
             pattern: args.pattern.clone(),
             path: args.path.clone().unwrap_or_default(),
             output_mode: output_mode.to_owned(),
-            workspace_results: HashMap::from([(workspace_key, union_result)]),
+            workspace_results: BTreeMap::from([(workspace_key, union_result)]),
             ..GrepSuccess::default()
         })),
     }
@@ -1122,7 +1122,7 @@ fn decode_mcp_arg_value(value: &[u8]) -> Value {
     parse_tool_args_json(&String::from_utf8_lossy(value))
 }
 
-fn decode_mcp_args_map(args: Option<&HashMap<String, Bytes>>) -> Option<Map<String, Value>> {
+fn decode_mcp_args_map(args: Option<&BTreeMap<String, Bytes>>) -> Option<Map<String, Value>> {
     let args = args?;
     Some(args.iter().map(|(key, value)| (key.clone(), decode_mcp_arg_value(value))).collect())
 }
@@ -2339,8 +2339,8 @@ fn is_json_value(value: &Value) -> bool {
     }
 }
 
-fn encode_cursor_mcp_arguments(tool_call: &ToolCall) -> Result<HashMap<String, Bytes>, String> {
-    let mut encoded = HashMap::new();
+fn encode_cursor_mcp_arguments(tool_call: &ToolCall) -> Result<BTreeMap<String, Bytes>, String> {
+    let mut encoded = BTreeMap::new();
     for (name, value) in &tool_call.arguments {
         if !is_json_value(value) {
             return Err(format!("Cursor tool argument {}.{} is not JSON-serializable", tool_call.name, name));
@@ -2672,11 +2672,11 @@ fn build_grpc_request(
             todos: Vec::new(),
             pending_tool_calls: Vec::new(),
             previous_workspace_uris: Vec::new(),
-            file_states: HashMap::new(),
-            file_states_v2: HashMap::new(),
+            file_states: BTreeMap::new(),
+            file_states_v2: BTreeMap::new(),
             summary_archives: Vec::new(),
             turn_timings: Vec::new(),
-            subagent_states: HashMap::new(),
+            subagent_states: BTreeMap::new(),
             self_summary_count: 0,
             read_paths: Vec::new(),
             ..ConversationStateStructure::default()
@@ -3566,7 +3566,7 @@ async fn dispatch_exec_server_message(
             git_repos: Vec::new(),
             project_layouts: Vec::new(),
             mcp_instructions: Vec::new(),
-            file_contents: HashMap::new(),
+            file_contents: BTreeMap::new(),
             custom_subagents: Vec::new(),
             ..RequestContext::default()
         };

@@ -77,7 +77,11 @@ async function main() {
 		{
 			name: "update-environment-variables-request",
 			schema: UpdateEnvironmentVariablesRequestSchema,
-			value: { env: { FOO: "bar", BAZ: "qux" }, replace: true },
+			// Map entries are written in the order they appear here (protobuf-es
+			// preserves insertion order). The Rust side decodes them into a
+			// BTreeMap, so the keys must already be sorted for the re-encoded
+			// bytes to match byte-for-byte.
+			value: { env: { BAZ: "qux", FOO: "bar" }, replace: true },
 		},
 		{
 			name: "glob-tool-result-success",

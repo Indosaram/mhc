@@ -85,6 +85,85 @@ async function renderComponent(senpi, spec) {
 	return outputs;
 }
 
+/**
+ * `tui-screen` cases drive senpi's own renderer over a recording VirtualTerminal and capture
+ * (a) the raw ANSI byte stream the renderer wrote and (b) the resulting screen. The Rust side
+ * replays the same steps and must produce the identical stream, so the fixture is both the
+ * byte-equal reference and the screen oracle.
+ *
+ *   { name, kind: "tui-screen", crate, mode: "main"|"alt", cols, rows, steps: [...] }
+ *
+ * Steps: {op:"text", text, paddingX, paddingY} | {op:"render"} | {op:"resize", cols, rows}
+ *      | {op:"wheel", direction} | {op:"key", data} | {op:"stop", preserveScreen}
+ * `alt` cases start the screen before the steps (and stop at a `stop` step or at the end).
+ */
+async function renderTuiScreen(senpi, spec) {
+	// The alt screen's mouse sequence and several render branches read the environment; pin it so a
+	// fixture cannot depend on the machine that generated it.
+	const savedEnv = { TMUX: process.env.TMUX, ZELLIJ: process.env.ZELLIJ, STY: process.env.STY, TERM: process.env.TERM };
+	delete process.env.TMUX;
+	delete process.env.ZELLIJ;
+	delete process.env.STY;
+	process.env.TERM = "xterm-256color";
+	try {
+		return await renderTuiScreenInner(senpi, spec);
+	} finally {
+		for (const [key, value] of Object.entries(savedEnv)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
+}
+
+async function renderTuiScreenInner(senpi, spec) {
+	const { VirtualTerminal } = await importSenpi(senpi, "packages/tui/test/virtual-terminal.ts");
+	const { Text } = await importSenpi(senpi, "packages/tui/src/components/text.ts");
+	const Tui = (
+		await importSenpi(
+			senpi,
+			spec.mode === "alt" ? "packages/tui/src/tui-alt-screen.ts" : "packages/tui/src/tui-main-screen.ts",
+		)
+	)[spec.mode === "alt" ? "TuiAltScreen" : "TuiMainScreen"];
+
+	const term = new VirtualTerminal(spec.cols, spec.rows);
+	let stream = "";
+	const originalWrite = term.write.bind(term);
+	term.write = (data) => {
+		stream += data;
+		originalWrite(data);
+	};
+
+	const tui = new Tui(term);
+	if (spec.mode === "alt") tui.start();
+	for (const step of spec.steps ?? []) {
+		if (step.op === "text") {
+			const component = new Text(step.text ?? "", step.paddingX ?? 1, step.paddingY ?? 1);
+			if (spec.mode === "alt") tui.setLayoutRoot(component);
+			else tui.addChild(component);
+		} else if (step.op === "render") {
+			tui.renderNow(true);
+		} else if (step.op === "resize") {
+			term.resize(step.cols, step.rows);
+		} else if (step.op === "wheel") {
+			term.sendInput(`\x1b[<${step.direction < 0 ? 64 : 65};1;1M`);
+		} else if (step.op === "key") {
+			term.sendInput(step.data);
+		} else if (step.op === "stop") {
+			tui.stop({ preserveScreen: Boolean(step.preserveScreen) });
+		} else {
+			usage(`case ${spec.name}: unknown step op ${step.op}`);
+		}
+	}
+	await term.flush();
+	return [
+		{ file: `${spec.name}.ansi`, content: stream },
+		{
+			file: `${spec.name}.${term.columns}x${term.rows}.json`,
+			content: `${JSON.stringify(serializeScreen(term), null, 1)}\n`,
+		},
+	];
+}
+
 function colorOf(cell, which) {
 	const isDefault = which === "fg" ? cell.isFgDefault() : cell.isBgDefault();
 	if (isDefault) return "default";
@@ -182,11 +261,13 @@ for (const name of names) {
 			? await renderComponent(senpi, spec)
 			: spec.kind === "screen"
 				? await renderScreen(senpi, spec)
-				: spec.kind === "function"
-					? await renderFunction(senpi, spec)
-					: spec.kind === "validation"
-						? await renderValidation(senpi, spec)
-						: usage(`case ${name}: unknown kind ${spec.kind}`);
+				: spec.kind === "tui-screen"
+					? await renderTuiScreen(senpi, spec)
+					: spec.kind === "function"
+						? await renderFunction(senpi, spec)
+						: spec.kind === "validation"
+							? await renderValidation(senpi, spec)
+							: usage(`case ${name}: unknown kind ${spec.kind}`);
 	const dir = goldenDir(spec);
 	mkdirSync(dir, { recursive: true });
 	for (const { file, content } of outputs) {

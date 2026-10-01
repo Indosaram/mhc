@@ -15,7 +15,7 @@ pub fn coerce_xtml_argument_value(raw: &str, value_type: Option<&str>) -> Coerce
     match value_type {
         None | Some("string") => CoercedXtmlValue::Ok(Value::String(raw.to_string())),
         Some("number") => match raw.trim().parse::<f64>() {
-            Ok(parsed) if !parsed.is_nan() => CoercedXtmlValue::Ok(serde_json::Number::from_f64(parsed).map_or(Value::Null, Value::Number)),
+            Ok(parsed) if !parsed.is_nan() => CoercedXtmlValue::Ok(crate::utils::js::json_number(parsed)),
             _ => CoercedXtmlValue::Err,
         },
         Some("boolean") => match raw {
@@ -148,7 +148,7 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].name, "get_weather");
         assert_eq!(parsed[0].arguments.get("city"), Some(&json!("Seoul")));
-        assert_eq!(parsed[0].arguments.get("days"), Some(&json!(3.0)));
+        assert_eq!(parsed[0].arguments.get("days"), Some(&json!(3)));
     }
 
     #[test]
@@ -181,17 +181,17 @@ mod tests {
         }
     }
 
-    fn error_sink() -> (std::sync::Arc<std::sync::Mutex<Vec<String>>>, impl Fn(&str, Option<&std::collections::HashMap<String, Value>>) + Send + Sync + 'static) {
+    fn error_sink() -> (std::sync::Arc<std::sync::Mutex<Vec<String>>>, crate::tool_call_middleware::types::ParserErrorHandler) {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = seen.clone();
-        let handler = move |message: &str, _metadata: Option<&std::collections::HashMap<String, Value>>| {
+        let handler: crate::tool_call_middleware::types::ParserErrorHandler = std::sync::Arc::new(move |message: &str, _metadata: Option<&std::collections::HashMap<String, Value>>| {
             sink.lock().expect("error sink").push(message.to_string());
-        };
+        });
         (seen, handler)
     }
 
-    fn options_with(handler: impl Fn(&str, Option<&std::collections::HashMap<String, Value>>) + Send + Sync + 'static) -> ParserOptions {
-        ParserOptions { emit_raw_tool_call_text_on_error: false, on_error: Some(std::sync::Arc::new(handler)) }
+    fn options_with(handler: crate::tool_call_middleware::types::ParserErrorHandler) -> ParserOptions {
+        ParserOptions { emit_raw_tool_call_text_on_error: false, on_error: Some(handler) }
     }
 
     #[test]

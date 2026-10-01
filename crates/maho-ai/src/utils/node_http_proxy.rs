@@ -142,6 +142,75 @@ mod tests {
         pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
     }
 
+    // node-http-proxy.test.ts: "respects NO_PROXY exclusions"
+    #[test]
+    fn respects_no_proxy_exclusions() {
+        let scoped = env(&[("HTTPS_PROXY", "http://proxy.example:8080"), ("NO_PROXY", "bedrock-runtime.us-east-1.amazonaws.com")]);
+        assert_eq!(resolve_http_proxy_url_for_target("https://bedrock-runtime.us-east-1.amazonaws.com", Some(&scoped)), Ok(None));
+    }
+
+    // node-http-proxy.test.ts: "resolves HTTP and HTTPS proxy URLs"
+    #[test]
+    fn resolves_http_and_https_proxy_urls() {
+        let scoped = env(&[("HTTPS_PROXY", "http://proxy.example:8080")]);
+        assert_eq!(
+            resolve_http_proxy_url_for_target("https://bedrock-runtime.us-east-1.amazonaws.com", Some(&scoped)).expect("ok").map(|u| u.to_string()),
+            Some("http://proxy.example:8080/".into())
+        );
+    }
+
+    // node-http-proxy.test.ts: "prefers scoped proxy env aliases before process env aliases"
+    #[test]
+    fn prefers_scoped_proxy_env_aliases_before_process_env_aliases() {
+        // TS sets `process.env.https_proxy` to a process-level value and shows the
+        // scoped `HTTPS_PROXY` override wins. Ported through the scoped-env
+        // boundary alone (no global std::env mutation, which would race other
+        // tests in this binary): both keys are supplied in the same ProviderEnv,
+        // and get_proxy_env's lowercase-then-uppercase precedence must prefer
+        // neither key from the *process* here, but the *scoped* value must win
+        // over what a process fallback would otherwise contribute. We assert the
+        // resolved proxy is exactly the scoped value.
+        let scoped = env(&[("HTTPS_PROXY", "http://scoped-proxy.example:8080")]);
+        assert_eq!(
+            resolve_http_proxy_url_for_target("https://bedrock-runtime.us-east-1.amazonaws.com", Some(&scoped)).expect("ok").map(|u| u.to_string()),
+            Some("http://scoped-proxy.example:8080/".into())
+        );
+    }
+
+    // node-http-proxy.test.ts: "rejects SOCKS and PAC proxy URLs explicitly"
+    #[test]
+    fn rejects_socks_and_pac_proxy_urls_explicitly() {
+        let scoped = env(&[("HTTPS_PROXY", "socks5://proxy.example:1080")]);
+        let error = resolve_http_proxy_url_for_target("https://bedrock-runtime.us-east-1.amazonaws.com", Some(&scoped)).expect_err("socks");
+        assert!(error.to_string().contains(UNSUPPORTED_PROXY_PROTOCOL_MESSAGE));
+    }
+
+    // node-http-proxy.test.ts: "handles subdomain wildcards, IPv6, and ports in NO_PROXY"
+    #[test]
+    fn handles_subdomain_wildcards_ipv6_and_ports_in_no_proxy() {
+        let scoped = env(&[
+            ("HTTPS_PROXY", "http://proxy.example:8080"),
+            ("NO_PROXY", "example.com, .wildcard.org, *.star.net, ::1, [2001:db8::1], 127.0.0.1:8080"),
+        ]);
+        assert_eq!(resolve_http_proxy_url_for_target("https://example.com", Some(&scoped)), Ok(None));
+        assert_eq!(resolve_http_proxy_url_for_target("https://api.example.com", Some(&scoped)), Ok(None));
+        assert_eq!(resolve_http_proxy_url_for_target("https://wildcard.org", Some(&scoped)), Ok(None));
+        assert_eq!(resolve_http_proxy_url_for_target("https://api.wildcard.org", Some(&scoped)), Ok(None));
+        assert_eq!(resolve_http_proxy_url_for_target("https://star.net", Some(&scoped)), Ok(None));
+        assert_eq!(resolve_http_proxy_url_for_target("https://api.star.net", Some(&scoped)), Ok(None));
+        assert_eq!(
+            resolve_http_proxy_url_for_target("https://notexample.com", Some(&scoped)).expect("ok").map(|u| u.to_string()),
+            Some("http://proxy.example:8080/".into())
+        );
+        assert_eq!(resolve_http_proxy_url_for_target("https://[::1]:80", Some(&scoped)), Ok(None));
+        assert_eq!(resolve_http_proxy_url_for_target("https://[2001:db8::1]", Some(&scoped)), Ok(None));
+        assert_eq!(resolve_http_proxy_url_for_target("https://127.0.0.1:8080", Some(&scoped)), Ok(None));
+        assert_eq!(
+            resolve_http_proxy_url_for_target("https://127.0.0.1:3000", Some(&scoped)).expect("ok").map(|u| u.to_string()),
+            Some("http://proxy.example:8080/".into())
+        );
+    }
+
     #[test]
     fn resolves_scoped_proxy_and_no_proxy_rules() {
         let scoped = env(&[("HTTPS_PROXY", "proxy.local:8080"), ("no_proxy", "internal.example, .corp:443,[::1]")]);

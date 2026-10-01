@@ -1,0 +1,22 @@
+{
+	"name": "tui-screen-alt-basic",
+	"kind": "tui-screen",
+	"crate": "maho-tui",
+	"mode": "alt",
+	"cols": 20,
+	"rows": 4,
+	"steps": [
+		{
+			"op": "text",
+			"text": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10",
+			"paddingX": 0,
+			"paddingY": 0
+		},
+		{ "op": "render" },
+		{ "op": "wheel", "direction": -1 },
+		{ "op": "render" },
+		{ "op": "resize", "cols": 30, "rows": 6 },
+		{ "op": "render" },
+		{ "op": "stop", "preserveScreen": false }
+	]
+}

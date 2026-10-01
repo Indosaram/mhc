@@ -231,4 +231,187 @@ mod tests {
         events.extend(parser.finish());
         assert_eq!(text_of(&events), "banana");
     }
+
+    // ---- port of packages/ai/test/tool-call-middleware/invoke-recovery-parser.test.ts ----
+
+    /// The suite's `bashTool`: `command` is required and has `minLength: 3`.
+    fn bash_tool() -> Tool {
+        Tool {
+            name: "Bash".into(),
+            description: "Run a command".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "command": { "type": "string", "minLength": 3 } },
+                "required": ["command"],
+            }),
+            freeform: None,
+            constrained_sampling: None,
+        }
+    }
+
+    fn arguments(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        value.as_object().expect("object arguments").clone()
+    }
+
+    fn tool_call_events(events: &[StreamParserEvent]) -> Vec<StreamParserEvent> {
+        events
+            .iter()
+            .filter(|event| {
+                matches!(event, StreamParserEvent::ToolcallStart { .. } | StreamParserEvent::ToolcallDelta { .. } | StreamParserEvent::ToolcallEnd { .. })
+            })
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn emits_start_at_the_known_invoke_opening_boundary() {
+        let mut parser = create_antml_invoke_recovery_stream_parser(vec![bash_tool()], None);
+        let opening = parser.feed("<antml:invoke name=\"Bash\">");
+        assert_eq!(opening, vec![StreamParserEvent::ToolcallStart { index: 0, name: "Bash".into(), id: "recovered-antml-0".into() }]);
+
+        let mut completion = parser.feed("<antml:parameter name=\"command\">echo recovered</antml:parameter></antml:invoke>");
+        completion.extend(parser.finish());
+        assert_eq!(
+            completion,
+            vec![
+                StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: r#"{"command":"echo recovered"}"#.into() },
+                StreamParserEvent::ToolcallEnd {
+                    index: 0,
+                    name: "Bash".into(),
+                    id: "recovered-antml-0".into(),
+                    arguments: arguments(json!({"command": "echo recovered"})),
+                    incomplete: false,
+                    error_message: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn keeps_unknown_and_ambiguous_tools_as_text() {
+        let unknown = r#"<function_calls><invoke name="Missing"></invoke></function_calls>"#;
+        let ambiguous = r#"<invoke name="bash"></invoke>"#;
+        let mut unknown_parser = create_antml_invoke_recovery_stream_parser(vec![bash_tool()], None);
+        let mut ambiguous_tools = vec![bash_tool()];
+        let mut upper = bash_tool();
+        upper.name = "BASH".into();
+        ambiguous_tools.push(upper);
+        let mut ambiguous_parser = create_antml_invoke_recovery_stream_parser(ambiguous_tools, None);
+
+        let mut unknown_events = unknown_parser.feed(unknown);
+        unknown_events.extend(unknown_parser.finish());
+        let mut ambiguous_events = ambiguous_parser.feed(ambiguous);
+        ambiguous_events.extend(ambiguous_parser.finish());
+
+        assert_eq!(text_of(&unknown_events), unknown);
+        assert_eq!(text_of(&ambiguous_events), ambiguous);
+        let mut both = unknown_events.clone();
+        both.extend(ambiguous_events);
+        assert_eq!(tool_call_events(&both), Vec::new());
+    }
+
+    #[test]
+    fn finalizes_schema_failure_after_start_as_incomplete() {
+        let mut parser = create_antml_invoke_recovery_stream_parser(vec![bash_tool()], None);
+        let mut events = parser.feed("<invoke name=\"Bash\">");
+        events.extend(parser.feed("<parameter name=\"command\">42</parameter></invoke>"));
+
+        assert_eq!(
+            events,
+            vec![
+                StreamParserEvent::ToolcallStart { index: 0, name: "Bash".into(), id: "recovered-antml-0".into() },
+                StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: "{}".into() },
+                StreamParserEvent::ToolcallEnd {
+                    index: 0,
+                    name: "Bash".into(),
+                    id: "recovered-antml-0".into(),
+                    arguments: serde_json::Map::new(),
+                    incomplete: true,
+                    error_message: Some("Recovered tool call arguments failed validation".into()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn never_ends_or_makes_a_missing_invoke_close_executable() {
+        let mut parser = create_antml_invoke_recovery_stream_parser(vec![bash_tool()], None);
+        let mut events = parser.feed("<invoke name=\"Bash\"><parameter name=\"command\">echo no-close</parameter>");
+        events.extend(parser.finish());
+
+        assert_eq!(events, vec![StreamParserEvent::ToolcallStart { index: 0, name: "Bash".into(), id: "recovered-antml-0".into() }]);
+    }
+
+    #[test]
+    fn preserves_nested_prompt_like_invokes_inside_an_active_parameter() {
+        let mut parser = create_antml_invoke_recovery_stream_parser(vec![bash_tool()], None);
+        let mut events =
+            parser.feed("<invoke name=\"Bash\"><parameter name=\"command\">echo <invoke name=\"X\"></invoke></parameter></invoke>");
+        events.extend(parser.finish());
+
+        assert_eq!(
+            events,
+            vec![
+                StreamParserEvent::ToolcallStart { index: 0, name: "Bash".into(), id: "recovered-antml-0".into() },
+                StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: r#"{"command":"echo <invoke name=\"X\"></invoke>"}"#.into() },
+                StreamParserEvent::ToolcallEnd {
+                    index: 0,
+                    name: "Bash".into(),
+                    id: "recovered-antml-0".into(),
+                    arguments: arguments(json!({"command": "echo <invoke name=\"X\"></invoke>"})),
+                    incomplete: false,
+                    error_message: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn consumes_the_wrapper_close_after_a_recovered_call() {
+        let mut parser = create_antml_invoke_recovery_stream_parser(vec![bash_tool()], None);
+        let mut events = parser
+            .feed("<function_calls><invoke name=\"Bash\"><parameter name=\"command\">echo wrapped</parameter></invoke></function_calls>");
+        events.extend(parser.finish());
+
+        assert_eq!(text_of(&events), "");
+        assert_eq!(
+            tool_call_events(&events),
+            vec![
+                StreamParserEvent::ToolcallStart { index: 0, name: "Bash".into(), id: "recovered-antml-0".into() },
+                StreamParserEvent::ToolcallDelta { index: 0, arguments_delta: r#"{"command":"echo wrapped"}"#.into() },
+                StreamParserEvent::ToolcallEnd {
+                    index: 0,
+                    name: "Bash".into(),
+                    id: "recovered-antml-0".into(),
+                    arguments: arguments(json!({"command": "echo wrapped"})),
+                    incomplete: false,
+                    error_message: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn preserves_unknown_invokes_after_a_recovered_wrapper_call() {
+        let mut parser = create_antml_invoke_recovery_stream_parser(vec![bash_tool()], None);
+        let mut events = parser.feed(
+            "<function_calls><invoke name=\"Bash\"><parameter name=\"command\">one</parameter></invoke><invoke name=\"Missing\"></invoke></function_calls>",
+        );
+        events.extend(parser.finish());
+
+        assert_eq!(text_of(&events), r#"<invoke name="Missing"></invoke>"#);
+        assert_eq!(tool_call_events(&events).len(), 3);
+    }
+
+    #[test]
+    fn preserves_tail_text_after_a_recovered_wrapper_call() {
+        let mut parser = create_antml_invoke_recovery_stream_parser(vec![bash_tool()], None);
+        let mut events = parser.feed(
+            "<function_calls><invoke name=\"Bash\"><parameter name=\"command\">one</parameter></invoke>TAIL</function_calls>",
+        );
+        events.extend(parser.finish());
+
+        assert_eq!(text_of(&events), "TAIL");
+        assert_eq!(tool_call_events(&events).len(), 3);
+    }
 }

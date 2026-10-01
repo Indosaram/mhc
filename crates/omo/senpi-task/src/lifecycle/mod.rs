@@ -33,4 +33,4 @@ pub use types::{
 };
 
 #[cfg(test)]
-mod lifecycle_tests;
+pub(crate) mod lifecycle_tests;

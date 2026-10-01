@@ -6,6 +6,7 @@ mod batch_admission_race;
 mod destroy;
 mod reconcile;
 mod reconcile_multi_session;
+mod reconcile_reattach;
 mod reconcile_revival;
 mod residency;
 mod shutdown;
@@ -29,12 +30,12 @@ use crate::state::{TaskTransition, TaskTransitionResult};
 use crate::store::{ListTaskRecordsResult, PersistedTaskEvent, StoreError, TombstoneResult};
 use crate::store::{StateDirConfig, TaskRecordStore};
 
-pub(super) struct TempStore {
+pub(crate) struct TempStore {
     pub store: Arc<TaskRecordStore>,
     _dir: tempfile::TempDir,
 }
 
-pub(super) fn temp_store() -> TempStore {
+pub(crate) fn temp_store() -> TempStore {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = TaskRecordStore::new(&StateDirConfig {
         project_dir: dir.path().to_path_buf(),
@@ -46,16 +47,16 @@ pub(super) fn temp_store() -> TempStore {
     }
 }
 
-pub(super) fn settings(overrides: Value) -> TaskSettings {
+pub(crate) fn settings(overrides: Value) -> TaskSettings {
     TaskSettings::resolve(&overrides).expect("valid task settings")
 }
 
-pub(super) fn default_settings() -> TaskSettings {
+pub(crate) fn default_settings() -> TaskSettings {
     settings(json!({}))
 }
 
 #[derive(Default)]
-pub(super) struct Seed<'a> {
+pub(crate) struct Seed<'a> {
     pub task_id: &'a str,
     pub parent_session_id: Option<&'a str>,
     pub status: Option<TaskStatus>,
@@ -72,7 +73,7 @@ pub(super) struct Seed<'a> {
     pub notification_failed_epoch: Option<i64>,
 }
 
-pub(super) fn seed_record(store: &TaskRecordStore, input: Seed<'_>) -> TaskRecord {
+pub(crate) fn seed_record(store: &TaskRecordStore, input: Seed<'_>) -> TaskRecord {
     let timestamp = input
         .updated_at
         .clone()
@@ -102,33 +103,33 @@ pub(super) fn seed_record(store: &TaskRecordStore, input: Seed<'_>) -> TaskRecor
     record
 }
 
-pub(super) fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     i64::try_from(crate::state::system_now_ms()).unwrap_or(i64::MAX)
 }
 
 /// `new Date(1_000_000 + offset).toISOString()`.
-pub(super) fn iso(offset_ms: i64) -> String {
+pub(crate) fn iso(offset_ms: i64) -> String {
     crate::shared::iso_from_ms(1_000_000 + offset_ms)
 }
 
-pub(super) type CallLog = Arc<Mutex<Vec<String>>>;
+pub(crate) type CallLog = Arc<Mutex<Vec<String>>>;
 
-pub(super) fn call_log() -> CallLog {
+pub(crate) fn call_log() -> CallLog {
     Arc::default()
 }
 
-pub(super) fn calls(log: &CallLog) -> Vec<String> {
+pub(crate) fn calls(log: &CallLog) -> Vec<String> {
     log.lock().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
 #[derive(Default)]
-pub(super) struct HandleOptions {
+pub(crate) struct HandleOptions {
     pub pid: Option<i64>,
     pub abort_rejects: bool,
     pub dispose_rejects: bool,
 }
 
-pub(super) struct FakeHandle {
+pub(crate) struct FakeHandle {
     task_id: String,
     kind: ResidentKind,
     order: CallLog,
@@ -156,7 +157,7 @@ impl FakeHandle {
     }
 }
 
-pub(super) fn fake_handle(
+pub(crate) fn fake_handle(
     task_id: &str,
     kind: ResidentKind,
     order: &CallLog,
@@ -206,7 +207,7 @@ impl ResidentHandle for FakeHandle {
 }
 
 #[derive(Default)]
-pub(super) struct FakeRegistry {
+pub(crate) struct FakeRegistry {
     handles: Mutex<BTreeMap<String, Arc<dyn ResidentHandle>>>,
     pending: Mutex<HashSet<String>>,
     forgotten: Mutex<Vec<String>>,
@@ -281,7 +282,7 @@ impl ResidencyRegistry for FakeRegistry {
     }
 }
 
-pub(super) fn read_events(store: &TaskRecordStore, task_id: &str) -> Vec<String> {
+pub(crate) fn read_events(store: &TaskRecordStore, task_id: &str) -> Vec<String> {
     let path = store
         .state_dir()
         .join("logs")
@@ -302,7 +303,7 @@ pub(super) fn read_events(store: &TaskRecordStore, task_id: &str) -> Vec<String>
         .unwrap_or_default()
 }
 
-pub(super) fn lifecycle(
+pub(crate) fn lifecycle(
     store: &Arc<TaskRecordStore>,
     registry: &Arc<FakeRegistry>,
     config: TaskSettings,
@@ -310,18 +311,18 @@ pub(super) fn lifecycle(
     create_task_lifecycle(LifecycleDeps::new(store.clone(), registry.clone(), config))
 }
 
-pub(super) fn residency(store: &TaskRecordStore, task_id: &str) -> Option<ResidencyState> {
+pub(crate) fn residency(store: &TaskRecordStore, task_id: &str) -> Option<ResidencyState> {
     store
         .load(task_id)
         .expect("load")
         .map(|record| record.residency_state)
 }
 
-pub(super) type SignalHook = Box<dyn Fn(i64, OrphanSignal) + Send + Sync>;
+pub(crate) type SignalHook = Box<dyn Fn(i64, OrphanSignal) + Send + Sync>;
 
 /// `ProcessSignaller` over a mutable alive set; records every signal and runs an optional hook.
 #[derive(Default)]
-pub(super) struct FakeSignaller {
+pub(crate) struct FakeSignaller {
     alive: Mutex<HashSet<i64>>,
     signals: Mutex<Vec<(i64, &'static str)>>,
     hook: Option<SignalHook>,
@@ -380,11 +381,11 @@ impl ProcessSignaller for FakeSignaller {
     }
 }
 
-pub(super) type ListHook = Box<dyn FnMut(&TaskRecordStore) + Send>;
+pub(crate) type ListHook = Box<dyn FnMut(&TaskRecordStore) + Send>;
 
 /// Delegates to a real store but runs `on_list` once, right after the first `list()` scan -
 /// the TS tests' `{ ...store, list: () => ... }` race injection.
-pub(super) struct RacingStore {
+pub(crate) struct RacingStore {
     pub inner: Arc<TaskRecordStore>,
     on_list: Mutex<Option<ListHook>>,
 }
@@ -452,14 +453,14 @@ impl LifecycleStore for RacingStore {
     }
 }
 
-pub(super) fn record_path(store: &TaskRecordStore, task_id: &str) -> std::path::PathBuf {
+pub(crate) fn record_path(store: &TaskRecordStore, task_id: &str) -> std::path::PathBuf {
     store
         .state_dir()
         .join("tasks")
         .join(format!("{task_id}.json"))
 }
 
-pub(super) fn append_seed_event(store: &TaskRecordStore, task_id: &str) {
+pub(crate) fn append_seed_event(store: &TaskRecordStore, task_id: &str) {
     store
         .append_event(
             task_id,
