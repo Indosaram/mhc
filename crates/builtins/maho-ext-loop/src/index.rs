@@ -1,6 +1,23 @@
 use crate::{tick_prompt::{LoopMode,TickDelivery},types::{EpochMs,LoopEndReason,LoopId,LoopSentinel,DeliveryId}};
 use serde::Serialize;
 pub const LOOP_TICK_ENTRY_TYPE:&str="loop-tick";
+pub struct PreparedLoopTick { pub text:String,pub entry:LoopTickEntryData,pub delivery_state:crate::types::SentinelDeliveryState,pub defer:bool }
+pub fn prepare_loop_tick(entry:&crate::types::CronEntry,tick:&crate::scheduler::LoopTick,delivery_state:crate::types::SentinelDeliveryState,loop_file:crate::tick_prompt::LoopFileSnapshot,busy:bool,commands:&[maho_ext_api::SlashCommandInfo])->Option<PreparedLoopTick> {
+    let (fields,lifecycle,mode)=match entry {
+        crate::types::CronEntry::Fixed { fields,lifecycle,.. }=>(fields,lifecycle,crate::types::LoopKind::Fixed),
+        crate::types::CronEntry::Dynamic { fields,lifecycle,.. }=>(fields,lifecycle,crate::types::LoopKind::Dynamic),
+    };
+    if lifecycle.phase==crate::types::LoopPhase::Ended { return None; }
+    let built=crate::tick_prompt::build_tick_message(crate::tick_prompt::TickPromptInput { loop_id:fields.id.clone(),delivery_id:tick.delivery_id.clone(),mode,payload:fields.payload.clone(),reentry_prompt:fields.reentry_prompt.clone(),delivery_state,loop_file });
+    let command=built.text.strip_prefix('/').and_then(|text|text.split(char::is_whitespace).next());
+    let defer=busy&&command.is_some_and(|name|commands.iter().any(|command|command.name==name));
+    Some(PreparedLoopTick { text:built.text,entry:LoopTickEntryData { loop_id:fields.id.clone(),delivery_id:tick.delivery_id.clone(),scheduled_for_at:tick.scheduled_for_at,mode,delivery:built.delivery,sentinel:built.details.sentinel,noop_streak:fields.noop_streak,folded:fields.noop_streak>=2.0 },delivery_state:built.delivery_state,defer })
+}
+pub fn deliver_loop_tick(api:&maho_ext_api::ExtensionApi,prepared:PreparedLoopTick,busy:bool)->Result<(),maho_ext_api::ExtensionFailure> {
+    if prepared.defer { return Err(maho_ext_api::ExtensionFailure::new("Loop extension command must be deferred until settlement")); }
+    api.append_entry(LOOP_TICK_ENTRY_TYPE,Some(serde_json::to_value(prepared.entry).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?))?;
+    api.send_user_message(maho_ext_api::UserMessageContent::Text(prepared.text),maho_ext_api::SendUserMessageOptions { expand_prompt_templates:true,deliver_as:busy.then_some(maho_ext_api::StreamingBehavior::FollowUp) })
+}
 #[derive(Clone,Debug,PartialEq,Serialize)]
 #[serde(rename_all="camelCase")]
 pub struct LoopTickEntryData {
@@ -64,6 +81,15 @@ impl NodeTimerPort {
 impl Drop for NodeTimerPort { fn drop(&mut self) { for handle in self.handles.values() { handle.abort(); } } }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn busy_registered_slash_payload_is_deferred_but_plain_prompt_is_not() {
+        let mut scheduler=crate::scheduler::LoopScheduler::new("s",None,&Default::default());
+        scheduler.create_dynamic(crate::scheduler::CreateDynamicRequest { original_args:"/test".into(),reentry_prompt:"/loop /test".into(),payload:crate::types::LoopPayload::Prompt { prompt:"/test args".into() } },"a".into(),0.0);
+        let tick=crate::scheduler::LoopTick { loop_id:"a".into(),delivery_id:"d".into(),scheduled_for_at:0.0,coalesced:false };
+        let entry=&scheduler.state.entries["a"]; let commands=vec![maho_ext_api::SlashCommandInfo { name:"test".into(),..Default::default() }];
+        assert!(prepare_loop_tick(entry,&tick,Default::default(),crate::tick_prompt::LoopFileSnapshot::Absent,true,&commands).unwrap().defer);
+        assert!(!prepare_loop_tick(entry,&tick,Default::default(),crate::tick_prompt::LoopFileSnapshot::Absent,false,&commands).unwrap().defer);
+        assert!(!prepare_loop_tick(entry,&tick,Default::default(),crate::tick_prompt::LoopFileSnapshot::Absent,true,&[]).unwrap().defer);
+    }
     #[tokio::test] async fn replaced_and_cancelled_callbacks_never_run() {
         let mut timers=NodeTimerPort::new();
         timers.arm("a",0.0,0.0,||panic!("superseded callback ran"));
