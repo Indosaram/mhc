@@ -54,5 +54,11 @@ pub async fn connect_mcp_transport(connection:&McpTransportConnection)->Result<A
     }
 }
 pub async fn shutdown_mcp_transport(connection:&McpTransportConnection)->Result<(),McpError> {
-    if let Some(client)=connection.client.get(){client.close().await?;}Ok(())
+    if let Some(client)=connection.client.get() {
+        if let Some(pid)=client.root_pid {
+            let reaper=crate::process_tree::reap_process_tree(pid,Duration::from_millis(400),Duration::from_millis(500));
+            let (result,())=tokio::join!(client.close(),reaper);result?;
+        }else{client.close().await?;}
+    }
+    Ok(())
 }

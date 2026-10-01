@@ -17,3 +17,7 @@ pub mod transport;
 pub mod transport_sdk;
 pub mod catalog;
 pub mod resources;
+pub mod instructions;
+pub mod process_tree;
+pub mod connection;
+pub mod connection_types;

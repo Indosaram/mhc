@@ -52,3 +52,13 @@ async fn native_http_connects_lists_and_calls_pinned_fixture() {
     let result=client.request("tools/call",serde_json::json!({"name":"tool_1","arguments":{"value":"http native"}}),Duration::from_secs(3)).await.unwrap();assert!(result["content"].is_array());
     shutdown_mcp_transport(&connection).await.unwrap();fixture.kill().await.unwrap();fixture.wait().await.unwrap();
 }
+#[tokio::test]
+async fn shutdown_reaps_fixture_process_tree() {
+    use std::sync::{Arc,Mutex};
+    let root=tempfile::tempdir().unwrap();let logger=Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("tree",root.path(),None).unwrap()));
+    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into(),"--spawn-grandchild".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
+    let connection=create_mcp_transport("tree",&config,None,logger).unwrap();connect_mcp_transport(&connection).await.unwrap();
+    let pids=maho_ext_mcp::process_tree::collect_process_tree(connection.get_root_pid().unwrap()).await;assert!(pids.len()>1);
+    shutdown_mcp_transport(&connection).await.unwrap();
+    for pid in pids {assert!(!maho_ext_mcp::process_tree::is_process_alive(pid).await,"fixture pid {pid} still alive");}
+}
