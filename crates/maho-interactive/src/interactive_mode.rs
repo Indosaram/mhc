@@ -467,6 +467,7 @@ impl InteractiveMode {
     }
 
     pub fn tick(&mut self, now_ms: f64) {
+        for component in &self.tool_cards { component.borrow_mut().tick(now_ms.max(0.0) as u64); }
         if let Some(value) = self.reveal.tick(now_ms) && let Some(component) = &self.streaming { component.borrow_mut().update_content(&value, Some(true)); }
         for (id, value) in self.tool_reveal.tick(now_ms) { if let Some(component) = self.pending_tools.get(&id) { component.borrow_mut().update_result(Self::tool_result(&value, false), true); } }
     }
