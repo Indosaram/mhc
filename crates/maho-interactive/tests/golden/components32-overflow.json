@@ -1,0 +1,1133 @@
+{
+  "groups": [
+    {
+      "name": "overflow",
+      "width": 40,
+      "calls": [
+        {
+          "action": "Search",
+          "label": "pattern0 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern1 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern2 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern3 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern4 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern5 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern6 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern7 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern8 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern9 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern10 in src",
+          "pending": false,
+          "failed": false
+        }
+      ],
+      "rules": [],
+      "lines": [
+        "",
+        "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
+        "\u001b[38;5;241m  └ \u001b[39m\u001b[38;5;109mSearch\u001b[39m pattern0 in src",
+        "    \u001b[38;5;109mSearch\u001b[39m pattern1 in src",
+        "    \u001b[38;5;109mSearch\u001b[39m pattern2 in src",
+        "    \u001b[38;5;109mSearch\u001b[39m pattern3 in src",
+        "    \u001b[38;5;109mSearch\u001b[39m pattern4 in src",
+        "    \u001b[38;5;109mSearch\u001b[39m pattern5 in src",
+        "    \u001b[38;5;109mSearch\u001b[39m pattern6 in src",
+        "    \u001b[38;5;109mSearch\u001b[39m pattern7 in src",
+        "    \u001b[38;5;241m… +3 more\u001b[39m"
+      ]
+    },
+    {
+      "name": "mixed-overflow",
+      "width": 40,
+      "calls": [
+        {
+          "action": "Read",
+          "label": "a.rs",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Read",
+          "label": "b.rs",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "p0",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "p1",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "p2",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "p3",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "p4",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "p5",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "p6",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "p7",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "p8",
+          "pending": false,
+          "failed": false
+        }
+      ],
+      "rules": [],
+      "lines": [
+        "",
+        "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
+        "\u001b[38;5;241m  └ \u001b[39m\u001b[38;5;109mRead\u001b[39m a.rs\u001b[38;5;241m, \u001b[39mb.rs",
+        "    \u001b[38;5;109mSearch\u001b[39m p0",
+        "    \u001b[38;5;109mSearch\u001b[39m p1",
+        "    \u001b[38;5;109mSearch\u001b[39m p2",
+        "    \u001b[38;5;109mSearch\u001b[39m p3",
+        "    \u001b[38;5;109mSearch\u001b[39m p4",
+        "    \u001b[38;5;109mSearch\u001b[39m p5",
+        "    \u001b[38;5;109mSearch\u001b[39m p6",
+        "    \u001b[38;5;241m… +2 more\u001b[39m"
+      ]
+    },
+    {
+      "name": "rules-deduped",
+      "width": 40,
+      "calls": [
+        {
+          "action": "List",
+          "label": ".",
+          "pending": false,
+          "failed": false
+        }
+      ],
+      "rules": [
+        "r1",
+        "r2",
+        "r1"
+      ],
+      "lines": [
+        "",
+        "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
+        "\u001b[38;5;241m  └ \u001b[39m\u001b[38;5;109mList\u001b[39m .",
+        "    \u001b[38;5;109mApplied\u001b[39m 2 project rules"
+      ]
+    },
+    {
+      "name": "overflow",
+      "width": 80,
+      "calls": [
+        {
+          "action": "Search",
+          "label": "pattern0 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern1 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern2 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern3 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern4 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern5 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern6 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern7 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern8 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern9 in src",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "pattern10 in src",
+          "pending": false,
+          "failed": false
+        }
+      ],
+      "rules": [],
+      "lines": [
+        "",
+        "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
+        "\u001b[38;5;241m  └ \u001b[39m\u001b[38;5;109mSearch\u001b[39m pattern0 in src",
+        "    \u001b[38;5;109mSearch\u001b[39m pattern1 in src",
+        "    \u001b[38;5;109mSearch\u001b[39m pattern2 in src",
+        "    \u001b[38;5;109mSearch\u001b[39m pattern3 in src",
+        "    \u001b[38;5;109mSearch\u001b[39m pattern4 in src",
+        "    \u001b[38;5;109mSearch\u001b[39m pattern5 in src",
+        "    \u001b[38;5;109mSearch\u001b[39m pattern6 in src",
+        "    \u001b[38;5;109mSearch\u001b[39m pattern7 in src",
+        "    \u001b[38;5;241m… +3 more\u001b[39m"
+      ]
+    },
+    {
+      "name": "mixed-overflow",
+      "width": 80,
+      "calls": [
+        {
+          "action": "Read",
+          "label": "a.rs",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Read",
+          "label": "b.rs",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "p0",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "p1",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "p2",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "p3",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "p4",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "p5",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "p6",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "p7",
+          "pending": false,
+          "failed": false
+        },
+        {
+          "action": "Search",
+          "label": "p8",
+          "pending": false,
+          "failed": false
+        }
+      ],
+      "rules": [],
+      "lines": [
+        "",
+        "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
+        "\u001b[38;5;241m  └ \u001b[39m\u001b[38;5;109mRead\u001b[39m a.rs\u001b[38;5;241m, \u001b[39mb.rs",
+        "    \u001b[38;5;109mSearch\u001b[39m p0",
+        "    \u001b[38;5;109mSearch\u001b[39m p1",
+        "    \u001b[38;5;109mSearch\u001b[39m p2",
+        "    \u001b[38;5;109mSearch\u001b[39m p3",
+        "    \u001b[38;5;109mSearch\u001b[39m p4",
+        "    \u001b[38;5;109mSearch\u001b[39m p5",
+        "    \u001b[38;5;109mSearch\u001b[39m p6",
+        "    \u001b[38;5;241m… +2 more\u001b[39m"
+      ]
+    },
+    {
+      "name": "rules-deduped",
+      "width": 80,
+      "calls": [
+        {
+          "action": "List",
+          "label": ".",
+          "pending": false,
+          "failed": false
+        }
+      ],
+      "rules": [
+        "r1",
+        "r2",
+        "r1"
+      ],
+      "lines": [
+        "",
+        "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
+        "\u001b[38;5;241m  └ \u001b[39m\u001b[38;5;109mList\u001b[39m .",
+        "    \u001b[38;5;109mApplied\u001b[39m 2 project rules"
+      ]
+    }
+  ],
+  "assistant": [
+    {
+      "name": "hide-thinking",
+      "width": 40,
+      "message": {
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "reasoning"
+          },
+          {
+            "type": "text",
+            "text": "done"
+          }
+        ],
+        "stopReason": "stop"
+      },
+      "hideThinkingBlock": false,
+      "isExplorationDetail": false,
+      "lines": [
+        "\u001b]133;A\u0007",
+        " \u001b[3m\u001b[38;5;244mThinking...\u001b[39m\u001b[23m",
+        "",
+        "\u001b]133;B\u0007\u001b]133;C\u0007 done"
+      ]
+    },
+    {
+      "name": "hidden-label",
+      "width": 40,
+      "message": {
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "reasoning"
+          },
+          {
+            "type": "text",
+            "text": "done"
+          }
+        ],
+        "stopReason": "stop"
+      },
+      "hideThinkingBlock": false,
+      "isExplorationDetail": false,
+      "lines": [
+        "\u001b]133;A\u0007",
+        " \u001b[3m\u001b[38;5;244mreasoning\u001b[39m\u001b[23m",
+        "",
+        "\u001b]133;B\u0007\u001b]133;C\u0007 done"
+      ]
+    },
+    {
+      "name": "output-pad",
+      "width": 40,
+      "message": {
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "reasoning"
+          },
+          {
+            "type": "text",
+            "text": "done"
+          }
+        ],
+        "stopReason": "stop"
+      },
+      "hideThinkingBlock": false,
+      "isExplorationDetail": false,
+      "lines": [
+        "\u001b]133;A\u0007",
+        "   \u001b[3m\u001b[38;5;244mreasoning\u001b[39m\u001b[23m",
+        "",
+        "\u001b]133;B\u0007\u001b]133;C\u0007   done"
+      ]
+    },
+    {
+      "name": "expanded",
+      "width": 40,
+      "message": {
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "reasoning"
+          },
+          {
+            "type": "text",
+            "text": "done"
+          }
+        ],
+        "stopReason": "stop"
+      },
+      "hideThinkingBlock": false,
+      "isExplorationDetail": false,
+      "lines": [
+        "\u001b]133;A\u0007",
+        " \u001b[3m\u001b[38;5;244mreasoning\u001b[39m\u001b[23m",
+        "",
+        "\u001b]133;B\u0007\u001b]133;C\u0007 done"
+      ]
+    },
+    {
+      "name": "exploration-detail",
+      "width": 40,
+      "message": {
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "why"
+          }
+        ],
+        "stopReason": "stop"
+      },
+      "hideThinkingBlock": false,
+      "isExplorationDetail": false,
+      "lines": [
+        "\u001b]133;A\u0007",
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;244mwhy\u001b[39m\u001b[23m"
+      ]
+    },
+    {
+      "name": "exploration-detail-hidden",
+      "width": 40,
+      "message": {
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "why"
+          }
+        ],
+        "stopReason": "stop"
+      },
+      "hideThinkingBlock": true,
+      "isExplorationDetail": true,
+      "lines": [
+        "\u001b]133;A\u0007",
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;244mThinking...\u001b[39m\u001b[23m"
+      ]
+    },
+    {
+      "name": "hide-thinking",
+      "width": 80,
+      "message": {
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "reasoning"
+          },
+          {
+            "type": "text",
+            "text": "done"
+          }
+        ],
+        "stopReason": "stop"
+      },
+      "hideThinkingBlock": false,
+      "isExplorationDetail": false,
+      "lines": [
+        "\u001b]133;A\u0007",
+        " \u001b[3m\u001b[38;5;244mThinking...\u001b[39m\u001b[23m",
+        "",
+        "\u001b]133;B\u0007\u001b]133;C\u0007 done"
+      ]
+    },
+    {
+      "name": "hidden-label",
+      "width": 80,
+      "message": {
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "reasoning"
+          },
+          {
+            "type": "text",
+            "text": "done"
+          }
+        ],
+        "stopReason": "stop"
+      },
+      "hideThinkingBlock": false,
+      "isExplorationDetail": false,
+      "lines": [
+        "\u001b]133;A\u0007",
+        " \u001b[3m\u001b[38;5;244mreasoning\u001b[39m\u001b[23m",
+        "",
+        "\u001b]133;B\u0007\u001b]133;C\u0007 done"
+      ]
+    },
+    {
+      "name": "output-pad",
+      "width": 80,
+      "message": {
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "reasoning"
+          },
+          {
+            "type": "text",
+            "text": "done"
+          }
+        ],
+        "stopReason": "stop"
+      },
+      "hideThinkingBlock": false,
+      "isExplorationDetail": false,
+      "lines": [
+        "\u001b]133;A\u0007",
+        "   \u001b[3m\u001b[38;5;244mreasoning\u001b[39m\u001b[23m",
+        "",
+        "\u001b]133;B\u0007\u001b]133;C\u0007   done"
+      ]
+    },
+    {
+      "name": "expanded",
+      "width": 80,
+      "message": {
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "reasoning"
+          },
+          {
+            "type": "text",
+            "text": "done"
+          }
+        ],
+        "stopReason": "stop"
+      },
+      "hideThinkingBlock": false,
+      "isExplorationDetail": false,
+      "lines": [
+        "\u001b]133;A\u0007",
+        " \u001b[3m\u001b[38;5;244mreasoning\u001b[39m\u001b[23m",
+        "",
+        "\u001b]133;B\u0007\u001b]133;C\u0007 done"
+      ]
+    },
+    {
+      "name": "exploration-detail",
+      "width": 80,
+      "message": {
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "why"
+          }
+        ],
+        "stopReason": "stop"
+      },
+      "hideThinkingBlock": false,
+      "isExplorationDetail": false,
+      "lines": [
+        "\u001b]133;A\u0007",
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;244mwhy\u001b[39m\u001b[23m"
+      ]
+    },
+    {
+      "name": "exploration-detail-hidden",
+      "width": 80,
+      "message": {
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "why"
+          }
+        ],
+        "stopReason": "stop"
+      },
+      "hideThinkingBlock": true,
+      "isExplorationDetail": true,
+      "lines": [
+        "\u001b]133;A\u0007",
+        "\u001b]133;B\u0007\u001b]133;C\u0007 \u001b[3m\u001b[38;5;244mThinking...\u001b[39m\u001b[23m"
+      ]
+    }
+  ],
+  "selectors": [
+    {
+      "name": "empty",
+      "width": 40,
+      "messages": [],
+      "initialSelectedId": null,
+      "lines": [
+        "",
+        " \u001b[1mFork from Message\u001b[22m",
+        " \u001b[38;5;244mSelect a user message to copy the",
+        " \u001b[38;5;244mactive path up to that point into a",
+        " \u001b[38;5;244mnew session\u001b[39m",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────\u001b[39m",
+        "",
+        "\u001b[38;5;244m  No user messages found\u001b[39m",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────\u001b[39m"
+      ]
+    },
+    {
+      "name": "scroll-first",
+      "width": 40,
+      "messages": [
+        {
+          "id": "e0",
+          "text": "message 0"
+        },
+        {
+          "id": "e1",
+          "text": "message 1"
+        },
+        {
+          "id": "e2",
+          "text": "message 2"
+        },
+        {
+          "id": "e3",
+          "text": "message 3"
+        },
+        {
+          "id": "e4",
+          "text": "message 4"
+        },
+        {
+          "id": "e5",
+          "text": "message 5"
+        },
+        {
+          "id": "e6",
+          "text": "message 6"
+        },
+        {
+          "id": "e7",
+          "text": "message 7"
+        },
+        {
+          "id": "e8",
+          "text": "message 8"
+        },
+        {
+          "id": "e9",
+          "text": "message 9"
+        },
+        {
+          "id": "e10",
+          "text": "message 10"
+        },
+        {
+          "id": "e11",
+          "text": "message 11"
+        },
+        {
+          "id": "e12",
+          "text": "message 12"
+        },
+        {
+          "id": "e13",
+          "text": "message 13"
+        }
+      ],
+      "initialSelectedId": "e0",
+      "lines": [
+        "",
+        " \u001b[1mFork from Message\u001b[22m",
+        " \u001b[38;5;244mSelect a user message to copy the",
+        " \u001b[38;5;244mactive path up to that point into a",
+        " \u001b[38;5;244mnew session\u001b[39m",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────\u001b[39m",
+        "",
+        "\u001b[38;5;109m› \u001b[39m\u001b[1mmessage 0\u001b[22m",
+        "\u001b[38;5;244m  Message 1 of 14\u001b[39m",
+        "",
+        "  message 1",
+        "\u001b[38;5;244m  Message 2 of 14\u001b[39m",
+        "",
+        "  message 2",
+        "\u001b[38;5;244m  Message 3 of 14\u001b[39m",
+        "",
+        "  message 3",
+        "\u001b[38;5;244m  Message 4 of 14\u001b[39m",
+        "",
+        "  message 4",
+        "\u001b[38;5;244m  Message 5 of 14\u001b[39m",
+        "",
+        "  message 5",
+        "\u001b[38;5;244m  Message 6 of 14\u001b[39m",
+        "",
+        "  message 6",
+        "\u001b[38;5;244m  Message 7 of 14\u001b[39m",
+        "",
+        "  message 7",
+        "\u001b[38;5;244m  Message 8 of 14\u001b[39m",
+        "",
+        "  message 8",
+        "\u001b[38;5;244m  Message 9 of 14\u001b[39m",
+        "",
+        "  message 9",
+        "\u001b[38;5;244m  Message 10 of 14\u001b[39m",
+        "",
+        "\u001b[38;5;244m  (1/14)\u001b[39m",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────\u001b[39m"
+      ]
+    },
+    {
+      "name": "scroll-last",
+      "width": 40,
+      "messages": [
+        {
+          "id": "e0",
+          "text": "message 0"
+        },
+        {
+          "id": "e1",
+          "text": "message 1"
+        },
+        {
+          "id": "e2",
+          "text": "message 2"
+        },
+        {
+          "id": "e3",
+          "text": "message 3"
+        },
+        {
+          "id": "e4",
+          "text": "message 4"
+        },
+        {
+          "id": "e5",
+          "text": "message 5"
+        },
+        {
+          "id": "e6",
+          "text": "message 6"
+        },
+        {
+          "id": "e7",
+          "text": "message 7"
+        },
+        {
+          "id": "e8",
+          "text": "message 8"
+        },
+        {
+          "id": "e9",
+          "text": "message 9"
+        },
+        {
+          "id": "e10",
+          "text": "message 10"
+        },
+        {
+          "id": "e11",
+          "text": "message 11"
+        },
+        {
+          "id": "e12",
+          "text": "message 12"
+        },
+        {
+          "id": "e13",
+          "text": "message 13"
+        }
+      ],
+      "initialSelectedId": "e13",
+      "lines": [
+        "",
+        " \u001b[1mFork from Message\u001b[22m",
+        " \u001b[38;5;244mSelect a user message to copy the",
+        " \u001b[38;5;244mactive path up to that point into a",
+        " \u001b[38;5;244mnew session\u001b[39m",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────\u001b[39m",
+        "",
+        "  message 4",
+        "\u001b[38;5;244m  Message 5 of 14\u001b[39m",
+        "",
+        "  message 5",
+        "\u001b[38;5;244m  Message 6 of 14\u001b[39m",
+        "",
+        "  message 6",
+        "\u001b[38;5;244m  Message 7 of 14\u001b[39m",
+        "",
+        "  message 7",
+        "\u001b[38;5;244m  Message 8 of 14\u001b[39m",
+        "",
+        "  message 8",
+        "\u001b[38;5;244m  Message 9 of 14\u001b[39m",
+        "",
+        "  message 9",
+        "\u001b[38;5;244m  Message 10 of 14\u001b[39m",
+        "",
+        "  message 10",
+        "\u001b[38;5;244m  Message 11 of 14\u001b[39m",
+        "",
+        "  message 11",
+        "\u001b[38;5;244m  Message 12 of 14\u001b[39m",
+        "",
+        "  message 12",
+        "\u001b[38;5;244m  Message 13 of 14\u001b[39m",
+        "",
+        "\u001b[38;5;109m› \u001b[39m\u001b[1mmessage 13\u001b[22m",
+        "\u001b[38;5;244m  Message 14 of 14\u001b[39m",
+        "",
+        "\u001b[38;5;244m  (14/14)\u001b[39m",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────\u001b[39m"
+      ]
+    },
+    {
+      "name": "empty",
+      "width": 80,
+      "messages": [],
+      "initialSelectedId": null,
+      "lines": [
+        "",
+        " \u001b[1mFork from Message\u001b[22m",
+        " \u001b[38;5;244mSelect a user message to copy the active path up to that point into a new",
+        " \u001b[38;5;244msession\u001b[39m",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m",
+        "",
+        "\u001b[38;5;244m  No user messages found\u001b[39m",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
+      ]
+    },
+    {
+      "name": "scroll-first",
+      "width": 80,
+      "messages": [
+        {
+          "id": "e0",
+          "text": "message 0"
+        },
+        {
+          "id": "e1",
+          "text": "message 1"
+        },
+        {
+          "id": "e2",
+          "text": "message 2"
+        },
+        {
+          "id": "e3",
+          "text": "message 3"
+        },
+        {
+          "id": "e4",
+          "text": "message 4"
+        },
+        {
+          "id": "e5",
+          "text": "message 5"
+        },
+        {
+          "id": "e6",
+          "text": "message 6"
+        },
+        {
+          "id": "e7",
+          "text": "message 7"
+        },
+        {
+          "id": "e8",
+          "text": "message 8"
+        },
+        {
+          "id": "e9",
+          "text": "message 9"
+        },
+        {
+          "id": "e10",
+          "text": "message 10"
+        },
+        {
+          "id": "e11",
+          "text": "message 11"
+        },
+        {
+          "id": "e12",
+          "text": "message 12"
+        },
+        {
+          "id": "e13",
+          "text": "message 13"
+        }
+      ],
+      "initialSelectedId": "e0",
+      "lines": [
+        "",
+        " \u001b[1mFork from Message\u001b[22m",
+        " \u001b[38;5;244mSelect a user message to copy the active path up to that point into a new",
+        " \u001b[38;5;244msession\u001b[39m",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m",
+        "",
+        "\u001b[38;5;109m› \u001b[39m\u001b[1mmessage 0\u001b[22m",
+        "\u001b[38;5;244m  Message 1 of 14\u001b[39m",
+        "",
+        "  message 1",
+        "\u001b[38;5;244m  Message 2 of 14\u001b[39m",
+        "",
+        "  message 2",
+        "\u001b[38;5;244m  Message 3 of 14\u001b[39m",
+        "",
+        "  message 3",
+        "\u001b[38;5;244m  Message 4 of 14\u001b[39m",
+        "",
+        "  message 4",
+        "\u001b[38;5;244m  Message 5 of 14\u001b[39m",
+        "",
+        "  message 5",
+        "\u001b[38;5;244m  Message 6 of 14\u001b[39m",
+        "",
+        "  message 6",
+        "\u001b[38;5;244m  Message 7 of 14\u001b[39m",
+        "",
+        "  message 7",
+        "\u001b[38;5;244m  Message 8 of 14\u001b[39m",
+        "",
+        "  message 8",
+        "\u001b[38;5;244m  Message 9 of 14\u001b[39m",
+        "",
+        "  message 9",
+        "\u001b[38;5;244m  Message 10 of 14\u001b[39m",
+        "",
+        "\u001b[38;5;244m  (1/14)\u001b[39m",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
+      ]
+    },
+    {
+      "name": "scroll-last",
+      "width": 80,
+      "messages": [
+        {
+          "id": "e0",
+          "text": "message 0"
+        },
+        {
+          "id": "e1",
+          "text": "message 1"
+        },
+        {
+          "id": "e2",
+          "text": "message 2"
+        },
+        {
+          "id": "e3",
+          "text": "message 3"
+        },
+        {
+          "id": "e4",
+          "text": "message 4"
+        },
+        {
+          "id": "e5",
+          "text": "message 5"
+        },
+        {
+          "id": "e6",
+          "text": "message 6"
+        },
+        {
+          "id": "e7",
+          "text": "message 7"
+        },
+        {
+          "id": "e8",
+          "text": "message 8"
+        },
+        {
+          "id": "e9",
+          "text": "message 9"
+        },
+        {
+          "id": "e10",
+          "text": "message 10"
+        },
+        {
+          "id": "e11",
+          "text": "message 11"
+        },
+        {
+          "id": "e12",
+          "text": "message 12"
+        },
+        {
+          "id": "e13",
+          "text": "message 13"
+        }
+      ],
+      "initialSelectedId": "e13",
+      "lines": [
+        "",
+        " \u001b[1mFork from Message\u001b[22m",
+        " \u001b[38;5;244mSelect a user message to copy the active path up to that point into a new",
+        " \u001b[38;5;244msession\u001b[39m",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m",
+        "",
+        "  message 4",
+        "\u001b[38;5;244m  Message 5 of 14\u001b[39m",
+        "",
+        "  message 5",
+        "\u001b[38;5;244m  Message 6 of 14\u001b[39m",
+        "",
+        "  message 6",
+        "\u001b[38;5;244m  Message 7 of 14\u001b[39m",
+        "",
+        "  message 7",
+        "\u001b[38;5;244m  Message 8 of 14\u001b[39m",
+        "",
+        "  message 8",
+        "\u001b[38;5;244m  Message 9 of 14\u001b[39m",
+        "",
+        "  message 9",
+        "\u001b[38;5;244m  Message 10 of 14\u001b[39m",
+        "",
+        "  message 10",
+        "\u001b[38;5;244m  Message 11 of 14\u001b[39m",
+        "",
+        "  message 11",
+        "\u001b[38;5;244m  Message 12 of 14\u001b[39m",
+        "",
+        "  message 12",
+        "\u001b[38;5;244m  Message 13 of 14\u001b[39m",
+        "",
+        "\u001b[38;5;109m› \u001b[39m\u001b[1mmessage 13\u001b[22m",
+        "\u001b[38;5;244m  Message 14 of 14\u001b[39m",
+        "",
+        "\u001b[38;5;244m  (14/14)\u001b[39m",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
+      ]
+    }
+  ]
+}
