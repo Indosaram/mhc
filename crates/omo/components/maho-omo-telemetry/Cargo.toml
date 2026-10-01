@@ -7,3 +7,6 @@ license = "LicenseRef-SUL-1.0"
 
 [lints]
 workspace = true
+
+[dependencies]
+serde_json.workspace = true
