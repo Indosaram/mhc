@@ -457,6 +457,15 @@ async fn empty_compact_returns_native_nothing_to_compact_without_prompt() {
     assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0));
 }
 
+#[tokio::test]
+async fn native_shell_submission_renders_and_persists_without_model_turn() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("!printf shell-output", Default::default()).await.expect("shell");
+    assert!(mode.render(80).join("\n").contains("shell-output"));
+    mode.rebuild_history(); assert!(mode.render(80).join("\n").contains("shell-output"));
+}
+
 #[test]
 fn skill_invocation_replay_separates_collapsed_skill_and_user_request() {
     use maho_tui::tui::Component;

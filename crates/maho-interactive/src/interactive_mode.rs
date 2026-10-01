@@ -189,6 +189,23 @@ impl InteractiveMode {
     }
 
     pub async fn submit(&mut self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
+        if let Some(command) = text.strip_prefix('!') {
+            let (command, excluded) = command.strip_prefix('!').map_or((command, false), |command| (command, true));
+            let component = Rc::new(RefCell::new(crate::components::bash_execution::BashExecutionComponent::new(command, excluded, self.theme.clone())));
+            component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(component.clone());
+            let session = self.session.clone();
+            let execution = session.execute_bash(command, None, excluded, None, None); tokio::pin!(execution);
+            let result = loop { tokio::select! {
+                result = &mut execution => break result,
+                Some(event) = self.events.recv() => { if let maho_ext_api::AgentSessionEvent::BashExecutionUpdate { delta, .. } = event { component.borrow_mut().append_output(&delta); } },
+                Some(request) = self.ui_requests.recv() => self.handle_ui_request(request),
+            }};
+            while let Ok(event) = self.events.try_recv() { if let maho_ext_api::AgentSessionEvent::BashExecutionUpdate { delta, .. } = event { component.borrow_mut().append_output(&delta); } }
+            let result = match result { Ok(result) => result, Err(error) => { component.borrow_mut().append_output(&error); component.borrow_mut().set_complete(Some(1), false, None, None); return Err(error); } };
+            component.borrow_mut().set_complete(result.exit_code, result.cancelled, None, result.full_output_path.map(|path| path.to_string_lossy().into_owned()));
+            self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
+            return Ok(PromptDisposition::Handled);
+        }
         if text.trim() == "/reload" {
             if self.session.reload().await? { self.rebuild_history(); self.show_status("Reloaded session resources".into()); }
             return Ok(PromptDisposition::Handled);
