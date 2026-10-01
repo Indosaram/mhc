@@ -7,3 +7,5 @@ pub mod drift;
 pub mod proposed_data;
 pub mod eligibility;
 pub mod runtime;
+pub mod component;
+pub mod index;
