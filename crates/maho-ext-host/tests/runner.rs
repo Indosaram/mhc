@@ -597,6 +597,27 @@ async fn context_binding_reads_live_host_state_and_rejects_after_invalidation() 
     runner.invalidate("old context"); assert_eq!(ctx.get_message_revision().unwrap_err().message, "old context"); assert!(ctx.abort(None).is_err());
 }
 
+#[tokio::test]
+async fn before_agent_start_keeps_prompt_chaining_with_bound_live_context() {
+    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(1), aborted: Mutex::new(None) });
+    let mut runner = runner(vec![extension("first", EventKind::BeforeAgentStart, prompt("1")), extension("second", EventKind::BeforeAgentStart, prompt("2"))]);
+    runner.bind_context_actions(actions).unwrap();
+    assert_eq!(runner.emit_before_agent_start(before()).await.unwrap().unwrap().system_prompt.as_deref(), Some("base12"));
+}
+
+#[tokio::test]
+async fn provider_request_metadata_reaches_handlers_while_payloads_chain() {
+    let handler: ExtensionHandler = Arc::new(|event, _| Box::pin(async move {
+        let ExtensionEvent::BeforeProviderRequest { payload, headers, .. } = event else { panic!("wrong event") };
+        assert_eq!(headers.as_ref().unwrap()["X-Fixture"].as_deref(), Some("request"));
+        Ok(EventResult::ProviderPayload(JsonValue::String(format!("{}:next", payload.as_str().unwrap()))))
+    }));
+    let mut runner = runner(vec![extension("metadata", EventKind::BeforeProviderRequest, handler)]);
+    let headers = [(String::from("X-Fixture"), Some(String::from("request")))].into_iter().collect();
+    let result = runner.emit_before_provider_request_with_metadata(JsonValue::String("payload".into()), None, Some(headers), None).await.unwrap();
+    assert_eq!(result, JsonValue::String("payload:next".into()));
+}
+
 struct CommandActions(Mutex<Vec<String>>);
 impl ExtensionCommandContextActions for CommandActions {
     fn wait_for_idle(&self) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
@@ -624,6 +645,9 @@ async fn command_invocation_uses_command_capable_context_without_changing_legacy
     assert_eq!(ctx.edit_user_message("entry", "text", EditMessageOptions::default()).await.unwrap().entry_id.as_deref(), Some("edited"));
     ctx.switch_session("next", SwitchSessionOptions::default()).await.unwrap(); ctx.reload().await.unwrap(); ctx.wait_for_idle().await.unwrap();
     assert!(runner.invoke_command("missing", "", &ctx).await.is_err());
+    runner.invalidate("replaced command context");
+    assert_eq!(ctx.navigate_tree("old leaf", ExtensionTreeNavigationOptions::default()).await.unwrap_err().message, "replaced command context");
+    assert_eq!(*actions.0.lock().unwrap(), ["leaf"]);
 }
 #[tokio::test]
 async fn question_without_ui_returns_unavailable_and_preserves_unanswered_ids() {

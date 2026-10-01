@@ -414,8 +414,8 @@ impl ExtensionContext {
     pub async fn wait_for_idle(&self) { (self.wait_for_idle_fn)().await; }
     pub fn is_project_trusted(&self) -> bool { self.session_manager.extension_context_actions().map_or_else(|| (self.is_project_trusted_fn)(), ExtensionContextActions::is_project_trusted) }
     pub fn is_compacting(&self) -> bool { self.session_manager.extension_context_actions().map_or_else(|| (self.is_compacting_fn)(), ExtensionContextActions::is_compacting) }
-    pub fn get_system_prompt(&self) -> String { self.session_manager.extension_context_actions().map_or_else(|| (self.get_system_prompt_fn)(), ExtensionContextActions::get_system_prompt) }
-    pub fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { self.session_manager.extension_context_actions().map_or_else(|| (self.get_system_prompt_options_fn)(), ExtensionContextActions::get_system_prompt_options) }
+    pub fn get_system_prompt(&self) -> String { (self.get_system_prompt_fn)() }
+    pub fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { (self.get_system_prompt_options_fn)() }
     pub fn get_registered_mcp_servers(&self) -> &[RegisteredMcpServerDeclaration] { &self.registered_mcp_servers }
 }
 impl ToolContext for ExtensionContext {
@@ -633,17 +633,17 @@ pub trait ExtensionCommandContextActions: Send + Sync {
     fn reload(&self) -> ExtensionFuture<'_, ()>;
 }
 #[derive(Clone)]
-pub struct ExtensionCommandContext { pub context: ExtensionContext, pub actions: Arc<dyn ExtensionCommandContextActions> }
+pub struct ExtensionCommandContext { pub context: ExtensionContext, pub actions: Arc<dyn ExtensionCommandContextActions>, pub runtime: ExtensionRuntime }
 impl std::ops::Deref for ExtensionCommandContext { type Target = ExtensionContext; fn deref(&self) -> &Self::Target { &self.context } }
 impl ExtensionCommandContext {
-    pub async fn wait_for_idle(&self) -> Result<(), ExtensionFailure> { self.actions.wait_for_idle().await }
-    pub async fn new_session(&self, options: NewSessionOptions) -> Result<SessionNavigationResult, ExtensionFailure> { self.actions.new_session(options).await }
-    pub async fn fork(&self, entry_id: &str, options: ForkOptions) -> Result<SessionNavigationResult, ExtensionFailure> { self.actions.fork(entry_id, options).await }
-    pub async fn navigate_tree(&self, target_id: &str, options: ExtensionTreeNavigationOptions) -> Result<SessionNavigationResult, ExtensionFailure> { self.actions.navigate_tree(target_id, options).await }
-    pub async fn edit_assistant_message(&self, entry_id: &str, text: &str, options: EditMessageOptions) -> Result<EditMessageResult, ExtensionFailure> { self.actions.edit_assistant_message(entry_id, text, options).await }
-    pub async fn edit_user_message(&self, entry_id: &str, text: &str, options: EditMessageOptions) -> Result<EditMessageResult, ExtensionFailure> { self.actions.edit_user_message(entry_id, text, options).await }
-    pub async fn switch_session(&self, path: &str, options: SwitchSessionOptions) -> Result<SessionNavigationResult, ExtensionFailure> { self.actions.switch_session(path, options).await }
-    pub async fn reload(&self) -> Result<(), ExtensionFailure> { self.actions.reload().await }
+    pub async fn wait_for_idle(&self) -> Result<(), ExtensionFailure> { self.runtime.assert_active()?; self.actions.wait_for_idle().await }
+    pub async fn new_session(&self, options: NewSessionOptions) -> Result<SessionNavigationResult, ExtensionFailure> { self.runtime.assert_active()?; self.actions.new_session(options).await }
+    pub async fn fork(&self, entry_id: &str, options: ForkOptions) -> Result<SessionNavigationResult, ExtensionFailure> { self.runtime.assert_active()?; self.actions.fork(entry_id, options).await }
+    pub async fn navigate_tree(&self, target_id: &str, options: ExtensionTreeNavigationOptions) -> Result<SessionNavigationResult, ExtensionFailure> { self.runtime.assert_active()?; self.actions.navigate_tree(target_id, options).await }
+    pub async fn edit_assistant_message(&self, entry_id: &str, text: &str, options: EditMessageOptions) -> Result<EditMessageResult, ExtensionFailure> { self.runtime.assert_active()?; self.actions.edit_assistant_message(entry_id, text, options).await }
+    pub async fn edit_user_message(&self, entry_id: &str, text: &str, options: EditMessageOptions) -> Result<EditMessageResult, ExtensionFailure> { self.runtime.assert_active()?; self.actions.edit_user_message(entry_id, text, options).await }
+    pub async fn switch_session(&self, path: &str, options: SwitchSessionOptions) -> Result<SessionNavigationResult, ExtensionFailure> { self.runtime.assert_active()?; self.actions.switch_session(path, options).await }
+    pub async fn reload(&self) -> Result<(), ExtensionFailure> { self.runtime.assert_active()?; self.actions.reload().await }
 }
 #[derive(Clone)]
 pub struct ReplacedSessionContext { pub context: ExtensionCommandContext, pub message_actions: Arc<dyn ExtensionActions> }
@@ -792,6 +792,7 @@ struct RuntimeState {
     provider_actions: Option<Arc<dyn ExtensionProviderActions>>, pending_providers: Vec<(ProviderRegistration, String)>,
     read_classifiers: Vec<(u64, ReadClassifier)>, next_classifier_id: u64,
     session_actions: Option<Arc<dyn ExtensionSessionActions>>,
+    provider_errors: Vec<ExtensionError>,
 }
 #[derive(Clone, Default)]
 pub struct ExtensionRuntime { state: Arc<Mutex<RuntimeState>> }
@@ -815,9 +816,14 @@ impl ExtensionRuntime {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             state.provider_actions = Some(Arc::clone(&actions)); std::mem::take(&mut state.pending_providers)
         };
-        for (registration, path) in pending { actions.register_provider(registration, &path)?; }
+        for (registration, path) in pending {
+            if let Err(error) = actions.register_provider(registration, &path) {
+                self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider_errors.push(ExtensionError { extension_path: path, event: "register_provider".into(), error: error.message, stack: error.stack });
+            }
+        }
         Ok(())
     }
+    pub fn take_provider_errors(&self) -> Vec<ExtensionError> { std::mem::take(&mut self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider_errors) }
     pub fn register_provider(&self, registration: ProviderRegistration, path: &str) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
         let actions = {

@@ -100,3 +100,21 @@ fn session_actions_fail_explicitly_before_host_binding() {
     assert!(api.get_commands().is_err()); assert!(api.get_thinking_level().is_err());
     assert!(api.set_session_fast_mode(true).is_err());
 }
+
+#[test]
+fn failed_queued_provider_does_not_discard_later_registrations() {
+    struct Selective(Providers);
+    impl ExtensionProviderActions for Selective {
+        fn register_provider(&self, registration: ProviderRegistration, path: &str) -> Result<(), ExtensionFailure> {
+            if registration.name() == "bad" { return Err(ExtensionFailure::new("invalid provider")); }
+            self.0.register_provider(registration, path)
+        }
+        fn unregister_provider(&self, name: &str, path: &str) -> Result<(), ExtensionFailure> { self.0.unregister_provider(name, path) }
+    }
+    let runtime = ExtensionRuntime::default(); let api = api(runtime.clone());
+    api.register_provider("bad", ProviderConfig::default()).unwrap(); api.register_provider("good", ProviderConfig::default()).unwrap();
+    let actions = Arc::new(Selective(Providers::default())); runtime.bind_providers(actions.clone()).unwrap();
+    assert_eq!(*actions.0.0.lock().unwrap(), ["good:test"]);
+    let errors = runtime.take_provider_errors(); assert_eq!(errors.len(), 1); assert_eq!(errors[0].extension_path, "test"); assert_eq!(errors[0].event, "register_provider");
+    assert!(runtime.take_provider_errors().is_empty());
+}

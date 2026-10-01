@@ -85,10 +85,18 @@ impl ExtensionRunner {
     }
     pub fn bind_context_actions(&mut self, actions: Arc<dyn ExtensionContextActions>) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;
+        let prompt_actions = Arc::clone(&actions);
+        self.context.get_system_prompt_fn = Arc::new(move || prompt_actions.get_system_prompt());
+        let option_actions = Arc::clone(&actions);
+        self.context.get_system_prompt_options_fn = Arc::new(move || option_actions.get_system_prompt_options());
         self.context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions, runtime: self.runtime.clone() });
         Ok(())
     }
-    pub fn bind_providers(&self, actions: Arc<dyn ExtensionProviderActions>) -> Result<(), ExtensionFailure> { self.runtime.bind_providers(actions) }
+    pub fn bind_providers(&mut self, actions: Arc<dyn ExtensionProviderActions>) -> Result<(), ExtensionFailure> {
+        self.runtime.bind_providers(actions)?;
+        for error in self.runtime.take_provider_errors() { self.emit_error(error); }
+        Ok(())
+    }
     pub fn bind_session_actions(&self, actions: Arc<dyn ExtensionSessionActions>) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;
         for extension in &self.extensions {
@@ -98,7 +106,7 @@ impl ExtensionRunner {
         self.runtime.bind_session_actions(actions); Ok(())
     }
     pub fn create_command_context(&self, actions: Arc<dyn ExtensionCommandContextActions>) -> Result<ExtensionCommandContext, ExtensionFailure> {
-        Ok(ExtensionCommandContext { context: self.create_context()?, actions })
+        Ok(ExtensionCommandContext { context: self.create_context()?, actions, runtime: self.runtime.clone() })
     }
     pub async fn invoke_command(&self, name: &str, args: &str, context: &ExtensionCommandContext) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;
@@ -315,7 +323,10 @@ impl ExtensionRunner {
         Err(ExtensionFailure::new("context handler replaced event kind"))
     }
     pub async fn emit_before_provider_request(&mut self, payload: JsonValue, exclude_path: Option<&str>) -> Result<JsonValue, ExtensionFailure> {
-        let mut event = ExtensionEvent::BeforeProviderRequest { payload, model: None, headers: None };
+        self.emit_before_provider_request_with_metadata(payload, None, None, exclude_path).await
+    }
+    pub async fn emit_before_provider_request_with_metadata(&mut self, payload: JsonValue, model: Option<Model>, headers: Option<BTreeMap<String, Option<String>>>, exclude_path: Option<&str>) -> Result<JsonValue, ExtensionFailure> {
+        let mut event = ExtensionEvent::BeforeProviderRequest { payload, model, headers };
         for (path, handler) in self.handlers(EventKind::BeforeProviderRequest) {
             if exclude_path == Some(path.as_str()) { continue; }
             let context = self.create_context()?;
