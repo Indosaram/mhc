@@ -1,5 +1,16 @@
 use maho_ext_config_reload::watch_event_source::subscribe;
 use std::{path::PathBuf, sync::{Arc, mpsc}, time::Duration};
+#[tokio::test]
+async fn async_close_cancels_synchronously_then_joins_worker() {
+    let root = tempfile::tempdir().unwrap();
+    let source = maho_ext_config_reload::watch_event_source::FsWatchEventSource::default();
+    let mut subscription = source.subscribe(root.path().into(), false, Arc::new(|_, _| {}), Arc::new(|error, _| panic!("{error}"))).unwrap();
+    subscription.ready().unwrap();
+    let closing = subscription.close_async();
+    subscription.close().unwrap();
+    closing.await.unwrap();
+    subscription.close_async().await.unwrap();
+}
 #[test]
 fn isolated_sources_keep_other_registry_alive_after_close() {
     use maho_ext_config_reload::watch_event_source::FsWatchEventSource;

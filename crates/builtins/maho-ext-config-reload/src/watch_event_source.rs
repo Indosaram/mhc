@@ -27,7 +27,20 @@ impl WatchSubscription {
         receiver.recv_timeout(std::time::Duration::from_secs(5)).map_err(|error| error.to_string())
     }
     pub fn close(&mut self) -> Result<(), String> {
-        if self.closed { return Ok(()); }
+        if let Some(worker) = self.cancel()? { worker.join.join().map_err(|_| "Config watcher teardown failed".to_owned())?; }
+        Ok(())
+    }
+    pub fn close_async(&mut self) -> impl std::future::Future<Output = Result<(), String>> + Send + 'static {
+        let worker = self.cancel();
+        async move {
+            if let Some(worker) = worker? {
+                tokio::task::spawn_blocking(move || worker.join.join().map_err(|_| "Config watcher teardown failed".to_owned())).await.map_err(|error| error.to_string())??;
+            }
+            Ok(())
+        }
+    }
+    fn cancel(&mut self) -> Result<Option<Worker>, String> {
+        if self.closed { return Ok(None); }
         self.closed = true;
         self.active.store(false, Ordering::SeqCst);
         let worker = {
@@ -36,11 +49,10 @@ impl WatchSubscription {
             registry.count -= 1;
             if registry.count == 0 { registry.worker.take() } else { None }
         };
-        if let Some(worker) = worker {
+        if let Some(worker) = &worker {
             worker.sender.send(Command::Shutdown).map_err(|error| error.to_string())?;
-            worker.join.join().map_err(|_| "Config watcher teardown failed".to_owned())?;
         }
-        Ok(())
+        Ok(worker)
     }
 }
 impl Drop for WatchSubscription { fn drop(&mut self) { if let Err(error) = self.close() { eprintln!("{error}"); } } }
