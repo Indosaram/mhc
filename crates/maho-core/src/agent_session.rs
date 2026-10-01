@@ -380,13 +380,20 @@ struct AgentSessionState {
     post_compaction_deferred_steering_messages: Vec<AgentMessage>,
     post_compaction_deferred_follow_up_messages: Vec<AgentMessage>,
     had_cleared_queued_messages: bool,
+    auto_compaction_session_override: Option<bool>,
 }
 
 fn name_set(names: Option<Vec<String>>) -> Option<BTreeSet<String>> {
     names.map(|names| names.into_iter().collect())
 }
 
+#[derive(Clone)]
 pub struct AgentSession {
+    inner: Arc<AgentSessionInner>,
+}
+
+#[doc(hidden)]
+pub struct AgentSessionInner {
     agent: Agent,
     session_manager: Mutex<SessionManager>,
     settings_manager: Mutex<SettingsManager>,
@@ -399,6 +406,16 @@ pub struct AgentSession {
     session_logger: SessionLogger,
     fallback_now: Arc<dyn Fn() -> f64 + Send + Sync>,
     retry_random: Arc<dyn Fn() -> f64 + Send + Sync>,
+    agent_subscription: Mutex<Option<maho_agent::agent::AgentSubscription>>,
+    prompt_admission: tokio::sync::Mutex<()>,
+}
+
+impl std::ops::Deref for AgentSession {
+    type Target = AgentSessionInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
 }
 
 /// Resolved provider auth for one request.
@@ -491,8 +508,9 @@ impl AgentSession {
             post_compaction_deferred_steering_messages: Vec::new(),
             post_compaction_deferred_follow_up_messages: Vec::new(),
             had_cleared_queued_messages: false,
+            auto_compaction_session_override: None,
         };
-        let session = Self {
+        let session = Self { inner: Arc::new(AgentSessionInner {
             agent,
             session_manager: Mutex::new(config.session_manager),
             settings_manager: Mutex::new(config.settings_manager),
@@ -507,7 +525,9 @@ impl AgentSession {
                 .fallback_now
                 .unwrap_or_else(|| Arc::new(|| maho_ai::utils::diagnostics::now_ms() as f64)),
             retry_random: config.retry_random.unwrap_or_else(|| Arc::new(rand_unit)),
-        };
+            agent_subscription: Mutex::new(None),
+            prompt_admission: tokio::sync::Mutex::new(()),
+        }) };
 
         let initial_model = session.agent.state().model;
         let scoped_tier = lock(&session.state)
@@ -518,11 +538,200 @@ impl AgentSession {
         let tier = resolve_service_tier(&initial_model, scoped_tier);
         lock(&session.state).current_service_tier = tier;
 
+        let weak = Arc::downgrade(&session.inner);
+        let subscription = session.agent.subscribe(Arc::new(move |event, signal| {
+            let weak = weak.clone();
+            Box::pin(async move {
+                if let Some(inner) = weak.upgrade() {
+                    let session = AgentSession { inner };
+                    session.process_agent_event(event, signal).await;
+                }
+            })
+        }));
+        *lock(&session.agent_subscription) = Some(subscription);
+
         Ok(session)
     }
 
     fn state(&self) -> MutexGuard<'_, AgentSessionState> {
         lock(&self.state)
+    }
+
+    async fn process_agent_event(
+        &self,
+        event: maho_agent::types::AgentEvent,
+        _signal: maho_ai::utils::abort::AbortSignal,
+    ) {
+        use maho_agent::types::AgentEvent;
+        if let AgentEvent::MessageStart { message } = &event
+            && message.role() == "user"
+        {
+            let text = user_message_text(message);
+            let removed = {
+                let mut state = self.state();
+                if let Some(index) = state.steering_messages.iter().position(|queued| queued == &text) {
+                    state.steering_messages.remove(index);
+                    Some(StreamingBehavior::Steer)
+                } else if let Some(index) = state.follow_up_messages.iter().position(|queued| queued == &text) {
+                    state.follow_up_messages.remove(index);
+                    Some(StreamingBehavior::FollowUp)
+                } else {
+                    None
+                }
+            };
+            if let Some(mode) = removed {
+                self.remove_queued_input(&text, mode);
+                self.emit_queue_update();
+            }
+        }
+        let extension_event = match &event {
+            AgentEvent::AgentStart => maho_ext_api::ExtensionEvent::AgentStart,
+            AgentEvent::AgentEnd { messages } => maho_ext_api::ExtensionEvent::AgentEnd {
+                messages: messages.clone(), aborted: None, will_retry: Some(false), abort_source: None,
+            },
+            AgentEvent::TurnStart => maho_ext_api::ExtensionEvent::TurnStart {
+                turn_index: 0, timestamp: maho_ai::utils::diagnostics::now_ms() as u64,
+            },
+            AgentEvent::TurnEnd { message, tool_results } => maho_ext_api::ExtensionEvent::TurnEnd {
+                turn_index: 0, message: message.clone(), tool_results: tool_results.clone(),
+            },
+            AgentEvent::MessageStart { message } => maho_ext_api::ExtensionEvent::MessageStart { message: message.clone() },
+            AgentEvent::MessageUpdate { message, assistant_message_event } => maho_ext_api::ExtensionEvent::MessageUpdate {
+                message: message.clone(),
+                assistant_message_event: serde_json::to_value(assistant_message_event).unwrap_or(Value::Null),
+            },
+            AgentEvent::MessageEnd { message } => maho_ext_api::ExtensionEvent::MessageEnd { message: message.clone() },
+            AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => maho_ext_api::ExtensionEvent::ToolExecutionStart {
+                tool_call_id: tool_call_id.clone(), tool_name: tool_name.clone(), args: args.clone(),
+            },
+            AgentEvent::ToolExecutionUpdate { tool_call_id, tool_name, args, partial_result } => maho_ext_api::ExtensionEvent::ToolExecutionUpdate {
+                tool_call_id: tool_call_id.clone(), tool_name: tool_name.clone(), args: args.clone(), partial_result: partial_result.clone(),
+            },
+            AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } => maho_ext_api::ExtensionEvent::ToolExecutionEnd {
+                tool_call_id: tool_call_id.clone(), tool_name: tool_name.clone(), result: result.clone(), is_error: *is_error,
+            },
+        };
+        self.dispatch_extension_event(extension_event).await;
+        self.emit(AgentSessionEvent::Agent(event.clone()));
+        if let AgentEvent::MessageEnd { message } = &event
+            && matches!(message.role(), "user" | "assistant" | "toolResult")
+        {
+            match serde_json::to_value(message) {
+                Ok(message) => {
+                    let entry = self.with_session_manager_mut(|manager| manager.append_message(message));
+                    if let Some(id) = entry.get("id").and_then(Value::as_str) {
+                        self.emit_entry_appended(id);
+                    }
+                    self.state().message_revision += 1;
+                }
+                Err(error) => self.emit(AgentSessionEvent::ContinuationError { error_message: error.to_string() }),
+            }
+        }
+    }
+
+    async fn dispatch_extension_event(&self, event: maho_ext_api::ExtensionEvent) {
+        let result = {
+            let mut guard = self.extension_runner.lock().await;
+            match guard.as_mut() {
+                Some(runner) => runner.emit(event).await.map(|_| ()),
+                None => Ok(()),
+            }
+        };
+        if let Err(error) = result {
+            self.emit(AgentSessionEvent::ContinuationError { error_message: error.to_string() });
+        }
+    }
+
+    /// Start a prompt, or explicitly queue input when a provider turn is active.
+    pub async fn prompt(&self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
+        if options.signal.as_ref().is_some_and(|signal| signal.aborted()) {
+            return Err("Prompt cancelled".to_owned());
+        }
+        if self.is_streaming() {
+            let mode = options.streaming_behavior.ok_or_else(||
+                "Agent is already processing a prompt. Use steer() or followUp() to queue messages, or wait for completion.".to_owned())?;
+            self.queue_user_input(text, options.images, mode, QueuedInputOptions { source: options.source, ..Default::default() }).await?;
+            return Ok(PromptDisposition::Queued);
+        }
+        let _admission = self.prompt_admission.lock().await;
+        let Some((text, images)) = self.run_input_handlers(text, options.images, options.source, None).await? else {
+            return Ok(PromptDisposition::Handled);
+        };
+        if let Some(level) = options.thinking_level {
+            self.set_session_thinking_level(match level {
+                ThinkingLevel::Minimal => ModelThinkingLevel::Minimal,
+                ThinkingLevel::Low => ModelThinkingLevel::Low,
+                ThinkingLevel::Medium => ModelThinkingLevel::Medium,
+                ThinkingLevel::High => ModelThinkingLevel::High,
+                ThinkingLevel::Xhigh => ModelThinkingLevel::Xhigh,
+                ThinkingLevel::Max => ModelThinkingLevel::Max,
+            });
+        }
+        self.agent.prompt(maho_agent::agent::AgentPromptInput::Message(make_user_message(&text, images))).await;
+        self.agent.wait_for_idle().await;
+        self.dispatch_extension_event(maho_ext_api::ExtensionEvent::AgentSettled).await;
+        self.emit(AgentSessionEvent::AgentSettled);
+        self.emit(AgentSessionEvent::AgentIdle);
+        Ok(PromptDisposition::Started)
+    }
+
+    async fn run_input_handlers(
+        &self, text: &str, images: Option<Vec<ImageContent>>, source: Option<InputSource>,
+        streaming_behavior: Option<StreamingBehavior>,
+    ) -> Result<Option<(String, Option<Vec<ImageContent>>)>, String> {
+        let mut runner = self.extension_runner.lock().await;
+        let Some(runner) = runner.as_mut() else { return Ok(Some((text.to_owned(), images))); };
+        let result = runner.emit_input(maho_ext_api::InputEvent {
+            input_id: format!("{}:{}", self.session_id(), self.reserve_queued_input_order()),
+            text: text.to_owned(), images: images.clone(), source: source.unwrap_or(InputSource::Interactive), streaming_behavior,
+        }).await.map_err(|error| error.to_string())?;
+        match result {
+            maho_ext_api::InputEventResult::Continue => Ok(Some((text.to_owned(), images))),
+            maho_ext_api::InputEventResult::Transform { text, images } => Ok(Some((text, images))),
+            maho_ext_api::InputEventResult::Handled => Ok(None),
+        }
+    }
+
+    async fn queue_user_input(
+        &self, text: &str, images: Option<Vec<ImageContent>>, mode: StreamingBehavior, options: QueuedInputOptions,
+    ) -> Result<(), String> {
+        let Some((text, images)) = self.run_input_handlers(text, images, options.source, self.is_streaming().then_some(mode)).await? else {
+            return Ok(());
+        };
+        self.record_queued_input(&text, mode, options.enqueue_order);
+        let message = make_user_message(&text, images);
+        match mode {
+            StreamingBehavior::Steer => {
+                self.state().steering_messages.push(text);
+                self.agent.steer(message);
+            }
+            StreamingBehavior::FollowUp => {
+                self.state().follow_up_messages.push(text);
+                self.agent.follow_up(message);
+            }
+        }
+        self.emit_queue_update();
+        Ok(())
+    }
+
+    pub async fn steer(&self, text: &str, images: Option<Vec<ImageContent>>, options: QueuedInputOptions) -> Result<(), String> {
+        self.queue_user_input(text, images, StreamingBehavior::Steer, options).await
+    }
+
+    pub async fn follow_up(&self, text: &str, images: Option<Vec<ImageContent>>, options: QueuedInputOptions) -> Result<(), String> {
+        self.queue_user_input(text, images, StreamingBehavior::FollowUp, options).await
+    }
+
+    pub async fn abort(&self) {
+        let pending = !self.is_streaming() && (self.pending_message_count() > 0 || self.state().had_cleared_queued_messages);
+        self.state().had_cleared_queued_messages = false;
+        self.agent.suppress_queued_message_drain();
+        self.agent.abort(None);
+        self.agent.wait_for_idle().await;
+        if pending {
+            self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionAbort).await;
+            self.emit(AgentSessionEvent::SessionAbort);
+        }
     }
 
     pub fn model_runtime(&self) -> &ModelRuntime {
@@ -1052,6 +1261,18 @@ impl AgentSession {
         *self.extension_runner.lock().await = Some(runner);
     }
 
+    pub async fn bind_extensions(&self, bindings: ExtensionBindings) {
+        {
+            let mut state = self.state();
+            if let Some(ui) = bindings.ui_context { state.extension_ui_context = Some(ui); }
+            if let Some(mode) = bindings.mode { state.extension_mode = mode; }
+            if let Some(handler) = bindings.abort_handler { state.extension_abort_handler = Some(handler); }
+            if let Some(listener) = bindings.on_error { state.extension_error_listener = Some(listener); }
+        }
+        let event = self.state().session_start_event.clone();
+        self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionStart(event)).await;
+    }
+
     /// Subscribe to the internal event bus shared by this session's extensions.
     pub fn on_extension_event(&self, channel: &str, handler: EventHandler) -> EventSubscription {
         self.event_bus.on(channel, handler)
@@ -1135,6 +1356,7 @@ impl AgentSession {
     /// session manager's own dispose; each lands with the slice that owns it.
     pub async fn dispose(&self) {
         self.agent.abort(None);
+        lock(&self.agent_subscription).take();
         {
             let mut guard = self.extension_runner.lock().await;
             if let Some(runner) = guard.as_mut() {
@@ -1602,6 +1824,9 @@ impl AgentSession {
     /// Not yet ported: `_autoCompactionSessionOverride` (owned by the compaction slice); this reads
     /// the settings value only.
     pub fn auto_compaction_enabled(&self) -> bool {
+        if let Some(enabled) = self.state().auto_compaction_session_override {
+            return enabled;
+        }
         self.with_settings_manager(|manager| {
             manager
                 .get_value("compaction")
@@ -1609,6 +1834,11 @@ impl AgentSession {
                 .and_then(Value::as_bool)
                 .unwrap_or(true)
         })
+    }
+
+    pub fn set_auto_compaction_enabled(&self, enabled: bool) {
+        self.state().auto_compaction_session_override = Some(enabled);
+        self.emit_session_settings_changed();
     }
 
     /// Set the thinking level, clamping to the model's available levels.
@@ -1750,6 +1980,27 @@ fn clamp_thinking_level(level: ModelThinkingLevel, available: &[ModelThinkingLev
         }
     }
     available.first().copied().unwrap_or(ModelThinkingLevel::Off)
+}
+
+fn make_user_message(text: &str, images: Option<Vec<ImageContent>>) -> AgentMessage {
+    let mut content = vec![maho_ai::types::ContentBlock::Text(maho_ai::types::TextContent {
+        text: text.to_owned(), ..Default::default()
+    })];
+    content.extend(images.unwrap_or_default().into_iter().map(maho_ai::types::ContentBlock::Image));
+    maho_ai::types::Message::User(maho_ai::types::UserMessage {
+        content: maho_ai::types::UserContent::Blocks(content),
+        timestamp: maho_ai::utils::diagnostics::now_ms(),
+    }).into()
+}
+
+fn user_message_text(message: &AgentMessage) -> String {
+    match message.try_as_llm() {
+        Some(maho_ai::types::Message::User(user)) => match &user.content {
+            maho_ai::types::UserContent::Text(text) => text.clone(),
+            maho_ai::types::UserContent::Blocks(content) => maho_ai::utils::text::content_text(content, ""),
+        },
+        _ => String::new(),
+    }
 }
 
 fn queue_mode_str(mode: maho_agent::types::QueueMode) -> &'static str {
@@ -2048,6 +2299,54 @@ mod tests {
             AgentSessionEvent::SessionSettingsChanged { steering_mode, .. } if steering_mode == "all"
         )));
         assert_eq!(session.with_settings_manager(|manager| manager.get_string("steeringMode")), Some("all".to_owned()));
+    }
+
+    #[test]
+    fn auto_compaction_override_emits_settings_without_changing_persisted_defaults() {
+        let session = test_session();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            lock(&sink).push(event.clone());
+        }));
+        session.set_auto_compaction_enabled(false);
+        assert!(!session.auto_compaction_enabled());
+        assert!(session.with_settings_manager(|manager| manager.get_value("compaction").is_none()));
+        assert!(matches!(lock(&events).last(), Some(AgentSessionEvent::SessionSettingsChanged {
+            auto_compaction_enabled: false, ..
+        })));
+    }
+
+    #[tokio::test]
+    async fn queued_user_start_updates_queue_before_message_event() {
+        let session = test_session();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            lock(&sink).push(event.clone());
+        }));
+        session.steer("queued", None, QueuedInputOptions::default()).await.expect("steer");
+        assert_eq!(session.get_steering_messages(), vec!["queued"]);
+        session.process_agent_event(maho_agent::types::AgentEvent::MessageStart {
+            message: make_user_message("queued", None),
+        }, maho_ai::utils::abort::AbortController::new().signal()).await;
+        assert_eq!(session.pending_message_count(), 0);
+        let events = lock(&events);
+        assert!(matches!(&events[1], AgentSessionEvent::QueueUpdate { steering, .. } if steering.is_empty()));
+        assert!(matches!(&events[2], AgentSessionEvent::Agent(maho_agent::types::AgentEvent::MessageStart { .. })));
+    }
+
+    #[tokio::test]
+    async fn aborting_pending_input_emits_session_abort_once() {
+        let session = test_session();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| { lock(&sink).push(event.clone()); }));
+        session.follow_up("later", None, QueuedInputOptions::default()).await.expect("follow up");
+        session.clear_queue(true);
+        session.abort().await;
+        session.abort().await;
+        assert_eq!(lock(&events).iter().filter(|event| matches!(event, AgentSessionEvent::SessionAbort)).count(), 1);
     }
 
     #[test]
