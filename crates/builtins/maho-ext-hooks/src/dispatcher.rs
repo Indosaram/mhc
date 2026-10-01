@@ -19,6 +19,10 @@ pub struct HookDispatchResult {pub decision:HookDispatchDecision,pub diagnostics
 
 pub async fn dispatch_hook_event<F,Fut>(handlers:&[ExecutableHookHandler],input:&Value,trust_state:&HookTrustState,platform:&str,runner:F)->std::io::Result<HookDispatchResult>
 where F:Fn(ExecutableHookHandler)->Fut,Fut:std::future::Future<Output=std::io::Result<CommandHookRunResult>> {
+    dispatch_hook_event_with_status(handlers,input,trust_state,platform,runner,|_|{}).await
+}
+pub async fn dispatch_hook_event_with_status<F,Fut,S>(handlers:&[ExecutableHookHandler],input:&Value,trust_state:&HookTrustState,platform:&str,runner:F,mut status:S)->std::io::Result<HookDispatchResult>
+where F:Fn(ExecutableHookHandler)->Fut,Fut:std::future::Future<Output=std::io::Result<CommandHookRunResult>>,S:FnMut(&[ExecutableHookHandler]) {
     let event:SupportedHookEvent=serde_json::from_value(input.get("event").cloned().unwrap_or(Value::Null)).map_err(std::io::Error::other)?;
     let matched=matching_hook_handlers(HookMatcherInput {event,tool_name:input.get("toolName").and_then(Value::as_str).unwrap_or("")},handlers);
     let mut matched_handlers=matched.handlers.into_iter().cloned().collect::<Vec<_>>();
@@ -31,15 +35,25 @@ where F:Fn(ExecutableHookHandler)->Fut,Fut:std::future::Future<Output=std::io::R
         if let Some(reason)=reason {skipped.push(HookDispatchSkipped {diagnostics:if reason=="unsafe" {diagnostics} else {Vec::new()},handler:handler.clone(),reason,record});} else {executable_handlers.push(handler.clone());}
     }
     let mut pending=futures::stream::FuturesUnordered::new();
-    for (index,handler) in executable_handlers.iter().cloned().enumerate() {let future=runner(handler.clone());pending.push(async move {Ok::<_,std::io::Error>((index,handler,future.await?))});}
+    let mut running=Vec::new();
+    for (index,handler) in executable_handlers.iter().cloned().enumerate() {running.push((index,handler.clone()));status(&running.iter().map(|(_,handler)|handler.clone()).collect::<Vec<_>>());let future=runner(handler.clone());pending.push(async move {(index,handler,future.await)});}
     use futures::StreamExt;
     let mut completed=Vec::new();
-    while let Some(run)=pending.next().await {let (declaration_index,handler,run)=run?;let parsed=parse_hook_output(HookOutputParseInput {event,exit_code:run.exit_code.unwrap_or(1),stdout:&run.stdout,stderr:&run.stderr,source:&handler.source});let completion_index=completed.len();completed.push((declaration_index,HookDispatchSummary {completion_index,diagnostics:parsed.diagnostics,handler,output:parsed.output,run}));}
+    while let Some((declaration_index,handler,run))=pending.next().await {running.retain(|(index,_)|*index!=declaration_index);status(&running.iter().map(|(_,handler)|handler.clone()).collect::<Vec<_>>());let run=run?;let parsed=parse_hook_output(HookOutputParseInput {event,exit_code:run.exit_code.unwrap_or(1),stdout:&run.stdout,stderr:&run.stderr,source:&handler.source});let completion_index=completed.len();completed.push((declaration_index,HookDispatchSummary {completion_index,diagnostics:parsed.diagnostics,handler,output:parsed.output,run}));}
     completed.sort_by_key(|(index,_)|*index);let summaries=completed.into_iter().map(|(_,summary)|summary).collect::<Vec<_>>();
     let mut diagnostics=matched.diagnostics;diagnostics.extend(skipped.iter().flat_map(|s|s.diagnostics.iter().cloned()));diagnostics.extend(summaries.iter().flat_map(|s|s.diagnostics.iter().cloned()));
     Ok(HookDispatchResult {decision:aggregate_decision(event,&summaries),diagnostics,executable_handlers,matched_handlers,skipped,summaries})
 }
 
+pub fn running_hook_handlers_status_label(handlers:&[ExecutableHookHandler],platform:&str)->String {
+    let ansi=fancy_regex::Regex::new(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))").expect("status ANSI regex");
+    let labels=handlers.iter().map(|handler| {
+        let raw=handler.config.status_message.as_deref().unwrap_or_else(||crate::plugin_loader::select_hook_command_for_platform(handler,platform));
+        let stripped=ansi.replace_all(raw,"");let replaced=stripped.replace(['\r','\n','\t']," ");
+        replaced.chars().filter(|character|!character.is_control()).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
+    }).collect::<Vec<_>>().join(" · ");
+    let units=labels.encode_utf16().collect::<Vec<_>>();if units.len()>79 {format!("{}...",String::from_utf16_lossy(&units[..76]))} else {labels}
+}
 pub fn aggregate_decision(event:SupportedHookEvent,summaries:&[HookDispatchSummary])->HookDispatchDecision {
     let decision=|summary:&HookDispatchSummary|summary.output.get("decision").and_then(Value::as_str).map(str::to_owned);
     if let Some(blocker)=summaries.iter().find(|summary|matches!(decision(summary).as_deref(),Some("block"|"deny"))) {
@@ -55,6 +69,17 @@ pub fn aggregate_decision(event:SupportedHookEvent,summaries:&[HookDispatchSumma
 #[cfg(test)]
 mod tests {
     use super::*;use serde_json::json;use crate::schema::parse_hook_config;use crate::types::{HookSourceScope,HookDiscoveryTiming};use crate::trust::{create_hook_trust_entry,hook_trust_id};
+    #[tokio::test]
+    async fn concurrent_status_tracks_all_starts_and_each_settlement()->std::io::Result<()> {
+        let handlers=vec![handler("first",0),handler("second",1)];let mut sizes=Vec::new();
+        dispatch_hook_event_with_status(&handlers,&json!({"event":"PreToolUse"}),&state(&handlers)?,"linux",|handler|run(handler,String::new()),|running|sizes.push(running.len())).await?;
+        assert_eq!(sizes,vec![1,2,1,0]);Ok(())
+    }
+    #[test]
+    fn status_label_removes_control_sequences_and_bounds_utf16() {
+        let mut handler=handler("command",0);handler.config.status_message=Some(format!("\x1b[31m{}\x1b[0m\r\n", "x".repeat(100)));
+        let label=running_hook_handlers_status_label(&[handler],"linux");assert_eq!(label.encode_utf16().count(),79);assert!(!label.chars().any(char::is_control));
+    }
     fn handler(command:&str,index:usize)->ExecutableHookHandler {let mut handler=parse_hook_config(&json!({"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":command}]}]}}),&HookSourceMetadata {scope:HookSourceScope::Project,source_path:"/repo/hooks.json".to_owned(),display_order:1,discovered_at:HookDiscoveryTiming::PreSession,plugin_root:None,manifest_path:None,plugin_env:None}).executable_handlers.remove(0);handler.handler_index=index;handler}
     fn state(handlers:&[ExecutableHookHandler])->std::io::Result<HookTrustState> {let mut state=HookTrustState {version:1,hooks:Default::default()};for handler in handlers {state.hooks.insert(hook_trust_id(handler),create_hook_trust_entry(handler,"linux","fixed").map_err(std::io::Error::other)?);}Ok(state)}
     async fn run(handler:ExecutableHookHandler,stdout:String)->std::io::Result<CommandHookRunResult> {let options=crate::command_runner::CommandHookRunOptions {cwd:std::path::Path::new("/tmp"),env_passthrough:&[],output_policy:None,signal:None,source_env:None};let mut handler=handler;handler.config.command="exit 0".to_owned();let mut result=crate::command_runner::run_command_hook(&handler,&json!({"event":"PreToolUse"}),options).await?;result.stdout=stdout;Ok(result)}
