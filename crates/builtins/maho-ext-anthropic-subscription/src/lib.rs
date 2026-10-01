@@ -24,3 +24,4 @@ pub mod session_reattach;
 pub mod executable_version;
 pub mod executable_model_support;
 pub mod executable;
+pub mod config_dir_credentials;
