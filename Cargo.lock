@@ -1789,11 +1789,13 @@ version = "0.0.0"
 dependencies = [
  "fancy-regex",
  "maho-ai",
+ "maho-pty",
  "maho-tools",
  "regex",
  "serde_json",
  "sha2",
  "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
