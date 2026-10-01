@@ -14,11 +14,19 @@ pub fn get_senpi_telemetry_state_dir(env:&TelemetryEnv) -> PathBuf {
     path.join("omo-senpi/posthog")
 }
 pub async fn record_senpi_daily_active(options:&SenpiTelemetryOptions) -> Result<(),TelemetryError> {
+    let options=options.clone();
+    let timeout=Duration::from_millis(options.timeout_ms.unwrap_or(500));
+    let mut work=tokio::spawn(async move {
     let env=options.env.clone().unwrap_or_else(||std::env::vars().collect());
     let product=create_senpi_telemetry_product_config();
     let state_dir=options.state_dir.clone().unwrap_or_else(||get_senpi_telemetry_state_dir(&env));
     let input=RecordDailyActiveInput {diagnostics:None,env:Some(&env),now:options.now,os_provider:options.os_provider.as_deref(),product:&product,reason:"session_start",source:"senpi-extension",state_dir:&state_dir,transport_factory:options.transport_factory.clone()};
-    match tokio::time::timeout(Duration::from_millis(options.timeout_ms.unwrap_or(500)),record_daily_active(&input)).await {Ok(result)=>result,Err(_)=>Ok(())}
+    record_daily_active(&input).await
+    });
+    tokio::select! {
+        result=&mut work=>result.map_err(|e|TelemetryError::new(e.to_string()))?,
+        ()=tokio::time::sleep(timeout)=>Ok(()),
+    }
 }
 #[derive(Default)]
 pub struct SenpiTelemetryComponent {pub options:SenpiTelemetryOptions}
