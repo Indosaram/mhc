@@ -11,5 +11,8 @@ serde_json = "=1.0.149"
 regex = "=1.12.3"
 tokio = { version = "=1.52.3", features = ["process", "time", "io-util", "macros", "rt"] }
 
+[dev-dependencies]
+tempfile = "=3.27.0"
+
 [lints]
 workspace = true
