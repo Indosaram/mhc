@@ -6,9 +6,10 @@ pub struct OmoNativeTelemetryComponent {
     pub options:SenpiTelemetryOptions,
     pub skills_root:PathBuf,
     pub is_config_enabled:ConfigEnabled,
+    pub clock:Arc<dyn Fn()->f64+Send+Sync>,
     subscriptions:Mutex<Vec<BusSubscription>>,
 }
-impl OmoNativeTelemetryComponent {pub fn new(options:SenpiTelemetryOptions,skills_root:PathBuf,is_config_enabled:ConfigEnabled)->Self {Self {options,skills_root,is_config_enabled,subscriptions:Mutex::default()}}}
+impl OmoNativeTelemetryComponent {pub fn new(options:SenpiTelemetryOptions,skills_root:PathBuf,is_config_enabled:ConfigEnabled)->Self {Self {options,skills_root,is_config_enabled,clock:Arc::new(||std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64()*1000.0),subscriptions:Mutex::default()}}}
 impl Extension for OmoNativeTelemetryComponent {
     fn register(&self,api:&mut ExtensionApi) {
         let env=self.options.env.clone().unwrap_or_else(||std::env::vars().collect());
@@ -19,7 +20,7 @@ impl Extension for OmoNativeTelemetryComponent {
         let capture:SummaryCapture=Arc::new(move |name,properties| {if let Some(client)=client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() && let Some(properties)=properties.as_object() {client.capture_event(name,properties);}});
         let hash:Arc<dyn Fn(&str)->String+Send+Sync>=Arc::new(move |id|hash_session_id(id,&state_dir).unwrap_or_else(|error| {eprintln!("omo-native session identity failed: {error}");String::new()}));
         let registry=Arc::new(Mutex::new(ParallelTelemetryRegistry::default()));
-        let now=Arc::new(||std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64()*1000.0);
+        let now=Arc::clone(&self.clock);
         let subscription=register_omo_native_parallel_summary(api,registry,now,Arc::clone(&hash),Arc::clone(&capture));
         self.subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(subscription);
         let options=self.options.clone();let enabled=Arc::clone(&self.is_config_enabled);let client=Arc::clone(&shared);
@@ -38,7 +39,7 @@ mod tests {
     use super::*;use crate::telemetry_test_support::*;use telemetry_core::*;use futures::future::BoxFuture;
     struct Recorder(Arc<Mutex<Vec<TelemetryCaptureMessage>>>);
     impl TelemetryTransport for Recorder {fn capture(&self,m:&TelemetryCaptureMessage)->Result<(),TelemetryError> {self.0.lock().unwrap().push(m.clone());Ok(())}fn flush(&self)->Option<BoxFuture<'_,Result<(),TelemetryError>>> {None}fn shutdown(&self)->BoxFuture<'_,Result<(),TelemetryError>> {Box::pin(async {Ok(())})}}
-    fn component(home:&std::path::Path)->(OmoNativeTelemetryComponent,Arc<Mutex<Vec<TelemetryCaptureMessage>>>) {std::fs::write(home.join("models.json"),"{\"providers\":{}}").unwrap();std::fs::write(home.join("settings.json"),"{}").unwrap();let messages=Arc::new(Mutex::new(Vec::new()));let captured=Arc::clone(&messages);let options=SenpiTelemetryOptions {env:Some(env(home)),state_dir:Some(home.join("native")),transport_factory:Some(Arc::new(move |_,_|Ok(Box::new(Recorder(Arc::clone(&captured)))))),..Default::default()};(OmoNativeTelemetryComponent::new(options,home.join("skills"),Arc::new(|_|true)),messages)}
+    fn component(home:&std::path::Path)->(OmoNativeTelemetryComponent,Arc<Mutex<Vec<TelemetryCaptureMessage>>>) {std::fs::write(home.join("models.json"),"{\"providers\":{}}").unwrap();std::fs::write(home.join("settings.json"),"{}").unwrap();let messages=Arc::new(Mutex::new(Vec::new()));let captured=Arc::clone(&messages);let options=SenpiTelemetryOptions {env:Some(env(home)),state_dir:Some(home.join("native")),transport_factory:Some(Arc::new(move |_,_|Ok(Box::new(Recorder(Arc::clone(&captured)))))),..Default::default()};{let mut component=OmoNativeTelemetryComponent::new(options,home.join("skills"),Arc::new(|_|true));let clock=std::sync::atomic::AtomicU64::new(1000);component.clock=Arc::new(move || f64::from(u32::try_from(clock.fetch_add(1,std::sync::atomic::Ordering::SeqCst)).unwrap()));(component,messages)}}
     fn start()->ExtensionEvent {ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None})}
     fn shutdown()->ExtensionEvent {ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent {reason:SessionReason::Quit,target_session_file:None,signal:None})}
     #[tokio::test] async fn shutdown_summary_precedes_client_teardown() {let t=tempfile::tempdir().unwrap();let (component,messages)=component(t.path());let mut api=api();component.register(&mut api);let ctx=context(t.path(),"ordering-session");dispatch(&api,start(),&ctx).await;for id in ["a","b"] {dispatch(&api,ExtensionEvent::ToolExecutionStart {tool_call_id:id.into(),tool_name:"bash".into(),args:serde_json::json!({})},&ctx).await;}for id in ["a","b"] {dispatch(&api,ExtensionEvent::ToolExecutionEnd {tool_call_id:id.into(),tool_name:"bash".into(),result:serde_json::json!(1),is_error:false},&ctx).await;}dispatch(&api,shutdown(),&ctx).await;dispatch(&api,shutdown(),&ctx).await;let messages=messages.lock().unwrap();let summaries:Vec<_>=messages.iter().filter(|m|m.event=="parallelism_summary").collect();assert_eq!(summaries.len(),1);assert_eq!(summaries[0].properties["non_eval_joined_calls"],2);}
