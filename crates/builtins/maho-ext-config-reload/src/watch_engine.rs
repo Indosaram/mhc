@@ -6,6 +6,19 @@ use super::watch_event_source::{subscribe, WatchErrorListener, WatchSubscription
 pub enum WatchKind { Dir, DirRecursive }
 pub type WatchFilter = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
 pub type HashFile = Arc<dyn Fn(&Path) -> Result<String, std::io::Error> + Send + Sync>;
+pub fn normalize_relative_path(filename: &Path) -> Option<PathBuf> {
+    if filename.is_absolute() { return None; }
+    let mut normalized = PathBuf::new();
+    for component in filename.components() {
+        match component {
+            std::path::Component::ParentDir => { if !normalized.pop() { return None; } },
+            std::path::Component::CurDir => {},
+            std::path::Component::Normal(name) => normalized.push(name),
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => return None,
+        }
+    }
+    (!normalized.as_os_str().is_empty()).then_some(normalized)
+}
 pub struct WatchTarget { pub id: String, pub kind: WatchKind, pub path: PathBuf, pub allow_list: Option<Vec<PathBuf>>, pub filter: Option<WatchFilter> }
 #[derive(Default)]
 pub struct RealChange { pub changed_paths: Vec<PathBuf>, pub created: Vec<PathBuf>, pub deleted: Vec<PathBuf> }
@@ -36,7 +49,7 @@ impl NativeWatchEngine {
             let subscription = subscribe(path.clone(), false, Arc::new(move |_, filename| {
                 let mut affected = None;
                 if let Some(filename) = filename {
-                    if filename.is_absolute() || filename.components().any(|component| matches!(component, std::path::Component::ParentDir)) { return; }
+                    let Some(filename) = normalize_relative_path(&filename) else { return; };
                     let absolute = directory.join(filename);
                     if !targets.iter().any(|(root, kind, allowed, filter)| absolute.strip_prefix(root).is_ok_and(|relative| {
                         (*kind == WatchKind::DirRecursive || relative.components().count() <= 1)

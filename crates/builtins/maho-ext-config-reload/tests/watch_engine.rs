@@ -74,3 +74,10 @@ fn injected_hash_scans_only_the_observed_file() {
     assert!(engine.evaluate_affected(&std::collections::BTreeSet::from([first.clone()])).unwrap().changed_paths.is_empty());
     assert_eq!(receiver.try_iter().collect::<Vec<_>>(), [first]);
 }
+#[test]
+fn event_filename_normalization_accepts_internal_parent_segments_only() {
+    use std::path::{Path, PathBuf};
+    assert_eq!(normalize_relative_path(Path::new("nested/../file")), Some(PathBuf::from("file")));
+    assert_eq!(normalize_relative_path(Path::new("./file")), Some(PathBuf::from("file")));
+    for rejected in [".", "..", "../file", "nested/../../file", "/file"] { assert!(normalize_relative_path(Path::new(rejected)).is_none()); }
+}
