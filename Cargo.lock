@@ -1639,6 +1639,9 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-gpt-apply-patch"
 version = "0.0.0"
+dependencies = [
+ "regex",
+]
 
 [[package]]
 name = "maho-ext-help"
@@ -1675,6 +1678,10 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-look-at"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-loop"
@@ -1783,6 +1790,10 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-todotools"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-tool-pair-guard"
@@ -1791,6 +1802,12 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-tool-search"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-tools",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-ttsr"
@@ -1803,10 +1820,20 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-webfetch"
 version = "0.0.0"
+dependencies = [
+ "futures",
+ "maho-tools",
+ "thiserror 2.0.18",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-websearch"
 version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "url",
+]
 
 [[package]]
 name = "maho-grep"
