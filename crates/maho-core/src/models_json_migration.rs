@@ -182,3 +182,22 @@ pub fn migrate_models_json_provider_ids(path: &Path, content: &str) -> ModelsJso
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn migration_preserves_comments_and_original_backup() {
+        let dir=tempfile::tempdir().expect("tempdir");let path=dir.path().join("models.json");
+        let content="{\n // keep this comment\n \"providers\": {\"openai-codex\": {\"apiKey\":\"fixture\"}},\n \"disabledProviders\": [\"openai-codex\"]\n}";
+        fs::write(&path,content).expect("write");
+        let ModelsJsonMigration::Migrated{backup_path,..}=migrate_models_json_provider_ids(&path,content) else {panic!("expected migration");};
+        assert_eq!(fs::read_to_string(backup_path).expect("backup"),content);
+        let migrated=fs::read_to_string(path).expect("migrated");assert!(migrated.contains("// keep this comment"));assert!(!migrated.contains("openai-codex"));
+    }
+    #[test]
+    fn unchanged_config_does_not_create_a_backup() {
+        let dir=tempfile::tempdir().expect("tempdir");let path=dir.path().join("models.json");let content=r#"{"providers":{"custom":{"apiKey":"fixture"}}}"#;
+        fs::write(&path,content).expect("write");assert!(matches!(migrate_models_json_provider_ids(&path,content),ModelsJsonMigration::Unchanged));assert_eq!(fs::read_dir(dir.path()).expect("entries").count(),1);
+    }
+}
