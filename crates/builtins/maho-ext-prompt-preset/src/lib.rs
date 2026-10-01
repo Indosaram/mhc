@@ -23,3 +23,8 @@ pub mod claude_fable_5;
 pub mod claude_fable_5_1;
 pub mod claude_opus_5;
 pub mod claude_opus_5_5;
+pub mod kimi_k2_code;
+pub mod kimi_k2_6;
+pub mod kimi_k2_7;
+pub mod kimi_k2_8;
+pub mod kimi_k3;
