@@ -53,19 +53,14 @@ pub fn create_grep_tool_definition(cwd: PathBuf, options: GrepToolOptions) -> To
             let mut paths = Vec::new(); let mut missing = Vec::new(); let mut single_file = false; let mut line_start = None; let mut line_end = None;
             for raw in &requested {
                 let mut path = crate::path_utils::resolve_to_cwd(raw, &cwd); let mut info = tokio::fs::metadata(&path).await;
-                if info.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
-                    if let Some((prefix, range)) = path.to_string_lossy().rsplit_once(":L") {
-                        if let Some((start,end)) = range.split_once('-') {
-                            if let (Ok(start),Ok(end)) = (start.parse::<u32>(),end.trim_start_matches('L').parse::<u32>()) {
-                                if let Ok(meta) = tokio::fs::metadata(prefix).await {
-                                    if meta.is_file() {
+                if info.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+                    && let Some((prefix, range)) = path.to_string_lossy().rsplit_once(":L")
+                    && let Some((start,end)) = range.split_once('-')
+                    && let (Ok(start),Ok(end)) = (start.parse::<u32>(),end.trim_start_matches('L').parse::<u32>())
+                    && let Ok(meta) = tokio::fs::metadata(prefix).await
+                    && meta.is_file() {
                                         if requested.len() != 1 || start == 0 || end < start { return Err(ToolError::Message("Invalid line selector".into())); }
                                         let selected = PathBuf::from(prefix); line_start = Some(start); line_end = Some(end); info = Ok(meta); path = selected;
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
                 check_filesystem_policy(policy.as_ref(), &path, FilesystemOperation::Enumerate, "grep").await?;
                 match info {
@@ -107,7 +102,7 @@ pub fn create_grep_tool_definition(cwd: PathBuf, options: GrepToolOptions) -> To
                 let mut groups: BTreeMap<&str,Vec<usize>> = BTreeMap::new();
                 for (i,row) in result.matches.iter().enumerate().filter(|(_,r)| !r.is_context) { groups.entry(&row.path).or_default().push(i); }
                 let mut admitted = BTreeSet::new();
-                for round in 0..cap as usize { for rows in groups.values() { if admitted.len() < limit as usize { if let Some(i) = rows.get(round) { admitted.insert(*i); } } } }
+                for round in 0..cap as usize { for rows in groups.values() { if admitted.len() < limit as usize && let Some(i) = rows.get(round) { admitted.insert(*i); } } }
                 per_file = groups.values().any(|rows| rows.len() > cap as usize);
                 total_limit = groups.values().map(|rows| rows.len().min(cap as usize)).sum::<usize>() > admitted.len();
                 let mut bytes = 0;

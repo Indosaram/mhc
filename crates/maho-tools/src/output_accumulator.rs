@@ -77,7 +77,7 @@ impl OutputAccumulator {
         Ok(OutputSnapshot { content: truncation.content.clone(), truncation, full_output_path: self.temp_path.clone() })
     }
     pub fn close_temp_file(&mut self) -> Result<(), ToolError> {
-        if let Some(mut file) = self.temp.take() { if let Err(error) = file.flush() { self.remove_temp_file()?; return Err(error.into()); } } Ok(())
+        if let Some(mut file) = self.temp.take() && let Err(error) = file.flush() { self.remove_temp_file()?; return Err(error.into()); } Ok(())
     }
     pub fn remove_temp_file(&mut self) -> Result<(), ToolError> {
         self.temp.take();

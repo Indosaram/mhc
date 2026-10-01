@@ -7,10 +7,8 @@ pub fn expand_path(path: &str) -> PathBuf {
         _ => c,
     }).collect();
     let normalized = normalized.strip_prefix('@').unwrap_or(&normalized);
-    if normalized == "~" || normalized.starts_with("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
+    if (normalized == "~" || normalized.starts_with("~/")) && let Some(home) = std::env::var_os("HOME") {
             return PathBuf::from(home).join(normalized.strip_prefix("~/").unwrap_or(""));
-        }
     }
     PathBuf::from(normalized)
 }

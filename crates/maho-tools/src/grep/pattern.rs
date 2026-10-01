@@ -6,7 +6,8 @@ pub fn recover_pattern(pattern: &str) -> String {
     while i < chars.len() {
         let c = chars[i];
         if c == '\\' { i += 2; continue; }
-        if c == '[' { class = true; } if c == ']' { class = false; }
+        if c == '[' { class = true; }
+        if c == ']' { class = false; }
         if class { i += 1; continue; }
         if c == '{' {
             let mut end = i+1;

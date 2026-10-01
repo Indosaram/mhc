@@ -56,7 +56,7 @@ pub fn detect_supported_image_mime_type(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 fn process_image(bytes: Vec<u8>, mime: String, resize: bool) -> Result<(Vec<ToolContent>, String), ToolError> {
-    let mut bytes = bytes; let mut mime = mime; let mut hints = Vec::new();
+    let mut bytes = bytes; let mut mime = mime.split(';').next().unwrap_or(&mime).trim().to_lowercase(); let mut hints = Vec::new();
     if !["image/png","image/jpeg","image/jpg","image/gif","image/webp"].contains(&mime.as_str()) {
         let converted = image::load_from_memory(&bytes).and_then(|image| {
             let mut out = std::io::Cursor::new(Vec::new()); image.write_to(&mut out, image::ImageFormat::Png)?; Ok(out.into_inner())
@@ -66,7 +66,15 @@ fn process_image(bytes: Vec<u8>, mime: String, resize: bool) -> Result<(Vec<Tool
     }
     if mime == "image/jpg" { mime = "image/jpeg".into(); }
     if resize {
-        let decoded = match image::load_from_memory(&bytes) { Ok(image) => image, Err(_) => return Ok((Vec::new(), "[Image omitted: could not be resized below the inline image size limit.]".into())) };
+        let decoded = (|| -> image::ImageResult<image::DynamicImage> {
+            use image::ImageDecoder;
+            let mut decoder = image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format()?.into_decoder()?;
+            let orientation = decoder.orientation()?;
+            let mut decoded = image::DynamicImage::from_decoder(decoder)?;
+            decoded.apply_orientation(orientation);
+            Ok(decoded)
+        })();
+        let decoded = match decoded { Ok(image) => image, Err(_) => return Ok((Vec::new(), "[Image omitted: could not be resized below the inline image size limit.]".into())) };
         let (width,height) = (decoded.width(),decoded.height());
         if width > 2000 || height > 2000 || bytes.len().div_ceil(3)*4 >= 4_718_592 {
             let (mut w,mut h) = (width,height);

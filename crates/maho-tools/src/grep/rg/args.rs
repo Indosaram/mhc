@@ -14,7 +14,7 @@ pub fn matcher_flags(request: &GrepEngineRequest) -> Vec<String> {
     for (enabled,flag) in [(request.ignore_case,"-i"),(request.literal,"-F"),(request.multiline,"-U"),(request.pcre2,"--pcre2")] { if enabled == Some(true) { args.push(flag.into()); } }
     for (value,flag) in [(request.context_before,"-B"),(request.context_after,"-A")] { if let Some(value) = value { args.extend([flag.into(),value.to_string()]); } }
     if request.mode == Some(GrepMode::Files) { args.extend(["-m".into(),"1".into()]); }
-    else if request.mode.unwrap_or(GrepMode::Content) == GrepMode::Content && request.line_start.is_none() && request.line_end.is_none() {
-        if let Some(cap) = request.max_count_per_file { args.extend(["-m".into(),cap.saturating_add(1).to_string()]); }
+    else if request.mode.unwrap_or(GrepMode::Content) == GrepMode::Content && request.line_start.is_none() && request.line_end.is_none() && let Some(cap) = request.max_count_per_file {
+        args.extend(["-m".into(),cap.saturating_add(1).to_string()]);
     } args
 }

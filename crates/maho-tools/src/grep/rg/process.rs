@@ -9,14 +9,15 @@ pub async fn run(args: &[String], cwd: &Path, input: Option<Vec<u8>>, deadline: 
     let stdin = child.stdin.take();
     let operation = async {
         let writer = async {
-            if let (Some(mut stdin),Some(input)) = (stdin,input) {
-                if let Err(error) = stdin.write_all(&input).await { if error.kind() != std::io::ErrorKind::BrokenPipe { return Err(GrepEngineError::EngineUnavailable(format!("Failed to write ripgrep input: {error}"))); } }
-            } Ok(())
+            if let (Some(mut stdin),Some(input)) = (stdin,input)
+                && let Err(error) = stdin.write_all(&input).await
+                && error.kind() != std::io::ErrorKind::BrokenPipe { return Err(GrepEngineError::EngineUnavailable(format!("Failed to write ripgrep input: {error}"))); }
+            Ok(())
         };
         let reader = async { child.wait_with_output().await.map_err(|e| GrepEngineError::EngineUnavailable(e.to_string())) };
         let (_,output) = tokio::try_join!(writer,reader)?;
         let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if !matches!(output.status.code(),Some(0|1)) && !(output.status.code() == Some(2) && error.lines().all(|line| line.starts_with("No files were searched") || line == "Running with --debug will show why files are being skipped.")) {
+        if !(matches!(output.status.code(),Some(0|1)) || output.status.code() == Some(2) && error.lines().all(|line| line.starts_with("No files were searched") || line == "Running with --debug will show why files are being skipped.")) {
             let lower = error.to_lowercase();
             return Err(if lower.contains("look-around") || lower.contains("backreference") { GrepEngineError::UnsupportedRegex(error) }
                 else if lower.contains("regex parse error") || lower.contains("error compiling pattern") || lower.contains("not allowed in a regex") { GrepEngineError::InvalidPattern(error) }

@@ -49,7 +49,7 @@ impl BashOperations for LocalShellOperations {
                 }
             };
             while let Ok(data) = receiver.try_recv() {
-                if callback_error.is_none() { if let Err(error) = (options.on_data)(&data) { callback_error = Some(error); } }
+                if callback_error.is_none() && let Err(error) = (options.on_data)(&data) { callback_error = Some(error); }
             }
             if let Some(error) = callback_error { return Err(error); }
             if cancelled || options.signal.is_aborted() { return Err(ToolError::Message("aborted".into())); }
@@ -59,7 +59,7 @@ impl BashOperations for LocalShellOperations {
     }
 }
 pub fn create_local_bash_operations(shell: Option<&str>) -> Arc<dyn BashOperations> {
-    Arc::new(LocalShellOperations { shell_name: "bash".into(), shell: shell.unwrap_or("bash").into(), args: vec!["-c".into()], prefix: String::new() })
+    Arc::new(LocalShellOperations { shell_name: "bash".into(), shell: shell.unwrap_or("bash").into(), args: vec!["-c".into()], prefix: if cfg!(unix) { "stty -echo -onlcr; exec </dev/null;\n".into() } else { String::new() } })
 }
 #[derive(Clone)]
 pub struct BashSpawnContext { pub command: String, pub cwd: PathBuf, pub env: BTreeMap<String,String> }
@@ -76,8 +76,7 @@ pub struct ShellToolConfig { pub name: String, pub shell_name: String, pub promp
 pub fn resolve_spawn_context(command: String, cwd: PathBuf, hook: Option<&BashSpawnHook>, expose: bool, context: Option<&dyn ToolContext>) -> Result<BashSpawnContext, ToolError> {
     let mut env: BTreeMap<_,_> = std::env::vars().collect();
     for key in ["PI_SESSION_ID", "PI_SESSION_FILE", "PI_SESSION_CWD", "PI_GOAL_STORE_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL"] { env.remove(key); }
-    if expose {
-        if let Some(context) = context {
+    if expose && let Some(context) = context {
             env.insert("PI_SESSION_ID".into(), context.session_manager().session_id().into());
             env.insert("PI_SESSION_CWD".into(), context.cwd().to_string_lossy().into_owned());
             for (key, path) in [("PI_SESSION_FILE", context.session_manager().session_file()), ("PI_GOAL_STORE_FILE", context.goal_store_file())] {
@@ -88,7 +87,6 @@ pub fn resolve_spawn_context(command: String, cwd: PathBuf, hook: Option<&BashSp
                 env.insert("PI_PROVIDER".into(), provider.as_str().unwrap_or_default().into()); env.insert("PI_MODEL".into(), model.id.clone());
             }
             if let Some(level) = context.thinking_level() { env.insert("PI_REASONING_LEVEL".into(), serde_json::to_value(level)?.as_str().unwrap_or_default().into()); }
-        }
     }
     let context = BashSpawnContext { command, cwd, env }; if let Some(hook) = hook { hook(context) } else { Ok(context) }
 }
@@ -118,19 +116,46 @@ pub fn create_shell_tool_definition(cwd: PathBuf, config: ShellToolConfig, optio
             let context = resolve_spawn_context(command, call.context.map_or(cwd.as_path(), ToolContext::cwd).to_path_buf(), options.spawn_hook.as_ref(), options.expose_session_environment.unwrap_or(true), call.context)?;
             let output = Arc::new(Mutex::new(OutputAccumulator::new(OutputAccumulatorOptions { temp_file_prefix: config.temp_file_prefix, ..Default::default() })));
             if let Some(update) = &call.on_update { update(ToolResult { content: Vec::new(), details: None })?; }
-            let captured = Arc::clone(&output); let update = call.on_update.clone();
+            let captured = Arc::clone(&output);
+            let changed = Arc::new(tokio::sync::Notify::new());
+            let data_changed = Arc::clone(&changed);
             let on_data: BashDataCallback = Arc::new(move |data| {
                 let mut accumulator = captured.lock().map_err(|_| ToolError::Message("Output accumulator lock poisoned".into()))?;
                 accumulator.append(data)?;
-                if let Some(update) = &update {
-                    let snapshot = accumulator.snapshot(true)?;
+                data_changed.notify_one();
+                Ok(())
+            });
+            let operation = ops.exec(&context.command, &context.cwd, BashExecOptions { on_data, signal: call.signal, timeout: input.timeout, env: context.env });
+            tokio::pin!(operation);
+            let mut dirty = false;
+            let mut next_update = tokio::time::Instant::now();
+            let mut update_error = None;
+            let emit_update = || -> Result<(), ToolError> {
+                if let Some(update) = &call.on_update {
+                    let snapshot = output.lock().map_err(|_| ToolError::Message("Output accumulator lock poisoned".into()))?.snapshot(true)?;
                     update(ToolResult { content: vec![ToolContent::text(snapshot.content)], details: Some(json!({"truncation":snapshot.truncation.truncated.then_some(snapshot.truncation),"fullOutputPath":snapshot.full_output_path})) })?;
                 }
                 Ok(())
-            });
-            let execution = ops.exec(&context.command, &context.cwd, BashExecOptions { on_data, signal: call.signal, timeout: input.timeout, env: context.env }).await;
+            };
+            let execution = loop {
+                tokio::select! {
+                    biased;
+                    () = changed.notified() => { dirty = true; },
+                    result = &mut operation => break result,
+                    () = tokio::time::sleep_until(next_update), if dirty && update_error.is_none() => {
+                        dirty = false;
+                        if let Err(error) = emit_update() { update_error = Some(error); }
+                        next_update = tokio::time::Instant::now() + Duration::from_millis(100);
+                    }
+                }
+            };
             let mut output = output.lock().map_err(|_| ToolError::Message("Output accumulator lock poisoned".into()))?;
-            output.finish()?; let snapshot = output.snapshot(true)?; output.close_temp_file()?;
+            output.finish()?; let snapshot = output.snapshot(true)?;
+            if update_error.is_none()
+                && let Some(update) = &call.on_update
+                && let Err(error) = update(ToolResult { content: vec![ToolContent::text(snapshot.content.clone())], details: Some(json!({"truncation":snapshot.truncation.truncated.then_some(&snapshot.truncation),"fullOutputPath":snapshot.full_output_path})) }) { update_error = Some(error); }
+            output.close_temp_file()?;
+            if let Some(error) = update_error { output.remove_temp_file()?; return Err(error); }
             match execution {
                 Ok(exit) => {
                     let (result, text) = format_output(&snapshot, output.get_last_line_bytes(), "(no output)");
