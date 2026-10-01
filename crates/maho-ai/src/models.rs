@@ -178,6 +178,11 @@ impl RefreshModelsContext {
     pub async fn publish(&self, publication: ModelsPublication) -> Result<bool, AbortReason> {
         (self.publish)(publication).await
     }
+
+    /// A `'static` handle to `publish`, for providers that publish from a future they do not own.
+    pub fn publisher(&self) -> PublishFn {
+        self.publish.clone()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -668,7 +673,27 @@ impl Models {
 
     pub async fn get_auth(&self, provider_id: &str, overrides: &AuthResolutionOverrides) -> Result<Option<AuthResolution>, ModelsError> {
         let Some(provider) = self.get_provider(provider_id) else { return Ok(None) };
-        self.inner.auth.resolve(provider.as_ref(), overrides).await
+        let signal = operation_signal(overrides.signal.clone());
+        match race_with_abort_signal(self.inner.auth.resolve(provider.as_ref(), overrides), &signal).await {
+            Ok(result) => result,
+            Err(reason) => Err(ModelsError::new(ModelsErrorCode::Auth, reason.message)),
+        }
+    }
+
+    /// `getAuth(model | providerId, overrides)`'s model overload: the resolved auth headers are
+    /// merged under the model's own headers (`mergeHeaders(result.auth.headers, model.headers)`).
+    pub async fn get_auth_for_model(
+        &self,
+        model: &Model,
+        overrides: &AuthResolutionOverrides,
+    ) -> Result<Option<AuthResolution>, ModelsError> {
+        let Some(mut resolution) = self.get_auth(&model.provider, overrides).await? else { return Ok(None) };
+        if let Some(model_headers) = &model.headers {
+            let model_headers: ProviderHeaders =
+                model_headers.iter().map(|(name, value)| (name.clone(), Some(value.clone()))).collect();
+            resolution.auth.headers = merge_headers(resolution.auth.headers.as_ref(), Some(&model_headers));
+        }
+        Ok(Some(resolution))
     }
 
     fn require_provider(&self, model: &Model) -> Result<Arc<dyn Provider>, ModelsError> {
@@ -689,10 +714,10 @@ impl Models {
             signal: request.signal.clone(),
             ..AuthResolutionOverrides::default()
         };
+        // `getAuth(model, …)` — the model overload, so the model's own headers take part in the
+        // merge `transformHeaders` and the provider request see.
         let resolution = self
-            .inner
-            .auth
-            .resolve(provider.as_ref(), &overrides)
+            .get_auth_for_model(model, &overrides)
             .await?
             .ok_or_else(|| ModelsError::new(ModelsErrorCode::Auth, provider_not_configured_message(&model.provider)))?;
         let mut headers = merge_headers(resolution.auth.headers.as_ref(), request.headers.as_ref());

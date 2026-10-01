@@ -317,14 +317,327 @@ pub fn resolve_prompt_cache_ttl_seconds(model: &Model, env: Option<&ProviderEnv>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models_generated::get_builtin_model;
+    use crate::model::ModelCompat;
+    use serde_json::json;
 
-    fn model(provider: &str, id: &str) -> Model {
-        get_builtin_model(provider, id).expect("model").clone()
+    /// Port of `createModel` (prompt-cache-ttl.test.ts): the shared minimal model fixture, with
+    /// per-field overrides applied the same way `{ ...base, ...overrides }` does in TS.
+    fn create_model(api: &str) -> Model {
+        Model {
+            id: "test-model".into(),
+            name: "Test Model".into(),
+            api: api.into(),
+            provider: "test-provider".into(),
+            base_url: "https://example.com/v1".into(),
+            reasoning: false,
+            thinking_level_map: None,
+            input: vec![crate::types::InputModality::Text],
+            cost: crate::types::ModelCost::default(),
+            context_window: 128_000,
+            max_tokens: 4096,
+            sampling_params: None,
+            headers: None,
+            cache_retention: None,
+            upstream_model_id: None,
+            service_tier: None,
+            recover_text_tool_calls: None,
+            compat: None,
+        }
+    }
+
+    fn compat_of(json: serde_json::Value) -> ModelCompat {
+        ModelCompat(json.as_object().cloned().unwrap_or_default())
     }
 
     fn long_env() -> ProviderEnv {
         [("PI_CACHE_RETENTION".to_owned(), "long".to_owned())].into_iter().collect()
+    }
+
+    fn anthropic_model() -> Model {
+        Model { provider: "anthropic".into(), base_url: "https://api.anthropic.com/v1".into(), ..create_model("anthropic-messages") }
+    }
+
+    fn anthropic_completions_model() -> Model {
+        Model {
+            provider: "custom-proxy".into(),
+            compat: Some(compat_of(json!({ "cacheControlFormat": "anthropic", "supportsLongCacheRetention": true }))),
+            ..create_model("openai-completions")
+        }
+    }
+
+    fn cacheable_bedrock_model() -> Model {
+        Model {
+            id: "anthropic.claude-3-7-sonnet-20250219-v1:0".into(),
+            provider: "amazon-bedrock".into(),
+            ..create_model("bedrock-converse-stream")
+        }
+    }
+
+    fn openai_responses_model() -> Model {
+        Model { provider: "openai".into(), base_url: "https://api.openai.com/v1".into(), ..create_model("openai-responses") }
+    }
+
+    #[test]
+    fn exports_the_short_and_long_cache_durations_from_the_pi_ai_root() {
+        assert_eq!(PROMPT_CACHE_TTL_SHORT_SECONDS, 300);
+        assert_eq!(PROMPT_CACHE_TTL_LONG_SECONDS, 3600);
+    }
+
+    #[test]
+    fn lets_an_explicit_model_retention_override_provider_env() {
+        let env = long_env();
+        assert_eq!(
+            resolve_prompt_cache_ttl_seconds(&Model { cache_retention: Some(CacheRetention::Short), ..anthropic_model() }, Some(&env)),
+            Some(300)
+        );
+        assert_eq!(
+            resolve_prompt_cache_ttl_seconds(&Model { cache_retention: Some(CacheRetention::Short), ..anthropic_completions_model() }, Some(&env)),
+            Some(300)
+        );
+        assert_eq!(
+            resolve_prompt_cache_ttl_seconds(&Model { cache_retention: Some(CacheRetention::Short), ..cacheable_bedrock_model() }, Some(&env)),
+            Some(300)
+        );
+        assert_eq!(
+            resolve_prompt_cache_ttl_seconds(&Model { cache_retention: Some(CacheRetention::Short), ..openai_responses_model() }, Some(&env)),
+            Some(300)
+        );
+    }
+
+    #[test]
+    fn honors_pi_cache_retention_long_from_provider_env() {
+        let env = long_env();
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&anthropic_model(), Some(&env)), Some(3600));
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&anthropic_completions_model(), Some(&env)), Some(3600));
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&cacheable_bedrock_model(), Some(&env)), Some(300));
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&openai_responses_model(), Some(&env)), Some(300));
+    }
+
+    /// TS sets `process.env.PI_CACHE_RETENTION = "legacy-opt-out"` directly and calls the resolver
+    /// with no `env` argument, exercising the Anthropic branch's own `process.env`-only read
+    /// (`getProviderEnvValue` falls back to `process.env` when no `ProviderEnv` is supplied).
+    /// `get_provider_env_value` only reads the passed `ProviderEnv`, so the equivalent call here
+    /// passes the same value through the `ProviderEnv` argument instead of `std::env`.
+    #[test]
+    fn uses_the_anthropic_process_env_only_short_branch_when_the_variable_is_set_but_not_long() {
+        let env: ProviderEnv = [("PI_CACHE_RETENTION".to_owned(), "legacy-opt-out".to_owned())].into_iter().collect();
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&anthropic_model(), Some(&env)), Some(300));
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&anthropic_completions_model(), Some(&env)), Some(300));
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&cacheable_bedrock_model(), Some(&env)), Some(300));
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&openai_responses_model(), Some(&env)), Some(300));
+    }
+
+    #[test]
+    fn uses_each_adapters_own_unset_fallback() {
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&anthropic_model(), None), Some(300));
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&anthropic_completions_model(), None), Some(300));
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&cacheable_bedrock_model(), None), Some(300));
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&openai_responses_model(), None), Some(300));
+    }
+
+    #[test]
+    fn returns_one_hour_for_direct_anthropic_long_retention() {
+        let model = Model { cache_retention: Some(CacheRetention::Long), ..anthropic_model() };
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&model, None), Some(3600));
+    }
+
+    #[test]
+    fn returns_five_minutes_for_proxied_anthropic_models() {
+        let model = Model {
+            base_url: "https://anthropic-proxy.example.com/v1".into(),
+            cache_retention: Some(CacheRetention::Long),
+            ..anthropic_model()
+        };
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&model, None), Some(300));
+    }
+
+    #[test]
+    fn returns_undefined_when_caching_is_disabled() {
+        let model = Model { cache_retention: Some(CacheRetention::None), ..anthropic_model() };
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&model, None), None);
+    }
+
+    #[test]
+    fn reuses_anthropic_compat_defaults_for_fireworks_hosted_models() {
+        let model = Model {
+            provider: "fireworks".into(),
+            base_url: "https://api.anthropic.com/v1".into(),
+            cache_retention: Some(CacheRetention::Long),
+            ..create_model("anthropic-messages")
+        };
+        assert!(!get_anthropic_compat(&model).supports_long_cache_retention);
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&model, None), Some(300));
+    }
+
+    /// One row per `it.each([...])("uses resolved OpenRouter cache control compat for %s")` case in
+    /// prompt-cache-ttl.test.ts, title carried verbatim.
+    #[test]
+    fn uses_resolved_open_router_cache_control_compat_for_each_model_id() {
+        let cases: &[(&str, &str)] = &[
+            ("uses resolved OpenRouter cache control compat for anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4"),
+            ("uses resolved OpenRouter cache control compat for ~anthropic/claude-opus-latest", "~anthropic/claude-opus-latest"),
+            ("uses resolved OpenRouter cache control compat for qwen/qwen3-235b-a22b", "qwen/qwen3-235b-a22b"),
+            ("uses resolved OpenRouter cache control compat for google/gemini-2.5-pro", "google/gemini-2.5-pro"),
+        ];
+        for (title, model_id) in cases {
+            let model = Model {
+                id: (*model_id).into(),
+                provider: "openrouter".into(),
+                base_url: "https://openrouter.ai/api/v1".into(),
+                cache_retention: Some(CacheRetention::Long),
+                ..create_model("openai-completions")
+            };
+            let compat = get_openai_completions_compat(&model);
+            assert_eq!(compat.cache_control_format, Some(CacheControlFormat::Anthropic), "case: {title}");
+            assert!(compat.send_session_affinity_headers, "case: {title}");
+            assert_eq!(resolve_prompt_cache_ttl_seconds(&model, None), Some(3600), "case: {title}");
+        }
+    }
+
+    #[test]
+    fn does_not_enable_cache_control_for_other_open_router_model_prefixes() {
+        let model = Model {
+            id: "meta-llama/llama-3.3-70b-instruct".into(),
+            provider: "openrouter".into(),
+            base_url: "https://openrouter.ai/api/v1".into(),
+            ..create_model("openai-completions")
+        };
+        assert_eq!(get_openai_completions_compat(&model).cache_control_format, None);
+    }
+
+    #[test]
+    fn selects_moonshot_tool_schema_normalization_and_prompt_cache_keys_automatically() {
+        let model = Model { provider: "moonshotai".into(), base_url: "https://api.moonshot.ai/v1".into(), ..create_model("openai-completions") };
+        let compat = get_openai_completions_compat(&model);
+        assert_eq!(compat.tool_schema_flavor, Some(ToolSchemaFlavor::MoonshotMfjs));
+        assert_eq!(compat.supports_prompt_cache_key, Some(true));
+    }
+
+    #[test]
+    fn preserves_an_explicit_moonshot_prompt_cache_key_override() {
+        let model = Model {
+            provider: "moonshotai".into(),
+            base_url: "https://api.moonshot.ai/v1".into(),
+            compat: Some(compat_of(json!({ "supportsPromptCacheKey": false }))),
+            ..create_model("openai-completions")
+        };
+        assert_eq!(get_openai_completions_compat(&model).supports_prompt_cache_key, Some(false));
+    }
+
+    #[test]
+    fn preserves_an_explicit_tool_schema_normalization_override() {
+        let model = Model {
+            provider: "custom".into(),
+            base_url: "https://example.com/v1".into(),
+            compat: Some(compat_of(json!({ "toolSchemaFlavor": "moonshot-mfjs" }))),
+            ..create_model("openai-completions")
+        };
+        assert_eq!(get_openai_completions_compat(&model).tool_schema_flavor, Some(ToolSchemaFlavor::MoonshotMfjs));
+    }
+
+    #[test]
+    fn uses_a_conservative_five_minutes_for_openai_style_automatic_caching() {
+        let model = Model {
+            provider: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            cache_retention: Some(CacheRetention::Long),
+            ..create_model("openai-completions")
+        };
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&model, None), Some(300));
+    }
+
+    /// TS re-exports the same `supportsPromptCaching` from both `api/bedrock-converse-stream.ts`
+    /// and `utils/prompt-cache-ttl.ts`, so `supportsPromptCachingBrowserSafe` and
+    /// `supportsPromptCaching` are the identical function under two import paths; there is only
+    /// one Rust `supports_prompt_caching`, so this exercises its three TS fixture scenarios.
+    #[test]
+    fn keeps_the_browser_safe_predicate_aligned_with_the_bedrock_api_export() {
+        let unsupported_model = Model { id: "meta.llama3-70b-instruct-v1:0".into(), provider: "amazon-bedrock".into(), ..create_model("bedrock-converse-stream") };
+        let forced_model = Model {
+            id: "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/custom-profile".into(),
+            provider: "amazon-bedrock".into(),
+            ..create_model("bedrock-converse-stream")
+        };
+        let force_env: ProviderEnv = [("AWS_BEDROCK_FORCE_CACHE".to_owned(), "1".to_owned())].into_iter().collect();
+
+        assert!(supports_prompt_caching(&cacheable_bedrock_model(), None));
+        assert!(!supports_prompt_caching(&unsupported_model, None));
+        assert!(supports_prompt_caching(&forced_model, Some(&force_env)));
+    }
+
+    #[test]
+    fn returns_five_minutes_for_a_cacheable_claude_3_7_model_with_long_retention() {
+        let model = Model { cache_retention: Some(CacheRetention::Long), ..cacheable_bedrock_model() };
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&model, None), Some(300));
+    }
+
+    #[test]
+    fn returns_undefined_for_a_model_without_explicit_prompt_caching_support() {
+        let model = Model {
+            id: "meta.llama3-70b-instruct-v1:0".into(),
+            provider: "amazon-bedrock".into(),
+            cache_retention: Some(CacheRetention::Long),
+            ..create_model("bedrock-converse-stream")
+        };
+        assert!(!supports_prompt_caching(&model, None));
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&model, None), None);
+    }
+
+    #[test]
+    fn honors_aws_bedrock_force_cache_from_provider_env() {
+        let model = Model {
+            id: "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/custom-profile".into(),
+            provider: "amazon-bedrock".into(),
+            cache_retention: Some(CacheRetention::Long),
+            ..create_model("bedrock-converse-stream")
+        };
+        let env: ProviderEnv = [("AWS_BEDROCK_FORCE_CACHE".to_owned(), "1".to_owned())].into_iter().collect();
+        assert!(supports_prompt_caching(&model, Some(&env)));
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&model, Some(&env)), Some(300));
+    }
+
+    #[test]
+    fn returns_five_minutes_for_the_actual_claude_sdk_oauth_model_shape() {
+        let model = Model { provider: "anthropic-subscription".into(), base_url: "claude-sdk-oauth".into(), ..create_model("claude-sdk-oauth") };
+        let env: ProviderEnv = [("PI_CACHE_RETENTION".to_owned(), "long".to_owned())].into_iter().collect();
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&model, Some(&env)), Some(300));
+    }
+
+    /// One row per `it.each(["openai-responses", "openai-codex-responses", "azure-openai-responses"])`
+    /// case ("returns five minutes for %s") in prompt-cache-ttl.test.ts, title carried verbatim.
+    #[test]
+    fn returns_five_minutes_for_each_responses_api() {
+        let cases: &[(&str, &str)] = &[
+            ("returns five minutes for openai-responses", "openai-responses"),
+            ("returns five minutes for openai-codex-responses", "openai-codex-responses"),
+            ("returns five minutes for azure-openai-responses", "azure-openai-responses"),
+        ];
+        for (title, api) in cases {
+            assert_eq!(resolve_prompt_cache_ttl_seconds(&create_model(api), None), Some(300), "case: {title}");
+        }
+    }
+
+    #[test]
+    fn returns_undefined_for_disabled_openai_responses_caching() {
+        let model = Model { cache_retention: Some(CacheRetention::None), ..create_model("openai-responses") };
+        assert_eq!(resolve_prompt_cache_ttl_seconds(&model, None), None);
+    }
+
+    /// One row per `it.each(["google-generative-ai", "google-vertex", "mistral-conversations",
+    /// "pi-messages", "unknown-api"])` case ("returns undefined for %s") in
+    /// prompt-cache-ttl.test.ts, title carried verbatim.
+    #[test]
+    fn returns_undefined_for_each_unknown_api() {
+        let cases: &[(&str, &str)] = &[
+            ("returns undefined for google-generative-ai", "google-generative-ai"),
+            ("returns undefined for google-vertex", "google-vertex"),
+            ("returns undefined for mistral-conversations", "mistral-conversations"),
+            ("returns undefined for pi-messages", "pi-messages"),
+            ("returns undefined for unknown-api", "unknown-api"),
+        ];
+        for (title, api) in cases {
+            assert_eq!(resolve_prompt_cache_ttl_seconds(&create_model(api), None), None, "case: {title}");
+        }
     }
 
     #[test]
@@ -356,19 +669,12 @@ mod tests {
         assert!(!compat.supports_developer_role && compat.send_session_affinity_headers);
     }
 
+    fn model(provider: &str, id: &str) -> Model {
+        crate::models_generated::get_builtin_model(provider, id).expect("model").clone()
+    }
+
     #[test]
-    fn prompt_cache_ttl_resolution() {
-        let opus = model("anthropic", "claude-opus-4-8");
-        assert_eq!(resolve_prompt_cache_ttl_seconds(&Model { cache_retention: Some(CacheRetention::Short), ..opus.clone() }, None), Some(300));
-        assert_eq!(resolve_prompt_cache_ttl_seconds(&opus, Some(&long_env())), Some(3600));
-        assert_eq!(resolve_prompt_cache_ttl_seconds(&Model { cache_retention: Some(CacheRetention::None), ..opus.clone() }, None), None);
-        let proxied = Model { base_url: "https://proxy.example".into(), ..opus.clone() };
-        assert_eq!(resolve_prompt_cache_ttl_seconds(&proxied, Some(&long_env())), Some(300));
-        let bedrock = Model { api: "bedrock-converse-stream".into(), id: "us.anthropic.claude-haiku-4-5".into(), name: "Haiku".into(), compat: None, ..opus.clone() };
-        assert_eq!(resolve_prompt_cache_ttl_seconds(&bedrock, Some(&long_env())), Some(3600));
-        let titan = Model { id: "amazon.titan".into(), name: "Titan".into(), ..bedrock };
-        assert_eq!(resolve_prompt_cache_ttl_seconds(&titan, Some(&long_env())), None);
-        assert_eq!(resolve_prompt_cache_ttl_seconds(&Model { api: "google-generative-ai".into(), ..opus }, None), None);
+    fn get_bedrock_model_match_candidates_normalizes_separators() {
         assert_eq!(get_bedrock_model_match_candidates("A.B:c", Some("X y")), ["a.b:c", "a-b-c", "x y", "x-y"]);
     }
 }

@@ -16,7 +16,21 @@ pub struct NormalizedProviderError {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SdkResponseBody {
     Value(Value),
+    /// A non-stream SDK wrapper/class instance (e.g. an AWS SDK v3 HTTP response wrapper). The
+    /// TS prototype check (`Object.getPrototypeOf(value) !== Object.prototype`) rejects these the
+    /// same way it rejects a readable stream: no body is surfaced and `error.message` wins.
+    ClassInstance,
     Stream,
+}
+
+/// A JSON-shaped value duck-typed off the TS `unknown` field: either a genuine plain object /
+/// primitive (serializes and normalizes like TS's own plain-object check), or a class instance
+/// whose fields TS's `Object.getPrototypeOf(value) !== Object.prototype` check rejects as "not a
+/// parsed body" regardless of how many enumerable fields it carries.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SdkFieldValue {
+    Plain(Value),
+    ClassInstance,
 }
 
 /// The SDK error fields the TS normalizer duck-types (`Error & {...}`).
@@ -26,7 +40,7 @@ pub struct SdkErrorShape {
     pub status_code: Option<Value>,
     pub status: Option<Value>,
     pub body: Option<Value>,
-    pub error: Option<Value>,
+    pub error: Option<SdkFieldValue>,
     pub metadata_http_status_code: Option<Value>,
     pub response_status_code: Option<Value>,
     pub response_body: Option<SdkResponseBody>,
@@ -77,7 +91,7 @@ fn pick_body_text(error: &SdkErrorShape) -> Option<String> {
     if let Some(Value::String(body)) = &error.body {
         return Some(body.clone());
     }
-    if let Some(inner) = error.error.as_ref().filter(|v| is_plain_non_empty_object(v)) {
+    if let Some(SdkFieldValue::Plain(inner)) = error.error.as_ref().filter(|v| matches!(v, SdkFieldValue::Plain(value) if is_plain_non_empty_object(value))) {
         return Some(safe_json_stringify(inner));
     }
     match &error.response_body {
@@ -120,26 +134,210 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn normalizes_and_formats_sdk_errors() {
-        let sdk = SdkErrorShape {
-            message: "Bad request".into(),
-            status: Some(json!(400)),
-            error: Some(json!({"type": "invalid_request_error"})),
+    fn extracts_status_and_body_from_a_mistral_shaped_error() {
+        let error = SdkErrorShape {
+            message: "Mistral request failed".into(),
+            status_code: Some(json!(403)),
+            body: Some(json!("{\"error\":\"blocked by gateway WAF\"}")),
             ..Default::default()
         };
-        let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(sdk)));
-        assert_eq!(norm.body.as_deref(), Some(r#"{"type":"invalid_request_error"}"#));
+        let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
+        assert_eq!(norm.status, Some(403));
+        assert_eq!(norm.body.as_deref(), Some("{\"error\":\"blocked by gateway WAF\"}"));
         assert!(!norm.message_carries_body);
-        assert_eq!(format_provider_error(&norm, Some("Anthropic")), r#"Anthropic (400): {"type":"invalid_request_error"}"#);
-        assert_eq!(format_provider_error(&norm, None), r#"400: {"type":"invalid_request_error"}"#);
-        let carried = SdkErrorShape { message: "503 upstream".into(), body: Some(json!(" upstream ")), status_code: Some(json!(503)), ..Default::default() };
-        let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(carried)));
+    }
+
+    #[test]
+    fn reads_the_parsed_body_off_an_openai_apierror_when_the_message_is_opaque() {
+        let error = SdkErrorShape {
+            message: "403 status code (no body)".into(),
+            status: Some(json!(403)),
+            error: Some(SdkFieldValue::Plain(json!({"error": "blocked by gateway WAF"}))),
+            ..Default::default()
+        };
+        let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
+        assert_eq!(norm.status, Some(403));
+        assert_eq!(norm.body.as_deref(), Some("{\"error\":\"blocked by gateway WAF\"}"));
+        assert!(!norm.message_carries_body);
+    }
+
+    #[test]
+    fn preserves_the_message_when_google_genai_already_folds_the_body_into_it() {
+        let body = json!({"error": {"code": 403, "message": "Permission denied"}});
+        let message = serde_json::to_string(&body).unwrap();
+        let error = SdkErrorShape { message: message.clone(), status: Some(json!(403)), ..Default::default() };
+        let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
+        assert_eq!(norm.status, Some(403));
         assert!(norm.message_carries_body);
-        assert_eq!(format_provider_error(&norm, Some("X")), "X (503): 503 upstream");
-        let stream = SdkErrorShape { message: "m".into(), response_body: Some(SdkResponseBody::Stream), ..Default::default() };
-        assert_eq!(normalize_provider_error(&ThrownProviderError::Error(Box::new(stream))).body, None);
-        let other = normalize_provider_error(&ThrownProviderError::Other(json!("boom")));
-        assert_eq!((other.message.as_str(), other.message_carries_body), ("\"boom\"", false));
+        assert_eq!(norm.message, message);
+    }
+
+    #[test]
+    fn extracts_status_and_body_from_a_bedrock_shaped_service_exception() {
+        let error = SdkErrorShape {
+            message: "UnknownError".into(),
+            metadata_http_status_code: Some(json!(403)),
+            response_status_code: Some(json!(403)),
+            response_body: Some(SdkResponseBody::Value(json!("{\"message\":\"blocked by gateway WAF\"}"))),
+            ..Default::default()
+        };
+        let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
+        assert_eq!(norm.status, Some(403));
+        assert_eq!(norm.body.as_deref(), Some("{\"message\":\"blocked by gateway WAF\"}"));
+        assert!(!norm.message_carries_body);
+    }
+
+    #[test]
+    fn ignores_a_bedrock_response_stream_instead_of_serializing_its_internals() {
+        let error = SdkErrorShape {
+            message: "Invocation of model ID anthropic.claude-opus-5 with on-demand throughput isn't supported.".into(),
+            metadata_http_status_code: Some(json!(400)),
+            response_status_code: Some(json!(400)),
+            response_body: Some(SdkResponseBody::Stream),
+            ..Default::default()
+        };
+        let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
+        assert_eq!(norm.status, Some(400));
+        assert_eq!(norm.body, None);
+        assert!(norm.message.contains("on-demand throughput isn't supported"));
+        assert!(norm.message_carries_body);
+    }
+
+    #[test]
+    fn ignores_a_class_instance_response_body_without_a_pipe_method_instead_of_serializing_it() {
+        // TS constructs `new SdkHttpResponseBody()` (a class instance with `locked`/`state`
+        // fields, no `pipe`). `SdkResponseBody::ClassInstance` models any non-stream SDK wrapper
+        // object the TS prototype check (`Object.getPrototypeOf(value) !== Object.prototype`)
+        // rejects the same way it rejects a Node stream: no body surfaces, the real message wins.
+        let error = SdkErrorShape {
+            message: "Input is too long for requested model.".into(),
+            metadata_http_status_code: Some(json!(400)),
+            response_status_code: Some(json!(400)),
+            response_body: Some(SdkResponseBody::ClassInstance),
+            ..Default::default()
+        };
+        let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
+        assert_eq!(norm.status, Some(400));
+        assert_eq!(norm.body, None);
+        assert!(norm.message.contains("Input is too long"));
+        assert!(norm.message_carries_body);
+    }
+
+    #[test]
+    fn ignores_a_class_instance_error_field_instead_of_serializing_it() {
+        // TS: `new SdkInnerError()` (`code`/`internalState` fields). `SdkFieldValue::ClassInstance`
+        // is the same "reject a non-plain instance" signal `pick_body_text` treats as no body.
+        let error = SdkErrorShape {
+            message: "TLS handshake failed".into(),
+            status: Some(json!(502)),
+            error: Some(SdkFieldValue::ClassInstance),
+            ..Default::default()
+        };
+        let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
+        assert_eq!(norm.body, None);
+        assert_eq!(norm.message, "TLS handshake failed");
+        assert!(norm.message_carries_body);
+    }
+
+    #[test]
+    fn still_surfaces_a_plain_parsed_json_body_object() {
+        let error = SdkErrorShape {
+            message: "400 status code (no body)".into(),
+            status: Some(json!(400)),
+            error: Some(SdkFieldValue::Plain(json!({"message": "schema validation failed", "field": "tools[0]"}))),
+            ..Default::default()
+        };
+        let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
+        assert_eq!(norm.body.as_deref(), Some("{\"message\":\"schema validation failed\",\"field\":\"tools[0]\"}"));
+        assert!(!norm.message_carries_body);
+    }
+
+    #[test]
+    fn json_stringifies_a_non_error_thrown_value() {
+        let norm = normalize_provider_error(&ThrownProviderError::Other(json!({"reason": "boom"})));
+        assert_eq!(norm.status, None);
+        assert_eq!(norm.body, None);
+        assert_eq!(norm.message, "{\"reason\":\"boom\"}");
+        assert!(!norm.message_carries_body);
+    }
+
+    #[test]
+    fn treats_an_empty_parsed_body_object_as_no_body() {
+        let error = SdkErrorShape {
+            message: "403 status code (no body)".into(),
+            status: Some(json!(403)),
+            error: Some(SdkFieldValue::Plain(json!({}))),
+            ..Default::default()
+        };
+        let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
+        assert_eq!(norm.body, None);
+        assert!(norm.message_carries_body);
+    }
+
+    #[test]
+    fn truncates_the_body_at_the_cap() {
+        let long_body = "x".repeat(MAX_PROVIDER_ERROR_BODY_CHARS + 50);
+        let error = SdkErrorShape { message: "failed".into(), status_code: Some(json!(500)), body: Some(json!(long_body.clone())), ..Default::default() };
+        let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
+        let body = norm.body.expect("body");
+        assert!(body.contains("... [truncated 50 chars]"));
+        assert!(body.len() < long_body.len());
+    }
+
+    #[test]
+    fn sets_message_carries_body_when_the_message_already_contains_the_extracted_body() {
+        let error = SdkErrorShape {
+            message: "500: upstream exploded".into(),
+            status_code: Some(json!(500)),
+            body: Some(json!("upstream exploded")),
+            ..Default::default()
+        };
+        let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
+        assert!(norm.message_carries_body);
+    }
+
+    #[test]
+    fn surfaces_status_and_body_without_a_prefix() {
+        let error = SdkErrorShape {
+            message: "403 status code (no body)".into(),
+            status: Some(json!(403)),
+            error: Some(SdkFieldValue::Plain(json!({"error": "blocked by gateway WAF"}))),
+            ..Default::default()
+        };
+        let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
+        let formatted = format_provider_error(&norm, None);
+        assert!(formatted.contains("403"));
+        assert!(formatted.contains("blocked by gateway WAF"));
+        assert_ne!(formatted, "403 status code (no body)");
+    }
+
+    #[test]
+    fn applies_a_provider_prefix_with_status_and_body() {
+        let error = SdkErrorShape {
+            message: "403 status code (no body)".into(),
+            status: Some(json!(403)),
+            error: Some(SdkFieldValue::Plain(json!({"error": "blocked by gateway WAF"}))),
+            ..Default::default()
+        };
+        let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
+        assert_eq!(
+            format_provider_error(&norm, Some("OpenAI API error")),
+            "OpenAI API error (403): {\"error\":\"blocked by gateway WAF\"}"
+        );
+    }
+
+    #[test]
+    fn preserves_the_message_with_prefix_plus_status_when_it_already_carries_the_body() {
+        let body = serde_json::to_string(&json!({"error": {"message": "Permission denied"}})).unwrap();
+        let error = SdkErrorShape { message: body.clone(), status: Some(json!(403)), ..Default::default() };
+        let norm = normalize_provider_error(&ThrownProviderError::Error(Box::new(error)));
+        assert_eq!(format_provider_error(&norm, Some("OpenAI API error")), format!("OpenAI API error (403): {body}"));
+    }
+
+    #[test]
+    fn returns_the_bare_message_for_a_non_error_value() {
+        let norm = normalize_provider_error(&ThrownProviderError::Other(json!({"reason": "boom"})));
+        assert_eq!(format_provider_error(&norm, None), "{\"reason\":\"boom\"}");
     }
 
     #[test]
