@@ -575,3 +575,14 @@ async fn clone_keeps_current_leaf_transcript_and_clears_composer() {
     assert!(mode.editor.editor.get_text().is_empty());
     assert!(mode.render(80).join("\n").contains("clone-source"));
 }
+
+#[tokio::test]
+async fn native_tree_selector_cancel_retains_session_and_releases_composer() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("tree-source", Default::default()).await.expect("turn");
+    mode.submit("/tree", Default::default()).await.expect("tree"); mode.render(80);
+    mode.handle_input_at("\x1b", 0); mode.handle_input_at("draft", 1);
+    assert_eq!(mode.editor.editor.get_text(), "draft");
+    assert!(mode.render(80).join("\n").contains("tree-source"));
+}

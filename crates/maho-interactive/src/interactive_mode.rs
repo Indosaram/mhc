@@ -276,6 +276,11 @@ impl InteractiveMode {
             if !result.cancelled { self.rebuild_history(); self.editor.editor.set_text(result.editor_text.as_deref().unwrap_or("")); }
             return Ok(PromptDisposition::Handled);
         }
+        if let Some(id) = text.trim().strip_prefix("/tree ") {
+            let result = self.session.navigate_tree(id.trim(), Default::default()).await?;
+            if !result.cancelled && result.aborted != Some(true) { self.rebuild_history(); if let Some(text) = result.editor_text { self.editor.editor.set_text(&text); } }
+            return Ok(PromptDisposition::Handled);
+        }
         if let Some(reference) = text.trim().strip_prefix("/model ") {
             let (provider, id) = reference.trim().split_once('/').ok_or("Model reference requires provider/model")?;
             let model = self.session.model_registry().find(provider, id).ok_or_else(|| format!("Model not found: {reference}"))?;
@@ -343,6 +348,18 @@ impl InteractiveMode {
 
     fn dispatch_command(&mut self, text: &str) -> Result<bool, String> {
         let text = text.trim();
+        if text == "/tree" {
+            let (tree, leaf) = self.session.with_session_manager(|manager| (manager.get_tree(None), manager.leaf_id().map(str::to_owned)));
+            let Some(tree) = tree else { self.show_status("No entries in session".into()); return Ok(true); };
+            let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+            let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone(); let session = self.session.clone();
+            self.ui_dialog = Some(Box::new(crate::components::tree_selector::TreeSelectorComponent::new(&self.theme,
+                Arc::new(maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default())),
+                vec![tree], leaf.as_deref(), self.editor_host.terminal_rows(),
+                Box::new(move |id| { submissions.borrow_mut().push_back(format!("/tree {id}")); selected.borrow_mut().take(); }), Box::new(move || { cancelled.borrow_mut().take(); }),
+                Some(Box::new(move |id, label| session.with_session_manager_mut(|manager| { manager.append_label(id, label); }))), None, None, std::env::var("HOME").ok())));
+            return Ok(true);
+        }
         if text == "/fork" {
             use crate::components::user_message_selector::{UserMessageItem, UserMessageSelectorComponent};
             let entries = self.session.with_session_manager(|manager| manager.branch(None));
