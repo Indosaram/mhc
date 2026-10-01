@@ -23,6 +23,8 @@ pub mod prompt;
 pub mod session_model_resolver;
 pub mod session_context_resolver;
 pub mod shutdown_drain;
+pub mod memory_rpc_snapshot_state;
+pub mod memory_rpc_bridge;
 pub mod policy_guard;
 pub mod skills_usage_ledger;
 pub mod status;
