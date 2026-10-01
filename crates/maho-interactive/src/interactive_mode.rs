@@ -46,6 +46,7 @@ pub struct InteractiveMode {
     working_message: Option<String>,
     working_visible: bool,
     editor_host: Rc<dyn maho_tui::components::editor::EditorTuiHost>,
+    hidden_thinking_label: String,
 }
 
 impl InteractiveMode {
@@ -59,7 +60,7 @@ impl InteractiveMode {
         editor.editor.on_submit = Some(Box::new(move |text| { if !text.trim().is_empty() { captured.borrow_mut().push_back(text.trim().into()); } }));
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(maho_ext_api::Theme { name: Some(theme.name.clone()), colors: theme.resolved_colors(), ..Default::default() });
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host }
+        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into() }
     }
 
     pub fn use_registered_markdown_transformers(&mut self, extensions: &[maho_ext_api::LoadedExtension]) {
@@ -313,6 +314,7 @@ impl InteractiveMode {
     fn handle_ui_request(&mut self, request: crate::interactive_extension_ui::UiRequest) {
         use crate::interactive_extension_ui::UiRequest;
         match request {
+            UiRequest::HiddenThinkingLabel(label) => { self.hidden_thinking_label = label.unwrap_or_else(|| "Thinking...".into()); for card in &self.assistant_cards { card.borrow_mut().set_hidden_thinking_label(&self.hidden_thinking_label); } }
             UiRequest::Editor { title, prefill, reply } => {
                 *self.ui_reply.borrow_mut() = Some(reply);
                 let selected = self.ui_reply.clone(); let cancelled = selected.clone();
@@ -393,6 +395,7 @@ impl InteractiveMode {
                     let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", 1, self.markdown_transformers.clone(), self.theme.clone())));
                     self.chat.add_child(component.clone());
                     self.assistant_cards.push(component.clone());
+                    component.borrow_mut().set_hidden_thinking_label(&self.hidden_thinking_label);
                     self.streaming = Some(component);
                 } else if message.role() == "custom" { self.add_history_message(message); }
             }
@@ -448,6 +451,7 @@ impl InteractiveMode {
         let component = if start == 0 { self.streaming.clone() } else {
             Some(self.assistant_segments.entry(start).or_insert_with(|| {
                 let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", 1, self.markdown_transformers.clone(), self.theme.clone())));
+                component.borrow_mut().set_hidden_thinking_label(&self.hidden_thinking_label);
                 self.chat.add_child(component.clone()); self.assistant_cards.push(component.clone()); component
             }).clone())
         };
@@ -498,6 +502,7 @@ impl crate::replay_assistant_tools::ReplayToolHost for InteractiveMode {
     fn add_message(&mut self, message: maho_ai::types::AssistantMessage) {
         let component = Rc::new(RefCell::new(AssistantMessageComponent::new(Some(serde_json::to_value(message).expect("assistant")), self.reveal.hide_thinking, get_markdown_theme(&self.theme), "Thinking…", 1, self.markdown_transformers.clone(), self.theme.clone())));
         component.borrow_mut().set_expanded(self.tools_expanded);
+        component.borrow_mut().set_hidden_thinking_label(&self.hidden_thinking_label);
         self.chat.add_child(component.clone()); self.assistant_cards.push(component);
     }
     fn add_child(&mut self, component: Rc<RefCell<ToolExecutionComponent>>) { self.chat.add_child(component.clone()); self.tool_cards.push(component); }

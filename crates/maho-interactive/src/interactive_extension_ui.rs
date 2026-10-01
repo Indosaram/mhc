@@ -13,6 +13,7 @@ pub enum UiRequest {
     EditorText(String),
     WorkingMessage(Option<String>),
     WorkingVisible(bool),
+    HiddenThinkingLabel(Option<String>),
     Editor { title: String, prefill: Option<String>, reply: tokio::sync::oneshot::Sender<Option<String>> },
 }
 
@@ -41,6 +42,7 @@ impl InteractiveExtensionUi {
 }
 
 impl ExtensionUi for InteractiveExtensionUi {
+    fn set_hidden_thinking_label(&self, label: Option<&str>) -> Result<(), ExtensionFailure> { self.send(UiRequest::HiddenThinkingLabel(label.map(str::to_owned))); Ok(()) }
     fn editor<'a>(&'a self, title: &'a str, prefill: Option<&'a str>) -> ExtensionFuture<'a, Option<String>> {
         let (reply, receiver) = tokio::sync::oneshot::channel();
         self.send(UiRequest::Editor { title:title.into(), prefill:prefill.map(str::to_owned), reply });
