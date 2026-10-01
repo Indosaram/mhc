@@ -139,15 +139,19 @@ impl InteractiveMode {
     }
 
     pub fn handle_input_at(&mut self, data: &str, now_ms: u64) {
+        if let Some(data) = self.filter_terminal_input(data) { self.handle_filtered_input_at(&data, now_ms); }
+    }
+
+    fn filter_terminal_input(&self, data: &str) -> Option<String> {
         let listeners = self.extension_ui.terminal_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         let mut data = data.to_owned();
         for listener in listeners {
             if let Some(result) = listener(&data) {
-                if result.consume.unwrap_or(false) { return; }
+                if result.consume.unwrap_or(false) { return None; }
                 if let Some(replacement) = result.data { data = replacement; }
             }
         }
-        self.handle_filtered_input_at(&data, now_ms);
+        Some(data)
     }
 
     fn handle_filtered_input_at(&mut self, data: &str, now_ms: u64) {
@@ -188,7 +192,9 @@ impl InteractiveMode {
     }
 
     pub async fn handle_runtime_input(&mut self, data: &str, now_ms: u64) -> Result<(), String> {
-        if self.ui_dialog.is_some() || self.rename_input.is_some() { self.handle_input_at(data, now_ms); return Ok(()); }
+        let Some(data) = self.filter_terminal_input(data) else { return Ok(()); };
+        let data = data.as_str();
+        if self.ui_dialog.is_some() || self.rename_input.is_some() { self.handle_filtered_input_at(data, now_ms); return Ok(()); }
         let keys = maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default());
         if keys.matches(data, "app.model.cycleForward") || keys.matches(data, "app.model.cycleBackward") {
             if let Some(result) = self.session.cycle_model(keys.matches(data, "app.model.cycleForward")).await? { self.show_status(format!("Switched to {}", result.model.name)); }
@@ -196,7 +202,7 @@ impl InteractiveMode {
             return Ok(());
         }
         if keys.matches(data, "app.interrupt") && !self.agent_idle { self.abort_and_restore_queue().await; return Ok(()); }
-        self.handle_input_at(data, now_ms);
+        self.handle_filtered_input_at(data, now_ms);
         Ok(())
     }
 

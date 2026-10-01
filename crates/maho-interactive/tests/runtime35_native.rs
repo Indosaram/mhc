@@ -509,6 +509,15 @@ fn native_editor_completes_builtin_command_from_canonical_catalog() {
     assert!(mode.editor.editor.get_text().starts_with("/thinking"));
 }
 
+#[tokio::test]
+async fn runtime_input_listener_consumes_model_shortcut_before_dispatch() {
+    use maho_ext_api::{ExtensionUi, TerminalInputResult}; use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let _unsubscribe = mode.extension_ui.on_terminal_input(std::sync::Arc::new(|_| Some(TerminalInputResult { consume:Some(true), data:None }))).expect("listener");
+    mode.handle_runtime_input("\x0c", 0).await.expect("input");
+    assert!(!mode.render(80).join("\n").contains("Select Model"));
+}
+
 #[test]
 fn skill_invocation_replay_separates_collapsed_skill_and_user_request() {
     use maho_tui::tui::Component;
