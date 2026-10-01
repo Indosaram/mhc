@@ -231,6 +231,7 @@ pub trait ExtensionKernelTools: Send + Sync {
     fn invoke(&self, request: KernelToolInvokeRequest, options: KernelToolInvokeOptions) -> ExtensionFuture<'_, JsonValue>;
 }
 pub trait ExtensionContextActions: Send + Sync {
+    fn assert_active(&self) -> Result<(), ExtensionFailure> { Ok(()) }
     fn get_model(&self) -> Option<Model>;
     fn get_service_tier(&self) -> Option<ServiceTier>;
     fn get_effective_service_tier(&self) -> Option<ServiceTier> { self.get_service_tier() }
@@ -274,6 +275,53 @@ impl WidgetPlacement { pub const fn as_str(self) -> &'static str { match self { 
 pub struct ExtensionUiDialogOptions { pub signal: Option<AbortSignal>, pub timeout_ms: Option<u64> }
 #[derive(Clone, Debug, Default)]
 pub struct ExtensionWidgetOptions { pub placement: WidgetPlacement }
+#[derive(Clone, Debug, Default)]
+pub struct WorkingIndicatorOptions { pub frames: Option<Vec<String>>, pub interval_ms: Option<u64> }
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TerminalInputResult { pub consume: Option<bool>, pub data: Option<String> }
+pub type TerminalInputHandler = Arc<dyn Fn(&str) -> Option<TerminalInputResult> + Send + Sync>;
+pub type UiUnsubscribe = Box<dyn FnOnce() + Send>;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestionOption { pub label: String, pub description: Option<String> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Question { pub id: String, pub header: String, pub question: String, pub options: Vec<QuestionOption>, pub multi_select: bool }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestionRequest { pub request_id: String, pub questions: Vec<Question>, pub wait_for_answer: bool, pub timeout_ms: u64 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuestionStatus { Answered, CommentSubmitted, TimedOut, Cancelled, OrphanedAfterRestart, Unavailable }
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QuestionAnswer { pub selected: Vec<String>, pub text: Option<String> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestionResponse { pub status: QuestionStatus, pub answers: BTreeMap<String, QuestionAnswer>, pub comment: Option<String>, pub unanswered: Vec<String>, pub auto_resolved_after_ms: Option<u64> }
+#[derive(Clone, Debug, Default)]
+pub struct QuestionDraft { pub answers: Option<BTreeMap<String, QuestionAnswer>>, pub comment: Option<String> }
+#[derive(Clone, Default)]
+pub struct QuestionOptions { pub dialog: ExtensionUiDialogOptions, pub on_progress: Option<Arc<dyn Fn(QuestionDraft) + Send + Sync>> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThemeInfo { pub name: String, pub path: Option<PathBuf> }
+#[derive(Clone, Debug)]
+pub enum ThemeSelection { Name(String), Theme(Theme) }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SetThemeResult { pub success: bool, pub error: Option<String> }
+pub type AutocompleteProviderFactory = Arc<dyn Fn(Box<dyn maho_tui::autocomplete::AutocompleteProvider>) -> Box<dyn maho_tui::autocomplete::AutocompleteProvider> + Send + Sync>;
+pub type EditorFactory = Arc<dyn Fn(std::rc::Rc<dyn maho_tui::components::editor::EditorTuiHost>, maho_tui::components::editor::EditorTheme, &maho_tui::keybindings::KeybindingsManager) -> Box<dyn maho_tui::editor_component::EditorComponent> + Send + Sync>;
+pub trait ExtensionUiActions: Send + Sync {
+    fn question(&self, request: QuestionRequest, options: QuestionOptions) -> ExtensionFuture<'_, QuestionResponse>;
+    fn on_terminal_input(&self, handler: TerminalInputHandler) -> UiUnsubscribe;
+    fn set_working_message(&self, message: Option<&str>);
+    fn set_working_visible(&self, visible: bool);
+    fn set_working_indicator(&self, options: Option<WorkingIndicatorOptions>);
+    fn set_hidden_thinking_label(&self, label: Option<&str>);
+    fn editor<'a>(&'a self, title: &'a str, prefill: Option<&'a str>) -> ExtensionFuture<'a, Option<String>>;
+    fn add_autocomplete_provider(&self, factory: AutocompleteProviderFactory);
+    fn set_editor_component(&self, factory: Option<EditorFactory>);
+    fn get_editor_component(&self) -> Option<EditorFactory>;
+    fn get_all_themes(&self) -> Vec<ThemeInfo>;
+    fn get_theme(&self, name: &str) -> Option<Theme>;
+    fn set_theme(&self, theme: ThemeSelection) -> SetThemeResult;
+    fn get_tools_expanded(&self) -> bool;
+    fn set_tools_expanded(&self, expanded: bool);
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotificationType { Info, Warning, Error }
 /// Components retain senpi's render/invalidate/input contract; creation occurs on the UI thread.
@@ -283,6 +331,24 @@ pub enum WidgetContent { Lines(Vec<String>), Component(ComponentFactory) }
 #[derive(Clone, Debug, Default)]
 pub struct CustomUiOptions { pub overlay: bool, pub overlay_options: Option<JsonValue> }
 pub trait ExtensionUi: Send + Sync {
+    fn actions(&self) -> Option<&dyn ExtensionUiActions> { None }
+    fn question(&self, request: QuestionRequest, options: QuestionOptions) -> ExtensionFuture<'_, QuestionResponse> {
+        match self.actions() { Some(actions) => actions.question(request, options), None => Box::pin(async move { Ok(QuestionResponse { status: QuestionStatus::Unavailable, answers: BTreeMap::new(), comment: None, unanswered: request.questions.into_iter().map(|question| question.id).collect(), auto_resolved_after_ms: None }) }) }
+    }
+    fn on_terminal_input(&self, handler: TerminalInputHandler) -> Result<UiUnsubscribe, ExtensionFailure> { Ok(self.actions().ok_or_else(|| ExtensionFailure::new("Terminal input is not available"))?.on_terminal_input(handler)) }
+    fn set_working_message(&self, message: Option<&str>) -> Result<(), ExtensionFailure> { self.actions().ok_or_else(|| ExtensionFailure::new("Working indicator is not available"))?.set_working_message(message); Ok(()) }
+    fn set_working_visible(&self, visible: bool) -> Result<(), ExtensionFailure> { self.actions().ok_or_else(|| ExtensionFailure::new("Working indicator is not available"))?.set_working_visible(visible); Ok(()) }
+    fn set_working_indicator(&self, options: Option<WorkingIndicatorOptions>) -> Result<(), ExtensionFailure> { self.actions().ok_or_else(|| ExtensionFailure::new("Working indicator is not available"))?.set_working_indicator(options); Ok(()) }
+    fn set_hidden_thinking_label(&self, label: Option<&str>) -> Result<(), ExtensionFailure> { self.actions().ok_or_else(|| ExtensionFailure::new("Thinking label is not available"))?.set_hidden_thinking_label(label); Ok(()) }
+    fn editor<'a>(&'a self, title: &'a str, prefill: Option<&'a str>) -> ExtensionFuture<'a, Option<String>> { match self.actions() { Some(actions) => actions.editor(title, prefill), None => Box::pin(async { Err(ExtensionFailure::new("Editor is not available")) }) } }
+    fn add_autocomplete_provider(&self, factory: AutocompleteProviderFactory) -> Result<(), ExtensionFailure> { self.actions().ok_or_else(|| ExtensionFailure::new("Autocomplete is not available"))?.add_autocomplete_provider(factory); Ok(()) }
+    fn set_editor_component(&self, factory: Option<EditorFactory>) -> Result<(), ExtensionFailure> { self.actions().ok_or_else(|| ExtensionFailure::new("Custom editor is not available"))?.set_editor_component(factory); Ok(()) }
+    fn get_editor_component(&self) -> Result<Option<EditorFactory>, ExtensionFailure> { Ok(self.actions().ok_or_else(|| ExtensionFailure::new("Custom editor is not available"))?.get_editor_component()) }
+    fn get_all_themes(&self) -> Result<Vec<ThemeInfo>, ExtensionFailure> { Ok(self.actions().ok_or_else(|| ExtensionFailure::new("Theme catalog is not available"))?.get_all_themes()) }
+    fn get_theme(&self, name: &str) -> Result<Option<Theme>, ExtensionFailure> { Ok(self.actions().ok_or_else(|| ExtensionFailure::new("Theme catalog is not available"))?.get_theme(name)) }
+    fn set_theme(&self, theme: ThemeSelection) -> Result<SetThemeResult, ExtensionFailure> { Ok(self.actions().ok_or_else(|| ExtensionFailure::new("Theme selection is not available"))?.set_theme(theme)) }
+    fn get_tools_expanded(&self) -> Result<bool, ExtensionFailure> { Ok(self.actions().ok_or_else(|| ExtensionFailure::new("Tool expansion is not available"))?.get_tools_expanded()) }
+    fn set_tools_expanded(&self, expanded: bool) -> Result<(), ExtensionFailure> { self.actions().ok_or_else(|| ExtensionFailure::new("Tool expansion is not available"))?.set_tools_expanded(expanded); Ok(()) }
     fn select<'a>(&'a self, title: &'a str, options: &'a [String], opts: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>>;
     fn confirm<'a>(&'a self, title: &'a str, message: &'a str, opts: ExtensionUiDialogOptions) -> UiFuture<'a, bool>;
     fn input<'a>(&'a self, title: &'a str, placeholder: Option<&'a str>, opts: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>>;
@@ -318,7 +384,8 @@ pub struct ExtensionContext {
 }
 impl ExtensionContext {
     pub fn actions(&self) -> Result<&dyn ExtensionContextActions, ExtensionFailure> {
-        self.session_manager.extension_context_actions().ok_or_else(|| ExtensionFailure::new("Extension context actions are not bound"))
+        let actions = self.session_manager.extension_context_actions().ok_or_else(|| ExtensionFailure::new("Extension context actions are not bound"))?;
+        actions.assert_active()?; Ok(actions)
     }
     pub fn abort(&self, source: Option<AbortSource>) -> Result<(), ExtensionFailure> { self.actions()?.abort(source); Ok(()) }
     pub fn has_pending_messages(&self) -> Result<bool, ExtensionFailure> { Ok(self.actions()?.has_pending_messages()) }
@@ -343,12 +410,12 @@ impl ExtensionContext {
     pub async fn apply_compaction(&self, result: CompactionResult, options: ApplyCompactionOptions) -> Result<ApplyCompactionResult, ExtensionFailure> { self.actions()?.apply_compaction(result, options).await }
     pub fn get_loaded_hook_sources(&self) -> Result<LoadedHookSources, ExtensionFailure> { Ok(self.actions()?.get_loaded_hook_sources()) }
     pub fn kernel_tools(&self) -> Result<Option<&dyn ExtensionKernelTools>, ExtensionFailure> { Ok(self.actions()?.kernel_tools()) }
-    pub fn is_idle(&self) -> bool { (self.is_idle_fn)() }
+    pub fn is_idle(&self) -> bool { self.session_manager.extension_context_actions().map_or_else(|| (self.is_idle_fn)(), ExtensionContextActions::is_idle) }
     pub async fn wait_for_idle(&self) { (self.wait_for_idle_fn)().await; }
-    pub fn is_project_trusted(&self) -> bool { (self.is_project_trusted_fn)() }
-    pub fn is_compacting(&self) -> bool { (self.is_compacting_fn)() }
-    pub fn get_system_prompt(&self) -> String { (self.get_system_prompt_fn)() }
-    pub fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { (self.get_system_prompt_options_fn)() }
+    pub fn is_project_trusted(&self) -> bool { self.session_manager.extension_context_actions().map_or_else(|| (self.is_project_trusted_fn)(), ExtensionContextActions::is_project_trusted) }
+    pub fn is_compacting(&self) -> bool { self.session_manager.extension_context_actions().map_or_else(|| (self.is_compacting_fn)(), ExtensionContextActions::is_compacting) }
+    pub fn get_system_prompt(&self) -> String { self.session_manager.extension_context_actions().map_or_else(|| (self.get_system_prompt_fn)(), ExtensionContextActions::get_system_prompt) }
+    pub fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { self.session_manager.extension_context_actions().map_or_else(|| (self.get_system_prompt_options_fn)(), ExtensionContextActions::get_system_prompt_options) }
     pub fn get_registered_mcp_servers(&self) -> &[RegisteredMcpServerDeclaration] { &self.registered_mcp_servers }
 }
 impl ToolContext for ExtensionContext {

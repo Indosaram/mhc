@@ -6,6 +6,55 @@ pub type ErrorListener = Arc<dyn Fn(&ExtensionError) + Send + Sync>;
 pub type HookObserver = Arc<dyn Fn(&ToolHookLifecycleEvent) + Send + Sync>;
 pub type WarningListener = Arc<dyn Fn(&str) + Send + Sync>;
 struct HookRun { event: ToolHookLifecycleEvent, state: Arc<std::sync::Mutex<(bool, String)>> }
+struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime }
+impl ToolSessionManager for ContextSessionManager {
+    fn session_id(&self) -> &str { self.session.session_id() }
+    fn session_file(&self) -> Option<&std::path::Path> { self.session.session_file() }
+}
+impl SessionManager for ContextSessionManager {
+    fn get_entries(&self) -> Vec<SessionEntry> { self.session.get_entries() }
+    fn get_branch(&self) -> Vec<SessionEntry> { self.session.get_branch() }
+    fn get_leaf_id(&self) -> Option<String> { self.session.get_leaf_id() }
+    fn get_session_name(&self) -> Option<String> { self.session.get_session_name() }
+    fn extension_context_actions(&self) -> Option<&dyn ExtensionContextActions> { Some(self) }
+}
+impl ExtensionContextActions for ContextSessionManager {
+    fn assert_active(&self) -> Result<(), ExtensionFailure> { self.runtime.assert_active() }
+    fn get_model(&self) -> Option<Model> { self.actions.get_model() }
+    fn get_service_tier(&self) -> Option<ServiceTier> { self.actions.get_service_tier() }
+    fn get_effective_service_tier(&self) -> Option<ServiceTier> { self.actions.get_effective_service_tier() }
+    fn get_scoped_models(&self) -> Vec<ScopedModel> { self.actions.get_scoped_models() }
+    fn get_agent_dir(&self) -> std::path::PathBuf { self.actions.get_agent_dir() }
+    fn is_idle(&self) -> bool { self.actions.is_idle() }
+    fn is_project_trusted(&self) -> bool { self.actions.is_project_trusted() }
+    fn get_signal(&self) -> Option<AbortSignal> { self.actions.get_signal() }
+    fn abort(&self, source: Option<AbortSource>) { self.actions.abort(source); }
+    fn has_pending_messages(&self) -> bool { self.actions.has_pending_messages() }
+    fn request_reload(&self) -> ExtensionFuture<'_, ()> { self.actions.request_reload() }
+    fn is_compacting(&self) -> bool { self.actions.is_compacting() }
+    fn check_reload_veto(&self) -> ExtensionFuture<'_, ReloadVetoDecision> { self.actions.check_reload_veto() }
+    fn shutdown(&self) { self.actions.shutdown(); }
+    fn get_context_usage(&self) -> Option<ContextUsage> { self.actions.get_context_usage() }
+    fn get_compaction_settings(&self) -> CompactionSettings { self.actions.get_compaction_settings() }
+    fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { self.actions.get_prompt_cache_safe_wait_seconds() }
+    fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64 { self.actions.get_prompt_cache_goal_backstop_max_seconds() }
+    fn get_prompt_cache_keep_alive_settings(&self) -> PromptCacheKeepAliveSettings { self.actions.get_prompt_cache_keep_alive_settings() }
+    fn get_look_at_settings(&self) -> LookAtSettings { self.actions.get_look_at_settings() }
+    fn get_ask_user_settings(&self) -> AskUserSettings { self.actions.get_ask_user_settings() }
+    fn get_image_settings(&self) -> ImageSettings { self.actions.get_image_settings() }
+    fn session_settings(&self) -> &dyn ExtensionSessionSettings { self.actions.session_settings() }
+    fn compact(&self, options: CompactOptions) { self.actions.compact(options); }
+    fn prepare_provider_request(&self, messages: Vec<AgentMessage>) -> ExtensionFuture<'_, ProviderRequestPreparation> { self.actions.prepare_provider_request(messages) }
+    fn begin_compaction(&self, options: BeginCompactionOptions) -> Option<AbortSignal> { self.actions.begin_compaction(options) }
+    fn update_compaction(&self, options: UpdateCompactionOptions) { self.actions.update_compaction(options); }
+    fn end_compaction(&self, options: EndCompactionOptions) { self.actions.end_compaction(options); }
+    fn get_message_revision(&self) -> u64 { self.actions.get_message_revision() }
+    fn apply_compaction(&self, result: CompactionResult, options: ApplyCompactionOptions) -> ExtensionFuture<'_, ApplyCompactionResult> { self.actions.apply_compaction(result, options) }
+    fn get_system_prompt(&self) -> String { self.actions.get_system_prompt() }
+    fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { self.actions.get_system_prompt_options() }
+    fn get_loaded_hook_sources(&self) -> LoadedHookSources { self.actions.get_loaded_hook_sources() }
+    fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools> { self.actions.kernel_tools() }
+}
 
 pub struct ExtensionRunner {
     pub extensions: Vec<LoadedExtension>, pub runtime: ExtensionRuntime, pub events: EventBus,
@@ -33,6 +82,11 @@ impl ExtensionRunner {
     }
     pub fn bind_core(&mut self, actions: Arc<dyn ExtensionActions>, context: ExtensionContext) {
         self.runtime.bind(actions); self.context = context;
+    }
+    pub fn bind_context_actions(&mut self, actions: Arc<dyn ExtensionContextActions>) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        self.context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions, runtime: self.runtime.clone() });
+        Ok(())
     }
     pub fn bind_providers(&self, actions: Arc<dyn ExtensionProviderActions>) -> Result<(), ExtensionFailure> { self.runtime.bind_providers(actions) }
     pub fn bind_session_actions(&self, actions: Arc<dyn ExtensionSessionActions>) -> Result<(), ExtensionFailure> {
@@ -80,6 +134,12 @@ impl ExtensionRunner {
     pub fn create_context(&self) -> Result<ExtensionContext, ExtensionFailure> {
         self.runtime.assert_active()?;
         let mut context = self.context.clone();
+        if let Some(actions) = context.session_manager.extension_context_actions() {
+            actions.assert_active()?;
+            context.model = actions.get_model(); context.service_tier = actions.get_service_tier();
+            context.effective_service_tier = actions.get_effective_service_tier(); context.scoped_models = actions.get_scoped_models();
+            context.agent_dir = actions.get_agent_dir(); context.signal = actions.get_signal();
+        }
         context.loaded_extension_paths = self.extensions.iter().map(|e| e.identity.resolved_path.clone()).collect();
         context.registered_mcp_servers = self.get_registered_mcp_servers();
         Ok(context)

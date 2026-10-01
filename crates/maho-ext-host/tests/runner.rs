@@ -532,3 +532,103 @@ fn rpc_events_use_the_shared_channel_and_normalized_envelope() {
     assert!(api.rpc_handle("echo", Arc::new(|data| Box::pin(async move { Ok(data) }))).is_err());
     runtime.invalidate("stale"); assert!(api.rpc_emit("progress", &JsonValue::Null).is_err());
 }
+
+struct ContextActions { revision: std::sync::atomic::AtomicU64, aborted: Mutex<Option<AbortSource>> }
+impl ExtensionSessionSettings for ContextActions {
+    fn get_retry_fallback_settings(&self) -> RetryFallbackSettings { RetryFallbackSettings { model_fallback: false, chains: BTreeMap::new(), revert_policy: FallbackRevertPolicy::Never } }
+    fn set_fallback_chain<'a>(&'a self, _: &'a str, _: &'a [String]) -> ExtensionFuture<'a, ()> { Box::pin(async { Ok(()) }) }
+    fn remove_fallback_chain<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, ()> { Box::pin(async { Ok(()) }) }
+    fn set_model_fallback_enabled(&self, _: bool) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
+    fn set_fallback_revert_policy(&self, _: FallbackRevertPolicy) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
+    fn reload(&self) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
+    fn get_fallback_status(&self) -> Option<RetryFallbackStatus> { None }
+}
+impl ExtensionContextActions for ContextActions {
+    fn get_model(&self) -> Option<Model> { None }
+    fn get_service_tier(&self) -> Option<ServiceTier> { Some(ServiceTier::Flex) }
+    fn get_scoped_models(&self) -> Vec<ScopedModel> { vec![] }
+    fn get_agent_dir(&self) -> std::path::PathBuf { "/fixture/agent".into() }
+    fn is_idle(&self) -> bool { false }
+    fn is_project_trusted(&self) -> bool { false }
+    fn get_signal(&self) -> Option<AbortSignal> { None }
+    fn abort(&self, source: Option<AbortSource>) { *self.aborted.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = source; }
+    fn has_pending_messages(&self) -> bool { true }
+    fn request_reload(&self) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
+    fn is_compacting(&self) -> bool { true }
+    fn check_reload_veto(&self) -> ExtensionFuture<'_, ReloadVetoDecision> { Box::pin(async { Ok(ReloadVetoDecision { cancelled: true, reason: Some("busy".into()) }) }) }
+    fn shutdown(&self) {}
+    fn get_context_usage(&self) -> Option<ContextUsage> { Some(ContextUsage { tokens: Some(100), context_window: 1000, percent: Some(10.0) }) }
+    fn get_compaction_settings(&self) -> CompactionSettings { CompactionSettings { enabled: true, reserve_tokens: 100, keep_recent_tokens: 200 } }
+    fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { Some(30.0) }
+    fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64 { 60.0 }
+    fn get_prompt_cache_keep_alive_settings(&self) -> PromptCacheKeepAliveSettings { PromptCacheKeepAliveSettings { enabled: false, max_requests_per_session: 1, max_cost_usd_per_session: 0.1, margin_seconds: 5.0 } }
+    fn get_look_at_settings(&self) -> LookAtSettings { LookAtSettings { enabled: true, models: None } }
+    fn get_ask_user_settings(&self) -> AskUserSettings { AskUserSettings { enabled: true, timeout_minutes: 30.0 } }
+    fn get_image_settings(&self) -> ImageSettings { ImageSettings { auto_resize: true, block_images: false } }
+    fn session_settings(&self) -> &dyn ExtensionSessionSettings { self }
+    fn compact(&self, _: CompactOptions) {}
+    fn prepare_provider_request(&self, messages: Vec<AgentMessage>) -> ExtensionFuture<'_, ProviderRequestPreparation> {
+        Box::pin(async move { Ok(ProviderRequestPreparation { messages, transform_payload: Arc::new(|payload| Box::pin(async move { Ok(payload) })), transform_headers: Arc::new(|headers| Box::pin(async move { Ok(headers) })) }) })
+    }
+    fn begin_compaction(&self, _: BeginCompactionOptions) -> Option<AbortSignal> { None }
+    fn update_compaction(&self, _: UpdateCompactionOptions) {}
+    fn end_compaction(&self, _: EndCompactionOptions) {}
+    fn get_message_revision(&self) -> u64 { self.revision.load(std::sync::atomic::Ordering::SeqCst) }
+    fn apply_compaction(&self, _: CompactionResult, options: ApplyCompactionOptions) -> ExtensionFuture<'_, ApplyCompactionResult> {
+        Box::pin(async move { Ok(if options.expected_revision == Some(self.get_message_revision()) { ApplyCompactionResult::Applied } else { ApplyCompactionResult::Stale }) })
+    }
+    fn get_system_prompt(&self) -> String { "live prompt".into() }
+    fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { BuildSystemPromptOptions::default() }
+    fn get_loaded_hook_sources(&self) -> LoadedHookSources { LoadedHookSources { cwd: "/tmp".into(), agent_dir: "/fixture/agent".into(), global_hooks_path: "/global".into(), project_hooks_path: "/project".into(), global_settings_hooks: None, project_settings_hooks: None, global_hook_source_paths: vec![], project_hook_source_paths: vec![], pre_session_hook_source_paths: vec![], runtime_hook_source_paths: vec![] } }
+    fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools> { None }
+}
+#[tokio::test]
+async fn context_binding_reads_live_host_state_and_rejects_after_invalidation() {
+    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(1), aborted: Mutex::new(None) });
+    let mut runner = runner(vec![]); runner.bind_context_actions(actions.clone()).unwrap();
+    let ctx = runner.create_context().unwrap();
+    assert_eq!(ctx.agent_dir, std::path::PathBuf::from("/fixture/agent")); assert_eq!(ctx.effective_service_tier, Some(ServiceTier::Flex));
+    assert!(!ctx.is_idle()); assert!(ctx.is_compacting()); assert_eq!(ctx.get_system_prompt(), "live prompt");
+    assert!(ctx.has_pending_messages().unwrap()); assert!(ctx.check_reload_veto().await.unwrap().cancelled);
+    ctx.abort(Some(AbortSource::User)).unwrap(); assert_eq!(*actions.aborted.lock().unwrap(), Some(AbortSource::User));
+    actions.revision.store(2, std::sync::atomic::Ordering::SeqCst); assert_eq!(ctx.get_message_revision().unwrap(), 2);
+    let result = ctx.apply_compaction(CompactionResult { summary: "summary".into(), first_kept_entry_id: "id".into(), tokens_before: 100, details: None }, ApplyCompactionOptions { reason: CompactionReason::Extension, expected_revision: Some(1), expected_warm_anchor: None, signal: None }).await.unwrap();
+    assert_eq!(result, ApplyCompactionResult::Stale);
+    runner.invalidate("old context"); assert_eq!(ctx.get_message_revision().unwrap_err().message, "old context"); assert!(ctx.abort(None).is_err());
+}
+
+struct CommandActions(Mutex<Vec<String>>);
+impl ExtensionCommandContextActions for CommandActions {
+    fn wait_for_idle(&self) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
+    fn new_session(&self, _: NewSessionOptions) -> ExtensionFuture<'_, SessionNavigationResult> { Box::pin(async { Ok(SessionNavigationResult { cancelled: true }) }) }
+    fn fork<'a>(&'a self, _: &'a str, _: ForkOptions) -> ExtensionFuture<'a, SessionNavigationResult> { Box::pin(async { Ok(SessionNavigationResult { cancelled: false }) }) }
+    fn navigate_tree<'a>(&'a self, target: &'a str, _: ExtensionTreeNavigationOptions) -> ExtensionFuture<'a, SessionNavigationResult> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(target.into()); Box::pin(async { Ok(SessionNavigationResult { cancelled: false }) })
+    }
+    fn edit_assistant_message<'a>(&'a self, _: &'a str, _: &'a str, _: EditMessageOptions) -> ExtensionFuture<'a, EditMessageResult> { Box::pin(async { Ok(EditMessageResult { unchanged: Some(true), ..Default::default() }) }) }
+    fn edit_user_message<'a>(&'a self, _: &'a str, _: &'a str, _: EditMessageOptions) -> ExtensionFuture<'a, EditMessageResult> { Box::pin(async { Ok(EditMessageResult { entry_id: Some("edited".into()), ..Default::default() }) }) }
+    fn switch_session<'a>(&'a self, _: &'a str, _: SwitchSessionOptions) -> ExtensionFuture<'a, SessionNavigationResult> { Box::pin(async { Ok(SessionNavigationResult { cancelled: false }) }) }
+    fn reload(&self) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
+}
+#[tokio::test]
+async fn command_invocation_uses_command_capable_context_without_changing_legacy_handlers() {
+    let mut api = ExtensionApi::new(LoadedExtension::new("commands", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+    api.register_command_with_context("jump", None, None, Arc::new(|args, ctx| Box::pin(async move { ctx.navigate_tree(args, ExtensionTreeNavigationOptions::default()).await?; Ok(()) })));
+    let runner = runner(vec![api.registered]); let actions = Arc::new(CommandActions(Mutex::new(vec![])));
+    let ctx = runner.create_command_context(actions.clone()).unwrap();
+    runner.invoke_command("jump", "leaf", &ctx).await.unwrap();
+    assert_eq!(*actions.0.lock().unwrap(), ["leaf"]);
+    assert!(ctx.new_session(NewSessionOptions::default()).await.unwrap().cancelled);
+    assert!(!ctx.fork("entry", ForkOptions::default()).await.unwrap().cancelled);
+    assert_eq!(ctx.edit_assistant_message("entry", "text", EditMessageOptions::default()).await.unwrap().unchanged, Some(true));
+    assert_eq!(ctx.edit_user_message("entry", "text", EditMessageOptions::default()).await.unwrap().entry_id.as_deref(), Some("edited"));
+    ctx.switch_session("next", SwitchSessionOptions::default()).await.unwrap(); ctx.reload().await.unwrap(); ctx.wait_for_idle().await.unwrap();
+    assert!(runner.invoke_command("missing", "", &ctx).await.is_err());
+}
+#[tokio::test]
+async fn question_without_ui_returns_unavailable_and_preserves_unanswered_ids() {
+    let ctx = context();
+    let response = ctx.ui.question(QuestionRequest { request_id: "request".into(), questions: vec![Question { id: "choice".into(), header: "Choice".into(), question: "Select".into(), options: vec![], multi_select: false }], wait_for_answer: false, timeout_ms: 1000 }, QuestionOptions::default()).await.unwrap();
+    assert_eq!(response.status, QuestionStatus::Unavailable); assert_eq!(response.unanswered, ["choice"]);
+    assert!(ctx.ui.editor("Edit", None).await.is_err()); assert!(ctx.ui.set_working_visible(false).is_err());
+}
