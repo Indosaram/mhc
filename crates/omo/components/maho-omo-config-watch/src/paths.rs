@@ -3,9 +3,9 @@ use maho_omo_agent_home::resolve_agent_home;
 pub const OMO_CONFIG_FILE_FILTER_GLOBS:[&str;2]=["/omo.jsonc","/omo.json"];
 pub const OMO_CONFIG_DIRECTORY_FILTER_GLOBS:[&str;3]=["/.omo","/.omo/omo.jsonc","/.omo/omo.json"];
 pub const USER_OMO_CONFIG_DIRECTORY_FILTER_GLOBS:[&str;1]=["/.maho"];
-pub struct OmoConfigWatchTarget { pub path:PathBuf,pub filter_globs:Vec<String> }
-pub struct OmoConfigWatchTargetResolution { pub targets:Vec<OmoConfigWatchTarget>,pub user_config_creation_watched:bool }
-fn target(path:PathBuf,globs:&[&str])->OmoConfigWatchTarget { OmoConfigWatchTarget{path,filter_globs:globs.iter().map(|s|s.to_string()).collect()} }
+pub struct OmoConfigWatchTarget { pub path:PathBuf,pub kind:&'static str,pub filter_globs:Vec<String> }
+pub struct OmoConfigWatchTargetResolution { pub targets:Vec<OmoConfigWatchTarget>,pub user_config_creation_watched:bool,pub user_config_creation_discovery:&'static str }
+fn target(path:PathBuf,globs:&[&str])->OmoConfigWatchTarget { OmoConfigWatchTarget{path,kind:"dir",filter_globs:globs.iter().map(|s|s.to_string()).collect()} }
 fn contains(parent:&Path,child:&Path)->bool { child.strip_prefix(parent).is_ok() }
 pub fn resolve_omo_config_watch_target_resolution(cwd:&Path,home:&Path,env:&BTreeMap<String,String>)->OmoConfigWatchTargetResolution {
     let cwd_path=PathBuf::from(omo_config_core::internal::posix_path::posix_resolve(&[&cwd.to_string_lossy()]));let cwd=cwd_path.as_path();
@@ -25,5 +25,5 @@ pub fn resolve_omo_config_watch_target_resolution(cwd:&Path,home:&Path,env:&BTre
     let protected=[agent.join("auth.json"),agent.join("sessions"),agent.join("logs")];
     targets.retain(|t|!protected.iter().any(|p|contains(&t.path,p)||contains(p,&t.path)));
     let user_config_creation_watched=targets.iter().any(|t|t.path==user||Some(t.path.as_path())==user.parent());
-    OmoConfigWatchTargetResolution{targets,user_config_creation_watched}
+    OmoConfigWatchTargetResolution{targets,user_config_creation_watched,user_config_creation_discovery:if user_config_creation_watched {"watched"}else{"reload_required"}}
 }
