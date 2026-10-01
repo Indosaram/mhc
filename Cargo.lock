@@ -1625,6 +1625,10 @@ dependencies = [
 [[package]]
 name = "maho-ext-btw"
 version = "0.0.0"
+dependencies = [
+ "maho-ai",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-builtin-loose"
