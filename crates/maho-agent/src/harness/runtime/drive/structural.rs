@@ -163,3 +163,24 @@ pub async fn publish_nested_request_outcome(lane: &crate::harness::runtime::lane
         }, operation_state: Box::new(crate::harness::session::types::OperationState::SummaryEffectPending(pending)), lane: None })
     }), &drive.context).await
 }
+
+pub async fn commit_navigation(lane: &crate::harness::runtime::lane::Lane, drive: &crate::harness::runtime::types::Drive) -> Result<crate::harness::runtime::types::ProcedureResult, SessionError> {
+    use crate::harness::runtime::types::{ContinueOperationResult, FinishDecision, LanePatch, OperationCommand, ProcedureResult};
+    use crate::harness::session::types::{OperationState, TerminalStatus, Write};
+    use crate::harness::session::values::{branch_tip, entry_label, set_value};
+    let name = lane.name.clone();
+    let context = drive.context.clone();
+    let result = lane.continue_operation(move |_, current, meta, reader| Box::pin(async move {
+        let OperationState::NavigationReadyToCommit(navigation) = &current else { return Err(session_invariant_error("Expected navigation.ready_to_commit operation")); };
+        if let Some(target) = &navigation.target_id && !reader.get_entries(vec![target.clone()], &context).await?.contains_key(target) { return Err(session_invariant_error(format!("Navigation target {target} is missing"))); }
+        if navigation.target_id == meta.source_tip_id { return Err(session_invariant_error("Navigation target must differ from its source tip")); }
+        if navigation.target_id.is_none() && navigation.label.is_some() { return Err(session_invariant_error("Root navigation cannot set a label")); }
+        let mut writes = vec![Write::Value(set_value(&branch_tip(&name), crate::harness::runtime::lane::encoded(&navigation.target_id)?))];
+        if let (Some(target), Some(label)) = (&navigation.target_id, &navigation.label) { writes.push(Write::Value(set_value(&entry_label(target), crate::harness::runtime::lane::encoded(label)?))); }
+        writes.extend(super::drive::terminal::operation_cleanup_writes(reader, &meta.operation_id, &current, &context).await?);
+        let record = super::drive::terminal::operation_result_record(&meta, TerminalStatus::Completed, navigation.target_id.clone(), None).map_err(|error| session_invariant_error(error.to_string()))?;
+        let event = crate::harness::events::HarnessEvent::new(crate::harness::events::HarnessEventPayload::NavigationEnd(crate::harness::events::NavigationEndPayload { run_id: meta.operation_id, from_tip_id: meta.source_tip_id, tip_id: navigation.target_id.clone(), ended_at: record.ended_at, status: "completed".into(), error: None }), Some(name));
+        Ok(OperationCommand::Finish { decision: Box::new(FinishDecision { writes, record: record.clone(), lane: Some(LanePatch { tip_id: Some(navigation.target_id.clone()), ..Default::default() }), materialize: std::sync::Arc::new(move |_| ProcedureResult::Settled { outcome: record.clone() }), events: Some(std::sync::Arc::new(move |_| vec![event.clone()])) }) })
+    }), &drive.context).await?;
+    Ok(match result { ContinueOperationResult::CancelRequested => ProcedureResult::Continue, ContinueOperationResult::Result { value } => value })
+}

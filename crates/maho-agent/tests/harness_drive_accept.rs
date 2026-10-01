@@ -279,3 +279,28 @@ async fn navigation_rejections_do_not_install_operation() {
     assert!(lane.state().operation.is_none());
     assert_eq!(lane.get_tip_id().unwrap(), Some(source));
 }
+
+#[tokio::test]
+async fn navigation_terminal_transaction_moves_tip_and_cleans_operation() {
+    let lane = navigation_fixture(false).await.unwrap();
+    let drive = maho_agent::harness::runtime::types::Drive::new(&maho_agent::harness::agent_harness::DriveOptions { operation_id: "nav".into(), wait_for_retry: None, poll_deferred: None }, &BACKGROUND_CONTEXT);
+    let result = maho_agent::harness::runtime::structural::commit_navigation(&lane, &drive).await.unwrap();
+    assert!(matches!(result, maho_agent::harness::runtime::types::ProcedureResult::Settled { .. }));
+    assert_eq!(lane.get_tip_id().unwrap().as_deref(), Some("target"));
+    assert!(lane.state().operation.is_none());
+    assert_eq!(lane.state().last_operation_id.as_deref(), Some("nav"));
+    assert_eq!(lane.session.get_label("target", &BACKGROUND_CONTEXT).await.unwrap().as_deref(), Some("label"));
+    assert!(lane.session.get_value(&maho_agent::harness::session::values::operation_meta("nav"), &BACKGROUND_CONTEXT).await.unwrap().is_none());
+    assert!(lane.session.get_value(&maho_agent::harness::session::values::operation_state("nav"), &BACKGROUND_CONTEXT).await.unwrap().is_none());
+    assert_eq!(lane.get_result("nav", &BACKGROUND_CONTEXT).await.unwrap().unwrap().status, TerminalStatus::Completed);
+}
+
+#[tokio::test]
+async fn cancelled_navigation_does_not_move_tip() {
+    let lane = navigation_fixture(false).await.unwrap();
+    let tip = lane.get_tip_id().unwrap();
+    lane.request_operation_abort("nav".into(), &BACKGROUND_CONTEXT).await.unwrap().unwrap();
+    let drive = maho_agent::harness::runtime::types::Drive::new(&maho_agent::harness::agent_harness::DriveOptions { operation_id: "nav".into(), wait_for_retry: None, poll_deferred: None }, &BACKGROUND_CONTEXT);
+    assert_eq!(maho_agent::harness::runtime::structural::commit_navigation(&lane, &drive).await.unwrap(), maho_agent::harness::runtime::types::ProcedureResult::Continue);
+    assert_eq!(lane.get_tip_id().unwrap(), tip);
+}
