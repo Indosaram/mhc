@@ -756,9 +756,17 @@ impl Markdown {
                 lines.push(String::new());
             }
 
-            _ => {
-                lines.push(token.raw().to_string());
-            }
+            Token::Escape { text, .. }
+            | Token::Link { text, .. }
+            | Token::Image { text, .. }
+            | Token::Strong { text, .. }
+            | Token::Em { text, .. }
+            | Token::Codespan { text, .. }
+            | Token::Del { text, .. }
+            | Token::LatexInline { text, .. }
+            | Token::LatexLiteral { text, .. }
+            | Token::ListItem { text, .. } => lines.push(text.clone()),
+            Token::Checkbox { .. } | Token::Def { .. } | Token::Br { .. } => {}
         }
 
         lines
