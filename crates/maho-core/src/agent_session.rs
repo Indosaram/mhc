@@ -1254,7 +1254,10 @@ impl AgentSession {
     }
 
     /// Bind the extension runner the tool hooks read at execution time.
-    pub async fn set_extension_runner(&self, runner: ExtensionRunner) {
+    pub async fn set_extension_runner(&self, mut runner: ExtensionRunner) {
+        if let Err(error) = runner.bind_providers(Arc::new(crate::agent_session_runtime::ExtensionModelRuntimeActions(Mutex::new(self.model_runtime().clone())))) {
+            self.emit(AgentSessionEvent::ContinuationError { error_message: error.message });
+        }
         *self.extension_runner.lock().await = Some(runner);
     }
 
