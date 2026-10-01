@@ -2,6 +2,20 @@ use maho_ai::{auth::types::*,types::{Context,Message,UserMessage,UserContent},mo
 use maho_ext_cursor_cli_oauth::{stream::{stream_cursor_cli,StreamDeps},accounts::{add_account,empty_credential,CursorCliAccountSlot,AccountSource},settings::CursorCliOauthProviderSettings};
 use std::{sync::Arc,collections::BTreeMap,os::unix::fs::PermissionsExt};
 struct Flow;
+#[tokio::test]
+async fn failure_result_is_delivered_after_child_exit() {
+    use maho_ext_cursor_cli_oauth::{stream::{spawn_attempt,SpawnAttemptInput},session_router::SessionAttempt};
+    let directory=tempfile::tempdir().expect("directory");let executable=directory.path().join("cursor-agent");
+    std::fs::write(&executable,r#"#!/bin/sh
+printf '%s\n' '{"type":"result","subtype":"error","is_error":true,"error":"session missing","result":"","usage":{"inputTokens":0,"outputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0},"request_id":"r","duration_ms":1}'
+touch "$PWD/exited"
+"#).expect("script");std::fs::set_permissions(&executable,std::fs::Permissions::from_mode(0o700)).expect("permissions");
+    let settings=CursorCliOauthProviderSettings {execution_mode:maho_ext_cursor_cli_oauth::settings::ExecutionMode::Plan,..Default::default()};
+    let policy=maho_ext_cursor_cli_oauth::guardrails::resolve_execution_policy(&settings,&mut Default::default(),&[]).expect("policy");
+    let mut events=spawn_attempt(SpawnAttemptInput {executable,cwd:directory.path().into(),agent_dir:directory.path().join("agent"),slot:CursorCliAccountSlot {name:"a".into(),display_name:None,access:"fake".into(),refresh:"fake".into(),expires:10000.0,source:AccountSource::Login,blocked_until:None,block_reason:None},attempt:SessionAttempt {prompt:"hello".into(),resume_chat_id:None},model:"test".into(),policy,environment:BTreeMap::new(),signal:None});
+    let result=tokio::time::timeout(std::time::Duration::from_secs(10),events.recv()).await.expect("bounded event").expect("event").expect("wire result");
+    assert_eq!(result["type"],"result");assert_eq!(result["is_error"],true);assert!(directory.path().join("exited").exists());
+}
 #[async_trait::async_trait]
 impl OAuthAuth for Flow {
     fn name(&self)->&str {"test"}

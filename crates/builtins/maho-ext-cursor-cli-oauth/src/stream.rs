@@ -90,7 +90,7 @@ pub fn spawn_attempt(input:SpawnAttemptInput)->crate::session_router::AttemptRec
             match event {
                 Ok(event)=>{
                     if event["type"]=="result" {saw_result=true;}
-                    if event["type"]=="aborted" || event["type"]=="malformed_stream" {held.push(event);} else {let _=sender.send(Ok(event));}
+                    if event["type"]=="aborted" || event["type"]=="malformed_stream" || (event["type"]=="result"&&(event["is_error"]==true||event["subtype"]=="error")) {held.push(event);} else {let _=sender.send(Ok(event));}
                 },
                 Err(error)=>{let _=sender.send(Err(json!({"thrown":{"message":error.to_string()}})));},
             }
