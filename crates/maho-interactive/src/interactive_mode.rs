@@ -38,6 +38,9 @@ pub struct InteractiveMode {
     clock: std::time::Instant,
     tool_reveal: crate::tool_result_reveal::ToolResultRevealController,
     last_status: Option<(usize, Rc<RefCell<maho_tui::components::text::Text>>)>,
+    assistant_cards: Vec<Rc<RefCell<AssistantMessageComponent>>>,
+    tool_cards: Vec<Rc<RefCell<ToolExecutionComponent>>>,
+    pub tools_expanded: bool,
 }
 
 impl InteractiveMode {
@@ -51,7 +54,7 @@ impl InteractiveMode {
         editor.editor.on_submit = Some(Box::new(move |text| { if !text.trim().is_empty() { captured.borrow_mut().push_back(text.trim().into()); } }));
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(maho_ext_api::Theme { name: Some(theme.name.clone()), colors: theme.resolved_colors(), ..Default::default() });
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), last_status: None }
+        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false }
     }
 
     pub fn use_registered_markdown_transformers(&mut self, extensions: &[maho_ext_api::LoadedExtension]) {
@@ -66,6 +69,7 @@ impl InteractiveMode {
 
     pub fn rebuild_history(&mut self) {
         self.chat.clear(); self.pending_tools.clear(); self.streaming = None; self.assistant_segments.clear();
+        self.assistant_cards.clear(); self.tool_cards.clear(); self.last_status = None;
         for message in self.session.messages() { self.add_history_message(&message); }
     }
 
@@ -127,6 +131,12 @@ impl InteractiveMode {
             return;
         }
         if keys.matches(data, "app.message.dequeue") { self.restore_queued_messages(false); return; }
+        if keys.matches(data, "app.tools.expand") { self.set_tools_expanded(!self.tools_expanded); return; }
+        if keys.matches(data, "app.thinking.toggle") {
+            self.reveal.hide_thinking = !self.reveal.hide_thinking;
+            for component in &self.assistant_cards { component.borrow_mut().set_hide_thinking_block(self.reveal.hide_thinking); }
+            return;
+        }
         if data == "?" && self.editor.editor.get_text().is_empty() { self.shortcut_overlay = true; return; }
         self.handle_editor_input(data);
     }
@@ -137,6 +147,12 @@ impl InteractiveMode {
         self.editor.editor.add_to_history(&text);
         let options = PromptOptions { streaming_behavior: Some(maho_ext_api::StreamingBehavior::Steer), ..Default::default() };
         self.submit(&text, options).await.map(Some)
+    }
+
+    pub fn set_tools_expanded(&mut self, expanded: bool) {
+        self.tools_expanded = expanded;
+        for component in &self.tool_cards { component.borrow_mut().set_expanded(expanded); }
+        for component in &self.assistant_cards { component.borrow_mut().set_expanded(expanded); }
     }
 
     pub async fn submit(&mut self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
@@ -346,6 +362,7 @@ impl InteractiveMode {
                     self.reveal.begin(serde_json::to_value(message).expect("assistant"), self.clock.elapsed().as_secs_f64() * 1000.0);
                     let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", 1, self.markdown_transformers.clone(), self.theme.clone())));
                     self.chat.add_child(component.clone());
+                    self.assistant_cards.push(component.clone());
                     self.streaming = Some(component);
                 } else if message.role() == "custom" { self.add_history_message(message); }
             }
@@ -401,7 +418,7 @@ impl InteractiveMode {
         let component = if start == 0 { self.streaming.clone() } else {
             Some(self.assistant_segments.entry(start).or_insert_with(|| {
                 let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", 1, self.markdown_transformers.clone(), self.theme.clone())));
-                self.chat.add_child(component.clone()); component
+                self.chat.add_child(component.clone()); self.assistant_cards.push(component.clone()); component
             }).clone())
         };
         if let Some(component) = component {
@@ -410,6 +427,8 @@ impl InteractiveMode {
             let value = serde_json::to_value(segment).expect("assistant segment");
             let value = if start == 0 && !final_message { self.reveal.set_target(value, self.clock.elapsed().as_secs_f64() * 1000.0) } else { value };
             component.borrow_mut().update_content(&value, Some(!final_message));
+            component.borrow_mut().set_hide_thinking_block(self.reveal.hide_thinking);
+            component.borrow_mut().set_expanded(self.tools_expanded);
         }
     }
 
@@ -422,6 +441,8 @@ impl InteractiveMode {
         self.pending_tools.entry(id.into()).or_insert_with(|| {
             let component = Rc::new(RefCell::new(ToolExecutionComponent::new(name, id, args, ToolExecutionOptions::default(), None, &self.session.cwd(), ToolExecutionPresentation::Classic, None, self.theme.clone())));
             self.chat.add_child(component.clone());
+            component.borrow_mut().set_expanded(self.tools_expanded);
+            self.tool_cards.push(component.clone());
             component
         }).clone()
     }
@@ -432,11 +453,13 @@ impl InteractiveMode {
 }
 
 impl crate::replay_assistant_tools::ReplayToolHost for InteractiveMode {
-    fn expanded(&self) -> bool { false }
+    fn expanded(&self) -> bool { self.tools_expanded }
     fn add_message(&mut self, message: maho_ai::types::AssistantMessage) {
-        self.chat.add_child(Rc::new(RefCell::new(AssistantMessageComponent::new(Some(serde_json::to_value(message).expect("assistant")), false, get_markdown_theme(&self.theme), "Thinking…", 1, self.markdown_transformers.clone(), self.theme.clone()))));
+        let component = Rc::new(RefCell::new(AssistantMessageComponent::new(Some(serde_json::to_value(message).expect("assistant")), self.reveal.hide_thinking, get_markdown_theme(&self.theme), "Thinking…", 1, self.markdown_transformers.clone(), self.theme.clone())));
+        component.borrow_mut().set_expanded(self.tools_expanded);
+        self.chat.add_child(component.clone()); self.assistant_cards.push(component);
     }
-    fn add_child(&mut self, component: Rc<RefCell<ToolExecutionComponent>>) { self.chat.add_child(component); }
+    fn add_child(&mut self, component: Rc<RefCell<ToolExecutionComponent>>) { self.chat.add_child(component.clone()); self.tool_cards.push(component); }
     fn create_tool(&mut self, name: &str, id: &str, args: &serde_json::Map<String, serde_json::Value>) -> ToolExecutionComponent {
         ToolExecutionComponent::new(name, id, serde_json::Value::Object(args.clone()), ToolExecutionOptions::default(), None, &self.session.cwd(), ToolExecutionPresentation::Classic, None, self.theme.clone())
     }

@@ -345,3 +345,14 @@ async fn cancelled_extension_input_releases_composer() {
     mode.render(80); mode.handle_input_at("new-draft", 0);
     assert_eq!(mode.editor.editor.get_text(), "new-draft");
 }
+
+#[test]
+fn expansion_updates_completed_tool_cards_not_just_pending_cards() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let text = (0..100).map(|n| format!("line-{n}")).collect::<Vec<_>>().join("\n");
+    mode.handle_event(&maho_agent::types::AgentEvent::ToolExecutionEnd { tool_call_id:"expanded".into(), tool_name:"ls".into(), result:serde_json::json!({"content":[{"type":"text","text":text}]}), is_error:false });
+    assert!(!mode.render(80).join("\n").contains("line-99"));
+    mode.set_tools_expanded(true);
+    assert!(mode.render(80).join("\n").contains("line-99"));
+}
