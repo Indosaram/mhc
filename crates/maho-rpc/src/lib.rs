@@ -48,3 +48,5 @@ pub mod session_worker_signals;
 pub mod session_worker_credit;
 pub mod socket_event_fanout;
 pub mod session_event_fanout;
+pub mod socket_transport;
+pub mod host_daemon_registration;
