@@ -28,4 +28,7 @@ pub struct ToolExecutionRenderState {
     pub spinner_frame: Option<i64>,
     pub result: Option<ToolExecutionResult>,
     pub is_error: bool,
+    /// Wall-clock milliseconds for the progress line's elapsed time. senpi reads `Date.now()` at
+    /// render time; this port takes it from the host tick so a render is reproducible.
+    pub now_ms: f64,
 }

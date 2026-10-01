@@ -1,0 +1,197 @@
+{
+  "cases": [
+    {
+      "name": "click-y1-toggles-on",
+      "steps": [
+        {
+          "event": {},
+          "handled": true,
+          "capture": null,
+          "focus": null,
+          "hasTarget": true,
+          "lines": [
+            "",
+            "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
+            "",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109ma.rs\u001b[39m                                                                      \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m body                                                                           \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109mb.rs\u001b[39m                                                                      \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m body                                                                           \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m"
+          ]
+        },
+        {
+          "event": {},
+          "handled": true,
+          "capture": null,
+          "focus": null,
+          "hasTarget": true,
+          "lines": [
+            "",
+            "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
+            "\u001b[38;5;241m  └ \u001b[39m\u001b[38;5;109mRead\u001b[39m x"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "press-y1-handled-without-toggle",
+      "steps": [
+        {
+          "event": {
+            "type": "press"
+          },
+          "handled": true,
+          "capture": null,
+          "focus": null,
+          "hasTarget": true,
+          "lines": [
+            "",
+            "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
+            "\u001b[38;5;241m  └ \u001b[39m\u001b[38;5;109mRead\u001b[39m x"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "click-y0-not-handled",
+      "steps": [
+        {
+          "event": {
+            "y": 0
+          },
+          "handled": true,
+          "capture": null,
+          "focus": null,
+          "hasTarget": true,
+          "lines": [
+            "",
+            "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
+            "",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109ma.rs\u001b[39m                                                                      \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m body                                                                           \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109mb.rs\u001b[39m                                                                      \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m body                                                                           \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "click-right-not-handled",
+      "steps": [
+        {
+          "event": {
+            "button": "right"
+          },
+          "handled": false,
+          "capture": null,
+          "focus": null,
+          "hasTarget": false,
+          "lines": [
+            "",
+            "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
+            "\u001b[38;5;241m  └ \u001b[39m\u001b[38;5;109mRead\u001b[39m x"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "click-y3-collapsed-not-handled",
+      "steps": [
+        {
+          "event": {
+            "y": 3
+          },
+          "handled": true,
+          "capture": null,
+          "focus": null,
+          "hasTarget": true,
+          "lines": [
+            "",
+            "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
+            "",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109ma.rs\u001b[39m                                                                      \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m body                                                                           \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109mb.rs\u001b[39m                                                                      \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m body                                                                           \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "click-y5-then-y3-expanded-delegates",
+      "steps": [
+        {
+          "event": {
+            "y": 5
+          },
+          "handled": true,
+          "capture": null,
+          "focus": null,
+          "hasTarget": true,
+          "lines": [
+            "",
+            "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
+            "",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109ma.rs\u001b[39m                                                                      \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m body                                                                           \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109mb.rs\u001b[39m                                                                      \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m body                                                                           \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m"
+          ]
+        },
+        {
+          "event": {
+            "y": 3
+          },
+          "handled": false,
+          "capture": null,
+          "focus": null,
+          "hasTarget": false,
+          "lines": [
+            "",
+            "\u001b[38;5;241m•\u001b[39m \u001b[1mExplored\u001b[22m",
+            "",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109ma.rs\u001b[39m                                                                      \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m body                                                                           \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109mb.rs\u001b[39m                                                                      \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m",
+            "\u001b[48;5;22m body                                                                           \u001b[49m",
+            "\u001b[48;5;22m                                                                                \u001b[49m"
+          ]
+        }
+      ]
+    }
+  ]
+}
