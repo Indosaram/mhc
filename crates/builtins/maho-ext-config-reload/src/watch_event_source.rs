@@ -30,7 +30,7 @@ impl WatchSubscription {
         if let Some(worker) = self.cancel()? { worker.join.join().map_err(|_| "Config watcher teardown failed".to_owned())?; }
         Ok(())
     }
-    pub fn close_async(&mut self) -> impl std::future::Future<Output = Result<(), String>> + Send + 'static {
+    pub fn close_async(&mut self) -> impl std::future::Future<Output = Result<(), String>> + Send + 'static + use<> {
         let worker = self.cancel();
         async move {
             if let Some(worker) = worker? {

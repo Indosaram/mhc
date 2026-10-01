@@ -122,6 +122,15 @@ impl NativeWatchEngine {
         for (_, mut subscription) in std::mem::take(&mut self.subscriptions) { if let Err(error) = subscription.close() { errors.push(error); } }
         if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
     }
+    pub fn close_async(&mut self) -> impl std::future::Future<Output = Result<(), String>> + Send + 'static + use<> {
+        self.engine.close();
+        let closures: Vec<_> = std::mem::take(&mut self.subscriptions).into_values().map(|mut subscription| subscription.close_async()).collect();
+        async move {
+            let mut errors = Vec::new();
+            for closure in closures { if let Err(error) = closure.await { errors.push(error); } }
+            if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
+        }
+    }
 }
 impl Drop for NativeWatchEngine { fn drop(&mut self) { if let Err(error) = self.close() { (self.on_error)(error, PathBuf::new()); } } }
 impl ConfigReloadWatchEngine {

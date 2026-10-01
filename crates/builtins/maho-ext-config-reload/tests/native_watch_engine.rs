@@ -10,7 +10,8 @@ async fn async_native_events_use_signal_without_polling() {
     std::fs::rename(staged.path(), &path).unwrap();
     let change = tokio::time::timeout(Duration::from_secs(5), engine.next_change_async()).await.unwrap().unwrap();
     assert_eq!(change.created, [path]);
-    engine.close().unwrap();
+    engine.close_async().await.unwrap();
+    engine.close_async().await.unwrap();
 }
 #[test]
 fn native_events_drive_hash_gated_changes() {
