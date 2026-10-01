@@ -5,5 +5,23 @@ edition.workspace = true
 publish.workspace = true
 license = "MIT"
 
+[dependencies]
+maho-ai = { path = "../maho-ai" }
+maho-agent = { path = "../maho-agent" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order", "float_roundtrip"] }
+thiserror = { workspace = true }
+chrono = { workspace = true, features = ["clock", "std", "alloc"] }
+sha2 = { workspace = true }
+hex = { workspace = true }
+uuid = { workspace = true, features = ["v4", "v7"] }
+tokio = { workspace = true, features = ["fs", "sync", "time", "macros", "rt", "io-util", "process"] }
+regex = { workspace = true }
+futures = { workspace = true }
+indexmap = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [lints]
 workspace = true
