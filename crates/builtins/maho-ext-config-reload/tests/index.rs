@@ -32,3 +32,14 @@ fn keybindings_validation_rejects_non_string_values_and_allows_deletion() {
     std::fs::remove_file(&path).unwrap();
     assert!(validate_builtin_paths(&[path], root.path(), root.path()).is_empty());
 }
+#[test]
+fn routine_suppression_advances_snapshot_before_registration_grouping() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("settings.json");
+    let mut contents = std::collections::BTreeMap::from([(path.clone(), "{\"defaultModel\":\"old\"}".into())]);
+    let mut logger = maho_ext_config_reload::log::ConfigReloadLogger::new(root.path(), None).unwrap();
+    std::fs::write(&path, "{\"defaultModel\":\"new\"}").unwrap();
+    assert!(significant_changed_paths(std::slice::from_ref(&path), &Default::default(), &mut contents, root.path(), root.path(), &mut logger).is_empty());
+    std::fs::write(&path, "{\"defaultModel\":\"new\",\"theme\":\"dark\"}").unwrap();
+    assert_eq!(significant_changed_paths(std::slice::from_ref(&path), &Default::default(), &mut contents, root.path(), root.path(), &mut logger), [path]);
+}

@@ -12,6 +12,20 @@ impl<T> ConfigReloadHandoffRegistry<T> {
 }
 pub struct ResolvedConfigReloadSettings { pub enabled: bool, pub debounce_ms: f64, pub watch: BTreeMap<String, bool> }
 pub struct ActiveTarget { pub registration_id: String, pub target: WatchTarget, pub rearm_on_creation: Option<PathBuf> }
+pub fn significant_changed_paths(paths: &[PathBuf], snapshot: &BTreeMap<PathBuf, String>, settings_contents: &mut BTreeMap<PathBuf, String>, agent_dir: &Path, cwd: &Path, logger: &mut crate::log::ConfigReloadLogger) -> Vec<PathBuf> {
+    use crate::{log::{LogEvent, LogLevel}, routine_settings::{is_settings_path, update_settings_content_snapshot, exclude_routine_only_settings_changes}};
+    let watched: Vec<_> = paths.iter().filter(|path| {
+        if !is_settings_path(path, agent_dir, cwd) { return true; }
+        if !snapshot.get(*path).is_some_and(|hash| maho_core::settings_manager::was_self_write(&path.to_string_lossy(), hash)) { return true; }
+        logger.log(LogLevel::Debug, LogEvent::SelfWriteSuppressed { path: &path.to_string_lossy() });
+        update_settings_content_snapshot(settings_contents, path);
+        false
+    }).cloned().collect();
+    let significant = exclude_routine_only_settings_changes(&watched, settings_contents, agent_dir, cwd, logger);
+    let config = crate::generated_shim_filter::exclude_generated_extension_shims(&significant, agent_dir);
+    for path in &significant { if !config.contains(path) { logger.log(LogLevel::Debug, LogEvent::GeneratedShimChangeSuppressed { path: &path.to_string_lossy() }); } }
+    config
+}
 pub fn build_external_watch_targets(cwd: &Path, registrations: &[crate::protocol::ConfigWatchRegistration]) -> Vec<ActiveTarget> {
     use crate::protocol::{ConfigWatchTargetKind, matches_config_watch_filter};
     let mut targets = Vec::new();
