@@ -1636,7 +1636,11 @@ version = "0.0.0"
 name = "maho-ext-goal"
 version = "0.0.0"
 dependencies = [
+ "maho-agent",
+ "maho-ai",
  "maho-core",
+ "maho-ext-api",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
@@ -1810,6 +1814,9 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-ttsr"
 version = "0.0.0"
+dependencies = [
+ "regex",
+]
 
 [[package]]
 name = "maho-ext-video-in"
