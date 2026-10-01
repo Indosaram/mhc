@@ -30,6 +30,25 @@ impl RpcSocketClient{
         if count==0{self.lines.extend(self.reader.finish());if self.lines.is_empty(){self.frames.reject_pending();return Ok(None);}continue;}
         self.lines.extend(self.reader.push(&bytes[..count]));
     }}
+    pub async fn open_session(&mut self,mut options:Value,mut on_event:impl FnMut(Value))->std::io::Result<Value>{
+        if self.frames.pending_open_session{return Err(std::io::Error::other("RPC open_session already in flight"));}
+        self.frames.pending_open_session=true;
+        options["type"]="open_session".into();
+        let response=self.request(options,false,&mut on_event,|_|{}).await;
+        self.frames.pending_open_session=false;
+        match response{
+            Ok(response) if response["success"]==true=>{
+                let data=response["data"].clone();
+                self.frames.session_id=data["sessionId"].as_str().map(str::to_owned);
+                for event in self.frames.flush_pending_session_events(){on_event(event);}
+                Ok(data)
+            },
+            response=>{
+                self.frames.events.clear();self.frames.event_bytes=0;
+                match response{Err(error)=>Err(error),Ok(response)=>Err(std::io::Error::other(response["error"].as_str().unwrap_or("RPC open_session failed"))) }
+            },
+        }
+    }
 }
 #[derive(Debug,PartialEq)]pub enum ClientFrame{Response(Value),Event(Value),Ignored}
 #[derive(Default)]pub struct RpcClientFrames{request_id:u64,pending:BTreeSet<String>,pub session_id:Option<String>,pub pending_open_session:bool,events:VecDeque<(String,Value,usize)>,event_bytes:usize}
