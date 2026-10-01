@@ -14,6 +14,7 @@ const { BorderedLoader } = await load(interactive, "components/bordered-loader")
 const { BashExecutionComponent } = await load(interactive, "components/bash-execution");
 const { UserMessageSelectorComponent } = await load(interactive, "components/user-message-selector");
 const { CustomEntryComponent } = await load(interactive, "components/custom-entry");
+const { ToolExecutionImages } = await load(interactive, "components/tool-execution-images");
 const { Text } = await import(pathToFileURL(root + "/packages/tui/src/components/text.ts").href);
 
 initTheme("dark", false);
@@ -104,14 +105,24 @@ for (const width of [40, 80]) {
   }
 }
 
+const imageCases = [];
+for (const width of [40, 80]) {
+  for (const showImages of [true, false]) {
+    const images = new ToolExecutionImages(() => {});
+    images.updateOptions({ showImages, maxWidthCells: 60, showRendererFallback: false });
+    images.updateResult({ content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }], isError: false });
+    imageCases.push({ width, showImages, lines: trim(images.render(width)) });
+  }
+}
+
 writeFileSync(
   import.meta.dir + "/golden/components32-extra.json",
   JSON.stringify(
-    { mermaid: mermaidCases, bordered: borderedCases, bash: bashCases, selector: selectorCases, entry: entryCases },
+    { mermaid: mermaidCases, bordered: borderedCases, bash: bashCases, selector: selectorCases, entry: entryCases, images: imageCases },
     null,
     2,
   ) + "\n",
 );
 console.log(
-  `Generated ${mermaidCases.length} mermaid, ${borderedCases.length} bordered, ${bashCases.length} bash, ${selectorCases.length} selector, ${entryCases.length} entry cases`,
+  `Generated ${mermaidCases.length} mermaid, ${borderedCases.length} bordered, ${bashCases.length} bash, ${selectorCases.length} selector, ${entryCases.length} entry, ${imageCases.length} image cases`,
 );

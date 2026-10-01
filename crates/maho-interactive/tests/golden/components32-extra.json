@@ -765,5 +765,27 @@
       "hasContent": false,
       "lines": []
     }
+  ],
+  "images": [
+    {
+      "width": 40,
+      "showImages": true,
+      "lines": []
+    },
+    {
+      "width": 40,
+      "showImages": false,
+      "lines": []
+    },
+    {
+      "width": 80,
+      "showImages": true,
+      "lines": []
+    },
+    {
+      "width": 80,
+      "showImages": false,
+      "lines": []
+    }
   ]
 }

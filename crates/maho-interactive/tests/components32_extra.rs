@@ -7,6 +7,7 @@ use maho_interactive::components::custom_entry::{CustomEntryComponent, EntryRend
 use maho_interactive::components::keybinding_hints::key_hint;
 use maho_interactive::components::markdown_transform::{MarkdownTransformContext, MessageType};
 use maho_interactive::components::mermaid::{MermaidRenderingMode, create_mermaid_markdown_transformer};
+use maho_interactive::components::tool_execution_images::{ToolExecutionImageOptions, ToolExecutionImages};
 use maho_interactive::components::user_message_selector::{UserMessageItem, UserMessageSelectorComponent};
 use maho_interactive::theme::{ColorMode, Theme};
 use maho_tui::components::text::Text;
@@ -126,6 +127,28 @@ fn bash_execution_matches_pinned_senpi_for_every_terminal_state() {
                 case["name"].as_str().unwrap_or("")
             );
         }
+    }
+}
+
+#[test]
+fn tool_execution_images_match_pinned_senpi_without_image_support() {
+    let theme = theme();
+    for case in fixtures()["images"].as_array().expect("images") {
+        let width = case["width"].as_u64().expect("width") as usize;
+        let mut images = ToolExecutionImages::new(theme.clone());
+        images.update_options(ToolExecutionImageOptions {
+            show_images: case["showImages"].as_bool().expect("showImages"),
+            max_width_cells: 60,
+            show_renderer_fallback: false,
+        });
+        images.update_result(&maho_tools::definition::ToolResult {
+            content: vec![maho_tools::definition::ToolContent::Image {
+                data: String::from("aGVsbG8="),
+                mime_type: String::from("image/png"),
+            }],
+            details: None,
+        });
+        assert_eq!(trim(images.render(width)), expected(case), "images at {width}");
     }
 }
 

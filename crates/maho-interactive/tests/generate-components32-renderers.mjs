@@ -80,6 +80,9 @@ resultCase("find", { pattern: "*.rs", path: "src" }, { content: [{ type: "text",
 resultCase("grep", { pattern: "needle", path: "src" }, { content: [{ type: "text", text: "no matches" }], details: undefined });
 resultCase("bash", { command: "echo hi" }, { content: [{ type: "text", text: "hi\n" }], details: undefined });
 resultCase("write", { file_path: "src/main.rs", content: "x" }, { content: [{ type: "text", text: "boom" }], details: undefined }, { isError: true });
+// An image block with images suppressed: the fallback indicator is what the card shows.
+resultCase("read", { file_path: "shot.png" }, { content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }], details: undefined }, { expanded: true });
+resultCase("ls", { path: "pics" }, { content: [{ type: "text", text: "shot.png" }, { type: "image", data: "aGVsbG8=", mimeType: "image/png" }], details: undefined });
 
 writeFileSync(import.meta.dir + "/golden/components32-renderers.json", JSON.stringify(cases, null, 2) + "\n");
 console.log(`Generated ${cases.length} renderer fixtures from pinned Senpi`);

@@ -240,5 +240,54 @@
       "",
       "\u001b[38;5;167mboom\u001b[39m"
     ]
+  },
+  {
+    "name": "read",
+    "kind": "result",
+    "args": {
+      "file_path": "shot.png"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "image",
+          "data": "aGVsbG8=",
+          "mimeType": "image/png"
+        }
+      ]
+    },
+    "expanded": true,
+    "isError": false,
+    "lines": [
+      "",
+      "\u001b[38;5;244m[Image: [image/png]]\u001b[39m"
+    ]
+  },
+  {
+    "name": "ls",
+    "kind": "result",
+    "args": {
+      "path": "pics"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "shot.png"
+        },
+        {
+          "type": "image",
+          "data": "aGVsbG8=",
+          "mimeType": "image/png"
+        }
+      ]
+    },
+    "expanded": false,
+    "isError": false,
+    "lines": [
+      "",
+      "\u001b[38;5;244mshot.png\u001b[39m",
+      "\u001b[38;5;244m[Image: [image/png]]\u001b[39m"
+    ]
   }
 ]

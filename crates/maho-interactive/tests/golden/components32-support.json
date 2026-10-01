@@ -1,0 +1,454 @@
+{
+  "strike": [
+    {
+      "text": "",
+      "frame": null,
+      "count": null
+    },
+    {
+      "text": "",
+      "frame": 0,
+      "count": 0
+    },
+    {
+      "text": "",
+      "frame": 1,
+      "count": 0
+    },
+    {
+      "text": "",
+      "frame": 2,
+      "count": 0
+    },
+    {
+      "text": "",
+      "frame": 3,
+      "count": null
+    },
+    {
+      "text": "",
+      "frame": 7,
+      "count": null
+    },
+    {
+      "text": "",
+      "frame": 13,
+      "count": null
+    },
+    {
+      "text": "",
+      "frame": 14,
+      "count": null
+    },
+    {
+      "text": "",
+      "frame": 20,
+      "count": null
+    },
+    {
+      "text": "a",
+      "frame": null,
+      "count": null
+    },
+    {
+      "text": "a",
+      "frame": 0,
+      "count": 0
+    },
+    {
+      "text": "a",
+      "frame": 1,
+      "count": 0
+    },
+    {
+      "text": "a",
+      "frame": 2,
+      "count": 0
+    },
+    {
+      "text": "a",
+      "frame": 3,
+      "count": 1
+    },
+    {
+      "text": "a",
+      "frame": 7,
+      "count": 1
+    },
+    {
+      "text": "a",
+      "frame": 13,
+      "count": 1
+    },
+    {
+      "text": "a",
+      "frame": 14,
+      "count": 1
+    },
+    {
+      "text": "a",
+      "frame": 20,
+      "count": 1
+    },
+    {
+      "text": "task one",
+      "frame": null,
+      "count": null
+    },
+    {
+      "text": "task one",
+      "frame": 0,
+      "count": 0
+    },
+    {
+      "text": "task one",
+      "frame": 1,
+      "count": 0
+    },
+    {
+      "text": "task one",
+      "frame": 2,
+      "count": 0
+    },
+    {
+      "text": "task one",
+      "frame": 3,
+      "count": 1
+    },
+    {
+      "text": "task one",
+      "frame": 7,
+      "count": 4
+    },
+    {
+      "text": "task one",
+      "frame": 13,
+      "count": 8
+    },
+    {
+      "text": "task one",
+      "frame": 14,
+      "count": 8
+    },
+    {
+      "text": "task one",
+      "frame": 20,
+      "count": 8
+    },
+    {
+      "text": "a much longer todo entry",
+      "frame": null,
+      "count": null
+    },
+    {
+      "text": "a much longer todo entry",
+      "frame": 0,
+      "count": 0
+    },
+    {
+      "text": "a much longer todo entry",
+      "frame": 1,
+      "count": 0
+    },
+    {
+      "text": "a much longer todo entry",
+      "frame": 2,
+      "count": 0
+    },
+    {
+      "text": "a much longer todo entry",
+      "frame": 3,
+      "count": 2
+    },
+    {
+      "text": "a much longer todo entry",
+      "frame": 7,
+      "count": 10
+    },
+    {
+      "text": "a much longer todo entry",
+      "frame": 13,
+      "count": 22
+    },
+    {
+      "text": "a much longer todo entry",
+      "frame": 14,
+      "count": 24
+    },
+    {
+      "text": "a much longer todo entry",
+      "frame": 20,
+      "count": 24
+    },
+    {
+      "text": "  spaces  ",
+      "frame": null,
+      "count": null
+    },
+    {
+      "text": "  spaces  ",
+      "frame": 0,
+      "count": 0
+    },
+    {
+      "text": "  spaces  ",
+      "frame": 1,
+      "count": 0
+    },
+    {
+      "text": "  spaces  ",
+      "frame": 2,
+      "count": 0
+    },
+    {
+      "text": "  spaces  ",
+      "frame": 3,
+      "count": 1
+    },
+    {
+      "text": "  spaces  ",
+      "frame": 7,
+      "count": 5
+    },
+    {
+      "text": "  spaces  ",
+      "frame": 13,
+      "count": 10
+    },
+    {
+      "text": "  spaces  ",
+      "frame": 14,
+      "count": 10
+    },
+    {
+      "text": "  spaces  ",
+      "frame": 20,
+      "count": 10
+    },
+    {
+      "kind": "hasCompleted",
+      "details": null,
+      "hasCompleted": false
+    },
+    {
+      "kind": "hasCompleted",
+      "details": null,
+      "hasCompleted": false
+    },
+    {
+      "kind": "hasCompleted",
+      "details": {},
+      "hasCompleted": false
+    },
+    {
+      "kind": "hasCompleted",
+      "details": {
+        "completedTasks": []
+      },
+      "hasCompleted": false
+    },
+    {
+      "kind": "hasCompleted",
+      "details": {
+        "completedTasks": [
+          1
+        ]
+      },
+      "hasCompleted": true
+    },
+    {
+      "kind": "hasCompleted",
+      "details": {
+        "completedTasks": [
+          1,
+          2
+        ]
+      },
+      "hasCompleted": true
+    }
+  ],
+  "partial": [
+    {
+      "text": "",
+      "visible": -1,
+      "output": ""
+    },
+    {
+      "text": "",
+      "visible": 0,
+      "output": ""
+    },
+    {
+      "text": "",
+      "visible": 1,
+      "output": "<>"
+    },
+    {
+      "text": "",
+      "visible": 3,
+      "output": "<>"
+    },
+    {
+      "text": "",
+      "visible": 100,
+      "output": "<>"
+    },
+    {
+      "text": "abc",
+      "visible": -1,
+      "output": "abc"
+    },
+    {
+      "text": "abc",
+      "visible": 0,
+      "output": "abc"
+    },
+    {
+      "text": "abc",
+      "visible": 1,
+      "output": "<a>bc"
+    },
+    {
+      "text": "abc",
+      "visible": 3,
+      "output": "<abc>"
+    },
+    {
+      "text": "abc",
+      "visible": 100,
+      "output": "<abc>"
+    },
+    {
+      "text": "task one",
+      "visible": -1,
+      "output": "task one"
+    },
+    {
+      "text": "task one",
+      "visible": 0,
+      "output": "task one"
+    },
+    {
+      "text": "task one",
+      "visible": 1,
+      "output": "<t>ask one"
+    },
+    {
+      "text": "task one",
+      "visible": 3,
+      "output": "<tas>k one"
+    },
+    {
+      "text": "task one",
+      "visible": 100,
+      "output": "<task one>"
+    }
+  ],
+  "keyText": [
+    {
+      "key": "escape",
+      "capitalize": false,
+      "output": "esc"
+    },
+    {
+      "key": "escape",
+      "capitalize": true,
+      "output": "Esc"
+    },
+    {
+      "key": "alt+up",
+      "capitalize": false,
+      "output": "alt+up"
+    },
+    {
+      "key": "alt+up",
+      "capitalize": true,
+      "output": "Alt+Up"
+    },
+    {
+      "key": "ctrl+o",
+      "capitalize": false,
+      "output": "ctrl+o"
+    },
+    {
+      "key": "ctrl+o",
+      "capitalize": true,
+      "output": "Ctrl+O"
+    },
+    {
+      "key": "ctrl+shift+f",
+      "capitalize": false,
+      "output": "ctrl+shift+f"
+    },
+    {
+      "key": "ctrl+shift+f",
+      "capitalize": true,
+      "output": "Ctrl+Shift+F"
+    },
+    {
+      "key": "up/down",
+      "capitalize": false,
+      "output": "up/down"
+    },
+    {
+      "key": "up/down",
+      "capitalize": true,
+      "output": "Up/Down"
+    },
+    {
+      "key": "enter",
+      "capitalize": false,
+      "output": "enter"
+    },
+    {
+      "key": "enter",
+      "capitalize": true,
+      "output": "Enter"
+    },
+    {
+      "key": "esc+alt",
+      "capitalize": false,
+      "output": "esc+alt"
+    },
+    {
+      "key": "esc+alt",
+      "capitalize": true,
+      "output": "Esc+Alt"
+    }
+  ],
+  "keyHint": [
+    {
+      "keybinding": "app.tools.expand",
+      "description": "to expand",
+      "keyText": "ctrl+o",
+      "keyDisplayText": "Ctrl+O",
+      "keyHint": "\u001b[38;5;241mctrl+o\u001b[39m\u001b[38;5;244m to expand\u001b[39m"
+    },
+    {
+      "keybinding": "tui.select.cancel",
+      "description": "cancel",
+      "keyText": "esc/ctrl+c",
+      "keyDisplayText": "Esc/Ctrl+C",
+      "keyHint": "\u001b[38;5;241mesc/ctrl+c\u001b[39m\u001b[38;5;244m cancel\u001b[39m"
+    },
+    {
+      "keybinding": "tui.select.confirm",
+      "description": "confirm",
+      "keyText": "enter",
+      "keyDisplayText": "Enter",
+      "keyHint": "\u001b[38;5;241menter\u001b[39m\u001b[38;5;244m confirm\u001b[39m"
+    }
+  ],
+  "rawKey": [
+    {
+      "key": "escape",
+      "description": "cancel",
+      "output": "\u001b[38;5;241mesc\u001b[39m\u001b[38;5;244m cancel\u001b[39m"
+    },
+    {
+      "key": "ctrl+c",
+      "description": "quit",
+      "output": "\u001b[38;5;241mctrl+c\u001b[39m\u001b[38;5;244m quit\u001b[39m"
+    }
+  ]
+}
