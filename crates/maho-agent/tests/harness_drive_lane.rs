@@ -116,6 +116,62 @@ async fn sealing_rejects_new_work_but_admitted_configuration_finishes() {
 }
 
 #[tokio::test]
+async fn queued_commands_plan_from_latest_committed_memory() {
+    let (lane, storage) = gated_lane().await.unwrap();
+    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let first_observed = observed.clone();
+    let first_lane = lane.clone();
+    let first = tokio::spawn(async move { first_lane.command(move |mut state, _| Box::pin(async move {
+        first_observed.lock().unwrap().push(state.configuration.thinking_level);
+        state.configuration.thinking_level = ModelThinkingLevel::High;
+        let value = serde_json::to_value(&state.configuration).unwrap();
+        Ok(LaneCommand::Commit { decision: CommitDecision { writes: vec![Write::Value(set_value(&lane_config("main"), value))], materialize: Arc::new(|_| ()), events: None }, next: Box::new(state) })
+    }), &BACKGROUND_CONTEXT).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), storage.wait_pending(1)).await.unwrap().unwrap();
+    let second_observed = observed.clone();
+    let second = lane.command(move |mut state, _| Box::pin(async move {
+        second_observed.lock().unwrap().push(state.configuration.thinking_level);
+        state.configuration.thinking_level = ModelThinkingLevel::Medium;
+        let value = serde_json::to_value(&state.configuration).unwrap();
+        Ok(LaneCommand::Commit { decision: CommitDecision { writes: vec![Write::Value(set_value(&lane_config("main"), value))], materialize: Arc::new(|_| ()), events: None }, next: Box::new(state) })
+    }), &BACKGROUND_CONTEXT);
+    tokio::pin!(second);
+    assert!(futures::poll!(second.as_mut()).is_pending());
+    assert_eq!(*observed.lock().unwrap(), vec![ModelThinkingLevel::Off]);
+    storage.next(1).await.unwrap();
+    first.await.unwrap().unwrap();
+    let release = storage.next(1);
+    let (result, released) = tokio::time::timeout(std::time::Duration::from_secs(2), async { tokio::join!(second, release) }).await.unwrap();
+    result.unwrap();
+    released.unwrap();
+    assert_eq!(*observed.lock().unwrap(), vec![ModelThinkingLevel::Off, ModelThinkingLevel::High]);
+    assert_eq!(lane.state().configuration.thinking_level, ModelThinkingLevel::Medium);
+}
+
+#[tokio::test]
+async fn global_configuration_events_include_previous_and_current_values() {
+    let harness = fixture().await;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events = seen.clone();
+    let _subscription = harness.events.on("config_update", Arc::new(move |event, _| {
+        let events = events.clone();
+        Box::pin(async move { events.lock().unwrap().push(event.payload); })
+    }));
+    harness.set_stream_options(maho_agent::harness::types::AgentHarnessStreamOptions { timeout_ms: Some(123), ..Default::default() }, &BACKGROUND_CONTEXT).await.unwrap();
+    harness.set_steering_mode(maho_agent::types::QueueMode::OneAtATime, &BACKGROUND_CONTEXT).await.unwrap();
+    let events = seen.lock().unwrap();
+    assert_eq!(events.len(), 2);
+    let maho_agent::harness::events::HarnessEventPayload::ConfigUpdate { property, previous, value } = &events[0] else { panic!("config update"); };
+    assert_eq!(property, "streamOptions");
+    assert_eq!(previous, &serde_json::json!({}));
+    assert_eq!(value, &serde_json::json!({"timeoutMs":123}));
+    let maho_agent::harness::events::HarnessEventPayload::ConfigUpdate { property, previous, value } = &events[1] else { panic!("config update"); };
+    assert_eq!(property, "steeringMode");
+    assert_eq!(previous, "all");
+    assert_eq!(value, "one-at-a-time");
+}
+
+#[tokio::test]
 async fn drive_completion_preserves_first_settlement_and_wakes_all_observers() {
     use maho_agent::harness::runtime::lane::Drive;
     use maho_agent::harness::agent_harness::{DriveOptions, DriveOutcome};
