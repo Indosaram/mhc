@@ -28,3 +28,14 @@ fn scan_omits_symlinks_dependencies_and_unallowed_dot_directories() {
     assert_eq!(engine.get_baseline_snapshot().len(), 1);
     assert_eq!(engine.watched_directories().len(), 2);
 }
+#[test]
+fn scan_reports_bad_path_and_continues_other_targets() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("file");
+    fs::write(&file, "fixture").unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let invalid = file.join("child");
+    let engine = ConfigReloadWatchEngine::with_error_listener(vec![target(&invalid), target(root.path())], std::sync::Arc::new(move |error, path| { sender.send((error, path)).unwrap(); })).unwrap();
+    assert_eq!(receiver.try_recv().unwrap().1, invalid);
+    assert_eq!(engine.get_baseline_snapshot().len(), 1);
+}
