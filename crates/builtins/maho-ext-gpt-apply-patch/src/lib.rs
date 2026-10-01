@@ -3,3 +3,4 @@ pub mod text;
 pub mod seek_sequence;
 pub mod parser;
 pub mod patch_replace;
+pub mod streaming_parser;
