@@ -25,7 +25,7 @@ pub struct RealChange { pub changed_paths: Vec<PathBuf>, pub created: Vec<PathBu
 #[derive(Default)]
 struct ScanResult { hashes: BTreeMap<PathBuf, String>, allowed_directories: BTreeSet<PathBuf>, scanned_directories: BTreeSet<PathBuf> }
 pub struct ConfigReloadWatchEngine { targets: Vec<WatchTarget>, states: Vec<ScanResult>, closed: bool, on_error: Option<WatchErrorListener>, hash_file: HashFile }
-pub struct NativeWatchEngine { pub engine: ConfigReloadWatchEngine, subscriptions: BTreeMap<PathBuf, WatchSubscription>, receiver: std::sync::mpsc::Receiver<Option<PathBuf>>, sender: std::sync::mpsc::Sender<Option<PathBuf>>, on_error: WatchErrorListener, debounce: std::time::Duration }
+pub struct NativeWatchEngine { pub engine: ConfigReloadWatchEngine, subscriptions: BTreeMap<PathBuf, WatchSubscription>, receiver: std::sync::mpsc::Receiver<Option<PathBuf>>, sender: std::sync::mpsc::Sender<Option<PathBuf>>, on_error: WatchErrorListener, debounce: std::time::Duration, signal: Arc<tokio::sync::Notify> }
 impl NativeWatchEngine {
     pub fn new(targets: Vec<WatchTarget>, on_error: WatchErrorListener) -> Result<Self, String> {
         Self::with_debounce(targets, on_error, std::time::Duration::from_millis(200))
@@ -33,7 +33,7 @@ impl NativeWatchEngine {
     pub fn with_debounce(targets: Vec<WatchTarget>, on_error: WatchErrorListener, debounce: std::time::Duration) -> Result<Self, String> {
         let engine = ConfigReloadWatchEngine::with_error_listener(targets, Arc::clone(&on_error)).map_err(|error| error.to_string())?;
         let (sender, receiver) = std::sync::mpsc::channel();
-        let mut state = Self { engine, subscriptions: BTreeMap::new(), receiver, sender, on_error, debounce };
+        let mut state = Self { engine, subscriptions: BTreeMap::new(), receiver, sender, on_error, debounce, signal: Arc::new(tokio::sync::Notify::new()) };
         state.reconcile()?;
         Ok(state)
     }
@@ -44,6 +44,7 @@ impl NativeWatchEngine {
         for path in wanted {
             if self.subscriptions.contains_key(&path) { continue; }
             let sender = self.sender.clone();
+            let signal = Arc::clone(&self.signal);
             let directory = path.clone();
             let targets: Vec<_> = self.engine.targets.iter().map(|target| (target.path.clone(), target.kind, target.allow_list.clone(), target.filter.clone())).collect();
             let subscription = subscribe(path.clone(), false, Arc::new(move |_, filename| {
@@ -58,7 +59,7 @@ impl NativeWatchEngine {
                     })) { return; }
                     affected = Some(absolute);
                 }
-                let _ = sender.send(affected);
+                if sender.send(affected).is_ok() { signal.notify_one(); }
             }), Arc::clone(&self.on_error))?;
             subscription.ready()?;
             self.subscriptions.insert(path, subscription);
@@ -79,6 +80,38 @@ impl NativeWatchEngine {
         let change = if full { self.engine.evaluate() } else { self.engine.evaluate_affected(&affected) }.map_err(|error| error.to_string())?;
         self.reconcile()?;
         Ok(change)
+    }
+    pub async fn next_change_async(&mut self) -> Result<RealChange, String> {
+        loop {
+            let first = loop {
+                let notified = self.signal.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                match self.receiver.try_recv() {
+                    Ok(path) => break path,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => notified.await,
+                    Err(error) => return Err(error.to_string()),
+                }
+            };
+            let mut full = first.is_none();
+            let mut affected: BTreeSet<_> = first.into_iter().collect();
+            let mut deadline = tokio::time::Instant::now() + self.debounce;
+            loop {
+                let notified = self.signal.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                let mut received = false;
+                while let Ok(path) = self.receiver.try_recv() { full |= path.is_none(); affected.extend(path); received = true; }
+                if received { deadline = tokio::time::Instant::now() + self.debounce; }
+                tokio::select! {
+                    () = tokio::time::sleep_until(deadline) => break,
+                    () = &mut notified => {},
+                }
+            }
+            let change = if full { self.engine.evaluate() } else { self.engine.evaluate_affected(&affected) }.map_err(|error| error.to_string())?;
+            self.reconcile()?;
+            if !change.changed_paths.is_empty() { return Ok(change); }
+        }
     }
     pub fn close(&mut self) -> Result<(), String> {
         self.engine.close();
