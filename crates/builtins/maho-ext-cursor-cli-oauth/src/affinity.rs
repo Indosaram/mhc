@@ -19,8 +19,7 @@ impl std::fmt::Display for AllCursorAccountsBlockedError {
         match self.soonest_unblock_at {
             None => f.write_str("All Cursor CLI OAuth accounts are blocked until re-login."),
             Some(at) => {
-                let date = serde_json::Number::from_f64(at).and_then(|n| n.as_i64())
-                    .and_then(chrono::DateTime::from_timestamp_millis).ok_or(std::fmt::Error)?;
+                let date = chrono::DateTime::from_timestamp_millis(at as i64).ok_or(std::fmt::Error)?;
                 write!(f, "All Cursor CLI OAuth accounts are blocked until {}.", date.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
             }
         }
@@ -76,6 +75,12 @@ pub fn select_account(accounts: &[CursorCliAccountSlot], options: &CursorAffinit
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn blocked_error_formats_numeric_timestamp() {
+        let error=AllCursorAccountsBlockedError {soonest_unblock_at:Some(4000.0)};
+        let mut output=String::new();assert!(std::fmt::write(&mut output,format_args!("{error}")).is_ok());
+        assert!(output.contains("1970-01-01T00:00:04.000Z"));
+    }
     use crate::accounts::AccountSource;
     fn accounts() -> Vec<CursorCliAccountSlot> {
         ["alpha", "bravo", "charlie"].map(|name| CursorCliAccountSlot { name: name.into(), display_name: None,
