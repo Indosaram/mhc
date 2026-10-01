@@ -1,0 +1,75 @@
+[
+ {
+  "export": "generateDiffString",
+  "args": [
+   "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve\n",
+   "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\nTWELVE\n"
+  ],
+  "result": {
+   "diff": "- 1 one\n+ 1 ONE\n  2 two\n  3 three\n  4 four\n  5 five\n    ...\n  8 eight\n  9 nine\n 10 ten\n 11 eleven\n-12 twelve\n+12 TWELVE",
+   "firstChangedLine": 1
+  }
+ },
+ {
+  "export": "generateUnifiedPatch",
+  "args": [
+   "sample.txt",
+   "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve\n",
+   "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\nTWELVE\n"
+  ],
+  "result": "--- sample.txt\n+++ sample.txt\n@@ -1,5 +1,5 @@\n-one\n+ONE\n two\n three\n four\n five\n@@ -8,5 +8,5 @@\n eight\n nine\n ten\n eleven\n-twelve\n+TWELVE\n"
+ },
+ {
+  "export": "generateDiffString",
+  "args": [
+   "a\nb\n",
+   "b\na\n"
+  ],
+  "result": {
+   "diff": "-1 a\n 2 b\n+2 a",
+   "firstChangedLine": 1
+  }
+ },
+ {
+  "export": "generateUnifiedPatch",
+  "args": [
+   "sample.txt",
+   "a",
+   "b"
+  ],
+  "result": "--- sample.txt\n+++ sample.txt\n@@ -1,1 +1,1 @@\n-a\n\\ No newline at end of file\n+b\n\\ No newline at end of file\n"
+ },
+ {
+  "export": "generateUnifiedPatch",
+  "args": [
+   "sample.txt",
+   "",
+   "hello\n"
+  ],
+  "result": "--- sample.txt\n+++ sample.txt\n@@ -0,0 +1,1 @@\n+hello\n"
+ },
+ {
+  "export": "applyEditsToNormalizedContent",
+  "args": [
+   "keep  \nconst x = ‘old’;\nkeep too  \n",
+   [
+    {
+     "oldText": "const x = 'old';",
+     "newText": "const x = 'new';"
+    }
+   ],
+   "sample.txt"
+  ],
+  "result": {
+   "baseContent": "keep  \nconst x = ‘old’;\nkeep too  \n",
+   "newContent": "keep  \nconst x = 'new';\nkeep too  \n"
+  }
+ },
+ {
+  "export": "normalizeForFuzzyMatch",
+  "args": [
+   "Ｆｏｏ – ‘bar’  \n"
+  ],
+  "result": "Foo - 'bar'\n"
+ }
+]

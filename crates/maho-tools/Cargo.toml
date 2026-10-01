@@ -5,5 +5,20 @@ edition.workspace = true
 publish.workspace = true
 license = "MIT"
 
+[dependencies]
+maho-ai = { path = "../maho-ai" }
+maho-agent = { path = "../maho-agent" }
+maho-grep = { path = "../vendor/maho-grep" }
+maho-pty = { path = "../vendor/maho-pty" }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+thiserror = "=2.0.18"
+tokio = { version = "=1.52.3", features = ["fs", "sync", "rt-multi-thread", "macros", "time", "process", "io-util", "test-util"] }
+unicode-normalization = "=0.1.25"
+regex = "=1.12.3"
+tempfile = "=3.27.0"
+base64 = "=0.22.1"
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+
 [lints]
 workspace = true
