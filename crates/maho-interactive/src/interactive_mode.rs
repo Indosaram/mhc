@@ -107,7 +107,8 @@ impl InteractiveMode {
             AgentMessage::Llm(maho_ai::types::Message::User(_)) => {
                 self.handle_event(&AgentEvent::MessageStart { message: message.clone() });
                 let value = serde_json::to_value(message).expect("user message");
-                if let Some(parts) = value["content"].as_array() { let text = parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n"); self.editor.editor.add_to_history(&text); }
+                let text = value["content"].as_str().map(str::to_owned).unwrap_or_else(|| value["content"].as_array().map(|parts| parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default());
+                self.editor.editor.add_to_history(&text);
             }
             AgentMessage::Custom(CustomAgentMessage::Custom(message)) if message.display => {
                 let component = Rc::new(RefCell::new(crate::components::custom_message::CustomMessageComponent::new(serde_json::to_value(message).expect("custom message"), None, self.theme.clone(), get_markdown_theme(&self.theme), 1)));
@@ -626,7 +627,7 @@ impl InteractiveMode {
             AgentEvent::MessageStart { message } => {
                 if message.role() == "user" {
                     let value = serde_json::to_value(message).expect("serializable agent message");
-                    let text = value["content"].as_array().map(|parts| parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default();
+                    let text = value["content"].as_str().map(str::to_owned).unwrap_or_else(|| value["content"].as_array().map(|parts| parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default());
                     if let Some(block) = maho_core::skill_invocation::parse_skill_block(&text) {
                         let mut component = crate::components::skill_invocation_message::SkillInvocationMessageComponent::new(block.skills.into_iter().map(|skill| crate::components::skill_invocation_message::InvokedSkill { name:skill.name, content:skill.content }).collect(), self.theme.clone(), get_markdown_theme(&self.theme), crate::components::keybinding_hints::key_display_text("app.tools.expand"));
                         component.set_expanded(self.tools_expanded);

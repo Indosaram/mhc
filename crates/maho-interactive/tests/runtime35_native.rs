@@ -253,6 +253,15 @@ fn streamed_tool_arguments_finish_with_exact_parsed_arguments() {
     assert!(mode.render(80).join("\n").contains("exact-final"));
 }
 
+#[test]
+fn plain_string_user_content_renders_in_native_transcript() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let message = serde_json::from_value(serde_json::json!({"role":"user","content":"string-user-message","timestamp":0})).expect("user message");
+    mode.handle_event(&maho_agent::types::AgentEvent::MessageStart { message });
+    assert!(mode.render(80).join("\n").contains("string-user-message"));
+}
+
 #[tokio::test]
 async fn registered_extension_markdown_transformer_reaches_native_assistant() {
     use maho_tui::tui::Component;
