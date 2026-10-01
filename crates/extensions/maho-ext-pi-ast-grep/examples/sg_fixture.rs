@@ -15,6 +15,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let applied = run_sg(&options, binary).await;
     if applied.matches.len() != 1 || applied.error.is_some() { return Err(format!("apply failed: {applied:?}").into()); }
     if std::fs::read_to_string(&file)? != "logger.info(value);\n" { return Err("apply did not rewrite fixture".into()); }
+    let definition = maho_ext_pi_ast_grep::tools::tool(false, binary.to_owned());
+    let result = (definition.execute)(maho_ext_api::ToolCall {
+        id: "fixture-call", params: serde_json::json!({"pattern":"logger.info($MSG)","lang":"typescript","paths":[file]}),
+        signal: Default::default(), on_update: None, context: None,
+    }).await?;
+    if result.details.as_ref().and_then(|details| details.get("totalMatches")).and_then(serde_json::Value::as_u64) != Some(1) { return Err("native tool executor did not expose match details".into()); }
     println!("preview_matches=1 preview_unchanged=true applied_matches=1 rewrite_verified=true");
+    println!("native_tool_executor_matches=1");
     Ok(())
 }
