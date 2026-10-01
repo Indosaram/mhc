@@ -564,3 +564,14 @@ async fn fork_selection_reopens_user_text_before_selected_message() {
     assert_eq!(mode.editor.editor.get_text(), "fork-source");
     assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0));
 }
+
+#[tokio::test]
+async fn clone_keeps_current_leaf_transcript_and_clears_composer() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("clone-source", Default::default()).await.expect("turn");
+    mode.editor.editor.set_text("draft");
+    mode.submit("/clone", Default::default()).await.expect("clone");
+    assert!(mode.editor.editor.get_text().is_empty());
+    assert!(mode.render(80).join("\n").contains("clone-source"));
+}

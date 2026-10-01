@@ -258,6 +258,14 @@ impl InteractiveMode {
             if self.session.new_session(None).await? { self.rebuild_history(); self.show_status("Started new session".into()); }
             return Ok(PromptDisposition::Handled);
         }
+        if text.trim() == "/clone" {
+            let leaf = self.session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned));
+            if let Some(leaf) = leaf {
+                let result = self.session.fork(&leaf, true).await?;
+                if !result.cancelled { self.rebuild_history(); self.editor.editor.set_text(""); self.show_status("Cloned to new session".into()); }
+            } else { self.show_status("Nothing to clone yet".into()); }
+            return Ok(PromptDisposition::Handled);
+        }
         if text.trim().starts_with("/resume ") {
             let path = get_path_command_argument(text.trim(), "/resume").ok_or("Missing session path")?;
             if self.session.switch_session(&path).await? { self.rebuild_history(); self.editor.editor.set_text(""); }
