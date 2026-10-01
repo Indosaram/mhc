@@ -1,0 +1,72 @@
+use maho_ext_pi_nested_agents_md::{containment::resolve_and_contain, find_agents_md_up::find_agents_md_up, inject_directory_context::{InjectionConfig, inject_directory_context}, injection_cache::InjectionCache};
+use std::path::Path;
+
+fn tree() -> tempfile::TempDir {
+    let tree = tempfile::tempdir().expect("create fixture directory");
+    std::fs::create_dir_all(tree.path().join("src/deep")).expect("create nested fixture directory");
+    for (path, content) in [("AGENTS.md", "root"), ("src/AGENTS.md", "outer"), ("src/deep/AGENTS.md", "inner"), ("src/deep/file.ts", "x")] { std::fs::write(tree.path().join(path), content).expect("write fixture file"); }
+    tree
+}
+
+#[test]
+fn contained_when_relative_file() {
+    let tree = tree();
+    let contained = resolve_and_contain(Path::new("src/deep/file.ts"), tree.path()).expect("fixture is contained");
+    assert_eq!(contained.0, tree.path().join("src/deep/file.ts").canonicalize().expect("canonicalize fixture"));
+}
+#[test]
+fn excluded_when_root_itself() {
+    let tree = tree();
+    assert!(resolve_and_contain(tree.path(), tree.path()).is_none());
+}
+#[test]
+fn excluded_when_missing_file() {
+    let tree = tree();
+    assert!(resolve_and_contain(Path::new("missing"), tree.path()).is_none());
+}
+#[test]
+fn excluded_when_sibling_prefix() {
+    let tree = tree();
+    let outside = tempfile::tempdir().expect("create outside directory");
+    assert!(resolve_and_contain(outside.path(), tree.path()).is_none());
+}
+#[test]
+fn outermost_when_nested_files() {
+    let tree = tree();
+    let files = find_agents_md_up(&tree.path().join("src/deep"), tree.path(), &["AGENTS.md"]);
+    assert_eq!(files, [tree.path().join("src/AGENTS.md"), tree.path().join("src/deep/AGENTS.md")]);
+}
+#[test]
+fn injected_when_nested_read() {
+    let tree = tree();
+    let result = inject_directory_context(Path::new("src/deep/file.ts"), tree.path(), &mut InjectionCache::default(), "a", &InjectionConfig::default());
+    assert_eq!(result.injected_files.len(), 2);
+    assert!(!result.injected_text.contains("\nroot"));
+    assert!(result.errors.is_empty());
+}
+#[test]
+fn deduplicated_when_second_read() {
+    let tree = tree();
+    let mut cache = InjectionCache::default();
+    inject_directory_context(Path::new("src/deep/file.ts"), tree.path(), &mut cache, "a", &InjectionConfig::default());
+    let result = inject_directory_context(Path::new("src/deep/file.ts"), tree.path(), &mut cache, "a", &InjectionConfig::default());
+    assert!(result.injected_files.is_empty());
+}
+#[test]
+fn reinjected_when_compacted() {
+    let tree = tree();
+    let mut cache = InjectionCache::default();
+    inject_directory_context(Path::new("src/deep/file.ts"), tree.path(), &mut cache, "a", &InjectionConfig::default());
+    cache.clear_session("a");
+    let result = inject_directory_context(Path::new("src/deep/file.ts"), tree.path(), &mut cache, "a", &InjectionConfig::default());
+    assert_eq!(result.injected_files.len(), 2);
+}
+#[test]
+fn bounded_when_read_budget_exhausted() {
+    let tree = tree();
+    let config = InjectionConfig { max_bytes_per_read: 3, ..Default::default() };
+    let result = inject_directory_context(Path::new("src/deep/file.ts"), tree.path(), &mut InjectionCache::default(), "a", &config);
+    assert_eq!(result.injected_files.len(), 1);
+    assert_eq!(result.injected_files[0].injected_bytes, 3);
+    assert!(result.injected_files[0].truncated);
+}
