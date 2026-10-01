@@ -754,6 +754,30 @@ fn compaction_signal_is_inherited_within_one_context_not_across_invocations() {
     assert_eq!(actions.revision.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
+struct KernelCapabilities(bool);
+impl ExtensionKernelTools for KernelCapabilities {
+    fn invoke_scope(&self) -> bool { self.0 }
+    fn describe<'a>(&'a self, _: &'a [String]) -> ExtensionFuture<'a, JsonValue> { Box::pin(async { Ok(JsonValue::Null) }) }
+    fn invoke(&self, _: KernelToolInvokeRequest, _: KernelToolInvokeOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Ok(JsonValue::Null) }) }
+}
+
+#[tokio::test]
+async fn nested_kernel_invocations_restore_outer_capability_scope() {
+    use maho_ext_host::kernel_tools_context::*;
+    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) });
+    let mut runner = runner(vec![]);
+    runner.bind_context_actions(actions).unwrap();
+    with_kernel_tools(Arc::new(KernelCapabilities(true)), async {
+        assert!(runner.create_context().unwrap().kernel_tools().unwrap().unwrap().invoke_scope());
+        with_kernel_tools(Arc::new(KernelCapabilities(false)), async {
+            assert!(!runner.create_context().unwrap().kernel_tools().unwrap().unwrap().invoke_scope());
+        }).await;
+        assert!(current_kernel_tools().unwrap().invoke_scope());
+    }).await;
+    assert!(current_kernel_tools().is_none());
+    assert!(runner.create_context().unwrap().kernel_tools().unwrap().is_none());
+}
+
 #[tokio::test]
 async fn provider_request_metadata_reaches_handlers_while_payloads_chain() {
     let handler: ExtensionHandler = Arc::new(|event, _| Box::pin(async move {

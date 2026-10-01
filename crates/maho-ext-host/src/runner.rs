@@ -10,7 +10,7 @@ pub struct BuiltinShortcut { pub keybinding: String, pub restrict_override: bool
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShortcutDiagnostic { pub message: String, pub path: String }
 struct HookRun { event: ToolHookLifecycleEvent, state: Arc<std::sync::Mutex<(bool, String)>> }
-struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime, compaction_signal: std::sync::Mutex<Option<AbortSignal>> }
+struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime, compaction_signal: std::sync::Mutex<Option<AbortSignal>>, kernel_tools: Option<Arc<dyn ExtensionKernelTools>> }
 impl ToolSessionManager for ContextSessionManager {
     fn session_id(&self) -> &str { self.session.session_id() }
     fn session_file(&self) -> Option<&std::path::Path> { self.session.session_file() }
@@ -70,7 +70,7 @@ impl ExtensionContextActions for ContextSessionManager {
     fn get_system_prompt(&self) -> String { self.actions.get_system_prompt() }
     fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { self.actions.get_system_prompt_options() }
     fn get_loaded_hook_sources(&self) -> LoadedHookSources { self.actions.get_loaded_hook_sources() }
-    fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools> { self.actions.kernel_tools() }
+    fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools> { self.kernel_tools.as_deref().or_else(|| self.actions.kernel_tools()) }
 }
 
 pub struct ExtensionRunner {
@@ -108,7 +108,7 @@ impl ExtensionRunner {
         let option_actions = Arc::clone(&actions);
         self.context.get_system_prompt_options_fn = Arc::new(move || option_actions.get_system_prompt_options());
         self.context_actions = Some(Arc::clone(&actions));
-        self.context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions, runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None) });
+        self.context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions, runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), kernel_tools: None });
         Ok(())
     }
     pub fn bind_providers(&mut self, actions: Arc<dyn ExtensionProviderActions>) -> Result<(), ExtensionFailure> {
@@ -183,7 +183,7 @@ impl ExtensionRunner {
         self.runtime.assert_active()?;
         let mut context = self.context.clone();
         if let Some(actions) = &self.context_actions {
-            context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&context.session_manager), actions: Arc::clone(actions), runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None) });
+            context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&context.session_manager), actions: Arc::clone(actions), runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), kernel_tools: crate::kernel_tools_context::current_kernel_tools() });
         }
         if let Some(actions) = context.session_manager.extension_context_actions() {
             actions.assert_active()?;
