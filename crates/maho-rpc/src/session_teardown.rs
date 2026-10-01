@@ -1,5 +1,14 @@
 use crate::session_registry::{RpcSessionState,SessionCloseState,RpcSessionRegistryError};
 pub struct CloseClaim{pub finalizer:Option<bool>,pub mark_detached:Option<String>}
+pub async fn dispose_runtime(runtime:&maho_core::agent_session_runtime::AgentSessionRuntime,scope:&maho_ai::node::provider_scope::ProviderScope)->Result<(),maho_ai::node::provider_scope::ProviderScopeError>{
+    maho_ai::node::provider_scope::run_with_provider_scope_async(scope,async{
+        runtime.session().abort().await;
+        runtime.session().wait_for_idle().await;
+        runtime.dispose().await;
+    }).await?;
+    scope.close();
+    Ok(())
+}
 pub fn begin_session_close(entry:&mut SessionCloseState,detach:bool)->Result<CloseClaim,RpcSessionRegistryError>{
     if entry.state==RpcSessionState::Closing{return Ok(CloseClaim{finalizer:Some(false),mark_detached:None});}
     if entry.state!=RpcSessionState::Open{return Err(RpcSessionRegistryError::new("unknown_session",None,None));}
