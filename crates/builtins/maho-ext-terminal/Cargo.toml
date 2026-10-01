@@ -9,6 +9,9 @@ license = "MIT"
 sha2 = "=0.10.9"
 fancy-regex = "=0.16.2"
 serde_json = "=1.0.149"
+regex = "=1.12.3"
+maho-ai = { path = "../../maho-ai" }
+maho-tools = { path = "../../maho-tools" }
 
 [dev-dependencies]
 tempfile = "=3.27.0"
