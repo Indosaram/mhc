@@ -20,6 +20,7 @@
 
 pub mod auth_storage;
 pub mod brand;
+pub mod compaction;
 pub mod config;
 pub mod credential_accounts;
 pub mod credential_pool;
