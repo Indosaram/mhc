@@ -99,17 +99,26 @@ impl MonitorRegistry {
     }
     #[cfg(unix)]
     pub fn register_file_with_identity(&mut self,description:&str,path:&std::path::Path,event:crate::terminal_manifest_model::FileEvent,timeout_ms:u64,monitor_id:Option<&str>,approved_parent:Option<&std::path::Path>)->std::io::Result<(String,String)> {
+        self.register_file_lifetime(description,path,event,(timeout_ms,false),monitor_id,approved_parent)
+    }
+    #[cfg(unix)]
+    pub fn register_persistent_file(&mut self,description:&str,path:&std::path::Path,event:crate::terminal_manifest_model::FileEvent)->std::io::Result<(String,String)> {
+        self.register_file_lifetime(description,path,event,(crate::shared::DURABLE_MONITOR_EXPIRY_MS,true),None,None)
+    }
+    #[cfg(unix)]
+    fn register_file_lifetime(&mut self,description:&str,path:&std::path::Path,event:crate::terminal_manifest_model::FileEvent,lifetime:(u64,bool),monitor_id:Option<&str>,approved_parent:Option<&std::path::Path>)->std::io::Result<(String,String)> {
+        let (timeout_ms,persistent)=lifetime;
         let id=format!("watch_{}",self.next_file_id+1);let monitor_id=match monitor_id {Some(id)=>id.to_owned(),None=>allocate_monitor_id()?};
         let file=std::sync::Arc::new(std::sync::Mutex::new(crate::file_monitor::FileMonitor::register(id.clone(),description.to_owned(),path,event,approved_parent)?));
         let checker=file.clone();let emit=self.emit.clone();let snapshots=self.file_snapshots.clone();let runtime_id=id.clone();
-        snapshots.lock().expect("file snapshots").insert(id.clone(),MonitorSnapshotEntry {id:id.clone(),monitor_id:Some(monitor_id.clone()),description:description.to_owned(),started_at_ms:now_ms(),deadline_ms:Some(now_ms()+timeout_ms as f64),..Default::default()});
+        snapshots.lock().expect("file snapshots").insert(id.clone(),MonitorSnapshotEntry {id:id.clone(),monitor_id:Some(monitor_id.clone()),description:description.to_owned(),started_at_ms:now_ms(),persistent:Some(persistent),deadline_ms:(!persistent).then_some(now_ms()+timeout_ms as f64),expires_at:persistent.then_some(now_ms()+timeout_ms as f64),..Default::default()});
         let watch=tokio::spawn(async move {
             let period=std::time::Duration::from_millis(crate::monitor_file_watch::FILE_MONITOR_POLL_MS);
             let mut timer=tokio::time::interval_at(tokio::time::Instant::now()+period,period);timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let deadline=tokio::time::sleep(std::time::Duration::from_millis(timeout_ms));tokio::pin!(deadline);
             loop {
                 let timed_out=tokio::select! {_=timer.tick()=>false,_=&mut deadline=>true};
-                let (events,settled)={let mut file=checker.lock().expect("file monitor");let events=if timed_out {file.stop("watcher timed_out").into_iter().collect()} else {match file.check() {Ok(events)=>events,Err(error)=>file.stop(&format!("watcher error: {error}")).into_iter().collect()}};(events,file.settled)};
+                let (events,settled)={let mut file=checker.lock().expect("file monitor");let events=if timed_out {file.stop(if persistent {"watcher expired"} else {"watcher timed_out"}).into_iter().collect()} else {match file.check() {Ok(events)=>events,Err(error)=>file.stop(&format!("watcher error: {error}")).into_iter().collect()}};(events,file.settled)};
                 if settled {snapshots.lock().expect("file snapshots").remove(&runtime_id);}
                 for event in events {emit(event);}
                 if settled {return;}

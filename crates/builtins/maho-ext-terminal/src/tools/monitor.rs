@@ -24,10 +24,12 @@ pub fn execute_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistr
     if description.is_some()&&command.is_some()&&path.is_some() {return error_result("monitor accepts either command or path, not both.");}
     if let (Some(description),Some(path))=(description,path) {
         if input.get("filter").is_some() {return error_result("Native file monitors do not support filter.");}
-        let timeout=input.get("timeout_ms").and_then(Value::as_f64).unwrap_or(DEFAULT_MONITOR_TIMEOUT_MS as f64).trunc().clamp(1.0,MAX_MONITOR_TIMEOUT_MS as f64) as u64;
+        let persistent=input.get("persistent").and_then(Value::as_bool)==Some(true);
+        let timeout=if persistent {DURABLE_MONITOR_EXPIRY_MS} else {input.get("timeout_ms").and_then(Value::as_f64).unwrap_or(DEFAULT_MONITOR_TIMEOUT_MS as f64).trunc().clamp(1.0,MAX_MONITOR_TIMEOUT_MS as f64) as u64};
         let event=if input.get("event").and_then(Value::as_str)==Some("modify") {crate::terminal_manifest_model::FileEvent::Modify} else {crate::terminal_manifest_model::FileEvent::Create};
         let reservation=match manager.reserve() {Ok(Some(reservation))=>reservation,Ok(None)=>return error_result("Cannot create file monitor: terminal capacity is already in use."),Err(error)=>return error_result(error.to_string())};
-        let (id,monitor_id)=match registry.register_file(description,&cwd.join(path),event,timeout) {Ok(ids)=>ids,Err(error)=>return error_result(error.to_string())};
+        let registration=if persistent {registry.register_persistent_file(description,&cwd.join(path),event)} else {registry.register_file(description,&cwd.join(path),event,timeout)};
+        let (id,monitor_id)=match registration {Ok(ids)=>ids,Err(error)=>return error_result(error.to_string())};
         registry.reserve_file_capacity(&id,reservation);
         manager.bind_monitor_id(&monitor_id,&id);
         let mut result=text_result(format!("Monitor started with ID: {monitor_id}"));result.details=json!({"monitor_id":monitor_id,"bash_id":id,"monitor":true}).as_object().cloned();return result;
@@ -51,6 +53,12 @@ pub fn execute_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistr
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn persistent_file_has_expiry_without_ephemeral_deadline() {
+        let dir=tempfile::tempdir().unwrap();let mut manager=TerminalManager::new(1);let mut registry=MonitorRegistry::new(|_|{});
+        let result=execute_monitor(&mut manager,&mut registry,&json!({"description":"durable","path":"watched","persistent":true,"timeout_ms":1}),dir.path());assert!(result.is_error.is_none());
+        let snapshot=registry.snapshot();assert_eq!(snapshot[0].persistent,Some(true));assert!(snapshot[0].deadline_ms.is_none());assert!(snapshot[0].expires_at.is_some());assert!(registry.stop_file("watch_1"));assert_eq!(manager.active_size().unwrap(),0);
+    }
     #[tokio::test]
     async fn file_watch_holds_shared_capacity_until_killed() {
         let dir=tempfile::tempdir().unwrap();let mut manager=TerminalManager::new(1);let mut registry=MonitorRegistry::new(|_|{});
