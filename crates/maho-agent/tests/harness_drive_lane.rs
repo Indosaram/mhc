@@ -43,6 +43,30 @@ async fn lane_admission_observes_current_harness_resources() {
     }
 }
 
+#[tokio::test]
+async fn resolves_model_from_shared_registry_without_requiring_registration_for_set() {
+    let harness = fixture().await;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    assert!(lane.get_model().unwrap().is_none());
+    let faux = maho_ai::providers::faux::faux_provider(Default::default());
+    let model = faux.get_model(None).unwrap();
+    lane.set_model(LaneModelRef { provider: model.provider.clone(), model_id: model.id.clone() }, &BACKGROUND_CONTEXT).await.unwrap();
+    assert!(lane.get_model().unwrap().is_none());
+    harness.models.set_provider(faux.provider);
+    assert_eq!(lane.get_model().unwrap().unwrap().id, model.id);
+}
+
+#[tokio::test]
+async fn pending_assistant_acceptance_is_expected_rejection() {
+    let harness = fixture().await;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let pending = maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions { stop_reason: Some(maho_ai::types::StopReason::Pending), ..Default::default() });
+    let settings = maho_agent::harness::session::types::RunSettings { compaction: maho_agent::harness::compaction::compaction::DEFAULT_COMPACTION_SETTINGS, steering_mode: maho_agent::types::QueueMode::All, follow_up_mode: maho_agent::types::QueueMode::All, tool_execution: maho_agent::harness::session::types::ToolExecutionMode::Parallel };
+    let result = lane.accept_prompt(maho_agent::harness::runtime::lane::PromptInput::Messages(vec![maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(pending)))]), None, settings, &BACKGROUND_CONTEXT).await.unwrap();
+    assert_eq!(result, Err(maho_agent::harness::runtime::lane::AdmissionError::PendingAssistant));
+    assert!(lane.get_tip_id().unwrap().is_none());
+}
+
 async fn gated_lane() -> Result<(Arc<maho_agent::harness::runtime::lane::Lane>, Arc<maho_agent::harness::session::testing::GatingStorage>), maho_agent::harness::session::session::SessionError> {
     let storage = Arc::new(maho_agent::harness::session::testing::GatingStorage::new(Arc::new(MemoryStorage::new(MemoryStorageOptions::default()))));
     let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "gated-lane".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None }, storage.clone(), StorageBackedSessionOptions::default()));

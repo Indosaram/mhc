@@ -28,6 +28,7 @@ impl Default for RuntimeConfig {
 pub struct Harness {
     pub session: Arc<dyn Session>,
     pub events: HarnessEventBus,
+    pub models: maho_ai::models::Models,
     pub lanes_by_name: Mutex<BTreeMap<String, Arc<Lane>>>,
     seed: LaneConfiguration,
     closed_error: Mutex<Option<SessionError>>,
@@ -170,6 +171,7 @@ impl Harness {
                 self.events.clone(),
             );
             lane.config = self.config.clone();
+            lane.models = self.models.clone();
             let lane = Arc::new(lane);
             self.lanes_by_name
                 .lock()
@@ -379,6 +381,7 @@ pub async fn create_agent_harness(
     let harness = Harness {
         session,
         events: HarnessEventBus::new(),
+        models: maho_ai::models::create_models(None),
         lanes_by_name: Mutex::new(BTreeMap::new()),
         seed,
         closed_error: Mutex::new(None),

@@ -154,6 +154,7 @@ pub struct Lane {
     pub name: String,
     pub session: Arc<dyn Session>,
     pub events: HarnessEventBus,
+    pub models: maho_ai::models::Models,
     state: Mutex<LaneState>,
     closed_error: Mutex<Option<SessionError>>,
     idle_owner: tokio::sync::RwLock<()>,
@@ -172,6 +173,7 @@ impl Lane {
             name,
             session,
             events,
+            models: maho_ai::models::create_models(None),
             state: Mutex::new(state),
             closed_error: Mutex::new(None),
             idle_owner: tokio::sync::RwLock::new(()),
@@ -207,6 +209,12 @@ impl Lane {
     pub fn get_tip_id(&self) -> Result<Option<String>, SessionError> {
         self.assert_open()?;
         Ok(self.state().tip_id)
+    }
+
+    pub fn get_model(&self) -> Result<Option<maho_ai::types::Model>, SessionError> {
+        self.assert_open()?;
+        let model = self.state().configuration.model;
+        Ok(self.models.get_model(&model.provider, &model.model_id))
     }
 
     pub async fn accept_skill(&self, name: &str, additional_instructions: Option<String>, operation_id: Option<String>, context: &Context) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
