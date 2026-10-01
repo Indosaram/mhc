@@ -11,7 +11,10 @@ workspace = true
 [dependencies]
 maho-lsp-core = { path = "../../lsp-core" }
 maho-ext-api = { path = "../../../maho-ext-api" }
+maho-lsp-daemon = { path = "../../lsp-daemon" }
 serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+tempfile.workspace = true
