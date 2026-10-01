@@ -12,7 +12,7 @@ pub fn transition_goal_status(current: &Goal, status: GoalStatus, source: GoalUp
     next.updated_at = updated_at;
     if status == GoalStatus::Blocked {
         if current.status != GoalStatus::Blocked {
-            let blocked_reason = reason.map(str::trim).filter(|r| !r.is_empty()).ok_or_else(|| GoalError::InvalidMutation("reason is required when status is blocked".into()))?;
+            let blocked_reason = reason.map(|r| r.trim_matches(crate::validation::js_whitespace)).filter(|r| !r.is_empty()).ok_or_else(|| GoalError::InvalidMutation("reason is required when status is blocked".into()))?;
             next.blocked_reason = Some(blocked_reason.into()); next.blocked_at = Some(updated_at);
         }
     } else { next.blocked_reason = None; next.blocked_at = None; }

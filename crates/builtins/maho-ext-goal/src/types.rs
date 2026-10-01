@@ -64,3 +64,4 @@ pub struct GoalToolSnapshot {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GoalToolResponse { pub goal: Option<GoalToolSnapshot> }
+pub fn is_record(value: &serde_json::Value) -> bool { value.is_object() || value.is_array() }

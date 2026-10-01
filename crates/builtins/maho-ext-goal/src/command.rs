@@ -3,7 +3,7 @@ use crate::types::GoalStatus;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParsedGoalCommand { Show, Clear, SetStatus(GoalStatus), SetObjective(String) }
 pub fn parse_goal_command(raw_args: &str) -> ParsedGoalCommand {
-    let trimmed = raw_args.trim();
+    let trimmed = raw_args.trim_matches(crate::validation::js_whitespace);
     match trimmed.to_lowercase().as_str() {
         "" => ParsedGoalCommand::Show,
         "pause" => ParsedGoalCommand::SetStatus(GoalStatus::Paused),

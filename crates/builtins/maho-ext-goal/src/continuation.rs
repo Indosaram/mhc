@@ -50,7 +50,7 @@ pub fn evaluate_goal_continuation(input: &GoalContinuationInput<'_>) -> GoalCont
     } else { ContinuationPrompt::Full };
     GoalContinuationVerdict::Continue { prompt, stall_notice: input.toolless_continuation_streak >= GOAL_STALL_TOOLLESS_THRESHOLD }
 }
-pub fn normalize_assistant_text(text: &str) -> String { text.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ") }
+pub fn normalize_assistant_text(text: &str) -> String { text.to_lowercase().split(crate::validation::js_whitespace).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ") }
 pub fn hash_assistant_text(text: &str) -> String {
     let hash = normalize_assistant_text(text).encode_utf16().fold(0x811c9dc5_u32, |hash, unit| (hash ^ u32::from(unit)).wrapping_mul(0x01000193));
     format!("{hash:08x}")
