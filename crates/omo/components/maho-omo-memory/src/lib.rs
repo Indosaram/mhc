@@ -22,6 +22,7 @@ pub mod facts_terminal_writes;
 pub mod prompt;
 pub mod session_model_resolver;
 pub mod session_context_resolver;
+pub mod shutdown_drain;
 pub mod policy_guard;
 pub mod skills_usage_ledger;
 pub mod status;
