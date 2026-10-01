@@ -8,7 +8,7 @@ pub struct CompactionExtensionState {
     pub accepted_absolute: u64,
     pub last_yield: Option<CompactionYield>,
     pub turn_id: Option<String>,
-    pub restoration: Option<serde_json::Value>,
+    pub restoration: Option<crate::restoration_tracker::RestorationTrackerState>,
 }
 pub fn create_initial_state() -> CompactionExtensionState { CompactionExtensionState::default() }
 pub fn reset_turn_counter(mut state: CompactionExtensionState, turn_id: &str) -> CompactionExtensionState {

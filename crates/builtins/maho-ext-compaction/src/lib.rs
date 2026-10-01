@@ -27,3 +27,5 @@ pub mod model_usability_budget;
 pub mod switch_admission;
 pub mod resume_admission;
 pub mod resume_slice;
+pub mod restoration_tracker;
+pub mod checkpoint_state;
