@@ -73,12 +73,18 @@ fn provider_session(ctx: &ExtensionContext) -> Option<Value> {
 }
 
 #[derive(Default)]
-pub struct FerryxAgentState { subscriptions: Mutex<Vec<BusSubscription>> }
+pub struct FerryxAgentState;
 impl Extension for FerryxAgentState {
     fn register(&self, api: &mut ExtensionApi) {
         let Some(config) = Config::from_env() else { return; };
         let delivery = Arc::new(Delivery::new(config));
         let state = Arc::new(Mutex::new(State::default()));
+        let subscriptions = Arc::new(Mutex::new(Vec::<BusSubscription>::new()));
+        let retained = Arc::clone(&subscriptions);
+        api.on(EventKind::SessionShutdown, Arc::new(move |_, _| {
+            retained.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+            Box::pin(async { Ok(EventResult::None) })
+        }));
         for kind in [EventKind::SessionStart, EventKind::AgentStart, EventKind::AgentSettled] {
             let state = Arc::clone(&state);
             let delivery = Arc::clone(&delivery);
@@ -103,7 +109,7 @@ impl Extension for FerryxAgentState {
                 let changed = if channel == "ask-user:asked" { state.asked(data) } else { state.blocked(data) };
                 if changed { delivery.send(&mut state, false, None); }
             }));
-            self.subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(subscription);
+            subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(subscription);
         }
     }
 }

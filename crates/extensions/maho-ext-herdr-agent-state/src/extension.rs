@@ -91,12 +91,18 @@ impl Runtime {
 fn now_ms() -> u128 { SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |value| value.as_millis()) }
 
 #[derive(Default)]
-pub struct HerdrAgentState { subscriptions: Mutex<Vec<BusSubscription>> }
+pub struct HerdrAgentState;
 impl Extension for HerdrAgentState {
     fn register(&self, api: &mut ExtensionApi) {
         let Some(config) = Config::from_env() else { return; };
         let delivery = Arc::new(Delivery::new(config));
         let runtime = Arc::new(Mutex::new(Runtime::new()));
+        let subscriptions = Arc::new(Mutex::new(Vec::<BusSubscription>::new()));
+        let retained = Arc::clone(&subscriptions);
+        api.on(EventKind::SessionShutdown, Arc::new(move |_, _| {
+            retained.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+            Box::pin(async { Ok(EventResult::None) })
+        }));
         for kind in [EventKind::SessionStart, EventKind::AgentStart, EventKind::AgentSettled] {
             let runtime = Arc::clone(&runtime);
             let delivery = Arc::clone(&delivery);
@@ -130,6 +136,6 @@ impl Extension for HerdrAgentState {
             runtime.state.blocked(data.get("active").and_then(Value::as_bool).unwrap_or(false), data.get("label").and_then(Value::as_str));
             runtime.publish(&delivery, false);
         }));
-        self.subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(subscription);
+        subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(subscription);
     }
 }
