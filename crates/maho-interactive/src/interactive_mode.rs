@@ -307,6 +307,11 @@ impl InteractiveMode {
             self.chat.add_child(Rc::new(RefCell::new(crate::components::markdown_transform::MarkdownComponent(maho_tui::components::markdown::Markdown::new(&markdown, 1, 1, get_markdown_theme(&self.theme), None, Default::default())))));
             return Ok(true);
         }
+        if let Some(name) = text.split_whitespace().next().and_then(|word| word.strip_prefix('/'))
+            && maho_core::slash_commands::builtin_slash_commands().iter().any(|command| command.name == name)
+        {
+            return Err(format!("/{name} is not yet integrated into the native interactive runtime"));
+        }
         Ok(false)
     }
 

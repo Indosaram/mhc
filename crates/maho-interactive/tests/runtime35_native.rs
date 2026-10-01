@@ -409,3 +409,12 @@ fn extension_terminal_input_transforms_consumes_and_unsubscribes() {
     unsubscribe(); mode.editor.editor.set_text(""); mode.handle_input_at("original", 2);
     assert_eq!(mode.editor.editor.get_text(), "original");
 }
+
+#[tokio::test]
+async fn unintegrated_builtin_does_not_silently_become_provider_input() {
+    let (mut mode, _directory) = native_mode();
+    for command in ["/model", "/compact", "/export session.html", "/new"] {
+        assert!(mode.submit(command, Default::default()).await.is_err());
+    }
+    assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0));
+}
