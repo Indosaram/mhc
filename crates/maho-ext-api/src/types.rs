@@ -3,6 +3,7 @@
 use std::{collections::BTreeMap, fmt, future::Future, path::{Path, PathBuf}, pin::Pin, sync::{Arc, Mutex}};
 pub use maho_agent::types::{AgentEvent, AgentMessage};
 pub use maho_ai::{model::Model, types::{JsonValue, ThinkingLevel, Usage, ImageContent}};
+pub use maho_ai::types::{Message, UserMessage, UserContent, AssistantMessage, ContentBlock};
 pub use maho_tools::{ToolContext, ToolDefinition, FilesystemPolicy, FilesystemPolicyChecker, FilesystemPolicyDecision, FilesystemPolicyRequest};
 pub use maho_tools::definition::{AbortSignal, ToolContent, ToolResult, ToolSessionManager, ToolExposure, ToolExecutionMode};
 pub use maho_tools::filesystem_policy::FilesystemOperation;
@@ -425,8 +426,11 @@ impl EventBus {
     }
     pub fn emit(&self, channel: &str, data: &JsonValue) {
         let handlers = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.get(channel).cloned().unwrap_or_default();
-        for (_, handler) in handlers { handler(data); }
+        for (_, handler) in handlers {
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(data))).is_err() { eprintln!("Event handler error ({channel}): native handler panicked"); }
+        }
     }
+    pub fn clear(&self) { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.clear(); }
 }
 
 /// Native factories are passed by the CLI as an explicit Vec<Box<dyn Extension>>.
@@ -486,7 +490,7 @@ impl ExtensionApi {
         let flag = ExtensionFlag { name: name.into(), description, kind, extension_path: self.registered.identity.path.clone() };
         if let Some(existing) = self.registered.flags.iter_mut().find(|f| f.name == name) { *existing = flag; } else { self.registered.flags.push(flag); }
     }
-    pub fn get_flag(&self, name: &str) -> Option<FlagValue> { self.runtime.get_flag(name) }
+    pub fn get_flag(&self, name: &str) -> Option<FlagValue> { if self.registered.flags.iter().any(|flag| flag.name == name) { self.runtime.get_flag(name) } else { None } }
     pub fn set_flag(&self, name: &str, value: FlagValue) { self.runtime.set_flag(name, value); }
     pub fn register_message_renderer(&mut self, custom_type: &str, renderer: MessageRenderer) { self.registered.message_renderers.insert(custom_type.into(), renderer); }
     pub fn register_entry_renderer(&mut self, custom_type: &str, renderer: EntryRenderer, options: EntryRendererOptions) { self.registered.entry_renderers.insert(custom_type.into(), renderer); self.registered.entry_renderer_options.insert(custom_type.into(), options); }
