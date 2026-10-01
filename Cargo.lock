@@ -1692,6 +1692,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "fancy-regex",
+ "futures",
  "getrandom 0.4.2",
  "globset",
  "maho-core",

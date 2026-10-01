@@ -83,7 +83,14 @@ fn read_config(path: &Path, trusted: bool, diagnostics: &mut Vec<String>) -> Res
     }
 }
 fn trusted_config(raw: Option<Value>, env: &BTreeMap<String, String>) -> Result<Option<RawConfig>, McpConfigValidationError> {
-    raw.map(|raw| { validate_raw(raw.clone())?; validate_raw(interpolate_value(&raw, "mcp", env)?) }).transpose()
+    raw.map(|raw| {
+        let original=validate_raw(raw.clone())?;
+        let mut resolved=validate_raw(interpolate_value(&raw,"mcp",env)?)?;
+        if let (Some(original),Some(resolved))=(original.mcp_servers,resolved.mcp_servers.as_mut()) {
+            for (name,target) in resolved {if let Some(source)=original.get(name){crate::sharing_policy::inherit_mcp_sharing_scope(source,target);}}
+        }
+        Ok(resolved)
+    }).transpose()
 }
 pub fn load_mcp_config(options: LoadMcpConfigOptions<'_>) -> Result<ResolvedMcpConfig, McpConfigValidationError> {
     let global_path = options.agent_dir.join("mcp.json");

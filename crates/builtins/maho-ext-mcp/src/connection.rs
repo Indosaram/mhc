@@ -65,7 +65,10 @@ impl ServerConnection {
             if inner.generation!=generation || inner.state==ServerConnectionState::Disabled{return Err(self.error(format!("MCP server {} connect was superseded",self.server_name),"connect"));}
             inner.transport=Some(transport.clone());self.transition(&mut inner,ServerConnectionState::Connecting,None);
         }
-        let result=connect_mcp_transport(&transport).await;
+        let result=match connect_mcp_transport(&transport).await {
+            Ok(client)=>Ok(client),
+            Err(error)=>Err(crate::diagnose::diagnose_mcp_connect_failure(&self.server_name,&self.config,self.env.as_ref(),&error,self.logger.clone()).await),
+        };
         let current={
             let mut inner=self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if inner.generation!=generation || inner.state==ServerConnectionState::Disabled {false}else{

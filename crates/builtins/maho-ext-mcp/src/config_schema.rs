@@ -37,6 +37,7 @@ pub enum DirectTools { All(bool), Patterns(Vec<String>) }
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServerConfigWire {
+    #[serde(skip)] pub session_dependent: bool,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")] pub transport: Option<Transport>,
     #[serde(skip_serializing_if = "Option::is_none")] pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")] pub command: Option<String>,
@@ -64,6 +65,7 @@ impl From<&maho_ext_api::McpServerDeclaration> for ServerConfigWire {
     fn from(value: &maho_ext_api::McpServerDeclaration) -> Self {
         use maho_ext_api::{McpAuth, McpDirectTools, McpExposure, McpLifecycle, McpLogLevel, McpTransport};
         Self {
+            session_dependent: false,
             transport: value.transport.map(|v| match v { McpTransport::Stdio => Transport::Stdio, McpTransport::Http => Transport::Http }),
             url: value.url.clone(), command: value.command.clone(), args: value.args.clone(), env: value.env.clone(), cwd: value.cwd.clone(), headers: value.headers.clone(),
             auth: value.auth.map(|v| match v { McpAuth::Bearer => Auth::Mode(AuthMode::Bearer), McpAuth::OAuth => Auth::Mode(AuthMode::Oauth), McpAuth::Disabled => Auth::Disabled(false) }),
