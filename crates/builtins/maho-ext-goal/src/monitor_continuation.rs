@@ -16,6 +16,10 @@ pub struct MonitorAwareGoalContinuation {
     direct_input_holds:BTreeSet<String>,
     pub ended_turn_was_user_initiated:bool,
     pub ask_user_deadline_at_ms:Option<f64>,
+    pub recent_normalized_output_hashes:Vec<String>,
+    pub toolless_continuation_streak:u64,
+    toolless_streak_goal_id:Option<String>,
+    pub consecutive_length_recoveries:BTreeMap<String,u64>,
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum WakeSourceChange { Drained,QuestionDeadlineChanged,CountsChanged }
@@ -42,8 +46,20 @@ impl MonitorAwareGoalContinuation {
             self.armed_timer=None;
         } else { self.armed_timer=Some(ArmedTimer { kind,due_at_ms:now+remaining_ms,total_ms,drain_fire }); }
     }
-    pub fn note_user_prompt(&mut self) { self.armed_timer=None; self.held_timer=None; self.ended_turn_was_user_initiated=true; }
+    pub fn note_user_prompt(&mut self) { self.armed_timer=None; self.held_timer=None; self.ended_turn_was_user_initiated=true; self.reset_continuation_state(); }
     pub fn note_continuation_started(&mut self) { self.ended_turn_was_user_initiated=false; }
+    pub fn record_assistant_output(&mut self,text:&str,turn_used_tools:bool) {
+        if turn_used_tools { self.recent_normalized_output_hashes.clear(); return; }
+        if crate::continuation::normalize_assistant_text(text).is_empty() { return; }
+        self.recent_normalized_output_hashes.push(crate::continuation::hash_assistant_text(text));
+        if self.recent_normalized_output_hashes.len()>3 { self.recent_normalized_output_hashes.remove(0); }
+    }
+    pub fn record_toolless_continuation_turn(&mut self,goal_id:&str,turn_used_tools:bool) {
+        if self.toolless_streak_goal_id.as_deref()!=Some(goal_id) { self.toolless_streak_goal_id=Some(goal_id.into()); self.toolless_continuation_streak=0; }
+        if self.ended_turn_was_user_initiated { return; }
+        if turn_used_tools { self.toolless_continuation_streak=0; } else { self.toolless_continuation_streak+=1; }
+    }
+    pub fn reset_continuation_state(&mut self) { self.consecutive_length_recoveries.clear(); self.recent_normalized_output_hashes.clear(); self.toolless_continuation_streak=0; self.toolless_streak_goal_id=None; }
     pub fn ask_user_wait_ms(&self,now:f64,idle_timeout_ms:f64)->Option<f64> {
         if self.wake_sources.get("ask-user").copied().unwrap_or(0.0)<=0.0 { return None; }
         let remaining=self.ask_user_deadline_at_ms.unwrap_or(0.0)-now;
@@ -61,6 +77,7 @@ impl MonitorAwareGoalContinuation {
         if previous>0.0 && self.wake_sources.values().sum::<f64>()==0.0 {
             let kind=self.armed_timer.map(|timer|timer.kind).or_else(||self.held_timer.map(|timer|timer.kind));
             if kind==Some(GoalWaitKind::Monitor) { self.arm_timer(GoalWaitKind::Monitor,1000.0,1000.0,true,now); }
+            self.toolless_continuation_streak=0; self.toolless_streak_goal_id=None;
             return WakeSourceChange::Drained;
         }
         if deadline!=self.ask_user_deadline_at_ms { WakeSourceChange::QuestionDeadlineChanged } else { WakeSourceChange::CountsChanged }
@@ -97,5 +114,17 @@ impl MonitorAwareGoalContinuation {
         let mut monitor=MonitorAwareGoalContinuation::default(); monitor.set_wake_source_count("task",1.0,&[],0.0,30_000.0); monitor.arm_timer(GoalWaitKind::Monitor,30_000.0,30_000.0,false,0.0); monitor.hold_direct_input("input",100.0);
         monitor.set_wake_source_count("task",0.0,&[],500.0,30_000.0); assert!(monitor.armed_timer.is_none());
         monitor.resolve_direct_input("input",false,700.0); assert_eq!(monitor.armed_timer.unwrap().due_at_ms,1500.0);
+    }
+    #[test] fn tool_progress_clears_repetition_window() {
+        let mut monitor=MonitorAwareGoalContinuation::default(); monitor.record_assistant_output("same",false); monitor.record_assistant_output("same",false);
+        monitor.record_assistant_output("same",true); assert!(monitor.recent_normalized_output_hashes.is_empty());
+    }
+    #[test] fn output_history_retains_only_three_nonempty_turns() {
+        let mut monitor=MonitorAwareGoalContinuation::default(); for text in ["a","b","c","d"," "] { monitor.record_assistant_output(text,false); }
+        assert_eq!(monitor.recent_normalized_output_hashes,["b","c","d"].map(crate::continuation::hash_assistant_text));
+    }
+    #[test] fn user_turn_is_exempt_from_toolless_streak() {
+        let mut monitor=MonitorAwareGoalContinuation::default(); monitor.note_user_prompt(); monitor.record_toolless_continuation_turn("g",false);
+        assert_eq!(monitor.toolless_continuation_streak,0); monitor.note_continuation_started(); monitor.record_toolless_continuation_turn("g",false); assert_eq!(monitor.toolless_continuation_streak,1);
     }
 }

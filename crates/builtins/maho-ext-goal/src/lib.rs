@@ -33,3 +33,4 @@ pub mod monitor_continuation;
 pub mod command_registration;
 pub mod cache_warm_renderer;
 pub mod renderers;
+pub mod tool_registration;
