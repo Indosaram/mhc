@@ -43,3 +43,6 @@ pub mod session_worker_protocol;
 pub mod connection_question_bridge;
 pub mod login_prompts;
 pub mod host_watchdog;
+pub mod supervisor_route;
+pub mod session_worker_signals;
+pub mod session_worker_credit;

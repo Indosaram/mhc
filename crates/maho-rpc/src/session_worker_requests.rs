@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use serde_json::Value;
+use crate::session_worker_protocol::SESSION_WORKER_LIMITS;
 struct Pending{bytes:usize,control:bool,deadline:Option<u64>}
 #[derive(Default)]
 pub struct SessionWorkerRequests{pending:BTreeMap<u64,Pending>,serial:u64,closed:bool,opening_deadline:Option<u64>}
@@ -17,10 +18,10 @@ impl SessionWorkerRequests{
         let control=command&&message.get("command").and_then(|command|command.get("type")).and_then(Value::as_str).is_some_and(|kind|matches!(kind,"abort"|"abort_bash"|"extension_ui_response"|"extension_ui_progress"));
         let bytes=serde_json::to_vec(message).map_err(|error|WorkerRequestError::Serialization(error.to_string()))?.len();
         let debt=self.pending.values().filter(|pending|pending.control==control).collect::<Vec<_>>();
-        let (max_count,max_bytes)=if control{(4,1024*1024)}else{(64,16*1024*1024)};
+        let (max_count,max_bytes)=if control{(SESSION_WORKER_LIMITS.control_requests,SESSION_WORKER_LIMITS.control_bytes)}else{(SESSION_WORKER_LIMITS.requests,SESSION_WORKER_LIMITS.request_bytes)};
         if debt.len()>=max_count||debt.iter().map(|pending|pending.bytes).sum::<usize>()+bytes>max_bytes{return Err(WorkerRequestError::RequestLimit);}
         self.serial+=1;
-        let deadline=if command&&!control{None}else if control{Some(now+5000)}else{Some(*self.opening_deadline.get_or_insert(now+30000))};
+        let deadline=if command&&!control{None}else if control{Some(now+SESSION_WORKER_LIMITS.control_ms)}else{Some(*self.opening_deadline.get_or_insert(now+SESSION_WORKER_LIMITS.open_ms))};
         self.pending.insert(self.serial,Pending{bytes,control,deadline});
         let mut request=message.clone();request["request"]=self.serial.into();Ok(request)
     }
