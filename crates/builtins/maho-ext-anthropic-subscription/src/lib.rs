@@ -20,3 +20,4 @@ pub mod session_observability;
 pub mod session_reaper;
 pub mod session_input;
 pub mod session_registry_pump;
+pub mod session_reattach;
