@@ -15,6 +15,32 @@ pub type ExtensionFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, Extensio
 pub type UiFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub type ToolHookStatusUpdater = Arc<dyn Fn(&str) + Send + Sync>;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ToolRenderResultOptions { pub expanded: bool, pub is_partial: bool }
+pub struct ToolRenderContext<TState, TArgs> {
+    pub args: TArgs,
+    pub tool_call_id: String,
+    pub invalidate: std::rc::Rc<dyn Fn()>,
+    pub last_component: Option<Box<dyn Component>>,
+    pub state: TState,
+    pub cwd: PathBuf,
+    pub execution_started: bool,
+    pub args_complete: bool,
+    pub is_partial: bool,
+    pub expanded: bool,
+    pub show_images: bool,
+    pub image_protocol: Option<maho_tui::image_stub::ImageProtocol>,
+    pub is_error: bool,
+    pub has_result: Option<bool>,
+    pub spinner_frame: Option<usize>,
+}
+pub type ToolCallRenderer<TState, TArgs> = Arc<dyn Fn(&TArgs, &Theme, &mut ToolRenderContext<TState, TArgs>) -> Box<dyn Component> + Send + Sync>;
+pub type ToolResultRenderer<TState, TArgs> = Arc<dyn Fn(&AgentToolResult, ToolRenderResultOptions, &Theme, &mut ToolRenderContext<TState, TArgs>) -> Box<dyn Component> + Send + Sync>;
+pub struct ToolRenderers<TState, TArgs> {
+    pub render_call: Option<ToolCallRenderer<TState, TArgs>>,
+    pub render_result: Option<ToolResultRenderer<TState, TArgs>>,
+}
+
 pub type LazyToolActivator = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 pub type ShortcutHandler = Arc<dyn for<'a> Fn(&'a ExtensionContext) -> ExtensionFuture<'a, ()> + Send + Sync>;
 #[derive(Clone)]

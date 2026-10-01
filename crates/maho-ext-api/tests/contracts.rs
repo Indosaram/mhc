@@ -176,3 +176,22 @@ fn provider_extra_body_rejects_nonobjects_before_queuing_registration() {
     api.register_provider("valid", ProviderConfig { extra_body: Some(JsonValue::Object(Default::default())), ..Default::default() }).unwrap();
     assert_eq!(*providers.0.lock().unwrap(), ["valid:test"]);
 }
+
+#[test]
+fn typed_tool_renderer_retains_state_across_render_calls() {
+    let renderer: ToolCallRenderer<usize, String> = Arc::new(|args, _, context| {
+        context.state += 1;
+        Box::new(FactoryComponent(format!("{args}:{}", context.state)))
+    });
+    let mut context = ToolRenderContext {
+        args: "input".into(), tool_call_id: "call".into(), invalidate: std::rc::Rc::new(|| {}),
+        last_component: None, state: 0, cwd: "/tmp".into(), execution_started: true,
+        args_complete: true, is_partial: false, expanded: false, show_images: false,
+        image_protocol: None, is_error: false, has_result: None, spinner_frame: None,
+    };
+    let mut first = renderer(&"input".into(), &Theme::default(), &mut context);
+    assert_eq!(first.render(80), ["input:1"]);
+    context.last_component = Some(first);
+    let mut second = renderer(&"input".into(), &Theme::default(), &mut context);
+    assert_eq!(second.render(80), ["input:2"]);
+}
