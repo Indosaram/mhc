@@ -391,6 +391,7 @@ impl ExtensionRunner {
                 Ok(EventResult::Context { messages: Some(next) }) => if let ExtensionEvent::Context { messages } = &mut event { *messages = next; },
                 Ok(_) => {}, Err(error) => self.report(&path, EventKind::Context, error),
             }
+            self.runtime.assert_active()?;
         }
         if let ExtensionEvent::Context { messages } = event { return Ok(messages); }
         Err(ExtensionFailure::new("context handler replaced event kind"))
@@ -407,6 +408,7 @@ impl ExtensionRunner {
                 Ok(EventResult::ProviderPayload(next)) => if let ExtensionEvent::BeforeProviderRequest { payload, .. } = &mut event { *payload = next; },
                 Ok(_) => {}, Err(error) => self.report(&path, EventKind::BeforeProviderRequest, error),
             }
+            self.runtime.assert_active()?;
         }
         if let ExtensionEvent::BeforeProviderRequest { payload, .. } = event { return Ok(payload); }
         Err(ExtensionFailure::new("provider handler replaced event kind"))
@@ -416,6 +418,7 @@ impl ExtensionRunner {
         for (path, handler) in self.handlers(EventKind::BeforeProviderHeaders) {
             let context = self.create_context()?;
             if let Err(error) = handler(&mut event, &context).await { self.report(&path, EventKind::BeforeProviderHeaders, error); }
+            self.runtime.assert_active()?;
         }
         if let ExtensionEvent::BeforeProviderHeaders { headers } = event { return Ok(headers); }
         Err(ExtensionFailure::new("header handler replaced event kind"))

@@ -649,6 +649,22 @@ async fn inline_factory_names_and_hidden_identities_preserve_load_order() {
 }
 
 #[tokio::test]
+async fn provider_transform_rejects_result_after_runtime_invalidation() {
+    let runtime = ExtensionRuntime::default();
+    let captured = runtime.clone();
+    let handler: ExtensionHandler = Arc::new(move |_, _| {
+        let runtime = captured.clone();
+        Box::pin(async move {
+            runtime.invalidate("reloaded");
+            Ok(EventResult::ProviderPayload(JsonValue::Bool(true)))
+        })
+    });
+    let mut runner = ExtensionRunner::new(vec![extension("invalidate", EventKind::BeforeProviderRequest, handler)], runtime, EventBus::default(), context());
+    let error = runner.emit_before_provider_request(JsonValue::Null, None).await.unwrap_err();
+    assert_eq!(error.message, "reloaded");
+}
+
+#[tokio::test]
 async fn invocation_disposes_when_pending_execution_is_dropped() {
     let disposed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let observed = disposed.clone();
