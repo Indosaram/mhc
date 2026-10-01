@@ -1,0 +1,101 @@
+use std::collections::{BTreeMap,BTreeSet};
+use crate::wait_progress::GoalWaitKind;
+pub const GOAL_CONTINUATION_SCHEDULED_EVENT:&str="goal_continuation_scheduled";
+pub const GOAL_CONTINUATION_RESUMED_EVENT:&str="goal_continuation_resumed";
+pub const GOAL_CONTINUATION_TIMER_STATE_EVENT:&str="goal_continuation_timer_state";
+pub const GOAL_MONITOR_STALL_EVENT:&str="goal_monitor_continuation_stall";
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct HeldTimer { pub kind:GoalWaitKind,pub remaining_ms:f64,pub held_at_ms:f64,pub total_ms:f64,pub drain_fire:bool }
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub struct ArmedTimer { pub kind:GoalWaitKind,pub due_at_ms:f64,pub total_ms:f64,pub drain_fire:bool }
+#[derive(Default)]
+pub struct MonitorAwareGoalContinuation {
+    pub wake_sources:BTreeMap<String,f64>,
+    pub armed_timer:Option<ArmedTimer>,
+    pub held_timer:Option<HeldTimer>,
+    direct_input_holds:BTreeSet<String>,
+    pub ended_turn_was_user_initiated:bool,
+    pub ask_user_deadline_at_ms:Option<f64>,
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum WakeSourceChange { Drained,QuestionDeadlineChanged,CountsChanged }
+impl MonitorAwareGoalContinuation {
+    pub fn has_active_wake_sources(&self)->bool { self.wake_sources.values().sum::<f64>()>0.0 }
+    pub fn hold_direct_input(&mut self,input_id:&str,now:f64) {
+        if !self.direct_input_holds.insert(input_id.into()) || self.direct_input_holds.len()!=1 { return; }
+        if let Some(timer)=self.armed_timer.take() {
+            self.held_timer=Some(HeldTimer { kind:timer.kind,remaining_ms:(timer.due_at_ms-now).max(0.0),held_at_ms:now,total_ms:timer.total_ms,drain_fire:timer.drain_fire });
+        }
+    }
+    pub fn resolve_direct_input(&mut self,input_id:&str,accepted:bool,now:f64) {
+        if !self.direct_input_holds.remove(input_id) { return; }
+        if accepted { self.held_timer=None; self.note_user_prompt(); return; }
+        if !self.direct_input_holds.is_empty() { return; }
+        if let Some(held)=self.held_timer.take() {
+            let remaining=(held.remaining_ms-(now-held.held_at_ms).max(0.0)).max(0.0);
+            self.arm_timer(held.kind,remaining,held.total_ms,held.drain_fire,now);
+        }
+    }
+    pub fn arm_timer(&mut self,kind:GoalWaitKind,remaining_ms:f64,total_ms:f64,drain_fire:bool,now:f64) {
+        if !self.direct_input_holds.is_empty() {
+            self.held_timer=Some(HeldTimer { kind,remaining_ms,held_at_ms:now,total_ms,drain_fire });
+            self.armed_timer=None;
+        } else { self.armed_timer=Some(ArmedTimer { kind,due_at_ms:now+remaining_ms,total_ms,drain_fire }); }
+    }
+    pub fn note_user_prompt(&mut self) { self.armed_timer=None; self.held_timer=None; self.ended_turn_was_user_initiated=true; }
+    pub fn note_continuation_started(&mut self) { self.ended_turn_was_user_initiated=false; }
+    pub fn ask_user_wait_ms(&self,now:f64,idle_timeout_ms:f64)->Option<f64> {
+        if self.wake_sources.get("ask-user").copied().unwrap_or(0.0)<=0.0 { return None; }
+        let remaining=self.ask_user_deadline_at_ms.unwrap_or(0.0)-now;
+        Some(crate::cache_warm::resolve_goal_monitor_continuation_delay_ms(Some(if remaining>0.0 { remaining/1000.0 } else { idle_timeout_ms/1000.0 })))
+    }
+    pub fn note_ask_user_wait(&mut self,count:f64,deadlines:&[f64],now:f64,idle_timeout_ms:f64) {
+        if count<=0.0 { self.ask_user_deadline_at_ms=None; return; }
+        if let Some(deadline)=deadlines.iter().copied().reduce(f64::min) { self.ask_user_deadline_at_ms=Some(deadline); return; }
+        if count>self.wake_sources.get("ask-user").copied().unwrap_or(0.0) || self.ask_user_deadline_at_ms.is_none() { self.ask_user_deadline_at_ms=Some(now+idle_timeout_ms); }
+    }
+    pub fn set_wake_source_count(&mut self,source:&str,count:f64,deadlines:&[f64],now:f64,idle_timeout_ms:f64)->WakeSourceChange {
+        let previous=self.wake_sources.values().sum::<f64>(); let deadline=self.ask_user_deadline_at_ms;
+        if source=="ask-user" { self.note_ask_user_wait(count,deadlines,now,idle_timeout_ms); }
+        self.wake_sources.insert(source.into(),count);
+        if previous>0.0 && self.wake_sources.values().sum::<f64>()==0.0 {
+            let kind=self.armed_timer.map(|timer|timer.kind).or_else(||self.held_timer.map(|timer|timer.kind));
+            if kind==Some(GoalWaitKind::Monitor) { self.arm_timer(GoalWaitKind::Monitor,1000.0,1000.0,true,now); }
+            return WakeSourceChange::Drained;
+        }
+        if deadline!=self.ask_user_deadline_at_ms { WakeSourceChange::QuestionDeadlineChanged } else { WakeSourceChange::CountsChanged }
+    }
+    pub fn dispose(&mut self) { *self=Self::default(); }
+}
+#[cfg(test)] mod tests {
+    use super::*;
+    #[test] fn overlapping_rejected_inputs_preserve_original_deadline() {
+        let mut monitor=MonitorAwareGoalContinuation::default(); monitor.arm_timer(GoalWaitKind::Monitor,1000.0,1000.0,false,0.0);
+        monitor.hold_direct_input("a",100.0); monitor.hold_direct_input("b",200.0);
+        monitor.resolve_direct_input("a",false,300.0); assert!(monitor.armed_timer.is_none());
+        monitor.resolve_direct_input("b",false,400.0); assert_eq!(monitor.armed_timer.unwrap().due_at_ms,1000.0);
+    }
+    #[test] fn accepted_input_cancels_held_wait() {
+        let mut monitor=MonitorAwareGoalContinuation::default(); monitor.arm_timer(GoalWaitKind::Monitor,1000.0,1000.0,false,0.0);
+        monitor.hold_direct_input("a",100.0); monitor.resolve_direct_input("a",true,200.0);
+        assert!(monitor.held_timer.is_none() && monitor.armed_timer.is_none()); assert!(monitor.ended_turn_was_user_initiated);
+    }
+    #[test] fn earliest_question_deadline_overrides_count_heuristic() {
+        let mut monitor=MonitorAwareGoalContinuation::default(); monitor.note_ask_user_wait(2.0,&[9000.0,5000.0],1000.0,30_000.0); monitor.wake_sources.insert("ask-user".into(),2.0);
+        assert_eq!(monitor.ask_user_wait_ms(2000.0,30_000.0),Some(3000.0));
+    }
+    #[test] fn expired_question_deadline_uses_another_idle_window() {
+        let mut monitor=MonitorAwareGoalContinuation::default(); monitor.note_ask_user_wait(1.0,&[1000.0],0.0,30_000.0); monitor.wake_sources.insert("ask-user".into(),1.0);
+        assert_eq!(monitor.ask_user_wait_ms(2000.0,30_000.0),Some(30_000.0));
+    }
+    #[test] fn final_channel_drain_arms_one_second_resume() {
+        let mut monitor=MonitorAwareGoalContinuation::default(); monitor.set_wake_source_count("task",1.0,&[],0.0,30_000.0); monitor.arm_timer(GoalWaitKind::Monitor,30_000.0,30_000.0,false,0.0);
+        assert_eq!(monitor.set_wake_source_count("task",0.0,&[],500.0,30_000.0),WakeSourceChange::Drained);
+        assert_eq!(monitor.armed_timer.unwrap(),ArmedTimer { kind:GoalWaitKind::Monitor,due_at_ms:1500.0,total_ms:1000.0,drain_fire:true });
+    }
+    #[test] fn channel_drain_during_admission_waits_for_rejection() {
+        let mut monitor=MonitorAwareGoalContinuation::default(); monitor.set_wake_source_count("task",1.0,&[],0.0,30_000.0); monitor.arm_timer(GoalWaitKind::Monitor,30_000.0,30_000.0,false,0.0); monitor.hold_direct_input("input",100.0);
+        monitor.set_wake_source_count("task",0.0,&[],500.0,30_000.0); assert!(monitor.armed_timer.is_none());
+        monitor.resolve_direct_input("input",false,700.0); assert_eq!(monitor.armed_timer.unwrap().due_at_ms,1500.0);
+    }
+}
