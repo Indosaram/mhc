@@ -14,4 +14,6 @@ pub mod omo_native_notice;
 pub mod omo_native_session;
 pub mod omo_native_parallel_summary;
 pub mod product_identity;
+#[cfg(test)]
+pub mod telemetry_test_support;
 pub use index::SenpiTelemetryComponent;
