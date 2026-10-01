@@ -6,7 +6,8 @@ use maho_ai::types::BoxFuture;
 use maho_ai::utils::abort::{AbortController, AbortSignal};
 use maho_ai::utils::retry::RetryPolicy;
 
-use crate::harness::agent_harness::{DriveOptions, DriveOutcome, HarnessEvent, Resources};
+use crate::harness::agent_harness::{DriveOptions, DriveOutcome, Resources};
+use crate::harness::events::HarnessEvent;
 use crate::harness::compaction::compaction::CompactionSettings;
 use crate::harness::context::{Context, without_abort_signal};
 use crate::harness::execution::effect_gate::{Cancellation, Gate, GateControl, create_gate};
@@ -146,6 +147,8 @@ impl Completion {
     pub async fn wait(&self) -> Result<DriveOutcome, String> {
         loop {
             let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             {
                 let state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 if let Some(outcome) = &state.outcome {
