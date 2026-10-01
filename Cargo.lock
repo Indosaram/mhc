@@ -1694,6 +1694,8 @@ name = "maho-ext-loop"
 version = "0.0.0"
 dependencies = [
  "regex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
