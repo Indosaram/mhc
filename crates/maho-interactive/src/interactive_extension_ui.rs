@@ -16,6 +16,7 @@ pub enum UiRequest {
     HiddenThinkingLabel(Option<String>),
     ToolsExpanded(bool),
     Editor { title: String, prefill: Option<String>, reply: tokio::sync::oneshot::Sender<Option<String>> },
+    Question { request: QuestionRequest, options: QuestionOptions, reply: tokio::sync::oneshot::Sender<QuestionResponse> },
 }
 
 pub struct InteractiveExtensionUi {
@@ -45,6 +46,19 @@ impl InteractiveExtensionUi {
 }
 
 impl ExtensionUi for InteractiveExtensionUi {
+    fn question(&self, request: QuestionRequest, options: QuestionOptions) -> ExtensionFuture<'_, QuestionResponse> {
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        let dialog = options.dialog.clone();
+        let unanswered = request.questions.iter().map(|question| question.id.clone()).collect();
+        self.send(UiRequest::Question { request:request.clone(), options, reply });
+        Box::pin(async move {
+            let mut status = QuestionStatus::Cancelled;
+            let operation = async { receiver.await.ok() };
+            let bounded = async { if let Some(timeout) = dialog.timeout_ms { match tokio::time::timeout(std::time::Duration::from_millis(timeout), operation).await { Ok(response) => response, Err(_) => { status = QuestionStatus::TimedOut; None } } } else { operation.await } };
+            let response = if let Some(signal) = dialog.signal { tokio::select! { biased; () = signal.cancelled() => None, response = bounded => response } } else { bounded.await };
+            Ok(response.unwrap_or(QuestionResponse { status, unanswered, answers:Default::default(), comment:None, auto_resolved_after_ms:None }))
+        })
+    }
     fn get_tools_expanded(&self) -> Result<bool, ExtensionFailure> { Ok(self.tools_expanded.load(std::sync::atomic::Ordering::Relaxed)) }
     fn set_tools_expanded(&self, expanded: bool) -> Result<(), ExtensionFailure> { self.tools_expanded.store(expanded, std::sync::atomic::Ordering::Relaxed); self.send(UiRequest::ToolsExpanded(expanded)); Ok(()) }
     fn on_terminal_input(&self, handler: TerminalInputHandler) -> Result<UiUnsubscribe, ExtensionFailure> {

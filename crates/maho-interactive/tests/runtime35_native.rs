@@ -530,3 +530,14 @@ fn skill_invocation_replay_separates_collapsed_skill_and_user_request() {
     mode.set_tools_expanded(true);
     assert!(mode.render(80).join("\n").contains("private-body"));
 }
+
+#[tokio::test]
+async fn extension_question_cancel_releases_composer_and_preserves_unanswered_ids() {
+    use maho_ext_api::ExtensionUi; use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode(); let ui = mode.extension_ui.clone();
+    let request = maho_ext_api::QuestionRequest { request_id:"q".into(), questions:vec![maho_ext_api::Question { id:"item".into(), header:"Header".into(), question:"Choose".into(), options:vec![maho_ext_api::QuestionOption { label:"A".into(), description:None }], multi_select:false }], wait_for_answer:true, timeout_ms:0 };
+    let answer = ui.question(request, Default::default());
+    mode.render(80); mode.handle_input_at("\x1b", 0);
+    let response = answer.await.expect("question"); assert_eq!(response.status, maho_ext_api::QuestionStatus::Cancelled); assert_eq!(response.unanswered, vec!["item"]);
+    mode.handle_input_at("draft", 1); assert_eq!(mode.editor.editor.get_text(), "draft");
+}
