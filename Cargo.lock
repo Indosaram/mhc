@@ -1619,6 +1619,10 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-compaction"
 version = "0.0.0"
+dependencies = [
+ "maho-core",
+ "maho-ext-api",
+]
 
 [[package]]
 name = "maho-ext-config-reload"
