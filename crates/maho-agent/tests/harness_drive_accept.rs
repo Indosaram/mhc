@@ -306,3 +306,46 @@ async fn cancelled_navigation_does_not_move_tip() {
     assert_eq!(maho_agent::harness::runtime::structural::commit_navigation(&lane, &drive).await.unwrap(), maho_agent::harness::runtime::types::ProcedureResult::Continue);
     assert_eq!(lane.get_tip_id().unwrap(), tip);
 }
+
+#[tokio::test]
+async fn acceptance_listener_reads_committed_execution_without_deadlock() {
+    let lane = fixture().await.unwrap();
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let sender = Arc::new(std::sync::Mutex::new(Some(sender)));
+    let reader = lane.clone();
+    let _subscription = lane.events.on("run_start", Arc::new(move |_, context| {
+        let reader = reader.clone();
+        let sender = sender.clone();
+        Box::pin(async move {
+            let observation = reader.inspect_execution(&context).await;
+            if let Some(sender) = sender.lock().unwrap().take() { let _ = sender.send(observation); }
+        })
+    }));
+    lane.accept_prompt(PromptInput::Text { text: "hello".into(), images: vec![] }, Some("op".into()), settings(), &BACKGROUND_CONTEXT).await.unwrap().unwrap();
+    let observed = tokio::time::timeout(std::time::Duration::from_secs(2), receiver).await.unwrap().unwrap().unwrap();
+    assert_eq!(observed.current.unwrap().id, "op");
+}
+
+#[tokio::test]
+async fn acceptance_waits_for_direct_listener_completion() {
+    let lane = fixture().await.unwrap();
+    let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+    let (release_sender, release_receiver) = tokio::sync::oneshot::channel();
+    let started = Arc::new(std::sync::Mutex::new(Some(started_sender)));
+    let release = Arc::new(std::sync::Mutex::new(Some(release_receiver)));
+    let _subscription = lane.events.on("run_start", Arc::new(move |_, _| {
+        let started = started.clone();
+        let release = release.clone();
+        Box::pin(async move {
+            if let Some(sender) = started.lock().unwrap().take() { let _ = sender.send(()); }
+            let receiver = release.lock().unwrap().take();
+            if let Some(receiver) = receiver { receiver.await.unwrap(); }
+        })
+    }));
+    let writer = lane.clone();
+    let acceptance = tokio::spawn(async move { writer.accept_prompt(PromptInput::Text { text: "hello".into(), images: vec![] }, None, settings(), &BACKGROUND_CONTEXT).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), started_receiver).await.unwrap().unwrap();
+    assert!(!acceptance.is_finished());
+    release_sender.send(()).unwrap();
+    acceptance.await.unwrap().unwrap().unwrap();
+}
