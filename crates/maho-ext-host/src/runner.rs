@@ -10,7 +10,9 @@ pub struct BuiltinShortcut { pub keybinding: String, pub restrict_override: bool
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShortcutDiagnostic { pub message: String, pub path: String }
 struct HookRun { event: ToolHookLifecycleEvent, state: Arc<std::sync::Mutex<(bool, String)>> }
-struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime, compaction_signal: std::sync::Mutex<Option<AbortSignal>>, kernel_tools: Option<Arc<dyn ExtensionKernelTools>> }
+struct ReloadRequest { result: std::sync::Mutex<Option<Result<(), ExtensionFailure>>>, ready: tokio::sync::Notify }
+type ReloadState = Arc<std::sync::Mutex<Option<Arc<ReloadRequest>>>>;
+struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime, compaction_signal: std::sync::Mutex<Option<AbortSignal>>, kernel_tools: Option<Arc<dyn ExtensionKernelTools>>, reload: ReloadState }
 impl ToolSessionManager for ContextSessionManager {
     fn session_id(&self) -> &str { self.session.session_id() }
     fn session_file(&self) -> Option<&std::path::Path> { self.session.session_file() }
@@ -34,7 +36,34 @@ impl ExtensionContextActions for ContextSessionManager {
     fn get_signal(&self) -> Option<AbortSignal> { self.actions.get_signal() }
     fn abort(&self, source: Option<AbortSource>) { self.actions.abort(source); }
     fn has_pending_messages(&self) -> bool { self.actions.has_pending_messages() }
-    fn request_reload(&self) -> ExtensionFuture<'_, ()> { self.actions.request_reload() }
+    fn request_reload(&self) -> ExtensionFuture<'_, ()> {
+        Box::pin(async move {
+            let request = {
+                let mut current = self.reload.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(request) = current.as_ref() { Arc::clone(request) } else {
+                    let request = Arc::new(ReloadRequest { result: std::sync::Mutex::new(None), ready: tokio::sync::Notify::new() });
+                    *current = Some(Arc::clone(&request));
+                    let actions = Arc::clone(&self.actions);
+                    let state = Arc::clone(&self.reload);
+                    let pending = Arc::clone(&request);
+                    tokio::spawn(async move {
+                        let result = actions.request_reload().await;
+                        *pending.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+                        *state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                        pending.ready.notify_waiters();
+                    });
+                    request
+                }
+            };
+            loop {
+                let notified = request.ready.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if let Some(result) = request.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() { return result; }
+                notified.await;
+            }
+        })
+    }
     fn is_compacting(&self) -> bool { self.actions.is_compacting() }
     fn check_reload_veto(&self) -> ExtensionFuture<'_, ReloadVetoDecision> { self.actions.check_reload_veto() }
     fn shutdown(&self) { self.actions.shutdown(); }
@@ -79,11 +108,12 @@ pub struct ExtensionRunner {
     pub warnings: Vec<String>, pub shutdown_warn_ms: u64, pub shutdown_timeout_ms: u64,
     hook_observer: Option<HookObserver>, warning_listener: Option<WarningListener>, next_hook_index: u64,
     context_actions: Option<Arc<dyn ExtensionContextActions>>,
+    reload: ReloadState,
 }
 impl ExtensionRunner {
     pub fn new(extensions: Vec<LoadedExtension>, runtime: ExtensionRuntime, events: EventBus, context: ExtensionContext) -> Self {
         Self { extensions, runtime, events, context, error_listeners: Vec::new(), errors: Vec::new(), warnings: Vec::new(),
-            shutdown_warn_ms: 2000, shutdown_timeout_ms: 10000, hook_observer: None, warning_listener: None, next_hook_index: 0, context_actions: None }
+            shutdown_warn_ms: 2000, shutdown_timeout_ms: 10000, hook_observer: None, warning_listener: None, next_hook_index: 0, context_actions: None, reload: Arc::new(std::sync::Mutex::new(None)) }
     }
     pub fn from_static(extensions: Vec<Box<dyn Extension>>, context: ExtensionContext) -> Self {
         let runtime = ExtensionRuntime::default();
@@ -108,7 +138,7 @@ impl ExtensionRunner {
         let option_actions = Arc::clone(&actions);
         self.context.get_system_prompt_options_fn = Arc::new(move || option_actions.get_system_prompt_options());
         self.context_actions = Some(Arc::clone(&actions));
-        self.context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions, runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), kernel_tools: None });
+        self.context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions, runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), kernel_tools: None, reload: Arc::clone(&self.reload) });
         Ok(())
     }
     pub fn bind_providers(&mut self, actions: Arc<dyn ExtensionProviderActions>) -> Result<(), ExtensionFailure> {
@@ -183,7 +213,7 @@ impl ExtensionRunner {
         self.runtime.assert_active()?;
         let mut context = self.context.clone();
         if let Some(actions) = &self.context_actions {
-            context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&context.session_manager), actions: Arc::clone(actions), runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), kernel_tools: crate::kernel_tools_context::current_kernel_tools() });
+            context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&context.session_manager), actions: Arc::clone(actions), runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), kernel_tools: crate::kernel_tools_context::current_kernel_tools(), reload: Arc::clone(&self.reload) });
         }
         if let Some(actions) = context.session_manager.extension_context_actions() {
             actions.assert_active()?;

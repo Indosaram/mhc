@@ -683,7 +683,10 @@ impl ExtensionContextActions for ContextActions {
     fn get_signal(&self) -> Option<AbortSignal> { None }
     fn abort(&self, source: Option<AbortSource>) { *self.aborted.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = source; }
     fn has_pending_messages(&self) -> bool { true }
-    fn request_reload(&self) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
+    fn request_reload(&self) -> ExtensionFuture<'_, ()> { Box::pin(async move {
+        self.revision.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }) }
     fn is_compacting(&self) -> bool { true }
     fn check_reload_veto(&self) -> ExtensionFuture<'_, ReloadVetoDecision> { Box::pin(async { Ok(ReloadVetoDecision { cancelled: true, reason: Some("busy".into()) }) }) }
     fn shutdown(&self) {}
@@ -759,6 +762,21 @@ impl ExtensionKernelTools for KernelCapabilities {
     fn invoke_scope(&self) -> bool { self.0 }
     fn describe<'a>(&'a self, _: &'a [String]) -> ExtensionFuture<'a, JsonValue> { Box::pin(async { Ok(JsonValue::Null) }) }
     fn invoke(&self, _: KernelToolInvokeRequest, _: KernelToolInvokeOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Ok(JsonValue::Null) }) }
+}
+
+#[tokio::test]
+async fn concurrent_context_reload_requests_share_one_host_operation() {
+    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) });
+    let mut runner = runner(vec![]);
+    runner.bind_context_actions(actions.clone()).unwrap();
+    let first = runner.create_context().unwrap();
+    let second = runner.create_context().unwrap();
+    let (one, two) = tokio::join!(first.request_reload(), second.request_reload());
+    one.unwrap();
+    two.unwrap();
+    assert_eq!(actions.revision.load(std::sync::atomic::Ordering::SeqCst), 1);
+    first.request_reload().await.unwrap();
+    assert_eq!(actions.revision.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
