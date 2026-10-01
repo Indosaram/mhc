@@ -25,6 +25,7 @@ indexmap = { workspace = true }
 serde_yaml = "=0.9.34"
 ignore = "=0.4.33"
 async-trait = "=0.1.92"
+anyhow = "=1.0.104"
 
 [dev-dependencies]
 tempfile = { workspace = true }
