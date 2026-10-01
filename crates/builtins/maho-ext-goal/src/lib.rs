@@ -18,3 +18,4 @@ pub mod parked_wait;
 pub mod format;
 pub mod channel_state_subscriptions;
 pub mod store_ref;
+pub mod wait_progress;
