@@ -20,6 +20,9 @@ pub struct InteractiveMode {
     submissions: Rc<RefCell<std::collections::VecDeque<String>>>,
     rename_input: Option<crate::components::extension_input::ExtensionInputComponent>,
     rename_result: Rc<RefCell<Option<Option<String>>>>,
+    shortcut_overlay: bool,
+    last_clear_ms: Option<u64>,
+    pub shutdown_requested: bool,
     pub agent_idle: bool,
 }
 
@@ -32,7 +35,24 @@ impl InteractiveMode {
         let keys = Arc::new(maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default()));
         let mut editor = CustomEditor::new(host, editor_theme(&theme), keys, CustomEditorOptions::default());
         editor.editor.on_submit = Some(Box::new(move |text| { if !text.trim().is_empty() { captured.borrow_mut().push_back(text.trim().into()); } }));
-        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), agent_idle: true }
+        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true }
+    }
+
+    pub fn handle_input_at(&mut self, data: &str, now_ms: u64) {
+        if self.shortcut_overlay { self.shortcut_overlay = false; return; }
+        let keys = maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default());
+        if keys.matches(data, "app.clear") {
+            if self.last_clear_ms.is_some_and(|last| now_ms.saturating_sub(last) < 500) { self.shutdown_requested = true; }
+            else { self.editor.editor.set_text(""); self.last_clear_ms = Some(now_ms); }
+            return;
+        }
+        if keys.matches(data, "app.exit") && self.editor.editor.get_text().is_empty() { self.shutdown_requested = true; return; }
+        if keys.matches(data, "app.thinking.cycle") {
+            if self.session.cycle_thinking_level().is_none() { self.show_status("Current model does not support thinking".into()); }
+            return;
+        }
+        if data == "?" && self.editor.editor.get_text().is_empty() { self.shortcut_overlay = true; return; }
+        self.handle_editor_input(data);
     }
 
     pub async fn submit_editor(&mut self) -> Result<Option<PromptDisposition>, String> {
@@ -193,6 +213,7 @@ impl Component for InteractiveMode {
     fn render(&mut self, width: usize) -> Vec<String> {
         self.drain_events();
         let mut lines = self.chat.render(width);
+        if self.shortcut_overlay { lines.extend(crate::components::shortcut_overlay::ShortcutOverlay::new(&self.theme).render(width)); }
         lines.extend(if let Some(input) = &mut self.rename_input { input.render(width) } else { self.editor.render(width) });
         let mut footer = crate::components::footer::FooterComponent::new(self.footer_snapshot());
         footer.set_auto_compact_enabled(self.session.auto_compaction_enabled());
@@ -200,6 +221,15 @@ impl Component for InteractiveMode {
         lines
     }
     fn handle_input(&mut self, data: &str) {
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system clock").as_millis();
+        self.handle_input_at(data, u64::try_from(now_ms).expect("timestamp"));
+    }
+    fn has_input_handler(&self) -> bool { true }
+    fn invalidate(&mut self) { self.chat.invalidate(); self.editor.invalidate(); }
+}
+
+impl InteractiveMode {
+    fn handle_editor_input(&mut self, data: &str) {
         if let Some(input) = &mut self.rename_input {
             input.handle_input(data);
             let result = self.rename_result.borrow_mut().take();
@@ -213,6 +243,4 @@ impl Component for InteractiveMode {
             }
         } else { self.editor.handle_input(data); }
     }
-    fn has_input_handler(&self) -> bool { true }
-    fn invalidate(&mut self) { self.chat.invalidate(); self.editor.invalidate(); }
 }

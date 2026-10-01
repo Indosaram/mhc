@@ -143,3 +143,26 @@ async fn native_footer_reflects_session_name_and_selected_model() {
     let lines = mode.render(120);
     assert!(lines.last().expect("footer").contains("faux-1"));
 }
+
+#[test]
+fn ctrl_c_clear_then_second_press_requests_shutdown_without_timing_luck() {
+    let (mut mode, _directory) = native_mode();
+    mode.editor.editor.set_text("draft");
+    mode.handle_input_at("\x03", 1000);
+    assert!(mode.editor.editor.get_text().is_empty());
+    assert!(!mode.shutdown_requested);
+    mode.handle_input_at("\x03", 1499);
+    assert!(mode.shutdown_requested);
+}
+
+#[test]
+fn question_opens_shortcut_overlay_and_next_key_dismisses_without_typing() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let before = mode.render(80).len();
+    mode.handle_input_at("?", 0);
+    assert!(mode.render(80).len() > before);
+    mode.handle_input_at("a", 1);
+    assert!(mode.editor.editor.get_text().is_empty());
+    assert_eq!(mode.render(80).len(), before);
+}
