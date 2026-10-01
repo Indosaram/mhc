@@ -184,3 +184,42 @@ fn command_path_parser_preserves_quotes_and_first_argument_semantics() {
     assert_eq!(get_path_command_argument("/export a.jsonl ignored", "/export").as_deref(), Some("a.jsonl"));
     assert_eq!(get_path_command_argument("/export 'unclosed", "/export"), None);
 }
+
+#[tokio::test]
+async fn extension_select_uses_real_selector_and_returns_enter_choice() {
+    use maho_ext_api::ExtensionUi;
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let ui = mode.extension_ui.clone();
+    let choices = vec!["first".into(), "second".into()];
+    let selected = ui.select("Pick", &choices, Default::default());
+    mode.render(80);
+    mode.handle_input_at("\x1b[B", 0); mode.handle_input_at("\r", 1);
+    assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), selected).await.expect("bounded selector"), Some("second".into()));
+}
+
+#[tokio::test]
+async fn extension_input_uses_real_input_and_returns_typed_value() {
+    use maho_ext_api::ExtensionUi;
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let ui = mode.extension_ui.clone();
+    let answer = ui.input("Name", None, Default::default());
+    mode.render(80); mode.handle_input_at("typed-value", 0); mode.handle_input_at("\r", 1);
+    assert_eq!(answer.await.as_deref(), Some("typed-value"));
+}
+
+#[test]
+fn extension_editor_widgets_and_status_reach_native_surface() {
+    use maho_ext_api::{ExtensionUi, WidgetContent};
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.extension_ui.set_editor_text("extension-draft");
+    mode.extension_ui.set_widget("fixture", Some(WidgetContent::Lines(vec!["widget-value".into()])), Default::default());
+    mode.extension_ui.set_status("fixture", Some("extension-status"));
+    let lines = mode.render(120).join("\n");
+    assert_eq!(mode.extension_ui.get_editor_text(), "extension-draft");
+    assert!(lines.contains("widget-value")); assert!(lines.contains("extension-status"));
+    mode.extension_ui.set_widget("fixture", None, Default::default());
+    assert!(!mode.render(120).join("\n").contains("widget-value"));
+}

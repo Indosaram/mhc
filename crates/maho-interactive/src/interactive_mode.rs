@@ -24,6 +24,14 @@ pub struct InteractiveMode {
     last_clear_ms: Option<u64>,
     pub shutdown_requested: bool,
     pub agent_idle: bool,
+    pub extension_ui: Arc<crate::interactive_extension_ui::InteractiveExtensionUi>,
+    ui_requests: tokio::sync::mpsc::UnboundedReceiver<crate::interactive_extension_ui::UiRequest>,
+    ui_dialog: Option<Box<dyn Component>>,
+    ui_reply: Rc<RefCell<Option<tokio::sync::oneshot::Sender<Option<String>>>>>,
+    header: Option<Box<dyn Component>>,
+    footer: Option<Box<dyn Component>>,
+    widgets: BTreeMap<String, (Box<dyn Component>, maho_ext_api::WidgetPlacement)>,
+    pub terminal_title: Option<String>,
 }
 
 impl InteractiveMode {
@@ -35,10 +43,21 @@ impl InteractiveMode {
         let keys = Arc::new(maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default()));
         let mut editor = CustomEditor::new(host, editor_theme(&theme), keys, CustomEditorOptions::default());
         editor.editor.on_submit = Some(Box::new(move |text| { if !text.trim().is_empty() { captured.borrow_mut().push_back(text.trim().into()); } }));
-        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true }
+        let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(maho_ext_api::Theme { name: Some(theme.name.clone()), colors: theme.resolved_colors(), ..Default::default() });
+        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: BTreeMap::new(), terminal_title: None }
+    }
+
+    pub async fn bind_extensions(&mut self) {
+        let session = self.session.clone();
+        let bindings = maho_core::agent_session::ExtensionBindings { ui_context: Some(self.extension_ui.clone()), mode: Some(maho_ext_api::ExtensionMode::Tui), ..Default::default() };
+        let binding = session.bind_extensions(bindings);
+        tokio::pin!(binding);
+        loop { tokio::select! { () = &mut binding => break, Some(request) = self.ui_requests.recv() => self.handle_ui_request(request) } }
+        self.drain_ui_requests();
     }
 
     pub fn handle_input_at(&mut self, data: &str, now_ms: u64) {
+        if self.ui_dialog.is_some() || self.rename_input.is_some() { self.handle_editor_input(data); return; }
         if self.shortcut_overlay { self.shortcut_overlay = false; return; }
         let keys = maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default());
         if keys.matches(data, "app.clear") {
@@ -74,6 +93,7 @@ impl InteractiveMode {
                 Some(event) = self.events.recv() => {
                     if let maho_ext_api::AgentSessionEvent::Agent(event) = event { self.handle_event(&event); }
                 }
+                Some(request) = self.ui_requests.recv() => self.handle_ui_request(request),
             }
         };
         self.drain_events();
@@ -130,9 +150,49 @@ impl InteractiveMode {
     }
 
     pub fn drain_events(&mut self) {
+        self.drain_ui_requests();
         while let Ok(event) = self.events.try_recv() {
             if let maho_ext_api::AgentSessionEvent::Agent(event) = event { self.handle_event(&event); }
         }
+    }
+
+    fn drain_ui_requests(&mut self) { while let Ok(request) = self.ui_requests.try_recv() { self.handle_ui_request(request); } }
+
+    fn handle_ui_request(&mut self, request: crate::interactive_extension_ui::UiRequest) {
+        use crate::interactive_extension_ui::UiRequest;
+        match request {
+            UiRequest::Notify(text, _) => self.show_status(text),
+            UiRequest::Title(title) => self.terminal_title = Some(title),
+            UiRequest::EditorText(text) => self.editor.editor.set_text(&text),
+            UiRequest::Paste(text) => self.editor.editor.insert_text_at_cursor(&text),
+            UiRequest::Header(factory) => self.header = factory.map(|factory| factory(&maho_ext_api::ExtensionUi::theme(self.extension_ui.as_ref()))),
+            UiRequest::Footer(factory) => self.footer = factory.map(|factory| factory(&maho_ext_api::ExtensionUi::theme(self.extension_ui.as_ref()))),
+            UiRequest::Widget(key, content, options) => {
+                if let Some(content) = content {
+                    let component: Box<dyn Component> = match content {
+                        maho_ext_api::WidgetContent::Lines(lines) => Box::new(maho_tui::components::text::Text::with_padding(lines.join("\n"), 0, 0)),
+                        maho_ext_api::WidgetContent::Component(factory) => factory(&maho_ext_api::ExtensionUi::theme(self.extension_ui.as_ref())),
+                    };
+                    self.widgets.insert(key, (component, options.placement));
+                } else { self.widgets.remove(&key); }
+            }
+            UiRequest::Select { title, options, reply } => {
+                *self.ui_reply.borrow_mut() = Some(reply);
+                let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone();
+                let keys = Arc::new(maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default()));
+                self.ui_dialog = Some(Box::new(crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, keys, &title, options,
+                    Box::new(move |text| { if let Some(reply) = selected.borrow_mut().take() { drop(reply.send(Some(text.into()))); } }),
+                    Box::new(move || { if let Some(reply) = cancelled.borrow_mut().take() { drop(reply.send(None)); } }), Default::default())));
+            }
+            UiRequest::Input { title, reply } => {
+                *self.ui_reply.borrow_mut() = Some(reply);
+                let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone();
+                self.ui_dialog = Some(Box::new(crate::components::extension_input::ExtensionInputComponent::new(&self.theme, &title,
+                    Box::new(move |text| { if let Some(reply) = selected.borrow_mut().take() { drop(reply.send(Some(text.into()))); } }),
+                    Box::new(move || { if let Some(reply) = cancelled.borrow_mut().take() { drop(reply.send(None)); } }), Default::default())));
+            }
+        }
+        *self.extension_ui.editor_text.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = self.editor.editor.get_text();
     }
 
     pub fn footer_snapshot(&self) -> crate::components::footer::FooterSnapshot {
@@ -232,11 +292,15 @@ impl Component for InteractiveMode {
     fn render(&mut self, width: usize) -> Vec<String> {
         self.drain_events();
         let mut lines = self.chat.render(width);
+        if let Some(header) = &mut self.header { let mut top = header.render(width); top.extend(lines); lines = top; }
+        for (widget, placement) in self.widgets.values_mut() { if *placement == maho_ext_api::WidgetPlacement::AboveEditor { lines.extend(widget.render(width)); } }
         if self.shortcut_overlay { lines.extend(crate::components::shortcut_overlay::ShortcutOverlay::new(&self.theme).render(width)); }
-        lines.extend(if let Some(input) = &mut self.rename_input { input.render(width) } else { self.editor.render(width) });
+        lines.extend(if let Some(dialog) = &mut self.ui_dialog { dialog.render(width) } else if let Some(input) = &mut self.rename_input { input.render(width) } else { self.editor.render(width) });
+        for (widget, placement) in self.widgets.values_mut() { if *placement == maho_ext_api::WidgetPlacement::BelowEditor { lines.extend(widget.render(width)); } }
         let mut footer = crate::components::footer::FooterComponent::new(self.footer_snapshot());
         footer.set_auto_compact_enabled(self.session.auto_compaction_enabled());
-        lines.extend(footer.render(width, &self.theme).expect("footer layout"));
+        footer.snapshot.extension_statuses = self.extension_ui.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        lines.extend(if let Some(custom) = &mut self.footer { custom.render(width) } else { footer.render(width, &self.theme).expect("footer layout") });
         lines
     }
     fn handle_input(&mut self, data: &str) {
@@ -249,6 +313,11 @@ impl Component for InteractiveMode {
 
 impl InteractiveMode {
     fn handle_editor_input(&mut self, data: &str) {
+        if let Some(dialog) = &mut self.ui_dialog {
+            dialog.handle_input(data);
+            if self.ui_reply.borrow().is_none() { self.ui_dialog = None; }
+            return;
+        }
         if let Some(input) = &mut self.rename_input {
             input.handle_input(data);
             let result = self.rename_result.borrow_mut().take();
@@ -261,5 +330,6 @@ impl InteractiveMode {
                 }
             }
         } else { self.editor.handle_input(data); }
+        *self.extension_ui.editor_text.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = self.editor.editor.get_text();
     }
 }
