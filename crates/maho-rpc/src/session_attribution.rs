@@ -1,6 +1,12 @@
 use std::{collections::BTreeMap,sync::{Arc,Mutex}};
 #[derive(Debug,Clone,Default,PartialEq,Eq)]
 pub struct SessionAttribution{pub session_id:Option<String>,pub tool:Option<String>}
+tokio::task_local!{static ATTRIBUTION:SessionAttribution;}
+pub fn current_session_attribution()->Option<SessionAttribution>{ATTRIBUTION.try_with(Clone::clone).ok()}
+pub async fn run_with_session_attribution<T>(registry:&SessionActivityRegistry,attribution:SessionAttribution,task:impl std::future::Future<Output=T>)->T{
+    let _span=registry.open_span(attribution.clone(),None);
+    ATTRIBUTION.scope(attribution,task).await
+}
 #[derive(Default)]
 struct ActivityState{sequence:u64,open:BTreeMap<u64,SessionAttribution>,last_finished:Option<(u64,SessionAttribution)>}
 #[derive(Clone,Default)]
@@ -29,6 +35,7 @@ impl ToolAttributionSpans{
 }
 #[cfg(test)]mod tests{
     use super::*;
+    #[tokio::test]async fn async_context_and_activity_live_until_exact_completion(){let registry=SessionActivityRegistry::default();let attribution=SessionAttribution{session_id:Some("session".into()),tool:None};let(mark_send,mark_recv)=tokio::sync::oneshot::channel();let(release_send,release_recv)=tokio::sync::oneshot::channel();let work=run_with_session_attribution(&registry,attribution.clone(),async{assert_eq!(current_session_attribution(),Some(attribution.clone()));mark_send.send(()).unwrap();release_recv.await.unwrap();assert_eq!(current_session_attribution(),Some(attribution.clone()));});let observer=async{mark_recv.await.unwrap();assert_eq!(registry.since(registry.mark()),Some(attribution.clone()));assert!(current_session_attribution().is_none());release_send.send(()).unwrap();};tokio::time::timeout(std::time::Duration::from_secs(2),async{tokio::join!(work,observer)}).await.unwrap();assert!(registry.since(registry.mark()).is_none());assert!(current_session_attribution().is_none());}
     #[test]fn finished_activity_wins_over_open_and_close_is_idempotent(){let registry=SessionActivityRegistry::default();let mut first=registry.open_span(SessionAttribution{session_id:Some("first".into()),tool:None},None);let mark=registry.mark();let _second=registry.open_span(SessionAttribution{session_id:Some("second".into()),tool:None},None);first.close();assert_eq!(registry.since(mark).unwrap().session_id.as_deref(),Some("first"));let after=registry.mark();first.close();assert_eq!(registry.mark(),after);assert_eq!(registry.since(after).unwrap().session_id.as_deref(),Some("second"));}
     #[test]fn settled_turn_closes_tool_spans(){let registry=SessionActivityRegistry::default();let mut tools=ToolAttributionSpans::new("session".into(),registry.clone());tools.observe(&serde_json::json!({"type":"tool_execution_start","toolCallId":"id","toolName":"bash"}));assert_eq!(registry.since(registry.mark()).unwrap().tool.as_deref(),Some("bash"));tools.observe(&serde_json::json!({"type":"agent_settled"}));assert!(registry.since(registry.mark()).is_none());}
     #[test]fn span_inherits_only_session_id(){let registry=SessionActivityRegistry::default();let ambient=SessionAttribution{session_id:Some("ambient".into()),tool:Some("old".into())};let _span=registry.open_span(SessionAttribution::default(),Some(&ambient));assert_eq!(registry.since(0).unwrap(),SessionAttribution{session_id:ambient.session_id,tool:None});}
