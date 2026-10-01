@@ -51,16 +51,25 @@ pub fn decide(input:&ContinuityInput<'_>)->Decision {
         }
     } else if let Some(binding)=input.binding {let decision=from_binding(input,binding);if binding.sdk_session_id_confirmed==Some(false)&&matches!(decision,Decision::Reattach {..}|Decision::Fork {..}) {flatten("session_unconfirmed")}else {decision}}
     else {Decision::Bootstrap {reason:None}};
-    if let Some(reason)=input.invalidation_reason {let cause=match reason {"compaction"=>"tainted_compaction","tree_changed"=>"branch_diverged","fork"=>"tainted_fork",other=>sanitize_reason(other)};
-        match &mut decision {Decision::Bootstrap {reason}=>*reason=Some(cause.into()),Decision::Flatten {reason} if reason=="registry_miss"=>*reason=cause.into(),_=>{}}
+    if let Some(reason)=input.invalidation_reason {let cause=match reason {"compaction"=>"tainted_compaction".into(),"tree_changed"=>"branch_diverged".into(),"fork"=>"tainted_fork".into(),other=>sanitize_reason(other)};
+        match &mut decision {Decision::Bootstrap {reason}=>*reason=Some(cause),Decision::Flatten {reason} if reason=="registry_miss"=>*reason=cause,_=>{}}
     }
     decision
 }
-pub fn sanitize_reason(reason:&str)->&str {
+pub fn sanitize_reason(reason:&str)->String {
+    if let Some(suffix)=reason.strip_prefix("tainted:") {
+        let mapped=format!("tainted_{suffix}");
+        if ["compaction","fork","abort","assistant_provenance_unverified"].contains(&suffix) {return mapped;}
+    }
     match reason {
         "prefix_matched"|"registry_miss"|"idle_ttl"|"capacity"|"model_selected"|"thinking_level_selected"|"bound_account_token_expiring"|"account_changed"|"model_changed"|"toolset_changed"|"system_prompt_changed"|"assistant_stream_diverged"|"options_changed"|"history_rolled_back"|"assistant_rewritten"|"transcript_missing"|"cross_root_unsupported"|"sent_stream_diverged"|"branch_diverged"|"branch_boundary_unavailable"|"branch_resume"|"tainted_compaction"|"tainted_fork"|"tainted_abort"|"tainted_assistant_provenance_unverified"|"resume_initialization_failed"|"resume_initialization_aborted"|"resume_mode_off"|"query_failed"|"turn_attribution_failed"|"session_unconfirmed"|"abort_timeout"|"extensions_removed"|"session_shutdown"|"timeout_retry"|"other"=>reason,
-        _=>"other",
-    }
+        _=>{
+            let text=reason.to_lowercase();
+            return if ["did not terminate","interrupt failed"].iter().any(|s|text.contains(s)) {"abort_timeout"}
+            else if ["user_message_uuid did not match","result arrived before replay claim","pre-replay buffer overflow"].iter().any(|s|text.contains(s)) {"turn_attribution_failed"}
+            else if ["query ended before","claude sdk oauth query","anthropic subscription query","claude code"].iter().any(|s|text.contains(s)) {"query_failed"}else {"other"}.into();
+        },
+    }.into()
 }
 #[cfg(test)]
 mod tests {
@@ -79,6 +88,7 @@ mod tests {
     }
     #[test]
     fn restored_prefix_fails_closed_and_invalidations_are_sanitized() {
+        for (text,expected) in [("tainted:abort","tainted_abort"),("interrupt failed","abort_timeout"),("result arrived before replay claim","turn_attribution_failed"),("Claude Code query ended before init","query_failed")] {assert_eq!(sanitize_reason(text),expected);}
         let hashes=vec!["h1".into(),"different".into(),"h3".into()];let mut binding=snapshot();binding.sent_prefix_hash=Some(prefix_digest(&binding.sent_hashes,2));let mut request=input(&hashes);request.binding=Some(&binding);assert_eq!(decide(&request),flatten("sent_stream_diverged"));request.binding=None;request.invalidation_reason=Some("arbitrary credential text");assert_eq!(decide(&request),Decision::Bootstrap {reason:Some("other".into())});request.invalidation_reason=Some("compaction");assert_eq!(decide(&request),Decision::Bootstrap {reason:Some("tainted_compaction".into())});
     }
 }
