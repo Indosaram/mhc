@@ -231,10 +231,10 @@ impl InteractiveMode {
             let execution = session.execute_bash(command, None, excluded, None, None); tokio::pin!(execution);
             let result = loop { tokio::select! {
                 result = &mut execution => break result,
-                Some(event) = self.events.recv() => { if let maho_ext_api::AgentSessionEvent::BashExecutionUpdate { delta, .. } = event { component.borrow_mut().append_output(&delta); } },
+                Some(event) = self.events.recv() => { if let maho_ext_api::AgentSessionEvent::BashExecutionUpdate { delta, .. } = &event { component.borrow_mut().append_output(delta); } else { self.handle_session_event(&event); } },
                 Some(request) = self.ui_requests.recv() => self.handle_ui_request(request),
             }};
-            while let Ok(event) = self.events.try_recv() { if let maho_ext_api::AgentSessionEvent::BashExecutionUpdate { delta, .. } = event { component.borrow_mut().append_output(&delta); } }
+            while let Ok(event) = self.events.try_recv() { if let maho_ext_api::AgentSessionEvent::BashExecutionUpdate { delta, .. } = &event { component.borrow_mut().append_output(delta); } else { self.handle_session_event(&event); } }
             let result = match result { Ok(result) => result, Err(error) => { component.borrow_mut().append_output(&error); component.borrow_mut().set_complete(Some(1), false, None, None); return Err(error); } };
             component.borrow_mut().set_complete(result.exit_code, result.cancelled, None, result.full_output_path.map(|path| path.to_string_lossy().into_owned()));
             self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
@@ -251,7 +251,7 @@ impl InteractiveMode {
             let result = loop { tokio::select! {
                 result = &mut compact => break result,
                 Some(request) = self.ui_requests.recv() => self.handle_ui_request(request),
-                Some(event) = self.events.recv() => { if let maho_ext_api::AgentSessionEvent::Agent(event) = event { self.handle_event(&event); } }
+                Some(event) = self.events.recv() => self.handle_session_event(&event),
             }}?;
             self.rebuild_history();
             self.show_status(format!("Compacted from {} tokens", result.tokens_before));
