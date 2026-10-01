@@ -16,3 +16,4 @@ pub mod tools;
 pub mod prompt_bridge;
 pub mod settings;
 pub mod system_prompt;
+pub mod session_observability;
