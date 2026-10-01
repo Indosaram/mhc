@@ -356,3 +356,15 @@ fn expansion_updates_completed_tool_cards_not_just_pending_cards() {
     mode.set_tools_expanded(true);
     assert!(mode.render(80).join("\n").contains("line-99"));
 }
+
+#[tokio::test]
+async fn bare_thinking_selector_filters_then_cancels_without_provider_turn() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("/thinking", Default::default()).await.expect("selector");
+    mode.render(80); mode.handle_input_at("off", 0);
+    mode.render(80); mode.handle_input_at("\x1b", 1);
+    mode.handle_input_at("draft", 2);
+    assert_eq!(mode.editor.editor.get_text(), "draft");
+    assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0));
+}
