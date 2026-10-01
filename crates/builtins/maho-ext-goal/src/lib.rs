@@ -35,3 +35,4 @@ pub mod cache_warm_renderer;
 pub mod renderers;
 pub mod tool_registration;
 pub mod index;
+#[cfg(test)] mod test_context;

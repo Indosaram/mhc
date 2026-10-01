@@ -63,6 +63,34 @@ pub fn goal_live_elapsed_seconds(goal:&Goal,measured_from_milliseconds:f64,now_m
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn stale_context_retires_and_live_resync_rearms() {
+        let stale=Arc::new(std::sync::atomic::AtomicBool::new(true)); let rendering=Arc::clone(&stale);
+        let (send,mut receive)=tokio::sync::mpsc::unbounded_channel();
+        let mut ticker=GoalElapsedTicker::new(Arc::new(move |_,_,live| {
+            if rendering.load(std::sync::atomic::Ordering::SeqCst) { return Err(ExtensionFailure::new(crate::stale_context::STALE_EXTENSION_CONTEXT_ERROR_PREFIX)); }
+            send.send(live).unwrap(); Ok(())
+        }),Arc::new(||0.0));
+        ticker.sync(crate::test_context::context(),goal(),0.0).await.unwrap(); assert!(!ticker.running());
+        stale.store(false,std::sync::atomic::Ordering::SeqCst);
+        ticker.sync(crate::test_context::context(),goal(),0.0).await.unwrap(); assert_eq!(receive.recv().await.unwrap(),10.0); assert!(ticker.running());
+        ticker.stop().unwrap().unwrap().await.unwrap_err();
+    }
+    #[tokio::test(start_paused=true)] async fn live_elapsed_advances_and_stop_observes_worker_cleanup() {
+        let start=tokio::time::Instant::now(); let (send,mut receive)=tokio::sync::mpsc::unbounded_channel();
+        let mut ticker=GoalElapsedTicker::new(Arc::new(move |_,_,live| { send.send(live).unwrap(); Ok(()) }),Arc::new(move ||(tokio::time::Instant::now()-start).as_secs_f64()*1000.0));
+        ticker.sync(crate::test_context::context(),goal(),0.0).await.unwrap(); assert_eq!(receive.recv().await.unwrap(),10.0);
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(2),receive.recv()).await.unwrap().unwrap(),11.0);
+        let worker=ticker.stop().unwrap().unwrap(); assert!(worker.await.unwrap_err().is_cancelled()); assert!(!ticker.running());
+        drop(ticker); assert!(receive.recv().await.is_none());
+    }
+    #[tokio::test] async fn resync_replaces_goal_snapshot_and_measurement_window() {
+        let (send,mut receive)=tokio::sync::mpsc::unbounded_channel();
+        let mut ticker=GoalElapsedTicker::new(Arc::new(move |_,goal,live| { send.send((goal.id.clone(),live)).unwrap(); Ok(()) }),Arc::new(||1000.0));
+        ticker.sync(crate::test_context::context(),goal(),0.0).await.unwrap(); assert_eq!(receive.recv().await.unwrap(),("g".into(),11.0));
+        let mut replacement=goal(); replacement.id="next".into(); replacement.time_used_seconds=20.0;
+        ticker.sync(crate::test_context::context(),replacement,1000.0).await.unwrap(); assert_eq!(receive.recv().await.unwrap(),("next".into(),20.0));
+        ticker.stop().unwrap().unwrap().await.unwrap_err();
+    }
     fn goal()->Goal { serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":10.0,"createdAt":0,"updatedAt":0})).unwrap() }
     #[test] fn live_elapsed_rounds_positive_half_seconds() { let goal=goal(); let result=[goal_live_elapsed_seconds(&goal,1000.0,1499.0),goal_live_elapsed_seconds(&goal,1000.0,1500.0)]; assert_eq!(result,[10.0,11.0]); }
     #[test] fn backward_clock_never_subtracts_committed_elapsed() { let result=goal_live_elapsed_seconds(&goal(),1000.0,0.0); assert_eq!(result,10.0); }
