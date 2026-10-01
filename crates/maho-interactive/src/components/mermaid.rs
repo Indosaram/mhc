@@ -1,9 +1,9 @@
 //! Port of `components/mermaid.ts`.
 //!
 //! The transformer replaces top-level `mermaid` code blocks with terminal diagrams. The layout
-//! engine that draws them is not ported (see `crate::grok_mermaid`), so every block falls through
-//! to the source-box rendering path, which is the documented answer whenever there is no art to
-//! show.
+//! engine that draws them is not ported (see `crate::grok_mermaid`), so `render` reports no art and
+//! every block keeps its original source, which is exactly what senpi does whenever it has no art
+//! to show.
 use std::rc::Rc;
 
 use maho_tui::components::markdown_lexer::Lexer;
@@ -11,7 +11,7 @@ use maho_tui::components::markdown_token::Token;
 use serde_json::Value;
 
 use super::markdown_transform::MarkdownTransformer;
-use crate::grok_mermaid::{Cls, source_box};
+use crate::grok_mermaid::Cls;
 use crate::theme::{Theme, ThemeColor};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,11 +95,11 @@ pub fn create_mermaid_markdown_transformer(
                 continue;
             };
             let Some(art) = crate::grok_mermaid::render(text) else {
-                out.push_str(&source_box_markdown(text, theme.as_ref()));
+                out.push_str(token.raw());
                 continue;
             };
             if art.width > context.available_width {
-                out.push_str(&source_box_markdown(text, theme.as_ref()));
+                out.push_str(token.raw());
                 continue;
             }
             if !context.is_streaming && !art.warnings.is_empty() {
@@ -121,15 +121,4 @@ pub fn create_mermaid_markdown_transformer(
         }
         Ok(Some(out))
     })
-}
-
-fn source_box_markdown(text: &str, theme: Option<&Theme>) -> String {
-    let art = source_box(text, None);
-    let lines = match theme {
-        Some(theme) => themed_lines(&art, theme),
-        None => art.plain.clone(),
-    };
-    let mut out = lines.iter().map(|line| code_span(line)).collect::<Vec<_>>().join("  \n");
-    out.push('\n');
-    out
 }

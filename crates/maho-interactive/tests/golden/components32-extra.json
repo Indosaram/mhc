@@ -1,0 +1,769 @@
+{
+  "mermaid": [
+    {
+      "name": "unsupported-type",
+      "markdown": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n",
+      "mode": "off",
+      "isStreaming": false,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n"
+    },
+    {
+      "name": "unsupported-type",
+      "markdown": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n",
+      "mode": "off",
+      "isStreaming": false,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n"
+    },
+    {
+      "name": "unsupported-type",
+      "markdown": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n",
+      "mode": "off",
+      "isStreaming": true,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n"
+    },
+    {
+      "name": "unsupported-type",
+      "markdown": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n",
+      "mode": "off",
+      "isStreaming": true,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n"
+    },
+    {
+      "name": "unsupported-type",
+      "markdown": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n",
+      "mode": "streaming",
+      "isStreaming": false,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n"
+    },
+    {
+      "name": "unsupported-type",
+      "markdown": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n",
+      "mode": "streaming",
+      "isStreaming": false,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n"
+    },
+    {
+      "name": "unsupported-type",
+      "markdown": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n",
+      "mode": "streaming",
+      "isStreaming": true,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n"
+    },
+    {
+      "name": "unsupported-type",
+      "markdown": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n",
+      "mode": "streaming",
+      "isStreaming": true,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n"
+    },
+    {
+      "name": "unsupported-type",
+      "markdown": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n",
+      "mode": "on",
+      "isStreaming": false,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n"
+    },
+    {
+      "name": "unsupported-type",
+      "markdown": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n",
+      "mode": "on",
+      "isStreaming": false,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n"
+    },
+    {
+      "name": "unsupported-type",
+      "markdown": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n",
+      "mode": "on",
+      "isStreaming": true,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n"
+    },
+    {
+      "name": "unsupported-type",
+      "markdown": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n",
+      "mode": "on",
+      "isStreaming": true,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n"
+    },
+    {
+      "name": "blank-block",
+      "markdown": "```mermaid\n\n```\n",
+      "mode": "off",
+      "isStreaming": false,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "```mermaid\n\n```\n"
+    },
+    {
+      "name": "blank-block",
+      "markdown": "```mermaid\n\n```\n",
+      "mode": "off",
+      "isStreaming": false,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "```mermaid\n\n```\n"
+    },
+    {
+      "name": "blank-block",
+      "markdown": "```mermaid\n\n```\n",
+      "mode": "off",
+      "isStreaming": true,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "```mermaid\n\n```\n"
+    },
+    {
+      "name": "blank-block",
+      "markdown": "```mermaid\n\n```\n",
+      "mode": "off",
+      "isStreaming": true,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "```mermaid\n\n```\n"
+    },
+    {
+      "name": "blank-block",
+      "markdown": "```mermaid\n\n```\n",
+      "mode": "streaming",
+      "isStreaming": false,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "```mermaid\n\n```\n"
+    },
+    {
+      "name": "blank-block",
+      "markdown": "```mermaid\n\n```\n",
+      "mode": "streaming",
+      "isStreaming": false,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "```mermaid\n\n```\n"
+    },
+    {
+      "name": "blank-block",
+      "markdown": "```mermaid\n\n```\n",
+      "mode": "streaming",
+      "isStreaming": true,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "```mermaid\n\n```\n"
+    },
+    {
+      "name": "blank-block",
+      "markdown": "```mermaid\n\n```\n",
+      "mode": "streaming",
+      "isStreaming": true,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "```mermaid\n\n```\n"
+    },
+    {
+      "name": "blank-block",
+      "markdown": "```mermaid\n\n```\n",
+      "mode": "on",
+      "isStreaming": false,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "```mermaid\n\n```\n"
+    },
+    {
+      "name": "blank-block",
+      "markdown": "```mermaid\n\n```\n",
+      "mode": "on",
+      "isStreaming": false,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "```mermaid\n\n```\n"
+    },
+    {
+      "name": "blank-block",
+      "markdown": "```mermaid\n\n```\n",
+      "mode": "on",
+      "isStreaming": true,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "```mermaid\n\n```\n"
+    },
+    {
+      "name": "blank-block",
+      "markdown": "```mermaid\n\n```\n",
+      "mode": "on",
+      "isStreaming": true,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "```mermaid\n\n```\n"
+    },
+    {
+      "name": "not-mermaid-lang",
+      "markdown": "```rust\nfn main() {}\n```\n",
+      "mode": "off",
+      "isStreaming": false,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "```rust\nfn main() {}\n```\n"
+    },
+    {
+      "name": "not-mermaid-lang",
+      "markdown": "```rust\nfn main() {}\n```\n",
+      "mode": "off",
+      "isStreaming": false,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "```rust\nfn main() {}\n```\n"
+    },
+    {
+      "name": "not-mermaid-lang",
+      "markdown": "```rust\nfn main() {}\n```\n",
+      "mode": "off",
+      "isStreaming": true,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "```rust\nfn main() {}\n```\n"
+    },
+    {
+      "name": "not-mermaid-lang",
+      "markdown": "```rust\nfn main() {}\n```\n",
+      "mode": "off",
+      "isStreaming": true,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "```rust\nfn main() {}\n```\n"
+    },
+    {
+      "name": "not-mermaid-lang",
+      "markdown": "```rust\nfn main() {}\n```\n",
+      "mode": "streaming",
+      "isStreaming": false,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "```rust\nfn main() {}\n```\n"
+    },
+    {
+      "name": "not-mermaid-lang",
+      "markdown": "```rust\nfn main() {}\n```\n",
+      "mode": "streaming",
+      "isStreaming": false,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "```rust\nfn main() {}\n```\n"
+    },
+    {
+      "name": "not-mermaid-lang",
+      "markdown": "```rust\nfn main() {}\n```\n",
+      "mode": "streaming",
+      "isStreaming": true,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "```rust\nfn main() {}\n```\n"
+    },
+    {
+      "name": "not-mermaid-lang",
+      "markdown": "```rust\nfn main() {}\n```\n",
+      "mode": "streaming",
+      "isStreaming": true,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "```rust\nfn main() {}\n```\n"
+    },
+    {
+      "name": "not-mermaid-lang",
+      "markdown": "```rust\nfn main() {}\n```\n",
+      "mode": "on",
+      "isStreaming": false,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "```rust\nfn main() {}\n```\n"
+    },
+    {
+      "name": "not-mermaid-lang",
+      "markdown": "```rust\nfn main() {}\n```\n",
+      "mode": "on",
+      "isStreaming": false,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "```rust\nfn main() {}\n```\n"
+    },
+    {
+      "name": "not-mermaid-lang",
+      "markdown": "```rust\nfn main() {}\n```\n",
+      "mode": "on",
+      "isStreaming": true,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "```rust\nfn main() {}\n```\n"
+    },
+    {
+      "name": "not-mermaid-lang",
+      "markdown": "```rust\nfn main() {}\n```\n",
+      "mode": "on",
+      "isStreaming": true,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "```rust\nfn main() {}\n```\n"
+    },
+    {
+      "name": "plain-text",
+      "markdown": "just text\n",
+      "mode": "off",
+      "isStreaming": false,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "just text\n"
+    },
+    {
+      "name": "plain-text",
+      "markdown": "just text\n",
+      "mode": "off",
+      "isStreaming": false,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "just text\n"
+    },
+    {
+      "name": "plain-text",
+      "markdown": "just text\n",
+      "mode": "off",
+      "isStreaming": true,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "just text\n"
+    },
+    {
+      "name": "plain-text",
+      "markdown": "just text\n",
+      "mode": "off",
+      "isStreaming": true,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "just text\n"
+    },
+    {
+      "name": "plain-text",
+      "markdown": "just text\n",
+      "mode": "streaming",
+      "isStreaming": false,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "just text\n"
+    },
+    {
+      "name": "plain-text",
+      "markdown": "just text\n",
+      "mode": "streaming",
+      "isStreaming": false,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "just text\n"
+    },
+    {
+      "name": "plain-text",
+      "markdown": "just text\n",
+      "mode": "streaming",
+      "isStreaming": true,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "just text\n"
+    },
+    {
+      "name": "plain-text",
+      "markdown": "just text\n",
+      "mode": "streaming",
+      "isStreaming": true,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "just text\n"
+    },
+    {
+      "name": "plain-text",
+      "markdown": "just text\n",
+      "mode": "on",
+      "isStreaming": false,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "just text\n"
+    },
+    {
+      "name": "plain-text",
+      "markdown": "just text\n",
+      "mode": "on",
+      "isStreaming": false,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "just text\n"
+    },
+    {
+      "name": "plain-text",
+      "markdown": "just text\n",
+      "mode": "on",
+      "isStreaming": true,
+      "messageType": "assistant",
+      "availableWidth": 80,
+      "output": "just text\n"
+    },
+    {
+      "name": "plain-text",
+      "markdown": "just text\n",
+      "mode": "on",
+      "isStreaming": true,
+      "messageType": "assistant-thinking",
+      "availableWidth": 80,
+      "output": "just text\n"
+    }
+  ],
+  "bordered": [
+    {
+      "width": 40,
+      "cancellable": true,
+      "lines": [
+        "\u001b[38;5;69m────────────────────────────────────────\u001b[39m",
+        "",
+        " \u001b[38;5;109m⠋\u001b[39m \u001b[38;5;244mWorking...\u001b[39m",
+        "",
+        " \u001b[38;5;241mesc/ctrl+c\u001b[39m\u001b[38;5;244m cancel\u001b[39m",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────\u001b[39m"
+      ]
+    },
+    {
+      "width": 40,
+      "cancellable": false,
+      "lines": [
+        "\u001b[38;5;69m────────────────────────────────────────\u001b[39m",
+        "",
+        " \u001b[38;5;109m⠋\u001b[39m \u001b[38;5;244mWorking...\u001b[39m",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────\u001b[39m"
+      ]
+    },
+    {
+      "width": 80,
+      "cancellable": true,
+      "lines": [
+        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m",
+        "",
+        " \u001b[38;5;109m⠋\u001b[39m \u001b[38;5;244mWorking...\u001b[39m",
+        "",
+        " \u001b[38;5;241mesc/ctrl+c\u001b[39m\u001b[38;5;244m cancel\u001b[39m",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
+      ]
+    },
+    {
+      "width": 80,
+      "cancellable": false,
+      "lines": [
+        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m",
+        "",
+        " \u001b[38;5;109m⠋\u001b[39m \u001b[38;5;244mWorking...\u001b[39m",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
+      ]
+    }
+  ],
+  "bash": [
+    {
+      "name": "complete",
+      "width": 40,
+      "excludeFromContext": false,
+      "output": [
+        "hello",
+        "world"
+      ],
+      "exitCode": 0,
+      "cancelled": false,
+      "lines": [
+        "",
+        "\u001b[38;5;143m────────────────────────────────────────\u001b[39m",
+        " \u001b[38;5;143m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;79mecho\u001b[39m hello",
+        "",
+        " \u001b[38;5;244mhello\u001b[39m",
+        " \u001b[38;5;244mworld\u001b[39m",
+        " \u001b[38;5;244m\u001b[39m",
+        "\u001b[38;5;143m────────────────────────────────────────\u001b[39m"
+      ]
+    },
+    {
+      "name": "error",
+      "width": 40,
+      "excludeFromContext": false,
+      "output": [
+        "boom"
+      ],
+      "exitCode": 2,
+      "cancelled": false,
+      "lines": [
+        "",
+        "\u001b[38;5;143m────────────────────────────────────────\u001b[39m",
+        " \u001b[38;5;143m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;79mecho\u001b[39m hello",
+        "",
+        " \u001b[38;5;244mboom\u001b[39m",
+        " \u001b[38;5;244m\u001b[39m",
+        "",
+        " \u001b[38;5;167m(exit 2)\u001b[39m",
+        "\u001b[38;5;143m────────────────────────────────────────\u001b[39m"
+      ]
+    },
+    {
+      "name": "cancelled",
+      "width": 40,
+      "excludeFromContext": false,
+      "output": [],
+      "exitCode": null,
+      "cancelled": true,
+      "lines": [
+        "",
+        "\u001b[38;5;143m────────────────────────────────────────\u001b[39m",
+        " \u001b[38;5;143m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;79mecho\u001b[39m hello",
+        "",
+        " \u001b[38;5;226m(cancelled)\u001b[39m",
+        "\u001b[38;5;143m────────────────────────────────────────\u001b[39m"
+      ]
+    },
+    {
+      "name": "excluded",
+      "width": 40,
+      "excludeFromContext": true,
+      "output": [
+        "quiet"
+      ],
+      "exitCode": 0,
+      "cancelled": false,
+      "lines": [
+        "",
+        "\u001b[38;5;241m────────────────────────────────────────\u001b[39m",
+        " \u001b[38;5;143m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;79mecho\u001b[39m hello",
+        "",
+        " \u001b[38;5;244mquiet\u001b[39m",
+        " \u001b[38;5;244m\u001b[39m",
+        "\u001b[38;5;241m────────────────────────────────────────\u001b[39m"
+      ]
+    },
+    {
+      "name": "complete",
+      "width": 80,
+      "excludeFromContext": false,
+      "output": [
+        "hello",
+        "world"
+      ],
+      "exitCode": 0,
+      "cancelled": false,
+      "lines": [
+        "",
+        "\u001b[38;5;143m────────────────────────────────────────────────────────────────────────────────\u001b[39m",
+        " \u001b[38;5;143m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;79mecho\u001b[39m hello",
+        "",
+        " \u001b[38;5;244mhello\u001b[39m",
+        " \u001b[38;5;244mworld\u001b[39m",
+        " \u001b[38;5;244m\u001b[39m",
+        "\u001b[38;5;143m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
+      ]
+    },
+    {
+      "name": "error",
+      "width": 80,
+      "excludeFromContext": false,
+      "output": [
+        "boom"
+      ],
+      "exitCode": 2,
+      "cancelled": false,
+      "lines": [
+        "",
+        "\u001b[38;5;143m────────────────────────────────────────────────────────────────────────────────\u001b[39m",
+        " \u001b[38;5;143m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;79mecho\u001b[39m hello",
+        "",
+        " \u001b[38;5;244mboom\u001b[39m",
+        " \u001b[38;5;244m\u001b[39m",
+        "",
+        " \u001b[38;5;167m(exit 2)\u001b[39m",
+        "\u001b[38;5;143m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
+      ]
+    },
+    {
+      "name": "cancelled",
+      "width": 80,
+      "excludeFromContext": false,
+      "output": [],
+      "exitCode": null,
+      "cancelled": true,
+      "lines": [
+        "",
+        "\u001b[38;5;143m────────────────────────────────────────────────────────────────────────────────\u001b[39m",
+        " \u001b[38;5;143m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;79mecho\u001b[39m hello",
+        "",
+        " \u001b[38;5;226m(cancelled)\u001b[39m",
+        "\u001b[38;5;143m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
+      ]
+    },
+    {
+      "name": "excluded",
+      "width": 80,
+      "excludeFromContext": true,
+      "output": [
+        "quiet"
+      ],
+      "exitCode": 0,
+      "cancelled": false,
+      "lines": [
+        "",
+        "\u001b[38;5;241m────────────────────────────────────────────────────────────────────────────────\u001b[39m",
+        " \u001b[38;5;143m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;79mecho\u001b[39m hello",
+        "",
+        " \u001b[38;5;244mquiet\u001b[39m",
+        " \u001b[38;5;244m\u001b[39m",
+        "\u001b[38;5;241m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
+      ]
+    }
+  ],
+  "selector": [
+    {
+      "width": 40,
+      "initialSelectedId": "e2",
+      "messages": [
+        {
+          "id": "e1",
+          "text": "first message"
+        },
+        {
+          "id": "e2",
+          "text": "second\nmessage"
+        },
+        {
+          "id": "e3",
+          "text": "third message"
+        }
+      ],
+      "lines": [
+        "",
+        " \u001b[1mFork from Message\u001b[22m",
+        " \u001b[38;5;244mSelect a user message to copy the",
+        " \u001b[38;5;244mactive path up to that point into a",
+        " \u001b[38;5;244mnew session\u001b[39m",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────\u001b[39m",
+        "",
+        "  first message",
+        "\u001b[38;5;244m  Message 1 of 3\u001b[39m",
+        "",
+        "\u001b[38;5;109m› \u001b[39m\u001b[1msecond message\u001b[22m",
+        "\u001b[38;5;244m  Message 2 of 3\u001b[39m",
+        "",
+        "  third message",
+        "\u001b[38;5;244m  Message 3 of 3\u001b[39m",
+        "",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────\u001b[39m"
+      ]
+    },
+    {
+      "width": 80,
+      "initialSelectedId": "e2",
+      "messages": [
+        {
+          "id": "e1",
+          "text": "first message"
+        },
+        {
+          "id": "e2",
+          "text": "second\nmessage"
+        },
+        {
+          "id": "e3",
+          "text": "third message"
+        }
+      ],
+      "lines": [
+        "",
+        " \u001b[1mFork from Message\u001b[22m",
+        " \u001b[38;5;244mSelect a user message to copy the active path up to that point into a new",
+        " \u001b[38;5;244msession\u001b[39m",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m",
+        "",
+        "  first message",
+        "\u001b[38;5;244m  Message 1 of 3\u001b[39m",
+        "",
+        "\u001b[38;5;109m› \u001b[39m\u001b[1msecond message\u001b[22m",
+        "\u001b[38;5;244m  Message 2 of 3\u001b[39m",
+        "",
+        "  third message",
+        "\u001b[38;5;244m  Message 3 of 3\u001b[39m",
+        "",
+        "",
+        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
+      ]
+    }
+  ],
+  "entry": [
+    {
+      "width": 40,
+      "entry": {
+        "customType": "note",
+        "data": {
+          "text": "hello"
+        }
+      },
+      "hasContent": true,
+      "lines": [
+        "",
+        "entry: hello"
+      ]
+    },
+    {
+      "width": 40,
+      "entry": {
+        "customType": "note",
+        "data": {}
+      },
+      "hasContent": false,
+      "lines": []
+    },
+    {
+      "width": 80,
+      "entry": {
+        "customType": "note",
+        "data": {
+          "text": "hello"
+        }
+      },
+      "hasContent": true,
+      "lines": [
+        "",
+        "entry: hello"
+      ]
+    },
+    {
+      "width": 80,
+      "entry": {
+        "customType": "note",
+        "data": {}
+      },
+      "hasContent": false,
+      "lines": []
+    }
+  ]
+}
