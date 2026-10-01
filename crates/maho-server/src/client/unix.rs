@@ -94,6 +94,7 @@ async fn probe(
             Ok(None)
         }
         Ok(Err(ClientError::Server { code, .. })) if code == "version" => Ok(None),
+        Ok(Err(ClientError::Io { kind:std::io::ErrorKind::NotFound|std::io::ErrorKind::ConnectionRefused|std::io::ErrorKind::ConnectionReset|std::io::ErrorKind::BrokenPipe|std::io::ErrorKind::TimedOut, .. }))=>Ok(None),
         Ok(Err(error)) => Err(error),
     }
 }

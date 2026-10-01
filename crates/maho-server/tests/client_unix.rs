@@ -149,7 +149,7 @@ async fn rejects_missing_socket() {
     .unwrap();
     assert!(matches!(
         client.connect().await,
-        Err(ClientError::Disconnected(_))
+        Err(ClientError::Io { kind:std::io::ErrorKind::NotFound, .. })
     ));
     client.dispose();
 }
@@ -199,11 +199,11 @@ async fn discovery_propagates_filesystem_errors() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("file");
     tokio::fs::write(&path, "content").await.unwrap();
-    assert!(
+    assert!(matches!(
         discover_unix_servers(&path, Duration::from_secs(1))
-            .await
-            .is_err()
-    );
+            .await,
+        Err(ClientError::Io { kind:std::io::ErrorKind::NotADirectory, .. })
+    ));
 }
 
 #[tokio::test]
