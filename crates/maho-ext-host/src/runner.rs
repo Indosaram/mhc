@@ -34,6 +34,49 @@ impl ExtensionRunner {
     pub fn bind_core(&mut self, actions: Arc<dyn ExtensionActions>, context: ExtensionContext) {
         self.runtime.bind(actions); self.context = context;
     }
+    pub fn bind_providers(&self, actions: Arc<dyn ExtensionProviderActions>) -> Result<(), ExtensionFailure> { self.runtime.bind_providers(actions) }
+    pub fn bind_session_actions(&self, actions: Arc<dyn ExtensionSessionActions>) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        for extension in &self.extensions {
+            for activator in &extension.lazy_tool_activators { actions.register_lazy_tool_activator(Arc::clone(activator))?; }
+            for (name, hint) in &extension.removed_tool_hints { actions.register_removed_tool_hint(name, hint)?; }
+        }
+        self.runtime.bind_session_actions(actions); Ok(())
+    }
+    pub fn create_command_context(&self, actions: Arc<dyn ExtensionCommandContextActions>) -> Result<ExtensionCommandContext, ExtensionFailure> {
+        Ok(ExtensionCommandContext { context: self.create_context()?, actions })
+    }
+    pub async fn invoke_command(&self, name: &str, args: &str, context: &ExtensionCommandContext) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let commands = self.get_registered_commands();
+        let resolved = commands.iter().find(|command| command.invocation_name == name).ok_or_else(|| ExtensionFailure::new(format!("Unknown extension command: {name}")))?;
+        let extension = self.extensions.iter().find(|extension| extension.commands.iter().any(|command| Arc::ptr_eq(&command.handler, &resolved.command.handler))).ok_or_else(|| ExtensionFailure::new("Command owner is unavailable"))?;
+        match extension.command_context_handlers.get(&resolved.command.name) {
+            Some(handler) => handler(args, context).await,
+            None => (resolved.command.handler)(args, &context.context).await,
+        }
+    }
+    pub fn get_shortcuts(&self) -> BTreeMap<String, ExtensionShortcut> {
+        let mut shortcuts = BTreeMap::new();
+        for extension in &self.extensions { for (key, shortcut) in &extension.shortcuts { shortcuts.insert(key.to_lowercase(), shortcut.clone()); } }
+        shortcuts
+    }
+    pub fn transform_markdown(&self, markdown: &str, context: &MarkdownTransformContext) -> String {
+        let mut transformed = markdown.to_owned();
+        for extension in &self.extensions { if let Some(transformer) = &extension.markdown_transformer { transformed = transformer(&transformed, context); } }
+        transformed
+    }
+    pub async fn handle_rpc_request(&self, name: &str, data: JsonValue) -> Result<JsonValue, ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let name = name.trim();
+        if name.is_empty() { return Err(ExtensionFailure::new("Extension RPC request name must not be empty")); }
+        let mut handlers = self.extensions.iter().filter_map(|extension| extension.rpc_handlers.get(name));
+        let handler = handlers.next().ok_or_else(|| ExtensionFailure::new(format!("Unknown extension RPC request: {name}")))?;
+        if handlers.next().is_some() { return Err(ExtensionFailure::new(format!("Multiple extension RPC request handlers registered: {name}"))); }
+        let result = handler(data).await?;
+        self.runtime.assert_active()?;
+        Ok(result)
+    }
     pub fn create_context(&self) -> Result<ExtensionContext, ExtensionFailure> {
         self.runtime.assert_active()?;
         let mut context = self.context.clone();

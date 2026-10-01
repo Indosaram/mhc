@@ -410,3 +410,33 @@ fn bus_panics_are_isolated_and_invalidation_unsubscribes() {
     runner.events.emit("x", &JsonValue::Null); assert_eq!(*count.lock().unwrap(), 1);
     runner.invalidate("reload"); runner.events.emit("x", &JsonValue::Null); assert_eq!(*count.lock().unwrap(), 1);
 }
+
+#[tokio::test]
+async fn rpc_requests_require_one_owner_and_an_active_runtime() {
+    let mut a = extension("a", EventKind::AgentStart, none());
+    a.rpc_handlers.insert("echo".into(), Arc::new(|data| Box::pin(async move { Ok(data) })));
+    let mut b = extension("b", EventKind::AgentStart, none()); b.rpc_handlers = a.rpc_handlers.clone();
+    let duplicate = runner(vec![a.clone(), b]);
+    assert_eq!(duplicate.handle_rpc_request("echo", JsonValue::Null).await.unwrap_err().message, "Multiple extension RPC request handlers registered: echo");
+    let one = runner(vec![a]);
+    assert_eq!(one.handle_rpc_request(" echo ", JsonValue::Bool(true)).await.unwrap(), JsonValue::Bool(true));
+    assert!(one.handle_rpc_request(" ", JsonValue::Null).await.is_err());
+    assert!(one.handle_rpc_request("missing", JsonValue::Null).await.is_err());
+    one.invalidate("replaced"); assert_eq!(one.handle_rpc_request("echo", JsonValue::Null).await.unwrap_err().message, "replaced");
+}
+#[test]
+fn markdown_transformers_chain_in_extension_order() {
+    let mut a = extension("a", EventKind::AgentStart, none()); let mut b = extension("b", EventKind::AgentStart, none());
+    a.markdown_transformer = Some(Arc::new(|text, _| format!("{text}A")));
+    b.markdown_transformer = Some(Arc::new(|text, context| format!("{text}{}", context.available_width)));
+    let context = MarkdownTransformContext { message_type: MarkdownMessageType::AssistantThinking, is_streaming: true, available_width: 80 };
+    assert_eq!(runner(vec![a,b]).transform_markdown("base", &context), "baseA80");
+}
+#[test]
+fn shortcuts_normalize_case_and_last_extension_wins() {
+    let mut a = extension("a", EventKind::AgentStart, none()); let mut b = extension("b", EventKind::AgentStart, none());
+    for (extension, key) in [(&mut a, "Ctrl+X"), (&mut b, "ctrl+x")] {
+        extension.shortcuts.insert(key.into(), ExtensionShortcut { shortcut: key.into(), description: None, handler: Arc::new(|_| Box::pin(async { Ok(()) })), extension_path: extension.identity.path.clone() });
+    }
+    let shortcuts = runner(vec![a,b]).get_shortcuts(); assert_eq!(shortcuts.len(), 1); assert_eq!(shortcuts["ctrl+x"].extension_path, "b");
+}

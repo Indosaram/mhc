@@ -42,3 +42,61 @@ fn runtime_invalidation_preserves_first_reason_and_rejects_actions() {
     runtime.invalidate("later");
     assert_eq!(runtime.assert_active().unwrap_err().message, "replacement");
 }
+
+fn api(runtime: ExtensionRuntime) -> ExtensionApi {
+    ExtensionApi::new(LoadedExtension::new("test", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), runtime)
+}
+#[derive(Default)]
+struct Providers(Mutex<Vec<String>>);
+impl ExtensionProviderActions for Providers {
+    fn register_provider(&self, registration: ProviderRegistration, path: &str) -> Result<(), ExtensionFailure> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(format!("{}:{path}", registration.name())); Ok(())
+    }
+    fn unregister_provider(&self, name: &str, _: &str) -> Result<(), ExtensionFailure> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(format!("remove:{name}")); Ok(())
+    }
+}
+#[test]
+fn providers_queue_in_order_then_register_immediately_after_binding() {
+    let runtime = ExtensionRuntime::default(); let api = api(runtime.clone());
+    api.register_provider("first", ProviderConfig::default()).unwrap();
+    api.register_provider("removed", ProviderConfig::default()).unwrap();
+    api.unregister_provider("removed").unwrap();
+    api.register_provider("second", ProviderConfig::default()).unwrap();
+    let providers = Arc::new(Providers::default()); runtime.bind_providers(providers.clone()).unwrap();
+    api.register_provider("third", ProviderConfig::default()).unwrap(); api.unregister_provider("first").unwrap();
+    assert_eq!(*providers.0.lock().unwrap(), ["first:test", "second:test", "third:test", "remove:first"]);
+}
+#[test]
+fn invalidation_rejects_provider_changes_and_discards_pending_registrations() {
+    let runtime = ExtensionRuntime::default(); let api = api(runtime.clone());
+    api.register_provider("queued", ProviderConfig::default()).unwrap(); runtime.invalidate("old generation");
+    assert_eq!(api.unregister_provider("queued").unwrap_err().message, "old generation");
+    assert!(runtime.bind_providers(Arc::new(Providers::default())).is_err());
+}
+#[test]
+fn read_classifiers_are_first_wins_and_unsubscribe_on_drop_or_invalidation() {
+    let runtime = ExtensionRuntime::default(); let api = api(runtime.clone());
+    let make = |label: &'static str| -> ReadClassifier { Arc::new(move |_, _| Some(CompactReadClassification { kind: CompactReadKind::Docs, label: label.into(), headline: None })) };
+    let first = api.register_read_classifier(make("first")).unwrap();
+    let _second = api.register_read_classifier(make("second")).unwrap();
+    assert_eq!(runtime.classify_read(std::path::Path::new("/docs"), &api.cwd).unwrap().label, "first");
+    drop(first);
+    assert_eq!(runtime.classify_read(std::path::Path::new("/docs"), &api.cwd).unwrap().label, "second");
+    runtime.invalidate("reload"); assert!(runtime.classify_read(std::path::Path::new("/docs"), &api.cwd).is_none());
+}
+#[test]
+fn classifier_panics_do_not_block_later_classifiers() {
+    let runtime = ExtensionRuntime::default(); let api = api(runtime.clone());
+    let _bad = api.register_read_classifier(Arc::new(|_, _| panic!("classifier"))).unwrap();
+    let _good = api.register_read_classifier(Arc::new(|_, _| Some(CompactReadClassification { kind: CompactReadKind::Memory, label: "memory".into(), headline: None }))).unwrap();
+    assert_eq!(runtime.classify_read(std::path::Path::new("/memory"), &api.cwd).unwrap().kind, CompactReadKind::Memory);
+}
+#[test]
+fn session_actions_fail_explicitly_before_host_binding() {
+    let api = api(ExtensionRuntime::default());
+    assert!(api.set_session_name("name").is_err()); assert!(api.get_session_name().is_err());
+    assert!(api.get_active_tools().is_err()); assert!(api.set_active_tools(vec![]).is_err());
+    assert!(api.get_commands().is_err()); assert!(api.get_thinking_level().is_err());
+    assert!(api.set_session_fast_mode(true).is_err());
+}
