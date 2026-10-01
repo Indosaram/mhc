@@ -21,7 +21,7 @@ enum SourceContent { Inline(Value), File }
 struct SourceCandidate { content:SourceContent,source:HookSourceMetadata }
 
 fn source(scope:HookSourceScope,path:String,timing:HookDiscoveryTiming)->HookSourceMetadata {
-    HookSourceMetadata {scope,source_path:path,discovered_at:timing,display_order:0,plugin_root:None,manifest_path:None}
+    HookSourceMetadata {scope,source_path:path,discovered_at:timing,display_order:0,plugin_root:None,manifest_path:None,plugin_env:None}
 }
 
 fn create_source_candidates(options:&HookConfigLoaderOptions)->Vec<SourceCandidate> {

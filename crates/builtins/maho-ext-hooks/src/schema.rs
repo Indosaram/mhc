@@ -68,7 +68,7 @@ mod tests {
     use serde_json::{Map, json};
 
     fn source() -> HookSourceMetadata {
-        HookSourceMetadata { scope: HookSourceScope::Project, source_path: "/repo/.senpi/hooks.json".to_owned(), display_order: 7, discovered_at: HookDiscoveryTiming::PreSession, plugin_root: None, manifest_path: None }
+        HookSourceMetadata { scope: HookSourceScope::Project, source_path: "/repo/.senpi/hooks.json".to_owned(), display_order: 7, discovered_at: HookDiscoveryTiming::PreSession, plugin_root: None, manifest_path: None, plugin_env: None }
     }
 
     #[test]

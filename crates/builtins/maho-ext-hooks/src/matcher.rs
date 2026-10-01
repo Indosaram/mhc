@@ -78,7 +78,7 @@ mod tests {
         }).collect();
         parse_hook_config(&json!({"hooks":{event.as_str():hooks}}),&HookSourceMetadata {
             scope:HookSourceScope::Project,source_path:"/repo/.senpi/hooks.json".to_owned(),display_order:11,
-            discovered_at:HookDiscoveryTiming::PreSession,plugin_root:None,manifest_path:None,
+            discovered_at:HookDiscoveryTiming::PreSession,plugin_root:None,manifest_path:None,plugin_env:None,
         }).executable_handlers
     }
 

@@ -169,7 +169,7 @@ mod tests {
     fn parse(event: SupportedHookEvent, stdout: &str, exit_code: i32, stderr: &str) -> ParsedHookOutput {
         parse_hook_output(HookOutputParseInput { event, stdout, exit_code, stderr, source: &HookSourceMetadata {
             scope: HookSourceScope::Project, source_path: "/repo/.senpi/hooks.json".to_owned(), display_order: 3,
-            discovered_at: HookDiscoveryTiming::Runtime, plugin_root: None, manifest_path: None,
+            discovered_at: HookDiscoveryTiming::Runtime, plugin_root: None, manifest_path: None, plugin_env: None,
         } })
     }
 

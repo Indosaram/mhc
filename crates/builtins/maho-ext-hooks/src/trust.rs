@@ -128,7 +128,7 @@ mod tests {
     fn handler() -> ExecutableHookHandler {
         ExecutableHookHandler { event: SupportedHookEvent::PreToolUse, matcher: Some("Bash".to_owned()), group_index: 0, handler_index: 0,
             config: CommandHookConfig { kind:"command".to_owned(), command:"node hooks/check.mjs".to_owned(), command_windows:Some("node hooks/check.ps1".to_owned()),timeout:Some(30.0),status_message:Some("Checking tool call".to_owned()) },
-            source:HookSourceMetadata { scope:HookSourceScope::Project,source_path:"/repo/.senpi/hooks.json".to_owned(),display_order:1,discovered_at:HookDiscoveryTiming::PreSession,plugin_root:None,manifest_path:None },
+            source:HookSourceMetadata { scope:HookSourceScope::Project,source_path:"/repo/.senpi/hooks.json".to_owned(),display_order:1,discovered_at:HookDiscoveryTiming::PreSession,plugin_root:None,manifest_path:None,plugin_env:None },
         }
     }
 

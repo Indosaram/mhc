@@ -46,6 +46,8 @@ pub struct HookSourceMetadata {
     pub plugin_root: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_env: Option<std::collections::BTreeMap<String,String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
