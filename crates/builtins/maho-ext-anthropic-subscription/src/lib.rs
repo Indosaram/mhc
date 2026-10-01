@@ -11,3 +11,4 @@ pub mod refusal;
 pub mod session_registry_state;
 pub mod session_turn_claim;
 pub mod session_binding_store;
+pub mod session_continuity;
