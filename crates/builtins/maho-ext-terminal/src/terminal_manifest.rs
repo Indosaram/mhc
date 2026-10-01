@@ -57,6 +57,27 @@ impl TerminalManifestWriter {
         if let Err(error)=result {self.persist_failure=Some(error);}
     }
 }
+pub struct CheckpointDebouncer {
+    writer:std::sync::Arc<tokio::sync::Mutex<TerminalManifestWriter>>,
+    task:Option<tokio::task::JoinHandle<()>>,
+}
+impl CheckpointDebouncer {
+    pub fn new(writer:std::sync::Arc<tokio::sync::Mutex<TerminalManifestWriter>>)->Self {Self {writer,task:None}}
+    pub async fn schedule(&mut self,id:&str,checkpoint:TerminalManifestCheckpoint) {
+        self.writer.lock().await.schedule_checkpoint(id,checkpoint);
+        if let Some(task)=self.task.take() {task.abort();}
+        let writer=self.writer.clone();
+        let deadline=tokio::time::Instant::now()+std::time::Duration::from_millis(TERMINAL_MANIFEST_CHECKPOINT_DEBOUNCE_MS);
+        self.task=Some(tokio::spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("epoch").as_secs_f64()*1000.0;
+            writer.lock().await.flush(now).await;
+        }));
+    }
+    pub async fn flush(&mut self,now:f64) {if let Some(task)=self.task.take() {task.abort();}self.writer.lock().await.flush(now).await;}
+    pub async fn record_shutdown(&mut self,now:f64) {if let Some(task)=self.task.take() {task.abort();}self.writer.lock().await.record_shutdown(now).await;}
+}
+impl Drop for CheckpointDebouncer {fn drop(&mut self) {if let Some(task)=self.task.take() {task.abort();}}}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,4 +100,17 @@ mod tests {
     }
     #[tokio::test]
     async fn missing_stable_identity_is_an_error() {let dir=tempfile::tempdir().unwrap();let mut writer=TerminalManifestWriter::new(dir.path(),"s");assert!(writer.observe_monitor_state(&[crate::monitor_registry::MonitorSnapshotEntry {id:"bash_1".to_owned(),..Default::default()}],0.0).await.is_err());}
+}
+#[cfg(test)]
+mod debounce_tests {
+    use super::*;
+    #[tokio::test]
+    async fn drain_cancels_timer_and_persists_last_checkpoint() {
+        let dir=tempfile::tempdir().unwrap();let writer=std::sync::Arc::new(tokio::sync::Mutex::new(TerminalManifestWriter::new(dir.path(),"s")));
+        writer.lock().await.record_register(MonitorRegistration {monitor_id:"mon_1".to_owned(),spec:MonitorSpec::Command {description:"watch".to_owned(),command:"true".to_owned(),filter:None,cwd:Some("/tmp".to_owned()),persistent:true}},1.0).await;
+        let mut debounce=CheckpointDebouncer::new(writer.clone());
+        for size in [1.0,2.0] {debounce.schedule("mon_1",TerminalManifestCheckpoint {dev:1.0,ino:1.0,size,mtime_ms:1.0,digest:format!("{size}"),present:true}).await;}
+        debounce.flush(2.0).await;assert!(debounce.task.is_none());
+        let state=crate::restore::parse_terminal_manifest(&writer.lock().await.store.read().await.unwrap().unwrap(),"s").unwrap();assert_eq!(state.monitors[0].last_checkpoint.as_ref().unwrap().size,2.0);
+    }
 }
