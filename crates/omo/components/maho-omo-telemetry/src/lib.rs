@@ -5,4 +5,7 @@ pub mod omo_native_eval;
 pub mod eval_cell_correlation;
 pub mod index;
 pub mod omo_native_parallel;
+pub mod parallelism_schema;
+pub mod omo_native_turns;
+pub mod product_identity;
 pub use index::SenpiTelemetryComponent;
