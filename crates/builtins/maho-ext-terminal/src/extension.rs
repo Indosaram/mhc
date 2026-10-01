@@ -18,6 +18,12 @@ impl Extension for TerminalExtension {
             if let Some(notifier)=event_notifier.lock().expect("monitor notifier").as_ref() && let Err(error)=notifier.notify_event(event) {eprintln!("monitor delivery failed: {error}");}
         })));
         let sender=Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));
+        let prompt_sender=sender.clone();
+        api.on(EventKind::BeforeAgentStart,Arc::new(move |event,_| {let sender=prompt_sender.clone();Box::pin(async move {
+            let maho_ext_api::types::ExtensionEvent::BeforeAgentStart(event)=event else {return Ok(EventResult::None);};
+            let eval_only=sender.get_all_tools()?.iter().any(|tool|tool.name=="eval");
+            Ok(EventResult::BeforeAgentStart(maho_ext_api::types::BeforeAgentStartEventResult {system_prompt:Some(format!("{}\n{}",event.system_prompt,crate::prompt::build_terminal_prompt_section(eval_only))),..Default::default()}))
+        })}));
         let lifecycle_notifier=notifier.clone();let lifecycle_monitors=monitors.clone();
         api.on(EventKind::SessionStart,Arc::new(move |_,ctx| {let notifier=lifecycle_notifier.clone();let monitors=lifecycle_monitors.clone();let sender=sender.clone();Box::pin(async move {
             use maho_ext_api::types::{ExtensionMode,CustomMessage,SendMessageOptions,DeliverAs};
