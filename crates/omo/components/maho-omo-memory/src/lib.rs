@@ -3,6 +3,7 @@ pub mod binding;
 pub mod context;
 pub mod dream_scoring;
 pub mod dream_selector;
+pub mod dream_trigger_gates;
 pub mod guard;
 pub mod prompt;
 pub mod policy_guard;
