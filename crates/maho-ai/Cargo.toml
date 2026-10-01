@@ -10,13 +10,27 @@ workspace = true
 
 # Dependencies for maho-ai and for the lanes that fill its declared modules
 # (todos 10-13: wire APIs over reqwest/SSE, OAuth, credential store). Exact versions.
+[build-dependencies]
+# Compiles crates/maho-ai/proto/agent.proto (vendored from senpi's
+# packages/ai/proto/cursor/agent.proto) into gen/agent_pb.rs at build time, so
+# the wire encoding stays derived from the same schema as the pinned TS client.
+prost-build = "=0.14.4"
+
 [dependencies]
 base64 = "=0.22.1"
 bytes = "=1.12.1"
+prost = "=0.14.4"
+h2 = "=0.4.19"
+http = "=1.4.0"
+rustls = "=0.23.45"
+rustls-pki-types = "=1.14.0"
+tokio-rustls = "=0.26.4"
+webpki-roots = "=1.0.5"
 chrono = { workspace = true, features = ["alloc"] }
 dirs = { workspace = true }
 eventsource-stream = "=0.2.3"
 fancy-regex = { workspace = true }
+flate2 = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
 idna = "=1.1.0"
@@ -26,6 +40,7 @@ reqwest = { workspace = true, features = ["json", "rustls-tls", "stream", "http2
 ring = "=0.17.14"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
+serde_yaml = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "fs", "io-util", "net"] }
@@ -34,6 +49,7 @@ unicode-general-category = { workspace = true }
 unicode-normalization = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4", "v7"] }
+zstd = "=0.13.3"
 
 [dev-dependencies]
 axum = "=0.8.9"
