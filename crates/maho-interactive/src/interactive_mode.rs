@@ -128,7 +128,9 @@ impl InteractiveMode {
                 let mut component = crate::components::bash_execution::BashExecutionComponent::new(&message.command, message.exclude_from_context.unwrap_or(false), self.theme.clone());
                 component.append_output(&message.output);
                 component.set_complete(message.exit_code.map(|code| i32::try_from(code).expect("exit code")), message.cancelled, None, message.full_output_path.clone());
-                self.chat.add_child(Rc::new(RefCell::new(component)));
+                component.set_expanded(self.tools_expanded);
+                let component = Rc::new(RefCell::new(component)); self.chat.add_child(component.clone());
+                self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
             }
             _ => {}
         }
