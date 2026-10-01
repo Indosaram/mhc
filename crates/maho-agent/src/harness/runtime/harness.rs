@@ -9,6 +9,7 @@ use crate::harness::session::session::{SessionError, SessionErrorKind, session_i
 use crate::harness::session::types::{LaneConfiguration, Operation, Session, Write};
 use crate::harness::session::values::*;
 
+#[derive(Clone)]
 pub struct RuntimeConfig {
     pub resources: crate::harness::types::AgentHarnessResources,
     pub stream_options: crate::harness::types::AgentHarnessStreamOptions,
@@ -31,7 +32,7 @@ pub struct Harness {
     seed: LaneConfiguration,
     closed_error: Mutex<Option<SessionError>>,
     close_lock: tokio::sync::Mutex<()>,
-    config: Mutex<RuntimeConfig>,
+    config: Arc<Mutex<RuntimeConfig>>,
     session_closed: Mutex<bool>,
 }
 
@@ -156,7 +157,7 @@ impl Harness {
                 )));
                 mutation.commit(writes, context).await?;
             }
-            let lane = Arc::new(Lane::new(
+            let mut lane = Lane::new(
                 name.into(),
                 self.session.clone(),
                 LaneState {
@@ -167,7 +168,9 @@ impl Harness {
                     operation,
                 },
                 self.events.clone(),
-            ));
+            );
+            lane.config = self.config.clone();
+            let lane = Arc::new(lane);
             self.lanes_by_name
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -380,7 +383,7 @@ pub async fn create_agent_harness(
         seed,
         closed_error: Mutex::new(None),
         close_lock: tokio::sync::Mutex::new(()),
-        config: Mutex::new(RuntimeConfig::default()),
+        config: Arc::new(Mutex::new(RuntimeConfig::default())),
         session_closed: Mutex::new(false),
     };
     let configurations = harness

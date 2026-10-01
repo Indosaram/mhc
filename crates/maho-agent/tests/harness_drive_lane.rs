@@ -22,6 +22,27 @@ fn seed() -> LaneConfiguration {
     }
 }
 
+#[tokio::test]
+async fn lane_admission_observes_current_harness_resources() {
+    use maho_agent::harness::runtime::lane::AdmissionError;
+    use maho_agent::harness::types::{AgentHarnessResources, Skill, PromptTemplate};
+    let harness = fixture().await;
+    let skill_lane = harness.lane("skill", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let template_lane = harness.lane("template", None, &BACKGROUND_CONTEXT).await.unwrap();
+    assert_eq!(skill_lane.accept_skill("review", None, None, &BACKGROUND_CONTEXT).await.unwrap(), Err(AdmissionError::UnknownSkill { name: "review".into() }));
+    assert_eq!(template_lane.accept_prompt_template("fix", vec![], None, &BACKGROUND_CONTEXT).await.unwrap(), Err(AdmissionError::UnknownTemplate { name: "fix".into() }));
+    harness.set_resources(AgentHarnessResources { skills: Some(vec![Skill { name: "review".into(), description: "Review".into(), content: "Inspect".into(), file_path: "/skills/review/SKILL.md".into(), disable_model_invocation: None }]), prompt_templates: Some(vec![PromptTemplate { name: "fix".into(), description: None, content: "$1".into() }]) }, &BACKGROUND_CONTEXT).await.unwrap();
+    harness.set_steering_mode(maho_agent::types::QueueMode::OneAtATime, &BACKGROUND_CONTEXT).await.unwrap();
+    skill_lane.accept_skill("review", Some("strict".into()), None, &BACKGROUND_CONTEXT).await.unwrap().unwrap();
+    template_lane.accept_prompt_template("fix", vec!["argument".into()], None, &BACKGROUND_CONTEXT).await.unwrap().unwrap();
+    for lane in [skill_lane, template_lane] {
+        let operation = lane.state().operation.unwrap();
+        assert_eq!(operation.state.operation_scope_of().settings.steering_mode, maho_agent::types::QueueMode::OneAtATime);
+        assert!(matches!(operation.meta.intent, maho_agent::harness::session::types::OperationIntent::Run { .. }));
+        assert!(lane.get_tip_id().unwrap().is_some());
+    }
+}
+
 async fn gated_lane() -> Result<(Arc<maho_agent::harness::runtime::lane::Lane>, Arc<maho_agent::harness::session::testing::GatingStorage>), maho_agent::harness::session::session::SessionError> {
     let storage = Arc::new(maho_agent::harness::session::testing::GatingStorage::new(Arc::new(MemoryStorage::new(MemoryStorageOptions::default()))));
     let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "gated-lane".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None }, storage.clone(), StorageBackedSessionOptions::default()));

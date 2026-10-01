@@ -54,6 +54,10 @@ pub enum AdmissionError {
     UnknownTarget { target_id: String },
     #[error("{message}")]
     Closed { message: String },
+    #[error("Unknown skill: {name}")]
+    UnknownSkill { name: String },
+    #[error("Unknown prompt template: {name}")]
+    UnknownTemplate { name: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -154,6 +158,7 @@ pub struct Lane {
     closed_error: Mutex<Option<SessionError>>,
     idle_owner: tokio::sync::RwLock<()>,
     state_change: tokio::sync::Notify,
+    pub(crate) config: Arc<Mutex<super::harness::RuntimeConfig>>,
 }
 
 impl Lane {
@@ -171,6 +176,7 @@ impl Lane {
             closed_error: Mutex::new(None),
             idle_owner: tokio::sync::RwLock::new(()),
             state_change: tokio::sync::Notify::new(),
+            config: Arc::new(Mutex::new(super::harness::RuntimeConfig::default())),
         }
     }
 
@@ -201,6 +207,28 @@ impl Lane {
     pub fn get_tip_id(&self) -> Result<Option<String>, SessionError> {
         self.assert_open()?;
         Ok(self.state().tip_id)
+    }
+
+    pub async fn accept_skill(&self, name: &str, additional_instructions: Option<String>, operation_id: Option<String>, context: &Context) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
+        self.assert_open()?;
+        let config = self.config.lock().unwrap_or_else(|error| error.into_inner()).clone();
+        let Some(skill) = config.resources.skills.as_ref().and_then(|skills| skills.iter().find(|skill| skill.name == name)) else { return Ok(Err(AdmissionError::UnknownSkill { name: name.into() })); };
+        let normalized = skill.file_path.trim_end_matches(['/', '\\']);
+        let separator = normalized.rfind(['/', '\\']);
+        let directory = match separator { Some(2) if normalized.as_bytes().get(1) == Some(&b':') => &normalized[..3], Some(index) if index > 0 => &normalized[..index], _ => "/" };
+        let mut text = format!("<skill name=\"{}\" location=\"{}\">\nReferences are relative to {}.\n\n{}\n</skill>", skill.name, skill.file_path, directory, skill.content);
+        if let Some(instructions) = additional_instructions.filter(|value| !value.is_empty()) { text.push_str("\n\n"); text.push_str(&instructions); }
+        let settings = crate::harness::session::types::RunSettings { compaction: config.compaction, steering_mode: config.steering_mode, follow_up_mode: config.follow_up_mode, tool_execution: crate::harness::session::types::ToolExecutionMode::Parallel };
+        self.accept_prompt(PromptInput::Text { text, images: vec![] }, operation_id, settings, context).await
+    }
+
+    pub async fn accept_prompt_template(&self, name: &str, args: Vec<String>, operation_id: Option<String>, context: &Context) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
+        self.assert_open()?;
+        let config = self.config.lock().unwrap_or_else(|error| error.into_inner()).clone();
+        let Some(template) = config.resources.prompt_templates.as_ref().and_then(|templates| templates.iter().find(|template| template.name == name)) else { return Ok(Err(AdmissionError::UnknownTemplate { name: name.into() })); };
+        let text = crate::harness::prompt_templates::format_prompt_template_invocation(template, &args);
+        let settings = crate::harness::session::types::RunSettings { compaction: config.compaction, steering_mode: config.steering_mode, follow_up_mode: config.follow_up_mode, tool_execution: crate::harness::session::types::ToolExecutionMode::Parallel };
+        self.accept_prompt(PromptInput::Text { text, images: vec![] }, operation_id, settings, context).await
     }
 
     pub async fn inspect_execution(&self, context: &Context) -> Result<LaneExecutionInfo, SessionError> {
