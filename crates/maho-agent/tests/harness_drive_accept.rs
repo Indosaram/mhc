@@ -201,3 +201,41 @@ async fn cancellation_diverts_continuation_but_allows_settlement() {
     assert!(matches!(continued, ContinueOperationResult::CancelRequested));
     lane.settle_operation(|_, current, _, _| Box::pin(async move { assert!(matches!(current.operation_scope_of().control, Control::CancelRequested { .. })); Ok(OperationCommand::Return { result: () }) }), &BACKGROUND_CONTEXT).await.unwrap();
 }
+
+#[tokio::test]
+async fn execution_inspection_reports_configured_and_current_operation() {
+    let lane = fixture().await.unwrap();
+    let idle = lane.inspect_execution(&BACKGROUND_CONTEXT).await.unwrap();
+    assert!(idle.current.is_none());
+    assert_eq!(idle.configured_model.model_id, "model");
+    lane.accept_prompt(PromptInput::Text { text: "hello".into(), images: vec![] }, Some("op".into()), settings(), &BACKGROUND_CONTEXT).await.unwrap().unwrap();
+    let open = lane.inspect_execution(&BACKGROUND_CONTEXT).await.unwrap();
+    assert_eq!(open.current.unwrap().meta.operation_id, "op");
+    assert!(open.captured_model.is_none());
+    lane.request_operation_abort("op".into(), &BACKGROUND_CONTEXT).await.unwrap().unwrap();
+    let aborting = lane.inspect_execution(&BACKGROUND_CONTEXT).await.unwrap();
+    assert!(matches!(aborting.current.unwrap().state.operation_scope_of().control, Control::CancelRequested { .. }));
+}
+
+#[tokio::test]
+async fn accepts_standalone_compaction_with_durable_preparation() {
+    let lane = fixture().await.unwrap();
+    let message = maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::User(maho_ai::types::UserMessage { content: maho_ai::types::UserContent::Text("history".into()), timestamp: 1 }));
+    let tip = lane.append_message(message, &BACKGROUND_CONTEXT).await.unwrap();
+    let admission = lane.accept_compaction(Some("focus".into()), Some("compact".into()), settings(), &BACKGROUND_CONTEXT).await.unwrap().unwrap();
+    assert_eq!(admission.kind, OperationIntentKind::Compaction);
+    assert_eq!(lane.get_tip_id().unwrap(), Some(tip));
+    let OperationState::SummaryDeciding(current) = lane.state().operation.unwrap().state else { panic!("summary deciding"); };
+    assert_eq!(current.task.reason, Some(SummaryTaskReason::Manual));
+    assert_eq!(current.task.custom_instructions.as_deref(), Some("focus"));
+    let prepared = lane.session.get_value(&maho_agent::harness::session::values::operation_preparation("compact", &current.task.task_id), &BACKGROUND_CONTEXT).await.unwrap().unwrap();
+    assert_eq!(prepared.value["kind"], "compaction");
+}
+
+#[tokio::test]
+async fn rejects_empty_standalone_compaction_without_operation() {
+    let lane = fixture().await.unwrap();
+    assert_eq!(lane.accept_compaction(None, None, settings(), &BACKGROUND_CONTEXT).await.unwrap(), Err(AdmissionError::NothingToCompact));
+    assert!(lane.state().operation.is_none());
+    assert!(lane.get_tip_id().unwrap().is_none());
+}

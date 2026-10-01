@@ -39,6 +39,8 @@ pub enum AdmissionError {
     Empty,
     #[error("Cannot accept a pending assistant message")]
     PendingAssistant,
+    #[error("Lane has nothing to compact")]
+    NothingToCompact,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +55,16 @@ pub struct AbortRequest {
 pub struct OperationMismatch {
     pub expected: String,
     pub current_operation_id: Option<String>,
+    pub last_operation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LaneExecutionInfo {
+    pub lane: String,
+    pub tip_id: Option<String>,
+    pub configured_model: LaneModelRef,
+    pub current: Option<Operation>,
+    pub captured_model: Option<LaneModelRef>,
     pub last_operation_id: Option<String>,
 }
 
@@ -179,6 +191,61 @@ impl Lane {
     pub fn get_tip_id(&self) -> Result<Option<String>, SessionError> {
         self.assert_open()?;
         Ok(self.state().tip_id)
+    }
+
+    pub async fn inspect_execution(&self, context: &Context) -> Result<LaneExecutionInfo, SessionError> {
+        let name = self.name.clone();
+        self.command(move |state, _| Box::pin(async move {
+            let captured_model = state.operation.as_ref().and_then(|operation| {
+                let model = match &operation.state {
+                    OperationState::AssistantReady(value) => &value.assistant.generation_context.configuration.model,
+                    OperationState::AssistantEffectPending(value) => &value.assistant.generation_context.configuration.model,
+                    OperationState::AssistantRetryWait(value) => &value.assistant.generation_context.configuration.model,
+                    OperationState::Tools(value) => &value.batch.configuration.model,
+                    OperationState::DeferredSuspended(value) => &value.deferred.configuration.model,
+                    OperationState::DeferredEffectPending(value) => &value.deferred.configuration.model,
+                    OperationState::SummaryReady(value) => &value.ready.scope.summary_context.configuration.model,
+                    OperationState::SummaryEffectPending(value) => &value.pending.scope.summary_context.configuration.model,
+                    OperationState::SummaryRetryWait(value) => &value.retry.scope.summary_context.configuration.model,
+                    OperationState::Starting(_) | OperationState::Checkpoint(_) | OperationState::SummaryDeciding(_) | OperationState::NavigationReadyToCommit(_) => return None,
+                };
+                Some(model.clone())
+            });
+            Ok(LaneCommand::Return { result: LaneExecutionInfo { lane: name, tip_id: state.tip_id, configured_model: state.configuration.model, current: state.operation, captured_model, last_operation_id: state.last_operation_id } })
+        }), context).await
+    }
+
+    pub async fn accept_compaction(&self, custom_instructions: Option<String>, operation_id: Option<String>, settings: crate::harness::session::types::RunSettings, context: &Context) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
+        use crate::harness::session::types::{StorageBranchScan, BranchOrder, EntryType, OperationScope, OperationMarker, OperationIntent, OperationIntentKind, SummaryDecidingOperation, SummaryTask, SummaryTaskReason, ResultBoundary};
+        self.assert_open()?;
+        let started_at = now_ms();
+        let operation_id = operation_id.unwrap_or_else(|| (self.session.id_generator())(Some(started_at)));
+        let task_id = (self.session.id_generator())(Some(started_at));
+        let name = self.name.clone();
+        let read_context = context.clone();
+        self.command(move |mut state, reader| Box::pin(async move {
+            if let Some(operation) = &state.operation { return Ok(LaneCommand::Return { result: Err(AdmissionError::LaneBusy { lane: name, operation_id: operation.meta.operation_id.clone() }) }); }
+            let mut path = if let Some(tip) = &state.tip_id {
+                let mut query = StorageBranchScan::new(tip);
+                query.stop_at_type = Some(EntryType::Compaction);
+                query.order = Some(BranchOrder::NewestFirst);
+                reader.scan_branch(query, &read_context).await?
+            } else { vec![] };
+            path.reverse();
+            let prepared = crate::harness::compaction::compaction::prepare_compaction(&path, settings.compaction).map_err(|error| session_invariant_error(error.to_string()))?;
+            let Some(prepared) = prepared else { return Ok(LaneCommand::Return { result: Err(AdmissionError::NothingToCompact) }); };
+            let meta = OperationMeta { operation_id: operation_id.clone(), lane: name.clone(), source_tip_id: state.tip_id.clone(), started_at, intent: OperationIntent::Compaction { custom_instructions: custom_instructions.clone() } };
+            let current = OperationState::SummaryDeciding(SummaryDecidingOperation { operation: OperationScope { control: Control::Running, settings, latest_assistant_entry_id: None }, at: OperationMarker::SummaryDeciding, task: SummaryTask { task_id: task_id.clone(), reason: Some(SummaryTaskReason::Manual), custom_instructions, boundary: ResultBoundary::Finish } });
+            state.operation = Some(Operation { meta: meta.clone(), state: current.clone() });
+            let writes = vec![
+                Write::Value(set_value(&operation_preparation(&operation_id, &task_id), encoded(&super::structural::durable_compaction_preparation(&prepared))?)),
+                Write::Value(set_value(&operation_meta(&operation_id), encoded(&meta)?)),
+                Write::Value(set_value(&operation_state(&operation_id), encoded(&current)?)),
+                Write::Value(set_value(&lane_state(&name), encoded(&durable_lane_state(&state))?)),
+            ];
+            let admission = OperationAdmission { operation_id: operation_id.clone(), started_at, kind: OperationIntentKind::Compaction };
+            Ok(LaneCommand::Commit { decision: CommitDecision { writes, materialize: Arc::new(move |_| Ok(admission.clone())), events: Some(Arc::new(move |_| vec![HarnessEvent::new(HarnessEventPayload::CompactionStart { run_id: operation_id.clone(), reason: "manual".into(), started_at }, Some(name.clone()))])) }, next: Box::new(state) })
+        }), context).await
     }
 
     pub async fn request_operation_abort(&self, operation_id: String, context: &Context) -> Result<Result<AbortRequest, OperationMismatch>, SessionError> {
