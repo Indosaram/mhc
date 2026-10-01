@@ -29,6 +29,38 @@ pub fn is_ultrawork_input(text:&str) -> bool {
     lower.contains("ultrawork") || lower.match_indices("ulw").any(|(index,_)| !lower[index+3..].starts_with('-'))
 }
 pub fn already_embedded(text:&str) -> bool { text.contains("<ultrawork-mode>") && text.contains("</ultrawork-mode>") }
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct ArmingSnapshot { pub was_armed:bool,pub compact_rearm_pending:bool }
+#[derive(Clone,Debug,PartialEq,Eq)]
+pub struct UltraworkClassification {
+    pub matched_ulw:bool,pub matched_ultrawork:bool,pub occurrence_count:usize,
+    pub effective:bool,pub stage:&'static str,pub route:&'static str,pub suppression_reason:&'static str,
+}
+pub fn arming_snapshot(id:Option<&str>)->ArmingSnapshot {
+    let shared=shared_session_arming();let a=shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    ArmingSnapshot{was_armed:a.is_armed(id),compact_rearm_pending:a.is_compact_rearm_pending(id)}
+}
+pub fn classify_ultrawork_input(text:&str,source:InputSource,snapshot:ArmingSnapshot)->UltraworkClassification {
+    let lower=text.to_ascii_lowercase();let mut matches=Vec::new();let mut offset=0;
+    while offset<lower.len() {
+        let rest=&lower[offset..];let full=rest.find("ultrawork");let short=rest.match_indices("ulw").find(|(i,_)|!rest[i+3..].starts_with('-')).map(|(i,_)|i);
+        let next=match (full,short) { (None,None)=>break,(Some(i),None)=>(i,true),(None,Some(i))=>(i,false),(Some(a),Some(b))=>if a<=b {(a,true)}else{(b,false)} };
+        let start=offset+next.0;matches.push((start,next.1));offset=start+if next.1 {9}else{3};
+    }
+    let mut result=UltraworkClassification{matched_ulw:matches.iter().any(|(_,full)|!*full),matched_ultrawork:matches.iter().any(|(_,full)|*full),occurrence_count:matches.len(),effective:false,stage:"none",route:"none",suppression_reason:"none"};
+    if source==InputSource::Extension {result.suppression_reason="extension_source";return result;}
+    if matches.is_empty() {result.suppression_reason="no_keyword";return result;}
+    if already_embedded(text) {result.route="embedded_directive";result.suppression_reason="embedded_directive";return result;}
+    result.route="direct";
+    if let Some(rest)=text.strip_prefix("/skill:") {
+        let (name,_)=rest.split_once(' ').unwrap_or((rest,""));
+        if name=="ultrawork" {result.route="skill_expansion";result.suppression_reason="skill_expansion";return result;}
+        let args_start=text.find(' ').map_or(text.len(),|i|i+1);
+        if !matches.iter().any(|(i,_)|*i>=args_start) {result.route="none";result.suppression_reason="skill_name_only";return result;}
+        result.route="skill_args";
+    }
+    result.effective=true;result.stage=if snapshot.compact_rearm_pending {"post_compact_rearm"}else if snapshot.was_armed {"remention"}else{"first_arm"};result
+}
 pub fn skill_invocation_suppressed(text:&str) -> bool {
     let Some(rest)=text.strip_prefix("/skill:") else { return false; };
     let (name,args)=rest.split_once(' ').unwrap_or((rest,""));
