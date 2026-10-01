@@ -1,6 +1,8 @@
 use std::{collections::BTreeMap,path::{Path,PathBuf},sync::Arc};
 pub struct RpcSessionLaunchProfile{pub runtime:maho_core::agent_session_runtime::AgentSessionLaunchProfile,pub session_path:Option<String>,pub durable_session_id:Option<String>,pub session_kind:Option<maho_ext_api::SessionKind>,pub session_context:Option<BTreeMap<String,String>>}
 pub struct SessionIdentity{pub kind:maho_ext_api::SessionKind,pub context:Arc<BTreeMap<String,String>>}
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]pub enum RpcSessionState{Opening,Open,Closing,Quarantined,Closed}
+pub struct SessionCloseState{pub state:RpcSessionState,pub attachments:i64,pub retain_on_disconnect:bool,pub reservation_key:Option<String>,pub writing:bool}
 pub fn session_identity(profile:&RpcSessionLaunchProfile)->SessionIdentity{SessionIdentity{kind:profile.session_kind.unwrap_or_default(),context:Arc::new(profile.session_context.clone().unwrap_or_default())}}
 pub fn canonical_path(path:&Path)->std::io::Result<PathBuf>{if path.exists(){path.canonicalize()}else{let parent=path.parent().unwrap_or(Path::new("."));Ok(parent.canonicalize()?.join(path.file_name().unwrap_or_default()))}}
 #[derive(Debug,thiserror::Error,PartialEq,Eq)]#[error("{code}{suffix}")]

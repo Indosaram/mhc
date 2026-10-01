@@ -1,0 +1,7 @@
+use crate::host_protocol_info::HostProtocolInfo;
+#[derive(Debug,PartialEq,Eq)]pub struct HandoffRefusal{pub reason:&'static str,pub upgradeable:bool}
+pub fn handoff_refusal(platform:&str,host:Option<&HostProtocolInfo>,owner_proven:bool)->Option<HandoffRefusal>{
+    let reason=if platform=="win32"{Some(("upgrade_unsupported",false))}else if let Some(host)=host{if !host.capabilities.iter().any(|capability|capability==crate::host_decision::GENERATION_HANDOFF_CAPABILITY){Some(("handoff_unsupported",false))}else if !owner_proven{Some(("unknown_owner",true))}else{None}}else{Some(("no_host",false))};
+    reason.map(|(reason,upgradeable)|HandoffRefusal{reason,upgradeable})
+}
+#[cfg(test)]mod tests{use super::*;#[test]fn platform_and_capability_refusals_precede_owner_check(){let mut host=crate::host_protocol_info::parse_host_protocol_info(&serde_json::json!({"protocolVersion":1,"serverVersion":"1","capabilities":[]})).unwrap();assert_eq!(handoff_refusal("win32",None,false).unwrap().reason,"upgrade_unsupported");assert_eq!(handoff_refusal("linux",None,false).unwrap().reason,"no_host");assert_eq!(handoff_refusal("linux",Some(&host),false).unwrap().reason,"handoff_unsupported");host.capabilities.push(crate::host_decision::GENERATION_HANDOFF_CAPABILITY.into());assert_eq!(handoff_refusal("linux",Some(&host),false),Some(HandoffRefusal{reason:"unknown_owner",upgradeable:true}));assert!(handoff_refusal("linux",Some(&host),true).is_none());}}
