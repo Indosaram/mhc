@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::path::{Component, Path, PathBuf};
 pub const CONFIG_WATCH_REGISTER: &str = "config-watch:register";
 pub const CONFIG_WATCH_UNREGISTER: &str = "config-watch:unregister";
 pub const CONFIG_WATCH_READY: &str = "config-watch:ready";
@@ -11,6 +12,28 @@ pub enum ConfigWatchTargetKind { File, Dir }
 pub struct ConfigWatchTarget { pub path: String, pub kind: ConfigWatchTargetKind, pub filter_globs: Option<Vec<String>> }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConfigWatchRegistration { pub id: String, pub display_name: String, pub targets: Vec<ConfigWatchTarget> }
+pub fn registration_has_restricted_target(registration: &ConfigWatchRegistration, cwd: &Path, agent_dir: &Path) -> bool {
+ let resolve = |path: &Path| {
+  let mut normalized = PathBuf::new();
+  for component in path.components() { match component { Component::ParentDir => { normalized.pop(); }, Component::CurDir => {}, other => normalized.push(other.as_os_str()) } }
+  normalized
+ };
+ let agent = resolve(&if agent_dir.is_absolute() { agent_dir.into() } else { cwd.join(agent_dir) });
+ let protected: Vec<_> = ["auth.json", "sessions", "logs"].into_iter().map(|name| agent.join(name)).collect();
+ registration.targets.iter().any(|target| {
+  let raw = Path::new(target.path.trim());
+  let path = resolve(&if raw.is_absolute() { raw.into() } else { cwd.join(raw) });
+  let safe = target.kind == ConfigWatchTargetKind::Dir
+   && !protected.iter().any(|protected| path.starts_with(protected))
+   && target.filter_globs.as_ref().is_some_and(|filters| !filters.is_empty() && filters.iter().all(|filter| {
+    filter.strip_prefix('/').is_some_and(|anchored| {
+     let filtered = resolve(&path.join(anchored));
+     protected.iter().all(|protected| !filtered.starts_with(protected) && !protected.starts_with(&filtered))
+    })
+   }));
+  !safe && protected.iter().any(|protected| path.starts_with(protected) || protected.starts_with(&path))
+ })
+}
 fn strings(value: &Value) -> Option<Vec<String>> { value.as_array()?.iter().map(|entry| entry.as_str().map(str::to_owned)).collect() }
 pub fn parse_config_watch_target(value: &Value) -> Option<ConfigWatchTarget> {
  let object = value.as_object()?;

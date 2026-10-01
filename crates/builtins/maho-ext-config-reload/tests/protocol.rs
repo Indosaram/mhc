@@ -18,3 +18,13 @@ fn later_registration_replaces_earlier_in_place() { let first = ConfigWatchRegis
 fn duplicate_veto_reason_does_not_notify_twice() { let mut deferral = ReloadVetoDeferral::default(); assert!(deferral.defer(Some("worker")).is_some()); assert!(deferral.defer(Some("worker")).is_none()); assert!(deferral.defer(Some("other")).is_some()); }
 #[test]
 fn reset_allows_same_veto_reason_again() { let mut deferral = ReloadVetoDeferral::default(); deferral.defer(None); deferral.reset(); assert!(deferral.defer(None).is_some()); }
+#[test]
+fn protected_ancestor_requires_exclusive_root_anchored_filters() {
+ let root = std::path::Path::new("/fixture");
+ let make = |filters| ConfigWatchRegistration { id: "r".into(), display_name: "fixture".into(), targets: vec![ConfigWatchTarget { path: ".".into(), kind: ConfigWatchTargetKind::Dir, filter_globs: filters }] };
+ assert!(registration_has_restricted_target(&make(None), root, root));
+ assert!(registration_has_restricted_target(&make(Some(vec!["*.json".into()])), root, root));
+ assert!(registration_has_restricted_target(&make(Some(vec!["/logs".into()])), root, root));
+ assert!(registration_has_restricted_target(&make(Some(vec!["/nested/../auth.json".into()])), root, root));
+ assert!(!registration_has_restricted_target(&make(Some(vec!["/settings.json".into()])), root, root));
+}
