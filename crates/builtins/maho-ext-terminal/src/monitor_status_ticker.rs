@@ -31,9 +31,26 @@ impl ScheduledMonitorStatusTicker {
     pub fn stop(&mut self) {if let Some(task)=self.task.take() {task.abort();}self.state.lock().expect("monitor ticker").stop();}
 }
 impl Drop for ScheduledMonitorStatusTicker {fn drop(&mut self) {self.stop();}}
+pub fn bind_monitor_status(mut state:tokio::sync::watch::Receiver<Vec<MonitorSnapshotEntry>>,render:impl Fn(Option<String>)+Send+Sync+'static)->tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker=ScheduledMonitorStatusTicker::new(render,||std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("epoch").as_secs_f64()*1000.0);
+        ticker.sync(state.borrow_and_update().clone());
+        while state.changed().await.is_ok() {ticker.sync(state.borrow_and_update().clone());}
+    })
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn registry_transitions_update_and_clear_bound_status() {
+        let dir=tempfile::tempdir().unwrap();let mut registry=crate::monitor_registry::MonitorRegistry::new(|_|{});let (sender,mut rendered)=tokio::sync::mpsc::unbounded_channel();
+        let task=bind_monitor_status(registry.subscribe_state(),move |status| {sender.send(status).unwrap();});
+        tokio::time::timeout(std::time::Duration::from_secs(5),async {
+            assert_eq!(rendered.recv().await.unwrap(),None);
+            let (id,_)=registry.register_persistent_file("watch",&dir.path().join("file"),crate::terminal_manifest_model::FileEvent::Create).unwrap();assert!(rendered.recv().await.unwrap().is_some());
+            registry.stop_file(&id);assert_eq!(rendered.recv().await.unwrap(),None);
+        }).await.unwrap();task.abort();assert!(task.await.unwrap_err().is_cancelled());
+    }
     #[tokio::test(start_paused=true)]
     async fn scheduled_elapsed_refresh_has_exact_timer_cadence() {
         let now=std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));let clock=now.clone();
