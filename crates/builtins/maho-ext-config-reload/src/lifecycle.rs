@@ -51,13 +51,15 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
         events.emit(CONFIG_WATCH_READY, &serde_json::json!({"enabled":false})); return Ok(());
     }
     let skill_paths: Vec<PathBuf> = settings.get_value("skills").and_then(serde_json::Value::as_array).into_iter().flatten().filter_map(serde_json::Value::as_str).map(PathBuf::from).collect();
-    let targets = build_builtin_watch_targets(&ctx.cwd, &ctx.agent_dir, ctx.is_project_trusted(), &resolved, &skill_paths);
+    let mut targets = build_builtin_watch_targets(&ctx.cwd, &ctx.agent_dir, ctx.is_project_trusted(), &resolved, &skill_paths);
     let watched = build_builtin_watch_targets(&ctx.cwd, &ctx.agent_dir, ctx.is_project_trusted(), &resolved, &skill_paths).into_iter().map(|active| active.target).collect();
     let logger = Arc::new(Mutex::new(ConfigReloadLogger::new(&ctx.agent_dir, None).map_err(|error| ExtensionFailure::new(error.to_string()))?));
     let errors = Arc::clone(&logger);
-    let mut engine = NativeWatchEngine::with_debounce(watched, Arc::new(move |message, path| {
+    let on_error: crate::watch_event_source::WatchErrorListener = Arc::new(move |message, path| {
         if let Ok(mut logger) = errors.lock() { logger.log(LogLevel::Error, LogEvent::WatcherError { path: &path.to_string_lossy(), message: &message }); }
-    }), Duration::from_secs_f64(resolved.debounce_ms / 1000.0)).map_err(ExtensionFailure::new)?;
+    });
+    let debounce = Duration::from_secs_f64(resolved.debounce_ms / 1000.0);
+    let mut engine = NativeWatchEngine::with_debounce(watched, Arc::clone(&on_error), debounce).map_err(ExtensionFailure::new)?;
     let mut contents = BTreeMap::new();
     crate::routine_settings::refresh_settings_content_snapshots(&mut contents, &ctx.agent_dir, &ctx.cwd);
     let generation = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.generation;
@@ -89,6 +91,14 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
                     if deferred && !state.deferred_notice { state.deferred_notice = true; ctx.ui.notify("Config changed; reloading when idle", NotificationType::Info); }
                 }
                 events.emit(CONFIG_WATCH_CHANGED, &serde_json::json!({"registrationId":id,"paths":paths,"deferred":deferred}));
+            }
+            if change.created.iter().any(|path| targets.iter().any(|target| target.rearm_on_creation.as_ref() == Some(path))) {
+                engine.close_async().await?;
+                targets = build_builtin_watch_targets(&ctx.cwd, &ctx.agent_dir, ctx.is_project_trusted(), &resolved, &skill_paths);
+                let watched = build_builtin_watch_targets(&ctx.cwd, &ctx.agent_dir, ctx.is_project_trusted(), &resolved, &skill_paths).into_iter().map(|active| active.target).collect();
+                engine = NativeWatchEngine::with_debounce(watched, Arc::clone(&on_error), debounce)?;
+                crate::routine_settings::refresh_settings_content_snapshots(&mut contents, &ctx.agent_dir, &ctx.cwd);
+                events.emit(CONFIG_WATCH_READY, &serde_json::json!({"enabled":true}));
             }
             let state = Arc::clone(&shared); let context = ctx.clone();
             tokio::spawn(async move { if let Err(error) = flush(state, context.clone(), Some(generation)).await { context.ui.notify(&error.to_string(), NotificationType::Error); } });

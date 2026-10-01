@@ -75,3 +75,34 @@ fn registers_native_start_idle_and_shutdown_hooks() {
     maho_ext_config_reload::ConfigReload.register(&mut api);
     for kind in [EventKind::SessionStart, EventKind::AgentEnd, EventKind::AgentSettled, EventKind::SessionShutdown] { assert_eq!(api.registered.handlers[&kind].len(), 1); }
 }
+#[tokio::test]
+async fn missing_prompt_directory_rearms_before_observing_its_files() {
+    use maho_ext_config_reload::protocol::*;
+    let root = tempfile::tempdir().unwrap();
+    let events = EventBus::default();
+    let (ready_sender, mut ready) = tokio::sync::mpsc::unbounded_channel();
+    let (change_sender, mut changes) = tokio::sync::mpsc::unbounded_channel();
+    let _ready = events.on(CONFIG_WATCH_READY, Arc::new(move |value| { ready_sender.send(value.clone()).unwrap(); }));
+    let _changes = events.on(CONFIG_WATCH_CHANGED, Arc::new(move |value| { change_sender.send(value.clone()).unwrap(); }));
+    let mut api = ExtensionApi::new(LoadedExtension::new("config-reload", root.path().into(), SourceInfo::default()), ExtensionSessionProfile::default(), events, ExtensionRuntime::default());
+    maho_ext_config_reload::ConfigReload.register(&mut api);
+    let mut ctx = context(root.path());
+    ctx.mode = ExtensionMode::Tui;
+    ctx.is_idle_fn = Arc::new(|| false);
+    let mut start = ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::Startup, initial_model_provenance: None, previous_session_file: None });
+    (api.registered.handlers[&EventKind::SessionStart][0])(&mut start, &ctx).await.unwrap();
+    ready.try_recv().unwrap();
+    let prompts = root.path().join("prompts");
+    std::fs::create_dir(&prompts).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), ready.recv()).await.unwrap().unwrap();
+    let directory_change = changes.try_recv().unwrap();
+    assert_eq!(directory_change["paths"], serde_json::json!([prompts]));
+    let staged = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(staged.path(), "fixture").unwrap();
+    let path = prompts.join("fixture.md");
+    std::fs::rename(staged.path(), &path).unwrap();
+    let change = tokio::time::timeout(std::time::Duration::from_secs(5), changes.recv()).await.unwrap().unwrap();
+    assert_eq!(change["paths"], serde_json::json!([path]));
+    let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason: SessionReason::Quit, target_session_file: None, signal: None });
+    (api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown, &ctx).await.unwrap();
+}
