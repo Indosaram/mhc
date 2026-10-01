@@ -5,3 +5,5 @@ pub mod settings;
 pub mod output_format;
 pub mod runtime_session;
 pub mod tools;
+pub mod monitor_status;
+pub mod monitor_registry;
