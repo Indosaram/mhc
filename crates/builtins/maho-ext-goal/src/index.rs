@@ -1,5 +1,13 @@
 use crate::{types::{Goal,GoalStatus,GoalAccountingMode,GoalStoreRef},turn_usage::TurnUsageTracker,errors::GoalError};
 use maho_agent::types::AgentMessage;
+pub fn count_trailing_goal_continuation_entries(entries:&[maho_ext_api::SessionEntry])->usize {
+    let mut count=0;
+    for entry in entries.iter().rev() {
+        if entry.kind=="message"&&entry.data.get("message").and_then(|message|message.get("role")).and_then(serde_json::Value::as_str)==Some("user") { break; }
+        if entry.kind=="custom_message"&&entry.data.get("customType").and_then(serde_json::Value::as_str)==Some("goal-continuation") { count+=1; }
+    }
+    count
+}
 pub struct AgentGoalAccounting { pub goal_id:String,pub measured_from_milliseconds:f64 }
 #[derive(Default)]
 pub struct GoalTurnAccounting {
@@ -48,6 +56,14 @@ impl GoalTurnAccounting {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn history_counter_resets_only_at_real_user_message() {
+        fn entry(kind:&str,data:serde_json::Value)->maho_ext_api::SessionEntry { maho_ext_api::SessionEntry { id:String::new(),parent_id:None,timestamp:String::new(),kind:kind.into(),data } }
+        let continuation=||entry("custom_message",serde_json::json!({"customType":"goal-continuation"}));
+        let mut entries=vec![continuation(),entry("message",serde_json::json!({"message":{"role":"user"}})),continuation(),entry("message",serde_json::json!({"message":{"role":"assistant"}})),entry("custom_message",serde_json::json!({"customType":"notice"})),continuation()];
+        assert_eq!(count_trailing_goal_continuation_entries(&entries),2);
+        entries.push(entry("message",serde_json::json!({"message":{"role":"user"}}))); assert_eq!(count_trailing_goal_continuation_entries(&entries),0);
+        assert_eq!(count_trailing_goal_continuation_entries(&[]),0);
+    }
     #[tokio::test] async fn user_abort_accounts_then_blocks_and_retires_window() {
         let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() };
         let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap();
