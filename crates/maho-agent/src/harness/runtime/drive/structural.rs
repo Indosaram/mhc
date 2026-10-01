@@ -123,3 +123,43 @@ pub fn navigation_boundary(task: &SummaryTask) -> Result<(&str, Option<&str>), S
         ),
     }
 }
+
+pub fn effect_pending_from_ready(ready: &crate::harness::session::types::SummaryReadyOperation) -> crate::harness::session::types::SummaryEffectPendingOperation {
+    crate::harness::session::types::SummaryEffectPendingOperation {
+        operation: ready.operation.clone(), at: crate::harness::session::types::OperationMarker::SummaryEffectPending,
+        pending: crate::harness::session::types::SummaryGenerationEffectPending { scope: ready.ready.scope.clone(), attempt: ready.ready.next_attempt, request: None, usage_ids: vec![] },
+    }
+}
+
+pub fn ready_from_retry_wait(retry: &crate::harness::session::types::SummaryRetryWaitOperation) -> crate::harness::session::types::SummaryReadyOperation {
+    crate::harness::session::types::SummaryReadyOperation { operation: retry.operation.clone(), at: crate::harness::session::types::OperationMarker::SummaryReady, ready: crate::harness::session::types::SummaryGenerationReady { scope: retry.retry.scope.clone(), next_attempt: retry.retry.retry_wait.next_attempt } }
+}
+
+pub async fn publish_attempt_intent(lane: &crate::harness::runtime::lane::Lane, drive: &crate::harness::runtime::types::Drive) -> Result<crate::harness::runtime::types::ContinueOperationResult<crate::harness::session::types::SummaryEffectPendingOperation>, SessionError> {
+    lane.continue_operation(|_, current, _, _| Box::pin(async move {
+        let crate::harness::session::types::OperationState::SummaryReady(ready) = current else { return Err(session_invariant_error("Expected summary.ready operation")); };
+        let pending = effect_pending_from_ready(&ready);
+        Ok(crate::harness::runtime::types::OperationCommand::Commit { decision: crate::harness::runtime::types::CommitDecision { writes: vec![], materialize: std::sync::Arc::new({ let pending = pending.clone(); move |_| pending.clone() }), events: None }, operation_state: Box::new(crate::harness::session::types::OperationState::SummaryEffectPending(pending)), lane: None })
+    }), &drive.context).await
+}
+
+pub async fn publish_nested_request_intent(lane: &crate::harness::runtime::lane::Lane, drive: &crate::harness::runtime::types::Drive, index: usize, usage_id: String) -> Result<crate::harness::runtime::types::ContinueOperationResult<crate::harness::session::types::SummaryEffectPendingOperation>, SessionError> {
+    lane.continue_operation(move |_, current, _, _| Box::pin(async move {
+        let crate::harness::session::types::OperationState::SummaryEffectPending(mut pending) = current else { return Err(session_invariant_error("Expected summary.effect_pending operation")); };
+        pending.pending.request = Some(crate::harness::session::types::SummaryGenerationRequest { index, usage_id });
+        Ok(crate::harness::runtime::types::OperationCommand::Commit { decision: crate::harness::runtime::types::CommitDecision { writes: vec![], materialize: std::sync::Arc::new({ let pending = pending.clone(); move |_| pending.clone() }), events: None }, operation_state: Box::new(crate::harness::session::types::OperationState::SummaryEffectPending(pending)), lane: None })
+    }), &drive.context).await
+}
+
+pub async fn publish_nested_request_outcome(lane: &crate::harness::runtime::lane::Lane, drive: &crate::harness::runtime::types::Drive, usage_id: String, usage: maho_ai::types::Usage) -> Result<(), SessionError> {
+    let name = lane.name.clone();
+    lane.settle_operation(move |_, current, _, _| Box::pin(async move {
+        let crate::harness::session::types::OperationState::SummaryEffectPending(mut pending) = current else { return Err(session_invariant_error("Expected summary.effect_pending operation")); };
+        pending.pending.usage_ids.push(usage_id.clone());
+        pending.pending.request = None;
+        let row = crate::harness::session::types::NewUsageRow { id: usage_id.clone(), usage, adjustment: false, entry_id: None, details: None };
+        Ok(crate::harness::runtime::types::OperationCommand::Commit { decision: crate::harness::runtime::types::CommitDecision {
+            writes: vec![crate::harness::session::commit::insert_usage(row)], materialize: std::sync::Arc::new(|_| ()), events: Some(std::sync::Arc::new(move |commit| vec![crate::harness::events::HarnessEvent::new(crate::harness::events::HarnessEventPayload::Usage { lane: name.clone(), row: crate::harness::session::types::UsageRow { id: usage_id.clone(), seq: commit.seqs[0], usage, adjustment: false, entry_id: None, details: None }, totals: commit.stats.usage }, Some(name.clone()))])),
+        }, operation_state: Box::new(crate::harness::session::types::OperationState::SummaryEffectPending(pending)), lane: None })
+    }), &drive.context).await
+}
