@@ -8,6 +8,20 @@ pub struct GoalTurnAccounting {
     pub usage:TurnUsageTracker,
 }
 impl GoalTurnAccounting {
+    pub fn agent_start(&mut self,goal:Option<&Goal>,now:f64) {
+        self.turn_in_progress=true; self.blocked_this_turn=None; self.completed_this_turn=None; self.usage.reset();
+        if let Some(goal)=goal.filter(|goal|goal.status==GoalStatus::Active) { self.begin(goal,now); } else { self.window=None; }
+    }
+    pub async fn agent_end(&mut self,reference:&GoalStoreRef,messages:&[AgentMessage],user_aborted:bool,now:f64,epoch_seconds:u64)->Result<Option<Goal>,GoalError> {
+        let mode=if self.blocked_this_turn.is_some() { GoalAccountingMode::ActiveOrBlocked } else if self.completed_this_turn.is_some() { GoalAccountingMode::ActiveOrComplete } else { GoalAccountingMode::Active };
+        let mut goal=self.account(reference,mode,Some(messages),now,epoch_seconds).await?;
+        self.turn_in_progress=false; self.blocked_this_turn=None; self.completed_this_turn=None;
+        if user_aborted&&goal.as_ref().is_some_and(|goal|goal.status==GoalStatus::Active) {
+            goal=Some(crate::store::update_goal(reference,&crate::types::GoalUpdate { status:Some(GoalStatus::Blocked),reason:Some("user interrupted the turn".into()),..Default::default() },crate::types::GoalUpdateSource::Model,epoch_seconds).await?);
+        }
+        if let Some(goal)=goal.as_ref().filter(|goal|goal.status==GoalStatus::Active) { self.begin(goal,now); } else { self.clear(); }
+        Ok(goal)
+    }
     pub fn begin(&mut self,goal:&Goal,now:f64) {
         if goal.status!=GoalStatus::Active || self.window.as_ref().is_some_and(|window|window.goal_id==goal.id) { return; }
         self.usage.discard_pending(); self.window=Some(AgentGoalAccounting { goal_id:goal.id.clone(),measured_from_milliseconds:now });
@@ -34,6 +48,23 @@ impl GoalTurnAccounting {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn user_abort_accounts_then_blocks_and_retires_window() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() };
+        let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap();
+        let mut accounting=GoalTurnAccounting::default(); accounting.agent_start(Some(&goal),0.0);
+        let ended=accounting.agent_end(&reference,&[],true,1500.0,1).await.unwrap().unwrap();
+        assert_eq!(ended.status,GoalStatus::Blocked); assert_eq!(ended.time_used_seconds,2.0); assert_eq!(ended.blocked_reason.as_deref(),Some("user interrupted the turn"));
+        assert!(!accounting.turn_in_progress); assert!(accounting.window.is_none());
+    }
+    #[tokio::test] async fn completed_goal_accounts_final_turn_without_reopening() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() };
+        let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap();
+        let mut accounting=GoalTurnAccounting::default(); accounting.agent_start(Some(&goal),0.0);
+        let completed=crate::store::update_goal(&reference,&crate::types::GoalUpdate { status:Some(GoalStatus::Complete),..Default::default() },crate::types::GoalUpdateSource::Model,1).await.unwrap();
+        accounting.mark_completed(&completed,1000.0);
+        let ended=accounting.agent_end(&reference,&[],false,2500.0,2).await.unwrap().unwrap();
+        assert_eq!(ended.status,GoalStatus::Complete); assert_eq!(ended.time_used_seconds,2.0); assert!(accounting.window.is_none());
+    }
     #[tokio::test] async fn checkpoints_do_not_double_count_elapsed_and_replacement_retires_window() {
         let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() };
         let goal=crate::store::create_goal(&reference,"first",None,0).await.unwrap();
