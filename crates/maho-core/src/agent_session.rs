@@ -399,6 +399,8 @@ struct AgentSessionState {
     cumulative_hinted_wait_ms: f64,
     pending_model_switch: Option<PendingModelSwitch>,
     compaction_abort_controller: Option<maho_ai::utils::abort::AbortController>,
+    prompt_templates: Vec<crate::prompt_templates::PromptTemplate>,
+    skills: Vec<crate::skills::Skill>,
 }
 
 fn name_set(names: Option<Vec<String>>) -> Option<BTreeSet<String>> {
@@ -598,6 +600,8 @@ impl AgentSession {
             cumulative_hinted_wait_ms: 0.0,
             pending_model_switch: None,
             compaction_abort_controller: None,
+            prompt_templates: Vec::new(),
+            skills: Vec::new(),
         };
         let session = Self { inner: Arc::new(AgentSessionInner {
             agent,
@@ -840,6 +844,7 @@ impl AgentSession {
         if options.signal.as_ref().is_some_and(|signal| signal.aborted()) {
             return Err("Prompt cancelled".to_owned());
         }
+        if text.starts_with('/') && self.try_execute_extension_command(text).await? { return Ok(PromptDisposition::Handled); }
         if self.is_streaming() {
             let mode = options.streaming_behavior.ok_or_else(||
                 "Agent is already processing a prompt. Use steer() or followUp() to queue messages, or wait for completion.".to_owned())?;
@@ -851,6 +856,7 @@ impl AgentSession {
         let Some((text, images)) = self.run_input_handlers(text, options.images, options.source, None).await? else {
             return Ok(PromptDisposition::Handled);
         };
+        let text = self.expand_input(&text, options.expand_prompt_templates.unwrap_or(true))?;
         if self.auto_compaction_enabled() && self.pending_model_switch().is_none() {
             let model = self.model();
             let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
@@ -909,6 +915,7 @@ impl AgentSession {
         let Some((text, images)) = self.run_input_handlers(text, images, options.source, self.is_streaming().then_some(mode)).await? else {
             return Ok(());
         };
+        let text = self.expand_input(&text, true)?;
         self.record_queued_input(&text, mode, options.enqueue_order);
         let message = make_user_message(&text, images);
         match mode {
@@ -1550,6 +1557,7 @@ impl AgentSession {
         if self.is_compacting() { return Err("Cannot navigate the session tree while compacting".to_owned()); }
         let entry = self.with_session_manager(|manager| manager.entry(target_id)).ok_or_else(|| format!("Entry {target_id} not found"))?;
         let old_leaf = self.with_session_manager(|manager| manager.leaf_id().map(str::to_owned));
+        if options.expected_leaf_id.is_some() && options.expected_leaf_id != old_leaf { return Err("Session leaf changed before edit".to_owned()); }
         let signal = maho_ext_api::AbortSignal::default();
         let before = self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeTree {
             preparation: maho_ext_api::TreePreparation { target_id: target_id.to_owned(), old_leaf_id: old_leaf.clone(), common_ancestor_id: None,
@@ -1574,6 +1582,61 @@ impl AgentSession {
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionTree { new_leaf_id: self.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)),
             old_leaf_id: old_leaf, summary_entry: summary_entry.clone().map(session_entry_from_value), from_extension: Some(summary_entry.is_some()) }).await;
         Ok(AssistantEditResult { editor_text, summary_entry, entry_id: replacement_entry.as_ref().and_then(|entry| entry.get("id")).and_then(Value::as_str).map(str::to_owned), ..Default::default() })
+    }
+
+    pub fn set_prompt_resources(&self, templates: Vec<crate::prompt_templates::PromptTemplate>, skills: Vec<crate::skills::Skill>) {
+        let mut state = self.state(); state.prompt_templates = templates; state.skills = skills;
+    }
+
+    pub fn prompt_templates(&self) -> Vec<crate::prompt_templates::PromptTemplate> { self.state().prompt_templates.clone() }
+
+    fn expand_input(&self, text: &str, templates: bool) -> Result<String, String> {
+        let skills = self.state().skills.clone();
+        let tokens = crate::skill_invocation::parse_skill_invocation_tokens(text, &crate::skill_invocation::ParseSkillInvocationOptions {
+            known_skill_names: Some(skills.iter().map(|skill| skill.name.clone()).collect()),
+        });
+        let mut blocks = Vec::new();
+        let mut removed = Vec::new();
+        let mut metadata = Vec::new();
+        let mut seen = BTreeSet::new();
+        for token in tokens {
+            if let Some(skill) = skills.iter().find(|skill| skill.name == token.name) {
+                removed.push(token.clone());
+                if !seen.insert(skill.name.clone()) { continue; }
+                let source = match std::fs::read_to_string(&skill.file_path) { Ok(source) => source, Err(error) => {
+                    self.emit(AgentSessionEvent::ContinuationError { error_message: error.to_string() }); return Ok(text.to_owned());
+                }};
+                let parsed = crate::frontmatter::parse_frontmatter(&source).map_err(|error| error.to_string())?;
+                blocks.push(crate::skill_invocation::SkillInvocationPromptSkill {
+                    name: skill.name.clone(), file_path: skill.file_path.clone(), base_dir: skill.base_dir.clone(), body: parsed.body.trim().to_owned(),
+                });
+                metadata.push(maho_ext_api::SkillInvocation { name: skill.name.clone(), path: skill.file_path.clone(), syntax: match token.syntax {
+                    crate::skill_invocation::SkillInvocationSyntax::Slash => "slash", crate::skill_invocation::SkillInvocationSyntax::Dollar => "dollar",
+                }.to_owned() });
+            }
+        }
+        let expanded = if blocks.is_empty() { text.to_owned() } else {
+            self.emit(AgentSessionEvent::SkillInvocation { skills: metadata });
+            crate::skill_invocation::format_skill_invocation_prompt(&blocks, Some(&crate::skill_invocation::remove_skill_invocation_tokens(text, &removed)))
+        };
+        if !templates { return Ok(expanded); }
+        let expansion = crate::prompt_templates::expand_prompt_template_with_metadata(&expanded, &self.prompt_templates());
+        if let Some(template) = expansion.template { self.emit(AgentSessionEvent::CommandInvocation { command: serde_json::json!({
+            "name":template.name,"source":"prompt","syntax":"slash","path":template.file_path,
+        }) }); }
+        Ok(expansion.text)
+    }
+
+    async fn try_execute_extension_command(&self, text: &str) -> Result<bool, String> {
+        let command_text = text.strip_prefix('/').unwrap_or(text);
+        let (name, args) = command_text.split_once(' ').unwrap_or((command_text, ""));
+        let mut runner = self.extension_runner.lock().await;
+        let Some(runner) = runner.as_mut() else { return Ok(false); };
+        let Some(command) = runner.get_command(name) else { return Ok(false); };
+        self.emit(AgentSessionEvent::CommandInvocation { command: serde_json::json!({"name":name,"source":"extension","syntax":"slash"}) });
+        let context = runner.create_context().map_err(|error| error.to_string())?;
+        (command.command.handler)(args, &context).await.map_err(|error| error.to_string())?;
+        Ok(true)
     }
 
     /// Resolve the auth a provider request needs, refusing when none is configured.
@@ -3674,5 +3737,43 @@ mod tests {
             estimated_tokens_after: None, usage: None, details: None,
         }).is_err());
         assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn editing_user_message_preserves_old_branch_and_rejects_stale_leaf() {
+        let session = test_session();
+        let entry = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"old","timestamp":0})));
+        let id = entry["id"].as_str().expect("id");
+        assert!(session.edit_user_message(id, "changed", TreeNavigationOptions {
+            expected_leaf_id: Some("stale".to_owned()), ..Default::default()
+        }).await.is_err());
+        let result = session.edit_user_message(id, "changed", Default::default()).await.expect("edit");
+        assert!(result.entry_id.is_some());
+        assert_eq!(session.with_session_manager(|manager| manager.entries().len()), 2);
+        assert_eq!(user_message_text(&session.messages()[0]), "changed");
+        session.navigate_tree(id, TreeNavigationOptions { intent: Some(TreeNavigationIntent::Resume), ..Default::default() }).await.expect("resume");
+        assert_eq!(user_message_text(&session.messages()[0]), "old");
+    }
+
+    #[tokio::test]
+    async fn new_session_clears_context_and_changes_identity() {
+        let session = test_session();
+        let id = session.session_id();
+        session.agent.set_messages(vec![make_user_message("old", None)]);
+        assert!(session.new_session(None).await.expect("new"));
+        assert_ne!(session.session_id(), id);
+        assert!(session.messages().is_empty());
+    }
+
+    #[test]
+    fn prompt_expansion_uses_template_arguments_and_can_be_disabled() {
+        let session = test_session();
+        session.set_prompt_resources(vec![crate::prompt_templates::PromptTemplate {
+            name: "review".to_owned(), description: String::new(), argument_hint: None, content: "review $1".to_owned(),
+            source_info: crate::source_info::create_synthetic_source_info("/tmp/review.md", crate::source_info::SyntheticSourceInfoOptions::default()),
+            file_path: "/tmp/review.md".to_owned(),
+        }], Vec::new());
+        assert_eq!(session.expand_input("/review file", true).expect("expand"), "review file");
+        assert_eq!(session.expand_input("/review file", false).expect("raw"), "/review file");
     }
 }
