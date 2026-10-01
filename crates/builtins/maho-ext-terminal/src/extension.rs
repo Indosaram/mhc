@@ -5,6 +5,23 @@ use serde_json::{Value,json};
 use crate::manager::TerminalManager;
 use crate::tools::{bash_input::{execute_bash_input,BashInputInput},bash_output::execute_bash_output,bash_resize::execute_bash_resize,kill_bash::execute_kill_bash,context::TerminalToolResult};
 pub struct TerminalExtension;
+pub fn monitor_state_payload(snapshot:&[crate::monitor_registry::MonitorSnapshotEntry])->Value {
+    let monitors=snapshot.iter().map(|entry| {
+        let mut value=json!({"id":entry.id,"description":entry.description,"paused":entry.paused,"startedAtMs":entry.started_at_ms});
+        for (key,field) in [("command",entry.command.as_ref().map(|value|json!(value))),("filter",entry.filter.as_ref().map(|value|json!(value))),("persistent",entry.persistent.map(|value|json!(value))),("deadlineMs",entry.deadline_ms.map(|value|json!(value))),("fireCount",entry.fire_count.map(|value|json!(value))),("lastFiredAtMs",entry.last_fired_at_ms.map(|value|json!(value)))] {if let Some(field)=field {value[key]=field;}}
+        value
+    }).collect::<Vec<_>>();json!({"activeCount":snapshot.len(),"monitors":monitors})
+}
+fn bind_monitor_events(mut state:tokio::sync::watch::Receiver<Vec<crate::monitor_registry::MonitorSnapshotEntry>>,sender:Arc<ExtensionApi>)->tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let snapshot=state.borrow_and_update().clone();let payload=monitor_state_payload(&snapshot);
+            sender.events.emit("terminal_monitor_state",&payload);if let Err(error)=sender.rpc_emit("terminal_monitor_state",&payload) {eprintln!("monitor state RPC delivery failed: {error}");}
+            sender.events.emit("wake_source_state",&json!({"source":"terminal-monitors","activeCount":snapshot.len(),"monitors":snapshot.iter().map(|entry|json!({"id":entry.id,"description":entry.description,"startedAtMs":entry.started_at_ms})).collect::<Vec<_>>()}));
+            if state.changed().await.is_err() {return;}
+        }
+    })
+}
 fn tool_result(result:TerminalToolResult)->Result<ToolResult,ToolError> {
     if result.is_error==Some(true) {return Err(ToolError::Message(result.content.into_iter().map(|part|part.text).collect::<Vec<_>>().join("\n")));}
     Ok(ToolResult {content:result.content.into_iter().map(|part|ToolContent::Text {text:part.text,audience:part.audience.map(|_|"model".to_owned())}).collect(),details:result.details.map(Value::Object)})
@@ -28,6 +45,12 @@ impl Extension for TerminalExtension {
             Ok(EventResult::None)
         })}));
         let sender=Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));
+        let telemetry_task:Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>=Arc::new(Mutex::new(None));
+        let telemetry_monitors=monitors.clone();let telemetry_sender=sender.clone();let start_telemetry=telemetry_task.clone();
+        api.on(EventKind::SessionStart,Arc::new(move |_,_| {let monitors=telemetry_monitors.clone();let sender=telemetry_sender.clone();let task=start_telemetry.clone();Box::pin(async move {
+            let mut task=task.lock().map_err(|_|ExtensionFailure::new("monitor telemetry state poisoned"))?;if let Some(previous)=task.take() {previous.abort();}
+            *task=Some(bind_monitor_events(monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?.subscribe_state(),sender));Ok(EventResult::None)
+        })}));
         let stepped_aside=Arc::new(std::sync::atomic::AtomicBool::new(false));
         let notice_shown=Arc::new(std::sync::atomic::AtomicBool::new(false));
         for kind in [EventKind::SessionStart,EventKind::ModelSelect] {
@@ -144,6 +167,7 @@ impl Extension for TerminalExtension {
         let activity=notifier.clone();
         api.on(EventKind::ToolCall,Arc::new(move |_,_| {let notifier=activity.clone();Box::pin(async move {if let Some(notifier)=notifier.lock().map_err(|_|ExtensionFailure::new("monitor notifier state poisoned"))?.as_ref() {notifier.note_activity().map_err(ExtensionFailure::new)?;}Ok(EventResult::None)})}));
         let cleanup=Arc::clone(&manager);
+        api.on(EventKind::SessionShutdown,Arc::new(move |_,_| {let task=telemetry_task.clone();Box::pin(async move {if let Some(task)=task.lock().map_err(|_|ExtensionFailure::new("monitor telemetry state poisoned"))?.take() {task.abort();}Ok(EventResult::None)})}));
         api.on(EventKind::SessionShutdown,Arc::new(move |_,ctx| {let status=status_task.clone();Box::pin(async move {if let Some(task)=status.lock().map_err(|_|ExtensionFailure::new("monitor status state poisoned"))?.take() {task.abort();}ctx.ui.set_status(crate::monitor_status::MONITOR_STATUS_KEY,None);Ok(EventResult::None)})}));
         api.on(EventKind::SessionShutdown,Arc::new(move |_,_| {let manager=Arc::clone(&cleanup);let monitors=monitors.clone();let notifier=notifier.clone();Box::pin(async move {notifier.lock().map_err(|_|ExtensionFailure::new("monitor notifier state poisoned"))?.take();monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?.dispose();manager.lock().map_err(|_|ExtensionFailure::new("terminal manager state poisoned"))?.teardown().map_err(|error|ExtensionFailure::new(error.to_string()))?;Ok(EventResult::None)})}));
     }
@@ -151,6 +175,17 @@ impl Extension for TerminalExtension {
 #[cfg(test)]
 mod tests {
     use super::*;use maho_ext_api::types::*;
+    #[tokio::test]
+    async fn registry_state_reaches_native_event_bus_and_rpc() {
+        let dir=tempfile::tempdir().unwrap();let bus=EventBus::default();let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let state_sender=sender.clone();let rpc_sender=sender;
+        let _state=bus.on("terminal_monitor_state",Arc::new(move |data| {state_sender.send(("state",data.clone())).unwrap();}));let _rpc=bus.on("senpi:extension-rpc-event",Arc::new(move |data| {rpc_sender.send(("rpc",data.clone())).unwrap();}));
+        let api=Arc::new(ExtensionApi::new(LoadedExtension::new("terminal",dir.path().to_owned(),SourceInfo::default()),ExtensionSessionProfile::default(),bus,ExtensionRuntime::default()));let mut registry=crate::monitor_registry::MonitorRegistry::new(|_|{});let task=bind_monitor_events(registry.subscribe_state(),api);
+        tokio::time::timeout(std::time::Duration::from_secs(5),async {
+            let (_,initial)=events.recv().await.unwrap();assert_eq!(initial["activeCount"],0);let (kind,rpc)=events.recv().await.unwrap();assert_eq!(kind,"rpc");assert_eq!(rpc["data"],initial);
+            let (id,_)=registry.register_persistent_file("watch",&dir.path().join("file"),crate::terminal_manifest_model::FileEvent::Create).unwrap();let (kind,live)=events.recv().await.unwrap();assert_eq!(kind,"state");assert_eq!(live["activeCount"],1);assert_eq!(live["monitors"][0]["id"],id);assert_eq!(live["monitors"][0]["persistent"],true);assert!(live["monitors"][0].get("command").is_none());let (_,rpc)=events.recv().await.unwrap();assert_eq!(rpc["data"],live);
+            registry.stop_file(&id);let (_,empty)=events.recv().await.unwrap();assert_eq!(empty["activeCount"],0);assert_eq!(events.recv().await.unwrap().1["data"],empty);
+        }).await.unwrap();task.abort();assert!(task.await.unwrap_err().is_cancelled());
+    }
     #[tokio::test] async fn registered_bash_runs_real_pty_and_companion_peeks()->Result<(),ToolError> {
         let mut api=ExtensionApi::new(LoadedExtension::new("terminal","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());TerminalExtension.register(&mut api);
         let result=(api.registered.tools[0].definition.execute)(maho_tools::definition::ToolCall {id:"c1",params:json!({"command":"stty -echo; printf 'ready\\n'"}),signal:Default::default(),on_update:None,context:None}).await?;
@@ -160,5 +195,5 @@ mod tests {
         assert!(matches!(&result.content[0],ToolContent::Text {text,..} if text.contains("status: completed exit_code: 0")));
         (api.registered.tools[4].definition.execute)(maho_tools::definition::ToolCall {id:"c3",params:json!({"all":true}),signal:Default::default(),on_update:None,context:None}).await?;Ok(())
     }
-    #[test] fn native_companions_register_flat_schemas_and_shutdown() {let mut api=ExtensionApi::new(LoadedExtension::new("terminal","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());TerminalExtension.register(&mut api);assert_eq!(api.registered.tools.iter().map(|tool|tool.definition.name.as_str()).collect::<Vec<_>>(),vec!["bash","bash_output","bash_input","bash_resize","kill_bash","monitor"]);for tool in &api.registered.tools {assert_eq!(tool.definition.parameters["type"],"object");assert!(tool.definition.parameters.get("properties").is_some());}assert_eq!(api.registered.handlers[&EventKind::SessionShutdown].len(),2);}
+    #[test] fn native_companions_register_flat_schemas_and_shutdown() {let mut api=ExtensionApi::new(LoadedExtension::new("terminal","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());TerminalExtension.register(&mut api);assert_eq!(api.registered.tools.iter().map(|tool|tool.definition.name.as_str()).collect::<Vec<_>>(),vec!["bash","bash_output","bash_input","bash_resize","kill_bash","monitor"]);for tool in &api.registered.tools {assert_eq!(tool.definition.parameters["type"],"object");assert!(tool.definition.parameters.get("properties").is_some());}assert_eq!(api.registered.handlers[&EventKind::SessionShutdown].len(),3);}
 }
