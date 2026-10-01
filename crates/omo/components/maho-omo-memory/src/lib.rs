@@ -6,6 +6,7 @@ pub mod dream_selector;
 pub mod dream_trigger_gates;
 pub mod engine_session;
 pub mod journal_wiring;
+pub mod nudge_wiring;
 pub mod guard;
 pub mod facts_run_cleanup;
 pub mod facts_failure_recording;
