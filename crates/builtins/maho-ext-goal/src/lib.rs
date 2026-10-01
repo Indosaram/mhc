@@ -6,3 +6,4 @@ pub mod transitions;
 pub mod types;
 pub mod validation;
 pub mod persistence;
+pub mod store;
