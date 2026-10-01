@@ -12,6 +12,8 @@ workspace = true
 tempfile.workspace = true
 
 [dependencies]
+maho-ext-api = { path = "../../../maho-ext-api" }
+tokio = { workspace = true, features = ["rt", "time"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
