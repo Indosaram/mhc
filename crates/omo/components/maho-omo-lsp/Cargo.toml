@@ -7,3 +7,11 @@ license = "LicenseRef-SUL-1.0"
 
 [lints]
 workspace = true
+
+[dependencies]
+maho-lsp-core = { path = "../../lsp-core" }
+maho-ext-api = { path = "../../../maho-ext-api" }
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
