@@ -8,6 +8,8 @@ pub mod tool_adapter;
 pub mod lifecycle_adapter;
 pub mod command;
 pub mod stop_adapter;
+pub mod index;
+pub use index::HooksExtension;
 pub mod handler;
 pub mod matcher;
 pub mod output_parser;

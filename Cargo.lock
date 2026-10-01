@@ -1660,6 +1660,7 @@ version = "0.0.0"
 name = "maho-ext-hooks"
 version = "0.0.0"
 dependencies = [
+ "chrono",
  "fancy-regex",
  "futures",
  "maho-core",
@@ -1796,6 +1797,7 @@ version = "0.0.0"
 dependencies = [
  "fancy-regex",
  "maho-ai",
+ "maho-ext-api",
  "maho-pty",
  "maho-tools",
  "regex",
