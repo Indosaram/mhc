@@ -57,6 +57,14 @@ pub enum OperationCommand<T> {
     },
 }
 
+pub enum QueuedInput {
+    Text(String),
+    Message(Box<crate::types::AgentMessage>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelQueuedOutcome { Cancelled, AlreadyConsumed, NotFound }
+
 pub fn inbox_items(inbox: &[InboxItem], kind: InboxItemKind) -> Vec<InboxItem> {
     inbox
         .iter()
@@ -495,6 +503,80 @@ impl Lane {
             .map(|stored| serde_json::from_value(stored.value).map_err(|error| session_invariant_error(error.to_string()))).transpose()
     }
 
+    pub async fn steer(&self, input: QueuedInput, images: Vec<maho_ai::types::ImageContent>, context: &Context) -> Result<String, SessionError> { self.enqueue(InboxItemKind::Steer, input, images, context).await }
+    pub async fn follow_up(&self, input: QueuedInput, images: Vec<maho_ai::types::ImageContent>, context: &Context) -> Result<String, SessionError> { self.enqueue(InboxItemKind::FollowUp, input, images, context).await }
+    pub async fn next_run(&self, input: QueuedInput, images: Vec<maho_ai::types::ImageContent>, context: &Context) -> Result<String, SessionError> { self.enqueue(InboxItemKind::NextRun, input, images, context).await }
+
+    async fn enqueue(&self, kind: InboxItemKind, input: QueuedInput, images: Vec<maho_ai::types::ImageContent>, context: &Context) -> Result<String, SessionError> {
+        self.assert_open()?;
+        let at = now_ms();
+        let message = match input {
+            QueuedInput::Text(text) => {
+                if text.is_empty() && images.is_empty() { return Err(session_invariant_error("Queued input must contain text or an image")); }
+                let mut content = Vec::new();
+                if !text.is_empty() { content.push(maho_ai::types::ContentBlock::text(text)); }
+                content.extend(images.into_iter().map(maho_ai::types::ContentBlock::Image));
+                crate::types::AgentMessage::Llm(maho_ai::types::Message::User(maho_ai::types::UserMessage { content: maho_ai::types::UserContent::Blocks(content), timestamp: at }))
+            },
+            QueuedInput::Message(message) => {
+                let mut message = *message;
+                if matches!(message.try_as_llm(), Some(maho_ai::types::Message::Assistant(assistant)) if assistant.stop_reason == maho_ai::types::StopReason::Pending) { return Err(session_invariant_error("Cannot queue a pending assistant message")); }
+                if !images.is_empty() {
+                    let crate::types::AgentMessage::Llm(maho_ai::types::Message::User(user)) = &mut message else { return Err(session_invariant_error("Images can be added only to queued user messages")); };
+                    let mut content = match &user.content {
+                        maho_ai::types::UserContent::Text(text) => if text.is_empty() { vec![] } else { vec![maho_ai::types::ContentBlock::text(text.clone())] },
+                        maho_ai::types::UserContent::Blocks(blocks) => blocks.clone(),
+                    };
+                    content.extend(images.into_iter().map(maho_ai::types::ContentBlock::Image));
+                    user.content = maho_ai::types::UserContent::Blocks(content);
+                }
+                message
+            },
+        };
+        let id = (self.session.id_generator())(Some(at));
+        let name = self.name.clone();
+        let read_context = context.clone();
+        self.command(move |mut state, reader| Box::pin(async move {
+            let mut queues = read_lane_queues(reader, &state.inbox, &read_context).await?;
+            let item = InboxItem { entry_id: id.clone(), kind };
+            let pending = PendingEntry::Message { payload: message };
+            queues.push(queued_item(&item, &pending)?);
+            state.inbox.push(item);
+            let writes = vec![Write::Value(set_value(&pending_entry(&id), encoded(&pending)?)), Write::Value(set_value(&lane_state(&name), encoded(&durable_lane_state(&state))?))];
+            Ok(LaneCommand::Commit { decision: CommitDecision { writes, materialize: Arc::new(move |_| id.clone()), events: Some(Arc::new(move |_| vec![HarnessEvent::new(HarnessEventPayload::QueueUpdate { queues: queues.clone() }, Some(name.clone()))])) }, next: Box::new(state) })
+        }), context).await
+    }
+
+    pub async fn cancel_queued(&self, id: String, context: &Context) -> Result<CancelQueuedOutcome, SessionError> {
+        self.assert_open()?;
+        let name = self.name.clone();
+        let read_context = context.clone();
+        self.command(move |mut state, reader| Box::pin(async move {
+            if !state.inbox.iter().any(|item| item.entry_id == id) {
+                let consumed = reader.get_entries(vec![id.clone()], &read_context).await?.contains_key(&id);
+                return Ok(LaneCommand::Return { result: if consumed { CancelQueuedOutcome::AlreadyConsumed } else { CancelQueuedOutcome::NotFound } });
+            }
+            if reader.get_value(&pending_entry(&id), &read_context).await?.is_none() { return Err(session_invariant_error(format!("Queued entry {id} is missing its payload"))); }
+            state.inbox.retain(|item| item.entry_id != id);
+            let queues = read_lane_queues(reader, &state.inbox, &read_context).await?;
+            let writes = vec![Write::Value(delete_value(&pending_entry(&id))), Write::Value(set_value(&lane_state(&name), encoded(&durable_lane_state(&state))?))];
+            Ok(LaneCommand::Commit { decision: CommitDecision { writes, materialize: Arc::new(|_| CancelQueuedOutcome::Cancelled), events: Some(Arc::new(move |_| vec![HarnessEvent::new(HarnessEventPayload::QueueUpdate { queues: queues.clone() }, Some(name.clone()))])) }, next: Box::new(state) })
+        }), context).await
+    }
+
+    pub async fn record_usage(&self, usage: maho_ai::types::Usage, entry_id: Option<String>, details: Option<serde_json::Value>, context: &Context) -> Result<String, SessionError> {
+        self.assert_open()?;
+        let id = (self.session.id_generator())(None);
+        let name = self.name.clone();
+        self.command(move |state, _| Box::pin(async move {
+            let row = crate::harness::session::types::NewUsageRow { id: id.clone(), usage, entry_id, adjustment: true, details };
+            Ok(LaneCommand::Commit { decision: CommitDecision {
+                writes: vec![crate::harness::session::commit::insert_usage(row.clone())], materialize: Arc::new(move |_| id.clone()),
+                events: Some(Arc::new(move |commit| vec![HarnessEvent::new(HarnessEventPayload::Usage { lane: name.clone(), row: crate::harness::session::types::UsageRow { id: row.id.clone(), seq: commit.seqs[0], usage: row.usage, entry_id: row.entry_id.clone(), adjustment: true, details: row.details.clone() }, totals: commit.stats.usage }, Some(name.clone()))])),
+            }, next: Box::new(state) })
+        }), context).await
+    }
+
     pub async fn find_entries(&self, query: Option<crate::harness::session::types::BranchScan>, context: &Context) -> Result<Vec<crate::harness::session::types::Entry>, SessionError> {
         self.assert_open()?;
         let query = query.unwrap_or_default();
@@ -592,4 +674,8 @@ async fn read_lane_queues(reader: &dyn SessionReader, inbox: &[InboxItem], conte
         queues.push(queued_item(item, &pending)?);
     }
     Ok(queues)
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
 }

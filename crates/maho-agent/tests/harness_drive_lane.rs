@@ -23,6 +23,54 @@ fn seed() -> LaneConfiguration {
 }
 
 #[tokio::test]
+async fn queues_all_input_kinds_without_moving_tip_and_cancels_one() {
+    use maho_agent::harness::runtime::lane::{QueuedInput, CancelQueuedOutcome};
+    use maho_agent::harness::session::types::InboxItemKind;
+    use maho_agent::harness::session::values::pending_entry;
+    let harness = fixture().await;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let steer = lane.steer(QueuedInput::Text("steer".into()), vec![], &BACKGROUND_CONTEXT).await.unwrap();
+    lane.follow_up(QueuedInput::Text("follow".into()), vec![], &BACKGROUND_CONTEXT).await.unwrap();
+    lane.next_run(QueuedInput::Text("next".into()), vec![], &BACKGROUND_CONTEXT).await.unwrap();
+    assert_eq!(lane.state().inbox.iter().map(|item| item.kind).collect::<Vec<_>>(), vec![InboxItemKind::Steer, InboxItemKind::FollowUp, InboxItemKind::NextRun]);
+    assert_eq!(lane.get_tip_id().unwrap(), None);
+    assert_eq!(lane.cancel_queued(steer.clone(), &BACKGROUND_CONTEXT).await.unwrap(), CancelQueuedOutcome::Cancelled);
+    assert_eq!(lane.cancel_queued(steer.clone(), &BACKGROUND_CONTEXT).await.unwrap(), CancelQueuedOutcome::NotFound);
+    assert!(harness.session.get_value(&pending_entry(&steer), &BACKGROUND_CONTEXT).await.unwrap().is_none());
+    assert_eq!(lane.state().inbox.len(), 2);
+}
+
+#[tokio::test]
+async fn rejects_empty_queued_text_without_faulting_lane() {
+    use maho_agent::harness::runtime::lane::QueuedInput;
+    let harness = fixture().await;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    assert_eq!(lane.steer(QueuedInput::Text(String::new()), vec![], &BACKGROUND_CONTEXT).await.unwrap_err().message, "Queued input must contain text or an image");
+    lane.steer(QueuedInput::Text("valid".into()), vec![], &BACKGROUND_CONTEXT).await.unwrap();
+    assert_eq!(lane.state().inbox.len(), 1);
+}
+
+#[tokio::test]
+async fn cancelling_committed_entry_reports_already_consumed() {
+    use maho_agent::harness::runtime::lane::CancelQueuedOutcome;
+    let harness = fixture().await;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let id = lane.append_custom_entry("committed".into(), None, &BACKGROUND_CONTEXT).await.unwrap();
+    assert_eq!(lane.cancel_queued(id, &BACKGROUND_CONTEXT).await.unwrap(), CancelQueuedOutcome::AlreadyConsumed);
+}
+
+#[tokio::test]
+async fn records_adjustment_usage_without_changing_branch_tip() {
+    let harness = fixture().await;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let usage = maho_ai::types::Usage { input: 7, total_tokens: 7, ..Default::default() };
+    let id = lane.record_usage(usage, None, Some(serde_json::json!({"reason": "external"})), &BACKGROUND_CONTEXT).await.unwrap();
+    assert!(!id.is_empty());
+    assert_eq!(harness.session.get_stats(&BACKGROUND_CONTEXT).await.unwrap().usage.input, 7);
+    assert_eq!(lane.get_tip_id().unwrap(), None);
+}
+
+#[tokio::test]
 async fn appends_custom_entries_in_a_parent_chain_and_reads_latest() {
     let harness = fixture().await;
     let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
