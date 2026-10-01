@@ -81,6 +81,20 @@ impl NodeTimerPort {
 impl Drop for NodeTimerPort { fn drop(&mut self) { for handle in self.handles.values() { handle.abort(); } } }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn bound_tick_transport_appends_before_followup_and_expands_templates() {
+        use maho_ext_api::*;
+        struct Capture(std::sync::Mutex<Vec<String>>);
+        impl ExtensionActions for Capture {
+            fn append_entry(&self,kind:&str,data:Option<JsonValue>)->Result<(),ExtensionFailure> { assert_eq!(kind,LOOP_TICK_ENTRY_TYPE); assert_eq!(data.unwrap()["deliveryId"],"d"); self.0.lock().unwrap().push("entry".into()); Ok(()) }
+            fn send_user_message(&self,content:UserMessageContent,options:SendUserMessageOptions)->Result<(),ExtensionFailure> { assert!(matches!(content,UserMessageContent::Text(_))); assert!(options.expand_prompt_templates); assert_eq!(options.deliver_as,Some(StreamingBehavior::FollowUp)); self.0.lock().unwrap().push("message".into()); Ok(()) }
+            fn send_message(&self,_:CustomMessage,_:SendMessageOptions)->Result<(),ExtensionFailure> { Err("unexpected custom message".into()) }
+            fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure> { Ok(Vec::new()) }
+        }
+        let capture=Arc::new(Capture(std::sync::Mutex::new(Vec::new()))); let runtime=ExtensionRuntime::default(); runtime.bind(capture.clone());
+        let api=ExtensionApi::new(LoadedExtension::new("loop","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
+        let prepared=PreparedLoopTick { text:"work".into(),entry:LoopTickEntryData { loop_id:"a".into(),delivery_id:"d".into(),scheduled_for_at:0.0,mode:crate::types::LoopKind::Dynamic,delivery:TickDelivery::Prompt,sentinel:None,noop_streak:0.0,folded:false },delivery_state:Default::default(),defer:false };
+        deliver_loop_tick(&api,prepared,true).unwrap(); assert_eq!(*capture.0.lock().unwrap(),vec!["entry","message"]);
+    }
     #[test] fn busy_registered_slash_payload_is_deferred_but_plain_prompt_is_not() {
         let mut scheduler=crate::scheduler::LoopScheduler::new("s",None,&Default::default());
         scheduler.create_dynamic(crate::scheduler::CreateDynamicRequest { original_args:"/test".into(),reentry_prompt:"/loop /test".into(),payload:crate::types::LoopPayload::Prompt { prompt:"/test args".into() } },"a".into(),0.0);
