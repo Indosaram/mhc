@@ -14,3 +14,4 @@ pub mod session_binding_store;
 pub mod session_continuity;
 pub mod tools;
 pub mod prompt_bridge;
+pub mod settings;
