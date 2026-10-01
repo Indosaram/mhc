@@ -10,7 +10,22 @@ pub fn goal_active(runtime:&FooterRuntime)->bool {
     false
 }
 #[derive(Default)]
-pub struct FooterStatus { runtime:Option<FooterRuntime>,frame:usize,published:bool,active:bool,pub running:bool }
+pub struct FooterStatus { runtime:Option<FooterRuntime>,frame:usize,published:bool,active:bool,pub running:bool,timer:Option<tokio::task::JoinHandle<()>> }
+pub fn sync_shared(footer:&Arc<std::sync::Mutex<FooterStatus>>,ctx:&maho_ext_api::ExtensionContext,active:bool) {
+    let mut state=footer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    state.sync_context(ctx,active);
+    if !state.running||state.timer.is_some() {return;}
+    let weak=Arc::downgrade(footer);
+    state.timer=Some(tokio::spawn(async move {
+        let mut interval=tokio::time::interval(std::time::Duration::from_millis(FRAME_INTERVAL_MS));interval.tick().await;
+        loop {
+            interval.tick().await;
+            let Some(footer)=weak.upgrade() else {break;};
+            let mut state=footer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);state.tick();if !state.running {break;}
+        }
+    }));
+}
+impl Drop for FooterStatus {fn drop(&mut self){if let Some(timer)=self.timer.take(){timer.abort();}}}
 impl FooterStatus {
     pub fn sync_context(&mut self,ctx:&maho_ext_api::ExtensionContext,active:bool) {
         let id=ctx.session_manager.session_id();let mut encoded=String::new();
@@ -31,5 +46,5 @@ impl FooterStatus {
     }
     pub fn dispose(&mut self) {self.active=false;self.stop();self.runtime=None;}
     fn publish(&mut self) { if let Some(runtime)=&self.runtime {runtime.ui.set_status("ulw-loop",Some(ULW_LOOP_FOOTER_FRAMES[self.frame]));self.published=true;} }
-    fn stop(&mut self) {self.running=false;if self.published && let Some(runtime)=&self.runtime {runtime.ui.set_status("ulw-loop",None);}self.published=false;self.frame=0;}
+    fn stop(&mut self) {if let Some(timer)=self.timer.take(){timer.abort();}self.running=false;if self.published && let Some(runtime)=&self.runtime {runtime.ui.set_status("ulw-loop",None);}self.published=false;self.frame=0;}
 }
