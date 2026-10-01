@@ -320,3 +320,16 @@ fn consecutive_extension_notifications_replace_status_not_append_it() {
     let lines = mode.render(80).join("\n");
     assert!(!lines.contains("first-status")); assert_eq!(lines.matches("second-status").count(), 1);
 }
+
+#[test]
+fn widget_refresh_keeps_insertion_order_and_caps_lines() {
+    use maho_ext_api::{ExtensionUi, WidgetContent}; use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.extension_ui.set_widget("z", Some(WidgetContent::Lines(vec!["first-widget".into()])), Default::default());
+    mode.extension_ui.set_widget("a", Some(WidgetContent::Lines(vec!["second-widget".into()])), Default::default());
+    mode.render(80);
+    mode.extension_ui.set_widget("z", Some(WidgetContent::Lines((0..12).map(|n| format!("updated-widget-{n}" )).collect())), Default::default());
+    let lines = mode.render(80).join("\n");
+    assert!(lines.find("updated-widget-0").expect("first") < lines.find("second-widget").expect("second"));
+    assert!(!lines.contains("updated-widget-11"));
+}

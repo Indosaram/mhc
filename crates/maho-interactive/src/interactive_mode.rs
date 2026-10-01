@@ -31,7 +31,7 @@ pub struct InteractiveMode {
     ui_reply: Rc<RefCell<Option<tokio::sync::oneshot::Sender<Option<String>>>>>,
     header: Option<Box<dyn Component>>,
     footer: Option<Box<dyn Component>>,
-    widgets: BTreeMap<String, (Box<dyn Component>, maho_ext_api::WidgetPlacement)>,
+    widgets: Vec<(String, Box<dyn Component>, maho_ext_api::WidgetPlacement)>,
     pub terminal_title: Option<String>,
     markdown_transformers: Vec<crate::components::markdown_transform::MarkdownTransformer>,
     reveal: crate::streaming_reveal::StreamingRevealController,
@@ -51,7 +51,7 @@ impl InteractiveMode {
         editor.editor.on_submit = Some(Box::new(move |text| { if !text.trim().is_empty() { captured.borrow_mut().push_back(text.trim().into()); } }));
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(maho_ext_api::Theme { name: Some(theme.name.clone()), colors: theme.resolved_colors(), ..Default::default() });
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: BTreeMap::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), last_status: None }
+        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), last_status: None }
     }
 
     pub fn use_registered_markdown_transformers(&mut self, extensions: &[maho_ext_api::LoadedExtension]) {
@@ -280,13 +280,20 @@ impl InteractiveMode {
             UiRequest::Header(factory) => self.header = factory.map(|factory| factory(&maho_ext_api::ExtensionUi::theme(self.extension_ui.as_ref()))),
             UiRequest::Footer(factory) => self.footer = factory.map(|factory| factory(&maho_ext_api::ExtensionUi::theme(self.extension_ui.as_ref()))),
             UiRequest::Widget(key, content, options) => {
+                let index = self.widgets.iter().position(|(name, _, _)| name == &key);
                 if let Some(content) = content {
                     let component: Box<dyn Component> = match content {
-                        maho_ext_api::WidgetContent::Lines(lines) => Box::new(maho_tui::components::text::Text::with_padding(lines.join("\n"), 0, 0)),
+                        maho_ext_api::WidgetContent::Lines(lines) => {
+                            let mut container = Container::new();
+                            for line in lines.iter().take(10) { container.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(line.clone(), 1, 0)))); }
+                            if lines.len() > 10 { container.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.fg(crate::theme::ThemeColor::Muted, "... (widget truncated)"), 1, 0)))); }
+                            Box::new(container)
+                        }
                         maho_ext_api::WidgetContent::Component(factory) => factory(&maho_ext_api::ExtensionUi::theme(self.extension_ui.as_ref())),
                     };
-                    self.widgets.insert(key, (component, options.placement));
-                } else { self.widgets.remove(&key); }
+                    if let Some(index) = index { self.widgets[index].1.dispose(); self.widgets[index] = (key, component, options.placement); }
+                    else { self.widgets.push((key, component, options.placement)); }
+                } else if let Some(index) = index { let (_, mut component, _) = self.widgets.remove(index); component.dispose(); }
             }
             UiRequest::Select { title, options, reply } => {
                 *self.ui_reply.borrow_mut() = Some(reply);
@@ -448,10 +455,10 @@ impl Component for InteractiveMode {
         self.tick(self.clock.elapsed().as_secs_f64() * 1000.0);
         let mut lines = self.chat.render(width);
         if let Some(header) = &mut self.header { let mut top = header.render(width); top.extend(lines); lines = top; }
-        for (widget, placement) in self.widgets.values_mut() { if *placement == maho_ext_api::WidgetPlacement::AboveEditor { lines.extend(widget.render(width)); } }
+        for (_, widget, placement) in &mut self.widgets { if *placement == maho_ext_api::WidgetPlacement::AboveEditor { lines.extend(widget.render(width)); } }
         if self.shortcut_overlay { lines.extend(crate::components::shortcut_overlay::ShortcutOverlay::new(&self.theme).render(width)); }
         lines.extend(if let Some(dialog) = &mut self.ui_dialog { dialog.render(width) } else if let Some(input) = &mut self.rename_input { input.render(width) } else { self.editor.render(width) });
-        for (widget, placement) in self.widgets.values_mut() { if *placement == maho_ext_api::WidgetPlacement::BelowEditor { lines.extend(widget.render(width)); } }
+        for (_, widget, placement) in &mut self.widgets { if *placement == maho_ext_api::WidgetPlacement::BelowEditor { lines.extend(widget.render(width)); } }
         let mut footer = crate::components::footer::FooterComponent::new(self.footer_snapshot());
         footer.set_auto_compact_enabled(self.session.auto_compaction_enabled());
         footer.snapshot.extension_statuses = self.extension_ui.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
