@@ -638,12 +638,11 @@ fn real_manager_residency_cap_batches_a_wide_wave_without_failures() {
     let residents = Arc::new(AtomicUsize::new(0));
     let peak = Arc::new(AtomicUsize::new(0));
     let runner = FakeRunner::new();
-    let handles = Arc::new((std::sync::Mutex::new(std::collections::BTreeMap::<String, Arc<FakeHandle>>::new()), std::sync::Condvar::new()));
+    let handles = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<String, Arc<FakeHandle>>::new()));
     let started_handles = Arc::clone(&handles);
     *runner.hook.lock().unwrap() = Some(Arc::new(move |spec, _| {
         let handle = FakeHandle::new(&spec.task_id, None);
-        started_handles.0.lock().unwrap().insert(spec.prompt.strip_prefix("do ").unwrap().into(), Arc::clone(&handle));
-        started_handles.1.notify_all();
+        started_handles.lock().unwrap().insert(spec.prompt.strip_prefix("do ").unwrap().into(), Arc::clone(&handle));
         Some(Ok(handle as Arc<dyn crate::manager::ManagedChildHandle>))
     }));
     let admission_residents = Arc::clone(&residents);
@@ -661,18 +660,34 @@ fn real_manager_residency_cap_batches_a_wide_wave_without_failures() {
     let started = fixture.start(input);
     let run_id = started.snapshot.run_id;
     let scheduler = create_dag_scheduler(DagSchedulerOptions { store: Arc::clone(&fixture.store), task_manager: Arc::clone(&fixture.tasks), initial_record: fixture.manager.record(&run_id, PARENT_SESSION_ID).unwrap(), execution_mode_agents: None, execution_mode_config: None, ancestry_depth: None, subscriber_ring: None, now: None }).unwrap();
+    let (attached_tx, attached_rx) = mpsc::channel();
+    let (completed_tx, completed_rx) = mpsc::channel();
+    let _unsubscribe = scheduler.subscribe(Arc::new(move |event| {
+        if let DagRunEventPayload::NodeTaskAttached { node_id, .. } = &event.payload {
+            attached_tx.send(node_id.clone()).unwrap();
+        }
+        if let DagRunEventPayload::NodeTransitioned { node_id, to: DagNodeState::Completed, .. } = &event.payload {
+            completed_tx.send(node_id.clone()).unwrap();
+        }
+    }));
     let run = std::thread::spawn(move || scheduler.run().unwrap());
+    // Attachment follows the entire admission pass. Keep both slots occupied until
+    // that boundary, then release exactly one child for each replacement admission.
+    assert_eq!(recv_within(&attached_rx, "first resident attached"), "wide-0");
+    assert_eq!(recv_within(&attached_rx, "second resident attached"), "wide-1");
     for index in 0..7 {
         let id = format!("wide-{index}");
-        let state = handles.0.lock().unwrap();
-        let (state, timeout) = handles.1.wait_timeout_while(state, Duration::from_secs(5), |state| !state.contains_key(&id) || (index == 0 && state.len() < 2)).unwrap();
-        assert!(!timeout.timed_out(), "{id} not admitted");
-        let handle = Arc::clone(&state[&id]); drop(state);
+        let handle = Arc::clone(&handles.lock().unwrap()[&id]);
         residents.fetch_sub(1, Ordering::SeqCst);
         handle.complete(&format!("output:{id}"));
+        assert_eq!(recv_within(&completed_rx, "released resident completed"), id);
+        if index < 5 {
+            assert_eq!(recv_within(&attached_rx, "replacement resident attached"), format!("wide-{}", index + 2));
+        }
     }
     let result = run.join().unwrap();
     assert_eq!(result.status, DagRunStatus::Completed);
+    assert_eq!(result.nodes.len(), 7);
     assert_eq!(peak.load(Ordering::SeqCst), 2);
     assert_eq!(runner.started_count(), 7);
     assert!(result.nodes.iter().all(|node| node.state == DagNodeState::Completed && node.error.is_none()));
