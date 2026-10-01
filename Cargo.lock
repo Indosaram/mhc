@@ -1759,6 +1759,7 @@ dependencies = [
  "maho-comment-checker-core",
  "maho-ext-api",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

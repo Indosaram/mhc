@@ -12,6 +12,16 @@ pub struct RunResult { pub status: RunStatus, pub message: String }
 pub fn resolve_binary(source_path: &Path) -> Option<PathBuf> {
     let exists = |path: &str| Path::new(path).exists();
     let binary_name = if cfg!(windows) { "comment-checker.exe" } else { "comment-checker" };
+    let platform = if cfg!(windows) { "win32" } else if cfg!(target_os = "macos") { "darwin" } else { "linux" };
+    let arch = if cfg!(target_arch = "x86_64") { "x64" } else if cfg!(target_arch = "aarch64") { "arm64" } else { std::env::consts::ARCH };
+    for directory in source_path.parent()?.ancestors() {
+        let package = directory.join("node_modules/@code-yeongyu/comment-checker");
+        if package.join("package.json").exists() {
+            let bundled = package.join("vendor").join(format!("{platform}-{arch}")).join(binary_name);
+            if bundled.exists() { return Some(bundled); }
+            break;
+        }
+    }
     comment_checker_core::resolve_comment_checker_binary(&ResolveCommentCheckerBinaryInput { binary_name, cached_binary_path: None, exists_sync: &exists, import_meta_url: source_path.to_str(), package_name: None }).map(PathBuf::from)
 }
 
@@ -35,8 +45,15 @@ async fn read_output(mut stream: impl AsyncRead + Unpin, name: &str) -> std::io:
 }
 
 pub async fn run_checker(input: &HookInput, binary: Option<&Path>) -> RunResult {
+    run_checker_with_prompt(input, binary, None).await
+}
+
+pub async fn run_checker_with_prompt(input: &HookInput, binary: Option<&Path>, custom_prompt: Option<&str>) -> RunResult {
     let Some(binary) = binary else { return RunResult { status: RunStatus::Missing, message: "comment-checker binary not found. Install @code-yeongyu/comment-checker or reload the package.".into() }; };
-    let mut child = match tokio::process::Command::new(binary).arg("check").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).spawn() {
+    let mut command = tokio::process::Command::new(binary);
+    command.arg("check");
+    if let Some(prompt) = custom_prompt.filter(|value| !value.is_empty()) { command.args(["--prompt", prompt]); }
+    let mut child = match command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).spawn() {
         Ok(child) => child,
         Err(error) => return RunResult { status: RunStatus::Error, message: error.to_string() },
     };
@@ -63,5 +80,34 @@ pub async fn run_checker(input: &HookInput, binary: Option<&Path>) -> RunResult 
             if let Err(error) = child.kill().await { eprintln!("comment-checker cleanup: {error}"); }
             RunResult { status: RunStatus::Error, message: format!("comment-checker process timed out after {PROCESS_TIMEOUT_MS} ms") }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_when_package_has_vendor_binary() {
+        let directory = tempfile::tempdir().expect("create package fixture");
+        let package = directory.path().join("node_modules/@code-yeongyu/comment-checker");
+        let platform = if cfg!(windows) { "win32" } else if cfg!(target_os = "macos") { "darwin" } else { "linux" };
+        let arch = if cfg!(target_arch = "x86_64") { "x64" } else if cfg!(target_arch = "aarch64") { "arm64" } else { std::env::consts::ARCH };
+        let name = if cfg!(windows) { "comment-checker.exe" } else { "comment-checker" };
+        let bundled = package.join("vendor").join(format!("{platform}-{arch}")).join(name);
+        std::fs::create_dir_all(bundled.parent().expect("vendor parent")).expect("create vendor directory");
+        std::fs::create_dir_all(package.join("bin")).expect("create fallback directory");
+        std::fs::write(package.join("package.json"), "{}").expect("write package metadata");
+        std::fs::write(&bundled, "binary").expect("write bundled fixture");
+        std::fs::write(package.join("bin").join(name), "fallback").expect("write fallback fixture");
+        assert_eq!(resolve_binary(&directory.path().join("extension.rs")), Some(bundled));
+    }
+
+    #[tokio::test]
+    async fn bounded_when_multibyte_output_crosses_limit() {
+        let mut bytes = vec![b'x'; MAX_PROCESS_OUTPUT_BYTES - 1];
+        bytes.extend_from_slice("é".as_bytes());
+        let output = read_output(bytes.as_slice(), "stderr").await.expect("read fixture output");
+        assert_eq!(output, format!("{}\n[stderr truncated after {MAX_PROCESS_OUTPUT_BYTES} bytes]", "x".repeat(MAX_PROCESS_OUTPUT_BYTES - 1)));
     }
 }

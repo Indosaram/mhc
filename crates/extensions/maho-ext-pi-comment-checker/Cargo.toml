@@ -11,5 +11,8 @@ maho-comment-checker-core = { path = "../../omo/comment-checker-core" }
 serde_json = "=1.0.149"
 tokio = { version = "=1.52.3", features = ["process", "io-util", "time", "macros", "rt"] }
 
+[dev-dependencies]
+tempfile = "=3.27.0"
+
 [lints]
 workspace = true
