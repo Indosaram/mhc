@@ -6,7 +6,16 @@ pub struct RpcSocketClient{stream:tokio::net::UnixStream,pub frames:RpcClientFra
 impl RpcSocketClient{
     pub async fn connect(path:&std::path::Path)->std::io::Result<Self>{Ok(Self::from_stream(tokio::net::UnixStream::connect(path).await?))}
     pub fn from_stream(stream:tokio::net::UnixStream)->Self{Self{stream,frames:RpcClientFrames::default(),reader:crate::jsonl::JsonlLineReader::default(),lines:VecDeque::new()}}
-    pub async fn send(&mut self,command:Value,route:bool,expect_response:bool)->std::io::Result<Value>{use tokio::io::AsyncWriteExt;let command=self.frames.command(command,route,expect_response);let line=crate::jsonl::serialize_json_line(&command)?;self.stream.write_all(line.as_bytes()).await?;Ok(command)}
+    pub async fn send(&mut self,command:Value,route:bool,expect_response:bool)->std::io::Result<Value>{
+        use tokio::io::AsyncWriteExt;
+        let command=self.frames.command(command,route,expect_response);
+        let line=crate::jsonl::serialize_json_line(&command)?;
+        if let Err(error)=self.stream.write_all(line.as_bytes()).await{
+            if let Some(id)=command["id"].as_str(){self.frames.pending.remove(id);}
+            return Err(error);
+        }
+        Ok(command)
+    }
     pub async fn request(&mut self,command:Value,route:bool,mut on_event:impl FnMut(Value),on_response:impl FnOnce(&Value))->std::io::Result<Value>{
         let kind=command["type"].as_str().unwrap_or_default().to_owned();
         let command=self.send(command,route,true).await?;
