@@ -1822,7 +1822,10 @@ version = "0.0.0"
 name = "maho-ext-ttsr"
 version = "0.0.0"
 dependencies = [
+ "maho-ai",
  "regex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
