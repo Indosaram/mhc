@@ -50,9 +50,35 @@ pub fn execute_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistr
     let mut result=text_result(format!("Monitor started with ID: {monitor_id}"));result.details=json!({"monitor_id":monitor_id,"bash_id":id,"monitor":true}).as_object().cloned();result
 }
 
+pub async fn execute_monitor_recorded(manager:&mut TerminalManager,registry:&mut MonitorRegistry,input:&Value,cwd:&std::path::Path,writer:Option<&mut crate::terminal_manifest::TerminalManifestWriter>)->TerminalToolResult {
+    use crate::terminal_manifest_model::{MonitorRegistration,MonitorSpec,FileEvent};
+    let Some(writer)=writer else {return execute_monitor(manager,registry,input,cwd);};
+    let persistent=input.get("persistent").and_then(Value::as_bool)==Some(true);
+    if input.get("action").and_then(Value::as_str)!=Some("rearm")&&persistent&&writer.durable_count()>=MAX_DURABLE_MONITORS {
+        return error_result(format!("Cannot start another persistent monitor: this session already holds {MAX_DURABLE_MONITORS} durable monitors (the maximum). Stop one with kill_bash first."));
+    }
+    let result=execute_monitor(manager,registry,input,cwd);
+    let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("epoch").as_secs_f64()*1000.0;
+    if result.is_error.is_none()&&input.get("action").and_then(Value::as_str)!=Some("rearm")&&let Some(details)=&result.details&&let Some(monitor_id)=details.get("monitor_id").and_then(Value::as_str) {
+        let description=input["description"].as_str().expect("registered description").to_owned();
+        let spec=if let Some(command)=input.get("command").and_then(Value::as_str) {MonitorSpec::Command {description,command:command.to_owned(),filter:input.get("filter").and_then(Value::as_str).map(str::to_owned),cwd:Some(cwd.to_string_lossy().into_owned()),persistent}} else {MonitorSpec::File {description,path:input["path"].as_str().expect("registered path").to_owned(),event:if input.get("event").and_then(Value::as_str)==Some("modify") {FileEvent::Modify} else {FileEvent::Create},timeout_ms:input.get("timeout_ms").and_then(Value::as_f64).unwrap_or(DEFAULT_MONITOR_TIMEOUT_MS as f64),cwd:cwd.to_string_lossy().into_owned(),approved_parent:None,persistent}};
+        writer.record_register(MonitorRegistration {monitor_id:monitor_id.to_owned(),spec},now).await;
+        if let Some(id)=details.get("bash_id").and_then(Value::as_str)&&let Some(checkpoint)=registry.file_checkpoint(id) {writer.schedule_checkpoint(monitor_id,checkpoint);}
+    }
+    if let Err(error)=writer.observe_monitor_state(&registry.snapshot(),now).await {return error_result(error);}
+    result
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn durable_admission_rejects_before_file_registration() {
+        let dir=tempfile::tempdir().unwrap();let mut manager=TerminalManager::default();let mut registry=MonitorRegistry::new(|_|{});let mut writer=crate::terminal_manifest::TerminalManifestWriter::new(dir.path(),"s");
+        for index in 0..MAX_DURABLE_MONITORS {let result=execute_monitor_recorded(&mut manager,&mut registry,&json!({"description":"watch","path":format!("watch-{index}"),"persistent":true}),dir.path(),Some(&mut writer)).await;assert!(result.is_error.is_none());}
+        let before=registry.snapshot().len();let result=execute_monitor_recorded(&mut manager,&mut registry,&json!({"description":"rejected","path":"extra","persistent":true}),dir.path(),Some(&mut writer)).await;
+        assert_eq!(result.is_error,Some(true));assert_eq!(registry.snapshot().len(),before);assert_eq!(writer.durable_count(),MAX_DURABLE_MONITORS);assert_eq!(manager.active_size().unwrap(),MAX_DURABLE_MONITORS);
+        registry.dispose();assert_eq!(manager.active_size().unwrap(),0);
+    }
     #[tokio::test]
     async fn persistent_file_has_expiry_without_ephemeral_deadline() {
         let dir=tempfile::tempdir().unwrap();let mut manager=TerminalManager::new(1);let mut registry=MonitorRegistry::new(|_|{});

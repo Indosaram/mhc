@@ -201,7 +201,7 @@ impl MonitorRegistry {
         }));
         Ok(())
     }
-    pub fn dispose(&mut self) {for (_,(_,task)) in std::mem::take(&mut self.files) {task.abort();}self.file_snapshots.lock().expect("file snapshots").clear();for task in self.tasks.drain(..) {task.abort();}self.records.lock().expect("monitor records").clear();}
+    pub fn dispose(&mut self) {for (_,(file,task)) in std::mem::take(&mut self.files) {task.abort();file.lock().expect("file monitor").stop("watcher disposed");}self.file_snapshots.lock().expect("file snapshots").clear();for task in self.tasks.drain(..) {task.abort();}self.records.lock().expect("monitor records").clear();}
 }
 impl Drop for MonitorRegistry {fn drop(&mut self) {self.dispose();}}
 
