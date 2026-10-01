@@ -450,6 +450,13 @@ async fn new_command_replaces_native_session_and_clears_transcript() {
     assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0));
 }
 
+#[tokio::test]
+async fn empty_compact_returns_native_nothing_to_compact_without_prompt() {
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/compact", Default::default()).await.expect_err("empty"), "Nothing to compact");
+    assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0));
+}
+
 #[test]
 fn skill_invocation_replay_separates_collapsed_skill_and_user_request() {
     use maho_tui::tui::Component;

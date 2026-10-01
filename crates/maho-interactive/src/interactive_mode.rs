@@ -189,6 +189,23 @@ impl InteractiveMode {
     }
 
     pub async fn submit(&mut self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
+        if text.trim() == "/reload" {
+            if self.session.reload().await? { self.rebuild_history(); self.show_status("Reloaded session resources".into()); }
+            return Ok(PromptDisposition::Handled);
+        }
+        if text.trim() == "/compact" || text.trim().starts_with("/compact ") {
+            let session = self.session.clone();
+            let compact = session.compact(text.trim().strip_prefix("/compact "));
+            tokio::pin!(compact);
+            let result = loop { tokio::select! {
+                result = &mut compact => break result,
+                Some(request) = self.ui_requests.recv() => self.handle_ui_request(request),
+                Some(event) = self.events.recv() => { if let maho_ext_api::AgentSessionEvent::Agent(event) = event { self.handle_event(&event); } }
+            }}?;
+            self.rebuild_history();
+            self.show_status(format!("Compacted from {} tokens", result.tokens_before));
+            return Ok(PromptDisposition::Handled);
+        }
         if text.trim() == "/new" {
             if self.session.new_session(None).await? { self.rebuild_history(); self.show_status("Started new session".into()); }
             return Ok(PromptDisposition::Handled);
