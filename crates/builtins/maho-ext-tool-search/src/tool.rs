@@ -1,7 +1,7 @@
-use std::sync::{Arc, Mutex};
-use maho_tools::definition::{ToolDefinition, ToolError, ToolExecutionMode, ToolResult};
 use serde_json::{Value, json};
-use crate::{engine::{bm25::{Bm25Result, Bm25SearchOptions},document::ToolSearchSource},service::{HiddenToolHint,ToolSearchService}};
+use crate::engine::{bm25::Bm25Result,document::ToolSearchSource};
+#[derive(Clone,Debug,PartialEq,Eq)]
+pub struct HiddenToolHint { pub name:String,pub hint:String }
 pub const TOOL_SEARCH_TOOL_NAME: &str="tool_search";
 pub fn prepare_tool_search_arguments(mut args: Value) -> Value {
     if let Some(obj)=args.as_object_mut() && let Some(server)=obj.remove("server") {
@@ -9,23 +9,6 @@ pub fn prepare_tool_search_arguments(mut args: Value) -> Value {
         if obj.get("group").is_none_or(Value::is_null) { obj.insert("group".into(),server); }
     }
     args
-}
-pub fn create_tool_search_tool(service: Arc<Mutex<ToolSearchService>>) -> ToolDefinition {
-    let mut definition=ToolDefinition::new(TOOL_SEARCH_TOOL_NAME,"Search the catalog of deferred tools by capability. Returns matching tool names with their parameter schemas and never changes your active tool set; call a returned tool by name and it activates on that first call.",json!({"type":"object","properties":{"query":{"type":"string","description":"Natural-language description of the capability you need."},"source":{"anyOf":[{"const":"mcp","type":"string"},{"const":"extension","type":"string"}],"description":"Optional: restrict the search to MCP or extension tools."},"group":{"type":"string","description":"Optional: restrict the search to one catalog group."}},"required":["query"]}),Arc::new(move |call| {
-        let service=Arc::clone(&service);
-        Box::pin(async move {
-            let query=call.params.get("query").and_then(Value::as_str).ok_or_else(||ToolError::Message("query must be a string".into()))?;
-            let source=call.params.get("source").and_then(Value::as_str).map(|s| match s { "mcp"=>Ok(ToolSearchSource::Mcp),"extension"=>Ok(ToolSearchSource::Extension),_=>Err(ToolError::Message("source must be mcp or extension".into())) }).transpose()?;
-            let group=call.params.get("group").and_then(Value::as_str);
-            let mut service=service.lock().map_err(|_|ToolError::Message("ToolSearchService lock poisoned".into()))?;
-            let matches=service.search(query,5,&Bm25SearchOptions { source,group:group.map(str::to_owned),..Default::default() });
-            let text=build_tool_search_result_text(query,&matches,&service.hidden_tool_hints(query),source,group,|name|service.get_tool_parameters(name));
-            Ok(ToolResult { content:vec![maho_tools::definition::ToolContent::text(text)],details:Some(json!({"matched":matches.iter().map(|m|&m.name).collect::<Vec<_>>(),"query":query})) })
-        })
-    }));
-    definition.label="Tool search".into(); definition.execution_mode=Some(ToolExecutionMode::Parallel);
-    definition.prompt_snippet=Some("Search deferred tool catalogs by capability; call a returned tool by name to use it.".into());
-    definition.prepare_arguments=Some(Arc::new(|args|Ok(prepare_tool_search_arguments(args)))); definition
 }
 pub fn build_tool_search_result_text(query: &str, matches: &[Bm25Result], hints: &[HiddenToolHint], source: Option<ToolSearchSource>, group: Option<&str>, parameters_of: impl Fn(&str)->Option<Value>) -> String {
     let mut scope=Vec::new();
