@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 maho-core = { path = "../maho-core" }
 maho-ai = { path = "../maho-ai" }
+maho-ext-api = { path = "../maho-ext-api" }
 chrono = { workspace = true, features = ["std", "clock"] }
 rustix = { version = "=1.1.4", features = ["process"] }
 sha2.workspace = true

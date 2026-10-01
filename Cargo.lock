@@ -2021,6 +2021,7 @@ dependencies = [
  "chrono",
  "maho-ai",
  "maho-core",
+ "maho-ext-api",
  "maho-test-support",
  "rustix",
  "serde",
