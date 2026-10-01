@@ -1,4 +1,4 @@
-use crate::{manager::TerminalManager,monitor_registry::{CommandMonitor,MonitorSnapshotEntry},restore::RestoreOutcome,terminal_manifest_model::{ManifestMonitor,MonitorRuntimeKind}};
+use crate::{manager::TerminalManager,monitor_registry::{CommandMonitor,MonitorSnapshotEntry,MonitorFireWindow},restore::RestoreOutcome,terminal_manifest_model::{ManifestMonitor,MonitorRuntimeKind}};
 use maho_pty::PtySessionOptions;
 use std::path::Path;
 
@@ -8,7 +8,7 @@ pub fn restore_command(monitor:&ManifestMonitor,manager:&mut TerminalManager,mut
     let Some(cwd)=monitor.cwd.as_deref().filter(|cwd|Path::new(cwd).is_absolute()&&Path::new(cwd).is_dir()) else {return RestoreOutcome::Lost;};
     let options=PtySessionOptions::new("/bin/sh").arg("-c").arg(command).cwd(cwd);
     let Ok(id)=manager.create(command,options) else {return RestoreOutcome::Lost;};
-    let mut record=CommandMonitor::new(MonitorSnapshotEntry {id:id.clone(),monitor_id:Some(monitor.monitor_id.clone()),description:monitor.description.clone(),command:monitor.command.clone(),filter:monitor.filter.clone(),persistent:Some(true),deadline_ms:None,expires_at:monitor.expires_at,..Default::default()},monitor.filter.as_deref().and_then(crate::shared::safe_reg_exp));
+    let mut record=CommandMonitor::new(MonitorSnapshotEntry {id:id.clone(),monitor_id:Some(monitor.monitor_id.clone()),description:monitor.description.clone(),command:monitor.command.clone(),filter:monitor.filter.clone(),persistent:Some(true),deadline_ms:None,expires_at:monitor.expires_at,fire_window:Some(MonitorFireWindow {start_ms:monitor.fire_window.start_ms,count:monitor.fire_window.count as usize}),..Default::default()},monitor.filter.as_deref().and_then(crate::shared::safe_reg_exp));
     if monitor.delivery_paused {record.pause();}
     manager.bind_monitor_id(&monitor.monitor_id,&id);
     if register(&id,manager.get(&id).expect("restored runtime"),record).is_err() {return RestoreOutcome::Lost;}
@@ -23,7 +23,7 @@ mod tests {
     #[test]
     fn restores_once_with_stable_identity_and_fresh_muted_runtime() {
         let saved=monitor();let mut manager=TerminalManager::default();let mut calls=0;
-        assert_eq!(restore_command(&saved,&mut manager,|id,_,record| {calls+=1;assert_eq!(id,"bash_1");assert!(record.snapshot.paused);assert_eq!(record.snapshot.deadline_ms,None);Ok(())}),RestoreOutcome::Muted);
+        assert_eq!(restore_command(&saved,&mut manager,|id,_,record| {calls+=1;assert_eq!(id,"bash_1");assert!(record.snapshot.paused);assert_eq!(record.snapshot.deadline_ms,None);assert_eq!(record.snapshot.fire_window.unwrap().start_ms,saved.fire_window.start_ms);Ok(())}),RestoreOutcome::Muted);
         assert_eq!(calls,1);assert_eq!(manager.resolve_id("mon_saved"),Some("bash_1".to_owned()));
         let runtime=manager.get("bash_1").unwrap();runtime.wait(std::time::Duration::from_secs(5)).unwrap();assert_eq!(runtime.full_output().unwrap(),"restored\r\n");manager.teardown().unwrap();
     }
