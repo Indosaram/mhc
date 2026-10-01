@@ -43,6 +43,9 @@ pub mod speculative_job;
 pub mod speculative;
 pub mod todo_bridge;
 pub mod openai_remote_dependencies;
+pub mod context_pipeline;
+pub mod deterministic_fallback;
+pub mod openai_remote;
 
 #[derive(Default)]
 pub struct CompactionExtension;

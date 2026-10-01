@@ -1624,6 +1624,7 @@ dependencies = [
  "maho-ai",
  "maho-core",
  "maho-ext-api",
+ "reqwest",
  "serde_json",
  "sha2",
  "tempfile",
