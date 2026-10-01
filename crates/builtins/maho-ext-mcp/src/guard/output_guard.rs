@@ -1,5 +1,4 @@
 use std::{collections::BTreeSet,io::Write,path::{Path,PathBuf},sync::{Mutex,OnceLock}};
-use base64::{Engine,engine::general_purpose::STANDARD};
 use serde_json::{json,Value};
 use crate::config_schema::OutputGuardSettings;
 #[derive(Default)]
@@ -69,7 +68,15 @@ fn binary_payload(block:&Value)->Option<Payload> {
         _=>None,
     }
 }
-fn decode(data:&str)->Vec<u8> {STANDARD.decode(data).unwrap_or_default()}
+fn decode(data:&str)->Vec<u8> {
+    let mut decoded=Vec::new();let mut bits=0u32;let mut count=0;
+    for byte in data.bytes() {
+        let digit=match byte {b'A'..=b'Z'=>byte-b'A',b'a'..=b'z'=>byte-b'a'+26,b'0'..=b'9'=>byte-b'0'+52,b'+'|b'-'=>62,b'/'|b'_'=>63,b'='=>break,_=>continue};
+        bits=(bits<<6)|u32::from(digit);count+=6;
+        if count>=8 {count-=8;decoded.push((bits>>count).to_le_bytes()[0]);bits&=(1<<count)-1;}
+    }
+    decoded
+}
 fn count_lines(text:&str)->usize {if text.is_empty(){0}else{text.split('\n').count()}}
 fn extension(mime:&str)->&'static str {match mime {"image/png"=>"png","image/jpeg"=>"jpg","image/webp"=>"webp","image/gif"=>"gif","audio/mpeg"=>"mp3","audio/wav"=>"wav","application/json"=>"json","application/pdf"=>"pdf",m if m.starts_with("text/")=>"txt",_=>"bin"}}
 fn head_tail_lines(text:&str,max:usize)->String {
@@ -80,12 +87,16 @@ fn head_tail_lines(text:&str,max:usize)->String {
 fn trim_bytes(text:&str,max:usize)->String {
     if text.len()<=max{return text.into();}
     let units:Vec<u16>=text.encode_utf16().collect();
+    let mut prefix_bytes=Vec::with_capacity(units.len()+1);prefix_bytes.push(0usize);
+    for (index,unit) in units.iter().enumerate() {
+        let previous=prefix_bytes[index];
+        let bytes=if (0xdc00..=0xdfff).contains(unit) && index>0 && (0xd800..=0xdbff).contains(&units[index-1]) {previous+1}
+            else {previous+if *unit<0x80 {1}else if *unit<0x800 {2}else {3}};
+        prefix_bytes.push(bytes);
+    }
     let mut end=units.len();
-    let mut bytes=text.len();
-    while end>0 && bytes+20>max {
-        let next=end.saturating_sub(256);
-        let removed=String::from_utf16_lossy(&units[next..end]).len();
-        bytes=bytes.saturating_sub(removed);end=next;
+    while end>0 && prefix_bytes[end]+20>max {
+        end=end.saturating_sub(256);
     }
     let result=String::from_utf16_lossy(&units[..end]);
     format!("{result}\n[... truncated ...]")

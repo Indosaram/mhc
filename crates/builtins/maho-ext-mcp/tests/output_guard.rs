@@ -40,3 +40,23 @@ fn write_failure_returns_inline_preview() {
     let result=apply_mcp_output_guard(&[json!({"type":"text","text":"x".repeat(65536)})],McpOutputGuardOptions {agent_dir:root.path(),artifacts:None,server:"fx",output_guard:None});
     assert!(!root.path().join("tmp/mcp-out").exists());assert!(result[0]["text"].as_str().unwrap().len()<10000);
 }
+#[test]
+fn unicode_preview_matches_utf16_chunk_truncation() {
+    let root=tempfile::tempdir().unwrap();let text="a😀".repeat(10001);let mut units=text.encode_utf16().collect::<Vec<_>>();
+    while String::from_utf16_lossy(&units).len()+20>8192 {units.truncate(units.len().saturating_sub(256));}
+    let expected=format!("{}\n[... truncated ...]",String::from_utf16_lossy(&units));
+    let settings=maho_ext_mcp::config_schema::OutputGuardSettings {max_bytes:Some(10000.0),..Default::default()};
+    while String::from_utf16_lossy(&units).len()+20>5000 {units.truncate(units.len().saturating_sub(256));}
+    let result=apply_mcp_output_guard(&[json!({"type":"text","text":text})],McpOutputGuardOptions {agent_dir:root.path(),artifacts:None,server:"fx",output_guard:Some(&settings)});
+    let actual=result[0]["text"].as_str().unwrap().split_once("Preview:\n").unwrap().1;
+    assert_eq!(actual,format!("{}\n[... truncated ...]",String::from_utf16_lossy(&units)));
+    assert!(expected.len()<=8192);
+}
+#[test]
+fn binary_spills_accept_node_style_base64() {
+    let root=tempfile::tempdir().unwrap();let settings=maho_ext_mcp::config_schema::OutputGuardSettings {max_bytes:Some(1.0),..Default::default()};
+    for data in ["Y W\nJj$", "YWJj", "YWJj=ignored"] {
+        let result=apply_mcp_output_guard(&[json!({"type":"image","data":data,"mimeType":"image/png"})],McpOutputGuardOptions {agent_dir:root.path(),artifacts:None,server:"fx",output_guard:Some(&settings)});
+        assert_eq!(std::fs::read(spill_path(&result)).unwrap(),b"abc");
+    }
+}
