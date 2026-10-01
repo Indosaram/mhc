@@ -7,6 +7,7 @@ pub mod home_store;
 pub mod models_probe;
 pub mod models;
 pub mod oauth_login;
+pub mod native_bootstrap;
 pub mod failover;
 pub mod stream;
 pub mod errors;

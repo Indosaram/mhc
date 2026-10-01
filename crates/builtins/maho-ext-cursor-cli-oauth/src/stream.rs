@@ -1,5 +1,43 @@
 use maho_ai::{types::{AssistantMessage,AssistantMessageEvent as Event,ContentBlock,TextContent,ThinkingContent,Usage,StopReason,DoneReason},model::Model,utils::{event_stream::{AssistantMessageEventStream,create_assistant_message_event_stream},diagnostics::{create_assistant_message_diagnostic,Thrown}}};
 use serde_json::{Value,json};
+pub struct SpawnAttemptInput {
+    pub executable:std::path::PathBuf,pub cwd:std::path::PathBuf,pub agent_dir:std::path::PathBuf,pub slot:crate::accounts::CursorCliAccountSlot,
+    pub attempt:crate::session_router::SessionAttempt,pub model:String,pub policy:crate::guardrails::ExecutionDecision,
+    pub environment:std::collections::BTreeMap<String,String>,pub signal:Option<maho_ai::utils::abort::AbortSignal>,
+}
+pub fn spawn_attempt(input:SpawnAttemptInput)->crate::session_router::AttemptReceiver {
+    let (sender,receiver)=tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+    let SpawnAttemptInput {executable,cwd,agent_dir,slot,attempt,model,policy,environment,signal}=input;
+    let producer=sender.clone();
+    let result=crate::home_store::run_in_account_home(&agent_dir,&slot,move |home|async move {
+        let sender=producer;
+        crate::guardrails::apply_deny_config(&home.home,&policy.deny_commands)?;
+        let args=crate::spawn_args::CursorCliArgsInput {prompt:&attempt.prompt,model:Some(&model),resume_chat_id:attempt.resume_chat_id.as_deref(),force:policy.force,
+            execution_mode:if policy.execution_mode==crate::settings::ExecutionMode::Plan {crate::spawn_args::ExecutionMode::Plan} else {crate::spawn_args::ExecutionMode::Agent},sandbox_mode:policy.sandbox_mode.as_deref()};
+        let mut handle=crate::transport::spawn_cursor_cli(&executable,args,home.home.to_str().ok_or_else(||anyhow::anyhow!("account HOME is not UTF-8"))?,&cwd,&environment,signal)?;
+        let mut held=Vec::new();let mut saw_result=false;
+        loop {
+            let event=tokio::select! { event=handle.events.recv()=>event,_=sender.closed()=>{handle.abort();let _=handle.completed.await;return Ok(());} };
+            let Some(event)=event else {break;};
+            match event {
+                Ok(event)=>{
+                    if event["type"]=="result" {saw_result=true;}
+                    if event["type"]=="aborted" || event["type"]=="malformed_stream" {held.push(event);} else {let _=sender.send(Ok(event));}
+                },
+                Err(error)=>{let _=sender.send(Err(json!({"thrown":{"message":error.to_string()}})));},
+            }
+        }
+        match handle.completed.await?? {
+            crate::transport::TransportOutcome::Aborted=>{let _=sender.send(Err(json!({"kind":"aborted"})));},
+            crate::transport::TransportOutcome::Completed {exit_code,stderr,..} if exit_code!=Some(0)&&!saw_result=>{let _=sender.send(Err(json!({"exitCode":exit_code,"stderr":stderr})));},
+            crate::transport::TransportOutcome::Completed {..}=>{for event in held {let _=sender.send(Ok(event));}},
+        }
+        Ok(())
+    },|_|{}).await;
+    if let Err(error)=result {let _=sender.send(Err(json!({"message":error.to_string()})));}
+    });receiver
+}
 #[derive(Clone,Copy,PartialEq)]
 enum OpenKind {Text,Thinking}
 pub struct StreamMapper {pub stream:AssistantMessageEventStream,pub output:AssistantMessage,started:bool,open:Option<OpenKind>,index:usize,text:String,accumulated:String}
