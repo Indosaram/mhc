@@ -299,3 +299,13 @@ async fn smooth_reveal_ticks_show_buffered_text_and_final_event_flushes_it() {
     mode.handle_event(&maho_agent::types::AgentEvent::MessageEnd { message });
     assert_eq!(mode.render(80).join("\n").matches("paced-reply").count(), 1);
 }
+
+#[tokio::test]
+async fn session_command_reports_native_turn_without_starting_another() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("hi", Default::default()).await.expect("turn");
+    assert_eq!(mode.submit("/session", Default::default()).await.expect("stats"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(mode.render(80).join("\n").contains("In-memory"));
+    assert!(mode.agent_idle);
+}

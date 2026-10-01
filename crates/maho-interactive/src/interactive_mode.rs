@@ -193,6 +193,32 @@ impl InteractiveMode {
     fn dispatch_command(&mut self, text: &str) -> Result<bool, String> {
         let text = text.trim();
         if matches!(text, "/quit" | "/exit") { self.shutdown_requested = true; return Ok(true); }
+        if text == "/session" {
+            let stats = self.session.get_session_stats();
+            let entries = self.session.with_session_manager(|manager| manager.entries());
+            let prices = |provider: &str, model: &str| self.session.model_registry().find(provider, model).map(|model| model.cost.cache_read);
+            let waste = maho_core::cache_stats::compute_cache_waste(&entries, &prices).map_err(|error| error.to_string())?;
+            let breakdown = maho_core::usage_totals::get_usage_cost_breakdown(&entries);
+            let theme = &self.theme;
+            let label = |text: &str| theme.fg(crate::theme::ThemeColor::Dim, text);
+            let count = crate::components::compaction_summary_message::format_count;
+            let mut info = format!("{}\n\n", theme.bold("Session Info"));
+            if let Some(name) = self.session.session_name() { info += &format!("{} {name}\n", label("Name:")); }
+            info += &format!("{} {}\n{} {}\n\n{}\n{} {}\n{} {}\n{} {}\n{} {} calls, {} results\n\n{}\n", label("File:"), stats.session_file.as_deref().unwrap_or("In-memory"), label("ID:"), stats.session_id, theme.bold("Messages"), label("Total:"), stats.total_messages, label("User:"), stats.user_messages, label("Assistant:"), stats.assistant_messages, label("Tools:"), stats.tool_calls, stats.tool_results, theme.bold("Tokens"));
+            let tokens = stats.tokens;
+            let prompt = tokens.input + tokens.cache_read + tokens.cache_write;
+            info += &format!("{} {}\n", label("Input:"), count(prompt));
+            if prompt > 0 && (tokens.cache_read > 0 || tokens.cache_write > 0) {
+                info += &format!("  {} {} {}\n  {} {}{}\n", label("Cached:"), count(tokens.cache_read), label(&format!("({:.1}%)", tokens.cache_read as f64 / prompt as f64 * 100.0)), label("Uncached:"), count(tokens.input + tokens.cache_write), if tokens.cache_write > 0 { format!(" {}", label(&format!("({} written to cache)", count(tokens.cache_write)))) } else { String::new() });
+            }
+            info += &format!("{} {}\n{} {}\n", label("Output:"), count(tokens.output), label("Total:"), count(tokens.total));
+            if stats.cost > 0.0 || waste.missed_tokens > 0.0 {
+                info += &format!("\n{}\n{} ${:.3}", theme.bold("Cost"), label("Total:"), stats.cost);
+                if breakdown.len() > 1 { for entry in breakdown { info += &format!("\n  {} ${:.3} {}", label(&format!("{}:", entry.key)), entry.cost, label(&format!("({} tokens)", crate::components::footer::format_tokens(entry.tokens as f64)))); } }
+                if waste.missed_tokens > 0.0 { info += &format!("\n{} {}{}", label("Cache Re-billed:"), if waste.missed_cost >= 0.0001 { format!("${:.3} ", waste.missed_cost) } else { String::new() }, label(&format!("({} tokens, {} miss{})", count(waste.missed_tokens as u64), waste.miss_count, if waste.miss_count == 1 { "" } else { "es" }))); }
+            }
+            self.show_status(info); return Ok(true);
+        }
         if text.starts_with("/export ") {
             let path = get_path_command_argument(text, "/export").ok_or("Missing export path")?;
             if path.ends_with(".jsonl") {
