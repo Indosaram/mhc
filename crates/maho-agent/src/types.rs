@@ -1,9 +1,8 @@
 //! Port of senpi packages/agent/src/types.ts.
 //!
 //! `AgentMessage` is `Message | CustomAgentMessages[keyof CustomAgentMessages]` in TS. The
-//! declaration-merged custom union is empty by default, so it is modelled as the uninhabited
-//! `CustomAgentMessage` variant: today it is isomorphic to `Message`, and a later todo that adds
-//! custom messages extends the enum instead of every call site.
+//! declaration-merged custom union is modelled by the `CustomAgentMessage` enum, which the harness
+//! extends with its own message kinds (harness/messages.ts) instead of every call site changing.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -287,9 +286,15 @@ pub fn identity_convert_to_llm() -> ConvertToLlm {
     })
 }
 
-/// Extensible interface for custom app messages (empty by default, as in senpi).
+/// Custom app messages. senpi declares the harness kinds into `CustomAgentMessages` from
+/// `harness/messages.ts`; Rust models that declaration merge as this enum.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum CustomAgentMessage {}
+pub enum CustomAgentMessage {
+    BashExecution(crate::harness::messages::BashExecutionMessage),
+    Custom(crate::harness::messages::CustomMessage),
+    BranchSummary(crate::harness::messages::BranchSummaryMessage),
+    CompactionSummary(crate::harness::messages::CompactionSummaryMessage),
+}
 
 /// AgentMessage: union of LLM messages + custom messages.
 ///
@@ -307,34 +312,45 @@ impl AgentMessage {
     pub fn role(&self) -> &'static str {
         match self {
             AgentMessage::Llm(message) => message.role(),
-            AgentMessage::Custom(never) => match *never {},
+            AgentMessage::Custom(custom) => crate::harness::messages::custom_agent_message_role(custom),
         }
     }
 
+    /// Borrowed LLM projection. Only LLM messages can be borrowed; a custom app message must be
+    /// projected with `into_llm()` (its LLM form is built, not stored).
     pub fn as_llm(&self) -> &Message {
         match self {
             AgentMessage::Llm(message) => message,
-            AgentMessage::Custom(never) => match *never {},
+            AgentMessage::Custom(_) => {
+                panic!("custom agent message has no borrowed LLM projection; use into_llm()")
+            }
+        }
+    }
+
+    pub fn try_as_llm(&self) -> Option<&Message> {
+        match self {
+            AgentMessage::Llm(message) => Some(message),
+            AgentMessage::Custom(_) => None,
         }
     }
 
     pub fn into_llm(self) -> Message {
         match self {
             AgentMessage::Llm(message) => message,
-            AgentMessage::Custom(never) => match never {},
+            AgentMessage::Custom(custom) => crate::harness::messages::custom_agent_message_to_llm(&custom),
         }
     }
 
     pub fn as_assistant(&self) -> Option<&AssistantMessage> {
-        match self.as_llm() {
-            Message::Assistant(message) => Some(message),
+        match self {
+            AgentMessage::Llm(Message::Assistant(message)) => Some(message),
             _ => None,
         }
     }
 
     pub fn as_tool_result(&self) -> Option<&ToolResultMessage> {
-        match self.as_llm() {
-            Message::ToolResult(message) => Some(message),
+        match self {
+            AgentMessage::Llm(Message::ToolResult(message)) => Some(message),
             _ => None,
         }
     }
