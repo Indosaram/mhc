@@ -2,9 +2,27 @@ use std::sync::Arc;
 use maho_ext_api::{ExtensionContext,ExtensionFailure,ExtensionFuture,NotificationType};
 use crate::monitor_continuation::ArmedTimer;
 pub type GoalTimerDelivery=Arc<dyn Fn(ArmedTimer)->ExtensionFuture<'static,()>+Send+Sync>;
+pub type DueGoalDelivery=Arc<dyn Fn(crate::monitor_continuation::DueGoalContinuation)->ExtensionFuture<'static,()>+Send+Sync>;
 #[derive(Default)]
 pub struct GoalContinuationTimer { worker:Option<tokio::task::JoinHandle<Result<(),ExtensionFailure>>> }
 impl GoalContinuationTimer {
+    pub async fn sync_monitor(&mut self,monitor:Arc<std::sync::Mutex<crate::monitor_continuation::MonitorAwareGoalContinuation>>,now:Arc<dyn Fn()->f64+Send+Sync>,ctx:ExtensionContext,delivery:DueGoalDelivery)->Result<(),ExtensionFailure> {
+        let armed=monitor.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?.armed_timer;
+        let Some(armed)=armed else { return self.cancel().await; };
+        let reading_ctx=ctx.clone(); let timestamp=now();
+        self.arm(armed,timestamp,ctx,Arc::new(move |expected| {
+            let monitor=monitor.clone(); let now=now.clone(); let ctx=reading_ctx.clone(); let delivery=delivery.clone();
+            Box::pin(async move {
+                let idle=ctx.is_idle(); let pending=ctx.has_pending_messages()?;
+                let due={ let mut monitor=monitor.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?;
+                    if monitor.armed_timer!=Some(expected) { return Ok(()); }
+                    monitor.take_due_continuation(now(),idle,pending)
+                };
+                if let Some(due)=due { delivery(due).await?; }
+                Ok(())
+            })
+        })).await
+    }
     pub fn running(&self)->bool { self.worker.as_ref().is_some_and(|worker|!worker.is_finished()) }
     pub async fn cancel(&mut self)->Result<(),ExtensionFailure> {
         if let Some(worker)=self.worker.take() {
@@ -29,6 +47,15 @@ impl GoalContinuationTimer {
 impl Drop for GoalContinuationTimer { fn drop(&mut self) { if let Some(worker)=&self.worker { worker.abort(); } } }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test(start_paused=true)] async fn changed_monitor_deadline_invalidates_old_callback() {
+        let mut desired=crate::monitor_continuation::MonitorAwareGoalContinuation::default();
+        desired.arm_timer(crate::wait_progress::GoalWaitKind::Monitor,1000.0,1000.0,false,0.0);
+        let monitor=Arc::new(std::sync::Mutex::new(desired)); let mut timer=GoalContinuationTimer::default();
+        timer.sync_monitor(monitor.clone(),Arc::new(||0.0),crate::test_context::context(),Arc::new(|_|Box::pin(async { panic!("superseded desired-state callback fired") }))).await.unwrap();
+        monitor.lock().unwrap().armed_timer=None;
+        timer.sync_monitor(monitor,Arc::new(||0.0),crate::test_context::context(),Arc::new(|_|Box::pin(async { panic!("canceled monitor delivered") }))).await.unwrap();
+        assert!(!timer.running());
+    }
     #[tokio::test(start_paused=true)] async fn deadline_dispatches_once_and_replacement_cancels_old_delivery() {
         let mut timer=GoalContinuationTimer::default();
         let armed=ArmedTimer { kind:crate::wait_progress::GoalWaitKind::Monitor,due_at_ms:1000.0,total_ms:1000.0,drain_fire:false };

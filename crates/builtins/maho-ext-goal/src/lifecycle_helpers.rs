@@ -25,6 +25,11 @@ pub async fn admit_and_record_goal_continuation(reference:&crate::types::GoalSto
     };
     Ok((recorded,verdict))
 }
+pub async fn admit_and_queue_goal_continuation(api:&maho_ext_api::ExtensionApi,reference:&crate::types::GoalStoreRef,input:&crate::continuation::GoalContinuationInput<'_>,now:u64,mark_pending:impl FnOnce(),content:impl FnOnce(crate::continuation::GoalContinuationVerdict)->String)->Result<Option<Goal>,ExtensionFailure> {
+    let (recorded,verdict)=admit_and_record_goal_continuation(reference,input,now).await?;
+    if recorded.is_some()&&matches!(verdict,crate::continuation::GoalContinuationVerdict::Continue { .. }) { mark_pending(); queue_hidden_goal_prompt(api,content(verdict))?; }
+    Ok(recorded)
+}
 
 pub fn is_resume_of_stopped_goal(ctx:&ExtensionContext,reason:&str,goal:Option<&Goal>)->Result<bool,ExtensionFailure> {
     if reason!="resume" || !goal.is_some_and(|goal|matches!(goal.status,GoalStatus::Paused|GoalStatus::Blocked)) || !ctx.has_ui || !ctx.is_idle() { return Ok(false); }
