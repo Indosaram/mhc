@@ -13,3 +13,6 @@ pub mod restore;
 pub mod manifest_lease;
 pub mod notify;
 pub mod manager;
+pub mod extension;
+pub mod index;
+pub use extension::TerminalExtension;

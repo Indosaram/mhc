@@ -58,6 +58,7 @@ pub struct TerminalRuntimeSession {
     output:Arc<Mutex<OutputState>>,
     exit:ExitState,
     exit_thread:Option<std::thread::JoinHandle<()>>,
+    exit_signal:tokio::sync::watch::Receiver<Option<Result<PtyExit,String>>>,
 }
 
 impl TerminalRuntimeSession {
@@ -68,15 +69,18 @@ impl TerminalRuntimeSession {
         })?;
         let waiter=session.wait_in_background()?;
         let exit:ExitState=Arc::new((Mutex::new(None),Condvar::new()));let settled=Arc::clone(&exit);
+        let (exit_sender,exit_signal)=tokio::sync::watch::channel(None);
         let exit_thread=std::thread::spawn(move || {
             let result=match waiter.join() {Ok(result)=>result.map_err(|e|e.to_string()),Err(_)=>Err("terminal exit waiter panicked".to_owned())};
             let (lock,signal)=&*settled;
-            if let Ok(mut state)=lock.lock() {*state=Some(result);signal.notify_all();}
+            if let Ok(mut state)=lock.lock() {*state=Some(result.clone());signal.notify_all();}
+            exit_sender.send_replace(Some(result));
         });
-        Ok(Self {command:command.to_owned(),session,output,exit,exit_thread:Some(exit_thread)})
+        Ok(Self {command:command.to_owned(),session,output,exit,exit_thread:Some(exit_thread),exit_signal})
     }
 
     pub fn backend(&self)->&'static str {"native"}
+    pub fn subscribe_exit(&self)->tokio::sync::watch::Receiver<Option<Result<PtyExit,String>>> {self.exit_signal.clone()}
     pub fn exited(&self)->Result<bool,RuntimeError> {Ok(self.exit.0.lock().map_err(|_|RuntimeError::Poisoned)?.is_some())}
     pub fn exit_result(&self)->Result<Option<PtyExit>,RuntimeError> {
         let state=self.exit.0.lock().map_err(|_|RuntimeError::Poisoned)?;
