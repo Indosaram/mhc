@@ -6,3 +6,6 @@ pub mod types;
 pub mod parser;
 pub mod cache;
 pub mod ordering;
+pub mod scanner;
+pub mod finder;
+pub mod formatter;

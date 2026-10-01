@@ -1,4 +1,5 @@
 pub const GLOBAL_DISTANCE: usize = 9999;
+pub const PROJECT_RULE_SUBDIRS: &[(&str, &str)] = &[(".omo", "rules"), (".claude", "rules"), (".cursor", "rules"), (".github", "instructions")];
 pub const DEFAULT_MAX_RULE_CHARS: usize = 12000;
 pub const DEFAULT_MAX_RESULT_CHARS: usize = 40000;
 pub const TRUNCATION_NOTICE: &str = "\n\n[Rule truncated. Read full rule: {path}]";
