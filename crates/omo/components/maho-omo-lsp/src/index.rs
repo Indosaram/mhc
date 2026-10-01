@@ -12,6 +12,9 @@ impl Extension for LspComponent {
         api.register_flag(POST_EDIT_FLAG,FlagType::Boolean {default:Some(true)},Some("Enable omo-senpi post-edit LSP diagnostics.".into()));
         if api.get_flag(TOOLS_FLAG)==Some(FlagValue::Boolean(false)) {return;}
         let home=PathBuf::from(std::env::var("HOME").unwrap_or_default());
+        for notice in crate::adapter::migration_notices::get_config_notices(&api.cwd,&home) {
+            eprintln!("omo-senpi ignored project-local LSP commands; move custom commands to the user .pi config: {} ({:?})",notice.config_path.display(),notice.server_ids);
+        }
         for mut tool in descriptors() {
             let name=tool.name.clone();let cwd=api.cwd.clone();let home=home.clone();
             tool.execute=Arc::new(move |call| {let name=name.clone();let cwd=cwd.clone();let home=home.clone();Box::pin(async move {
