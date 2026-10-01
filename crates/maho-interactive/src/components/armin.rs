@@ -1,8 +1,7 @@
 //! Port of senpi `packages/coding-agent/src/modes/interactive/components/armin.ts`.
 //!
-//! senpi picks the effect and drives the animation with `Math.random` + `setInterval`; this port
-//! takes an explicit effect and seed and advances from host ticks (`tick()`), so a run is
-//! reproducible.
+//! senpi picks the effect and drives the animation with `Math.random` and `setInterval`; this port
+//! takes the effect and a seed explicitly and advances from `tick()`, so a run is deterministic.
 
 use maho_tui::tui::Component;
 
@@ -84,9 +83,7 @@ fn get_pixel(x: usize, y: usize) -> bool {
 }
 
 fn get_char(x: usize, row: usize) -> char {
-    let upper = get_pixel(x, row * 2);
-    let lower = get_pixel(x, row * 2 + 1);
-    match (upper, lower) {
+    match (get_pixel(x, row * 2), get_pixel(x, row * 2 + 1)) {
         (true, true) => '█',
         (true, false) => '▀',
         (false, true) => '▄',
@@ -124,6 +121,11 @@ fn shuffled_positions(rng: &mut Rng) -> Vec<(usize, usize)> {
     positions
 }
 
+struct Drop {
+    y: isize,
+    settled: usize,
+}
+
 enum EffectState {
     Typewriter { pos: usize },
     Scanline { row: usize },
@@ -134,9 +136,27 @@ enum EffectState {
     Dissolve { positions: Vec<(usize, usize)>, index: usize },
 }
 
-struct Drop {
-    y: isize,
-    settled: usize,
+fn init_effect(effect: Effect, rng: &mut Rng) -> EffectState {
+    match effect {
+        Effect::Typewriter => EffectState::Typewriter { pos: 0 },
+        Effect::Scanline => EffectState::Scanline { row: 0 },
+        Effect::Rain => EffectState::Rain {
+            drops: (0..WIDTH)
+                .map(|_| Drop { y: -(rng.below(DISPLAY_HEIGHT * 2) as isize), settled: 0 })
+                .collect(),
+        },
+        Effect::Fade => EffectState::Fade { positions: shuffled_positions(rng), index: 0 },
+        Effect::Crt => EffectState::Crt { expansion: 0 },
+        Effect::Glitch => EffectState::Glitch { phase: 0, glitch_frames: 8 },
+        Effect::Dissolve => EffectState::Dissolve { positions: shuffled_positions(rng), index: 0 },
+    }
+}
+
+fn random_noise(rng: &mut Rng) -> Vec<Vec<char>> {
+    let chars = [' ', '░', '▒', '▓', '█', '▀', '▄'];
+    (0..DISPLAY_HEIGHT)
+        .map(|_| (0..WIDTH).map(|_| chars[rng.below(chars.len())]).collect())
+        .collect()
 }
 
 pub struct ArminComponent {
@@ -152,28 +172,17 @@ impl ArminComponent {
     pub fn new(effect: Effect, seed: u64, theme: Theme) -> Self {
         let mut rng = Rng(seed | 1);
         let final_grid = build_final_grid();
+        let current_grid = if effect == Effect::Dissolve { random_noise(&mut rng) } else { empty_grid() };
         let state = init_effect(effect, &mut rng);
-        let current_grid = match effect {
-            Effect::Dissolve => random_noise(&mut rng),
-            _ => empty_grid(),
-        };
-        Self {
-            effect,
-            final_grid,
-            current_grid,
-            state,
-            rng,
-            theme,
-        }
+        Self { effect, final_grid, current_grid, state, rng, theme }
     }
 
     pub fn effect(&self) -> Effect {
         self.effect
     }
 
-    /// Advances the animation by one frame; `false` once it is complete.
     pub fn tick(&mut self) -> bool {
-        let done = match self.effect {
+        match self.effect {
             Effect::Typewriter => self.tick_typewriter(),
             Effect::Scanline => self.tick_scanline(),
             Effect::Rain => self.tick_rain(),
@@ -181,8 +190,7 @@ impl ArminComponent {
             Effect::Crt => self.tick_crt(),
             Effect::Glitch => self.tick_glitch(),
             Effect::Dissolve => self.tick_dissolve(),
-        };
-        !done
+        }
     }
 
     fn tick_typewriter(&mut self) -> bool {
@@ -218,47 +226,42 @@ impl ArminComponent {
     fn tick_rain(&mut self) -> bool {
         let mut all_settled = true;
         self.current_grid = empty_grid();
-        let mut updates: Vec<(usize, usize, isize, bool)> = Vec::with_capacity(WIDTH);
+        let mut falling: Vec<(usize, usize)> = Vec::new();
         {
             let EffectState::Rain { drops } = &mut self.state else {
                 return true;
             };
-            for x in 0..WIDTH {
-                let settled = drops[x].settled;
-                for row in (DISPLAY_HEIGHT.saturating_sub(settled)..DISPLAY_HEIGHT).rev() {
+            for (x, drop) in drops.iter_mut().enumerate() {
+                let settled = drop.settled;
+                for row in (DISPLAY_HEIGHT - settled.min(DISPLAY_HEIGHT))..DISPLAY_HEIGHT {
                     self.current_grid[row][x] = self.final_grid[row][x];
                 }
                 if settled >= DISPLAY_HEIGHT {
-                    updates.push((x, 0, drops[x].y, true));
                     continue;
                 }
                 all_settled = false;
                 let mut target_row: Option<usize> = None;
-                for row in (0..DISPLAY_HEIGHT.saturating_sub(settled)).rev() {
+                for row in (0..DISPLAY_HEIGHT - settled).rev() {
                     if self.final_grid[row][x] != ' ' {
                         target_row = Some(row);
                         break;
                     }
                 }
-                drops[x].y += 1;
-                let y = drops[x].y;
-                let mut settled_row = None;
+                drop.y += 1;
+                let y = drop.y;
                 if y >= 0 && (y as usize) < DISPLAY_HEIGHT {
                     match target_row {
                         Some(target) if y as usize >= target => {
-                            drops[x].settled = DISPLAY_HEIGHT - target;
-                            drops[x].y = -(self.rng.below(5) as isize) - 1;
+                            drop.settled = DISPLAY_HEIGHT - target;
+                            drop.y = -(self.rng.below(5) as isize) - 1;
                         }
-                        _ => settled_row = Some(y as usize),
+                        _ => falling.push((y as usize, x)),
                     }
                 }
-                updates.push((x, settled_row.unwrap_or(usize::MAX), y, false));
             }
         }
-        for (x, row, _y, is_settled) in updates {
-            if !is_settled && row != usize::MAX {
-                self.current_grid[row][x] = '▓';
-            }
+        for (row, x) in falling {
+            self.current_grid[row][x] = '▓';
         }
         all_settled
     }
@@ -284,9 +287,9 @@ impl ArminComponent {
         };
         let mid_row = DISPLAY_HEIGHT / 2;
         self.current_grid = empty_grid();
-        let top = mid_row as isize - *expansion as isize;
-        let bottom = mid_row + *expansion;
-        for row in top.max(0) as usize..=bottom.min(DISPLAY_HEIGHT - 1) {
+        let top = (mid_row as isize - *expansion as isize).max(0) as usize;
+        let bottom = (mid_row + *expansion).min(DISPLAY_HEIGHT - 1);
+        for row in top..=bottom {
             for x in 0..WIDTH {
                 self.current_grid[row][x] = self.final_grid[row][x];
             }
@@ -303,24 +306,21 @@ impl ArminComponent {
             let mut next = Vec::with_capacity(DISPLAY_HEIGHT);
             for row in &self.final_grid {
                 let offset = self.rng.below(7) as isize - 3;
-                let mut glitch_row = row.clone();
+                let glitch_row = row.clone();
                 if self.rng.chance(30) {
                     let len = glitch_row.len() as isize;
                     let mut shifted = Vec::with_capacity(WIDTH);
                     for i in 0..len {
-                        let source = (i + offset).rem_euclid(len);
-                        shifted.push(glitch_row[source as usize]);
+                        shifted.push(glitch_row[(i + offset).rem_euclid(len) as usize]);
                     }
                     shifted.truncate(WIDTH);
                     next.push(shifted);
-                    continue;
-                }
-                if self.rng.chance(20) {
+                } else if self.rng.chance(20) {
                     let swap_row = self.rng.below(DISPLAY_HEIGHT);
                     next.push(self.final_grid[swap_row].clone());
-                    continue;
+                } else {
+                    next.push(glitch_row);
                 }
-                next.push(std::mem::take(&mut glitch_row));
             }
             self.current_grid = next;
             *phase += 1;
@@ -346,70 +346,28 @@ impl ArminComponent {
     }
 }
 
-fn init_effect(effect: Effect, rng: &mut Rng) -> EffectState {
-    match effect {
-        Effect::Typewriter => EffectState::Typewriter { pos: 0 },
-        Effect::Scanline => EffectState::Scanline { row: 0 },
-        Effect::Rain => EffectState::Rain {
-            drops: (0..WIDTH)
-                .map(|_| Drop {
-                    y: -(rng.below(DISPLAY_HEIGHT * 2) as isize),
-                    settled: 0,
-                })
-                .collect(),
-        },
-        Effect::Fade => EffectState::Fade {
-            positions: shuffled_positions(rng),
-            index: 0,
-        },
-        Effect::Crt => EffectState::Crt { expansion: 0 },
-        Effect::Glitch => EffectState::Glitch {
-            phase: 0,
-            glitch_frames: 8,
-        },
-        Effect::Dissolve => EffectState::Dissolve {
-            positions: shuffled_positions(rng),
-            index: 0,
-        },
-    }
-}
-
-fn random_noise(rng: &mut Rng) -> Vec<Vec<char>> {
-    let chars = [' ', '░', '▒', '▓', '█', '▀', '▄'];
-    (0..DISPLAY_HEIGHT)
-        .map(|_| (0..WIDTH).map(|_| chars[rng.below(chars.len())]).collect())
-        .collect()
-}
-
 impl Component for ArminComponent {
     fn render(&mut self, width: usize) -> Vec<String> {
         let padding = 1;
         let available_width = width.saturating_sub(padding);
-        let accent = self.theme.fg(ThemeColor::Accent, "");
-        let _ = accent;
         let mut lines: Vec<String> = self
             .current_grid
             .iter()
             .map(|row| {
                 let clipped: String = row.iter().take(available_width).collect();
-                let clipped_len = clipped.chars().count();
-                let pad_right = width.saturating_sub(padding + clipped_len);
+                let pad_right = width.saturating_sub(padding + clipped.chars().count());
                 format!(" {}{}", self.theme.fg(ThemeColor::Accent, &clipped), " ".repeat(pad_right))
             })
             .collect();
         let message = "ARMIN SAYS HI";
-        let msg_pad_right = width.saturating_sub(padding + message.chars().count());
-        lines.push(format!(
-            " {}{}",
-            self.theme.fg(ThemeColor::Accent, message),
-            " ".repeat(msg_pad_right)
-        ));
+        let msg_pad_right = width.saturating_sub(padding + message.len());
+        lines.push(format!(" {}{}", self.theme.fg(ThemeColor::Accent, message), " ".repeat(msg_pad_right)));
         lines
     }
 
     fn invalidate(&mut self) {}
 }
 
-pub fn effect_from_seed(seed: u64) -> Effect {
-    EFFECTS[(seed % EFFECTS.len() as u64) as usize]
+pub fn effect_for_index(index: usize) -> Effect {
+    EFFECTS[index % EFFECTS.len()]
 }

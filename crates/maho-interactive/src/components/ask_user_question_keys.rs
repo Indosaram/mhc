@@ -118,12 +118,12 @@ fn handle_submit_key(component: &mut AskUserQuestionComponent, data: &str) {
         return;
     }
     let comment_has_text = component.comment_input.borrow().get_value() != "";
-    if matches_key(data, "left") || matches_key(data, "right") {
-        if !component.state.is_comment_focused() || !comment_has_text {
-            component.state.switch_tab(if matches_key(data, "right") { 1 } else { -1 });
-            component.update_all();
-            return;
-        }
+    if (matches_key(data, "left") || matches_key(data, "right"))
+        && (!component.state.is_comment_focused() || !comment_has_text)
+    {
+        component.state.switch_tab(if matches_key(data, "right") { 1 } else { -1 });
+        component.update_all();
+        return;
     }
     if matches_key(data, "backspace") && component.state.is_comment_focused() && !comment_has_text {
         component.state.move_submit_row(-1);
@@ -186,7 +186,7 @@ fn handle_options_key(
         component.update_all();
         return;
     }
-    if data.len() == 1 && data >= "1" && data <= "9" {
+    if data.len() == 1 && ("1"..="9").contains(&data) {
         let index = usize::from(data.as_bytes()[0] - b'1');
         let question = component.state.active_question().clone();
         if let Some(option) = question.options.get(index) {

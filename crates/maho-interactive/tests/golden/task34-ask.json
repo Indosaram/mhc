@@ -1,0 +1,106 @@
+{
+  "happy": {
+    "keys": [
+      "down",
+      "enter"
+    ],
+    "request": {
+      "requestId": "q1",
+      "questions": [
+        {
+          "id": "framework",
+          "header": "Framework",
+          "question": "Which framework should the port use?",
+          "options": [
+            {
+              "label": "React"
+            },
+            {
+              "label": "Vue"
+            },
+            {
+              "label": "Svelte"
+            }
+          ],
+          "multiSelect": false
+        }
+      ],
+      "waitForAnswer": true,
+      "timeoutMs": 60000
+    },
+    "response": {
+      "status": "answered",
+      "answers": {
+        "framework": {
+          "selected": [
+            "Vue"
+          ]
+        }
+      },
+      "unanswered": []
+    }
+  },
+  "notice": {
+    "notice": "You have not answered all questions",
+    "expected": "You have not answered all questions",
+    "resolved": false
+  },
+  "timeout": {
+    "autoResolvedAfterMs": 60000,
+    "response": {
+      "status": "timed_out",
+      "answers": {},
+      "unanswered": [
+        "framework"
+      ],
+      "autoResolvedAfterMs": 60000
+    },
+    "commentResponse": {
+      "status": "comment-submitted",
+      "answers": {},
+      "comment": "use react please",
+      "unanswered": [
+        "framework"
+      ]
+    },
+    "unanswered": [
+      "framework"
+    ],
+    "statusLine": "\u001b[38;2;138;190;183m\u001b[1m?\u001b[22m\u001b[39m\u001b[38;2;212;212;212m Question pending (1 unanswered)\u001b[39m\u001b[38;2;128;128;128m · 01:00\u001b[39m",
+    "statusLineMulti": "\u001b[38;2;138;190;183m\u001b[1m?\u001b[22m\u001b[39m\u001b[38;2;212;212;212m 3 questions pending\u001b[39m\u001b[38;2;128;128;128m · 05:00\u001b[39m",
+    "countdownLabels": [
+      [
+        0,
+        "00:00"
+      ],
+      [
+        999,
+        "00:01"
+      ],
+      [
+        1000,
+        "00:01"
+      ],
+      [
+        59000,
+        "00:59"
+      ],
+      [
+        60000,
+        "01:00"
+      ],
+      [
+        299000,
+        "04:59"
+      ],
+      [
+        300000,
+        "5m"
+      ],
+      [
+        600000,
+        "10m"
+      ]
+    ]
+  }
+}

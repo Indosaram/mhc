@@ -4,20 +4,11 @@ use std::collections::{HashMap, HashSet};
 
 use super::catalog::types::TipDefinition;
 
+#[derive(Default)]
 pub struct SelectTipOptions<'a> {
     pub exclude: Option<&'a HashSet<String>>,
     pub keys: Option<&'a dyn Fn(&str) -> String>,
     pub has_command: Option<&'a dyn Fn(&str) -> bool>,
-}
-
-impl Default for SelectTipOptions<'_> {
-    fn default() -> Self {
-        Self {
-            exclude: None,
-            keys: None,
-            has_command: None,
-        }
-    }
 }
 
 pub fn select_tip<'a>(
@@ -35,7 +26,7 @@ pub fn select_tip<'a>(
         }
         if let Some(keys) = options.keys
             && !tip.bindings.is_empty()
-            && tip.bindings.iter().all(|binding| keys(binding) == "")
+            && tip.bindings.iter().all(|binding| keys(binding).is_empty())
         {
             continue;
         }

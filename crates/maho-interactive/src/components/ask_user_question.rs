@@ -60,7 +60,7 @@ pub struct AskUserQuestionOptions {
     pub now_ms: u64,
     pub timeout_ms: Option<u64>,
     pub get_deadline_at_ms: Option<Box<dyn Fn() -> u64>>,
-    pub on_progress: Option<Box<dyn FnMut(&QuestionDraft)>>,
+    pub on_progress: Option<ProgressCallback>,
     pub initial_draft: Option<QuestionDraft>,
     pub initial_question_index: Option<usize>,
 }
@@ -79,6 +79,9 @@ impl AskUserQuestionOptions {
     }
 }
 
+/// Draft notification on every selection or keystroke (drives the idle timer).
+pub type ProgressCallback = Box<dyn FnMut(&QuestionDraft)>;
+
 pub struct AskUserQuestionComponent {
     pub state: AskUserQuestionState,
     done: Box<dyn FnMut(QuestionResponse)>,
@@ -88,7 +91,7 @@ pub struct AskUserQuestionComponent {
     countdown: Option<AskUserCountdown>,
     timeout_ms: u64,
     get_deadline_at_ms: Option<Box<dyn Fn() -> u64>>,
-    on_progress: Option<Box<dyn FnMut(&QuestionDraft)>>,
+    on_progress: Option<ProgressCallback>,
     root: Container,
     title_text: Rc<RefCell<Text>>,
     tab_text: Rc<RefCell<AskUserQuestionTabs>>,
