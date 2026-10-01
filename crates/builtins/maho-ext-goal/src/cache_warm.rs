@@ -28,6 +28,10 @@ pub fn estimate_cache_warm_metrics(model: Option<&Model>, env: &ProviderEnv, usa
 }
 pub fn format_wake_duration(ms: f64) -> String { let seconds = (ms / 1000.0 + 0.5).floor(); if seconds < 60.0 { return format!("{seconds}s"); } let minutes = (seconds / 60.0).floor(); let rest_seconds = seconds % 60.0; if minutes < 60.0 { return if rest_seconds == 0.0 { format!("{minutes}m") } else { format!("{minutes}m {rest_seconds}s") }; } let hours = (minutes / 60.0).floor(); let rest_minutes = minutes % 60.0; if rest_minutes == 0.0 { format!("{hours}h") } else { format!("{hours}h {rest_minutes}m") } }
 pub fn format_cache_ttl(seconds: f64) -> String { if seconds % 3600.0 == 0.0 { format!("{}h", seconds / 3600.0) } else if seconds % 60.0 == 0.0 { format!("{}m", seconds / 60.0) } else { format!("{seconds}s") } }
+pub fn format_warm_token_count(tokens:f64)->String {
+    let compact=|value:f64,suffix:&str| { let rendered=format!("{value:.1}"); format!("{}{suffix}",rendered.strip_suffix(".0").unwrap_or(&rendered)) };
+    if tokens>=1_000_000.0 { compact(tokens/1_000_000.0,"M") } else if tokens>=1000.0 { compact(tokens/1000.0,"K") } else { format!("{}",tokens.trunc().max(0.0)) }
+}
 pub fn format_saved_usd(value: f64) -> String { if value < 0.0005 { "<$0.001".into() } else if value < 1.0 { format!("${value:.3}") } else { format!("${value:.2}") } }
 #[cfg(test)] mod tests {
     use super::*;
