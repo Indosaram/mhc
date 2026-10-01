@@ -11,6 +11,10 @@ pub fn turn_completed_properties(event:&Value,session_id:&str) -> Option<(Value,
     let invalid=![input,output,read,write,reasoning,total].iter().all(|n|n.1) || cost.is_none();
     Some((json!({"$session_id":session_id,"provider":provider,"model_id":model,"input_tokens":input.0,"output_tokens":output.0,"cache_read_tokens":read.0,"cache_write_tokens":write.0,"reasoning_tokens":reasoning.0,"total_tokens":total.0,"cost_usd":((cost.unwrap_or(0.0)+f64::EPSILON)*10000.0).round()/10000.0,"turn_index":event.get("turnIndex")}),invalid))
 }
+pub fn register_omo_native_turn_telemetry(api:&mut maho_ext_api::ExtensionApi,hash:std::sync::Arc<dyn Fn(&str)->String+Send+Sync>,capture:crate::omo_native_parallel_summary::SummaryCapture,diagnostic:std::sync::Arc<dyn Fn()+Send+Sync>) {
+    use maho_ext_api::{EventKind,EventResult,ExtensionEvent};
+    api.on(EventKind::TurnEnd,std::sync::Arc::new(move |event,ctx| {let output=if let ExtensionEvent::TurnEnd {turn_index,message,..}=event {turn_completed_properties(&json!({"turnIndex":turn_index,"message":message}),&hash(ctx.session_manager.session_id()))} else {None};let capture=std::sync::Arc::clone(&capture);let diagnostic=std::sync::Arc::clone(&diagnostic);Box::pin(async move {if let Some((properties,invalid))=output {if invalid {diagnostic();}capture("turn_completed",properties);}Ok(EventResult::None)})}));
+}
 #[cfg(test)]
 mod tests {
     use super::*;
