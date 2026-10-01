@@ -32,3 +32,6 @@ pub mod host_launch_spec;
 pub mod host_reservations;
 pub mod host_generations;
 pub mod protocol_identity;
+pub mod host_lifecycle;
+pub mod session_attribution;
+pub mod loop_lag_watchdog;
