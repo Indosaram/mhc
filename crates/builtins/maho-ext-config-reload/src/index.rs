@@ -15,6 +15,39 @@ pub struct ActiveTarget { pub registration_id: String, pub target: WatchTarget, 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingChange { pub registration_id: String, pub paths: Vec<PathBuf> }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegistrationAdmission { Added, Identical, Restricted, RejectionSuppressed }
+#[derive(Default)]
+pub struct WatchRegistrations {
+    registrations: Vec<Arc<crate::protocol::ConfigWatchRegistration>>,
+    rejected: BTreeMap<String, String>,
+}
+impl WatchRegistrations {
+    pub fn register(&mut self, registration: Arc<crate::protocol::ConfigWatchRegistration>, cwd: &Path, agent_dir: &Path, pending: &mut PendingChanges) -> RegistrationAdmission {
+        let fingerprint = crate::protocol::registration_fingerprint(&registration, false);
+        if self.rejected.get(&registration.id) == Some(&fingerprint) { return RegistrationAdmission::RejectionSuppressed; }
+        if crate::protocol::registration_has_restricted_target(&registration, cwd, agent_dir) {
+            self.rejected.insert(registration.id.clone(), fingerprint);
+            return RegistrationAdmission::Restricted;
+        }
+        self.rejected.remove(&registration.id);
+        if let Some(existing) = self.registrations.iter_mut().find(|existing| existing.id == registration.id) {
+            if Arc::ptr_eq(existing, &registration) { return RegistrationAdmission::Identical; }
+            *existing = Arc::clone(&registration);
+        } else { self.registrations.push(Arc::clone(&registration)); }
+        pending.delete(&registration.id);
+        RegistrationAdmission::Added
+    }
+    pub fn unregister(&mut self, id: &str, pending: &mut PendingChanges) -> bool {
+        self.rejected.remove(id);
+        let before = self.registrations.len();
+        self.registrations.retain(|registration| registration.id != id);
+        let removed = self.registrations.len() != before;
+        if removed { pending.delete(id); }
+        removed
+    }
+    pub fn snapshot(&self) -> Vec<crate::protocol::ConfigWatchRegistration> { self.registrations.iter().map(|registration| (**registration).clone()).collect() }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReloadAdmission { Empty, InFlight, Busy, Compacting, Unavailable, ProbeVeto }
 pub fn reload_admission(pending_empty: bool, in_flight: bool, idle: bool, pending_messages: bool, compacting: bool, request_available: bool) -> ReloadAdmission {
     if pending_empty { ReloadAdmission::Empty }

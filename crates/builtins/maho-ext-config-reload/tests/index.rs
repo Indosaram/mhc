@@ -1,6 +1,26 @@
 use maho_ext_config_reload::index::*;
 use serde_json::json;
 #[test]
+fn registration_rejection_suppression_and_identity_do_not_clear_pending() {
+    use maho_ext_config_reload::protocol::*;
+    use std::{path::Path, sync::Arc};
+    let root = Path::new("/fixture");
+    let registration = Arc::new(ConfigWatchRegistration { id: "r".into(), display_name: "fixture".into(), targets: vec![ConfigWatchTarget { path: "auth.json".into(), kind: ConfigWatchTargetKind::File, filter_globs: None }] });
+    let mut registrations = WatchRegistrations::default();
+    let mut pending = PendingChanges::default();
+    assert_eq!(registrations.register(Arc::clone(&registration), root, root, &mut pending), RegistrationAdmission::Restricted);
+    assert_eq!(registrations.register(registration, root, root, &mut pending), RegistrationAdmission::RejectionSuppressed);
+    let safe = Arc::new(ConfigWatchRegistration { id: "r".into(), display_name: "fixture".into(), targets: vec![] });
+    assert_eq!(registrations.register(Arc::clone(&safe), root, root, &mut pending), RegistrationAdmission::Added);
+    pending.add("r", &["settings.json".into()]);
+    assert_eq!(registrations.register(Arc::clone(&safe), root, root, &mut pending), RegistrationAdmission::Identical);
+    assert!(!pending.is_empty());
+    assert_eq!(registrations.register(Arc::new((*safe).clone()), root, root, &mut pending), RegistrationAdmission::Added);
+    assert!(pending.is_empty());
+    assert!(registrations.unregister("r", &mut pending));
+    assert!(!registrations.unregister("r", &mut pending));
+}
+#[test]
 fn reload_admission_probes_veto_only_after_idle_compaction_and_capability_gates() {
     assert_eq!(reload_admission(true, false, true, false, false, true), ReloadAdmission::Empty);
     assert_eq!(reload_admission(false, true, true, false, false, true), ReloadAdmission::InFlight);
