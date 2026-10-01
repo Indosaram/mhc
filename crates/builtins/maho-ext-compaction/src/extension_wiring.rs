@@ -26,3 +26,38 @@ pub fn compaction_feedback(applied:bool,reason:&str,aborted:bool,remote_fallback
     if !aborted && !parts.is_empty() {result["errorMessage"]=json!(format!("Compaction did not apply: {}",parts.join("; local fallback ")));}
     Some(result)
 }
+
+pub fn end_compaction_feedback(
+    context: &maho_ext_api::ExtensionContext,
+    signal: Option<maho_ext_api::AbortSignal>,
+    applied: bool,
+    reason: &str,
+    remote_fallback: Option<&str>,
+) -> Result<(), maho_ext_api::ExtensionFailure> {
+    let aborted = signal.as_ref().is_some_and(maho_ext_api::AbortSignal::is_aborted);
+    let Some(feedback) = compaction_feedback(applied, reason, aborted, remote_fallback) else { return Ok(()); };
+    context.end_compaction(maho_ext_api::EndCompactionOptions {
+        reason: maho_ext_api::CompactionReason::Extension,
+        signal,
+        aborted: Some(aborted),
+        error_message: feedback.get("errorMessage").and_then(Value::as_str).map(str::to_owned),
+    })
+}
+
+pub fn create_blocking_remote_compaction_event(
+    context: &maho_ext_api::ExtensionContext,
+    preparation: maho_ext_api::CompactionPreparation,
+    request_id: String,
+    custom_instructions: String,
+    signal: maho_ext_api::AbortSignal,
+) -> maho_ext_api::SessionBeforeCompactEvent {
+    maho_ext_api::SessionBeforeCompactEvent {
+        reason: maho_ext_api::CompactionReason::Extension,
+        will_retry: false,
+        request_id,
+        preparation,
+        branch_entries: context.session_manager.get_branch(),
+        custom_instructions: Some(custom_instructions),
+        signal,
+    }
+}
