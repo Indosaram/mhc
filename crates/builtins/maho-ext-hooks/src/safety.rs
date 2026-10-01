@@ -55,6 +55,36 @@ fn read_command_words(command:&str)->Vec<(String,String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn plugin_handler(root:&std::path::Path,command:&str,windows:Option<&str>)->ExecutableHookHandler {
+        let source=crate::types::HookSourceMetadata {scope:HookSourceScope::Plugin,source_path:root.join("hooks/hooks.json").to_string_lossy().into_owned(),display_order:0,discovered_at:crate::types::HookDiscoveryTiming::PreSession,plugin_root:Some(root.to_string_lossy().into_owned()),manifest_path:None,plugin_env:Some(crate::plugin_manifest::build_plugin_env(root,None).unwrap())};
+        crate::schema::parse_hook_config(&serde_json::json!({"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":command,"commandWindows":windows}]}]}}),&source).executable_handlers.remove(0)
+    }
+    #[test]
+    fn plugin_targets_reject_escaped_and_quoted_suffixes_in_both_fields()->std::io::Result<()> {
+        let root=tempfile::tempdir()?;
+        for (command,windows) in [("node ${PLUGIN_ROOT}/../escape.mjs","node ${PLUGIN_ROOT}\\..\\escape.ps1"),("node \"${PLUGIN_ROOT}\"/../escape.mjs","node \"%PLUGIN_ROOT%\"/../escape.cmd")] {
+            let diagnostics=validate_hook_handler_safety(&plugin_handler(root.path(),command,Some(windows)))?;assert_eq!(diagnostics.len(),2);assert!(diagnostics.iter().all(|diagnostic|diagnostic.code=="invalid_command_target"));assert!(diagnostics[0].path.ends_with(".command"));assert!(diagnostics[1].path.ends_with(".commandWindows"));
+        }Ok(())
+    }
+    #[test]
+    fn missing_plugin_target_returns_diagnostic()->std::io::Result<()> {
+        let root=tempfile::tempdir()?;let diagnostics=validate_hook_handler_safety(&plugin_handler(root.path(),"node ${PLUGIN_ROOT}/hooks/missing.mjs",Some("exit 0")))?;assert_eq!(diagnostics.len(),1);assert_eq!(diagnostics[0].code,"missing_command_target");Ok(())
+    }
+    #[cfg(unix)]
+    #[test]
+    fn command_target_uses_filesystem_truth_through_symlink_dotdot()->std::io::Result<()> {
+        for decoy in [true,false] {
+            let root=tempfile::tempdir()?;let outside=tempfile::tempdir()?;std::fs::create_dir(outside.path().join("subdir"))?;std::fs::write(outside.path().join("escape.mjs"),b"exit 0")?;
+            if decoy {std::fs::write(root.path().join("escape.mjs"),b"exit 1")?;}
+            std::os::unix::fs::symlink(outside.path().join("subdir"),root.path().join("jump"))?;std::os::unix::fs::symlink("jump/..",root.path().join("entry"))?;
+            let diagnostics=validate_hook_handler_safety(&plugin_handler(root.path(),"node ${PLUGIN_ROOT}/entry/escape.mjs",Some("exit 0")))?;assert_eq!(diagnostics.len(),1);assert_eq!(diagnostics[0].code,"invalid_command_target");
+        }Ok(())
+    }
+    #[test]
+    fn environment_inherits_only_minimal_explicit_and_plugin_fields()->std::io::Result<()> {
+        let root=tempfile::tempdir()?;let handler=plugin_handler(root.path(),"exit 0",Some("exit 0"));let source=BTreeMap::from([("PATH".to_owned(),"/bin".to_owned()),("HOME".to_owned(),"home".to_owned()),("ALLOWED".to_owned(),"allow".to_owned()),("DENIED".to_owned(),"deny".to_owned()),("PLUGIN_ROOT".to_owned(),"wrong".to_owned())]);
+        let env=build_hook_environment(&handler,SupportedHookEvent::PreToolUse,&source,&["ALLOWED".to_owned()]);assert_eq!(env["PATH"],"/bin");assert_eq!(env["HOME"],"home");assert_eq!(env["ALLOWED"],"allow");assert!(!env.contains_key("DENIED"));assert_eq!(env["PLUGIN_ROOT"],root.path().to_string_lossy());assert_eq!(env["CLAUDE_PLUGIN_ROOT"],env["PLUGIN_ROOT"]);assert_eq!(env["SENPI_HOOK_EVENT"],"PreToolUse");assert_eq!(env["SENPI_HOOK_SOURCE"],handler.source.source_path);Ok(())
+    }
     #[test] fn quoted_suffix_keeps_escape_for_validation() {assert_eq!(read_command_words("node \"${PLUGIN_ROOT}\"/../escape.mjs"),vec![("node".to_owned(),"node".to_owned()),("\"${PLUGIN_ROOT}\"/../escape.mjs".to_owned(),"${PLUGIN_ROOT}/../escape.mjs".to_owned())]);}
     #[test] fn default_timeout_and_invalid_numbers() {assert!(!is_valid_hook_timeout_seconds(f64::NAN));assert!(!is_valid_hook_timeout_seconds(0.0));assert!(is_valid_hook_timeout_seconds(600.0));}
 }
