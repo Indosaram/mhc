@@ -28,7 +28,7 @@ fn claude_config_requires_opt_in() {
 }
 #[test]
 fn invalid_arrays_are_rejected() {
-    assert!(validate_raw(json!({"mcpServers":{"x":{"command":"node","args":"not-array"}}})).is_err());
+    assert_eq!(validate_raw(json!({"mcpServers":{"x":{"command":"node","args":"not-array"}}})).unwrap_err().to_string(), "Invalid MCP config at mcpServers.x.args: Expected array");
 }
 #[test]
 fn hashes_ignore_key_order_and_startup_policy() {
@@ -140,4 +140,40 @@ fn trusted_project_can_spawn() {
     write(&root.path().join(".maho/mcp.json"),json!({"mcpServers":{"x":{"command":"${COMMAND}"}}}));
     let result = load(root.path(),true,&BTreeMap::from([("COMMAND".into(),"node".into())])).unwrap();
     assert_eq!(result.servers["x"].config.as_ref().unwrap().command.as_deref(),Some("node"));
+}
+fn declaration(name: &str) -> maho_ext_api::RegisteredMcpServerDeclaration {
+    maho_ext_api::RegisteredMcpServerDeclaration { name: name.into(), config: maho_ext_api::McpServerDeclaration { command: Some("extension".into()), exposure: Some(maho_ext_api::McpExposure::Direct), ..Default::default() }, extension_path: "<ext>".into(), registration_cwd: "/tmp/ext".into() }
+}
+#[test]
+fn trusted_global_wins_over_extension() {
+    let root = tempfile::tempdir().unwrap();
+    write(&root.path().join("agent/mcp.json"),json!({"mcpServers":{"x":{"command":"global"}}}));
+    let mut result = load(root.path(),true,&BTreeMap::new()).unwrap();
+    merge_extension_mcp_servers(&mut result,&[declaration("x")]).unwrap();
+    assert_eq!(result.servers["x"].source,McpServerSource::Global);
+}
+#[test]
+fn disabled_global_wins_over_extension() {
+    let root = tempfile::tempdir().unwrap();
+    write(&root.path().join("agent/mcp.json"),json!({"mcpServers":{"x":{"enabled":false}}}));
+    let mut result = load(root.path(),true,&BTreeMap::new()).unwrap();
+    merge_extension_mcp_servers(&mut result,&[declaration("x")]).unwrap();
+    assert_eq!(result.servers["x"].state,McpServerState::Disabled);
+}
+#[test]
+fn extension_replaces_untrusted_placeholder() {
+    let root = tempfile::tempdir().unwrap();
+    write(&root.path().join(".maho/mcp.json"),json!({"mcpServers":{"x":{"command":"evil"}}}));
+    let mut result = load(root.path(),false,&BTreeMap::new()).unwrap();
+    merge_extension_mcp_servers(&mut result,&[declaration("x")]).unwrap();
+    assert_eq!(result.servers["x"].source,McpServerSource::Extension); assert_eq!(result.diagnostics.len(),1);
+}
+#[test]
+fn identical_declarations_have_stable_hashes() {
+    let root = tempfile::tempdir().unwrap();
+    let mut result = load(root.path(),true,&BTreeMap::new()).unwrap();
+    merge_extension_mcp_servers(&mut result,&[declaration("x")]).unwrap();
+    let first = result.servers.remove("x").unwrap();
+    merge_extension_mcp_servers(&mut result,&[declaration("x")]).unwrap();
+    assert_eq!(first.config_hash,result.servers["x"].config_hash);
 }

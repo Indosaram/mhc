@@ -60,6 +60,25 @@ pub struct ServerConfigWire {
     #[serde(skip_serializing_if = "Option::is_none")] pub log_level: Option<LogLevel>,
 }
 pub type McpServerConfig = ServerConfigWire;
+impl From<&maho_ext_api::McpServerDeclaration> for ServerConfigWire {
+    fn from(value: &maho_ext_api::McpServerDeclaration) -> Self {
+        use maho_ext_api::{McpAuth, McpDirectTools, McpExposure, McpLifecycle, McpLogLevel, McpTransport};
+        Self {
+            transport: value.transport.map(|v| match v { McpTransport::Stdio => Transport::Stdio, McpTransport::Http => Transport::Http }),
+            url: value.url.clone(), command: value.command.clone(), args: value.args.clone(), env: value.env.clone(), cwd: value.cwd.clone(), headers: value.headers.clone(),
+            auth: value.auth.map(|v| match v { McpAuth::Bearer => Auth::Mode(AuthMode::Bearer), McpAuth::OAuth => Auth::Mode(AuthMode::Oauth), McpAuth::Disabled => Auth::Disabled(false) }),
+            bearer_token_env: value.bearer_token_env.clone(),
+            oauth: value.oauth.as_ref().map(|v| OAuthConfig { client_id: v.client_id.clone(), callback_port: v.callback_port, scopes: v.scopes.clone(), client_metadata_url: v.client_metadata_url.clone(), flow: v.flow.map(|f| match f { maho_ext_api::OAuthFlow::Code => OAuthFlow::Code, maho_ext_api::OAuthFlow::ClientCredentials => OAuthFlow::ClientCredentials }) }),
+            enabled: value.enabled,
+            lifecycle: value.lifecycle.map(|v| match v { McpLifecycle::Lazy => Lifecycle::Lazy, McpLifecycle::Eager => Lifecycle::Eager, McpLifecycle::KeepAlive => Lifecycle::KeepAlive }),
+            idle_timeout_min: value.idle_timeout_min, request_timeout_ms: value.request_timeout_ms, connect_timeout_ms: value.connect_timeout_ms, startup_timeout_ms: value.startup_timeout_ms,
+            include_tools: value.include_tools.clone(), exclude_tools: value.exclude_tools.clone(),
+            direct_tools: value.direct_tools.as_ref().map(|v| match v { McpDirectTools::Enabled(b) => DirectTools::All(*b), McpDirectTools::Names(items) => DirectTools::Patterns(items.clone()) }),
+            exposure: value.exposure.map(|v| match v { McpExposure::Auto => Exposure::Auto, McpExposure::Direct => Exposure::Direct, McpExposure::Search => Exposure::Search, McpExposure::Proxy => Exposure::Proxy }),
+            log_level: value.log_level.map(|v| match v { McpLogLevel::Debug => LogLevel::Debug, McpLogLevel::Info => LogLevel::Info, McpLogLevel::Notice => LogLevel::Notice, McpLogLevel::Warning => LogLevel::Warning, McpLogLevel::Error => LogLevel::Error, McpLogLevel::Critical => LogLevel::Critical, McpLogLevel::Alert => LogLevel::Alert, McpLogLevel::Emergency => LogLevel::Emergency }),
+        }
+    }
+}
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OutputGuardSettings {

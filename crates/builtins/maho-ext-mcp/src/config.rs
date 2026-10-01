@@ -8,7 +8,11 @@ use crate::config_schema::*;
 #[error("{0}")]
 pub struct McpConfigValidationError(pub String);
 pub fn validate_raw(raw: Value) -> Result<RawConfig, McpConfigValidationError> {
-    let config: RawConfig = serde_json::from_value(raw).map_err(|e| McpConfigValidationError(format!("Invalid MCP config: {e}")))?;
+    let config: RawConfig = serde_path_to_error::deserialize(raw).map_err(|e| {
+        let path = e.path().to_string();
+        let message = if e.inner().to_string().contains("expected a sequence") { "Expected array".into() } else { e.inner().to_string() };
+        McpConfigValidationError(format!("Invalid MCP config at {}: {message}", if path == "." { "$" } else { &path }))
+    })?;
     if let Some(error) = get_server_endpoint_validation_error(&config) { return Err(McpConfigValidationError(format!("Invalid MCP config at {error}"))); }
     if let Some(settings) = &config.settings {
         if settings.import_configs.as_ref().is_some_and(|items| items.iter().any(|s| s != "claude")) {
@@ -138,4 +142,18 @@ pub fn resolve_skill_mcp_server(name: &str, raw: ServerConfigWire, source_path: 
 }
 pub fn visit_spawnable_mcp_servers(config: &ResolvedMcpConfig, mut visit: impl FnMut(&str, &ResolvedMcpServer)) {
     for (name, server) in &config.servers { if server.state == McpServerState::Enabled { visit(name, server); } }
+}
+pub fn merge_extension_mcp_servers(result: &mut ResolvedMcpConfig, declarations: &[maho_ext_api::RegisteredMcpServerDeclaration]) -> Result<(), McpConfigValidationError> {
+    for declaration in declarations {
+        let name = &declaration.name;
+        if let Some(existing) = result.servers.get(name) {
+            if existing.state != McpServerState::Untrusted {
+                result.diagnostics.push(format!("Extension MCP server '{name}' from {} skipped; {} config at {} wins.", declaration.extension_path, existing.source, existing.source_path.display()));
+                continue;
+            }
+            result.diagnostics.push(format!("Extension MCP server '{name}' from {} replaces untrusted {} placeholder from {}.", declaration.extension_path, existing.source, existing.source_path.display()));
+        }
+        result.servers.insert(name.clone(), resolve_extension_mcp_server(name, ServerConfigWire::from(&declaration.config), Path::new(&declaration.extension_path), &declaration.registration_cwd)?);
+    }
+    Ok(())
 }
