@@ -3,7 +3,7 @@ pub const STOP_STATE_CUSTOM_TYPE:&str="senpi.hooks.stop-state";
 pub const STOP_DIAGNOSTICS_CUSTOM_TYPE:&str="senpi.hooks.stop-diagnostics";
 pub const STOP_OUTPUT_CUSTOM_TYPE:&str="senpi.hooks.stop-output";
 pub const STOP_REENTRY_LIMIT:usize=8;
-pub fn apply_stop_hook_result(api:&maho_ext_api::types::ExtensionApi,ctx:&maho_ext_api::types::ExtensionContext,result:&crate::dispatcher::HookDispatchResult,turn_key:&str)->Result<(),maho_ext_api::types::ExtensionFailure> {
+pub async fn apply_stop_hook_result(api:&maho_ext_api::types::ExtensionApi,ctx:&maho_ext_api::types::ExtensionContext,result:&crate::dispatcher::HookDispatchResult,turn_key:&str)->Result<(),maho_ext_api::types::ExtensionFailure> {
     use maho_ext_api::types::*;use crate::dispatcher::HookDispatchDecision;
     let session_id=ctx.session_manager.session_id();
     let previous=ctx.session_manager.get_entries().iter().rev().find_map(|entry| {
@@ -33,7 +33,10 @@ pub fn apply_stop_hook_result(api:&maho_ext_api::types::ExtensionApi,ctx:&maho_e
     let HookDispatchDecision::Block {source,reason,..}=&result.decision else {return Ok(());};
     let blocker=result.summaries.iter().find(|summary|summary.handler.source.source_path==source.source_path&&matches!(summary.output.get("decision").and_then(Value::as_str),Some("block"|"deny")));
     let follow_up=blocker.filter(|summary|summary.run.exit_code!=Some(2)).and_then(|summary|summary.output.get("additionalContext").and_then(Value::as_str).or(reason.as_deref()));
-    if let Some(text)=follow_up {api.send_user_message(UserMessageContent::Text(text.to_owned()),SendUserMessageOptions {deliver_as:Some(StreamingBehavior::FollowUp),expand_prompt_templates:false})?;}
+    if let Some(text)=follow_up {
+        api.send_user_message(UserMessageContent::Text(text.to_owned()),SendUserMessageOptions {deliver_as:Some(StreamingBehavior::FollowUp),expand_prompt_templates:false})?;
+        for _ in 0..64 {tokio::task::yield_now().await;if ctx.has_pending_messages()? {break;}}
+    }
     else {api.append_entry(STOP_DIAGNOSTICS_CUSTOM_TYPE,Some(json!([stop_diagnostic(source,"unsupported_field","stdout.reason","Stop hook blocked without follow-up context.")])))?;}
     Ok(())
 }

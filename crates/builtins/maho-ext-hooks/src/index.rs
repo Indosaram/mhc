@@ -123,7 +123,7 @@ impl Extension for HooksExtension {
             let messages=messages.iter().map(serde_json::to_value).collect::<Result<Vec<_>,_>>().map_err(|error|ExtensionFailure::new(error.to_string()))?;
             let transcript=ctx.session_manager.session_file().map(|path|path.to_string_lossy().into_owned());let input=crate::stop_adapter::build_stop_hook_input(&messages,&ctx.cwd.to_string_lossy(),ctx.session_manager.session_id(),transcript.as_deref());
             let result=dispatch(ctx,input).await?;let leaf=ctx.session_manager.get_leaf_id();let turn_key=pending.lock().map_err(|_|ExtensionFailure::new("hooks pending state poisoned"))?.stop_tracker.turn_key(leaf.as_deref(),ctx.session_manager.session_id());
-            crate::stop_adapter::apply_stop_hook_result(&sender,ctx,&result,&turn_key)?;Ok(EventResult::None)
+            crate::stop_adapter::apply_stop_hook_result(&sender,ctx,&result,&turn_key).await?;Ok(EventResult::None)
         })}));
         crate::command::register_hooks_command(api);
     }
