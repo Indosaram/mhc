@@ -305,12 +305,18 @@ impl InteractiveMode {
             let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
             let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone();
             let models = self.session.model_registry().get_available().into_iter().map(|model| ModelEntry { provider:model.provider, id:model.id, name:model.name }).collect::<Vec<_>>();
-            let selector = ModelSelectorComponent::new(&self.theme, Arc::new(maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default())), 0, &models,
+            let scoped = self.session.scoped_models().into_iter().map(|entry| crate::components::model_selector::ScopedModelItem { model:ModelEntry { provider:entry.model.provider, id:entry.model.id, name:entry.model.name }, thinking_level:entry.thinking_level.map(|level| serde_json::to_value(level).expect("thinking level").as_str().expect("string level").to_owned()) }).collect();
+            let mut selector = ModelSelectorComponent::new(&self.theme, Arc::new(maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default())), 0, &models,
                 Some(ModelEntry { provider:current.provider, id:current.id, name:current.name }),
-                Vec::new(),
+                scoped,
                 Box::new(move |model| { submissions.borrow_mut().push_back(format!("/model {}/{}", model.provider, model.id)); selected.borrow_mut().take(); }),
                 Box::new(move || { cancelled.borrow_mut().take(); }), None,
                 ModelSelectorFavoriteOptions { favorite_model_ids:None, on_favorite_change:None }, None);
+            let session = self.session.clone(); let ui = self.extension_ui.clone();
+            selector.set_default_model_change_handler(Box::new(move |model| {
+                let values = [("defaultProvider".into(), serde_json::json!(model.provider)), ("defaultModel".into(), serde_json::json!(model.id))].into_iter().collect();
+                if let Err(error) = session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) { maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error); }
+            }));
             self.ui_dialog = Some(Box::new(selector));
             return Ok(true);
         }
