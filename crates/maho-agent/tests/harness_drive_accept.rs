@@ -114,3 +114,51 @@ async fn captures_eligible_tags_in_order_and_leaves_second_items() {
     assert_eq!(lane.session.get_entry(&follow, &BACKGROUND_CONTEXT).await.unwrap().unwrap().parent_id, Some(next.clone()));
     assert_eq!(lane.session.get_entry(&next, &BACKGROUND_CONTEXT).await.unwrap().unwrap().parent_id, Some(first));
 }
+
+async fn gated_fixture() -> Result<(Arc<Lane>, Arc<maho_agent::harness::session::testing::GatingStorage>), maho_agent::harness::session::session::SessionError> {
+    let storage = Arc::new(maho_agent::harness::session::testing::GatingStorage::new(Arc::new(MemoryStorage::new(MemoryStorageOptions::default()))));
+    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "gated".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None }, storage.clone(), StorageBackedSessionOptions::default()));
+    session.attach();
+    let harness = create_agent_harness(session, LaneConfiguration { model: LaneModelRef { provider: "test".into(), model_id: "model".into() }, thinking_level: maho_ai::types::ModelThinkingLevel::Off, active_tool_names: vec![] }, &BACKGROUND_CONTEXT).await?;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await?;
+    storage.arm();
+    Ok((lane, storage))
+}
+
+#[tokio::test]
+async fn failed_commit_does_not_publish_acceptance() {
+    let (lane, storage) = gated_fixture().await.unwrap();
+    let writer = lane.clone();
+    let accept = tokio::spawn(async move { writer.accept_prompt(PromptInput::Text { text: "hello".into(), images: vec![] }, None, settings(), &BACKGROUND_CONTEXT).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), storage.wait_pending(1)).await.unwrap().unwrap();
+    storage.discard();
+    assert!(accept.await.unwrap().is_err());
+    assert!(lane.state().operation.is_none());
+    assert!(lane.state().tip_id.is_none());
+}
+
+#[tokio::test]
+async fn admitted_acceptance_finishes_after_sealing() {
+    let (lane, storage) = gated_fixture().await.unwrap();
+    let writer = lane.clone();
+    let accept = tokio::spawn(async move { writer.accept_prompt(PromptInput::Text { text: "hello".into(), images: vec![] }, None, settings(), &BACKGROUND_CONTEXT).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), storage.wait_pending(1)).await.unwrap().unwrap();
+    lane.seal(maho_agent::harness::session::session::SessionError::new(maho_agent::harness::session::session::SessionErrorKind::Closed, "closed"));
+    storage.next(1).await.unwrap();
+    assert!(accept.await.unwrap().unwrap().is_ok());
+    assert!(lane.state().operation.is_some());
+    assert!(lane.get_tip_id().is_err());
+}
+
+#[tokio::test]
+async fn acceptance_publishes_memory_only_after_commit() {
+    let (lane, storage) = gated_fixture().await.unwrap();
+    let writer = lane.clone();
+    let accept = tokio::spawn(async move { writer.accept_prompt(PromptInput::Text { text: "hello".into(), images: vec![] }, None, settings(), &BACKGROUND_CONTEXT).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), storage.wait_pending(1)).await.unwrap().unwrap();
+    assert!(lane.state().operation.is_none());
+    assert!(lane.state().tip_id.is_none());
+    storage.next(1).await.unwrap();
+    accept.await.unwrap().unwrap().unwrap();
+    assert!(lane.state().operation.is_some());
+}
