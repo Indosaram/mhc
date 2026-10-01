@@ -63,7 +63,7 @@ mod filesystem_tests {
         let manifest=crate::restore::parse_terminal_manifest(&serde_json::json!({"monitors":[{"monitorId":"mon_muted","sessionId":"s","description":"watch","runtimeKind":"file","durabilityClass":"checkpointed-file","path":"watched","cwd":dir.path().to_string_lossy(),"event":"modify","createdAt":1,"expiresAt":null,"persistent":true,"suspended":true,"lastCheckpoint":saved,"deliveryPaused":true,"fireWindow":{"startMs":12,"count":4}}],"backgroundSessions":[],"updatedAt":1}),"s").unwrap();
         let mut registry=crate::monitor_registry::MonitorRegistry::new(|_|{});let mut manager=crate::manager::TerminalManager::default();assert_eq!(restore_file(&manifest.monitors[0],&mut registry,&mut manager,None,20.0),crate::restore::RestoreOutcome::Muted);
         let snapshot=registry.snapshot();assert_eq!(snapshot[0].id,"watch_1");assert!(snapshot[0].paused);let window=snapshot[0].fire_window.as_ref().unwrap();assert_eq!(window.start_ms,12.0);assert_eq!(window.count,4);
-        assert_eq!(registry.resume(Some(&["watch_1".to_owned()])),vec![("watch_1".to_owned(),0)]);assert!(!registry.snapshot()[0].paused);registry.dispose();assert_eq!(manager.active_size().unwrap(),0);Ok(())
+        assert_eq!(registry.resume(Some(&["watch_1".to_owned()])),vec![("watch_1".to_owned(),0)]);let resumed=registry.snapshot();assert!(!resumed[0].paused);assert_eq!(resumed[0].fire_window.as_ref().unwrap().count,0);assert_eq!(resumed[0].fire_window.as_ref().unwrap().start_ms,12.0);registry.dispose();assert_eq!(manager.active_size().unwrap(),0);Ok(())
     }
     #[tokio::test]
     async fn restore_reports_detached_change_once_and_rebinds_kill_identity()->std::io::Result<()> {

@@ -187,7 +187,7 @@ impl MonitorRegistry {
             if let Some((file,_))=self.files.get(&id) {
                 let (events,settled)={let mut file=file.lock().expect("file monitor");if !file.paused||file.settled {continue;}file.paused=false;let events=file.check().unwrap_or_else(|error|file.stop(&format!("watcher error: {error}")).into_iter().collect());(events,file.settled)};
                 let mut snapshots=self.file_snapshots.lock().expect("file snapshots");
-                if settled {snapshots.remove(&id);} else if let Some(snapshot)=snapshots.get_mut(&id) {snapshot.paused=false;}
+                if settled {snapshots.remove(&id);} else if let Some(snapshot)=snapshots.get_mut(&id) {snapshot.paused=false;if let Some(window)=&mut snapshot.fire_window {window.count=0;}}
                 resumed.push((id,0));pending_events.extend(events);
             }
         }
