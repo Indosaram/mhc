@@ -937,6 +937,16 @@ impl ExtensionRuntime {
     pub fn take_provider_errors(&self) -> Vec<ExtensionError> { std::mem::take(&mut self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider_errors) }
     pub fn register_provider(&self, registration: ProviderRegistration, path: &str) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
+        if let ProviderRegistration::Config { name, config } = &registration {
+            if config.extra_body.as_ref().is_some_and(|body| !body.is_object()) {
+                return Err(ExtensionFailure::new(format!("Provider {name}: extraBody must be an object")));
+            }
+            for model in config.models.iter().flatten() {
+                if model.extra_body.as_ref().is_some_and(|body| !body.is_object()) {
+                    return Err(ExtensionFailure::new(format!("Provider {name}, model {}: extraBody must be an object", model.id)));
+                }
+            }
+        }
         let actions = {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             match &state.provider_actions { Some(actions) => Arc::clone(actions), None => { state.pending_providers.push((registration, path.into())); return Ok(()); } }

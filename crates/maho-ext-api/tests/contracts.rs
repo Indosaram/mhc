@@ -163,3 +163,16 @@ fn footer_factory_receives_tui_and_readonly_footer_data() {
     let mut component = factory(&FactoryHost, &Theme::default(), &FooterData);
     assert_eq!(component.render(80), ["80:work:2"]);
 }
+
+#[test]
+fn provider_extra_body_rejects_nonobjects_before_queuing_registration() {
+    let runtime = ExtensionRuntime::default();
+    let api = api(runtime.clone());
+    let config = ProviderConfig { extra_body: Some(JsonValue::Array(Vec::new())), ..Default::default() };
+    assert!(api.register_provider("invalid", config).is_err());
+    let providers = Arc::new(Providers::default());
+    runtime.bind_providers(providers.clone()).unwrap();
+    assert!(providers.0.lock().unwrap().is_empty());
+    api.register_provider("valid", ProviderConfig { extra_body: Some(JsonValue::Object(Default::default())), ..Default::default() }).unwrap();
+    assert_eq!(*providers.0.lock().unwrap(), ["valid:test"]);
+}
