@@ -14,4 +14,6 @@ pub mod discovery;
 pub mod watch;
 pub mod commands;
 pub mod stream_remediation;
+pub mod index;
+pub use index::TtsrExtension;
 pub mod detectors { pub mod collapse_scalars; pub mod collapse_periods; pub mod collapse_lines; pub mod collapse_paragraphs; pub mod repetitive_turns; pub mod collapse_near_duplicates; pub mod collapse; pub mod token_grammar; pub mod leak_context; pub mod control_leak; }
