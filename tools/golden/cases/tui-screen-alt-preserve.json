@@ -1,0 +1,13 @@
+{
+	"name": "tui-screen-alt-preserve",
+	"kind": "tui-screen",
+	"crate": "maho-tui",
+	"mode": "alt",
+	"cols": 24,
+	"rows": 6,
+	"steps": [
+		{ "op": "text", "text": "alt screen one\nalt screen two\nalt screen three", "paddingX": 1, "paddingY": 0 },
+		{ "op": "render" },
+		{ "op": "stop", "preserveScreen": true }
+	]
+}
