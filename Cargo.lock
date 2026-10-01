@@ -2019,6 +2019,7 @@ dependencies = [
  "maho-ext-api",
  "maho-telemetry-core",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
 ]

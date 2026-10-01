@@ -15,6 +15,7 @@ maho-telemetry-core = { path = "../../telemetry-core" }
 chrono = { workspace = true, features = ["clock", "std"] }
 tokio = { workspace = true, features = ["rt", "time", "macros"] }
 futures.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
