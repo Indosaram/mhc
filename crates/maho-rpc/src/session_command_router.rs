@@ -1,5 +1,12 @@
 pub struct IdleSession{pub session_id:String,pub open:bool,pub busy:bool,pub last_command_at:f64}
 pub struct IdleSweep{pub evict:Vec<String>,pub exit:bool}
+#[derive(Default)]pub struct SharedSessionWidths{widths:std::collections::BTreeMap<String,std::collections::BTreeMap<String,f64>>}
+impl SharedSessionWidths{
+    pub fn set_width(&mut self,session:&str,connection:Option<&str>,width:f64){if let Some(connection)=connection{self.widths.entry(session.into()).or_default().insert(connection.into(),width);}}
+    pub fn clear_width(&mut self,session:&str,connection:Option<&str>){if let Some(connection)=connection&&let Some(widths)=self.widths.get_mut(session){widths.remove(connection);}}
+    pub fn width(&self,session:&str)->f64{self.widths.get(session).and_then(|widths|widths.values().copied().reduce(f64::min)).unwrap_or(80.)}
+}
+#[cfg(test)]mod width_tests{use super::*;#[test]fn narrowest_live_connection_controls_render_width(){let mut widths=SharedSessionWidths::default();assert_eq!(widths.width("s"),80.);widths.set_width("s",None,10.);widths.set_width("s",Some("desktop"),120.);widths.set_width("s",Some("phone"),40.);assert_eq!(widths.width("s"),40.);widths.clear_width("s",Some("phone"));assert_eq!(widths.width("s"),120.);widths.clear_width("s",Some("desktop"));assert_eq!(widths.width("s"),80.);}}
 pub struct SessionIdlePolicy{pub idle_eviction_ms:f64,pub empty_exit_ms:f64,pub memory_pressure:bool,empty_since:Option<f64>,stopped:bool}
 impl SessionIdlePolicy{
     pub fn new(idle_eviction_ms:f64,empty_exit_ms:f64)->Self{Self{idle_eviction_ms,empty_exit_ms,memory_pressure:false,empty_since:None,stopped:false}}
