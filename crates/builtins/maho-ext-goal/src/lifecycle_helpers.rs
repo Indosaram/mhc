@@ -8,6 +8,23 @@ pub fn queue_hidden_goal_prompt(api:&maho_ext_api::ExtensionApi,content:String)-
         custom_type:"goal-continuation".into(),content:vec![maho_ext_api::ToolContent::text(content)],display:false,details:None,
     },maho_ext_api::SendMessageOptions { trigger_turn:true,deliver_as:Some(maho_ext_api::DeliverAs::FollowUp) })
 }
+pub async fn admit_and_record_goal_continuation(reference:&crate::types::GoalStoreRef,input:&crate::continuation::GoalContinuationInput<'_>,now:u64)->Result<(Option<Goal>,crate::continuation::GoalContinuationVerdict),ExtensionFailure> {
+    use crate::continuation::{evaluate_goal_continuation,GoalContinuationVerdict,GoalContinuationPath};
+    let verdict=evaluate_goal_continuation(input);
+    let Some(goal)=input.goal else { return Ok((None,verdict)); };
+    let recorded=match verdict {
+        GoalContinuationVerdict::Deny(reason)=>{
+            if let Some(reason)=blocked_reason_for_continuation_guard(reason) {
+                Some(crate::store::update_goal(reference,&crate::types::GoalUpdate { status:Some(GoalStatus::Blocked),reason:Some(reason.into()),..Default::default() },crate::types::GoalUpdateSource::Model,now).await.map_err(|error|ExtensionFailure::new(error.to_string()))?)
+            } else { Some(goal.clone()) }
+        },
+        GoalContinuationVerdict::Continue { .. }=>{
+            let signature=input.current_signature.ok_or_else(||ExtensionFailure::new("Cannot queue a goal continuation without a progress signature"))?;
+            crate::store::record_continuation_delivered(reference,signature,Some(&goal.id),input.path!=GoalContinuationPath::MonitorDelayed).await.map_err(|error|ExtensionFailure::new(error.to_string()))?
+        },
+    };
+    Ok((recorded,verdict))
+}
 
 pub fn is_resume_of_stopped_goal(ctx:&ExtensionContext,reason:&str,goal:Option<&Goal>)->Result<bool,ExtensionFailure> {
     if reason!="resume" || !goal.is_some_and(|goal|matches!(goal.status,GoalStatus::Paused|GoalStatus::Blocked)) || !ctx.has_ui || !ctx.is_idle() { return Ok(false); }
@@ -28,6 +45,26 @@ pub fn blocked_reason_for_continuation_guard(reason:DenyReason)->Option<&'static
 }
 #[cfg(test)] mod tests {
     use super::*;
+    fn admission(goal:&Goal)->crate::continuation::GoalContinuationInput<'_> {
+        crate::continuation::GoalContinuationInput { goal:Some(goal),is_idle:true,has_pending_messages:false,path:crate::continuation::GoalContinuationPath::SessionStart,last_stop_reason:None,last_turn_was_malformed_tool_use:false,consecutive_continuations:0,last_continuation_signature:None,current_signature:Some("sig"),consecutive_length_recoveries:0,recent_normalized_output_hashes:&[],toolless_continuation_streak:0,continuation_pending:false,last_turn_stuck_on_context_overflow:false }
+    }
+    #[tokio::test] async fn admitted_delivery_records_before_transport_and_exempts_monitor_waits() {
+        let dir=tempfile::tempdir().unwrap(); let reference=crate::types::GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() };
+        let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap();
+        let mut input=admission(&goal); input.path=crate::continuation::GoalContinuationPath::MonitorDelayed;
+        let (recorded,verdict)=admit_and_record_goal_continuation(&reference,&input,1).await.unwrap();
+        assert!(matches!(verdict,crate::continuation::GoalContinuationVerdict::Continue { .. }));
+        let recorded=recorded.unwrap(); assert_eq!(recorded.consecutive_continuations,Some(1)); assert_eq!(recorded.unattended_continuations,Some(0)); assert_eq!(recorded.last_continuation_signature.as_deref(),Some("sig"));
+        assert_eq!(crate::store::read_goal(&reference).unwrap(),Some(recorded));
+    }
+    #[tokio::test] async fn guard_denial_persists_block_but_single_flight_does_not() {
+        let dir=tempfile::tempdir().unwrap(); let reference=crate::types::GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() };
+        let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap();
+        let mut input=admission(&goal); input.continuation_pending=true;
+        let (same,_)=admit_and_record_goal_continuation(&reference,&input,1).await.unwrap(); assert_eq!(same,Some(goal.clone()));
+        input.continuation_pending=false; input.consecutive_continuations=crate::continuation::GOAL_CONTINUATION_CAP;
+        let (blocked,_)=admit_and_record_goal_continuation(&reference,&input,2).await.unwrap(); assert_eq!(blocked.unwrap().status,GoalStatus::Blocked);
+    }
     #[test] fn hidden_prompt_uses_bound_followup_transport() {
         use maho_ext_api::*;
         struct Capture(std::sync::Mutex<Option<(CustomMessage,SendMessageOptions)>>);
