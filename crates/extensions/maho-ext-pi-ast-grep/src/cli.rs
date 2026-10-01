@@ -20,14 +20,11 @@ pub fn build_sg_args(options: &RunSgOptions, include_update_all: bool) -> Vec<St
 
 pub async fn run_sg(options: &RunSgOptions, binary: &std::path::Path) -> crate::types::SgResult {
     use crate::{json_output::create_sg_result_from_stdout, types::{SgResult, TruncationReason}};
-    async fn spawn(binary: &std::path::Path, args: &[String]) -> Result<std::process::Output, String> {
+    async fn spawn(binary: &std::path::Path, args: &[String]) -> Result<crate::process_timeout::ProcessOutput, String> {
         let mut command = tokio::process::Command::new(binary);
-        command.args(args).kill_on_drop(true);
-        match tokio::time::timeout(std::time::Duration::from_millis(300_000), command.output()).await {
-            Ok(Ok(output)) => Ok(output),
-            Ok(Err(error)) => Err(error.to_string()),
-            Err(_) => Err("Search timeout after 300000ms".to_owned()),
-        }
+        command.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+        let child = command.spawn().map_err(|error| error.to_string())?;
+        crate::process_timeout::collect_process_output_with_timeout(child, 300_000).await.map_err(|error| error.to_string())
     }
     let separate = options.update_all && options.rewrite.as_ref().is_some_and(|value| !value.is_empty());
     let mut read_options = options.clone();
@@ -38,9 +35,9 @@ pub async fn run_sg(options: &RunSgOptions, binary: &std::path::Path) -> crate::
         Err(error) if error.starts_with("Search timeout") => return SgResult { truncated: true, truncated_reason: Some(TruncationReason::Timeout), error: Some(error), ..Default::default() },
         Err(error) => return SgResult { error: Some(format!("Failed to spawn ast-grep: {error}")), ..Default::default() },
     };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !output.status.success() && stdout.trim().is_empty() {
+    let stdout = output.stdout;
+    let stderr = output.stderr;
+    if output.exit_code != 0 && stdout.trim().is_empty() {
         if stderr.contains("No files found") || stderr.trim().is_empty() { return SgResult::default(); }
         return SgResult { error: Some(stderr.trim().to_owned()), ..Default::default() };
     }
@@ -49,9 +46,9 @@ pub async fn run_sg(options: &RunSgOptions, binary: &std::path::Path) -> crate::
         let mut args = build_sg_args(options, false);
         args.push("--update-all".to_owned());
         match spawn(binary, &args).await {
-            Ok(output) if !output.status.success() => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let detail = if stderr.trim().is_empty() { format!("ast-grep exited with code {}", output.status.code().unwrap_or(0)) } else { stderr.trim().to_owned() };
+            Ok(output) if output.exit_code != 0 => {
+                let stderr = output.stderr;
+                let detail = if stderr.trim().is_empty() { format!("ast-grep exited with code {}", output.exit_code) } else { stderr.trim().to_owned() };
                 result.error = Some(format!("Replace failed: {detail}"));
             }
             Ok(_) => {}

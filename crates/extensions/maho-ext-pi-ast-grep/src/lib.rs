@@ -8,5 +8,7 @@ pub mod binary_path;
 pub mod tools;
 pub mod downloader;
 pub mod binary_downloader;
+pub mod errors;
+pub mod process_timeout;
 mod index;
 pub use index::AstGrep;

@@ -1770,6 +1770,7 @@ name = "maho-ext-pi-ast-grep"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "nix",
  "regex",
  "reqwest",
  "serde",

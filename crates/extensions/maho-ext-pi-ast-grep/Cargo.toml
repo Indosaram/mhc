@@ -17,5 +17,8 @@ tokio = { version = "=1.52.3", features = ["process", "time", "io-util", "macros
 [dev-dependencies]
 tempfile = "=3.27.0"
 
+[target.'cfg(unix)'.dependencies]
+nix = { version = "=0.28.0", features = ["signal", "process"] }
+
 [lints]
 workspace = true
