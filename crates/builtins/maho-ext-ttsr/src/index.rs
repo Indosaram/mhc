@@ -7,6 +7,12 @@ struct State { watcher:Option<StreamWatcher>,generation_state:GenerationDetectio
 fn now()->u64 { SystemTime::now().duration_since(UNIX_EPOCH).map_or(0,|duration|duration.as_millis().min(u128::from(u64::MAX)) as u64) }
 fn owner_name(owner:DetectionOwner)->&'static str { match owner { DetectionOwner::CollapseRepetition=>"collapse-repetition",DetectionOwner::ControlTokenLeak=>"control-token-leak" } }
 fn record_injection(api:&ExtensionApi,owner:&str,rules:&[String],mode:&str)->Result<(),ExtensionFailure> { api.append_entry("rule-activation",Some(serde_json::json!({"kind":"ttsr","owner":owner,"rules":rules,"remediation":mode}))) }
+fn record_remediation_injection(api:&ExtensionApi,owner:&str,rules:&[String],mode:&str)->Result<bool,ExtensionFailure> {
+    if let Err(error)=record_injection(api,owner,rules,mode) {
+        api.append_entry("ttsr-remediation-error",Some(serde_json::json!({"message":error.message,"at":now()})))?; return Ok(false);
+    }
+    Ok(true)
+}
 impl State {
     fn cancel(&mut self) { if self.pending_remediation.is_some() || self.pending_nudge.is_some() || self.pending_rule.is_some() { mark_user_cancelled(&mut self.generation_state); self.pending_remediation=None; self.pending_rule=None; self.pending_nudge=None; self.repetitive_turns.disarm(); } }
     fn reset_generation(&mut self) { self.generation+=1; self.generation_state=GenerationDetectionState::default(); self.pending_remediation=None; self.pending_rule=None; self.repetitive_turns.reset_turn(); if let Some(watcher)=&mut self.watcher { watcher.reset(); } }
@@ -59,7 +65,8 @@ fn handle(state:&mut State,api:&ExtensionApi,event:&ExtensionEvent,ctx:&Extensio
                 let names=vec![rule.name.clone()]; if let Some(watcher)=&mut state.watcher { watcher.manager.mark_injected_by_names(&names); } record_injection(api,&rule.name,&names,"nudge")?; state.pending_nudge=Some(build_nudge_message(&rule.name,&rule.content));
             } else if let Some(pending)=state.pending_remediation.take() {
                 if let Some(text)=&text { state.repetitive_turns.record_completed_turn(text); }
-                let outcome=build_stream_remediation(pending,assistant.clone()); record_injection(api,owner_name(outcome.owner),&outcome.observed_rules.into_iter().map(|owner|owner_name(owner).into()).collect::<Vec<_>>(),outcome.retry_mode)?;
+                let outcome=build_stream_remediation(pending,assistant.clone());
+                if !record_remediation_injection(api,owner_name(outcome.owner),&outcome.observed_rules.into_iter().map(|owner|owner_name(owner).into()).collect::<Vec<_>>(),outcome.retry_mode)? { return Ok(EventResult::None); }
                 if outcome.nudge.is_some() { state.pending_nudge=outcome.nudge; }
                 let replacement=match outcome.replacement { StreamReplacement::Truncated(message)=>*message,StreamReplacement::ErrorShell(shell)=>{ let mut message=assistant.clone(); message.content=shell.content; message.stop_reason=shell.stop_reason; message.error_message=Some(shell.error_message); message } };
                 return Ok(EventResult::MessageEnd { message:Some(AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(replacement)))) });
@@ -85,6 +92,20 @@ impl Extension for TtsrExtension {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn activation_failure_appends_remediation_error_and_preserves_failure_message() {
+        use maho_ext_api::*;
+        struct Capture(Mutex<Vec<JsonValue>>);
+        impl ExtensionActions for Capture {
+            fn append_entry(&self,kind:&str,data:Option<JsonValue>)->Result<(),ExtensionFailure> { if kind=="rule-activation" { return Err("fixture activation failure".into()); } assert_eq!(kind,"ttsr-remediation-error"); self.0.lock().unwrap().push(data.unwrap()); Ok(()) }
+            fn send_message(&self,_:CustomMessage,_:SendMessageOptions)->Result<(),ExtensionFailure> { Err("unexpected message".into()) }
+            fn send_user_message(&self,_:UserMessageContent,_:SendUserMessageOptions)->Result<(),ExtensionFailure> { Err("unexpected user message".into()) }
+            fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure> { Ok(Vec::new()) }
+        }
+        let capture=Arc::new(Capture(Mutex::new(Vec::new()))); let runtime=ExtensionRuntime::default(); runtime.bind(capture.clone());
+        let api=ExtensionApi::new(LoadedExtension::new("ttsr","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
+        assert!(!record_remediation_injection(&api,"collapse-repetition",&["collapse-repetition".into()],"nudge").unwrap());
+        let entries=capture.0.lock().unwrap(); assert_eq!(entries.len(),1); assert_eq!(entries[0]["message"],"fixture activation failure"); assert!(entries[0]["at"].is_u64());
+    }
     #[test] fn native_registration_exposes_flags_command_and_nine_hooks() { let mut api=ExtensionApi::new(maho_ext_api::LoadedExtension::new("ttsr",".".into(),Default::default()),Default::default(),Default::default(),Default::default()); TtsrExtension.register(&mut api); assert_eq!(api.registered.handlers.len(),9); assert_eq!(api.registered.commands[0].name,"ttsr"); assert_eq!(api.registered.flags.len(),2); }
     #[test] fn cancel_drops_remediation_and_disarms_recovery() { let mut state=State { pending_nudge:Some(build_nudge_message("test","test")),..Default::default() }; state.cancel(); assert!(state.generation_state.user_cancelled); assert!(state.pending_nudge.is_none()); }
     #[test] fn generation_reset_preserves_queued_nudge_but_releases_abort_claim() { let mut state=State { pending_nudge:Some(build_nudge_message("test","test")),generation_state:GenerationDetectionState { abort_claimed:true,..Default::default() },..Default::default() }; state.reset_generation(); assert!(!state.generation_state.abort_claimed); assert!(state.pending_nudge.is_some()); assert_eq!(state.generation,1); }

@@ -41,6 +41,7 @@ impl RuleRemediation {
     pub const fn context_mode(&self) -> TtsrContextMode { match self { Self::Nudge { context_mode, .. } => *context_mode, Self::ProviderError => TtsrContextMode::Discard } }
     pub const fn corruption_scope(&self) -> &'static str { match self { Self::Nudge { .. } => "output-region", Self::ProviderError => "generation" } }
     pub const fn retry_mode(&self) -> &'static str { match self { Self::Nudge { .. } => "nudge", Self::ProviderError => "provider-error" } }
+    pub const fn error_kind(&self) -> Option<&'static str> { match self { Self::Nudge { .. } => None, Self::ProviderError => Some("control-token-leak") } }
 }
 pub fn collapse_remediation() -> RuleRemediation { RuleRemediation::Nudge { context_mode: TtsrContextMode::Truncate, nudge_key: "collapse-repetition".into() } }
 pub const CONTROL_LEAK_REMEDIATION: RuleRemediation = RuleRemediation::ProviderError;
