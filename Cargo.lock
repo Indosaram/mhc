@@ -1625,6 +1625,10 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-builtin-loose"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-cache-keepalive"
