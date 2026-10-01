@@ -39,4 +39,3 @@ fn narrow_compaction_keeps_cancel_hint() {
     assert_eq!(lines.len(), 1);
     assert!(maho_tui::utils::strip_terminal_sequences(&lines[0]).contains("to cancel"));
 }
-

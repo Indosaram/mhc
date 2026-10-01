@@ -440,4 +440,3 @@ fn stale_detection_cannot_replace_explicit_selection() {
     );
     assert_eq!(c.active_theme.name, "dark");
 }
-
