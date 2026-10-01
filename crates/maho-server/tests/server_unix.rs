@@ -19,21 +19,45 @@ const MAX: u32 = 1024 * 1024;
 async fn listener_options_validate_before_publication_and_apply_mode() {
     use maho_server::server::unix::UnixListenerOptions;
     use std::os::unix::fs::PermissionsExt;
-    let dir=tempfile::tempdir().unwrap();let path=dir.path().join("options.sock");
-    let server=Server::new(Arc::new(Host),ID.into(),Some(MAX),None).unwrap();
-    let mut options=UnixListenerOptions {mode:0o640,max_pending_bytes:u64::from(MAX)+4,graceful_close_timeout_ms:5000};
-    options.max_pending_bytes-=1;
-    assert!(UnixServer::start_with_options(server.clone(),path.clone(),options).await.is_err());assert!(!path.exists());
-    options.max_pending_bytes+=1;
-    let mut listener=UnixServer::start_with_options(server,path.clone(),options).await.unwrap();
-    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode()&0o777,0o640);listener.close().await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("options.sock");
+    let server = Server::new(Arc::new(Host), ID.into(), Some(MAX), None).unwrap();
+    let mut options = UnixListenerOptions {
+        mode: 0o640,
+        max_pending_bytes: u64::from(MAX) + 4,
+        graceful_close_timeout_ms: 5000,
+    };
+    options.max_pending_bytes -= 1;
+    assert!(
+        UnixServer::start_with_options(server.clone(), path.clone(), options)
+            .await
+            .is_err()
+    );
+    assert!(!path.exists());
+    options.max_pending_bytes += 1;
+    let mut listener = UnixServer::start_with_options(server, path.clone(), options)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+    listener.close().await.unwrap();
 }
 #[tokio::test]
 async fn owned_bind_path_avoids_linux_public_path_length_limit() {
-    let dir=tempfile::tempdir().unwrap();let path=dir.path().join(format!("{}.sock","s".repeat(100)));
-    let mut listener=UnixServer::start(Server::new(Arc::new(Host),ID.into(),Some(MAX),None).unwrap(),path.clone()).await.unwrap();
-    assert!(path.exists());assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(),1);
-    listener.close().await.unwrap();assert!(!path.exists());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(format!("{}.sock", "s".repeat(100)));
+    let mut listener = UnixServer::start(
+        Server::new(Arc::new(Host), ID.into(), Some(MAX), None).unwrap(),
+        path.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(path.exists());
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    listener.close().await.unwrap();
+    assert!(!path.exists());
 }
 struct Host;
 impl ServerHost for Host {
@@ -232,8 +256,12 @@ async fn callback_service_adapter_delivers_after_activation_and_closes() {
     let adapter =
         ClientServiceTransport::new(client.clone(), Arc::new(|| Some(json!({"serverId":ID}))));
     let (delivered, mut received) = tokio::sync::mpsc::unbounded_channel();
-    let (errors,mut observed)=tokio::sync::mpsc::unbounded_channel();
-    client.set_listener_error_observer(Some(Arc::new(move|error|{errors.send(error).expect("error observer");}))).unwrap();
+    let (errors, mut observed) = tokio::sync::mpsc::unbounded_channel();
+    client
+        .set_listener_error_observer(Some(Arc::new(move |error| {
+            errors.send(error).expect("error observer");
+        })))
+        .unwrap();
     let mut subscription = adapter
         .subscribe(
             "echo",
@@ -242,7 +270,9 @@ async fn callback_service_adapter_delivers_after_activation_and_closes() {
                 let delivered = delivered.clone();
                 Box::pin(async move {
                     delivered.send(update).expect("callback receiver");
-                    Err(maho_server::client::errors::ClientError::Protocol("callback failed".into()))
+                    Err(maho_server::client::errors::ClientError::Protocol(
+                        "callback failed".into(),
+                    ))
                 })
             }),
         )
@@ -255,8 +285,14 @@ async fn callback_service_adapter_delivers_after_activation_and_closes() {
         .unwrap()
         .unwrap();
     assert_eq!(update["ops"], json!([["s", ["n"], 1]]));
-    let error=tokio::time::timeout(Duration::from_secs(3),observed.recv()).await.unwrap().unwrap();
-    assert_eq!(error,maho_server::client::errors::ClientError::Protocol("callback failed".into()));
+    let error = tokio::time::timeout(Duration::from_secs(3), observed.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        error,
+        maho_server::client::errors::ClientError::Protocol("callback failed".into())
+    );
     assert!(client.connected());
     subscription.close().await.unwrap();
     subscription.close().await.unwrap();

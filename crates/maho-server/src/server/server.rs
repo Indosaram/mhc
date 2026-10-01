@@ -73,7 +73,9 @@ impl Server {
         self.closing.store(true, Ordering::SeqCst);
         self.router.close().await
     }
-    pub fn max_frame_length(&self)->u32 {self.max_frame_length}
+    pub fn max_frame_length(&self) -> u32 {
+        self.max_frame_length
+    }
     pub async fn serve(
         self: Arc<Self>,
         connection: Arc<dyn ByteConnection>,
@@ -105,7 +107,10 @@ impl Server {
         .unwrap_or_else(|_| Err(ServerError::new("invalid_request", "Handshake timeout")));
         let (hello, remaining) = match handshake {
             Ok(hello) => hello,
-            Err(error) => { connection.close(None).await?; return Err(error); }
+            Err(error) => {
+                connection.close(None).await?;
+                return Err(error);
+            }
         };
         let hello_error = if hello["type"] != "hello" {
             Some(ServerError::new(
