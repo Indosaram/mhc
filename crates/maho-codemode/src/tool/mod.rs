@@ -1,3 +1,5 @@
 pub mod eval_request;
+pub mod eval_kernel_reset_refused_error;
+pub mod interrupt_note;
 pub mod runtime_label;
 pub mod types;
