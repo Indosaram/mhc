@@ -7,3 +7,5 @@ pub mod custom_capability;
 pub mod event_output_buffer;
 pub mod media_placeholders;
 pub mod provider_native_rendering;
+pub mod rpc_types;
+pub mod session_extension_ui_requests;
