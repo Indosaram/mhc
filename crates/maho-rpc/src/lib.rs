@@ -20,3 +20,6 @@ pub mod host_crash_record;
 pub mod host_child_exit;
 pub mod child_reaper_syscalls;
 pub mod child_reaper;
+pub mod host_daemon_env;
+pub mod host_daemon_paths;
+pub mod host_daemon_state;
