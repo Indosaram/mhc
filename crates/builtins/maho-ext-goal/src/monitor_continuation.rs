@@ -87,7 +87,7 @@ impl MonitorAwareGoalContinuation {
             self.armed_timer=None;
         } else { self.armed_timer=Some(ArmedTimer { kind,due_at_ms:now+remaining_ms,total_ms,drain_fire }); }
     }
-    pub fn note_user_prompt(&mut self) { self.armed_timer=None; self.held_timer=None; self.ended_turn_was_user_initiated=true; self.reset_continuation_state(); }
+    pub fn note_user_prompt(&mut self) { self.armed_timer=None; self.held_timer=None; self.scheduled_cache=None; self.ended_turn_was_user_initiated=true; self.reset_continuation_state(); }
     pub fn note_continuation_started(&mut self) { self.ended_turn_was_user_initiated=false; }
     pub fn record_assistant_output(&mut self,text:&str,turn_used_tools:bool) {
         if turn_used_tools { self.recent_normalized_output_hashes.clear(); return; }
@@ -170,8 +170,9 @@ impl MonitorAwareGoalContinuation {
     }
     #[test] fn accepted_input_cancels_held_wait() {
         let mut monitor=MonitorAwareGoalContinuation::default(); monitor.arm_timer(GoalWaitKind::Monitor,1000.0,1000.0,false,0.0);
+        monitor.scheduled_cache=Some(crate::cache_warm::create_goal_cache_warm_schedule_data("g".into(),1000.0,0.0,1.0,0.0,BTreeMap::new(),None));
         monitor.hold_direct_input("a",100.0); monitor.resolve_direct_input("a",true,200.0);
-        assert!(monitor.held_timer.is_none() && monitor.armed_timer.is_none()); assert!(monitor.ended_turn_was_user_initiated);
+        assert!(monitor.held_timer.is_none() && monitor.armed_timer.is_none()); assert!(monitor.scheduled_cache.is_none()); assert!(monitor.ended_turn_was_user_initiated);
     }
     #[test] fn earliest_question_deadline_overrides_count_heuristic() {
         let mut monitor=MonitorAwareGoalContinuation::default(); monitor.note_ask_user_wait(2.0,&[9000.0,5000.0],1000.0,30_000.0); monitor.wake_sources.insert("ask-user".into(),2.0);
