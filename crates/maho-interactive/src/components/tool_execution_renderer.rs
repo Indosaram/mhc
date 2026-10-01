@@ -125,10 +125,11 @@ impl ToolExecutionRenderer {
 
         if !self.has_renderer_definition() {
             self.content_text.set_custom_bg_fn(Some(background));
+            let result = self.state.result.as_ref().map(|result| result.as_tool_result());
             let mut text = format_tool_execution_fallback(
                 &self.identity.tool_name,
                 &self.state.args,
-                self.state.result.as_ref(),
+                result.as_ref(),
                 self.state.show_images,
                 &self.theme,
             );
@@ -202,7 +203,8 @@ impl ToolExecutionRenderer {
             Some(result) => result,
             None => return,
         };
-        let fallback = create_tool_result_fallback(Some(&result), self.state.show_images, &self.theme);
+        let tool_result = result.as_tool_result();
+        let fallback = create_tool_result_fallback(Some(&tool_result), self.state.show_images, &self.theme);
         let Some(renderer) = self.get_call_renderer() else {
             if let Some(fallback) = fallback {
                 self.add_child(use_self, fallback);
@@ -216,7 +218,7 @@ impl ToolExecutionRenderer {
         let component = {
             let last = self.result_component.clone();
             let context = self.context(last.as_ref());
-            renderer.borrow_mut().render_result(&result, options, &self.theme, &context)
+            renderer.borrow_mut().render_result(&tool_result, options, &self.theme, &context)
         };
         match component {
             Some(component) => {

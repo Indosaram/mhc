@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use maho_tools::definition::{ToolContent, ToolResult};
+use maho_tools::definition::ToolContent;
 use maho_tui::components::spacer::Spacer;
 use maho_tui::tui::Component;
 use serde_json::Value;
@@ -58,7 +58,7 @@ fn collapse_fallback_result(
     if expanded {
         return Some(result.clone());
     }
-    let output = crate::tools::render_utils::get_text_output(Some(result), show_images);
+    let output = crate::tools::render_utils::get_text_output(Some(&result.as_tool_result()), show_images);
     if output.is_empty() {
         return Some(result.clone());
     }
@@ -75,7 +75,7 @@ fn collapse_fallback_result(
         hint,
         theme.fg(ThemeColor::Muted, ")")
     );
-    Some(ToolExecutionResult { content: vec![ToolContent::text(text)], details: result.details.clone() })
+    Some(ToolExecutionResult { content: vec![ToolContent::text(text)], details: result.details.clone(), is_error: result.is_error })
 }
 
 pub struct ToolExecutionComponent {
@@ -231,7 +231,7 @@ impl ToolExecutionComponent {
         self.update_todo_strike_animation();
         self.update_display();
         if let Some(images) = &mut self.images {
-            images.update_result(&result);
+            images.update_result(&result.as_tool_result());
         }
         self.invalidate_render_cache();
     }
@@ -336,12 +336,7 @@ impl ToolExecutionComponent {
     }
 
     fn is_error(&self) -> bool {
-        self.result
-            .as_ref()
-            .and_then(|result| result.details.as_ref())
-            .and_then(|details| details.get("isError"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
+        self.result.as_ref().is_some_and(|result| result.is_error)
     }
 
     fn create_render_state(&self) -> ToolExecutionRenderState {
@@ -353,6 +348,7 @@ impl ToolExecutionComponent {
                 .cloned()
                 .collect(),
             details: result.details.clone(),
+            is_error: result.is_error,
         });
         ToolExecutionRenderState {
             args: self.args.clone(),
@@ -503,13 +499,8 @@ impl Component for ToolExecutionComponent {
     }
 }
 
-pub fn result_is_error(result: &ToolResult) -> bool {
-    result
-        .details
-        .as_ref()
-        .and_then(|details| details.get("isError"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+pub fn result_is_error(result: &ToolExecutionResult) -> bool {
+    result.is_error
 }
 
 pub fn format_elapsed(elapsed_ms: f64) -> String {
