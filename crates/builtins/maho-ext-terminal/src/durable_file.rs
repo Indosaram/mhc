@@ -33,6 +33,10 @@ pub fn restore_file(monitor:&ManifestMonitor,registry:&mut crate::monitor_regist
 }
 #[cfg(unix)]
 pub fn file_checkpoint(path:&std::path::Path)->std::io::Result<TerminalManifestCheckpoint> {
+    file_checkpoint_with_identity(path,None)
+}
+#[cfg(unix)]
+pub fn file_checkpoint_with_identity(path:&std::path::Path,identity:Option<(f64,f64)>)->std::io::Result<TerminalManifestCheckpoint> {
     use std::os::unix::fs::MetadataExt;
     let absent=||TerminalManifestCheckpoint {dev:0.0,ino:0.0,size:0.0,mtime_ms:0.0,digest:String::new(),present:false};
     let initial=match std::fs::symlink_metadata(path) {Ok(metadata)=>metadata,Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Ok(absent()),Err(error)=>return Err(error)};
@@ -40,6 +44,7 @@ pub fn file_checkpoint(path:&std::path::Path)->std::io::Result<TerminalManifestC
     if !initial.is_file() {return Err(std::io::Error::other(format!("Cannot watch file: target is not a regular file: {}",path.display())));}
     let mut handle=std::fs::File::open(path)?;
     let opened=handle.metadata()?;
+    if identity.is_some_and(|(dev,ino)|opened.dev() as f64!=dev||opened.ino() as f64!=ino)&&opened.nlink()>1 {return Err(std::io::Error::other(format!("Cannot watch file: target identity changed: {}",path.display())));}
     let rebound=std::fs::symlink_metadata(path)?;
     if !opened.is_file()||rebound.file_type().is_symlink()||rebound.dev()!=opened.dev()||rebound.ino()!=opened.ino() {return Err(std::io::Error::other(format!("Cannot watch file: target identity changed: {}",path.display())));}
     let digest=crate::monitor_file_digest::digest_file_handle(&mut handle)?;

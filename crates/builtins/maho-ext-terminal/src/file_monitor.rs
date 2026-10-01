@@ -7,6 +7,7 @@ pub struct FileMonitor {
     path:PathBuf,
     parent:PathBuf,
     event:FileEvent,
+    identity:(f64,f64),
     pub checkpoint:TerminalManifestCheckpoint,
     pub paused:bool,
     pub settled:bool,
@@ -20,22 +21,19 @@ impl FileMonitor {
         let parent=std::fs::canonicalize(raw_parent).map_err(|error|std::io::Error::other(format!("Cannot access parent directory {}: {error}",raw_parent.display())))?;
         if approved_parent.is_some_and(|approved|approved!=parent) {return Err(std::io::Error::other(format!("Cannot watch file: parent directory changed during permission approval: {}",raw_parent.display())));}
         let checkpoint=crate::durable_file::file_checkpoint(&path)?;
-        Ok(Self {id,description,path,parent,event,checkpoint,paused:false,settled:false,reservation:None})
+        Ok(Self {id,description,path,parent,event,identity:(checkpoint.dev,checkpoint.ino),checkpoint,paused:false,settled:false,reservation:None})
     }
     pub fn reserve_capacity(&mut self,reservation:crate::manager::CapacityReservation) {if !self.settled {self.reservation=Some(reservation);}}
     pub fn check(&mut self)->std::io::Result<Vec<MonitorEvent>> {
         if self.paused||self.settled {return Ok(vec![]);}
         let parent=std::fs::canonicalize(self.path.parent().expect("registered file parent"))?;
         if parent!=self.parent {return Err(std::io::Error::other(format!("watcher error: monitored parent changed: {}",self.path.parent().expect("registered file parent").display())));}
-        if let Ok(metadata)=std::fs::symlink_metadata(&self.path) {
-            use std::os::unix::fs::MetadataExt;
-            if (metadata.dev() as f64!=self.checkpoint.dev||metadata.ino() as f64!=self.checkpoint.ino)&&metadata.nlink()>1 {return Err(std::io::Error::other(format!("Cannot watch file: target identity changed: {}",self.path.display())));}
-        }
-        let current=crate::durable_file::file_checkpoint(&self.path)?;
+        let current=crate::durable_file::file_checkpoint_with_identity(&self.path,Some(self.identity))?;
         let changed=match self.event {
             FileEvent::Create=>!self.checkpoint.present&&current.present,
             FileEvent::Modify=>self.checkpoint.present&&current.present&&(self.checkpoint.mtime_ms!=current.mtime_ms||self.checkpoint.size!=current.size||self.checkpoint.digest!=current.digest),
         };
+        if !self.checkpoint.present&&current.present {self.identity=(current.dev,current.ino);}
         self.checkpoint=current;
         if !changed {return Ok(vec![]);}
         self.settled=true;self.reservation.take();
@@ -49,6 +47,14 @@ impl FileMonitor {
 #[cfg(all(test,unix))]
 mod tests {
     use super::*;
+    #[test]
+    fn create_watch_keeps_original_identity_until_absent_to_present()->std::io::Result<()> {
+        let dir=tempfile::tempdir()?;let path=dir.path().join("watch");let replacement=dir.path().join("replacement");std::fs::write(&path,b"old")?;
+        let mut monitor=FileMonitor::register("watch_1".to_owned(),"watch".to_owned(),&path,FileEvent::Create,None)?;let identity=monitor.identity;
+        std::fs::write(&replacement,b"new")?;std::fs::rename(&replacement,&path)?;assert!(monitor.check()?.is_empty());assert_eq!(monitor.identity,identity);assert_ne!(monitor.checkpoint.ino,identity.1);
+        std::fs::hard_link(&path,&replacement)?;assert!(monitor.check().is_err());std::fs::remove_file(&replacement)?;std::fs::remove_file(&path)?;assert!(monitor.check()?.is_empty());
+        std::fs::write(&path,b"created")?;assert_eq!(monitor.check()?.len(),2);assert_eq!(monitor.identity,(monitor.checkpoint.dev,monitor.checkpoint.ino));Ok(())
+    }
     #[test]
     fn changed_identity_with_multiple_links_is_rejected()->std::io::Result<()> {
         let dir=tempfile::tempdir()?;let path=dir.path().join("watch");let replacement=dir.path().join("replacement");std::fs::write(&path,b"old")?;
