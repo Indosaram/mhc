@@ -693,6 +693,7 @@ impl InteractiveMode {
                 if matches!(event, AgentEvent::MessageEnd { .. }) { self.reveal.stop(); self.streaming = None; self.assistant_segments.clear(); }
             }
             AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
+                self.tool_args_reveal.finish(tool_call_id); self.tool_partial_json.remove(tool_call_id);
                 let component = self.tool_component(tool_name, tool_call_id, args.clone());
                 let mut component = component.borrow_mut();
                 component.update_args(args.clone());
