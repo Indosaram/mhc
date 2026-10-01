@@ -4,6 +4,7 @@ pub mod config_loader;
 pub mod command_runner;
 pub mod dispatcher;
 pub mod prompt_adapter;
+pub mod tool_adapter;
 pub mod handler;
 pub mod matcher;
 pub mod output_parser;
