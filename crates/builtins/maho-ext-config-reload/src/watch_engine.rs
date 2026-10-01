@@ -11,7 +11,7 @@ pub struct RealChange { pub changed_paths: Vec<PathBuf>, pub created: Vec<PathBu
 #[derive(Default)]
 struct ScanResult { hashes: BTreeMap<PathBuf, String>, allowed_directories: BTreeSet<PathBuf>, scanned_directories: BTreeSet<PathBuf> }
 pub struct ConfigReloadWatchEngine { targets: Vec<WatchTarget>, states: Vec<ScanResult>, closed: bool, on_error: Option<WatchErrorListener> }
-pub struct NativeWatchEngine { pub engine: ConfigReloadWatchEngine, subscriptions: BTreeMap<PathBuf, WatchSubscription>, receiver: std::sync::mpsc::Receiver<()>, sender: std::sync::mpsc::Sender<()>, on_error: WatchErrorListener, debounce: std::time::Duration }
+pub struct NativeWatchEngine { pub engine: ConfigReloadWatchEngine, subscriptions: BTreeMap<PathBuf, WatchSubscription>, receiver: std::sync::mpsc::Receiver<Option<PathBuf>>, sender: std::sync::mpsc::Sender<Option<PathBuf>>, on_error: WatchErrorListener, debounce: std::time::Duration }
 impl NativeWatchEngine {
     pub fn new(targets: Vec<WatchTarget>, on_error: WatchErrorListener) -> Result<Self, String> {
         Self::with_debounce(targets, on_error, std::time::Duration::from_millis(200))
@@ -33,6 +33,7 @@ impl NativeWatchEngine {
             let directory = path.clone();
             let targets: Vec<_> = self.engine.targets.iter().map(|target| (target.path.clone(), target.kind, target.allow_list.clone(), target.filter.clone())).collect();
             let subscription = subscribe(path.clone(), false, Arc::new(move |_, filename| {
+                let mut affected = None;
                 if let Some(filename) = filename {
                     if filename.is_absolute() || filename.components().any(|component| matches!(component, std::path::Component::ParentDir)) { return; }
                     let absolute = directory.join(filename);
@@ -41,8 +42,9 @@ impl NativeWatchEngine {
                             && allowed.as_ref().is_none_or(|allowed| allowed.iter().any(|allowed| relative == allowed || relative.starts_with(allowed)))
                             && filter.as_ref().is_none_or(|filter| filter(relative))
                     })) { return; }
+                    affected = Some(absolute);
                 }
-                let _ = sender.send(());
+                let _ = sender.send(affected);
             }), Arc::clone(&self.on_error))?;
             subscription.ready()?;
             self.subscriptions.insert(path, subscription);
@@ -50,15 +52,17 @@ impl NativeWatchEngine {
         Ok(())
     }
     pub fn next_change(&mut self, timeout: std::time::Duration) -> Result<RealChange, String> {
-        self.receiver.recv_timeout(timeout).map_err(|error| error.to_string())?;
+        let first = self.receiver.recv_timeout(timeout).map_err(|error| error.to_string())?;
+        let mut full = first.is_none();
+        let mut affected: BTreeSet<_> = first.into_iter().collect();
         loop {
             match self.receiver.recv_timeout(self.debounce) {
-                Ok(()) => {},
+                Ok(path) => { full |= path.is_none(); affected.extend(path); },
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
                 Err(error) => return Err(error.to_string()),
             }
         }
-        let change = self.engine.evaluate().map_err(|error| error.to_string())?;
+        let change = if full { self.engine.evaluate() } else { self.engine.evaluate_affected(&affected) }.map_err(|error| error.to_string())?;
         self.reconcile()?;
         Ok(change)
     }
@@ -87,10 +91,27 @@ impl ConfigReloadWatchEngine {
         self.targets.iter().zip(&self.states).flat_map(|(target, state)| std::iter::once(target.path.clone()).chain(state.scanned_directories.iter().cloned())).collect()
     }
     pub fn evaluate(&mut self) -> Result<RealChange, std::io::Error> {
+        self.evaluate_paths(None)
+    }
+    pub fn evaluate_affected(&mut self, paths: &BTreeSet<PathBuf>) -> Result<RealChange, std::io::Error> {
+        self.evaluate_paths(Some(paths))
+    }
+    fn evaluate_paths(&mut self, paths: Option<&BTreeSet<PathBuf>>) -> Result<RealChange, std::io::Error> {
         let mut changes = BTreeMap::new();
         if self.closed { return Ok(RealChange::default()); }
         for (target, state) in self.targets.iter().zip(&mut self.states) {
-            let next = scan(target, self.on_error.as_ref())?;
+            let next = if let Some(paths) = paths {
+                let prefixes: Vec<_> = paths.iter().filter_map(|path| path.strip_prefix(&target.path).ok().filter(|relative| matches(target, relative)).map(|relative| (path, relative))).collect();
+                if prefixes.is_empty() { continue; }
+                let mut next = ScanResult { hashes: state.hashes.clone(), allowed_directories: state.allowed_directories.clone(), scanned_directories: state.scanned_directories.clone() };
+                for (path, relative) in prefixes {
+                    next.hashes.retain(|key, _| !key.starts_with(path));
+                    next.allowed_directories.retain(|key| !key.starts_with(path));
+                    next.scanned_directories.retain(|key| !key.starts_with(path));
+                    scan_path(target, path, relative, &mut next, self.on_error.as_ref())?;
+                }
+                next
+            } else { scan(target, self.on_error.as_ref())? };
             for (path, hash) in &next.hashes { if state.hashes.get(path) != Some(hash) { changes.insert(path.clone(), (!state.hashes.contains_key(path), false)); } }
             for path in state.hashes.keys() { if !next.hashes.contains_key(path) { changes.insert(path.clone(), (false, true)); } }
             for path in &next.allowed_directories { if !state.allowed_directories.contains(path) { changes.insert(path.clone(), (true, false)); } }

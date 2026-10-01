@@ -39,3 +39,16 @@ fn scan_reports_bad_path_and_continues_other_targets() {
     assert_eq!(receiver.try_recv().unwrap().1, invalid);
     assert_eq!(engine.get_baseline_snapshot().len(), 1);
 }
+#[test]
+fn affected_scan_preserves_unobserved_siblings_until_their_event() {
+    let root = tempfile::tempdir().unwrap();
+    let first = root.path().join("first");
+    let second = root.path().join("second");
+    fs::write(&first, "old").unwrap();
+    fs::write(&second, "old").unwrap();
+    let mut engine = ConfigReloadWatchEngine::new(vec![target(root.path())]).unwrap();
+    fs::write(&first, "new").unwrap();
+    fs::write(&second, "new").unwrap();
+    assert_eq!(engine.evaluate_affected(&std::collections::BTreeSet::from([first.clone()])).unwrap().changed_paths, [first]);
+    assert_eq!(engine.evaluate().unwrap().changed_paths, [second]);
+}
