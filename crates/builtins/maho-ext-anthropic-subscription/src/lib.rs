@@ -18,3 +18,4 @@ pub mod settings;
 pub mod system_prompt;
 pub mod session_observability;
 pub mod session_reaper;
+pub mod session_input;
