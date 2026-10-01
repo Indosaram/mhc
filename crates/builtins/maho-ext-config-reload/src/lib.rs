@@ -6,3 +6,4 @@ pub mod log;
 pub mod routine_settings;
 pub mod watch_engine;
 pub mod session_scoped_callback;
+pub mod index;
