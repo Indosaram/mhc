@@ -475,6 +475,18 @@ async fn bare_model_selector_cancels_and_releases_native_composer() {
     assert_eq!(mode.editor.editor.get_text(), "draft");
 }
 
+#[tokio::test]
+async fn resume_path_restores_exported_native_transcript() {
+    use maho_tui::tui::Component;
+    let (mut mode, directory) = native_mode();
+    mode.submit("saved-message", Default::default()).await.expect("turn");
+    let path = directory.path().join("resume.jsonl");
+    mode.submit(&format!("/export {}", path.display()), Default::default()).await.expect("export");
+    mode.submit("/new", Default::default()).await.expect("new");
+    mode.submit(&format!("/resume {}", path.display()), Default::default()).await.expect("resume");
+    assert!(mode.render(80).join("\n").contains("saved-message"));
+}
+
 #[test]
 fn skill_invocation_replay_separates_collapsed_skill_and_user_request() {
     use maho_tui::tui::Component;

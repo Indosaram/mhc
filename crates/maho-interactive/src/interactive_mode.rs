@@ -227,6 +227,11 @@ impl InteractiveMode {
             if self.session.new_session(None).await? { self.rebuild_history(); self.show_status("Started new session".into()); }
             return Ok(PromptDisposition::Handled);
         }
+        if text.trim().starts_with("/resume ") {
+            let path = get_path_command_argument(text.trim(), "/resume").ok_or("Missing session path")?;
+            if self.session.switch_session(&path).await? { self.rebuild_history(); self.editor.editor.set_text(""); }
+            return Ok(PromptDisposition::Handled);
+        }
         if let Some(reference) = text.trim().strip_prefix("/model ") {
             let (provider, id) = reference.trim().split_once('/').ok_or("Model reference requires provider/model")?;
             let model = self.session.model_registry().find(provider, id).ok_or_else(|| format!("Model not found: {reference}"))?;
