@@ -7,7 +7,11 @@ pub const PROCESS_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RunStatus { Pass, Warning, Error, Missing }
-pub struct RunResult { pub status: RunStatus, pub message: String }
+pub struct RunResult {
+    pub status: RunStatus, pub message: String,
+    pub binary_path: Option<PathBuf>, pub exit_code: Option<i32>,
+    pub stdout: Option<String>, pub stderr: Option<String>,
+}
 
 pub fn resolve_binary(source_path: &Path) -> Option<PathBuf> {
     let exists = |path: &str| Path::new(path).exists();
@@ -49,13 +53,13 @@ pub async fn run_checker(input: &HookInput, binary: Option<&Path>) -> RunResult 
 }
 
 pub async fn run_checker_with_prompt(input: &HookInput, binary: Option<&Path>, custom_prompt: Option<&str>) -> RunResult {
-    let Some(binary) = binary else { return RunResult { status: RunStatus::Missing, message: "comment-checker binary not found. Install @code-yeongyu/comment-checker or reload the package.".into() }; };
+    let Some(binary) = binary else { return RunResult { status: RunStatus::Missing, message: "comment-checker binary not found. Install @code-yeongyu/comment-checker or reload the package.".into(), binary_path: None, exit_code: None, stdout: None, stderr: None }; };
     let mut command = tokio::process::Command::new(binary);
     command.arg("check");
     if let Some(prompt) = custom_prompt.filter(|value| !value.is_empty()) { command.args(["--prompt", prompt]); }
     let mut child = match command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).spawn() {
         Ok(child) => child,
-        Err(error) => return RunResult { status: RunStatus::Error, message: error.to_string() },
+        Err(error) => return process_result(binary, None, String::new(), error.to_string()),
     };
     let operation = async {
         let mut stdin = child.stdin.take().ok_or_else(|| std::io::Error::other("comment-checker stdin missing"))?;
@@ -68,24 +72,47 @@ pub async fn run_checker_with_prompt(input: &HookInput, binary: Option<&Path>, c
     };
     match tokio::time::timeout(Duration::from_millis(PROCESS_TIMEOUT_MS), operation).await {
         Ok(Ok((stdout, stderr, exit))) => {
-            let message = if stderr.is_empty() { stdout } else { stderr };
-            match exit.code() {
-                Some(0) => RunResult { status: RunStatus::Pass, message: String::new() },
-                Some(2) => RunResult { status: RunStatus::Warning, message },
-                _ => RunResult { status: RunStatus::Error, message },
-            }
+            process_result(binary, exit.code(), stdout, stderr)
         }
-        Ok(Err(error)) => RunResult { status: RunStatus::Error, message: error.to_string() },
+        Ok(Err(error)) => process_result(binary, None, String::new(), error.to_string()),
         Err(_) => {
             if let Err(error) = child.kill().await { eprintln!("comment-checker cleanup: {error}"); }
-            RunResult { status: RunStatus::Error, message: format!("comment-checker process timed out after {PROCESS_TIMEOUT_MS} ms") }
+            process_result(binary, None, String::new(), format!("comment-checker process timed out after {PROCESS_TIMEOUT_MS} ms"))
         }
     }
+}
+
+fn process_result(binary: &Path, exit_code: Option<i32>, stdout: String, stderr: String) -> RunResult {
+    let status = match exit_code { Some(0) => RunStatus::Pass, Some(2) => RunStatus::Warning, _ => RunStatus::Error };
+    let message = if status == RunStatus::Pass { String::new() } else if stderr.is_empty() { stdout.clone() } else { stderr.clone() };
+    RunResult { status, message, binary_path: Some(binary.to_owned()), exit_code, stdout: Some(stdout), stderr: Some(stderr) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pass_preserves_process_output() {
+        let result = process_result(Path::new("checker"), Some(0), "output".into(), "diagnostic".into());
+        assert_eq!(result.status, RunStatus::Pass);
+        assert!(result.message.is_empty());
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(result.stdout.as_deref(), Some("output"));
+        assert_eq!(result.stderr.as_deref(), Some("diagnostic"));
+    }
+    #[test]
+    fn warning_prefers_stderr() {
+        let result = process_result(Path::new("checker"), Some(2), "stdout".into(), "stderr".into());
+        assert_eq!(result.status, RunStatus::Warning);
+        assert_eq!(result.message, "stderr");
+        assert_eq!(result.binary_path, Some(PathBuf::from("checker")));
+    }
+    #[test]
+    fn error_uses_stdout_when_stderr_empty() {
+        let result = process_result(Path::new("checker"), Some(1), "failure".into(), String::new());
+        assert_eq!(result.status, RunStatus::Error);
+        assert_eq!(result.message, "failure");
+    }
 
     #[test]
     fn bundled_when_package_has_vendor_binary() {
