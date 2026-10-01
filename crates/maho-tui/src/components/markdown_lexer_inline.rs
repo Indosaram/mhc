@@ -259,7 +259,7 @@ impl Lexer {
                 .map(utf16_len)
                 .unwrap_or(0);
             Some(format!(
-                "{}{}{}",
+                "{}{}{}]",
                 slice_utf16(matched, 0, offset),
                 "[",
                 "a".repeat(utf16_len(matched).saturating_sub(offset + 2))

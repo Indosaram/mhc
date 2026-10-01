@@ -24,6 +24,17 @@ fn lexes_emphasis_and_strong() {
 }
 
 #[test]
+fn preserves_inline_raw_slices_around_code() {
+    let mut lexer = Lexer::new();
+    let tokens = lexer.lex("A paragraph with *emphasis*, **strong**, `code`.");
+    let inline = inline_of(&tokens[0]);
+    let actual: Vec<(&str, &str)> = inline.iter().map(|t| (t.type_name(), t.raw())).collect();
+    assert_eq!(actual, vec![("text", "A paragraph with "), ("em", "*emphasis*"),
+        ("text", ", "), ("strong", "**strong**"), ("text", ", "),
+        ("codespan", "`code`"), ("text", ".")]);
+}
+
+#[test]
 fn lexes_headings_paragraphs_and_fences() {
     let mut lexer = Lexer::new();
     let tokens = lexer.lex("# Title\n\nBody text.\n\n```rust\nlet x = 1;\n```\n");
