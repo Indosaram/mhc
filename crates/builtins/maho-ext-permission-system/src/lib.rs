@@ -31,7 +31,7 @@ impl Extension for PermissionSystem{
                 let manager=maho_core::settings_manager::SettingsManager::create(&ctx.cwd.to_string_lossy(),&ctx.agent_dir.to_string_lossy(),&home,ctx.is_project_trusted());
                 let cli=match runtime.get_flag("permission"){Some(FlagValue::String(value))=>cli::parse_permission_flag(&value),_=>Vec::new()};
                 let preset=match runtime.get_flag("permission-preset"){
-                    Some(FlagValue::String(value))=>Some(cli::parse_permission_preset_name(&value).ok_or_else(||ExtensionFailure::new(format!("Invalid --permission-preset \"{value}\". Expected one of: full-access, workspace, read-only, ask.")))?),_=>None,
+                    Some(FlagValue::String(value))=>Some(cli::parse_permission_preset_flag(&value).ok_or_else(||ExtensionFailure::new(format!("Invalid --permission-preset \"{value}\". Expected one of: full-access, workspace, read-only, ask.")))?),_=>None,
                 };
                 let (rules,approved)=settings::load_permission_settings(&manager,&cli,(&ctx.cwd,&home),preset).map_err(|error|ExtensionFailure::new(error.to_string()))?;
                 let initial_approved=approved.len();let actions=runtime.session_actions()?;let active=actions.get_active_tools()?;
