@@ -29,3 +29,8 @@ fn snapshots_advance_after_suppressed_change() {
 fn jsonc_routine_changes_use_shared_parser() {
     assert!(is_routine_only_settings_change(Some("{/* before */\"defaultModel\":\"m1\",}"), Some("{\"defaultModel\":\"m2\"}")));
 }
+#[test]
+fn equivalent_json_numbers_do_not_turn_a_routine_change_into_a_reload() {
+    assert!(is_routine_only_settings_change(Some(r#"{"config":{"limit":[1,0]},"defaultModel":"old"}"#), Some(r#"{"config":{"limit":[1.0,-0.0]},"defaultModel":"new"}"#)));
+    assert!(!is_routine_only_settings_change(Some(r#"{"defaultModel":1}"#), Some(r#"{"defaultModel":1.0}"#)));
+}

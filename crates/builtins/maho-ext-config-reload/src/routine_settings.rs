@@ -35,8 +35,17 @@ pub fn is_routine_only_settings_change(previous: Option<&str>, next: Option<&str
     let (Some(previous), Some(next)) = (previous, next) else { return false; };
     let (Ok(previous), Ok(next)) = (parse_settings_json(previous), parse_settings_json(next)) else { return false; };
     let keys: BTreeSet<_> = previous.keys().chain(next.keys()).collect();
-    let changed: Vec<_> = keys.into_iter().filter(|key| previous.get(*key).map(serde_json::Value::to_string) != next.get(*key).map(serde_json::Value::to_string)).collect();
+    let changed: Vec<_> = keys.into_iter().filter(|key| !json_values_equal(previous.get(*key), next.get(*key))).collect();
     !changed.is_empty() && changed.iter().all(|key| ROUTINE_SETTINGS_KEYS.contains(&key.as_str()))
+}
+fn json_values_equal(previous: Option<&serde_json::Value>, next: Option<&serde_json::Value>) -> bool {
+    use serde_json::Value;
+    match (previous, next) {
+        (Some(Value::Number(left)), Some(Value::Number(right))) => left.as_f64() == right.as_f64(),
+        (Some(Value::Array(left)), Some(Value::Array(right))) => left.len() == right.len() && left.iter().zip(right).all(|(left, right)| json_values_equal(Some(left), Some(right))),
+        (Some(Value::Object(left)), Some(Value::Object(right))) => left.len() == right.len() && left.iter().zip(right).all(|((left_key, left), (right_key, right))| left_key == right_key && json_values_equal(Some(left), Some(right))),
+        _ => previous == next,
+    }
 }
 pub fn exclude_routine_only_settings_changes(paths: &[PathBuf], contents: &mut BTreeMap<PathBuf, String>, agent_dir: &Path, cwd: &Path, logger: &mut ConfigReloadLogger) -> Vec<PathBuf> {
     paths.iter().filter(|path| {
