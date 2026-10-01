@@ -14,6 +14,7 @@ sha1 = "=0.10.6"
 regex = "=1.12.3"
 tokio = { version = "=1.52.3", features = ["full"] }
 maho-ext-api = { path = "../../maho-ext-api" }
+maho-core = { path = "../../maho-core" }
 serde_path_to_error = "=0.1.20"
 tempfile = "=3.27.0"
 getrandom = "=0.4.2"

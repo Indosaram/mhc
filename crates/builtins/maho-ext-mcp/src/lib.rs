@@ -7,3 +7,4 @@ pub mod errors;
 pub mod auth;
 pub mod catalog_cache;
 pub mod guard;
+pub mod skills;

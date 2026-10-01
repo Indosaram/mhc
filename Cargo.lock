@@ -1691,6 +1691,7 @@ dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.2",
  "globset",
+ "maho-core",
  "maho-ext-api",
  "regex",
  "serde",
