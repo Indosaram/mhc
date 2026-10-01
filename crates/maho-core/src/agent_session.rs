@@ -373,6 +373,13 @@ struct AgentSessionState {
     extension_abort_handler: Option<Arc<dyn Fn() + Send + Sync>>,
     extension_error_listener: Option<ExtensionErrorListener>,
     message_revision: u64,
+    steering_messages: Vec<String>,
+    follow_up_messages: Vec<String>,
+    queued_input_order: Vec<QueuedInput>,
+    next_queued_input_order: u64,
+    post_compaction_deferred_steering_messages: Vec<AgentMessage>,
+    post_compaction_deferred_follow_up_messages: Vec<AgentMessage>,
+    had_cleared_queued_messages: bool,
 }
 
 fn name_set(names: Option<Vec<String>>) -> Option<BTreeSet<String>> {
@@ -477,6 +484,13 @@ impl AgentSession {
             extension_abort_handler: None,
             extension_error_listener: None,
             message_revision: 0,
+            steering_messages: Vec::new(),
+            follow_up_messages: Vec::new(),
+            queued_input_order: Vec::new(),
+            next_queued_input_order: 0,
+            post_compaction_deferred_steering_messages: Vec::new(),
+            post_compaction_deferred_follow_up_messages: Vec::new(),
+            had_cleared_queued_messages: false,
         };
         let session = Self {
             agent,
@@ -1129,6 +1143,169 @@ impl AgentSession {
         self.event_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
         let _ = maho_ai::session_resources::cleanup_session_resources(Some(&self.session_id()));
     }
+
+    /// Reserve a global order for input temporarily owned outside the native queues.
+    pub fn reserve_queued_input_order(&self) -> u64 {
+        let mut state = self.state();
+        state.next_queued_input_order += 1;
+        state.next_queued_input_order
+    }
+
+    #[allow(dead_code)] // consumed by the steer/follow-up queue entry points in the queue slice
+    fn record_queued_input(&self, text: &str, mode: StreamingBehavior, enqueue_order: Option<u64>) {
+        let mut state = self.state();
+        let order = enqueue_order.unwrap_or_else(|| {
+            state.next_queued_input_order += 1;
+            state.next_queued_input_order
+        });
+        state.next_queued_input_order = state.next_queued_input_order.max(order);
+        state.queued_input_order.push(QueuedInput { text: text.to_owned(), mode, enqueue_order: order });
+    }
+
+    #[allow(dead_code)] // consumed by the steer/follow-up delivery path in the queue slice
+    fn remove_queued_input(&self, text: &str, mode: StreamingBehavior) {
+        let mut state = self.state();
+        if let Some(index) = state
+            .queued_input_order
+            .iter()
+            .position(|message| message.mode == mode && message.text == text)
+        {
+            state.queued_input_order.remove(index);
+        }
+    }
+
+    /// Clear all queued messages and return them. `ordered` preserves the recovery order across
+    /// both native queue modes.
+    pub fn clear_queue(&self, abort_will_follow: bool) -> ClearedQueue {
+        let steering;
+        let follow_up;
+        let ordered;
+        {
+            let mut state = self.state();
+            steering = std::mem::take(&mut state.steering_messages);
+            follow_up = std::mem::take(&mut state.follow_up_messages);
+            ordered = std::mem::take(&mut state.queued_input_order);
+            state.post_compaction_deferred_steering_messages.clear();
+            state.post_compaction_deferred_follow_up_messages.clear();
+            if abort_will_follow && (!steering.is_empty() || !follow_up.is_empty()) {
+                state.had_cleared_queued_messages = true;
+            }
+        }
+        let mut ordered = ordered;
+        ordered.sort_by_key(|input| input.enqueue_order);
+        self.agent.clear_all_queues();
+        self.emit_queue_update();
+        ClearedQueue { steering, follow_up, ordered }
+    }
+
+    pub fn pending_message_count(&self) -> usize {
+        let state = self.state();
+        state.steering_messages.len() + state.follow_up_messages.len()
+    }
+
+    pub fn get_steering_messages(&self) -> Vec<String> {
+        self.state().steering_messages.clone()
+    }
+
+    pub fn get_follow_up_messages(&self) -> Vec<String> {
+        self.state().follow_up_messages.clone()
+    }
+
+    fn emit_queue_update(&self) {
+        let (steering, follow_up, mut ordered) = {
+            let state = self.state();
+            (state.steering_messages.clone(), state.follow_up_messages.clone(), state.queued_input_order.clone())
+        };
+        ordered.sort_by_key(|input| input.enqueue_order);
+        let ordered = ordered
+            .into_iter()
+            .map(|input| maho_ext_api::QueuedInput {
+                text: input.text,
+                mode: input.mode,
+                enqueue_order: input.enqueue_order,
+            })
+            .collect();
+        self.emit(AgentSessionEvent::QueueUpdate { steering, follow_up, ordered });
+    }
+
+    pub fn steering_mode(&self) -> maho_agent::types::QueueMode {
+        self.agent.steering_mode()
+    }
+
+    pub fn follow_up_mode(&self) -> maho_agent::types::QueueMode {
+        self.agent.follow_up_mode()
+    }
+
+    /// Set steering message mode; saves to settings and emits `session_settings_changed`.
+    pub fn set_steering_mode(&self, mode: maho_agent::types::QueueMode) {
+        self.agent.set_steering_mode(mode);
+        self.persist_queue_mode("steeringMode", mode);
+        self.emit_session_settings_changed();
+    }
+
+    /// Set follow-up message mode; saves to settings and emits `session_settings_changed`.
+    pub fn set_follow_up_mode(&self, mode: maho_agent::types::QueueMode) {
+        self.agent.set_follow_up_mode(mode);
+        self.persist_queue_mode("followUpMode", mode);
+        self.emit_session_settings_changed();
+    }
+
+    fn persist_queue_mode(&self, key: &str, mode: maho_agent::types::QueueMode) {
+        let mut settings = crate::settings_manager::Settings::new();
+        settings.insert(key.to_owned(), Value::String(queue_mode_str(mode).to_owned()));
+        self.with_settings_manager_mut(|manager| {
+            let _ = manager.set(crate::settings_manager::SettingsScope::Global, &settings);
+        });
+    }
+
+    /// Apply the persisted steering/follow-up modes to the agent.
+    pub fn sync_queue_modes_from_settings(&self) {
+        let steering = self.with_settings_manager(|manager| manager.get_string("steeringMode"));
+        let follow_up = self.with_settings_manager(|manager| manager.get_string("followUpMode"));
+        if let Some(mode) = steering.as_deref().and_then(queue_mode_from_str) {
+            self.agent.set_steering_mode(mode);
+        }
+        if let Some(mode) = follow_up.as_deref().and_then(queue_mode_from_str) {
+            self.agent.set_follow_up_mode(mode);
+        }
+    }
+
+    fn emit_session_settings_changed(&self) {
+        self.emit(AgentSessionEvent::SessionSettingsChanged {
+            steering_mode: queue_mode_str(self.agent.steering_mode()).to_owned(),
+            follow_up_mode: queue_mode_str(self.agent.follow_up_mode()).to_owned(),
+            auto_compaction_enabled: self.auto_compaction_enabled(),
+        });
+    }
+
+    /// `autoCompactionEnabled`: the session override when set, else the settings value.
+    ///
+    /// Not yet ported: `_autoCompactionSessionOverride` (owned by the compaction slice); this reads
+    /// the settings value only.
+    pub fn auto_compaction_enabled(&self) -> bool {
+        self.with_settings_manager(|manager| {
+            manager
+                .get_value("compaction")
+                .and_then(|value| value.get("enabled"))
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+        })
+    }
+}
+
+fn queue_mode_str(mode: maho_agent::types::QueueMode) -> &'static str {
+    match mode {
+        maho_agent::types::QueueMode::All => "all",
+        maho_agent::types::QueueMode::OneAtATime => "one-at-a-time",
+    }
+}
+
+fn queue_mode_from_str(value: &str) -> Option<maho_agent::types::QueueMode> {
+    match value {
+        "all" => Some(maho_agent::types::QueueMode::All),
+        "one-at-a-time" => Some(maho_agent::types::QueueMode::OneAtATime),
+        _ => None,
+    }
 }
 
 fn session_entry_from_value(entry: Value) -> maho_ext_api::SessionEntry {
@@ -1372,6 +1549,46 @@ mod tests {
             "message": { "role": "user", "content": [{ "type": "text", "text": "hi" }], "timestamp": 0 }
         }));
         assert!(session.with_session_manager(|manager| manager.entry("entry-1")).is_some());
+    }
+
+    #[test]
+    fn reserving_queued_input_order_is_monotonic() {
+        let session = test_session();
+        assert_eq!(session.reserve_queued_input_order(), 1);
+        assert_eq!(session.reserve_queued_input_order(), 2);
+    }
+
+    #[test]
+    fn clear_queue_returns_messages_in_recovery_order() {
+        let session = test_session();
+        session.record_queued_input("b", StreamingBehavior::FollowUp, Some(2));
+        session.record_queued_input("a", StreamingBehavior::Steer, Some(1));
+        session.state().steering_messages.push("a".to_owned());
+        session.state().follow_up_messages.push("b".to_owned());
+        let cleared = session.clear_queue(false);
+        let ordered: Vec<&str> = cleared.ordered.iter().map(|input| input.text.as_str()).collect();
+        assert_eq!(ordered, vec!["a", "b"]);
+        assert_eq!(cleared.steering, vec!["a".to_owned()]);
+        assert_eq!(cleared.follow_up, vec!["b".to_owned()]);
+        assert_eq!(session.pending_message_count(), 0);
+    }
+
+    #[test]
+    fn setting_a_queue_mode_persists_and_emits() {
+        let session = test_session();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event.clone());
+        }));
+        session.set_steering_mode(maho_agent::types::QueueMode::All);
+        assert_eq!(session.steering_mode(), maho_agent::types::QueueMode::All);
+        let emitted = events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        assert!(emitted.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::SessionSettingsChanged { steering_mode, .. } if steering_mode == "all"
+        )));
+        assert_eq!(session.with_settings_manager(|manager| manager.get_string("steeringMode")), Some("all".to_owned()));
     }
 
     fn test_tool(name: &str) -> AgentTool {
