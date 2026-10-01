@@ -15,3 +15,4 @@ pub mod anchors;
 pub mod creation;
 pub mod runtime;
 pub mod activation;
+pub mod lifecycle_hooks;
