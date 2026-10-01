@@ -4,3 +4,4 @@ pub mod affinity;
 pub mod environment;
 pub mod errors;
 pub mod spawn_args;
+pub mod stream_parser;
