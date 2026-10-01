@@ -13,3 +13,5 @@ pub mod per_turn_cap;
 pub mod degradation_monitor;
 pub mod repair_tool_pairs;
 pub mod summarization_turn_order;
+pub mod overflow_retry;
+pub mod tool_admission;
