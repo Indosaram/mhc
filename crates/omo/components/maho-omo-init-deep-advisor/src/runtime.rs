@@ -49,4 +49,20 @@ mod tests {
     #[test] fn global_decline_suppresses() { let (_r,_s,p)=preflight(); write_global_decline(&p.state_dir,0.0).unwrap(); assert!(prepare_proposal(&p,100.0).unwrap().is_none()); }
     #[test] fn project_decline_suppresses() { let (_r,_s,p)=preflight(); write_project_decline(&p.state_dir,&repo_hash(&p.root).unwrap(),0.0).unwrap(); assert!(prepare_proposal(&p,100.0).unwrap().is_none()); }
     #[test] fn cooldown_suppresses() { let (_r,_s,p)=preflight(); write_cooldown(&p.state_dir,&repo_hash(&p.root).unwrap(),100.0).unwrap(); assert!(prepare_proposal(&p,101.0).unwrap().is_none()); }
+    fn api()->ExtensionApi {use maho_ext_api::{LoadedExtension,SourceInfo,ExtensionSessionProfile,EventBus,ExtensionRuntime};ExtensionApi::new(LoadedExtension::new("advisor",PathBuf::from("/workspace"),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default())}
+    fn eligibility()->EligibilityResult {EligibilityResult::SnapshotInvalid {drift:crate::proposed_data::StaleData {stale:true}}}
+    #[test] fn skip_writes_cooldown() {let (_r,_s,p)=preflight();let repo=repo_hash(&p.root).unwrap();handle_choice(Some("Skip this time"),&api(),&p,&repo,&eligibility(),Path::new("/skills"),100.0).unwrap();assert!(read_cooldown_until(&p.state_dir,&repo)>100.0);}
+    #[test] fn timeout_writes_cooldown() {let (_r,_s,p)=preflight();let repo=repo_hash(&p.root).unwrap();handle_choice(None,&api(),&p,&repo,&eligibility(),Path::new("/skills"),100.0).unwrap();assert!(read_cooldown_until(&p.state_dir,&repo)>100.0);}
+    #[test] fn never_project_writes_decline() {let (_r,_s,p)=preflight();let repo=repo_hash(&p.root).unwrap();handle_choice(Some("Never in this project"),&api(),&p,&repo,&eligibility(),Path::new("/skills"),100.0).unwrap();assert!(is_project_declined(&p.state_dir,&repo));assert!(!is_globally_declined(&p.state_dir));}
+    #[test] fn never_anywhere_writes_decline() {let (_r,_s,p)=preflight();let repo=repo_hash(&p.root).unwrap();handle_choice(Some("Never anywhere"),&api(),&p,&repo,&eligibility(),Path::new("/skills"),100.0).unwrap();assert!(is_globally_declined(&p.state_dir));}
+    #[derive(Default)]
+    struct Actions {messages:std::sync::Mutex<Vec<(CustomMessage,SendMessageOptions)>>,entries:std::sync::Mutex<Vec<(String,Option<serde_json::Value>)>>}
+    impl maho_ext_api::ExtensionActions for Actions {
+        fn send_message(&self,m:CustomMessage,o:SendMessageOptions)->Result<(),ExtensionFailure> {self.messages.lock().unwrap().push((m,o));Ok(())}
+        fn send_user_message(&self,_:maho_ext_api::UserMessageContent,_:maho_ext_api::SendUserMessageOptions)->Result<(),ExtensionFailure> {Err(ExtensionFailure::new("unexpected user message"))}
+        fn append_entry(&self,t:&str,v:Option<serde_json::Value>)->Result<(),ExtensionFailure> {self.entries.lock().unwrap().push((t.into(),v));Ok(())}
+        fn get_all_tools(&self)->Result<Vec<maho_ext_api::ToolInfo>,ExtensionFailure> {Ok(Vec::new())}
+    }
+    #[test] fn run_now_hidden_followup_and_local_entry() {let (_r,_s,p)=preflight();let a=api();let actions=std::sync::Arc::new(Actions::default());a.runtime.bind(actions.clone());handle_choice(Some("Run now"),&a,&p,"repo",&eligibility(),Path::new("/skills"),100.0).unwrap();let messages=actions.messages.lock().unwrap();assert_eq!(messages.len(),1);assert!(!messages[0].0.display);assert_eq!(messages[0].0.custom_type,"omo-init-deep-advisor:run");assert!(messages[0].1.trigger_turn);assert_eq!(messages[0].1.deliver_as,Some(DeliverAs::FollowUp));let entries=actions.entries.lock().unwrap();assert_eq!(entries[0].0,"omo-init-deep-advisor:proposed");assert_eq!(entries[0].1.as_ref().unwrap()["suggestedMode"],"local");}
+    #[test] fn tracked_agents_suggests_committed() {let (_r,_s,p)=preflight();fs::write(p.root.join("AGENTS.md"),"").unwrap();run(&p.root,&["add","AGENTS.md"]).unwrap();let a=api();let actions=std::sync::Arc::new(Actions::default());a.runtime.bind(actions.clone());handle_choice(Some("Run now"),&a,&p,"repo",&eligibility(),Path::new("/skills"),100.0).unwrap();assert_eq!(actions.entries.lock().unwrap()[0].1.as_ref().unwrap()["suggestedMode"],"committed");}
 }
