@@ -24,6 +24,8 @@ pub struct ScheduleWakeupInput { pub loop_id:LoopId,pub delay_seconds:f64,pub re
 pub enum ScheduleWakeupResult { Scheduled { wakeup_id:WakeupId,replaced_wakeup_id:Option<WakeupId>,due_at:f64,noop_streak:f64 },UnknownLoop,NotDynamic,Ended,Expired }
 #[derive(Clone,Debug,PartialEq)]
 pub enum KeepaliveResult { Armed { wakeup_id:WakeupId,delay_seconds:f64,due_at:f64 },Ended(LoopEndReason),Ignored }
+#[derive(Default)]
+pub struct RestoreResult { pub recovery_ticks:Vec<LoopTick>,pub expired_loop_ids:Vec<LoopId>,pub rearmed_loop_ids:Vec<LoopId>,pub still_paused_loop_ids:Vec<LoopId> }
 fn fields(entry:&CronEntry)->&LoopEntryFields { match entry { CronEntry::Fixed { fields,.. }|CronEntry::Dynamic { fields,.. }=>fields } }
 fn fields_mut(entry:&mut CronEntry)->&mut LoopEntryFields { match entry { CronEntry::Fixed { fields,.. }|CronEntry::Dynamic { fields,.. }=>fields } }
 fn lifecycle(entry:&CronEntry)->&LoopLifecycle { match entry { CronEntry::Fixed { lifecycle,.. }|CronEntry::Dynamic { lifecycle,.. }=>lifecycle } }
@@ -105,6 +107,28 @@ impl LoopScheduler {
     pub fn resume(&mut self,target:&str,now:f64)->Vec<LoopId> { let affected=self.targets(target).into_iter().filter(|id|self.state.entries.get(id).is_some_and(|entry|lifecycle(entry).phase==LoopPhase::Suspended)).collect::<Vec<_>>(); for id in &affected { if let Some(entry)=self.state.entries.get_mut(id) { phase(entry,LoopPhase::Waiting); fields_mut(entry).queued_for_at=None; match entry { CronEntry::Fixed { next_fire_at,interval_ms,.. }=>*next_fire_at=now+*interval_ms,CronEntry::Dynamic { pending_wakeup,.. }=>if let Some(wake)=pending_wakeup { wake.due_at=wake.due_at.max(now); } } } self.arm(id,now); } if !affected.is_empty() { self.commit(now); } affected }
     pub fn stop(&mut self,target:&str,detail:&str,now:f64)->Vec<LoopId> { let affected=self.targets(target).into_iter().filter(|id|self.state.entries.get(id).is_some_and(|entry|lifecycle(entry).phase!=LoopPhase::Ended)).collect::<Vec<_>>(); for id in &affected { self.end(id,now,LoopEndReason::Stopped,Some(detail.into())); if self.state.active_dynamic_id.as_ref()==Some(id) { self.state.active_dynamic_id=None; } } if !affected.is_empty() { self.commit(now); } affected }
     pub fn on_shutdown(&mut self,now:f64)->Vec<LoopId> { self.armed_timers.clear(); let affected=self.pause("all",now); self.in_flight_deliveries.clear(); affected }
+    pub fn restore(&mut self,now:f64,user_paused:&[LoopId],mut delivery_id:impl FnMut()->DeliveryId)->RestoreResult {
+        let mut result=RestoreResult::default(); self.armed_timers.clear();
+        for id in self.order.clone() {
+            let Some(entry)=self.state.entries.get(&id) else { continue; };
+            if lifecycle(entry).phase==LoopPhase::Ended || self.in_flight_deliveries.contains_key(&id) { continue; }
+            if user_paused.contains(&id) { if let Some(entry)=self.state.entries.get_mut(&id) { phase(entry,LoopPhase::Suspended); fields_mut(entry).queued_for_at=None; } result.still_paused_loop_ids.push(id); continue; }
+            if now>=fields(entry).expires_at { self.end(&id,now,LoopEndReason::Expired,None); result.expired_loop_ids.push(id); continue; }
+            let due=match entry { CronEntry::Fixed { next_fire_at,.. }=>Some(*next_fire_at),CronEntry::Dynamic { pending_wakeup,.. }=>pending_wakeup.as_ref().map(|wake|wake.due_at) };
+            let overdue=due.is_some_and(|due|due<=now); let remnant=matches!(lifecycle(entry).phase,LoopPhase::Starting|LoopPhase::Queued|LoopPhase::Running);
+            let recover=(overdue || remnant || fields(entry).coalesced_fire_pending) && fields(entry).tick_count<self.max_ticks;
+            if let Some(entry)=self.state.entries.get_mut(&id) { phase(entry,LoopPhase::Waiting); let base=fields_mut(entry); base.queued_for_at=None; base.coalesced_fire_pending=false; match entry { CronEntry::Fixed { next_fire_at,interval_ms,.. }=>*next_fire_at=now+*interval_ms,CronEntry::Dynamic { pending_wakeup,.. }=>if overdue { *pending_wakeup=None; } } }
+            if self.arm(&id,now).is_some() { result.expired_loop_ids.push(id); continue; }
+            if recover { result.recovery_ticks.push(LoopTick { loop_id:id.clone(),delivery_id:delivery_id(),scheduled_for_at:now,coalesced:true }); }
+            result.rearmed_loop_ids.push(id);
+        }
+        self.commit(now);
+        if !result.recovery_ticks.is_empty() {
+            for tick in &result.recovery_ticks { if let Some(entry)=self.state.entries.get_mut(&tick.loop_id) { if lifecycle(entry).phase==LoopPhase::Ended { continue; } phase(entry,LoopPhase::Queued); let base=fields_mut(entry); base.last_fired_at=Some(now); base.last_scheduled_for_at=Some(now); base.queued_for_at=Some(now); base.tick_count+=1.0; self.in_flight_deliveries.insert(tick.loop_id.clone(),tick.delivery_id.clone()); } }
+            self.commit(now);
+        }
+        result
+    }
 }
 #[cfg(test)] mod tests {
     use super::*;
@@ -116,4 +140,7 @@ impl LoopScheduler {
     #[test] fn expiry_never_extends_when_model_schedules() { let mut scheduler=scheduler(); scheduler.create_dynamic(dynamic(),"one".into(),0.0); scheduler.on_schedule_wakeup(ScheduleWakeupInput { loop_id:"one".into(),delay_seconds:60.0,requested_delay_seconds:60.0,reason:"wait".into(),prompt:"check".into(),noop:false },"wake".into(),LOOP_EXPIRY_MS-1.0); assert_eq!(lifecycle(&scheduler.state.entries["one"]).end_reason,Some(LoopEndReason::Expired)); assert!(scheduler.armed_timers.is_empty()); }
     #[test] fn shutdown_suspends_without_terminal_reason() { let mut scheduler=scheduler(); scheduler.create_dynamic(dynamic(),"one".into(),0.0); scheduler.on_shutdown(1.0); let lifecycle=lifecycle(&scheduler.state.entries["one"]); assert_eq!(lifecycle.phase,LoopPhase::Suspended); assert!(lifecycle.end_reason.is_none()); }
     #[test] fn retrying_tick_keeps_delivery_slot() { let mut scheduler=scheduler(); scheduler.create_dynamic(dynamic(),"one".into(),0.0); scheduler.on_due("one",1.0,false,"delivery".into()); let result=scheduler.on_tick_settled("one","delivery",TickOutcome::Retrying,2.0,"unused".into()); assert_eq!(result,SettledResult::InProgress); assert_eq!(scheduler.current_delivery_id("one"),Some("delivery")); }
+    #[test] fn crash_remnant_recovers_exactly_one_delivery() { let mut first=scheduler(); first.create_dynamic(dynamic(),"one".into(),0.0); first.on_due("one",1.0,false,"lost".into()); let mut resumed=LoopScheduler::new("test",Some(first.state),&BTreeMap::new()); let result=resumed.restore(2.0,&[],||"recovered".into()); assert_eq!(result.recovery_ticks.len(),1); assert_eq!(resumed.current_delivery_id("one"),Some("recovered")); assert_eq!(fields(&resumed.state.entries["one"]).tick_count,2.0); }
+    #[test] fn restore_never_duplicates_live_delivery() { let mut scheduler=scheduler(); scheduler.create_dynamic(dynamic(),"one".into(),0.0); scheduler.on_due("one",1.0,false,"live".into()); let result=scheduler.restore(2.0,&[],||"duplicate".into()); assert!(result.recovery_ticks.is_empty()); assert_eq!(scheduler.current_delivery_id("one"),Some("live")); }
+    #[test] fn explicit_pause_survives_restore() { let mut scheduler=scheduler(); scheduler.create_dynamic(dynamic(),"one".into(),0.0); let result=scheduler.restore(2.0,&["one".into()],||"unused".into()); assert_eq!(result.still_paused_loop_ids,["one"]); assert_eq!(lifecycle(&scheduler.state.entries["one"]).phase,LoopPhase::Suspended); }
 }
