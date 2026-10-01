@@ -2,12 +2,14 @@ use std::{collections::BTreeMap,path::{Path,PathBuf}};
 use maho_omo_agent_home::resolve_agent_home;
 pub const OMO_CONFIG_FILE_FILTER_GLOBS:[&str;2]=["/omo.jsonc","/omo.json"];
 pub const OMO_CONFIG_DIRECTORY_FILTER_GLOBS:[&str;3]=["/.omo","/.omo/omo.jsonc","/.omo/omo.json"];
-pub const USER_OMO_CONFIG_DIRECTORY_FILTER_GLOBS:[&str;1]=["/maho"];
+pub const USER_OMO_CONFIG_DIRECTORY_FILTER_GLOBS:[&str;1]=["/.maho"];
 pub struct OmoConfigWatchTarget { pub path:PathBuf,pub filter_globs:Vec<String> }
 pub struct OmoConfigWatchTargetResolution { pub targets:Vec<OmoConfigWatchTarget>,pub user_config_creation_watched:bool }
 fn target(path:PathBuf,globs:&[&str])->OmoConfigWatchTarget { OmoConfigWatchTarget{path,filter_globs:globs.iter().map(|s|s.to_string()).collect()} }
 fn contains(parent:&Path,child:&Path)->bool { child.strip_prefix(parent).is_ok() }
 pub fn resolve_omo_config_watch_target_resolution(cwd:&Path,home:&Path,env:&BTreeMap<String,String>)->OmoConfigWatchTargetResolution {
+    let cwd_path=PathBuf::from(omo_config_core::internal::posix_path::posix_resolve(&[&cwd.to_string_lossy()]));let cwd=cwd_path.as_path();
+    let home_path=PathBuf::from(omo_config_core::internal::posix_path::posix_resolve(&[&home.to_string_lossy()]));let home=home_path.as_path();
     let mut loader_env=env.clone();loader_env.insert("HOME".into(),home.to_string_lossy().into_owned());
     let configured=omo_config_core::resolve_omo_config_paths(&omo_config_core::ResolveOmoConfigPathsOptions{cwd:cwd.to_string_lossy().into_owned(),env:Some(loader_env),file_system:None,platform:Some("linux".into())});
     let mut project_directories:std::collections::BTreeSet<PathBuf>=configured.into_iter().filter(|p|p.scope=="project").filter_map(|p|PathBuf::from(p.path).parent().map(Path::to_owned)).collect();
