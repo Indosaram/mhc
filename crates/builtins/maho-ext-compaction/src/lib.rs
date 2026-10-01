@@ -16,3 +16,4 @@ pub mod summarization_turn_order;
 pub mod overflow_retry;
 pub mod tool_admission;
 pub mod context_reduction;
+pub mod lane_policy;
