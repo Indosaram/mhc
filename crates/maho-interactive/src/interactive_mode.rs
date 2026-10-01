@@ -59,6 +59,45 @@ impl InteractiveMode {
         }).collect();
     }
 
+    pub fn rebuild_history(&mut self) {
+        self.chat.clear(); self.pending_tools.clear(); self.streaming = None; self.assistant_segments.clear();
+        for message in self.session.messages() { self.add_history_message(&message); }
+    }
+
+    pub fn add_history_message(&mut self, message: &maho_agent::types::AgentMessage) {
+        use maho_agent::types::{AgentMessage, CustomAgentMessage};
+        match message {
+            AgentMessage::Llm(maho_ai::types::Message::Assistant(message)) => crate::replay_assistant_tools::replay_assistant_tools(message, self),
+            AgentMessage::Llm(maho_ai::types::Message::ToolResult(message)) => {
+                if let Some(component) = self.pending_tools.remove(&message.tool_call_id) {
+                    let value = serde_json::to_value(message).expect("tool result");
+                    component.borrow_mut().update_result(Self::tool_result(&value, message.is_error), false);
+                }
+            }
+            AgentMessage::Llm(maho_ai::types::Message::User(_)) => {
+                self.handle_event(&AgentEvent::MessageStart { message: message.clone() });
+                let value = serde_json::to_value(message).expect("user message");
+                if let Some(parts) = value["content"].as_array() { let text = parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n"); self.editor.editor.add_to_history(&text); }
+            }
+            AgentMessage::Custom(CustomAgentMessage::Custom(message)) if message.display => {
+                self.chat.add_child(Rc::new(RefCell::new(crate::components::custom_message::CustomMessageComponent::new(serde_json::to_value(message).expect("custom message"), None, self.theme.clone(), get_markdown_theme(&self.theme), 1))));
+            }
+            AgentMessage::Custom(CustomAgentMessage::BranchSummary(message)) => {
+                self.chat.add_child(Rc::new(RefCell::new(crate::components::branch_summary_message::BranchSummaryMessageComponent::new(message.summary.clone(), self.theme.clone(), get_markdown_theme(&self.theme), crate::components::keybinding_hints::key_display_text("app.tools.expand")))));
+            }
+            AgentMessage::Custom(CustomAgentMessage::CompactionSummary(message)) => {
+                self.chat.add_child(Rc::new(RefCell::new(crate::components::compaction_summary_message::CompactionSummaryMessageComponent::new(serde_json::to_value(message).expect("summary"), self.theme.clone(), get_markdown_theme(&self.theme), crate::components::keybinding_hints::key_display_text("app.tools.expand")))));
+            }
+            AgentMessage::Custom(CustomAgentMessage::BashExecution(message)) => {
+                let mut component = crate::components::bash_execution::BashExecutionComponent::new(&message.command, message.exclude_from_context.unwrap_or(false), self.theme.clone());
+                component.append_output(&message.output);
+                component.set_complete(message.exit_code.map(|code| i32::try_from(code).expect("exit code")), message.cancelled, None, message.full_output_path.clone());
+                self.chat.add_child(Rc::new(RefCell::new(component)));
+            }
+            _ => {}
+        }
+    }
+
     pub async fn bind_extensions(&mut self) {
         let session = self.session.clone();
         let bindings = maho_core::agent_session::ExtensionBindings { ui_context: Some(self.extension_ui.clone()), mode: Some(maho_ext_api::ExtensionMode::Tui), ..Default::default() };
@@ -235,7 +274,7 @@ impl InteractiveMode {
                     let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", 1, self.markdown_transformers.clone(), self.theme.clone())));
                     self.chat.add_child(component.clone());
                     self.streaming = Some(component);
-                }
+                } else if message.role() == "custom" { self.add_history_message(message); }
             }
             AgentEvent::MessageUpdate { message, .. } | AgentEvent::MessageEnd { message } if message.role() == "assistant" => {
                 if let Some(assistant) = message.as_assistant() {
@@ -305,6 +344,18 @@ impl InteractiveMode {
     fn tool_result(value: &serde_json::Value, is_error: bool) -> ToolExecutionResult {
         ToolExecutionResult { content: serde_json::from_value(value["content"].clone()).expect("typed tool result content"), details: value.get("details").cloned(), is_error }
     }
+}
+
+impl crate::replay_assistant_tools::ReplayToolHost for InteractiveMode {
+    fn expanded(&self) -> bool { false }
+    fn add_message(&mut self, message: maho_ai::types::AssistantMessage) {
+        self.chat.add_child(Rc::new(RefCell::new(AssistantMessageComponent::new(Some(serde_json::to_value(message).expect("assistant")), false, get_markdown_theme(&self.theme), "Thinking…", 1, self.markdown_transformers.clone(), self.theme.clone()))));
+    }
+    fn add_child(&mut self, component: Rc<RefCell<ToolExecutionComponent>>) { self.chat.add_child(component); }
+    fn create_tool(&mut self, name: &str, id: &str, args: &serde_json::Map<String, serde_json::Value>) -> ToolExecutionComponent {
+        ToolExecutionComponent::new(name, id, serde_json::Value::Object(args.clone()), ToolExecutionOptions::default(), None, &self.session.cwd(), ToolExecutionPresentation::Classic, None, self.theme.clone())
+    }
+    fn add_pending(&mut self, id: &str, component: Rc<RefCell<ToolExecutionComponent>>) { self.pending_tools.insert(id.into(), component); }
 }
 
 pub fn get_path_command_argument(text: &str, command: &str) -> Option<String> {

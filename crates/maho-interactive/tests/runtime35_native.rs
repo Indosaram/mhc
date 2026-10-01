@@ -252,3 +252,24 @@ async fn registered_extension_markdown_transformer_reaches_native_assistant() {
     let lines = mode.render(80).join("\n");
     assert!(lines.contains("transformed-reply")); assert!(!lines.contains("hello"));
 }
+
+#[tokio::test]
+async fn rebuilding_native_history_does_not_duplicate_existing_transcript() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("hi", Default::default()).await.expect("turn");
+    mode.rebuild_history(); mode.rebuild_history();
+    assert_eq!(mode.render(80).join("\n").matches("hello").count(), 1);
+}
+
+#[test]
+fn hidden_custom_history_is_not_rendered() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    for display in [false, true] {
+        let message = maho_agent::types::AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(maho_agent::harness::messages::CustomMessage { role:"custom".into(), custom_type:"fixture".into(), content:maho_agent::harness::messages::CustomMessageContent::Text(if display {"visible-value"} else {"hidden-value"}.into()), display, details:None, timestamp:0 }));
+        mode.add_history_message(&message);
+    }
+    let rendered = mode.render(80).join("\n");
+    assert!(rendered.contains("visible-value")); assert!(!rendered.contains("hidden-value"));
+}
