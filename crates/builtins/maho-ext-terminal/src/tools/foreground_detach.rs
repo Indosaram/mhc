@@ -2,7 +2,7 @@ use maho_pty::PtyExit;
 use maho_tools::definition::AbortSignal;
 pub enum ForegroundOutcome {Exit(PtyExit),Aborted,Detached}
 pub async fn foreground_outcome(mut exit:tokio::sync::watch::Receiver<Option<Result<PtyExit,String>>>,signal:&AbortSignal,delay:std::time::Duration)->Result<ForegroundOutcome,String> {
-    let deadline=tokio::time::sleep(delay);tokio::pin!(deadline);
+    let deadline=async move {if delay==std::time::Duration::MAX {std::future::pending::<()>().await;} else {tokio::time::sleep(delay).await;}};tokio::pin!(deadline);
     loop {
         if signal.is_aborted() {return Ok(ForegroundOutcome::Aborted);}
         if let Some(result)=exit.borrow_and_update().clone() {return result.map(ForegroundOutcome::Exit);}
