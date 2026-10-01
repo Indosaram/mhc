@@ -245,6 +245,14 @@ pub struct ModelCycleResult {
     pub system_prompt_change: Option<SystemPromptChangeEvent>,
 }
 
+#[derive(Clone, Debug)]
+pub struct PendingModelSwitch {
+    pub model: Model,
+    pub budget: maho_ext_api::ModelBudget,
+    pub persist_default: bool,
+    pub notice: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ContextUsage {
     pub tokens: Option<u64>,
@@ -389,6 +397,7 @@ struct AgentSessionState {
     probe_phase: crate::retry_fallback::hint_policy::ProbePhase,
     hint_deadline_ms: Option<f64>,
     cumulative_hinted_wait_ms: f64,
+    pending_model_switch: Option<PendingModelSwitch>,
 }
 
 fn name_set(names: Option<Vec<String>>) -> Option<BTreeSet<String>> {
@@ -586,6 +595,7 @@ impl AgentSession {
             probe_phase: crate::retry_fallback::hint_policy::ProbePhase::Idle,
             hint_deadline_ms: None,
             cumulative_hinted_wait_ms: 0.0,
+            pending_model_switch: None,
         };
         let session = Self { inner: Arc::new(AgentSessionInner {
             agent,
@@ -1093,6 +1103,171 @@ impl AgentSession {
 
     pub fn model_registry(&self) -> &ModelRegistry {
         &self.model_registry
+    }
+
+    pub fn pending_model_switch(&self) -> Option<PendingModelSwitch> { self.state().pending_model_switch.clone() }
+
+    fn model_budget(&self, model: &Model, live_context_tokens: u64, speculation: bool)
+        -> Result<(maho_ext_api::ModelBudget, bool), String>
+    {
+        let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
+        let settings = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
+            .transpose().map_err(|error| error.to_string())?;
+        let settings = crate::compaction_settings_resolver::resolve_compaction_settings(settings.as_ref(), Some(
+            crate::compaction_settings_access::CompactionModelSelector { provider: &model.provider, id: &model.id },
+        ))?;
+        let window = model.context_window;
+        let ratio = match window {
+            0..=16_000 => 0.45, 16_001..=32_000 => 0.5, 32_001..=64_000 => 0.55,
+            64_001..=128_000 => 0.6, 128_001..=512_000 => 0.7, _ => 0.8,
+        };
+        let prompt_tokens = u64::try_from(self.system_prompt().len().div_ceil(4)).map_err(|error| error.to_string())?;
+        let tools = self.agent.state().tools().iter().map(|tool| serde_json::to_string(&tool.tool)
+            .map(|text| u64::try_from(text.len().div_ceil(4)).unwrap_or(u64::MAX))).collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?.into_iter().sum::<u64>();
+        let (margin, profile) = if model.provider == "anthropic" || model.id.contains("claude") { (16_384, "anthropic") }
+            else if model.provider == "openai" || ["gpt-5", "o1", "o3", "o4"].iter().any(|family| model.id.contains(family)) { (16_384, "openai-reasoning") }
+            else if model.provider == "google" || model.id.contains("gemini") { (12_288, "google") }
+            else if model.provider == "deepseek" || model.id.contains("deepseek") { (12_288, "deepseek") }
+            else { (8_192, "default") };
+        let reserve = if settings.enabled {
+            let configured = u64::try_from(settings.reserve_tokens).map_err(|error| error.to_string())?;
+            if settings.reserve_scaling_enabled { configured.max((window / 25).min(49_152)) } else { configured }
+        } else { 0 };
+        let lead = if speculation && settings.enabled && settings.speculative_enabled {
+            settings.speculative_lead_tokens.unwrap_or((window as f64 * ratio * 0.125).floor()).clamp(8_192.0, 32_768.0) as u64
+        } else { 0 };
+        let overhead = prompt_tokens.saturating_add(tools).saturating_add(model.max_tokens.min(window / 2))
+            .saturating_add(reserve).saturating_add(lead).saturating_add(margin);
+        let required_tokens = overhead.saturating_add(live_context_tokens);
+        let keep = u64::try_from(settings.keep_recent_tokens).map_err(|error| error.to_string())?;
+        let keep = if window > 409_600 && keep >= 10_000 { keep.max((window / 20).min(60_000)) } else { keep };
+        let keep = keep.min(((window as f64 * (1.0 - ratio - 0.05)).floor() as u64).max(1_024));
+        Ok((maho_ext_api::ModelBudget {
+            context_window: window, live_context_tokens, required_tokens,
+            shortfall_tokens: required_tokens.saturating_sub(window), safety_margin_profile: Some(profile.to_owned()),
+        }, settings.enabled && overhead.saturating_add(keep) <= window))
+    }
+
+    pub fn assert_model_usable(&self, model: &Model, live_context_tokens: u64) -> Result<(), String> {
+        if model.context_window == 0 { return Ok(()); }
+        let (budget, _) = self.model_budget(model, live_context_tokens, live_context_tokens == 0)?;
+        if budget.shortfall_tokens == 0 { Ok(()) } else { Err(format!(
+            "Model \"{}/{}\" cannot {}: context window {} tokens is {} tokens short of the {}-token requirement.",
+            model.provider, model.id, if live_context_tokens == 0 { "start" } else { "switch" },
+            budget.context_window, budget.shortfall_tokens, budget.required_tokens,
+        )) }
+    }
+
+    pub async fn set_model(&self, model: Model) -> Result<Option<SystemPromptChangeEvent>, String> {
+        self.set_model_internal(model, true, maho_ext_api::ModelSelectSource::Set, true).await
+    }
+
+    pub async fn set_session_model(&self, model: Model) -> Result<Option<SystemPromptChangeEvent>, String> {
+        self.set_model_internal(model, false, maho_ext_api::ModelSelectSource::Set, true).await
+    }
+
+    async fn set_model_internal(&self, model: Model, persist_default: bool, source: maho_ext_api::ModelSelectSource,
+        allow_deferral: bool) -> Result<Option<SystemPromptChangeEvent>, String>
+    {
+        let previous = self.model();
+        let live = if model.context_window < previous.context_window {
+            self.get_context_usage().and_then(|usage| usage.tokens).unwrap_or(0)
+        } else { 0 };
+        let (budget, repairable) = self.model_budget(&model, live, self.messages().is_empty())?;
+        let admission = if model.context_window > 0 && budget.shortfall_tokens > 0 && !repairable {
+            self.assert_model_usable(&model, live)
+        } else { Ok(()) };
+        if let Err(detail) = admission {
+            self.emit(AgentSessionEvent::ModelChangeRejected { model, reason: "context-budget".to_owned(), detail: detail.clone(), budget: Some(budget) });
+            return Err(detail);
+        }
+        if self.state().uses_default_stream_function { self.get_required_request_auth(&model).await?; }
+        if allow_deferral && budget.shortfall_tokens > 0 && repairable {
+            let notice = format!("{} needs {} fewer tokens than this conversation holds. It is compacted on your next message, and the switch applies after that.", model.id, budget.shortfall_tokens);
+            self.state().pending_model_switch = Some(PendingModelSwitch { model: model.clone(), budget: budget.clone(), persist_default, notice: notice.clone() });
+            self.emit(AgentSessionEvent::ModelChangePending { model, budget, notice });
+            return Ok(None);
+        }
+        let old_prompt = self.system_prompt();
+        let old_thinking = self.thinking_level();
+        let old_tier = self.service_tier();
+        self.agent.set_model(model.clone());
+        self.agent.set_thinking_level(self.get_thinking_for_model_switch(&model, None));
+        let result = {
+            let mut runner = self.extension_runner.lock().await;
+            match runner.as_mut() {
+                Some(runner) => runner.emit_model_select(maho_ext_api::ModelSelectEvent {
+                    model: model.clone(), previous_model: Some(previous.clone()), source,
+                    system_prompt: old_prompt.clone(), system_prompt_options: maho_ext_api::BuildSystemPromptOptions {
+                        cwd: self.cwd().into(), ..Default::default()
+                    },
+                }).await.map_err(|error| error.to_string()),
+                None => Ok(None),
+            }
+        };
+        let change = match result {
+            Ok(result) => {
+                let prompt = result.as_ref().and_then(|result| result.system_prompt.clone())
+                    .unwrap_or_else(|| Some(old_prompt.clone())).unwrap_or_else(|| self.state().base_system_prompt.clone());
+                self.agent.set_system_prompt(prompt.clone());
+                let admission = self.assert_model_usable(&model, live);
+                if let Err(error) = admission {
+                    self.agent.set_model(previous); self.agent.set_system_prompt(old_prompt); self.agent.set_thinking_level(old_thinking);
+                    return Err(error);
+                }
+                (prompt != old_prompt).then(|| SystemPromptChangeEvent {
+                    system_prompt: prompt, previous_system_prompt: old_prompt,
+                    system_prompt_name: result.and_then(|result| result.system_prompt_name), model: model.clone(), previous_model: Some(previous.clone()),
+                })
+            }
+            Err(error) => {
+                self.agent.set_model(previous); self.agent.set_thinking_level(old_thinking); self.agent.set_system_prompt(old_prompt);
+                return Err(error);
+            }
+        };
+        self.with_session_manager_mut(|manager| manager.append_model_change(&model.provider, &model.id, None, None));
+        if persist_default {
+            self.with_settings_manager_mut(|manager| manager.set(crate::settings_manager::SettingsScope::Global,
+                &Map::from_iter([("defaultProvider".to_owned(), Value::String(model.provider.clone())), ("defaultModel".to_owned(), Value::String(model.id.clone()))])))?;
+        }
+        self.state().pending_model_switch = None;
+        self.state().current_service_tier = resolve_service_tier(&model, self.scoped_models().iter().find(|entry|
+            models_are_equal(Some(&entry.model), Some(&model))).and_then(|entry| entry.service_tier));
+        self.emit(AgentSessionEvent::ModelChanged { model: model.clone(), thinking_level: thinking_level_from_model_level(self.thinking_level()).unwrap_or(ThinkingLevel::Minimal), source });
+        if old_tier != self.service_tier() { self.emit(AgentSessionEvent::ServiceTierChanged { tier: self.service_tier(), fast_mode: self.is_fast_mode_active() }); }
+        if let Some(change) = &change { self.emit(AgentSessionEvent::SystemPromptChange {
+            system_prompt: change.system_prompt.clone(), previous_system_prompt: change.previous_system_prompt.clone(),
+            system_prompt_name: change.system_prompt_name.clone(), model, previous_model: Some(previous),
+        }); }
+        Ok(change)
+    }
+
+    pub async fn cycle_model(&self, forward: bool) -> Result<Option<ModelCycleResult>, String> {
+        let models = self.get_current_favorite_models();
+        if models.len() <= 1 { return Ok(None); }
+        let current = self.model();
+        let index = models.iter().position(|entry| models_are_equal(Some(&entry.model), Some(&current)));
+        let mut skipped_models = Vec::new();
+        for offset in 1..=models.len() {
+            let next = match (index, forward) {
+                (Some(index), true) => (index + offset) % models.len(),
+                (Some(index), false) => (index + models.len() - offset % models.len()) % models.len(),
+                (None, true) => offset - 1, (None, false) => models.len() - offset,
+            };
+            let model = &models[next].model;
+            if models_are_equal(Some(model), Some(&current)) { continue; }
+            let live = self.get_context_usage().and_then(|usage| usage.tokens).unwrap_or(0);
+            let (budget, repairable) = self.model_budget(model, live, false)?;
+            if budget.shortfall_tokens > 0 && !repairable {
+                self.emit(AgentSessionEvent::ModelChangeSkipped { model: model.clone(), budget, direction: if forward { "forward" } else { "backward" }.to_owned() });
+                skipped_models.push(model.clone()); continue;
+            }
+            let system_prompt_change = self.set_model_internal(model.clone(), true, maho_ext_api::ModelSelectSource::Cycle, true).await?;
+            return Ok(Some(ModelCycleResult { model: self.model(), thinking_level: thinking_level_from_model_level(self.thinking_level()).unwrap_or(ThinkingLevel::Minimal),
+                is_scoped: true, skipped_models, system_prompt_change }));
+        }
+        Ok(None)
     }
 
     /// Resolve the auth a provider request needs, refusing when none is configured.
@@ -2222,7 +2397,17 @@ impl AgentSession {
             }
             self.emit_high_reasoning_warning_if_needed();
         }
-        let _ = update_global_default;
+        if update_global_default {
+            let model = self.model();
+            let key = format!("{}/{}", model.provider, model.id);
+            let mut levels = self.with_settings_manager(|manager| manager.get_value("modelThinkingLevels")
+                .and_then(Value::as_object).cloned()).unwrap_or_default();
+            levels.insert(key, Value::String(effective.as_str().to_owned()));
+            if let Err(error) = self.with_settings_manager_mut(|manager| manager.set(crate::settings_manager::SettingsScope::Global,
+                &Map::from_iter([("modelThinkingLevels".to_owned(), Value::Object(levels))]))) {
+                self.emit(AgentSessionEvent::ContinuationError { error_message: error });
+            }
+        }
     }
 
     fn emit_high_reasoning_warning_if_needed(&self) {
@@ -2278,14 +2463,17 @@ impl AgentSession {
     /// The thinking level a model switch would land on, from an explicit level, the model's
     /// remembered level, the configured default, or `DEFAULT_THINKING_LEVEL`.
     ///
-    /// Adaptations: the settings manager has no per-model or default thinking-level accessors, so
-    /// the remembered and configured-default steps are skipped (other todos' modules).
     pub fn get_thinking_for_model_switch(
         &self,
         model: &Model,
         explicit_level: Option<ModelThinkingLevel>,
     ) -> ModelThinkingLevel {
-        let requested = explicit_level.unwrap_or(ModelThinkingLevel::Medium);
+        let remembered = self.with_settings_manager(|manager| manager.get_value("modelThinkingLevels")
+            .and_then(|levels| levels.get(format!("{}/{}", model.provider, model.id))).and_then(Value::as_str)
+            .and_then(|level| ModelThinkingLevel::ALL.into_iter().find(|candidate| candidate.as_str() == level)));
+        let default = self.with_settings_manager(|manager| manager.get_string("defaultThinkingLevel"))
+            .and_then(|level| ModelThinkingLevel::ALL.into_iter().find(|candidate| candidate.as_str() == level));
+        let requested = explicit_level.or(remembered).or(default).unwrap_or(ModelThinkingLevel::Medium);
         let available = crate::thinking_levels::get_supported_thinking_levels(model);
         if available.contains(&requested) { requested } else { clamp_thinking_level(requested, &available) }
     }
@@ -3100,5 +3288,42 @@ mod tests {
             .await.expect("bounded prompt").expect("prompt");
         assert!(!session.is_retrying());
         assert_eq!(session.with_session_manager(|manager| manager.entries().len()), 2);
+    }
+
+    #[tokio::test]
+    async fn model_switch_persists_only_after_admission() {
+        let session = test_session_with_stream_function(false);
+        let mut model = test_model();
+        model.id = "second".to_owned();
+        session.set_session_model(model).await.expect("switch");
+        assert_eq!(session.model().id, "second");
+        assert_eq!(session.with_session_manager(|manager| manager.entries()[0]["type"].clone()), "model_change");
+        assert!(session.with_settings_manager(|manager| manager.get_string("defaultModel")).is_none());
+    }
+
+    #[tokio::test]
+    async fn impossible_model_switch_leaves_active_model_and_history_unchanged() {
+        let session = test_session_with_stream_function(false);
+        session.agent.set_model(test_model());
+        let mut model = test_model();
+        model.id = "tiny".to_owned();
+        model.context_window = 4_096;
+        assert!(session.set_model(model).await.is_err());
+        assert_eq!(session.model().id, "faux-1");
+        assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn oversized_transcript_holds_repairable_switch_without_durable_change() {
+        let session = test_session_with_stream_function(false);
+        session.agent.set_model(test_model());
+        session.agent.set_messages(vec![make_user_message(&"x".repeat(200_000), None)]);
+        let mut model = test_model();
+        model.id = "smaller".to_owned();
+        model.context_window = 64_000;
+        session.set_model(model).await.expect("held switch");
+        assert_eq!(session.model().id, "faux-1");
+        assert_eq!(session.pending_model_switch().expect("pending").model.id, "smaller");
+        assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
     }
 }
