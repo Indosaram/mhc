@@ -284,3 +284,18 @@ async fn queued_messages_restore_in_enqueue_order_ahead_of_live_draft() {
     assert_eq!(mode.editor.editor.get_text(), "first\n\nsecond\n\ndraft");
     assert_eq!(mode.restore_queued_messages(false), 0);
 }
+
+#[tokio::test]
+async fn smooth_reveal_ticks_show_buffered_text_and_final_event_flushes_it() {
+    use maho_tui::tui::Component;
+    let result = FauxSession::new(FauxScript { name:"pacing".into(), prompt:"hi".into(), responses:vec![FauxResponse { content:"paced-reply".into(), stop_reason:"stop".into() }] }).run_native().await.expect("native");
+    let message: maho_agent::types::AgentMessage = serde_json::from_value(result["messages"][1].clone()).expect("assistant");
+    let assistant = message.as_assistant().expect("assistant").clone();
+    let (mut mode, _directory) = native_mode();
+    mode.handle_event(&maho_agent::types::AgentEvent::MessageStart { message:message.clone() });
+    mode.handle_event(&maho_agent::types::AgentEvent::MessageUpdate { message:message.clone(), assistant_message_event:maho_ai::types::AssistantMessageEvent::TextDelta { content_index:0, delta:"paced-reply".into(), partial:assistant } });
+    for frame in 100..200 { mode.tick(f64::from(frame) * 100.0); }
+    assert!(mode.render(80).join("\n").contains("paced-reply"));
+    mode.handle_event(&maho_agent::types::AgentEvent::MessageEnd { message });
+    assert_eq!(mode.render(80).join("\n").matches("paced-reply").count(), 1);
+}
