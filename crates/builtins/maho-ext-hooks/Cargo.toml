@@ -10,6 +10,7 @@ serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = { version = "=1.0.149", features = ["preserve_order"] }
 sha2 = "=0.10.9"
 thiserror = "=2.0.18"
+fancy-regex = "=0.16.2"
 
 [lints]
 workspace = true
