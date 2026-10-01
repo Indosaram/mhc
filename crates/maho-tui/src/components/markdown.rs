@@ -106,11 +106,10 @@ fn object_id<T: ?Sized>(pointer: *const T) -> u64 {
 fn cache_set<T>(cache: &mut HashMap<String, T>, key: String, value: T, max_size: usize) {
     cache.remove(&key);
     cache.insert(key.clone(), value);
-    if cache.len() > max_size {
-        if let Some(oldest) = cache.keys().next().cloned() {
+    if cache.len() > max_size
+        && let Some(oldest) = cache.keys().next().cloned() {
             cache.remove(&oldest);
         }
-    }
 }
 
 fn content_key(text: &str) -> String {
@@ -250,11 +249,9 @@ impl Markdown {
     pub fn render(&mut self, width: usize) -> Vec<String> {
         if let (Some(lines), Some(text), Some(cached_width)) =
             (&self.cached_lines, &self.cached_text, self.cached_width)
-        {
-            if *text == self.text && cached_width == width {
+            && *text == self.text && cached_width == width {
                 return lines.clone();
             }
-        }
 
         let content_width = 1.max(width.saturating_sub(self.padding_x * 2));
         let text = self.text.clone();
@@ -300,8 +297,8 @@ impl Markdown {
             let cache = RENDER_CACHE
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(entry) = cache.get(&render_key) {
-                if entry.source == normalized_text {
+            if let Some(entry) = cache.get(&render_key)
+                && entry.source == normalized_text {
                     let lines = entry.value.clone();
                     drop(cache);
                     self.cached_text = Some(self.text.clone());
@@ -309,7 +306,6 @@ impl Markdown {
                     self.cached_lines = Some(lines.clone());
                     return lines;
                 }
-            }
         }
 
         let tokens = {
@@ -1059,11 +1055,7 @@ impl Markdown {
                     .iter()
                     .map(|width| {
                         let weight = width.saturating_sub(1);
-                        if total_weight > 0 {
-                            (weight * remaining) / total_weight
-                        } else {
-                            0
-                        }
+                        (weight * remaining).checked_div(total_weight).unwrap_or(0)
                     })
                     .collect();
                 for index in 0..num_cols {
@@ -1102,11 +1094,9 @@ impl Markdown {
                 .map(|(index, min_width)| {
                     let natural_width = natural_widths[index];
                     let min_width_delta = natural_width.saturating_sub(*min_width);
-                    let grow = if total_grow_potential > 0 {
-                        (min_width_delta * extra_width) / total_grow_potential
-                    } else {
-                        0
-                    };
+                    let grow = (min_width_delta * extra_width)
+                        .checked_div(total_grow_potential)
+                        .unwrap_or(0);
                     min_width + grow
                 })
                 .collect();
@@ -1237,7 +1227,7 @@ static UNORDERED_LIST_MARKER: LazyLock<crate::components::markdown_helpers::Rule
         crate::components::markdown_helpers::Rule::new(r"^(?: {0,3})([-+*])(?:[ \t]+|(?=\r?\n|$))", "")
     });
 
-fn trim_partial_closing_fences(tokens: &mut Vec<Token>) {
+fn trim_partial_closing_fences(tokens: &mut [Token]) {
     let Some(last) = tokens.last_mut() else {
         return;
     };
@@ -1283,6 +1273,3 @@ fn trim_partial_closing_fences(tokens: &mut Vec<Token>) {
 static FENCE_MARKER: LazyLock<crate::components::markdown_helpers::Rule> =
     LazyLock::new(|| crate::components::markdown_helpers::Rule::new(r"^(`{3,}|~{3,})", ""));
 
-#[cfg(test)]
-#[path = "markdown_tests.rs"]
-mod tests;

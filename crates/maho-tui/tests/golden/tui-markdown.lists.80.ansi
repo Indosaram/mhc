@@ -1,0 +1,16 @@
+[36m- [ ] [39munchecked task                                                            
+[36m- [x] [39mchecked task                                                              
+                                                                                
+[36m1. [39mLorem ipsum dolor sit amet.                                                  
+                                                                                
+   Ut enim ad minim veniam.                                                     
+                                                                                
+[36m2. [39mDuis aute irure dolor.                                                       
+                                                                                
+   Excepteur sint occaecat cupidatat.                                           
+                                                                                
+[36m3. [39mBeep boop                                                                    
+                                                                                
+[36m- [39ma list item whose text is long enough to wrap onto a continuation line at     
+  forty columns                                                                 
+    [36m- [39mand a nested item that also wraps because it is long                      

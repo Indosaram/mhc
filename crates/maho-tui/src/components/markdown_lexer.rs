@@ -140,9 +140,18 @@ fn list_item_regex(bull: &str) -> Rule {
     Rule::new(&format!(r"^( {{0,3}}{bull})((?:[\t ][^\n]*)?(?:\n|$))"), "")
 }
 
+/// marked's `cachedIndentRegex` builds each indentation-sensitive rule from `indent - 1` clamped to
+/// `0..=3`, not from `indent` itself.
+fn cached_indent(indent: usize) -> usize {
+    indent.saturating_sub(1).min(3)
+}
+
 fn next_bullet_regex(indent: usize) -> Rule {
     Rule::new(
-        &format!(r"^ {{0,{indent}}}(?:[*+-]|\d{{1,9}}[.)])((?:[ \t][^\n]*)?(?:\n|$))"),
+        &format!(
+            r"^ {{0,{}}}(?:[*+-]|\d{{1,9}}[.)])((?:[ \t][^\n]*)?(?:\n|$))",
+            cached_indent(indent)
+        ),
         "",
     )
 }
@@ -150,22 +159,26 @@ fn next_bullet_regex(indent: usize) -> Rule {
 fn hr_regex(indent: usize) -> Rule {
     Rule::new(
         &format!(
-            r"^ {{0,{indent}}}((?:-[\t ]*){{3,}}|(?:_[ \t]*){{3,}}|(?:\*[ \t]*){{3,}})(?:\n+|$)"
+            r"^ {{0,{}}}((?:-[\t ]*){{3,}}|(?:_[ \t]*){{3,}}|(?:\*[ \t]*){{3,}})(?:\n+|$)",
+            cached_indent(indent)
         ),
         "",
     )
 }
 
 fn fences_begin_regex(indent: usize) -> Rule {
-    Rule::new(&format!(r"^ {{0,{indent}}}(?:```|~~~)"), "")
+    Rule::new(
+        &format!(r"^ {{0,{}}}(?:```|~~~)", cached_indent(indent)),
+        "",
+    )
 }
 
 fn heading_begin_regex(indent: usize) -> Rule {
-    Rule::new(&format!(r"^ {{0,{indent}}}#"), "")
+    Rule::new(&format!(r"^ {{0,{}}}#", cached_indent(indent)), "")
 }
 
 fn blockquote_begin_regex(indent: usize) -> Rule {
-    Rule::new(&format!(r"^ {{0,{indent}}}>"), "")
+    Rule::new(&format!(r"^ {{0,{}}}>", cached_indent(indent)), "")
 }
 
 const TAG: &str = "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul";
@@ -173,7 +186,8 @@ const TAG: &str = "address|article|aside|base|basefont|blockquote|body|caption|c
 fn html_begin_regex(indent: usize) -> Rule {
     Rule::new(
         &format!(
-            r"^ {{0,{indent}}}(?:</?(?:{TAG})(?: +|$|/?>)|<(?:script|pre|style|textarea|!--))"
+            r"^ {{0,{}}}(?:</?(?:{TAG})(?: +|$|/?>)|<(?:script|pre|style|textarea|!--))",
+            cached_indent(indent)
         ),
         "i",
     )
@@ -258,8 +272,8 @@ pub(crate) fn find_malformed_inline_span(src: &str, open: &str, close: &str) -> 
             index += nested.chars().count();
             continue;
         }
-        if let Some(expected) = closers.last().copied() {
-            if starts_with_chars(&chars, index, expected) {
+        if let Some(expected) = closers.last().copied()
+            && starts_with_chars(&chars, index, expected) {
                 closers.pop();
                 if closers.is_empty() {
                     return competing_opener
@@ -268,7 +282,6 @@ pub(crate) fn find_malformed_inline_span(src: &str, open: &str, close: &str) -> 
                 index += expected.chars().count();
                 continue;
             }
-        }
         if chars[index] == '\\' {
             if chars.get(index + 1).is_some_and(|c| *c == '\n' || *c == '\r') {
                 return competing_opener.then(|| chars[..index].iter().collect());
@@ -564,8 +577,8 @@ impl Lexer {
                     }
                     let merged = tokens.last().map(|t| t.raw().to_string()).unwrap_or_default();
                     self.last_paragraph_source(&merged);
-                } else if let Token::Def { tag, href, title, .. } = &token {
-                    if !self.links.contains_key(tag) {
+                } else if let Token::Def { tag, href, title, .. } = &token
+                    && !self.links.contains_key(tag) {
                         self.links.insert(
                             tag.clone(),
                             Link {
@@ -575,7 +588,6 @@ impl Lexer {
                         );
                         tokens.push(token);
                     }
-                }
                 continue;
             }
 
@@ -591,8 +603,8 @@ impl Lexer {
                 continue;
             }
 
-            if self.state.top {
-                if let Some(token) = self.tokenizer_paragraph(&src) {
+            if self.state.top
+                && let Some(token) = self.tokenizer_paragraph(&src) {
                     let raw = token.raw().to_string();
                     let text = match &token {
                         Token::Paragraph { text, .. } => text.clone(),
@@ -614,7 +626,6 @@ impl Lexer {
                     src = drop_utf16(&src, utf16_len(&raw)).to_string();
                     continue;
                 }
-            }
 
             if let Some(token) = self.tokenizer_text(&src) {
                 let raw = token.raw().to_string();
@@ -770,7 +781,7 @@ impl Lexer {
                         R_BQ_SETEXT_REPLACE2.replace_all(&continuation, "")
                     );
                     if let Some(new_token) = self.tokenizer_blockquote(&new_text) {
-                        let new_raw = new_token.raw().to_string();
+                        let _new_raw = new_token.raw().to_string();
                         let new_text_value = match &new_token {
                             Token::Blockquote { text, .. } => text.clone(),
                             _ => String::new(),
@@ -854,17 +865,15 @@ impl Lexer {
             let mut next_line = src.split('\n').next().unwrap_or("").to_string();
             let mut blank_line = line.trim().is_empty();
 
-            let mut indent = 0usize;
             let mut item_contents = String::new();
-            if blank_line {
-                indent = utf16_len(&item_prefix) + 1;
+            let indent = if blank_line {
+                utf16_len(&item_prefix) + 1
             } else {
-                let found = line.chars().position(|c| c != ' ');
-                indent = found.unwrap_or(0);
-                indent = if indent > 4 { 1 } else { indent };
-                item_contents = line.chars().skip(indent).collect();
-                indent += utf16_len(&item_prefix);
-            }
+                let found = line.chars().position(|c| c != ' ').unwrap_or(0);
+                let found = if found > 4 { 1 } else { found };
+                item_contents = line.chars().skip(found).collect();
+                found + utf16_len(&item_prefix)
+            };
 
             if blank_line && R_BLANK_LINE.matches(&next_line) {
                 raw.push_str(&next_line);
@@ -1149,7 +1158,7 @@ impl Lexer {
         });
         let title = captures.group(3).map(|value| {
             let inner = slice_utf16(value, 1, utf16_len(value).saturating_sub(1));
-            R_ANY_PUNCTUATION.replace_all(&inner, "$1")
+            R_ANY_PUNCTUATION.replace_all(inner, "$1")
         });
         Some(Token::Def {
             tag,

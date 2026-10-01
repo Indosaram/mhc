@@ -80,7 +80,7 @@ fn converts_escaped_punctuation_commands() {
 
 #[test]
 fn falls_back_literally_beyond_the_conversion_budgets() {
-    let over_budget = format!(r"{}", "x".repeat(MAX_FORMULA_LENGTH + 1));
+    let over_budget = "x".repeat(MAX_FORMULA_LENGTH + 1).to_string();
     assert_eq!(latex(&over_budget), over_budget);
 
     let deep = format!("{}{}", "{".repeat(MAX_NESTING_DEPTH + 2), "}".repeat(MAX_NESTING_DEPTH + 2));

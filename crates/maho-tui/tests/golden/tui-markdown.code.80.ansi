@@ -1,0 +1,16 @@
+Paragraph before.                                                               
+                                                                                
+[2m```rust[22m                                                                         
+  [32mfn main() {[39m                                                                   
+  [32m    println!("hello");[39m                                                        
+  [32m}[39m                                                                             
+[2m```[22m                                                                             
+                                                                                
+Paragraph after.                                                                
+                                                                                
+[2m```[22m                                                                             
+  [32mindented code block[39m                                                           
+  [32msecond line[39m                                                                   
+[2m```[22m                                                                             
+                                                                                
+End.                                                                            

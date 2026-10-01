@@ -1,0 +1,17 @@
+┌─────────┬─────────────────────────────────────────────────┬────────────┐                                              
+│ [1mCommand[22m │ [1mDescription                                    [22m │ [1mNotes     [22m │                                              
+├─────────┼─────────────────────────────────────────────────┼────────────┤                                              
+│ build   │ Compile the whole workspace from scratch        │ slow       │                                              
+├─────────┼─────────────────────────────────────────────────┼────────────┤                                              
+│ test    │ Run the nextest suite for one crate             │ fast       │                                              
+├─────────┼─────────────────────────────────────────────────┼────────────┤                                              
+│ audit   │ Check parity ledgers against the pinned sources │ reads only │                                              
+└─────────┴─────────────────────────────────────────────────┴────────────┘                                              
+                                                                                                                        
+A table that has to wrap its cells because the terminal is narrow:                                                      
+                                                                                                                        
+┌───────────────────────────┬───────────────────────────────┐                                                           
+│ [1mKey                      [22m │ [1mValue                        [22m │                                                           
+├───────────────────────────┼───────────────────────────────┤                                                           
+│ long-unbroken-token-value │ another long value that wraps │                                                           
+└───────────────────────────┴───────────────────────────────┘                                                           

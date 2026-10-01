@@ -116,11 +116,10 @@ impl Lexer {
                 return Some(latex_token("latex_literal", "$$", "$$"));
             }
             let found = find_inline_math(src, "$", "$");
-            if let Some((raw, text)) = &found {
-                if is_likely_literal_dollar_body(text) {
+            if let Some((raw, text)) = &found
+                && is_likely_literal_dollar_body(text) {
                     return Some(latex_token("latex_literal", raw, raw));
                 }
-            }
             let previous = previous_raw_character(tokens);
             let next = found
                 .as_ref()
@@ -367,13 +366,12 @@ impl Lexer {
                 continue;
             }
 
-            if !self.state.in_link {
-                if let Some(token) = self.tokenizer_url(&src) {
+            if !self.state.in_link
+                && let Some(token) = self.tokenizer_url(&src) {
                     src = drop_utf16(&src, utf16_len(token.raw())).to_string();
                     push_inline(tokens, token);
                     continue;
                 }
-            }
 
             let cut_src = clip_to_inline_extension(&src);
             if let Some(token) = self.tokenizer_inline_text(&cut_src) {
@@ -453,7 +451,7 @@ impl Lexer {
             }
             let inner = slice_utf16(trimmed_url, 0, utf16_len(trimmed_url).saturating_sub(1));
             let rtrimmed = rtrim(inner, '\\', false);
-            if (utf16_len(trimmed_url) - utf16_len(&rtrimmed)) % 2 == 0 {
+            if (utf16_len(trimmed_url) - utf16_len(&rtrimmed)).is_multiple_of(2) {
                 return None;
             }
         } else {

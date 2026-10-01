@@ -374,7 +374,7 @@ pub fn detect_capabilities_with_tmux(
     let legacy = tmux_passthrough_state();
     let hyperlinks = tmux_forwards_hyperlink();
     let mut merged = env.clone();
-    if merged.get("TMUX").map_or(true, |v| v.is_empty()) {
+    if merged.get("TMUX").is_none_or(|v| v.is_empty()) {
         merged.insert("TMUX".to_string(), "compat,0,0".to_string());
     }
     let legacy_output = [
@@ -677,12 +677,11 @@ pub fn register_kitty_image_metadata(metadata: KittyImageMetadata) {
         },
     );
     registry.order.push(metadata.image_id);
-    if registry.order.len() > 1000 {
-        if let Some(oldest) = registry.order.first().copied() {
+    if registry.order.len() > 1000
+        && let Some(oldest) = registry.order.first().copied() {
             registry.entries.remove(&oldest);
             registry.order.remove(0);
         }
-    }
 }
 
 fn kitty_controls_before_semicolon(line: &str) -> Option<(usize, String)> {

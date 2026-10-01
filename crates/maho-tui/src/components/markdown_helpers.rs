@@ -213,10 +213,7 @@ impl Rule {
     pub fn exec_all<'a>(&self, text: &'a str) -> Vec<Captures<'a>> {
         let mut out = Vec::new();
         let mut cursor = 0usize;
-        loop {
-            let Some(captures) = self.exec_from(text, cursor) else {
-                break;
-            };
+        while let Some(captures) = self.exec_from(text, cursor) {
             let start = captures.start();
             let end = captures.end();
             let next = if end == start { end + 1 } else { end };
@@ -282,5 +279,9 @@ impl<'a> Captures<'a> {
 
     pub fn len(&self) -> usize {
         self.groups.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.groups.is_empty()
     }
 }

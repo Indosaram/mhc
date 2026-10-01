@@ -1,0 +1,36 @@
+[1m[36m[1m[4mTitle[24m[22m[39m[22m                                                                           
+                                                                                
+A paragraph with [3memphasis[23m, [1mstrong[22m, [33mcode[39m, [9mstruck[29m and a [34m[4mlink[24m[39m[2m                      
+[2m(https://example.com)[22m.                                                          
+                                                                                
+[1m[36m[1mSecond level[22m[39m[22m                                                                    
+                                                                                
+[1m[36m[1m### [22m[39m[22m[1m[36m[1mThird level[22m[39m[22m                                                                 
+                                                                                
+[36m- [39malpha                                                                         
+[36m- [39mbeta                                                                          
+    [36m- [39mnested gamma                                                              
+    [36m- [39mnested delta                                                              
+[36m- [39mepsilon                                                                       
+                                                                                
+[36m1. [39mfirst                                                                        
+[36m2. [39msecond                                                                       
+    [36m1. [39mnested first                                                             
+[36m3. [39mthird                                                                        
+                                                                                
+[2m│ [22m[3m[3mquoted line one                                                               
+[2m│ [22m[3mquoted line two[23m[23m                                                               
+                                                                                
+[2m```typescript[22m                                                                   
+  [32mconst value = 1;[39m                                                              
+[2m```[22m                                                                             
+                                                                                
+[2m────────────────────────────────────────────────────────────────────────────────[22m
+                                                                                
+┌───────┬─────┐                                                                 
+│ [1mName [22m │ [1mAge[22m │                                                                 
+├───────┼─────┤                                                                 
+│ Alice │ 30  │                                                                 
+├───────┼─────┤                                                                 
+│ Bob   │ 25  │                                                                 
+└───────┴─────┘                                                                 
