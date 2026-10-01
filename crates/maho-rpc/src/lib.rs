@@ -46,3 +46,4 @@ pub mod host_watchdog;
 pub mod supervisor_route;
 pub mod session_worker_signals;
 pub mod session_worker_credit;
+pub mod socket_event_fanout;
