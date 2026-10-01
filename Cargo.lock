@@ -1669,6 +1669,14 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-history-search"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "maho-interactive",
+ "maho-tui",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "maho-ext-hooks"
@@ -1742,6 +1750,15 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-permission-system"
 version = "0.0.0"
+dependencies = [
+ "maho-core",
+ "maho-ext-api",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-pi-ast-grep"
