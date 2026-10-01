@@ -23,24 +23,60 @@ pub fn refresh_state(ctx:&ExtensionContext)->Result<HookRuntimeState,ExtensionFa
     Ok(HookRuntimeState {parsed,trust,storage})
 }
 async fn dispatch(ctx:&ExtensionContext,input:serde_json::Value)->Result<HookDispatchResult,ExtensionFailure> {
-    let state=refresh_state(ctx)?;let cwd=ctx.cwd.clone();let signal=ctx.signal.clone();let wire=input.clone();
+    let mut state=refresh_state(ctx)?;let cwd=ctx.cwd.clone();let signal=ctx.signal.clone();let wire=input.clone();
+    if matches!(input.get("event").and_then(serde_json::Value::as_str),Some("SessionStart"|"PreCompact"|"PostCompact"|"Notification")) {
+        let platform=if cfg!(windows) {"win32"} else {"linux"};let mut selected=Vec::new();let mut trust=empty_hook_trust_state();
+        for handler in state.parsed.executable_handlers {
+            if Some(handler.event.as_str())!=input.get("event").and_then(serde_json::Value::as_str) {continue;}
+            if handler.event==crate::types::SupportedHookEvent::SessionStart&&input.get("reason").and_then(serde_json::Value::as_str)==Some("startup")&&handler.source.discovered_at==crate::types::HookDiscoveryTiming::Runtime {continue;}
+            let matcher=handler.matcher.as_deref().unwrap_or("").trim();
+            let subjects=[handler.event.as_str(),input.get("reason").and_then(serde_json::Value::as_str).unwrap_or("")];
+            let matched=handler.event==crate::types::SupportedHookEvent::Notification||matcher.is_empty()||matcher=="*"||matcher.split(['|',',']).map(str::trim).any(|part|subjects.contains(&part))||fancy_regex::Regex::new(matcher).is_ok_and(|regex|subjects.iter().any(|subject|regex.is_match(subject).unwrap_or(false)));
+            if !matched||!crate::trust::is_command_hook_trusted(&handler,&state.trust,platform).map_err(|error|ExtensionFailure::new(error.to_string()))? {continue;}
+            let mut handler=handler;handler.matcher=None;
+            trust.hooks.insert(crate::trust::hook_trust_id(&handler),crate::trust::create_hook_trust_entry(&handler,platform,"2026-06-29T00:00:00.000Z").map_err(|error|ExtensionFailure::new(error.to_string()))?);selected.push(handler);
+        }
+        state.parsed.executable_handlers=selected;state.trust=trust;
+    }
     dispatch_hook_event(&state.parsed.executable_handlers,&input,&state.trust,if cfg!(windows) {"win32"} else {"linux"},|handler| {let cwd=cwd.clone();let signal=signal.clone();let wire=wire.clone();async move {run_command_hook(&handler,&wire,CommandHookRunOptions {cwd:&cwd,env_passthrough:&[],output_policy:None,signal:signal.as_ref(),source_env:None}).await}}).await.map_err(|error|ExtensionFailure::new(error.to_string()))
 }
 #[derive(Default)]
-struct Pending {prompts:VecDeque<PendingPromptHookContext>,pre_tools:BTreeMap<String,Vec<String>>}
+struct Pending {prompts:VecDeque<PendingPromptHookContext>,pre_tools:BTreeMap<String,Vec<String>>,stop_tracker:crate::stop_adapter::StopTurnTracker}
 pub struct HooksExtension;
 impl Extension for HooksExtension {
     fn register(&self,api:&mut ExtensionApi) {
         let pending=Arc::new(Mutex::new(Pending::default()));
+        let sender=Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));
+        for kind in [EventKind::SessionStart,EventKind::SessionBeforeCompact,EventKind::SessionCompact] {
+            let sender=Arc::clone(&sender);
+            api.on(kind,Arc::new(move |event,ctx| {let sender=Arc::clone(&sender);Box::pin(async move {
+                use crate::lifecycle_adapter::*;
+                let cwd=ctx.cwd.to_string_lossy();let transcript=ctx.session_manager.session_file().map(|path|path.to_string_lossy().into_owned());
+                let context=LifecycleInputContext {cwd:&cwd,session_id:ctx.session_manager.session_id(),transcript_path:transcript.as_deref()};
+                let session_reason=|reason:SessionReason|match reason {SessionReason::Startup=>"startup",SessionReason::Reload=>"reload",SessionReason::New=>"new",SessionReason::Resume=>"resume",SessionReason::Fork=>"fork",SessionReason::Quit=>"quit"};
+                let compact_reason=|reason:CompactionReason|match reason {CompactionReason::Manual=>"manual",CompactionReason::Threshold=>"threshold",CompactionReason::Overflow=>"overflow",CompactionReason::PrePrompt=>"pre-prompt",CompactionReason::Branch=>"branch",CompactionReason::Extension=>"extension"};
+                let (name,input,request_id)=match event {
+                    ExtensionEvent::SessionStart(event)=>("SessionStart",build_session_start_hook_input(session_reason(event.reason),&context),None),
+                    ExtensionEvent::SessionBeforeCompact(event)=>("PreCompact",build_pre_compact_hook_input(compact_reason(event.reason),&event.request_id,event.will_retry,event.custom_instructions.as_deref(),&context),Some(event.request_id.clone())),
+                    ExtensionEvent::SessionCompact(SessionCompactEvent::Accepted {reason,request_id,will_retry,..})=>("PostCompact",build_post_compact_hook_input(compact_reason(*reason),request_id,*will_retry,true,&context),Some(request_id.clone())),
+                    _=>return Ok(EventResult::None),
+                };
+                let result=dispatch(ctx,input).await?;let details=lifecycle_result_details(name,Some(&result));
+                if let Some(message)=lifecycle_message(name,&details,request_id.as_deref()) {sender.send_message(message,SendMessageOptions::default())?;}
+                if name=="PreCompact"&&details.cancel {Ok(EventResult::SessionBefore(SessionBeforeEventResult {cancel:Some(true),..Default::default()}))} else {Ok(EventResult::None)}
+            })}));
+        }
         for kind in [EventKind::Input,EventKind::BeforeAgentStart,EventKind::ToolCall,EventKind::ToolResult] {
             let pending=Arc::clone(&pending);
-            api.on(kind,Arc::new(move |event,ctx| {let pending=Arc::clone(&pending);Box::pin(async move {
+            let sender=Arc::clone(&sender);
+            api.on(kind,Arc::new(move |event,ctx| {let pending=Arc::clone(&pending);let sender=Arc::clone(&sender);Box::pin(async move {
                 match event {
                     ExtensionEvent::Input(event) if event.source!=InputSource::Extension=> {
                         pending.lock().map_err(|_|ExtensionFailure::new("hooks pending state poisoned"))?.prompts.clear();
+                        pending.lock().map_err(|_|ExtensionFailure::new("hooks pending state poisoned"))?.stop_tracker.reset();
                         let transcript=ctx.session_manager.session_file().map(|path|path.to_string_lossy().into_owned());
                         let result=dispatch(ctx,build_user_prompt_hook_input(UserPromptHookInputOptions {cwd:&ctx.cwd.to_string_lossy(),permission_mode:"default",prompt:&event.text,session_id:ctx.session_manager.session_id(),transcript_path:transcript.as_deref()})).await?;
-                        if matches!(result.decision,HookDispatchDecision::Block {..}) {ctx.ui.notify(&prompt_block_reason_from_result(&result),NotificationType::Warning);return Ok(EventResult::Input(InputEventResult::Handled));}
+                        if let HookDispatchDecision::Block {source,..}=&result.decision {let reason=prompt_block_reason_from_result(&result);ctx.ui.notify(&reason,NotificationType::Warning);sender.send_message(CustomMessage {custom_type:HOOK_CUSTOM_MESSAGE_TYPE.to_owned(),content:vec![ToolContent::text(reason)],display:false,details:Some(serde_json::json!({"decision":"block","event":"UserPromptSubmit","sourcePath":source.source_path}))},SendMessageOptions::default())?;return Ok(EventResult::Input(InputEventResult::Handled));}
                         if ctx.is_idle() && let Some(context)=prompt_context_from_result(&result) {pending.lock().map_err(|_|ExtensionFailure::new("hooks pending state poisoned"))?.prompts.push_back(context);}
                         Ok(EventResult::Input(InputEventResult::Continue))
                     },
@@ -61,6 +97,14 @@ impl Extension for HooksExtension {
                 }
             })}));
         }
+        let stop_pending=Arc::clone(&pending);let stop_sender=Arc::clone(&sender);
+        api.on(EventKind::AgentEnd,Arc::new(move |event,ctx| {let pending=Arc::clone(&stop_pending);let sender=Arc::clone(&stop_sender);Box::pin(async move {
+            let ExtensionEvent::AgentEnd {messages,..}=event else {return Ok(EventResult::None);};
+            let messages=messages.iter().map(serde_json::to_value).collect::<Result<Vec<_>,_>>().map_err(|error|ExtensionFailure::new(error.to_string()))?;
+            let transcript=ctx.session_manager.session_file().map(|path|path.to_string_lossy().into_owned());let input=crate::stop_adapter::build_stop_hook_input(&messages,&ctx.cwd.to_string_lossy(),ctx.session_manager.session_id(),transcript.as_deref());
+            let result=dispatch(ctx,input).await?;let leaf=ctx.session_manager.get_leaf_id();let turn_key=pending.lock().map_err(|_|ExtensionFailure::new("hooks pending state poisoned"))?.stop_tracker.turn_key(leaf.as_deref(),ctx.session_manager.session_id());
+            crate::stop_adapter::apply_stop_hook_result(&sender,ctx,&result,&turn_key)?;Ok(EventResult::None)
+        })}));
         crate::command::register_hooks_command(api);
     }
 }

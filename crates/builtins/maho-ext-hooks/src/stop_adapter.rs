@@ -3,6 +3,23 @@ pub const STOP_STATE_CUSTOM_TYPE:&str="senpi.hooks.stop-state";
 pub const STOP_DIAGNOSTICS_CUSTOM_TYPE:&str="senpi.hooks.stop-diagnostics";
 pub const STOP_OUTPUT_CUSTOM_TYPE:&str="senpi.hooks.stop-output";
 pub const STOP_REENTRY_LIMIT:usize=8;
+pub fn apply_stop_hook_result(api:&maho_ext_api::types::ExtensionApi,ctx:&maho_ext_api::types::ExtensionContext,result:&crate::dispatcher::HookDispatchResult,turn_key:&str)->Result<(),maho_ext_api::types::ExtensionFailure> {
+    use maho_ext_api::types::*;use crate::dispatcher::HookDispatchDecision;
+    let session_id=ctx.session_manager.session_id();
+    let previous=ctx.session_manager.get_entries().iter().rev().find_map(|entry| {
+        if entry.kind!="custom"||entry.data.get("customType").and_then(Value::as_str)!=Some(STOP_STATE_CUSTOM_TYPE) {return None;}
+        let state=entry.data.get("data")?;if state.get("sessionId").and_then(Value::as_str)!=Some(session_id)||state.get("turnKey").and_then(Value::as_str)!=Some(turn_key) {return None;}state.get("count").and_then(Value::as_u64)
+    }).unwrap_or(0);
+    if previous>=STOP_REENTRY_LIMIT as u64 {api.append_entry(STOP_STATE_CUSTOM_TYPE,Some(json!({"count":previous,"sessionId":session_id,"turnKey":turn_key})))?;return Ok(());}
+    if !result.diagnostics.is_empty() {api.append_entry(STOP_DIAGNOSTICS_CUSTOM_TYPE,Some(json!(result.diagnostics.iter().map(crate::prompt_adapter::safe_diagnostic_details).collect::<Vec<_>>())))?;}
+    let blocked=matches!(result.decision,HookDispatchDecision::Block {..});api.append_entry(STOP_STATE_CUSTOM_TYPE,Some(json!({"count":previous+u64::from(blocked),"sessionId":session_id,"turnKey":turn_key})))?;
+    let HookDispatchDecision::Block {source,reason,..}=&result.decision else {return Ok(());};
+    let blocker=result.summaries.iter().find(|summary|summary.handler.source.source_path==source.source_path&&matches!(summary.output.get("decision").and_then(Value::as_str),Some("block"|"deny")));
+    let Some(blocker)=blocker.filter(|summary|summary.run.exit_code!=Some(2)) else {return Ok(());};
+    let follow_up=blocker.output.get("additionalContext").and_then(Value::as_str).or(reason.as_deref());
+    if let Some(text)=follow_up {api.send_user_message(UserMessageContent::Text(text.to_owned()),SendUserMessageOptions {deliver_as:Some(StreamingBehavior::FollowUp),expand_prompt_templates:false})?;}
+    Ok(())
+}
 #[derive(Default)]
 pub struct StopTurnTracker {active_turn_key:Option<String>,turn_index:usize}
 impl StopTurnTracker {
