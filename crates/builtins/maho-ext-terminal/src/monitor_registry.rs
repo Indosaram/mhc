@@ -71,6 +71,71 @@ impl CommandMonitor {
     pub fn dispose(&mut self) {self.settled=true;}
 }
 
+pub struct MonitorRegistry {
+    records:std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String,CommandMonitor>>>,
+    tasks:Vec<tokio::task::JoinHandle<()>>,
+    emit:std::sync::Arc<dyn Fn(MonitorEvent)+Send+Sync>,
+}
+fn now_ms()->f64 {std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("epoch").as_secs_f64()*1000.0}
+impl MonitorRegistry {
+    pub fn new(emit:impl Fn(MonitorEvent)+Send+Sync+'static)->Self {Self {records:Default::default(),tasks:vec![],emit:std::sync::Arc::new(emit)}}
+    pub fn snapshot(&self)->Vec<MonitorSnapshotEntry> {self.records.lock().expect("monitor records").values().map(|record|record.snapshot.clone()).collect()}
+    pub fn pause(&self,ids:&[String])->Vec<String> {
+        let mut records=self.records.lock().expect("monitor records");
+        ids.iter().filter(|id|records.get_mut(*id).is_some_and(CommandMonitor::pause)).cloned().collect()
+    }
+    pub fn resume(&self,ids:Option<&[String]>)->Vec<(String,usize)> {
+        let mut records=self.records.lock().expect("monitor records");
+        let ids=ids.map(<[String]>::to_vec).unwrap_or_else(||records.keys().cloned().collect());
+        ids.into_iter().filter_map(|id|records.get_mut(&id)?.resume().map(|dropped|(id,dropped))).collect()
+    }
+    pub fn register(&mut self,runtime:&crate::runtime_session::TerminalRuntimeSession,mut record:CommandMonitor)->Result<(),crate::runtime_session::RuntimeError> {
+        let (history,mut output)=runtime.subscribe_output()?;
+        let mut exit=runtime.subscribe_exit();
+        record.snapshot.started_at_ms=now_ms();
+        let id=record.snapshot.id.clone();
+        let initial=record.consume(&history,now_ms());
+        self.records.lock().expect("monitor records").insert(id.clone(),record);
+        for event in initial {(self.emit)(event);}
+        let records=self.records.clone();let emit=self.emit.clone();
+        self.tasks.push(tokio::spawn(async move {
+            loop {
+                let settled=exit.borrow().clone();
+                if let Some(result)=settled {
+                    let Some(mut record)=records.lock().expect("monitor records").remove(&id) else {return;};
+                    while let Ok(chunk)=output.try_recv() {for event in record.consume(&chunk,now_ms()) {emit(event);}}
+                    let summary=match result {Ok(result)=>format!("watcher {}{}",crate::tools::spawn::describe_exit(Some(&result)).unwrap_or_else(||"exited".to_owned()),result.exit_code.map_or(String::new(),|code|format!(" (exit code {code})"))),Err(error)=>format!("watcher error: {error}")};
+                    if let Some(event)=record.settle(summary,now_ms()) {emit(event);}
+                    return;
+                }
+                tokio::select! {
+                    chunk=output.recv()=>{let Some(chunk)=chunk else {return;};let events=records.lock().expect("monitor records").get_mut(&id).map(|record|record.consume(&chunk,now_ms())).unwrap_or_default();for event in events {emit(event);}},
+                    changed=exit.changed()=>{if changed.is_err() {return;}}
+                }
+            }
+        }));
+        Ok(())
+    }
+    pub fn dispose(&mut self) {for task in self.tasks.drain(..) {task.abort();}self.records.lock().expect("monitor records").clear();}
+}
+impl Drop for MonitorRegistry {fn drop(&mut self) {self.dispose();}}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+    #[tokio::test]
+    async fn native_watch_emits_lines_then_exactly_one_completion() {
+        let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();
+        let mut registry=MonitorRegistry::new(move |event| {sender.send(event).unwrap();});
+        let runtime=crate::runtime_session::TerminalRuntimeSession::start("printf ready",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'ready\\n'")).unwrap();
+        registry.register(&runtime,CommandMonitor::new(MonitorSnapshotEntry {id:"bash_1".to_owned(),description:"ready".to_owned(),..Default::default()},None)).unwrap();
+        let observed=tokio::time::timeout(std::time::Duration::from_secs(5),async {let line=events.recv().await.unwrap();let summary=events.recv().await.unwrap();(line,summary)}).await.unwrap();
+        assert!(matches!(observed.0,MonitorEvent::Line {line,..} if line=="ready"));
+        assert!(matches!(observed.1,MonitorEvent::Summary {summary,..} if summary=="watcher completed (exit code 0)"));
+        assert!(registry.snapshot().is_empty());assert!(events.try_recv().is_err());runtime.dispose().unwrap();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
