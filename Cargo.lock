@@ -1503,11 +1503,15 @@ version = "0.0.0"
 name = "maho-codemode"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
+ "getrandom 0.4.2",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
