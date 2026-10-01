@@ -166,3 +166,21 @@ fn question_opens_shortcut_overlay_and_next_key_dismisses_without_typing() {
     assert!(mode.editor.editor.get_text().is_empty());
     assert_eq!(mode.render(80).len(), before);
 }
+
+#[tokio::test]
+async fn jsonl_export_preserves_native_messages_and_quoted_path() {
+    let (mut mode, directory) = native_mode();
+    mode.submit("hi", Default::default()).await.expect("prompt");
+    let path = directory.path().join("export with spaces.jsonl");
+    assert_eq!(mode.submit(&format!("/export \"{}\"", path.display()), Default::default()).await.expect("export"), maho_core::agent_session::PromptDisposition::Handled);
+    let entries = std::fs::read_to_string(path).expect("export").lines().map(|line| serde_json::from_str::<serde_json::Value>(line).expect("jsonl")).collect::<Vec<_>>();
+    assert_eq!(entries.iter().filter(|entry| entry["type"] == "message").count(), 2);
+}
+
+#[test]
+fn command_path_parser_preserves_quotes_and_first_argument_semantics() {
+    use maho_interactive::interactive_mode::get_path_command_argument;
+    assert_eq!(get_path_command_argument("/export 'a b.jsonl' ignored", "/export").as_deref(), Some("a b.jsonl"));
+    assert_eq!(get_path_command_argument("/export a.jsonl ignored", "/export").as_deref(), Some("a.jsonl"));
+    assert_eq!(get_path_command_argument("/export 'unclosed", "/export"), None);
+}

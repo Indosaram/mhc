@@ -92,6 +92,15 @@ impl InteractiveMode {
 
     fn dispatch_command(&mut self, text: &str) -> Result<bool, String> {
         let text = text.trim();
+        if matches!(text, "/quit" | "/exit") { self.shutdown_requested = true; return Ok(true); }
+        if text.starts_with("/export ") {
+            let path = get_path_command_argument(text, "/export").ok_or("Missing export path")?;
+            if path.ends_with(".jsonl") {
+                let exported = self.session.export_to_jsonl(Some(&path)).map_err(|error| format!("Failed to export session: {error}"))?;
+                self.show_status(format!("Session exported to: {exported}"));
+                return Ok(true);
+            }
+        }
         if matches!(text, "/rename" | "/name") {
             let accepted = self.rename_result.clone();
             let cancelled = self.rename_result.clone();
@@ -207,6 +216,16 @@ impl InteractiveMode {
     fn tool_result(value: &serde_json::Value, is_error: bool) -> ToolExecutionResult {
         ToolExecutionResult { content: serde_json::from_value(value["content"].clone()).expect("typed tool result content"), details: value.get("details").cloned(), is_error }
     }
+}
+
+pub fn get_path_command_argument(text: &str, command: &str) -> Option<String> {
+    let args = text.strip_prefix(command)?.strip_prefix(' ')?.trim_start();
+    let first = args.chars().next()?;
+    let path = if matches!(first, '\'' | '"') { let end = args[1..].find(first)? + 1; &args[1..end] }
+        else { args.split_whitespace().next()? };
+    if path == "~" { std::env::var("HOME").ok() }
+    else if let Some(relative) = path.strip_prefix("~/") { std::env::var("HOME").ok().map(|home| format!("{home}/{relative}")) }
+    else { Some(path.into()) }
 }
 
 impl Component for InteractiveMode {
