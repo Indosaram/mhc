@@ -21,6 +21,7 @@ subtle = "=2.6.1"
 tokio = { workspace = true, features = ["io-util", "sync", "rt", "macros", "net", "time"] }
 
 [dev-dependencies]
+maho-agent = { path = "../maho-agent" }
 tempfile.workspace = true
 maho-test-support = { path = "../maho-test-support", features = ["sdk"] }
 

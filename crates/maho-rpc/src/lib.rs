@@ -52,5 +52,6 @@ pub mod socket_transport;
 pub mod rpc_command_invocation;
 pub mod rpc_client;
 pub mod rpc_mode;
+pub mod connection_handler;
 pub mod session_event_writer;
 pub mod host_daemon_registration;

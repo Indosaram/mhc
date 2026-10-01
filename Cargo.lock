@@ -2020,6 +2020,7 @@ version = "0.0.0"
 dependencies = [
  "chrono",
  "getrandom 0.3.4",
+ "maho-agent",
  "maho-ai",
  "maho-core",
  "maho-ext-api",
