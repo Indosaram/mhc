@@ -652,8 +652,9 @@ impl InteractiveMode {
     }
 
     fn tool_component(&mut self, name: &str, id: &str, args: serde_json::Value) -> Rc<RefCell<ToolExecutionComponent>> {
+        let options = self.session.with_settings_manager(|settings| ToolExecutionOptions { show_images:settings.get_bool("showImages"), image_width_cells:settings.get_number("imageWidthCells").map(|width| width as u32) });
         self.pending_tools.entry(id.into()).or_insert_with(|| {
-            let component = Rc::new(RefCell::new(ToolExecutionComponent::new(name, id, args, ToolExecutionOptions::default(), None, &self.session.cwd(), ToolExecutionPresentation::Classic, None, self.theme.clone())));
+            let component = Rc::new(RefCell::new(ToolExecutionComponent::new(name, id, args, options, None, &self.session.cwd(), ToolExecutionPresentation::Classic, None, self.theme.clone())));
             self.chat.add_child(component.clone());
             component.borrow_mut().set_expanded(self.tools_expanded);
             self.tool_cards.push(component.clone());
@@ -676,7 +677,8 @@ impl crate::replay_assistant_tools::ReplayToolHost for InteractiveMode {
     }
     fn add_child(&mut self, component: Rc<RefCell<ToolExecutionComponent>>) { self.chat.add_child(component.clone()); self.tool_cards.push(component); }
     fn create_tool(&mut self, name: &str, id: &str, args: &serde_json::Map<String, serde_json::Value>) -> ToolExecutionComponent {
-        ToolExecutionComponent::new(name, id, serde_json::Value::Object(args.clone()), ToolExecutionOptions::default(), None, &self.session.cwd(), ToolExecutionPresentation::Classic, None, self.theme.clone())
+        let options = self.session.with_settings_manager(|settings| ToolExecutionOptions { show_images:settings.get_bool("showImages"), image_width_cells:settings.get_number("imageWidthCells").map(|width| width as u32) });
+        ToolExecutionComponent::new(name, id, serde_json::Value::Object(args.clone()), options, None, &self.session.cwd(), ToolExecutionPresentation::Classic, None, self.theme.clone())
     }
     fn add_pending(&mut self, id: &str, component: Rc<RefCell<ToolExecutionComponent>>) { self.pending_tools.insert(id.into(), component); }
 }
