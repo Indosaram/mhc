@@ -162,8 +162,9 @@ impl MonitorRegistry {
         for id in ids {
             if let Some(dropped)=records.get_mut(&id).and_then(CommandMonitor::resume) {resumed.push((id,dropped));continue;}
             if let Some((file,_))=self.files.get(&id) {
-                let events={let mut file=file.lock().expect("file monitor");if !file.paused||file.settled {continue;}file.paused=false;file.check().unwrap_or_else(|error|file.stop(&format!("watcher error: {error}")).into_iter().collect())};
-                if let Some(snapshot)=self.file_snapshots.lock().expect("file snapshots").get_mut(&id) {snapshot.paused=false;}
+                let (events,settled)={let mut file=file.lock().expect("file monitor");if !file.paused||file.settled {continue;}file.paused=false;let events=file.check().unwrap_or_else(|error|file.stop(&format!("watcher error: {error}")).into_iter().collect());(events,file.settled)};
+                let mut snapshots=self.file_snapshots.lock().expect("file snapshots");
+                if settled {snapshots.remove(&id);} else if let Some(snapshot)=snapshots.get_mut(&id) {snapshot.paused=false;}
                 resumed.push((id,0));pending_events.extend(events);
             }
         }
@@ -214,6 +215,7 @@ mod registry_tests {
         let (id,_)=registry.register_file("created",&path,crate::terminal_manifest_model::FileEvent::Create,5000).unwrap();
         registry.pause(std::slice::from_ref(&id));std::fs::write(&path,b"ready").unwrap();
         assert_eq!(registry.resume(Some(std::slice::from_ref(&id))),vec![(id,0)]);
+        assert!(registry.snapshot().is_empty());
     }
     #[tokio::test]
     async fn native_file_registration_emits_once_and_releases_live_snapshot() {
