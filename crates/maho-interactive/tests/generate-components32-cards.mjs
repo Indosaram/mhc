@@ -114,6 +114,12 @@ const toolScenarios = [
   { toolName: "read", args: { file_path: "src/main.rs" }, result: { content: [{ type: "text", text: "fn main() {}\n" }], isError: false } },
   { toolName: "ls", args: { path: "src" }, result: { content: [{ type: "text", text: "a.rs\nb.rs" }], isError: false } },
   { toolName: "grep", args: { pattern: "needle", path: "src" }, result: { content: [{ type: "text", text: "no matches" }], isError: false } },
+  { toolName: "find", args: { pattern: "*.rs", path: "src" }, result: { content: [{ type: "text", text: "src/a.rs" }], isError: false } },
+  // `edit` is the one built-in whose tool definition declares renderShell "self", so its card
+  // must skip the content box; this case is what pins that.
+  { toolName: "edit", args: { file_path: "src/main.rs" }, result: { content: [{ type: "text", text: "Successfully replaced 1 block(s) in src/main.rs." }], details: { diff: "-1 old\n+1 new", firstChangedLine: 1 }, isError: false } },
+  { toolName: "write", args: { file_path: "src/new.rs", content: "fn main() {}\n" }, result: { content: [{ type: "text", text: "wrote" }], isError: false } },
+  { toolName: "bash", args: { command: "echo hi" }, result: { content: [{ type: "text", text: "hi\n" }], isError: false } },
   { toolName: "read", args: { file_path: "missing.rs" }, result: { content: [{ type: "text", text: "ENOENT: no such file" }], isError: true } },
 ];
 for (const { toolName, args, result } of toolScenarios) {
@@ -137,12 +143,42 @@ for (const { toolName, args, result } of toolScenarios) {
   }
 }
 
+// The progress line reads the wall clock; pin it so the elapsed time is reproducible.
+const progressCases = [];
+const realNow = Date.now;
+Date.now = () => 1_000_000;
+for (const width of [40, 80]) {
+  const component = new ToolExecutionComponent(
+    "read",
+    "call-1",
+    { file_path: "src/main.rs" },
+    { showImages: false },
+    withBuiltInRenderers("read", undefined),
+    tui,
+    cwd,
+    "classic",
+  );
+  component.markExecutionStarted();
+  component.setArgsComplete();
+  component.updateResult(
+    {
+      content: [{ type: "text", text: "partial" }],
+      isError: false,
+      details: { progress: { startedAt: 995_000, activity: "reading", maxWaitMs: 60_000 } },
+    },
+    true,
+  );
+  progressCases.push({ width, nowMs: 1_000_000, lines: trim(component.render(width)) });
+}
+Date.now = realNow;
+
 const data = {
   assistant: assistantCases,
   user: userCases,
   custom: customCases,
   exploration: explorationCases,
   tool: toolCases,
+  progress: progressCases,
 };
 writeFileSync(import.meta.dir + "/golden/components32-cards.json", JSON.stringify(data, null, 2) + "\n");
 console.log(
