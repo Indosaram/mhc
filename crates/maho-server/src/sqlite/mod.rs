@@ -2,6 +2,8 @@ pub mod sql;
 pub mod values;
 pub mod session_row;
 pub mod entries;
+pub mod storage;
+pub mod branch_entries;
 pub use sql::{SqlQuery, SqlValue, join_sql_fragments};
 pub fn apply_initial_schema(db: &rusqlite::Connection) -> rusqlite::Result<()> {
     db.execute_batch(include_str!("001_initial.sql"))
