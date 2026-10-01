@@ -18,6 +18,7 @@ tokio = { workspace = true, features = ["io-util", "sync", "rt", "macros"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+maho-test-support = { path = "../maho-test-support", features = ["sdk"] }
 
 [lints]
 workspace = true
