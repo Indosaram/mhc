@@ -2017,6 +2017,7 @@ dependencies = [
  "chrono",
  "futures",
  "maho-ext-api",
+ "maho-senpi-task",
  "maho-telemetry-core",
  "serde_json",
  "sha2",

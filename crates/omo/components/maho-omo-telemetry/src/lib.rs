@@ -7,6 +7,7 @@ pub mod index;
 pub mod omo_native_parallel;
 pub mod parallelism_schema;
 pub mod omo_native_turns;
+pub mod omo_native_tools;
 pub mod omo_native_notice;
 pub mod omo_native_session;
 pub mod omo_native_parallel_summary;

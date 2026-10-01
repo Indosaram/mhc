@@ -15,6 +15,16 @@ pub const KNOWN_MODELS: &[(&str, &[&str])] = &[
 ];
 use std::{collections::HashMap,io::{Read,Write},os::unix::fs::OpenOptionsExt,path::{Path,PathBuf},sync::{Mutex,OnceLock}};
 use sha2::{Digest,Sha256};
+pub const BUILTIN_SKILL_NAMES: &[&str] = &["ast-grep", "coding-agent-sessions", "dag-library", "data-scientist", "debugging", "frontend", "git-master", "give-me-tips", "hyperplan", "init-deep", "lsp-setup", "mass-ulw", "onboarding", "programming", "refactor", "remove-ai-slops", "review-work", "start-work", "ultimate-browsing", "ultrawork", "ulw-loop", "ulw-plan", "ulw-research", "visual-qa"];
+pub const EVENT_PROPERTY_ALLOWLISTS: &[(&str, &[&str])] = &[
+    ("daily_active", &["$session_id", "day_utc", "reason"]),
+    ("session_started", &["$session_id", "$os", "$os_version", "arch", "cpu_count", "default_model", "default_provider", "memory_bucket", "model_count", "provider_count", "providers", "reason"]),
+    ("prompt_submitted", &["$session_id", "input_source", "invocation_stage", "is_effective_ultrawork_invocation", "is_real_user_prompt", "is_turn_start", "keyword_any", "keyword_occurrence_bucket", "keyword_ultrawork_full", "keyword_ulw_abbrev", "keyword_variant", "prompt_length_bucket", "queue_mode", "real_prompt_ordinal_bucket", "suppression_reason"]),
+    ("turn_completed", &["$session_id", "cache_read_tokens", "cache_write_tokens", "cost_usd", "input_tokens", "model_id", "output_tokens", "provider", "reasoning_tokens", "total_tokens", "turn_index"]),
+    ("skill_loaded", &["$session_id", "skill_name"]),
+    ("delegation_started", &["$session_id", "background", "batch_size_bucket", "kind", "name"]),
+    ("feature_used", &["$session_id", "feature"]),
+];
 static FALLBACK_SALTS:OnceLock<Mutex<HashMap<PathBuf,[u8;32]>>>=OnceLock::new();
 pub fn get_omo_native_state_dir(env:&telemetry_core::TelemetryEnv)->PathBuf {
     let legacy=crate::index::get_senpi_telemetry_state_dir(env);
