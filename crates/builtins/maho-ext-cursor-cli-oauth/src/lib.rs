@@ -6,6 +6,8 @@ pub mod guardrails;
 pub mod home_store;
 pub mod models_probe;
 pub mod models;
+pub mod oauth_login;
+pub mod failover;
 pub mod errors;
 pub mod executable;
 pub mod spawn_args;
