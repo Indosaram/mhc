@@ -21,6 +21,7 @@ pub mod facts_drain;
 pub mod facts_terminal_writes;
 pub mod prompt;
 pub mod session_model_resolver;
+pub mod model_registry_resolver;
 pub mod session_context_resolver;
 pub mod shutdown_drain;
 pub mod memory_rpc_snapshot_state;
