@@ -47,6 +47,7 @@ pub struct InteractiveMode {
     working_visible: bool,
     editor_host: Rc<dyn maho_tui::components::editor::EditorTuiHost>,
     hidden_thinking_label: String,
+    history_expansion: Vec<Box<dyn FnMut(bool)>>,
 }
 
 impl InteractiveMode {
@@ -60,7 +61,7 @@ impl InteractiveMode {
         editor.editor.on_submit = Some(Box::new(move |text| { if !text.trim().is_empty() { captured.borrow_mut().push_back(text.trim().into()); } }));
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(maho_ext_api::Theme { name: Some(theme.name.clone()), colors: theme.resolved_colors(), ..Default::default() });
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into() }
+        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new() }
     }
 
     pub fn use_registered_markdown_transformers(&mut self, extensions: &[maho_ext_api::LoadedExtension]) {
@@ -76,6 +77,7 @@ impl InteractiveMode {
     pub fn rebuild_history(&mut self) {
         self.chat.clear(); self.pending_tools.clear(); self.streaming = None; self.assistant_segments.clear();
         self.assistant_cards.clear(); self.tool_cards.clear(); self.last_status = None;
+        self.history_expansion.clear();
         for message in self.session.messages() { self.add_history_message(&message); }
     }
 
@@ -95,13 +97,19 @@ impl InteractiveMode {
                 if let Some(parts) = value["content"].as_array() { let text = parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n"); self.editor.editor.add_to_history(&text); }
             }
             AgentMessage::Custom(CustomAgentMessage::Custom(message)) if message.display => {
-                self.chat.add_child(Rc::new(RefCell::new(crate::components::custom_message::CustomMessageComponent::new(serde_json::to_value(message).expect("custom message"), None, self.theme.clone(), get_markdown_theme(&self.theme), 1))));
+                let component = Rc::new(RefCell::new(crate::components::custom_message::CustomMessageComponent::new(serde_json::to_value(message).expect("custom message"), None, self.theme.clone(), get_markdown_theme(&self.theme), 1)));
+                component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(component.clone());
+                self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
             }
             AgentMessage::Custom(CustomAgentMessage::BranchSummary(message)) => {
-                self.chat.add_child(Rc::new(RefCell::new(crate::components::branch_summary_message::BranchSummaryMessageComponent::new(message.summary.clone(), self.theme.clone(), get_markdown_theme(&self.theme), crate::components::keybinding_hints::key_display_text("app.tools.expand")))));
+                let component = Rc::new(RefCell::new(crate::components::branch_summary_message::BranchSummaryMessageComponent::new(message.summary.clone(), self.theme.clone(), get_markdown_theme(&self.theme), crate::components::keybinding_hints::key_display_text("app.tools.expand"))));
+                component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(component.clone());
+                self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
             }
             AgentMessage::Custom(CustomAgentMessage::CompactionSummary(message)) => {
-                self.chat.add_child(Rc::new(RefCell::new(crate::components::compaction_summary_message::CompactionSummaryMessageComponent::new(serde_json::to_value(message).expect("summary"), self.theme.clone(), get_markdown_theme(&self.theme), crate::components::keybinding_hints::key_display_text("app.tools.expand")))));
+                let component = Rc::new(RefCell::new(crate::components::compaction_summary_message::CompactionSummaryMessageComponent::new(serde_json::to_value(message).expect("summary"), self.theme.clone(), get_markdown_theme(&self.theme), crate::components::keybinding_hints::key_display_text("app.tools.expand"))));
+                component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(component.clone());
+                self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
             }
             AgentMessage::Custom(CustomAgentMessage::BashExecution(message)) => {
                 let mut component = crate::components::bash_execution::BashExecutionComponent::new(&message.command, message.exclude_from_context.unwrap_or(false), self.theme.clone());
@@ -176,6 +184,7 @@ impl InteractiveMode {
         self.tools_expanded = expanded;
         for component in &self.tool_cards { component.borrow_mut().set_expanded(expanded); }
         for component in &self.assistant_cards { component.borrow_mut().set_expanded(expanded); }
+        for update in &mut self.history_expansion { update(expanded); }
         self.show_status(format!("Tool output: {}", if expanded { "expanded" } else { "collapsed" }));
     }
 
@@ -422,7 +431,8 @@ impl InteractiveMode {
                     if let Some(block) = maho_core::skill_invocation::parse_skill_block(&text) {
                         let mut component = crate::components::skill_invocation_message::SkillInvocationMessageComponent::new(block.skills.into_iter().map(|skill| crate::components::skill_invocation_message::InvokedSkill { name:skill.name, content:skill.content }).collect(), self.theme.clone(), get_markdown_theme(&self.theme), crate::components::keybinding_hints::key_display_text("app.tools.expand"));
                         component.set_expanded(self.tools_expanded);
-                        self.chat.add_child(Rc::new(RefCell::new(component)));
+                        let component = Rc::new(RefCell::new(component)); self.chat.add_child(component.clone());
+                        self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
                         if let Some(text) = block.user_message { self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))); self.chat.add_child(Rc::new(RefCell::new(UserMessageComponent::new(text, self.theme.clone(), get_markdown_theme(&self.theme), 1, self.markdown_transformers.clone())))); }
                         return;
                     }

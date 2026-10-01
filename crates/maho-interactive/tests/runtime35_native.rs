@@ -459,4 +459,6 @@ fn skill_invocation_replay_separates_collapsed_skill_and_user_request() {
     mode.add_history_message(&message);
     let lines = mode.render(80).join("\n");
     assert!(lines.contains("sample")); assert!(lines.contains("user-request")); assert!(!lines.contains("private-body"));
+    mode.set_tools_expanded(true);
+    assert!(mode.render(80).join("\n").contains("private-body"));
 }
