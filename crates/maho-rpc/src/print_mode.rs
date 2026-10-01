@@ -5,6 +5,12 @@ use crate::provider_native_rendering::{format_provider_native_body,format_provid
 
 #[derive(Default,Debug,PartialEq)]
 pub struct PrintOutput { pub stdout:String,pub stderr:String,pub exit_code:i32 }
+pub fn fallback_diagnostic(event:&maho_ext_api::AgentSessionEvent)->Option<String>{use maho_ext_api::AgentSessionEvent;match event{
+    AgentSessionEvent::RetryFallbackApplied{from,to,reason,..}=>Some(format!("Model fallback: {from} -> {to} ({reason})\n")),
+    AgentSessionEvent::RetryFallbackExhausted{chain_key,last_error}=>Some(format!("Model fallback exhausted: {chain_key} ({last_error})\n")),
+    AgentSessionEvent::RetryFallbackReverted{from,to}=>Some(format!("Model fallback reverted: {from} -> {to}\n")),
+    _=>None,
+}}
 pub fn format_print_result(message: Option<&AssistantMessage>) -> Result<PrintOutput,serde_json::Error> {
     let Some(message) = message else { return Ok(PrintOutput::default()); };
     if matches!(message.stop_reason,StopReason::Error|StopReason::Aborted) {
