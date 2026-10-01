@@ -1,5 +1,15 @@
 use maho_core::agent_session::{AgentSession,QueuedInputOptions};
 use crate::rpc_types::{RpcCommand,RpcCommandBody,RpcResponse,RpcResponseResult,ResponseRecordType};
+pub async fn handle_input_line(session:&AgentSession,line:&str)->Result<Option<String>,serde_json::Error>{
+    let parsed=serde_json::from_str::<serde_json::Value>(line);
+    let error=match &parsed{Err(error)=>Some(format!("Failed to parse command: {error}")),Ok(value)=>crate::rpc_input_validation::rpc_command_shape_error(value).map(str::to_owned)};
+    if let Some(error)=error{return crate::jsonl::serialize_json_line(&RpcResponse{id:None,record_type:ResponseRecordType::Response,command:"parse".into(),session_id:None,result:RpcResponseResult::Error{error,error_code:None,error_data:None}}).map(Some);}
+    let value=parsed?;
+    let error=crate::rpc_input_validation::rpc_command_payload_error(&value).map(str::to_owned).or_else(||crate::rpc_input_validation::rpc_message_length_error(&value));
+    if let Some(error)=error{return crate::jsonl::serialize_json_line(&RpcResponse{id:value["id"].as_str().map(str::to_owned),record_type:ResponseRecordType::Response,command:value["type"].as_str().unwrap_or_default().into(),session_id:None,result:RpcResponseResult::Error{error,error_code:None,error_data:None}}).map(Some);}
+    let command:RpcCommand=serde_json::from_value(value)?;
+    handle_session_command(session,&command).await.map(|response|crate::jsonl::serialize_json_line(&response)).transpose()
+}
 pub async fn handle_session_command(session:&AgentSession,command:&RpcCommand)->Option<RpcResponse>{
     let (kind,result)=match &command.body{
         RpcCommandBody::Steer{message,images,enqueue_order}|RpcCommandBody::FollowUp{message,images,enqueue_order}=>{
