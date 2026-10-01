@@ -333,3 +333,15 @@ fn widget_refresh_keeps_insertion_order_and_caps_lines() {
     assert!(lines.find("updated-widget-0").expect("first") < lines.find("second-widget").expect("second"));
     assert!(!lines.contains("updated-widget-11"));
 }
+
+#[tokio::test]
+async fn cancelled_extension_input_releases_composer() {
+    use maho_ext_api::ExtensionUi; use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let ui = mode.extension_ui.clone();
+    let signal = maho_tools::definition::AbortSignal::default();
+    let answer = ui.input("Cancelled", None, maho_ext_api::ExtensionUiDialogOptions { signal:Some(signal.clone()), ..Default::default() });
+    mode.render(80); signal.abort(); assert_eq!(answer.await, None);
+    mode.render(80); mode.handle_input_at("new-draft", 0);
+    assert_eq!(mode.editor.editor.get_text(), "new-draft");
+}
