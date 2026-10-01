@@ -11,12 +11,15 @@ pub struct RealChange { pub changed_paths: Vec<PathBuf>, pub created: Vec<PathBu
 #[derive(Default)]
 struct ScanResult { hashes: BTreeMap<PathBuf, String>, allowed_directories: BTreeSet<PathBuf>, scanned_directories: BTreeSet<PathBuf> }
 pub struct ConfigReloadWatchEngine { targets: Vec<WatchTarget>, states: Vec<ScanResult>, closed: bool }
-pub struct NativeWatchEngine { pub engine: ConfigReloadWatchEngine, subscriptions: BTreeMap<PathBuf, WatchSubscription>, receiver: std::sync::mpsc::Receiver<()>, sender: std::sync::mpsc::Sender<()>, on_error: WatchErrorListener }
+pub struct NativeWatchEngine { pub engine: ConfigReloadWatchEngine, subscriptions: BTreeMap<PathBuf, WatchSubscription>, receiver: std::sync::mpsc::Receiver<()>, sender: std::sync::mpsc::Sender<()>, on_error: WatchErrorListener, debounce: std::time::Duration }
 impl NativeWatchEngine {
     pub fn new(targets: Vec<WatchTarget>, on_error: WatchErrorListener) -> Result<Self, String> {
+        Self::with_debounce(targets, on_error, std::time::Duration::from_millis(200))
+    }
+    pub fn with_debounce(targets: Vec<WatchTarget>, on_error: WatchErrorListener, debounce: std::time::Duration) -> Result<Self, String> {
         let engine = ConfigReloadWatchEngine::new(targets).map_err(|error| error.to_string())?;
         let (sender, receiver) = std::sync::mpsc::channel();
-        let mut state = Self { engine, subscriptions: BTreeMap::new(), receiver, sender, on_error };
+        let mut state = Self { engine, subscriptions: BTreeMap::new(), receiver, sender, on_error, debounce };
         state.reconcile()?;
         Ok(state)
     }
@@ -27,7 +30,20 @@ impl NativeWatchEngine {
         for path in wanted {
             if self.subscriptions.contains_key(&path) { continue; }
             let sender = self.sender.clone();
-            let subscription = subscribe(path.clone(), false, Arc::new(move |_, _| { let _ = sender.send(()); }), Arc::clone(&self.on_error))?;
+            let directory = path.clone();
+            let targets: Vec<_> = self.engine.targets.iter().map(|target| (target.path.clone(), target.kind, target.allow_list.clone(), target.filter.clone())).collect();
+            let subscription = subscribe(path.clone(), false, Arc::new(move |_, filename| {
+                if let Some(filename) = filename {
+                    if filename.is_absolute() || filename.components().any(|component| matches!(component, std::path::Component::ParentDir)) { return; }
+                    let absolute = directory.join(filename);
+                    if !targets.iter().any(|(root, kind, allowed, filter)| absolute.strip_prefix(root).is_ok_and(|relative| {
+                        (*kind == WatchKind::DirRecursive || relative.components().count() <= 1)
+                            && allowed.as_ref().is_none_or(|allowed| allowed.iter().any(|allowed| relative == allowed || relative.starts_with(allowed)))
+                            && filter.as_ref().is_none_or(|filter| filter(relative))
+                    })) { return; }
+                }
+                let _ = sender.send(());
+            }), Arc::clone(&self.on_error))?;
             subscription.ready()?;
             self.subscriptions.insert(path, subscription);
         }
@@ -35,7 +51,13 @@ impl NativeWatchEngine {
     }
     pub fn next_change(&mut self, timeout: std::time::Duration) -> Result<RealChange, String> {
         self.receiver.recv_timeout(timeout).map_err(|error| error.to_string())?;
-        while self.receiver.try_recv().is_ok() {}
+        loop {
+            match self.receiver.recv_timeout(self.debounce) {
+                Ok(()) => {},
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                Err(error) => return Err(error.to_string()),
+            }
+        }
         let change = self.engine.evaluate().map_err(|error| error.to_string())?;
         self.reconcile()?;
         Ok(change)
