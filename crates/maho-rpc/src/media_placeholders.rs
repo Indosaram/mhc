@@ -27,13 +27,15 @@ fn walk(value: &Value) -> Cow<'_,Value> {
         }
         Value::Object(object) => {
             let mut replaced = None;
+            let mut scrubbed_content = false;
             if value.get("role").and_then(Value::as_str) == Some("toolResult")
                 && let Some(content) = value.get("content").and_then(|c| omit_content_images(c,value.get("toolCallId").and_then(Value::as_str).unwrap_or(""))) {
                     let output = replaced.get_or_insert_with(|| object.clone());
                     output.insert("content".into(),content);
+                    scrubbed_content = true;
             }
             for (key,child) in object {
-                if key == "content" && replaced.is_some() { continue; }
+                if key == "content" && scrubbed_content { continue; }
                 if let Cow::Owned(next) = walk(child) { replaced.get_or_insert_with(|| object.clone()).insert(key.clone(),next); }
             }
             replaced.map(Value::Object).map_or(Cow::Borrowed(value),Cow::Owned)
@@ -62,4 +64,5 @@ mod tests {
     #[test] fn user_images_stay_inline() { let record = json!({"type":"message_end","message":{"role":"user","content":[{"type":"image","data":"YQ=="}]}}); assert!(matches!(omit_inline_media(&record),Cow::Borrowed(_))); }
     #[test] fn unchanged_graph_is_borrowed() { let record = json!({"type":"agent_end","messages":[{"role":"toolResult","content":[{"type":"text","text":"ok"}]}]}); assert!(matches!(omit_inline_media(&record),Cow::Borrowed(_))); }
     #[test] fn base64_length_handles_padding() { assert_eq!(base64_byte_length("YQ=="),1); assert_eq!(base64_byte_length("YWI="),2); assert_eq!(base64_byte_length("YWJj"),3); assert_eq!(base64_byte_length(""),0); }
+    #[test] fn earlier_changed_sibling_does_not_skip_content_subtree() { let tool = json!({"role":"toolResult","toolCallId":"call","content":[{"type":"image","data":"YQ=="}]}); let record = json!({"type":"agent_end","before":tool,"content":{"nested":tool}}); let output = omit_inline_media(&record); assert_eq!(output["content"]["nested"]["content"][0]["type"],"image_ref"); }
 }

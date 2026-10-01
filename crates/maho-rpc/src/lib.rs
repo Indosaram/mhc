@@ -9,3 +9,6 @@ pub mod media_placeholders;
 pub mod provider_native_rendering;
 pub mod rpc_types;
 pub mod session_extension_ui_requests;
+pub mod session_path_reservations;
+pub mod loop_blocked_time;
+pub mod shutdown;
