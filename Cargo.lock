@@ -1696,6 +1696,7 @@ version = "0.0.0"
 dependencies = [
  "hex",
  "maho-core",
+ "maho-ext-api",
  "regex",
  "serde",
  "serde_json",
