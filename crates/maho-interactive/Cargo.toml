@@ -25,7 +25,7 @@ chrono = { version = "=0.4.43", features = ["clock"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"
-maho-test-support = { path = "../maho-test-support" }
+maho-test-support = { path = "../maho-test-support", features = ["sdk"] }
 
 [lints]
 workspace = true
