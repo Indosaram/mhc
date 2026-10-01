@@ -287,6 +287,9 @@ impl InteractiveMode {
             return Ok(PromptDisposition::Handled);
         }
         if let Some(id) = text.trim().strip_prefix("/tree ") {
+            if self.session.with_session_manager(|manager| manager.leaf_id().is_some_and(|leaf| leaf == id.trim())) {
+                self.show_status("Already at this point".into()); return Ok(PromptDisposition::Handled);
+            }
             let result = self.session.navigate_tree(id.trim(), Default::default()).await?;
             if !result.cancelled && result.aborted != Some(true) { self.rebuild_history(); if let Some(text) = result.editor_text { self.editor.editor.set_text(&text); } }
             return Ok(PromptDisposition::Handled);
