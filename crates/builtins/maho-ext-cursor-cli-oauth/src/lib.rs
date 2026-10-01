@@ -1,5 +1,7 @@
 //! Cursor CLI OAuth transport helpers.
 pub mod accounts;
+pub mod extension;
+pub use extension::CursorCliExtension;
 pub mod account_command;
 pub mod affinity;
 pub mod environment;
