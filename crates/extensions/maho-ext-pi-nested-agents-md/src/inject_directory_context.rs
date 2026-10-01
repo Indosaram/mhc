@@ -1,29 +1,6 @@
 use crate::{containment::resolve_and_contain, find_agents_md_up::find_agents_md_up, format::format_directory_context, injection_cache::InjectionCache, truncate::truncate_bytes};
-use std::path::{Path, PathBuf};
-
-pub struct InjectedFileInfo {
-    pub absolute_path: PathBuf,
-    pub directory: PathBuf,
-    pub truncated: bool,
-    pub original_bytes: usize,
-    pub injected_bytes: usize,
-}
-
-#[derive(Default)]
-pub struct InjectionResult {
-    pub injected_text: String,
-    pub injected_files: Vec<InjectedFileInfo>,
-    pub errors: Vec<(PathBuf, std::io::Error)>,
-}
-
-pub struct InjectionConfig<'a> {
-    pub file_names: &'a [&'a str],
-    pub max_bytes_per_file: usize,
-    pub max_bytes_per_read: usize,
-}
-impl Default for InjectionConfig<'_> {
-    fn default() -> Self { Self { file_names: &["AGENTS.md"], max_bytes_per_file: 32 * 1024, max_bytes_per_read: 128 * 1024 } }
-}
+use std::path::Path;
+pub use crate::types::{InjectedFileInfo, InjectionResult, InjectionConfig};
 
 pub fn inject_directory_context(file: &Path, root: &Path, cache: &mut InjectionCache, session: &str, config: &InjectionConfig<'_>) -> InjectionResult {
     let mut result = InjectionResult::default();
@@ -38,7 +15,7 @@ pub fn inject_directory_context(file: &Path, root: &Path, cache: &mut InjectionC
         if budget == 0 { break; }
         let bytes = match std::fs::read(&agents_path) {
             Ok(bytes) => bytes,
-            Err(error) => { result.errors.push((agents_path, error)); continue; }
+            Err(error) => { result.errors.push((agents_path.clone(), crate::errors::InjectionFileReadError { path: agents_path, cause: error })); continue; }
         };
         let content = String::from_utf8_lossy(&bytes);
         let truncated = truncate_bytes(&content, config.max_bytes_per_file.min(budget));

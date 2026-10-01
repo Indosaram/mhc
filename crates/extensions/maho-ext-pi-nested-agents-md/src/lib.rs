@@ -1,4 +1,6 @@
 pub mod containment;
+pub mod types;
+pub mod errors;
 pub mod find_agents_md_up;
 pub mod format;
 pub mod injection_cache;

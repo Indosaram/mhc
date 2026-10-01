@@ -27,8 +27,22 @@ fn excluded_when_missing_file() {
 #[test]
 fn excluded_when_sibling_prefix() {
     let tree = tree();
-    let outside = tempfile::tempdir().expect("create outside directory");
-    assert!(resolve_and_contain(outside.path(), tree.path()).is_none());
+    let repo = tree.path().join("repo");
+    let outside = tree.path().join("repo-evil");
+    std::fs::create_dir(&repo).expect("create root fixture");
+    std::fs::create_dir(&outside).expect("create prefix sibling fixture");
+    assert!(resolve_and_contain(&outside, &repo).is_none());
+}
+#[cfg(unix)]
+#[test]
+fn excluded_when_symlink_escapes_root() {
+    let tree = tree();
+    let outside = tempfile::tempdir().expect("create outside fixture");
+    std::fs::write(outside.path().join("AGENTS.md"), "outside").expect("write outside fixture");
+    std::os::unix::fs::symlink(outside.path(), tree.path().join("src/escape")).expect("create escape symlink");
+    let result = inject_directory_context(Path::new("src/escape/AGENTS.md"), tree.path(), &mut InjectionCache::default(), "a", &InjectionConfig::default());
+    assert!(result.injected_files.is_empty());
+    assert!(result.injected_text.is_empty());
 }
 #[test]
 fn outermost_when_nested_files() {
