@@ -90,11 +90,12 @@ impl Extension for TerminalExtension {
             *notifier.lock().map_err(|_|ExtensionFailure::new("monitor notifier state poisoned"))?=Some(delivery);Ok(EventResult::None)
         })}));
         let bash_manager=Arc::clone(&manager);
-        let mut bash=ToolDefinition::new("bash","Execute a shell command in a persistent PTY-backed session.",json!({"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"number"},"description":{"type":"string"},"run_in_background":{"type":"boolean"},"cols":{"type":"number"},"rows":{"type":"number"}},"required":["command"]}),Arc::new(move |call| {let manager=Arc::clone(&bash_manager);let sender=bash_sender.clone();let delivery=completion_delivery.clone();let notifier=terminal_notifier.clone();Box::pin(async move {
+        let completion_tasks:Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>=Arc::new(Mutex::new(vec![]));let bash_tasks=completion_tasks.clone();let cleanup_terminal_notifier=terminal_notifier.clone();
+        let mut bash=ToolDefinition::new("bash","Execute a shell command in a persistent PTY-backed session.",json!({"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"number"},"description":{"type":"string"},"run_in_background":{"type":"boolean"},"cols":{"type":"number"},"rows":{"type":"number"}},"required":["command"]}),Arc::new(move |call| {let manager=Arc::clone(&bash_manager);let sender=bash_sender.clone();let delivery=completion_delivery.clone();let notifier=terminal_notifier.clone();let tasks=bash_tasks.clone();Box::pin(async move {
             let result=crate::tools::bash::execute_bash(manager.clone(),call).await.map_err(ToolError::Message)?;
             if let Some(details)=&result.details && details.get("background").and_then(Value::as_bool)==Some(true) && let Some(id)=details.get("bash_id").and_then(Value::as_str) {
                 let id=id.to_owned();let exit=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?.get(&id).map(|runtime|runtime.subscribe_exit());
-                if let Some(mut exit)=exit {tokio::spawn(async move {
+                if let Some(mut exit)=exit {let task=tokio::spawn(async move {
                     loop {
                         if exit.borrow_and_update().is_some() {break;}
                         if exit.changed().await.is_err() {return;}
@@ -104,7 +105,7 @@ impl Extension for TerminalExtension {
                         use maho_ext_api::types::{CustomMessage,SendMessageOptions,DeliverAs};
                         if let Err(error)=sender.send_message(CustomMessage {custom_type:crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE.to_owned(),content:vec![ToolContent::text(content)],display:false,details:None},SendMessageOptions {trigger_turn:true,deliver_as:Some(if delivery==crate::notify::NotificationDelivery::Steer {DeliverAs::Steer} else {DeliverAs::FollowUp})}) {eprintln!("terminal notification failed: {error}");}
                     });
-                });}
+                });let mut tasks=tasks.lock().map_err(|_|ToolError::Message("terminal completion tasks poisoned".to_owned()))?;tasks.retain(|task|!task.is_finished());tasks.push(task);}
             }
             tool_result(result)
         })}));
@@ -167,6 +168,7 @@ impl Extension for TerminalExtension {
         let activity=notifier.clone();
         api.on(EventKind::ToolCall,Arc::new(move |_,_| {let notifier=activity.clone();Box::pin(async move {if let Some(notifier)=notifier.lock().map_err(|_|ExtensionFailure::new("monitor notifier state poisoned"))?.as_ref() {notifier.note_activity().map_err(ExtensionFailure::new)?;}Ok(EventResult::None)})}));
         let cleanup=Arc::clone(&manager);
+        api.on(EventKind::SessionShutdown,Arc::new(move |_,_| {let tasks=completion_tasks.clone();let notifier=cleanup_terminal_notifier.clone();Box::pin(async move {for task in tasks.lock().map_err(|_|ExtensionFailure::new("terminal completion tasks poisoned"))?.drain(..) {task.abort();}*notifier.lock().map_err(|_|ExtensionFailure::new("terminal notifier state poisoned"))?=crate::notify::TerminalNotifier::default();Ok(EventResult::None)})}));
         api.on(EventKind::SessionShutdown,Arc::new(move |_,_| {let task=telemetry_task.clone();Box::pin(async move {if let Some(task)=task.lock().map_err(|_|ExtensionFailure::new("monitor telemetry state poisoned"))?.take() {task.abort();}Ok(EventResult::None)})}));
         api.on(EventKind::SessionShutdown,Arc::new(move |_,ctx| {let status=status_task.clone();Box::pin(async move {if let Some(task)=status.lock().map_err(|_|ExtensionFailure::new("monitor status state poisoned"))?.take() {task.abort();}ctx.ui.set_status(crate::monitor_status::MONITOR_STATUS_KEY,None);Ok(EventResult::None)})}));
         api.on(EventKind::SessionShutdown,Arc::new(move |_,_| {let manager=Arc::clone(&cleanup);let monitors=monitors.clone();let notifier=notifier.clone();Box::pin(async move {notifier.lock().map_err(|_|ExtensionFailure::new("monitor notifier state poisoned"))?.take();monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?.dispose();manager.lock().map_err(|_|ExtensionFailure::new("terminal manager state poisoned"))?.teardown().map_err(|error|ExtensionFailure::new(error.to_string()))?;Ok(EventResult::None)})}));
@@ -195,5 +197,5 @@ mod tests {
         assert!(matches!(&result.content[0],ToolContent::Text {text,..} if text.contains("status: completed exit_code: 0")));
         (api.registered.tools[4].definition.execute)(maho_tools::definition::ToolCall {id:"c3",params:json!({"all":true}),signal:Default::default(),on_update:None,context:None}).await?;Ok(())
     }
-    #[test] fn native_companions_register_flat_schemas_and_shutdown() {let mut api=ExtensionApi::new(LoadedExtension::new("terminal","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());TerminalExtension.register(&mut api);assert_eq!(api.registered.tools.iter().map(|tool|tool.definition.name.as_str()).collect::<Vec<_>>(),vec!["bash","bash_output","bash_input","bash_resize","kill_bash","monitor"]);for tool in &api.registered.tools {assert_eq!(tool.definition.parameters["type"],"object");assert!(tool.definition.parameters.get("properties").is_some());}assert_eq!(api.registered.handlers[&EventKind::SessionShutdown].len(),3);}
+    #[test] fn native_companions_register_flat_schemas_and_shutdown() {let mut api=ExtensionApi::new(LoadedExtension::new("terminal","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());TerminalExtension.register(&mut api);assert_eq!(api.registered.tools.iter().map(|tool|tool.definition.name.as_str()).collect::<Vec<_>>(),vec!["bash","bash_output","bash_input","bash_resize","kill_bash","monitor"]);for tool in &api.registered.tools {assert_eq!(tool.definition.parameters["type"],"object");assert!(tool.definition.parameters.get("properties").is_some());}assert_eq!(api.registered.handlers[&EventKind::SessionShutdown].len(),4);}
 }
