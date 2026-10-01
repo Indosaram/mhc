@@ -19,14 +19,15 @@ use maho_agent::Agent;
 use maho_ai::model::Model;
 use maho_ai::models::models_are_equal;
 use maho_ai::types::{
-    ImageContent, ModelThinkingLevel, ServiceTierPreference, ThinkingLevel, ThinkingSelection,
+    ImageContent, ModelThinkingLevel, ProviderEnv, ProviderHeaders, ServiceTierPreference, ThinkingLevel,
+    ThinkingSelection,
 };
 use maho_ext_api::{
     CompactionRejectionCause, ExtensionError, ExtensionMode, ExtensionUi, FlagValue, InputSource,
     ServiceTier, SessionReason, SessionStartEvent, SourceInfo, SourceOrigin, SourceScope,
     StreamingBehavior, ToolDefinition, ToolExposure, ToolInfo,
 };
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::model_registry::ModelRegistry;
 use crate::model_runtime::ModelRuntime;
@@ -81,6 +82,10 @@ pub struct AgentSessionConfig {
     pub custom_tools: Vec<ToolDefinition>,
     pub model_runtime: Option<ModelRuntime>,
     pub model_registry: Option<ModelRegistry>,
+    /// Whether the agent streams through the default `streamSimple` (senpi reads
+    /// `agent.streamFunction === streamSimple`; the Rust agent exposes no getter, so the host
+    /// states it). Defaults to true, matching senpi's default stream function.
+    pub uses_default_stream_function: Option<bool>,
     pub initial_active_tool_names: Option<Vec<String>>,
     pub default_tool_names: Option<Vec<String>>,
     pub eval_only_tool_names: Option<Vec<String>>,
@@ -289,6 +294,7 @@ struct AgentSessionState {
     base_tools_override: Option<BTreeMap<String, AgentTool>>,
     session_start_event: SessionStartEvent,
     auto_title_sessions: bool,
+    uses_default_stream_function: bool,
     flag_values: BTreeMap<String, FlagValue>,
     session_fast_mode: bool,
     current_service_tier: Option<ServiceTier>,
@@ -311,10 +317,33 @@ pub struct AgentSession {
     agent: Agent,
     session_manager: Mutex<SessionManager>,
     settings_manager: Mutex<SettingsManager>,
-    model_runtime: ModelRuntime,
+    model_registry: ModelRegistry,
     state: Mutex<AgentSessionState>,
     fallback_now: Arc<dyn Fn() -> f64 + Send + Sync>,
     retry_random: Arc<dyn Fn() -> f64 + Send + Sync>,
+}
+
+/// Resolved provider auth for one request.
+#[derive(Clone, Debug)]
+pub struct RequestAuth {
+    pub model: Model,
+    pub api_key: Option<String>,
+    pub headers: Option<BTreeMap<String, String>>,
+    pub extra_body: Option<Map<String, Value>>,
+    pub env: Option<ProviderEnv>,
+}
+
+/// Auth for a summarization stream; native stream functions may supply ambient credentials.
+#[derive(Clone, Debug)]
+pub struct SummarizationRequestAuth {
+    pub model: Model,
+    pub api_key: Option<String>,
+    pub headers: Option<BTreeMap<String, String>>,
+    pub env: Option<ProviderEnv>,
+}
+
+fn without_deleted_headers(headers: Option<ProviderHeaders>) -> Option<BTreeMap<String, String>> {
+    headers.map(|headers| headers.into_iter().filter_map(|(key, value)| value.map(|value| (key, value))).collect())
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -328,9 +357,9 @@ impl AgentSession {
     /// probe scheduler, the agent subscription and tool hooks, and `_buildRuntime` (tool registry
     /// and system prompt). Each lands with the slice that owns it.
     pub fn new(config: AgentSessionConfig) -> Result<Self, MissingModelAccessError> {
-        let model_runtime = match (config.model_runtime, config.model_registry) {
-            (Some(runtime), _) => runtime,
-            (None, Some(registry)) => registry.model_runtime,
+        let model_registry = match (config.model_runtime, config.model_registry) {
+            (Some(runtime), _) => ModelRegistry::new(runtime),
+            (None, Some(registry)) => registry,
             (None, None) => return Err(MissingModelAccessError),
         };
         let agent_dir = config.agent_dir.clone().unwrap_or_else(crate::config::get_agent_dir);
@@ -353,6 +382,7 @@ impl AgentSession {
                 previous_session_file: None,
             }),
             auto_title_sessions: config.auto_title_sessions.unwrap_or(false),
+            uses_default_stream_function: config.uses_default_stream_function.unwrap_or(true),
             flag_values: config.flag_values,
             session_fast_mode: false,
             current_service_tier: None,
@@ -370,7 +400,7 @@ impl AgentSession {
             agent,
             session_manager: Mutex::new(config.session_manager),
             settings_manager: Mutex::new(config.settings_manager),
-            model_runtime,
+            model_registry,
             state: Mutex::new(state),
             fallback_now: config
                 .fallback_now
@@ -395,7 +425,99 @@ impl AgentSession {
     }
 
     pub fn model_runtime(&self) -> &ModelRuntime {
-        &self.model_runtime
+        &self.model_registry.model_runtime
+    }
+
+    pub fn model_registry(&self) -> &ModelRegistry {
+        &self.model_registry
+    }
+
+    /// Resolve the auth a provider request needs, refusing when none is configured.
+    ///
+    /// Adaptation: senpi inspects the thrown error's `cause` for the `authHeader requires a
+    /// resolved API key` text; the Rust `ModelsError` keeps only a message, which is matched here.
+    pub async fn get_required_request_auth(&self, model: &Model) -> Result<RequestAuth, String> {
+        let result = match self.model_runtime().get_auth(&model.provider).await {
+            Ok(result) => result,
+            Err(error) => {
+                if error.message.contains("authHeader requires a resolved API key") {
+                    return Err(crate::auth_guidance::format_no_api_key_found_message(&model.provider));
+                }
+                return Err(error.message);
+            }
+        };
+        if let Some(result) = result
+            && (result.auth.api_key.is_some() || result.auth.headers.is_some())
+        {
+            let request_model = match &result.auth.base_url {
+                Some(base_url) => {
+                    let mut request_model = model.clone();
+                    request_model.base_url = base_url.clone();
+                    request_model
+                }
+                None => model.clone(),
+            };
+            return Ok(RequestAuth {
+                model: request_model,
+                api_key: result.auth.api_key,
+                headers: without_deleted_headers(result.auth.headers),
+                extra_body: self.model_runtime().get_compatibility_request_config(model).extra_body,
+                env: result.env,
+            });
+        }
+        if self.model_runtime().is_using_oauth(&model.provider) {
+            return Err(format!(
+                "Authentication failed for \"{}\". Credentials may have expired or network is unavailable. Run '/login {}' to re-authenticate.",
+                model.provider, model.provider
+            ));
+        }
+        Err(crate::auth_guidance::format_no_api_key_found_message(&model.provider))
+    }
+
+    /// Resolve optional auth for a summarization stream.
+    ///
+    /// Adaptations: senpi's ambient-credential refinement reads `agent.getApiKey` and
+    /// `AuthResolution.source`; the Rust agent exposes no `getApiKey` getter and `AuthResolution`
+    /// carries no `source`, so the stored resolution is used as-is.
+    pub async fn get_summarization_request_auth(&self, model: &Model) -> Result<SummarizationRequestAuth, String> {
+        if self.state().uses_default_stream_function {
+            let auth = self.get_required_request_auth(model).await?;
+            return Ok(SummarizationRequestAuth {
+                model: auth.model,
+                api_key: auth.api_key,
+                headers: auth.headers,
+                env: auth.env,
+            });
+        }
+        let Ok(Some(result)) = self.model_runtime().get_auth(&model.provider).await else {
+            return Ok(SummarizationRequestAuth { model: model.clone(), api_key: None, headers: None, env: None });
+        };
+        let request_model = match &result.auth.base_url {
+            Some(base_url) => {
+                let mut request_model = model.clone();
+                request_model.base_url = base_url.clone();
+                request_model
+            }
+            None => model.clone(),
+        };
+        Ok(SummarizationRequestAuth {
+            model: request_model,
+            api_key: result.auth.api_key,
+            headers: without_deleted_headers(result.auth.headers),
+            env: result.env,
+        })
+    }
+
+    /// Compaction summarization auth, carrying the provider's compatibility `extraBody`.
+    pub async fn get_compaction_request_auth(&self, model: &Model) -> Result<RequestAuth, String> {
+        let auth = self.get_summarization_request_auth(model).await?;
+        Ok(RequestAuth {
+            model: auth.model,
+            api_key: auth.api_key,
+            headers: auth.headers,
+            extra_body: self.model_runtime().get_compatibility_request_config(model).extra_body,
+            env: auth.env,
+        })
     }
 
     pub fn fallback_now(&self) -> f64 {
@@ -632,6 +754,118 @@ mod tests {
         model.service_tier = Some(ServiceTierPreference::Flex);
         assert_eq!(resolve_service_tier(&model, Some(ServiceTier::Priority)), Some(ServiceTier::Priority));
         assert_eq!(resolve_service_tier(&model, None), Some(ServiceTier::Flex));
+    }
+
+    #[test]
+    fn a_null_header_value_is_dropped() {
+        let headers: ProviderHeaders = [
+            ("Authorization".to_owned(), Some("Bearer x".to_owned())),
+            ("X-Deleted".to_owned(), None),
+        ]
+        .into_iter()
+        .collect();
+        let filtered = without_deleted_headers(Some(headers)).expect("headers");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered.get("Authorization").map(String::as_str), Some("Bearer x"));
+    }
+
+    fn stub_agent() -> Agent {
+        let stream_fn: maho_agent::types::StreamFn =
+            Arc::new(|_, _, _| maho_ai::types::AssistantMessageEventStream::assistant());
+        Agent::new(maho_agent::AgentOptions { stream_fn: Some(stream_fn), ..Default::default() })
+    }
+
+    fn test_session() -> AgentSession {
+        test_session_with_stream_function(true)
+    }
+
+    fn test_session_with_stream_function(uses_default_stream_function: bool) -> AgentSession {
+        let runtime = ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
+            providers: Some(Vec::new()),
+            ..Default::default()
+        });
+        AgentSession::new(AgentSessionConfig {
+            agent: stub_agent(),
+            session_manager: SessionManager::in_memory("/tmp", None, None),
+            settings_manager: SettingsManager::from_storage(
+                Box::new(crate::settings_manager::InMemorySettingsStorage::default()),
+                false,
+            ),
+            cwd: "/tmp".to_owned(),
+            agent_dir: Some("/tmp/maho-agent".to_owned()),
+            fallback_now: None,
+            retry_random: None,
+            scoped_models: Vec::new(),
+            favorite_models: Vec::new(),
+            flag_values: BTreeMap::new(),
+            custom_tools: Vec::new(),
+            model_runtime: Some(runtime),
+            model_registry: None,
+            uses_default_stream_function: Some(uses_default_stream_function),
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: None,
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: None,
+            auto_title_sessions: None,
+        })
+        .expect("session")
+    }
+
+    #[tokio::test]
+    async fn an_unconfigured_provider_refuses_the_request() {
+        let session = test_session();
+        let error = session.get_required_request_auth(&test_model()).await.expect_err("refused");
+        assert!(error.contains("No API key found for faux"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_native_stream_function_falls_back_to_the_bare_model() {
+        let session = test_session_with_stream_function(false);
+        let auth = session.get_summarization_request_auth(&test_model()).await.expect("auth");
+        assert_eq!(auth.model.id, "faux-1");
+        assert!(auth.api_key.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_default_stream_function_requires_request_auth() {
+        let session = test_session();
+        let error = session.get_summarization_request_auth(&test_model()).await.expect_err("refused");
+        assert!(error.contains("No API key found for faux"), "{error}");
+    }
+
+    #[test]
+    fn a_session_without_model_access_is_refused() {
+        let result = AgentSession::new(AgentSessionConfig {
+            agent: stub_agent(),
+            session_manager: SessionManager::in_memory("/tmp", None, None),
+            settings_manager: SettingsManager::from_storage(
+                Box::new(crate::settings_manager::InMemorySettingsStorage::default()),
+                false,
+            ),
+            cwd: "/tmp".to_owned(),
+            agent_dir: None,
+            fallback_now: None,
+            retry_random: None,
+            scoped_models: Vec::new(),
+            favorite_models: Vec::new(),
+            flag_values: BTreeMap::new(),
+            custom_tools: Vec::new(),
+            model_runtime: None,
+            model_registry: None,
+            uses_default_stream_function: None,
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: None,
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: None,
+            auto_title_sessions: None,
+        });
+        assert!(result.is_err());
     }
 
     fn test_model() -> Model {
