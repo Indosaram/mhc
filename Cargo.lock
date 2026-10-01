@@ -1945,6 +1945,11 @@ dependencies = [
 [[package]]
 name = "maho-omo-config-resolution"
 version = "0.0.0"
+dependencies = [
+ "maho-omo-config-core",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "maho-omo-config-startup"
@@ -1957,6 +1962,10 @@ version = "0.0.0"
 [[package]]
 name = "maho-omo-fallback-architect"
 version = "0.0.0"
+dependencies = [
+ "regex",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-omo-init-deep-advisor"
@@ -1969,6 +1978,9 @@ version = "0.0.0"
 [[package]]
 name = "maho-omo-mass-ulw"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+]
 
 [[package]]
 name = "maho-omo-memory"
@@ -1977,10 +1989,20 @@ version = "0.0.0"
 [[package]]
 name = "maho-omo-native-badge"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+]
 
 [[package]]
 name = "maho-omo-onboarding"
 version = "0.0.0"
+dependencies = [
+ "jiff",
+ "maho-ext-api",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
 
 [[package]]
 name = "maho-omo-start-work-continuation"
