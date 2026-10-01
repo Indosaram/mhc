@@ -33,3 +33,17 @@ async fn native_stdio_connects_to_pinned_senpi_fixture() {
     let result=client.request("tools/call",serde_json::json!({"name":"tool_1","arguments":{"value":"native"}}),Duration::from_secs(3)).await.unwrap();assert!(result["content"].is_array());
     shutdown_mcp_transport(&connection).await.unwrap();
 }
+#[tokio::test]
+async fn native_http_connects_lists_and_calls_pinned_fixture() {
+    use std::{sync::{Arc,Mutex},time::Duration,process::Stdio};
+    use tokio::io::{AsyncBufReadExt,BufReader};
+    let mut fixture=tokio::process::Command::new("/usr/bin/node").args(["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/http-server.ts","--tools","3"]).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true).spawn().unwrap();
+    let output=fixture.stdout.take().unwrap();let mut lines=BufReader::new(output).lines();
+    let ready=tokio::time::timeout(Duration::from_secs(5),lines.next_line()).await.unwrap().unwrap().unwrap();let ready:serde_json::Value=serde_json::from_str(&ready).unwrap();
+    let root=tempfile::tempdir().unwrap();let logger=Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("http",root.path(),None).unwrap()));
+    let config=McpServerConfig {transport:Some(Transport::Http),url:Some(ready["url"].as_str().unwrap().into()),auth:Some(Auth::Disabled(false)),connect_timeout_ms:Some(5000.0),..Default::default()};
+    let connection=create_mcp_transport("http",&config,None,logger).unwrap();let client=connect_mcp_transport(&connection).await.unwrap();
+    let tools=client.request("tools/list",serde_json::json!({}),Duration::from_secs(3)).await.unwrap();assert_eq!(tools["tools"].as_array().unwrap().len(),3);
+    let result=client.request("tools/call",serde_json::json!({"name":"tool_1","arguments":{"value":"http native"}}),Duration::from_secs(3)).await.unwrap();assert!(result["content"].is_array());
+    shutdown_mcp_transport(&connection).await.unwrap();fixture.kill().await.unwrap();fixture.wait().await.unwrap();
+}

@@ -30,7 +30,7 @@ pub fn create_mcp_transport(server:&str,config:&McpServerConfig,env:Option<&BTre
 }
 impl McpTransportConnection {
     pub async fn materialize(&self)->Result<Arc<McpClient>,McpError> {
-        self.client.get_or_try_init(||McpClient::materialize_stdio(&self.server_name,&self.spec,self.logger.clone())).await.cloned()
+        self.client.get_or_try_init(||McpClient::materialize(&self.server_name,&self.spec,self.logger.clone())).await.cloned()
     }
     pub fn client(&self)->Result<Arc<McpClient>,McpError> {
         self.client.get().cloned().ok_or_else(||{
