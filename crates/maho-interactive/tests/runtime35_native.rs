@@ -500,6 +500,16 @@ async fn native_runtime_model_keys_do_not_insert_control_input() {
 }
 
 #[test]
+fn native_editor_completes_builtin_command_from_canonical_catalog() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.editor.editor.set_text("/thi"); mode.render(80); mode.handle_input_at("\t", 0);
+    assert!(mode.editor.editor.is_showing_autocomplete());
+    mode.handle_input_at("\t", 1);
+    assert!(mode.editor.editor.get_text().starts_with("/thinking"));
+}
+
+#[test]
 fn skill_invocation_replay_separates_collapsed_skill_and_user_request() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();

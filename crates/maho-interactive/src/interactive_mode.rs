@@ -58,6 +58,8 @@ impl InteractiveMode {
         let captured = submissions.clone();
         let keys = Arc::new(maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default()));
         let mut editor = CustomEditor::new(host.clone(), editor_theme(&theme), keys, CustomEditorOptions::default());
+        let commands = maho_core::slash_commands::builtin_slash_commands().into_iter().map(|command| maho_tui::autocomplete::CommandSpec::Command { name:command.name.into(), description:Some(command.description.into()), argument_hint:command.argument_hint.map(str::to_owned), get_argument_completions:None }).collect();
+        editor.editor.set_autocomplete_provider(Rc::new(RefCell::new(maho_tui::autocomplete::CombinedAutocompleteProvider::new(commands, &session.cwd(), None))));
         editor.editor.on_submit = Some(Box::new(move |text| { if !text.trim().is_empty() { captured.borrow_mut().push_back(text.trim().into()); } }));
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(maho_ext_api::Theme { name: Some(theme.name.clone()), colors: theme.resolved_colors(), ..Default::default() });
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
