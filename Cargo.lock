@@ -1540,6 +1540,8 @@ dependencies = [
  "indexmap",
  "maho-agent",
  "maho-ai",
+ "maho-ext-api",
+ "maho-tools",
  "maho-tui",
  "regex",
  "serde",

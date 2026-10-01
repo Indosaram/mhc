@@ -9,6 +9,8 @@ license = "MIT"
 maho-ai = { path = "../maho-ai" }
 maho-agent = { path = "../maho-agent" }
 maho-tui = { path = "../maho-tui" }
+maho-ext-api = { path = "../maho-ext-api" }
+maho-tools = { path = "../maho-tools" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order", "float_roundtrip"] }
 thiserror = { workspace = true }
