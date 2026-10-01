@@ -15,3 +15,5 @@ pub mod log;
 pub mod wrap;
 pub mod transport;
 pub mod transport_sdk;
+pub mod catalog;
+pub mod resources;

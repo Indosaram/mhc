@@ -31,6 +31,11 @@ async fn native_stdio_connects_to_pinned_senpi_fixture() {
     let tools=client.request("tools/list",serde_json::json!({}),Duration::from_secs(3)).await.unwrap();
     assert_eq!(tools["tools"].as_array().unwrap().iter().map(|tool|tool["name"].as_str().unwrap()).collect::<Vec<_>>(),vec!["tool_1","tool_2"]);
     let result=client.request("tools/call",serde_json::json!({"name":"tool_1","arguments":{"value":"native"}}),Duration::from_secs(3)).await.unwrap();assert!(result["content"].is_array());
+    let catalog=maho_ext_mcp::catalog::collect_tool_catalog("fixture",client.clone(),Duration::from_secs(3)).await.unwrap();assert_eq!(catalog.len(),2);assert_eq!(catalog[0].tool,"tool_1");
+    let cached=maho_ext_mcp::catalog_cache::collect_server_catalog_for_cache(&client,Duration::from_secs(3),"fixture-hash").await.unwrap();assert_eq!(cached.tools.len(),2);assert_eq!(cached.config_hash,"fixture-hash");
+    let resource=maho_ext_mcp::resources::McpResourceServer {server:"fixture".into(),client:client.clone(),agent_dir:root.path().into(),artifacts:Arc::new(maho_ext_mcp::guard::output_guard::McpOutputArtifacts::default()),output_guard:None,request_timeout:Duration::from_secs(3),resources:cached.resources};
+    let body=maho_ext_mcp::resources::read_mcp_resource_as_text(&resource,"fixture://resource/one").await.unwrap();assert_eq!(body,"resource body for fixture://resource/one");
+    let expansion=maho_ext_mcp::resources::expand_mcp_resource_mentions("Use @mcp:fixture/fixture://resource/one please",&[resource]).await.unwrap();assert!(expansion.changed);assert!(expansion.text.contains(&body));assert!(expansion.notices.is_empty());
     shutdown_mcp_transport(&connection).await.unwrap();
 }
 #[tokio::test]
