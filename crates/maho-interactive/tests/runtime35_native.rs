@@ -413,7 +413,7 @@ fn extension_terminal_input_transforms_consumes_and_unsubscribes() {
 #[tokio::test]
 async fn unintegrated_builtin_does_not_silently_become_provider_input() {
     let (mut mode, _directory) = native_mode();
-    for command in ["/model", "/compact", "/export session.html"] {
+    for command in ["/compact", "/export session.html"] {
         assert!(mode.submit(command, Default::default()).await.is_err());
     }
     assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0));
@@ -464,6 +464,15 @@ async fn native_shell_submission_renders_and_persists_without_model_turn() {
     mode.submit("!printf shell-output", Default::default()).await.expect("shell");
     assert!(mode.render(80).join("\n").contains("shell-output"));
     mode.rebuild_history(); assert!(mode.render(80).join("\n").contains("shell-output"));
+}
+
+#[tokio::test]
+async fn bare_model_selector_cancels_and_releases_native_composer() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("/model", Default::default()).await.expect("selector");
+    mode.render(80); mode.handle_input_at("\x1b", 0); mode.handle_input_at("draft", 1);
+    assert_eq!(mode.editor.editor.get_text(), "draft");
 }
 
 #[test]

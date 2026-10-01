@@ -294,6 +294,21 @@ impl InteractiveMode {
 
     fn dispatch_command(&mut self, text: &str) -> Result<bool, String> {
         let text = text.trim();
+        if text == "/model" {
+            use crate::components::model_selector::{ModelSelectorComponent, ModelEntry, ModelSelectorFavoriteOptions};
+            let current = self.session.model();
+            let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+            let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone();
+            let models = self.session.model_registry().get_available().into_iter().map(|model| ModelEntry { provider:model.provider, id:model.id, name:model.name }).collect::<Vec<_>>();
+            let selector = ModelSelectorComponent::new(&self.theme, Arc::new(maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default())), 0, &models,
+                Some(ModelEntry { provider:current.provider, id:current.id, name:current.name }),
+                Vec::new(),
+                Box::new(move |model| { submissions.borrow_mut().push_back(format!("/model {}/{}", model.provider, model.id)); selected.borrow_mut().take(); }),
+                Box::new(move || { cancelled.borrow_mut().take(); }), None,
+                ModelSelectorFavoriteOptions { favorite_model_ids:None, on_favorite_change:None }, None);
+            self.ui_dialog = Some(Box::new(selector));
+            return Ok(true);
+        }
         if text == "/thinking" {
             let (reply, _receiver) = tokio::sync::oneshot::channel();
             self.local_dialog_reply = Some(_receiver);
