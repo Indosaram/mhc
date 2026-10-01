@@ -1824,6 +1824,7 @@ name = "maho-ext-ttsr"
 version = "0.0.0"
 dependencies = [
  "fancy-regex",
+ "globset",
  "maho-ai",
  "regex",
  "serde",
