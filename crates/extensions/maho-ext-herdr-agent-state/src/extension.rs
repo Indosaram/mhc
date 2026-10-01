@@ -89,6 +89,15 @@ impl Runtime {
     }
 }
 fn now_ms() -> u128 { SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |value| value.as_millis()) }
+fn truthy(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        Some(Value::Number(value)) => value.as_f64().is_some_and(|number| number != 0.0),
+        Some(Value::String(value)) => !value.is_empty(),
+        Some(Value::Array(_) | Value::Object(_)) => true,
+    }
+}
 
 #[derive(Default)]
 pub struct HerdrAgentState;
@@ -133,9 +142,16 @@ impl Extension for HerdrAgentState {
         }
         let subscription = api.events.on("herdr:blocked", Arc::new(move |data| {
             let mut runtime = runtime.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            runtime.state.blocked(data.get("active").and_then(Value::as_bool).unwrap_or(false), data.get("label").and_then(Value::as_str));
+            runtime.state.blocked(truthy(data.get("active")), data.get("label").and_then(Value::as_str));
             runtime.publish(&delivery, false);
         }));
         subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(subscription);
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test] fn inactive_when_falsy() { for value in [Value::Null, json!(false), json!(0), json!("")] { assert!(!truthy(Some(&value))); } assert!(!truthy(None)); }
+    #[test] fn active_when_truthy() { for value in [json!(true), json!(1), json!("active"), json!([]), json!({})] { assert!(truthy(Some(&value))); } }
 }
