@@ -3,6 +3,9 @@ use std::sync::{Arc,Mutex};
 use maho_ext_api::*;
 use maho_omo_ultrawork::SessionArming;
 use maho_omo_todo_fanout_reminder::TodoFanoutReminderComponent;
+struct AnonymousSession;
+impl ToolSessionManager for AnonymousSession {fn session_id(&self)->&str{""}fn session_file(&self)->Option<&std::path::Path>{None}}
+impl SessionManager for AnonymousSession {fn get_entries(&self)->Vec<SessionEntry>{vec![]}fn get_branch(&self)->Vec<SessionEntry>{vec![]}fn get_leaf_id(&self)->Option<String>{None}fn get_session_name(&self)->Option<String>{None}}
 fn registered(armed:bool)->ExtensionApi {
     let mut arming=SessionArming::default();if armed { arming.mark_armed(Some("session")); }
     let mut api=ExtensionApi::new(LoadedExtension::new("reminder","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
@@ -23,3 +26,4 @@ async fn dispatch(api:&ExtensionApi,event:&mut ExtensionEvent)->EventResult { ap
 #[tokio::test] async fn shutdown_clears_reminder() { let api=registered(true);dispatch(&api,&mut result("init",false)).await;dispatch(&api,&mut ExtensionEvent::SessionShutdown(SessionShutdownEvent{reason:SessionReason::Quit,target_session_file:None,signal:None})).await;assert!(matches!(dispatch(&api,&mut result("init",false)).await,EventResult::ToolResult(_))); }
 #[tokio::test] async fn view_then_append_triggers() { let api=registered(true);assert!(matches!(dispatch(&api,&mut result("view",false)).await,EventResult::None));assert!(matches!(dispatch(&api,&mut result("append",false)).await,EventResult::ToolResult(_))); }
 #[tokio::test] async fn accepted_compact_clears_reminder_gate() {let api=registered(true);dispatch(&api,&mut result("init",false)).await;let mut event=ExtensionEvent::SessionCompact(SessionCompactEvent::Accepted{reason:CompactionReason::Manual,request_id:"id".into(),compaction_entry:SessionEntry{id:"entry".into(),parent_id:None,timestamp:String::new(),kind:"compaction".into(),data:JsonValue::Null},from_extension:false,will_retry:false});dispatch(&api,&mut event).await;assert!(matches!(dispatch(&api,&mut result("init",false)).await,EventResult::ToolResult(_)));}
+#[tokio::test] async fn anonymous_slot_reminds_only_once() {let mut arming=SessionArming::default();arming.mark_armed(None);let mut api=ExtensionApi::new(LoadedExtension::new("reminder","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());TodoFanoutReminderComponent{arming:Arc::new(Mutex::new(arming))}.register(&mut api);let mut ctx=support::context();ctx.session_manager=Arc::new(AnonymousSession);for expected in [true,false] {assert_eq!(matches!(api.registered.handlers[&EventKind::ToolResult][0](&mut result("init",false),&ctx).await.expect("dispatch"),EventResult::ToolResult(_)),expected);}}
