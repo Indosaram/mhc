@@ -41,3 +41,5 @@ pub mod shared_lease;
 pub mod needs_auth;
 pub mod control_inventory;
 pub mod commands;
+pub mod service;
+pub mod index;
