@@ -1,5 +1,72 @@
 use maho_ai::{types::{AssistantMessage,AssistantMessageEvent as Event,ContentBlock,TextContent,ThinkingContent,Usage,StopReason,DoneReason},model::Model,utils::{event_stream::{AssistantMessageEventStream,create_assistant_message_event_stream},diagnostics::{create_assistant_message_diagnostic,Thrown}}};
 use serde_json::{Value,json};
+pub struct StreamDeps {
+    pub cwd:std::path::PathBuf,pub agent_dir:std::path::PathBuf,pub executable:std::path::PathBuf,
+    pub store:std::sync::Arc<dyn maho_ai::auth::types::CredentialStore>,pub oauth:std::sync::Arc<dyn maho_ai::auth::types::OAuthAuth>,
+    pub settings:crate::settings::CursorCliOauthProviderSettings,pub router:std::sync::Arc<tokio::sync::Mutex<crate::session_router::SessionRouter>>,
+    pub environment:std::collections::BTreeMap<String,String>,pub now:std::sync::Arc<dyn Fn()->i64+Send+Sync>,
+}
+pub fn stream_cursor_cli(model:Model,context:maho_ai::types::Context,options:Option<maho_ai::types::SimpleStreamOptions>,deps:StreamDeps)->AssistantMessageEventStream {
+    let mut mapper=StreamMapper::new(&model,(deps.now)());let stream=mapper.stream.clone();
+    tokio::spawn(async move {
+        use maho_ai::types::{Message,UserContent,ErrorReason};
+        let text=|blocks:&[ContentBlock]|blocks.iter().filter_map(|b|match b {ContentBlock::Text(t) if !t.text.is_empty()=>Some(t.text.as_str()),_=>None}).collect::<Vec<_>>().join("\n");
+        let user_text=|content:&UserContent|match content {UserContent::Text(s)=>s.clone(),UserContent::Blocks(blocks)=>text(blocks)};
+        let signal=options.as_ref().and_then(|o|o.stream.request.signal.clone());
+        let session=options.as_ref().and_then(|o|o.stream.request.affinity_session_id.clone().or_else(||o.stream.session_id.clone())).unwrap_or_else(||crate::affinity::DEFAULT_CURSOR_AFFINITY_KEY.into());
+        let prompt=context.messages.iter().rev().find_map(|m|match m {Message::User(u)=>Some(user_text(&u.content)),_=>None});
+        let recent:Vec<_>=context.messages.iter().filter_map(|m|match m {
+            Message::User(u)=>Some(crate::session_router::RecapExchange {role:crate::session_router::ExchangeRole::User,text:user_text(&u.content)}),
+            Message::Assistant(a)=>Some(crate::session_router::RecapExchange {role:crate::session_router::ExchangeRole::Assistant,text:text(&a.content)}),_=>None,
+        }).filter(|e|!e.text.is_empty()).collect();let recent=&recent[recent.len().saturating_sub(12)..];
+        let spawn_model=crate::spawn_model::resolve_cursor_cli_spawn_model(&model,options.as_ref().and_then(|o|o.thinking_selection.as_ref()));
+        let result=async {
+            if deps.settings.explicitly_disabled {return Err(json!({"message":"disabled by settings"}));}
+            let policy=crate::guardrails::resolve_execution_policy(&deps.settings,&mut Default::default(),&deps.settings.deny_commands).map_err(|e|json!({"message":e.to_string()}))?;
+            for warning in &policy.warnings {mapper.apply(&json!({"type":"cursor_chat_restarted","message":warning.message}),&model,0);}
+            let prompt=prompt.ok_or_else(||json!({"message":"cursor-cli-oauth needs a user message to prompt the Cursor CLI"}))?;
+            let stored=deps.store.read(crate::oauth_login::PROVIDER_ID,None).await.map_err(|e|json!({"message":e.to_string()}))?;
+            let slots=stored.as_ref().and_then(maho_ai::auth::types::Credential::as_oauth).map(crate::accounts::list_accounts).transpose().map_err(|e|json!({"message":e.to_string()}))?.unwrap_or_default();
+            if !crate::oauth_login::lane_enabled(&deps.settings,slots.len()) {return Err(json!({"message":"disabled by settings"}));}
+            if slots.is_empty() {return Err(json!({"message":"no accounts: run /login cursor-cli-oauth"}));}
+            let sent_tokens=std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));let emitted_tokens=sent_tokens.clone();
+            let outcome=crate::failover::run_failover(crate::failover::FailoverOptions {store:deps.store.as_ref(),provider_id:crate::oauth_login::PROVIDER_ID,affinity:crate::affinity::CursorAffinityOptions {session_id:Some(&session),pinned_account:deps.settings.pinned_account.as_deref(),..Default::default()}},|slot,_| {
+                let (sender,receiver)=tokio::sync::mpsc::unbounded_channel();let router=deps.router.clone();let session=session.clone();let prompt=prompt.clone();let recent=recent.iter().map(|e|crate::session_router::RecapExchange {role:match e.role {crate::session_router::ExchangeRole::User=>crate::session_router::ExchangeRole::User,crate::session_router::ExchangeRole::Assistant=>crate::session_router::ExchangeRole::Assistant},text:e.text.clone()}).collect::<Vec<_>>();
+                let model=spawn_model.clone();let policy=policy.clone();let cwd=deps.cwd.clone();let agent_dir=deps.agent_dir.clone();let executable=deps.executable.clone();let environment=deps.environment.clone();let signal=signal.clone();let now=deps.now.clone();let tokens=sent_tokens.clone();let store=deps.store.clone();let oauth=deps.oauth.clone();
+                let session_policy=crate::session_router::SessionPolicy {resume:deps.settings.resume_mode==crate::settings::ResumeMode::Auto,recap_on_model_switch:deps.settings.context_recap_on_model_switch,..Default::default()};
+                tokio::spawn(async move {
+                    let mut slot=slot;
+                    let refreshed=async {
+                        let current=store.read(crate::oauth_login::PROVIDER_ID,None).await?;
+                        if let Some(credential)=current.as_ref().and_then(maho_ai::auth::types::Credential::as_oauth) {
+                            if let Some(current)=crate::accounts::list_accounts(credential)?.into_iter().find(|s|s.name==slot.name) {slot=current;}
+                            if (now() as f64)>=slot.expires {
+                                let abort=signal.clone().unwrap_or_else(||maho_ai::utils::abort::AbortController::new().signal());
+                                let refreshed=oauth.refresh(credential,&abort).await?;
+                                store.modify(crate::oauth_login::PROVIDER_ID,Box::new(move |_|Box::pin(async move {Ok(Some(maho_ai::auth::types::Credential::OAuth(refreshed)))})),None).await?;
+                                let current=store.read(crate::oauth_login::PROVIDER_ID,None).await?;
+                                slot=current.as_ref().and_then(maho_ai::auth::types::Credential::as_oauth).map(crate::accounts::list_accounts).transpose()?.unwrap_or_default().into_iter().find(|s|s.name==slot.name).ok_or_else(||anyhow::anyhow!("cursor-cli-oauth account '{}' disappeared during token refresh",slot.name))?;
+                            }
+                        }
+                        Ok::<(),anyhow::Error>(())
+                    }.await;
+                    if let Err(error)=refreshed {let _=sender.send(Err(json!({"message":error.to_string()})));return;}
+                    let result=router.lock().await.run_turn(crate::session_router::TurnInput {session:&session,account:&slot.name,prompt:&prompt,model:Some(&model),recent:&recent,policy:&session_policy},|attempt| {
+                        tokens.store(maho_core::compaction::compaction::estimate_tokens(&json!({"role":"user","content":attempt.prompt,"timestamp":now()})),std::sync::atomic::Ordering::Relaxed);
+                        let receiver=spawn_attempt(SpawnAttemptInput {executable:executable.clone(),cwd:cwd.clone(),agent_dir:agent_dir.clone(),slot:slot.clone(),attempt,model:model.clone(),policy:policy.clone(),environment:environment.clone(),signal:signal.clone()});async move {Ok(receiver)}
+                    },||now(),|input|crate::errors::classify_cursor_cli_error(Some(input)).kind,|event|{let _=sender.send(Ok(event));}).await;
+                    if let Err(error)=result {let _=sender.send(Err(error));}
+                });async move {Ok(receiver)}
+            },||(deps.now)() as f64,|event|mapper.apply(&event,&model,emitted_tokens.load(std::sync::atomic::Ordering::Relaxed))).await;
+            outcome.map_err(|error|match error {crate::failover::RunError::Attempt(e)=>e.original,crate::failover::RunError::Store(e)=>json!({"message":e.to_string()}),crate::failover::RunError::AllBlocked(e)=>json!({"message":e.to_string()})})
+        }.await;
+        match result {Ok(())=>mapper.finish(),Err(error)=>{
+            mapper.close_open();let aborted=signal.as_ref().is_some_and(maho_ai::utils::abort::AbortSignal::aborted)||error["kind"]=="aborted";
+            mapper.output.stop_reason=if aborted {StopReason::Aborted} else {StopReason::Error};mapper.output.error_message=Some(error["message"].as_str().or_else(||error["stderr"].as_str()).unwrap_or("Cursor CLI turn failed").into());
+            mapper.stream.push(Event::Error {reason:if aborted {ErrorReason::Aborted} else {ErrorReason::Error},error:mapper.output.clone()});mapper.stream.end(None);
+        }}
+    });stream
+}
 pub struct SpawnAttemptInput {
     pub executable:std::path::PathBuf,pub cwd:std::path::PathBuf,pub agent_dir:std::path::PathBuf,pub slot:crate::accounts::CursorCliAccountSlot,
     pub attempt:crate::session_router::SessionAttempt,pub model:String,pub policy:crate::guardrails::ExecutionDecision,
