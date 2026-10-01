@@ -79,7 +79,13 @@ impl ToolExecutionRenderer {
     }
 
     pub fn has_result_renderer(&self) -> bool {
-        self.custom.is_some() || self.built_in.is_some()
+        // senpi's `hasResultRenderer` asks the renderer the card actually chose: the definition's
+        // own, else the built-in's.
+        match (&self.custom, &self.built_in) {
+            (Some(custom), _) => custom.borrow().has_result_renderer(),
+            (None, Some(built_in)) => built_in.borrow().has_result_renderer(),
+            (None, None) => false,
+        }
     }
 
     pub fn render_shell(&self) -> RenderShell {

@@ -69,7 +69,7 @@ fn collapse_fallback_result(
     let remaining = lines.len() - FALLBACK_PREVIEW_LINES;
     let hint = crate::components::keybinding_hints::key_hint("app.tools.expand", "to expand", theme);
     let text = format!(
-        "{}{}{}{}",
+        "{}{} {}{}",
         lines[..FALLBACK_PREVIEW_LINES].join("\n"),
         theme.fg(ThemeColor::Muted, &format!("\n... ({remaining} more lines,")),
         hint,

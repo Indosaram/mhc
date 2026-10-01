@@ -59,6 +59,12 @@ pub trait ToolRenderers {
     fn rebuild_call_after_result(&self) -> bool {
         false
     }
+    /// senpi's `renderResult` is optional, so a definition can draw its call but leave the result to
+    /// the plain fallback. A renderer that has no result half reports `false`, which is what makes
+    /// the card collapse a long fallback result to the preview budget.
+    fn has_result_renderer(&self) -> bool {
+        true
+    }
     fn render_call(&mut self, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent>;
     fn render_result(
         &mut self,
