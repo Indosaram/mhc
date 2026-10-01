@@ -7,6 +7,9 @@ fn exec_returning(output: &'static str) -> TmuxExecFile {
     Arc::new(move |_file: &str, _args: &[String]| Ok(output.to_string()))
 }
 
+type RecordedFileCalls = Arc<Mutex<Vec<(String, Vec<String>)>>>;
+type RecordedArgLists = Arc<Mutex<Vec<Vec<String>>>>;
+
 fn detected(state: &TmuxImageState) -> &TmuxBaseState {
     match state {
         TmuxImageState::Detected { base, .. } => base,
@@ -36,7 +39,7 @@ fn normalizes_historical_option_values_by_support_tier() {
 
 #[test]
 fn uses_exec_file_compatible_argv_without_shell_quoting() {
-    let calls: Arc<Mutex<Vec<(String, Vec<String>)>>> = Arc::new(Mutex::new(Vec::new()));
+    let calls: RecordedFileCalls = Arc::new(Mutex::new(Vec::new()));
     let recorder = Arc::clone(&calls);
     let exec_file: TmuxExecFile = Arc::new(move |file: &str, args: &[String]| {
         recorder
@@ -149,7 +152,7 @@ fn omits_cell_dimensions_unless_both_are_positive_integers() {
 
 #[test]
 fn ignores_a_tmux_pane_that_is_not_a_pane_id() {
-    let calls: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    let calls: RecordedArgLists = Arc::new(Mutex::new(Vec::new()));
     let recorder = Arc::clone(&calls);
     let exec_file: TmuxExecFile = Arc::new(move |_file: &str, args: &[String]| {
         recorder.lock().unwrap().push(args.to_vec());

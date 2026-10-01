@@ -959,9 +959,7 @@ impl Lexer {
             list_raw.push_str(items.last().map(|t| t.raw()).unwrap_or(""));
         }
 
-        let Some(last) = items.last_mut() else {
-            return None;
-        };
+        let last = items.last_mut()?;
         let trimmed_raw = last.raw().trim_end().to_string();
         let trimmed_text = match last {
             Token::ListItem { text, .. } => text.trim_end().to_string(),
@@ -1034,14 +1032,12 @@ impl Lexer {
                     continue;
                 };
                 *text = new_text;
-                if let Some(first) = tokens.first_mut() {
-                    match first {
-                        Token::Text { raw, text, .. } | Token::Paragraph { raw, text, .. } => {
-                            *raw = new_first_raw;
-                            *text = new_first_text;
-                        }
-                        _ => {}
-                    }
+                if let Some(
+                    Token::Text { raw, text, .. } | Token::Paragraph { raw, text, .. },
+                ) = tokens.first_mut()
+                {
+                    *raw = new_first_raw;
+                    *text = new_first_text;
                 }
             }
 
