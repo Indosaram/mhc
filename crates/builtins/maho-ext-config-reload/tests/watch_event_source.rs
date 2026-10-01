@@ -1,6 +1,23 @@
 use maho_ext_config_reload::watch_event_source::subscribe;
 use std::{path::PathBuf, sync::{Arc, mpsc}, time::Duration};
 #[test]
+fn isolated_sources_keep_other_registry_alive_after_close() {
+    use maho_ext_config_reload::watch_event_source::FsWatchEventSource;
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let source = FsWatchEventSource::default();
+    let independent = FsWatchEventSource::default();
+    let (sender, receiver) = mpsc::channel();
+    let mut one = source.subscribe(first.path().into(), false, Arc::new(|_, _| {}), Arc::new(|error, _| panic!("{error}"))).unwrap();
+    let mut two = independent.subscribe(second.path().into(), false, Arc::new(move |_, filename| { if filename == Some("settings.json".into()) { sender.send(()).unwrap(); } }), Arc::new(|error, _| panic!("{error}"))).unwrap();
+    one.ready().unwrap();
+    two.ready().unwrap();
+    one.close().unwrap();
+    std::fs::write(second.path().join("settings.json"), "{}").unwrap();
+    receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+    two.close().unwrap();
+}
+#[test]
 fn native_watch_delivers_creation_and_joins_teardown() {
     let root = tempfile::tempdir().unwrap();
     let (sender, receiver) = mpsc::channel();

@@ -8,12 +8,19 @@ enum Command { Watch(u64, Subscription), Unwatch(u64), Event(u64, notify::Result
 struct Worker { sender: mpsc::Sender<Command>, join: thread::JoinHandle<()> }
 #[derive(Default)]
 struct Registry { worker: Option<Worker>, count: usize, next_id: u64 }
-static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
-pub struct WatchSubscription { id: u64, active: Arc<AtomicBool>, closed: bool }
+static REGISTRY: OnceLock<Arc<Mutex<Registry>>> = OnceLock::new();
+#[derive(Clone, Default)]
+pub struct FsWatchEventSource { registry: Arc<Mutex<Registry>> }
+impl FsWatchEventSource {
+    pub fn subscribe(&self, path: PathBuf, recursive: bool, listener: WatchEventListener, on_error: WatchErrorListener) -> Result<WatchSubscription, String> {
+        subscribe_in(Arc::clone(&self.registry), path, recursive, listener, on_error)
+    }
+}
+pub struct WatchSubscription { id: u64, active: Arc<AtomicBool>, closed: bool, registry: Arc<Mutex<Registry>> }
 impl WatchSubscription {
     pub fn ready(&self) -> Result<(), String> {
         let (sender, receiver) = mpsc::channel();
-        let registry = REGISTRY.get_or_init(Mutex::default).lock().map_err(|error| error.to_string())?;
+        let registry = self.registry.lock().map_err(|error| error.to_string())?;
         if let Some(worker) = &registry.worker { worker.sender.send(Command::Barrier(sender)).map_err(|error| error.to_string())?; }
         drop(registry);
         receiver.recv_timeout(std::time::Duration::from_secs(5)).map_err(|error| error.to_string())
@@ -23,7 +30,7 @@ impl WatchSubscription {
         self.closed = true;
         self.active.store(false, Ordering::SeqCst);
         let worker = {
-            let mut registry = REGISTRY.get_or_init(Mutex::default).lock().map_err(|error| error.to_string())?;
+            let mut registry = self.registry.lock().map_err(|error| error.to_string())?;
             if let Some(worker) = &registry.worker { worker.sender.send(Command::Unwatch(self.id)).map_err(|error| error.to_string())?; }
             registry.count -= 1;
             if registry.count == 0 { registry.worker.take() } else { None }
@@ -37,7 +44,10 @@ impl WatchSubscription {
 }
 impl Drop for WatchSubscription { fn drop(&mut self) { if let Err(error) = self.close() { eprintln!("{error}"); } } }
 pub fn subscribe(path: PathBuf, recursive: bool, listener: WatchEventListener, on_error: WatchErrorListener) -> Result<WatchSubscription, String> {
-    let mut registry = REGISTRY.get_or_init(Mutex::default).lock().map_err(|error| error.to_string())?;
+    subscribe_in(Arc::clone(REGISTRY.get_or_init(|| Arc::new(Mutex::default()))), path, recursive, listener, on_error)
+}
+fn subscribe_in(owner: Arc<Mutex<Registry>>, path: PathBuf, recursive: bool, listener: WatchEventListener, on_error: WatchErrorListener) -> Result<WatchSubscription, String> {
+    let mut registry = owner.lock().map_err(|error| error.to_string())?;
     if registry.worker.is_none() {
         let (sender, receiver) = mpsc::channel();
         let event_sender = sender.clone();
@@ -50,7 +60,8 @@ pub fn subscribe(path: PathBuf, recursive: bool, listener: WatchEventListener, o
     let subscription = Subscription { path, recursive, active: Arc::clone(&active), listener, on_error };
     if let Some(worker) = &registry.worker { worker.sender.send(Command::Watch(id, subscription)).map_err(|error| error.to_string())?; }
     registry.count += 1;
-    Ok(WatchSubscription { id, active, closed: false })
+    drop(registry);
+    Ok(WatchSubscription { id, active, closed: false, registry: owner })
 }
 fn run_worker(receiver: mpsc::Receiver<Command>, sender: mpsc::Sender<Command>) {
     let mut subscriptions: BTreeMap<u64, (Subscription, RecommendedWatcher)> = BTreeMap::new();
