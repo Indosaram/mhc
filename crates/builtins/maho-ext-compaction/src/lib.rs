@@ -22,3 +22,8 @@ pub mod openai_remote_schema;
 pub mod fallback_failed_turn_normalization;
 pub mod orchestration;
 pub mod retained_message_safety;
+pub mod emergency_prune;
+pub mod model_usability_budget;
+pub mod switch_admission;
+pub mod resume_admission;
+pub mod resume_slice;
