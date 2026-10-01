@@ -1631,6 +1631,9 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-ferryx-agent-state"
 version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-goal"
@@ -1715,6 +1718,9 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-orca-prefill"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+]
 
 [[package]]
 name = "maho-ext-orca-titlebar-spinner"
