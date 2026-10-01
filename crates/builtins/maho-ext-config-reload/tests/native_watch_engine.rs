@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 #[tokio::test]
 async fn async_native_events_use_signal_without_polling() {
     let root = tempfile::tempdir().unwrap();
-    let mut engine = NativeWatchEngine::with_debounce(vec![WatchTarget { id: "fixture".into(), kind: WatchKind::DirRecursive, path: root.path().into(), allow_list: None, filter: None }], Arc::new(|error, _| panic!("{error}")), Duration::ZERO).unwrap();
+    let mut engine = NativeWatchEngine::with_source(vec![WatchTarget { id: "fixture".into(), kind: WatchKind::DirRecursive, path: root.path().into(), allow_list: None, filter: None }], Arc::new(|error, _| panic!("{error}")), Duration::ZERO, maho_ext_config_reload::watch_event_source::FsWatchEventSource::default()).unwrap();
     let path = root.path().join("settings.json");
     let staged = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(staged.path(), "{}").unwrap();

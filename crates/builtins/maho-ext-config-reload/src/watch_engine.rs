@@ -1,6 +1,6 @@
 use std::{collections::{BTreeMap, BTreeSet}, path::{Path, PathBuf}, sync::Arc};
 use sha2::{Digest, Sha256};
-use super::watch_event_source::{subscribe, WatchErrorListener, WatchSubscription};
+use super::watch_event_source::{FsWatchEventSource, WatchErrorListener, WatchSubscription};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum WatchKind { Dir, DirRecursive }
@@ -25,15 +25,18 @@ pub struct RealChange { pub changed_paths: Vec<PathBuf>, pub created: Vec<PathBu
 #[derive(Default)]
 struct ScanResult { hashes: BTreeMap<PathBuf, String>, allowed_directories: BTreeSet<PathBuf>, scanned_directories: BTreeSet<PathBuf> }
 pub struct ConfigReloadWatchEngine { targets: Vec<WatchTarget>, states: Vec<ScanResult>, closed: bool, on_error: Option<WatchErrorListener>, hash_file: HashFile }
-pub struct NativeWatchEngine { pub engine: ConfigReloadWatchEngine, subscriptions: BTreeMap<PathBuf, WatchSubscription>, receiver: std::sync::mpsc::Receiver<Option<PathBuf>>, sender: std::sync::mpsc::Sender<Option<PathBuf>>, on_error: WatchErrorListener, debounce: std::time::Duration, signal: Arc<tokio::sync::Notify> }
+pub struct NativeWatchEngine { pub engine: ConfigReloadWatchEngine, subscriptions: BTreeMap<PathBuf, WatchSubscription>, receiver: std::sync::mpsc::Receiver<Option<PathBuf>>, sender: std::sync::mpsc::Sender<Option<PathBuf>>, on_error: WatchErrorListener, debounce: std::time::Duration, signal: Arc<tokio::sync::Notify>, source: FsWatchEventSource }
 impl NativeWatchEngine {
     pub fn new(targets: Vec<WatchTarget>, on_error: WatchErrorListener) -> Result<Self, String> {
         Self::with_debounce(targets, on_error, std::time::Duration::from_millis(200))
     }
     pub fn with_debounce(targets: Vec<WatchTarget>, on_error: WatchErrorListener, debounce: std::time::Duration) -> Result<Self, String> {
+        Self::with_source(targets, on_error, debounce, FsWatchEventSource::shared())
+    }
+    pub fn with_source(targets: Vec<WatchTarget>, on_error: WatchErrorListener, debounce: std::time::Duration, source: FsWatchEventSource) -> Result<Self, String> {
         let engine = ConfigReloadWatchEngine::with_error_listener(targets, Arc::clone(&on_error)).map_err(|error| error.to_string())?;
         let (sender, receiver) = std::sync::mpsc::channel();
-        let mut state = Self { engine, subscriptions: BTreeMap::new(), receiver, sender, on_error, debounce, signal: Arc::new(tokio::sync::Notify::new()) };
+        let mut state = Self { engine, subscriptions: BTreeMap::new(), receiver, sender, on_error, debounce, signal: Arc::new(tokio::sync::Notify::new()), source };
         state.reconcile()?;
         Ok(state)
     }
@@ -47,7 +50,7 @@ impl NativeWatchEngine {
             let signal = Arc::clone(&self.signal);
             let directory = path.clone();
             let targets: Vec<_> = self.engine.targets.iter().map(|target| (target.path.clone(), target.kind, target.allow_list.clone(), target.filter.clone())).collect();
-            let subscription = subscribe(path.clone(), false, Arc::new(move |_, filename| {
+            let subscription = self.source.subscribe(path.clone(), false, Arc::new(move |_, filename| {
                 let mut affected = None;
                 if let Some(filename) = filename {
                     let Some(filename) = normalize_relative_path(&filename) else { return; };

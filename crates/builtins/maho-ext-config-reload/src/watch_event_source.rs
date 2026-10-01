@@ -12,6 +12,7 @@ static REGISTRY: OnceLock<Arc<Mutex<Registry>>> = OnceLock::new();
 #[derive(Clone, Default)]
 pub struct FsWatchEventSource { registry: Arc<Mutex<Registry>> }
 impl FsWatchEventSource {
+    pub fn shared() -> Self { Self { registry: Arc::clone(REGISTRY.get_or_init(|| Arc::new(Mutex::default()))) } }
     pub fn subscribe(&self, path: PathBuf, recursive: bool, listener: WatchEventListener, on_error: WatchErrorListener) -> Result<WatchSubscription, String> {
         subscribe_in(Arc::clone(&self.registry), path, recursive, listener, on_error)
     }
@@ -44,7 +45,7 @@ impl WatchSubscription {
 }
 impl Drop for WatchSubscription { fn drop(&mut self) { if let Err(error) = self.close() { eprintln!("{error}"); } } }
 pub fn subscribe(path: PathBuf, recursive: bool, listener: WatchEventListener, on_error: WatchErrorListener) -> Result<WatchSubscription, String> {
-    subscribe_in(Arc::clone(REGISTRY.get_or_init(|| Arc::new(Mutex::default()))), path, recursive, listener, on_error)
+    FsWatchEventSource::shared().subscribe(path, recursive, listener, on_error)
 }
 fn subscribe_in(owner: Arc<Mutex<Registry>>, path: PathBuf, recursive: bool, listener: WatchEventListener, on_error: WatchErrorListener) -> Result<WatchSubscription, String> {
     let mut registry = owner.lock().map_err(|error| error.to_string())?;
