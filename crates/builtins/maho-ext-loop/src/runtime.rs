@@ -7,6 +7,15 @@ pub struct LoopRuntime {
     store_touched:bool,
 }
 impl LoopRuntime {
+    pub fn sync_timers(&self,timers:&mut crate::index::NodeTimerPort,now:f64,on_fire:std::sync::Arc<dyn Fn(LoopId)+Send+Sync>)->Vec<tokio::task::JoinHandle<()>> {
+        let mut retired=Vec::new();
+        for key in timers.keys() { if !self.scheduler.armed_timers.contains_key(&key)&&let Some(handle)=timers.cancel(&key) { retired.push(handle); } }
+        for (id,due) in &self.scheduler.armed_timers {
+            let callback=on_fire.clone(); let fired=id.clone();
+            if let Some(handle)=timers.arm(id,*due,now,move ||callback(fired)) { retired.push(handle); }
+        }
+        retired
+    }
     pub fn new(session_id:&str,initial:Option<LoopState>,env:&BTreeMap<String,String>)->Self {
         let store_touched=initial.is_some();
         Self { scheduler:LoopScheduler::new(session_id,initial,env),attribution:Default::default(),deferred_dispatches:Vec::new(),delivery_states:BTreeMap::new(),ended_with_error:BTreeSet::new(),store_failure:None,store_touched }
@@ -54,6 +63,18 @@ impl LoopRuntime {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test(start_paused=true)] async fn scheduler_timer_reconciliation_fires_and_shutdown_cancels() {
+        let mut runtime=LoopRuntime::new("s",None,&Default::default()); let mut timers=crate::index::NodeTimerPort::new();
+        runtime.scheduler.armed_timers.insert("a".into(),1000.0);
+        let (send,mut receive)=tokio::sync::mpsc::unbounded_channel(); let callback=std::sync::Arc::new(move |id| { send.send(id).unwrap(); });
+        assert!(runtime.sync_timers(&mut timers,0.0,callback.clone()).is_empty());
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(2),receive.recv()).await.unwrap().unwrap(),"a");
+        runtime.scheduler.armed_timers.insert("a".into(),2000.0);
+        for worker in runtime.sync_timers(&mut timers,1000.0,callback.clone()) { worker.await.unwrap(); }
+        runtime.shutdown(1000.0);
+        for worker in runtime.sync_timers(&mut timers,1000.0,callback) { assert!(worker.await.unwrap_err().is_cancelled()); }
+        assert!(receive.recv().await.is_none());
+    }
     #[tokio::test] async fn prepared_delivery_overlay_persists_and_shutdown_suspends() {
         let dir=tempfile::tempdir().unwrap(); let reference=LoopStoreRef { base_dir:dir.path().into(),session_id:"s".into() }; let mut runtime=LoopRuntime::new("s",None,&Default::default());
         crate::creation::create_bare(&mut runtime.scheduler,crate::index::StartBareRequest { original_args:String::new(),interval:None },"a".into(),0.0,false);

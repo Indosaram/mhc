@@ -58,6 +58,7 @@ pub struct NodeTimerPort {
 impl Default for NodeTimerPort { fn default()->Self { Self::new() } }
 impl NodeTimerPort {
     pub fn new()->Self { Self { handles:BTreeMap::new(),generations:BTreeMap::new() } }
+    pub fn keys(&self)->Vec<String> { self.handles.keys().cloned().collect() }
     pub fn cancel(&mut self,key:&str)->Option<tokio::task::JoinHandle<()>> {
         let handle=self.handles.remove(key); if let Some(handle)=&handle { handle.abort(); }
         self.generations.entry(key.into()).or_default().fetch_add(1,Ordering::SeqCst);
