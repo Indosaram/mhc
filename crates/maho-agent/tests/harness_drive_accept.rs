@@ -448,3 +448,37 @@ async fn acceptance_after_close_returns_expected_closed_rejection() {
     assert_eq!(lane.accept_prompt(PromptInput::Text { text: "late".into(), images: vec![] }, None, settings(), &BACKGROUND_CONTEXT).await.unwrap(), Err(AdmissionError::Closed { message: "AgentHarness is closed".into() }));
     assert!(lane.state().operation.is_none());
 }
+
+#[tokio::test]
+async fn acceptance_commits_exact_write_families_and_event_context() {
+    use maho_agent::harness::session::testing::InstrumentedStorage;
+    use maho_agent::harness::context::{create_context_key, with_context_value};
+    static KEY: maho_agent::harness::context::ContextKey<String> = create_context_key("accept.context");
+    let storage = Arc::new(InstrumentedStorage::new(Arc::new(MemoryStorage::new(MemoryStorageOptions::default()))));
+    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "instrumented-accept".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None }, storage.clone(), StorageBackedSessionOptions::default()));
+    session.attach();
+    let harness = create_agent_harness(session, LaneConfiguration { model: LaneModelRef { provider: "test".into(), model_id: "model".into() }, thinking_level: maho_ai::types::ModelThinkingLevel::Off, active_tool_names: vec![] }, &BACKGROUND_CONTEXT).await.unwrap();
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    storage.clear_commit_attempts();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut subscriptions = vec![];
+    for kind in ["run_start", "message_start", "message_end", "entry_added"] {
+        let seen = seen.clone();
+        subscriptions.push(lane.events.on(kind, Arc::new(move |event, context| {
+            let seen = seen.clone();
+            Box::pin(async move { seen.lock().unwrap().push((event.event_type().to_owned(), context.value(&KEY))); })
+        })));
+    }
+    let context = with_context_value(&KEY, "source".into(), &BACKGROUND_CONTEXT);
+    let messages = [10, 11].into_iter().map(|timestamp| maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::User(maho_ai::types::UserMessage { content: maho_ai::types::UserContent::Text(timestamp.to_string()), timestamp }))).collect();
+    lane.accept_prompt(PromptInput::Messages(messages), Some("operation".into()), settings(), &context).await.unwrap().unwrap();
+    let commits = storage.get_commit_attempts();
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0].len(), 6);
+    assert!(matches!(commits[0][0], Write::Entry(_)));
+    assert!(matches!(commits[0][1], Write::Entry(_)));
+    assert!(commits[0][2..].iter().all(|write| matches!(write, Write::Value(_))));
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.iter().map(|(event, _)| event.as_str()).collect::<Vec<_>>(), vec!["run_start", "message_start", "message_end", "entry_added", "message_start", "message_end", "entry_added"]);
+    assert!(seen.iter().all(|(_, value)| value.as_deref() == Some("source")));
+}
