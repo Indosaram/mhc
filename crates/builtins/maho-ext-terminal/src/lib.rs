@@ -19,4 +19,5 @@ pub mod durable_file;
 pub mod monitor_file_watch;
 pub mod durable_command;
 pub mod file_monitor;
+pub mod monitor_notify;
 pub use extension::TerminalExtension;
