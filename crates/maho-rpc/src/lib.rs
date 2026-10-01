@@ -47,3 +47,4 @@ pub mod supervisor_route;
 pub mod session_worker_signals;
 pub mod session_worker_credit;
 pub mod socket_event_fanout;
+pub mod session_event_fanout;
