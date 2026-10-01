@@ -117,6 +117,36 @@ pub fn get_debug_log_path() -> String {
     join(&get_agent_dir(), &format!("{}-debug.log", app_name()))
 }
 
+/// `getPackageDir`: the `PACKAGE_DIR` override, else the running executable's directory.
+pub fn get_package_dir() -> String {
+    if let Some(env_dir) = env_value("PACKAGE_DIR", &current_env()).filter(|value| !value.is_empty()) {
+        return normalize_path(&env_dir, &crate::paths::PathInputOptions::default());
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|parent| parent.to_string_lossy().into_owned()))
+        .unwrap_or_default()
+}
+
+/// `getReadmePath`.
+pub fn get_readme_path() -> String {
+    resolve_in_package("README.md")
+}
+
+/// `getDocsPath`.
+pub fn get_docs_path() -> String {
+    resolve_in_package("docs")
+}
+
+/// `getExamplesPath`.
+pub fn get_examples_path() -> String {
+    resolve_in_package("examples")
+}
+
+fn resolve_in_package(child: &str) -> String {
+    crate::paths::lexical_resolve(&Path::new(&get_package_dir()).join(child).to_string_lossy())
+}
+
 /// `homedir()`.
 pub fn home_dir() -> String {
     std::env::var("HOME").ok().filter(|value| !value.is_empty()).unwrap_or_else(|| ".".to_owned())

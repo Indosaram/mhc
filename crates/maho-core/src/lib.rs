@@ -20,23 +20,36 @@
 
 pub mod auth_storage;
 pub mod brand;
+pub mod compaction;
 pub mod config;
 pub mod credential_accounts;
 pub mod credential_pool;
 pub mod defaults;
 pub mod diagnostics;
+pub mod discovered_resource_scope;
+pub mod dynamic_prompt;
 pub mod event_bus;
 pub mod exec;
+pub mod frontmatter;
+pub mod keybindings;
 pub mod lockfile_policy;
 pub mod messages;
 pub mod nearest_parent_config;
 pub mod output_guard;
+pub mod package_manager;
 pub mod paths;
+pub mod prompt_templates;
 pub mod resolve_config_value;
+pub mod resource_loader;
 pub mod session_manager;
 pub mod session_resident_store;
 pub mod session_title_generator;
 pub mod settings_manager;
+pub mod skill_discovery;
+pub mod skill_invocation;
+pub mod skills;
+pub mod source_info;
+pub mod system_prompt;
 pub mod text;
 pub mod trust_manager;
 
@@ -68,5 +81,26 @@ pub use session_resident_store::{
     RESIDENT_STRING_PREFIX, ResidentStringStore, ResidentStringStoreOptions, ResidentStoreStats,
 };
 pub use session_title_generator::{humanize_provider_error, parse_session_title, should_skip_session_title};
+pub use prompt_templates::{
+    LoadPromptTemplatesOptions, PromptTemplate, PromptTemplateExpansion, expand_prompt_template,
+    expand_prompt_template_with_metadata, load_prompt_templates, parse_command_args, substitute_args,
+};
+pub use source_info::{
+    SourceInfo, SourceOrigin, SourceScope, SyntheticSourceInfoOptions, create_source_info,
+    create_synthetic_source_info,
+};
+pub use skills::{
+    FileReadTool, LoadSkillsFromDirOptions, LoadSkillsOptions, LoadSkillsResult, MAX_DESCRIPTION_LENGTH,
+    MAX_NAME_LENGTH, Skill, format_skills_for_prompt, load_skill_from_file, load_skills,
+    load_skills_from_dir, validate_description, validate_name,
+};
+pub use skill_invocation::{
+    MAX_SKILL_EXPANSIONS_PER_PROMPT, MAX_SKILL_INVOCATION_TOKENS_PER_PROMPT, ParsedSkillBlock,
+    ParsedSkillBlockSkill, SkillInvocationPromptSkill, SkillInvocationSyntax, SkillInvocationToken,
+    format_skill_invocation_prompt, parse_skill_block, parse_skill_invocation_tokens,
+    remove_skill_invocation_tokens,
+};
+pub use skill_discovery::{SkillDiscoveryMode, collect_auto_skill_entries, collect_skill_entries, read_skill_markdown_source};
+pub use system_prompt::{BuildSystemPromptOptions, ContextFile, build_system_prompt, get_eval_only_grep_guideline};
 pub use settings_manager::{Settings, SettingsManager, SettingsScope, parse_settings_json};
 pub use trust_manager::{ProjectTrustDecision, ProjectTrustStore, ProjectTrustUpdate};
