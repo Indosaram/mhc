@@ -25,3 +25,6 @@ pub mod host_daemon_paths;
 pub mod host_daemon_state;
 pub mod host_process_table;
 pub mod host_process_metrics;
+pub mod socket_ownership;
+pub mod host_supersession;
+pub mod host_memory_sampler;
