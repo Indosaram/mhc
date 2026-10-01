@@ -64,6 +64,8 @@ pub fn track_outcome(
         let outcome = handle.wait_for_outcome();
         settle_outcome(ports.as_ref(), &task_id, &handle, &model, epoch, outcome);
         ports.outcome_processed();
+        #[cfg(test)]
+        test_barrier::note_consume(Arc::as_ptr(&handle) as *const () as usize);
     });
 }
 
@@ -164,6 +166,7 @@ pub(crate) mod test_barrier {
     struct Entry {
         issued: u64,
         consumed: u64,
+        finished: bool,
     }
 
     struct State {
@@ -187,12 +190,17 @@ pub(crate) mod test_barrier {
     }
 
     pub(crate) fn note_issue(ptr: usize) {
-        lock().entry(ptr).or_default().issued += 1;
+        let mut entries = lock();
+        let entry = entries.entry(ptr).or_default();
+        if !entry.finished { entry.issued += 1; }
         state().cv.notify_all();
     }
 
     pub(crate) fn note_consume(ptr: usize) {
-        lock().entry(ptr).or_default().consumed += 1;
+        let mut entries = lock();
+        let entry = entries.entry(ptr).or_default();
+        entry.consumed = entry.issued;
+        entry.finished = true;
         state().cv.notify_all();
     }
 
@@ -211,8 +219,12 @@ pub(crate) mod test_barrier {
         {
             entries = state()
                 .cv
-                .wait(entries)
-                .unwrap_or_else(PoisonError::into_inner);
+                .wait_timeout(entries, std::time::Duration::from_secs(5))
+                .map(|(entries, timeout)| {
+                    assert!(!timeout.timed_out(), "outcome watcher never applied handle {ptr}");
+                    entries
+                })
+                .unwrap_or_else(|error| error.into_inner().0);
         }
     }
 }

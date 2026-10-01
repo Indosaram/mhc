@@ -300,6 +300,8 @@ struct LockHolder {
 /// spread: lets a test make the next checkpoint write fail once without a real I/O fault.
 #[cfg(test)]
 type CheckpointHook = Arc<dyn Fn(&Value) -> Result<(), DagStoreError> + Send + Sync>;
+#[cfg(test)]
+type AppendHook = Arc<dyn Fn(&DagRunEvent) -> Result<(), DagStoreError> + Send + Sync>;
 
 pub struct DagFileStore {
     pub state_dir: PathBuf,
@@ -315,6 +317,8 @@ pub struct DagFileStore {
     retention_days: u64,
     #[cfg(test)]
     checkpoint_hook: Mutex<Option<CheckpointHook>>,
+    #[cfg(test)]
+    append_hook: Mutex<Option<AppendHook>>,
 }
 
 pub fn create_dag_file_store(
@@ -344,6 +348,8 @@ pub fn create_dag_file_store(
         paths,
         #[cfg(test)]
         checkpoint_hook: Mutex::new(None),
+        #[cfg(test)]
+        append_hook: Mutex::new(None),
     };
     for directory in [
         &store.paths.keys,
@@ -362,6 +368,11 @@ impl DagFileStore {
     #[cfg(test)]
     pub(crate) fn set_checkpoint_hook(&self, hook: CheckpointHook) {
         *guard(&self.checkpoint_hook) = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_append_hook(&self, hook: AppendHook) {
+        *guard(&self.append_hook) = Some(hook);
     }
 
     fn clock(&self) -> &dyn Fn() -> i64 {
@@ -400,6 +411,10 @@ impl DagFileStore {
         file.write_all(format!("{value}\n").as_bytes())?;
         if self.fsync_writes {
             self.fs.fsync(&file)?;
+        }
+        #[cfg(test)]
+        if let Some(hook) = guard(&self.append_hook).clone() {
+            hook(event)?;
         }
         Ok(())
     }

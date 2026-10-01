@@ -4,6 +4,8 @@
 //! (waiters, released slots) has no event hook, so each wait slice is also capped at `RECHECK`.
 
 use std::collections::HashMap;
+#[path = "dag_fake.rs"]
+pub(crate) mod dag_fake;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -218,11 +220,9 @@ impl ManagedChildHandle for FakeHandle {
     }
 
     fn wait_for_outcome(&self) -> RunnerOutcome {
-        let outcome = lock(&self.outcomes)
+        lock(&self.outcomes)
             .recv()
-            .unwrap_or(RunnerOutcome::Cancelled);
-        crate::manager::outcome::test_barrier::note_consume(self.ptr());
-        outcome
+            .unwrap_or(RunnerOutcome::Cancelled)
     }
 
     fn last_assistant_text(&self) -> Option<String> {

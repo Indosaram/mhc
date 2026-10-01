@@ -218,6 +218,23 @@ fn given_checkpoint_replacement_crashes_after_wal_append_when_reopened_on_the_sa
 }
 
 #[test]
+fn after_wal_append_fault_leaves_reducer_unapplied_until_reopen() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let store = temp_store();
+    let fail_once = AtomicBool::new(true);
+    store.set_append_hook(Arc::new(move |_| {
+        if fail_once.swap(false, Ordering::SeqCst) { Err(DagStoreError::Message("after WAL crash".into())) } else { Ok(()) }
+    }));
+    let options = || DagJournalOptions { store: Arc::clone(&store), run_id: run_id(), initial_checkpoint: initial_checkpoint(), apply_event: Arc::new(apply_event), subscriber_ring: None, now: None };
+    let first = create_dag_journal(options()).unwrap();
+    assert_eq!(first.append(run_started(1)).unwrap_err().to_string(), "after WAL crash");
+    assert_eq!(first.snapshot().generations, Vec::<u64>::new());
+    let reopened = create_dag_journal(options()).unwrap();
+    assert_eq!(reopened.snapshot().generations, vec![1]);
+    assert_eq!(reopened.snapshot().checkpoint_seq, 1);
+}
+
+#[test]
 fn given_a_queued_node_transition_when_appended_then_the_journal_preserves_its_queue_position() {
     let store = temp_store();
     let journal = create_dag_journal(DagJournalOptions {

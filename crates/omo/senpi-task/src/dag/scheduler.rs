@@ -76,6 +76,8 @@ struct SchedulerState {
 
 pub struct DagSchedulerContext {
     task_manager: Arc<TaskManager>,
+    #[cfg(test)]
+    task_port: Mutex<Option<Arc<dyn TestTaskPort>>>,
     journal: Arc<DagJournal<DagRunRecordV1>>,
     definition_nodes: BTreeMap<DagNodeId, DagPersistedNode>,
     execution_mode_agents: Option<Arc<BTreeMap<String, AgentDefinition>>>,
@@ -132,6 +134,8 @@ pub fn create_dag_scheduler(
         .collect();
     Ok(Arc::new(DagSchedulerContext {
         task_manager: options.task_manager,
+        #[cfg(test)]
+        task_port: Mutex::new(None),
         journal,
         definition_nodes,
         execution_mode_agents: options.execution_mode_agents,
@@ -432,6 +436,11 @@ fn artifact_ref_from(
 }
 
 impl DagSchedulerContext {
+    #[cfg(test)]
+    pub(crate) fn set_task_port(&self, port: Arc<dyn TestTaskPort>) {
+        *self.task_port.lock().unwrap() = Some(port);
+    }
+
     pub fn run(&self) -> Result<DagRunRecordV1, crate::dag::store::DagStoreError> {
         run_waves(self)
     }
@@ -524,13 +533,7 @@ fn perform_cancellation(context: &DagSchedulerContext, reason: Option<&str>) -> 
         .collect();
     let mut cancellation_failure: Option<String> = None;
     for task_id in &attached_task_ids {
-        if let Err(error) = context.task_manager.cancel_task(
-            task_id,
-            reason,
-            CancelOptions {
-                abort: crate::steering::CancelAbort::Skip,
-            },
-        ) && cancellation_failure.is_none()
+        if let Err(error) = cancel_task(context, task_id, reason) && cancellation_failure.is_none()
         {
             cancellation_failure = Some(error.to_string());
         }
@@ -680,7 +683,7 @@ fn admit_and_settle_wave(
                 let owner_stamp = owner(context, node_id);
                 (
                     node_id.clone(),
-                    Ok(context.task_manager.start_owned(&spec, &owner_stamp)),
+                    start_owned(context, &spec, &owner_stamp),
                 )
             })
             .collect();
@@ -808,7 +811,7 @@ fn attach_started(
         .unwrap_or_else(PoisonError::into_inner)
         .insert(node_id.clone(), task.task_id.clone());
     let (sender, receiver): (Sender<AttachedTaskSettlement>, _) = channel();
-    spawn_wait_for(Arc::clone(&context.task_manager), task.task_id.clone(), sender);
+    spawn_wait_for(context, task.task_id.clone(), sender);
     attached.insert(
         node_id.clone(),
         AttachedTask {
@@ -818,8 +821,17 @@ fn attach_started(
     Ok(())
 }
 
-fn spawn_wait_for(task_manager: Arc<TaskManager>, task_id: String, sender: Sender<AttachedTaskSettlement>) {
+fn spawn_wait_for(context: &DagSchedulerContext, task_id: String, sender: Sender<AttachedTaskSettlement>) {
+    let task_manager = Arc::clone(&context.task_manager);
+    #[cfg(test)]
+    let port = context.task_port.lock().unwrap().clone();
     std::thread::spawn(move || {
+        #[cfg(test)]
+        let result = match port {
+            Some(port) => port.wait_for(&task_id),
+            None => task_manager.wait_for(&task_id, None, None).map_err(|error| error.to_string()),
+        };
+        #[cfg(not(test))]
         let result = task_manager.wait_for(&task_id, None, None);
         let settlement = match result {
             Ok(record) => AttachedTaskSettlement::Record(Box::new(record)),
@@ -827,6 +839,31 @@ fn spawn_wait_for(task_manager: Arc<TaskManager>, task_id: String, sender: Sende
         };
         let _ = sender.send(settlement);
     });
+}
+
+#[cfg(test)]
+pub(crate) trait TestTaskPort: Send + Sync {
+    fn start_owned(&self, spec: &ManagerStartSpec, owner: &DagTaskOwner) -> Result<OwnedStartResult, String>;
+    fn wait_for(&self, task_id: &str) -> Result<TaskRecord, String>;
+    fn cancel_task(&self, task_id: &str) -> Result<(), String>;
+}
+
+fn start_owned(context: &DagSchedulerContext, spec: &ManagerStartSpec, owner: &DagTaskOwner) -> Result<OwnedStartResult, String> {
+    #[cfg(test)]
+    if let Some(port) = context.task_port.lock().unwrap().clone() {
+        return port.start_owned(spec, owner);
+    }
+    Ok(context.task_manager.start_owned(spec, owner))
+}
+
+fn cancel_task(context: &DagSchedulerContext, task_id: &str, reason: Option<&str>) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(port) = context.task_port.lock().unwrap().clone() {
+        return port.cancel_task(task_id);
+    }
+    context.task_manager.cancel_task(task_id, reason, CancelOptions {
+        abort: crate::steering::CancelAbort::Skip,
+    }).map(|_| ()).map_err(|error| error.to_string())
 }
 
 fn settle_one(

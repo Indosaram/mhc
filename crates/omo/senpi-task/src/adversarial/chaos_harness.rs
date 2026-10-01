@@ -263,7 +263,7 @@ impl ChaosHarness {
         }
     }
 
-    fn flush_handle_outcome(&self, handle: &super::chaos_engine::ChaosRunnerHandle) {
+    fn flush_handle_outcome(&self, handle: &crate::manager::manager_tests::fakes::FakeHandle) {
         let terminal = self
             .store
             .load(handle.task_id())
