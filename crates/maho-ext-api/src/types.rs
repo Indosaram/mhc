@@ -570,6 +570,20 @@ pub enum AbortSource { User, System, Provider }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UiPromptKind { Select, Confirm, Input, Editor, Custom, Question }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiPromptReason { UiPrompt }
+impl UiPromptReason { pub const fn as_str(self) -> &'static str { "ui_prompt" } }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemPromptChangeSource { ModelSelect }
+impl SystemPromptChangeSource { pub const fn as_str(self) -> &'static str { "model_select" } }
+impl ExtensionEvent {
+    pub const fn ui_prompt_reason(&self) -> Option<UiPromptReason> {
+        match self { Self::UiPromptStart { .. } | Self::UiPromptEnd { .. } => Some(UiPromptReason::UiPrompt), _ => None }
+    }
+    pub const fn system_prompt_change_source(&self) -> Option<SystemPromptChangeSource> {
+        match self { Self::SystemPromptChange { .. } => Some(SystemPromptChangeSource::ModelSelect), _ => None }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputDisposition { Handled, Queued, Started, Rejected }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExtensionIdentity { pub path: String, pub resolved_path: String }
