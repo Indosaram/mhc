@@ -1,0 +1,21 @@
+use maho_ext_cursor_cli_oauth::{models::{resolve_catalog,parse_models_listing},models_probe::{run_models_probe,ModelProbeError}};
+use std::{collections::BTreeMap,os::unix::fs::PermissionsExt};
+#[tokio::test]
+async fn full_output_and_explicit_home_through_real_probe() {
+    let dir=tempfile::tempdir().expect("directory");let executable=dir.path().join("cursor-agent");
+    let script="#!/bin/sh\n[ \"$1\" = models ] || exit 2\n[ \"$AGENT_CLI_CREDENTIAL_STORE\" = file ] || exit 3\n[ -z \"$SENPI_PROBE_SECRET\" ] || exit 4\ni=0; while [ $i -lt 400 ]; do printf 'model-%s - Model %s\\n' \"$i\" \"$i\"; i=$((i+1)); done\n";
+    std::fs::write(&executable,script).expect("script");std::fs::set_permissions(&executable,std::fs::Permissions::from_mode(0o700)).expect("permissions");
+    let stdout=dir.path().join("stdout.txt");let environment=BTreeMap::from([("SENPI_PROBE_SECRET".into(),"must-not-leak".into())]);
+    let models=resolve_catalog(dir.path(),1000.0,None,||async {
+        run_models_probe(&executable,&stdout,15000,dir.path().to_str().expect("home"),&environment).await?;
+        Ok(std::fs::read_to_string(&stdout)?)
+    }).await;
+    let listing=std::fs::read_to_string(stdout).expect("listing");assert!(listing.len()>8192);assert_eq!(models.len(),400);assert_eq!(parse_models_listing(&listing).last().expect("last").id,"model-399");
+}
+#[tokio::test]
+async fn failed_probe_returns_exit_status() {
+    let dir=tempfile::tempdir().expect("directory");let executable=dir.path().join("cursor-agent");
+    std::fs::write(&executable,"#!/bin/sh\nexit 7\n").expect("script");std::fs::set_permissions(&executable,std::fs::Permissions::from_mode(0o700)).expect("permissions");
+    let result=run_models_probe(&executable,&dir.path().join("stdout"),15000,dir.path().to_str().expect("home"),&BTreeMap::new()).await;
+    assert!(matches!(result,Err(ModelProbeError::Exit {exit_code:Some(7),signal:None})));
+}
