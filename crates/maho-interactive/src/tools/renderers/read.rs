@@ -190,7 +190,7 @@ fn format_read_result(
     );
     if remaining > 0 {
         text += &format!(
-            "{}{}{}",
+            "{} {}{}",
             theme.fg(ThemeColor::Muted, &format!("\n... ({remaining} more lines,")),
             key_hint("app.tools.expand", "to expand", theme),
             theme.fg(ThemeColor::Muted, ")")
