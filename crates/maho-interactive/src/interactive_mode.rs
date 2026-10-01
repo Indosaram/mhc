@@ -263,7 +263,7 @@ impl InteractiveMode {
             tokio::select! {
                 result = &mut prompt => break result,
                 Some(event) = self.events.recv() => {
-                    if let maho_ext_api::AgentSessionEvent::Agent(event) = event { self.handle_event(&event); }
+                    self.handle_session_event(&event);
                 }
                 Some(request) = self.ui_requests.recv() => self.handle_ui_request(request),
             }
@@ -430,7 +430,24 @@ impl InteractiveMode {
     pub fn drain_events(&mut self) {
         self.drain_ui_requests();
         while let Ok(event) = self.events.try_recv() {
-            if let maho_ext_api::AgentSessionEvent::Agent(event) = event { self.handle_event(&event); }
+            self.handle_session_event(&event);
+        }
+    }
+
+    pub fn handle_session_event(&mut self, event: &maho_ext_api::AgentSessionEvent) {
+        use maho_ext_api::AgentSessionEvent;
+        match event {
+            AgentSessionEvent::Agent(event) => self.handle_event(event),
+            AgentSessionEvent::ContinuationError { error_message } => self.show_status(error_message.clone()),
+            AgentSessionEvent::ModelChangePending { notice, .. } | AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_status(notice.clone()),
+            AgentSessionEvent::ModelChangeRejected { detail, .. } => self.show_status(detail.clone()),
+            AgentSessionEvent::ThinkingLevelChanged { level } => self.show_status(format!("Thinking level: {}", serde_json::to_value(level).expect("level").as_str().expect("string"))),
+            AgentSessionEvent::AutoRetryStart { attempt, max_attempts, error_message, .. } => self.show_status(format!("Retrying ({attempt}/{max_attempts}): {error_message}")),
+            AgentSessionEvent::AutoRetryEnd { final_error:Some(error), .. } => self.show_status(error.clone()),
+            AgentSessionEvent::CompactionStart { .. } => self.show_status("Compacting context...".into()),
+            AgentSessionEvent::CompactionEnd { error_message:Some(error), .. } => self.show_status(error.clone()),
+            AgentSessionEvent::AgentIdle | AgentSessionEvent::AgentSettled | AgentSessionEvent::SessionAbort => { self.agent_idle = true; self.working_started_ms = None; }
+            _ => {}
         }
     }
 
