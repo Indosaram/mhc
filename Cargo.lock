@@ -1637,6 +1637,9 @@ dependencies = [
 [[package]]
 name = "maho-ext-cache-keepalive"
 version = "0.0.0"
+dependencies = [
+ "maho-ai",
+]
 
 [[package]]
 name = "maho-ext-compaction"
