@@ -1,0 +1,412 @@
+use maho_ext_api::*;
+use maho_ext_host::*;
+use std::{collections::BTreeMap, path::Path, sync::{Arc, Mutex}};
+
+struct TestSession;
+impl ToolSessionManager for TestSession {
+    fn session_id(&self) -> &str { "session" }
+    fn session_file(&self) -> Option<&Path> { None }
+}
+impl SessionManager for TestSession {
+    fn get_entries(&self) -> Vec<SessionEntry> { Vec::new() }
+    fn get_branch(&self) -> Vec<SessionEntry> { Vec::new() }
+    fn get_leaf_id(&self) -> Option<String> { None }
+    fn get_session_name(&self) -> Option<String> { None }
+}
+struct TestRegistry;
+impl ModelRegistry for TestRegistry {
+    fn get_all(&self) -> Vec<Model> { Vec::new() }
+    fn get_available(&self) -> Vec<Model> { Vec::new() }
+    fn find(&self, _: &str, _: &str) -> Option<Model> { None }
+    fn has_configured_auth(&self, _: &Model) -> bool { false }
+    fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<String>> { Box::pin(async { Ok(None) }) }
+}
+struct TestUi;
+impl ExtensionUi for TestUi {
+    fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
+    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> { Box::pin(async { false }) }
+    fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
+    fn notify(&self, _: &str, _: NotificationType) {}
+    fn set_status(&self, _: &str, _: Option<&str>) {}
+    fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
+    fn set_header(&self, _: Option<ComponentFactory>) {}
+    fn set_footer(&self, _: Option<ComponentFactory>) {}
+    fn set_title(&self, _: &str) {}
+    fn paste_to_editor(&self, _: &str) {}
+    fn set_editor_text(&self, _: &str) {}
+    fn get_editor_text(&self) -> String { String::new() }
+    fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Err("UI not available".into()) }) }
+    fn theme(&self) -> Theme { Theme::default() }
+}
+fn context() -> ExtensionContext {
+    ExtensionContext { ui: Arc::new(TestUi), mode: ExtensionMode::Print, has_ui: false, cwd: "/tmp".into(), agent_dir: "/tmp/agent".into(),
+        session_manager: Arc::new(TestSession), model_registry: Arc::new(TestRegistry), model: None, thinking_level: None,
+        service_tier: None, effective_service_tier: None, scoped_models: Vec::new(), goal_store_file: None,
+        loaded_extension_paths: Vec::new(), signal: None, steering_signal: None,
+        is_idle_fn: Arc::new(|| true), wait_for_idle_fn: Arc::new(|| Box::pin(async {})), is_project_trusted_fn: Arc::new(|| true),
+        is_compacting_fn: Arc::new(|| false), get_system_prompt_fn: Arc::new(|| "base".into()),
+        get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions { cwd: "/tmp".into(), ..Default::default() }),
+        registered_mcp_servers: Vec::new(), update_tool_hook_status: None }
+}
+fn extension(path: &str, kind: EventKind, handler: ExtensionHandler) -> LoadedExtension {
+    let mut ext = LoadedExtension::new(path, "/tmp".into(), SourceInfo { path: path.into(), source: "inline".into(), ..Default::default() });
+    ext.handlers.insert(kind, vec![handler]); ext
+}
+fn runner(extensions: Vec<LoadedExtension>) -> ExtensionRunner { ExtensionRunner::new(extensions, ExtensionRuntime::default(), EventBus::default(), context()) }
+fn before() -> BeforeAgentStartEvent { BeforeAgentStartEvent { prompt: "hello".into(), images: None, system_prompt: "base".into(), system_prompt_options: BuildSystemPromptOptions::default() } }
+fn input() -> InputEvent { InputEvent { input_id: "id".into(), text: "X".into(), images: None, source: InputSource::Interactive, streaming_behavior: None } }
+fn result_event() -> ToolResultEvent { ToolResultEvent { tool_name: "bash".into(), tool_call_id: "call".into(), input: JsonValue::Null, content: vec![ToolContent::text("base")], details: None, is_error: false, usage: None } }
+fn none() -> ExtensionHandler { Arc::new(|_, _| Box::pin(async { Ok(EventResult::None) })) }
+fn failure() -> ExtensionHandler { Arc::new(|_, _| Box::pin(async { Err(ExtensionFailure { message: "boom".into(), stack: Some("test-stack".into()) }) })) }
+fn transform(suffix: &'static str) -> ExtensionHandler {
+    Arc::new(move |event, _| Box::pin(async move {
+        if let ExtensionEvent::Input(input) = event { return Ok(EventResult::Input(InputEventResult::Transform { text: format!("{}{suffix}", input.text), images: None })); }
+        Err("wrong event".into())
+    }))
+}
+fn prompt(suffix: &'static str) -> ExtensionHandler {
+    Arc::new(move |event, ctx| Box::pin(async move {
+        let ExtensionEvent::BeforeAgentStart(event) = event else { return Err("wrong event".into()); };
+        assert_eq!(ctx.get_system_prompt(), event.system_prompt);
+        Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { system_prompt: Some(format!("{}{suffix}", event.system_prompt)), message: None }))
+    }))
+}
+
+#[tokio::test]
+async fn before_agent_start_chains_in_senpi_order() {
+    let mut runner = runner(vec![extension("first", EventKind::BeforeAgentStart, prompt("\nfirst")), extension("second", EventKind::BeforeAgentStart, prompt("\nsecond"))]);
+    let merged = runner.emit_before_agent_start(before()).await.unwrap().unwrap();
+    assert_eq!(merged.system_prompt.as_deref(), Some("base\nfirst\nsecond"));
+    assert!(merged.messages.is_empty());
+    println!("systemPrompt={:?}; handlers=first,second; errors={}", merged.system_prompt, runner.errors.len());
+}
+#[tokio::test]
+async fn failing_handler_is_isolated_and_reported() {
+    let mut runner = runner(vec![extension("/ext/failing", EventKind::BeforeAgentStart, failure()), extension("good", EventKind::BeforeAgentStart, prompt("\ngood"))]);
+    let merged = runner.emit_before_agent_start(before()).await.unwrap().unwrap();
+    assert_eq!(merged.system_prompt.as_deref(), Some("base\ngood"));
+    assert_eq!(runner.errors.len(), 1);
+    assert_eq!(runner.errors[0].event, "before_agent_start");
+    assert_eq!(runner.errors[0].stack.as_deref(), Some("test-stack"));
+    println!("{}; later handler=good; systemPrompt={:?}", format_extension_error_headline(&runner.errors[0]), merged.system_prompt);
+}
+#[tokio::test]
+async fn before_agent_start_no_changes_returns_none() { assert!(runner(vec![extension("empty", EventKind::BeforeAgentStart, none())]).emit_before_agent_start(before()).await.unwrap().is_none()); }
+#[tokio::test]
+async fn before_agent_start_collects_messages_in_order() {
+    let message = |name: &'static str| -> ExtensionHandler { Arc::new(move |_, _| Box::pin(async move { Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult { message: Some(CustomMessage { custom_type: name.into(), content: vec![], display: true, details: None }), system_prompt: None })) })) };
+    let mut runner = runner(vec![extension("a", EventKind::BeforeAgentStart, message("a")), extension("b", EventKind::BeforeAgentStart, message("b"))]);
+    assert_eq!(runner.emit_before_agent_start(before()).await.unwrap().unwrap().messages.iter().map(|m| m.custom_type.as_str()).collect::<Vec<_>>(), vec!["a", "b"]);
+}
+#[tokio::test]
+async fn multiple_handlers_per_extension_preserve_registration_order() {
+    let mut ext = extension("one", EventKind::BeforeAgentStart, prompt("1")); ext.handlers.get_mut(&EventKind::BeforeAgentStart).unwrap().push(prompt("2"));
+    assert_eq!(runner(vec![ext]).emit_before_agent_start(before()).await.unwrap().unwrap().system_prompt.as_deref(), Some("base12"));
+}
+#[tokio::test]
+async fn input_no_handlers_returns_continue() { assert_eq!(runner(vec![]).emit_input(input()).await.unwrap(), InputEventResult::Continue); }
+#[tokio::test]
+async fn input_undefined_return_continues() { assert_eq!(runner(vec![extension("a", EventKind::Input, none())]).emit_input(input()).await.unwrap(), InputEventResult::Continue); }
+#[tokio::test]
+async fn input_explicit_continue_continues() {
+    let handler: ExtensionHandler = Arc::new(|_, _| Box::pin(async { Ok(EventResult::Input(InputEventResult::Continue)) }));
+    assert_eq!(runner(vec![extension("a", EventKind::Input, handler)]).emit_input(input()).await.unwrap(), InputEventResult::Continue);
+}
+#[tokio::test]
+async fn input_transform_preserves_images_when_omitted() {
+    let mut input = input(); input.images = Some(vec![ImageContent { data: "orig".into(), mime_type: "image/png".into() }]);
+    let images = input.images.clone();
+    assert_eq!(runner(vec![extension("a", EventKind::Input, transform("1"))]).emit_input(input).await.unwrap(), InputEventResult::Transform { text: "X1".into(), images });
+}
+#[tokio::test]
+async fn input_transform_replaces_images_when_present() {
+    let images = vec![ImageContent { data: "new".into(), mime_type: "image/jpeg".into() }]; let expected = images.clone();
+    let handler: ExtensionHandler = Arc::new(move |_, _| { let images = images.clone(); Box::pin(async move { Ok(EventResult::Input(InputEventResult::Transform { text: "new".into(), images: Some(images) })) }) });
+    assert_eq!(runner(vec![extension("a", EventKind::Input, handler)]).emit_input(input()).await.unwrap(), InputEventResult::Transform { text: "new".into(), images: Some(expected) });
+}
+#[tokio::test]
+async fn input_transforms_chain_across_extensions() {
+    assert_eq!(runner(vec![extension("a", EventKind::Input, transform("[1]")), extension("b", EventKind::Input, transform("[2]"))]).emit_input(input()).await.unwrap(), InputEventResult::Transform { text: "X[1][2]".into(), images: None });
+}
+#[tokio::test]
+async fn input_handled_short_circuits() {
+    let handled: ExtensionHandler = Arc::new(|_, _| Box::pin(async { Ok(EventResult::Input(InputEventResult::Handled)) }));
+    let never: ExtensionHandler = Arc::new(|_, _| Box::pin(async { panic!("subsequent handler ran") }));
+    assert_eq!(runner(vec![extension("a", EventKind::Input, handled), extension("b", EventKind::Input, never)]).emit_input(input()).await.unwrap(), InputEventResult::Handled);
+}
+#[tokio::test]
+async fn input_passes_all_sources() {
+    for source in [InputSource::Interactive, InputSource::Rpc, InputSource::Extension] {
+        let handler: ExtensionHandler = Arc::new(move |event, _| Box::pin(async move { let ExtensionEvent::Input(event) = event else { panic!() }; assert_eq!(event.source, source); Ok(EventResult::None) }));
+        let mut input = input(); input.source = source; runner(vec![extension("a", EventKind::Input, handler)]).emit_input(input).await.unwrap();
+    }
+}
+#[tokio::test]
+async fn input_passes_streaming_behavior_and_id() {
+    for behavior in [None, Some(StreamingBehavior::Steer), Some(StreamingBehavior::FollowUp)] {
+        let handler: ExtensionHandler = Arc::new(move |event, _| Box::pin(async move { let ExtensionEvent::Input(event) = event else { panic!() }; assert_eq!(event.streaming_behavior, behavior); assert_eq!(event.input_id, "id"); Ok(EventResult::None) }));
+        let mut input = input(); input.streaming_behavior = behavior; runner(vec![extension("a", EventKind::Input, handler)]).emit_input(input).await.unwrap();
+    }
+}
+#[tokio::test]
+async fn input_error_continues_to_later_transform() {
+    let mut runner = runner(vec![extension("bad", EventKind::Input, failure()), extension("good", EventKind::Input, transform("1"))]);
+    assert_eq!(runner.emit_input(input()).await.unwrap(), InputEventResult::Transform { text: "X1".into(), images: None }); assert_eq!(runner.errors[0].error, "boom");
+}
+#[test]
+fn has_handlers_matches_each_registered_event() {
+    for kind in EventKind::ALL { let runner = runner(vec![extension("a", kind, none())]); assert!(runner.has_handlers(kind)); }
+    assert!(!runner(vec![]).has_handlers(EventKind::Input));
+}
+#[tokio::test]
+async fn generic_emit_isolates_errors_and_notifies_listeners() {
+    let seen = Arc::new(Mutex::new(Vec::new())); let capture = Arc::clone(&seen);
+    let mut runner = runner(vec![extension("bad", EventKind::AgentStart, failure()), extension("good", EventKind::AgentStart, none())]);
+    runner.on_error(Arc::new(move |error| capture.lock().unwrap().push(error.clone())));
+    runner.emit(ExtensionEvent::AgentStart).await.unwrap(); assert_eq!(*seen.lock().unwrap(), runner.errors);
+}
+#[tokio::test]
+async fn session_before_cancel_short_circuits() {
+    let handler: ExtensionHandler = Arc::new(|_, _| Box::pin(async { Ok(EventResult::SessionBefore(SessionBeforeEventResult { cancel: Some(true), reason: Some("busy".into()), ..Default::default() })) }));
+    let mut runner = runner(vec![extension("a", EventKind::SessionBeforeReload, handler), extension("b", EventKind::SessionBeforeReload, failure())]);
+    let EventResult::SessionBefore(result) = runner.emit(ExtensionEvent::SessionBeforeReload).await.unwrap() else { panic!() }; assert_eq!(result.reason.as_deref(), Some("busy")); assert!(runner.errors.is_empty());
+}
+#[tokio::test]
+async fn session_before_last_non_cancel_result_wins() {
+    let handler = |reason: &'static str| -> ExtensionHandler { Arc::new(move |_, _| Box::pin(async move { Ok(EventResult::SessionBefore(SessionBeforeEventResult { reason: Some(reason.into()), ..Default::default() })) })) };
+    let EventResult::SessionBefore(result) = runner(vec![extension("a", EventKind::SessionBeforeReload, handler("a")), extension("b", EventKind::SessionBeforeReload, handler("b"))]).emit(ExtensionEvent::SessionBeforeReload).await.unwrap() else { panic!() }; assert_eq!(result.reason.as_deref(), Some("b"));
+}
+#[tokio::test]
+async fn tool_result_content_chains() {
+    let handler = |text: &'static str| -> ExtensionHandler { Arc::new(move |event, _| Box::pin(async move { let ExtensionEvent::ToolResult(event) = event else { panic!() }; let mut content = event.content.clone(); content.push(ToolContent::text(text)); Ok(EventResult::ToolResult(ToolResultEventResult { content: Some(content), ..Default::default() })) })) };
+    let result = runner(vec![extension("a", EventKind::ToolResult, handler("a")), extension("b", EventKind::ToolResult, handler("b"))]).emit_tool_result(result_event()).await.unwrap().unwrap();
+    assert_eq!(result.content, Some(vec![ToolContent::text("base"), ToolContent::text("a"), ToolContent::text("b")]));
+}
+#[tokio::test]
+async fn tool_result_partial_patches_preserve_prior_fields() {
+    let first: ExtensionHandler = Arc::new(|_, _| Box::pin(async { Ok(EventResult::ToolResult(ToolResultEventResult { content: Some(vec![ToolContent::text("first")]), details: Some(JsonValue::Bool(true)), ..Default::default() })) }));
+    let second: ExtensionHandler = Arc::new(|_, _| Box::pin(async { Ok(EventResult::ToolResult(ToolResultEventResult { is_error: Some(true), ..Default::default() })) }));
+    let result = runner(vec![extension("a", EventKind::ToolResult, first), extension("b", EventKind::ToolResult, second)]).emit_tool_result(result_event()).await.unwrap().unwrap();
+    assert_eq!(result.content, Some(vec![ToolContent::text("first")])); assert_eq!(result.details, Some(JsonValue::Bool(true))); assert_eq!(result.is_error, Some(true));
+}
+#[tokio::test]
+async fn tool_result_none_returns_none() { assert!(runner(vec![extension("a", EventKind::ToolResult, none())]).emit_tool_result(result_event()).await.unwrap().is_none()); }
+#[tokio::test]
+async fn tool_result_error_isolated_with_failed_hook_then_completed_hook() {
+    let events = Arc::new(Mutex::new(Vec::new())); let capture = Arc::clone(&events);
+    let mut runner = runner(vec![extension("bad", EventKind::ToolResult, failure()), extension("good", EventKind::ToolResult, none())]);
+    runner.set_tool_hook_lifecycle_observer(Some(Arc::new(move |event| capture.lock().unwrap().push(event.clone()))));
+    runner.emit_tool_result(result_event()).await.unwrap();
+    let events = events.lock().unwrap(); assert_eq!(events.len(), 4);
+    assert!(matches!(events[1].phase, ToolHookPhase::End { status: ToolHookStatus::Failed, .. })); assert!(matches!(events[3].phase, ToolHookPhase::End { status: ToolHookStatus::Completed, .. }));
+}
+#[tokio::test]
+async fn tool_call_mutations_chain_and_reach_caller() {
+    let handler: ExtensionHandler = Arc::new(|event, _| Box::pin(async move { let ExtensionEvent::ToolCall(event) = event else { panic!() }; event.input = JsonValue::Bool(true); Ok(EventResult::None) }));
+    let mut event = ToolCallEvent { tool_call_id: "call".into(), tool_name: "bash".into(), input: JsonValue::Null };
+    runner(vec![extension("a", EventKind::ToolCall, handler)]).emit_tool_call(&mut event).await.unwrap(); assert_eq!(event.input, JsonValue::Bool(true));
+}
+#[tokio::test]
+async fn tool_call_block_short_circuits_and_reports_blocked_hook() {
+    let handler: ExtensionHandler = Arc::new(|_, _| Box::pin(async { Ok(EventResult::ToolCall(ToolCallEventResult { block: Some(true), reason: Some("no".into()), terminate: Some(true) })) }));
+    let events = Arc::new(Mutex::new(Vec::new())); let capture = Arc::clone(&events);
+    let mut runner = runner(vec![extension("a", EventKind::ToolCall, handler), extension("b", EventKind::ToolCall, failure())]); runner.set_tool_hook_lifecycle_observer(Some(Arc::new(move |e| capture.lock().unwrap().push(e.clone()))));
+    let mut event = ToolCallEvent { tool_call_id: "call".into(), tool_name: "bash".into(), input: JsonValue::Null };
+    assert_eq!(runner.emit_tool_call(&mut event).await.unwrap().unwrap().terminate, Some(true)); assert!(matches!(events.lock().unwrap()[1].phase, ToolHookPhase::End { status: ToolHookStatus::Blocked, .. }));
+}
+#[tokio::test]
+async fn tool_call_errors_propagate_like_upstream() {
+    let mut runner = runner(vec![extension("a", EventKind::ToolCall, failure())]); let mut event = ToolCallEvent { tool_call_id: "call".into(), tool_name: "bash".into(), input: JsonValue::Null };
+    assert_eq!(runner.emit_tool_call(&mut event).await.unwrap_err().message, "boom"); assert!(runner.errors.is_empty());
+}
+#[tokio::test]
+async fn hook_updates_are_sanitized_bounded_and_stale_updates_ignored() {
+    let updater = Arc::new(Mutex::new(None)); let capture = Arc::clone(&updater);
+    let handler: ExtensionHandler = Arc::new(move |_, ctx| { let capture = Arc::clone(&capture); Box::pin(async move { let update = ctx.update_tool_hook_status.clone().unwrap(); update("line\u{1b}[31mone\ntwo\t\u{7} done"); update(&"x".repeat(200)); *capture.lock().unwrap() = Some(update); Ok(EventResult::None) }) });
+    let events = Arc::new(Mutex::new(Vec::new())); let captured_events = Arc::clone(&events); let mut runner = runner(vec![extension("<builtin:hooks>", EventKind::ToolResult, handler)]);
+    runner.set_tool_hook_lifecycle_observer(Some(Arc::new(move |e| captured_events.lock().unwrap().push(e.clone())))); runner.emit_tool_result(result_event()).await.unwrap();
+    updater.lock().unwrap().as_ref().unwrap()("late"); let events = events.lock().unwrap(); assert_eq!(events.len(), 4); assert_eq!(events[1].status_message, "lineone two done"); assert_eq!(events[2].status_message, format!("{}...", "x".repeat(76))); assert_eq!(events[3].status_message, events[2].status_message);
+}
+#[tokio::test]
+async fn headers_mutate_in_place_and_ignore_return_value() {
+    let handler: ExtensionHandler = Arc::new(|event, _| Box::pin(async move { let ExtensionEvent::BeforeProviderHeaders { headers } = event else { panic!() }; headers.insert("X-Turn".into(), Some("3".into())); Ok(EventResult::ProviderPayload(JsonValue::Null)) }));
+    let result = runner(vec![extension("a", EventKind::BeforeProviderHeaders, handler)]).emit_before_provider_headers(BTreeMap::from([("User-Agent".into(), Some("test".into()))])).await.unwrap(); assert_eq!(result.len(), 2); assert_eq!(result["X-Turn"].as_deref(), Some("3"));
+}
+#[tokio::test]
+async fn headers_error_isolated_before_later_handler() {
+    let handler: ExtensionHandler = Arc::new(|event, _| Box::pin(async move { let ExtensionEvent::BeforeProviderHeaders { headers } = event else { panic!() }; headers.insert("good".into(), Some("yes".into())); Ok(EventResult::None) }));
+    let mut runner = runner(vec![extension("bad", EventKind::BeforeProviderHeaders, failure()), extension("good", EventKind::BeforeProviderHeaders, handler)]); assert_eq!(runner.emit_before_provider_headers(BTreeMap::new()).await.unwrap()["good"].as_deref(), Some("yes")); assert_eq!(runner.errors.len(), 1);
+}
+#[tokio::test]
+async fn provider_payload_transform_chains_and_supports_null() {
+    let first: ExtensionHandler = Arc::new(|_, _| Box::pin(async { Ok(EventResult::ProviderPayload(JsonValue::Bool(true))) }));
+    let second: ExtensionHandler = Arc::new(|event, _| Box::pin(async move { let ExtensionEvent::BeforeProviderRequest { payload, .. } = event else { panic!() }; assert_eq!(*payload, JsonValue::Bool(true)); Ok(EventResult::ProviderPayload(JsonValue::Null)) }));
+    assert_eq!(runner(vec![extension("a", EventKind::BeforeProviderRequest, first), extension("b", EventKind::BeforeProviderRequest, second)]).emit_before_provider_request(JsonValue::Bool(false), None).await.unwrap(), JsonValue::Null);
+}
+#[tokio::test]
+async fn provider_payload_excluded_extension_does_not_run() { assert_eq!(runner(vec![extension("a", EventKind::BeforeProviderRequest, failure())]).emit_before_provider_request(JsonValue::Null, Some("a")).await.unwrap(), JsonValue::Null); }
+#[tokio::test]
+async fn context_clones_and_isolates_original_messages() {
+    let handler: ExtensionHandler = Arc::new(|event, _| Box::pin(async move { let ExtensionEvent::Context { messages } = event else { panic!() }; messages.clear(); Ok(EventResult::None) }));
+    let messages = vec![AgentMessage::Llm(Message::User(UserMessage { content: UserContent::Text("original".into()), timestamp: 1 }))]; assert!(runner(vec![extension("a", EventKind::Context, handler)]).emit_context(&messages, None).await.unwrap().is_empty()); assert_eq!(messages.len(), 1);
+}
+#[tokio::test]
+async fn context_excludes_originating_extension() { let mut runner = runner(vec![extension("a", EventKind::Context, failure())]); runner.emit_context(&[], Some("a")).await.unwrap(); assert!(runner.errors.is_empty()); }
+#[tokio::test]
+async fn project_trust_first_decision_after_undecided_wins() {
+    let handler = |trusted| -> ExtensionHandler { Arc::new(move |_, _| Box::pin(async move { Ok(EventResult::ProjectTrust(ProjectTrustEventResult { trusted, remember: Some(true) })) })) };
+    let result = runner(vec![extension("a", EventKind::ProjectTrust, handler(TrustDecision::Undecided)), extension("b", EventKind::ProjectTrust, handler(TrustDecision::No)), extension("c", EventKind::ProjectTrust, failure())]).emit_project_trust("/tmp".into()).await.unwrap().unwrap(); assert_eq!(result.trusted, TrustDecision::No);
+}
+#[tokio::test]
+async fn resources_preserve_scope_origin_and_order() {
+    let handler: ExtensionHandler = Arc::new(|event, _| Box::pin(async move { let ExtensionEvent::ResourcesDiscover(event) = event else { panic!() }; assert!(event.scoped_entries); Ok(EventResult::ResourcesDiscover(ResourcesDiscoverResult { skill_paths: vec![ResourceDiscoverEntry { path: "one".into(), scope: Some(SourceScope::User) }, "two".to_string().into()], ..Default::default() })) }));
+    let result = runner(vec![extension("a", EventKind::ResourcesDiscover, handler)]).emit_resources_discover("/tmp".into(), SessionReason::Startup).await.unwrap(); assert_eq!(result.skill_paths[0].scope, Some(SourceScope::User)); assert_eq!(result.skill_paths[1].scope, None); assert_eq!(result.skill_paths[1].extension_path, "a");
+}
+#[test]
+fn mcp_servers_first_wins_and_context_exposes_aggregate() {
+    let mut a = extension("a", EventKind::AgentStart, none()); let mut b = extension("b", EventKind::AgentStart, none());
+    for ext in [&mut a, &mut b] { ext.mcp_servers.push(RegisteredMcpServerDeclaration { name: "dup".into(), config: McpServerDeclaration { command: Some(ext.identity.path.clone()), ..Default::default() }, extension_path: ext.identity.path.clone(), registration_cwd: "/tmp".into() }); }
+    let runner = runner(vec![a, b]); assert_eq!(runner.get_registered_mcp_servers().len(), 1); assert_eq!(runner.create_context().unwrap().registered_mcp_servers[0].config.command.as_deref(), Some("a"));
+}
+#[test]
+fn mcp_servers_empty_without_declarations() { assert!(runner(vec![]).get_registered_mcp_servers().is_empty()); }
+#[test]
+fn command_duplicates_receive_insertion_order_suffixes() {
+    let mut a = extension("a", EventKind::AgentStart, none()); let mut b = extension("b", EventKind::AgentStart, none());
+    for ext in [&mut a, &mut b] { ext.commands.push(RegisteredCommand { name: "same".into(), source_info: ext.source_info.clone(), description: Some(ext.identity.path.clone()), argument_hint: None, handler: Arc::new(|_, _| Box::pin(async { Ok(()) })) }); }
+    let runner = runner(vec![a, b]); assert_eq!(runner.get_registered_commands().iter().map(|c| c.invocation_name.as_str()).collect::<Vec<_>>(), vec!["same:1", "same:2"]); assert_eq!(runner.get_command("same:2").unwrap().command.description.as_deref(), Some("b")); assert!(runner.get_command("same").is_none());
+}
+#[test]
+fn context_live_idle_and_compaction_actions() {
+    let state = Arc::new(std::sync::atomic::AtomicBool::new(true)); let mut ctx = context(); let idle = Arc::clone(&state); let compacting = Arc::clone(&state);
+    ctx.is_idle_fn = Arc::new(move || idle.load(std::sync::atomic::Ordering::SeqCst)); ctx.is_compacting_fn = Arc::new(move || compacting.load(std::sync::atomic::Ordering::SeqCst));
+    let runner = ExtensionRunner::new(vec![], ExtensionRuntime::default(), EventBus::default(), ctx); let ctx = runner.create_context().unwrap(); assert!(ctx.is_idle()); state.store(false, std::sync::atomic::Ordering::SeqCst); assert!(!ctx.is_idle()); assert!(!ctx.is_compacting());
+}
+#[test]
+fn context_signal_observes_cancellation() { let mut ctx = context(); let signal = AbortSignal::default(); ctx.signal = Some(signal.clone()); assert!(!ctx.signal.as_ref().unwrap().is_aborted()); signal.abort(); assert!(ctx.signal.as_ref().unwrap().is_aborted()); }
+#[test]
+fn context_print_mode_and_tool_context_contract() { let ctx = context(); assert_eq!(ctx.mode, ExtensionMode::Print); assert!(!ctx.has_ui); assert_eq!(ToolContext::cwd(&ctx), Path::new("/tmp")); assert_eq!(ToolContext::session_manager(&ctx).session_id(), "session"); }
+#[test]
+fn invalidated_runner_rejects_new_context() { let runner = runner(vec![]); runner.invalidate("stale"); assert_eq!(runner.create_context().err().unwrap().message, "stale"); }
+#[tokio::test(start_paused = true)]
+async fn shutdown_hard_cap_aborts_and_runs_next_handler() {
+    let signal = Arc::new(Mutex::new(None)); let capture = Arc::clone(&signal);
+    let hung: ExtensionHandler = Arc::new(move |event, _| { let capture = Arc::clone(&capture); Box::pin(async move { let ExtensionEvent::SessionShutdown(event) = event else { panic!() }; *capture.lock().unwrap() = event.signal.clone(); std::future::pending().await }) });
+    let seen = Arc::new(Mutex::new(false)); let capture = Arc::clone(&seen); let good: ExtensionHandler = Arc::new(move |_, _| { let capture = Arc::clone(&capture); Box::pin(async move { *capture.lock().unwrap() = true; Ok(EventResult::None) }) });
+    let mut runner = runner(vec![extension("hung", EventKind::SessionShutdown, hung), extension("good", EventKind::SessionShutdown, good)]); runner.shutdown_warn_ms = 0; runner.shutdown_timeout_ms = 50;
+    runner.emit(ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason: SessionReason::Quit, target_session_file: None, signal: None })).await.unwrap(); assert!(*seen.lock().unwrap()); assert!(signal.lock().unwrap().as_ref().unwrap().is_aborted()); assert_eq!(runner.errors[0].error, "handler timed out after 50ms");
+}
+#[tokio::test(start_paused = true)]
+async fn shutdown_warning_event_releases_handler_without_error() {
+    let gate = Arc::new(tokio::sync::Notify::new()); let wait = Arc::clone(&gate);
+    let handler: ExtensionHandler = Arc::new(move |_, _| { let wait = Arc::clone(&wait); Box::pin(async move { wait.notified().await; Ok(EventResult::None) }) });
+    let mut runner = runner(vec![extension("slow", EventKind::SessionShutdown, handler)]); runner.shutdown_warn_ms = 5; runner.set_warning_listener(Some(Arc::new(move |_| gate.notify_one())));
+    runner.emit(ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason: SessionReason::Reload, target_session_file: None, signal: None })).await.unwrap(); assert_eq!(runner.warnings.len(), 1); assert!(runner.errors.is_empty());
+}
+#[tokio::test]
+async fn shutdown_fast_handler_keeps_signal_unaborted() {
+    let handler: ExtensionHandler = Arc::new(|event, _| Box::pin(async move { let ExtensionEvent::SessionShutdown(event) = event else { panic!() }; assert_eq!(event.reason, SessionReason::New); assert!(!event.signal.as_ref().unwrap().is_aborted()); Ok(EventResult::None) }));
+    let mut runner = runner(vec![extension("fast", EventKind::SessionShutdown, handler)]); runner.emit(ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason: SessionReason::New, target_session_file: Some("next".into()), signal: None })).await.unwrap(); assert!(runner.errors.is_empty()); assert!(runner.warnings.is_empty());
+}
+#[tokio::test]
+async fn shutdown_error_preserves_extension_error_shape() { let mut runner = runner(vec![extension("bad", EventKind::SessionShutdown, failure())]); runner.emit(ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason: SessionReason::Quit, target_session_file: None, signal: None })).await.unwrap(); assert_eq!(runner.errors[0].event, "session_shutdown"); assert_eq!(runner.errors[0].stack.as_deref(), Some("test-stack")); }
+#[test]
+fn extension_error_runtime_with_event() { assert_eq!(format_extension_error_headline(&ExtensionError { extension_path: "<runtime>".into(), event: "title".into(), error: "boom".into(), stack: None }), "Runtime error (title): boom"); }
+#[test]
+fn extension_error_runtime_without_event() { assert_eq!(format_extension_error_headline(&ExtensionError { extension_path: "<runtime>".into(), event: "".into(), error: "boom".into(), stack: None }), "Runtime error: boom"); }
+#[test]
+fn extension_error_real_extension_framing() { assert_eq!(format_extension_error_headline(&ExtensionError { extension_path: "/ext.ts".into(), event: "tool_call".into(), error: "boom".into(), stack: None }), "Extension \"/ext.ts\" error: boom"); }
+#[test]
+fn extension_error_strips_hostile_control_sequences() {
+    let error = ExtensionError { extension_path: "<runtime>".into(), event: "title".into(), error: "Overloaded\u{1b}]52;c;Zm9v\u{7}\u{1b}]0;pwned\u{1b}\\\u{1b}]8;;https://evil\u{7}link\u{1b}]8;;\u{7}\u{1b}[31mred\u{1b}[0m\u{9b}2Jclear\0\u{8}\u{7f}tail".into(), stack: None };
+    assert_eq!(format_extension_error_headline(&error), "Runtime error (title): Overloadedlinkredcleartail");
+}
+#[test]
+fn extension_error_sanitizes_path_and_event() { assert_eq!(format_extension_error_headline(&ExtensionError { extension_path: "/ext\u{1b}]52;c;Zm9v\u{7}.ts".into(), event: "tool\u{1b}[31m_call".into(), error: "boom".into(), stack: None }), "Extension \"/ext.ts\" error: boom"); }
+
+#[tokio::test]
+async fn static_registration_executes_real_extension_traits_in_order() {
+    struct Append(&'static str);
+    impl Extension for Append { fn register(&self, api: &mut ExtensionApi) { api.on(EventKind::BeforeAgentStart, prompt(self.0)); } }
+    let mut runner = ExtensionRunner::from_static(vec![Box::new(Append("1")), Box::new(Append("2"))], context());
+    assert_eq!(runner.emit_before_agent_start(before()).await.unwrap().unwrap().system_prompt.as_deref(), Some("base12"));
+}
+#[tokio::test]
+async fn message_end_chains_same_role_replacements() {
+    let handler = |text: &'static str| -> ExtensionHandler { Arc::new(move |_, _| Box::pin(async move { Ok(EventResult::MessageEnd { message: Some(AgentMessage::Llm(Message::User(UserMessage { content: UserContent::Text(text.into()), timestamp: 1 }))) }) })) };
+    let original = AgentMessage::Llm(Message::User(UserMessage { content: UserContent::Text("original".into()), timestamp: 1 }));
+    let result = runner(vec![extension("a", EventKind::MessageEnd, handler("one")), extension("b", EventKind::MessageEnd, handler("two"))]).emit_message_end(original).await.unwrap().unwrap();
+    assert_eq!(result, AgentMessage::Llm(Message::User(UserMessage { content: UserContent::Text("two".into()), timestamp: 1 })));
+}
+#[tokio::test]
+async fn message_end_no_replacement_returns_none() {
+    let original = AgentMessage::Llm(Message::User(UserMessage { content: UserContent::Text("original".into()), timestamp: 1 }));
+    assert!(runner(vec![extension("a", EventKind::MessageEnd, none())]).emit_message_end(original).await.unwrap().is_none());
+}
+#[test]
+fn mcp_collision_diagnostic_names_both_owners() {
+    let mut a = extension("a", EventKind::AgentStart, none()); let mut b = extension("b", EventKind::AgentStart, none());
+    for ext in [&mut a, &mut b] { ext.mcp_servers.push(RegisteredMcpServerDeclaration { name: "dup".into(), config: McpServerDeclaration::default(), extension_path: ext.identity.path.clone(), registration_cwd: "/tmp".into() }); }
+    let warnings = runner(vec![a,b]).get_mcp_server_diagnostics(); assert_eq!(warnings, vec!["MCP server 'dup' declared by both a and b; keeping first declaration from a."]);
+}
+#[test]
+fn tools_first_wins_with_non_builtin_override() {
+    let tool = |description: &str| ToolDefinition::new("shared", description, JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { Ok(ToolResult::text("ok")) })));
+    let mut a = extension("a", EventKind::AgentStart, none()); let mut b = extension("b", EventKind::AgentStart, none());
+    a.source_info.source = "builtin".into();
+    a.tools.push(RegisteredTool { definition: tool("builtin"), source_info: a.source_info.clone() }); b.tools.push(RegisteredTool { definition: tool("user"), source_info: b.source_info.clone() });
+    let runner = runner(vec![a,b]); assert_eq!(runner.get_all_tools()[0].description, "user"); assert_eq!(runner.get_tool_definition("shared").unwrap().description, "builtin");
+}
+#[test]
+fn normalized_tool_metadata_discards_non_search_text() {
+    let mut tool = ToolDefinition::new("test", "test", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { Ok(ToolResult::text("ok")) })));
+    tool.search_text = Some("hidden".into()); tool.allow_lazy_activation = Some(false);
+    let info = normalize_tool_exposure(&tool, SourceInfo::default()); assert_eq!(info.exposure, ToolExposure::Direct); assert_eq!(info.search_text, None); assert!(!info.allow_lazy_activation);
+    tool.exposure = Some(ToolExposure::Search); assert_eq!(normalize_tool_exposure(&tool, SourceInfo::default()).search_text.as_deref(), Some("hidden"));
+}
+#[test]
+fn flags_first_definition_wins_across_extensions() {
+    let mut a = extension("a", EventKind::AgentStart, none()); let mut b = extension("b", EventKind::AgentStart, none());
+    for ext in [&mut a, &mut b] { ext.flags.push(ExtensionFlag { name: "shared".into(), description: Some(ext.identity.path.clone()), kind: FlagType::Boolean { default: Some(true) }, extension_path: ext.identity.path.clone() }); }
+    assert_eq!(runner(vec![a,b]).get_flags()["shared"].description.as_deref(), Some("a"));
+}
+#[test]
+fn renderers_first_owner_and_options_stay_together() {
+    let mut a = extension("a", EventKind::AgentStart, none()); let mut b = extension("b", EventKind::AgentStart, none());
+    a.message_renderers.insert("custom".into(), Arc::new(|_, _, _| None));
+    a.entry_renderers.insert("custom".into(), Arc::new(|_, _, _| None));
+    b.entry_renderers.insert("custom".into(), Arc::new(|_, _, _| None)); b.entry_renderer_options.insert("custom".into(), EntryRendererOptions::default());
+    let runner = runner(vec![a,b]); assert!(runner.get_message_renderer("custom").is_some()); assert!(runner.get_entry_renderer("custom").is_some()); assert!(runner.get_entry_renderer_options("custom").is_none()); assert!(runner.get_entry_renderer("missing").is_none());
+}
+#[test]
+fn extension_actions_reject_before_binding_and_after_invalidation() {
+    let runtime = ExtensionRuntime::default(); let api = ExtensionApi::new(LoadedExtension::new("a", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), runtime.clone());
+    assert!(api.append_entry("state", None).is_err()); runtime.invalidate("stale"); assert_eq!(api.get_all_tools().unwrap_err().message, "stale");
+}
+#[tokio::test]
+async fn wait_for_idle_uses_host_event_signal() {
+    let (sender, receiver) = tokio::sync::oneshot::channel(); let receiver = Arc::new(Mutex::new(Some(receiver))); let mut ctx = context();
+    ctx.wait_for_idle_fn = Arc::new(move || { let receiver = receiver.lock().unwrap().take().unwrap(); Box::pin(async move { receiver.await.unwrap(); }) });
+    sender.send(()).unwrap(); ctx.wait_for_idle().await;
+}
+#[test]
+fn widgets_support_both_senpi_placements() { assert_eq!(WidgetPlacement::default().as_str(), "aboveEditor"); assert_eq!(WidgetPlacement::BelowEditor.as_str(), "belowEditor"); }
+#[test]
+fn extension_error_normalizes_carriage_returns_and_spaces() { assert_eq!(format_extension_error_headline(&ExtensionError { extension_path: "/ext.ts".into(), event: "x".into(), error: "a\r\nb\rc\t  d".into(), stack: None }), "Extension \"/ext.ts\" error: a\nb\nc d"); }
+
+#[tokio::test]
+async fn model_select_merges_partial_results_and_preserves_null_reset() {
+    let model = Model { id: "test".into(), name: "test".into(), api: "openai-completions".into(), provider: "test".into(), base_url: "https://example.test".into(), reasoning: false, thinking_level_map: None, input: vec![], cost: Default::default(), context_window: 1000, max_tokens: 100, sampling_params: None, headers: None, cache_retention: None, upstream_model_id: None, service_tier: None, recover_text_tool_calls: None, compat: None };
+    let first: ExtensionHandler = Arc::new(|_, _| Box::pin(async { Ok(EventResult::ModelSelect(ModelSelectEventResult { system_prompt: Some(None), system_prompt_name: None })) }));
+    let second: ExtensionHandler = Arc::new(|event, ctx| Box::pin(async move { let ExtensionEvent::ModelSelect(event) = event else { panic!() }; assert_eq!(event.system_prompt_options, ctx.get_system_prompt_options()); Ok(EventResult::ModelSelect(ModelSelectEventResult { system_prompt: None, system_prompt_name: Some("default".into()) })) }));
+    let result = runner(vec![extension("a", EventKind::ModelSelect, first), extension("b", EventKind::ModelSelect, second)]).emit_model_select(ModelSelectEvent { model, previous_model: None, source: ModelSelectSource::Set, system_prompt: "old".into(), system_prompt_options: Default::default() }).await.unwrap().unwrap();
+    assert_eq!(result.system_prompt, Some(None)); assert_eq!(result.system_prompt_name.as_deref(), Some("default"));
+}
+#[test]
+fn bus_panics_are_isolated_and_invalidation_unsubscribes() {
+    let runner = runner(vec![]); let count = Arc::new(Mutex::new(0)); let capture = Arc::clone(&count);
+    let _bad = runner.events.on("x", Arc::new(|_| panic!("bad listener")));
+    let _good = runner.events.on("x", Arc::new(move |_| *capture.lock().unwrap() += 1));
+    runner.events.emit("x", &JsonValue::Null); assert_eq!(*count.lock().unwrap(), 1);
+    runner.invalidate("reload"); runner.events.emit("x", &JsonValue::Null); assert_eq!(*count.lock().unwrap(), 1);
+}
