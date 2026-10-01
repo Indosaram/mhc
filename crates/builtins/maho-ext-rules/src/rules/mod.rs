@@ -10,3 +10,4 @@ pub mod scanner;
 pub mod finder;
 pub mod formatter;
 pub mod matcher;
+pub mod engine;
