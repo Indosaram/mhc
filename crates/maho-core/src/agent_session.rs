@@ -383,6 +383,12 @@ struct AgentSessionState {
     auto_compaction_session_override: Option<bool>,
     turn_index: u64,
     message_replacements: Vec<(AgentMessage, AgentMessage)>,
+    retry_attempt: u32,
+    retry_abort_controller: Option<maho_ai::utils::abort::AbortController>,
+    user_aborted: bool,
+    probe_phase: crate::retry_fallback::hint_policy::ProbePhase,
+    hint_deadline_ms: Option<f64>,
+    cumulative_hinted_wait_ms: f64,
 }
 
 fn name_set(names: Option<Vec<String>>) -> Option<BTreeSet<String>> {
@@ -410,6 +416,67 @@ pub struct AgentSessionInner {
     retry_random: Arc<dyn Fn() -> f64 + Send + Sync>,
     agent_subscription: Mutex<Option<maho_agent::agent::AgentSubscription>>,
     prompt_admission: tokio::sync::Mutex<()>,
+    retry_fallback: tokio::sync::Mutex<Option<crate::retry_fallback::controller::RetryFallbackController<SessionFallbackDeps>>>,
+}
+
+struct SessionFallbackDeps(std::sync::Weak<AgentSessionInner>);
+
+impl crate::retry_fallback::controller::RetryFallbackDeps for SessionFallbackDeps {
+    fn settings(&self) -> crate::retry_fallback::settings::ResolvedRetryFallbackSettings {
+        let settings = self.0.upgrade().map(|inner| AgentSession { inner })
+            .and_then(|session| session.with_settings_manager(|manager| manager.get_value("retry").cloned()));
+        crate::retry_fallback::settings::resolve_retry_fallback_settings(settings.as_ref())
+    }
+    fn models(&self) -> Vec<Model> {
+        self.0.upgrade().map_or_else(Vec::new, |inner| inner.model_registry.get_all())
+    }
+    fn current(&self) -> Option<(Model, Option<ModelThinkingLevel>)> {
+        self.0.upgrade().map(|inner| {
+            let state = inner.agent.state();
+            (state.model, Some(state.thinking_level))
+        })
+    }
+    fn is_auth_available(&self, provider: &str) -> bool {
+        self.0.upgrade().is_some_and(|inner| inner.model_registry.get_all().iter()
+            .any(|model| model.provider == provider && inner.model_registry.has_configured_auth(model)))
+    }
+    fn is_using_oauth(&self, model: &Model) -> bool {
+        self.0.upgrade().is_some_and(|inner| inner.model_registry.is_using_oauth(model))
+    }
+    fn is_fallback_eligible(&self, model: &Model) -> bool {
+        self.0.upgrade().is_some_and(|inner| inner.model_registry.is_fallback_eligible(model))
+    }
+    fn switch_model<'a>(&'a mut self, model: Model, thinking: ModelThinkingLevel, revert: bool)
+        -> maho_ai::types::BoxFuture<'a, Result<(), String>>
+    {
+        Box::pin(async move {
+            let inner = self.0.upgrade().ok_or("Session disposed")?;
+            let session = AgentSession { inner };
+            let previous = session.model();
+            session.agent.set_model(model.clone());
+            session.set_session_thinking_level(thinking);
+            session.with_session_manager_mut(|manager| manager.append_model_change(
+                &model.provider, &model.id, Some(if revert { "fallback-revert" } else { "fallback" }),
+                Some((&previous.provider, &previous.id)),
+            ));
+            Ok(())
+        })
+    }
+    fn emit(&mut self, event: crate::retry_fallback::controller::FallbackEvent) {
+        if let Some(inner) = self.0.upgrade() {
+            let session = AgentSession { inner };
+            use crate::retry_fallback::controller::{FallbackEvent, FallbackReason};
+            session.emit(match event {
+                FallbackEvent::Applied { from, to, chain_key, reason } => AgentSessionEvent::RetryFallbackApplied {
+                    from, to, chain_key, reason: match reason {
+                        FallbackReason::Transient => "transient", FallbackReason::Refusal => "refusal",
+                        FallbackReason::HardError => "hard-error", FallbackReason::Billing => "billing",
+                    }.to_owned(),
+                },
+                FallbackEvent::Reverted { from, to } => AgentSessionEvent::RetryFallbackReverted { from, to },
+            });
+        }
+    }
 }
 
 impl std::ops::Deref for AgentSession {
@@ -513,6 +580,12 @@ impl AgentSession {
             auto_compaction_session_override: None,
             turn_index: 0,
             message_replacements: Vec::new(),
+            retry_attempt: 0,
+            retry_abort_controller: None,
+            user_aborted: false,
+            probe_phase: crate::retry_fallback::hint_policy::ProbePhase::Idle,
+            hint_deadline_ms: None,
+            cumulative_hinted_wait_ms: 0.0,
         };
         let session = Self { inner: Arc::new(AgentSessionInner {
             agent,
@@ -531,6 +604,7 @@ impl AgentSession {
             retry_random: config.retry_random.unwrap_or_else(|| Arc::new(rand_unit)),
             agent_subscription: Mutex::new(None),
             prompt_admission: tokio::sync::Mutex::new(()),
+            retry_fallback: tokio::sync::Mutex::new(None),
         }) };
 
         let initial_model = session.agent.state().model;
@@ -553,6 +627,16 @@ impl AgentSession {
             })
         }));
         *lock(&session.agent_subscription) = Some(subscription);
+
+        let now = session.fallback_now.clone();
+        let random = session.retry_random.clone();
+        let cooldowns = crate::retry_fallback::cooldown::SelectorCooldowns::new(move || now(), move || random())
+            .unwrap_or_else(|error| panic!("Invalid pinned cooldown pattern: {error}"));
+        *session.retry_fallback.try_lock().map_err(|_| MissingModelAccessError)? = Some(
+            crate::retry_fallback::controller::RetryFallbackController::new(
+                SessionFallbackDeps(Arc::downgrade(&session.inner)), cooldowns,
+            ),
+        );
 
         Ok(session)
     }
@@ -600,6 +684,9 @@ impl AgentSession {
         if let AgentEvent::MessageStart { message } = &event
             && message.role() == "user"
         {
+            if let Some(controller) = self.retry_fallback.lock().await.as_mut() {
+                controller.reset_turn();
+            }
             let text = user_message_text(message);
             let removed = {
                 let mut state = self.state();
@@ -618,10 +705,14 @@ impl AgentSession {
                 self.emit_queue_update();
             }
         }
+        let will_retry = if let AgentEvent::AgentEnd { messages } = &event {
+            self.will_retry(messages.iter().rev().find_map(AgentMessage::as_assistant)).await
+        } else { false };
+        if will_retry { self.agent.suppress_queued_message_drain(); }
         let extension_event = match &event {
             AgentEvent::AgentStart => maho_ext_api::ExtensionEvent::AgentStart,
             AgentEvent::AgentEnd { messages } => maho_ext_api::ExtensionEvent::AgentEnd {
-                messages: messages.clone(), aborted: None, will_retry: Some(false), abort_source: None,
+                messages: messages.clone(), aborted: Some(self.state().user_aborted), will_retry: Some(will_retry), abort_source: None,
             },
             AgentEvent::TurnStart => maho_ext_api::ExtensionEvent::TurnStart {
                 turn_index: self.state().turn_index, timestamp: maho_ai::utils::diagnostics::now_ms() as u64,
@@ -699,6 +790,23 @@ impl AgentSession {
                 }
                 Err(error) => self.emit(AgentSessionEvent::ContinuationError { error_message: error.to_string() }),
             }
+            if let Some(assistant) = message.as_assistant()
+                && assistant.error_message.is_none()
+                && !matches!(assistant.stop_reason, StopReason::Error | StopReason::Aborted)
+                && !maho_ai::utils::stop_details::is_classifier_refusal(assistant)
+            {
+                let attempt = self.state().retry_attempt;
+                if attempt > 0 {
+                    if let Some(fallback) = self.retry_fallback.lock().await.as_ref().and_then(|controller| controller.state.clone()) {
+                        self.emit(AgentSessionEvent::RetryFallbackSucceeded {
+                            model: format!("{}/{}", self.model().provider, self.model().id), chain_key: fallback.chain_key,
+                        });
+                    }
+                    self.state().retry_attempt = 0;
+                    self.reset_hint_tier_state();
+                    self.emit(AgentSessionEvent::AutoRetryEnd { success: true, attempt, final_error: None });
+                }
+            }
         }
     }
 
@@ -727,6 +835,7 @@ impl AgentSession {
             return Ok(PromptDisposition::Queued);
         }
         let _admission = self.prompt_admission.lock().await;
+        self.state().user_aborted = false;
         let Some((text, images)) = self.run_input_handlers(text, options.images, options.source, None).await? else {
             return Ok(PromptDisposition::Handled);
         };
@@ -741,7 +850,7 @@ impl AgentSession {
             });
         }
         self.agent.prompt(maho_agent::agent::AgentPromptInput::Message(make_user_message(&text, images))).await;
-        self.agent.wait_for_idle().await;
+        self.finish_provider_turn().await?;
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::AgentSettled).await;
         self.emit(AgentSessionEvent::AgentSettled);
         self.emit(AgentSessionEvent::AgentIdle);
@@ -796,6 +905,8 @@ impl AgentSession {
     }
 
     pub async fn abort(&self) {
+        self.state().user_aborted = true;
+        self.abort_retry();
         let pending = !self.is_streaming() && (self.pending_message_count() > 0 || self.state().had_cleared_queued_messages);
         self.state().had_cleared_queued_messages = false;
         self.agent.suppress_queued_message_drain();
@@ -804,6 +915,175 @@ impl AgentSession {
         if pending {
             self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionAbort).await;
             self.emit(AgentSessionEvent::SessionAbort);
+        }
+    }
+
+    pub fn is_retrying(&self) -> bool { self.state().retry_attempt > 0 }
+
+    pub fn retry_attempt(&self) -> u32 { self.state().retry_attempt }
+
+    pub fn abort_retry(&self) {
+        if let Some(controller) = self.state().retry_abort_controller.as_ref() { controller.abort(None); }
+    }
+
+    pub fn auto_retry_enabled(&self) -> bool {
+        self.with_settings_manager(|manager| manager.get_value("retry")
+            .and_then(|settings| settings.get("enabled")).and_then(Value::as_bool).unwrap_or(true))
+    }
+
+    fn reset_hint_tier_state(&self) {
+        let mut state = self.state();
+        state.probe_phase = crate::retry_fallback::hint_policy::ProbePhase::Idle;
+        state.hint_deadline_ms = None;
+        state.cumulative_hinted_wait_ms = 0.0;
+    }
+
+    pub fn fallback_validation_warnings(&self) -> Vec<String> {
+        let settings = self.with_settings_manager(|manager| manager.get_value("retry").cloned());
+        crate::retry_fallback::validate::validate_fallback_chains(
+            settings.as_ref().and_then(|settings| settings.get("fallbackChains")), &self.model_registry.get_all(),
+        )
+    }
+
+    pub fn set_auto_retry_enabled(&self, enabled: bool) -> Result<(), String> {
+        let mut retry = self.with_settings_manager(|manager| manager.get_value("retry").cloned())
+            .and_then(|retry| retry.as_object().cloned()).unwrap_or_default();
+        retry.insert("enabled".to_owned(), Value::Bool(enabled));
+        self.with_settings_manager_mut(|manager| manager.set(crate::settings_manager::SettingsScope::Global,
+            &Map::from_iter([("retry".to_owned(), Value::Object(retry))])))
+    }
+
+    pub async fn wait_for_retry(&self) {
+        let _admission = self.prompt_admission.lock().await;
+    }
+
+    async fn will_retry(&self, message: Option<&maho_ai::types::AssistantMessage>) -> bool {
+        let Some(message) = message else { return false; };
+        if self.state().user_aborted || !self.with_settings_manager(|manager| manager.get_value("retry")
+            .and_then(|settings| settings.get("enabled")).and_then(Value::as_bool).unwrap_or(true)) { return false; }
+        if message.error_message.as_deref().is_some_and(|error| error.starts_with(
+            maho_ai::utils::provider_failure_description::TURN_RETRY_SUPPRESSION_PREFIX))
+            || maho_ai::utils::overflow::is_context_overflow(message, Some(self.model().context_window)) { return false; }
+        if maho_ai::utils::retry::is_retryable_assistant_error(message)
+            || maho_ai::utils::retry::is_provider_timeout_error(message)
+            || maho_ai::utils::stop_details::is_classifier_refusal(message) { return true; }
+        message.stop_reason == StopReason::Error
+            && !message.content.iter().any(|content| matches!(content, maho_ai::types::ContentBlock::ToolCall(_)))
+            && self.retry_fallback.lock().await.as_mut().is_some_and(|controller| controller.can_try_fallback())
+    }
+
+    async fn finish_provider_turn(&self) -> Result<(), String> {
+        use crate::retry_fallback::controller::FallbackReason;
+        use maho_ai::utils::retry_hint::parse_retry_after_ms_marker;
+        loop {
+            self.agent.wait_for_idle().await;
+            let Some(message) = self.messages().iter().rev().find_map(AgentMessage::as_assistant).cloned() else { return Ok(()); };
+            if !self.will_retry(Some(&message)).await { return Ok(()); }
+            let settings = self.with_settings_manager(|manager| manager.get_value("retry").cloned()).unwrap_or(Value::Null);
+            let max_attempts = settings.get("maxRetries").and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok()).unwrap_or(5);
+            let base_delay = settings.get("baseDelayMs").and_then(Value::as_u64).unwrap_or(2_000);
+            let cap = settings.get("maxAgentDelayMs").and_then(Value::as_u64).unwrap_or(60_000);
+            let error = message.error_message.clone().unwrap_or_else(|| "Unknown error".to_owned());
+            let hint = parse_retry_after_ms_marker(&error);
+            let refusal = maho_ai::utils::stop_details::is_classifier_refusal(&message);
+            let transient = maho_ai::utils::retry::is_retryable_assistant_error(&message)
+                || maho_ai::utils::retry::is_provider_timeout_error(&message);
+            let attempt = self.state().retry_attempt.saturating_add(1);
+            let rate_limited = ["rate limit", "rate_limit", "429", "too many requests", "resource_exhausted"]
+                .iter().any(|marker| error.to_lowercase().contains(marker));
+            let hint_settings = crate::retry_fallback::settings::resolve_hint_policy_settings(Some(&settings));
+            let tier = crate::retry_fallback::hint_policy::classify_rate_limited_wait(hint.map(|hint| hint as f64), hint_settings);
+            let mut hint_delay = None;
+            if rate_limited && tier == crate::retry_fallback::hint_policy::HintTier::Tier1InTurn {
+                let mut state = self.state();
+                let result = crate::retry_fallback::hint_policy::next_in_turn_delay_ms(
+                    crate::retry_fallback::hint_policy::InTurnState {
+                        probe_phase: state.probe_phase, hint_deadline_ms: state.hint_deadline_ms,
+                        attempt, cumulative_hinted_wait_ms: state.cumulative_hinted_wait_ms,
+                    }, hint.map(|hint| hint as f64), base_delay as f64, hint_settings.hinted_wait_cap_ms, self.fallback_now(),
+                );
+                state.probe_phase = result.probe_phase;
+                state.hint_deadline_ms = result.hint_deadline_ms;
+                state.cumulative_hinted_wait_ms = result.cumulative_hinted_wait_ms;
+                if !result.demote_to_probe_back { hint_delay = Some(result.delay_ms as u64); }
+            }
+            let needs_fallback = refusal || !transient || attempt > max_attempts ||
+                if rate_limited { hint_delay.is_none() } else { hint.is_some_and(|hint| hint > cap) };
+            let mut switched = false;
+            if needs_fallback {
+                let reason = if refusal { FallbackReason::Refusal } else if transient { FallbackReason::Transient }
+                    else if crate::retry_fallback::billing::is_billing_error_message(Some(&error)) { FallbackReason::Billing }
+                    else { FallbackReason::HardError };
+                let mut controller = self.retry_fallback.lock().await;
+                if let Some(controller) = controller.as_mut() {
+                    switched = controller.try_fallback(reason, crate::retry_fallback::cooldown::SelectorFailure {
+                        error_message: Some(&error), retry_after_ms: hint.map(|hint| hint as f64),
+                    }).await?;
+                    if !switched && let Some(chain_key) = controller.exhausted_chain_key.clone() {
+                        self.emit(AgentSessionEvent::RetryFallbackExhausted { chain_key, last_error: error.clone() });
+                    }
+                }
+                if !switched && rate_limited && attempt <= max_attempts && !refusal {
+                    match crate::retry_fallback::hint_policy::degrade_without_fallback(
+                        tier, hint.map(|hint| hint as f64), attempt, base_delay as f64, hint_settings.hinted_wait_cap_ms,
+                    ) {
+                        crate::retry_fallback::hint_policy::DegradedRateLimitAction::InTurn { delay_ms } => hint_delay = Some(delay_ms as u64),
+                        crate::retry_fallback::hint_policy::DegradedRateLimitAction::Fail { .. } => {}
+                    }
+                }
+                if !switched && hint_delay.is_none() {
+                    let attempt = self.state().retry_attempt;
+                    self.state().retry_attempt = 0;
+                    self.reset_hint_tier_state();
+                    self.emit(AgentSessionEvent::AutoRetryEnd { success: false, attempt, final_error: Some(error) });
+                    return Ok(());
+                }
+            }
+            let attempt = if switched { 1 } else { attempt };
+            self.state().retry_attempt = attempt;
+            let delay_ms = if switched { 0 } else { hint_delay.or(hint).unwrap_or_else(|| base_delay.saturating_mul(
+                2_u64.saturating_pow(attempt.saturating_sub(1)))).min(cap) };
+            let abort = maho_ai::utils::abort::AbortController::new();
+            self.state().retry_abort_controller = Some(abort.clone());
+            self.emit(AgentSessionEvent::AutoRetryStart { attempt, max_attempts, delay_ms, error_message: error });
+            let mut messages = self.messages();
+            if messages.last().is_some_and(|message| message.role() == "assistant") {
+                messages.pop();
+                self.agent.set_messages(messages);
+                self.state().message_revision += 1;
+            }
+            let signal = abort.signal();
+            tokio::select! {
+                _ = signal.cancelled() => {
+                    self.state().retry_abort_controller = None;
+                    self.state().retry_attempt = 0;
+                    self.reset_hint_tier_state();
+                    self.emit(AgentSessionEvent::AutoRetryEnd { success: false, attempt, final_error: Some("Retry cancelled".to_owned()) });
+                    return Ok(());
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
+            }
+            self.state().retry_abort_controller = None;
+            let policy = crate::retry_fallback::settings::resolve_retry_fallback_settings(Some(&settings)).revert_policy;
+            if let Some(controller) = self.retry_fallback.lock().await.as_mut() { controller.maybe_restore_primary(policy).await?; }
+            let plan = crate::provider_timeout_retry::create_provider_timeout_retry_plan(&message,
+                crate::provider_timeout_retry::ProviderTimeoutRetryPlanInput {
+                    stream_retry_timeout_ms: settings.get("provider").and_then(|provider| provider.get("streamRetryTimeoutMs"))
+                        .and_then(Value::as_u64).or(Some(30_000)),
+                    timeout_ms: self.agent.timeout_ms(), stream_start_timeout_ms: self.agent.stream_start_timeout_ms(),
+                });
+            let continuation = self.agent.continue_run(plan.options);
+            if let Some(timeout) = plan.watchdog_timeout_ms {
+                tokio::pin!(continuation);
+                tokio::select! {
+                    _ = &mut continuation => {}
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(timeout)) => {
+                        self.agent.abort(Some(maho_ai::utils::abort::AbortReason::new("AbortError",
+                            provider_retry_watchdog_abort_message(Some(timeout), self.agent.stream_start_timeout_ms()))));
+                        continuation.await;
+                    }
+                }
+            } else { continuation.await; }
         }
     }
 
@@ -2753,5 +3033,72 @@ mod tests {
         ).await;
         // Then its first extension turn starts at zero.
         assert_eq!(session.state().turn_index, 0);
+    }
+
+    fn retry_session(responses: Vec<maho_ai::types::AssistantMessage>, max_retries: u32) -> AgentSession {
+        use maho_ai::providers::faux::{faux_provider, faux_streams, RegisterFauxProviderOptions};
+        let provider = faux_provider(RegisterFauxProviderOptions {
+            tokens_per_second: Some(0.0), ..Default::default()
+        });
+        provider.set_responses(responses.into_iter().map(Into::into).collect());
+        let streams = faux_streams(provider.core.clone());
+        let session = test_session_with_stream_function(false);
+        session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
+        session.agent.set_stream_function(Arc::new(move |model, context, options| {
+            streams.stream_simple(model, context, options.map(|options| options.simple))
+        }));
+        session.with_settings_manager_mut(|manager| manager.set(crate::settings_manager::SettingsScope::Global, &serde_json::from_value(
+            serde_json::json!({"retry":{"enabled":true,"maxRetries":max_retries,"baseDelayMs":0,"modelFallback":false}})
+        ).expect("settings")).expect("save settings"));
+        session
+    }
+
+    #[tokio::test]
+    async fn prompt_retries_transient_failure_and_preserves_durable_history() {
+        let session = retry_session(vec![
+            maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+                stop_reason: Some(StopReason::Error), error_message: Some("overloaded_error".to_owned()), ..Default::default()
+            }),
+            maho_ai::providers::faux::faux_assistant_message("recovered", Default::default()),
+        ], 2);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| lock(&captured).push(event.clone())));
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("input", Default::default()))
+            .await.expect("bounded prompt").expect("prompt");
+        assert_eq!(session.get_last_assistant_text().as_deref(), Some("recovered"));
+        assert!(!session.is_retrying());
+        assert_eq!(session.messages().len(), 2);
+        assert_eq!(session.with_session_manager(|manager| manager.entries().len()), 3);
+        assert!(lock(&events).iter().any(|event| matches!(event, AgentSessionEvent::AutoRetryEnd { success: true, attempt: 1, .. })));
+    }
+
+    #[tokio::test]
+    async fn transient_failures_exhaust_bounded_retry_budget() {
+        let failed = maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+            stop_reason: Some(StopReason::Error), error_message: Some("overloaded_error".to_owned()), ..Default::default()
+        });
+        let session = retry_session(vec![failed.clone(), failed.clone(), failed], 2);
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("input", Default::default()))
+            .await.expect("bounded prompt").expect("prompt");
+        assert!(!session.is_retrying());
+        assert_eq!(session.with_session_manager(|manager| manager.entries().len()), 4);
+        assert_eq!(session.messages().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn abort_retry_cancels_backoff_before_another_request() {
+        let failed = maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+            stop_reason: Some(StopReason::Error), error_message: Some("overloaded_error".to_owned()), ..Default::default()
+        });
+        let session = retry_session(vec![failed], 2);
+        let cancelling = session.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if matches!(event, AgentSessionEvent::AutoRetryStart { .. }) { cancelling.abort_retry(); }
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("input", Default::default()))
+            .await.expect("bounded prompt").expect("prompt");
+        assert!(!session.is_retrying());
+        assert_eq!(session.with_session_manager(|manager| manager.entries().len()), 2);
     }
 }
