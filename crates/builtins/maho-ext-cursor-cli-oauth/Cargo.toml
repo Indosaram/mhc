@@ -7,6 +7,7 @@ license = "MIT"
 
 [dependencies]
 maho-ai = { path = "../../maho-ai" }
+maho-core = { path = "../../maho-core" }
 anyhow = "=1.0.104"
 serde = { version = "=1.0.228", features = ["derive"] }
 sha2 = "=0.10.9"
@@ -15,6 +16,7 @@ regex = "=1.12.3"
 serde_json = { version = "=1.0.149", features = ["preserve_order"] }
 
 [dev-dependencies]
+tempfile = "=3.27.0"
 tokio = { version = "=1.52.3", features = ["macros", "rt"] }
 
 [lints]
