@@ -29,3 +29,7 @@ pub mod resume_admission;
 pub mod resume_slice;
 pub mod restoration_tracker;
 pub mod checkpoint_state;
+pub mod model_selection;
+pub mod extension_wiring;
+pub mod openai_remote_model;
+pub mod openai_remote_convert;
