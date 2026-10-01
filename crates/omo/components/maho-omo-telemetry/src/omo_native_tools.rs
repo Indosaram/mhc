@@ -22,6 +22,13 @@ impl ToolTelemetry {
         if let Some(feature)=feature && self.feature_usage.entry(session.into()).or_default().insert(feature) {vec![("feature_used",json!({"$session_id":hash,"feature":feature}))]} else {Vec::new()}
     }
 }
+pub fn register_omo_native_tool_telemetry(api:&mut maho_ext_api::ExtensionApi,skills_root:std::path::PathBuf,hash:std::sync::Arc<dyn Fn(&str)->String+Send+Sync>,capture:crate::omo_native_parallel_summary::SummaryCapture) {
+    use std::sync::{Arc,Mutex};
+    use maho_ext_api::{EventKind,EventResult,ExtensionEvent};
+    let state=Arc::new(Mutex::new(ToolTelemetry::default()));let results=Arc::clone(&state);
+    api.on(EventKind::ToolResult,Arc::new(move |event,ctx| {let at_session=ctx.session_manager.session_id();let output=if let ExtensionEvent::ToolResult(event)=event {results.lock().unwrap_or_else(std::sync::PoisonError::into_inner).record(&json!({"type":"tool_result","toolName":event.tool_name,"input":event.input,"isError":event.is_error}),at_session,&hash(at_session),&ctx.cwd,&skills_root)} else {Vec::new()};let capture=Arc::clone(&capture);Box::pin(async move {for (name,properties) in output {capture(name,properties);}Ok(EventResult::None)})}));
+    api.on(EventKind::SessionShutdown,Arc::new(move |_,ctx| {state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear(ctx.session_manager.session_id());Box::pin(async {Ok(EventResult::None)})}));
+}
 #[cfg(test)]
 mod tests {
     use super::*;
