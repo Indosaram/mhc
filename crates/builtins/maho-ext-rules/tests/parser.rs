@@ -21,3 +21,9 @@ fn unclosed_array_is_diagnostic() { let result = parse_rule("---\nglobs: [a\n---
 fn content_after_array_is_diagnostic() { let result = parse_rule("---\nglobs: [a] trailing\n---\nbody"); assert!(result.diagnostic.is_some()); }
 #[test]
 fn quoted_inline_comma_is_not_a_separator() { let result = parse_rule("---\nglobs: ['a,b', c]\n---\nbody"); assert_eq!(result.frontmatter.globs, vec!["a,b","c"]); }
+#[test]
+fn lone_single_quote_scalar_is_an_empty_string() {
+ let result = parse_rule("---\ndescription: '\n---\nbody");
+ assert_eq!(result.frontmatter.description.as_deref(), Some(""));
+ assert!(result.diagnostic.is_none());
+}

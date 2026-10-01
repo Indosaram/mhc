@@ -28,7 +28,7 @@ fn strip_comment(line: &str) -> &str {
 }
 fn parse_string(value: &str) -> Result<String, String> {
  if value.starts_with('"') { return serde_json::from_str(value).map_err(|_| "Invalid JSON-quoted string".into()); }
- if value.starts_with('\'') { return value.strip_prefix('\'').and_then(|value| value.strip_suffix('\'')).map(str::to_owned).ok_or_else(|| "Unclosed quoted value".into()); }
+ if value.starts_with('\'') { return if value.ends_with('\'') { Ok(value.get(1..value.len().saturating_sub(1)).unwrap_or("").into()) } else { Err("Unclosed quoted value".into()) }; }
  Ok(value.into())
 }
 fn split_comma(value: &str) -> Result<Vec<String>, String> {
