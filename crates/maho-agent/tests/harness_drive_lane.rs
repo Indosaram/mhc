@@ -23,6 +23,40 @@ fn seed() -> LaneConfiguration {
 }
 
 #[tokio::test]
+async fn global_configuration_round_trips_and_rejects_invalid_values() {
+    let harness = fixture().await;
+    let options = maho_agent::harness::types::AgentHarnessStreamOptions { timeout_ms: Some(42), ..Default::default() };
+    harness.set_stream_options(options.clone(), &BACKGROUND_CONTEXT).await.unwrap();
+    harness.set_steering_mode(maho_agent::types::QueueMode::OneAtATime, &BACKGROUND_CONTEXT).await.unwrap();
+    harness.set_follow_up_mode(maho_agent::types::QueueMode::OneAtATime, &BACKGROUND_CONTEXT).await.unwrap();
+    assert_eq!(harness.get_stream_options().unwrap(), options);
+    assert_eq!(harness.get_steering_mode().unwrap(), maho_agent::types::QueueMode::OneAtATime);
+    assert_eq!(harness.get_follow_up_mode().unwrap(), maho_agent::types::QueueMode::OneAtATime);
+    let mut retry = harness.get_retry_policy().unwrap();
+    retry.base_delay_ms = u64::MAX;
+    assert!(harness.set_retry_policy(retry, &BACKGROUND_CONTEXT).await.is_err());
+    assert_eq!(harness.get_retry_policy().unwrap().base_delay_ms, 1_000);
+    let mut compaction = harness.get_compaction_settings().unwrap();
+    compaction.reserve_tokens = u64::MAX;
+    assert!(harness.set_compaction_settings(compaction, &BACKGROUND_CONTEXT).await.is_err());
+}
+
+#[tokio::test]
+async fn fault_seals_all_lanes_and_preserves_first_fault() {
+    let harness = fixture().await;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let cause = maho_agent::harness::session::session::session_invariant_error("broken storage");
+    let first = harness.fault(cause, &BACKGROUND_CONTEXT);
+    let second = harness.fault(maho_agent::harness::session::session::session_invariant_error("later"), &BACKGROUND_CONTEXT);
+    assert_eq!(first, second);
+    assert_eq!(lane.get_tip_id().unwrap_err(), first);
+    assert!(harness.get_stream_options().is_err());
+    harness.close(&BACKGROUND_CONTEXT).await;
+    harness.close(&BACKGROUND_CONTEXT).await;
+    assert!(harness.session.get_stats(&BACKGROUND_CONTEXT).await.is_err());
+}
+
+#[tokio::test]
 async fn queues_all_input_kinds_without_moving_tip_and_cancels_one() {
     use maho_agent::harness::runtime::lane::{QueuedInput, CancelQueuedOutcome};
     use maho_agent::harness::session::types::InboxItemKind;
