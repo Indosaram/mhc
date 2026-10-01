@@ -64,6 +64,27 @@ impl GoalWaitTicker {
 impl Drop for GoalWaitTicker { fn drop(&mut self) { if let Some(timer)=&self.timer { timer.abort(); } } }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test(start_paused=true)] async fn countdown_updates_channels_without_moving_deadline_and_stop_clears() {
+        let start=tokio::time::Instant::now(); let (send,mut receive)=tokio::sync::mpsc::unbounded_channel();
+        let mut ticker=GoalWaitTicker::new(Arc::new(move |_,status| { send.send(status.map(str::to_owned)).unwrap(); Ok(()) }),Arc::new(move ||(tokio::time::Instant::now()-start).as_secs_f64()*1000.0));
+        ticker.sync(crate::test_context::context(),GoalWaitLabelInput { kind:GoalWaitKind::Monitor,remaining_ms:10_000.0,total_ms:10_000.0,channel_counts:ResumptionChannelCounts::new() }).await.unwrap();
+        receive.recv().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2),receive.recv()).await.unwrap().unwrap();
+        let counts=ResumptionChannelCounts::from([("senpi-task".into(),1.0)]);
+        ticker.set_channel_counts(counts.clone()).unwrap();
+        assert_eq!(receive.recv().await.unwrap(),Some(format_goal_wait_label(&GoalWaitLabelInput { kind:GoalWaitKind::Monitor,remaining_ms:9000.0,total_ms:10_000.0,channel_counts:counts })));
+        ticker.stop().await.unwrap(); assert_eq!(receive.recv().await.unwrap(),None); assert!(!ticker.running());
+        drop(ticker); assert!(receive.recv().await.is_none());
+    }
+    #[tokio::test(start_paused=true)] async fn busy_context_hides_wait_and_idle_signal_reveals_countdown() {
+        let idle=Arc::new(std::sync::atomic::AtomicBool::new(false)); let reading=Arc::clone(&idle); let mut ctx=crate::test_context::context(); ctx.is_idle_fn=Arc::new(move ||reading.load(std::sync::atomic::Ordering::SeqCst));
+        let (send,mut receive)=tokio::sync::mpsc::unbounded_channel();
+        let mut ticker=GoalWaitTicker::new(Arc::new(move |_,status| { send.send(status.map(str::to_owned)).unwrap(); Ok(()) }),Arc::new(||0.0));
+        ticker.sync(ctx,GoalWaitLabelInput { kind:GoalWaitKind::UserGrace,remaining_ms:10_000.0,total_ms:10_000.0,channel_counts:ResumptionChannelCounts::new() }).await.unwrap();
+        assert!(receive.try_recv().is_err()); idle.store(true,std::sync::atomic::Ordering::SeqCst);
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(2),receive.recv()).await.unwrap().unwrap().is_some());
+        ticker.stop().await.unwrap(); assert_eq!(receive.recv().await.unwrap(),None);
+    }
     #[tokio::test] async fn stop_before_sync_is_idempotent_and_does_not_render() {
         let mut ticker=GoalWaitTicker::new(Arc::new(|_,_|panic!("no retained context to render")),Arc::new(||0.0));
         ticker.stop().await.unwrap(); ticker.stop().await.unwrap(); assert!(!ticker.running());
