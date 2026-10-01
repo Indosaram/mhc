@@ -1657,10 +1657,18 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-help"
 version = "0.0.0"
+dependencies = [
+ "maho-interactive",
+ "maho-tui",
+]
 
 [[package]]
 name = "maho-ext-herdr"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-herdr-agent-state"
@@ -1803,6 +1811,9 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-recommended-models"
 version = "0.0.0"
+dependencies = [
+ "maho-ai",
+]
 
 [[package]]
 name = "maho-ext-rule-activation"
