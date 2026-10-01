@@ -37,4 +37,5 @@ pub mod renderers;
 pub mod tool_registration;
 pub mod index;
 pub mod accounting_hooks;
+pub mod input_hooks;
 #[cfg(test)] mod test_context;
