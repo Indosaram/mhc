@@ -27,6 +27,20 @@ pub struct MonitorAwareGoalContinuation {
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum WakeSourceChange { Drained,QuestionDeadlineChanged,CountsChanged }
 pub struct DueGoalContinuation { pub goal:crate::types::Goal,pub path:crate::continuation::GoalContinuationPath,pub schedule:Option<crate::cache_warm::GoalCacheWarmScheduleData>,pub waited_ms:f64,pub drain_fire:bool }
+pub fn publish_monitor_schedule(api:&maho_ext_api::ExtensionApi,schedule:&crate::cache_warm::GoalCacheWarmScheduleData,append_card:bool)->Result<(),maho_ext_api::ExtensionFailure> {
+    let data=serde_json::to_value(schedule).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+    api.events.emit(GOAL_CONTINUATION_SCHEDULED_EVENT,&data);
+    if append_card {
+        let mut entry=data; entry["phase"]="scheduled".into(); api.append_entry(crate::cache_warm::GOAL_CACHE_WARMUP_ENTRY_TYPE,Some(entry))?;
+    }
+    Ok(())
+}
+pub fn publish_monitor_resume(api:&maho_ext_api::ExtensionApi,due:&DueGoalContinuation,wake_sources:&BTreeMap<String,f64>)->Result<(),maho_ext_api::ExtensionFailure> {
+    let Some(schedule)=&due.schedule else { return Ok(()); };
+    let mut data=serde_json::json!({"goalId":due.goal.id,"delayMs":schedule.delay_ms,"waitedMs":due.waited_ms,"iteration":schedule.iteration,"activeMonitorCount":wake_sources.values().sum::<f64>(),"wakeSources":wake_sources});
+    if let Some(cache)=&schedule.cache { data["cache"]=serde_json::to_value(cache).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?; }
+    api.events.emit(GOAL_CONTINUATION_RESUMED_EVENT,&data); data["phase"]="resumed".into(); api.append_entry(crate::cache_warm::GOAL_CACHE_WARMUP_ENTRY_TYPE,Some(data))
+}
 impl MonitorAwareGoalContinuation {
     pub fn take_due_continuation(&mut self,now:f64,idle:bool,pending_messages:bool)->Option<DueGoalContinuation> {
         let timer=self.armed_timer?;
@@ -113,6 +127,15 @@ impl MonitorAwareGoalContinuation {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn restored_schedule_publishes_event_without_duplicate_card() {
+        use maho_ext_api::*;
+        let api=ExtensionApi::new(LoadedExtension::new("goal","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
+        let seen=std::sync::Arc::new(std::sync::Mutex::new(Vec::new())); let captured=seen.clone();
+        let _subscription=api.events.on(GOAL_CONTINUATION_SCHEDULED_EVENT,std::sync::Arc::new(move |data|captured.lock().unwrap().push(data.clone())));
+        let schedule=crate::cache_warm::create_goal_cache_warm_schedule_data("g".into(),1000.0,0.0,4.0,1.0,BTreeMap::from([("task".into(),1.0)]),None);
+        publish_monitor_schedule(&api,&schedule,false).unwrap();
+        assert_eq!(*seen.lock().unwrap(),vec![serde_json::to_value(schedule).unwrap()]);
+    }
     #[test] fn due_backstop_is_single_use_and_requires_idle_live_source_unless_draining() {
         let goal:crate::types::Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap();
         let mut monitor=MonitorAwareGoalContinuation::default(); monitor.sync_goal(Some(&goal));

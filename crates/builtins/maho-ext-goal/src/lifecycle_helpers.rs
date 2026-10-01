@@ -48,8 +48,25 @@ pub fn blocked_reason_for_continuation_guard(reason:DenyReason)->Option<&'static
         DenyReason::NotEligible|DenyReason::SingleFlight|DenyReason::Stale=>None,
     }
 }
+pub fn report_denied_continuation(api:&maho_ext_api::ExtensionApi,ctx:&ExtensionContext,goal:&Goal,input:&crate::continuation::GoalContinuationInput<'_>,reason:DenyReason) {
+    let Some(blocked_reason)=blocked_reason_for_continuation_guard(reason) else { return; };
+    if ctx.has_ui { ctx.ui.notify(&continuation_cap_recovery_hint(blocked_reason),maho_ext_api::NotificationType::Warning); }
+    let reason=match reason { DenyReason::Cap=>"cap",DenyReason::Unattended=>"unattended",DenyReason::Repetition=>"repetition",DenyReason::LengthExhausted=>"length-exhausted",DenyReason::ContextOverflow=>"context-overflow",DenyReason::NotEligible|DenyReason::SingleFlight|DenyReason::Stale=>return };
+    api.events.emit("goal_continuation_guard_tripped",&serde_json::json!({"goalId":goal.id,"reason":reason,"count":input.consecutive_continuations,"unattendedContinuations":goal.unattended_continuations.unwrap_or(0)}));
+}
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn guard_trip_reports_machine_reason_and_counts_only_for_guardrail_denial() {
+        use maho_ext_api::*;
+        let goal:Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"blocked","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap();
+        let api=ExtensionApi::new(LoadedExtension::new("goal","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
+        let seen=std::sync::Arc::new(std::sync::Mutex::new(Vec::new())); let captured=seen.clone();
+        let _subscription=api.events.on("goal_continuation_guard_tripped",std::sync::Arc::new(move |data|captured.lock().unwrap().push(data.clone())));
+        let input=admission(&goal); let ctx=crate::test_context::context();
+        report_denied_continuation(&api,&ctx,&goal,&input,DenyReason::SingleFlight); assert!(seen.lock().unwrap().is_empty());
+        report_denied_continuation(&api,&ctx,&goal,&input,DenyReason::Cap);
+        assert_eq!(*seen.lock().unwrap(),vec![serde_json::json!({"goalId":"g","reason":"cap","count":0,"unattendedContinuations":0})]);
+    }
     fn admission(goal:&Goal)->crate::continuation::GoalContinuationInput<'_> {
         crate::continuation::GoalContinuationInput { goal:Some(goal),is_idle:true,has_pending_messages:false,path:crate::continuation::GoalContinuationPath::SessionStart,last_stop_reason:None,last_turn_was_malformed_tool_use:false,consecutive_continuations:0,last_continuation_signature:None,current_signature:Some("sig"),consecutive_length_recoveries:0,recent_normalized_output_hashes:&[],toolless_continuation_streak:0,continuation_pending:false,last_turn_stuck_on_context_overflow:false }
     }
