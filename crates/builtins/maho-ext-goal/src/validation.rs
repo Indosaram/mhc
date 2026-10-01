@@ -1,0 +1,39 @@
+//! Objective truncation and inert token-budget validation.
+use crate::errors::GoalError;
+pub const MAX_OBJECTIVE_LENGTH: usize = 4_000;
+const WHITESPACE_LOOKBACK: usize = 200;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidatedObjective { pub objective: String, pub truncated: bool, pub full_text_file_name: Option<String> }
+pub fn truncation_marker(file: &str) -> String { format!("… [truncated; full objective: {file}]") }
+pub fn objective_truncation_notice(file: &str) -> String { format!("Objective was truncated; full objective saved to {file}.") }
+pub fn validate_objective(value: &str, file: &str) -> Result<ValidatedObjective, GoalError> {
+    let objective = value.trim();
+    if objective.is_empty() { return Err(GoalError::InvalidMutation("objective must not be empty".into())); }
+    let points: Vec<char> = objective.chars().collect();
+    if points.len() <= MAX_OBJECTIVE_LENGTH {
+        return Ok(ValidatedObjective { objective: objective.into(), truncated: false, full_text_file_name: None });
+    }
+    let marker = truncation_marker(file);
+    let budget = MAX_OBJECTIVE_LENGTH.saturating_sub(marker.chars().count());
+    let cut = (budget.saturating_sub(WHITESPACE_LOOKBACK)..budget).rev().find(|&i| points.get(i).is_some_and(|c| c.is_whitespace() || *c == '\u{feff}')).unwrap_or(budget);
+    let mut payload: String = points[..cut].iter().collect();
+    payload.push_str(&marker);
+    Ok(ValidatedObjective { objective: payload, truncated: true, full_text_file_name: Some(file.into()) })
+}
+pub fn is_non_negative_safe_integer(value: f64) -> bool { value.is_finite() && (0.0..=9_007_199_254_740_991.0).contains(&value) && value.fract().abs() < f64::EPSILON }
+pub fn validate_token_budget(value: u64) -> Result<u64, GoalError> {
+    if value > 9_007_199_254_740_991 { return Err(GoalError::InvalidMutation("token budget must be a non-negative integer".into())); }
+    Ok(value)
+}
+pub fn resolve_token_budget(current: Option<u64>, update: Option<Option<u64>>) -> Result<Option<u64>, GoalError> {
+    match update { None => Ok(current), Some(None) => Ok(None), Some(Some(value)) => validate_token_budget(value).map(Some) }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test] fn empty_objective_is_rejected() { let value = "  \n"; let result = validate_objective(value, "full.txt"); assert!(result.is_err()); }
+    #[test] fn objective_is_trimmed_without_truncation() { let value = "  build it  "; let result = validate_objective(value, "full.txt").unwrap(); assert_eq!(result.objective, "build it"); assert!(!result.truncated); }
+    #[test] fn unicode_objective_uses_code_points() { let value = "😀".repeat(4001); let result = validate_objective(&value, "full.txt").unwrap(); assert_eq!(result.objective.chars().count(), 4000); assert!(result.truncated); }
+    #[test] fn whitespace_cut_stays_within_lookback() { let value = format!("{} {}", "a".repeat(3800), "b".repeat(300)); let result = validate_objective(&value, "full.txt").unwrap(); assert_eq!(result.objective, format!("{}{}", "a".repeat(3800), truncation_marker("full.txt"))); }
+    #[test] fn budget_update_preserves_clears_and_rejects_unsafe_values() { let current = Some(100); let result = (resolve_token_budget(current, None), resolve_token_budget(current, Some(None)), resolve_token_budget(current, Some(Some(u64::MAX)))); assert_eq!(result.0.unwrap(), Some(100)); assert_eq!(result.1.unwrap(), None); assert!(result.2.is_err()); }
+}
