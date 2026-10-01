@@ -1,0 +1,37 @@
+use std::path::{Path,PathBuf};
+use memory_core::locks::{AcquireLockOptions,AcquireLockError,CreateLockRecordOptions,acquire_lock,create_lock_record,facts_runs_lock_path,release_lock,run_finalization_lock_path,with_lock};
+pub const FACTS_RUN_KEEP_LAST:usize=20;
+pub const FACTS_RUN_MAX_TOTAL_BYTES:u64=128*1024*1024;
+pub struct PruneTerminalFactsRunsOptions<'a>{pub facts_dir:&'a Path,pub locks_dir:&'a Path,pub keep_last:Option<usize>,pub max_total_bytes:Option<u64>}
+#[derive(Debug)]
+pub struct PruneTerminalFactsRunsResult{pub pruned:Vec<String>}
+#[derive(Debug)]
+pub enum FactsPruneError{Io(std::io::Error),Record(memory_core::locks::LockRecordError),Domain(memory_core::locks::LockDomainError),Acquire(AcquireLockError),Lock(memory_core::locks::WithLockError<Box<FactsPruneError>>)}
+impl std::fmt::Display for FactsPruneError{fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{match self{Self::Io(error)=>error.fmt(f),Self::Record(error)=>error.fmt(f),Self::Domain(error)=>error.fmt(f),Self::Acquire(error)=>error.fmt(f),Self::Lock(error)=>error.fmt(f)}}}
+impl std::error::Error for FactsPruneError{}
+fn directory_bytes(path:&Path)->u64{let Ok(metadata)=std::fs::symlink_metadata(path)else{return 0;};if !metadata.is_dir(){return metadata.len();}metadata.len()+std::fs::read_dir(path).into_iter().flatten().filter_map(Result::ok).map(|entry|directory_bytes(&entry.path())).sum::<u64>()}
+fn json(path:&Path)->Option<serde_json::Value>{serde_json::from_slice(&std::fs::read(path).ok()?).ok()}
+fn terminal_runs(runs:&Path)->Vec<(String,i64,u64)>{let mut result=Vec::new();for entry in std::fs::read_dir(runs).into_iter().flatten().filter_map(Result::ok){let name=entry.file_name().to_string_lossy().into_owned();if !name.starts_with("facts-"){continue;}let dir=entry.path();let Some(ledger)=json(&dir.join("ledger.json"))else{continue;};if ledger.get("runId").and_then(serde_json::Value::as_str)!=Some(&name){continue;}let sentinel=if let Some(record)=json(&dir.join("final.json")){record.get("runId").and_then(serde_json::Value::as_str).zip(record.get("finishedAt").and_then(serde_json::Value::as_str)).map(|(id,at)|(id.to_owned(),at.to_owned()))}else{json(&dir.join("abandoned.json")).and_then(|record|record.get("runId").and_then(serde_json::Value::as_str).zip(record.get("abandonedAt").and_then(serde_json::Value::as_str)).map(|(id,at)|(id.to_owned(),at.to_owned())))};let Some((id,at))=sentinel else{continue;};if id!=name{continue;}let Ok(time)=chrono::DateTime::parse_from_rfc3339(&at)else{continue;};result.push((name,time.timestamp_millis(),directory_bytes(&dir)));}result.sort_by(|left,right|right.1.cmp(&left.1).then_with(||right.0.encode_utf16().cmp(left.0.encode_utf16())));result}
+fn claim(runs:&Path,locks:&Path,name:&str)->Result<Option<PathBuf>,FactsPruneError>{let record=create_lock_record("facts-finalize",CreateLockRecordOptions{run_id:Some(name.into())}).map_err(FactsPruneError::Record)?;let path=run_finalization_lock_path(locks,name).map_err(FactsPruneError::Domain)?;match acquire_lock(&path,&record,&AcquireLockOptions::default()){Ok(())=>{},Err(AcquireLockError::Contention(_))=>return Ok(None),Err(error)=>return Err(FactsPruneError::Acquire(error))}let tombstone=runs.join(format!(".prune-{name}-{}",memory_core::support::random::random_uuid()));let renamed=std::fs::rename(runs.join(name),&tombstone);let released=release_lock(&path,&record);renamed.map_err(FactsPruneError::Io)?;released.map_err(FactsPruneError::Io)?;Ok(Some(tombstone))}
+pub fn prune_terminal_facts_runs(options:&PruneTerminalFactsRunsOptions<'_>,before_delete:&mut dyn FnMut(&Path),warn:&mut dyn FnMut(&Path,&std::io::Error))->Result<PruneTerminalFactsRunsResult,FactsPruneError>{
+    let runs=options.facts_dir.join("runs");let record=create_lock_record("facts-runs",CreateLockRecordOptions{run_id:Some("facts-prune".into())}).map_err(FactsPruneError::Record)?;
+    let claimed=with_lock(&facts_runs_lock_path(options.locks_dir),&record,&AcquireLockOptions{wait_timeout_ms:Some(2000),..Default::default()},||{
+        let mut total=0;
+        let mut claimed=Vec::new();
+        for (index,(name,_,bytes)) in terminal_runs(&runs).into_iter().enumerate(){
+            total+=bytes;
+            if index==0{continue;}
+            if (index>=options.keep_last.unwrap_or(FACTS_RUN_KEEP_LAST)||total>options.max_total_bytes.unwrap_or(FACTS_RUN_MAX_TOTAL_BYTES))&&let Some(path)=claim(&runs,options.locks_dir,&name).map_err(Box::new)?{claimed.push((name,path));}
+        }
+        Ok(claimed)
+    }).map_err(FactsPruneError::Lock)?;
+    let mut pruned=Vec::new();for (name,path) in claimed{before_delete(&path);match crate::facts_run_cleanup::remove_run_artifact(&path){Ok(())=>pruned.push(name),Err(error)=>warn(&path,&error)}}Ok(PruneTerminalFactsRunsResult{pruned})
+}
+#[cfg(test)]
+mod tests{
+    use super::*;
+    fn seed(facts:&Path,name:&str,time:i64){let dir=facts.join("runs").join(name);std::fs::create_dir_all(&dir).unwrap();std::fs::write(dir.join("ledger.json"),serde_json::to_vec(&serde_json::json!({"runId":name})).unwrap()).unwrap();std::fs::write(dir.join("final.json"),serde_json::to_vec(&serde_json::json!({"runId":name,"finishedAt":chrono::DateTime::from_timestamp(time,0).unwrap().to_rfc3339()})).unwrap()).unwrap();}
+    #[test]fn newest_twenty_survive_and_delete_is_outside_runs_lock(){let root=tempfile::tempdir().unwrap();let facts=root.path().join("facts");let locks=root.path().join("locks");for index in 0..25{seed(&facts,&format!("facts-a-{index}"),index);}let result=prune_terminal_facts_runs(&PruneTerminalFactsRunsOptions{facts_dir:&facts,locks_dir:&locks,keep_last:None,max_total_bytes:None},&mut |path|{assert!(path.exists());assert!(!facts_runs_lock_path(&locks).exists());},&mut |_,error|panic!("{error}")).unwrap();assert_eq!(result.pruned.len(),5);assert_eq!(std::fs::read_dir(facts.join("runs")).unwrap().count(),20);assert!(facts.join("runs/facts-a-24").exists());}
+    #[test]fn newest_always_survives_and_malformed_live_are_ignored(){let root=tempfile::tempdir().unwrap();let facts=root.path().join("facts");let locks=root.path().join("locks");seed(&facts,"facts-a-1",1);seed(&facts,"facts-a-2",2);seed(&facts,"facts-bad",0);std::fs::write(facts.join("runs/facts-bad/final.json"),"{}").unwrap();std::fs::create_dir(facts.join("runs/facts-live")).unwrap();let result=prune_terminal_facts_runs(&PruneTerminalFactsRunsOptions{facts_dir:&facts,locks_dir:&locks,keep_last:Some(0),max_total_bytes:Some(0)},&mut |_|{},&mut |_,error|panic!("{error}")).unwrap();assert_eq!(result.pruned,["facts-a-1"]);assert!(facts.join("runs/facts-a-2").exists());assert!(facts.join("runs/facts-bad").exists());assert!(facts.join("runs/facts-live").exists());}
+    #[test]fn busy_finalization_lock_skips_without_waiting(){let root=tempfile::tempdir().unwrap();let facts=root.path().join("facts");let locks=root.path().join("locks");for index in 1..=3{seed(&facts,&format!("facts-a-{index}"),index);}let record=create_lock_record("held",Default::default()).unwrap();let lock=run_finalization_lock_path(&locks,"facts-a-1").unwrap();acquire_lock(&lock,&record,&Default::default()).unwrap();let result=prune_terminal_facts_runs(&PruneTerminalFactsRunsOptions{facts_dir:&facts,locks_dir:&locks,keep_last:Some(1),max_total_bytes:None},&mut |_|{},&mut |_,error|panic!("{error}")).unwrap();assert_eq!(result.pruned,["facts-a-2"]);assert!(facts.join("runs/facts-a-1").exists());release_lock(&lock,&record).unwrap();}
+}
