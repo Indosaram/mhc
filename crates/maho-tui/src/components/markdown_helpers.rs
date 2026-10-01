@@ -234,10 +234,7 @@ pub struct Captures<'a> {
 
 impl<'a> Captures<'a> {
     fn new(captures: &fancy_regex::Captures<'_>, text: &'a str) -> Option<Self> {
-        let whole = captures.get(0)?;
-        if whole.start() != 0 {
-            return None;
-        }
+        captures.get(0)?;
         let mut groups = Vec::with_capacity(captures.len());
         for index in 0..captures.len() {
             groups.push(captures.get(index).map(|m| m.start()..m.end()));
@@ -246,7 +243,7 @@ impl<'a> Captures<'a> {
     }
 
     /// JavaScript's global `exec` with `lastIndex = n` returns the leftmost match at or after
-    /// `n`, so unlike [`Captures::new`] the match is not required to start at the haystack start.
+    /// `n`. Anchoring is determined by the regex, not by capture construction.
     fn from_pos(captures: &fancy_regex::Captures<'_>, text: &'a str) -> Option<Self> {
         captures.get(0)?;
         let mut groups = Vec::with_capacity(captures.len());
