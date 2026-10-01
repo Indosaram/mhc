@@ -1707,6 +1707,7 @@ dependencies = [
 name = "maho-ext-loop-guard"
 version = "0.0.0"
 dependencies = [
+ "maho-ext-api",
  "serde_json",
 ]
 
