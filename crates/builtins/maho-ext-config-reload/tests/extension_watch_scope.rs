@@ -52,6 +52,15 @@ fn declared_nested_entry_and_ancestors_stay_watched() {
     assert!(!loadable(root.path(), "my-ext/dist/state.json"));
 }
 #[test]
+fn normalized_root_accepts_absolute_manifest_entries() {
+    let root = manifest("{}");
+    let entry = root.path().join("my-ext/dist/index.js");
+    fs::write(root.path().join("my-ext/package.json"), serde_json::json!({"pi":{"extensions":[entry]}}).to_string()).unwrap();
+    let dotted = root.path().join("my-ext/..");
+    assert!(loadable(&dotted, "my-ext/dist/index.js"));
+    assert!(scannable(&dotted, "my-ext/dist"));
+}
+#[test]
 fn absent_manifest_keeps_runtime_state_unwatched() {
     // Given
     let root = tempfile::tempdir().unwrap();

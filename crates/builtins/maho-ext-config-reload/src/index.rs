@@ -12,6 +12,50 @@ impl<T> ConfigReloadHandoffRegistry<T> {
 }
 pub struct ResolvedConfigReloadSettings { pub enabled: bool, pub debounce_ms: f64, pub watch: BTreeMap<String, bool> }
 pub struct ActiveTarget { pub registration_id: String, pub target: WatchTarget, pub rearm_on_creation: Option<PathBuf> }
+pub fn build_external_watch_targets(cwd: &Path, registrations: &[crate::protocol::ConfigWatchRegistration]) -> Vec<ActiveTarget> {
+    use crate::protocol::{ConfigWatchTargetKind, matches_config_watch_filter};
+    let mut targets = Vec::new();
+    for registration in registrations {
+        for (index, target) in registration.targets.iter().enumerate() {
+            let raw = Path::new(target.path.trim());
+            let absolute = if raw.is_absolute() { raw.to_path_buf() } else { cwd.join(raw) };
+            let mut path = PathBuf::new();
+            for component in absolute.components() { match component { std::path::Component::ParentDir => { path.pop(); }, std::path::Component::CurDir => {}, other => path.push(other.as_os_str()) } }
+            let filters = target.filter_globs.clone().unwrap_or_default();
+            let (path, kind, allow_list, filter) = if target.kind == ConfigWatchTargetKind::File {
+                let name = path.file_name().unwrap_or_default().to_owned();
+                let allowed = vec![PathBuf::from(&name)];
+                let filter: WatchFilter = Arc::new(move |relative| relative == Path::new(&name) && matches_config_watch_filter(&relative.to_string_lossy(), &filters));
+                (path.parent().unwrap_or(&path).to_path_buf(), WatchKind::Dir, Some(allowed), filter)
+            } else {
+                let literal: Vec<_> = filters.iter().map(|filter| filter.strip_prefix('/').unwrap_or(filter)).filter(|filter| !filter.contains('*') && !filter.contains('/') && !filter.contains("\\\\")).map(PathBuf::from).collect();
+                let allowed = (!literal.is_empty()).then_some(literal);
+                let filter: WatchFilter = Arc::new(move |relative| matches_config_watch_filter(&relative.to_string_lossy(), &filters));
+                (path, WatchKind::DirRecursive, allowed, filter)
+            };
+            targets.push(ActiveTarget { registration_id: registration.id.clone(), target: WatchTarget { id: format!("external-{}-{index}", registration.id), path, kind, allow_list, filter: Some(filter) }, rearm_on_creation: None });
+        }
+    }
+    targets
+}
+pub fn group_changed_paths(paths: &[PathBuf], targets: &[ActiveTarget]) -> BTreeMap<String, Vec<PathBuf>> {
+    let mut groups: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    for path in paths {
+        let mut matched = false;
+        for active in targets {
+            let target = &active.target;
+            let Ok(relative) = path.strip_prefix(&target.path) else { continue; };
+            if (target.kind == WatchKind::Dir && relative.components().count() > 1)
+                || target.allow_list.as_ref().is_some_and(|allowed| !allowed.iter().any(|allowed| relative == allowed || relative.starts_with(allowed)))
+                || target.filter.as_ref().is_some_and(|filter| !filter(relative)) { continue; }
+            let group = groups.entry(active.registration_id.clone()).or_default();
+            if !group.contains(path) { group.push(path.clone()); }
+            matched = true;
+        }
+        if !matched { groups.entry("builtin".into()).or_default().push(path.clone()); }
+    }
+    groups
+}
 pub fn validate_builtin_paths(paths: &[PathBuf], agent_dir: &Path, cwd: &Path) -> Vec<String> {
     let mut errors = Vec::new();
     for path in paths {

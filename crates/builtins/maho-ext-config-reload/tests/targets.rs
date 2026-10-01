@@ -1,5 +1,17 @@
 use maho_ext_config_reload::index::{build_builtin_watch_targets, resolve_config_reload_settings};
 use serde_json::json;
+use maho_ext_config_reload::{index::{build_external_watch_targets, group_changed_paths}, protocol::*};
+#[test]
+fn external_file_filters_and_literal_dot_directory_are_grouped() {
+    let root = tempfile::tempdir().unwrap();
+    let registrations = vec![ConfigWatchRegistration { id: "external".into(), display_name: "fixture".into(), targets: vec![ConfigWatchTarget { path: "./settings.json".into(), kind: ConfigWatchTargetKind::File, filter_globs: None }, ConfigWatchTarget { path: ".".into(), kind: ConfigWatchTargetKind::Dir, filter_globs: Some(vec!["/.omo".into()]) }] }];
+    let targets = build_external_watch_targets(root.path(), &registrations);
+    assert_eq!(targets[1].target.allow_list.as_ref().unwrap(), &[std::path::PathBuf::from(".omo")]);
+    let paths = vec![root.path().join("settings.json"), root.path().join(".omo"), root.path().join("unmatched")];
+    let groups = group_changed_paths(&paths, &targets);
+    assert_eq!(groups["external"], paths[..2]);
+    assert_eq!(groups["builtin"], paths[2..]);
+}
 #[test]
 fn missing_resources_use_parent_presence_and_untrusted_project_is_omitted() {
     let root = tempfile::tempdir().unwrap();

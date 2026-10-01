@@ -1,6 +1,16 @@
 use std::path::{Component, Path, PathBuf};
 
 fn manifest_entry_paths(extensions_dir: &Path, package_name: &str) -> Vec<PathBuf> {
+    let absolute = std::path::absolute(extensions_dir).unwrap_or_else(|_| extensions_dir.to_path_buf());
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::ParentDir => { normalized.pop(); },
+            Component::CurDir => {},
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    let extensions_dir = normalized.as_path();
     let package = extensions_dir.join(package_name);
     let Ok(content) = std::fs::read_to_string(package.join("package.json")) else { return Vec::new(); };
     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) else { return Vec::new(); };
