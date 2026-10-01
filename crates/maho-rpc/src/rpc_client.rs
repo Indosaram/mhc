@@ -40,7 +40,7 @@ impl RpcSocketClient{
         self.lines.extend(self.reader.push(&bytes[..count]));
     }}
     pub async fn open_session(&mut self,mut options:Value,mut on_event:impl FnMut(Value))->std::io::Result<Value>{
-        if self.frames.pending_open_session{return Err(std::io::Error::other("RPC open_session already in flight"));}
+        if self.frames.pending_open_session{return Err(std::io::Error::other("An open_session request is already in flight"));}
         self.frames.pending_open_session=true;
         options["type"]="open_session".into();
         let response=self.request(options,false,&mut on_event,|_|{}).await;
