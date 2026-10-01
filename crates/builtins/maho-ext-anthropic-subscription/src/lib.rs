@@ -21,3 +21,5 @@ pub mod session_reaper;
 pub mod session_input;
 pub mod session_registry_pump;
 pub mod session_reattach;
+pub mod executable_version;
+pub mod executable_model_support;
