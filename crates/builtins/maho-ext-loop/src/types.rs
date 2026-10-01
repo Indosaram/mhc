@@ -8,7 +8,7 @@ pub enum EffectiveIntervalUnit { #[serde(rename="m")] Minutes, #[serde(rename="h
 pub struct RequestedInterval { pub value: f64, pub unit: RequestedIntervalUnit, pub raw: String }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct EffectiveInterval { pub value: f64, pub unit: EffectiveIntervalUnit, pub human: String, pub rounded: bool, pub rounding_notice: Option<String> }
+pub struct EffectiveInterval { pub value: f64, pub unit: EffectiveIntervalUnit, pub human: String, pub rounded: bool, #[serde(skip_serializing_if="Option::is_none")] pub rounding_notice: Option<String> }
 pub type EpochMs = f64;
 pub type LoopId = String;
 pub type WakeupId = String;

@@ -77,6 +77,19 @@ pub fn clear_loop_state_snapshot(reference:&LoopStoreRef) { store(reference).cle
     use super::*;
     fn reference(dir:&Path)->LoopStoreRef { LoopStoreRef { base_dir:dir.into(),session_id:"session/one".into() } }
     use std::path::Path;
+    #[tokio::test] async fn fixed_schedule_without_rounding_notice_roundtrips() {
+        use crate::scheduler::{CreateDynamicRequest,CreateFixedRequest,LoopScheduler};
+        let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path());
+        let mut scheduler=LoopScheduler::new(&reference.session_id,None,&BTreeMap::new());
+        scheduler.create_fixed(CreateFixedRequest {
+            base:CreateDynamicRequest { original_args:"1m check".into(),reentry_prompt:"check".into(),payload:LoopPayload::Prompt { prompt:"check".into() } },
+            requested_interval:RequestedInterval { value:1.0,unit:RequestedIntervalUnit::Minutes,raw:"1m".into() },
+            effective_interval:EffectiveInterval { value:1.0,unit:EffectiveIntervalUnit::Minutes,human:"1 minute".into(),rounded:false,rounding_notice:None },
+            cron_expression:"* * * * *".into(),interval_ms:60_000.0,
+        },"fixed".into(),1_000.0);
+        write_loop_state(&reference,&scheduler.state).await.unwrap();
+        assert_eq!(read_loop_state(&reference).await.unwrap(),Some(scheduler.state));
+    }
     #[tokio::test] async fn missing_store_is_empty_without_creating_file() { let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path()); assert!(read_loop_state(&reference).await.unwrap().is_none()); let state=load_loop_state(&reference).await.unwrap(); assert!(state.entries.is_empty()); assert!(!Path::new(&loop_state_file_path(&reference)).exists()); }
     #[tokio::test] async fn writes_roundtrip_and_update_snapshot() { let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path()); let mut state=empty_loop_state(&reference.session_id); state.updated_at=5.0; write_loop_state(&reference,&state).await.unwrap(); assert_eq!(read_loop_state(&reference).await.unwrap(),Some(state.clone())); assert_eq!(snapshot_loop_state(&reference).unwrap(),Some(state)); clear_loop_state_snapshot(&reference); assert!(snapshot_loop_state(&reference).unwrap().is_none()); }
     #[tokio::test] async fn malformed_json_fails_closed() { let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path()); std::fs::write(loop_state_file_path(&reference),"{").unwrap(); let result=read_loop_state(&reference).await; assert!(matches!(result,Err(LoopStoreError::Invalid(_)))); }
