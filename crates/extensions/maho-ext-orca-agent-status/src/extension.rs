@@ -36,6 +36,22 @@ impl EndpointCache {
     }
 }
 struct Delivery { pending: Arc<(Mutex<Pending>, Condvar)>, thread: Mutex<Option<JoinHandle<()>>> }
+fn windows_curl_path() -> Option<&'static str> {
+    static PATH: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+    *PATH.get_or_init(|| {
+        let wsl = std::env::var("WSL_DISTRO_NAME").is_ok_and(|value| !value.is_empty()) || ["/proc/sys/kernel/osrelease", "/proc/version"].iter().any(|path| std::fs::read_to_string(path).is_ok_and(|text| { let text = text.to_lowercase(); text.contains("microsoft") || text.contains("wsl") }));
+        let path = "/mnt/c/Windows/System32/curl.exe";
+        (wsl && std::path::Path::new(path).exists()).then_some(path)
+    })
+}
+fn post_windows_curl(path: &str, url: &str, token: &str, body: &Value) {
+    use std::io::Write;
+    let child = std::process::Command::new(path).args(["-sS", "--connect-timeout", "3", "--max-time", "10", "--noproxy", "127.0.0.1", "-o", "NUL", "-X", "POST", "-H", "Content-Type: application/json", "-H", &format!("X-Orca-Agent-Hook-Token: {token}"), "--data-binary", "@-", url]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+    if let Ok(mut child) = child {
+        if let Some(mut stdin) = child.stdin.take() { let _write = stdin.write_all(body.to_string().as_bytes()); }
+        std::thread::spawn(move || { let _exit = child.wait(); });
+    }
+}
 impl Delivery {
     fn new(metadata: Arc<Mutex<Map<String, Value>>>, omp: bool) -> Self {
         let pending = Arc::new((Mutex::new(Pending::default()), Condvar::new()));
@@ -72,7 +88,9 @@ impl Delivery {
                 let body = status_payload(&envelope, &event, if omp { &snapshot } else if persisted { &metadata } else { &empty }, &extra);
                 drop(metadata);
                 let route = if omp { "omp" } else { "pi" };
-                let _delivery = client.post(format!("http://127.0.0.1:{port}/hook/{route}")).header("X-Orca-Agent-Hook-Token", token).json(&body).send();
+                let url = format!("http://127.0.0.1:{port}/hook/{route}");
+                if client.post(&url).header("X-Orca-Agent-Hook-Token", &token).json(&body).send().is_err()
+                    && let Some(path) = windows_curl_path() { post_windows_curl(path, &url, &token, &body); }
             }
         });
         Self { pending, thread: Mutex::new(Some(thread)) }
