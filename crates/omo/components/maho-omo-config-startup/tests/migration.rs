@@ -1,4 +1,5 @@
 use maho_omo_config_startup::run_senpi_startup_migration;
+#[test] fn both_legacy_groups_migrate_into_unified_config()->Result<(),Box<dyn std::error::Error>> {let root=tempfile::tempdir()?;let home=root.path().join("home");let project=home.join("project");std::fs::create_dir_all(&project)?;std::fs::create_dir_all(home.join(".config/opencode"))?;std::fs::create_dir_all(home.join(".maho"))?;std::fs::write(home.join(".config/opencode/oh-my-openagent.jsonc"),r#"{"agents":{"finder":{"model":"provider/finder"}}}"#)?;std::fs::write(home.join(".maho/config.jsonc"),r#"{"codegraph":{"daemon":false}}"#)?;let env=std::collections::BTreeMap::from([("HOME".into(),home.to_string_lossy().into_owned())]);let result=run_senpi_startup_migration(&project.to_string_lossy(),&env,&home.to_string_lossy());assert!(result.error.is_none(),"{:?}",result.error);assert!(!result.migrated_from.is_empty());assert!(home.join(".maho/omo.jsonc").exists());Ok(())}
 #[test]
 fn missing_home_reports_error() {
     let result=run_senpi_startup_migration("/tmp/project",&Default::default(),"");
