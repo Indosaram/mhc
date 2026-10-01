@@ -1,0 +1,400 @@
+[
+	{
+		"type": "start",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "The user asks about the weather.",
+					"thinkingSignature": "sig_replay_1"
+				},
+				{
+					"type": "toolCall",
+					"id": "toolu_replay_1",
+					"name": "get_weather",
+					"arguments": {
+						"city": "Paris"
+					}
+				}
+			],
+			"api": "anthropic-messages",
+			"provider": "test-replay",
+			"model": "",
+			"usage": {
+				"input": 21,
+				"output": 14,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 35,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				},
+				"cacheWrite1h": 0
+			},
+			"stopReason": "pending",
+			"timestamp": 0
+		}
+	},
+	{
+		"type": "thinking_start",
+		"contentIndex": 0,
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "The user asks about the weather.",
+					"thinkingSignature": "sig_replay_1"
+				},
+				{
+					"type": "toolCall",
+					"id": "toolu_replay_1",
+					"name": "get_weather",
+					"arguments": {
+						"city": "Paris"
+					}
+				}
+			],
+			"api": "anthropic-messages",
+			"provider": "test-replay",
+			"model": "",
+			"usage": {
+				"input": 21,
+				"output": 14,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 35,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				},
+				"cacheWrite1h": 0
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "msg_replay_thinking"
+		}
+	},
+	{
+		"type": "thinking_delta",
+		"contentIndex": 0,
+		"delta": "The user asks about the weather.",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "The user asks about the weather.",
+					"thinkingSignature": "sig_replay_1"
+				},
+				{
+					"type": "toolCall",
+					"id": "toolu_replay_1",
+					"name": "get_weather",
+					"arguments": {
+						"city": "Paris"
+					}
+				}
+			],
+			"api": "anthropic-messages",
+			"provider": "test-replay",
+			"model": "",
+			"usage": {
+				"input": 21,
+				"output": 14,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 35,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				},
+				"cacheWrite1h": 0
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "msg_replay_thinking"
+		}
+	},
+	{
+		"type": "thinking_end",
+		"contentIndex": 0,
+		"content": "The user asks about the weather.",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "The user asks about the weather.",
+					"thinkingSignature": "sig_replay_1"
+				},
+				{
+					"type": "toolCall",
+					"id": "toolu_replay_1",
+					"name": "get_weather",
+					"arguments": {
+						"city": "Paris"
+					}
+				}
+			],
+			"api": "anthropic-messages",
+			"provider": "test-replay",
+			"model": "",
+			"usage": {
+				"input": 21,
+				"output": 14,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 35,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				},
+				"cacheWrite1h": 0
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "msg_replay_thinking"
+		}
+	},
+	{
+		"type": "toolcall_start",
+		"contentIndex": 1,
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "The user asks about the weather.",
+					"thinkingSignature": "sig_replay_1"
+				},
+				{
+					"type": "toolCall",
+					"id": "toolu_replay_1",
+					"name": "get_weather",
+					"arguments": {
+						"city": "Paris"
+					}
+				}
+			],
+			"api": "anthropic-messages",
+			"provider": "test-replay",
+			"model": "",
+			"usage": {
+				"input": 21,
+				"output": 14,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 35,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				},
+				"cacheWrite1h": 0
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "msg_replay_thinking"
+		}
+	},
+	{
+		"type": "toolcall_delta",
+		"contentIndex": 1,
+		"delta": "{\"city\":",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "The user asks about the weather.",
+					"thinkingSignature": "sig_replay_1"
+				},
+				{
+					"type": "toolCall",
+					"id": "toolu_replay_1",
+					"name": "get_weather",
+					"arguments": {
+						"city": "Paris"
+					}
+				}
+			],
+			"api": "anthropic-messages",
+			"provider": "test-replay",
+			"model": "",
+			"usage": {
+				"input": 21,
+				"output": 14,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 35,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				},
+				"cacheWrite1h": 0
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "msg_replay_thinking"
+		}
+	},
+	{
+		"type": "toolcall_delta",
+		"contentIndex": 1,
+		"delta": "\"Paris\"}",
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "The user asks about the weather.",
+					"thinkingSignature": "sig_replay_1"
+				},
+				{
+					"type": "toolCall",
+					"id": "toolu_replay_1",
+					"name": "get_weather",
+					"arguments": {
+						"city": "Paris"
+					}
+				}
+			],
+			"api": "anthropic-messages",
+			"provider": "test-replay",
+			"model": "",
+			"usage": {
+				"input": 21,
+				"output": 14,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 35,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				},
+				"cacheWrite1h": 0
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "msg_replay_thinking"
+		}
+	},
+	{
+		"type": "toolcall_end",
+		"contentIndex": 1,
+		"toolCall": {
+			"type": "toolCall",
+			"id": "toolu_replay_1",
+			"name": "get_weather",
+			"arguments": {
+				"city": "Paris"
+			}
+		},
+		"partial": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "The user asks about the weather.",
+					"thinkingSignature": "sig_replay_1"
+				},
+				{
+					"type": "toolCall",
+					"id": "toolu_replay_1",
+					"name": "get_weather",
+					"arguments": {
+						"city": "Paris"
+					}
+				}
+			],
+			"api": "anthropic-messages",
+			"provider": "test-replay",
+			"model": "",
+			"usage": {
+				"input": 21,
+				"output": 14,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 35,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				},
+				"cacheWrite1h": 0
+			},
+			"stopReason": "pending",
+			"timestamp": 0,
+			"responseId": "msg_replay_thinking"
+		}
+	},
+	{
+		"type": "done",
+		"reason": "toolUse",
+		"message": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "thinking",
+					"thinking": "The user asks about the weather.",
+					"thinkingSignature": "sig_replay_1"
+				},
+				{
+					"type": "toolCall",
+					"id": "toolu_replay_1",
+					"name": "get_weather",
+					"arguments": {
+						"city": "Paris"
+					}
+				}
+			],
+			"api": "anthropic-messages",
+			"provider": "test-replay",
+			"model": "",
+			"usage": {
+				"input": 21,
+				"output": 14,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 35,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				},
+				"cacheWrite1h": 0
+			},
+			"stopReason": "toolUse",
+			"timestamp": 0,
+			"responseId": "msg_replay_thinking",
+			"rawStopReason": "tool_use"
+		}
+	}
+]

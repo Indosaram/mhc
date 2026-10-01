@@ -1250,6 +1250,7 @@ dependencies = [
  "pretty_assertions",
  "regex",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "sha2",
