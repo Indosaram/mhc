@@ -299,6 +299,8 @@ impl Harness {
             lane.seal(error.clone());
         }
         self.events.close(error.to_string());
+        let lanes: Vec<_> = self.lanes_by_name.lock().unwrap_or_else(|error| error.into_inner()).values().cloned().collect();
+        for lane in lanes { lane.finish_idle_callback().await; }
         self.session.close(context).await;
         *self.session_closed.lock().unwrap_or_else(|error| error.into_inner()) = true;
     }

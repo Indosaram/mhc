@@ -52,6 +52,8 @@ pub enum AdmissionError {
     InvalidNavigation { reason: &'static str },
     #[error("Unknown target: {target_id}")]
     UnknownTarget { target_id: String },
+    #[error("{message}")]
+    Closed { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -150,6 +152,8 @@ pub struct Lane {
     pub events: HarnessEventBus,
     state: Mutex<LaneState>,
     closed_error: Mutex<Option<SessionError>>,
+    idle_owner: tokio::sync::RwLock<()>,
+    state_change: tokio::sync::Notify,
 }
 
 impl Lane {
@@ -165,6 +169,8 @@ impl Lane {
             events,
             state: Mutex::new(state),
             closed_error: Mutex::new(None),
+            idle_owner: tokio::sync::RwLock::new(()),
+            state_change: tokio::sync::Notify::new(),
         }
     }
 
@@ -188,6 +194,7 @@ impl Lane {
         let mut closed = self.closed_error.lock().unwrap_or_else(|e| e.into_inner());
         if closed.is_none() {
             *closed = Some(error);
+            self.state_change.notify_waiters();
         }
     }
 
@@ -198,7 +205,7 @@ impl Lane {
 
     pub async fn inspect_execution(&self, context: &Context) -> Result<LaneExecutionInfo, SessionError> {
         let name = self.name.clone();
-        self.command(move |state, _| Box::pin(async move {
+        self.command_inner(move |state, _| Box::pin(async move {
             let captured_model = state.operation.as_ref().and_then(|operation| {
                 let model = match &operation.state {
                     OperationState::AssistantReady(value) => &value.assistant.generation_context.configuration.model,
@@ -224,6 +231,48 @@ impl Lane {
             });
             Ok(LaneCommand::Return { result: LaneExecutionInfo { lane: name, tip_id: state.tip_id, configured_model: identity(state.configuration.model), current, last_operation_id: state.last_operation_id } })
         }), context).await
+    }
+
+    pub async fn wait_for_idle(&self, context: &Context) -> Result<(), SessionError> {
+        loop {
+            let changed = self.state_change.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let owner = crate::harness::context::await_with_context(self.idle_owner.read(), context).await.map_err(|error| session_invariant_error(error.to_string()))?;
+            self.assert_open()?;
+            let mutation = self.session.begin_mutation(context).await?;
+            let idle = self.state().operation.is_none();
+            mutation.end(context).await;
+            drop(owner);
+            if idle { return Ok(()); }
+            crate::harness::context::await_with_context(changed, context).await.map_err(|error| session_invariant_error(error.to_string()))?;
+        }
+    }
+
+    pub async fn run_when_idle<F, Fut>(&self, callback: F, context: &Context) -> Result<(), SessionError>
+    where F: FnOnce(Context) -> Fut, Fut: std::future::Future<Output = Result<(), SessionError>> {
+        loop {
+            let changed = self.state_change.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let owner = crate::harness::context::await_with_context(self.idle_owner.write(), context).await.map_err(|error| session_invariant_error(error.to_string()))?;
+            self.assert_open()?;
+            let mutation = self.session.begin_mutation(context).await?;
+            let idle = self.state().operation.is_none();
+            mutation.end(context).await;
+            if idle {
+                let result = callback(context.clone()).await;
+                drop(owner);
+                self.state_change.notify_waiters();
+                return result;
+            }
+            drop(owner);
+            crate::harness::context::await_with_context(changed, context).await.map_err(|error| session_invariant_error(error.to_string()))?;
+        }
+    }
+
+    pub async fn finish_idle_callback(&self) {
+        drop(self.idle_owner.write().await);
     }
 
     pub async fn accept_compaction(&self, custom_instructions: Option<String>, operation_id: Option<String>, settings: crate::harness::session::types::RunSettings, context: &Context) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
@@ -346,7 +395,9 @@ impl Lane {
 
     pub async fn accept_prompt(&self, input: PromptInput, operation_id: Option<String>, settings: crate::harness::session::types::RunSettings, context: &Context) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
         use crate::harness::session::types::{OperationIntent, OperationMarker, OperationScope, OperationIntentKind, StartingOperation};
-        self.assert_open()?;
+        if let Err(error) = self.assert_open() {
+            return if error.kind == SessionErrorKind::Closed { Ok(Err(AdmissionError::Closed { message: error.message })) } else { Err(error) };
+        }
         let started_at = now_ms();
         let operation_id = operation_id.unwrap_or_else(|| (self.session.id_generator())(Some(started_at)));
         let messages = match input {
@@ -415,6 +466,20 @@ impl Lane {
     /// The Session mutation barrier covers planning, commit and memory publication, but not event delivery.
     pub async fn command<T, F>(&self, plan: F, context: &Context) -> Result<T, SessionError>
     where
+        F: for<'a> FnOnce(LaneState, &'a dyn SessionReader) -> BoxFuture<'a, Result<LaneCommand<T>, SessionError>>,
+    {
+        self.assert_open()?;
+        let owner = crate::harness::context::await_with_context(self.idle_owner.read(), context).await.map_err(|error| session_invariant_error(error.to_string()))?;
+        self.command_inner_with_owner(plan, context, Some(owner)).await
+    }
+
+    async fn command_inner<T, F>(&self, plan: F, context: &Context) -> Result<T, SessionError>
+    where F: for<'a> FnOnce(LaneState, &'a dyn SessionReader) -> BoxFuture<'a, Result<LaneCommand<T>, SessionError>> {
+        self.command_inner_with_owner(plan, context, None).await
+    }
+
+    async fn command_inner_with_owner<T, F>(&self, plan: F, context: &Context, owner: Option<tokio::sync::RwLockReadGuard<'_, ()>>) -> Result<T, SessionError>
+    where
         F: for<'a> FnOnce(
             LaneState,
             &'a dyn SessionReader,
@@ -433,6 +498,7 @@ impl Lane {
                 LaneCommand::Commit { decision, next } => {
                     let commit = mutation.commit(decision.writes, context).await?;
                     *self.state.lock().unwrap_or_else(|e| e.into_inner()) = *next;
+                    self.state_change.notify_waiters();
                     let result = (decision.materialize)(&commit);
                     let events = decision
                         .events
@@ -448,6 +514,7 @@ impl Lane {
             self.seal(error.clone());
         }
         mutation.end(context).await;
+        drop(owner);
         let (result, delivery) = outcome?;
         if let Some(delivery) = delivery {
             delivery.await;

@@ -349,3 +349,102 @@ async fn acceptance_waits_for_direct_listener_completion() {
     release_sender.send(()).unwrap();
     acceptance.await.unwrap().unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn idle_callback_excludes_acceptance_and_allows_execution_reads() {
+    let lane = fixture().await.unwrap();
+    let (started, observed) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let reader = lane.clone();
+    let owner = lane.clone();
+    let callback = tokio::spawn(async move { owner.run_when_idle(move |context| async move {
+        assert!(reader.inspect_execution(&context).await?.current.is_none());
+        started.send(()).unwrap();
+        released.await.unwrap();
+        Ok(())
+    }, &BACKGROUND_CONTEXT).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), observed).await.unwrap().unwrap();
+    let input = lane.accept_prompt(PromptInput::Text { text: "after".into(), images: vec![] }, None, settings(), &BACKGROUND_CONTEXT);
+    tokio::pin!(input);
+    assert!(futures::poll!(input.as_mut()).is_pending());
+    release.send(()).unwrap();
+    callback.await.unwrap().unwrap();
+    input.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn idle_callbacks_serialize_in_admission_order() {
+    let lane = fixture().await.unwrap();
+    let (started, observed) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let first_order = order.clone();
+    let owner = lane.clone();
+    let first = tokio::spawn(async move { owner.run_when_idle(move |_| async move {
+        first_order.lock().unwrap().push("first:start");
+        started.send(()).unwrap();
+        released.await.unwrap();
+        first_order.lock().unwrap().push("first:end");
+        Ok(())
+    }, &BACKGROUND_CONTEXT).await });
+    observed.await.unwrap();
+    let second_order = order.clone();
+    let second = lane.run_when_idle(move |_| async move { second_order.lock().unwrap().push("second"); Ok(()) }, &BACKGROUND_CONTEXT);
+    tokio::pin!(second);
+    assert!(futures::poll!(second.as_mut()).is_pending());
+    assert_eq!(*order.lock().unwrap(), vec!["first:start"]);
+    release.send(()).unwrap();
+    first.await.unwrap().unwrap();
+    second.await.unwrap();
+    assert_eq!(*order.lock().unwrap(), vec!["first:start", "first:end", "second"]);
+}
+
+#[tokio::test]
+async fn failing_idle_callback_releases_ownership() {
+    let lane = fixture().await.unwrap();
+    let result = lane.run_when_idle(|_| async { Err(maho_agent::harness::session::session::session_invariant_error("callback failed")) }, &BACKGROUND_CONTEXT).await;
+    assert!(result.is_err());
+    lane.accept_prompt(PromptInput::Text { text: "after".into(), images: vec![] }, None, settings(), &BACKGROUND_CONTEXT).await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn wait_for_idle_tracks_operation_without_installed_drive() {
+    let lane = navigation_fixture(false).await.unwrap();
+    let waiting = lane.wait_for_idle(&BACKGROUND_CONTEXT);
+    tokio::pin!(waiting);
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    let drive = maho_agent::harness::runtime::types::Drive::new(&maho_agent::harness::agent_harness::DriveOptions { operation_id: "nav".into(), wait_for_retry: None, poll_deferred: None }, &BACKGROUND_CONTEXT);
+    let (settled, idle) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::join!(maho_agent::harness::runtime::structural::commit_navigation(&lane, &drive), waiting)
+    }).await.unwrap();
+    settled.unwrap();
+    idle.unwrap();
+}
+
+#[tokio::test]
+async fn close_waits_for_admitted_idle_callback() {
+    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "closing-idle".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None }, Arc::new(MemoryStorage::new(MemoryStorageOptions::default())), StorageBackedSessionOptions::default()));
+    session.attach();
+    let harness = create_agent_harness(session, LaneConfiguration { model: LaneModelRef { provider: "test".into(), model_id: "model".into() }, thinking_level: maho_ai::types::ModelThinkingLevel::Off, active_tool_names: vec![] }, &BACKGROUND_CONTEXT).await.unwrap();
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let (started, observed) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let owner = lane.clone();
+    let callback = tokio::spawn(async move { owner.run_when_idle(move |_| async move { started.send(()).unwrap(); released.await.unwrap(); Ok(()) }, &BACKGROUND_CONTEXT).await });
+    observed.await.unwrap();
+    let closing = harness.close(&BACKGROUND_CONTEXT);
+    tokio::pin!(closing);
+    assert!(futures::poll!(closing.as_mut()).is_pending());
+    release.send(()).unwrap();
+    callback.await.unwrap().unwrap();
+    closing.await;
+    assert!(lane.get_tip_id().is_err());
+}
+
+#[tokio::test]
+async fn acceptance_after_close_returns_expected_closed_rejection() {
+    let lane = fixture().await.unwrap();
+    lane.seal(maho_agent::harness::session::session::SessionError::new(maho_agent::harness::session::session::SessionErrorKind::Closed, "AgentHarness is closed"));
+    assert_eq!(lane.accept_prompt(PromptInput::Text { text: "late".into(), images: vec![] }, None, settings(), &BACKGROUND_CONTEXT).await.unwrap(), Err(AdmissionError::Closed { message: "AgentHarness is closed".into() }));
+    assert!(lane.state().operation.is_none());
+}
