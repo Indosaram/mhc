@@ -70,6 +70,18 @@ pub fn aggregate_decision(event:SupportedHookEvent,summaries:&[HookDispatchSumma
 mod tests {
     use super::*;use serde_json::json;use crate::schema::parse_hook_config;use crate::types::{HookSourceScope,HookDiscoveryTiming};use crate::trust::{create_hook_trust_entry,hook_trust_id};
     #[tokio::test]
+    async fn deferred_completion_keeps_declaration_order_and_deny_precedence()->std::io::Result<()> {
+        let handlers=vec![handler("allow-slow",0),handler("deny-fast",1)];let trust=state(&handlers)?;let (started,mut starts)=tokio::sync::mpsc::unbounded_channel();let (status,mut transitions)=tokio::sync::mpsc::unbounded_channel();
+        let (slow_sender,slow)=tokio::sync::oneshot::channel();let (fast_sender,fast)=tokio::sync::oneshot::channel();let receivers=std::sync::Arc::new(std::sync::Mutex::new(vec![Some(slow),Some(fast)]));
+        let outputs=vec![run(handlers[0].clone(),json!({"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":"safe"}}}).to_string()).await?,run(handlers[1].clone(),json!({"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"dangerous"}}).to_string()).await?];
+        let dispatch=tokio::spawn(async move {dispatch_hook_event_with_status(&handlers,&json!({"event":"PreToolUse","toolName":"bash"}),&trust,"linux",move |handler| {started.send(handler.config.command).unwrap();let receiver=receivers.lock().unwrap()[handler.handler_index].take().unwrap();async move {receiver.await.map_err(std::io::Error::other)}},move |running| {status.send(running.iter().map(|handler|handler.config.command.clone()).collect::<Vec<_>>()).unwrap();}).await});
+        let result=tokio::time::timeout(std::time::Duration::from_secs(5),async {
+            assert_eq!(starts.recv().await.unwrap(),"allow-slow");assert_eq!(starts.recv().await.unwrap(),"deny-fast");assert_eq!(transitions.recv().await.unwrap(),["allow-slow"]);assert_eq!(transitions.recv().await.unwrap(),["allow-slow","deny-fast"]);
+            let mut outputs=outputs;fast_sender.send(outputs.pop().unwrap()).ok().unwrap();assert_eq!(transitions.recv().await.unwrap(),["allow-slow"]);slow_sender.send(outputs.pop().unwrap()).ok().unwrap();assert!(transitions.recv().await.unwrap().is_empty());dispatch.await.unwrap()
+        }).await.unwrap()?;
+        assert_eq!(result.summaries.iter().map(|summary|summary.handler.config.command.as_str()).collect::<Vec<_>>(),["allow-slow","deny-fast"]);assert_eq!(result.summaries.iter().map(|summary|summary.completion_index).collect::<Vec<_>>(),[1,0]);assert!(matches!(result.decision,HookDispatchDecision::Block {reason:Some(ref reason),source_command:ref command,..} if reason=="dangerous"&&command=="deny-fast"));assert!(result.diagnostics.is_empty());Ok(())
+    }
+    #[tokio::test]
     async fn concurrent_status_tracks_all_starts_and_each_settlement()->std::io::Result<()> {
         let handlers=vec![handler("first",0),handler("second",1)];let mut sizes=Vec::new();
         dispatch_hook_event_with_status(&handlers,&json!({"event":"PreToolUse"}),&state(&handlers)?,"linux",|handler|run(handler,String::new()),|running|sizes.push(running.len())).await?;
