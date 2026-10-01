@@ -4,6 +4,7 @@ pub mod context;
 pub mod dream_scoring;
 pub mod dream_selector;
 pub mod dream_trigger_gates;
+pub mod engine_session;
 pub mod guard;
 pub mod facts_run_cleanup;
 pub mod facts_failure_recording;
