@@ -1577,6 +1577,10 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-anthropic-bash"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-anthropic-subscription"
@@ -1603,6 +1607,11 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-bash-timeout"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-anthropic-bash",
+ "maho-ext-api",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-btw"
@@ -1787,6 +1796,11 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-tool-pair-guard"
 version = "0.0.0"
+dependencies = [
+ "maho-ai",
+ "maho-ext-api",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-tool-search"
