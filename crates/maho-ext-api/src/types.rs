@@ -2,10 +2,12 @@
 //! Session, resource, registry and theme ports live here to keep the dependency graph acyclic.
 use std::{collections::BTreeMap, fmt, future::Future, path::{Path, PathBuf}, pin::Pin, sync::{Arc, Mutex}};
 pub use maho_agent::types::{AgentEvent, AgentMessage};
+pub use maho_agent::types::{AgentTool, AgentToolResult};
+pub use maho_tools::tool_definition_wrapper::wrap_tool_definition;
 pub use maho_ai::{model::Model, types::{JsonValue, ThinkingLevel, Usage, ImageContent}};
 pub use maho_ai::types::{Message, UserMessage, UserContent, AssistantMessage, ContentBlock};
 pub use maho_tools::{ToolContext, ToolDefinition, FilesystemPolicy, FilesystemPolicyChecker, FilesystemPolicyDecision, FilesystemPolicyRequest};
-pub use maho_tools::definition::{AbortSignal, ToolContent, ToolResult, ToolSessionManager, ToolExposure, ToolExecutionMode};
+pub use maho_tools::definition::{AbortSignal, ToolContent, ToolResult, ToolSessionManager, ToolExposure, ToolExecutionMode, ToolError, ToolCall};
 pub use maho_tools::filesystem_policy::FilesystemOperation;
 pub use maho_tui::tui::Component;
 

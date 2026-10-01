@@ -440,3 +440,95 @@ fn shortcuts_normalize_case_and_last_extension_wins() {
     }
     let shortcuts = runner(vec![a,b]).get_shortcuts(); assert_eq!(shortcuts.len(), 1); assert_eq!(shortcuts["ctrl+x"].extension_path, "b");
 }
+
+#[derive(Default)]
+struct SessionActions { active: Mutex<Vec<String>>, name: Mutex<Option<String>>, fast: Mutex<bool>, entries: Mutex<Vec<(String, Option<JsonValue>)>> }
+impl ExtensionActions for SessionActions {
+    fn send_message(&self, _: CustomMessage, _: SendMessageOptions) -> Result<(), ExtensionFailure> { Err("not used".into()) }
+    fn send_user_message(&self, _: UserMessageContent, _: SendUserMessageOptions) -> Result<(), ExtensionFailure> { Err("not used".into()) }
+    fn append_entry(&self, name: &str, data: Option<JsonValue>) -> Result<(), ExtensionFailure> { self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((name.into(), data)); Ok(()) }
+    fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> { Ok(vec![]) }
+}
+impl ExtensionSessionActions for SessionActions {
+    fn set_session_name(&self, name: &str) -> Result<(), ExtensionFailure> { *self.name.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(name.into()); Ok(()) }
+    fn get_session_name(&self) -> Result<Option<String>, ExtensionFailure> { Ok(self.name.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()) }
+    fn set_label(&self, _: &str, _: Option<&str>) -> Result<(), ExtensionFailure> { Err("not used".into()) }
+    fn execute_tool<'a>(&'a self, name: &'a str, _: JsonValue, _: ExecuteToolOptions) -> ExecuteToolFuture<'a> {
+        Box::pin(async move {
+            let active = self.get_active_tools().unwrap_or_default();
+            Err(ExecuteToolError { code: ExecuteToolErrorCode::InactiveTool, tool_name: name.into(), message: "inactive".into(), active_tools: active })
+        })
+    }
+    fn get_active_tools(&self) -> Result<Vec<String>, ExtensionFailure> { Ok(self.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()) }
+    fn set_active_tools(&self, names: Vec<String>) -> Result<(), ExtensionFailure> { *self.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = names; Ok(()) }
+    fn refresh_tools(&self) -> Result<(), ExtensionFailure> { Ok(()) }
+    fn register_removed_tool_hint(&self, _: &str, _: &str) -> Result<(), ExtensionFailure> { Ok(()) }
+    fn register_lazy_tool_activator(&self, _: LazyToolActivator) -> Result<(), ExtensionFailure> { Ok(()) }
+    fn get_commands(&self) -> Result<Vec<SlashCommandInfo>, ExtensionFailure> { Ok(vec![]) }
+    fn set_model(&self, _: Model) -> ExtensionFuture<'_, bool> { Box::pin(async { Err("not used".into()) }) }
+    fn get_thinking_level(&self) -> Result<ThinkingLevel, ExtensionFailure> { Ok(ThinkingLevel::Low) }
+    fn set_thinking_level(&self, _: ThinkingLevel) -> Result<(), ExtensionFailure> { Ok(()) }
+    fn set_session_model(&self, _: Model) -> ExtensionFuture<'_, bool> { Box::pin(async { Err("not used".into()) }) }
+    fn set_session_thinking_level(&self, _: ThinkingLevel) -> Result<(), ExtensionFailure> { Ok(()) }
+    fn set_session_fast_mode(&self, enabled: bool) -> Result<(), ExtensionFailure> { *self.fast.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = enabled; Ok(()) }
+    fn exec<'a>(&'a self, _: &'a str, _: &'a [String], _: &'a Path, _: ExecOptions) -> ExtensionFuture<'a, ExecResult> { Box::pin(async { Err("not used".into()) }) }
+}
+#[tokio::test]
+async fn bound_session_actions_forward_state_and_preserve_typed_tool_errors() {
+    let actions = Arc::new(SessionActions::default());
+    let runtime = ExtensionRuntime::default();
+    let runner = ExtensionRunner::new(vec![], runtime.clone(), EventBus::default(), context());
+    runner.bind_session_actions(actions.clone()).unwrap();
+    let api = ExtensionApi::new(LoadedExtension::new("test", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), runtime);
+    api.set_session_name("new name").unwrap(); assert_eq!(api.get_session_name().unwrap().as_deref(), Some("new name"));
+    api.set_active_tools(vec!["read".into()]).unwrap(); assert_eq!(api.get_active_tools().unwrap(), ["read"]);
+    api.set_session_fast_mode(true).unwrap(); assert!(*actions.fast.lock().unwrap());
+    assert_eq!(api.get_thinking_level().unwrap(), ThinkingLevel::Low);
+    let error = api.execute_tool("hidden", JsonValue::Null, ExecuteToolOptions::default()).await.unwrap_err();
+    assert_eq!(error.code, ExecuteToolErrorCode::InactiveTool); assert_eq!(error.active_tools, ["read"]);
+}
+#[test]
+fn native_loader_preserves_factory_identity_profile_and_order() {
+    use maho_ext_host::loader::*;
+    struct Register;
+    impl Extension for Register {
+        fn register(&self, api: &mut ExtensionApi) {
+            assert_eq!(api.profile.session_kind, SessionKind::Worker);
+            api.register_flag("test", FlagType::String { default: Some(api.registered.identity.path.clone()) }, None);
+        }
+    }
+    let factories = ["first", "second"].into_iter().map(|path| NativeExtensionFactory { path: path.into(), source_info: SourceInfo::default(), extension: Box::new(Register) }).collect();
+    let loaded = load_extensions(factories, Path::new("/tmp"), ExtensionSessionProfile { session_kind: SessionKind::Worker, ..Default::default() });
+    assert_eq!(loaded.extensions.iter().map(|extension| extension.identity.path.as_str()).collect::<Vec<_>>(), ["first", "second"]);
+    assert_eq!(loaded.runtime.get_flag("test"), Some(FlagValue::String("first".into()))); assert!(loaded.errors.is_empty());
+}
+#[tokio::test]
+async fn registered_tool_wrapper_supplies_context_and_reports_new_active_tools() {
+    let actions = Arc::new(SessionActions::default()); actions.set_active_tools(vec!["read".into()]).unwrap();
+    let runtime = ExtensionRuntime::default(); runtime.bind_session_actions(actions.clone());
+    let captured = actions.clone();
+    let definition = ToolDefinition::new("activate", "activate", JsonValue::Object(Default::default()), Arc::new(move |call| {
+        let actions = captured.clone();
+        Box::pin(async move {
+            assert_eq!(call.context.unwrap().cwd(), Path::new("/tmp"));
+            actions.set_active_tools(vec!["read".into(), "new".into()]).unwrap_or_else(|error| panic!("{error}"));
+            Ok(ToolResult::text("activated"))
+        })
+    }));
+    let tool = maho_ext_host::wrapper::wrap_registered_tool(RegisteredTool { definition, source_info: SourceInfo::default() }, runtime, Arc::new(|| Ok(context())));
+    let result = (tool.execute)("call".into(), JsonValue::Null, None, None).await;
+    assert_eq!(result.added_tool_names, Some(vec!["new".into()])); assert_ne!(result.is_error, Some(true));
+}
+#[test]
+fn rpc_events_use_the_shared_channel_and_normalized_envelope() {
+    let runtime = ExtensionRuntime::default(); let events = EventBus::default();
+    let captured = Arc::new(Mutex::new(None)); let output = captured.clone();
+    let _subscription = events.on("senpi:extension-rpc-event", Arc::new(move |data| *output.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(data.clone())));
+    let mut api = ExtensionApi::new(LoadedExtension::new("test", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), events, runtime.clone());
+    api.rpc_emit(" progress ", &JsonValue::Bool(true)).unwrap();
+    let result = captured.lock().unwrap().clone().unwrap(); assert_eq!(result["name"], JsonValue::String("progress".into())); assert_eq!(result["data"], JsonValue::Bool(true));
+    assert!(api.rpc_emit(" ", &JsonValue::Null).is_err());
+    api.rpc_handle(" echo ", Arc::new(|data| Box::pin(async move { Ok(data) }))).unwrap();
+    assert!(api.rpc_handle("echo", Arc::new(|data| Box::pin(async move { Ok(data) }))).is_err());
+    runtime.invalidate("stale"); assert!(api.rpc_emit("progress", &JsonValue::Null).is_err());
+}
