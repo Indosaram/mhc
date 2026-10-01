@@ -5,12 +5,42 @@ use std::{sync::{Arc, Mutex, Condvar}, thread::JoinHandle, time::Duration};
 
 #[derive(Default)]
 struct Pending { value: Option<(String, Map<String, Value>)>, shutdown: bool }
+#[derive(Default)]
+struct EndpointCache {
+    key: Option<(std::time::SystemTime, u64, u64)>,
+    values: Option<std::collections::BTreeMap<String, String>>,
+    warned: bool,
+}
+impl EndpointCache {
+    fn read(&mut self, path: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+        let operation = || -> std::io::Result<_> {
+            let metadata = path.metadata()?;
+            #[cfg(unix)]
+            let inode = { use std::os::unix::fs::MetadataExt; metadata.ino() };
+            #[cfg(not(unix))]
+            let inode = 0;
+            let key = (metadata.modified()?, metadata.len(), inode);
+            if self.key == Some(key) && let Some(values) = &self.values { return Ok((key, values.clone())); }
+            Ok((key, parse_endpoint(&std::fs::read_to_string(path)?)))
+        };
+        match operation() {
+            Ok((key, values)) => { self.key = Some(key); self.values = Some(values.clone()); values }
+            Err(error) => {
+                self.key = None;
+                self.values = None;
+                if error.kind() != std::io::ErrorKind::NotFound && !self.warned { self.warned = true; eprintln!("[orca-pi-status] failed to parse endpoint file: {error}"); }
+                Default::default()
+            }
+        }
+    }
+}
 struct Delivery { pending: Arc<(Mutex<Pending>, Condvar)>, thread: Mutex<Option<JoinHandle<()>>> }
 impl Delivery {
     fn new(metadata: Arc<Mutex<Map<String, Value>>>) -> Self {
         let pending = Arc::new((Mutex::new(Pending::default()), Condvar::new()));
         let worker_pending = Arc::clone(&pending);
         let thread = std::thread::spawn(move || {
+            let mut endpoints = EndpointCache::default();
             let client = match reqwest::blocking::Client::builder().timeout(Duration::from_millis(1000)).build() {
                 Ok(client) => client,
                 Err(error) => { eprintln!("Orca hook client: {error}"); return; }
@@ -23,7 +53,7 @@ impl Delivery {
                 if next.is_none() && pending.shutdown { break; }
                 drop(pending);
                 let Some((event, extra)) = next else { continue; };
-                let file_env = std::env::var("ORCA_AGENT_HOOK_ENDPOINT").ok().and_then(|path| std::fs::read_to_string(path).ok()).map(|text| parse_endpoint(&text)).unwrap_or_default();
+                let file_env = std::env::var("ORCA_AGENT_HOOK_ENDPOINT").ok().filter(|path| !path.is_empty()).map(|path| endpoints.read(std::path::Path::new(&path))).unwrap_or_default();
                 let lookup = |key: &str| file_env.get(key).filter(|value| !value.is_empty()).cloned().or_else(|| std::env::var(key).ok()).unwrap_or_default();
                 let port = lookup("ORCA_AGENT_HOOK_PORT");
                 let token = lookup("ORCA_AGENT_HOOK_TOKEN");
@@ -111,5 +141,31 @@ impl Extension for OrcaAgentStatus {
                 })
             }));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn endpoint_cache_refreshes_after_size_change() {
+        let fixture = tempfile::tempdir().expect("create endpoint fixture");
+        let path = fixture.path().join("endpoint.env");
+        std::fs::write(&path, "ORCA_AGENT_HOOK_PORT=123").expect("write endpoint");
+        let mut cache = EndpointCache::default();
+        assert_eq!(cache.read(&path).get("ORCA_AGENT_HOOK_PORT").map(String::as_str), Some("123"));
+        let initial = cache.key;
+        cache.read(&path);
+        assert_eq!(cache.key, initial);
+        std::fs::write(&path, "ORCA_AGENT_HOOK_PORT=12345").expect("change endpoint size");
+        assert_eq!(cache.read(&path).get("ORCA_AGENT_HOOK_PORT").map(String::as_str), Some("12345"));
+    }
+    #[test]
+    fn missing_endpoint_clears_cache_without_warning() {
+        let fixture = tempfile::tempdir().expect("create missing endpoint fixture");
+        let mut cache = EndpointCache::default();
+        assert!(cache.read(&fixture.path().join("missing")).is_empty());
+        assert!(!cache.warned);
+        assert!(cache.values.is_none());
     }
 }

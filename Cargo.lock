@@ -1745,6 +1745,7 @@ dependencies = [
  "maho-ext-api",
  "reqwest",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
