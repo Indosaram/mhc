@@ -1,4 +1,4 @@
-use crate::{binary_path::find_sg_cli_path, downloader::{cache_dir, cached_binary_path, ensure_ast_grep_binary, DEFAULT_AST_GREP_VERSION}, tools::tool};
+use crate::{binary_path::{find_sg_cli_path, BinaryResolver}, downloader::{cache_dir, cached_binary_path, ensure_ast_grep_binary}, tools::tool_with_resolver};
 use maho_ext_api::{Extension, ExtensionApi, NotificationType};
 use std::{path::PathBuf, sync::Arc};
 
@@ -13,23 +13,24 @@ impl Extension for AstGrep {
         let cache = cache_dir(&home, platform, override_path.as_deref());
         let source = api.cwd.join("extension.rs");
         let path = std::env::var_os("PATH");
-        let cached = cached_binary_path(&cache, platform);
-        let local = find_sg_cli_path(&source, cached.as_deref(), path.as_deref());
-        let binary = local.clone().unwrap_or_else(|| cache.join(crate::downloader::binary_name(platform)));
-        api.register_tool(tool(false, binary.clone()));
-        api.register_tool(tool(true, binary));
+        let offline = matches!(std::env::var("PI_OFFLINE").ok().as_deref(), Some("1" | "true"));
+        let resolver = Arc::new(BinaryResolver::new(source.clone(), cache.clone(), path.clone(), platform_key.clone(), offline));
+        let version = resolver.version.clone();
+        api.register_tool(tool_with_resolver(false, Arc::clone(&resolver)));
+        api.register_tool(tool_with_resolver(true, resolver));
         api.register_command("ast-grep", Some("Show ast-grep binary path, version, and cache directory".into()), None, Arc::new(move |args, ctx| {
             let cache = cache.clone();
             let platform_key = platform_key.clone();
             let source = source.clone();
             let path = path.clone();
+            let version = version.clone();
             Box::pin(async move {
                 let cached = cached_binary_path(&cache, platform);
                 let local = find_sg_cli_path(&source, cached.as_deref(), path.as_deref());
                 if matches!(args.trim(), "install" | "download") {
                     ctx.ui.set_status("pi-ast-grep", Some("Downloading sg binary..."));
                     let offline = matches!(std::env::var("PI_OFFLINE").ok().as_deref(), Some("1" | "true"));
-                    let binary = ensure_ast_grep_binary(&cache, &platform_key, DEFAULT_AST_GREP_VERSION, offline).await;
+                    let binary = ensure_ast_grep_binary(&cache, &platform_key, &version, offline).await;
                     ctx.ui.set_status("pi-ast-grep", None);
                     if let Some(binary) = binary { ctx.ui.notify(&format!("ast-grep ready: {}", binary.display()), NotificationType::Info); }
                     else { ctx.ui.notify("Auto-download failed. Try: npm install -g @ast-grep/cli or brew install ast-grep", NotificationType::Error); }

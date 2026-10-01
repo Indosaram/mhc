@@ -2,6 +2,36 @@ use std::path::{Path, PathBuf};
 
 fn valid(path: &Path) -> bool { path.metadata().is_ok_and(|metadata| metadata.len() > 10_000) }
 
+pub struct BinaryResolver {
+    pub source_path: PathBuf,
+    pub cache: PathBuf,
+    pub path: Option<std::ffi::OsString>,
+    pub platform_key: String,
+    pub version: String,
+    pub offline: bool,
+    resolved: tokio::sync::Mutex<Option<PathBuf>>,
+}
+impl BinaryResolver {
+    pub fn new(source_path: PathBuf, cache: PathBuf, path: Option<std::ffi::OsString>, platform_key: String, offline: bool) -> Self {
+        let version = source_path.parent().and_then(|parent| parent.ancestors().find_map(|directory| {
+            let bytes = std::fs::read(directory.join("node_modules/@ast-grep/cli/package.json")).ok()?;
+            let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+            value.get("version")?.as_str().map(str::to_owned)
+        })).unwrap_or_else(|| crate::downloader::DEFAULT_AST_GREP_VERSION.to_owned());
+        Self { source_path, cache, path, platform_key, version, offline, resolved: tokio::sync::Mutex::new(None) }
+    }
+    pub async fn resolve(&self) -> Option<PathBuf> {
+        let mut resolved = self.resolved.lock().await;
+        if let Some(path) = resolved.as_ref().filter(|path| path.exists()) { return Some(path.clone()); }
+        let platform = self.platform_key.split('-').next()?;
+        let cached = crate::downloader::cached_binary_path(&self.cache, platform);
+        let path = if let Some(path) = find_sg_cli_path(&self.source_path, cached.as_deref(), self.path.as_deref()) { Some(path) }
+            else { crate::downloader::ensure_ast_grep_binary(&self.cache, &self.platform_key, &self.version, self.offline).await };
+        *resolved = path.clone();
+        path
+    }
+}
+
 pub fn find_sg_cli_path(source_path: &Path, cache: Option<&Path>, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     if let Some(cache) = cache.filter(|path| valid(path)) { return Some(cache.to_owned()); }
     let name = if cfg!(windows) { "sg.exe" } else { "sg" };
@@ -42,6 +72,19 @@ pub fn find_sg_cli_path(source_path: &Path, cache: Option<&Path>, path: Option<&
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn lazy_resolution_reuses_valid_package_binary() {
+        let root = tempfile::tempdir().expect("create resolver fixture");
+        let package = root.path().join("node_modules/@ast-grep/cli");
+        std::fs::create_dir_all(&package).expect("create resolver package");
+        std::fs::write(package.join("package.json"), r#"{"version":"0.41.1"}"#).expect("write package version");
+        let binary = package.join(if cfg!(windows) { "sg.exe" } else { "sg" });
+        std::fs::write(&binary, vec![0; 10_001]).expect("write package binary");
+        let resolver = BinaryResolver::new(root.path().join("source.rs"), root.path().join("cache"), None, "linux-x64".into(), true);
+        assert_eq!(resolver.version, "0.41.1");
+        assert_eq!(resolver.resolve().await, Some(binary.clone()));
+        assert_eq!(resolver.resolve().await, Some(binary));
+    }
     #[test]
     fn cache_precedes_package() {
         let root = tempfile::tempdir().expect("create binary fixture");

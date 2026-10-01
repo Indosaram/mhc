@@ -3,6 +3,22 @@ use maho_ext_api::{ToolCall, ToolContent, ToolDefinition, ToolExecutionMode, Too
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
 
+pub fn tool_with_resolver(replace: bool, resolver: Arc<crate::binary_path::BinaryResolver>) -> ToolDefinition {
+    let mut definition = tool(replace, PathBuf::new());
+    definition.execute = Arc::new(move |call| {
+        let resolver = Arc::clone(&resolver);
+        Box::pin(async move {
+            let Some(binary) = resolver.resolve().await else {
+                let result = crate::types::SgResult { error: Some("ast-grep (sg) binary not found.\n\nInstall options:\n  npm install -g @ast-grep/cli\n  cargo install ast-grep --locked\n  brew install ast-grep".into()), ..Default::default() };
+                let text = if replace { format_replace_result(&result, call.params.get("dryRun") != Some(&Value::Bool(false))) } else { format_search_result(&result) };
+                return Ok(ToolResult { content: vec![ToolContent::text(text)], details: Some(serde_json::to_value(result)?) });
+            };
+            (tool(replace, binary).execute)(call).await
+        })
+    });
+    definition
+}
+
 pub fn tool(replace: bool, binary: PathBuf) -> ToolDefinition {
     let mut properties = json!({
         "pattern":{"type":"string","description":if replace { "AST pattern to match" } else { "AST pattern with meta-variables ($VAR, $$$). Must be a complete AST node." }},
