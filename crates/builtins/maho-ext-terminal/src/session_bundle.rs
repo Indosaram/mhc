@@ -4,6 +4,18 @@ type MonitorSink=Arc<dyn Fn(MonitorEvent)+Send+Sync>;
 #[derive(Default)]
 struct Routing {sink:Option<MonitorSink>,parked:std::collections::VecDeque<MonitorEvent>,torndown:bool}
 pub struct TerminalSessionBundle {pub manager:TerminalManager,pub monitors:MonitorRegistry,routing:Arc<Mutex<Routing>>}
+fn parked_bundles()->&'static Mutex<std::collections::BTreeMap<String,Arc<Mutex<TerminalSessionBundle>>>> {
+    static BUNDLES:std::sync::OnceLock<Mutex<std::collections::BTreeMap<String,Arc<Mutex<TerminalSessionBundle>>>>>=std::sync::OnceLock::new();
+    BUNDLES.get_or_init(Mutex::default)
+}
+pub fn park_bundle(session_key:&str,bundle:Arc<Mutex<TerminalSessionBundle>>)->Result<(),crate::runtime_session::RuntimeError> {
+    bundle.lock().map_err(|_|crate::runtime_session::RuntimeError::Poisoned)?.park();
+    let previous=parked_bundles().lock().map_err(|_|crate::runtime_session::RuntimeError::Poisoned)?.insert(session_key.to_owned(),bundle.clone());
+    if let Some(previous)=previous && !Arc::ptr_eq(&previous,&bundle) {previous.lock().map_err(|_|crate::runtime_session::RuntimeError::Poisoned)?.teardown()?;}
+    Ok(())
+}
+pub fn claim_parked_bundle(session_key:&str)->Option<Arc<Mutex<TerminalSessionBundle>>> {parked_bundles().lock().expect("parked bundles").remove(session_key)}
+pub fn teardown_parked_bundle(session_key:&str)->Result<(),crate::runtime_session::RuntimeError> {if let Some(bundle)=claim_parked_bundle(session_key) {bundle.lock().map_err(|_|crate::runtime_session::RuntimeError::Poisoned)?.teardown()?;}Ok(())}
 impl TerminalSessionBundle {
     pub fn new(max_sessions:usize)->Self {
         let routing=Arc::new(Mutex::new(Routing::default()));let dispatch=routing.clone();
@@ -30,6 +42,11 @@ impl TerminalSessionBundle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn claim_transfers_same_bundle_only_once() {
+        let bundle=Arc::new(Mutex::new(TerminalSessionBundle::new(1)));park_bundle("bundle-claim-test",bundle.clone()).unwrap();
+        assert!(Arc::ptr_eq(&claim_parked_bundle("bundle-claim-test").unwrap(),&bundle));assert!(claim_parked_bundle("bundle-claim-test").is_none());bundle.lock().unwrap().teardown().unwrap();
+    }
     #[tokio::test]
     async fn parked_monitor_completion_flushes_into_new_owner() {
         let mut bundle=TerminalSessionBundle::new(1);
