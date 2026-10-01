@@ -1783,6 +1783,10 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-terminal"
 version = "0.0.0"
+dependencies = [
+ "sha2",
+ "tempfile",
+]
 
 [[package]]
 name = "maho-ext-todotools"

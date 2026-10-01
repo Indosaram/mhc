@@ -101,3 +101,23 @@ pub const UNSUPPORTED_KNOWN_HOOK_EVENTS: &[&str] = &[
     "StopFailure", "TeammateIdle", "InstructionsLoaded", "ConfigChange", "CwdChanged", "FileChanged",
     "WorktreeCreate", "WorktreeRemove", "MessageDisplay", "SessionEnd", "Elicitation", "ElicitationResult",
 ];
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookTrustEntry {
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trusted_hash: Option<String>,
+    pub scope: HookSourceScope,
+    pub source_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matcher: Option<String>,
+    pub command_preview: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HookTrustState {
+    pub version: u8,
+    pub hooks: std::collections::BTreeMap<String, HookTrustEntry>,
+}
