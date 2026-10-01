@@ -290,6 +290,8 @@ impl InteractiveMode {
             if self.session.with_session_manager(|manager| manager.leaf_id().is_some_and(|leaf| leaf == id.trim())) {
                 self.show_status("Already at this point".into()); return Ok(PromptDisposition::Handled);
             }
+            if self.session.is_streaming() { self.restore_queued_messages(false); self.session.abort().await; }
+            if self.session.is_compacting() { return Err("Wait for the current compaction or tree navigation to finish before navigating the session tree.".into()); }
             let result = self.session.navigate_tree(id.trim(), Default::default()).await?;
             if !result.cancelled && result.aborted != Some(true) { self.rebuild_history(); if let Some(text) = result.editor_text { self.editor.editor.set_text(&text); } }
             return Ok(PromptDisposition::Handled);
