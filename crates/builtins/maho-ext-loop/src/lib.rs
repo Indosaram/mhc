@@ -7,3 +7,4 @@ pub mod tick_prompt;
 pub mod store;
 pub mod scheduler;
 pub mod tools;
+pub mod command;
