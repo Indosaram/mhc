@@ -7,6 +7,7 @@ license = "LicenseRef-SUL-1.0"
 
 [dependencies]
 maho-memory-core.workspace = true
+maho-senpi-task = { path = "../../senpi-task", version = "=0.0.0" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 chrono = { workspace = true, features = ["std"] }
