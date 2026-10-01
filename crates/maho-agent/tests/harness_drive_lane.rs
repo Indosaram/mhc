@@ -22,6 +22,54 @@ fn seed() -> LaneConfiguration {
     }
 }
 
+async fn gated_lane() -> Result<(Arc<maho_agent::harness::runtime::lane::Lane>, Arc<maho_agent::harness::session::testing::GatingStorage>), maho_agent::harness::session::session::SessionError> {
+    let storage = Arc::new(maho_agent::harness::session::testing::GatingStorage::new(Arc::new(MemoryStorage::new(MemoryStorageOptions::default()))));
+    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "gated-lane".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None }, storage.clone(), StorageBackedSessionOptions::default()));
+    session.attach();
+    let harness = create_agent_harness(session, seed(), &BACKGROUND_CONTEXT).await?;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await?;
+    storage.arm();
+    Ok((lane, storage))
+}
+
+#[tokio::test]
+async fn publishes_configuration_memory_only_after_commit() {
+    let (lane, storage) = gated_lane().await.unwrap();
+    let writer = lane.clone();
+    let command = tokio::spawn(async move { writer.set_thinking_level(ModelThinkingLevel::High, &BACKGROUND_CONTEXT).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), storage.wait_pending(1)).await.unwrap().unwrap();
+    assert_eq!(lane.state().configuration.thinking_level, ModelThinkingLevel::Off);
+    storage.next(1).await.unwrap();
+    command.await.unwrap().unwrap();
+    assert_eq!(lane.state().configuration.thinking_level, ModelThinkingLevel::High);
+    assert_eq!(lane.session.get_value(&lane_config("main"), &BACKGROUND_CONTEXT).await.unwrap().unwrap().value["thinkingLevel"], "high");
+}
+
+#[tokio::test]
+async fn preserves_configuration_memory_when_commit_fails() {
+    let (lane, storage) = gated_lane().await.unwrap();
+    let writer = lane.clone();
+    let command = tokio::spawn(async move { writer.set_thinking_level(ModelThinkingLevel::High, &BACKGROUND_CONTEXT).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), storage.wait_pending(1)).await.unwrap().unwrap();
+    storage.discard();
+    assert!(command.await.unwrap().is_err());
+    assert_eq!(lane.state().configuration.thinking_level, ModelThinkingLevel::Off);
+}
+
+#[tokio::test]
+async fn sealing_rejects_new_work_but_admitted_configuration_finishes() {
+    let (lane, storage) = gated_lane().await.unwrap();
+    let writer = lane.clone();
+    let command = tokio::spawn(async move { writer.set_thinking_level(ModelThinkingLevel::High, &BACKGROUND_CONTEXT).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), storage.wait_pending(1)).await.unwrap().unwrap();
+    lane.seal(maho_agent::harness::session::session::session_invariant_error("sealed"));
+    assert!(lane.get_tip_id().is_err());
+    assert!(lane.set_thinking_level(ModelThinkingLevel::Low, &BACKGROUND_CONTEXT).await.is_err());
+    storage.next(1).await.unwrap();
+    command.await.unwrap().unwrap();
+    assert_eq!(lane.state().configuration.thinking_level, ModelThinkingLevel::High);
+}
+
 #[tokio::test]
 async fn drive_completion_preserves_first_settlement_and_wakes_all_observers() {
     use maho_agent::harness::runtime::lane::Drive;
@@ -64,6 +112,27 @@ async fn global_configuration_round_trips_and_rejects_invalid_values() {
     let mut compaction = harness.get_compaction_settings().unwrap();
     compaction.reserve_tokens = u64::MAX;
     assert!(harness.set_compaction_settings(compaction, &BACKGROUND_CONTEXT).await.is_err());
+}
+
+#[tokio::test]
+async fn closes_every_lane_and_rejects_later_acquisition() {
+    let harness = fixture().await;
+    let main = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let other = harness.lane("other", None, &BACKGROUND_CONTEXT).await.unwrap();
+    harness.close(&BACKGROUND_CONTEXT).await;
+    assert!(main.get_tip_id().is_err());
+    assert!(other.get_tip_id().is_err());
+    assert!(harness.lane("late", None, &BACKGROUND_CONTEXT).await.is_err());
+}
+
+#[tokio::test]
+async fn replaces_global_resources_without_changing_lane_configuration() {
+    let harness = fixture().await;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let resources = maho_agent::harness::types::AgentHarnessResources { prompt_templates: Some(vec![maho_agent::harness::types::PromptTemplate { name: "fix".into(), description: None, content: "$1".into() }]), skills: None };
+    harness.set_resources(resources.clone(), &BACKGROUND_CONTEXT).await.unwrap();
+    assert_eq!(harness.get_resources().unwrap(), resources);
+    assert_eq!(lane.state().configuration, seed());
 }
 
 #[tokio::test]

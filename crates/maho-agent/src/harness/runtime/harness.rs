@@ -319,6 +319,20 @@ impl Harness {
     }
 
     pub fn get_resources(&self) -> Result<crate::harness::types::AgentHarnessResources, SessionError> { self.assert_open()?; Ok(self.config.lock().unwrap_or_else(|error| error.into_inner()).resources.clone()) }
+    pub async fn set_resources(&self, resources: crate::harness::types::AgentHarnessResources, context: &Context) -> Result<(), SessionError> {
+        self.set_config(move |config| {
+            let as_value = |value: &crate::harness::types::AgentHarnessResources| -> Result<serde_json::Value, SessionError> {
+                let mut object = serde_json::Map::new();
+                if let Some(skills) = &value.skills { object.insert("skills".into(), encoded(skills)?); }
+                if let Some(templates) = &value.prompt_templates { object.insert("promptTemplates".into(), encoded(templates)?); }
+                Ok(serde_json::Value::Object(object))
+            };
+            let previous = as_value(&config.resources)?;
+            let value = as_value(&resources)?;
+            config.resources = resources;
+            Ok(HarnessEventPayload::ConfigUpdate { property: "resources".into(), previous, value })
+        }, context).await
+    }
     pub fn get_stream_options(&self) -> Result<crate::harness::types::AgentHarnessStreamOptions, SessionError> { self.assert_open()?; Ok(self.config.lock().unwrap_or_else(|error| error.into_inner()).stream_options.clone()) }
     pub fn get_retry_policy(&self) -> Result<maho_ai::utils::retry::RetryPolicy, SessionError> { self.assert_open()?; Ok(self.config.lock().unwrap_or_else(|error| error.into_inner()).retry_policy.clone()) }
     pub fn get_compaction_settings(&self) -> Result<crate::harness::compaction::compaction::CompactionSettings, SessionError> { self.assert_open()?; Ok(self.config.lock().unwrap_or_else(|error| error.into_inner()).compaction) }
