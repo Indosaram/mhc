@@ -1747,6 +1747,7 @@ version = "0.0.0"
 name = "maho-ext-pi-ast-grep"
 version = "0.0.0"
 dependencies = [
+ "regex",
  "serde",
  "serde_json",
  "tokio",
