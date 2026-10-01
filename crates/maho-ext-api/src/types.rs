@@ -326,12 +326,58 @@ pub trait ExtensionUiActions: Send + Sync {
 pub enum NotificationType { Info, Warning, Error }
 /// Components retain senpi's render/invalidate/input contract; creation occurs on the UI thread.
 pub type ComponentFactory = Arc<dyn Fn(&Theme) -> Box<dyn Component> + Send + Sync>;
+pub trait ExtensionTuiHost {
+    fn request_render(&self);
+    fn dimensions(&self) -> (u16, u16);
+}
+pub trait ReadonlyFooterDataProvider {
+    fn get_git_branch(&self) -> Option<String>;
+    fn get_extension_statuses(&self) -> BTreeMap<String, String>;
+    fn get_available_provider_count(&self) -> usize;
+    fn on_branch_change(&self, callback: Arc<dyn Fn() + Send + Sync>) -> UiUnsubscribe;
+}
+pub type TuiComponentFactory = Arc<dyn Fn(&dyn ExtensionTuiHost, &Theme) -> Box<dyn Component> + Send + Sync>;
+pub type FooterComponentFactory = Arc<dyn Fn(&dyn ExtensionTuiHost, &Theme, &dyn ReadonlyFooterDataProvider) -> Box<dyn Component> + Send + Sync>;
+pub type CustomUiDone = std::rc::Rc<dyn Fn(JsonValue)>;
+pub type CustomComponentFuture<'a> = Pin<Box<dyn Future<Output = Result<Box<dyn Component>, ExtensionFailure>> + 'a>>;
+pub type CustomComponentFactory = Arc<dyn for<'a> Fn(&'a dyn ExtensionTuiHost, &'a Theme, &'a maho_tui::keybindings::KeybindingsManager, CustomUiDone) -> CustomComponentFuture<'a> + Send + Sync>;
+pub type OverlayOptionsFactory = Arc<dyn Fn() -> maho_tui::tui::OverlayOptions + Send + Sync>;
+#[derive(Clone)]
+pub enum ExtensionOverlayOptions { Static(OverlayOptionsFactory), Dynamic(OverlayOptionsFactory) }
+#[derive(Clone, Default)]
+pub struct CustomUiFactoryOptions {
+    pub overlay: bool,
+    pub overlay_options: Option<ExtensionOverlayOptions>,
+    pub on_handle: Option<Arc<dyn Fn(maho_tui::tui::OverlayHandle) + Send + Sync>>,
+}
+pub trait ExtensionUiFactories: Send + Sync {
+    fn set_widget_factory(&self, key: &str, factory: Option<TuiComponentFactory>, options: ExtensionWidgetOptions);
+    fn set_header_factory(&self, factory: Option<TuiComponentFactory>);
+    fn set_footer_factory(&self, factory: Option<FooterComponentFactory>);
+    fn custom_factory(&self, factory: CustomComponentFactory, options: CustomUiFactoryOptions) -> ExtensionFuture<'_, JsonValue>;
+}
 #[derive(Clone)]
 pub enum WidgetContent { Lines(Vec<String>), Component(ComponentFactory) }
 #[derive(Clone, Debug, Default)]
 pub struct CustomUiOptions { pub overlay: bool, pub overlay_options: Option<JsonValue> }
 pub trait ExtensionUi: Send + Sync {
     fn actions(&self) -> Option<&dyn ExtensionUiActions> { None }
+    fn factories(&self) -> Option<&dyn ExtensionUiFactories> { None }
+    fn set_widget_factory(&self, key: &str, factory: Option<TuiComponentFactory>, options: ExtensionWidgetOptions) -> Result<(), ExtensionFailure> {
+        self.factories().ok_or_else(|| ExtensionFailure::new("Widget factories are not available"))?.set_widget_factory(key, factory, options);
+        Ok(())
+    }
+    fn set_header_factory(&self, factory: Option<TuiComponentFactory>) -> Result<(), ExtensionFailure> {
+        self.factories().ok_or_else(|| ExtensionFailure::new("Header factories are not available"))?.set_header_factory(factory);
+        Ok(())
+    }
+    fn set_footer_factory(&self, factory: Option<FooterComponentFactory>) -> Result<(), ExtensionFailure> {
+        self.factories().ok_or_else(|| ExtensionFailure::new("Footer factories are not available"))?.set_footer_factory(factory);
+        Ok(())
+    }
+    fn custom_factory(&self, factory: CustomComponentFactory, options: CustomUiFactoryOptions) -> ExtensionFuture<'_, JsonValue> {
+        match self.factories() { Some(factories) => factories.custom_factory(factory, options), None => Box::pin(async { Err(ExtensionFailure::new("Custom UI factories are not available")) }) }
+    }
     fn question(&self, request: QuestionRequest, options: QuestionOptions) -> ExtensionFuture<'_, QuestionResponse> {
         match self.actions() { Some(actions) => actions.question(request, options), None => Box::pin(async move { Ok(QuestionResponse { status: QuestionStatus::Unavailable, answers: BTreeMap::new(), comment: None, unanswered: request.questions.into_iter().map(|question| question.id).collect(), auto_resolved_after_ms: None }) }) }
     }

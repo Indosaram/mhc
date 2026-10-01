@@ -137,3 +137,29 @@ fn ui_prompt_events_expose_their_wire_reason_discriminant() {
     assert_eq!(event.ui_prompt_reason().unwrap().as_str(), "ui_prompt");
     assert!(event.system_prompt_change_source().is_none());
 }
+
+struct FactoryHost;
+impl ExtensionTuiHost for FactoryHost {
+    fn request_render(&self) {}
+    fn dimensions(&self) -> (u16, u16) { (80, 24) }
+}
+struct FooterData;
+impl ReadonlyFooterDataProvider for FooterData {
+    fn get_git_branch(&self) -> Option<String> { Some("work".into()) }
+    fn get_extension_statuses(&self) -> std::collections::BTreeMap<String, String> { [("status".into(), "ready".into())].into_iter().collect() }
+    fn get_available_provider_count(&self) -> usize { 2 }
+    fn on_branch_change(&self, _: Arc<dyn Fn() + Send + Sync>) -> UiUnsubscribe { Box::new(|| {}) }
+}
+struct FactoryComponent(String);
+impl Component for FactoryComponent {
+    fn render(&mut self, _: usize) -> Vec<String> { vec![self.0.clone()] }
+    fn invalidate(&mut self) {}
+}
+#[test]
+fn footer_factory_receives_tui_and_readonly_footer_data() {
+    let factory: FooterComponentFactory = Arc::new(|tui, _, data| {
+        Box::new(FactoryComponent(format!("{}:{}:{}", tui.dimensions().0, data.get_git_branch().unwrap(), data.get_available_provider_count())))
+    });
+    let mut component = factory(&FactoryHost, &Theme::default(), &FooterData);
+    assert_eq!(component.render(80), ["80:work:2"]);
+}
