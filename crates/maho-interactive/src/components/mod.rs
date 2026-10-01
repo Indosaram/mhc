@@ -67,3 +67,4 @@ pub mod trust_selector;
 pub mod user_message;
 pub mod user_message_selector;
 pub mod visual_truncate;
+pub mod write_result;
