@@ -29,6 +29,33 @@ fn newest_real_session() -> Option<PathBuf> {
 }
 
 #[test]
+fn round_trips_doubles_exactly_like_json_parse_and_json_stringify() {
+    // senpi's JSON.parse/JSON.stringify round-trips a double exactly; serde_json only does so with
+    // the float_roundtrip feature. 3.7186410017311573 is the shortest representation of a double
+    // that the default (lossy) float parser reads back as a different double.
+    let line = concat!(
+        r#"{"type":"message","id":"a1b2c3d4","parentId":null,"timestamp":"2026-09-28T15:32:11.831Z","message":{"role":"toolResult","toolCallId":"t1","toolName":"bash","content":[{"type":"text","text":"ok"}],"details":{"durationMs":3.7186410017311573,"exitCode":0},"isError":false,"timestamp":1780815493292}}"#,
+        "\n",
+    );
+    let entries = parse_session_entries(line);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["message"]["details"]["durationMs"].as_f64(), Some(3.7186410017311573));
+    assert_eq!(format!("{}\n", serialize_entry(&entries[0])), line);
+
+    // The same line must survive a real file read and rewrite byte-for-byte.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("2026-09-28T15-32-11-831Z_sess.jsonl");
+    let content = format!(
+        "{}\n{line}",
+        r#"{"type":"session","version":3,"id":"sess","timestamp":"2026-09-28T15:32:11.831Z","cwd":"/w"}"#,
+    );
+    std::fs::write(&path, &content).expect("write");
+    let loaded = load_entries_from_file(&path.to_string_lossy());
+    let reserialized: String = loaded.iter().map(|entry| format!("{}\n", serialize_entry(entry))).collect();
+    assert_eq!(reserialized, content);
+}
+
+#[test]
 fn round_trips_a_real_omo_session_byte_for_byte() {
     let source = newest_real_session().expect("a real omo session under ~/.omo/agent/sessions");
     let tmp = tempfile::tempdir().expect("tempdir");
