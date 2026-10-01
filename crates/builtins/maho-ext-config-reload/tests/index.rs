@@ -22,6 +22,17 @@ fn pending_paths_deduplicate_sort_and_remove_per_registration() {
     assert!(pending.is_empty());
 }
 #[test]
+fn pending_registration_order_follows_first_observation_not_name() {
+    let mut pending = PendingChanges::default();
+    pending.add("z", &["first".into()]);
+    pending.add("a", &["second".into()]);
+    pending.add("z", &["third".into()]);
+    assert_eq!(pending.snapshot().iter().map(|change| change.registration_id.as_str()).collect::<Vec<_>>(), ["z", "a"]);
+    pending.delete("z");
+    pending.add("z", &["new".into()]);
+    assert_eq!(pending.snapshot().iter().map(|change| change.registration_id.as_str()).collect::<Vec<_>>(), ["a", "z"]);
+}
+#[test]
 fn handoff_snapshot_diff_covers_changed_created_and_deleted_paths() {
     let previous = std::collections::BTreeMap::from([("same".into(), "hash".into()), ("changed".into(), "old".into()), ("deleted".into(), "hash".into())]);
     let next = std::collections::BTreeMap::from([("same".into(), "hash".into()), ("changed".into(), "new".into()), ("created".into(), "hash".into())]);

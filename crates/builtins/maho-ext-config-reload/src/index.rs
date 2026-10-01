@@ -25,10 +25,13 @@ pub fn reload_admission(pending_empty: bool, in_flight: bool, idle: bool, pendin
     else { ReloadAdmission::ProbeVeto }
 }
 #[derive(Default)]
-pub struct PendingChanges { changes: BTreeMap<String, std::collections::BTreeSet<PathBuf>> }
+pub struct PendingChanges { changes: Vec<(String, std::collections::BTreeSet<PathBuf>)> }
 impl PendingChanges {
-    pub fn add(&mut self, registration_id: &str, paths: &[PathBuf]) { self.changes.entry(registration_id.into()).or_default().extend(paths.iter().cloned()); }
-    pub fn delete(&mut self, registration_id: &str) { self.changes.remove(registration_id); }
+    pub fn add(&mut self, registration_id: &str, paths: &[PathBuf]) {
+        if let Some((_, existing)) = self.changes.iter_mut().find(|(id, _)| id == registration_id) { existing.extend(paths.iter().cloned()); }
+        else { self.changes.push((registration_id.into(), paths.iter().cloned().collect())); }
+    }
+    pub fn delete(&mut self, registration_id: &str) { self.changes.retain(|(id, _)| id != registration_id); }
     pub fn clear(&mut self) { self.changes.clear(); }
     pub fn is_empty(&self) -> bool { self.changes.is_empty() }
     pub fn snapshot(&self) -> Vec<PendingChange> { self.changes.iter().map(|(id, paths)| PendingChange { registration_id: id.clone(), paths: paths.iter().cloned().collect() }).collect() }
