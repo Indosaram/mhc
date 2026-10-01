@@ -95,8 +95,12 @@ impl MonitorRegistry {
     pub fn new(emit:impl Fn(MonitorEvent)+Send+Sync+'static)->Self {Self {records:Default::default(),tasks:vec![],emit:std::sync::Arc::new(emit),files:Default::default(),file_snapshots:Default::default(),next_file_id:0}}
     #[cfg(unix)]
     pub fn register_file(&mut self,description:&str,path:&std::path::Path,event:crate::terminal_manifest_model::FileEvent,timeout_ms:u64)->std::io::Result<(String,String)> {
-        let id=format!("watch_{}",self.next_file_id+1);let monitor_id=allocate_monitor_id()?;
-        let file=std::sync::Arc::new(std::sync::Mutex::new(crate::file_monitor::FileMonitor::register(id.clone(),description.to_owned(),path,event,None)?));
+        self.register_file_with_identity(description,path,event,timeout_ms,None,None)
+    }
+    #[cfg(unix)]
+    pub fn register_file_with_identity(&mut self,description:&str,path:&std::path::Path,event:crate::terminal_manifest_model::FileEvent,timeout_ms:u64,monitor_id:Option<&str>,approved_parent:Option<&std::path::Path>)->std::io::Result<(String,String)> {
+        let id=format!("watch_{}",self.next_file_id+1);let monitor_id=match monitor_id {Some(id)=>id.to_owned(),None=>allocate_monitor_id()?};
+        let file=std::sync::Arc::new(std::sync::Mutex::new(crate::file_monitor::FileMonitor::register(id.clone(),description.to_owned(),path,event,approved_parent)?));
         let checker=file.clone();let emit=self.emit.clone();let snapshots=self.file_snapshots.clone();let runtime_id=id.clone();
         snapshots.lock().expect("file snapshots").insert(id.clone(),MonitorSnapshotEntry {id:id.clone(),monitor_id:Some(monitor_id.clone()),description:description.to_owned(),started_at_ms:now_ms(),deadline_ms:Some(now_ms()+timeout_ms as f64),..Default::default()});
         let watch=tokio::spawn(async move {
@@ -118,6 +122,14 @@ impl MonitorRegistry {
     pub fn stop_file(&mut self,id:&str)->bool {
         let Some((file,watch))=self.files.remove(id) else {return false;};watch.abort();self.file_snapshots.lock().expect("file snapshots").remove(id);
         let event=file.lock().expect("file monitor").stop("watcher killed");if let Some(event)=event {(self.emit)(event);}true
+    }
+    pub fn file_checkpoint(&self,id:&str)->Option<crate::terminal_manifest_model::TerminalManifestCheckpoint> {
+        let (file,_)=self.files.get(id)?;let file=file.lock().expect("file monitor");if file.settled {None} else {Some(file.checkpoint.clone())}
+    }
+    pub fn emit_file_line(&self,id:&str,line:String)->bool {
+        let Some((file,_))=self.files.get(id) else {return false;};
+        let event={let file=file.lock().expect("file monitor");if file.settled {return false;}MonitorEvent::Line {id:file.id.clone(),description:file.description.clone(),line}};
+        (self.emit)(event);true
     }
     pub fn snapshot(&self)->Vec<MonitorSnapshotEntry> {let mut snapshot=self.records.lock().expect("monitor records").values().map(|record|record.snapshot.clone()).collect::<Vec<_>>();snapshot.extend(self.file_snapshots.lock().expect("file snapshots").values().cloned());snapshot}
     pub fn pause(&self,ids:&[String])->Vec<String> {

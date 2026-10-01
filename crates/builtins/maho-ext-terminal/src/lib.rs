@@ -23,4 +23,5 @@ pub mod monitor_notify;
 pub mod terminal_manifest;
 pub mod monitor_permission;
 pub mod prompt;
+pub mod session_bundle;
 pub use extension::TerminalExtension;
