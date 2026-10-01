@@ -1,9 +1,9 @@
 use crate::{inject_directory_context::{InjectionConfig, inject_directory_context}, injection_cache::InjectionCache, session_key::get_session_key};
 use maho_ext_api::{EventKind, EventResult, Extension, ExtensionApi, ExtensionEvent, FlagType, FlagValue, ToolContent, ToolResultEventResult};
-use std::{path::Path, sync::{Arc, Mutex}};
+use std::{collections::{BTreeMap, BTreeSet}, path::Path, sync::{Arc, Mutex}};
 
 #[derive(Default)]
-struct State { cache: InjectionCache, disabled: bool }
+struct State { cache: InjectionCache, disabled: bool, files: BTreeMap<String, Vec<crate::reporter::InjectedFileMeta>>, errors: BTreeSet<String> }
 
 pub struct NestedAgentsMd;
 impl Extension for NestedAgentsMd {
@@ -34,6 +34,13 @@ impl Extension for NestedAgentsMd {
                 if state.disabled { return Ok(EventResult::None); }
                 let session = get_session_key(ctx);
                 let result = inject_directory_context(Path::new(path), &ctx.cwd, &mut state.cache, &session, &InjectionConfig::default());
+                if !result.errors.is_empty() { state.errors.insert(session.clone()); }
+                let files = state.files.entry(session).or_default();
+                for file in &result.injected_files {
+                    let metadata = crate::reporter::InjectedFileMeta { absolute_path: file.absolute_path.clone(), truncated: file.truncated };
+                    if let Some(existing) = files.iter_mut().find(|existing| existing.absolute_path == file.absolute_path) { *existing = metadata; }
+                    else { files.push(metadata); }
+                }
                 if result.injected_text.is_empty() { return Ok(EventResult::None); }
                 let mut content = event.content.clone();
                 content.push(ToolContent::text(result.injected_text));
@@ -43,7 +50,11 @@ impl Extension for NestedAgentsMd {
         for kind in [EventKind::SessionCompact, EventKind::SessionShutdown] {
             let state = Arc::clone(&state);
             api.on(kind, Arc::new(move |_, ctx| {
-                state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cache.clear_session(&get_session_key(ctx));
+                let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let session = get_session_key(ctx);
+                state.cache.clear_session(&session);
+                state.files.remove(&session);
+                state.errors.remove(&session);
                 Box::pin(async { Ok(EventResult::None) })
             }));
         }
