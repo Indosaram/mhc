@@ -1688,12 +1688,14 @@ version = "0.0.0"
 name = "maho-ext-mcp"
 version = "0.0.0"
 dependencies = [
+ "axum",
  "base64 0.22.1",
  "getrandom 0.4.2",
  "globset",
  "maho-core",
  "maho-ext-api",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_path_to_error",

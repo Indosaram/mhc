@@ -8,3 +8,6 @@ pub mod auth;
 pub mod catalog_cache;
 pub mod guard;
 pub mod skills;
+pub mod logging;
+pub mod notification_schemas;
+pub mod notifications;
