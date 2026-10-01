@@ -89,7 +89,7 @@ impl Extension for UltraworkComponent {
             let id=if id.is_empty() { arming.current.clone() } else { Some(id.into()) };
             if already_embedded(&input.text) || input.text.strip_prefix("/skill:").is_some_and(|s| s.split(' ').next()==Some("ultrawork")) { arming.mark_armed(id.as_deref()); return Ok(EventResult::Input(InputEventResult::Continue)); }
             if skill_invocation_suppressed(&input.text) { return Ok(EventResult::Input(InputEventResult::Continue)); }
-            let content=if arming.is_armed(id.as_deref()) { ULTRAWORK_REMINDER } else { SENPI_ULTRAWORK_DIRECTIVE.trim_end_matches('\n') };
+            let content=if arming.is_armed(id.as_deref()) { ULTRAWORK_REMINDER } else { SENPI_ULTRAWORK_DIRECTIVE };
             arming.mark_armed(id.as_deref());
             if input.streaming_behavior.is_some() { return Ok(EventResult::Input(InputEventResult::Transform{text:format!("{}\n{content}",input.text),images:None})); }
             let api=ExtensionApi::new(LoadedExtension::new("ultrawork",std::path::PathBuf::new(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
