@@ -47,6 +47,26 @@ impl Extension for HooksExtension {
     fn register(&self,api:&mut ExtensionApi) {
         let pending=Arc::new(Mutex::new(Pending::default()));
         let sender=Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));
+        let wake_sources=Arc::new(Mutex::new(BTreeMap::<String,f64>::new()));
+        let sources=wake_sources.clone();
+        let subscription=Arc::new(api.events.on("wake_source_state",Arc::new(move |data| {
+            let Some(source)=data.get("source").and_then(serde_json::Value::as_str) else {return;};
+            let Some(count)=data.get("activeCount").and_then(serde_json::Value::as_f64).filter(|count|count.is_finite()&&*count>=0.0) else {return;};
+            if source=="ask-user" {return;}
+            let mut sources=sources.lock().expect("hooks wake sources");if count>0.0 {sources.insert(source.to_owned(),count);} else {sources.remove(source);}
+        })));
+        let notification_sender=sender.clone();
+        api.on(EventKind::AgentSettled,Arc::new(move |_,ctx| {let sources=wake_sources.clone();let sender=notification_sender.clone();let subscription=subscription.clone();Box::pin(async move {
+            let _subscription=subscription;
+            let summary=sources.lock().map_err(|_|ExtensionFailure::new("hooks wake sources poisoned"))?.iter().map(|(source,count)|format!("{source} ({count})")).collect::<Vec<_>>().join(", ");
+            if summary.is_empty() {return Ok(EventResult::None);}
+            use crate::lifecycle_adapter::*;
+            let cwd=ctx.cwd.to_string_lossy();let transcript=ctx.session_manager.session_file().map(|path|path.to_string_lossy().into_owned());
+            let input=build_notification_hook_input(NotificationHookInput {kind:"turn-settled",message:&format!("Turn settled while background work is still active: {summary}."),source:Some("wake-source"),title:Some("Background work still active"),request_id:None,status:None},&LifecycleInputContext {cwd:&cwd,session_id:ctx.session_manager.session_id(),transcript_path:transcript.as_deref()});
+            let result=dispatch(ctx,input).await?;let details=lifecycle_result_details("Notification",Some(&result));
+            if let Some(message)=lifecycle_message("Notification",&details,None) {sender.send_message(message,SendMessageOptions::default())?;}
+            Ok(EventResult::None)
+        })}));
         for kind in [EventKind::SessionStart,EventKind::SessionBeforeCompact,EventKind::SessionCompact] {
             let sender=Arc::clone(&sender);
             api.on(kind,Arc::new(move |event,ctx| {let sender=Arc::clone(&sender);Box::pin(async move {
