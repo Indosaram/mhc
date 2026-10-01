@@ -1211,6 +1211,92 @@ impl AgentSession {
         self.state().follow_up_messages.clone()
     }
 
+    /// Update the global model narrowing.
+    pub fn set_scoped_models(&self, scoped_models: Vec<SessionModelEntry>) {
+        self.state().scoped_models = scoped_models;
+    }
+
+    /// Update the favorite models used for cycling.
+    pub fn set_favorite_models(&self, favorite_models: Vec<SessionModelEntry>) {
+        self.state().favorite_models = favorite_models;
+    }
+
+    /// Favorites narrowed by the scoped set and de-duplicated, resolved against the catalog.
+    ///
+    /// Adaptation: the Rust runtime exposes no availability snapshot, so the full catalog stands in
+    /// for it (the TS `getAvailableSnapshot`).
+    pub fn get_current_favorite_models(&self) -> Vec<SessionModelEntry> {
+        let available = self.model_runtime().get_models(None);
+        let available_by_id: BTreeMap<String, Model> = available
+            .into_iter()
+            .map(|model| (format!("{}/{}", model.provider, model.id), model))
+            .collect();
+        let state = self.state();
+        let narrowed: Option<BTreeSet<String>> = if state.scoped_models.is_empty() {
+            None
+        } else {
+            Some(state.scoped_models.iter().map(|scoped| format!("{}/{}", scoped.model.provider, scoped.model.id)).collect())
+        };
+        let mut seen = BTreeSet::new();
+        let mut favorites = Vec::new();
+        for favorite in &state.favorite_models {
+            let id = format!("{}/{}", favorite.model.provider, favorite.model.id);
+            if seen.contains(&id) {
+                continue;
+            }
+            let Some(model) = available_by_id.get(&id) else {
+                continue;
+            };
+            if narrowed.as_ref().is_some_and(|narrowed| !narrowed.contains(&id)) {
+                continue;
+            }
+            seen.insert(id);
+            favorites.push(SessionModelEntry {
+                model: model.clone(),
+                thinking_level: favorite.thinking_level,
+                thinking_selection: favorite.thinking_selection.clone(),
+                service_tier: favorite.service_tier,
+            });
+        }
+        favorites
+    }
+
+    /// Surface a provider-level server-fallback abort before retry handling runs so the UI can
+    /// explain the switch.
+    ///
+    /// Adaptation: `chainConfigured` is derived from the settings' fallback chains, because the
+    /// session's retry-fallback controller is not ported (another todo's module).
+    pub fn emit_server_fallback_aborted(&self, message: &maho_ai::types::AssistantMessage) {
+        let Some(details) = message
+            .diagnostics
+            .as_ref()
+            .and_then(|diagnostics| diagnostics.iter().find(|entry| entry.kind == maho_ai::utils::server_fallback_receipt::SERVER_FALLBACK_ABORTED_DIAGNOSTIC))
+            .and_then(|entry| entry.details.clone())
+        else {
+            return;
+        };
+        let from = details
+            .get("from")
+            .and_then(Value::as_str)
+            .map_or_else(|| message.model.clone(), str::to_owned);
+        let to = details
+            .get("to")
+            .and_then(Value::as_str)
+            .map_or_else(|| message.model.clone(), str::to_owned);
+        self.emit(AgentSessionEvent::ServerFallbackAborted {
+            from,
+            to,
+            chain_configured: self.has_configured_fallback_chain(),
+        });
+    }
+
+    fn has_configured_fallback_chain(&self) -> bool {
+        let settings = self.with_settings_manager(|manager| manager.get_value("retry").cloned());
+        let chains = crate::retry_fallback::settings::resolve_retry_fallback_settings(settings.as_ref()).chains;
+        crate::retry_fallback::chains::resolve_chain_key(&self.model(), Some(self.agent.state().thinking_level), &chains)
+            .is_some()
+    }
+
     fn emit_queue_update(&self) {
         let (steering, follow_up, mut ordered) = {
             let state = self.state();
@@ -1763,6 +1849,56 @@ mod tests {
             session.get_thinking_for_model_switch(&test_model(), Some(ModelThinkingLevel::Xhigh)),
             ModelThinkingLevel::Off
         );
+    }
+
+    #[test]
+    fn favorites_are_narrowed_by_the_scoped_set() {
+        let session = test_session();
+        let model = test_model();
+        session.set_favorite_models(vec![SessionModelEntry {
+            model: model.clone(),
+            thinking_level: None,
+            thinking_selection: None,
+            service_tier: None,
+        }]);
+        session.set_scoped_models(vec![SessionModelEntry {
+            model: model.clone(),
+            thinking_level: None,
+            thinking_selection: None,
+            service_tier: None,
+        }]);
+        assert_eq!(session.favorite_models().len(), 1);
+    }
+
+    #[test]
+    fn a_favorite_outside_the_catalog_is_dropped() {
+        let session = test_session();
+        session.set_favorite_models(vec![SessionModelEntry {
+            model: test_model(),
+            thinking_level: None,
+            thinking_selection: None,
+            service_tier: None,
+        }]);
+        assert!(session.get_current_favorite_models().is_empty());
+    }
+
+    #[test]
+    fn a_message_without_the_fallback_receipt_emits_nothing() {
+        let session = test_session();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event.clone());
+        }));
+        let message: maho_ai::types::AssistantMessage = serde_json::from_value(serde_json::json!({
+            "content": [], "api": "faux", "provider": "faux", "model": "faux-1",
+            "usage": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0 } },
+            "stopReason": "error", "timestamp": 0
+        }))
+        .expect("assistant");
+        session.emit_server_fallback_aborted(&message);
+        assert!(events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty());
     }
 
     fn test_tool(name: &str) -> AgentTool {
