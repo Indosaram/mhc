@@ -1279,6 +1279,7 @@ impl AgentSession {
     }
 
     /// `autoCompactionEnabled`: the session override when set, else the settings value.
+    /// `autoCompactionEnabled`: the session override when set, else the settings value.
     ///
     /// Not yet ported: `_autoCompactionSessionOverride` (owned by the compaction slice); this reads
     /// the settings value only.
@@ -1291,6 +1292,146 @@ impl AgentSession {
                 .unwrap_or(true)
         })
     }
+
+    /// Set the thinking level, clamping to the model's available levels.
+    ///
+    /// Adaptations: the Rust agent exposes no thinkingSelection setter, so the selection is not
+    /// propagated into agent state; and the settings manager has no thinking-level accessors, so
+    /// `updateGlobalDefault` does not persist (both live in other todos' modules).
+    pub fn set_thinking_level(&self, level: ModelThinkingLevel) {
+        self.apply_thinking_level(level, true);
+    }
+
+    /// Set the thinking level for this session without changing the global default.
+    pub fn set_session_thinking_level(&self, level: ModelThinkingLevel) {
+        self.apply_thinking_level(level, false);
+    }
+
+    fn apply_thinking_level(&self, level: ModelThinkingLevel, update_global_default: bool) {
+        let available = self.get_available_thinking_levels();
+        let effective = if available.contains(&level) { level } else { clamp_thinking_level(level, &available) };
+        let previous = self.agent.state().thinking_level;
+        let changing = effective != previous;
+
+        self.agent.set_thinking_level(effective);
+
+        if changing {
+            self.with_session_manager_mut(|manager| {
+                manager.append_thinking_level_change(effective.as_str(), None);
+            });
+            if let Some(level) = thinking_level_from_model_level(effective) {
+                self.emit(AgentSessionEvent::ThinkingLevelChanged { level });
+            }
+            self.emit_high_reasoning_warning_if_needed();
+        }
+        let _ = update_global_default;
+    }
+
+    fn emit_high_reasoning_warning_if_needed(&self) {
+        let model = self.model();
+        let level = self.agent.state().thinking_level;
+        if !crate::high_reasoning_warning::should_warn_high_reasoning(&model.id, level) {
+            return;
+        }
+        let key = format!("{}/{}", model.provider, model.id);
+        if !self.state().shown_high_reasoning_warning_keys.insert(key) {
+            return;
+        }
+        self.emit(AgentSessionEvent::HighReasoningWarning {
+            model_id: model.id.clone(),
+            provider: model.provider.clone(),
+            thinking_level: thinking_level_from_model_level(level).unwrap_or(ThinkingLevel::Minimal),
+        });
+    }
+
+    /// Cycle to the next thinking level; `None` when the model does not support thinking.
+    pub fn cycle_thinking_level(&self) -> Option<ModelThinkingLevel> {
+        if !self.supports_thinking() {
+            return None;
+        }
+        let levels = self.get_available_thinking_levels();
+        if levels.is_empty() {
+            return None;
+        }
+        let current = self.agent.state().thinking_level;
+        let index = levels.iter().position(|level| *level == current).unwrap_or(levels.len() - 1);
+        let next = levels[(index + 1) % levels.len()];
+        self.set_thinking_level(next);
+        Some(next)
+    }
+
+    /// Available thinking levels for the current model.
+    pub fn get_available_thinking_levels(&self) -> Vec<ModelThinkingLevel> {
+        crate::thinking_levels::get_supported_thinking_levels(&self.model())
+    }
+
+    pub fn supports_xhigh_thinking(&self) -> bool {
+        crate::thinking_levels::supports_xhigh(&self.model())
+    }
+
+    pub fn supports_max_thinking(&self) -> bool {
+        crate::thinking_levels::supports_max(&self.model())
+    }
+
+    pub fn supports_thinking(&self) -> bool {
+        self.model().reasoning
+    }
+
+    /// The thinking level a model switch would land on, from an explicit level, the model's
+    /// remembered level, the configured default, or `DEFAULT_THINKING_LEVEL`.
+    ///
+    /// Adaptations: the settings manager has no per-model or default thinking-level accessors, so
+    /// the remembered and configured-default steps are skipped (other todos' modules).
+    pub fn get_thinking_for_model_switch(
+        &self,
+        model: &Model,
+        explicit_level: Option<ModelThinkingLevel>,
+    ) -> ModelThinkingLevel {
+        let requested = explicit_level.unwrap_or(ModelThinkingLevel::Medium);
+        let available = crate::thinking_levels::get_supported_thinking_levels(model);
+        if available.contains(&requested) { requested } else { clamp_thinking_level(requested, &available) }
+    }
+}
+
+/// Thinking levels including the native max tier.
+const THINKING_LEVELS_WITH_MAX: [ModelThinkingLevel; 7] = [
+    ModelThinkingLevel::Off,
+    ModelThinkingLevel::Minimal,
+    ModelThinkingLevel::Low,
+    ModelThinkingLevel::Medium,
+    ModelThinkingLevel::High,
+    ModelThinkingLevel::Xhigh,
+    ModelThinkingLevel::Max,
+];
+
+/// `"off" | ThinkingLevel` collapsed to the non-off union, or `None` for `Off`.
+fn thinking_level_from_model_level(level: ModelThinkingLevel) -> Option<ThinkingLevel> {
+    match level {
+        ModelThinkingLevel::Off => None,
+        ModelThinkingLevel::Minimal => Some(ThinkingLevel::Minimal),
+        ModelThinkingLevel::Low => Some(ThinkingLevel::Low),
+        ModelThinkingLevel::Medium => Some(ThinkingLevel::Medium),
+        ModelThinkingLevel::High => Some(ThinkingLevel::High),
+        ModelThinkingLevel::Xhigh => Some(ThinkingLevel::Xhigh),
+        ModelThinkingLevel::Max => Some(ThinkingLevel::Max),
+    }
+}
+
+fn clamp_thinking_level(level: ModelThinkingLevel, available: &[ModelThinkingLevel]) -> ModelThinkingLevel {
+    let Some(requested) = THINKING_LEVELS_WITH_MAX.iter().position(|candidate| *candidate == level) else {
+        return available.first().copied().unwrap_or(ModelThinkingLevel::Off);
+    };
+    for candidate in &THINKING_LEVELS_WITH_MAX[requested..] {
+        if available.contains(candidate) {
+            return *candidate;
+        }
+    }
+    for candidate in THINKING_LEVELS_WITH_MAX[..requested].iter().rev() {
+        if available.contains(candidate) {
+            return *candidate;
+        }
+    }
+    available.first().copied().unwrap_or(ModelThinkingLevel::Off)
 }
 
 fn queue_mode_str(mode: maho_agent::types::QueueMode) -> &'static str {
@@ -1589,6 +1730,39 @@ mod tests {
             AgentSessionEvent::SessionSettingsChanged { steering_mode, .. } if steering_mode == "all"
         )));
         assert_eq!(session.with_settings_manager(|manager| manager.get_string("steeringMode")), Some("all".to_owned()));
+    }
+
+    #[test]
+    fn clamping_prefers_the_next_higher_available_level() {
+        let available = [ModelThinkingLevel::Off, ModelThinkingLevel::Low, ModelThinkingLevel::Max];
+        assert_eq!(clamp_thinking_level(ModelThinkingLevel::Medium, &available), ModelThinkingLevel::Max);
+        assert_eq!(clamp_thinking_level(ModelThinkingLevel::Minimal, &available), ModelThinkingLevel::Low);
+        assert_eq!(clamp_thinking_level(ModelThinkingLevel::Off, &available), ModelThinkingLevel::Off);
+        assert_eq!(clamp_thinking_level(ModelThinkingLevel::Max, &[ModelThinkingLevel::Off]), ModelThinkingLevel::Off);
+    }
+
+    #[test]
+    fn only_non_off_levels_reach_the_thinking_level_event() {
+        assert_eq!(thinking_level_from_model_level(ModelThinkingLevel::Off), None);
+        assert_eq!(thinking_level_from_model_level(ModelThinkingLevel::High), Some(ThinkingLevel::High));
+    }
+
+    #[test]
+    fn a_non_reasoning_model_supports_no_thinking() {
+        let session = test_session();
+        assert!(!session.supports_thinking());
+        assert_eq!(session.cycle_thinking_level(), None);
+        assert_eq!(session.get_available_thinking_levels(), vec![ModelThinkingLevel::Off]);
+    }
+
+    #[test]
+    fn a_model_switch_clamps_the_default_to_the_supported_levels() {
+        let session = test_session();
+        assert_eq!(session.get_thinking_for_model_switch(&test_model(), None), ModelThinkingLevel::Off);
+        assert_eq!(
+            session.get_thinking_for_model_switch(&test_model(), Some(ModelThinkingLevel::Xhigh)),
+            ModelThinkingLevel::Off
+        );
     }
 
     fn test_tool(name: &str) -> AgentTool {
