@@ -13,6 +13,7 @@ impl Extension for OmoNativeTelemetryComponent {
     fn register(&self,api:&mut ExtensionApi) {
         let env=self.options.env.clone().unwrap_or_else(||std::env::vars().collect());
         let state_dir=self.options.state_dir.clone().unwrap_or_else(||get_omo_native_state_dir(&env));
+        let notice_state_dir=state_dir.clone();
         let shared:Arc<Mutex<Option<telemetry_core::EventTelemetryClient>>>=Arc::default();
         let client=Arc::clone(&shared);
         let capture:SummaryCapture=Arc::new(move |name,properties| {if let Some(client)=client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() && let Some(properties)=properties.as_object() {client.capture_event(name,properties);}});
@@ -29,5 +30,6 @@ impl Extension for OmoNativeTelemetryComponent {
         api.on(EventKind::SessionShutdown,Arc::new(move |_,_| {let client=shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();Box::pin(async move {if let Some(client)=client {client.shutdown().await;}Ok(EventResult::None)})}));
         crate::omo_native_turns::register_omo_native_turn_telemetry(api,Arc::clone(&hash),Arc::clone(&capture),Arc::new(||eprintln!("telemetry_event_property_rejected: turn_end assistant usage contained missing or invalid values")));
         crate::omo_native_tools::register_omo_native_tool_telemetry(api,self.skills_root.clone(),hash,capture);
+        crate::omo_native_notice::register_omo_native_notice(api,env,notice_state_dir,Arc::clone(&self.is_config_enabled));
     }
 }

@@ -7,6 +7,17 @@ pub fn claim_notice(state_dir:&Path)->std::io::Result<bool> {
         Err(error)=>Err(error),
     }
 }
+pub fn register_omo_native_notice(api:&mut maho_ext_api::ExtensionApi,env:telemetry_core::TelemetryEnv,state_dir:std::path::PathBuf,enabled:crate::omo_native_component::ConfigEnabled) {
+    use std::sync::{Arc,atomic::{AtomicBool,Ordering}};
+    let reported=Arc::new(AtomicBool::new(false));
+    api.on(maho_ext_api::EventKind::SessionStart,Arc::new(move |_,ctx| {
+        let product=crate::product_identity::create_omo_native_product_config();
+        if enabled(&ctx.cwd) && telemetry_core::is_telemetry_client_enabled(&telemetry_core::TelemetryClientEnabledInput::for_product(Some(&env),&product)) {
+            match claim_notice(&state_dir) {Ok(true)=>ctx.ui.notify("omo-senpi sends anonymous usage telemetry (no prompts, no paths). Docs: https://github.com/code-yeongyu/oh-my-openagent/blob/dev/docs/reference/senpi-telemetry.md - opt out: DO_NOT_TRACK=1",maho_ext_api::NotificationType::Info),Ok(false)=>{},Err(error)=>{if !reported.swap(true,Ordering::SeqCst) {eprintln!("telemetry_capture_failed: omo-native-notice: {error}");}}}
+        }
+        Box::pin(async {Ok(maho_ext_api::EventResult::None)})
+    }));
+}
 #[cfg(test)]
 mod tests {
     use super::*;
