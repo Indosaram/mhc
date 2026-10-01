@@ -1513,6 +1513,19 @@ impl AgentSession {
         self.agent.wait_for_idle().await;
     }
 
+    /// Emit a `session_shutdown` event through the bound extension runner.
+    pub async fn emit_session_shutdown(&self, reason: maho_ext_api::SessionReason) {
+        let mut guard = self.extension_runner.lock().await;
+        if let Some(runner) = guard.as_mut() {
+            let event = maho_ext_api::ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent {
+                reason,
+                target_session_file: None,
+                signal: None,
+            });
+            let _ = runner.emit(event).await;
+        }
+    }
+
     fn emit_queue_update(&self) {
         let (steering, follow_up, mut ordered) = {
             let state = self.state();

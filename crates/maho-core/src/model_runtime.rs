@@ -87,6 +87,7 @@ fn builtin_oauth(id:&str)->Option<Arc<dyn maho_ai::auth::types::OAuthAuth>> {
     }
 }
 
+#[derive(Clone)]
 pub struct ModelRuntime {
     models: Models,
     config: Arc<RwLock<ModelConfig>>,

@@ -1543,6 +1543,7 @@ dependencies = [
  "maho-agent",
  "maho-ai",
  "maho-ext-api",
+ "maho-ext-host",
  "maho-tools",
  "maho-tui",
  "regex",
