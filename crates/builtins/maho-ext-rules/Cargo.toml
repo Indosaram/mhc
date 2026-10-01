@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-ext-rule-activation = { path = "../maho-ext-rule-activation" }
+maho-tui = { path = "../../maho-tui" }
 serde_json.workspace = true
 globset = "=0.4.20"
 sha2.workspace = true
