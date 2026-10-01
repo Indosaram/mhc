@@ -9,5 +9,8 @@ license = "LicenseRef-SUL-1.0"
 maho-boulder-state = { path = "../../boulder-state" }
 maho-ext-api = { path = "../../../maho-ext-api" }
 
+[dev-dependencies]
+tempfile = "=3.27.0"
+
 [lints]
 workspace = true
