@@ -81,3 +81,11 @@ fn event_filename_normalization_accepts_internal_parent_segments_only() {
     assert_eq!(normalize_relative_path(Path::new("./file")), Some(PathBuf::from("file")));
     for rejected in [".", "..", "../file", "nested/../../file", "/file"] { assert!(normalize_relative_path(Path::new(rejected)).is_none()); }
 }
+#[test]
+fn failing_error_reporter_does_not_abort_scan() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("file");
+    fs::write(&file, "fixture").unwrap();
+    let engine = ConfigReloadWatchEngine::with_error_listener(vec![target(&file.join("child")), target(root.path())], std::sync::Arc::new(|_, _| panic!("fixture reporter failure"))).unwrap();
+    assert_eq!(engine.get_baseline_snapshot().len(), 1);
+}

@@ -161,7 +161,7 @@ fn scan(target: &WatchTarget, on_error: Option<&WatchErrorListener>, hash_file: 
 }
 fn scan_path(target: &WatchTarget, absolute: &Path, relative: &Path, result: &mut ScanResult, on_error: Option<&WatchErrorListener>, hash_file: &HashFile) -> Result<(), std::io::Error> {
     if let Err(error) = scan_entry(target, absolute, relative, result, on_error, hash_file) {
-        if let Some(listener) = on_error { listener(error.to_string(), absolute.into()); } else { return Err(error); }
+        if let Some(listener) = on_error { let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| listener(error.to_string(), absolute.into()))); } else { return Err(error); }
     }
     Ok(())
 }
