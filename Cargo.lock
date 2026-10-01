@@ -1720,6 +1720,8 @@ version = "0.0.0"
 name = "maho-ext-orca-agent-status"
 version = "0.0.0"
 dependencies = [
+ "maho-ext-api",
+ "reqwest",
  "serde_json",
 ]
 
@@ -2787,6 +2789,7 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",

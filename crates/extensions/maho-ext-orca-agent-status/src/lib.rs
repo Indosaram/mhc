@@ -1,5 +1,7 @@
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
+mod extension;
+pub use extension::OrcaAgentStatus;
 
 pub fn parse_endpoint(contents: &str) -> BTreeMap<String, String> {
     let mut output = BTreeMap::new();
