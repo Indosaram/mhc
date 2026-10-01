@@ -9,3 +9,4 @@ pub mod bash;
 pub mod sleep_wait;
 pub mod monitor;
 pub mod render;
+pub mod foreground_detach;

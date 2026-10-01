@@ -19,7 +19,11 @@ pub async fn execute_bash(manager:Arc<Mutex<TerminalManager>>,call:ToolCall<'_>)
     if !background {for (key,value) in FOREGROUND_ENV_OVERRIDES {options=options.env(*key,*value);}if let Some(timeout)=call.params.get("timeout").and_then(Value::as_f64) {options=options.timeout(Duration::try_from_secs_f64(timeout).map_err(|error|error.to_string())?);}}
     let (id,exit)={let mut manager=manager.lock().map_err(|_|"terminal manager state poisoned")?;let id=manager.create(command,options).map_err(|error|error.to_string())?;let runtime=manager.get(&id).ok_or("created terminal session missing")?;(id,runtime.subscribe_exit())};
     if background {tokio::select! {_=wait_exit(exit)=>{},_=tokio::time::sleep(Duration::from_millis(250))=>{}}let mut manager=manager.lock().map_err(|_|"terminal manager state poisoned")?;let early=format_terminal_tool_output(&manager.get(&id).ok_or("terminal session missing")?.read_delta().map_err(|error|error.to_string())?.text).text;let mut result=text_result(format!("Command running in background with ID: {id}{}",if early.is_empty() {String::new()} else {format!("\n\n{early}")}));result.details=Some(json!({"bash_id":id,"background":true}).as_object().ok_or("background details missing")?.clone());return Ok(result);}
-    let outcome=tokio::select! {exit=wait_exit(exit)=>Some(exit?),_=call.signal.cancelled()=>{manager.lock().map_err(|_|"terminal manager state poisoned")?.stop(&id).map_err(|error|error.to_string())?;None},_=tokio::time::sleep(Duration::from_secs(60))=>{None}};
+    let outcome=match super::foreground_detach::foreground_outcome(exit,&call.signal,Duration::from_secs(60)).await? {
+        super::foreground_detach::ForegroundOutcome::Exit(exit)=>Some(exit),
+        super::foreground_detach::ForegroundOutcome::Aborted=>{manager.lock().map_err(|_|"terminal manager state poisoned")?.stop(&id).map_err(|error|error.to_string())?;None},
+        super::foreground_detach::ForegroundOutcome::Detached=>None,
+    };
     let mut manager=manager.lock().map_err(|_|"terminal manager state poisoned")?;let runtime=manager.get(&id).ok_or("terminal session missing")?;
     let formatted=format_terminal_tool_output(&runtime.full_output().map_err(|error|error.to_string())?);
     if call.signal.is_aborted() {return Ok(error_result(format!("{}Command aborted",if formatted.text.is_empty() {String::new()} else {format!("{}\n\n",formatted.text)})));}
