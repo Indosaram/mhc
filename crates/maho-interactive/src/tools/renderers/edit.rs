@@ -193,6 +193,9 @@ pub struct EditRenderers {
 }
 
 impl ToolRenderers for EditRenderers {
+    fn is_built_in(&self) -> bool {
+        true
+    }
     fn render_call(&mut self, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent> {
         let preview_input = get_renderable_preview_input(Some(context.args));
         let args_key = preview_args_key(preview_input.as_ref());

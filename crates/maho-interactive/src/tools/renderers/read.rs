@@ -205,6 +205,9 @@ pub struct ReadRenderers {
 }
 
 impl ToolRenderers for ReadRenderers {
+    fn is_built_in(&self) -> bool {
+        true
+    }
     fn render_call(&mut self, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent> {
         let args = Some(context.args);
         let classification = if context.expanded {

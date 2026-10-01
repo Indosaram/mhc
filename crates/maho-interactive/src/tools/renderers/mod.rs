@@ -45,6 +45,13 @@ pub trait ToolRenderers {
     fn render_shell(&self) -> RenderShell {
         RenderShell::Default
     }
+    /// senpi keeps a card out of an exploration group when its definition replaced the built-in
+    /// renderers, and compares the two functions by reference to decide that. Rust has no function
+    /// identity, so a renderer reports whether both of its halves are the built-in ones; a
+    /// definition that supplies its own renderers leaves this `false`.
+    fn is_built_in(&self) -> bool {
+        false
+    }
     fn render_call(&mut self, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent>;
     fn render_result(
         &mut self,
@@ -66,4 +73,19 @@ pub fn create_all_tool_renderers() -> HashMap<&'static str, Rc<RefCell<dyn ToolR
         ("find", Rc::new(RefCell::new(find::FindRenderers)) as Rc<RefCell<dyn ToolRenderers>>),
         ("ls", Rc::new(RefCell::new(ls::LsRenderers)) as Rc<RefCell<dyn ToolRenderers>>),
     ])
+}
+
+/// senpi's `withBuiltInRenderers`.
+///
+/// senpi's version fills in each half a partial definition left out; a Rust [`ToolRenderers`] is
+/// always complete, so a definition that supplies its own renderers simply wins and one that has
+/// none falls back to the built-in pair.
+pub fn with_built_in_renderers(
+    tool_name: &str,
+    definition: Option<Rc<RefCell<dyn ToolRenderers>>>,
+) -> Option<Rc<RefCell<dyn ToolRenderers>>> {
+    match definition {
+        Some(definition) => Some(definition),
+        None => create_all_tool_renderers().get(tool_name).cloned(),
+    }
 }

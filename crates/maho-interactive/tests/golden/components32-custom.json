@@ -1,0 +1,138 @@
+{
+  "calls": [
+    {
+      "name": "no-definition",
+      "toolName": "read",
+      "args": {
+        "file_path": "a.rs"
+      },
+      "call": {
+        "action": "Read",
+        "label": "a.rs",
+        "pending": true,
+        "failed": false
+      }
+    },
+    {
+      "name": "explicit-builtin",
+      "toolName": "read",
+      "args": {
+        "file_path": "a.rs"
+      },
+      "call": {
+        "action": "Read",
+        "label": "a.rs",
+        "pending": true,
+        "failed": false
+      }
+    },
+    {
+      "name": "with-builtin-renderers",
+      "toolName": "read",
+      "args": {
+        "file_path": "a.rs"
+      },
+      "call": {
+        "action": "Read",
+        "label": "a.rs",
+        "pending": true,
+        "failed": false
+      }
+    },
+    {
+      "name": "custom-renderer",
+      "toolName": "read",
+      "args": {
+        "file_path": "a.rs"
+      },
+      "call": null
+    },
+    {
+      "name": "partial-override",
+      "toolName": "read",
+      "args": {
+        "file_path": "a.rs"
+      },
+      "call": null
+    },
+    {
+      "name": "skill-read",
+      "toolName": "read",
+      "args": {
+        "file_path": "pkg/skills/rust/SKILL.md"
+      },
+      "call": null
+    },
+    {
+      "name": "grep",
+      "toolName": "grep",
+      "args": {
+        "pattern": "needle",
+        "path": "src"
+      },
+      "call": {
+        "action": "Search",
+        "label": "needle in src",
+        "pending": true,
+        "failed": false
+      }
+    },
+    {
+      "name": "find",
+      "toolName": "find",
+      "args": {
+        "pattern": "*.rs",
+        "path": "src"
+      },
+      "call": {
+        "action": "List",
+        "label": "src",
+        "pending": true,
+        "failed": false
+      }
+    },
+    {
+      "name": "ls",
+      "toolName": "ls",
+      "args": {
+        "path": "src"
+      },
+      "call": {
+        "action": "List",
+        "label": "src",
+        "pending": true,
+        "failed": false
+      }
+    },
+    {
+      "name": "non-exploration",
+      "toolName": "write",
+      "args": {
+        "file_path": "a.rs"
+      },
+      "call": null
+    }
+  ],
+  "customRender": [
+    {
+      "width": 40,
+      "lines": [
+        "",
+        "\u001b[48;5;22m                                        \u001b[49m",
+        "\u001b[48;5;22m CUSTOM CALL                            \u001b[49m",
+        "\u001b[48;5;22m CUSTOM RESULT                          \u001b[49m",
+        "\u001b[48;5;22m                                        \u001b[49m"
+      ]
+    },
+    {
+      "width": 80,
+      "lines": [
+        "",
+        "\u001b[48;5;22m                                                                                \u001b[49m",
+        "\u001b[48;5;22m CUSTOM CALL                                                                    \u001b[49m",
+        "\u001b[48;5;22m CUSTOM RESULT                                                                  \u001b[49m",
+        "\u001b[48;5;22m                                                                                \u001b[49m"
+      ]
+    }
+  ]
+}

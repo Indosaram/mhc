@@ -117,6 +117,9 @@ impl ShellRenderers {
 }
 
 impl ToolRenderers for ShellRenderers {
+    fn is_built_in(&self) -> bool {
+        true
+    }
     fn render_call(&mut self, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent> {
         if context.execution_started && self.started_at.is_none() {
             self.started_at = Some(context.now_ms);

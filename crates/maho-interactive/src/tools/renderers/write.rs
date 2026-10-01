@@ -187,6 +187,9 @@ pub struct WriteRenderers {
 }
 
 impl ToolRenderers for WriteRenderers {
+    fn is_built_in(&self) -> bool {
+        true
+    }
     fn render_call(&mut self, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent> {
         let raw_path = context
             .args

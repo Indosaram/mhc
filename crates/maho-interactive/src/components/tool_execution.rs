@@ -101,7 +101,7 @@ pub struct ToolExecutionComponent {
     theme: Theme,
     on_change: Option<Rc<dyn Fn()>>,
     spinner_tick_ms: Option<u64>,
-    has_custom_renderers: bool,
+    custom: Option<Rc<RefCell<dyn ToolRenderers>>>,
 }
 
 struct ToolExecutionRendererIdentity {
@@ -151,7 +151,7 @@ impl ToolExecutionComponent {
             theme,
             on_change: None,
             spinner_tick_ms: None,
-            has_custom_renderers: custom.is_some(),
+            custom: custom.clone(),
         };
         let initial = component.create_render_state();
         if presentation == ToolExecutionPresentation::Grok {
@@ -179,10 +179,15 @@ impl ToolExecutionComponent {
         self.on_change = callback;
     }
 
-    /// senpi compares the card's renderer functions against the built-ins; a custom renderer is
-    /// what makes them differ, so this is the whole test.
+    /// senpi keeps a card out of an exploration group when its definition replaced the built-in
+    /// renderers. A definition that passes the built-in pair unchanged is still built-in.
     pub fn uses_built_in_renderers(&self) -> bool {
-        !self.has_custom_renderers
+        self.custom.as_ref().is_none_or(|custom| custom.borrow().is_built_in())
+    }
+
+    /// The renderer the card was constructed with, if any; senpi's `identity.toolDefinition`.
+    pub fn custom_renderer(&self) -> Option<Rc<RefCell<dyn ToolRenderers>>> {
+        self.custom.clone()
     }
 
     fn request_render(&self) {

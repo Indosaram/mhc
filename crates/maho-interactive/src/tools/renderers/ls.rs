@@ -76,6 +76,9 @@ fn format_ls_result(
 pub struct LsRenderers;
 
 impl ToolRenderers for LsRenderers {
+    fn is_built_in(&self) -> bool {
+        true
+    }
     fn render_call(&mut self, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent> {
         let text = format_ls_call(Some(context.args), theme, context.cwd);
         Some(Rc::new(RefCell::new(Text::with_padding(text, 0, 0))))

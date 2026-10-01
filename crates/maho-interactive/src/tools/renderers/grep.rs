@@ -229,6 +229,9 @@ fn format_grep_result(
 pub struct GrepRenderers;
 
 impl ToolRenderers for GrepRenderers {
+    fn is_built_in(&self) -> bool {
+        true
+    }
     fn render_call(&mut self, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent> {
         let text = format_grep_call(Some(context.args), theme, context.cwd);
         Some(Rc::new(RefCell::new(Text::with_padding(text, 0, 0))))

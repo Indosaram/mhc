@@ -92,6 +92,9 @@ fn format_find_result(
 pub struct FindRenderers;
 
 impl ToolRenderers for FindRenderers {
+    fn is_built_in(&self) -> bool {
+        true
+    }
     fn render_call(&mut self, theme: &Theme, context: &ToolRenderContext<'_>) -> Option<RenderedComponent> {
         let text = format_find_call(Some(context.args), theme);
         Some(Rc::new(RefCell::new(Text::with_padding(text, 0, 0))))
