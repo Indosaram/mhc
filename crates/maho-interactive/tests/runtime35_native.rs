@@ -389,3 +389,12 @@ fn extension_working_visibility_controls_native_active_row() {
     mode.extension_ui.set_working_visible(true).expect("show"); mode.drain_events();
     assert!(mode.working_frame(100.0).is_some());
 }
+
+#[tokio::test]
+async fn extension_editor_returns_prefill_through_real_multiline_component() {
+    use maho_ext_api::ExtensionUi; use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode(); let ui = mode.extension_ui.clone();
+    let result = ui.editor("Edit", Some("prefill")); mode.render(80);
+    mode.handle_input_at("\r", 0);
+    assert_eq!(result.await.expect("editor"), Some("prefill".into()));
+}

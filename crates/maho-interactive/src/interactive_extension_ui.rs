@@ -13,6 +13,7 @@ pub enum UiRequest {
     EditorText(String),
     WorkingMessage(Option<String>),
     WorkingVisible(bool),
+    Editor { title: String, prefill: Option<String>, reply: tokio::sync::oneshot::Sender<Option<String>> },
 }
 
 pub struct InteractiveExtensionUi {
@@ -40,6 +41,11 @@ impl InteractiveExtensionUi {
 }
 
 impl ExtensionUi for InteractiveExtensionUi {
+    fn editor<'a>(&'a self, title: &'a str, prefill: Option<&'a str>) -> ExtensionFuture<'a, Option<String>> {
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        self.send(UiRequest::Editor { title:title.into(), prefill:prefill.map(str::to_owned), reply });
+        Box::pin(async move { Ok(receiver.await.unwrap_or_default()) })
+    }
     fn set_working_message(&self, message: Option<&str>) -> Result<(), ExtensionFailure> { self.send(UiRequest::WorkingMessage(message.map(str::to_owned))); Ok(()) }
     fn set_working_visible(&self, visible: bool) -> Result<(), ExtensionFailure> { self.send(UiRequest::WorkingVisible(visible)); Ok(()) }
     fn select<'a>(&'a self, title: &'a str, options: &'a [String], opts: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
