@@ -11,6 +11,8 @@ pub struct ArmedTimer { pub kind:GoalWaitKind,pub due_at_ms:f64,pub total_ms:f64
 #[derive(Default)]
 pub struct MonitorAwareGoalContinuation {
     goal:Option<crate::types::Goal>,
+    pub scheduled_cache:Option<crate::cache_warm::GoalCacheWarmScheduleData>,
+    cache_warm_iteration:f64,
     pub wake_sources:BTreeMap<String,f64>,
     pub armed_timer:Option<ArmedTimer>,
     pub held_timer:Option<HeldTimer>,
@@ -28,7 +30,15 @@ impl MonitorAwareGoalContinuation {
     pub fn sync_goal(&mut self,goal:Option<&crate::types::Goal>) {
         if goal.map(|goal|goal.id.as_str())!=self.goal.as_ref().map(|goal|goal.id.as_str()) { self.reset_continuation_state(); }
         self.goal=goal.cloned();
-        if !goal.is_some_and(|goal|goal.status==crate::types::GoalStatus::Active) { self.armed_timer=None; self.held_timer=None; self.reset_continuation_state(); }
+        if !goal.is_some_and(|goal|goal.status==crate::types::GoalStatus::Active) { self.armed_timer=None; self.held_timer=None; self.scheduled_cache=None; self.reset_continuation_state(); }
+    }
+    pub fn rearm_monitor_backstop(&mut self,goal:&crate::types::Goal,parked:Option<&crate::parked_wait::ParkedGoalWait>,now:f64,backstop_seconds:f64,question_idle_ms:f64,cache:Option<crate::cache_warm::GoalCacheWarmMetrics>)->Option<crate::cache_warm::GoalCacheWarmScheduleData> {
+        if goal.status!=crate::types::GoalStatus::Active||!self.has_active_wake_sources()||self.armed_timer.is_some()||self.held_timer.is_some() { return None; }
+        self.goal=Some(goal.clone());
+        let delay=parked.map(|wait|wait.delay_ms).or_else(||self.ask_user_wait_ms(now,question_idle_ms)).unwrap_or_else(||crate::cache_warm::resolve_goal_monitor_continuation_delay_ms(Some(backstop_seconds)));
+        let (scheduled_at,remaining,cache)=if let Some(wait)=parked { self.cache_warm_iteration=wait.iteration; (wait.due_at_ms-delay,(wait.due_at_ms-now).max(0.0),wait.cache.clone()) } else { self.cache_warm_iteration+=1.0; (now,delay,cache) };
+        let schedule=crate::cache_warm::create_goal_cache_warm_schedule_data(goal.id.clone(),delay,scheduled_at,self.cache_warm_iteration,self.wake_sources.values().sum(),self.wake_sources.clone(),cache);
+        self.scheduled_cache=Some(schedule.clone()); self.arm_timer(GoalWaitKind::Monitor,remaining,delay,false,now); Some(schedule)
     }
     pub fn has_active_wake_sources(&self)->bool { self.wake_sources.values().sum::<f64>()>0.0 }
     pub fn hold_direct_input(&mut self,input_id:&str,now:f64) {
@@ -92,6 +102,14 @@ impl MonitorAwareGoalContinuation {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn restored_backstop_preserves_iteration_cache_and_original_due_time() {
+        let goal:crate::types::Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap();
+        let parked=crate::parked_wait::ParkedGoalWait { iteration:4.0,delay_ms:270_000.0,due_at_ms:300_000.0,cache:Some(crate::cache_warm::GoalCacheWarmMetrics { ttl_seconds:Some(300.0),cached_tokens:1000.0,estimated_saved_usd:None }) };
+        let mut monitor=MonitorAwareGoalContinuation::default(); monitor.wake_sources.insert("senpi-task".into(),1.0);
+        let schedule=monitor.rearm_monitor_backstop(&goal,Some(&parked),200_000.0,270.0,30_000.0,None).unwrap();
+        assert_eq!(schedule.iteration,4.0); assert_eq!(schedule.due_at_ms,300_000.0); assert_eq!(schedule.cache,parked.cache); assert_eq!(monitor.armed_timer.unwrap().due_at_ms,300_000.0);
+        assert!(monitor.rearm_monitor_backstop(&goal,None,200_000.0,270.0,30_000.0,None).is_none());
+    }
     #[test] fn stopped_goal_cancels_wait_and_changed_identity_resets_repetition() {
         let mut goal:crate::types::Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap();
         let mut monitor=MonitorAwareGoalContinuation::default(); monitor.sync_goal(Some(&goal)); monitor.record_assistant_output("same",false);
