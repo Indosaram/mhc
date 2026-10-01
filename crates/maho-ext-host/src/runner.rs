@@ -6,6 +6,55 @@ pub type ErrorListener = Arc<dyn Fn(&ExtensionError) + Send + Sync>;
 pub type HookObserver = Arc<dyn Fn(&ToolHookLifecycleEvent) + Send + Sync>;
 pub type WarningListener = Arc<dyn Fn(&str) + Send + Sync>;
 struct HookRun { event: ToolHookLifecycleEvent, state: Arc<std::sync::Mutex<(bool, String)>> }
+struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime }
+impl ToolSessionManager for ContextSessionManager {
+    fn session_id(&self) -> &str { self.session.session_id() }
+    fn session_file(&self) -> Option<&std::path::Path> { self.session.session_file() }
+}
+impl SessionManager for ContextSessionManager {
+    fn get_entries(&self) -> Vec<SessionEntry> { self.session.get_entries() }
+    fn get_branch(&self) -> Vec<SessionEntry> { self.session.get_branch() }
+    fn get_leaf_id(&self) -> Option<String> { self.session.get_leaf_id() }
+    fn get_session_name(&self) -> Option<String> { self.session.get_session_name() }
+    fn extension_context_actions(&self) -> Option<&dyn ExtensionContextActions> { Some(self) }
+}
+impl ExtensionContextActions for ContextSessionManager {
+    fn assert_active(&self) -> Result<(), ExtensionFailure> { self.runtime.assert_active() }
+    fn get_model(&self) -> Option<Model> { self.actions.get_model() }
+    fn get_service_tier(&self) -> Option<ServiceTier> { self.actions.get_service_tier() }
+    fn get_effective_service_tier(&self) -> Option<ServiceTier> { self.actions.get_effective_service_tier() }
+    fn get_scoped_models(&self) -> Vec<ScopedModel> { self.actions.get_scoped_models() }
+    fn get_agent_dir(&self) -> std::path::PathBuf { self.actions.get_agent_dir() }
+    fn is_idle(&self) -> bool { self.actions.is_idle() }
+    fn is_project_trusted(&self) -> bool { self.actions.is_project_trusted() }
+    fn get_signal(&self) -> Option<AbortSignal> { self.actions.get_signal() }
+    fn abort(&self, source: Option<AbortSource>) { self.actions.abort(source); }
+    fn has_pending_messages(&self) -> bool { self.actions.has_pending_messages() }
+    fn request_reload(&self) -> ExtensionFuture<'_, ()> { self.actions.request_reload() }
+    fn is_compacting(&self) -> bool { self.actions.is_compacting() }
+    fn check_reload_veto(&self) -> ExtensionFuture<'_, ReloadVetoDecision> { self.actions.check_reload_veto() }
+    fn shutdown(&self) { self.actions.shutdown(); }
+    fn get_context_usage(&self) -> Option<ContextUsage> { self.actions.get_context_usage() }
+    fn get_compaction_settings(&self) -> CompactionSettings { self.actions.get_compaction_settings() }
+    fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { self.actions.get_prompt_cache_safe_wait_seconds() }
+    fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64 { self.actions.get_prompt_cache_goal_backstop_max_seconds() }
+    fn get_prompt_cache_keep_alive_settings(&self) -> PromptCacheKeepAliveSettings { self.actions.get_prompt_cache_keep_alive_settings() }
+    fn get_look_at_settings(&self) -> LookAtSettings { self.actions.get_look_at_settings() }
+    fn get_ask_user_settings(&self) -> AskUserSettings { self.actions.get_ask_user_settings() }
+    fn get_image_settings(&self) -> ImageSettings { self.actions.get_image_settings() }
+    fn session_settings(&self) -> &dyn ExtensionSessionSettings { self.actions.session_settings() }
+    fn compact(&self, options: CompactOptions) { self.actions.compact(options); }
+    fn prepare_provider_request(&self, messages: Vec<AgentMessage>) -> ExtensionFuture<'_, ProviderRequestPreparation> { self.actions.prepare_provider_request(messages) }
+    fn begin_compaction(&self, options: BeginCompactionOptions) -> Option<AbortSignal> { self.actions.begin_compaction(options) }
+    fn update_compaction(&self, options: UpdateCompactionOptions) { self.actions.update_compaction(options); }
+    fn end_compaction(&self, options: EndCompactionOptions) { self.actions.end_compaction(options); }
+    fn get_message_revision(&self) -> u64 { self.actions.get_message_revision() }
+    fn apply_compaction(&self, result: CompactionResult, options: ApplyCompactionOptions) -> ExtensionFuture<'_, ApplyCompactionResult> { self.actions.apply_compaction(result, options) }
+    fn get_system_prompt(&self) -> String { self.actions.get_system_prompt() }
+    fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { self.actions.get_system_prompt_options() }
+    fn get_loaded_hook_sources(&self) -> LoadedHookSources { self.actions.get_loaded_hook_sources() }
+    fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools> { self.actions.kernel_tools() }
+}
 
 pub struct ExtensionRunner {
     pub extensions: Vec<LoadedExtension>, pub runtime: ExtensionRuntime, pub events: EventBus,
@@ -34,9 +83,71 @@ impl ExtensionRunner {
     pub fn bind_core(&mut self, actions: Arc<dyn ExtensionActions>, context: ExtensionContext) {
         self.runtime.bind(actions); self.context = context;
     }
+    pub fn bind_context_actions(&mut self, actions: Arc<dyn ExtensionContextActions>) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let prompt_actions = Arc::clone(&actions);
+        self.context.get_system_prompt_fn = Arc::new(move || prompt_actions.get_system_prompt());
+        let option_actions = Arc::clone(&actions);
+        self.context.get_system_prompt_options_fn = Arc::new(move || option_actions.get_system_prompt_options());
+        self.context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions, runtime: self.runtime.clone() });
+        Ok(())
+    }
+    pub fn bind_providers(&mut self, actions: Arc<dyn ExtensionProviderActions>) -> Result<(), ExtensionFailure> {
+        self.runtime.bind_providers(actions)?;
+        for error in self.runtime.take_provider_errors() { self.emit_error(error); }
+        Ok(())
+    }
+    pub fn bind_session_actions(&self, actions: Arc<dyn ExtensionSessionActions>) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        for extension in &self.extensions {
+            for activator in &extension.lazy_tool_activators { actions.register_lazy_tool_activator(Arc::clone(activator))?; }
+            for (name, hint) in &extension.removed_tool_hints { actions.register_removed_tool_hint(name, hint)?; }
+        }
+        self.runtime.bind_session_actions(actions); Ok(())
+    }
+    pub fn create_command_context(&self, actions: Arc<dyn ExtensionCommandContextActions>) -> Result<ExtensionCommandContext, ExtensionFailure> {
+        Ok(ExtensionCommandContext { context: self.create_context()?, actions, runtime: self.runtime.clone() })
+    }
+    pub async fn invoke_command(&self, name: &str, args: &str, context: &ExtensionCommandContext) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let commands = self.get_registered_commands();
+        let resolved = commands.iter().find(|command| command.invocation_name == name).ok_or_else(|| ExtensionFailure::new(format!("Unknown extension command: {name}")))?;
+        let extension = self.extensions.iter().find(|extension| extension.commands.iter().any(|command| Arc::ptr_eq(&command.handler, &resolved.command.handler))).ok_or_else(|| ExtensionFailure::new("Command owner is unavailable"))?;
+        match extension.command_context_handlers.get(&resolved.command.name) {
+            Some(handler) => handler(args, context).await,
+            None => (resolved.command.handler)(args, &context.context).await,
+        }
+    }
+    pub fn get_shortcuts(&self) -> BTreeMap<String, ExtensionShortcut> {
+        let mut shortcuts = BTreeMap::new();
+        for extension in &self.extensions { for (key, shortcut) in &extension.shortcuts { shortcuts.insert(key.to_lowercase(), shortcut.clone()); } }
+        shortcuts
+    }
+    pub fn transform_markdown(&self, markdown: &str, context: &MarkdownTransformContext) -> String {
+        let mut transformed = markdown.to_owned();
+        for extension in &self.extensions { if let Some(transformer) = &extension.markdown_transformer { transformed = transformer(&transformed, context); } }
+        transformed
+    }
+    pub async fn handle_rpc_request(&self, name: &str, data: JsonValue) -> Result<JsonValue, ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let name = name.trim();
+        if name.is_empty() { return Err(ExtensionFailure::new("Extension RPC request name must not be empty")); }
+        let mut handlers = self.extensions.iter().filter_map(|extension| extension.rpc_handlers.get(name));
+        let handler = handlers.next().ok_or_else(|| ExtensionFailure::new(format!("Unknown extension RPC request: {name}")))?;
+        if handlers.next().is_some() { return Err(ExtensionFailure::new(format!("Multiple extension RPC request handlers registered: {name}"))); }
+        let result = handler(data).await?;
+        self.runtime.assert_active()?;
+        Ok(result)
+    }
     pub fn create_context(&self) -> Result<ExtensionContext, ExtensionFailure> {
         self.runtime.assert_active()?;
         let mut context = self.context.clone();
+        if let Some(actions) = context.session_manager.extension_context_actions() {
+            actions.assert_active()?;
+            context.model = actions.get_model(); context.service_tier = actions.get_service_tier();
+            context.effective_service_tier = actions.get_effective_service_tier(); context.scoped_models = actions.get_scoped_models();
+            context.agent_dir = actions.get_agent_dir(); context.signal = actions.get_signal();
+        }
         context.loaded_extension_paths = self.extensions.iter().map(|e| e.identity.resolved_path.clone()).collect();
         context.registered_mcp_servers = self.get_registered_mcp_servers();
         Ok(context)
@@ -212,7 +323,10 @@ impl ExtensionRunner {
         Err(ExtensionFailure::new("context handler replaced event kind"))
     }
     pub async fn emit_before_provider_request(&mut self, payload: JsonValue, exclude_path: Option<&str>) -> Result<JsonValue, ExtensionFailure> {
-        let mut event = ExtensionEvent::BeforeProviderRequest { payload, model: None, headers: None };
+        self.emit_before_provider_request_with_metadata(payload, None, None, exclude_path).await
+    }
+    pub async fn emit_before_provider_request_with_metadata(&mut self, payload: JsonValue, model: Option<Model>, headers: Option<BTreeMap<String, Option<String>>>, exclude_path: Option<&str>) -> Result<JsonValue, ExtensionFailure> {
+        let mut event = ExtensionEvent::BeforeProviderRequest { payload, model, headers };
         for (path, handler) in self.handlers(EventKind::BeforeProviderRequest) {
             if exclude_path == Some(path.as_str()) { continue; }
             let context = self.create_context()?;
