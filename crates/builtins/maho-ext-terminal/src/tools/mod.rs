@@ -7,3 +7,4 @@ pub mod bash_output;
 pub mod kill_bash;
 pub mod bash;
 pub mod sleep_wait;
+pub mod monitor;

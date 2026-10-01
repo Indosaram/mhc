@@ -21,6 +21,17 @@ pub struct MonitorFireWindow {pub start_ms:f64,pub count:usize}
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub enum MonitorEvent {Line {id:String,description:String,line:String},Summary {id:String,description:String,summary:String}}
 
+pub fn allocate_monitor_id()->std::io::Result<String> {
+    use std::io::Read;
+    let mut bytes=[0u8;10];std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(monitor_id_from_bytes(bytes))
+}
+fn monitor_id_from_bytes(bytes:[u8;10])->String {
+    let mut id=String::from("mon_");let mut buffer=0u32;let mut bits=0;
+    for byte in bytes {buffer=(buffer<<8)|u32::from(byte);bits+=8;while bits>=5 {bits-=5;id.push(b"0123456789ABCDEFGHJKMNPQRSTVWXYZ"[((buffer>>bits)&31) as usize] as char);}}
+    id
+}
+
 pub struct CommandMonitor {
     pub snapshot:MonitorSnapshotEntry,
     pub muted_dropped:usize,
@@ -139,6 +150,7 @@ mod registry_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn stable_identity_encodes_eighty_random_bits() {assert_eq!(monitor_id_from_bytes([0;10]),"mon_0000000000000000");assert_eq!(monitor_id_from_bytes([255;10]),"mon_ZZZZZZZZZZZZZZZZ");assert_eq!(allocate_monitor_id().unwrap().len(),20);}
     fn monitor()->CommandMonitor {CommandMonitor::new(MonitorSnapshotEntry {id:"bash_1".to_owned(),description:"ready".to_owned(),fire_window:Some(MonitorFireWindow {start_ms:10.0,count:0}),..Default::default()},Some(fancy_regex::Regex::new("^ready").unwrap()))}
     #[test]
     fn filtering_buffers_partial_lines_and_counts_only_muted_matches() {
