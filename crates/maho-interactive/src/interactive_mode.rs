@@ -230,8 +230,10 @@ impl InteractiveMode {
         if let Some(reference) = text.trim().strip_prefix("/model ") {
             let (provider, id) = reference.trim().split_once('/').ok_or("Model reference requires provider/model")?;
             let model = self.session.model_registry().find(provider, id).ok_or_else(|| format!("Model not found: {reference}"))?;
+            let requested = model.clone();
             self.session.set_model(model).await?;
-            self.show_status(format!("Switched to {}", self.session.model().name));
+            if maho_ai::models::models_are_equal(Some(&self.session.model()), Some(&requested)) { self.show_status(format!("Switched to {}", self.session.model().name)); }
+            else { self.show_status(format!("Model switch pending: {reference}")); }
             return Ok(PromptDisposition::Handled);
         }
         if self.dispatch_command(text)? { return Ok(PromptDisposition::Handled); }
