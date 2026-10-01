@@ -242,6 +242,9 @@ impl ToolExecutionRenderer {
 
 impl Component for ToolExecutionRenderer {
     fn render(&mut self, width: usize) -> Vec<String> {
+        if !self.has_renderer_definition() {
+            return self.content_text.render(width);
+        }
         if self.render_shell() == RenderShell::Own {
             self.self_render_container.render(width)
         } else {
