@@ -15,6 +15,7 @@ pub mod facts_oversize;
 pub mod facts_people_payload;
 pub mod facts_runner_types;
 pub mod facts_drain;
+pub mod facts_terminal_writes;
 pub mod prompt;
 pub mod policy_guard;
 pub mod skills_usage_ledger;
