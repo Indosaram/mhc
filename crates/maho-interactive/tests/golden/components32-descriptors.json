@@ -1,0 +1,879 @@
+[
+  {
+    "name": "text-only",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "hello"
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "hello"
+      }
+    ]
+  },
+  {
+    "name": "blank-text",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "   "
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": []
+  },
+  {
+    "name": "thinking-untimed",
+    "message": {
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "why"
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "thinking-md",
+        "text": "why",
+        "thinkingRun": 0
+      }
+    ]
+  },
+  {
+    "name": "thinking-hidden",
+    "message": {
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "why"
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": true,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "thinking-label",
+        "text": "\u001b[3m\u001b[38;5;244mThinking...\u001b[39m\u001b[23m",
+        "thinkingRun": 0
+      }
+    ]
+  },
+  {
+    "name": "thinking-override-visible",
+    "message": {
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "why"
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": true,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": [
+        [
+          0,
+          false
+        ]
+      ]
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "thinking-md",
+        "text": "why",
+        "thinkingRun": 0
+      }
+    ]
+  },
+  {
+    "name": "two-thinking-runs",
+    "message": {
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "first",
+          "startedAt": 0,
+          "endedAt": 500
+        },
+        {
+          "type": "text",
+          "text": "between"
+        },
+        {
+          "type": "thinking",
+          "thinking": "second",
+          "startedAt": 1000,
+          "endedAt": 2000
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "thinking-label",
+        "text": "\u001b[3m\u001b[38;5;244mThought: 500ms\u001b[39m\u001b[23m",
+        "thinkingRun": 0
+      },
+      {
+        "kind": "thinking-md",
+        "text": "first",
+        "thinkingRun": 0
+      },
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "between"
+      },
+      {
+        "kind": "thinking-label",
+        "text": "\u001b[3m\u001b[38;5;244mThought: 1.0s\u001b[39m\u001b[23m",
+        "thinkingRun": 1
+      },
+      {
+        "kind": "thinking-md",
+        "text": "second",
+        "thinkingRun": 1
+      }
+    ]
+  },
+  {
+    "name": "duration-ms",
+    "message": {
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "t",
+          "startedAt": 0,
+          "endedAt": 900
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "thinking-label",
+        "text": "\u001b[3m\u001b[38;5;244mThought: 900ms\u001b[39m\u001b[23m",
+        "thinkingRun": 0
+      },
+      {
+        "kind": "thinking-md",
+        "text": "t",
+        "thinkingRun": 0
+      }
+    ]
+  },
+  {
+    "name": "duration-seconds",
+    "message": {
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "t",
+          "startedAt": 0,
+          "endedAt": 1500
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "thinking-label",
+        "text": "\u001b[3m\u001b[38;5;244mThought: 1.5s\u001b[39m\u001b[23m",
+        "thinkingRun": 0
+      },
+      {
+        "kind": "thinking-md",
+        "text": "t",
+        "thinkingRun": 0
+      }
+    ]
+  },
+  {
+    "name": "duration-minutes",
+    "message": {
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "t",
+          "startedAt": 0,
+          "endedAt": 125000
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "thinking-label",
+        "text": "\u001b[3m\u001b[38;5;244mThought: 2m 5s\u001b[39m\u001b[23m",
+        "thinkingRun": 0
+      },
+      {
+        "kind": "thinking-md",
+        "text": "t",
+        "thinkingRun": 0
+      }
+    ]
+  },
+  {
+    "name": "duration-hours",
+    "message": {
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "t",
+          "startedAt": 0,
+          "endedAt": 7500000
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "thinking-label",
+        "text": "\u001b[3m\u001b[38;5;244mThought: 2h 5m\u001b[39m\u001b[23m",
+        "thinkingRun": 0
+      },
+      {
+        "kind": "thinking-md",
+        "text": "t",
+        "thinkingRun": 0
+      }
+    ]
+  },
+  {
+    "name": "duration-days",
+    "message": {
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "t",
+          "startedAt": 0,
+          "endedAt": 180000000
+        }
+      ],
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "thinking-label",
+        "text": "\u001b[3m\u001b[38;5;244mThought: 2d 2h\u001b[39m\u001b[23m",
+        "thinkingRun": 0
+      },
+      {
+        "kind": "thinking-md",
+        "text": "t",
+        "thinkingRun": 0
+      }
+    ]
+  },
+  {
+    "name": "provider-native-collapsed",
+    "message": {
+      "content": [
+        {
+          "type": "providerNative",
+          "subtype": "web",
+          "raw": {
+            "a": 1
+          }
+        }
+      ],
+      "provider": "openai",
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "provider-native-summary",
+        "text": "\u001b[38;5;244m▸ openai · providerNative · web\u001b[39m"
+      },
+      {
+        "kind": "provider-native-body",
+        "text": "\u001b[38;5;241m{\n  \"a\": 1\n}\u001b[39m"
+      }
+    ]
+  },
+  {
+    "name": "provider-native-expanded",
+    "message": {
+      "content": [
+        {
+          "type": "providerNative",
+          "subtype": "web",
+          "raw": {
+            "a": 1
+          }
+        }
+      ],
+      "provider": "openai",
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": true,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "provider-native-summary",
+        "text": "\u001b[38;5;244m▾ openai · providerNative · web\u001b[39m"
+      },
+      {
+        "kind": "provider-native-body",
+        "text": "\u001b[38;5;241m{\n  \"a\": 1\n}\u001b[39m"
+      }
+    ]
+  },
+  {
+    "name": "provider-native-large-body",
+    "message": {
+      "content": [
+        {
+          "type": "providerNative",
+          "subtype": "big",
+          "raw": {
+            "blob": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          }
+        }
+      ],
+      "provider": "openai",
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "provider-native-summary",
+        "text": "\u001b[38;5;244m▸ openai · providerNative · big\u001b[39m"
+      },
+      {
+        "kind": "provider-native-body",
+        "text": "\u001b[38;5;241m{\n  \"blob\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\u001b[39m"
+      }
+    ]
+  },
+  {
+    "name": "provider-native-astral-body",
+    "message": {
+      "content": [
+        {
+          "type": "providerNative",
+          "subtype": "big",
+          "raw": {
+            "blob": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+          }
+        }
+      ],
+      "provider": "openai",
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "provider-native-summary",
+        "text": "\u001b[38;5;244m▸ openai · providerNative · big\u001b[39m"
+      },
+      {
+        "kind": "provider-native-body",
+        "text": "\u001b[38;5;241m{\n  \"blob\": \"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀�…\u001b[39m"
+      }
+    ]
+  },
+  {
+    "name": "provider-native-bmp-wide-body",
+    "message": {
+      "content": [
+        {
+          "type": "providerNative",
+          "subtype": "big",
+          "raw": {
+            "blob": "가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가"
+          }
+        }
+      ],
+      "provider": "openai",
+      "stopReason": "stop"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "provider-native-summary",
+        "text": "\u001b[38;5;244m▸ openai · providerNative · big\u001b[39m"
+      },
+      {
+        "kind": "provider-native-body",
+        "text": "\u001b[38;5;241m{\n  \"blob\": \"가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가…\u001b[39m"
+      }
+    ]
+  },
+  {
+    "name": "length",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "cut"
+        }
+      ],
+      "stopReason": "length"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "cut"
+      },
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "error-text",
+        "text": "\u001b[38;5;167mError: Model stopped because it reached the maximum output token limit. The response may be incomplete.\u001b[39m"
+      }
+    ]
+  },
+  {
+    "name": "aborted-plain",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "part"
+        }
+      ],
+      "stopReason": "aborted",
+      "errorMessage": "Request was aborted"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "part"
+      },
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "error-text",
+        "text": "\u001b[38;5;167mOperation aborted\u001b[39m"
+      }
+    ]
+  },
+  {
+    "name": "aborted-message",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "part"
+        }
+      ],
+      "stopReason": "aborted",
+      "errorMessage": "user cancelled"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "part"
+      },
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "error-text",
+        "text": "\u001b[38;5;167muser cancelled\u001b[39m"
+      }
+    ]
+  },
+  {
+    "name": "aborted-owned",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "part"
+        }
+      ],
+      "stopReason": "aborted",
+      "errorMessage": "x"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": true,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "part"
+      }
+    ]
+  },
+  {
+    "name": "aborted-with-tools",
+    "message": {
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "t"
+        }
+      ],
+      "stopReason": "aborted",
+      "errorMessage": "x"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": true,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": []
+  },
+  {
+    "name": "error",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "part"
+        }
+      ],
+      "stopReason": "error",
+      "errorMessage": "boom"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "part"
+      },
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "error-text",
+        "text": "\u001b[38;5;167mError: boom\u001b[39m"
+      }
+    ]
+  },
+  {
+    "name": "error-server-fallback",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "part"
+        }
+      ],
+      "stopReason": "error",
+      "errorMessage": "boom",
+      "diagnostics": [
+        {
+          "type": "server_fallback_aborted"
+        }
+      ]
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "part"
+      }
+    ]
+  },
+  {
+    "name": "error-empty",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "part"
+        }
+      ],
+      "stopReason": "error"
+    },
+    "options": {
+      "expanded": false,
+      "providerErrorOwned": false,
+      "hiddenThinkingLabel": "Thinking...",
+      "hideThinkingBlock": false,
+      "hasToolCalls": false,
+      "thinkingVisibilityOverrides": []
+    },
+    "descriptors": [
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "text-md",
+        "text": "part"
+      },
+      {
+        "kind": "spacer",
+        "text": ""
+      },
+      {
+        "kind": "error-text",
+        "text": "\u001b[38;5;167mError: Unknown error\u001b[39m"
+      }
+    ]
+  }
+]

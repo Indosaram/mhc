@@ -79,7 +79,15 @@ pub fn create_assistant_render_descriptors(message: &Value, options: &AssistantR
                 let provider = message["provider"].as_str().filter(|p| !p.is_empty()).map_or_else(String::new, |p| format!("{p} · "));
                 let summary = format!("{marker} {provider}providerNative · {}", part["subtype"].as_str().unwrap_or_default());
                 let body = serde_json::to_string_pretty(&part["raw"]).unwrap_or_else(|_| "null".into());
-                let body = if !options.expanded && body.encode_utf16().count() > 2000 { format!("{}…", body.chars().take(2000).collect::<String>()) } else { body };
+                // senpi slices at 2000 UTF-16 code units, so a cut can land between a surrogate
+                // pair; `from_utf16_lossy` yields the U+FFFD a terminal shows for that lone
+                // surrogate, which is the closest representable match.
+                let body = if !options.expanded && body.encode_utf16().count() > 2000 {
+                    let units: Vec<u16> = body.encode_utf16().take(2000).collect();
+                    format!("{}…", String::from_utf16_lossy(&units))
+                } else {
+                    body
+                };
                 descriptors.push(descriptor(DescriptorKind::ProviderNativeSummary, theme.fg(ThemeColor::Muted, &summary), None));
                 descriptors.push(descriptor(DescriptorKind::ProviderNativeBody, theme.fg(ThemeColor::Dim, &body), None));
                 if content[index + 1..].iter().any(|c| visible(c, true)) { descriptors.push(spacer()); }
