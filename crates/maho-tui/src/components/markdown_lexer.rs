@@ -9,11 +9,11 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use super::markdown_helpers::{
-    expand_tabs, find_closing_bracket, indent_code_compensation, normalize_label, rtrim,
-    split_cells, trim_trailing_blank_lines, Rule,
+    expand_tabs, indent_code_compensation, normalize_label, rtrim, split_cells,
+    trim_trailing_blank_lines, Rule,
 };
 use super::markdown_rules as rules;
-use super::markdown_token::{Align, InlineSlot, TableCell, Token};
+use super::markdown_token::{Align, Inline, InlineSlot, TableCell, Token};
 
 pub fn utf16_len(value: &str) -> usize {
     value.encode_utf16().count()
@@ -446,6 +446,8 @@ impl Lexer {
             self.inline_slots[entry.slot] = out;
             index += 1;
         }
+        let slots = self.inline_slots.clone();
+        resolve_inline_tokens(&mut tokens, &slots);
         tokens
     }
 
@@ -695,7 +697,7 @@ impl Lexer {
             raw,
             depth,
             text,
-            tokens,
+            tokens: Inline::Slot(tokens),
         })
     }
 
@@ -1078,13 +1080,13 @@ impl Lexer {
                                 Token::Paragraph {
                                     raw: checkbox_raw.clone(),
                                     text: checkbox_raw,
-                                    tokens: 0,
+                                    tokens: Inline::Slot(0),
                                 },
                             );
                             if let Some(Token::Paragraph { tokens: slot, .. }) = tokens.first_mut() {
                                 let slot_index = self.inline_slots.len();
                                 self.inline_slots.push(vec![checkbox]);
-                                *slot = slot_index;
+                                *slot = Inline::Slot(slot_index);
                             }
                         }
                     } else {
@@ -1101,10 +1103,10 @@ impl Lexer {
                     for token in tokens.iter_mut() {
                         if matches!(token, Token::Text { .. }) {
                             let converted = match token {
-                                Token::Text { raw, text, .. } => Token::Paragraph {
+                                Token::Text { raw, text, tokens, .. } => Token::Paragraph {
                                     raw: raw.clone(),
                                     text: text.clone(),
-                                    tokens: 0,
+                                    tokens: tokens.clone().unwrap_or_default(),
                                 },
                                 _ => continue,
                             };
@@ -1203,7 +1205,7 @@ impl Lexer {
             .enumerate()
             .map(|(index, text)| TableCell {
                 text: text.clone(),
-                tokens: self.inline(text),
+                tokens: Inline::Slot(self.inline(text)),
                 header: true,
                 align: align[index].clone(),
             })
@@ -1219,7 +1221,7 @@ impl Lexer {
                     .enumerate()
                     .map(|(index, text)| TableCell {
                         text: text.clone(),
-                        tokens: self.inline(text),
+                        tokens: Inline::Slot(self.inline(text)),
                         header: false,
                         align: align[index].clone(),
                     })
@@ -1244,7 +1246,7 @@ impl Lexer {
             raw: rtrim(captures.whole(), '\n', false),
             depth,
             text,
-            tokens,
+            tokens: Inline::Slot(tokens),
         })
     }
 
@@ -1260,7 +1262,7 @@ impl Lexer {
         Some(Token::Paragraph {
             raw: captures.whole().to_string(),
             text,
-            tokens,
+            tokens: Inline::Slot(tokens),
         })
     }
 
@@ -1271,10 +1273,71 @@ impl Lexer {
         Some(Token::Text {
             raw: raw.clone(),
             text: raw,
-            tokens: Some(tokens),
+            tokens: Some(Inline::Slot(tokens)),
             escaped: false,
         })
     }
+}
+
+/// Replaces every [`Inline::Slot`] with the tokens the queue produced, depth-first.
+pub fn resolve_inline_tokens(tokens: &mut [Token], slots: &[Vec<Token>]) {
+    for token in tokens.iter_mut() {
+        resolve_inline_token(token, slots);
+    }
+}
+
+fn resolve_inline_token(token: &mut Token, slots: &[Vec<Token>]) {
+    match token {
+        Token::Heading { tokens, .. }
+        | Token::Paragraph { tokens, .. }
+        | Token::Link { tokens, .. }
+        | Token::Image { tokens, .. }
+        | Token::Strong { tokens, .. }
+        | Token::Em { tokens, .. }
+        | Token::Del { tokens, .. } => resolve_inline(tokens, slots),
+        Token::Text { tokens, .. } => {
+            if let Some(Inline::Slot(slot)) = tokens {
+                let mut resolved = slots.get(*slot).cloned().unwrap_or_default();
+                resolve_inline_tokens(&mut resolved, slots);
+                *tokens = Some(Inline::Resolved(resolved));
+            }
+        }
+        Token::List { items, .. } => {
+            for item in items.iter_mut() {
+                resolve_inline_token(item, slots);
+            }
+        }
+        Token::ListItem { tokens, .. } => {
+            for inner in tokens.iter_mut() {
+                resolve_inline_token(inner, slots);
+            }
+        }
+        Token::Blockquote { tokens, .. } => {
+            for inner in tokens.iter_mut() {
+                resolve_inline_token(inner, slots);
+            }
+        }
+        Token::Table { header, rows, .. } => {
+            for cell in header.iter_mut() {
+                resolve_inline(&mut cell.tokens, slots);
+            }
+            for row in rows.iter_mut() {
+                for cell in row.iter_mut() {
+                    resolve_inline(&mut cell.tokens, slots);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn resolve_inline(inline: &mut Inline, slots: &[Vec<Token>]) {
+    let Inline::Slot(slot) = *inline else {
+        return;
+    };
+    let mut resolved = slots.get(slot).cloned().unwrap_or_default();
+    resolve_inline_tokens(&mut resolved, slots);
+    *inline = Inline::Resolved(resolved);
 }
 
 #[cfg(test)]

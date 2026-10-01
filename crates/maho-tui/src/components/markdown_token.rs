@@ -6,6 +6,37 @@
 
 pub type InlineSlot = usize;
 
+/// Inline children of a block or inline token. The lexer records a queue slot while it is still
+/// building the tree ([`Lexer::inline`]); [`resolve_inline`] then fills every slot with the tokens
+/// the queue produced, so consumers always see [`Inline::Resolved`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Inline {
+    Slot(InlineSlot),
+    Resolved(Vec<Token>),
+}
+
+impl Inline {
+    pub fn tokens(&self) -> &[Token] {
+        match self {
+            Inline::Slot(_) => &[],
+            Inline::Resolved(tokens) => tokens,
+        }
+    }
+
+    pub fn tokens_mut(&mut self) -> Option<&mut Vec<Token>> {
+        match self {
+            Inline::Slot(_) => None,
+            Inline::Resolved(tokens) => Some(tokens),
+        }
+    }
+}
+
+impl Default for Inline {
+    fn default() -> Self {
+        Inline::Resolved(Vec::new())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Align {
     Left,
@@ -17,7 +48,7 @@ pub enum Align {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableCell {
     pub text: String,
-    pub tokens: InlineSlot,
+    pub tokens: Inline,
     pub header: bool,
     pub align: Align,
 }
@@ -37,7 +68,7 @@ pub enum Token {
         raw: String,
         depth: u8,
         text: String,
-        tokens: InlineSlot,
+        tokens: Inline,
     },
     Hr {
         raw: String,
@@ -89,12 +120,12 @@ pub enum Token {
     Paragraph {
         raw: String,
         text: String,
-        tokens: InlineSlot,
+        tokens: Inline,
     },
     Text {
         raw: String,
         text: String,
-        tokens: Option<InlineSlot>,
+        tokens: Option<Inline>,
         escaped: bool,
     },
     Escape {
@@ -106,7 +137,7 @@ pub enum Token {
         href: String,
         title: Option<String>,
         text: String,
-        tokens: InlineSlot,
+        tokens: Inline,
         autolink: bool,
     },
     Image {
@@ -114,17 +145,17 @@ pub enum Token {
         href: String,
         title: Option<String>,
         text: String,
-        tokens: InlineSlot,
+        tokens: Inline,
     },
     Strong {
         raw: String,
         text: String,
-        tokens: InlineSlot,
+        tokens: Inline,
     },
     Em {
         raw: String,
         text: String,
-        tokens: InlineSlot,
+        tokens: Inline,
     },
     Codespan {
         raw: String,
@@ -136,7 +167,7 @@ pub enum Token {
     Del {
         raw: String,
         text: String,
-        tokens: InlineSlot,
+        tokens: Inline,
     },
     LatexBlock {
         raw: String,

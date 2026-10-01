@@ -10,7 +10,7 @@ use super::markdown_lexer::{
     is_word_character, latex_token, repeated_malformed_openers, slice_utf16, utf16_len, Lexer,
 };
 use super::markdown_rules as rules;
-use super::markdown_token::Token;
+use super::markdown_token::{Inline, Token};
 
 static R_ESCAPE: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::INLINE_ESCAPE, ""));
 static R_INLINE_CODE: LazyLock<Rule> = LazyLock::new(|| Rule::new(rules::INLINE_CODE, ""));
@@ -512,8 +512,11 @@ impl Lexer {
         self.state.link_emitted = outer_link_emitted;
         self.state.in_link = false;
 
-        let slot = self.inline_slots.len();
-        self.inline_slots.push(inner);
+        let slot = Inline::Slot({
+            let index = self.inline_slots.len();
+            self.inline_slots.push(inner);
+            index
+        });
 
         if !is_image {
             if text_has_link {
@@ -530,7 +533,7 @@ impl Lexer {
                 href: href.to_string(),
                 title,
                 text,
-                tokens: slot,
+                tokens: slot.clone(),
             })
         } else {
             Some(Token::Link {
@@ -667,15 +670,21 @@ impl Lexer {
                     let text = slice_utf16(&raw, 1, utf16_len(&raw).saturating_sub(1)).to_string();
                     let mut inner = Vec::new();
                     self.inline_tokens(&text, &mut inner, "");
-                    let slot = self.inline_slots.len();
-                    self.inline_slots.push(inner);
+                    let slot = Inline::Slot({
+                        let index = self.inline_slots.len();
+                        self.inline_slots.push(inner);
+                        index
+                    });
                     return Some(Token::Em { raw, text, tokens: slot });
                 }
                 let text = slice_utf16(&raw, 2, utf16_len(&raw).saturating_sub(2)).to_string();
                 let mut inner = Vec::new();
                 self.inline_tokens(&text, &mut inner, "");
-                let slot = self.inline_slots.len();
-                self.inline_slots.push(inner);
+                let slot = Inline::Slot({
+                    let index = self.inline_slots.len();
+                    self.inline_slots.push(inner);
+                    index
+                });
                 return Some(Token::Strong { raw, text, tokens: slot });
             }
         }
@@ -708,8 +717,11 @@ impl Lexer {
         let text = captures.group_or(2, "").to_string();
         let mut inner = Vec::new();
         self.inline_tokens(&text, &mut inner, "");
-        let slot = self.inline_slots.len();
-        self.inline_slots.push(inner);
+        let slot = Inline::Slot({
+            let index = self.inline_slots.len();
+            self.inline_slots.push(inner);
+            index
+        });
         Some(Token::Del {
             raw: captures.whole().to_string(),
             text,
@@ -725,8 +737,7 @@ impl Lexer {
         } else {
             text.clone()
         };
-        let slot = self.inline_slots.len();
-        self.inline_slots.push(vec![Token::Text {
+        let slot = Inline::Resolved(vec![Token::Text {
             raw: text.clone(),
             text: text.clone(),
             tokens: None,
@@ -766,8 +777,7 @@ impl Lexer {
             };
             (whole.clone(), href)
         };
-        let slot = self.inline_slots.len();
-        self.inline_slots.push(vec![Token::Text {
+        let slot = Inline::Resolved(vec![Token::Text {
             raw: text.clone(),
             text: text.clone(),
             tokens: None,
