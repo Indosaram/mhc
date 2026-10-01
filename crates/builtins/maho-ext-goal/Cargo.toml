@@ -12,6 +12,9 @@ thiserror = "=2.0.18"
 uuid = { version = "=1.20.0", features = ["v4"] }
 maho-core = { path = "../../maho-core" }
 maho-ext-api = { path = "../../maho-ext-api" }
+maho-agent = { path = "../../maho-agent" }
+maho-ai = { path = "../../maho-ai" }
+regex = "=1.12.3"
 tokio = { version = "=1.52.3", features = ["rt", "macros"] }
 
 [dev-dependencies]

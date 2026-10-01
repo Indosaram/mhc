@@ -8,8 +8,7 @@ pub const GOAL_UNATTENDED_CONTINUATION_LIMIT: u64 = 150;
 pub const GOAL_USER_GRACE_DELAY_MS: u64 = 10_000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GoalContinuationPath { Immediate, MonitorDelayed, UserGrace, SessionStart, SystemRecovery, ProviderRecovery }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StopReason { Stop, Length, ToolUse, Aborted, Error }
+pub use maho_ai::types::StopReason;
 pub struct GoalContinuationInput<'a> {
     pub goal: Option<&'a Goal>, pub is_idle: bool, pub has_pending_messages: bool,
     pub path: GoalContinuationPath, pub last_stop_reason: Option<StopReason>,
@@ -27,6 +26,21 @@ pub enum ContinuationPrompt { Full, Minimal }
 pub enum GoalContinuationVerdict { Continue { prompt: ContinuationPrompt, stall_notice: bool }, Deny(DenyReason) }
 pub fn should_queue_goal_continuation_when_idle(goal: Option<&Goal>, is_idle: bool, has_pending_messages: bool) -> bool {
     goal.is_some_and(|g| g.status == GoalStatus::Active) && is_idle && !has_pending_messages
+}
+pub fn is_malformed_tool_use_turn(message: &maho_ai::types::AssistantMessage) -> bool {
+    if message.content.iter().any(|content| matches!(content, maho_ai::types::ContentBlock::ToolCall(_))) { return false; }
+    message.stop_reason == StopReason::ToolUse || message.stop_reason == StopReason::Stop && message.diagnostics.as_ref().is_some_and(|diagnostics| diagnostics.iter().any(|d| d.kind == maho_agent::EMPTY_TOOL_USE_DEMOTION_DIAGNOSTIC))
+}
+pub fn continuation_turn_used_tools(messages: &[maho_agent::types::AgentMessage]) -> bool {
+    messages.iter().any(|message| message.as_tool_result().is_some() || message.as_assistant().is_some_and(|a| a.content.iter().any(|c| matches!(c, maho_ai::types::ContentBlock::ToolCall(_)))))
+}
+pub fn should_queue_goal_continuation_after_agent_end(goal: Option<&Goal>, has_pending_messages: bool, messages: &[maho_agent::types::AgentMessage]) -> bool {
+    if !goal.is_some_and(|g| g.status == GoalStatus::Active) || has_pending_messages { return false; }
+    let Some((index, assistant)) = messages.iter().enumerate().rev().find_map(|(i, m)| m.as_assistant().map(|a| (i, a))) else { return false; };
+    if !matches!(assistant.stop_reason, StopReason::Stop | StopReason::Length) && !is_malformed_tool_use_turn(assistant) { return false; }
+    static ABORTED: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let aborted = ABORTED.get_or_init(|| match regex::Regex::new(r"(?i)(?-u:\b)abort(?:ed)?(?-u:\b)") { Ok(regex) => regex, Err(error) => panic!("invalid static abort expression: {error}") });
+    !messages[index + 1..].iter().filter_map(maho_agent::types::AgentMessage::as_tool_result).any(|result| result.is_error && result.content.iter().any(|content| matches!(content, maho_ai::types::ContentBlock::Text(text) if aborted.is_match(&text.text))))
 }
 pub fn evaluate_goal_continuation(input: &GoalContinuationInput<'_>) -> GoalContinuationVerdict {
     use GoalContinuationVerdict::Deny;
@@ -71,4 +85,10 @@ pub fn has_goal_continuation_progress(input: &GoalContinuationInput<'_>) -> bool
     #[test] fn stale_immediate_signature_is_denied() { let goal = goal(); let mut input = input(&goal); input.last_continuation_signature = Some("same"); input.current_signature = Some("same"); let result = evaluate_goal_continuation(&input); assert_eq!(result, GoalContinuationVerdict::Deny(DenyReason::Stale)); }
     #[test] fn normalized_hash_ignores_case_and_spacing() { let text = "  Work\n MORE  "; let result = hash_assistant_text(text); assert_eq!(result, hash_assistant_text("work more")); }
     #[test] fn single_flight_blocks_delivery() { let goal = goal(); let mut input = input(&goal); input.continuation_pending = true; let result = evaluate_goal_continuation(&input); assert_eq!(result, GoalContinuationVerdict::Deny(DenyReason::SingleFlight)); }
+    fn assistant(stop: StopReason) -> maho_ai::types::AssistantMessage { serde_json::from_value(serde_json::json!({"content":[],"api":"faux","provider":"faux","model":"faux","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":stop,"timestamp":0})).unwrap() }
+    #[test] fn clean_agent_end_queues_active_goal() { let goal = goal(); let messages = vec![maho_ai::types::Message::Assistant(Box::new(assistant(StopReason::Stop))).into()]; let result = should_queue_goal_continuation_after_agent_end(Some(&goal), false, &messages); assert!(result); }
+    #[test] fn terminal_error_agent_end_does_not_queue() { let goal = goal(); let messages = vec![maho_ai::types::Message::Assistant(Box::new(assistant(StopReason::Error))).into()]; let result = should_queue_goal_continuation_after_agent_end(Some(&goal), false, &messages); assert!(!result); }
+    #[test] fn raw_empty_tool_use_is_malformed() { let message = assistant(StopReason::ToolUse); let result = is_malformed_tool_use_turn(&message); assert!(result); }
+    #[test] fn demotion_diagnostic_preserves_malformed_admission() { let mut message = assistant(StopReason::Stop); message.diagnostics = Some(vec![maho_ai::utils::diagnostics::AssistantMessageDiagnostic { kind: maho_agent::EMPTY_TOOL_USE_DEMOTION_DIAGNOSTIC.into(), timestamp: 0, error: None, details: None }]); let result = is_malformed_tool_use_turn(&message); assert!(result); }
+    #[test] fn aborted_error_tool_result_prevents_continuation() { let goal = goal(); let messages = vec![maho_ai::types::Message::Assistant(Box::new(assistant(StopReason::Stop))).into(), maho_ai::types::Message::ToolResult(maho_ai::types::ToolResultMessage { tool_call_id: "call".into(), tool_name: "wait".into(), content: vec![maho_ai::types::ContentBlock::text("Operation aborted")], details: None, usage: None, added_tool_names: None, is_error: true, timestamp: 0 }).into()]; let result = should_queue_goal_continuation_after_agent_end(Some(&goal), false, &messages); assert!(!result); }
 }
