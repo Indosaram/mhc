@@ -172,7 +172,7 @@ impl OpenAiCompletionsError {
         ThrownProviderError::Error(Box::new(SdkErrorShape {
             message: self.message.clone(),
             status: self.status.map(|status| json!(status)),
-            error: self.body.clone(),
+            error: self.body.clone().map(crate::utils::error_body::SdkFieldValue::Plain),
             ..SdkErrorShape::default()
         }))
     }

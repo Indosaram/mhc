@@ -3,7 +3,7 @@ mod concurrency;
 mod continue_outcome;
 mod core;
 mod facts;
-mod fakes;
+pub(crate) mod fakes;
 mod fallback;
 mod leaf_policies;
 mod names;

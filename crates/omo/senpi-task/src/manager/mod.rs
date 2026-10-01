@@ -22,7 +22,7 @@ pub mod transcript_log;
 pub mod types;
 
 #[cfg(test)]
-mod manager_tests;
+pub(crate) mod manager_tests;
 
 pub use child_handle::{ManagedChildHandle, ManagedChildListener, Unsubscribe};
 pub use manager::{AbortSignal, TaskManager, WaitError, create_task_manager};

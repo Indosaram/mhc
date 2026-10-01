@@ -1312,6 +1312,18 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 [[package]]
 name = "maho-agent"
 version = "0.0.0"
+dependencies = [
+ "futures",
+ "maho-ai",
+ "maho-test-support",
+ "pretty_assertions",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+]
 
 [[package]]
 name = "maho-ai"
@@ -1421,6 +1433,25 @@ dependencies = [
 [[package]]
 name = "maho-core"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "hex",
+ "ignore",
+ "indexmap",
+ "maho-agent",
+ "maho-ai",
+ "maho-tui",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "maho-delegate-core"
@@ -1864,6 +1895,7 @@ dependencies = [
  "maho-delegate-core",
  "maho-model-core",
  "maho-omo-config-core",
+ "maho-team-core",
  "maho-utils",
  "pretty_assertions",
  "regex",

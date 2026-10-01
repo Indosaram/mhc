@@ -1,5 +1,7 @@
 //! Rust port of the `@oh-my-opencode/senpi-task` package (SUL-1.0, internal use only).
 
+#[cfg(test)]
+mod adversarial;
 pub mod agents;
 pub mod category;
 pub mod completion;
@@ -20,6 +22,7 @@ pub mod status_line;
 pub mod steering;
 pub mod store;
 pub mod task_summary;
+pub mod team;
 #[cfg(test)]
 mod test_support;
 pub mod tools;

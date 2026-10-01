@@ -368,4 +368,3 @@ mod repair_golden_tests {
         }
     }
 }
-

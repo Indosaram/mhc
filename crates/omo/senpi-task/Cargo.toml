@@ -13,6 +13,7 @@ path = "src/lib.rs"
 maho-delegate-core.workspace = true
 maho-omo-config-core.workspace = true
 maho-model-core.workspace = true
+maho-team-core.workspace = true
 maho-utils.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }

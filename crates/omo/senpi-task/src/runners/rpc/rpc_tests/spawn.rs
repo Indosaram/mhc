@@ -494,3 +494,33 @@ fn given_member_extension_env_w2mem_when_building_then_identity_config_and_task_
     );
     assert!(descriptor.args.contains(&"/tmp/omo-member.js".to_string()));
 }
+
+#[test]
+fn given_senpi_hides_rpc_entry_from_node_exports_when_building_a_fallback_spawn_then_it_uses_the_physical_dist_entry()
+{
+    // `spawn-node-runtime.test.ts` bundles `spawn.ts` for Node, runs the fallback under `node`, and
+    // asserts the resolved entry is the physical `dist/rpc-entry.js` rather than a Node export. The
+    // Rust host is not a Node process, so the same fact is pinned on the descriptor the *default*
+    // runtime builds: the fallback entry is the physical dist file, not a package export.
+    let fallback = RpcSpawnRuntime {
+        parent_env: env(&[("PATH", "")]),
+        resolve_senpi_executable: Some(Arc::new(|_| None)),
+        ..RpcSpawnRuntime::default()
+    };
+    let spec = RpcRunnerSpec {
+        task_id: "st_node_runtime".to_string(),
+        cwd: std::env::current_dir()
+            .expect("cwd")
+            .to_string_lossy()
+            .into_owned(),
+        state_dir: "/tmp/st_node_runtime".to_string(),
+        prompt: "READY".to_string(),
+        ..RpcRunnerSpec::default()
+    };
+    let descriptor = build_rpc_spawn(&spec, &fallback);
+    let entry = descriptor.args.first().expect("rpc entry argument");
+    assert!(
+        entry.ends_with(&format!("dist{MAIN_SEPARATOR}rpc-entry.js")),
+        "expected the physical dist entry, got {entry}"
+    );
+}
