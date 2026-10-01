@@ -1,1 +1,7 @@
-//! Reserved for owner todos 32-35.
+use maho_tui::{tui::{Component,TuiMouseEvent,TuiMouseEventType,TuiMouseButton,TuiMouseEventResult},utils::{truncate_to_width,visible_width}};
+pub fn is_question_mouse_action(e:&TuiMouseEvent)->bool{e.button==TuiMouseButton::Left&&!e.shift&&!e.alt&&!e.ctrl&&(e.event_type==TuiMouseEventType::Press||(e.event_type==TuiMouseEventType::Click&&e.click_count==Some(1)))}
+#[derive(Default)]
+pub struct AskUserQuestionTabs{tabs:Vec<String>,hits:Vec<(usize,usize,usize,usize)>,width:usize,pub clicked:Option<usize>}
+impl AskUserQuestionTabs{pub fn set_tabs(&mut self,tabs:Vec<String>){self.tabs=tabs;}pub fn hit(&self,e:&TuiMouseEvent)->Option<usize>{if !is_question_mouse_action(e)||e.width!=self.width{return None;}self.hits.iter().find(|(_,r,s,end)|e.y==*r as i64&&e.x>=*s as i64&&e.x<*end as i64).map(|h|h.0)}}
+impl Component for AskUserQuestionTabs{fn render(&mut self,width:usize)->Vec<String>{self.hits.clear();self.width=width;if width<5{return vec![truncate_to_width("Use keys",width,"...",false)];}let mut lines=Vec::new();let mut line=String::from(" ");for(index,tab)in self.tabs.iter().enumerate(){let label=truncate_to_width(tab,width-2,"...",false);if visible_width(&line)>1&&visible_width(&line)+2+visible_width(&label)>width-1{lines.push(line);line=" ".into();}
+if visible_width(&line)>1{line.push_str("  ");}let start=visible_width(&line);line.push_str(&label);self.hits.push((index,lines.len(),start,visible_width(&line)));}lines.push(line);lines}fn handle_mouse(&mut self,e:&TuiMouseEvent)->Option<TuiMouseEventResult>{let i=self.hit(e)?;if e.event_type==TuiMouseEventType::Click{self.clicked=Some(i);}Some(TuiMouseEventResult{handled:true,focus:true,..Default::default()})}}

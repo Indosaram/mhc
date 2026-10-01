@@ -1,1 +1,20 @@
-//! Reserved for owner todos 32-35.
+//! Port of senpi `packages/coding-agent/src/modes/interactive/tips/catalog/ethos-tips.ts`.
+
+use super::types::TipDefinition;
+
+pub const ETHOS_TIPS: &[TipDefinition] = &[
+    TipDefinition { id: "ethos.tuning-discipline", bindings: &[], requires_command: None, render: |_k| "gpt-5.6-sol used to turn a sprint into a marathon. We tuned the system prompt and killed that habit: 5-minute jobs take 5 minutes, 12-hour jobs take 12.".to_string() },
+    TipDefinition { id: "ethos.tools-transparent", bindings: &[], requires_command: None, render: |_k| "Don't study our tools. A tool that needs studying is a tool that failed. We just ride shotgun while you keep doing your actual job.".to_string() },
+    TipDefinition { id: "ethos.only-harness", bindings: &[], requires_command: None, render: |_k| "The only harness that actually knows how to drive gpt-5.6-sol. Same job, feels up to 30% faster. *we counted*".to_string() },
+    TipDefinition { id: "ethos.spend-tokens", bindings: &[], requires_command: None, render: |_k| "Stop hoarding tokens. Spend them like they buy your hours back, because they do.".to_string() },
+    TipDefinition { id: "ethos.deep-work", bindings: &[], requires_command: None, render: |_k| "Using our tools means your work is already the deep, valuable kind. Keep your eyes on the essence of your craft. The rest is our problem now, and we're great at problems.".to_string() },
+    TipDefinition { id: "ethos.ulw-plan-sage", bindings: &[], requires_command: Some("tasks"), render: |_k| "Try ulw-plan on fable-5.1 xhigh. A patient sage obsessed with the essence does the agonizing for you and fills in every blank you were pretending not to see.".to_string() },
+    TipDefinition { id: "ethos.ulw-loop-shallow", bindings: &[], requires_command: Some("tasks"), render: |_k| "For days when deep thought sounds awful, run the ulw loop with gpt-6-sol fast/medium. Fair warning: shallow thinking sends invoices.".to_string() },
+    TipDefinition { id: "ethos.monitor-subscribe", bindings: &[], requires_command: None, render: |_k| "Subscribe to a command's stdout and forget it. CI finishes, server boots, log line lands... you're mid-edit and the news finds *you*. No sleep loops, no polling, no re-reading context like a chump.".to_string() },
+    TipDefinition { id: "ethos.cache-budget", bindings: &[], requires_command: None, render: |_k| "My harness knows the prompt cache's expiry to the second and never blocks past it. Cold re-read tax? *Refused on your behalf.* Other agents eat that cost, mine declines it.".to_string() },
+    TipDefinition { id: "ethos.cache-hit-rate", bindings: &[], requires_command: None, render: |_k| "Live cache-hit rate in the footer, plus a running tab of misses, idle gaps, and model swaps. I can point at the exact moment cache broke and why. Watching tokens you never re-pay stack up? Smug doesn't cover it.".to_string() },
+    TipDefinition { id: "ethos.multimodal-vision", bindings: &[], requires_command: None, render: |_k| format!("Drop a screenshot, a PDF, a crusty whiteboard photo... {} actually sees it, reads it, reasons about it. Your agent has eyes now. *Yes, really.*", maho_core::config::app_name()) },
+    TipDefinition { id: "ethos.oauth-multi-account", bindings: &[], requires_command: None, render: |_k| format!("Hit a rate limit, switch accounts. Wrong org, switch again. {} treats your Claude logins like a roster, not a single lifeline. *Env vars could never.*", maho_core::config::app_name()) },
+    TipDefinition { id: "ethos.agent-sdk-foundation", bindings: &[], requires_command: None, render: |_k| "Built on the official agent SDK, speaking the protocol natively. No reverse-engineered wrapper, no ToS gray zone, no \"will I get banned for this\" anxiety. *Sleep easy, ship loud.*".to_string() },
+    TipDefinition { id: "ethos.tool-call-repair", bindings: &[], requires_command: None, render: |_k| format!("{} catches malformed tool calls on the wire, fixes them, and salvages the turn - claude's sloppy invokes, kimi k3's leaked XTML channels, all of it. Other harnesses retry the whole thing and bill you for the privilege. *table stakes, honestly*", maho_core::config::app_name()) },
+];
