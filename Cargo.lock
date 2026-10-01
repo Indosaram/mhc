@@ -1661,9 +1661,11 @@ name = "maho-ext-hooks"
 version = "0.0.0"
 dependencies = [
  "fancy-regex",
+ "maho-core",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 

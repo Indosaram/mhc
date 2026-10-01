@@ -4,6 +4,7 @@ pub mod config_loader;
 pub mod handler;
 pub mod matcher;
 pub mod output_parser;
+pub mod output_bounds;
 pub mod schema;
 pub mod trust;
 pub mod trust_state_json;
