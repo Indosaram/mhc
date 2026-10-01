@@ -15,6 +15,7 @@ pub mod facts_people_payload;
 pub mod prompt;
 pub mod policy_guard;
 pub mod skills_usage_ledger;
+pub mod status;
 pub mod status_active_runs;
 pub mod supervisor;
 pub mod tool_receipts;
