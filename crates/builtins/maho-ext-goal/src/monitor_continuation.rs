@@ -10,6 +10,7 @@ pub struct HeldTimer { pub kind:GoalWaitKind,pub remaining_ms:f64,pub held_at_ms
 pub struct ArmedTimer { pub kind:GoalWaitKind,pub due_at_ms:f64,pub total_ms:f64,pub drain_fire:bool }
 #[derive(Default)]
 pub struct MonitorAwareGoalContinuation {
+    goal:Option<crate::types::Goal>,
     pub wake_sources:BTreeMap<String,f64>,
     pub armed_timer:Option<ArmedTimer>,
     pub held_timer:Option<HeldTimer>,
@@ -24,6 +25,11 @@ pub struct MonitorAwareGoalContinuation {
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum WakeSourceChange { Drained,QuestionDeadlineChanged,CountsChanged }
 impl MonitorAwareGoalContinuation {
+    pub fn sync_goal(&mut self,goal:Option<&crate::types::Goal>) {
+        if goal.map(|goal|goal.id.as_str())!=self.goal.as_ref().map(|goal|goal.id.as_str()) { self.reset_continuation_state(); }
+        self.goal=goal.cloned();
+        if !goal.is_some_and(|goal|goal.status==crate::types::GoalStatus::Active) { self.armed_timer=None; self.held_timer=None; self.reset_continuation_state(); }
+    }
     pub fn has_active_wake_sources(&self)->bool { self.wake_sources.values().sum::<f64>()>0.0 }
     pub fn hold_direct_input(&mut self,input_id:&str,now:f64) {
         if !self.direct_input_holds.insert(input_id.into()) || self.direct_input_holds.len()!=1 { return; }
@@ -86,6 +92,13 @@ impl MonitorAwareGoalContinuation {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn stopped_goal_cancels_wait_and_changed_identity_resets_repetition() {
+        let mut goal:crate::types::Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap();
+        let mut monitor=MonitorAwareGoalContinuation::default(); monitor.sync_goal(Some(&goal)); monitor.record_assistant_output("same",false);
+        monitor.sync_goal(Some(&goal)); assert_eq!(monitor.recent_normalized_output_hashes.len(),1);
+        goal.id="next".into(); monitor.sync_goal(Some(&goal)); assert!(monitor.recent_normalized_output_hashes.is_empty());
+        monitor.arm_timer(GoalWaitKind::Monitor,1000.0,1000.0,false,0.0); goal.status=crate::types::GoalStatus::Blocked; monitor.sync_goal(Some(&goal)); assert!(monitor.armed_timer.is_none());
+    }
     #[test] fn overlapping_rejected_inputs_preserve_original_deadline() {
         let mut monitor=MonitorAwareGoalContinuation::default(); monitor.arm_timer(GoalWaitKind::Monitor,1000.0,1000.0,false,0.0);
         monitor.hold_direct_input("a",100.0); monitor.hold_direct_input("b",200.0);
