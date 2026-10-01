@@ -24,6 +24,18 @@ pub fn proven_owner<'a>(registered:Option<&'a RegisteredHost>,socket:&str)->Opti
     (read_process_start_time(registered.pid).as_deref()==Some(recorded)).then_some(registered)
 }
 pub fn written_by_this_process(writer:Option<&Value>)->bool{let Some(writer)=writer else{return false;};writer["pid"].as_u64()==Some(u64::from(std::process::id()))&&writer["startTime"].as_str().is_some_and(|recorded|read_process_start_time(std::process::id()).as_deref()==Some(recorded))}
+pub struct HostRegistration{pub pid:u32,pub process_start_time:Option<String>,pub socket:String,pub instance_id:String,pub generation:f64,pub launch_profile_id:String}
+pub fn write_host_registration(paths:&HostDaemonPaths,registration:&HostRegistration)->Result<(),crate::host_daemon_paths::HostDaemonStateError>{
+    crate::host_generations::prune_dead_generations(paths).map_err(|source|crate::host_daemon_paths::HostDaemonStateError{path:paths.dir.clone(),source})?;
+    let generation=generation_paths(paths,&registration.instance_id);
+    crate::host_daemon_paths::create_generation_directory(&generation)?;
+    let writer=serde_json::json!({"pid":std::process::id(),"startTime":read_process_start_time(std::process::id())});
+    let build=maho_core::engine_build_identity::engine_build_identity();
+    crate::host_daemon_state::write_state_file(&generation.pid_file,&serde_json::json!({"pid":registration.pid,"processStartTime":registration.process_start_time,"instance_id":registration.instance_id,"generation":registration.generation,"engineVersion":build.text,"engineOrdinal":build.ordinal,"launchProfileId":registration.launch_profile_id,"socket":registration.socket,"writer":writer}))?;
+    let temporary=std::path::PathBuf::from(format!("{}.{}.tmp",paths.pointer_file.display(),std::process::id()));
+    crate::host_daemon_state::write_state_file(&temporary,&serde_json::json!({"layout":crate::host_daemon_paths::HOST_DAEMON_LAYOUT,"instance_id":registration.instance_id,"generation_dir":generation.relative_dir,"writer":writer}))?;
+    std::fs::rename(&temporary,&paths.pointer_file).map_err(|source|crate::host_daemon_paths::HostDaemonStateError{path:paths.pointer_file.clone(),source})
+}
 pub fn release_generation(paths:&HostDaemonPaths,instance_id:&str,pid:u32)->std::io::Result<()>{
     let generation=generation_paths(paths,instance_id);let record=read_file_or_undefined(&generation.pid_file)?;let record=parse_json(record.as_deref());
     if record.as_ref().and_then(|record|record["pid"].as_u64()).is_some_and(|recorded|recorded!=u64::from(pid)){return Ok(());}
