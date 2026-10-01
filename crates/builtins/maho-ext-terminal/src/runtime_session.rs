@@ -22,7 +22,7 @@ pub struct DeltaRead {pub text:String,pub dropped_chars:usize}
 struct OutputState {buffer:Vec<u16>,pending_utf8:Vec<u8>,dropped_chars:usize,consumed:usize}
 
 impl OutputState {
-    fn ingest(&mut self,chunk:&[u8]) {
+    fn ingest(&mut self,chunk:&[u8])->String {
         self.pending_utf8.extend_from_slice(chunk);
         let mut decoded=String::new();let mut consumed=0;
         while consumed<self.pending_utf8.len() {
@@ -40,6 +40,7 @@ impl OutputState {
         self.buffer.extend(decoded.encode_utf16());
         let overflow=self.buffer.len().saturating_sub(MAX_SESSION_OUTPUT_CHARS);
         self.buffer.drain(..overflow);self.dropped_chars+=overflow;
+        decoded
     }
 
     fn read_delta(&mut self)->DeltaRead {
@@ -59,13 +60,21 @@ pub struct TerminalRuntimeSession {
     exit:ExitState,
     exit_thread:Option<std::thread::JoinHandle<()>>,
     exit_signal:tokio::sync::watch::Receiver<Option<Result<PtyExit,String>>>,
+    observers:Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,
 }
 
 impl TerminalRuntimeSession {
     pub fn start(command:&str,options:PtySessionOptions)->Result<Self,RuntimeError> {
         let output=Arc::new(Mutex::new(OutputState::default()));let sink=Arc::clone(&output);
+        let observers:Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>=Arc::new(Mutex::new(vec![]));
+        let listeners=observers.clone();
         let mut session=PtySession::start(options,move |chunk| {
-            if let Ok(mut state)=sink.lock() {state.ingest(chunk);}
+            if let Ok(mut state)=sink.lock() {
+                let decoded=state.ingest(chunk);
+                if !decoded.is_empty() && let Ok(mut listeners)=listeners.lock() {
+                    listeners.retain(|listener|listener.send(decoded.clone()).is_ok());
+                }
+            }
         })?;
         let waiter=session.wait_in_background()?;
         let exit:ExitState=Arc::new((Mutex::new(None),Condvar::new()));let settled=Arc::clone(&exit);
@@ -76,11 +85,17 @@ impl TerminalRuntimeSession {
             if let Ok(mut state)=lock.lock() {*state=Some(result.clone());signal.notify_all();}
             exit_sender.send_replace(Some(result));
         });
-        Ok(Self {command:command.to_owned(),session,output,exit,exit_thread:Some(exit_thread),exit_signal})
+        Ok(Self {command:command.to_owned(),session,output,exit,exit_thread:Some(exit_thread),exit_signal,observers})
     }
 
     pub fn backend(&self)->&'static str {"native"}
     pub fn subscribe_exit(&self)->tokio::sync::watch::Receiver<Option<Result<PtyExit,String>>> {self.exit_signal.clone()}
+    pub fn subscribe_output(&self)->Result<(String,tokio::sync::mpsc::UnboundedReceiver<String>),RuntimeError> {
+        let state=self.output.lock().map_err(|_|RuntimeError::Poisoned)?;
+        let (sender,receiver)=tokio::sync::mpsc::unbounded_channel();
+        self.observers.lock().map_err(|_|RuntimeError::Poisoned)?.push(sender);
+        Ok((String::from_utf16_lossy(&state.buffer),receiver))
+    }
     pub fn exited(&self)->Result<bool,RuntimeError> {Ok(self.exit.0.lock().map_err(|_|RuntimeError::Poisoned)?.is_some())}
     pub fn exit_result(&self)->Result<Option<PtyExit>,RuntimeError> {
         let state=self.exit.0.lock().map_err(|_|RuntimeError::Poisoned)?;
@@ -134,5 +149,17 @@ mod tests {
         let runtime=TerminalRuntimeSession::start("printf ready",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'ready\\n'").timeout(Duration::from_secs(5)))?;
         assert_eq!(runtime.wait(Duration::from_secs(10))?.exit_code,Some(0));assert!(runtime.exited()?);
         assert_eq!(runtime.full_output()?,"ready\r\n");assert_eq!(runtime.read_delta()?.text,"ready\r\n");assert!(runtime.read_delta()?.text.is_empty());runtime.dispose()
+    }
+
+    #[tokio::test]
+    async fn atomic_subscription_covers_history_and_future_without_cursor_interference()->Result<(),RuntimeError> {
+        let mut runtime=TerminalRuntimeSession::start("read input",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'ready\\n'; read value; printf '%s\\n' \"$value\"").timeout(Duration::from_secs(5)))?;
+        let (mut output,mut receiver)=runtime.subscribe_output()?;
+        tokio::time::timeout(Duration::from_secs(5),async {while !output.contains("ready\r\n") {output.push_str(&receiver.recv().await.expect("output sender"));}}).await.map_err(|_|RuntimeError::WaitTimeout)?;
+        runtime.write(b"next\n")?;
+        tokio::time::timeout(Duration::from_secs(5),async {while !output.contains("next\r\n") {output.push_str(&receiver.recv().await.expect("output sender"));}}).await.map_err(|_|RuntimeError::WaitTimeout)?;
+        runtime.wait(Duration::from_secs(5))?;
+        assert_eq!(output,"ready\r\nnext\r\n");assert_eq!(runtime.read_delta()?.text,output);
+        runtime.dispose()
     }
 }
