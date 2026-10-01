@@ -13,6 +13,7 @@ maho-lsp-core = { path = "../../lsp-core" }
 maho-ext-api = { path = "../../../maho-ext-api" }
 maho-lsp-daemon = { path = "../../lsp-daemon" }
 serde_json.workspace = true
+url.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 
 [dev-dependencies]
