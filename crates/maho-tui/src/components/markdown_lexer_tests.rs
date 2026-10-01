@@ -14,6 +14,16 @@ fn inline_of(token: &Token) -> &[Token] {
 }
 
 #[test]
+fn lexes_emphasis_and_strong() {
+    let mut lexer = Lexer::new();
+    let tokens = lexer.lex("A paragraph with *emphasis* and **strong** text.\n");
+    let inline = inline_of(&tokens[0]);
+    let kinds: Vec<&str> = inline.iter().map(Token::type_name).collect();
+    assert!(kinds.contains(&"em"), "em missing: {kinds:?}");
+    assert!(kinds.contains(&"strong"), "strong missing: {kinds:?}");
+}
+
+#[test]
 fn lexes_headings_paragraphs_and_fences() {
     let mut lexer = Lexer::new();
     let tokens = lexer.lex("# Title\n\nBody text.\n\n```rust\nlet x = 1;\n```\n");

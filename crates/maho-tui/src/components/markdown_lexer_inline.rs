@@ -93,8 +93,7 @@ impl Lexer {
             state.last_processed_raw = None;
         }
 
-        for index in state.processed_token_count..tokens.len() {
-            let token = &tokens[index];
+        for token in &tokens[state.processed_token_count..] {
             if matches!(token, Token::Text { .. }) && token.raw().contains('`') {
                 state.has_unclosed_code_span = true;
             }
@@ -190,7 +189,7 @@ impl Lexer {
         }
         for captures in R_REFLINK_SEARCH.exec_all(text) {
             let matched = captures.whole();
-            let ref_start = matched.rfind('[').map(|index| index).unwrap_or(0);
+            let ref_start = matched.rfind('[').unwrap_or(0);
             if matched.starts_with('!') {
                 continue;
             }
@@ -210,10 +209,7 @@ impl Lexer {
         let mut result = String::new();
         let mut last = 0usize;
         let mut cursor = 0usize;
-        loop {
-            let Some(captures) = R_REFLINK_SEARCH.exec_from(src, cursor) else {
-                break;
-            };
+        while let Some(captures) = R_REFLINK_SEARCH.exec_from(src, cursor) {
             let matched = captures.whole();
             let start = captures.start();
             let end = captures.end();
@@ -814,10 +810,7 @@ where
     let mut result = String::new();
     let mut last = 0usize;
     let mut cursor = 0usize;
-    loop {
-        let Some(captures) = rule.exec_from(value, cursor) else {
-            break;
-        };
+    while let Some(captures) = rule.exec_from(value, cursor) {
         let start = captures.start();
         let end = captures.end();
         result.push_str(&value[last..start]);

@@ -203,7 +203,7 @@ impl Rule {
             .captures_from_pos(text, last_index)
             .ok()
             .flatten()?;
-        Captures::new(&captures, text)
+        Captures::from_pos(&captures, text)
     }
 
     pub fn replace_all(&self, text: &str, replacement: &str) -> String {
@@ -238,6 +238,17 @@ impl<'a> Captures<'a> {
         if whole.start() != 0 {
             return None;
         }
+        let mut groups = Vec::with_capacity(captures.len());
+        for index in 0..captures.len() {
+            groups.push(captures.get(index).map(|m| m.start()..m.end()));
+        }
+        Some(Self { groups, text })
+    }
+
+    /// JavaScript's global `exec` with `lastIndex = n` returns the leftmost match at or after
+    /// `n`, so unlike [`Captures::new`] the match is not required to start at the haystack start.
+    fn from_pos(captures: &fancy_regex::Captures<'_>, text: &'a str) -> Option<Self> {
+        captures.get(0)?;
         let mut groups = Vec::with_capacity(captures.len());
         for index in 0..captures.len() {
             groups.push(captures.get(index).map(|m| m.start()..m.end()));
