@@ -586,3 +586,15 @@ async fn native_tree_selector_cancel_retains_session_and_releases_composer() {
     assert_eq!(mode.editor.editor.get_text(), "draft");
     assert!(mode.render(80).join("\n").contains("tree-source"));
 }
+
+#[tokio::test]
+async fn fork_selector_defaults_to_latest_user_message() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("earlier-user", Default::default()).await.expect("first");
+    mode.submit("latest-user", Default::default()).await.expect("second");
+    mode.submit("/fork", Default::default()).await.expect("selector"); mode.render(80);
+    mode.handle_input_at("\r", 0); mode.submit_editor().await.expect("fork");
+    assert_eq!(mode.editor.editor.get_text(), "latest-user");
+    assert!(mode.render(80).join("\n").contains("earlier-user"));
+}

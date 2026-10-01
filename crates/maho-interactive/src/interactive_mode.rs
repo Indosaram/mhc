@@ -363,16 +363,18 @@ impl InteractiveMode {
         if text == "/fork" {
             use crate::components::user_message_selector::{UserMessageItem, UserMessageSelectorComponent};
             let entries = self.session.with_session_manager(|manager| manager.branch(None));
-            let messages = entries.iter().filter(|entry| entry["message"]["role"] == "user").map(|entry| {
+            let messages: Vec<UserMessageItem> = entries.iter().filter(|entry| entry["message"]["role"] == "user").map(|entry| {
                 let content = &entry["message"]["content"];
                 let text = content.as_str().map(str::to_owned).unwrap_or_else(|| content.as_array().map(|parts| parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default());
                 UserMessageItem { id:entry["id"].as_str().expect("entry id").into(), text, timestamp:entry["timestamp"].as_str().map(str::to_owned) }
             }).collect();
+            if messages.is_empty() { self.show_status("No messages to fork from".into()); return Ok(true); }
+            let initial_selected_id = messages.last().map(|message| message.id.clone());
             let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
             let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone();
             self.ui_dialog = Some(Box::new(UserMessageSelectorComponent::new(messages,
                 Box::new(move |id| { submissions.borrow_mut().push_back(format!("/fork {id}")); selected.borrow_mut().take(); }),
-                Box::new(move || { cancelled.borrow_mut().take(); }), None, self.theme.clone())));
+                Box::new(move || { cancelled.borrow_mut().take(); }), initial_selected_id.as_deref(), self.theme.clone())));
             if self.ui_reply.borrow().is_none() { self.ui_dialog = None; self.local_dialog_reply = None; }
             return Ok(true);
         }
