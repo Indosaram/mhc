@@ -66,6 +66,7 @@ pub mod session_binding;
 pub mod worker_session_registry;
 pub mod host_runner;
 pub mod host_ensure;
+pub mod socket_sink;
 pub mod ownership_safe_lock;
 pub mod connection_handler;
 pub mod session_event_writer;
