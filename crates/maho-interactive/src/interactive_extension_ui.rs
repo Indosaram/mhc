@@ -11,6 +11,8 @@ pub enum UiRequest {
     Title(String),
     Paste(String),
     EditorText(String),
+    WorkingMessage(Option<String>),
+    WorkingVisible(bool),
 }
 
 pub struct InteractiveExtensionUi {
@@ -38,6 +40,8 @@ impl InteractiveExtensionUi {
 }
 
 impl ExtensionUi for InteractiveExtensionUi {
+    fn set_working_message(&self, message: Option<&str>) -> Result<(), ExtensionFailure> { self.send(UiRequest::WorkingMessage(message.map(str::to_owned))); Ok(()) }
+    fn set_working_visible(&self, visible: bool) -> Result<(), ExtensionFailure> { self.send(UiRequest::WorkingVisible(visible)); Ok(()) }
     fn select<'a>(&'a self, title: &'a str, options: &'a [String], opts: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
         let (reply, receiver) = tokio::sync::oneshot::channel();
         self.send(UiRequest::Select { title: title.into(), options: options.to_vec(), reply });

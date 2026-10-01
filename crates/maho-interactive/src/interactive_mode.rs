@@ -43,6 +43,8 @@ pub struct InteractiveMode {
     pub tools_expanded: bool,
     local_dialog_reply: Option<tokio::sync::oneshot::Receiver<Option<String>>>,
     working_started_ms: Option<f64>,
+    working_message: Option<String>,
+    working_visible: bool,
 }
 
 impl InteractiveMode {
@@ -56,7 +58,7 @@ impl InteractiveMode {
         editor.editor.on_submit = Some(Box::new(move |text| { if !text.trim().is_empty() { captured.borrow_mut().push_back(text.trim().into()); } }));
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(maho_ext_api::Theme { name: Some(theme.name.clone()), colors: theme.resolved_colors(), ..Default::default() });
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, working_started_ms: None }
+        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, working_started_ms: None, working_message: None, working_visible: true }
     }
 
     pub fn use_registered_markdown_transformers(&mut self, extensions: &[maho_ext_api::LoadedExtension]) {
@@ -310,6 +312,8 @@ impl InteractiveMode {
     fn handle_ui_request(&mut self, request: crate::interactive_extension_ui::UiRequest) {
         use crate::interactive_extension_ui::UiRequest;
         match request {
+            UiRequest::WorkingMessage(message) => self.working_message = message,
+            UiRequest::WorkingVisible(visible) => self.working_visible = visible,
             UiRequest::Notify(text, _) => self.show_status(text),
             UiRequest::Title(title) => self.terminal_title = Some(title),
             UiRequest::EditorText(text) => self.editor.editor.set_text(&text),
@@ -455,11 +459,12 @@ impl InteractiveMode {
     }
 
     pub fn working_frame(&self, now_ms: f64) -> Option<String> {
+        if !self.working_visible { return None; }
         let elapsed = (now_ms - self.working_started_ms?).max(0.0);
         let base = |text: &str| self.theme.fg(crate::theme::ThemeColor::Dim, text);
         let glow = |text: &str| self.theme.fg(crate::theme::ThemeColor::Text, text);
         let highlight = |text: &str| self.theme.bold(&glow(text));
-        Some(crate::working_status::format_working_status_message_frame("Working", elapsed / 1000.0,
+        Some(crate::working_status::format_working_status_message_frame(self.working_message.as_deref().unwrap_or("Working"), elapsed / 1000.0,
             &crate::components::keybinding_hints::key_display_text("app.interrupt"), elapsed,
             &crate::working_status::WorkingStatusTextFrameStyle { base:&base, glow:&glow, highlight:&highlight, shimmer:None }, &base))
     }

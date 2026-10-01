@@ -378,3 +378,14 @@ fn working_row_animates_until_exact_agent_end_event() {
     mode.handle_event(&maho_agent::types::AgentEvent::AgentEnd { messages:Vec::new() });
     assert!(mode.working_frame(800.0).is_none());
 }
+
+#[test]
+fn extension_working_visibility_controls_native_active_row() {
+    use maho_ext_api::ExtensionUi;
+    let (mut mode, _directory) = native_mode();
+    mode.handle_event(&maho_agent::types::AgentEvent::AgentStart);
+    mode.extension_ui.set_working_visible(false).expect("hide"); mode.drain_events();
+    assert!(mode.working_frame(100.0).is_none());
+    mode.extension_ui.set_working_visible(true).expect("show"); mode.drain_events();
+    assert!(mode.working_frame(100.0).is_some());
+}
