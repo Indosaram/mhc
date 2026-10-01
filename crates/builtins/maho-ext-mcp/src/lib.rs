@@ -35,3 +35,4 @@ pub mod host_registry;
 pub mod reconnect;
 pub mod idle;
 pub mod service_exposure;
+pub mod service_connection;

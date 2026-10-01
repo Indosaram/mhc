@@ -1,4 +1,20 @@
 use std::time::Duration;
+pub async fn connect_and_refresh_mcp_catalog(entry:&mut crate::service_types::McpConnectionEntry,config:&crate::config_schema::McpServerConfig) {
+    let client=match entry.connection.connect().await {
+        Ok(client)=>client,
+        Err(error)=>{let _=entry.logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("warning",&error.to_string(),None,None);return;}
+    };
+    if entry.cache_refreshed_after_connect{return;}
+    entry.cache_refreshed_after_connect=true;
+    let result=crate::catalog_cache::collect_server_catalog_for_cache(&client,Duration::from_secs_f64(config.request_timeout_ms.unwrap_or(30000.0)/1000.0),&entry.config_hash).await;
+    match result {
+        Ok(catalog)=>{
+            if let Some(agent_dir)=&entry.agent_dir && let Err(error)=crate::catalog_cache::write_mcp_cached_server(agent_dir,&entry.name,catalog.clone()) {let _=entry.logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("warning",&format!("Failed to refresh MCP catalog cache: {error}"),None,None);}
+            entry.cached_catalog=Some(catalog);
+        }
+        Err(error)=>{let _=entry.logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("warning",&format!("Failed to refresh MCP catalog cache: {error}"),None,None);}
+    }
+}
 pub const MCP_STARTUP_RACE_MS:f64=250.0;
 pub const MCP_STARTUP_TIMEOUT_ENV:&str="SENPI_MCP_STARTUP_TIMEOUT_MS";
 pub const MCP_ATTACH_SETTLE_TIMEOUT_MS:u64=5000;

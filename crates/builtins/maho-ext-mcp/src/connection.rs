@@ -7,13 +7,15 @@ struct ConnectionInner {state:ServerConnectionState,generation:u64,last_error:Op
 pub struct ServerConnection {
     pub server_name:String,config:McpServerConfig,env:Option<BTreeMap<String,String>>,logger:Arc<Mutex<McpLogger>>,
     inner:Mutex<ConnectionInner>,states:broadcast::Sender<ServerConnectionStateChangedEvent>,tools:broadcast::Sender<ServerConnectionToolsChangedEvent>,
+    auth:Mutex<Option<Arc<crate::auth::oauth_refresh::McpRefreshManager>>>,
 }
 impl ServerConnection {
     pub fn new(server:&str,config:McpServerConfig,env:Option<BTreeMap<String,String>>,logger:Arc<Mutex<McpLogger>>)->Arc<Self> {
         let (states,_)=broadcast::channel(256);let (tools,_)=broadcast::channel(256);
         let state=if config.enabled==Some(true){ServerConnectionState::Idle}else{ServerConnectionState::Disabled};
-        Arc::new(Self {server_name:server.into(),config,env,logger,inner:Mutex::new(ConnectionInner {state,generation:0,last_error:None,transport:None,pending:None}),states,tools})
+        Arc::new(Self {server_name:server.into(),config,env,logger,inner:Mutex::new(ConnectionInner {state,generation:0,last_error:None,transport:None,pending:None}),states,tools,auth:Mutex::new(None)})
     }
+    pub fn set_auth(&self,refresh:Arc<crate::auth::oauth_refresh::McpRefreshManager>) {*self.auth.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(refresh);}
     pub fn state(&self)->ServerConnectionState {self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).state}
     pub fn generation(&self)->u64 {self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).generation}
     pub fn last_error(&self)->Option<McpError> {self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).last_error.clone()}
@@ -51,7 +53,7 @@ impl ServerConnection {
     }
     async fn open_connection(self:&Arc<Self>,generation:u64)->Result<Arc<McpClient>,McpError> {
         let transport=match create_mcp_transport(&self.server_name,&self.config,self.env.as_ref(),self.logger.clone()) {
-            Ok(transport)=>Arc::new(transport),
+            Ok(mut transport)=>{transport.auth=self.auth.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();Arc::new(transport)},
             Err(error)=>{
                 let mut inner=self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 if inner.generation==generation && inner.state!=ServerConnectionState::Disabled {
@@ -74,7 +76,7 @@ impl ServerConnection {
             if inner.generation!=generation || inner.state==ServerConnectionState::Disabled {false}else{
                 match &result {
                     Ok(_)=>{inner.last_error=None;self.transition(&mut inner,ServerConnectionState::Connected,None);}
-                    Err(error)=>{inner.transport=None;inner.last_error=Some(error.clone());self.transition(&mut inner,ServerConnectionState::Degraded,Some(error.clone()));}
+                    Err(error)=>{inner.transport=None;inner.last_error=Some(error.clone());let state=if error.kind==McpErrorKind::Auth{ServerConnectionState::NeedsAuth}else{ServerConnectionState::Degraded};self.transition(&mut inner,state,Some(error.clone()));}
                 }true
             }
         };

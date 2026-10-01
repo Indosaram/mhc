@@ -13,6 +13,7 @@ pub struct McpClient {
     server:String,io:ClientTransport,pending:Arc<Mutex<BTreeMap<u64,Reply>>>,next_id:AtomicU64,
     pub notifications:broadcast::Sender<Value>,pub closed:tokio::sync::watch::Sender<bool>,pub root_pid:Option<u32>,
     pub server_capabilities:tokio::sync::RwLock<Value>,pub server_info:tokio::sync::RwLock<Value>,pub instructions:tokio::sync::RwLock<Option<String>>,
+    auth:tokio::sync::RwLock<Option<Arc<crate::auth::oauth_refresh::McpRefreshManager>>>,
 }
 enum ClientTransport {
     Stdio {input:tokio::sync::Mutex<ChildStdin>,child:tokio::sync::Mutex<Child>,reader:JoinHandle<()>,stderr:JoinHandle<()>},
@@ -52,7 +53,7 @@ impl McpClient {
         let stderr=tokio::spawn(async move {
             let mut lines=BufReader::new(errors).lines();while let Ok(Some(line))=lines.next_line().await {if !line.is_empty(){let _=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("info",&line,None,Some("stderr"));}}
         });
-        Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Stdio {input:tokio::sync::Mutex::new(input),child:tokio::sync::Mutex::new(child),reader,stderr},pending,next_id:AtomicU64::new(1),notifications,closed,root_pid,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None)}))
+        Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Stdio {input:tokio::sync::Mutex::new(input),child:tokio::sync::Mutex::new(child),reader,stderr},pending,next_id:AtomicU64::new(1),notifications,closed,root_pid,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None)}))
     }
     pub async fn materialize(server:&str,spec:&McpTransportSpec,logger:Arc<Mutex<McpLogger>>)->Result<Arc<Self>,McpError> {
         match spec {
@@ -61,7 +62,7 @@ impl McpClient {
                 let client=reqwest::Client::builder().build().map_err(|e|failure(server,McpErrorKind::Connect,e.to_string(),"create"))?;
                 let (notifications,_)=broadcast::channel(256);
                 let (closed,_)=tokio::sync::watch::channel(false);
-                Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Http {client,url:url.clone(),headers:headers.clone(),session:tokio::sync::RwLock::new(None)},pending:Arc::new(Mutex::new(BTreeMap::new())),next_id:AtomicU64::new(1),notifications,closed,root_pid:None,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None)}))
+                Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Http {client,url:url.clone(),headers:headers.clone(),session:tokio::sync::RwLock::new(None)},pending:Arc::new(Mutex::new(BTreeMap::new())),next_id:AtomicU64::new(1),notifications,closed,root_pid:None,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None)}))
             }
         }
     }
@@ -77,6 +78,7 @@ impl McpClient {
         let result=tokio::time::timeout(timeout,result).await.unwrap_or_else(|_|Err(failure(&self.server,McpErrorKind::Timeout,format!("MCP request {method} timed out"),"request")));
         self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);result
     }
+    pub async fn set_auth(&self,refresh:Arc<crate::auth::oauth_refresh::McpRefreshManager>) {*self.auth.write().await=Some(refresh);}
     async fn send(&self,value:&Value)->Result<(),McpError> {
         let ClientTransport::Stdio {input,..}=&self.io else{self.http_send(value).await?;return Ok(());};
         let mut text=value.to_string();text.push('\n');let mut input=input.lock().await;
@@ -87,6 +89,11 @@ impl McpClient {
         let ClientTransport::Http {client,url,headers,session}=&self.io else{return Err(failure(&self.server,McpErrorKind::Protocol,"not HTTP","request"));};
         let mut request=client.post(url.clone()).header("accept","application/json, text/event-stream").header("mcp-protocol-version","2025-11-25").json(value);
         for (name,value) in headers {request=request.header(name,value);}
+        if let Some(refresh)=self.auth.read().await.as_ref() {
+            let tokens=refresh.ensure_fresh().await.map_err(|error|failure(&self.server,McpErrorKind::Auth,error.to_string(),"request"))?;
+            let tokens=tokens.ok_or_else(||failure(&self.server,McpErrorKind::Auth,format!("MCP server {} requires authorization",self.server),"request"))?;
+            request=request.bearer_auth(tokens.access_token);
+        }
         if let Some(id)=session.read().await.as_ref(){request=request.header("mcp-session-id",id);}
         let mut response=request.send().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"request"))?;
         if !response.status().is_success() {

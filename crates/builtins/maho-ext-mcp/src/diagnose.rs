@@ -23,7 +23,7 @@ pub fn diagnose_captured_mcp_connect_failure(server:&str,config:&McpServerConfig
     let lines=captured(logger);if lines.is_empty(){None}else{Some(connect_error(server,cause,Some(bound(&lines))))}
 }
 pub async fn diagnose_mcp_connect_failure(server:&str,config:&McpServerConfig,env:Option<&BTreeMap<String,String>>,cause:&McpError,logger:Arc<Mutex<McpLogger>>)->McpError {
-    if config.transport!=Some(Transport::Stdio){return connect_error(server,cause,None);}
+    if config.transport!=Some(Transport::Stdio){return cause.clone();}
     let lines=captured(&logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
     if !lines.is_empty(){return connect_error(server,cause,Some(bound(&lines)));}
     let Some(command)=config.command.as_ref().filter(|command|!command.trim().is_empty()) else{return connect_error(server,cause,None);};

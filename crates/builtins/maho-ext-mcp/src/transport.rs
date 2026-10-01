@@ -22,15 +22,16 @@ pub fn create_mcp_transport_spec(server:&str,config:&McpServerConfig,env:Option<
 pub struct McpTransportConnection {
     pub server_name:String,pub spec:McpTransportSpec,pub connect_timeout:Duration,
     logger:Arc<Mutex<McpLogger>>,client:tokio::sync::OnceCell<Arc<McpClient>>,
+    pub auth:Option<Arc<crate::auth::oauth_refresh::McpRefreshManager>>,
 }
 pub fn create_mcp_transport(server:&str,config:&McpServerConfig,env:Option<&BTreeMap<String,String>>,logger:Arc<Mutex<McpLogger>>)->Result<McpTransportConnection,McpError> {
     let spec=create_mcp_transport_spec(server,config,env)?;
     let timeout=config.connect_timeout_ms.unwrap_or(15000.0);
-    Ok(McpTransportConnection {server_name:server.into(),spec,connect_timeout:Duration::from_secs_f64(timeout.max(0.0)/1000.0),logger,client:tokio::sync::OnceCell::new()})
+    Ok(McpTransportConnection {server_name:server.into(),spec,connect_timeout:Duration::from_secs_f64(timeout.max(0.0)/1000.0),logger,client:tokio::sync::OnceCell::new(),auth:None})
 }
 impl McpTransportConnection {
     pub async fn materialize(&self)->Result<Arc<McpClient>,McpError> {
-        self.client.get_or_try_init(||McpClient::materialize(&self.server_name,&self.spec,self.logger.clone())).await.cloned()
+        self.client.get_or_try_init(||async {let client=McpClient::materialize(&self.server_name,&self.spec,self.logger.clone()).await?;if let Some(auth)=&self.auth {client.set_auth(auth.clone()).await;}Ok::<_,McpError>(client)}).await.cloned()
     }
     pub fn client(&self)->Result<Arc<McpClient>,McpError> {
         self.client.get().cloned().ok_or_else(||{
@@ -46,10 +47,11 @@ pub async fn connect_mcp_transport(connection:&McpTransportConnection)->Result<A
         result=>{
             let _=shutdown_mcp_transport(connection).await;
             let mut error=match result {
+                Ok(Err(error)) if error.kind==McpErrorKind::Auth=>error,
                 Ok(Err(error)) if error.kind!=McpErrorKind::Timeout=>McpError::new(McpErrorKind::Connect,format!("MCP server {} failed during connect: {error}",connection.server_name)),
                 _=>McpError::new(McpErrorKind::Timeout,format!("MCP server {} timed out during connect after {}ms",connection.server_name,connection.connect_timeout.as_millis())),
             };
-            error.phase=Some("connect".into());error.server_name=Some(connection.server_name.clone());error.retriable=true;Err(error)
+            error.phase=Some("connect".into());error.server_name=Some(connection.server_name.clone());error.retriable=error.kind!=McpErrorKind::Auth;Err(error)
         }
     }
 }

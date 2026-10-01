@@ -1,6 +1,6 @@
 use std::{sync::{Arc,Mutex},time::Duration,collections::BTreeMap};
 use maho_ext_mcp::{config_schema::*,connection::*,log::McpLogger,health::with_mcp_session_expiry_retry,errors::{McpError,McpErrorKind}};
-fn config()->McpServerConfig {McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into()]),connect_timeout_ms:Some(2000.0),..Default::default()}}
+fn config()->McpServerConfig {McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into()]),..Default::default()}}
 #[tokio::test]
 async fn stderr_diagnostics_are_redacted_and_retained() {
     let root=tempfile::tempdir().unwrap();let mut config=config();config.args.as_mut().unwrap().extend(["--fatal-missing-token".into(),"FOO_TOKEN=synthetic-secret".into()]);
