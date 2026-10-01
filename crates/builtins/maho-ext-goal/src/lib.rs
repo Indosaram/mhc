@@ -5,3 +5,4 @@ pub mod continuation;
 pub mod transitions;
 pub mod types;
 pub mod validation;
+pub mod persistence;
