@@ -27,6 +27,10 @@ impl FileMonitor {
         if self.paused||self.settled {return Ok(vec![]);}
         let parent=std::fs::canonicalize(self.path.parent().expect("registered file parent"))?;
         if parent!=self.parent {return Err(std::io::Error::other(format!("watcher error: monitored parent changed: {}",self.path.parent().expect("registered file parent").display())));}
+        if let Ok(metadata)=std::fs::symlink_metadata(&self.path) {
+            use std::os::unix::fs::MetadataExt;
+            if (metadata.dev() as f64!=self.checkpoint.dev||metadata.ino() as f64!=self.checkpoint.ino)&&metadata.nlink()>1 {return Err(std::io::Error::other(format!("Cannot watch file: target identity changed: {}",self.path.display())));}
+        }
         let current=crate::durable_file::file_checkpoint(&self.path)?;
         let changed=match self.event {
             FileEvent::Create=>!self.checkpoint.present&&current.present,
@@ -45,6 +49,13 @@ impl FileMonitor {
 #[cfg(all(test,unix))]
 mod tests {
     use super::*;
+    #[test]
+    fn changed_identity_with_multiple_links_is_rejected()->std::io::Result<()> {
+        let dir=tempfile::tempdir()?;let path=dir.path().join("watch");let replacement=dir.path().join("replacement");std::fs::write(&path,b"old")?;
+        let mut monitor=FileMonitor::register("watch_1".to_owned(),"watch".to_owned(),&path,FileEvent::Modify,None)?;
+        std::fs::write(&replacement,b"new")?;std::fs::remove_file(&path)?;std::fs::hard_link(&replacement,&path)?;
+        assert!(monitor.check().is_err());Ok(())
+    }
     #[test]
     fn create_only_fires_for_appearance_after_registration()->std::io::Result<()> {
         let dir=tempfile::tempdir()?;let path=dir.path().join("watched");let mut watch=FileMonitor::register("watch_1".to_owned(),"created".to_owned(),&path,FileEvent::Create,None)?;
