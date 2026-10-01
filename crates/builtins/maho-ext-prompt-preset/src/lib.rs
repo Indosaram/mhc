@@ -19,3 +19,7 @@ pub mod claude_opus_4_5;
 pub mod claude_opus_4_6;
 pub mod claude_opus_4_7;
 pub mod claude_opus_4_8;
+pub mod claude_fable_5;
+pub mod claude_fable_5_1;
+pub mod claude_opus_5;
+pub mod claude_opus_5_5;
