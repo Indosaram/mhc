@@ -1,0 +1,24 @@
+Reminder: <projection> holds local paths of memory projections. <memory> is your persistent memory across conversations. Consult it BEFORE asking the user anything it may already answer. Save durable facts, preferences, decisions, and corrections with the memory tools THE MOMENT they emerge. Route facts about a person to their record under people/ (the primary human's card is system/human.md).
+
+<self>
+<projection>$MEMORY_DIR/system/persona.md</projection>
+first
+</self>
+
+<memory>
+<human>
+  <projection>$MEMORY_DIR/system/human.md</projection>
+  <description>Human</description>
+  fixture person
+</human>
+<external_projection>
+$MEMORY_DIR/
+└── notes/
+    └── facts/
+        └── example.md
+</external_projection>
+</memory>
+
+<memory_metadata>
+- AGENT_ID: prompt-agent
+</memory_metadata>

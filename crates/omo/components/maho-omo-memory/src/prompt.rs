@@ -96,4 +96,35 @@ mod tests {
     }
     #[test]
     fn existing_block_is_replaced() { let (_dir, repo) = fixture(); let handler = MemoryPromptHandler::default(); let first = handler.inject(Some(&input(&repo))).unwrap().unwrap(); let mut input = input(&repo); input.system_prompt = &first.system_prompt; let second = handler.inject(Some(&input)).unwrap().unwrap(); assert_eq!(second.system_prompt.matches("<!-- senpi-memory:prompt-agent:begin -->").count(), 1); }
+    #[test]
+    fn projection_matches_pinned_ts_golden() {
+        let (_dir, repo) = fixture();
+        std::fs::write(repo.dir.join("system/human.md"), "---\ndescription: Human\n---\nfixture person\n").unwrap();
+        std::fs::create_dir_all(repo.dir.join("notes/facts")).unwrap();
+        std::fs::write(repo.dir.join("notes/facts/example.md"), "---\ndescription: Example\n---\nfixture fact\n").unwrap();
+        repo.commit_write(&["system/human.md", "notes/facts/example.md"], "fixture projection", &GitCommitAuthor { agent_id: "prompt-agent".into(), author_name: "Prompt Agent".into(), author_email: None }).unwrap();
+        let result = MemoryPromptHandler::default().inject(Some(&input(&repo))).unwrap().unwrap();
+        let expected = memory_core::compile::render::replace_memory_block("BASE PROMPT", &memory_core::compile::render::mark_memory_block("prompt-agent", include_str!("../tests/golden/projection.txt"))).unwrap();
+        assert_eq!(result.system_prompt, expected);
+    }
+    #[test]
+    fn soul_watermark_notice_consumed_once_at_same_head() {
+        use memory_core::soul::watermark::{ConsumeSoulNoticeOptions, consume_soul_notice_delta};
+        let (dir, repo) = fixture();
+        let options = ConsumeSoulNoticeOptions { notices_dir: dir.path().join("notices"), locks_dir: dir.path().join("locks"), wait_timeout_ms: None };
+        assert!(consume_soul_notice_delta(&repo, &options).unwrap().is_none());
+        std::fs::write(repo.dir.join("system/persona.md"), "---\ndescription: Persona\n---\nevolved\n").unwrap();
+        repo.commit_write(&["system/persona.md"], "chore(reflection): merge run r1\n\nOmo-Writer: reflection", &GitCommitAuthor { agent_id: "prompt-agent".into(), author_name: "Prompt Agent".into(), author_email: None }).unwrap();
+        let handler = MemoryPromptHandler::default();
+        let notice = consume_soul_notice_delta(&repo, &options).unwrap().unwrap();
+        let mut first_input = input(&repo); first_input.soul_sha = Some(&notice.sha);
+        let first = handler.inject(Some(&first_input)).unwrap().unwrap();
+        assert!(first.message.content.contains(MEMORY_SOUL_METADATA_TOKEN));
+        for _ in 0..2 {
+            assert!(consume_soul_notice_delta(&repo, &options).unwrap().is_none());
+            let later = handler.inject(Some(&input(&repo))).unwrap().unwrap();
+            assert_eq!(later.system_prompt, first.system_prompt);
+            assert!(!later.message.content.contains(MEMORY_SOUL_METADATA_TOKEN));
+        }
+    }
 }

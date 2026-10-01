@@ -1,9 +1,11 @@
 //! Native memory component adapter over maho-memory-core.
 pub mod binding;
 pub mod context;
+pub mod dream_scoring;
 pub mod prompt;
 pub mod status_active_runs;
 pub mod supervisor;
+pub mod tool_receipts;
 pub mod worker;
 
 // Todo 45 owns these module bodies; declaring the namespaces here keeps lib.rs

@@ -1,5 +1,12 @@
 pub mod fork_cost;
+pub mod completion_contracts;
+pub mod completion_delivery;
+pub mod completion;
+pub mod completion_records;
 pub mod health;
 pub mod model_cost;
 pub mod model_miss;
+pub mod memory_model_attempts;
 pub mod run_artifacts;
+pub mod registry_fallback;
+pub mod runner_results;

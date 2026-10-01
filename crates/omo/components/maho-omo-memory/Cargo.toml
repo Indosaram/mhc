@@ -13,6 +13,7 @@ chrono = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio = { version = "=1.52.3", features = ["macros", "rt"] }
 
 [lints]
 workspace = true
