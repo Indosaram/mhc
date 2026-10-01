@@ -11,18 +11,18 @@ fn attributable(d:&SenpiConfigDiagnostic,changed:&[PathBuf],user:&Path)->bool {
     changed.iter().any(|changed|path.starts_with(changed)||(directory.is_some()&&config_directory(changed,user)==directory))
 }
 pub enum ConfigWatchValidation { Ok,Rejected{errors:Vec<String>} }
-pub struct OmoConfigValidator { cwd:String,env:BTreeMap<String,String>,user:PathBuf,baseline:BTreeSet<String>,unresolved:BTreeSet<String> }
+pub struct OmoConfigValidator { cwd:String,env:BTreeMap<String,String>,user:PathBuf,baseline:BTreeSet<String>,unresolved:Vec<String> }
 impl OmoConfigValidator {
     pub fn new(cwd:String,env:BTreeMap<String,String>)->Self {
         let user=PathBuf::from(omo_config_core::resolve_user_omo_config_directory(&env));
         let diagnostics=load_senpi_omo_config(omo_config_core::LoadOmoConfigOptions{cwd:Some(cwd.clone()),env:Some(env.clone()),..Default::default()}).diagnostics;
-        Self{cwd,env,user,baseline:diagnostics.iter().map(fingerprint).collect(),unresolved:BTreeSet::new()}
+        Self{cwd,env,user,baseline:diagnostics.iter().map(fingerprint).collect(),unresolved:Vec::new()}
     }
     pub fn validate(&mut self,changed:&[PathBuf])->ConfigWatchValidation {
         let diagnostics=load_senpi_omo_config(omo_config_core::LoadOmoConfigOptions{cwd:Some(self.cwd.clone()),env:Some(self.env.clone()),..Default::default()}).diagnostics;
         let by_fingerprint:BTreeMap<_,_>=diagnostics.iter().map(|d|(fingerprint(d),d)).collect();
         self.unresolved.retain(|f|by_fingerprint.contains_key(f));
-        for d in &diagnostics { let f=fingerprint(d);if !self.baseline.contains(&f)&&attributable(d,changed,&self.user) { self.unresolved.insert(f); } }
+        for d in &diagnostics { let f=fingerprint(d);if !self.baseline.contains(&f)&&attributable(d,changed,&self.user)&&!self.unresolved.contains(&f) { self.unresolved.push(f); } }
         if !self.unresolved.is_empty() { return ConfigWatchValidation::Rejected{errors:self.unresolved.iter().filter_map(|f|by_fingerprint.get(f)).map(|d|parts(d).2.to_owned()).collect()}; }
         self.baseline=by_fingerprint.into_keys().collect();ConfigWatchValidation::Ok
     }
