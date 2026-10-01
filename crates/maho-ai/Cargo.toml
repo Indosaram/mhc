@@ -17,6 +17,8 @@ workspace = true
 prost-build = "=0.14.4"
 
 [dependencies]
+anyhow = "=1.0.104"
+async-trait = "=0.1.92"
 base64 = "=0.22.1"
 bytes = "=1.12.1"
 prost = "=0.14.4"
@@ -47,6 +49,7 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync
 tokio-util = "=0.7.18"
 unicode-general-category = { workspace = true }
 unicode-normalization = { workspace = true }
+unicode-segmentation = "=1.13.3"
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4", "v7"] }
 zstd = "=0.13.3"
