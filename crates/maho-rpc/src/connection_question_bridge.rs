@@ -2,6 +2,19 @@ use std::collections::{BTreeMap,BTreeSet};
 use maho_ext_api::{QuestionRequest,QuestionResponse,QuestionAnswer,QuestionStatus};
 use serde_json::{Value,json};
 use tokio::sync::oneshot;
+pub async fn degrade_question(ui:&dyn maho_ext_api::ExtensionUi,request:QuestionRequest,options:maho_ext_api::ExtensionUiDialogOptions)->Result<QuestionResponse,maho_ext_api::ExtensionFailure>{
+    let mut answers=BTreeMap::new();let other="Other (type an answer)";
+    for question in &request.questions{
+        let labels=question.options.iter().map(|option|option.label.clone()).chain(std::iter::once(other.into())).collect::<Vec<_>>();
+        let selected=ui.select(&question.question,&labels,options.clone()).await;
+        if selected.as_deref()==Some(other){if let Some(text)=ui.input(&question.question,None,options.clone()).await.filter(|text|!text.trim().is_empty()){answers.insert(question.id.clone(),QuestionAnswer{selected:vec![],text:Some(text)});}}
+        else if let Some(selected)=selected{answers.insert(question.id.clone(),QuestionAnswer{selected:vec![selected],text:None});}
+    }
+    let comment=ui.input("Anything else? (optional)",None,options).await;
+    let unanswered=request.questions.iter().filter(|question|!answers.contains_key(&question.id)).map(|question|question.id.clone()).collect::<Vec<_>>();
+    let status=if comment.as_deref().is_some_and(|comment|!comment.trim().is_empty()){QuestionStatus::CommentSubmitted}else if !unanswered.is_empty(){QuestionStatus::Cancelled}else{QuestionStatus::Answered};
+    Ok(QuestionResponse{status,answers,comment,unanswered,auto_resolved_after_ms:None})
+}
 struct Pending{request:QuestionRequest,frame:Value,answers:BTreeMap<String,QuestionAnswer>,comment:Option<String>,asked_at:u64,timeout:u64,sender:oneshot::Sender<QuestionResponse>}
 #[derive(Default)]
 pub struct ConnectionQuestionBridge{pending:BTreeMap<String,Pending>,resolved:BTreeSet<String>}
