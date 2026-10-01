@@ -114,6 +114,12 @@ const toolScenarios = [
   { toolName: "read", args: { file_path: "src/main.rs" }, result: { content: [{ type: "text", text: "fn main() {}\n" }], isError: false } },
   { toolName: "ls", args: { path: "src" }, result: { content: [{ type: "text", text: "a.rs\nb.rs" }], isError: false } },
   { toolName: "grep", args: { pattern: "needle", path: "src" }, result: { content: [{ type: "text", text: "no matches" }], isError: false } },
+  { toolName: "find", args: { pattern: "*.rs", path: "src" }, result: { content: [{ type: "text", text: "src/a.rs" }], isError: false } },
+  // `edit` is the one built-in whose tool definition declares renderShell "self", so its card
+  // must skip the content box; this case is what pins that.
+  { toolName: "edit", args: { file_path: "src/main.rs" }, result: { content: [{ type: "text", text: "Successfully replaced 1 block(s) in src/main.rs." }], details: { diff: "-1 old\n+1 new", firstChangedLine: 1 }, isError: false } },
+  { toolName: "write", args: { file_path: "src/new.rs", content: "fn main() {}\n" }, result: { content: [{ type: "text", text: "wrote" }], isError: false } },
+  { toolName: "bash", args: { command: "echo hi" }, result: { content: [{ type: "text", text: "hi\n" }], isError: false } },
   { toolName: "read", args: { file_path: "missing.rs" }, result: { content: [{ type: "text", text: "ENOENT: no such file" }], isError: true } },
 ];
 for (const { toolName, args, result } of toolScenarios) {
