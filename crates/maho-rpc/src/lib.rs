@@ -37,3 +37,6 @@ pub mod session_attribution;
 pub mod loop_lag_watchdog;
 pub mod host_probe;
 pub mod host_status;
+pub mod observer_link;
+pub mod session_worker_requests;
+pub mod session_worker_protocol;
