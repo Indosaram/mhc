@@ -24,6 +24,13 @@ pub enum PromptInput {
     Messages(Vec<crate::types::AgentMessage>),
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct NavigationOptions {
+    pub summarize: bool,
+    pub label: Option<String>,
+    pub custom_instructions: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationAdmission {
     pub operation_id: String,
@@ -41,6 +48,10 @@ pub enum AdmissionError {
     PendingAssistant,
     #[error("Lane has nothing to compact")]
     NothingToCompact,
+    #[error("Invalid navigation: {reason}")]
+    InvalidNavigation { reason: &'static str },
+    #[error("Unknown target: {target_id}")]
+    UnknownTarget { target_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -245,6 +256,54 @@ impl Lane {
             ];
             let admission = OperationAdmission { operation_id: operation_id.clone(), started_at, kind: OperationIntentKind::Compaction };
             Ok(LaneCommand::Commit { decision: CommitDecision { writes, materialize: Arc::new(move |_| Ok(admission.clone())), events: Some(Arc::new(move |_| vec![HarnessEvent::new(HarnessEventPayload::CompactionStart { run_id: operation_id.clone(), reason: "manual".into(), started_at }, Some(name.clone()))])) }, next: Box::new(state) })
+        }), context).await
+    }
+
+    pub async fn accept_navigation(&self, target_id: Option<String>, options: NavigationOptions, operation_id: Option<String>, settings: crate::harness::session::types::RunSettings, context: &Context) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
+        use crate::harness::session::types::{StorageBranchScan, BranchOrder, OperationScope, OperationMarker, OperationIntent, OperationIntentKind, SummaryDecidingOperation, NavigationReadyToCommitOperation, SummaryTask, ResultBoundary};
+        let NavigationOptions { summarize, label, custom_instructions } = options;
+        self.assert_open()?;
+        let started_at = now_ms();
+        let operation_id = operation_id.unwrap_or_else(|| (self.session.id_generator())(Some(started_at)));
+        let task_id = (self.session.id_generator())(Some(started_at));
+        let name = self.name.clone();
+        let read_context = context.clone();
+        self.command(move |mut state, reader| Box::pin(async move {
+            if let Some(operation) = &state.operation { return Ok(LaneCommand::Return { result: Err(AdmissionError::LaneBusy { lane: name, operation_id: operation.meta.operation_id.clone() }) }); }
+            let reason = if target_id == state.tip_id { Some("current_tip") } else if target_id.is_none() && label.is_some() { Some("root_label") } else if summarize && state.tip_id.is_none() { Some("source_root") } else if summarize && target_id.is_none() { Some("target_root") } else { None };
+            if let Some(reason) = reason { return Ok(LaneCommand::Return { result: Err(AdmissionError::InvalidNavigation { reason }) }); }
+            if let Some(target) = &target_id && !reader.get_entries(vec![target.clone()], &read_context).await?.contains_key(target) { return Ok(LaneCommand::Return { result: Err(AdmissionError::UnknownTarget { target_id: target.clone() }) }); }
+            let scope = OperationScope { control: Control::Running, settings, latest_assistant_entry_id: None };
+            let mut writes = vec![];
+            let current = if summarize {
+                let source = state.tip_id.as_ref().ok_or_else(|| session_invariant_error("Missing navigation source"))?;
+                let target = target_id.as_ref().ok_or_else(|| session_invariant_error("Missing navigation target"))?;
+                let mut source_query = StorageBranchScan::new(source);
+                source_query.order = Some(BranchOrder::NewestFirst);
+                let mut target_query = StorageBranchScan::new(target);
+                target_query.order = Some(BranchOrder::NewestFirst);
+                let mut old_path = reader.scan_branch(source_query, &read_context).await?;
+                let target_path = reader.scan_branch(target_query, &read_context).await?;
+                if let Some(common) = target_path.iter().find(|entry| old_path.iter().any(|old| old.id == entry.id))
+                    && let Some(index) = old_path.iter().position(|entry| entry.id == common.id) {
+                    old_path.truncate(index);
+                }
+                old_path.reverse();
+                let preparation = crate::harness::compaction::branch_summarization::prepare_branch_entries(&old_path, u64::MAX);
+                writes.push(Write::Value(set_value(&operation_preparation(&operation_id, &task_id), encoded(&super::structural::durable_branch_preparation(&preparation))?)));
+                OperationState::SummaryDeciding(SummaryDecidingOperation { operation: scope, at: OperationMarker::SummaryDeciding, task: SummaryTask { task_id, reason: None, custom_instructions: custom_instructions.clone(), boundary: ResultBoundary::CommitNavigation { target_id: target.clone(), label: label.clone() } } })
+            } else {
+                OperationState::NavigationReadyToCommit(NavigationReadyToCommitOperation { operation: scope, target_id: target_id.clone(), label: label.clone(), at: OperationMarker::NavigationReadyToCommit })
+            };
+            let meta = OperationMeta { operation_id: operation_id.clone(), lane: name.clone(), source_tip_id: state.tip_id.clone(), started_at, intent: OperationIntent::Navigation { target_id: target_id.clone(), summarize, label, custom_instructions } };
+            state.operation = Some(Operation { meta: meta.clone(), state: current.clone() });
+            writes.extend([
+                Write::Value(set_value(&operation_meta(&operation_id), encoded(&meta)?)),
+                Write::Value(set_value(&operation_state(&operation_id), encoded(&current)?)),
+                Write::Value(set_value(&lane_state(&name), encoded(&durable_lane_state(&state))?)),
+            ]);
+            let admission = OperationAdmission { operation_id: operation_id.clone(), started_at, kind: OperationIntentKind::Navigation };
+            Ok(LaneCommand::Commit { decision: CommitDecision { writes, materialize: Arc::new(move |_| Ok(admission.clone())), events: Some(Arc::new(move |_| vec![HarnessEvent::new(HarnessEventPayload::NavigationStart { run_id: operation_id.clone(), target_id: target_id.clone(), started_at }, Some(name.clone()))])) }, next: Box::new(state) })
         }), context).await
     }
 

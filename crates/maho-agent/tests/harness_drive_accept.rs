@@ -239,3 +239,43 @@ async fn rejects_empty_standalone_compaction_without_operation() {
     assert!(lane.state().operation.is_none());
     assert!(lane.get_tip_id().unwrap().is_none());
 }
+
+async fn navigation_fixture(summarize: bool) -> Result<Arc<Lane>, Box<dyn std::error::Error>> {
+    let lane = fixture().await?;
+    let root = lane.append_custom_entry("root".into(), None, &BACKGROUND_CONTEXT).await?;
+    let source = lane.append_custom_entry("source".into(), None, &BACKGROUND_CONTEXT).await?;
+    let mutation = lane.session.begin_mutation(&BACKGROUND_CONTEXT).await?;
+    mutation.commit(vec![maho_agent::harness::session::commit::insert_entry(NewEntry::custom("target", Some(root), "target"))], &BACKGROUND_CONTEXT).await?;
+    mutation.end(&BACKGROUND_CONTEXT).await;
+    lane.accept_navigation(Some("target".into()), maho_agent::harness::runtime::lane::NavigationOptions { summarize, label: Some("label".into()), custom_instructions: None }, Some("nav".into()), settings(), &BACKGROUND_CONTEXT).await??;
+    assert_eq!(lane.get_tip_id()?, Some(source));
+    Ok(lane)
+}
+
+#[tokio::test]
+async fn accepts_unsummarized_navigation_without_moving_tip() {
+    let lane = navigation_fixture(false).await.unwrap();
+    let OperationState::NavigationReadyToCommit(current) = lane.state().operation.unwrap().state else { panic!("navigation ready"); };
+    assert_eq!(current.target_id.as_deref(), Some("target"));
+    assert_eq!(current.label.as_deref(), Some("label"));
+}
+
+#[tokio::test]
+async fn accepts_summarized_navigation_with_durable_preparation() {
+    let lane = navigation_fixture(true).await.unwrap();
+    let OperationState::SummaryDeciding(current) = lane.state().operation.unwrap().state else { panic!("summary deciding"); };
+    let stored = lane.session.get_value(&maho_agent::harness::session::values::operation_preparation("nav", &current.task.task_id), &BACKGROUND_CONTEXT).await.unwrap().unwrap();
+    assert_eq!(stored.value["kind"], "branch_summary");
+    assert!(matches!(current.task.boundary, ResultBoundary::CommitNavigation { .. }));
+}
+
+#[tokio::test]
+async fn navigation_rejections_do_not_install_operation() {
+    let lane = fixture().await.unwrap();
+    let source = lane.append_custom_entry("source".into(), None, &BACKGROUND_CONTEXT).await.unwrap();
+    assert_eq!(lane.accept_navigation(Some(source.clone()), Default::default(), None, settings(), &BACKGROUND_CONTEXT).await.unwrap(), Err(AdmissionError::InvalidNavigation { reason: "current_tip" }));
+    assert_eq!(lane.accept_navigation(None, maho_agent::harness::runtime::lane::NavigationOptions { label: Some("bad".into()), ..Default::default() }, None, settings(), &BACKGROUND_CONTEXT).await.unwrap(), Err(AdmissionError::InvalidNavigation { reason: "root_label" }));
+    assert_eq!(lane.accept_navigation(Some("missing".into()), Default::default(), None, settings(), &BACKGROUND_CONTEXT).await.unwrap(), Err(AdmissionError::UnknownTarget { target_id: "missing".into() }));
+    assert!(lane.state().operation.is_none());
+    assert_eq!(lane.get_tip_id().unwrap(), Some(source));
+}
