@@ -169,7 +169,7 @@ fn format_write_call(
             }
             if remaining > 0 {
                 text += &format!(
-                    "{}{}{}",
+                    "{} {}{}",
                     theme.fg(ThemeColor::Muted, &format!("\n... ({remaining} more lines, {total_lines} total,")),
                     key_hint("app.tools.expand", "to expand", theme),
                     theme.fg(ThemeColor::Muted, ")")
