@@ -26,7 +26,18 @@ pub struct MonitorAwareGoalContinuation {
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum WakeSourceChange { Drained,QuestionDeadlineChanged,CountsChanged }
+pub struct DueGoalContinuation { pub goal:crate::types::Goal,pub path:crate::continuation::GoalContinuationPath,pub schedule:Option<crate::cache_warm::GoalCacheWarmScheduleData>,pub waited_ms:f64,pub drain_fire:bool }
 impl MonitorAwareGoalContinuation {
+    pub fn take_due_continuation(&mut self,now:f64,idle:bool,pending_messages:bool)->Option<DueGoalContinuation> {
+        let timer=self.armed_timer?;
+        if now<timer.due_at_ms { return None; }
+        self.armed_timer=None; let schedule=self.scheduled_cache.take();
+        let goal=self.goal.as_ref()?;
+        if goal.status!=crate::types::GoalStatus::Active||!idle||pending_messages { return None; }
+        if timer.kind==GoalWaitKind::Monitor&&!self.has_active_wake_sources()&&!timer.drain_fire { return None; }
+        let waited_ms=schedule.as_ref().map_or(timer.total_ms,|schedule|(now-(schedule.due_at_ms-schedule.delay_ms)).max(0.0));
+        Some(DueGoalContinuation { goal:goal.clone(),path:if timer.kind==GoalWaitKind::Monitor { crate::continuation::GoalContinuationPath::MonitorDelayed } else { crate::continuation::GoalContinuationPath::UserGrace },schedule,waited_ms,drain_fire:timer.drain_fire })
+    }
     pub fn sync_goal(&mut self,goal:Option<&crate::types::Goal>) {
         if goal.map(|goal|goal.id.as_str())!=self.goal.as_ref().map(|goal|goal.id.as_str()) { self.reset_continuation_state(); }
         self.goal=goal.cloned();
@@ -102,6 +113,17 @@ impl MonitorAwareGoalContinuation {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn due_backstop_is_single_use_and_requires_idle_live_source_unless_draining() {
+        let goal:crate::types::Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap();
+        let mut monitor=MonitorAwareGoalContinuation::default(); monitor.sync_goal(Some(&goal));
+        monitor.arm_timer(GoalWaitKind::Monitor,1000.0,1000.0,false,0.0);
+        assert!(monitor.take_due_continuation(999.0,true,false).is_none()); assert!(monitor.armed_timer.is_some());
+        assert!(monitor.take_due_continuation(1000.0,true,false).is_none()); assert!(monitor.armed_timer.is_none());
+        monitor.arm_timer(GoalWaitKind::Monitor,1000.0,1000.0,true,0.0);
+        let due=monitor.take_due_continuation(1000.0,true,false).unwrap(); assert!(due.drain_fire); assert_eq!(due.path,crate::continuation::GoalContinuationPath::MonitorDelayed);
+        assert!(monitor.take_due_continuation(1000.0,true,false).is_none());
+        monitor.arm_timer(GoalWaitKind::UserGrace,1000.0,1000.0,false,0.0); assert!(monitor.take_due_continuation(1000.0,false,false).is_none());
+    }
     #[test] fn restored_backstop_preserves_iteration_cache_and_original_due_time() {
         let goal:crate::types::Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap();
         let parked=crate::parked_wait::ParkedGoalWait { iteration:4.0,delay_ms:270_000.0,due_at_ms:300_000.0,cache:Some(crate::cache_warm::GoalCacheWarmMetrics { ttl_seconds:Some(300.0),cached_tokens:1000.0,estimated_saved_usd:None }) };
