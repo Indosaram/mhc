@@ -1297,6 +1297,222 @@ impl AgentSession {
             .is_some()
     }
 
+    /// Set the session display name and publish the change.
+    ///
+    /// Adaptation: the extension `session_info_changed` emit is not replicated because the runner's
+    /// raw-event emit needs an `ExtensionEvent` variant for it; the session event is emitted.
+    pub fn set_session_name(&self, name: &str) {
+        self.with_session_manager_mut(|manager| {
+            manager.append_session_info(Some(name));
+        });
+        self.emit(AgentSessionEvent::SessionInfoChanged { name: self.session_name() });
+    }
+
+    /// User messages available for forking, in session order.
+    pub fn get_user_messages_for_forking(&self) -> Vec<(String, String)> {
+        let entries = self.with_session_manager(|manager| manager.entries());
+        let mut result = Vec::new();
+        for entry in entries {
+            if entry.get("type").and_then(Value::as_str) != Some("message") {
+                continue;
+            }
+            let Some(message) = entry.get("message") else {
+                continue;
+            };
+            if message.get("role").and_then(Value::as_str) != Some("user") {
+                continue;
+            }
+            let text = message
+                .get("content")
+                .and_then(|content| serde_json::from_value::<Vec<maho_ai::types::ContentBlock>>(content.clone()).ok())
+                .map_or_else(String::new, |content| maho_ai::utils::text::content_text(&content, ""));
+            if !text.is_empty() {
+                let entry_id = entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+                result.push((entry_id, text));
+            }
+        }
+        result
+    }
+
+    /// Session statistics, aggregated over every session entry (including compacted-away history).
+    pub fn get_session_stats(&self) -> SessionStats {
+        let entries = self.with_session_manager(|manager| manager.entries());
+        let mut user_messages = 0;
+        let mut assistant_messages = 0;
+        let mut tool_results = 0;
+        let mut total_messages = 0;
+        let mut tool_calls = 0;
+        let mut totals = crate::usage_totals::create_usage_totals();
+        for entry in &entries {
+            let kind = entry.get("type").and_then(Value::as_str).unwrap_or_default();
+            if (kind == "branch_summary" || kind == "compaction")
+                && let Some(usage) = entry.get("usage").and_then(|usage| serde_json::from_value(usage.clone()).ok())
+            {
+                crate::usage_totals::add_usage_to_totals(&mut totals, &usage);
+            }
+            if kind != "message" {
+                continue;
+            }
+            total_messages += 1;
+            let Some(message) = entry.get("message") else {
+                continue;
+            };
+            match message.get("role").and_then(Value::as_str) {
+                Some("user") => user_messages += 1,
+                Some("toolResult") => {
+                    tool_results += 1;
+                    if let Some(usage) = message.get("usage").and_then(|usage| serde_json::from_value(usage.clone()).ok()) {
+                        crate::usage_totals::add_usage_to_totals(&mut totals, &usage);
+                    }
+                }
+                Some("assistant") => {
+                    assistant_messages += 1;
+                    if let Some(content) = message.get("content").and_then(Value::as_array) {
+                        tool_calls += content
+                            .iter()
+                            .filter(|block| block.get("type").and_then(Value::as_str) == Some("toolCall"))
+                            .count();
+                    }
+                    if let Some(usage) = message.get("usage").and_then(|usage| serde_json::from_value(usage.clone()).ok()) {
+                        crate::usage_totals::add_usage_to_totals(&mut totals, &usage);
+                    }
+                }
+                _ => {}
+            }
+        }
+        SessionStats {
+            session_file: self.session_file(),
+            session_id: self.session_id(),
+            user_messages,
+            assistant_messages,
+            tool_calls,
+            tool_results,
+            total_messages,
+            tokens: SessionStatsTokens {
+                input: totals.input as u64,
+                output: totals.output as u64,
+                cache_read: totals.cache_read as u64,
+                cache_write: totals.cache_write as u64,
+                total: (totals.input + totals.output + totals.cache_read + totals.cache_write) as u64,
+            },
+            cost: totals.cost,
+            context_usage: self.get_context_usage(),
+        }
+    }
+
+    /// Context usage for the live model, or `None` when the model has no context window.
+    pub fn get_context_usage(&self) -> Option<ContextUsage> {
+        let context_window = self.model().context_window;
+        if context_window == 0 {
+            return None;
+        }
+        let messages: Vec<Value> = self
+            .messages()
+            .iter()
+            .filter_map(|message| serde_json::to_value(message).ok())
+            .collect();
+        let messages = crate::messages::filter_context_excluded_messages(messages);
+        let branch = self.with_session_manager(|manager| manager.branch(None));
+        if let Some(latest) = crate::session_manager::get_latest_compaction_entry(&branch) {
+            let compaction_index = branch.iter().rposition(|entry| entry == &latest).unwrap_or(0);
+            let has_post_compaction_usage = branch[compaction_index + 1..].iter().rev().any(|entry| {
+                entry.get("type").and_then(Value::as_str) == Some("message")
+                    && entry.get("message").and_then(|message| message.get("role")).and_then(Value::as_str)
+                        == Some("assistant")
+                    && entry
+                        .get("message")
+                        .and_then(|message| serde_json::from_value::<maho_ai::types::AssistantMessage>(message.clone()).ok())
+                        .is_some_and(|assistant| {
+                            !matches!(
+                                assistant.stop_reason,
+                                maho_ai::types::StopReason::Aborted | maho_ai::types::StopReason::Error
+                            ) && crate::compaction::calculate_context_tokens(&assistant.usage) > 0
+                        })
+            });
+            if !has_post_compaction_usage {
+                let tokens: u64 = messages.iter().map(crate::compaction::estimate_tokens).sum();
+                return Some(ContextUsage {
+                    tokens: Some(tokens),
+                    context_window,
+                    percent: Some((tokens as f64 / context_window as f64) * 100.0),
+                });
+            }
+        }
+        let estimate = crate::compaction::estimate_context_tokens(&messages);
+        Some(ContextUsage {
+            tokens: Some(estimate.tokens),
+            context_window,
+            percent: Some((estimate.tokens as f64 / context_window as f64) * 100.0),
+        })
+    }
+
+    /// Export the current branch to a linear JSONL session file; returns the path written.
+    pub fn export_to_jsonl(&self, output_path: Option<&str>) -> Result<String, std::io::Error> {
+        let file_path = output_path.map_or_else(
+            || format!("session-{}.jsonl", chrono::Utc::now().to_rfc3339().replace([':', '.'], "-")),
+            str::to_owned,
+        );
+        if let Some(parent) = std::path::Path::new(&file_path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let header = serde_json::json!({
+            "type": "session",
+            "version": crate::session_manager::CURRENT_SESSION_VERSION,
+            "id": self.session_id(),
+            "timestamp": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "cwd": self.with_session_manager(|manager| manager.cwd().to_owned()),
+        });
+        let branch = self.with_session_manager(|manager| manager.branch(None));
+        let mut lines = vec![header.to_string()];
+        let mut previous: Option<String> = None;
+        for entry in branch {
+            let mut linear = entry.clone();
+            if let Some(object) = linear.as_object_mut() {
+                object.insert("parentId".to_owned(), previous.clone().map_or(Value::Null, Value::String));
+            }
+            lines.push(linear.to_string());
+            previous = entry.get("id").and_then(Value::as_str).map(str::to_owned);
+        }
+        std::fs::write(&file_path, format!("{}\n", lines.join("\n")))?;
+        Ok(file_path)
+    }
+
+    /// Text content of the last assistant message, for `/copy`.
+    pub fn get_last_assistant_text(&self) -> Option<String> {
+        let messages = self.messages();
+        let last = messages.iter().rev().find_map(|message| {
+            let assistant = message.as_assistant()?;
+            if assistant.stop_reason == maho_ai::types::StopReason::Aborted && assistant.content.is_empty() {
+                return None;
+            }
+            Some(assistant)
+        })?;
+        let mut text = String::new();
+        for content in &last.content {
+            if let maho_ai::types::ContentBlock::Text(block) = content {
+                text.push_str(&block.text);
+            }
+        }
+        let trimmed = text.trim();
+        if trimmed.is_empty() { None } else { Some(trimmed.to_owned()) }
+    }
+
+    /// Whether extensions registered handlers for an event kind.
+    pub async fn has_extension_handlers(&self, kind: maho_ext_api::EventKind) -> bool {
+        self.extension_runner
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|runner| runner.has_handlers(kind))
+    }
+
+    /// Resolve once the current run and all awaited event listeners have finished.
+    pub async fn wait_for_idle(&self) {
+        self.agent.wait_for_idle().await;
+    }
+
     fn emit_queue_update(&self) {
         let (steering, follow_up, mut ordered) = {
             let state = self.state();
@@ -1899,6 +2115,91 @@ mod tests {
         .expect("assistant");
         session.emit_server_fallback_aborted(&message);
         assert!(events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty());
+    }
+
+    #[test]
+    fn session_stats_aggregate_over_entries() {
+        let session = test_session();
+        session.append_session_entry(serde_json::json!({
+            "id": "u1", "type": "message", "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": { "role": "user", "content": [{ "type": "text", "text": "hi" }], "timestamp": 0 }
+        }));
+        session.append_session_entry(serde_json::json!({
+            "id": "a1", "type": "message", "timestamp": "2026-01-01T00:00:01.000Z",
+            "message": { "role": "assistant", "content": [{ "type": "text", "text": "hello" }], "api": "faux",
+                "provider": "faux", "model": "faux-1", "stopReason": "stop", "timestamp": 1,
+                "usage": { "input": 10, "output": 5, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 15,
+                    "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0.5 } } }
+        }));
+        let stats = session.get_session_stats();
+        assert_eq!(stats.user_messages, 1);
+        assert_eq!(stats.assistant_messages, 1);
+        assert_eq!(stats.total_messages, 2);
+        assert_eq!(stats.tokens.input, 10);
+        assert_eq!(stats.tokens.output, 5);
+        assert_eq!(stats.tokens.total, 15);
+        assert_eq!(stats.cost, 0.5);
+    }
+
+    #[test]
+    fn forking_lists_user_messages_in_order() {
+        let session = test_session();
+        session.append_session_entry(serde_json::json!({
+            "id": "u1", "type": "message", "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": { "role": "user", "content": [{ "type": "text", "text": "first" }], "timestamp": 0 }
+        }));
+        session.append_session_entry(serde_json::json!({
+            "id": "u2", "type": "message", "timestamp": "2026-01-01T00:00:01.000Z",
+            "message": { "role": "user", "content": [{ "type": "text", "text": "second" }], "timestamp": 1 }
+        }));
+        assert_eq!(
+            session.get_user_messages_for_forking(),
+            vec![("u1".to_owned(), "first".to_owned()), ("u2".to_owned(), "second".to_owned())]
+        );
+    }
+
+    #[test]
+    fn a_model_with_a_context_window_reports_usage() {
+        let session = test_session();
+        assert!(session.get_context_usage().is_none(), "the default agent model has no context window");
+        session.agent().set_model(test_model());
+        let usage = session.get_context_usage().expect("usage");
+        assert_eq!(usage.context_window, 128_000);
+        assert!(usage.tokens.is_some());
+    }
+
+    #[test]
+    fn exporting_linearizes_the_branch_parent_ids() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session = test_session();
+        session.append_session_entry(serde_json::json!({
+            "id": "u1", "type": "message", "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": { "role": "user", "content": [{ "type": "text", "text": "hi" }], "timestamp": 0 }
+        }));
+        let path = dir.path().join("out.jsonl");
+        let written = session.export_to_jsonl(Some(path.to_str().expect("path"))).expect("export");
+        let content = std::fs::read_to_string(&written).expect("read");
+        let mut lines = content.lines();
+        let header: Value = serde_json::from_str(lines.next().expect("header")).expect("header json");
+        assert_eq!(header.get("type").and_then(Value::as_str), Some("session"));
+        let first: Value = serde_json::from_str(lines.next().expect("entry")).expect("entry json");
+        assert!(first.get("parentId").expect("parentId").is_null());
+    }
+
+    #[test]
+    fn the_session_name_change_is_published() {
+        let session = test_session();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event.clone());
+        }));
+        session.set_session_name("lane 21");
+        assert_eq!(session.session_name(), Some("lane 21".to_owned()));
+        assert!(events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::SessionInfoChanged { name } if name.as_deref() == Some("lane 21")
+        )));
     }
 
     fn test_tool(name: &str) -> AgentTool {
