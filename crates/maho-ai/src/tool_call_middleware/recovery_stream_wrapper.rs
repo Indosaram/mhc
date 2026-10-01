@@ -306,8 +306,8 @@ fn synchronize_terminal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ContentBlock, StopReason, TextContent, Tool, Usage};
-    use serde_json::json;
+    use crate::types::{ContentBlock, StopReason, TextContent, Tool, ToolCall, Usage};
+    use serde_json::{json, Value};
 
     fn tool(name: &str) -> Tool {
         Tool { name: name.into(), description: "d".into(), parameters: json!({"type": "object"}), freeform: None, constrained_sampling: None }
@@ -402,5 +402,181 @@ mod tests {
         let Some(AssistantMessageEvent::Done { reason, message }) = done_event else { panic!("expected a done event") };
         assert_eq!(reason, DoneReason::Stop);
         assert!(!message.content.iter().any(|block| matches!(block, ContentBlock::ToolCall(_))));
+    }
+
+    // --- invoke-recovery-tool-alias.test.ts ---------------------------------
+    //
+    // Upstream gateways disguise tool names on the wire: ccapi-cf pascal-cases `todo` -> `Todo`, and
+    // CC-pool layers expose non-native tools as `mcp_<hash>-<Name>` (e.g. `mcp_49f0-Todo`). Reverse
+    // mapping only covers native tool_use blocks, so a leaked text invoke keeps the wire alias and
+    // the recovery resolver must still recognize the registered tool behind it.
+
+    fn schema_tool(name: &str, description: &str, parameters: Value) -> Tool {
+        Tool { name: name.into(), description: description.into(), parameters, freeform: None, constrained_sampling: None }
+    }
+
+    fn todo_tool() -> Tool {
+        schema_tool("todo", "Manage todos", json!({"type": "object", "required": ["op"], "properties": {"op": {"type": "string"}, "task": {"type": "string"}}}))
+    }
+
+    fn task_send_tool() -> Tool {
+        schema_tool("task_send", "Send to a task", json!({"type": "object", "required": ["to"], "properties": {"to": {"type": "string"}}}))
+    }
+
+    fn todo_twin_tool() -> Tool {
+        schema_tool("to_do", "Ambiguous twin of todo", json!({"type": "object", "required": ["op"], "properties": {"op": {"type": "string"}}}))
+    }
+
+    /// The TS fixtures' `TextStreamHarness`: a mutable producer for the real assistant event contract.
+    struct TextStreamHarness {
+        inner: AssistantMessageEventStream,
+        partial: AssistantMessage,
+        source_text: String,
+    }
+
+    impl TextStreamHarness {
+        fn new() -> Self {
+            // The TS harness pushes `text_start` with a `partial` object it mutates afterwards; the
+            // wrapper therefore observes a partial whose `content[0]` is already the text block.
+            // Rust events carry owned clones, so the block is present from the start.
+            Self {
+                inner: AssistantMessageEventStream::assistant(),
+                partial: message(vec![ContentBlock::Text(TextContent::default())], StopReason::Pending),
+                source_text: String::new(),
+            }
+        }
+
+        fn start(&mut self) {
+            self.inner.push(AssistantMessageEvent::Start { partial: self.partial.clone() });
+            self.inner.push(AssistantMessageEvent::TextStart { content_index: 0, partial: self.partial.clone() });
+        }
+
+        fn delta(&mut self, text: &str) {
+            self.source_text.push_str(text);
+            if let Some(ContentBlock::Text(block)) = self.partial.content.first_mut() {
+                block.text.clone_from(&self.source_text);
+            }
+            self.inner.push(AssistantMessageEvent::TextDelta { content_index: 0, delta: text.into(), partial: self.partial.clone() });
+        }
+
+        fn finish(&mut self) {
+            self.inner.push(AssistantMessageEvent::TextEnd { content_index: 0, content: self.source_text.clone(), partial: self.partial.clone() });
+            let final_message = message(
+                vec![ContentBlock::Text(TextContent { text: self.source_text.clone(), ..TextContent::default() })],
+                StopReason::Stop,
+            );
+            self.inner.push(AssistantMessageEvent::Done { reason: DoneReason::Stop, message: final_message });
+            self.inner.end(None);
+        }
+    }
+
+    /// Runs one leaked invoke through the recovery wrapper and returns its events and the terminal
+    /// message. The TS suite reads `await wrapped.result()`; the terminal `done` event carries the
+    /// same message (that is exactly what the stream's `extract_result` returns), so the assertions
+    /// are made against it instead of a second await that could park on an unsettled stream.
+    async fn run_leak(input: &str, tools: Vec<Tool>) -> (Vec<AssistantMessageEvent>, AssistantMessage) {
+        let mut producer = TextStreamHarness::new();
+        let wrapped = wrap_stream_with_invoke_recovery(producer.inner.clone(), tools, InvokeRecoveryOptions::default());
+        producer.start();
+        producer.delta(input);
+        producer.finish();
+        let mut events = Vec::new();
+        let mut result = None;
+        while let Ok(Some(event)) = wrapped.next().await {
+            let terminal = matches!(event, AssistantMessageEvent::Done { .. });
+            if let AssistantMessageEvent::Done { message, .. } = &event {
+                result = Some(message.clone());
+            }
+            events.push(event);
+            if terminal {
+                break;
+            }
+        }
+        (events, result.expect("a terminal done event"))
+    }
+
+    fn call_blocks(result: &AssistantMessage) -> Vec<&ToolCall> {
+        result.content.iter().filter_map(|block| match block { ContentBlock::ToolCall(call) => Some(call), _ => None }).collect()
+    }
+
+    fn text_content(result: &AssistantMessage) -> String {
+        result.content.iter().filter_map(|block| match block { ContentBlock::Text(text) => Some(text.text.as_str()), _ => None }).collect()
+    }
+
+    fn tool_events(events: &[AssistantMessageEvent]) -> Vec<&AssistantMessageEvent> {
+        events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    AssistantMessageEvent::ToolcallStart { .. } | AssistantMessageEvent::ToolcallDelta { .. } | AssistantMessageEvent::ToolcallEnd { .. }
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn recovers_the_exact_ccapi_clb_leak_mapping_mcp_49f0_todo_onto_todo() {
+        // Exact bytes captured from session 01a01381 event 1214 (ccapi-clb), including the stray
+        // `count` text prefix the model emitted before the invoke.
+        let leaked = "count\n<invoke name=\"mcp_49f0-Todo\">\n<parameter name=\"op\">done</parameter>\n<parameter name=\"task\">Review loop until mergeable</parameter>\n</invoke>";
+        let (events, result) = run_leak(leaked, vec![todo_tool()]).await;
+        let calls = call_blocks(&result);
+        assert_eq!(calls.len(), 1, "{}", text_content(&result));
+        assert_eq!(calls[0].name, "todo");
+        assert_eq!(calls[0].arguments.get("op"), Some(&json!("done")));
+        assert_eq!(calls[0].arguments.get("task"), Some(&json!("Review loop until mergeable")));
+        assert_eq!(tool_events(&events).len(), 3);
+        assert_eq!(text_content(&result), "count\n");
+        assert!(matches!(events.last(), Some(AssistantMessageEvent::Done { .. })));
+    }
+
+    #[tokio::test]
+    async fn resolves_hash_variant_prefixes_bare_pascal_aliases_and_cc_sdk_mcp_names() {
+        let cases: Vec<(&str, &str, Vec<Tool>)> = vec![
+            (r#"<invoke name="mcp_deadbeef-Todo"><parameter name="op">done</parameter></invoke>"#, "todo", vec![todo_tool()]),
+            (r#"<invoke name="Todo"><parameter name="op">done</parameter></invoke>"#, "todo", vec![todo_tool()]),
+            (r#"<invoke name="TaskSend"><parameter name="to">st_1</parameter></invoke>"#, "task_send", vec![task_send_tool()]),
+            (r#"<invoke name="mcp_49f0-TaskSend"><parameter name="to">st_1</parameter></invoke>"#, "task_send", vec![task_send_tool()]),
+            (r#"<invoke name="mcp__custom-tools__todo"><parameter name="op">done</parameter></invoke>"#, "todo", vec![todo_tool()]),
+        ];
+        for (input, expected, tools) in cases {
+            let (_, result) = run_leak(input, tools).await;
+            let calls = call_blocks(&result);
+            assert_eq!(calls.len(), 1, "alias case {input}");
+            assert_eq!(calls[0].name, expected, "alias case {input}");
+        }
+    }
+
+    #[tokio::test]
+    async fn keeps_hallucinated_and_ambiguous_names_as_literal_text() {
+        let (_, unknown) = run_leak(r#"<invoke name="mcp_49f0-DoesNotExist"><parameter name="op">done</parameter></invoke>"#, vec![todo_tool()]).await;
+        assert!(call_blocks(&unknown).is_empty());
+        assert!(text_content(&unknown).contains("mcp_49f0-DoesNotExist"));
+
+        let (_, ambiguous) = run_leak(
+            r#"<invoke name="mcp_1-TaskSend"><parameter name="to">st_1</parameter></invoke>"#,
+            vec![task_send_tool(), schema_tool("tasksend", "Send to a task", json!({"type": "object", "required": ["to"], "properties": {"to": {"type": "string"}}}))],
+        )
+        .await;
+        assert!(call_blocks(&ambiguous).is_empty());
+        assert!(text_content(&ambiguous).contains("name=\"mcp_1-TaskSend\""));
+
+        let (_, exact) = run_leak(r#"<invoke name="todo"><parameter name="op">done</parameter></invoke>"#, vec![todo_tool(), todo_twin_tool()]).await;
+        let exact_calls = call_blocks(&exact);
+        assert_eq!(exact_calls.len(), 1);
+        assert_eq!(exact_calls[0].name, "todo");
+    }
+
+    #[tokio::test]
+    async fn preserves_the_classic_exact_name_recovery_path() {
+        let (_, result) = run_leak(
+            r#"<invoke name="Bash"><parameter name="command">echo hi</parameter></invoke>"#,
+            vec![schema_tool("Bash", "Run a shell command", json!({"type": "object", "required": ["command"], "properties": {"command": {"type": "string"}}}))],
+        )
+        .await;
+        let calls = call_blocks(&result);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "Bash");
     }
 }

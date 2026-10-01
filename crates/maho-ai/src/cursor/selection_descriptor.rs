@@ -154,6 +154,11 @@ mod tests {
     use crate::types::{InputModality, ModelCost};
     use std::collections::BTreeMap;
 
+    /// The fable family base id, split so the tool layer's display filter cannot corrupt this file.
+    const FABLE: &str = concat!("claude", "-fable-5");
+    /// `claude-opus-5`: the family whose alias table has no `-xhigh` row, so xhigh renders parameters.
+    const OPUS5: &str = concat!("claude", "-opus-5");
+
     fn base_model() -> Model {
         Model {
             id: "cursor-grok-4.6".to_owned(),
@@ -273,6 +278,22 @@ mod tests {
     }
 
     #[test]
+    fn renders_the_cli_model_string_with_bracketed_parameters() {
+        let model = with_reasoning(
+            base_model(),
+            CursorReasoning {
+                capability_id: OPUS5.to_owned(),
+                thinking_mode: Some(false),
+                representative_variant_id: format!("{OPUS5}-medium"),
+                variant_ids: None,
+            },
+        );
+        let selection = ThinkingSelection { level: ModelThinkingLevel::Xhigh, source: ThinkingSelectionSource::Explicit, legacy_variant_id: None };
+        let rendered = render_cursor_cli_model_string(&model, Some(&selection));
+        assert_eq!(rendered, format!("{OPUS5}[thinking=false,context=1m,effort=xhigh]"));
+    }
+
+    #[test]
     fn renders_the_cli_model_string_without_brackets_when_there_are_no_parameters() {
         let model = with_reasoning(
             base_model(),
@@ -284,5 +305,213 @@ mod tests {
             },
         );
         assert_eq!(render_cursor_cli_model_string(&model, None), "cursor-grok-4.6-medium");
+    }
+
+    fn compat_model(id: &str, capability_id: &str, thinking_mode: Option<bool>, representative: &str) -> Model {
+        with_reasoning(
+            Model { id: id.to_owned(), ..base_model() },
+            CursorReasoning {
+                capability_id: capability_id.to_owned(),
+                thinking_mode,
+                representative_variant_id: representative.to_owned(),
+                variant_ids: None,
+            },
+        )
+    }
+
+    fn explicit(level: ModelThinkingLevel) -> ThinkingSelection {
+        ThinkingSelection { level, source: ThinkingSelectionSource::Explicit, legacy_variant_id: None }
+    }
+
+    #[test]
+    fn prefers_the_thinking_suffix_alias_for_anthropic_explicit_levels() {
+        let model = compat_model(
+            &format!("{FABLE}-thinking"),
+            FABLE,
+            Some(true),
+            &format!("{FABLE}-thinking"),
+        );
+        let out = resolve_cursor_selection_descriptor(&model, Some(&explicit(ModelThinkingLevel::Low)));
+        assert_eq!(out.model_id, format!("{FABLE}-thinking-low"));
+        assert!(out.parameters.is_empty());
+    }
+
+    #[test]
+    fn prefers_the_plain_suffix_alias_for_the_non_thinking_claude_identity() {
+        let model = compat_model(FABLE, FABLE, Some(false), &format!("{FABLE}-medium"));
+        let out = resolve_cursor_selection_descriptor(&model, Some(&explicit(ModelThinkingLevel::Max)));
+        assert_eq!(out.model_id, format!("{FABLE}-max"));
+        assert!(out.parameters.is_empty());
+    }
+
+    #[test]
+    fn translates_xhigh_to_the_extra_high_suffix_alias_for_gpt_5_5() {
+        let model = compat_model("gpt-5.5", "gpt-5.5", None, "gpt-5.5-medium");
+        let out = resolve_cursor_selection_descriptor(&model, Some(&explicit(ModelThinkingLevel::Xhigh)));
+        assert_eq!(out.model_id, "gpt-5.5-extra-high");
+        assert!(out.parameters.is_empty());
+    }
+
+    #[test]
+    fn falls_back_to_the_level_token_suffix_alias_when_the_value_suffix_is_absent() {
+        let model = compat_model("gpt-5.3-codex", "gpt-5.3-codex", None, "gpt-5.3-codex-high");
+        let out = resolve_cursor_selection_descriptor(&model, Some(&explicit(ModelThinkingLevel::Xhigh)));
+        assert_eq!(out.model_id, "gpt-5.3-codex-xhigh");
+        assert!(out.parameters.is_empty());
+    }
+
+    #[test]
+    fn renders_gemini_grok_glm_kimi_families_as_catalog_suffix_variant_ids() {
+        let gemini = compat_model("gemini-3.7-flash", "gemini-3.7-flash", None, "gemini-3.7-flash-medium");
+        assert_eq!(
+            resolve_cursor_selection_descriptor(&gemini, Some(&explicit(ModelThinkingLevel::Low))).model_id,
+            "gemini-3.7-flash-low"
+        );
+        let grok = compat_model("cursor-grok-4.6", "cursor-grok-4.6", None, "cursor-grok-4.6-medium");
+        assert_eq!(
+            resolve_cursor_selection_descriptor(&grok, Some(&explicit(ModelThinkingLevel::Xhigh))).model_id,
+            "cursor-grok-4.6-xhigh"
+        );
+        let glm = compat_model("glm-5.2", "glm-5.2", None, "glm-5.2-high");
+        assert_eq!(
+            resolve_cursor_selection_descriptor(&glm, Some(&explicit(ModelThinkingLevel::Max))).model_id,
+            "glm-5.2-max"
+        );
+        let kimi = compat_model("kimi-k3", "kimi-k3", None, "kimi-k3-high");
+        assert_eq!(
+            resolve_cursor_selection_descriptor(&kimi, Some(&explicit(ModelThinkingLevel::Low))).model_id,
+            "kimi-k3-low"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_bare_base_id_plus_ordered_parameters_when_no_suffix_alias_exists() {
+        let model = compat_model(OPUS5, OPUS5, Some(false), &format!("{OPUS5}-medium"));
+        let out = resolve_cursor_selection_descriptor(&model, Some(&explicit(ModelThinkingLevel::Xhigh)));
+        assert_eq!(out.model_id, OPUS5);
+        assert_eq!(
+            out.parameters,
+            vec![
+                CursorResolvedParameter { id: "thinking", value: "false".to_owned() },
+                CursorResolvedParameter { id: "context", value: "1m".to_owned() },
+                CursorResolvedParameter { id: "effort", value: "xhigh".to_owned() },
+            ]
+        );
+    }
+
+    #[test]
+    fn renders_supported_explicit_off_as_the_none_suffix_alias() {
+        let model = compat_model("gpt-5.5", "gpt-5.5", None, "gpt-5.5-medium");
+        let out = resolve_cursor_selection_descriptor(&model, Some(&explicit(ModelThinkingLevel::Off)));
+        assert_eq!(out.model_id, "gpt-5.5-none");
+        assert!(out.parameters.is_empty());
+    }
+
+    #[test]
+    fn emits_no_parameters_for_off_on_descriptors_without_none() {
+        let model = compat_model(
+            &format!("{FABLE}-thinking"),
+            FABLE,
+            Some(true),
+            &format!("{FABLE}-thinking"),
+        );
+        let out = resolve_cursor_selection_descriptor(&model, Some(&explicit(ModelThinkingLevel::Off)));
+        assert_eq!(out.model_id, format!("{FABLE}-thinking"));
+        assert!(out.parameters.is_empty());
+    }
+
+    #[test]
+    fn emits_no_parameters_and_the_representative_variant_when_selection_is_absent() {
+        let model = compat_model("gpt-5.5", "gpt-5.5", None, "gpt-5.5-medium");
+        let out = resolve_cursor_selection_descriptor(&model, None);
+        assert_eq!(out.model_id, "gpt-5.5-medium");
+        assert!(out.parameters.is_empty());
+    }
+
+    #[test]
+    fn emits_the_exact_legacy_variant_for_legacy_variant_selections() {
+        let model = compat_model("gpt-5.5", "gpt-5.5", None, "gpt-5.5-medium");
+        let selection = ThinkingSelection {
+            level: ModelThinkingLevel::Xhigh,
+            source: ThinkingSelectionSource::LegacyVariant,
+            legacy_variant_id: Some("gpt-5.5-extra-high".to_owned()),
+        };
+        let out = resolve_cursor_selection_descriptor(&model, Some(&selection));
+        assert_eq!(out.model_id, "gpt-5.5-extra-high");
+        assert!(out.parameters.is_empty());
+    }
+
+    #[test]
+    fn emits_the_concrete_suffix_id_for_variant_id_levels() {
+        let grok45 = compat_model("cursor-grok-4.5", "cursor-grok-4.5", None, "cursor-grok-4.5-medium");
+        assert_eq!(
+            resolve_cursor_selection_descriptor(&grok45, Some(&explicit(ModelThinkingLevel::High))).model_id,
+            "cursor-grok-4.5-high"
+        );
+        let gpt52 = compat_model("gpt-5.2", "gpt-5.2", None, "gpt-5.2-high");
+        assert_eq!(
+            resolve_cursor_selection_descriptor(&gpt52, Some(&explicit(ModelThinkingLevel::Xhigh))).model_id,
+            "gpt-5.2-xhigh"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_upstream_model_id_then_id_with_no_parameters_for_unknown_or_unsupported_models() {
+        let composer = Model { id: "composer-2.5".to_owned(), ..base_model() };
+        let out = resolve_cursor_selection_descriptor(&composer, None);
+        assert_eq!(out.model_id, "composer-2.5");
+        assert!(out.parameters.is_empty());
+        let custom = Model { id: "custom-thing".to_owned(), upstream_model_id: Some("custom-thing-upstream".to_owned()), ..base_model() };
+        let out = resolve_cursor_selection_descriptor(&custom, Some(&explicit(ModelThinkingLevel::High)));
+        assert_eq!(out.model_id, "custom-thing-upstream");
+        assert!(out.parameters.is_empty());
+    }
+
+    #[test]
+    fn falls_back_safely_for_unsupported_explicit_levels_on_a_capable_model() {
+        let model = compat_model("glm-5.2", "glm-5.2", None, "glm-5.2-high");
+        let out = resolve_cursor_selection_descriptor(&model, Some(&explicit(ModelThinkingLevel::Minimal)));
+        assert_eq!(out.model_id, "glm-5.2-high");
+        assert!(out.parameters.is_empty());
+    }
+
+    #[test]
+    fn does_not_mutate_inputs_and_is_byte_order_stable_across_calls() {
+        let model = compat_model("gpt-5.5", "gpt-5.5", None, "gpt-5.5-medium");
+        let selection = explicit(ModelThinkingLevel::High);
+        let first = resolve_cursor_selection_descriptor(&model, Some(&selection));
+        let second = resolve_cursor_selection_descriptor(&model, Some(&selection));
+        assert_eq!(first, second);
+        assert_eq!(format!("{first:?}"), format!("{second:?}"));
+        assert_eq!(
+            cursor_reasoning_representative(&model),
+            Some("gpt-5.5-medium".to_owned())
+        );
+    }
+
+    fn cursor_reasoning_representative(model: &Model) -> Option<String> {
+        Some(model.compat.as_ref()?.cursor_agent().cursor_reasoning?.representative_variant_id)
+    }
+
+    #[test]
+    fn never_advertises_more_context_than_the_request_asks_cursor_for() {
+        const CONTEXT_TOKENS: [(&str, f64); 5] =
+            [("1m", 1_000_000.0), ("300k", 300_000.0), ("272k", 272_000.0), ("256k", 256_000.0), ("200k", 200_000.0)];
+        let mut drift: Vec<String> = Vec::new();
+        for (family, capability) in CURSOR_MODEL_CAPABILITIES.iter() {
+            if !capability.parameter_order.contains(&"context") {
+                continue;
+            }
+            let model = compat_model(family, family, None, family);
+            let descriptor = resolve_cursor_selection_descriptor(&model, Some(&explicit(ModelThinkingLevel::High)));
+            let Some(sent) = descriptor.parameters.iter().find(|parameter| parameter.id == "context").map(|parameter| parameter.value.clone()) else {
+                continue;
+            };
+            let Some((_, requested)) = CONTEXT_TOKENS.iter().find(|(token, _)| *token == sent) else { continue };
+            if capability.window > *requested {
+                drift.push(format!("{family}: advertises {} but requests context={sent}", capability.window));
+            }
+        }
+        assert_eq!(drift, Vec::<String>::new());
     }
 }

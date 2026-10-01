@@ -1,0 +1,37 @@
+{
+	"name": "ai-replay-openai-responses-tool-calls",
+	"kind": "ai-replay",
+	"note": "Two streamed function calls. Every frame's shape is copied from senpi's own responses fixtures: response.created/output_item.added/function_call_arguments.delta/done/output_item.done/response.completed from test/openai-responses-partial-json-cleanup.test.ts and test/openai-responses-namespace.test.ts, with the terminal usage block from test/openai-responses-terminal-event.test.ts. The golden is generated from pinned senpi, never hand-written.",
+	"api": "openai-responses",
+	"model": {
+		"id": "gpt-5",
+		"name": "gpt-5",
+		"provider": "test-replay",
+		"reasoning": false,
+		"input": ["text"],
+		"cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+		"contextWindow": 200000,
+		"maxTokens": 8192
+	},
+	"context": {
+		"messages": [{ "role": "user", "content": "Look both up", "timestamp": 0 }]
+	},
+	"options": { "apiKey": "test", "maxRetries": 0 },
+	"fixture": {
+		"headers": { "content-type": "text/event-stream" },
+		"events": [
+			{ "data": "{\"type\":\"response.created\",\"response\":{\"id\":\"resp_tools\",\"status\":\"in_progress\"}}" },
+			{ "data": "{\"type\":\"response.output_item.added\",\"sequence_number\":0,\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_lookup\",\"call_id\":\"call_lookup\",\"name\":\"lookup\",\"arguments\":\"\"}}" },
+			{ "data": "{\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":1,\"output_index\":0,\"delta\":\"{\\\"value\\\":\"}" },
+			{ "data": "{\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":2,\"output_index\":0,\"delta\":\"\\\"hello\\\"}\"}" },
+			{ "data": "{\"type\":\"response.function_call_arguments.done\",\"sequence_number\":3,\"output_index\":0,\"arguments\":\"{\\\"value\\\":\\\"hello\\\"}\"}" },
+			{ "data": "{\"type\":\"response.output_item.done\",\"sequence_number\":4,\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_lookup\",\"call_id\":\"call_lookup\",\"name\":\"lookup\",\"arguments\":\"{\\\"value\\\":\\\"hello\\\"}\"}}" },
+			{ "data": "{\"type\":\"response.output_item.added\",\"sequence_number\":5,\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc_search\",\"call_id\":\"call_search\",\"name\":\"search\",\"arguments\":\"\"}}" },
+			{ "data": "{\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":6,\"output_index\":1,\"delta\":\"{\\\"q\\\":\\\"x\\\"}\"}" },
+			{ "data": "{\"type\":\"response.function_call_arguments.done\",\"sequence_number\":7,\"output_index\":1,\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\"}" },
+			{ "data": "{\"type\":\"response.output_item.done\",\"sequence_number\":8,\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc_search\",\"call_id\":\"call_search\",\"name\":\"search\",\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\"}}" },
+			{ "data": "{\"type\":\"response.completed\",\"sequence_number\":9,\"response\":{\"id\":\"resp_tools\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"id\":\"fc_lookup\",\"call_id\":\"call_lookup\",\"name\":\"lookup\",\"arguments\":\"{\\\"value\\\":\\\"hello\\\"}\"},{\"type\":\"function_call\",\"id\":\"fc_search\",\"call_id\":\"call_search\",\"name\":\"search\",\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\"}],\"usage\":{\"input_tokens\":12,\"output_tokens\":7,\"total_tokens\":19,\"input_tokens_details\":{\"cached_tokens\":2},\"output_tokens_details\":{\"reasoning_tokens\":0}}}}" },
+			{ "data": "[DONE]" }
+		]
+	}
+}

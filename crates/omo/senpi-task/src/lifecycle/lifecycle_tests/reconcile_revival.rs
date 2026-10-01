@@ -5,7 +5,8 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier, Mutex, PoisonError};
 
 use serde_json::{Value, json};
 
@@ -433,6 +434,76 @@ fn suspended_child_of_another_session_is_untouched() {
     assert_eq!(temp.store.load(&other.task_id).expect("load"), Some(other));
 }
 
+/// `Promise.all([first.reconcile(), second.reconcile()])` in the TS test: both `list()` reads run
+/// synchronously before either manager reaches its first `await` (the lease acquisition), so both
+/// see the suspended child. Rust `reconcile` is synchronous end to end, so the two harnesses
+/// rendezvous after their second `list()` (the scoped-revival candidate scan) to reproduce that
+/// ordering instead of racing on which manager finishes first.
+struct RendezvousStore {
+    inner: Arc<TaskRecordStore>,
+    gate: Arc<Barrier>,
+    lists: AtomicUsize,
+}
+
+impl RendezvousStore {
+    fn new(inner: &Arc<TaskRecordStore>, gate: &Arc<Barrier>) -> Self {
+        Self {
+            inner: Arc::clone(inner),
+            gate: Arc::clone(gate),
+            lists: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl LifecycleStore for RendezvousStore {
+    fn state_dir(&self) -> &Path {
+        self.inner.state_dir()
+    }
+    fn load(&self, task_id: &str) -> Result<Option<TaskRecord>, StoreError> {
+        self.inner.load(task_id)
+    }
+    fn list(&self) -> Result<ListTaskRecordsResult, StoreError> {
+        let result = self.inner.list();
+        if self.lists.fetch_add(1, Ordering::SeqCst) + 1 == 2 {
+            self.gate.wait();
+        }
+        result
+    }
+    fn mutate(
+        &self,
+        task_id: &str,
+        mutation: &mut RecordMutation<'_>,
+    ) -> Result<Option<TaskRecord>, StoreError> {
+        LifecycleStore::mutate(self.inner.as_ref(), task_id, mutation)
+    }
+    fn replace(&self, record: &TaskRecord) -> Result<(), StoreError> {
+        self.inner.replace(record)
+    }
+    fn transition(
+        &self,
+        task_id: &str,
+        transition: &TaskTransition,
+    ) -> Result<TaskTransitionResult, StoreError> {
+        self.inner.transition(task_id, transition)
+    }
+    fn append_event(&self, task_id: &str, event: &PersistedTaskEvent) -> Result<(), StoreError> {
+        LifecycleStore::append_event(self.inner.as_ref(), task_id, event)
+    }
+    fn tombstone_if_expired(
+        &self,
+        task_id: &str,
+        should_retain: &mut RetainPredicate<'_>,
+    ) -> Result<TombstoneResult, StoreError> {
+        LifecycleStore::tombstone_if_expired(self.inner.as_ref(), task_id, should_retain)
+    }
+    fn complete_expunge(&self, task_id: &str) -> Result<(), StoreError> {
+        self.inner.complete_expunge(task_id)
+    }
+    fn list_expunging(&self) -> Result<Vec<String>, StoreError> {
+        self.inner.list_expunging()
+    }
+}
+
 #[test]
 fn two_managers_racing_one_suspended_child_claim_once() {
     let temp = temp_store();
@@ -447,17 +518,25 @@ fn two_managers_racing_one_suspended_child_claim_once() {
         ),
     );
     persist_session(&temp.store, &record.task_id);
-    let first = harness(&temp, HarnessOptions::default());
-    let second = harness(&temp, HarnessOptions::default());
-    let barrier = std::sync::Barrier::new(2);
+    let gate = Arc::new(Barrier::new(2));
+    let first = harness(
+        &temp,
+        HarnessOptions {
+            store: Some(Arc::new(RendezvousStore::new(&temp.store, &gate))),
+            ..HarnessOptions::default()
+        },
+    );
+    let second = harness(
+        &temp,
+        HarnessOptions {
+            store: Some(Arc::new(RendezvousStore::new(&temp.store, &gate))),
+            ..HarnessOptions::default()
+        },
+    );
     let (a, b) = std::thread::scope(|scope| {
-        let (barrier, first, second) = (&barrier, &first, &second);
-        let run = move |h: &Harness| {
-            barrier.wait();
-            h.reconcile()
-        };
-        let a = scope.spawn(move || run(first));
-        let b = scope.spawn(move || run(second));
+        let (first, second) = (&first, &second);
+        let a = scope.spawn(move || first.reconcile());
+        let b = scope.spawn(move || second.reconcile());
         (a.join().expect("first"), b.join().expect("second"))
     });
     assert_eq!(first.launches().len() + second.launches().len(), 1);

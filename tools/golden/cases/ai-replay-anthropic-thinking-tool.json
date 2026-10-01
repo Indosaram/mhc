@@ -1,0 +1,46 @@
+{
+	"name": "ai-replay-anthropic-thinking-tool",
+	"kind": "ai-replay",
+	"api": "anthropic-messages",
+	"model": {
+		"id": "",
+		"name": "",
+		"provider": "test-replay",
+		"reasoning": true,
+		"input": ["text"],
+		"cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+		"contextWindow": 200000,
+		"maxTokens": 8192
+	},
+	"context": {
+		"messages": [{ "role": "user", "content": "What is the weather in Paris?", "timestamp": 0 }],
+		"tools": [
+			{
+				"name": "get_weather",
+				"description": "Get the current weather for a city",
+				"parameters": {
+					"type": "object",
+					"properties": { "city": { "type": "string" } },
+					"required": ["city"]
+				}
+			}
+		]
+	},
+	"options": { "apiKey": "test", "maxRetries": 0 },
+	"fixture": {
+		"headers": { "content-type": "text/event-stream" },
+		"events": [
+			{ "event": "message_start", "data": "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_replay_thinking\",\"model\":\"\",\"usage\":{\"input_tokens\":21,\"output_tokens\":0,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}" },
+			{ "event": "content_block_start", "data": "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}" },
+			{ "event": "content_block_delta", "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"The user asks about the weather.\"}}" },
+			{ "event": "content_block_delta", "data": "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_replay_1\"}}" },
+			{ "event": "content_block_stop", "data": "{\"type\":\"content_block_stop\",\"index\":0}" },
+			{ "event": "content_block_start", "data": "{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_replay_1\",\"name\":\"get_weather\",\"input\":{}}}" },
+			{ "event": "content_block_delta", "data": "{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\"}}" },
+			{ "event": "content_block_delta", "data": "{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"Paris\\\"}\"}}" },
+			{ "event": "content_block_stop", "data": "{\"type\":\"content_block_stop\",\"index\":1}" },
+			{ "event": "message_delta", "data": "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"input_tokens\":21,\"output_tokens\":14,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}" },
+			{ "event": "message_stop", "data": "{\"type\":\"message_stop\"}" }
+		]
+	}
+}

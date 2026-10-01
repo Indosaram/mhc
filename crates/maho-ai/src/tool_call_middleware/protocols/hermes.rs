@@ -99,17 +99,17 @@ mod tests {
         ]
     }
 
-    fn error_collector() -> (Arc<Mutex<Vec<String>>>, impl Fn(&str, Option<&HashMap<String, Value>>) + Send + Sync + 'static) {
+    fn error_collector() -> (Arc<Mutex<Vec<String>>>, crate::tool_call_middleware::types::ParserErrorHandler) {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
-        let handler = move |message: &str, _metadata: Option<&HashMap<String, Value>>| {
+        let handler: crate::tool_call_middleware::types::ParserErrorHandler = Arc::new(move |message: &str, _metadata: Option<&HashMap<String, Value>>| {
             sink.lock().expect("error sink").push(message.to_string());
-        };
+        });
         (seen, handler)
     }
 
-    fn options_with(emit_raw: bool, handler: impl Fn(&str, Option<&HashMap<String, Value>>) + Send + Sync + 'static) -> ParserOptions {
-        ParserOptions { emit_raw_tool_call_text_on_error: emit_raw, on_error: Some(Arc::new(handler)) }
+    fn options_with(emit_raw: bool, handler: crate::tool_call_middleware::types::ParserErrorHandler) -> ParserOptions {
+        ParserOptions { emit_raw_tool_call_text_on_error: emit_raw, on_error: Some(handler) }
     }
 
     fn text_of(events: &[StreamParserEvent]) -> String {

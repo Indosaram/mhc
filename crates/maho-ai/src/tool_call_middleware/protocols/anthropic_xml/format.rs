@@ -132,7 +132,7 @@ mod tests {
             freeform: None,
             constrained_sampling: None,
         };
-        let prompt = anthropic_xml_format_tools_system_prompt(&[tool.clone()]);
+        let prompt = anthropic_xml_format_tools_system_prompt(std::slice::from_ref(&tool));
         let start = prompt.rfind("<tools>").expect("tools open") + "<tools>".len();
         let end = prompt.rfind("</tools>").expect("tools close");
         let parsed: Value = serde_json::from_str(&prompt[start..end]).expect("tool json");

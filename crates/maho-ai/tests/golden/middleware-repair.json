@@ -1,0 +1,484 @@
+{
+  "generator": "tools/golden/middleware-repair.mjs",
+  "senpiPin": "/Users/indo/code/senpi",
+  "repairUnicodeEscapes": [
+    {
+      "input": "{\"text\":\"bad\\uZZZZescape\"}",
+      "repaired": "{\"text\":\"bad\\\\uZZZZescape\"}",
+      "parsed": {
+        "ok": true,
+        "value": {
+          "text": "bad\\uZZZZescape"
+        }
+      }
+    },
+    {
+      "input": "{\"text\":\"cut\\u12\"}",
+      "repaired": "{\"text\":\"cut\\\\u12\"}",
+      "parsed": {
+        "ok": true,
+        "value": {
+          "text": "cut\\u12"
+        }
+      }
+    },
+    {
+      "input": "{\"text\":\"ok\\u0041\"}",
+      "repaired": "{\"text\":\"ok\\u0041\"}",
+      "parsed": {
+        "ok": true,
+        "value": {
+          "text": "okA"
+        }
+      }
+    },
+    {
+      "input": "{\"path\":\"C:\\\\users\"}",
+      "repaired": "{\"path\":\"C:\\\\users\"}",
+      "parsed": {
+        "ok": true,
+        "value": {
+          "path": "C:\\users"
+        }
+      }
+    }
+  ],
+  "antmlParse": [
+    {
+      "label": "repairs-a-broken-unicode-escape-inside-json-arguments",
+      "text": "<invoke name=\"config_tool\"><parameter name=\"options\">{\"text\":\"bad\\uZZZZescape\"}</parameter></invoke>",
+      "tools": [
+        {
+          "name": "config_tool",
+          "description": "Writes a nested options object",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "options"
+            ],
+            "properties": {
+              "options": {
+                "type": "object",
+                "required": [
+                  "text"
+                ],
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "calls": [
+        {
+          "name": "config_tool",
+          "arguments": {
+            "options": {
+              "text": "bad\\uZZZZescape"
+            }
+          }
+        }
+      ],
+      "errors": []
+    },
+    {
+      "label": "repairs-the-pi-edits-invented-trailing-keys",
+      "text": "<invoke name=\"Edit\"><parameter name=\"file_path\">some/file.py</parameter><parameter name=\"edits\">[{\"oldText\":\"a\",\"newText\":\"b\",\"requireUnique\":true}]</parameter></invoke>",
+      "tools": [
+        {
+          "name": "Edit",
+          "description": "Edit a file",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "file_path",
+              "edits"
+            ],
+            "properties": {
+              "file_path": {
+                "type": "string"
+              },
+              "edits": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "oldText",
+                    "newText"
+                  ],
+                  "properties": {
+                    "oldText": {
+                      "type": "string"
+                    },
+                    "newText": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "calls": [
+        {
+          "name": "Edit",
+          "arguments": {
+            "file_path": "some/file.py",
+            "edits": [
+              {
+                "oldText": "a",
+                "newText": "b"
+              }
+            ]
+          }
+        }
+      ],
+      "errors": []
+    },
+    {
+      "label": "repairs-a-broken-unicode-escape-in-a-plain-string",
+      "text": "<invoke name=\"Bash\"><parameter name=\"command\">echo \\uZZZZ</parameter></invoke>",
+      "tools": [
+        {
+          "name": "Bash",
+          "description": "Run a shell command",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "command"
+            ],
+            "properties": {
+              "command": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "calls": [
+        {
+          "name": "Bash",
+          "arguments": {
+            "command": "echo \\uZZZZ"
+          }
+        }
+      ],
+      "errors": []
+    },
+    {
+      "label": "repairs-lone-surrogates-inside-json-arguments",
+      "text": "<invoke name=\"config_tool\"><parameter name=\"options\">{\"text\":\"a\\uD800b\"}</parameter></invoke>",
+      "tools": [
+        {
+          "name": "config_tool",
+          "description": "Writes a nested options object",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "options"
+            ],
+            "properties": {
+              "options": {
+                "type": "object",
+                "required": [
+                  "text"
+                ],
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "calls": [
+        {
+          "name": "config_tool",
+          "arguments": {
+            "options": {
+              "text": "a�b"
+            }
+          }
+        }
+      ],
+      "errors": []
+    },
+    {
+      "label": "coerces-tolerant-scalar-spellings",
+      "text": "<invoke name=\"count_tool\"><parameter name=\"enabled\"> TRUE </parameter><parameter name=\"count\"> 1.25 </parameter><parameter name=\"index\">\"2\"</parameter></invoke>",
+      "tools": [
+        {
+          "name": "count_tool",
+          "description": "Coerces tolerant scalar spellings",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "enabled",
+              "count",
+              "index"
+            ],
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "count": {
+                "type": "number"
+              },
+              "index": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      ],
+      "calls": [
+        {
+          "name": "count_tool",
+          "arguments": {
+            "enabled": true,
+            "count": 1.25,
+            "index": 2
+          }
+        }
+      ],
+      "errors": []
+    },
+    {
+      "label": "keeps-the-last-value-when-a-parameter-repeats",
+      "text": "<invoke name=\"get_weather\"><parameter name=\"city\">first</parameter><parameter name=\"city\">second</parameter></invoke>",
+      "tools": [
+        {
+          "name": "get_weather",
+          "description": "weather",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "city"
+            ],
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "calls": [
+        {
+          "name": "get_weather",
+          "arguments": {
+            "city": "second"
+          }
+        }
+      ],
+      "errors": []
+    },
+    {
+      "label": "rejects-unparseable-json-arguments",
+      "text": "<invoke name=\"config_tool\"><parameter name=\"options\">{bad</parameter></invoke>",
+      "tools": [
+        {
+          "name": "config_tool",
+          "description": "Writes a nested options object",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "options"
+            ],
+            "properties": {
+              "options": {
+                "type": "object",
+                "required": [
+                  "text"
+                ],
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "calls": [],
+      "errors": [
+        {
+          "message": "Could not process antml tool call, keeping original text.",
+          "metadata": {
+            "toolCall": "<invoke name=\"config_tool\"><parameter name=\"options\">{bad</parameter></invoke>"
+          }
+        }
+      ]
+    },
+    {
+      "label": "rejects-a-missing-required-parameter",
+      "text": "<invoke name=\"get_weather\"><parameter name=\"country\">KR</parameter></invoke>",
+      "tools": [
+        {
+          "name": "get_weather",
+          "description": "weather",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "city"
+            ],
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "calls": [],
+      "errors": [
+        {
+          "message": "Could not process antml tool call, keeping original text.",
+          "metadata": {
+            "toolCall": "<invoke name=\"get_weather\"><parameter name=\"country\">KR</parameter></invoke>"
+          }
+        }
+      ]
+    },
+    {
+      "label": "rejects-an-unknown-tool",
+      "text": "<invoke name=\"Missing\"><parameter name=\"command\">x</parameter></invoke>",
+      "tools": [
+        {
+          "name": "Bash",
+          "description": "Run a shell command",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "command"
+            ],
+            "properties": {
+              "command": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "calls": [],
+      "errors": []
+    }
+  ],
+  "anthropicXmlParse": [
+    {
+      "label": "coerces-an-integral-number-parameter",
+      "text": "<invoke name=\"count_tool\"><parameter name=\"enabled\">true</parameter><parameter name=\"count\">3</parameter><parameter name=\"index\">-2</parameter></invoke>",
+      "tools": [
+        {
+          "name": "count_tool",
+          "description": "Coerces tolerant scalar spellings",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "enabled",
+              "count",
+              "index"
+            ],
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "count": {
+                "type": "number"
+              },
+              "index": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      ],
+      "calls": [
+        {
+          "name": "count_tool",
+          "arguments": {
+            "enabled": true,
+            "count": 3,
+            "index": -2
+          }
+        }
+      ]
+    },
+    {
+      "label": "keeps-a-fractional-number-parameter",
+      "text": "<invoke name=\"count_tool\"><parameter name=\"count\">1.25</parameter></invoke>",
+      "tools": [
+        {
+          "name": "count_tool",
+          "description": "Coerces tolerant scalar spellings",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "enabled",
+              "count",
+              "index"
+            ],
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "count": {
+                "type": "number"
+              },
+              "index": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      ],
+      "calls": []
+    }
+  ],
+  "kimiXtmlParse": [
+    {
+      "label": "coerces-an-integral-number-argument",
+      "text": "<|open|>tools<|sep|><|open|>call tool=\"count_tool\" index=\"1\"<|sep|><|open|>argument key=\"count\" type=\"number\"<|sep|>3<|close|>argument<|sep|><|close|>call<|sep|><|close|>tools<|sep|>",
+      "tools": [
+        {
+          "name": "count_tool",
+          "description": "Coerces tolerant scalar spellings",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "enabled",
+              "count",
+              "index"
+            ],
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "count": {
+                "type": "number"
+              },
+              "index": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      ],
+      "calls": [
+        {
+          "name": "count_tool",
+          "arguments": {
+            "count": 3
+          }
+        }
+      ]
+    }
+  ]
+}

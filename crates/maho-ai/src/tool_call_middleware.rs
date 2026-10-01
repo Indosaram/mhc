@@ -269,3 +269,102 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod repair_golden_tests {
+    //! Replays the senpi-generated `tests/golden/middleware-repair.json` against this port: the
+    //! malformed-tool-call-JSON repair path must produce the identical result senpi does.
+    use crate::tool_call_middleware::protocols::antml::parse::parse_antml_generated_text;
+    use crate::tool_call_middleware::protocols::antml::repair::repair_unicode_escapes;
+    use crate::tool_call_middleware::types::ParserOptions;
+    use crate::types::Tool;
+    use serde_json::{json, Value};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    fn golden() -> Value {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/middleware-repair.json");
+        let raw = std::fs::read_to_string(path).expect("middleware-repair golden is present");
+        serde_json::from_str(&raw).expect("middleware-repair golden is valid JSON")
+    }
+
+    fn tool_from(value: &Value) -> Tool {
+        Tool {
+            name: value["name"].as_str().expect("tool name").to_string(),
+            description: value["description"].as_str().expect("tool description").to_string(),
+            parameters: value["parameters"].clone(),
+            freeform: None,
+            constrained_sampling: None,
+        }
+    }
+
+    #[test]
+    fn repairs_broken_unicode_escapes_like_senpi() {
+        let golden = golden();
+        let cases = golden["repairUnicodeEscapes"].as_array().expect("repairUnicodeEscapes cases");
+        assert!(!cases.is_empty(), "the golden carries repair cases");
+        for case in cases {
+            let input = case["input"].as_str().expect("input");
+            let repaired = repair_unicode_escapes(input);
+            assert_eq!(repaired, case["repaired"].as_str().expect("repaired"), "{input}");
+            if case["parsed"]["ok"].as_bool() == Some(true) {
+                let parsed: Value = serde_json::from_str(&repaired).expect("repaired JSON parses");
+                assert_eq!(parsed, case["parsed"]["value"], "{input}");
+            } else {
+                assert!(serde_json::from_str::<Value>(&repaired).is_err(), "{input}");
+            }
+        }
+    }
+
+    #[test]
+    fn repairs_malformed_tool_call_json_like_senpi() {
+        let golden = golden();
+        let cases = golden["antmlParse"].as_array().expect("antmlParse cases");
+        assert!(cases.len() >= 9, "the golden carries the full repair suite");
+        for case in cases {
+            let label = case["label"].as_str().expect("label");
+            let text = case["text"].as_str().expect("text");
+            let tools: Vec<Tool> = case["tools"].as_array().expect("tools").iter().map(tool_from).collect();
+            let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+            let sink = seen.clone();
+            let options = ParserOptions {
+                emit_raw_tool_call_text_on_error: false,
+                on_error: Some(Arc::new(move |message: &str, metadata: Option<&HashMap<String, Value>>| {
+                    let tool_call = metadata.and_then(|metadata| metadata.get("toolCall")).and_then(Value::as_str).unwrap_or_default();
+                    sink.lock()
+                        .expect("error sink")
+                        .push(json!({ "message": message, "metadata": { "toolCall": tool_call } }));
+                })),
+            };
+            let calls = parse_antml_generated_text(text, &tools, Some(&options));
+            let actual_calls: Vec<Value> =
+                calls.iter().map(|call| json!({ "name": call.name, "arguments": Value::Object(call.arguments.clone()) })).collect();
+            assert_eq!(Value::Array(actual_calls), case["calls"], "{label}: parsed calls");
+            let actual_errors = Value::Array(seen.lock().expect("error sink").clone());
+            assert_eq!(actual_errors, case["errors"], "{label}: onError reports");
+        }
+    }
+
+    #[test]
+    fn coerces_numeric_parameters_like_senpi() {
+        // JS `Number("3")` is the integer 3 and serializes as `3`; a port that stores every numeric
+        // argument as an f64 would emit `3.0`, so both protocols are replayed against the golden.
+        let golden = golden();
+        for (section, protocol) in [("anthropicXmlParse", 0usize), ("kimiXtmlParse", 1usize)] {
+            let cases = golden[section].as_array().expect("golden section");
+            assert!(!cases.is_empty(), "{section} carries cases");
+            for case in cases {
+                let label = case["label"].as_str().expect("label");
+                let text = case["text"].as_str().expect("text");
+                let tools: Vec<Tool> = case["tools"].as_array().expect("tools").iter().map(tool_from).collect();
+                let calls = if protocol == 0 {
+                    crate::tool_call_middleware::protocols::anthropic_xml::parse::parse_anthropic_xml_generated_text(text, &tools, None)
+                } else {
+                    crate::tool_call_middleware::protocols::kimi_xtml::parse::parse_kimi_xtml_generated_text(text, &tools, None)
+                };
+                let actual: Vec<Value> =
+                    calls.iter().map(|call| json!({ "name": call.name, "arguments": Value::Object(call.arguments.clone()) })).collect();
+                assert_eq!(Value::Array(actual), case["calls"], "{section}/{label}: parsed calls");
+            }
+        }
+    }
+}

@@ -1,0 +1,14 @@
+{
+	"name": "tui-screen-main-basic",
+	"kind": "tui-screen",
+	"crate": "maho-tui",
+	"mode": "main",
+	"cols": 40,
+	"rows": 10,
+	"steps": [
+		{ "op": "text", "text": "Hello, world.", "paddingX": 1, "paddingY": 1 },
+		{ "op": "render" },
+		{ "op": "resize", "cols": 30, "rows": 8 },
+		{ "op": "render" }
+	]
+}

@@ -347,9 +347,9 @@ mod tests {
         fn format_tool_response(&self, tool_name: &str, _tool_call_id: &str, content: &[ToolResultContent]) -> String {
             let text: String = content
                 .iter()
-                .filter_map(|block| match block {
-                    ToolResultContent::Text(text) => Some(text.text.as_str()),
-                    ToolResultContent::Image(_) => Some(""),
+                .map(|block| match block {
+                    ToolResultContent::Text(text) => text.text.as_str(),
+                    ToolResultContent::Image(_) => "",
                 })
                 .collect();
             format!("<tool_response>{tool_name}:{text}</tool_response>")

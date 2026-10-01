@@ -233,7 +233,6 @@ pub fn create_recovery_code_mask() -> RecoveryCodeMask {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool_call_middleware::protocols::anthropic_xml::recovery_stream::RecoveryStreamParser;
     use crate::tool_call_middleware::types::StreamParserEvent;
     use crate::types::Tool;
     use serde_json::{json, Value};

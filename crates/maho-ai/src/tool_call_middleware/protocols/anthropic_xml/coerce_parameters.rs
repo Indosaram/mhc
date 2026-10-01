@@ -63,7 +63,7 @@ fn coerce_known_value(raw_value: &str, schema: &Value) -> Coerced {
                     if schema_type == Some("integer") && parsed.fract() != 0.0 {
                         Coerced::Invalid
                     } else {
-                        Coerced::Ok(serde_json::Number::from_f64(parsed).map(Value::Number).unwrap_or(Value::Null))
+                        Coerced::Ok(crate::utils::js::json_number(parsed))
                     }
                 }
                 _ => Coerced::Invalid,
@@ -269,7 +269,7 @@ mod tests {
         )
         .expect("coerces");
         assert_eq!(result.get("s"), Some(&json!("hi")));
-        assert_eq!(result.get("n"), Some(&json!(42.0)));
+        assert_eq!(result.get("n"), Some(&json!(42)));
         assert_eq!(result.get("b"), Some(&json!(true)));
         assert_eq!(result.get("a"), Some(&json!([1, 2])));
         assert_eq!(result.get("o"), Some(&json!({"k": 1})));

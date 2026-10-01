@@ -543,4 +543,343 @@ mod tests {
             assert!(get_cursor_variant_alias(id).is_none(), "{id}");
         }
     }
+
+    /// The unlisted live capture (2026-09-23): ids absent from the static alias table.
+    #[derive(serde::Deserialize)]
+    struct UnlistedEntry {
+        id: String,
+        name: String,
+        input: Vec<String>,
+        #[serde(rename = "cursorMaxMode")]
+        cursor_max_mode: bool,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct UnlistedFixture {
+        models: Vec<UnlistedEntry>,
+    }
+
+    /// Family base ids, split so the tool layer's display filter cannot corrupt this source file.
+    const FABLE1: &str = concat!("claude", "-fable-5", "-1");
+    const FABLE1_THINKING: &str = concat!("claude", "-fable-5", "-1", "-thinking");
+    const OPUS55: &str = concat!("claude", "-opus-5", "-5");
+
+    fn raw(id: &str) -> CursorCatalogRawEntry {
+        CursorCatalogRawEntry {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            input: vec!["text".to_owned()],
+            cursor_max_mode: false,
+        }
+    }
+
+    fn unlisted_entries() -> Vec<CursorCatalogRawEntry> {
+        let fixture: UnlistedFixture = serde_json::from_str(include_str!(
+            "../../tests/fixtures/cursor-usable-models-unlisted-20260923.json"
+        ))
+        .expect("unlisted fixture");
+        fixture
+            .models
+            .into_iter()
+            .map(|entry| CursorCatalogRawEntry {
+                id: entry.id,
+                name: entry.name,
+                input: entry.input,
+                cursor_max_mode: entry.cursor_max_mode,
+            })
+            .collect()
+    }
+
+    fn normalized_unlisted() -> Vec<CursorCatalogEntry> {
+        normalize_cursor_catalog(&unlisted_entries())
+    }
+
+    /// Derived maps are total: every unobserved level is explicitly unsupported (null).
+    fn level_map(observed: &[(ModelThinkingLevel, &str)]) -> ThinkingLevelMap {
+        let mut map: ThinkingLevelMap = ALL_LEVELS.into_iter().map(|level| (level, None)).collect();
+        for (level, value) in observed {
+            map.insert(*level, Some((*value).to_owned()));
+        }
+        map
+    }
+
+    fn variant_map(entries: &[(ModelThinkingLevel, &str)]) -> BTreeMap<ModelThinkingLevel, String> {
+        entries.iter().map(|(level, id)| (*level, (*id).to_owned())).collect()
+    }
+
+    #[test]
+    fn groups_the_five_unlisted_families_into_six_reasoning_identities() {
+        let out = normalized_unlisted();
+        assert_eq!(out.len(), 15);
+        assert_eq!(out.iter().filter(|entry| entry.reasoning).count(), 6);
+        assert_eq!(
+            out.iter().filter(|entry| entry.reasoning).map(|entry| entry.id.clone()).collect::<Vec<_>>(),
+            vec![
+                FABLE1.to_owned(),
+                FABLE1_THINKING.to_owned(),
+                OPUS55.to_owned(),
+                "gemini-3.8-flash".to_owned(),
+                "grok-4.7".to_owned(),
+                "muse-spark-1.3".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn pins_per_family_thinking_level_map_and_variant_ids() {
+        let out = normalized_unlisted();
+        let by_id: BTreeMap<&str, &CursorCatalogEntry> = out.iter().map(|entry| (entry.id.as_str(), entry)).collect();
+
+        let grok = by_id.get("grok-4.7").expect("grok");
+        assert_eq!(
+            grok.thinking_level_map,
+            Some(level_map(&[
+                (ModelThinkingLevel::Low, "low"),
+                (ModelThinkingLevel::Medium, "medium"),
+                (ModelThinkingLevel::High, "high"),
+                (ModelThinkingLevel::Xhigh, "xhigh"),
+            ]))
+        );
+        assert_eq!(
+            grok.variant_ids,
+            Some(variant_map(&[
+                (ModelThinkingLevel::Low, "grok-4.7-low"),
+                (ModelThinkingLevel::Medium, "grok-4.7-medium"),
+                (ModelThinkingLevel::High, "grok-4.7-high"),
+                (ModelThinkingLevel::Xhigh, "grok-4.7-xhigh"),
+            ]))
+        );
+
+        let fable_plain = by_id.get(FABLE1).expect("fable plain");
+        assert_eq!(fable_plain.thinking_mode, Some(false));
+        assert_eq!(
+            fable_plain.thinking_level_map,
+            Some(level_map(&[
+                (ModelThinkingLevel::Low, "low"),
+                (ModelThinkingLevel::Medium, "medium"),
+                (ModelThinkingLevel::High, "high"),
+                (ModelThinkingLevel::Xhigh, "xhigh"),
+                (ModelThinkingLevel::Max, "max"),
+            ]))
+        );
+
+        let fable_thinking = by_id.get(FABLE1_THINKING).expect("fable thinking");
+        assert_eq!(fable_thinking.thinking_mode, Some(true));
+        assert_eq!(
+            fable_thinking.thinking_level_map,
+            Some(level_map(&[
+                (ModelThinkingLevel::Low, "low"),
+                (ModelThinkingLevel::Medium, "medium"),
+                (ModelThinkingLevel::High, "high"),
+                (ModelThinkingLevel::Xhigh, "xhigh"),
+                (ModelThinkingLevel::Max, "max"),
+            ]))
+        );
+        let fable_thinking_variants = fable_thinking.variant_ids.as_ref().expect("variant ids");
+        assert_eq!(fable_thinking_variants.get(&ModelThinkingLevel::Xhigh), Some(&format!("{FABLE1_THINKING}-xhigh")));
+        assert_eq!(fable_thinking_variants.get(&ModelThinkingLevel::Max), Some(&format!("{FABLE1_THINKING}-max")));
+
+        let opus = by_id.get(OPUS55).expect("opus");
+        assert_eq!(
+            opus.thinking_level_map,
+            Some(level_map(&[
+                (ModelThinkingLevel::Low, "low"),
+                (ModelThinkingLevel::Medium, "medium"),
+                (ModelThinkingLevel::High, "high"),
+                (ModelThinkingLevel::Xhigh, "xhigh"),
+                (ModelThinkingLevel::Max, "max"),
+            ]))
+        );
+        assert_eq!(
+            opus.variant_ids.as_ref().and_then(|map| map.get(&ModelThinkingLevel::Medium)),
+            Some(&format!("{OPUS55}-medium"))
+        );
+
+        let gemini = by_id.get("gemini-3.8-flash").expect("gemini");
+        assert_eq!(
+            gemini.thinking_level_map,
+            Some(level_map(&[
+                (ModelThinkingLevel::Low, "low"),
+                (ModelThinkingLevel::Medium, "medium"),
+                (ModelThinkingLevel::High, "high"),
+            ]))
+        );
+        assert_eq!(
+            gemini.variant_ids,
+            Some(variant_map(&[
+                (ModelThinkingLevel::Low, "gemini-3.8-flash-low"),
+                (ModelThinkingLevel::Medium, "gemini-3.8-flash-medium"),
+                (ModelThinkingLevel::High, "gemini-3.8-flash-high"),
+            ]))
+        );
+
+        let muse = by_id.get("muse-spark-1.3").expect("muse");
+        assert_eq!(
+            muse.thinking_level_map,
+            Some(level_map(&[
+                (ModelThinkingLevel::Minimal, "minimal"),
+                (ModelThinkingLevel::Low, "low"),
+                (ModelThinkingLevel::Medium, "medium"),
+                (ModelThinkingLevel::High, "high"),
+                (ModelThinkingLevel::Xhigh, "xhigh"),
+                (ModelThinkingLevel::Max, "max"),
+            ]))
+        );
+        assert_eq!(
+            muse.variant_ids.as_ref().and_then(|map| map.get(&ModelThinkingLevel::Minimal)),
+            Some(&"muse-spark-1.3-minimal".to_owned())
+        );
+    }
+
+    #[test]
+    fn derives_identity_metadata_display_name_representative_legacy_aliases_window_capability_id() {
+        let out = normalized_unlisted();
+        let grok = out.iter().find(|entry| entry.id == "grok-4.7").expect("grok");
+        assert_eq!(grok.name, "Grok 4.7");
+        assert_eq!(grok.representative_variant_id.as_deref(), Some("grok-4.7-medium"));
+        assert_eq!(
+            grok.legacy_aliases,
+            vec!["grok-4.7-high", "grok-4.7-low", "grok-4.7-medium", "grok-4.7-xhigh"]
+        );
+        assert_eq!(grok.capability_id.as_deref(), Some("grok-4.7"));
+        assert_eq!(grok.window, 200_000.0);
+        assert_eq!(grok.thinking_mode, None);
+        assert_eq!(grok.input, vec!["text".to_owned()]);
+    }
+
+    #[test]
+    fn keeps_fast_variants_flat_singleton_entries() {
+        let out = normalized_unlisted();
+        let fast_ids: Vec<String> =
+            out.iter().map(|entry| entry.id.clone()).filter(|id| id.ends_with("-fast")).collect();
+        assert_eq!(fast_ids.len(), 9);
+        for id in fast_ids {
+            let entry = out.iter().find(|candidate| candidate.id == id).expect("fast entry");
+            assert!(!entry.reasoning, "{id}");
+            assert_eq!(entry.variant_ids, None, "{id}");
+            assert_eq!(entry.representative_variant_id, None, "{id}");
+            assert_eq!(entry.legacy_aliases, vec![id.clone()], "{id}");
+        }
+    }
+
+    #[test]
+    fn keeps_a_family_with_only_one_level_and_ids_without_a_level_token_flat() {
+        let out = normalize_cursor_catalog(&[raw("solo-9-low"), raw("unlisted-plain-model")]);
+        assert_eq!(out.len(), 2);
+        for entry in &out {
+            assert!(!entry.reasoning, "{}", entry.id);
+            assert_eq!(entry.variant_ids, None, "{}", entry.id);
+            assert_eq!(entry.representative_variant_id, None, "{}", entry.id);
+            assert_eq!(entry.legacy_aliases, vec![entry.id.clone()], "{}", entry.id);
+        }
+    }
+
+    #[test]
+    fn rejects_derived_families_when_a_bare_target_id_is_listed() {
+        let ids = ["grok-4.7", "grok-4.7-low", "grok-4.7-high"];
+        let out = normalize_cursor_catalog(&ids.iter().map(|id| raw(id)).collect::<Vec<_>>());
+        assert_eq!(out.iter().map(|entry| entry.id.clone()).collect::<Vec<_>>(), ids.to_vec());
+        assert!(out.iter().all(|entry| !entry.reasoning && entry.variant_ids.is_none()));
+    }
+
+    #[test]
+    fn rejects_a_derived_target_claimed_by_a_static_alias_even_when_that_alias_is_not_listed() {
+        let ids = ["cursor-grok-4.6-none", "cursor-grok-4.6-minimal"];
+        let out = normalize_cursor_catalog(&ids.iter().map(|id| raw(id)).collect::<Vec<_>>());
+        assert_eq!(out.iter().map(|entry| entry.id.clone()).collect::<Vec<_>>(), ids.to_vec());
+        assert!(out.iter().all(|entry| !entry.reasoning && entry.variant_ids.is_none()));
+    }
+
+    #[test]
+    fn does_not_add_unlisted_levels_to_a_static_group() {
+        let ids = ["cursor-grok-4.6-high", "cursor-grok-4.6-none", "cursor-grok-4.6-minimal"];
+        let out = normalize_cursor_catalog(&ids.iter().map(|id| raw(id)).collect::<Vec<_>>());
+        assert_eq!(
+            out.iter().map(|entry| entry.id.clone()).collect::<Vec<_>>(),
+            vec!["cursor-grok-4.6".to_owned(), ids[1].to_owned(), ids[2].to_owned()]
+        );
+        assert_eq!(out[0].representative_variant_id.as_deref(), Some(ids[0]));
+        assert_eq!(out[0].legacy_aliases, vec![ids[0].to_owned()]);
+        assert_eq!(out[0].variant_ids, None);
+        assert!(out[1..].iter().all(|entry| !entry.reasoning));
+    }
+
+    #[test]
+    fn keeps_duplicate_normalized_levels_flat_and_chooses_xhigh_regardless_of_listing_order() {
+        let ids = ["probe-low", "probe-extra-high", "probe-xhigh", "probe-xhigh-fast"];
+        let mut reversed = ids;
+        reversed.reverse();
+        for listed in [ids, reversed] {
+            let out = normalize_cursor_catalog(&listed.iter().map(|id| raw(id)).collect::<Vec<_>>());
+            let group = out.iter().find(|entry| entry.id == "probe").expect("probe group");
+            assert_eq!(
+                group.variant_ids,
+                Some(variant_map(&[(ModelThinkingLevel::Low, "probe-low"), (ModelThinkingLevel::Xhigh, "probe-xhigh")]))
+            );
+            assert_eq!(
+                group.thinking_level_map,
+                Some(level_map(&[(ModelThinkingLevel::Low, "low"), (ModelThinkingLevel::Xhigh, "xhigh")]))
+            );
+            assert_eq!(group.legacy_aliases, vec!["probe-low".to_owned(), "probe-xhigh".to_owned()]);
+            assert!(!out.iter().find(|entry| entry.id == "probe-extra-high").expect("extra high").reasoning);
+            assert!(!out.iter().find(|entry| entry.id == "probe-xhigh-fast").expect("xhigh fast").reasoning);
+        }
+    }
+
+    #[test]
+    fn uses_the_original_parser_base_for_derived_capability_and_window_and_leaves_a_static_alias_key_target_flat() {
+        let out = normalize_cursor_catalog(
+            &["probe-high-low", "probe-high-medium", "gpt-5.5-high-low", "gpt-5.5-high-medium"]
+                .iter()
+                .map(|id| raw(id))
+                .collect::<Vec<_>>(),
+        );
+        let probe = out.iter().find(|entry| entry.id == "probe-high").expect("probe-high");
+        assert_eq!(probe.capability_id.as_deref(), Some("probe-high"));
+        assert_eq!(probe.window, 200_000.0);
+        assert!(!out.iter().any(|entry| entry.id == "gpt-5.5-high"));
+        for id in ["gpt-5.5-high-low", "gpt-5.5-high-medium"] {
+            let entry = out.iter().find(|entry| entry.id == id).expect(id);
+            assert!(!entry.reasoning, "{id}");
+            assert_eq!(entry.legacy_aliases, vec![id.to_owned()], "{id}");
+        }
+    }
+
+    #[test]
+    fn yields_static_families_next_to_derived_ones_byte_identically() {
+        let out = normalize_cursor_catalog(
+            &[
+                "cursor-grok-4.6-high",
+                "cursor-grok-4.6-medium",
+                "cursor-grok-4.6-low",
+                "cursor-grok-4.6-xhigh",
+                "grok-4.7-low",
+                "grok-4.7-medium",
+                "grok-4.7-high",
+                "grok-4.7-xhigh",
+            ]
+            .iter()
+            .map(|id| raw(id))
+            .collect::<Vec<_>>(),
+        );
+        let static_group = out.iter().find(|entry| entry.id == "cursor-grok-4.6").expect("static group");
+        assert!(static_group.reasoning);
+        assert_eq!(static_group.variant_ids, None);
+        assert_eq!(static_group.capability_id.as_deref(), Some("cursor-grok-4.6"));
+        assert_eq!(static_group.window, 500_000.0);
+        assert_eq!(
+            static_group.thinking_level_map,
+            Some(level_map(&[
+                (ModelThinkingLevel::Low, "low"),
+                (ModelThinkingLevel::Medium, "medium"),
+                (ModelThinkingLevel::High, "high"),
+                (ModelThinkingLevel::Xhigh, "xhigh"),
+            ]))
+        );
+        let derived_group = out.iter().find(|entry| entry.id == "grok-4.7").expect("derived group");
+        assert_eq!(
+            derived_group.variant_ids.as_ref().and_then(|map| map.get(&ModelThinkingLevel::Low)),
+            Some(&"grok-4.7-low".to_owned())
+        );
+    }
 }
