@@ -1,6 +1,7 @@
 //! Settings-configured lifecycle command hooks.
 pub mod diagnostics;
 pub mod config_loader;
+pub mod command_runner;
 pub mod handler;
 pub mod matcher;
 pub mod output_parser;

@@ -13,6 +13,11 @@ thiserror = "=2.0.18"
 fancy-regex = "=0.16.2"
 maho-core = { path = "../../maho-core" }
 tempfile = "=3.27.0"
+tokio = { version = "=1.52.3", features = ["process", "io-util", "time", "macros", "rt-multi-thread"] }
+maho-tools = { path = "../../maho-tools" }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "=0.28.0", features = ["signal", "process"] }
 
 [lints]
 workspace = true
