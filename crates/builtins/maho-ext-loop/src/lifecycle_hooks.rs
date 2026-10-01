@@ -6,20 +6,21 @@ pub fn register_loop_lifecycle_hooks(api:&mut ExtensionApi,runtime:Arc<tokio::sy
     for kind in [EventKind::Input,EventKind::SessionCompact,EventKind::AgentEnd,EventKind::SessionAbort,EventKind::SessionShutdown] {
         let runtime=runtime.clone(); let reference=reference.clone(); let now=now.clone(); let ids=ids.clone(); let settled=settled.clone();
         api.on(kind,Arc::new(move |event,ctx| { let runtime=runtime.clone(); let reference=reference.clone(); let now=now.clone(); let ids=ids.clone(); let settled=settled.clone(); Box::pin(async move {
-            let mut runtime=runtime.lock().await; let now=now(); let mut outcome=None; let mut persist=false;
+            let mut runtime=runtime.lock().await; let now=now(); let mut outcome=None; let mut persist=false; let mut paused=false;
             match event {
                 ExtensionEvent::Input(input) if input.source!=InputSource::Extension=>runtime.attribution.clear(),
                 ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Accepted { .. })=>{ runtime.accepted_compaction(); persist=true; },
                 ExtensionEvent::AgentEnd { aborted,abort_source,will_retry,.. }=>{
                     if *will_retry==Some(true) { return Ok(EventResult::None); }
-                    if *aborted==Some(true)&&*abort_source==Some(maho_ext_api::AbortSource::User) { let LoopRuntime { scheduler,attribution,.. }=&mut *runtime; attribution.pause(scheduler,now); }
+                    if *aborted==Some(true)&&*abort_source==Some(maho_ext_api::AbortSource::User) { let LoopRuntime { scheduler,attribution,.. }=&mut *runtime; paused = !attribution.pause(scheduler,now).is_empty(); }
                     else { outcome=runtime.settled(if *aborted==Some(true) { TickOutcome::Error } else { TickOutcome::Completed },now,ids(),ids()); }
                     persist=true;
                 },
-                ExtensionEvent::SessionAbort=>{ let LoopRuntime { scheduler,attribution,.. }=&mut *runtime; attribution.pause(scheduler,now); persist=true; },
+                ExtensionEvent::SessionAbort=>{ let LoopRuntime { scheduler,attribution,.. }=&mut *runtime; paused = !attribution.pause(scheduler,now).is_empty(); persist=paused; },
                 ExtensionEvent::SessionShutdown(_)=>{ runtime.shutdown(now); persist=true; },_=>{},
             }
             if persist { runtime.persist(&reference(ctx)).await.map_err(|error|ExtensionFailure::new(error.to_string()))?; }
+            if paused { ctx.ui.notify("loop paused - /loop resume or /loop stop",maho_ext_api::NotificationType::Info); }
             drop(runtime); if let Some(outcome)=outcome { settled(outcome).await?; }
             Ok(EventResult::None)
         }) }));
