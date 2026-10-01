@@ -11,3 +11,4 @@ pub mod skills;
 pub mod logging;
 pub mod notification_schemas;
 pub mod notifications;
+pub mod log;

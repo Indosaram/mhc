@@ -1,6 +1,13 @@
 use maho_ext_mcp::expose::schema_compat::*;
 use serde_json::json;
 #[test]
+fn pinned_nasty_schema_matches_upstream_typebox_golden() {
+    let input=serde_json::from_str(include_str!("fixtures/nasty-input.schema.json")).unwrap();
+    let golden:serde_json::Value=serde_json::from_str(include_str!("fixtures/nasty-input.typebox.golden.json")).unwrap();
+    let converted=convert_json_schema_to_type_box(&input);
+    assert!(converted.warnings.is_empty());assert_eq!(converted.schema,golden);
+}
+#[test]
 fn supported_schema_keywords_survive_local_ref_resolution() {
     let input = json!({"$schema":"ignored","additionalProperties":false,"type":"object","$defs":{"value":{"type":"string","minLength":1}},"properties":{"x":{"$ref":"#/$defs/value"}}});
     let result = convert_json_schema_to_type_box(&input);

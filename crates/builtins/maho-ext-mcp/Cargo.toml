@@ -22,6 +22,8 @@ base64 = "=0.22.1"
 url = "=2.5.8"
 globset = "=0.4.20"
 axum = "=0.8.9"
+fancy-regex.workspace = true
+chrono = { workspace = true, features = ["clock"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"
