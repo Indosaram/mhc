@@ -1695,6 +1695,7 @@ version = "0.0.0"
 name = "maho-ext-loop"
 version = "0.0.0"
 dependencies = [
+ "chrono",
  "hex",
  "maho-core",
  "maho-ext-api",
