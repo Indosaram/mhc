@@ -90,7 +90,7 @@ impl McpClient {
         let mut request=client.post(url.clone()).header("accept","application/json, text/event-stream").header("mcp-protocol-version","2025-11-25").json(value);
         for (name,value) in headers {request=request.header(name,value);}
         if let Some(refresh)=self.auth.read().await.as_ref() {
-            let tokens=refresh.ensure_fresh().await.map_err(|error|failure(&self.server,McpErrorKind::Auth,error.to_string(),"request"))?;
+            let tokens=refresh.ensure_fresh().await.map_err(|error|{let terminal=crate::needs_auth::is_oauth_needs_auth_error(&error);let mut result=failure(&self.server,if terminal{McpErrorKind::Auth}else{McpErrorKind::Connect},error.to_string(),"request");result.retriable = !terminal;result})?;
             let tokens=tokens.ok_or_else(||failure(&self.server,McpErrorKind::Auth,format!("MCP server {} requires authorization",self.server),"request"))?;
             request=request.bearer_auth(tokens.access_token);
         }

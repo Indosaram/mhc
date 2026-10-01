@@ -38,3 +38,6 @@ pub mod service_exposure;
 pub mod service_connection;
 pub mod shared_connection;
 pub mod shared_lease;
+pub mod needs_auth;
+pub mod control_inventory;
+pub mod commands;

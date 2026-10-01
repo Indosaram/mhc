@@ -3,6 +3,12 @@ use serde_json::{Value,json};
 use crate::{connection::{ServerConnection,ServerConnectionState},errors::{McpError,McpErrorKind,is_mcp_session_expired_error,is_retriable_mcp_error}};
 pub const MCP_PING_STALE_MS:u64=30000;
 pub const MCP_PING_TIMEOUT_MS:u64=2000;
+pub fn mark_mcp_connection_needs_auth(connection:&ServerConnection,cause:&McpError)->Option<McpError> {
+    if !crate::needs_auth::is_mcp_needs_auth_error(cause){return None;}
+    let mut error=McpError::new(McpErrorKind::Auth,format!("MCP server {} needs OAuth. Run senpi interactive, then /mcp auth-start {} and /mcp auth-complete {} <redirect-url>.",connection.server_name,connection.server_name,connection.server_name));
+    error.phase=Some("auth".into());error.server_name=Some(connection.server_name.clone());error.cause=Some(Box::new(error_value(cause)));
+    connection.mark_failure(ServerConnectionState::NeedsAuth,Some(error.clone()));Some(error)
+}
 fn error_value(error:&McpError)->Value {json!({"message":error.message,"retriable":error.retriable,"cause":error.cause})}
 fn expired(connection:&ServerConnection,cause:McpError,retriable:bool)->McpError {
     let suffix=if retriable {"reinitializing once".into()}else{format!("reinitialize retry also expired; run /mcp reconnect {}",connection.server_name)};
