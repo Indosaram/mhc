@@ -97,19 +97,13 @@ impl MethodRegistry {
         let error = if !connection.initialized
             && (method != "initialize" || registration.is_none_or(|r| r.requires_init))
         {
-            Some(JsonRpcError::new(-32600, "Not initialized"))
+            Some(super::errors::not_initialized_error())
         } else if connection.initialized && method == "initialize" {
-            Some(JsonRpcError::new(-32600, "Already initialized"))
+            Some(super::errors::already_initialized_error())
         } else if registration.is_none() {
-            Some(JsonRpcError::new(
-                -32601,
-                format!("Method not found: {method}"),
-            ))
+            Some(super::errors::method_not_found_error(method))
         } else if registration.is_some_and(|r| r.experimental) && !connection.experimental_api {
-            Some(JsonRpcError::new(
-                -32600,
-                format!("{method} requires experimentalApi capability"),
-            ))
+            Some(super::errors::experimental_capability_error(method))
         } else {
             None
         };

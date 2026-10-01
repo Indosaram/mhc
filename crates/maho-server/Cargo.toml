@@ -15,6 +15,7 @@ maho-agent = { path = "../maho-agent" }
 maho-ext-host = { path = "../maho-ext-host" }
 sha2 = "=0.10.9"
 url = "=2.5.8"
+chrono = "=0.4.43"
 tokio = { version = "=1.52.3", features = ["net", "io-util", "sync", "rt", "macros", "time", "fs"] }
 
 [dev-dependencies]
