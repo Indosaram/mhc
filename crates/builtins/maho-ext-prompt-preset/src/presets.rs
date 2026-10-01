@@ -1,4 +1,41 @@
 use crate::settings::{PromptPresetName, parse_prompt_preset};
+use maho_core::dynamic_prompt::build::BuildDynamicSystemPromptOptions;
+pub struct ResolvedPromptPreset { pub name: PromptPresetName, pub prompt: String }
+pub fn resolve_preset(model: ModelMetadata<'_>, setting: PromptPresetName, options: BuildDynamicSystemPromptOptions<'_>) -> Option<ResolvedPromptPreset> {
+ let name = resolve_preset_name(model, setting)?;
+ let prompt = match name {
+  PromptPresetName::Auto => return None,
+  PromptPresetName::ClaudeFable5 => crate::claude_fable_5::build_claude_fable5_prompt(options),
+  PromptPresetName::ClaudeFable51 => crate::claude_fable_5_1::build_claude_fable51_prompt(options),
+  PromptPresetName::ClaudeOpus55 => crate::claude_opus_5_5::build_claude_opus55_prompt(options),
+  PromptPresetName::ClaudeOpus5 => crate::claude_opus_5::build_claude_opus5_prompt(options),
+  PromptPresetName::ClaudeOpus48 => crate::claude_opus_4_8::build_claude_opus48_prompt(options),
+  PromptPresetName::ClaudeOpus47 => crate::claude_opus_4_7::build_claude_opus47_prompt(options),
+  PromptPresetName::ClaudeOpus46 => crate::claude_opus_4_6::build_claude_opus46_prompt(options),
+  PromptPresetName::ClaudeOpus45 => crate::claude_opus_4_5::build_claude_opus45_prompt(options),
+  PromptPresetName::DeepseekV4Flash => crate::deepseek_v4_flash::build_deepseek_v4_flash_prompt(options),
+  PromptPresetName::DeepseekV4Flash0731 => crate::deepseek_v4_flash_0731::build_deepseek_v4_flash_0731_prompt(options),
+  PromptPresetName::DeepseekV41Flash => crate::deepseek_v4_1_flash::build_deepseek_v41_flash_prompt(options),
+  PromptPresetName::DeepseekV4Pro => crate::deepseek_v4_pro::build_deepseek_v4_pro_prompt(options),
+  PromptPresetName::Glm52 => crate::glm_5_2::build_glm52_prompt(options),
+  PromptPresetName::Glm53 => crate::glm_5_3::build_glm53_prompt(options),
+  PromptPresetName::Grok45 => crate::grok_4_5::build_grok45_prompt(options),
+  PromptPresetName::Grok46 => crate::grok_4_6::build_grok46_prompt(options),
+  PromptPresetName::Grok47 => crate::grok_4_7::build_grok47_prompt(options),
+  PromptPresetName::KimiK3 => crate::kimi_k3::build_kimi_k3_prompt(options),
+  PromptPresetName::KimiK28 => crate::kimi_k2_8::build_kimi_k28_prompt(options),
+  PromptPresetName::KimiK27 => crate::kimi_k2_7::build_kimi_k27_prompt(options),
+  PromptPresetName::KimiK26 => crate::kimi_k2_6::build_kimi_k26_prompt(options),
+  PromptPresetName::Gpt5 => crate::gpt_5::build_gpt5_prompt(options),
+  PromptPresetName::Gpt52 => crate::gpt_5_2::build_gpt52_prompt(options),
+  PromptPresetName::Gpt53Codex => crate::gpt_5_3_codex::build_gpt53_codex_prompt(options),
+  PromptPresetName::Gpt54 => crate::gpt_5_4::build_gpt54_prompt(options),
+  PromptPresetName::Gpt55 => crate::gpt_5_5::build_gpt55_prompt(options),
+  PromptPresetName::Gpt56 => crate::gpt_5_6::build_gpt56_prompt(options),
+  PromptPresetName::Gpt6Astra => crate::gpt_6_astra::build_gpt6_astra_prompt(options),
+ };
+ Some(ResolvedPromptPreset { name, prompt })
+}
 #[derive(Clone, Copy)]
 pub struct ModelMetadata<'a> { pub id: &'a str, pub provider: &'a str, pub name: Option<&'a str>, pub prompt_preset: Option<&'a str> }
 fn normalized(value: &str) -> String { regex::Regex::new(r"\s+").map_or_else(|_| value.to_lowercase(), |pattern| pattern.replace_all(&value.to_lowercase(), "-").into_owned()) }
