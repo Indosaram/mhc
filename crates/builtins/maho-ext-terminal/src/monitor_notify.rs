@@ -1,6 +1,41 @@
 use crate::monitor_registry::MonitorEvent;
 pub const MONITOR_NOTIFICATION_CUSTOM_TYPE:&str="senpi-monitor:notification";
 fn identity(event:&MonitorEvent)->(&str,&str,&str) {match event {MonitorEvent::Line {id,description,..}=>(id,description,"line"),MonitorEvent::Summary {id,description,..}=>(id,description,"summary")}}
+pub fn resolve_delivery_settings(settings:&crate::settings::MonitorDeliverySettings)->crate::settings::MonitorDeliverySettings {
+    let bound=|value:f64,fallback:f64,minimum:f64,maximum:f64|if value.is_finite() {value.trunc().clamp(minimum,maximum)} else {fallback};
+    crate::settings::MonitorDeliverySettings {coalesce_window_ms:bound(settings.coalesce_window_ms,2000.0,1.0,60_000.0),rate_limit_ms:bound(settings.rate_limit_ms,5000.0,1.0,3_600_000.0),max_lines_per_injection:bound(settings.max_lines_per_injection,50.0,1.0,200.0),max_chars_per_injection:bound(settings.max_chars_per_injection,4096.0,512.0,16_384.0),wake_budget:bound(settings.wake_budget,5.0,1.0,100.0)}
+}
+pub struct MonitorNotifier {sender:tokio::sync::mpsc::UnboundedSender<NotifierAction>,task:tokio::task::JoinHandle<()>}
+enum NotifierAction {Event(MonitorEvent),Activity,Resume(Vec<String>)}
+impl MonitorNotifier {
+    pub fn new(settings:crate::settings::MonitorDeliverySettings,send:impl Fn(MonitorInjection)+Send+'static)->Self {
+        let settings=resolve_delivery_settings(&settings);
+        let (sender,mut receiver)=tokio::sync::mpsc::unbounded_channel();
+        let task=tokio::spawn(async move {
+            let mut queue=MonitorDeliveryQueue::default();let mut deadline=None;
+            let epoch=tokio::time::Instant::now();
+            loop {
+                let action=if let Some(due)=deadline {
+                    tokio::select! {action=receiver.recv()=>action,_=tokio::time::sleep_until(due)=>{
+                        let now=epoch.elapsed().as_secs_f64()*1000.0;
+                        if let Some(injection)=queue.flush(now,&settings) {send(injection);}
+                        deadline=queue.next_rate_limit(now,&settings).map(|delay|tokio::time::Instant::now()+std::time::Duration::from_secs_f64(delay/1000.0));
+                        continue;
+                    }}
+                } else {receiver.recv().await};
+                match action {
+                    Some(NotifierAction::Event(event))=>{queue.notify(event,&settings);let due=tokio::time::Instant::now()+std::time::Duration::from_secs_f64(settings.coalesce_window_ms/1000.0);deadline=Some(deadline.map_or(due,|old:tokio::time::Instant|old.min(due)));},
+                    Some(NotifierAction::Activity)=>queue.note_activity(),Some(NotifierAction::Resume(ids))=>queue.resume(&ids),None=>return,
+                }
+            }
+        });
+        Self {sender,task}
+    }
+    pub fn notify_event(&self,event:MonitorEvent)->Result<(),String> {self.sender.send(NotifierAction::Event(event)).map_err(|error|error.to_string())}
+    pub fn note_activity(&self)->Result<(),String> {self.sender.send(NotifierAction::Activity).map_err(|error|error.to_string())}
+    pub fn resume(&self,ids:Vec<String>)->Result<(),String> {self.sender.send(NotifierAction::Resume(ids)).map_err(|error|error.to_string())}
+}
+impl Drop for MonitorNotifier {fn drop(&mut self) {self.task.abort();}}
 #[derive(Default)]
 pub struct MonitorDeliveryQueue {
     events:Vec<MonitorEvent>,
@@ -82,6 +117,15 @@ pub fn build_monitor_message(events:&[MonitorEvent],overflow_count:usize,pause_n
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn scheduled_delivery_wakes_through_exact_injection_signal() {
+        let mut settings=crate::settings::TERMINAL_SETTINGS_DEFAULTS.monitor;settings.coalesce_window_ms=1.0;
+        let (sender,mut receiver)=tokio::sync::mpsc::unbounded_channel();
+        let notifier=MonitorNotifier::new(settings,move |injection| {sender.send(injection).unwrap();});
+        notifier.notify_event(line("ready")).unwrap();
+        let injection=tokio::time::timeout(std::time::Duration::from_secs(5),receiver.recv()).await.unwrap().unwrap();
+        assert!(injection.content.contains("Monitor event(watch): ready"));assert_eq!(injection.details["monitors"][0]["eventCount"],1);
+    }
     fn line(text:&str)->MonitorEvent {MonitorEvent::Line {id:"b1".to_owned(),description:"watch".to_owned(),line:text.to_owned()}}
     #[test]
     fn rate_limit_and_duplicate_batches_do_not_consume_wake_budget() {
