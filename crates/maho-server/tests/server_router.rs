@@ -48,3 +48,19 @@ async fn released_attachment_rejects_calls_and_releases_lease_only_once() {
     assert_eq!(releases.load(Ordering::SeqCst), 1);
     router.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn session_removal_invalidates_all_client_leases() {
+    let releases = Arc::new(AtomicUsize::new(0));
+    let router = SessionRouter::new(Arc::new(Host(releases.clone())), "00000000-0000-4000-8000-000000000001".into());
+    let first = router.attach("session").await.unwrap();
+    let second = router.attach("session").await.unwrap();
+    router.remove("session").await.unwrap();
+    let (_cancel, cancelled) = tokio::sync::watch::channel(false);
+    for attachment in [first, second] {
+        let result = attachment.invoke(json!({}), Arc::new(|_, _| Box::pin(async { Ok(()) })), Context { cancelled: cancelled.clone() }).await;
+        assert_eq!(result.unwrap_err().code, "session_not_attached");
+    }
+    assert_eq!(releases.load(Ordering::SeqCst), 2);
+    router.close().await.unwrap();
+}

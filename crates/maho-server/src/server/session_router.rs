@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc,
+        Arc, Weak,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -44,6 +44,7 @@ pub struct SessionRouter {
     host: Arc<dyn ServerHost>,
     server_id: String,
     hosted: Mutex<BTreeMap<String, Arc<dyn RoutedSessionHandle>>>,
+    attachments: Mutex<BTreeMap<String, Vec<Weak<Attachment>>>>,
     closing: AtomicBool,
 }
 impl SessionRouter {
@@ -52,6 +53,7 @@ impl SessionRouter {
             host,
             server_id,
             hosted: Mutex::new(BTreeMap::new()),
+            attachments: Mutex::new(BTreeMap::new()),
             closing: AtomicBool::new(false),
         }
     }
@@ -79,26 +81,51 @@ impl SessionRouter {
             lease.release().await?;
             return Err(ServerError::draining());
         }
-        Ok(Arc::new(Attachment {
+        let attachment = Arc::new(Attachment {
             target: json!({"serverId":self.server_id,"sessionId":session_id,"attachmentId":uuid::Uuid::new_v4().to_string()}),
             lease,
             operations: RwLock::new(()),
             released: AtomicBool::new(false),
-        }))
+        });
+        let mut attachments = self.attachments.lock().await;
+        if self.closing.load(Ordering::SeqCst) || !self.hosted.lock().await.contains_key(session_id) {
+            attachment.release().await?;
+            return Err(ServerError::draining());
+        }
+        let leases = attachments.entry(session_id.into()).or_default();
+        leases.retain(|lease| lease.strong_count() > 0);
+        leases.push(Arc::downgrade(&attachment));
+        Ok(attachment)
     }
     pub async fn remove(&self, session_id: &str) -> Result<(), ServerError> {
         if self.closing.load(Ordering::SeqCst) {
             return Err(ServerError::draining());
         }
-        if let Some(handle) = self.hosted.lock().await.remove(session_id) {
-            handle.close().await?;
+        let (leases, handle) = {
+            let mut attachments = self.attachments.lock().await;
+            let handle = self.hosted.lock().await.remove(session_id);
+            (attachments.remove(session_id).unwrap_or_default(), handle)
+        };
+        let mut errors = Vec::new();
+        for lease in leases.into_iter().filter_map(|lease| lease.upgrade()) {
+            if let Err(error) = lease.release().await { errors.push(error.message); }
+        }
+        if let Some(handle) = handle && let Err(error) = handle.close().await {
+            errors.push(error.message);
+        }
+        if !errors.is_empty() {
+            return Err(ServerError::new("internal_error", &errors.join("; ")));
         }
         Ok(())
     }
     pub async fn close(&self) -> Result<(), ServerError> {
         self.closing.store(true, Ordering::SeqCst);
+        let attachments = std::mem::take(&mut *self.attachments.lock().await);
         let handles = std::mem::take(&mut *self.hosted.lock().await);
         let mut errors = Vec::new();
+        for lease in attachments.into_values().flatten().filter_map(|lease| lease.upgrade()) {
+            if let Err(error) = lease.release().await { errors.push(error.message); }
+        }
         for (_, handle) in handles {
             if let Err(error) = handle.close().await {
                 errors.push(error.message);
