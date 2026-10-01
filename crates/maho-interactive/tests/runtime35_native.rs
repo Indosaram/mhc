@@ -541,3 +541,26 @@ async fn extension_question_cancel_releases_composer_and_preserves_unanswered_id
     let response = answer.await.expect("question"); assert_eq!(response.status, maho_ext_api::QuestionStatus::Cancelled); assert_eq!(response.unanswered, vec!["item"]);
     mode.handle_input_at("draft", 1); assert_eq!(mode.editor.editor.get_text(), "draft");
 }
+
+#[tokio::test]
+async fn fork_selector_uses_current_user_history_and_cancel_keeps_transcript() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("fork-source", Default::default()).await.expect("turn");
+    mode.submit("/fork", Default::default()).await.expect("selector");
+    assert!(mode.render(80).join("\n").contains("Fork from Message"));
+    mode.handle_input_at("\x1b", 0);
+    mode.handle_input_at("draft", 1);
+    assert_eq!(mode.editor.editor.get_text(), "draft");
+}
+
+#[tokio::test]
+async fn fork_selection_reopens_user_text_before_selected_message() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("fork-source", Default::default()).await.expect("turn");
+    mode.submit("/fork", Default::default()).await.expect("selector"); mode.render(80);
+    mode.handle_input_at("\r", 0); mode.submit_editor().await.expect("fork");
+    assert_eq!(mode.editor.editor.get_text(), "fork-source");
+    assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0));
+}
