@@ -62,3 +62,15 @@ fn watch_roots_normalize_dot_segments_before_snapshot_keys() {
     assert!(engine.get_baseline_snapshot().contains_key(&file));
     assert!(engine.watched_directories().contains(root.path()));
 }
+#[test]
+fn injected_hash_scans_only_the_observed_file() {
+    let root = tempfile::tempdir().unwrap();
+    let first = root.path().join("first");
+    fs::write(&first, "fixture").unwrap();
+    fs::write(root.path().join("second"), "fixture").unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let mut engine = ConfigReloadWatchEngine::with_hash_file(vec![target(root.path())], None, std::sync::Arc::new(move |path| { sender.send(path.to_path_buf()).unwrap(); Ok("hash".into()) })).unwrap();
+    assert_eq!(receiver.try_iter().count(), 2);
+    assert!(engine.evaluate_affected(&std::collections::BTreeSet::from([first.clone()])).unwrap().changed_paths.is_empty());
+    assert_eq!(receiver.try_iter().collect::<Vec<_>>(), [first]);
+}

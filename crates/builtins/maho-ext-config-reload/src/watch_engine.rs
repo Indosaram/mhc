@@ -5,12 +5,13 @@ use super::watch_event_source::{subscribe, WatchErrorListener, WatchSubscription
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum WatchKind { Dir, DirRecursive }
 pub type WatchFilter = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
+pub type HashFile = Arc<dyn Fn(&Path) -> Result<String, std::io::Error> + Send + Sync>;
 pub struct WatchTarget { pub id: String, pub kind: WatchKind, pub path: PathBuf, pub allow_list: Option<Vec<PathBuf>>, pub filter: Option<WatchFilter> }
 #[derive(Default)]
 pub struct RealChange { pub changed_paths: Vec<PathBuf>, pub created: Vec<PathBuf>, pub deleted: Vec<PathBuf> }
 #[derive(Default)]
 struct ScanResult { hashes: BTreeMap<PathBuf, String>, allowed_directories: BTreeSet<PathBuf>, scanned_directories: BTreeSet<PathBuf> }
-pub struct ConfigReloadWatchEngine { targets: Vec<WatchTarget>, states: Vec<ScanResult>, closed: bool, on_error: Option<WatchErrorListener> }
+pub struct ConfigReloadWatchEngine { targets: Vec<WatchTarget>, states: Vec<ScanResult>, closed: bool, on_error: Option<WatchErrorListener>, hash_file: HashFile }
 pub struct NativeWatchEngine { pub engine: ConfigReloadWatchEngine, subscriptions: BTreeMap<PathBuf, WatchSubscription>, receiver: std::sync::mpsc::Receiver<Option<PathBuf>>, sender: std::sync::mpsc::Sender<Option<PathBuf>>, on_error: WatchErrorListener, debounce: std::time::Duration }
 impl NativeWatchEngine {
     pub fn new(targets: Vec<WatchTarget>, on_error: WatchErrorListener) -> Result<Self, String> {
@@ -76,20 +77,23 @@ impl NativeWatchEngine {
 impl Drop for NativeWatchEngine { fn drop(&mut self) { if let Err(error) = self.close() { (self.on_error)(error, PathBuf::new()); } } }
 impl ConfigReloadWatchEngine {
     pub fn new(targets: Vec<WatchTarget>) -> Result<Self, std::io::Error> {
-        Self::create(targets, None)
+        Self::create(targets, None, Arc::new(hash_file))
     }
     pub fn with_error_listener(targets: Vec<WatchTarget>, on_error: WatchErrorListener) -> Result<Self, std::io::Error> {
-        Self::create(targets, Some(on_error))
+        Self::create(targets, Some(on_error), Arc::new(hash_file))
     }
-    fn create(mut targets: Vec<WatchTarget>, on_error: Option<WatchErrorListener>) -> Result<Self, std::io::Error> {
+    pub fn with_hash_file(targets: Vec<WatchTarget>, on_error: Option<WatchErrorListener>, hash_file: HashFile) -> Result<Self, std::io::Error> {
+        Self::create(targets, on_error, hash_file)
+    }
+    fn create(mut targets: Vec<WatchTarget>, on_error: Option<WatchErrorListener>, hash_file: HashFile) -> Result<Self, std::io::Error> {
         for target in &mut targets {
             let absolute = std::path::absolute(&target.path)?;
             let mut path = PathBuf::new();
             for component in absolute.components() { match component { std::path::Component::ParentDir => { path.pop(); }, std::path::Component::CurDir => {}, other => path.push(other.as_os_str()) } }
             target.path = path;
         }
-        let states = targets.iter().map(|target| scan(target, on_error.as_ref())).collect::<Result<Vec<_>, _>>()?;
-        Ok(Self { targets, states, closed: false, on_error })
+        let states = targets.iter().map(|target| scan(target, on_error.as_ref(), &hash_file)).collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { targets, states, closed: false, on_error, hash_file })
     }
     pub fn close(&mut self) { self.closed = true; }
     pub fn get_baseline_snapshot(&self) -> BTreeMap<PathBuf, String> { self.states.iter().flat_map(|state| state.hashes.clone()).collect() }
@@ -114,10 +118,10 @@ impl ConfigReloadWatchEngine {
                     next.hashes.retain(|key, _| !key.starts_with(path));
                     next.allowed_directories.retain(|key| !key.starts_with(path));
                     next.scanned_directories.retain(|key| !key.starts_with(path));
-                    scan_path(target, path, relative, &mut next, self.on_error.as_ref())?;
+                    scan_path(target, path, relative, &mut next, self.on_error.as_ref(), &self.hash_file)?;
                 }
                 next
-            } else { scan(target, self.on_error.as_ref())? };
+            } else { scan(target, self.on_error.as_ref(), &self.hash_file)? };
             for (path, hash) in &next.hashes { if state.hashes.get(path) != Some(hash) { changes.insert(path.clone(), (!state.hashes.contains_key(path), false)); } }
             for path in state.hashes.keys() { if !next.hashes.contains_key(path) { changes.insert(path.clone(), (false, true)); } }
             for path in &next.allowed_directories { if !state.allowed_directories.contains(path) { changes.insert(path.clone(), (true, false)); } }
@@ -136,22 +140,23 @@ fn matches(target: &WatchTarget, relative: &Path) -> bool {
         && target.filter.as_ref().is_none_or(|filter| filter(relative))
 }
 fn explicitly_allowed(target: &WatchTarget, relative: &Path) -> bool { target.allow_list.as_ref().is_some_and(|allowed| allowed.iter().any(|allowed| relative == allowed || relative.starts_with(allowed))) }
-fn scan(target: &WatchTarget, on_error: Option<&WatchErrorListener>) -> Result<ScanResult, std::io::Error> {
+fn hash_file(path: &Path) -> Result<String, std::io::Error> { Ok(format!("{:x}", Sha256::digest(std::fs::read(path)?))) }
+fn scan(target: &WatchTarget, on_error: Option<&WatchErrorListener>, hash_file: &HashFile) -> Result<ScanResult, std::io::Error> {
     let mut result = ScanResult::default();
-    scan_path(target, &target.path, Path::new(""), &mut result, on_error)?;
+    scan_path(target, &target.path, Path::new(""), &mut result, on_error, hash_file)?;
     Ok(result)
 }
-fn scan_path(target: &WatchTarget, absolute: &Path, relative: &Path, result: &mut ScanResult, on_error: Option<&WatchErrorListener>) -> Result<(), std::io::Error> {
-    if let Err(error) = scan_entry(target, absolute, relative, result, on_error) {
+fn scan_path(target: &WatchTarget, absolute: &Path, relative: &Path, result: &mut ScanResult, on_error: Option<&WatchErrorListener>, hash_file: &HashFile) -> Result<(), std::io::Error> {
+    if let Err(error) = scan_entry(target, absolute, relative, result, on_error, hash_file) {
         if let Some(listener) = on_error { listener(error.to_string(), absolute.into()); } else { return Err(error); }
     }
     Ok(())
 }
-fn scan_entry(target: &WatchTarget, absolute: &Path, relative: &Path, result: &mut ScanResult, on_error: Option<&WatchErrorListener>) -> Result<(), std::io::Error> {
+fn scan_entry(target: &WatchTarget, absolute: &Path, relative: &Path, result: &mut ScanResult, on_error: Option<&WatchErrorListener>, hash_file: &HashFile) -> Result<(), std::io::Error> {
     if !relative.as_os_str().is_empty() && !matches(target, relative) { return Ok(()); }
     let entry = match std::fs::symlink_metadata(absolute) { Ok(entry) => entry, Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()), Err(error) => return Err(error) };
     if entry.is_symlink() { return Ok(()); }
-    if entry.is_file() { result.hashes.insert(absolute.into(), format!("{:x}", Sha256::digest(std::fs::read(absolute)?))); return Ok(()); }
+    if entry.is_file() { result.hashes.insert(absolute.into(), hash_file(absolute)?); return Ok(()); }
     if !entry.is_dir() { return Ok(()); }
     let non_root = !relative.as_os_str().is_empty();
     let allowed = non_root && explicitly_allowed(target, relative);
@@ -163,7 +168,7 @@ fn scan_entry(target: &WatchTarget, absolute: &Path, relative: &Path, result: &m
         if child.file_type()?.is_symlink() || child.file_name() == "node_modules" || child.file_name() == ".git" { continue; }
         let child_relative = relative.join(child.file_name());
         if child.file_type()?.is_dir() && child.file_name().to_string_lossy().starts_with('.') && !explicitly_allowed(target, &child_relative) { continue; }
-        scan_path(target, &child.path(), &child_relative, result, on_error)?;
+        scan_path(target, &child.path(), &child_relative, result, on_error, hash_file)?;
     }
     Ok(())
 }
