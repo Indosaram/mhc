@@ -3,4 +3,5 @@ pub mod daemon_probe;
 pub mod cli_args;
 pub mod ndjson;
 pub mod registry;
+pub mod history_pagination;
 pub mod search_params;
