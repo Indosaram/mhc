@@ -2,6 +2,7 @@ use std::{collections::BTreeSet, path::{Path, PathBuf}};
 use super::{cache, constants::PROJECT_SINGLE_FILES, finder::{FinderOptions, RuleDiscoveryCache, find_rule_candidates}, formatter::{FormatOptions, format_static_block, format_dynamic_block}, matcher::{MatcherCache, MatcherInput, hash_content}, ordering::sort_candidates, parser::parse_rule, project_root::find_project_root, types::*};
 
 pub struct LoadResult { pub rules: Vec<LoadedRule>, pub diagnostics: Vec<RuleDiagnostic> }
+pub struct DynamicTargetFingerprint { pub target_path: PathBuf, pub cache_key: String, pub fingerprint: String }
 pub struct Engine { pub state: SessionState, pub config: PiRulesConfig, home_dir: PathBuf, matcher: MatcherCache }
 impl Engine {
     pub fn new(config: PiRulesConfig, home_dir: PathBuf) -> Self { Self { state: SessionState::default(), config, home_dir, matcher: MatcherCache::default() } }
@@ -65,6 +66,34 @@ impl Engine {
         }
         result.rules.sort_by(|a, b| super::ordering::compare_candidates(&a.candidate, &b.candidate));
         Ok(self.store(result))
+    }
+    pub fn fingerprint_dynamic_targets(&mut self, cwd: &Path, targets: &[PathBuf]) -> Vec<DynamicTargetFingerprint> {
+        use std::os::unix::fs::MetadataExt;
+        self.state.cwd = Some(cwd.to_string_lossy().into_owned());
+        if self.config.disabled || matches!(self.config.mode, RulesMode::Off | RulesMode::Static) { return Vec::new(); }
+        let disabled = self.disabled_sources();
+        let mut discovery = RuleDiscoveryCache::default();
+        let cwd_root = find_project_root(cwd, None);
+        let mut seen = BTreeSet::new();
+        let mut result = Vec::new();
+        for target in targets {
+            if !seen.insert(target) { continue; }
+            let root = if cwd_root.as_deref().is_some_and(|root| target.starts_with(root)) { cwd_root.clone() } else { find_project_root(target, None) };
+            let candidates = find_rule_candidates(FinderOptions { project_root: root.as_deref(), target_file: Some(target), home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut discovery);
+            let candidate_fingerprints = sort_candidates(&candidates).into_iter().map(|candidate| {
+                let stat = std::fs::metadata(&candidate.path).map_or_else(|_| "missing".into(), |stat| format!("{}:{}:{}", i128::from(stat.mtime()) * 1_000_000_000 + i128::from(stat.mtime_nsec()), i128::from(stat.ctime()) * 1_000_000_000 + i128::from(stat.ctime_nsec()), stat.len()));
+                [candidate.real_path, candidate.relative_path, candidate.source, if candidate.is_global { "global" } else { "project" }.into(), if candidate.is_single_file { "single" } else { "multi" }.into(), candidate.distance.to_string(), stat].join("\0")
+            }).collect::<Vec<_>>().join("\u{1}");
+            let cache_key = target.to_string_lossy().replace('\\', "/");
+            let sources = match &self.config.enabled_sources { EnabledSources::Auto => "auto".into(), EnabledSources::Explicit(sources) => sources.join(",") };
+            let fingerprint = hash_content(&["v1".into(), sources, root.map_or_else(String::new, |root| root.to_string_lossy().into_owned()), cache_key.clone(), candidate_fingerprints].join("\0"));
+            result.push(DynamicTargetFingerprint { target_path: target.clone(), cache_key, fingerprint });
+        }
+        result
+    }
+    pub fn is_dynamic_target_fingerprint_current(&self, target: &DynamicTargetFingerprint) -> bool { self.state.dynamic_target_fingerprints.get(&target.cache_key) == Some(&target.fingerprint) }
+    pub fn commit_dynamic_target_fingerprints(&mut self, targets: &[DynamicTargetFingerprint]) {
+        for target in targets { self.state.dynamic_target_fingerprints.insert(target.cache_key.clone(), target.fingerprint.clone()); }
     }
     pub fn format_static(&self, rules: &[LoadedRule]) -> String { format_static_block(rules, &self.format_options()) }
     pub fn format_dynamic(&self, rules: &[LoadedRule], target: &str) -> String { format_dynamic_block(rules, target, &self.format_options()) }

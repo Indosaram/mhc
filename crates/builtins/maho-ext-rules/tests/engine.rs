@@ -37,3 +37,24 @@ fn project_rule_symlink_outside_root_is_rejected() {
     assert!(loaded.rules.is_empty());
     assert_eq!(loaded.diagnostics.len(), 1);
 }
+#[test]
+fn fingerprints_invalidate_on_rule_addition_and_reset() {
+    let root = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("Cargo.toml"), "").unwrap();
+    let target = root.path().join("a.rs");
+    fs::write(&target, "").unwrap();
+    let mut engine = Engine::new(config_from_environment(|_| None), home.path().into());
+    let first = engine.fingerprint_dynamic_targets(root.path(), &[target.clone(), target.clone()]);
+    assert_eq!(first.len(), 1);
+    assert!(!engine.is_dynamic_target_fingerprint_current(&first[0]));
+    engine.commit_dynamic_target_fingerprints(&first);
+    let unchanged = engine.fingerprint_dynamic_targets(root.path(), std::slice::from_ref(&target));
+    assert!(engine.is_dynamic_target_fingerprint_current(&unchanged[0]));
+    fs::write(root.path().join("AGENTS.md"), "new").unwrap();
+    let changed = engine.fingerprint_dynamic_targets(root.path(), &[target]);
+    assert_ne!(first[0].fingerprint, changed[0].fingerprint);
+    assert!(!engine.is_dynamic_target_fingerprint_current(&changed[0]));
+    engine.reset_session(None);
+    assert!(!engine.is_dynamic_target_fingerprint_current(&first[0]));
+}
