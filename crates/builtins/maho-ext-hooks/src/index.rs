@@ -91,7 +91,8 @@ impl Extension for HooksExtension {
                     ExtensionEvent::SessionCompact(SessionCompactEvent::Accepted {reason,request_id,will_retry,..})=>("PostCompact",build_post_compact_hook_input(compact_reason(*reason),request_id,*will_retry,true,&context),Some(request_id.clone())),
                     _=>return Ok(EventResult::None),
                 };
-                let result=dispatch(ctx,input).await?;let details=lifecycle_result_details(name,Some(&result));
+                let mut lifecycle_ctx=ctx.clone();if let ExtensionEvent::SessionBeforeCompact(event)=event {lifecycle_ctx.signal=Some(event.signal.clone());}
+                let result=dispatch(&lifecycle_ctx,input).await?;let details=lifecycle_result_details(name,Some(&result));
                 if let Some(message)=lifecycle_message(name,&details,request_id.as_deref()) {sender.send_message(message,SendMessageOptions::default())?;}
                 if name=="PreCompact"&&details.cancel {Ok(EventResult::SessionBefore(SessionBeforeEventResult {cancel:Some(true),..Default::default()}))} else {Ok(EventResult::None)}
             })}));
