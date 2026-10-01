@@ -18,8 +18,11 @@
 //!   settings_public_types, settings_overrides, terminal_settings, compaction_settings_access,
 //!   compaction_settings_resolver, http_dispatcher, and the rest of the senpi core tree.
 
+pub mod auth_guidance;
+pub mod auth_providers;
 pub mod auth_storage;
 pub mod brand;
+pub mod cache_stats;
 pub mod compaction;
 pub mod config;
 pub mod credential_accounts;
@@ -31,16 +34,26 @@ pub mod dynamic_prompt;
 pub mod event_bus;
 pub mod exec;
 pub mod frontmatter;
+pub mod high_reasoning_warning;
 pub mod keybindings;
 pub mod lockfile_policy;
 pub mod messages;
+pub mod model_config;
+pub mod model_config_schema;
+pub mod model_registry;
+pub mod model_resolver;
+pub mod model_runtime;
+pub mod models_json_migration;
 pub mod nearest_parent_config;
 pub mod output_guard;
 pub mod package_manager;
 pub mod paths;
 pub mod prompt_templates;
+pub mod provider_api_key_auth;
+pub mod provider_composer;
 pub mod resolve_config_value;
 pub mod resource_loader;
+pub mod retry_fallback;
 pub mod session_manager;
 pub mod session_resident_store;
 pub mod session_title_generator;
