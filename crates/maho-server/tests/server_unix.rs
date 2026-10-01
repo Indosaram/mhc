@@ -212,6 +212,8 @@ async fn callback_service_adapter_delivers_after_activation_and_closes() {
     let adapter =
         ClientServiceTransport::new(client.clone(), Arc::new(|| Some(json!({"serverId":ID}))));
     let (delivered, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let (errors,mut observed)=tokio::sync::mpsc::unbounded_channel();
+    client.set_listener_error_observer(Some(Arc::new(move|error|{errors.send(error).expect("error observer");}))).unwrap();
     let mut subscription = adapter
         .subscribe(
             "echo",
@@ -220,7 +222,7 @@ async fn callback_service_adapter_delivers_after_activation_and_closes() {
                 let delivered = delivered.clone();
                 Box::pin(async move {
                     delivered.send(update).expect("callback receiver");
-                    Ok(())
+                    Err(maho_server::client::errors::ClientError::Protocol("callback failed".into()))
                 })
             }),
         )
@@ -233,6 +235,9 @@ async fn callback_service_adapter_delivers_after_activation_and_closes() {
         .unwrap()
         .unwrap();
     assert_eq!(update["ops"], json!([["s", ["n"], 1]]));
+    let error=tokio::time::timeout(Duration::from_secs(3),observed.recv()).await.unwrap().unwrap();
+    assert_eq!(error,maho_server::client::errors::ClientError::Protocol("callback failed".into()));
+    assert!(client.connected());
     subscription.close().await.unwrap();
     subscription.close().await.unwrap();
     client.dispose();

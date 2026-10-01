@@ -20,6 +20,14 @@ use tokio::sync::mpsc;
 
 const ID: &str = "00000000-0000-4000-8000-000000000001";
 #[tokio::test]
+async fn subscription_cancellation_sends_cancel_and_accepts_late_reply() {
+    let (memory,mut requests)=Memory::create(json!({"type":"hello","version":8,"serverId":ID}),false);
+    let client=Client::new(ID.into(),MAX,Arc::new(MemoryFactory(memory.clone()))).unwrap();client.connect().await.unwrap();requests.recv().await.unwrap();
+    let (abort,signal)=tokio::sync::watch::channel(None);let subscribing=client.subscribe_with_cancellation(json!({"serverId":ID}),"echo","singleton",Some(signal));
+    let server=async {let request=requests.recv().await.unwrap();abort.send_replace(Some(ClientError::Disconnected("cancel subscription".into())));let cancel=requests.recv().await.unwrap();assert_eq!(cancel["type"],"cancel");assert_eq!(cancel["id"],request["id"]);memory.send(json!({"type":"response","id":request["id"],"ok":true,"result":null}));};
+    let (result,_)=tokio::join!(subscribing,server);assert!(matches!(result,Err(ClientError::Disconnected(_))));assert!(client.connected());client.dispose();
+}
+#[tokio::test]
 async fn synchronous_listeners_preserve_every_change_and_unsubscribe() {
     let (memory, _requests) =
         Memory::create(json!({"type":"hello","version":8,"serverId":ID}), false);

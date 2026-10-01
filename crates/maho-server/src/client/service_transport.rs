@@ -37,14 +37,18 @@ impl ClientServiceTransport {
         mode: &str,
         listener: ServiceListener,
     ) -> Result<CallbackSubscription, ClientError> {
+        self.subscribe_with_cancellation(service_id,mode,listener,None).await
+    }
+    pub async fn subscribe_with_cancellation(&self,service_id:&str,mode:&str,listener:ServiceListener,cancel:Option<watch::Receiver<Option<ClientError>>>)->Result<CallbackSubscription,ClientError> {
         let mut subscription = self
             .client
-            .subscribe(self.target()?, service_id, mode)
+            .subscribe_with_cancellation(self.target()?, service_id, mode,cancel)
             .await?;
         let snapshot = subscription.snapshot.clone();
         let (activate, activated) = oneshot::channel();
         let (stop, mut stopping) = watch::channel(false);
         let mut tasks = JoinSet::new();
+        let client=self.client.clone();
         tasks.spawn(async move {
             tokio::select! {_=async {let _stopped=stopping.wait_for(|v|*v).await;}=>{},activated=activated=>{
                 if activated.is_ok() {
@@ -52,7 +56,7 @@ impl ClientServiceTransport {
                     loop {
                         tokio::select! {_=async {let _stopped=stopping.wait_for(|v|*v).await;}=>break,update=subscription.updates.recv()=>{
                             let Some(update)=update else {break;};
-                            if let Err(error)=listener(update).await {eprintln!("{error}");}
+                            if let Err(error)=listener(update).await {client.report_listener_error(error);}
                         }}
                     }
                 }

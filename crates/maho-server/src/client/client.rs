@@ -16,6 +16,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 type Reply = oneshot::Sender<Result<Option<Value>, ClientError>>;
 type ConnectionListener = Arc<dyn Fn(ConnectionStateChange) + Send + Sync>;
 type AttachmentListener = Arc<dyn Fn(Option<Value>) + Send + Sync>;
+type ListenerErrorObserver=Arc<dyn Fn(ClientError)+Send+Sync>;
 struct Pending {
     reply: Option<Reply>,
     subscription: Option<String>,
@@ -39,6 +40,7 @@ struct State {
     listener_sequence: u64,
     connection_listeners: BTreeMap<u64, ConnectionListener>,
     attachment_listeners: BTreeMap<u64, AttachmentListener>,
+    listener_error:Option<ListenerErrorObserver>,
 }
 
 pub struct Client {
@@ -74,6 +76,7 @@ impl Client {
             pending: BTreeMap::new(),
             subscriptions: BTreeMap::new(),
             listener_sequence: 0,
+            listener_error:None,
             connection_listeners: BTreeMap::new(),
             attachment_listeners: BTreeMap::new(),
         }));
@@ -245,6 +248,13 @@ impl Client {
         let mut state = lock(&self.state);
         state.connection_listeners.clear();
         state.attachment_listeners.clear();
+        state.listener_error=None;
+    }
+    pub fn set_listener_error_observer(&self,observer:Option<ListenerErrorObserver>)->Result<(),ClientError> {
+        let mut state=lock(&self.state);if state.disposed {return Err(ClientError::Disposed);}state.listener_error=observer;Ok(())
+    }
+    pub fn report_listener_error(&self,error:ClientError) {
+        let observer=lock(&self.state).listener_error.clone();if let Some(observer)=observer {observer(error);}
     }
     pub async fn request(
         &self,
@@ -336,6 +346,12 @@ impl Client {
         service_id: &str,
         mode: &str,
     ) -> Result<ServiceSubscription, ClientError> {
+        self.subscribe_with_cancellation(target,service_id,mode,None).await
+    }
+    pub async fn subscribe_with_cancellation(
+        self:&Arc<Self>,target:Value,service_id:&str,mode:&str,mut cancellation:Option<watch::Receiver<Option<ClientError>>>,
+    )->Result<ServiceSubscription,ClientError> {
+        if let Some(reason)=cancellation.as_ref().and_then(|signal|signal.borrow().clone()) {return Err(reason);}
         let (updates, rx) = mpsc::unbounded_channel();
         let id = {
             let mut state = lock(&self.state);
@@ -355,8 +371,17 @@ impl Client {
             id
         };
         let result=async {
-            let (_,reply)=self.begin_request(target.clone(),json!({"serviceId":"$chord.service","member":"subscribe","args":[id,service_id,mode]}),Some(id.clone())).await?;
-            reply.await.map_err(|_| ClientError::Disconnected("Client is disconnected".into()))?
+            let (request_id,reply)=self.begin_request(target.clone(),json!({"serviceId":"$chord.service","member":"subscribe","args":[id,service_id,mode]}),Some(id.clone())).await?;
+            if let Some(signal)=cancellation.as_mut() {
+                tokio::select! {
+                    result=reply=>result.map_err(|_|ClientError::Disconnected("Client is disconnected".into()))?,
+                    reason=async {signal.wait_for(|v|v.is_some()).await.map(|v|v.clone())}=>{
+                        if let Some(pending)=lock(&self.state).pending.get_mut(&request_id) {pending.reply=None;pending.subscription=None;}
+                        if self.connected() {let frame=encode_client_message(&json!({"type":"cancel","id":request_id,"target":target}),self.connection.max_frame_length())?;self.connection.send(&frame).await?;}
+                        Err(reason.ok().flatten().unwrap_or_else(||ClientError::Disconnected("The operation was aborted".into())))
+                    }
+                }
+            } else {reply.await.map_err(|_| ClientError::Disconnected("Client is disconnected".into()))?}
         }.await;
         match result {
             Ok(Some(snapshot)) => Ok(ServiceSubscription {
