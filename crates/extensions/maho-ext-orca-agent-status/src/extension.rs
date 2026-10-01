@@ -4,7 +4,8 @@ use serde_json::{Map, Value, json};
 use std::{sync::{Arc, Mutex, Condvar}, thread::JoinHandle, time::Duration};
 
 #[derive(Default)]
-struct Pending { value: Option<(String, Map<String, Value>)>, shutdown: bool }
+struct Pending { value: Option<Post>, shutdown: bool }
+struct Post { event: String, extra: Map<String, Value>, snapshot: Map<String, Value> }
 #[derive(Default)]
 struct EndpointCache {
     key: Option<(std::time::SystemTime, u64, u64)>,
@@ -36,7 +37,7 @@ impl EndpointCache {
 }
 struct Delivery { pending: Arc<(Mutex<Pending>, Condvar)>, thread: Mutex<Option<JoinHandle<()>>> }
 impl Delivery {
-    fn new(metadata: Arc<Mutex<Map<String, Value>>>) -> Self {
+    fn new(metadata: Arc<Mutex<Map<String, Value>>>, omp: bool) -> Self {
         let pending = Arc::new((Mutex::new(Pending::default()), Condvar::new()));
         let worker_pending = Arc::clone(&pending);
         let thread = std::thread::spawn(move || {
@@ -52,7 +53,7 @@ impl Delivery {
                 let next = pending.value.take();
                 if next.is_none() && pending.shutdown { break; }
                 drop(pending);
-                let Some((event, extra)) = next else { continue; };
+                let Some(Post { event, extra, snapshot }) = next else { continue; };
                 let file_env = std::env::var("ORCA_AGENT_HOOK_ENDPOINT").ok().filter(|path| !path.is_empty()).map(|path| endpoints.read(std::path::Path::new(&path))).unwrap_or_default();
                 let lookup = |key: &str| file_env.get(key).filter(|value| !value.is_empty()).cloned().or_else(|| std::env::var(key).ok()).unwrap_or_default();
                 let port = lookup("ORCA_AGENT_HOOK_PORT");
@@ -68,16 +69,17 @@ impl Delivery {
                 let metadata = metadata.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let persisted = metadata.get("session_file").and_then(Value::as_str).is_some_and(|path| std::path::Path::new(path).exists());
                 let empty = Map::new();
-                let body = status_payload(&envelope, &event, if persisted { &metadata } else { &empty }, &extra);
+                let body = status_payload(&envelope, &event, if omp { &snapshot } else if persisted { &metadata } else { &empty }, &extra);
                 drop(metadata);
-                let _delivery = client.post(format!("http://127.0.0.1:{port}/hook/pi")).header("X-Orca-Agent-Hook-Token", token).json(&body).send();
+                let route = if omp { "omp" } else { "pi" };
+                let _delivery = client.post(format!("http://127.0.0.1:{port}/hook/{route}")).header("X-Orca-Agent-Hook-Token", token).json(&body).send();
             }
         });
         Self { pending, thread: Mutex::new(Some(thread)) }
     }
-    fn post(&self, event: &str, extra: Map<String, Value>) {
+    fn post(&self, event: &str, extra: Map<String, Value>, snapshot: Map<String, Value>) {
         let (lock, signal) = &*self.pending;
-        lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner).value = Some((event.to_owned(), extra));
+        lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner).value = Some(Post { event: event.to_owned(), extra, snapshot });
         signal.notify_one();
     }
 }
@@ -107,7 +109,9 @@ impl Extension for OrcaAgentStatus {
         let pid = std::process::id().to_string();
         if std::env::var("ORCA_PI_STATUS_OWNED").ok().is_some_and(|owner| !owner.is_empty() && owner != pid) { return; }
         let metadata = Arc::new(Mutex::new(Map::new()));
-        let delivery = Arc::new(Delivery::new(Arc::clone(&metadata)));
+        let names = std::env::args().chain(std::env::var("_").ok()).collect::<Vec<_>>();
+        let omp = crate::is_omp_runtime(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        let delivery = Arc::new(Delivery::new(Arc::clone(&metadata), omp));
         let end_reported = Arc::new(Mutex::new(false));
         for kind in [EventKind::SessionStart, EventKind::BeforeAgentStart, EventKind::AgentStart, EventKind::ToolExecutionStart, EventKind::ToolCall, EventKind::ToolExecutionEnd, EventKind::MessageEnd, EventKind::AgentSettled] {
             let metadata = Arc::clone(&metadata);
@@ -136,7 +140,12 @@ impl Extension for OrcaAgentStatus {
                         ExtensionEvent::AgentSettled => { let mut reported = end_reported.lock().unwrap_or_else(std::sync::PoisonError::into_inner); if *reported { return Ok(EventResult::None); } *reported = true; "agent_end" }
                         _ => return Ok(EventResult::None),
                     };
-                    delivery.post(name, extra);
+                    let mut snapshot = Map::new();
+                    if name != "session_start" && omp {
+                        let id = ctx.session_manager.session_id();
+                        if !id.is_empty() && ctx.session_manager.session_file().is_some_and(|path| !path.as_os_str().is_empty()) { snapshot.insert("session_id".into(), json!(id)); }
+                    }
+                    delivery.post(name, extra, snapshot);
                     Ok(EventResult::None)
                 })
             }));
