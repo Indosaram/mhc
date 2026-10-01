@@ -31,7 +31,7 @@ impl FooterStatus {
         let id=ctx.session_manager.session_id();let mut encoded=String::new();
         for byte in id.bytes() {if byte.is_ascii_alphanumeric()||b"-_.!~*'()".contains(&byte) {encoded.push(char::from(byte));}else{encoded.push_str(&format!("%{byte:02X}"));}}
         let mut paths=Vec::new();
-        if let Some(file)=ctx.session_manager.session_file() && let Some(dir)=file.parent() {paths.push(dir.join("extensions/goal").join(format!("{encoded}.json")));}
+        if let Some(file)=&ctx.goal_store_file {paths.push(file.clone());}
         paths.push(ctx.cwd.join(".omo/goal").join(format!("{encoded}.json")));
         self.sync(Some(FooterRuntime{ui:Arc::clone(&ctx.ui),goal_paths:paths}),active);
     }
