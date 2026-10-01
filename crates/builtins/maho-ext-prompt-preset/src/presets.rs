@@ -1,8 +1,11 @@
 use crate::settings::{PromptPresetName, parse_prompt_preset};
 use maho_core::dynamic_prompt::build::BuildDynamicSystemPromptOptions;
 pub struct ResolvedPromptPreset { pub name: PromptPresetName, pub prompt: String }
-pub fn resolve_preset(model: ModelMetadata<'_>, setting: PromptPresetName, options: BuildDynamicSystemPromptOptions<'_>) -> Option<ResolvedPromptPreset> {
+pub fn resolve_preset(model: ModelMetadata<'_>, setting: PromptPresetName, mut options: BuildDynamicSystemPromptOptions<'_>) -> Option<ResolvedPromptPreset> {
  let name = resolve_preset_name(model, setting)?;
+ options.tuning_section = None;
+ options.core_prompt = None;
+ options.workstation_dialect = None;
  let prompt = match name {
   PromptPresetName::Auto => return None,
   PromptPresetName::ClaudeFable5 => crate::claude_fable_5::build_claude_fable5_prompt(options),

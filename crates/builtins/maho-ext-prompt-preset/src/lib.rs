@@ -35,3 +35,5 @@ pub mod gpt_5_4;
 pub mod gpt_5_5;
 pub mod gpt_5_6;
 pub mod gpt_6_astra;
+pub mod index;
+pub use index::PromptPreset;
