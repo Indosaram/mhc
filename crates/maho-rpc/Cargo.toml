@@ -11,6 +11,7 @@ maho-ai = { path = "../maho-ai" }
 chrono = { workspace = true, features = ["std", "clock"] }
 rustix = { version = "=1.1.4", features = ["process"] }
 sha2.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror.workspace = true

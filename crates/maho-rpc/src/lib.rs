@@ -31,3 +31,4 @@ pub mod host_memory_sampler;
 pub mod host_launch_spec;
 pub mod host_reservations;
 pub mod host_generations;
+pub mod protocol_identity;
