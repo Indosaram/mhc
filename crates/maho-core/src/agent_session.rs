@@ -381,6 +381,8 @@ struct AgentSessionState {
     post_compaction_deferred_follow_up_messages: Vec<AgentMessage>,
     had_cleared_queued_messages: bool,
     auto_compaction_session_override: Option<bool>,
+    turn_index: u64,
+    message_replacements: Vec<(AgentMessage, AgentMessage)>,
 }
 
 fn name_set(names: Option<Vec<String>>) -> Option<BTreeSet<String>> {
@@ -509,6 +511,8 @@ impl AgentSession {
             post_compaction_deferred_follow_up_messages: Vec::new(),
             had_cleared_queued_messages: false,
             auto_compaction_session_override: None,
+            turn_index: 0,
+            message_replacements: Vec::new(),
         };
         let session = Self { inner: Arc::new(AgentSessionInner {
             agent,
@@ -559,10 +563,40 @@ impl AgentSession {
 
     async fn process_agent_event(
         &self,
-        event: maho_agent::types::AgentEvent,
+        mut event: maho_agent::types::AgentEvent,
         _signal: maho_ai::utils::abort::AbortSignal,
     ) {
         use maho_agent::types::AgentEvent;
+        {
+            let mut state = self.state();
+            match &mut event {
+                AgentEvent::AgentStart => {
+                    state.turn_index = 0;
+                    state.message_replacements.clear();
+                }
+                AgentEvent::TurnEnd { message, .. } => {
+                    for (original, replacement) in &state.message_replacements {
+                        if message == original { *message = replacement.clone(); }
+                    }
+                }
+                AgentEvent::AgentEnd { messages } => {
+                    for message in messages {
+                        for (original, replacement) in &state.message_replacements {
+                            if message == original { *message = replacement.clone(); }
+                        }
+                    }
+                }
+                AgentEvent::TurnStart | AgentEvent::MessageStart { .. } |
+                AgentEvent::MessageUpdate { .. } | AgentEvent::MessageEnd { .. } |
+                AgentEvent::ToolExecutionStart { .. } | AgentEvent::ToolExecutionUpdate { .. } |
+                AgentEvent::ToolExecutionEnd { .. } => {}
+            }
+        }
+        if let AgentEvent::MessageEnd { message } = &event
+            && let Some(assistant) = message.as_assistant()
+        {
+            self.emit_server_fallback_aborted(assistant);
+        }
         if let AgentEvent::MessageStart { message } = &event
             && message.role() == "user"
         {
@@ -590,10 +624,10 @@ impl AgentSession {
                 messages: messages.clone(), aborted: None, will_retry: Some(false), abort_source: None,
             },
             AgentEvent::TurnStart => maho_ext_api::ExtensionEvent::TurnStart {
-                turn_index: 0, timestamp: maho_ai::utils::diagnostics::now_ms() as u64,
+                turn_index: self.state().turn_index, timestamp: maho_ai::utils::diagnostics::now_ms() as u64,
             },
             AgentEvent::TurnEnd { message, tool_results } => maho_ext_api::ExtensionEvent::TurnEnd {
-                turn_index: 0, message: message.clone(), tool_results: tool_results.clone(),
+                turn_index: self.state().turn_index, message: message.clone(), tool_results: tool_results.clone(),
             },
             AgentEvent::MessageStart { message } => maho_ext_api::ExtensionEvent::MessageStart { message: message.clone() },
             AgentEvent::MessageUpdate { message, assistant_message_event } => maho_ext_api::ExtensionEvent::MessageUpdate {
@@ -611,11 +645,50 @@ impl AgentSession {
                 tool_call_id: tool_call_id.clone(), tool_name: tool_name.clone(), result: result.clone(), is_error: *is_error,
             },
         };
-        self.dispatch_extension_event(extension_event).await;
+        if let AgentEvent::MessageEnd { message } = &mut event {
+            let replacement = {
+                let mut runner = self.extension_runner.lock().await;
+                match runner.as_mut() {
+                    Some(runner) => runner.emit_message_end(message.clone()).await,
+                    None => Ok(None),
+                }
+            };
+            match replacement {
+                Ok(Some(replacement)) => {
+                    self.state().message_replacements.push((message.clone(), replacement.clone()));
+                    let mut messages = self.messages();
+                    if let Some(original) = messages.iter_mut().rev().find(|original| *original == message) {
+                        *original = replacement.clone();
+                        self.agent.set_messages(messages);
+                    }
+                    *message = replacement;
+                }
+                Ok(None) => {}
+                Err(error) => self.emit(AgentSessionEvent::ContinuationError { error_message: error.to_string() }),
+            }
+        } else {
+            self.dispatch_extension_event(extension_event).await;
+        }
+        if matches!(event, AgentEvent::TurnEnd { .. }) {
+            self.state().turn_index += 1;
+        }
         self.emit(AgentSessionEvent::Agent(event.clone()));
-        if let AgentEvent::MessageEnd { message } = &event
-            && matches!(message.role(), "user" | "assistant" | "toolResult")
-        {
+        if let AgentEvent::MessageEnd { message } = &event {
+            if let AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(custom)) = message {
+                match serde_json::to_value(&custom.content) {
+                    Ok(content) => {
+                        self.with_session_manager_mut(|manager| manager.append_custom_message(
+                            &custom.custom_type, content, custom.display, custom.details.clone(),
+                        ));
+                        self.state().message_revision += 1;
+                    }
+                    Err(error) => self.emit(AgentSessionEvent::ContinuationError { error_message: error.to_string() }),
+                }
+                return;
+            }
+            if !matches!(message.role(), "user" | "assistant" | "toolResult") {
+                return;
+            }
             match serde_json::to_value(message) {
                 Ok(message) => {
                     let entry = self.with_session_manager_mut(|manager| manager.append_message(message));
@@ -2618,5 +2691,67 @@ mod tests {
             "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
         }))
         .expect("model")
+    }
+
+    #[tokio::test]
+    async fn custom_message_end_persists_custom_entry() {
+        // Given a session and an extension custom message.
+        let session = test_session();
+        let message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(
+            maho_agent::harness::messages::CustomMessage {
+                role: "custom".to_owned(), custom_type: "notice".to_owned(),
+                content: maho_agent::harness::messages::CustomMessageContent::Text("payload".to_owned()),
+                display: true, details: Some(serde_json::json!({"origin": "extension"})), timestamp: 0,
+            },
+        ));
+        // When the finalized message passes through session persistence.
+        session.process_agent_event(
+            maho_agent::types::AgentEvent::MessageEnd { message },
+            maho_ai::utils::abort::AbortController::new().signal(),
+        ).await;
+        // Then it is stored as a custom entry, not an LLM message.
+        let entries = session.with_session_manager(|manager| manager.entries());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["type"], "custom_message");
+        assert_eq!(entries[0]["customType"], "notice");
+        assert_eq!(entries[0]["content"], "payload");
+        assert_eq!(entries[0]["details"]["origin"], "extension");
+        assert_eq!(session.message_revision(), 1);
+    }
+
+    #[tokio::test]
+    async fn replacement_is_retained_in_later_turn_events() {
+        // Given an earlier message_end replacement and a later turn_end carrying the original.
+        let session = test_session();
+        let original = make_user_message("original", None);
+        let replacement = make_user_message("replacement", None);
+        session.state().message_replacements.push((original.clone(), replacement.clone()));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| lock(&captured).push(event.clone())));
+        // When the turn ends.
+        session.process_agent_event(
+            maho_agent::types::AgentEvent::TurnEnd { message: original, tool_results: Vec::new() },
+            maho_ai::utils::abort::AbortController::new().signal(),
+        ).await;
+        // Then listeners receive the replacement, and the next turn advances.
+        assert!(matches!(&lock(&events)[0], AgentSessionEvent::Agent(
+            maho_agent::types::AgentEvent::TurnEnd { message, .. }
+        ) if message == &replacement));
+        assert_eq!(session.state().turn_index, 1);
+    }
+
+    #[tokio::test]
+    async fn agent_start_resets_turn_index() {
+        // Given a session whose previous run ended on a later turn.
+        let session = test_session();
+        session.state().turn_index = 4;
+        // When a new run starts.
+        session.process_agent_event(
+            maho_agent::types::AgentEvent::AgentStart,
+            maho_ai::utils::abort::AbortController::new().signal(),
+        ).await;
+        // Then its first extension turn starts at zero.
+        assert_eq!(session.state().turn_index, 0);
     }
 }
