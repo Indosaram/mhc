@@ -368,3 +368,13 @@ async fn bare_thinking_selector_filters_then_cancels_without_provider_turn() {
     assert_eq!(mode.editor.editor.get_text(), "draft");
     assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0));
 }
+
+#[test]
+fn working_row_animates_until_exact_agent_end_event() {
+    let (mut mode, _directory) = native_mode();
+    assert!(mode.working_frame(0.0).is_none());
+    mode.handle_event(&maho_agent::types::AgentEvent::AgentStart);
+    assert_ne!(mode.working_frame(100.0), mode.working_frame(700.0));
+    mode.handle_event(&maho_agent::types::AgentEvent::AgentEnd { messages:Vec::new() });
+    assert!(mode.working_frame(800.0).is_none());
+}
