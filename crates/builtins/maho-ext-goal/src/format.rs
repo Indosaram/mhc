@@ -9,6 +9,14 @@ pub fn format_goal_elapsed_seconds(value:f64)->String {
 fn one_decimal(value:f64)->String { let rendered=format!("{value:.1}"); rendered.strip_suffix(".0").unwrap_or(&rendered).into() }
 pub fn format_tokens_compact(value:f64)->String { if value.abs()>=1_000_000.0 { format!("{}M",one_decimal(value/1_000_000.0)) } else if value.abs()>=1000.0 { format!("{}K",one_decimal(value/1000.0)) } else { format!("{}",value.trunc()) } }
 pub const fn goal_status_label(status:GoalStatus)->&'static str { match status { GoalStatus::Active=>"active",GoalStatus::Paused=>"paused",GoalStatus::Blocked=>"blocked",GoalStatus::Complete=>"complete" } }
+pub fn iso_timestamp(seconds:u64)->Option<String> { let seconds=i64::try_from(seconds).ok()?; let date=chrono::DateTime::from_timestamp(seconds,0)?; Some(date.to_rfc3339_opts(chrono::SecondsFormat::Millis,true)) }
+pub fn format_goal_for_tool(goal:Option<&Goal>)->Result<String,crate::errors::GoalError> {
+    let Some(goal)=goal else { return Ok("No active goal is set.".into()); };
+    let mut lines=vec![format!("Objective: {}",goal.objective),format!("Status: {}",goal_status_label(goal.status)),format!("Time used: {}",format_goal_elapsed_seconds(goal.time_used_seconds)),format!("Tokens used: {}",format_tokens_compact(goal.tokens_used as f64))];
+    if let Some(reason)=&goal.blocked_reason && !reason.is_empty() { lines.push(format!("Blocked reason: {reason}")); }
+    if let Some(at)=goal.completed_at && at!=0 { let timestamp=iso_timestamp(at).ok_or_else(||crate::errors::GoalError::InvalidMutation("Invalid time value".into()))?; lines.push(format!("Completed at: {timestamp}")); }
+    Ok(lines.join("\n"))
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct GoalToolRenderDetails { pub goal:Option<GoalToolSnapshot>,pub notice:Option<String> }
 pub fn goal_tool_snapshot(goal:&Goal)->GoalToolSnapshot { GoalToolSnapshot { thread_id:goal.thread_id.clone(),objective:goal.objective.clone(),status:goal.status,tokens_used:goal.tokens_used,time_used_seconds:goal.time_used_seconds,created_at:goal.created_at,updated_at:goal.updated_at,blocked_reason:goal.blocked_reason.clone(),blocked_at:goal.blocked_at } }

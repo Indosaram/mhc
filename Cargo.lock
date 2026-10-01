@@ -1636,6 +1636,7 @@ version = "0.0.0"
 name = "maho-ext-goal"
 version = "0.0.0"
 dependencies = [
+ "chrono",
  "maho-agent",
  "maho-ai",
  "maho-core",
