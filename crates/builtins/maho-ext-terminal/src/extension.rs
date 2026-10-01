@@ -20,8 +20,28 @@ impl Extension for TerminalExtension {
             if let Some(notifier)=event_notifier.lock().expect("monitor notifier").as_ref() && let Err(error)=notifier.notify_event(event) {eprintln!("monitor delivery failed: {error}");}
         })));
         let sender=Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));
+        let stepped_aside=Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let notice_shown=Arc::new(std::sync::atomic::AtomicBool::new(false));
+        for kind in [EventKind::SessionStart,EventKind::ModelSelect] {
+            let sender=sender.clone();let stepped_aside=stepped_aside.clone();let notice_shown=notice_shown.clone();let completion_delivery=completion_delivery.clone();
+            api.on(kind,Arc::new(move |event,ctx| {let sender=sender.clone();let stepped_aside=stepped_aside.clone();let notice_shown=notice_shown.clone();let completion_delivery=completion_delivery.clone();Box::pin(async move {
+                let model=match event {maho_ext_api::types::ExtensionEvent::ModelSelect(event)=>Some(&event.model),_=>ctx.model.as_ref()};
+                let enabled=std::env::var("PI_ANTHROPIC_BASH").is_ok_and(|value|matches!(value.trim().to_lowercase().as_str(),"1"|"true"|"yes"|"on"));
+                let step_aside=enabled&&model.is_some_and(|model|serde_json::to_value(&model.api).ok().and_then(|value|value.as_str().map(str::to_owned)).as_deref()==Some("anthropic-messages"));
+                stepped_aside.store(step_aside,std::sync::atomic::Ordering::SeqCst);
+                let mut active=sender.get_active_tools()?;
+                if !step_aside&&!active.iter().any(|tool|tool=="bash") {active.push("bash".to_owned());}
+                for companion in crate::shared::TERMINAL_COMPANION_TOOLS {if !active.iter().any(|tool|tool==companion) {active.push((*companion).to_owned());}}
+                if step_aside&&!notice_shown.swap(true,std::sync::atomic::Ordering::SeqCst) {ctx.ui.notify("native Anthropic bash active — monitor sessions remain available",maho_ext_api::types::NotificationType::Info);}
+                if !step_aside {notice_shown.store(false,std::sync::atomic::Ordering::SeqCst);}
+                sender.set_active_tools(active)?;
+                *completion_delivery.lock().map_err(|_|ExtensionFailure::new("terminal delivery state poisoned"))?=crate::notify::get_terminal_notification_delivery(crate::settings::TERMINAL_SETTINGS_DEFAULTS.notify,Some(match ctx.mode {maho_ext_api::types::ExtensionMode::Print=>"print",maho_ext_api::types::ExtensionMode::Json=>"json",_=>"interactive"}),model.is_some(),false);
+                Ok(EventResult::None)
+            })}));
+        }
         let prompt_sender=sender.clone();
-        api.on(EventKind::BeforeAgentStart,Arc::new(move |event,_| {let sender=prompt_sender.clone();Box::pin(async move {
+        api.on(EventKind::BeforeAgentStart,Arc::new(move |event,_| {let sender=prompt_sender.clone();let stepped_aside=stepped_aside.clone();Box::pin(async move {
+            if stepped_aside.load(std::sync::atomic::Ordering::SeqCst) {return Ok(EventResult::None);}
             let maho_ext_api::types::ExtensionEvent::BeforeAgentStart(event)=event else {return Ok(EventResult::None);};
             let eval_only=sender.get_all_tools()?.iter().any(|tool|tool.name=="eval");
             Ok(EventResult::BeforeAgentStart(maho_ext_api::types::BeforeAgentStartEventResult {system_prompt:Some(format!("{}\n{}",event.system_prompt,crate::prompt::build_terminal_prompt_section(eval_only))),..Default::default()}))
