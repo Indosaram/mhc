@@ -12,6 +12,14 @@ pub fn goal_active(runtime:&FooterRuntime)->bool {
 #[derive(Default)]
 pub struct FooterStatus { runtime:Option<FooterRuntime>,frame:usize,published:bool,active:bool,pub running:bool }
 impl FooterStatus {
+    pub fn sync_context(&mut self,ctx:&maho_ext_api::ExtensionContext,active:bool) {
+        let id=ctx.session_manager.session_id();let mut encoded=String::new();
+        for byte in id.bytes() {if byte.is_ascii_alphanumeric()||b"-_.!~*'()".contains(&byte) {encoded.push(char::from(byte));}else{encoded.push_str(&format!("%{byte:02X}"));}}
+        let mut paths=Vec::new();
+        if let Some(file)=ctx.session_manager.session_file() && let Some(dir)=file.parent() {paths.push(dir.join("extensions/goal").join(format!("{encoded}.json")));}
+        paths.push(ctx.cwd.join(".omo/goal").join(format!("{encoded}.json")));
+        self.sync(Some(FooterRuntime{ui:Arc::clone(&ctx.ui),goal_paths:paths}),active);
+    }
     pub fn sync(&mut self,runtime:Option<FooterRuntime>,active:bool) {
         if runtime.is_some() {self.runtime=runtime;}self.active=active;
         if self.runtime.as_ref().is_none_or(|r|!active||!goal_active(r)) {self.stop();return;}
