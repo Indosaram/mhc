@@ -26,13 +26,16 @@ pub fn run_senpi_startup_migration(cwd:&str,environment:&BTreeMap<String,String>
     }
 }
 
-pub struct ConfigStartupComponent;
+pub type StartupMigrationRunner=Arc<dyn Fn(&str)->SenpiStartupMigrationResult+Send+Sync>;
+pub type StartupConfigLoader=Arc<dyn Fn(&str)->maho_omo_config_resolution::SenpiOmoConfigResult+Send+Sync>;
+#[derive(Default)]
+pub struct ConfigStartupComponent { pub run_migration:Option<StartupMigrationRunner>,pub load_config:Option<StartupConfigLoader> }
 impl Extension for ConfigStartupComponent {
     fn register(&self,api:&mut ExtensionApi) {
         let cwd=api.cwd.to_string_lossy().into_owned(); let env:BTreeMap<_,_>=std::env::vars().collect();
         let home=env.get("HOME").or_else(||env.get("USERPROFILE")).map(String::as_str).unwrap_or_default();
-        let migration=run_senpi_startup_migration(&cwd,&env,home);
-        let config=maho_omo_config_resolution::load_senpi_omo_config(LoadOmoConfigOptions{cwd:Some(cwd),env:Some(env),..Default::default()});
+        let migration=self.run_migration.as_ref().map_or_else(||run_senpi_startup_migration(&cwd,&env,home),|run|run(&cwd));
+        let config=self.load_config.as_ref().map_or_else(||maho_omo_config_resolution::load_senpi_omo_config(LoadOmoConfigOptions{cwd:Some(cwd.clone()),env:Some(env),..Default::default()}),|load|load(&cwd));
         let mut notices=Vec::new();
         if let Some(error)=migration.error { notices.push((format!("omo-senpi: configuration migration: {error}"),NotificationType::Warning)); }
         else if !migration.migrated_from.is_empty() { notices.push((format!("omo-senpi: migrated legacy configuration from {}",migration.migrated_from.join(", ")),NotificationType::Info)); }
