@@ -118,10 +118,11 @@ impl MonitorRegistry {
         let file=std::sync::Arc::new(std::sync::Mutex::new(crate::file_monitor::FileMonitor::register(id.clone(),description.to_owned(),path,event,approved_parent)?));
         let checker=file.clone();let emit=self.emit.clone();let snapshots=self.file_snapshots.clone();let runtime_id=id.clone();
         snapshots.lock().expect("file snapshots").insert(id.clone(),MonitorSnapshotEntry {id:id.clone(),monitor_id:Some(monitor_id.clone()),description:description.to_owned(),started_at_ms:now_ms(),persistent:Some(persistent),deadline_ms:(!persistent).then_some(now_ms()+timeout_ms as f64),expires_at:persistent.then_some(now_ms()+timeout_ms as f64),..Default::default()});
+        let expires=tokio::time::Instant::now()+std::time::Duration::from_millis(timeout_ms);
         let watch=tokio::spawn(async move {
             let period=std::time::Duration::from_millis(crate::monitor_file_watch::FILE_MONITOR_POLL_MS);
             let mut timer=tokio::time::interval_at(tokio::time::Instant::now()+period,period);timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let deadline=tokio::time::sleep(std::time::Duration::from_millis(timeout_ms));tokio::pin!(deadline);
+            let deadline=tokio::time::sleep_until(expires);tokio::pin!(deadline);
             loop {
                 let timed_out=tokio::select! {_=timer.tick()=>false,_=&mut deadline=>true};
                 let (events,settled)={let mut file=checker.lock().expect("file monitor");let events=if timed_out {file.stop(if persistent {"watcher expired"} else {"watcher timed_out"}).into_iter().collect()} else {match file.check() {Ok(events)=>events,Err(error)=>file.stop(&format!("watcher error: {error}")).into_iter().collect()}};(events,file.settled)};
@@ -207,6 +208,14 @@ impl Drop for MonitorRegistry {fn drop(&mut self) {self.dispose();}}
 #[cfg(test)]
 mod registry_tests {
     use super::*;
+    #[tokio::test(start_paused=true)]
+    async fn file_timeout_starts_at_registration_not_task_first_poll() {
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("created");
+        let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let mut registry=MonitorRegistry::new(move |event| {sender.send(event).unwrap();});
+        registry.register_file("created",&path,crate::terminal_manifest_model::FileEvent::Create,1000).unwrap();
+        tokio::time::advance(std::time::Duration::from_millis(1000)).await;
+        assert!(matches!(events.recv().await,Some(MonitorEvent::Summary {summary,..}) if summary=="watcher timed_out"));assert!(registry.snapshot().is_empty());
+    }
     #[tokio::test]
     async fn file_rearm_callbacks_can_read_command_records() {
         let dir=tempfile::tempdir().unwrap();let path=dir.path().join("created");
