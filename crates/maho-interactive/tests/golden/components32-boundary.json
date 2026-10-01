@@ -1,0 +1,130 @@
+{
+  "boundary": [
+    {
+      "name": "healthy",
+      "width": 40,
+      "lines": [
+        "healthy"
+      ],
+      "failures": 0
+    },
+    {
+      "name": "throwing",
+      "width": 40,
+      "lines": [
+        "fallback"
+      ],
+      "failures": 1
+    },
+    {
+      "name": "throwing-again",
+      "width": 40,
+      "lines": [
+        "fallback"
+      ],
+      "failures": 1
+    },
+    {
+      "name": "healthy",
+      "width": 80,
+      "lines": [
+        "healthy"
+      ],
+      "failures": 0
+    },
+    {
+      "name": "throwing",
+      "width": 80,
+      "lines": [
+        "fallback"
+      ],
+      "failures": 1
+    },
+    {
+      "name": "throwing-again",
+      "width": 80,
+      "lines": [
+        "fallback"
+      ],
+      "failures": 1
+    }
+  ],
+  "progressive": [
+    {
+      "count": 0,
+      "tailBudget": 2,
+      "warmChunkSize": 1,
+      "frames": [
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    {
+      "count": 1,
+      "tailBudget": 2,
+      "warmChunkSize": 1,
+      "frames": [
+        [
+          "child-0"
+        ],
+        [
+          "child-0"
+        ],
+        [
+          "child-0"
+        ],
+        [
+          "child-0"
+        ]
+      ]
+    },
+    {
+      "count": 2,
+      "tailBudget": 2,
+      "warmChunkSize": 1,
+      "frames": [
+        [
+          "child-0",
+          "child-1"
+        ],
+        [
+          "child-0",
+          "child-1"
+        ],
+        [
+          "child-0",
+          "child-1"
+        ],
+        [
+          "child-0",
+          "child-1"
+        ]
+      ]
+    },
+    {
+      "count": 5,
+      "tailBudget": 2,
+      "warmChunkSize": 1,
+      "frames": [
+        [
+          "child-3",
+          "child-4"
+        ],
+        [
+          "child-3",
+          "child-4"
+        ],
+        [
+          "child-3",
+          "child-4"
+        ],
+        [
+          "child-3",
+          "child-4"
+        ]
+      ]
+    }
+  ]
+}

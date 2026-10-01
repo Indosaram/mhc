@@ -1,0 +1,600 @@
+{
+  "borders": [
+    {
+      "width": 0,
+      "lines": [
+        "\u001b[38;5;69m─\u001b[39m"
+      ]
+    },
+    {
+      "width": 1,
+      "lines": [
+        "\u001b[38;5;69m─\u001b[39m"
+      ]
+    },
+    {
+      "width": 10,
+      "lines": [
+        "\u001b[38;5;69m──────────\u001b[39m"
+      ]
+    },
+    {
+      "width": 80,
+      "lines": [
+        "\u001b[38;5;69m────────────────────────────────────────────────────────────────────────────────\u001b[39m"
+      ]
+    }
+  ],
+  "continuity": [
+    {
+      "message": {
+        "diagnostics": [
+          {
+            "type": "claude_sdk_oauth_session_continuity",
+            "details": {
+              "kind": "flatten",
+              "reason": "transcript_missing",
+              "payloadBytes": 214328,
+              "collapsedDirectives": 4
+            }
+          }
+        ]
+      },
+      "notice": "\u001b[38;5;244mSession continuity lost - resent the full conversation (transcript_missing) - sent 209.3KB, 4 duplicate ultrawork blocks collapsed\u001b[39m"
+    },
+    {
+      "message": {
+        "diagnostics": [
+          {
+            "type": "claude_sdk_oauth_session_continuity",
+            "details": {
+              "kind": "flatten",
+              "payloadBytes": 1024,
+              "collapsedDirectives": 0
+            }
+          }
+        ]
+      },
+      "notice": "\u001b[38;5;244mSession continuity lost - resent the full conversation - sent 1.0KB\u001b[39m"
+    },
+    {
+      "message": {
+        "diagnostics": [
+          {
+            "type": "claude_sdk_oauth_session_continuity",
+            "details": {
+              "kind": "flatten",
+              "reason": "registry_miss"
+            }
+          }
+        ]
+      },
+      "notice": "\u001b[38;5;244mSession continuity lost - resent the full conversation (registry_miss)\u001b[39m"
+    },
+    {
+      "message": {
+        "diagnostics": [
+          {
+            "type": "claude_sdk_oauth_session_continuity",
+            "details": {
+              "kind": "flatten",
+              "payloadBytes": 1
+            }
+          }
+        ]
+      },
+      "notice": "\u001b[38;5;244mSession continuity lost - resent the full conversation - sent 1B\u001b[39m"
+    },
+    {
+      "message": {
+        "diagnostics": [
+          {
+            "type": "claude_sdk_oauth_session_continuity",
+            "details": {
+              "kind": "flatten",
+              "payloadBytes": 2097152
+            }
+          }
+        ]
+      },
+      "notice": "\u001b[38;5;244mSession continuity lost - resent the full conversation - sent 2.0MB\u001b[39m"
+    },
+    {
+      "message": {
+        "diagnostics": [
+          {
+            "type": "claude_sdk_oauth_session_continuity",
+            "details": {
+              "kind": "disabled",
+              "reason": "resume_mode_off"
+            }
+          }
+        ]
+      },
+      "notice": "\u001b[38;5;244mSession continuity disabled (resumeMode: off) - resending the conversation each turn (resume_mode_off)\u001b[39m"
+    },
+    {
+      "message": {
+        "diagnostics": [
+          {
+            "type": "claude_sdk_oauth_session_continuity",
+            "details": {
+              "kind": "delta"
+            }
+          }
+        ]
+      },
+      "notice": null
+    },
+    {
+      "message": {
+        "diagnostics": [
+          {
+            "type": "claude_sdk_oauth_session_continuity",
+            "details": {
+              "kind": "bootstrap"
+            }
+          }
+        ]
+      },
+      "notice": null
+    },
+    {
+      "message": {
+        "diagnostics": [
+          {
+            "type": "claude_sdk_oauth_resume_fallback"
+          }
+        ]
+      },
+      "notice": "\u001b[38;5;244mSession continuity lost - resume failed, resent the full conversation\u001b[39m"
+    },
+    {
+      "message": {},
+      "notice": null
+    },
+    {
+      "message": {
+        "diagnostics": [
+          {
+            "type": "other"
+          }
+        ]
+      },
+      "notice": null
+    }
+  ],
+  "messages": [
+    {
+      "kind": "user",
+      "width": 20,
+      "text": "Hello **world**\n\n1. first\n2. second",
+      "lines": [
+        "\u001b]133;A\u0007\u001b[48;5;59m                    \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;188mHello \u001b[39m\u001b[1m\u001b[38;5;188mworld\u001b[39m\u001b[22m        \u001b[49m",
+        "\u001b[48;5;59m                    \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;109m1. \u001b[39m\u001b[38;5;188mfirst\u001b[39m           \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;109m2. \u001b[39m\u001b[38;5;188msecond\u001b[39m          \u001b[49m",
+        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;59m                    \u001b[49m"
+      ]
+    },
+    {
+      "kind": "branch",
+      "width": 20,
+      "expanded": false,
+      "text": "Retained **context**.",
+      "lines": [
+        "\u001b[48;5;17m                    \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[branch]\u001b[22m\u001b[39m           \u001b[49m",
+        "\u001b[48;5;17m                    \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mBranch summary (\u001b[39m\u001b[38;5;241m\u001b[39m\u001b[38;5;188m   \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mto expand)\u001b[39m         \u001b[49m",
+        "\u001b[48;5;17m                    \u001b[49m"
+      ]
+    },
+    {
+      "kind": "branch",
+      "width": 20,
+      "expanded": true,
+      "text": "Retained **context**.",
+      "lines": [
+        "\u001b[48;5;17m                    \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[branch]\u001b[22m\u001b[39m           \u001b[49m",
+        "\u001b[48;5;17m                    \u001b[49m",
+        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mBranch Summary\u001b[39m\u001b[22m     \u001b[49m",
+        "\u001b[48;5;17m                    \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mRetained \u001b[39m\u001b[1m\u001b[38;5;188mcontext\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m.\u001b[39m  \u001b[49m",
+        "\u001b[48;5;17m                    \u001b[49m"
+      ]
+    },
+    {
+      "kind": "compaction",
+      "width": 20,
+      "expanded": false,
+      "message": {
+        "summary": "Retained **context**.\r\n\u001b[31mSafe\u001b[0m",
+        "tokensBefore": 12345,
+        "details": {
+          "schema": "senpi.compaction.openai-remote.v1",
+          "transport": "websocket",
+          "retainedInputItemCount": 20,
+          "requestInputItemCount": 1000
+        }
+      },
+      "lines": [
+        "\u001b[48;5;17m                    \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[compaction]\u001b[22m\u001b[39m       \u001b[49m",
+        "\u001b[48;5;17m                    \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mOpenAI Responses   \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mWebSocket          \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mcompaction: 20     \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mretained items     \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mfrom 1,000 OpenAI  \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188minput items;       \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mcompacted from     \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188m12,345 tokens (\u001b[39m\u001b[38;5;241m\u001b[39m\u001b[38;5;188m to \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mexpand)\u001b[39m            \u001b[49m",
+        "\u001b[48;5;17m                    \u001b[49m"
+      ]
+    },
+    {
+      "kind": "compaction",
+      "width": 20,
+      "expanded": true,
+      "message": {
+        "summary": "Retained **context**.\r\n\u001b[31mSafe\u001b[0m",
+        "tokensBefore": 12345,
+        "details": {
+          "schema": "senpi.compaction.openai-remote.v1",
+          "transport": "websocket",
+          "retainedInputItemCount": 20,
+          "requestInputItemCount": 1000
+        }
+      },
+      "lines": [
+        "\u001b[48;5;17m                    \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[compaction]\u001b[22m\u001b[39m       \u001b[49m",
+        "\u001b[48;5;17m                    \u001b[49m",
+        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mCompacted from     \u001b[49m",
+        "\u001b[48;5;17m \u001b[1;38;5;188m12,345 tokens\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m\u001b[39m      \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mOpenAI Responses   \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mWebSocket          \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mcompaction: 20     \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mretained items     \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mfrom 1,000 OpenAI  \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188minput items\u001b[39m        \u001b[49m",
+        "\u001b[48;5;17m                    \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mRetained \u001b[39m\u001b[1m\u001b[38;5;188mcontext\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m.\u001b[39m  \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mSafe\u001b[39m               \u001b[49m",
+        "\u001b[48;5;17m                    \u001b[49m"
+      ]
+    },
+    {
+      "kind": "skill",
+      "width": 20,
+      "expanded": false,
+      "skills": [
+        {
+          "name": "rust",
+          "content": "Use **safe** APIs."
+        },
+        {
+          "name": "tests",
+          "content": "Run tests."
+        }
+      ],
+      "lines": [
+        "\u001b[48;5;17m                    \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[skill]\u001b[22m \u001b[39m\u001b[38;5;188mrust,      \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mtests\u001b[39m\u001b[38;5;241m ( to expand)\u001b[39m \u001b[49m",
+        "\u001b[48;5;17m                    \u001b[49m"
+      ]
+    },
+    {
+      "kind": "skill",
+      "width": 20,
+      "expanded": true,
+      "skills": [
+        {
+          "name": "rust",
+          "content": "Use **safe** APIs."
+        },
+        {
+          "name": "tests",
+          "content": "Run tests."
+        }
+      ],
+      "lines": [
+        "\u001b[48;5;17m                    \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[skill]\u001b[22m\u001b[39m            \u001b[49m",
+        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mrust\u001b[39m\u001b[22m               \u001b[49m",
+        "\u001b[48;5;17m                    \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mUse \u001b[39m\u001b[1m\u001b[38;5;188msafe\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m APIs.\u001b[39m     \u001b[49m",
+        "\u001b[48;5;17m                    \u001b[49m",
+        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mtests\u001b[39m\u001b[22m              \u001b[49m",
+        "\u001b[48;5;17m                    \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mRun tests.\u001b[39m         \u001b[49m",
+        "\u001b[48;5;17m                    \u001b[49m"
+      ]
+    },
+    {
+      "kind": "user",
+      "width": 40,
+      "text": "Hello **world**\n\n1. first\n2. second",
+      "lines": [
+        "\u001b]133;A\u0007\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;188mHello \u001b[39m\u001b[1m\u001b[38;5;188mworld\u001b[39m\u001b[22m                            \u001b[49m",
+        "\u001b[48;5;59m                                        \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;109m1. \u001b[39m\u001b[38;5;188mfirst\u001b[39m                               \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;109m2. \u001b[39m\u001b[38;5;188msecond\u001b[39m                              \u001b[49m",
+        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;59m                                        \u001b[49m"
+      ]
+    },
+    {
+      "kind": "branch",
+      "width": 40,
+      "expanded": false,
+      "text": "Retained **context**.",
+      "lines": [
+        "\u001b[48;5;17m                                        \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[branch]\u001b[22m\u001b[39m                               \u001b[49m",
+        "\u001b[48;5;17m                                        \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mBranch summary (\u001b[39m\u001b[38;5;241m\u001b[39m\u001b[38;5;188m to expand)\u001b[39m            \u001b[49m",
+        "\u001b[48;5;17m                                        \u001b[49m"
+      ]
+    },
+    {
+      "kind": "branch",
+      "width": 40,
+      "expanded": true,
+      "text": "Retained **context**.",
+      "lines": [
+        "\u001b[48;5;17m                                        \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[branch]\u001b[22m\u001b[39m                               \u001b[49m",
+        "\u001b[48;5;17m                                        \u001b[49m",
+        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mBranch Summary\u001b[39m\u001b[22m                         \u001b[49m",
+        "\u001b[48;5;17m                                        \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mRetained \u001b[39m\u001b[1m\u001b[38;5;188mcontext\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m.\u001b[39m                      \u001b[49m",
+        "\u001b[48;5;17m                                        \u001b[49m"
+      ]
+    },
+    {
+      "kind": "compaction",
+      "width": 40,
+      "expanded": false,
+      "message": {
+        "summary": "Retained **context**.\r\n\u001b[31mSafe\u001b[0m",
+        "tokensBefore": 12345,
+        "details": {
+          "schema": "senpi.compaction.openai-remote.v1",
+          "transport": "websocket",
+          "retainedInputItemCount": 20,
+          "requestInputItemCount": 1000
+        }
+      },
+      "lines": [
+        "\u001b[48;5;17m                                        \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[compaction]\u001b[22m\u001b[39m                           \u001b[49m",
+        "\u001b[48;5;17m                                        \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mOpenAI Responses WebSocket compaction: \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188m20 retained items from 1,000 OpenAI    \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188minput items; compacted from 12,345     \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mtokens (\u001b[39m\u001b[38;5;241m\u001b[39m\u001b[38;5;188m to expand)\u001b[39m                    \u001b[49m",
+        "\u001b[48;5;17m                                        \u001b[49m"
+      ]
+    },
+    {
+      "kind": "compaction",
+      "width": 40,
+      "expanded": true,
+      "message": {
+        "summary": "Retained **context**.\r\n\u001b[31mSafe\u001b[0m",
+        "tokensBefore": 12345,
+        "details": {
+          "schema": "senpi.compaction.openai-remote.v1",
+          "transport": "websocket",
+          "retainedInputItemCount": 20,
+          "requestInputItemCount": 1000
+        }
+      },
+      "lines": [
+        "\u001b[48;5;17m                                        \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[compaction]\u001b[22m\u001b[39m                           \u001b[49m",
+        "\u001b[48;5;17m                                        \u001b[49m",
+        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mCompacted from 12,345 tokens\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m\u001b[39m           \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mOpenAI Responses WebSocket compaction: \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188m20 retained items from 1,000 OpenAI    \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188minput items\u001b[39m                            \u001b[49m",
+        "\u001b[48;5;17m                                        \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mRetained \u001b[39m\u001b[1m\u001b[38;5;188mcontext\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m.\u001b[39m                      \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mSafe\u001b[39m                                   \u001b[49m",
+        "\u001b[48;5;17m                                        \u001b[49m"
+      ]
+    },
+    {
+      "kind": "skill",
+      "width": 40,
+      "expanded": false,
+      "skills": [
+        {
+          "name": "rust",
+          "content": "Use **safe** APIs."
+        },
+        {
+          "name": "tests",
+          "content": "Run tests."
+        }
+      ],
+      "lines": [
+        "\u001b[48;5;17m                                        \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[skill]\u001b[22m \u001b[39m\u001b[38;5;188mrust, tests\u001b[39m\u001b[38;5;241m ( to expand)\u001b[39m       \u001b[49m",
+        "\u001b[48;5;17m                                        \u001b[49m"
+      ]
+    },
+    {
+      "kind": "skill",
+      "width": 40,
+      "expanded": true,
+      "skills": [
+        {
+          "name": "rust",
+          "content": "Use **safe** APIs."
+        },
+        {
+          "name": "tests",
+          "content": "Run tests."
+        }
+      ],
+      "lines": [
+        "\u001b[48;5;17m                                        \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[skill]\u001b[22m\u001b[39m                                \u001b[49m",
+        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mrust\u001b[39m\u001b[22m                                   \u001b[49m",
+        "\u001b[48;5;17m                                        \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mUse \u001b[39m\u001b[1m\u001b[38;5;188msafe\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m APIs.\u001b[39m                         \u001b[49m",
+        "\u001b[48;5;17m                                        \u001b[49m",
+        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mtests\u001b[39m\u001b[22m                                  \u001b[49m",
+        "\u001b[48;5;17m                                        \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mRun tests.\u001b[39m                             \u001b[49m",
+        "\u001b[48;5;17m                                        \u001b[49m"
+      ]
+    },
+    {
+      "kind": "user",
+      "width": 80,
+      "text": "Hello **world**\n\n1. first\n2. second",
+      "lines": [
+        "\u001b]133;A\u0007\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;188mHello \u001b[39m\u001b[1m\u001b[38;5;188mworld\u001b[39m\u001b[22m                                                                    \u001b[49m",
+        "\u001b[48;5;59m                                                                                \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;109m1. \u001b[39m\u001b[38;5;188mfirst\u001b[39m                                                                       \u001b[49m",
+        "\u001b[48;5;59m \u001b[38;5;109m2. \u001b[39m\u001b[38;5;188msecond\u001b[39m                                                                      \u001b[49m",
+        "\u001b]133;B\u0007\u001b]133;C\u0007\u001b[48;5;59m                                                                                \u001b[49m"
+      ]
+    },
+    {
+      "kind": "branch",
+      "width": 80,
+      "expanded": false,
+      "text": "Retained **context**.",
+      "lines": [
+        "\u001b[48;5;17m                                                                                \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[branch]\u001b[22m\u001b[39m                                                                       \u001b[49m",
+        "\u001b[48;5;17m                                                                                \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mBranch summary (\u001b[39m\u001b[38;5;241m\u001b[39m\u001b[38;5;188m to expand)\u001b[39m                                                    \u001b[49m",
+        "\u001b[48;5;17m                                                                                \u001b[49m"
+      ]
+    },
+    {
+      "kind": "branch",
+      "width": 80,
+      "expanded": true,
+      "text": "Retained **context**.",
+      "lines": [
+        "\u001b[48;5;17m                                                                                \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[branch]\u001b[22m\u001b[39m                                                                       \u001b[49m",
+        "\u001b[48;5;17m                                                                                \u001b[49m",
+        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mBranch Summary\u001b[39m\u001b[22m                                                                 \u001b[49m",
+        "\u001b[48;5;17m                                                                                \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mRetained \u001b[39m\u001b[1m\u001b[38;5;188mcontext\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m.\u001b[39m                                                              \u001b[49m",
+        "\u001b[48;5;17m                                                                                \u001b[49m"
+      ]
+    },
+    {
+      "kind": "compaction",
+      "width": 80,
+      "expanded": false,
+      "message": {
+        "summary": "Retained **context**.\r\n\u001b[31mSafe\u001b[0m",
+        "tokensBefore": 12345,
+        "details": {
+          "schema": "senpi.compaction.openai-remote.v1",
+          "transport": "websocket",
+          "retainedInputItemCount": 20,
+          "requestInputItemCount": 1000
+        }
+      },
+      "lines": [
+        "\u001b[48;5;17m                                                                                \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[compaction]\u001b[22m\u001b[39m                                                                   \u001b[49m",
+        "\u001b[48;5;17m                                                                                \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mOpenAI Responses WebSocket compaction: 20 retained items from 1,000 OpenAI     \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188minput items; compacted from 12,345 tokens (\u001b[39m\u001b[38;5;241m\u001b[39m\u001b[38;5;188m to expand)\u001b[39m                         \u001b[49m",
+        "\u001b[48;5;17m                                                                                \u001b[49m"
+      ]
+    },
+    {
+      "kind": "compaction",
+      "width": 80,
+      "expanded": true,
+      "message": {
+        "summary": "Retained **context**.\r\n\u001b[31mSafe\u001b[0m",
+        "tokensBefore": 12345,
+        "details": {
+          "schema": "senpi.compaction.openai-remote.v1",
+          "transport": "websocket",
+          "retainedInputItemCount": 20,
+          "requestInputItemCount": 1000
+        }
+      },
+      "lines": [
+        "\u001b[48;5;17m                                                                                \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[compaction]\u001b[22m\u001b[39m                                                                   \u001b[49m",
+        "\u001b[48;5;17m                                                                                \u001b[49m",
+        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mCompacted from 12,345 tokens\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m\u001b[39m                                                   \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mOpenAI Responses WebSocket compaction: 20 retained items from 1,000 OpenAI     \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188minput items\u001b[39m                                                                    \u001b[49m",
+        "\u001b[48;5;17m                                                                                \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mRetained \u001b[39m\u001b[1m\u001b[38;5;188mcontext\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m.\u001b[39m                                                              \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mSafe\u001b[39m                                                                           \u001b[49m",
+        "\u001b[48;5;17m                                                                                \u001b[49m"
+      ]
+    },
+    {
+      "kind": "skill",
+      "width": 80,
+      "expanded": false,
+      "skills": [
+        {
+          "name": "rust",
+          "content": "Use **safe** APIs."
+        },
+        {
+          "name": "tests",
+          "content": "Run tests."
+        }
+      ],
+      "lines": [
+        "\u001b[48;5;17m                                                                                \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[skill]\u001b[22m \u001b[39m\u001b[38;5;188mrust, tests\u001b[39m\u001b[38;5;241m ( to expand)\u001b[39m                                               \u001b[49m",
+        "\u001b[48;5;17m                                                                                \u001b[49m"
+      ]
+    },
+    {
+      "kind": "skill",
+      "width": 80,
+      "expanded": true,
+      "skills": [
+        {
+          "name": "rust",
+          "content": "Use **safe** APIs."
+        },
+        {
+          "name": "tests",
+          "content": "Run tests."
+        }
+      ],
+      "lines": [
+        "\u001b[48;5;17m                                                                                \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;104m\u001b[1m[skill]\u001b[22m\u001b[39m                                                                        \u001b[49m",
+        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mrust\u001b[39m\u001b[22m                                                                           \u001b[49m",
+        "\u001b[48;5;17m                                                                                \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mUse \u001b[39m\u001b[1m\u001b[38;5;188msafe\u001b[39m\u001b[22m\u001b[38;5;188m\u001b[38;5;188m APIs.\u001b[39m                                                                 \u001b[49m",
+        "\u001b[48;5;17m                                                                                \u001b[49m",
+        "\u001b[48;5;17m \u001b[1m\u001b[38;5;188mtests\u001b[39m\u001b[22m                                                                          \u001b[49m",
+        "\u001b[48;5;17m                                                                                \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188mRun tests.\u001b[39m                                                                     \u001b[49m",
+        "\u001b[48;5;17m                                                                                \u001b[49m"
+      ]
+    }
+  ]
+}
