@@ -11,3 +11,4 @@ pub mod monitor_registry;
 pub mod terminal_manifest_model;
 pub mod restore;
 pub mod manifest_lease;
+pub mod notify;
