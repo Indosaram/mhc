@@ -13,7 +13,8 @@ impl Extension for CommentCheckerComponent {
             let ExtensionEvent::ToolResult(event)=event else { return Ok(EventResult::None); };
             if event.is_error || !matches!(event.tool_name.as_str(),"edit"|"write") { return Ok(EventResult::None); }
             let Some(path)=event.input["path"].as_str() else { return Ok(EventResult::None); };
-            let absolute=ctx.cwd.join(path);
+            let joined=ctx.cwd.join(path);let mut absolute=PathBuf::new();
+            for part in joined.components() { match part { std::path::Component::CurDir=>{},std::path::Component::ParentDir=>{absolute.pop();},other=>absolute.push(other.as_os_str()) } }
             let binary={
                 let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 if state.reported.contains(&absolute) { return Ok(EventResult::None); }
