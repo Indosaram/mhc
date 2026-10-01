@@ -21,7 +21,7 @@ pub fn find_rule_candidates(options: FinderOptions<'_>, cache: &mut RuleDiscover
         let root = absolute(root);
         let start = options.target_file.map(absolute).and_then(|path| path.parent().map(Path::to_path_buf));
         let mut directories = Vec::new();
-        let mut current = start.filter(|path| path.starts_with(&root)).unwrap_or_else(|| root.clone());
+        let mut current = start.filter(|path| path.strip_prefix(&root).is_ok_and(|relative| !relative.to_string_lossy().starts_with(".."))).unwrap_or_else(|| root.clone());
         loop {
             directories.push(current.clone());
             if current == root { break; }
@@ -62,7 +62,18 @@ pub fn find_rule_candidates(options: FinderOptions<'_>, cache: &mut RuleDiscover
     candidates
 }
 
-fn absolute(path: &Path) -> PathBuf { std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()) }
+fn absolute(path: &Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::ParentDir => { normalized.pop(); },
+            std::path::Component::CurDir => {},
+            std::path::Component::Normal(_) | std::path::Component::RootDir | std::path::Component::Prefix(_) => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
 fn candidate(path: &Path, real_path: PathBuf, root: &Path, source: &str, distance: usize, global: bool, single: bool) -> RuleCandidate {
     RuleCandidate { path: path.to_string_lossy().into_owned(), real_path: real_path.to_string_lossy().into_owned(), source: source.into(), distance,
         is_global: global, is_single_file: single, relative_path: path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/") }

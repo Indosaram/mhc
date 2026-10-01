@@ -65,3 +65,15 @@ fn discovery_omits_disabled_sources_and_caches_missing_files() {
     assert!(files.is_empty());
     assert_eq!(find(&mut RuleDiscoveryCache::default()).len(), 1);
 }
+
+#[test]
+fn discovery_normalizes_target_dot_segments_without_walking_outside_root() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("AGENTS.md"), "").unwrap();
+    let disabled = BTreeSet::new();
+    let target = root.path().join("absent/../file.rs");
+    let files = find_rule_candidates(FinderOptions { project_root: Some(root.path()), target_file: Some(&target), home_dir: root.path(), disabled_sources: &disabled, skip_user_home: true }, &mut RuleDiscoveryCache::default());
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].distance, 0);
+    assert_eq!(files[0].relative_path, "AGENTS.md");
+}
