@@ -5,7 +5,7 @@ pub enum McpErrorKind { Connect, Protocol, ToolExec, Auth, Timeout, SessionExpir
 #[error("{message}")]
 pub struct McpError {
     pub kind: McpErrorKind, pub message: String, pub phase: Option<String>, pub retriable: bool,
-    pub server_name: Option<String>, pub cause: Option<Value>,
+    pub server_name: Option<String>, pub cause: Option<Box<Value>>,
 }
 impl McpError {
     pub fn new(kind: McpErrorKind, message: impl Into<String>) -> Self { Self { kind, message: message.into(), phase: None, retriable: false, server_name: None, cause: None } }
