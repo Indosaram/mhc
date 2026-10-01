@@ -1,5 +1,11 @@
 use maho_test_support::{faux::{FauxResponse, FauxScript}, faux_session::FauxSession};
 
+struct EditorHost;
+impl maho_tui::components::editor::EditorTuiHost for EditorHost {
+    fn request_render(&self) {}
+    fn terminal_rows(&self) -> usize { 36 }
+}
+
 fn native_mode() -> (maho_interactive::interactive_mode::InteractiveMode, tempfile::TempDir) {
     use std::sync::Arc;
     use maho_ai::providers::faux::{FauxAssistantMessageOptions, RegisterFauxProviderOptions, faux_assistant_message, faux_provider, faux_streams};
@@ -28,7 +34,7 @@ fn native_mode() -> (maho_interactive::interactive_mode::InteractiveMode, tempfi
         default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: None, base_tools_override: None,
         session_start_event: None, auto_title_sessions: Some(false),
     }).expect("session");
-    let mode = maho_interactive::interactive_mode::InteractiveMode::new(Arc::new(session), maho_interactive::theme::Theme::builtin("dark", maho_interactive::theme::ColorMode::Truecolor).expect("theme"));
+    let mode = maho_interactive::interactive_mode::InteractiveMode::new(Arc::new(session), maho_interactive::theme::Theme::builtin("dark", maho_interactive::theme::ColorMode::Truecolor).expect("theme"), std::rc::Rc::new(EditorHost));
     (mode, directory)
 }
 
@@ -75,4 +81,25 @@ fn tool_end_without_start_still_renders_final_result() {
     let (mut mode, _directory) = native_mode();
     mode.handle_event(&maho_agent::types::AgentEvent::ToolExecutionEnd { tool_call_id: "orphan".into(), tool_name: "custom".into(), result: serde_json::json!({"content":[{"type":"text","text":"failed-result"}]}), is_error: true });
     assert!(mode.render(80).join("\n").contains("failed-result"));
+}
+
+#[tokio::test]
+async fn enter_captures_editor_text_clears_draft_and_submits_native_prompt() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.handle_input("hi");
+    mode.handle_input("\r");
+    assert!(mode.editor.editor.get_text().is_empty());
+    assert_eq!(mode.submit_editor().await.expect("submit"), Some(maho_core::agent_session::PromptDisposition::Started));
+    assert!(mode.render(80).join("\n").contains("hello"));
+    assert_eq!(mode.submit_editor().await.expect("empty submission queue"), None);
+}
+
+#[tokio::test]
+async fn empty_enter_does_not_start_provider_turn() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.handle_input("\r");
+    assert_eq!(mode.submit_editor().await.expect("empty"), None);
+    assert!(mode.agent_idle);
 }

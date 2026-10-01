@@ -6,6 +6,7 @@ use maho_core::agent_session::{AgentSession, AgentSessionSubscription, PromptDis
 use maho_tui::tui::{Component, Container};
 use crate::{components::{assistant_message::AssistantMessageComponent, user_message::UserMessageComponent, markdown_transform::get_markdown_theme}, theme::Theme};
 use crate::components::{tool_execution::{ToolExecutionComponent, ToolExecutionOptions, ToolExecutionPresentation}, tool_execution_types::ToolExecutionResult};
+use crate::components::{custom_editor::{CustomEditor, CustomEditorOptions}, extension_editor::editor_theme};
 
 pub struct InteractiveMode {
     session: Arc<AgentSession>,
@@ -15,14 +16,29 @@ pub struct InteractiveMode {
     streaming: Option<Rc<RefCell<AssistantMessageComponent>>>,
     pending_tools: BTreeMap<String, Rc<RefCell<ToolExecutionComponent>>>,
     theme: Theme,
+    pub editor: CustomEditor,
+    submissions: Rc<RefCell<std::collections::VecDeque<String>>>,
     pub agent_idle: bool,
 }
 
 impl InteractiveMode {
-    pub fn new(session: Arc<AgentSession>, theme: Theme) -> Self {
+    pub fn new(session: Arc<AgentSession>, theme: Theme, host: Rc<dyn maho_tui::components::editor::EditorTuiHost>) -> Self {
         let (sender, events) = tokio::sync::mpsc::unbounded_channel();
         let subscription = session.subscribe(Arc::new(move |event| { drop(sender.send(event.clone())); }));
-        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, pending_tools: BTreeMap::new(), theme, agent_idle: true }
+        let submissions = Rc::new(RefCell::new(std::collections::VecDeque::new()));
+        let captured = submissions.clone();
+        let keys = Arc::new(maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default()));
+        let mut editor = CustomEditor::new(host, editor_theme(&theme), keys, CustomEditorOptions::default());
+        editor.editor.on_submit = Some(Box::new(move |text| { if !text.trim().is_empty() { captured.borrow_mut().push_back(text.trim().into()); } }));
+        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, pending_tools: BTreeMap::new(), theme, editor, submissions, agent_idle: true }
+    }
+
+    pub async fn submit_editor(&mut self) -> Result<Option<PromptDisposition>, String> {
+        let text = self.submissions.borrow_mut().pop_front();
+        let Some(text) = text else { return Ok(None); };
+        self.editor.editor.add_to_history(&text);
+        let options = PromptOptions { streaming_behavior: Some(maho_ext_api::StreamingBehavior::Steer), ..Default::default() };
+        self.submit(&text, options).await.map(Some)
     }
 
     pub async fn submit(&mut self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
@@ -123,6 +139,8 @@ impl InteractiveMode {
 }
 
 impl Component for InteractiveMode {
-    fn render(&mut self, width: usize) -> Vec<String> { self.drain_events(); self.chat.render(width) }
-    fn invalidate(&mut self) { self.chat.invalidate(); }
+    fn render(&mut self, width: usize) -> Vec<String> { self.drain_events(); let mut lines = self.chat.render(width); lines.extend(self.editor.render(width)); lines }
+    fn handle_input(&mut self, data: &str) { self.editor.handle_input(data); }
+    fn has_input_handler(&self) -> bool { true }
+    fn invalidate(&mut self) { self.chat.invalidate(); self.editor.invalidate(); }
 }
