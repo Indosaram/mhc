@@ -32,3 +32,6 @@ pub mod gpt_5;
 pub mod gpt_5_2;
 pub mod gpt_5_3_codex;
 pub mod gpt_5_4;
+pub mod gpt_5_5;
+pub mod gpt_5_6;
+pub mod gpt_6_astra;
