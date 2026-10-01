@@ -33,6 +33,7 @@ pub struct InteractiveMode {
     footer: Option<Box<dyn Component>>,
     widgets: BTreeMap<String, (Box<dyn Component>, maho_ext_api::WidgetPlacement)>,
     pub terminal_title: Option<String>,
+    markdown_transformers: Vec<crate::components::markdown_transform::MarkdownTransformer>,
 }
 
 impl InteractiveMode {
@@ -45,7 +46,17 @@ impl InteractiveMode {
         let mut editor = CustomEditor::new(host, editor_theme(&theme), keys, CustomEditorOptions::default());
         editor.editor.on_submit = Some(Box::new(move |text| { if !text.trim().is_empty() { captured.borrow_mut().push_back(text.trim().into()); } }));
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(maho_ext_api::Theme { name: Some(theme.name.clone()), colors: theme.resolved_colors(), ..Default::default() });
-        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: BTreeMap::new(), terminal_title: None }
+        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: BTreeMap::new(), terminal_title: None, markdown_transformers: Vec::new() }
+    }
+
+    pub fn use_registered_markdown_transformers(&mut self, extensions: &[maho_ext_api::LoadedExtension]) {
+        self.markdown_transformers = extensions.iter().filter_map(|extension| extension.markdown_transformer.clone()).map(|transformer| -> crate::components::markdown_transform::MarkdownTransformer {
+            Rc::new(move |text, context| {
+                use crate::components::markdown_transform::MessageType;
+                let message_type = match context.message_type { MessageType::User => maho_ext_api::MarkdownMessageType::User, MessageType::Assistant => maho_ext_api::MarkdownMessageType::Assistant, MessageType::AssistantThinking => maho_ext_api::MarkdownMessageType::AssistantThinking };
+                Ok(Some(transformer(text, &maho_ext_api::MarkdownTransformContext { message_type, is_streaming: context.is_streaming, available_width: context.available_width })))
+            })
+        }).collect();
     }
 
     pub async fn bind_extensions(&mut self) {
@@ -218,10 +229,10 @@ impl InteractiveMode {
                 if message.role() == "user" {
                     let value = serde_json::to_value(message).expect("serializable agent message");
                     let text = value["content"].as_array().map(|parts| parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default();
-                    self.chat.add_child(Rc::new(RefCell::new(UserMessageComponent::new(text, self.theme.clone(), get_markdown_theme(&self.theme), 1, Vec::new()))));
+                    self.chat.add_child(Rc::new(RefCell::new(UserMessageComponent::new(text, self.theme.clone(), get_markdown_theme(&self.theme), 1, self.markdown_transformers.clone()))));
                 } else if message.role() == "assistant" {
                     self.assistant_segments.clear();
-                    let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", 1, Vec::new(), self.theme.clone())));
+                    let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", 1, self.markdown_transformers.clone(), self.theme.clone())));
                     self.chat.add_child(component.clone());
                     self.streaming = Some(component);
                 }
@@ -272,7 +283,7 @@ impl InteractiveMode {
         if start == end && start != 0 { return; }
         let component = if start == 0 { self.streaming.clone() } else {
             Some(self.assistant_segments.entry(start).or_insert_with(|| {
-                let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", 1, Vec::new(), self.theme.clone())));
+                let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", 1, self.markdown_transformers.clone(), self.theme.clone())));
                 self.chat.add_child(component.clone()); component
             }).clone())
         };

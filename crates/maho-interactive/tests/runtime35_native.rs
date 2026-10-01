@@ -238,3 +238,17 @@ fn assistant_text_segments_remain_on_either_side_of_tool_card() {
     assert!(lines.find("tool-output").expect("tool") < lines.find("after-tool").expect("tail"));
     assert_eq!(lines.matches("after-tool").count(), 1);
 }
+
+#[tokio::test]
+async fn registered_extension_markdown_transformer_reaches_native_assistant() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let mut api = maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("native-fixture", "/tmp".into(), Default::default()), Default::default(), Default::default(), Default::default());
+    api.register_markdown_transformer(std::sync::Arc::new(|text, context| {
+        if context.message_type == maho_ext_api::MarkdownMessageType::Assistant { text.replace("hello", "transformed-reply") } else { text.into() }
+    }));
+    mode.use_registered_markdown_transformers(&[api.registered]);
+    mode.submit("hi", Default::default()).await.expect("native turn");
+    let lines = mode.render(80).join("\n");
+    assert!(lines.contains("transformed-reply")); assert!(!lines.contains("hello"));
+}
