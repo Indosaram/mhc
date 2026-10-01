@@ -12,6 +12,81 @@ use maho_agent::harness::session::session::{StorageBackedSession,StorageBackedSe
 use maho_agent::harness::session::types::*;
 use maho_agent::harness::session::values::*;
 use serde_json::json;
+use maho_agent::harness::session::session::SessionResult;
+use std::collections::BTreeMap;
+
+struct ObservedStorage {delegate:Arc<dyn Storage>,reads:std::sync::atomic::AtomicUsize}
+impl Storage for ObservedStorage {
+    fn commit<'a>(&'a self, writes: Vec<Write>, context: &'a Context) -> BoxFuture<'a, SessionResult<CommitResult>> {
+        self.delegate.commit(writes, context)
+    }
+
+    fn get_entries<'a>(
+        &'a self,
+        ids: Vec<String>,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<BTreeMap<String, Entry>>> {
+        self.delegate.get_entries(ids, context)
+    }
+
+    fn get_value<'a>(
+        &'a self,
+        address: &'a Value,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<Option<StoredValue>>> {
+        self.reads.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+        self.delegate.get_value(address, context)
+    }
+
+    fn scan_values<'a>(
+        &'a self,
+        prefix: &'a Value,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<Vec<StoredValue>>> {
+        self.delegate.scan_values(prefix, context)
+    }
+
+    fn read_list<'a>(
+        &'a self,
+        address: &'a ValueList,
+        options: Option<ListReadOptions>,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<Vec<ListElement>>> {
+        self.delegate.read_list(address, options, context)
+    }
+
+    fn scan_branch<'a>(
+        &'a self,
+        query: StorageBranchScan,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<Vec<Entry>>> {
+        self.delegate.scan_branch(query, context)
+    }
+
+    fn scan_branch_structure<'a>(
+        &'a self,
+        query: StorageBranchScan,
+        context: &'a Context,
+    ) -> BoxFuture<'a, SessionResult<Vec<EntryStructure>>> {
+        self.delegate.scan_branch_structure(query, context)
+    }
+
+    fn scan_entries<'a>(&'a self, query: EntryScan, context: &'a Context) -> BoxFuture<'a, SessionResult<Vec<Entry>>> {
+        self.delegate.scan_entries(query, context)
+    }
+
+    fn scan_usage<'a>(&'a self, query: UsageScan, context: &'a Context) -> BoxFuture<'a, SessionResult<Vec<UsageRow>>> {
+        self.delegate.scan_usage(query, context)
+    }
+
+    fn get_stats<'a>(&'a self, context: &'a Context) -> BoxFuture<'a, SessionResult<SessionStats>> {
+        self.delegate.get_stats(context)
+    }
+
+    fn close<'a>(&'a self, context: &'a Context) -> BoxFuture<'a, ()> {
+        self.delegate.close(context)
+    }
+}
 
 struct Lane { session: StorageBackedSession, state: Mutex<LaneState> }
 impl RuntimeLane for Lane {
@@ -38,9 +113,9 @@ async fn strips_invocation_cancellation_and_owns_policy_gate(){let controller=ma
 #[tokio::test]
 async fn enqueues_frames_in_order_and_seals_admission(){let(lane,drive)=fixture("assistant.effect_pending");let progress=open_frame_progress(lane.clone(),&drive,"response");progress.write(frame("a"));progress.write(frame("b"));progress.seal();progress.write(frame("late"));progress.drain().await.unwrap();assert_eq!(read_assistant_frames(&lane.session,"op","response",&BACKGROUND_CONTEXT).await.unwrap(),vec![frame("a"),frame("b")]);}
 #[tokio::test]
-async fn declines_queued_frame_after_projection_leaves_phase(){let(lane,drive)=fixture("assistant.effect_pending");let mutation=lane.session.begin_mutation(&BACKGROUND_CONTEXT).await.unwrap();let progress=open_frame_progress(lane.clone(),&drive,"response");progress.write(frame("late"));let mut state=lane.state();state.operation.as_mut().unwrap().state=decode_operation_state(json!({"at":"checkpoint","control":{"status":"running"},"settings":{"compaction":{"enabled":true,"reserveTokens":1000,"keepRecentTokens":2000},"steeringMode":"all","followUpMode":"all","toolExecution":"parallel"},"latestAssistantEntryId":null,"continuation":{"kind":"may_finish","includeFinalAssistant":true},"triggerEntryId":"response"})).unwrap();lane.publish_state(state);mutation.end(&BACKGROUND_CONTEXT).await;progress.drain().await.unwrap();assert!(lane.session.read_list(&pending_assistant_frames("op","response"),None,&BACKGROUND_CONTEXT).await.unwrap().is_empty());}
+async fn declines_queued_frame_after_projection_leaves_phase(){let storage=Arc::new(ObservedStorage {delegate:Arc::new(MemoryStorage::new(Default::default())),reads:std::sync::atomic::AtomicUsize::new(0)});let(lane,drive)=fixture_with_storage("assistant.effect_pending",storage.clone());let mutation=lane.session.begin_mutation(&BACKGROUND_CONTEXT).await.unwrap();let progress=open_frame_progress(lane.clone(),&drive,"response");progress.write(frame("late"));let mut state=lane.state();state.operation.as_mut().unwrap().state=decode_operation_state(json!({"at":"checkpoint","control":{"status":"running"},"settings":{"compaction":{"enabled":true,"reserveTokens":1000,"keepRecentTokens":2000},"steeringMode":"all","followUpMode":"all","toolExecution":"parallel"},"latestAssistantEntryId":null,"continuation":{"kind":"may_finish","includeFinalAssistant":true},"triggerEntryId":"response"})).unwrap();mutation.commit(vec![Write::Value(set_value(&lane_state("main"),json!({"currentOperationId":state.operation.as_ref().map(|o|&o.meta.operation_id),"lastOperationId":null,"inbox":[]})))],&BACKGROUND_CONTEXT).await.expect("commit projection transition");lane.publish_state(state);mutation.end(&BACKGROUND_CONTEXT).await;progress.drain().await.unwrap();assert_eq!(storage.reads.load(std::sync::atomic::Ordering::SeqCst),0);assert!(lane.session.read_list(&pending_assistant_frames("op","response"),None,&BACKGROUND_CONTEXT).await.unwrap().is_empty());}
 #[tokio::test]
-async fn declines_queued_frame_after_terminal_publication(){let(lane,drive)=fixture("assistant.effect_pending");let mutation=lane.session.begin_mutation(&BACKGROUND_CONTEXT).await.unwrap();let progress=open_frame_progress(lane.clone(),&drive,"response");progress.write(frame("late"));let mut state=lane.state();state.operation=None;lane.publish_state(state);mutation.end(&BACKGROUND_CONTEXT).await;progress.drain().await.unwrap();assert!(lane.session.read_list(&pending_assistant_frames("op","response"),None,&BACKGROUND_CONTEXT).await.unwrap().is_empty());}
+async fn declines_queued_frame_after_terminal_publication(){let storage=Arc::new(ObservedStorage {delegate:Arc::new(MemoryStorage::new(Default::default())),reads:std::sync::atomic::AtomicUsize::new(0)});let(lane,drive)=fixture_with_storage("assistant.effect_pending",storage.clone());let mutation=lane.session.begin_mutation(&BACKGROUND_CONTEXT).await.unwrap();let progress=open_frame_progress(lane.clone(),&drive,"response");progress.write(frame("late"));let mut state=lane.state();state.operation=None;mutation.commit(vec![Write::Value(set_value(&lane_state("main"),json!({"currentOperationId":state.operation.as_ref().map(|o|&o.meta.operation_id),"lastOperationId":null,"inbox":[]})))],&BACKGROUND_CONTEXT).await.expect("commit projection transition");lane.publish_state(state);mutation.end(&BACKGROUND_CONTEXT).await;progress.drain().await.unwrap();assert_eq!(storage.reads.load(std::sync::atomic::Ordering::SeqCst),0);assert!(lane.session.read_list(&pending_assistant_frames("op","response"),None,&BACKGROUND_CONTEXT).await.unwrap().is_empty());}
 #[tokio::test]
 async fn replaces_tool_checkpoints_in_invocation_order(){let(lane,drive)=fixture("tools");let progress=open_tool_progress(lane.clone(),&drive,"turn",0,"result");progress.write(maho_agent::types::AgentToolResult::text("first"));progress.write(maho_agent::types::AgentToolResult::text("second"));progress.drain().await.unwrap();assert_eq!(lane.session.get_value(&pending_tool_output("op","result"),&BACKGROUND_CONTEXT).await.unwrap().unwrap().value["content"],json!([{"type":"text","text":"second"}]));progress.seal();progress.drain().await.unwrap();}
 #[tokio::test]

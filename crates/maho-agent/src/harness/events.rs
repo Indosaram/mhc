@@ -647,7 +647,7 @@ impl<T: Clone + Send + Sync + 'static> BufferedEventWatcher<T> {
             .expect("watch snapshot was not set")
     }
 
-    fn set_snapshot(&self, snapshot: T) {
+    pub(crate) fn set_snapshot(&self, snapshot: T) {
         *self.inner.snapshot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot);
     }
 
