@@ -1,7 +1,5 @@
 //! Port of senpi `packages/agent/src/harness/runtime/drive/terminal.ts`.
 
-use std::collections::BTreeSet;
-
 use crate::harness::context::Context;
 use crate::harness::session::session::{SessionError, SessionErrorKind, SessionInvariantError};
 use crate::harness::session::types::{
@@ -19,17 +17,14 @@ pub async fn operation_cleanup_writes(
     state: &OperationState,
     context: &Context,
 ) -> Result<Vec<Write>, SessionError> {
-    let tool_arguments = reader.scan_values(&operation_tool_args_prefix(operation_id, None), context).await?;
-    let tool_memos = reader.scan_values(&operation_tool_memo_prefix(operation_id, None), context).await?;
-    let preparations = reader.scan_values(&operation_preparation_prefix(operation_id), context).await?;
-    let tool_outputs = reader.scan_values(&pending_tool_output_prefix(operation_id), context).await?;
+    let (arguments, memos, preparation, outputs) = (operation_tool_args_prefix(operation_id, None), operation_tool_memo_prefix(operation_id, None), operation_preparation_prefix(operation_id), pending_tool_output_prefix(operation_id));
+    let (tool_arguments, tool_memos, preparations, tool_outputs) = tokio::try_join!(reader.scan_values(&arguments, context), reader.scan_values(&memos, context), reader.scan_values(&preparation, context), reader.scan_values(&outputs, context))?;
 
-    let mut pending_ids: BTreeSet<String> = BTreeSet::new();
+    let mut pending_ids: Vec<String> = Vec::new();
     if let OperationState::Tools(tools) = state {
         for call in &tools.batch.calls {
-            if matches!(call, ToolCall::OutcomeReady { .. }) {
-                pending_ids.insert(call.result_entry_id().to_owned());
-            }
+            if matches!(call, ToolCall::OutcomeReady { .. })
+                && !pending_ids.iter().any(|id| id == call.result_entry_id()) { pending_ids.push(call.result_entry_id().to_owned()); }
         }
     }
 
@@ -64,6 +59,10 @@ pub fn operation_result_record(
     tip_id: Option<String>,
     error: Option<OperationError>,
 ) -> Result<OperationResultRecord, SessionInvariantError> {
+    operation_result_record_at(meta, status, tip_id, error, now_ms())
+}
+
+pub fn operation_result_record_at(meta: &OperationMeta, status: TerminalStatus, tip_id: Option<String>, error: Option<OperationError>, ended_at: i64) -> Result<OperationResultRecord, SessionInvariantError> {
     if (status == TerminalStatus::Failed) != error.is_some() {
         return Err(SessionInvariantError::new(
             SessionErrorKind::Invariant,
@@ -78,7 +77,7 @@ pub fn operation_result_record(
         from_tip_id: meta.source_tip_id.clone(),
         tip_id,
         started_at: meta.started_at,
-        ended_at: now_ms(),
+        ended_at,
     })
 }
 
