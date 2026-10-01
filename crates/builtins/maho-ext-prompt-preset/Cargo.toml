@@ -7,6 +7,7 @@ license = "MIT"
 
 [dependencies]
 regex.workspace = true
+maho-core = { path = "../../maho-core" }
 
 [lints]
 workspace = true
