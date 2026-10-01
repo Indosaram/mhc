@@ -39,6 +39,7 @@ fn drain(state: &ChaosState) {
                 handle.complete("drain");
             }
         }
+        state.harness.flush_outcomes();
         state.harness.waiters.advance();
         for engine in &state.harness.engines {
             let _ = engine.lifecycle.admit_resident(CHAOS_SESSION);
@@ -100,6 +101,10 @@ fn make_state(seed: u32, concurrency: usize, residency_max: usize, max_tasks: u3
 /// `runIteration`: runs one fully-isolated chaos iteration for `seed` and returns any invariant
 /// violations. The harness (temp state dir) is always disposed via `Drop`, pass or fail.
 pub fn run_iteration(seed: u32) -> IterationReport {
+    // Each iteration builds a fresh harness in a fresh temp dir, but a freed allocation can be
+    // reused for the next iteration's handles; drop any barrier entries a prior iteration left so
+    // the new handles cannot inherit stale watcher state.
+    crate::manager::outcome::test_barrier::clear();
     let mut rng = RandomSource::new(seed);
     let concurrency = rng.int(1, 4) as usize;
     let residency_max = rng.int(1, 4) as usize;

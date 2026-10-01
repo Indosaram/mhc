@@ -445,3 +445,250 @@ fn given_a_paused_unclaimed_run_when_cancelled_then_it_ends_cancelled_without_ta
             .all(|n| n.state == DagNodeState::Cancelled)
     );
 }
+
+use crate::manager::manager_tests::fakes::dag_fake::{FakeOptions, FakeTaskManager, Gate};
+
+fn scripted(input: DagDefinition, options: FakeOptions) -> (Fixture, Arc<FakeTaskManager>) {
+    let fixture = fixture(input, 16);
+    let manager = FakeTaskManager::new(options);
+    fixture.scheduler.set_task_port(Arc::clone(&manager) as Arc<dyn TestTaskPort>);
+    (fixture, manager)
+}
+
+fn event_signal(scheduler: &Arc<DagSchedulerContext>, ready: impl Fn(&DagRunEvent) -> bool + Send + Sync + 'static) -> mpsc::Receiver<()> {
+    let (tx, rx) = mpsc::channel();
+    let unsubscribe = scheduler.subscribe(Arc::new(move |event| {
+        if ready(event) { let _ = tx.send(()); }
+    }));
+    std::mem::forget(unsubscribe);
+    rx
+}
+
+#[test]
+fn every_terminal_task_status_folds_to_its_exact_node_outcome() {
+    for (status, state, code) in [
+        (TaskStatus::Completed, DagNodeState::Completed, None),
+        (TaskStatus::Error, DagNodeState::Failed, Some(DagNodeErrorCode::TaskError)),
+        (TaskStatus::Interrupted, DagNodeState::Failed, Some(DagNodeErrorCode::TaskInterrupted)),
+        (TaskStatus::Lost, DagNodeState::Failed, Some(DagNodeErrorCode::TaskLost)),
+        (TaskStatus::Cancelled, DagNodeState::Failed, Some(DagNodeErrorCode::TaskCancelled)),
+    ] {
+        let (fixture, manager) = scripted(definition(vec![node("task", &[])]), FakeOptions { manual: true, ..Default::default() });
+        let running = run_in_background(&fixture.scheduler);
+        manager.when_started("task");
+        manager.complete("task", status);
+        let result = recv_within(&running, "terminal fold").unwrap();
+        assert_eq!(result.nodes[0].state, state);
+        assert_eq!(result.nodes[0].error.as_ref().map(|error| error.code), code);
+    }
+}
+
+#[test]
+fn every_start_denial_maps_to_its_exact_node_error() {
+    let (fixture, _) = scripted(definition(vec![node("plan", &[]), node("depth", &[]), node("start", &[]), node("residency", &[])]), FakeOptions {
+        residency_limit: Some(0), start_failures: [("plan".into(), "plan"), ("depth".into(), "depth"), ("start".into(), "start")].into(), ..Default::default()
+    });
+    let result = fixture.scheduler.run().unwrap();
+    assert_eq!(result.nodes.iter().map(|node| node.error.as_ref().unwrap().code).collect::<Vec<_>>(), vec![DagNodeErrorCode::PlanUnresolved, DagNodeErrorCode::DepthDenied, DagNodeErrorCode::StartFailed, DagNodeErrorCode::ResidencyDenied]);
+}
+
+#[test]
+fn scheduler_dispatch_resolves_the_configured_execution_mode() {
+    let store = temp_store();
+    let harness = make_manager(HarnessOptions::default());
+    let manager = FakeTaskManager::new(FakeOptions::default());
+    let scheduler = create_dag_scheduler(DagSchedulerOptions {
+        store, task_manager: Arc::new(harness.manager), initial_record: record_for(&definition(vec![node("mode", &[])])), execution_mode_agents: Some(Arc::new(BTreeMap::new())), execution_mode_config: Some(ExecutionMode::Process), ancestry_depth: None, subscriber_ring: None, now: None,
+    }).unwrap();
+    scheduler.set_task_port(Arc::clone(&manager) as Arc<dyn TestTaskPort>);
+    scheduler.run().unwrap();
+    assert_eq!(manager.state.lock().unwrap().specs[0].execution_mode, Some(ExecutionMode::Process));
+}
+
+#[test]
+fn queued_node_reports_the_attached_queue_position() {
+    let (fixture, _) = scripted(definition(vec![node("queued", &[])]), FakeOptions { queued: ["queued".into()].into(), ..Default::default() });
+    fixture.scheduler.run().unwrap();
+    assert!(events_of(&fixture.store).iter().any(|event| matches!(&event.payload, DagRunEventPayload::NodeTransitioned { node_id, reason: DagNodeTransitionReason::TaskQueued { queue_position: 3 }, .. } if node_id == "queued")));
+}
+
+#[test]
+fn rejected_wait_fails_one_node_while_its_sibling_completes() {
+    let (fixture, manager) = scripted(definition(vec![node("reject", &[]), node("sibling", &[])]), FakeOptions { manual: true, reject_wait: ["reject".into()].into(), ..Default::default() });
+    let settled = event_signal(&fixture.scheduler, |event| matches!(&event.payload, DagRunEventPayload::NodeTransitioned { node_id, to: DagNodeState::Failed, .. } if node_id == "reject"));
+    let running = run_in_background(&fixture.scheduler);
+    manager.when_started("sibling");
+    recv_within(&settled, "rejected waiter fold");
+    manager.complete("sibling", TaskStatus::Completed);
+    let result = recv_within(&running, "run").unwrap();
+    assert_eq!(result.nodes[0].error.as_ref().unwrap().code, DagNodeErrorCode::TaskError);
+    assert_eq!(result.nodes[0].error.as_ref().unwrap().message, "wait rejected reject");
+    assert_eq!(result.nodes[1].state, DagNodeState::Completed);
+}
+
+#[test]
+fn failed_start_preserves_siblings_and_an_independent_branch() {
+    let (fixture, manager) = scripted(definition(vec![node("fail", &[]), node("sibling", &[]), node("skip", &["fail"]), node("next", &["sibling"])]), FakeOptions { start_failures: [("fail".into(), "start")].into(), ..Default::default() });
+    let result = fixture.scheduler.run().unwrap();
+    assert_eq!(result.nodes.iter().map(|node| node.state).collect::<Vec<_>>(), vec![DagNodeState::Failed, DagNodeState::Completed, DagNodeState::Skipped, DagNodeState::Completed]);
+    assert_eq!(manager.state.lock().unwrap().starts, vec!["sibling", "next"]);
+}
+
+#[test]
+fn residency_denied_node_retries_after_attached_sibling_frees_a_slot() {
+    let (fixture, manager) = scripted(definition(vec![node("first", &[]), node("retry", &[])]), FakeOptions { manual: true, residency_limit: Some(1), ..Default::default() });
+    let running = run_in_background(&fixture.scheduler);
+    manager.when_started("first");
+    manager.when_denied("retry");
+    manager.complete("first", TaskStatus::Completed);
+    manager.when_started("retry");
+    manager.complete("retry", TaskStatus::Completed);
+    let result = recv_within(&running, "residency retry").unwrap();
+    assert_eq!(result.status, DagRunStatus::Completed);
+    assert!(manager.state.lock().unwrap().denials.contains(&"retry".into()));
+    assert!(result.nodes.iter().all(|node| node.error.is_none()));
+}
+
+#[test]
+fn wider_wave_admits_in_residency_batches_without_an_extra_limit() {
+    let (fixture, manager) = scripted(definition((0..5).map(|i| node(&format!("n{i}"), &[])).collect()), FakeOptions { manual: true, residency_limit: Some(2), ..Default::default() });
+    let running = run_in_background(&fixture.scheduler);
+    manager.when_started("n1");
+    manager.when_denied("n4");
+    for id in ["n0", "n1", "n2", "n3", "n4"] {
+        manager.when_started(id);
+        manager.complete(id, TaskStatus::Completed);
+    }
+    let result = recv_within(&running, "batched wave").unwrap();
+    assert_eq!(result.status, DagRunStatus::Completed);
+    assert_eq!(manager.state.lock().unwrap().starts.len(), 5);
+    assert_eq!(manager.state.lock().unwrap().max_residents, 2);
+}
+
+#[test]
+fn rejected_start_clears_admission_and_cancels_the_attached_sibling() {
+    let (fixture, manager) = scripted(definition(vec![node("sibling", &[]), node("reject", &[])]), FakeOptions { manual: true, reject_start: ["reject".into()].into(), ..Default::default() });
+    let attached = event_signal(&fixture.scheduler, |event| matches!(&event.payload, DagRunEventPayload::NodeTransitioned { node_id, to: DagNodeState::Failed, .. } if node_id == "reject"));
+    let running = run_in_background(&fixture.scheduler);
+    recv_within(&attached, "sibling attachment");
+    fixture.scheduler.cancel(&run_id(), Some("stop after rejected admission")).unwrap();
+    assert_eq!(recv_within(&running, "cancelled run").unwrap().status, DagRunStatus::Cancelled);
+    assert_eq!(manager.state.lock().unwrap().cancellations, vec!["sibling"]);
+}
+
+fn cancellation_failure(error: &str, two_nodes: bool) {
+    let (fixture, manager) = scripted(definition(if two_nodes { vec![node("a", &[]), node("b", &[])] } else { vec![node("a", &[]), node("b", &["a"])] }), FakeOptions { manual: true, cancel_errors: [("a".into(), error.into())].into(), ..Default::default() });
+    let attached = event_signal(&fixture.scheduler, move |event| matches!(&event.payload, DagRunEventPayload::NodeTaskAttached { node_id, .. } if node_id == if two_nodes { "b" } else { "a" }));
+    let running = run_in_background(&fixture.scheduler);
+    recv_within(&attached, "attachment");
+    manager.when_waiting("a");
+    if two_nodes { manager.when_waiting("b"); }
+    assert_eq!(fixture.scheduler.cancel(&run_id(), Some("cancel")).unwrap_err(), error);
+    let result = recv_within(&running, "cancelled despite error").unwrap();
+    assert_eq!(result.status, DagRunStatus::Cancelled);
+    assert!(result.nodes.iter().all(|node| node.state == DagNodeState::Cancelled));
+    if two_nodes { assert_eq!(manager.state.lock().unwrap().cancellations.len(), 2); }
+    for id in if two_nodes { vec!["a", "b"] } else { vec!["a"] } { manager.complete(id, TaskStatus::Cancelled); }
+}
+
+#[test]
+fn abort_error_from_task_cancellation_surfaces_after_durable_cancellation() {
+    cancellation_failure("intentional abort", false);
+}
+
+#[test]
+fn genuine_cancellation_failure_surfaces_without_leaving_the_run_live() {
+    cancellation_failure("cancel rejected a", true);
+}
+
+#[test]
+fn graph_order_selects_primary_failure_despite_reversed_completion_order() {
+    let (fixture, manager) = scripted(definition(vec![node("later", &["preparation"]), node("graph-first", &[]), node("completion-first", &[]), node("preparation", &[])]), FakeOptions { manual: true, ..Default::default() });
+    let settled = event_signal(&fixture.scheduler, |event| matches!(&event.payload, DagRunEventPayload::NodeTransitioned { node_id, to: DagNodeState::Failed, .. } if node_id == "completion-first"));
+    let running = run_in_background(&fixture.scheduler);
+    manager.when_started("preparation");
+    manager.complete("completion-first", TaskStatus::Error);
+    recv_within(&settled, "first failure");
+    manager.complete("preparation", TaskStatus::Completed);
+    manager.complete("graph-first", TaskStatus::Error);
+    manager.when_started("later");
+    manager.complete("later", TaskStatus::Error);
+    assert_eq!(recv_within(&running, "ordered failure").unwrap().status, DagRunStatus::Failed);
+    assert!(events_of(&fixture.store).iter().any(|event| matches!(&event.payload, DagRunEventPayload::RunFailed { error, .. } if error.node_id.as_deref() == Some("graph-first"))));
+}
+
+#[test]
+fn durable_waiters_before_during_and_after_cancellation_all_settle() {
+    use crate::dag::handle::{DagWaitSurfaceOptions, create_dag_wait_surface};
+    let gate = Arc::new(Gate::default());
+    let (fixture, manager) = scripted(definition(vec![node("CA", &[]), node("CB", &["CA"])]), FakeOptions { manual: true, cancel_gate: Some(Arc::clone(&gate)), ..Default::default() });
+    let attached = event_signal(&fixture.scheduler, |event| matches!(&event.payload, DagRunEventPayload::NodeTaskAttached { node_id, .. } if node_id == "CA"));
+    let (armed_tx, armed_rx) = mpsc::channel();
+    let surface = Arc::new(create_dag_wait_surface(DagWaitSurfaceOptions {
+        store: Arc::clone(&fixture.store), subscribe: Arc::new(move |_, _| { armed_tx.send(()).unwrap(); Box::new(|| {}) }), cancel: None, read_output: None,
+    }));
+    let running = run_in_background(&fixture.scheduler);
+    recv_within(&attached, "CA attachment");
+    manager.when_waiting("CA");
+    let spawn_wait = |attach: bool| {
+        let surface = Arc::clone(&surface);
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            tx.send(if attach { surface.attach(&run_id(), PARENT_SESSION_ID).unwrap().done() } else { surface.wait(&run_id(), PARENT_SESSION_ID) }).unwrap();
+        });
+        rx
+    };
+    let before = [spawn_wait(false), spawn_wait(true)];
+    recv_within(&armed_rx, "first waiter subscribed");
+    recv_within(&armed_rx, "second waiter subscribed");
+    let scheduler = Arc::clone(&fixture.scheduler);
+    let cancelling = std::thread::spawn(move || scheduler.cancel(&run_id(), Some("live cancel")));
+    manager.when_cancelling();
+    let during = [spawn_wait(false), spawn_wait(true)];
+    recv_within(&armed_rx, "third waiter subscribed during cancellation");
+    recv_within(&armed_rx, "fourth waiter subscribed during cancellation");
+    gate.release();
+    cancelling.join().unwrap().unwrap();
+    for rx in before.into_iter().chain(during) {
+        let result = recv_within(&rx, "durable cancelled wait").unwrap();
+        assert_eq!(result.status, DagRunStatus::Cancelled);
+        assert!(result.nodes.values().all(|node| matches!(node, crate::dag::handle::DagTerminalNodeResult::Cancelled { reason, .. } if reason == "live cancel")));
+    }
+    assert_eq!(surface.wait(&run_id(), PARENT_SESSION_ID).unwrap().status, DagRunStatus::Cancelled);
+    assert_eq!(surface.attach(&run_id(), PARENT_SESSION_ID).unwrap().done().unwrap().status, DagRunStatus::Cancelled);
+    assert_eq!(surface.waiter_count(&run_id()), 0);
+    assert_eq!(recv_within(&running, "scheduler cancellation").unwrap().status, DagRunStatus::Cancelled);
+}
+
+#[test]
+fn configured_subscriber_ring_overflows_at_its_bound() {
+    let store = temp_store();
+    let harness = make_manager(HarnessOptions::default());
+    let scheduler = create_dag_scheduler(DagSchedulerOptions {
+        store, task_manager: Arc::new(harness.manager), initial_record: record_for(&definition(vec![node("ring", &[])])), execution_mode_agents: None, execution_mode_config: None, ancestry_depth: None, subscriber_ring: Some(1), now: None,
+    }).unwrap();
+    let manager = FakeTaskManager::new(FakeOptions { manual: true, ..Default::default() });
+    scheduler.set_task_port(Arc::clone(&manager) as Arc<dyn TestTaskPort>);
+    let release = Arc::new(Gate::default());
+    let listener_release = Arc::clone(&release);
+    let (first_tx, first_rx) = mpsc::channel();
+    let overflow = Arc::new(Mutex::new(None));
+    let listener_overflow = Arc::clone(&overflow);
+    let _unsubscribe = scheduler.subscribe(Arc::new(move |event| {
+        if event.seq == 1 { first_tx.send(()).unwrap(); listener_release.wait(); }
+        if let DagRunEventPayload::StreamOverflow { dropped_count, recover_after_seq } = event.payload {
+            *listener_overflow.lock().unwrap() = Some((dropped_count, recover_after_seq));
+        }
+    }));
+    scheduler.journal.append(DagRunEventPayload::RunStarted { generation: 1 }).unwrap();
+    recv_within(&first_rx, "blocked first listener");
+    let running = run_in_background(&scheduler);
+    manager.when_started("ring");
+    manager.complete("ring", TaskStatus::Completed);
+    assert_eq!(recv_within(&running, "completed with blocked subscriber").unwrap().status, DagRunStatus::Completed);
+    release.release();
+    scheduler.when_idle();
+    let (dropped, cursor) = overflow.lock().unwrap().expect("overflow");
+    assert!(dropped > 0);
+    assert_eq!(cursor, 1);
+}

@@ -4,6 +4,8 @@
 //! (waiters, released slots) has no event hook, so each wait slice is also capped at `RECHECK`.
 
 use std::collections::HashMap;
+#[path = "dag_fake.rs"]
+pub(crate) mod dag_fake;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -104,7 +106,13 @@ impl FakeHandle {
         })
     }
 
+    /// The data pointer the chaos barrier keys on: its settle/consume accounting is per handle.
+    fn ptr(&self) -> usize {
+        self as *const Self as usize
+    }
+
     pub fn settle(&self, outcome: RunnerOutcome) {
+        crate::manager::outcome::test_barrier::note_issue(self.ptr());
         lock(&self.settle)
             .send(outcome)
             .expect("outcome receiver alive");

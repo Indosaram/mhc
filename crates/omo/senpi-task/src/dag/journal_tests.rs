@@ -6,7 +6,7 @@ use std::time::Duration;
 use pretty_assertions::assert_eq;
 
 use super::*;
-use crate::dag::store::{DagEventReadOptions, DagStoreConfig, DagStoreOptions, create_dag_file_store};
+use crate::dag::store::{DagEventReadOptions, DagStoreConfig, DagStoreError, DagStoreOptions, create_dag_file_store};
 use crate::dag::types::{DagNodeId, DagNodeState, DagNodeTransitionReason, DagRunEventPayload};
 
 const RUN_ID: &str = "run-journal";
@@ -136,6 +136,102 @@ fn given_three_mutations_when_appended_then_subscribers_see_durable_events_in_or
         .expect("checkpoint present");
     assert_eq!(checkpoint.checkpoint_seq, 3);
     assert_eq!(checkpoint.generations, vec![1, 2, 3]);
+}
+
+#[test]
+fn given_checkpoint_replacement_crashes_after_wal_append_when_reopened_on_the_same_store_then_replay_never_reaches_the_previous_journal_subscriber()
+{
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let store = temp_store();
+    let fail_once = Arc::new(AtomicBool::new(true));
+    let flag = Arc::clone(&fail_once);
+    store.set_checkpoint_hook(Arc::new(move |_value: &serde_json::Value| {
+        if flag.swap(false, Ordering::SeqCst) {
+            Err(DagStoreError::Message("injected checkpoint crash".to_string()))
+        } else {
+            Ok(())
+        }
+    }));
+
+    let crashing = create_dag_journal(DagJournalOptions {
+        store: Arc::clone(&store),
+        run_id: run_id(),
+        initial_checkpoint: initial_checkpoint(),
+        apply_event: Arc::new(apply_event),
+        subscriber_ring: None,
+        now: None,
+    })
+    .expect("journal");
+    let delivered_before_durability: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+    let collected_before = Arc::clone(&delivered_before_durability);
+    let _unsubscribe_before = crashing.subscribe(Arc::new(move |event: &DagRunEvent| {
+        collected_before.lock().unwrap().push(event.seq);
+    }));
+
+    // The checkpoint write fails after the WAL append, so the append reports the injected crash and
+    // the subscriber is never notified of the un-durable event.
+    let error = crashing.append(run_started(1)).expect_err("append crashes");
+    assert_eq!(error.to_string(), "injected checkpoint crash");
+    crashing.when_idle();
+
+    // Reopened on the same store (the hook has spent its one failure): replay rebuilds seq 1 from
+    // the WAL, so the next append lands on seq 2 and only that event reaches the new subscriber.
+    let reopened = create_dag_journal(DagJournalOptions {
+        store: Arc::clone(&store),
+        run_id: run_id(),
+        initial_checkpoint: initial_checkpoint(),
+        apply_event: Arc::new(apply_event),
+        subscriber_ring: None,
+        now: None,
+    })
+    .expect("reopened journal");
+    let delivered_after_reopen: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+    let collected_after = Arc::clone(&delivered_after_reopen);
+    let _unsubscribe_after = reopened.subscribe(Arc::new(move |event: &DagRunEvent| {
+        collected_after.lock().unwrap().push(event.seq);
+    }));
+    let second = reopened.append(run_started(2)).expect("append 2");
+    reopened.when_idle();
+
+    assert_eq!(*delivered_before_durability.lock().unwrap(), Vec::<u64>::new());
+    assert_eq!(second.seq, 2);
+    assert_eq!(*delivered_after_reopen.lock().unwrap(), vec![2]);
+    let snapshot = reopened.snapshot();
+    assert_eq!(snapshot.checkpoint_seq, 2);
+    assert_eq!(snapshot.generations, vec![1, 2]);
+    let events = store
+        .read_events(
+            &run_id(),
+            0,
+            &DagEventReadOptions {
+                limit: 10,
+                ..Default::default()
+            },
+        )
+        .expect("read events")
+        .events;
+    assert_eq!(
+        events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+}
+
+#[test]
+fn after_wal_append_fault_leaves_reducer_unapplied_until_reopen() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let store = temp_store();
+    let fail_once = AtomicBool::new(true);
+    store.set_append_hook(Arc::new(move |_| {
+        if fail_once.swap(false, Ordering::SeqCst) { Err(DagStoreError::Message("after WAL crash".into())) } else { Ok(()) }
+    }));
+    let options = || DagJournalOptions { store: Arc::clone(&store), run_id: run_id(), initial_checkpoint: initial_checkpoint(), apply_event: Arc::new(apply_event), subscriber_ring: None, now: None };
+    let first = create_dag_journal(options()).unwrap();
+    assert_eq!(first.append(run_started(1)).unwrap_err().to_string(), "after WAL crash");
+    assert_eq!(first.snapshot().generations, Vec::<u64>::new());
+    let reopened = create_dag_journal(options()).unwrap();
+    assert_eq!(reopened.snapshot().generations, vec![1]);
+    assert_eq!(reopened.snapshot().checkpoint_seq, 1);
 }
 
 #[test]
