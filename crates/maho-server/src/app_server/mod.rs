@@ -1,4 +1,8 @@
 pub mod envelope;
+pub mod connection;
+pub mod methods;
+pub mod notifications;
+pub mod approval_redaction;
 pub mod errors;
 pub mod daemon_probe;
 pub mod cli_args;

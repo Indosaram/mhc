@@ -16,6 +16,7 @@ pub struct Attachment {
     pub target: Value,
     pub lease: Arc<dyn RoutedSessionAttachment>,
     operations: RwLock<()>,
+    released: AtomicBool,
 }
 impl Attachment {
     pub async fn invoke(
@@ -25,10 +26,16 @@ impl Attachment {
         context: Context,
     ) -> Result<Option<Value>, ServerError> {
         let _operation = self.operations.read().await;
+        if self.released.load(Ordering::SeqCst) {
+            return Err(ServerError::not_attached());
+        }
         self.lease.invoke_service(call, publish, context).await
     }
     pub async fn release(&self) -> Result<(), ServerError> {
         let _operations = self.operations.write().await;
+        if self.released.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
         self.lease.release().await
     }
 }
@@ -76,6 +83,7 @@ impl SessionRouter {
             target: json!({"serverId":self.server_id,"sessionId":session_id,"attachmentId":uuid::Uuid::new_v4().to_string()}),
             lease,
             operations: RwLock::new(()),
+            released: AtomicBool::new(false),
         }))
     }
     pub async fn remove(&self, session_id: &str) -> Result<(), ServerError> {
