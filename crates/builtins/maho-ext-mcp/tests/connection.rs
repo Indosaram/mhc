@@ -14,6 +14,19 @@ async fn failed_connect_retains_degraded_error() {
     assert!(connection.connect().await.is_err());assert_eq!(connection.state(),ServerConnectionState::Degraded);assert!(connection.last_error().is_some());connection.dispose().await.unwrap();
 }
 #[tokio::test]
+async fn invalid_transport_configuration_releases_single_flight() {
+    let root=tempfile::tempdir().unwrap();let mut config=config();config.command=None;
+    let connection=ServerConnection::new("failure",config,None,Arc::new(Mutex::new(McpLogger::new("failure",root.path(),None).unwrap())));
+    for _ in 0..2 {
+        connection.mark_failure(ServerConnectionState::Idle,None);
+        let mut states=connection.on_state_change();
+        assert!(tokio::time::timeout(Duration::from_secs(3),connection.connect()).await.unwrap().is_err());
+        assert_eq!(connection.state(),ServerConnectionState::Degraded);assert!(connection.last_error().is_some());
+        assert_eq!(states.try_recv().unwrap().state,ServerConnectionState::Degraded);
+    }
+    connection.dispose().await.unwrap();
+}
+#[tokio::test]
 async fn disable_clears_error_and_rejects_connect() {
     let root=tempfile::tempdir().unwrap();let connection=ServerConnection::new("fixture",config(),None,Arc::new(Mutex::new(McpLogger::new("fixture",root.path(),None).unwrap())));connection.mark_failure(ServerConnectionState::Suspended,None);connection.disable().await.unwrap();assert!(connection.connect().await.is_err());assert_eq!(connection.generation(),1);assert!(connection.last_error().is_none());
 }

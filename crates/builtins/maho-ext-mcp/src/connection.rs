@@ -50,7 +50,16 @@ impl ServerConnection {
         }
     }
     async fn open_connection(self:&Arc<Self>,generation:u64)->Result<Arc<McpClient>,McpError> {
-        let transport=Arc::new(create_mcp_transport(&self.server_name,&self.config,self.env.as_ref(),self.logger.clone())?);
+        let transport=match create_mcp_transport(&self.server_name,&self.config,self.env.as_ref(),self.logger.clone()) {
+            Ok(transport)=>Arc::new(transport),
+            Err(error)=>{
+                let mut inner=self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if inner.generation==generation && inner.state!=ServerConnectionState::Disabled {
+                    inner.last_error=Some(error.clone());self.transition(&mut inner,ServerConnectionState::Degraded,Some(error.clone()));
+                }
+                return Err(error);
+            }
+        };
         {
             let mut inner=self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if inner.generation!=generation || inner.state==ServerConnectionState::Disabled{return Err(self.error(format!("MCP server {} connect was superseded",self.server_name),"connect"));}
@@ -60,7 +69,6 @@ impl ServerConnection {
         let current={
             let mut inner=self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if inner.generation!=generation || inner.state==ServerConnectionState::Disabled {false}else{
-                inner.pending=None;
                 match &result {
                     Ok(_)=>{inner.last_error=None;self.transition(&mut inner,ServerConnectionState::Connected,None);}
                     Err(error)=>{inner.transport=None;inner.last_error=Some(error.clone());self.transition(&mut inner,ServerConnectionState::Degraded,Some(error.clone()));}
