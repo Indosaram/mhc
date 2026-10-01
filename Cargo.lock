@@ -1812,6 +1812,10 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-reasoning"
 version = "0.0.0"
+dependencies = [
+ "maho-ai",
+ "maho-core",
+]
 
 [[package]]
 name = "maho-ext-recommended-models"
