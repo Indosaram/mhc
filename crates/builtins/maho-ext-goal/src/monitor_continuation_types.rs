@@ -1,6 +1,7 @@
 use crate::types::Goal;
 use maho_agent::types::AgentMessage;
-use maho_ext_api::{ExtensionEvent,ExtensionContext};
+use maho_ext_api::ExtensionContext;
+use maho_core::agent_abort_provenance::AgentEndEvent;
 
 pub struct AgentEndOptions<'a> {
     pub ctx:&'a ExtensionContext,
@@ -9,7 +10,7 @@ pub struct AgentEndOptions<'a> {
 }
 pub struct SystemAbortOptions<'a> {
     pub agent_end:AgentEndOptions<'a>,
-    pub event:&'a ExtensionEvent,
+    pub event:&'a AgentEndEvent,
     pub will_retry:bool,
 }
 pub type ProviderRecoveryOptions<'a>=SystemAbortOptions<'a>;

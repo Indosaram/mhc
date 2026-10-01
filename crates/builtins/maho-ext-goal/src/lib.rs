@@ -24,3 +24,4 @@ pub mod elapsed_ticker;
 pub mod prompt;
 pub mod lifecycle_helpers;
 pub mod monitor_continuation_types;
+pub mod todo_gate;
