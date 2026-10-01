@@ -18,6 +18,8 @@ pub struct InteractiveMode {
     theme: Theme,
     pub editor: CustomEditor,
     submissions: Rc<RefCell<std::collections::VecDeque<String>>>,
+    rename_input: Option<crate::components::extension_input::ExtensionInputComponent>,
+    rename_result: Rc<RefCell<Option<Option<String>>>>,
     pub agent_idle: bool,
 }
 
@@ -30,7 +32,7 @@ impl InteractiveMode {
         let keys = Arc::new(maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default()));
         let mut editor = CustomEditor::new(host, editor_theme(&theme), keys, CustomEditorOptions::default());
         editor.editor.on_submit = Some(Box::new(move |text| { if !text.trim().is_empty() { captured.borrow_mut().push_back(text.trim().into()); } }));
-        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, pending_tools: BTreeMap::new(), theme, editor, submissions, agent_idle: true }
+        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), agent_idle: true }
     }
 
     pub async fn submit_editor(&mut self) -> Result<Option<PromptDisposition>, String> {
@@ -42,6 +44,7 @@ impl InteractiveMode {
     }
 
     pub async fn submit(&mut self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
+        if self.dispatch_command(text)? { return Ok(PromptDisposition::Handled); }
         let session = self.session.clone();
         let prompt = session.prompt(text, options);
         tokio::pin!(prompt);
@@ -62,6 +65,40 @@ impl InteractiveMode {
     pub async fn steer(&self, text: &str) -> Result<(), String> { self.session.steer(text, None, Default::default()).await }
 
     pub async fn follow_up(&self, text: &str) -> Result<(), String> { self.session.follow_up(text, None, Default::default()).await }
+
+    fn show_status(&mut self, text: String) {
+        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(text, 1, 0))));
+    }
+
+    fn dispatch_command(&mut self, text: &str) -> Result<bool, String> {
+        let text = text.trim();
+        if matches!(text, "/rename" | "/name") {
+            let accepted = self.rename_result.clone();
+            let cancelled = self.rename_result.clone();
+            self.rename_input = Some(crate::components::extension_input::ExtensionInputComponent::new(&self.theme, "Rename session", Box::new(move |text| *accepted.borrow_mut() = Some(Some(text.into()))), Box::new(move || *cancelled.borrow_mut() = Some(None)), crate::components::extension_input::ExtensionInputOptions { initial_value: self.session.session_name(), ..Default::default() }));
+            return Ok(true);
+        }
+        if let Some(name) = text.strip_prefix("/rename ").or_else(|| text.strip_prefix("/name ")) {
+            let name = name.trim();
+            if name.is_empty() { return Err("Session name cannot be empty".into()); }
+            self.session.set_session_name(name);
+            self.show_status(format!("Session name set: {}", self.session.session_name().unwrap_or_else(|| name.into())));
+            return Ok(true);
+        }
+        if let Some(value) = text.strip_prefix("/thinking ") {
+            let level = maho_ai::types::ModelThinkingLevel::parse(value.trim()).ok_or_else(|| format!("Invalid thinking level: {}", value.trim()))?;
+            if !self.session.get_available_thinking_levels().contains(&level) { return Err(format!("Thinking level {} is not supported by the current model", value.trim())); }
+            self.session.set_session_thinking_level(level);
+            self.show_status(format!("Thinking level: {}", level.as_str()));
+            return Ok(true);
+        }
+        if text == "/hotkeys" {
+            let markdown = crate::help_content::build_help_markdown(&[]);
+            self.chat.add_child(Rc::new(RefCell::new(crate::components::markdown_transform::MarkdownComponent(maho_tui::components::markdown::Markdown::new(&markdown, 1, 1, get_markdown_theme(&self.theme), None, Default::default())))));
+            return Ok(true);
+        }
+        Ok(false)
+    }
 
     pub fn drain_events(&mut self) {
         while let Ok(event) = self.events.try_recv() {
@@ -139,8 +176,21 @@ impl InteractiveMode {
 }
 
 impl Component for InteractiveMode {
-    fn render(&mut self, width: usize) -> Vec<String> { self.drain_events(); let mut lines = self.chat.render(width); lines.extend(self.editor.render(width)); lines }
-    fn handle_input(&mut self, data: &str) { self.editor.handle_input(data); }
+    fn render(&mut self, width: usize) -> Vec<String> { self.drain_events(); let mut lines = self.chat.render(width); lines.extend(if let Some(input) = &mut self.rename_input { input.render(width) } else { self.editor.render(width) }); lines }
+    fn handle_input(&mut self, data: &str) {
+        if let Some(input) = &mut self.rename_input {
+            input.handle_input(data);
+            let result = self.rename_result.borrow_mut().take();
+            if let Some(result) = result {
+                self.rename_input = None;
+                if let Some(name) = result {
+                    let name = name.trim();
+                    if name.is_empty() { self.show_status("Session name cannot be empty".into()); }
+                    else { self.session.set_session_name(name); self.show_status(format!("Session name set: {}", self.session.session_name().unwrap_or_else(|| name.into()))); }
+                }
+            }
+        } else { self.editor.handle_input(data); }
+    }
     fn has_input_handler(&self) -> bool { true }
     fn invalidate(&mut self) { self.chat.invalidate(); self.editor.invalidate(); }
 }

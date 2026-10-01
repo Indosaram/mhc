@@ -103,3 +103,31 @@ async fn empty_enter_does_not_start_provider_turn() {
     assert_eq!(mode.submit_editor().await.expect("empty"), None);
     assert!(mode.agent_idle);
 }
+
+#[tokio::test]
+async fn rename_command_updates_session_without_consuming_provider_response() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/rename named-session", Default::default()).await.expect("rename"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(mode.render(80).join("\n").contains("named-session"));
+    assert_eq!(mode.submit("hi", Default::default()).await.expect("native turn"), maho_core::agent_session::PromptDisposition::Started);
+    assert!(mode.render(80).join("\n").contains("hello"));
+}
+
+#[tokio::test]
+async fn invalid_thinking_command_does_not_become_provider_input() {
+    let (mut mode, _directory) = native_mode();
+    assert!(mode.submit("/thinking nonsense", Default::default()).await.is_err());
+    assert!(mode.agent_idle);
+    assert_eq!(mode.submit("hi", Default::default()).await.expect("native turn"), maho_core::agent_session::PromptDisposition::Started);
+}
+
+#[tokio::test]
+async fn rename_without_argument_opens_real_input_and_commits_enter() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/rename", Default::default()).await.expect("dialog"), maho_core::agent_session::PromptDisposition::Handled);
+    mode.handle_input("dialog-name"); mode.handle_input("\r");
+    assert!(mode.render(80).join("\n").contains("dialog-name"));
+    assert!(mode.editor.editor.get_text().is_empty());
+}
