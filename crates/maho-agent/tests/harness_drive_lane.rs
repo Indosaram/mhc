@@ -22,6 +22,40 @@ fn seed() -> LaneConfiguration {
     }
 }
 
+#[tokio::test]
+async fn appends_custom_entries_in_a_parent_chain_and_reads_latest() {
+    let harness = fixture().await;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let first = lane.append_custom_entry("first".into(), Some(serde_json::json!(1)), &BACKGROUND_CONTEXT).await.unwrap();
+    let second = lane.append_custom_entry("second".into(), None, &BACKGROUND_CONTEXT).await.unwrap();
+    let entries = lane.find_entries(None, &BACKGROUND_CONTEXT).await.unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].id, second);
+    assert_eq!(entries[0].parent_id.as_ref(), Some(&first));
+    assert_eq!(entries[1].parent_id, None);
+    assert_eq!(lane.find_entry(None, &BACKGROUND_CONTEXT).await.unwrap().unwrap().id, second);
+    assert_eq!(lane.get_tip_id().unwrap(), Some(second));
+}
+
+#[tokio::test]
+async fn queued_writes_flush_before_idle_append_in_one_parent_chain() {
+    use maho_agent::harness::session::types::{InboxItem, InboxItemKind, PendingEntry};
+    use maho_agent::harness::session::values::pending_entry;
+    let harness = fixture().await;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    lane.command(|mut state, _| Box::pin(async move {
+        state.inbox.push(InboxItem { entry_id: "queued".into(), kind: InboxItemKind::Write });
+        Ok(LaneCommand::Commit { decision: CommitDecision { writes: vec![Write::Value(set_value(&pending_entry("queued"), serde_json::to_value(PendingEntry::Custom { custom_type: "queued".into(), payload: None }).unwrap()))], materialize: Arc::new(|_| ()), events: None }, next: Box::new(state) })
+    }), &BACKGROUND_CONTEXT).await.unwrap();
+    let id = lane.append_custom_entry("new".into(), None, &BACKGROUND_CONTEXT).await.unwrap();
+    let entries = lane.find_entries(None, &BACKGROUND_CONTEXT).await.unwrap();
+    assert_eq!(entries[0].id, id);
+    assert_eq!(entries[0].parent_id.as_deref(), Some("queued"));
+    assert!(lane.state().inbox.is_empty());
+    assert!(harness.session.get_value(&pending_entry("queued"), &BACKGROUND_CONTEXT).await.unwrap().is_none());
+    assert_eq!(entries[0].seq, entries[1].seq + 1);
+}
+
 async fn fixture() -> Harness {
     let storage = Arc::new(MemoryStorage::new(MemoryStorageOptions {
         now: Some(Arc::new(|| 10)),

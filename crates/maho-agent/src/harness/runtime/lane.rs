@@ -488,4 +488,108 @@ impl Lane {
         self.assert_open()?;
         Ok(self.state().configuration.active_tool_names)
     }
+
+    pub async fn get_result(&self, id: &str, context: &Context) -> Result<Option<crate::harness::session::types::OperationResultRecord>, SessionError> {
+        self.assert_open()?;
+        self.session.get_value(&operation_result(id), context).await?
+            .map(|stored| serde_json::from_value(stored.value).map_err(|error| session_invariant_error(error.to_string()))).transpose()
+    }
+
+    pub async fn find_entries(&self, query: Option<crate::harness::session::types::BranchScan>, context: &Context) -> Result<Vec<crate::harness::session::types::Entry>, SessionError> {
+        self.assert_open()?;
+        let query = query.unwrap_or_default();
+        let Some(start) = query.start.or(self.state().tip_id) else { return Ok(vec![]); };
+        self.session.scan_branch(crate::harness::session::types::StorageBranchScan {
+            start, stop_at_type: query.stop_at_type, stop_at_id: query.stop_at_id, entry_type: query.entry_type, custom_type: query.custom_type, order: Some(query.order.unwrap_or(crate::harness::session::types::BranchOrder::NewestFirst)), limit: query.limit, cursor: query.cursor,
+        }, context).await
+    }
+
+    pub async fn find_entry(&self, query: Option<crate::harness::session::types::BranchScan>, context: &Context) -> Result<Option<crate::harness::session::types::Entry>, SessionError> {
+        let mut query = query.unwrap_or_default();
+        query.limit = Some(query.limit.unwrap_or(1).min(1));
+        Ok(self.find_entries(Some(query), context).await?.into_iter().next())
+    }
+
+    pub async fn append_message(&self, message: crate::types::AgentMessage, context: &Context) -> Result<String, SessionError> {
+        self.append(PendingEntry::Message { payload: message }, context).await
+    }
+
+    pub async fn append_custom_entry(&self, custom_type: String, data: Option<serde_json::Value>, context: &Context) -> Result<String, SessionError> {
+        self.append(PendingEntry::Custom { custom_type, payload: data }, context).await
+    }
+
+    async fn append(&self, pending: PendingEntry, context: &Context) -> Result<String, SessionError> {
+        self.assert_open()?;
+        if let PendingEntry::Message { payload } = &pending
+            && matches!(payload.try_as_llm(), Some(maho_ai::types::Message::Assistant(message)) if message.stop_reason == maho_ai::types::StopReason::Pending) {
+                return Err(crate::harness::session::session::session_pending_assistant_message_error());
+        }
+        let id = (self.session.id_generator())(None);
+        let name = self.name.clone();
+        let context_read = context.clone();
+        self.command(move |mut state, reader| Box::pin(async move {
+            if state.operation.is_none() {
+                let queued = inbox_items(&state.inbox, InboxItemKind::Write);
+                let mut entries = Vec::with_capacity(queued.len() + 1);
+                for item in &queued {
+                    let stored = reader.get_value(&pending_entry(&item.entry_id), &context_read).await?.ok_or_else(|| session_invariant_error(format!("Pending write {} is missing its payload", item.entry_id)))?;
+                    let pending = serde_json::from_value(stored.value).map_err(|error| session_invariant_error(error.to_string()))?;
+                    entries.push(pending_entry_write(item.entry_id.clone(), pending));
+                }
+                state.inbox = without_inbox_items(&state.inbox, &queued);
+                let queues = if queued.is_empty() { None } else { Some(read_lane_queues(reader, &state.inbox, &context_read).await?) };
+                entries.push(pending_entry_write(id.clone(), pending));
+                let mut parent = state.tip_id.clone();
+                for entry in &mut entries { entry.parent_id = parent; parent = Some(entry.id.clone()); }
+                state.tip_id = Some(id.clone());
+                let mut writes: Vec<_> = entries.iter().cloned().map(crate::harness::session::commit::insert_entry).collect();
+                writes.extend(queued.iter().map(|item| Write::Value(delete_value(&pending_entry(&item.entry_id)))));
+                writes.push(Write::Value(set_value(&branch_tip(&name), encoded(&state.tip_id)?)));
+                writes.push(Write::Value(set_value(&lane_state(&name), encoded(&durable_lane_state(&state))?)));
+                Ok(LaneCommand::Commit { decision: CommitDecision {
+                    writes, materialize: Arc::new(move |_| id.clone()), events: Some(Arc::new(move |commit| {
+                        let mut events = Vec::new();
+                        for (entry, seq) in entries.iter().zip(&commit.seqs) {
+                            let entry = crate::harness::session::types::Entry { id: entry.id.clone(), parent_id: entry.parent_id.clone(), seq: *seq, timestamp: commit.timestamp, kind: entry.kind.clone() };
+                            if let crate::harness::session::types::EntryKind::Message { message, .. } = &entry.kind {
+                                events.push(HarnessEvent::new(HarnessEventPayload::MessageStart { run_id: None, message: message.clone() }, Some(name.clone())));
+                                events.push(HarnessEvent::new(HarnessEventPayload::MessageEnd { run_id: None, message: message.clone(), entry_id: Some(entry.id.clone()) }, Some(name.clone())));
+                            }
+                            events.push(HarnessEvent::new(HarnessEventPayload::EntryAdded { entry: Box::new(entry) }, Some(name.clone())));
+                        }
+                        if let Some(queues) = &queues { events.push(HarnessEvent::new(HarnessEventPayload::QueueUpdate { queues: queues.clone() }, Some(name.clone()))); }
+                        events
+                    })),
+                }, next: Box::new(state) })
+            } else {
+                let mut queues = read_lane_queues(reader, &state.inbox, &context_read).await?;
+                queues.push(queued_item(&InboxItem { entry_id: id.clone(), kind: InboxItemKind::Write }, &pending)?);
+                state.inbox.push(InboxItem { entry_id: id.clone(), kind: InboxItemKind::Write });
+                let writes = vec![Write::Value(set_value(&pending_entry(&id), encoded(&pending)?)), Write::Value(set_value(&lane_state(&name), encoded(&durable_lane_state(&state))?))];
+                Ok(LaneCommand::Commit { decision: CommitDecision { writes, materialize: Arc::new(move |_| id.clone()), events: Some(Arc::new(move |_| vec![HarnessEvent::new(HarnessEventPayload::QueueUpdate { queues: queues.clone() }, Some(name.clone()))])) }, next: Box::new(state) })
+            }
+        }), context).await
+    }
+}
+
+fn queued_item(item: &InboxItem, pending: &PendingEntry) -> Result<crate::harness::events::LaneQueuedItem, SessionError> {
+    let kind = match item.kind { InboxItemKind::Write => "write", InboxItemKind::Steer => "steer", InboxItemKind::FollowUp => "followUp", InboxItemKind::NextRun => "nextRun" }.to_owned();
+    let (item_type, message, custom_type, data) = match pending {
+        PendingEntry::Message { payload } => ("message", Some(payload.clone()), None, None),
+        PendingEntry::Custom { custom_type, payload } => {
+            if item.kind != InboxItemKind::Write { return Err(session_invariant_error(format!("Pending {kind} entry {} is not a message", item.entry_id))); }
+            ("custom", None, Some(custom_type.clone()), payload.clone())
+        },
+    };
+    Ok(crate::harness::events::LaneQueuedItem { entry_id: item.entry_id.clone(), kind, item_type: item_type.into(), message, custom_type, data })
+}
+
+async fn read_lane_queues(reader: &dyn SessionReader, inbox: &[InboxItem], context: &Context) -> Result<Vec<crate::harness::events::LaneQueuedItem>, SessionError> {
+    let mut queues = Vec::with_capacity(inbox.len());
+    for item in inbox {
+        let stored = reader.get_value(&pending_entry(&item.entry_id), context).await?.ok_or_else(|| session_invariant_error(format!("Pending {:?} entry {} is missing its payload", item.kind, item.entry_id)))?;
+        let pending: PendingEntry = serde_json::from_value(stored.value).map_err(|error| session_invariant_error(error.to_string()))?;
+        queues.push(queued_item(item, &pending)?);
+    }
+    Ok(queues)
 }
