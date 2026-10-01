@@ -4,6 +4,7 @@ pub mod context;
 pub mod dream_scoring;
 pub mod dream_selector;
 pub mod prompt;
+pub mod skills_usage_ledger;
 pub mod status_active_runs;
 pub mod supervisor;
 pub mod tool_receipts;
