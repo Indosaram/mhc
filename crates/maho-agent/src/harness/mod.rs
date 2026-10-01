@@ -1,6 +1,38 @@
-//! Placeholder for senpi packages/agent/src/harness/ (owned by todo 15).
+//! Port of senpi `packages/agent/src/harness/` (todo 15).
 //!
-//! `index.ts` re-exports the harness surface (agent-harness, compaction, context, messages,
-//! prompt-templates, result, runtime/reducer, session, skills, system-prompt, telemetry, tools,
-//! utils) plus `node.ts`'s NodeExecutionEnv. Todo 14 declares the module so the crate layout
-//! matches the TS tree; todo 15 fills it.
+//! One senpi source file maps to one Rust module here, keeping names and order so an upstream
+//! diff translates mechanically.
+
+pub mod agent_harness;
+pub mod compaction;
+pub mod config;
+pub mod context;
+pub mod env;
+pub mod events;
+pub mod execution;
+pub mod hooks;
+pub mod messages;
+pub mod prompt_templates;
+pub mod result;
+pub mod runtime;
+pub mod session;
+pub mod skills;
+pub mod system_prompt;
+pub mod telemetry;
+pub mod tools;
+pub mod types;
+pub mod utils;
+
+pub use result::{
+    Closed, HarnessClosed, HarnessFault, InvalidLane, InvalidMessage, InvalidNavigation, LaneBusy,
+    NoActiveOperation, NoActiveRun, NothingToCompact, NothingToResume, OperationKind, OperationMismatch,
+    TaggedErrorValue, UnknownSkill, UnknownTarget, UnknownTemplate,
+};
+pub use types::{
+    AgentHarnessResources, AgentHarnessStreamOptions, AgentHarnessStreamOptionsPatch, AgentHarnessTool,
+    AgentHarnessToolContextSource, AgentHarnessToolInvocation, AgentHarnessToolUpdateCallback,
+    AgentHarnessToolUpdateOptions, BranchSummaryError, CompactionError, ExecutionEnv, ExecutionError,
+    FileError, FileErrorCode, FileInfo, FileKind, FileSystem, PromptTemplate, Shell, ShellExecOptions,
+    ShellExecResult, ShellOutputCaptureOptions, ShellOutputLimits, ShellOutputMetadata, ShellOutputRetention,
+    ShellOutputTruncation, ShellOutputUpdate, ShellOutputView, Skill, TextLine, TextLineReader,
+};

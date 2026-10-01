@@ -27,6 +27,21 @@ pub type ToolExecuteFn = Arc<
         + Sync,
 >;
 
+/// Unique suffix for temp directories, mirroring the TS suites' `Math.random()` suffix.
+pub fn unique_suffix() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!(
+        "{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default(),
+        count
+    )
+}
+
 pub type RecordedCalls = Arc<Mutex<Vec<(Model, Context, Option<AgentStreamOptions>)>>>;
 
 pub fn test_model() -> Model {
@@ -353,5 +368,198 @@ impl EventCounter {
 impl Default for EventCounter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FileSystem decorators used by the JSONL suites (the Rust analogue of the TS
+// suites' `vi.spyOn(fileSystem, method)` and their NodeExecutionEnv subclasses).
+// ---------------------------------------------------------------------------
+
+use maho_agent::harness::context::Context as HarnessContext;
+use maho_agent::harness::types::{
+    FileError, FileErrorCode, FileFuture, FileInfo, FileResult, FileSystem, TextLineReader,
+};
+
+/// One observed atomic publication (rename of the staged temp file over the destination).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedPublication {
+    pub source_path: String,
+    pub destination_path: String,
+    pub destination_existed: bool,
+    pub staged_content: String,
+}
+
+/// Delegating filesystem that records publications and can fail the next appends.
+pub struct ObservingFileSystem {
+    inner: Arc<dyn FileSystem>,
+    remaining_append_failures: AtomicUsize,
+    publications: Mutex<Vec<ObservedPublication>>,
+}
+
+impl ObservingFileSystem {
+    pub fn new(inner: Arc<dyn FileSystem>, append_failures: usize) -> Self {
+        Self {
+            inner,
+            remaining_append_failures: AtomicUsize::new(append_failures),
+            publications: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn publications(&self) -> Vec<ObservedPublication> {
+        self.publications.lock().expect("publications").clone()
+    }
+}
+
+macro_rules! delegate {
+    ($self:ident, $method:ident, ($($argument:expr),*)) => {
+        $self.inner.$method($($argument),*)
+    };
+}
+
+impl FileSystem for ObservingFileSystem {
+    fn cwd(&self) -> &str {
+        self.inner.cwd()
+    }
+
+    fn absolute_path<'a>(&'a self, path: &'a str, context: &'a HarnessContext) -> FileFuture<'a, FileResult<String>> {
+        delegate!(self, absolute_path, (path, context))
+    }
+
+    fn join_path<'a>(&'a self, parts: Vec<String>, context: &'a HarnessContext) -> FileFuture<'a, FileResult<String>> {
+        delegate!(self, join_path, (parts, context))
+    }
+
+    fn read_text_file<'a>(&'a self, path: &'a str, context: &'a HarnessContext) -> FileFuture<'a, FileResult<String>> {
+        delegate!(self, read_text_file, (path, context))
+    }
+
+    fn open_text_line_reader<'a>(
+        &'a self,
+        path: &'a str,
+        context: &'a HarnessContext,
+    ) -> FileFuture<'a, FileResult<Box<dyn TextLineReader>>> {
+        delegate!(self, open_text_line_reader, (path, context))
+    }
+
+    fn read_text_lines<'a>(
+        &'a self,
+        path: &'a str,
+        max_lines: Option<u64>,
+        context: &'a HarnessContext,
+    ) -> FileFuture<'a, FileResult<Vec<String>>> {
+        delegate!(self, read_text_lines, (path, max_lines, context))
+    }
+
+    fn read_binary_file<'a>(&'a self, path: &'a str, context: &'a HarnessContext) -> FileFuture<'a, FileResult<Vec<u8>>> {
+        delegate!(self, read_binary_file, (path, context))
+    }
+
+    fn write_file<'a>(
+        &'a self,
+        path: &'a str,
+        content: &'a [u8],
+        context: &'a HarnessContext,
+    ) -> FileFuture<'a, FileResult<()>> {
+        delegate!(self, write_file, (path, content, context))
+    }
+
+    fn append_file<'a>(
+        &'a self,
+        path: &'a str,
+        content: &'a [u8],
+        context: &'a HarnessContext,
+    ) -> FileFuture<'a, FileResult<()>> {
+        Box::pin(async move {
+            if self
+                .remaining_append_failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| remaining.checked_sub(1))
+                .is_ok()
+            {
+                return Err(FileError::new(
+                    FileErrorCode::Unknown,
+                    "injected I/O failure",
+                    Some(path.to_owned()),
+                ));
+            }
+            self.inner.append_file(path, content, context).await
+        })
+    }
+
+    fn rename_file<'a>(
+        &'a self,
+        source_path: &'a str,
+        destination_path: &'a str,
+        context: &'a HarnessContext,
+    ) -> FileFuture<'a, FileResult<()>> {
+        Box::pin(async move {
+            let destination_exists = self.inner.exists(destination_path, context).await;
+            let staged = self.inner.read_text_file(source_path, context).await;
+            if let (Ok(destination_existed), Ok(staged_content)) = (destination_exists, staged) {
+                self.publications.lock().expect("publications").push(ObservedPublication {
+                    source_path: source_path.to_owned(),
+                    destination_path: destination_path.to_owned(),
+                    destination_existed,
+                    staged_content,
+                });
+            }
+            self.inner.rename_file(source_path, destination_path, context).await
+        })
+    }
+
+    fn file_info<'a>(&'a self, path: &'a str, context: &'a HarnessContext) -> FileFuture<'a, FileResult<FileInfo>> {
+        delegate!(self, file_info, (path, context))
+    }
+
+    fn list_dir<'a>(&'a self, path: &'a str, context: &'a HarnessContext) -> FileFuture<'a, FileResult<Vec<FileInfo>>> {
+        delegate!(self, list_dir, (path, context))
+    }
+
+    fn canonical_path<'a>(&'a self, path: &'a str, context: &'a HarnessContext) -> FileFuture<'a, FileResult<String>> {
+        delegate!(self, canonical_path, (path, context))
+    }
+
+    fn exists<'a>(&'a self, path: &'a str, context: &'a HarnessContext) -> FileFuture<'a, FileResult<bool>> {
+        delegate!(self, exists, (path, context))
+    }
+
+    fn create_dir<'a>(
+        &'a self,
+        path: &'a str,
+        recursive: Option<bool>,
+        context: &'a HarnessContext,
+    ) -> FileFuture<'a, FileResult<()>> {
+        delegate!(self, create_dir, (path, recursive, context))
+    }
+
+    fn remove<'a>(
+        &'a self,
+        path: &'a str,
+        recursive: Option<bool>,
+        force: Option<bool>,
+        context: &'a HarnessContext,
+    ) -> FileFuture<'a, FileResult<()>> {
+        delegate!(self, remove, (path, recursive, force, context))
+    }
+
+    fn create_temp_dir<'a>(
+        &'a self,
+        prefix: Option<String>,
+        context: &'a HarnessContext,
+    ) -> FileFuture<'a, FileResult<String>> {
+        delegate!(self, create_temp_dir, (prefix, context))
+    }
+
+    fn create_temp_file<'a>(
+        &'a self,
+        prefix: Option<String>,
+        suffix: Option<String>,
+        context: &'a HarnessContext,
+    ) -> FileFuture<'a, FileResult<String>> {
+        delegate!(self, create_temp_file, (prefix, suffix, context))
+    }
+
+    fn cleanup<'a>(&'a self, context: &'a HarnessContext) -> FileFuture<'a, ()> {
+        delegate!(self, cleanup, (context))
     }
 }
