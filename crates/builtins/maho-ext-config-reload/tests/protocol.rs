@@ -28,3 +28,13 @@ fn protected_ancestor_requires_exclusive_root_anchored_filters() {
  assert!(registration_has_restricted_target(&make(Some(vec!["/nested/../auth.json".into()])), root, root));
  assert!(!registration_has_restricted_target(&make(Some(vec!["/settings.json".into()])), root, root));
 }
+#[test]
+fn registration_fingerprint_tracks_validator_presence_and_target_fields() {
+ let registration = ConfigWatchRegistration { id: "r".into(), display_name: "fixture".into(), targets: vec![ConfigWatchTarget { path: "settings.json".into(), kind: ConfigWatchTargetKind::File, filter_globs: None }] };
+ let original = registration_fingerprint(&registration, false);
+ assert_ne!(original, registration_fingerprint(&registration, true));
+ let mut changed = registration.clone();
+ changed.targets[0].filter_globs = Some(vec![]);
+ assert_ne!(original, registration_fingerprint(&changed, false));
+ assert_eq!(original, registration_fingerprint(&registration.clone(), false));
+}

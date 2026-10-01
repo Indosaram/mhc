@@ -12,6 +12,10 @@ pub enum ConfigWatchTargetKind { File, Dir }
 pub struct ConfigWatchTarget { pub path: String, pub kind: ConfigWatchTargetKind, pub filter_globs: Option<Vec<String>> }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConfigWatchRegistration { pub id: String, pub display_name: String, pub targets: Vec<ConfigWatchTarget> }
+pub fn registration_fingerprint(registration: &ConfigWatchRegistration, has_validate: bool) -> String {
+ let targets: Vec<_> = registration.targets.iter().map(|target| serde_json::json!({"path":target.path,"kind":match target.kind { ConfigWatchTargetKind::File => "file", ConfigWatchTargetKind::Dir => "dir" },"filterGlobs":target.filter_globs})).collect();
+ serde_json::json!({"id":registration.id,"displayName":registration.display_name,"targets":targets,"hasValidate":has_validate}).to_string()
+}
 pub fn registration_has_restricted_target(registration: &ConfigWatchRegistration, cwd: &Path, agent_dir: &Path) -> bool {
  let resolve = |path: &Path| {
   let mut normalized = PathBuf::new();
