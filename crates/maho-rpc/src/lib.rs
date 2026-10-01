@@ -35,3 +35,5 @@ pub mod protocol_identity;
 pub mod host_lifecycle;
 pub mod session_attribution;
 pub mod loop_lag_watchdog;
+pub mod host_probe;
+pub mod host_status;

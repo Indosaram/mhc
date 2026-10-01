@@ -15,7 +15,7 @@ uuid = { workspace = true, features = ["v4"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-util", "sync", "rt", "macros"] }
+tokio = { workspace = true, features = ["io-util", "sync", "rt", "macros", "net", "time"] }
 
 [dev-dependencies]
 tempfile.workspace = true
