@@ -16,6 +16,19 @@ use tokio::{
 const ID: &str = "00000000-0000-4000-8000-000000000001";
 const MAX: u32 = 1024 * 1024;
 #[tokio::test]
+async fn listener_options_validate_before_publication_and_apply_mode() {
+    use maho_server::server::unix::UnixListenerOptions;
+    use std::os::unix::fs::PermissionsExt;
+    let dir=tempfile::tempdir().unwrap();let path=dir.path().join("options.sock");
+    let server=Server::new(Arc::new(Host),ID.into(),Some(MAX),None).unwrap();
+    let mut options=UnixListenerOptions {mode:0o640,max_pending_bytes:u64::from(MAX)+4,graceful_close_timeout_ms:5000};
+    options.max_pending_bytes-=1;
+    assert!(UnixServer::start_with_options(server.clone(),path.clone(),options).await.is_err());assert!(!path.exists());
+    options.max_pending_bytes+=1;
+    let mut listener=UnixServer::start_with_options(server,path.clone(),options).await.unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode()&0o777,0o640);listener.close().await.unwrap();
+}
+#[tokio::test]
 async fn owned_bind_path_avoids_linux_public_path_length_limit() {
     let dir=tempfile::tempdir().unwrap();let path=dir.path().join(format!("{}.sock","s".repeat(100)));
     let mut listener=UnixServer::start(Server::new(Arc::new(Host),ID.into(),Some(MAX),None).unwrap(),path.clone()).await.unwrap();

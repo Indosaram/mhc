@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool,AtomicU64, Ordering},
     },
 };
 use tokio::{
@@ -56,8 +56,15 @@ pub struct UnixServer {
     shutdown: watch::Sender<bool>,
     tasks: JoinSet<Result<(), ServerError>>,
 }
+#[derive(Clone,Copy)]
+pub struct UnixListenerOptions {pub mode:u32,pub max_pending_bytes:u64,pub graceful_close_timeout_ms:u32}
 impl UnixServer {
     pub async fn start(server: Arc<Server>, path: PathBuf) -> Result<Self, ServerError> {
+        let max_pending_bytes=u64::from(server.max_frame_length())*4;
+        Self::start_with_options(server,path,UnixListenerOptions {mode:0o600,max_pending_bytes,graceful_close_timeout_ms:5000}).await
+    }
+    pub async fn start_with_options(server:Arc<Server>,path:PathBuf,options:UnixListenerOptions)->Result<Self,ServerError> {
+        if options.mode>0o777 || options.max_pending_bytes<u64::from(server.max_frame_length())+4 || options.max_pending_bytes>9_007_199_254_740_991 || options.graceful_close_timeout_ms==0 || options.graceful_close_timeout_ms>2_147_483_647 {return Err(ServerError::new("invalid_request","Invalid Unix listener options"));}
         if path.as_os_str().is_empty() {
             return Err(ServerError::new(
                 "invalid_request",
@@ -75,7 +82,7 @@ impl UnixServer {
         let listener = UnixListener::bind(&owned)?;
         let metadata = tokio::fs::symlink_metadata(&owned).await?;
         let identity = (metadata.dev(), metadata.ino());
-        let publication=async {tokio::fs::hard_link(&owned,&path).await?;tokio::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600)).await?;Ok::<_,ServerError>(())}.await;
+        let publication=async {tokio::fs::hard_link(&owned,&path).await?;tokio::fs::set_permissions(&path,std::fs::Permissions::from_mode(options.mode)).await?;Ok::<_,ServerError>(())}.await;
         tokio::fs::remove_file(&owned).await?;
         if let Err(error)=publication {drop(listener);remove_owned_socket(&path,identity,"cleanup").await?;return Err(error);}
         let (shutdown, mut signal) = watch::channel(false);
@@ -90,7 +97,7 @@ impl UnixServer {
                     _=signal.wait_for(|v| *v)=>break,
                     connection=listener.accept()=>{
                         let (stream,_)=connection?; let server=runtime.clone(); let stop=connection_signal;
-                        connections.spawn(async move { serve_socket(server,stream,stop).await });
+                        connections.spawn(async move { serve_socket(server,stream,stop,options).await });
                     },
                     result=connections.join_next(),if !connections.is_empty()=>{ if let Some(result)=result { match result { Ok(Ok(()))=>{},Ok(Err(error))=>eprintln!("{}",error.message),Err(error)=>eprintln!("{error}") } } }
                 }
@@ -129,7 +136,11 @@ impl UnixServer {
 struct SocketConnection {
     writer: Mutex<OwnedWriteHalf>,
     closed: AtomicBool,
+    pending_bytes:AtomicU64,
+    options:UnixListenerOptions,
 }
+struct PendingBytes<'a> {pending:&'a AtomicU64,bytes:u64}
+impl Drop for PendingBytes<'_> {fn drop(&mut self) {self.pending.fetch_sub(self.bytes,Ordering::SeqCst);}}
 impl ByteConnection for SocketConnection {
     fn closed(&self) -> bool {
         self.closed.load(Ordering::SeqCst)
@@ -142,6 +153,9 @@ impl ByteConnection for SocketConnection {
                     "Unix connection is closed",
                 ));
             }
+            let count=bytes.len() as u64;
+            self.pending_bytes.fetch_update(Ordering::SeqCst,Ordering::SeqCst,|pending|pending.checked_add(count).filter(|sum|*sum<=self.options.max_pending_bytes)).map_err(|_|ServerError::new("internal_error","Unix connection exceeded its pending byte limit"))?;
+            let _reservation=PendingBytes {pending:&self.pending_bytes,bytes:count};
             self.writer.lock().await.write_all(bytes).await?;
             Ok(())
         })
@@ -151,11 +165,8 @@ impl ByteConnection for SocketConnection {
             if self.closed.swap(true, Ordering::SeqCst) {
                 return Ok(());
             }
-            let mut writer = self.writer.lock().await;
-            if let Some(bytes) = bytes {
-                writer.write_all(bytes).await?;
-            }
-            writer.shutdown().await?;
+            let graceful=async {let mut writer=self.writer.lock().await;if let Some(bytes)=bytes {writer.write_all(bytes).await?;}writer.shutdown().await};
+            let _closed=tokio::time::timeout(std::time::Duration::from_millis(u64::from(self.options.graceful_close_timeout_ms)),graceful).await;
             Ok(())
         })
     }
@@ -164,11 +175,14 @@ async fn serve_socket(
     server: Arc<Server>,
     stream: UnixStream,
     signal: watch::Receiver<bool>,
+    options:UnixListenerOptions,
 ) -> Result<(), ServerError> {
     let (mut reader, writer) = stream.into_split();
     let connection = Arc::new(SocketConnection {
         writer: Mutex::new(writer),
         closed: AtomicBool::new(false),
+        pending_bytes:AtomicU64::new(0),
+        options,
     });
     let (tx, rx) = mpsc::channel(64);
     let mut tasks = JoinSet::new();
@@ -199,4 +213,16 @@ async fn serve_socket(
         }
     }
     result
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn pending_write_limit_rejects_without_writing_and_releases_reservation() {
+        let (stream,mut peer)=UnixStream::pair().unwrap();let (_,writer)=stream.into_split();
+        let connection=SocketConnection {writer:Mutex::new(writer),closed:AtomicBool::new(false),pending_bytes:AtomicU64::new(0),options:UnixListenerOptions {mode:0o600,max_pending_bytes:2,graceful_close_timeout_ms:5000}};
+        assert!(connection.send(b"abc").await.is_err());assert_eq!(connection.pending_bytes.load(Ordering::SeqCst),0);
+        connection.send(b"ab").await.unwrap();assert_eq!(connection.pending_bytes.load(Ordering::SeqCst),0);
+        let mut received=[0;2];peer.read_exact(&mut received).await.unwrap();assert_eq!(&received,b"ab");connection.close(None).await.unwrap();
+    }
 }

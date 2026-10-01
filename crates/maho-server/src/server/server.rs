@@ -73,6 +73,7 @@ impl Server {
         self.closing.store(true, Ordering::SeqCst);
         self.router.close().await
     }
+    pub fn max_frame_length(&self)->u32 {self.max_frame_length}
     pub async fn serve(
         self: Arc<Self>,
         connection: Arc<dyn ByteConnection>,
