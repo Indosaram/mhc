@@ -146,6 +146,7 @@ impl InteractiveMode {
         if self.ui_dialog.is_some() || self.rename_input.is_some() { self.handle_editor_input(data); return; }
         if self.shortcut_overlay { self.shortcut_overlay = false; return; }
         let keys = maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default());
+        if keys.matches(data, "app.model.select") { if let Err(error) = self.dispatch_command("/model") { self.show_status(error); } return; }
         if keys.matches(data, "app.clear") {
             if self.last_clear_ms.is_some_and(|last| now_ms.saturating_sub(last) < 500) { self.shutdown_requested = true; }
             else { self.editor.editor.set_text(""); self.last_clear_ms = Some(now_ms); }
@@ -176,6 +177,19 @@ impl InteractiveMode {
         self.editor.editor.add_to_history(&text);
         let options = PromptOptions { streaming_behavior: Some(maho_ext_api::StreamingBehavior::Steer), ..Default::default() };
         self.submit(&text, options).await.map(Some)
+    }
+
+    pub async fn handle_runtime_input(&mut self, data: &str, now_ms: u64) -> Result<(), String> {
+        if self.ui_dialog.is_some() || self.rename_input.is_some() { self.handle_input_at(data, now_ms); return Ok(()); }
+        let keys = maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default());
+        if keys.matches(data, "app.model.cycleForward") || keys.matches(data, "app.model.cycleBackward") {
+            if let Some(result) = self.session.cycle_model(keys.matches(data, "app.model.cycleForward")).await? { self.show_status(format!("Switched to {}", result.model.name)); }
+            else { self.show_status("No other models available for cycling".into()); }
+            return Ok(());
+        }
+        if keys.matches(data, "app.interrupt") && !self.agent_idle { self.abort_and_restore_queue().await; return Ok(()); }
+        self.handle_input_at(data, now_ms);
+        Ok(())
     }
 
     pub fn set_tools_expanded(&mut self, expanded: bool) {

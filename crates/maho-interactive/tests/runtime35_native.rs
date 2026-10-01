@@ -487,6 +487,18 @@ async fn resume_path_restores_exported_native_transcript() {
     assert!(mode.render(80).join("\n").contains("saved-message"));
 }
 
+#[tokio::test]
+async fn native_runtime_model_keys_do_not_insert_control_input() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.handle_runtime_input("\x10", 0).await.expect("cycle");
+    assert!(mode.editor.editor.get_text().is_empty());
+    mode.handle_runtime_input("\x0c", 1).await.expect("selector"); mode.render(80);
+    mode.handle_runtime_input("\x1b", 2).await.expect("cancel");
+    mode.handle_runtime_input("draft", 3).await.expect("type");
+    assert_eq!(mode.editor.editor.get_text(), "draft");
+}
+
 #[test]
 fn skill_invocation_replay_separates_collapsed_skill_and_user_request() {
     use maho_tui::tui::Component;
