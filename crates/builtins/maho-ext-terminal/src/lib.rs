@@ -15,4 +15,5 @@ pub mod notify;
 pub mod manager;
 pub mod extension;
 pub mod index;
+pub mod durable_file;
 pub use extension::TerminalExtension;
