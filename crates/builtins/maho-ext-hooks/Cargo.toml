@@ -15,6 +15,7 @@ maho-core = { path = "../../maho-core" }
 tempfile = "=3.27.0"
 tokio = { version = "=1.52.3", features = ["process", "io-util", "time", "macros", "rt-multi-thread"] }
 maho-tools = { path = "../../maho-tools" }
+futures = "=0.3.34"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "=0.28.0", features = ["signal", "process"] }

@@ -38,7 +38,10 @@ pub async fn run_command_hook(handler:&ExecutableHookHandler,input:&serde_json::
     let stdout_limit=options.output_policy.and_then(|p|p.max_stdout_bytes).unwrap_or(DEFAULT_STDOUT_LIMIT_BYTES);
     let stderr_limit=options.output_policy.and_then(|p|p.max_stderr_bytes).unwrap_or(DEFAULT_STDERR_LIMIT_BYTES);
     let out=tokio::spawn(capture_stream(stdout,stdout_limit));let err=tokio::spawn(capture_stream(stderr,stderr_limit));
-    if let Some(mut stdin)=child.stdin.take() {stdin.write_all(&serde_json::to_vec(input).map_err(std::io::Error::other)?).await?;stdin.shutdown().await?;}
+    if let Some(mut stdin)=child.stdin.take() {
+        let write=async {stdin.write_all(&serde_json::to_vec(input).map_err(std::io::Error::other)?).await?;stdin.shutdown().await};
+        if let Err(error)=write.await && error.kind()!=std::io::ErrorKind::BrokenPipe {return Err(error);}
+    }
     let timeout=tokio::time::sleep(Duration::try_from_secs_f64(timeout_seconds).map_err(std::io::Error::other)?);tokio::pin!(timeout);
     let cancel=async {match options.signal {Some(signal)=>signal.cancelled().await,None=>std::future::pending::<()>().await}};tokio::pin!(cancel);
     let (status,timed_out,aborted)=tokio::select! {
@@ -48,7 +51,7 @@ pub async fn run_command_hook(handler:&ExecutableHookHandler,input:&serde_json::
     };
     let stdout=out.await.map_err(std::io::Error::other)??;let stderr=err.await.map_err(std::io::Error::other)??;
     #[cfg(unix)]
-    let signal={use std::os::unix::process::ExitStatusExt;status.signal().map(|signal|format!("SIG{signal}"))};
+    let signal={use std::os::unix::process::ExitStatusExt;status.signal().map(|signal|nix::sys::signal::Signal::try_from(signal).map_or_else(|_|format!("SIG{signal}"),|signal|signal.as_str().to_owned()))};
     #[cfg(not(unix))]
     let signal=None;
     build_result(command,&options,start,if timed_out||aborted {None} else {status.code()},signal,timed_out,aborted,timeout_seconds,stdout,stderr)
