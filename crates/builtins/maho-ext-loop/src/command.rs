@@ -2,6 +2,46 @@ use crate::{parse::LoopTarget,types::{CronEntry,LoopPhase,LoopState}};
 pub const LOOP_ARGUMENT_HINT:&str="[interval] [prompt] | stop [id|all] | status | pause | resume";
 pub const LOOP_COMMAND_DESCRIPTION:&str="Repeat a prompt on a fixed interval or a self-paced schedule (e.g. /loop 5m check the deploy)";
 pub const LOOP_HEADLESS_REJECTION:&str="/loop needs an interactive session; it is not available in print mode, so nothing was armed.";
+#[derive(Debug,thiserror::Error)]
+#[error("Invalid time value")]
+pub struct InvalidTimeValue;
+fn format_expiry(expires_at:Option<f64>)->Result<String,InvalidTimeValue> {
+    let Some(at)=expires_at else { return Ok("after 7 days".into()); };
+    if !at.is_finite() || at.abs()>8_640_000_000_000_000.0 { return Err(InvalidTimeValue); }
+    let date=chrono::DateTime::from_timestamp_millis(at.trunc() as i64).ok_or(InvalidTimeValue)?;
+    Ok(date.to_rfc3339_opts(chrono::SecondsFormat::Millis,true))
+}
+pub fn format_fixed_loop_confirmation(outcome:&crate::index::LoopCreateOk,requested_raw:&str)->Result<String,InvalidTimeValue> {
+    let cadence=outcome.effective_cadence.as_deref().unwrap_or("on schedule");
+    let parenthetical=if outcome.rounding_notice.is_none() { format!("every {cadence}") } else { format!("every {cadence}; requested {requested_raw}") };
+    let mut lines=vec![format!("Loop {} scheduled as `{}` ({parenthetical}).",outcome.loop_id,outcome.cron_expression.as_deref().unwrap_or(""))];
+    if let Some(notice)=&outcome.rounding_notice { lines.push(notice.clone()); }
+    lines.push(format!("It expires automatically at {} (7 days).",format_expiry(outcome.expires_at)?));
+    lines.push(format!("Stop it with `/loop stop {}`.",outcome.loop_id));
+    lines.push("Running the first tick now.".into()); Ok(lines.join("\n"))
+}
+pub fn format_dynamic_loop_confirmation(outcome:&crate::index::LoopCreateOk)->Result<String,InvalidTimeValue> {
+    let mut lines=vec![format!("Loop {} started in dynamic mode: the model paces each iteration with `schedule_wakeup`.",outcome.loop_id)];
+    if let Some(id)=&outcome.superseded_loop_id { lines.push(format!("Superseded dynamic loop {id}.")); }
+    lines.push(format!("It expires automatically at {} (7 days).",format_expiry(outcome.expires_at)?));
+    lines.push(format!("Stop it with `/loop stop {}` or a `schedule_wakeup` call with `{{ stop: true }}`.",outcome.loop_id));
+    lines.push("Running the first iteration now.".into()); Ok(lines.join("\n"))
+}
+pub fn format_bare_loop_confirmation(outcome:&crate::index::LoopCreateOk,entry:Option<&CronEntry>)->Result<String,InvalidTimeValue> {
+    let mode=match entry { Some(CronEntry::Fixed { effective_interval,.. })=>format!("fixed, every {}",effective_interval.human),Some(CronEntry::Dynamic { .. })|None=>"dynamic pacing".into() };
+    Ok([format!("Loop {} started ({mode}).",outcome.loop_id),format!("It expires automatically at {} (7 days).",format_expiry(outcome.expires_at)?),format!("Stop it with `/loop stop {}`.",outcome.loop_id),"Running the first tick now.".into()].join("\n"))
+}
+pub fn format_loop_status_listing(status_line:Option<&str>,state:&LoopState)->Result<String,InvalidTimeValue> {
+    let mut entries=Vec::new();
+    for entry in state.entries.values() {
+        let (fields,lifecycle,mode)=match entry { CronEntry::Fixed { fields,lifecycle,effective_interval,cron_expression,.. }=>(fields,lifecycle,format!("fixed, `{cron_expression}` (every {})",effective_interval.human)),CronEntry::Dynamic { fields,lifecycle,.. }=>(fields,lifecycle,"dynamic".into()) };
+        if lifecycle.phase==LoopPhase::Ended { continue; }
+        entries.push(format!("- {} ({mode}) · expires {}{}",fields.id,format_expiry(Some(fields.expires_at))?,if lifecycle.phase==LoopPhase::Suspended { " · paused" } else { "" }));
+    }
+    if entries.is_empty() { return Ok("No active loops.".into()); }
+    let mut lines=Vec::new(); if let Some(status)=status_line { lines.push(status.into()); }
+    lines.push("Active loops:".into()); lines.extend(entries); Ok(lines.join("\n"))
+}
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct ArgumentCompletion { pub value:String,pub label:String }
 pub fn complete_loop_arguments(prefix:&str)->Option<Vec<ArgumentCompletion>> {
@@ -31,6 +71,8 @@ pub fn resolve_command_target(target:&LoopTarget,state:&LoopState)->TargetResolu
     use super::*;
     #[test] fn completion_trims_js_whitespace_and_filters_prefix() { let result=complete_loop_arguments("\u{feff} ST "); assert_eq!(result.unwrap().into_iter().map(|item|item.value).collect::<Vec<_>>(),["stop","status"]); }
     #[test] fn unmatched_completion_is_absent() { assert_eq!(complete_loop_arguments("other"),None); }
+    #[test] fn invalid_expiry_is_rejected() { assert!(format_expiry(Some(f64::NAN)).is_err()); }
+    #[test] fn expiry_uses_millisecond_precision() { assert_eq!(format_expiry(Some(1234.9)).unwrap(),"1970-01-01T00:00:01.234Z"); }
     #[test] fn implicit_target_on_empty_state_applies_nothing() { let state=crate::store::empty_loop_state("s"); assert_eq!(resolve_command_target(&LoopTarget::Implicit,&state),TargetResolution::None); }
     #[test] fn explicit_target_is_not_changed_by_missing_entry() { let state=crate::store::empty_loop_state("s"); assert_eq!(resolve_command_target(&LoopTarget::Id("missing".into()),&state),TargetResolution::Apply(LoopTarget::Id("missing".into()))); }
 }

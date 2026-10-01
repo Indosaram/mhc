@@ -8,3 +8,4 @@ pub mod store;
 pub mod scheduler;
 pub mod tools;
 pub mod command;
+pub mod index;
