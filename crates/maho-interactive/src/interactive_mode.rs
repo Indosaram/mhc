@@ -171,6 +171,8 @@ impl InteractiveMode {
     }
 
     pub fn set_tools_expanded(&mut self, expanded: bool) {
+        self.extension_ui.tools_expanded.store(expanded, std::sync::atomic::Ordering::Relaxed);
+        if self.tools_expanded == expanded { return; }
         self.tools_expanded = expanded;
         for component in &self.tool_cards { component.borrow_mut().set_expanded(expanded); }
         for component in &self.assistant_cards { component.borrow_mut().set_expanded(expanded); }
@@ -331,6 +333,7 @@ impl InteractiveMode {
     fn handle_ui_request(&mut self, request: crate::interactive_extension_ui::UiRequest) {
         use crate::interactive_extension_ui::UiRequest;
         match request {
+            UiRequest::ToolsExpanded(expanded) => self.set_tools_expanded(expanded),
             UiRequest::HiddenThinkingLabel(label) => { self.hidden_thinking_label = label.unwrap_or_else(|| "Thinking...".into()); for card in &self.assistant_cards { card.borrow_mut().set_hidden_thinking_label(&self.hidden_thinking_label); } }
             UiRequest::Editor { title, prefill, reply } => {
                 *self.ui_reply.borrow_mut() = Some(reply);

@@ -418,3 +418,13 @@ async fn unintegrated_builtin_does_not_silently_become_provider_input() {
     }
     assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0));
 }
+
+#[test]
+fn extension_expansion_and_keyboard_expansion_share_state() {
+    use maho_ext_api::ExtensionUi;
+    let (mut mode, _directory) = native_mode();
+    mode.extension_ui.set_tools_expanded(true).expect("expand"); mode.drain_events();
+    assert!(mode.tools_expanded);
+    mode.handle_input_at("\x0f", 0);
+    assert!(!mode.extension_ui.get_tools_expanded().expect("read"));
+}

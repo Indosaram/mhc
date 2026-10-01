@@ -14,6 +14,7 @@ pub enum UiRequest {
     WorkingMessage(Option<String>),
     WorkingVisible(bool),
     HiddenThinkingLabel(Option<String>),
+    ToolsExpanded(bool),
     Editor { title: String, prefill: Option<String>, reply: tokio::sync::oneshot::Sender<Option<String>> },
 }
 
@@ -23,6 +24,7 @@ pub struct InteractiveExtensionUi {
     pub statuses: Mutex<BTreeMap<String, String>>,
     pub theme: Mutex<Theme>,
     pub terminal_input: Arc<Mutex<Vec<TerminalInputHandler>>>,
+    pub tools_expanded: std::sync::atomic::AtomicBool,
 }
 
 impl InteractiveExtensionUi {
@@ -38,11 +40,13 @@ impl InteractiveExtensionUi {
     }
     pub fn channel(theme: Theme) -> (Arc<Self>, tokio::sync::mpsc::UnboundedReceiver<UiRequest>) {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        (Arc::new(Self { sender, editor_text: Mutex::new(String::new()), statuses: Mutex::new(BTreeMap::new()), theme: Mutex::new(theme), terminal_input:Arc::new(Mutex::new(Vec::new())) }), receiver)
+        (Arc::new(Self { sender, editor_text: Mutex::new(String::new()), statuses: Mutex::new(BTreeMap::new()), theme: Mutex::new(theme), terminal_input:Arc::new(Mutex::new(Vec::new())), tools_expanded:std::sync::atomic::AtomicBool::new(false) }), receiver)
     }
 }
 
 impl ExtensionUi for InteractiveExtensionUi {
+    fn get_tools_expanded(&self) -> Result<bool, ExtensionFailure> { Ok(self.tools_expanded.load(std::sync::atomic::Ordering::Relaxed)) }
+    fn set_tools_expanded(&self, expanded: bool) -> Result<(), ExtensionFailure> { self.tools_expanded.store(expanded, std::sync::atomic::Ordering::Relaxed); self.send(UiRequest::ToolsExpanded(expanded)); Ok(()) }
     fn on_terminal_input(&self, handler: TerminalInputHandler) -> Result<UiUnsubscribe, ExtensionFailure> {
         self.terminal_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(handler.clone());
         let listeners = self.terminal_input.clone();
