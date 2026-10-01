@@ -88,6 +88,7 @@ impl InteractiveMode {
 
     pub fn rebuild_history(&mut self) {
         self.chat.clear(); self.pending_tools.clear(); self.streaming = None; self.assistant_segments.clear();
+        self.tool_partial_json.clear(); self.tool_args_reveal.stop(); self.tool_reveal.stop(); self.reveal.stop();
         self.assistant_cards.clear(); self.tool_cards.clear(); self.last_status = None;
         self.history_expansion.clear();
         for message in self.session.messages() { self.add_history_message(&message); }
