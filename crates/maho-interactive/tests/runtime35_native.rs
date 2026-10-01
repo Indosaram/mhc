@@ -273,3 +273,14 @@ fn hidden_custom_history_is_not_rendered() {
     let rendered = mode.render(80).join("\n");
     assert!(rendered.contains("visible-value")); assert!(!rendered.contains("hidden-value"));
 }
+
+#[tokio::test]
+async fn queued_messages_restore_in_enqueue_order_ahead_of_live_draft() {
+    let (mut mode, _directory) = native_mode();
+    mode.steer("first").await.expect("steer");
+    mode.follow_up("second").await.expect("follow up");
+    mode.editor.editor.set_text("draft");
+    assert_eq!(mode.restore_queued_messages(false), 2);
+    assert_eq!(mode.editor.editor.get_text(), "first\n\nsecond\n\ndraft");
+    assert_eq!(mode.restore_queued_messages(false), 0);
+}

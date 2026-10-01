@@ -121,6 +121,7 @@ impl InteractiveMode {
             if self.session.cycle_thinking_level().is_none() { self.show_status("Current model does not support thinking".into()); }
             return;
         }
+        if keys.matches(data, "app.message.dequeue") { self.restore_queued_messages(false); return; }
         if data == "?" && self.editor.editor.get_text().is_empty() { self.shortcut_overlay = true; return; }
         self.handle_editor_input(data);
     }
@@ -152,6 +153,30 @@ impl InteractiveMode {
     }
 
     pub async fn abort(&self) { self.session.abort().await; }
+
+    pub fn restore_queued_messages(&mut self, abort_will_follow: bool) -> usize {
+        let cleared = self.session.clear_queue(abort_will_follow);
+        let queued = cleared.ordered.iter().map(|message| message.text.as_str()).collect::<Vec<_>>();
+        let count = queued.len();
+        if count > 0 {
+            let current = self.editor.editor.get_text();
+            let queued = queued.join("\n\n");
+            self.editor.editor.set_text(&[queued.as_str(), current.as_str()].into_iter().filter(|text| !text.trim().is_empty()).collect::<Vec<_>>().join("\n\n"));
+        }
+        self.show_status(if count == 0 { "No queued messages to restore".into() } else { format!("Restored {count} queued message{} to editor", if count > 1 { "s" } else { "" }) });
+        count
+    }
+
+    pub async fn abort_and_restore_queue(&mut self) -> usize {
+        let queued = self.session.clear_queue(true).ordered;
+        self.session.abort().await;
+        if !queued.is_empty() {
+            let text = queued.iter().map(|message| message.text.as_str()).collect::<Vec<_>>().join("\n\n");
+            let current = self.editor.editor.get_text();
+            self.editor.editor.set_text(&[text.as_str(), current.as_str()].into_iter().filter(|text| !text.trim().is_empty()).collect::<Vec<_>>().join("\n\n"));
+        }
+        queued.len()
+    }
 
     pub async fn steer(&self, text: &str) -> Result<(), String> { self.session.steer(text, None, Default::default()).await }
 
