@@ -8,3 +8,5 @@ pub mod binary_path;
 pub mod tools;
 pub mod downloader;
 pub mod binary_downloader;
+mod index;
+pub use index::AstGrep;
