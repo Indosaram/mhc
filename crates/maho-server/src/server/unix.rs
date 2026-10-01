@@ -17,6 +17,28 @@ use tokio::{
     sync::{Mutex, mpsc, watch},
     task::JoinSet,
 };
+use sha2::{Digest,Sha256};
+
+async fn remove_owned_socket(path:&Path,identity:(u64,u64),prefix:&str)->Result<(),ServerError> {
+    let metadata=match tokio::fs::symlink_metadata(path).await {Ok(metadata)=>metadata,Err(error)if error.kind()==std::io::ErrorKind::NotFound=>return Ok(()),Err(error)=>return Err(error.into())};
+    if !metadata.file_type().is_socket() || (metadata.dev(),metadata.ino())!=identity {return Ok(());}
+    let preserved=path.parent().ok_or_else(||ServerError::new("internal_error","Socket has no parent"))?.join(format!("{prefix}-{}",&uuid::Uuid::new_v4().to_string()[..6]));
+    match tokio::fs::rename(path,&preserved).await {Ok(())=>{},Err(error)if error.kind()==std::io::ErrorKind::NotFound=>return Ok(()),Err(error)=>return Err(error.into())}
+    let moved=tokio::fs::symlink_metadata(&preserved).await?;
+    if moved.file_type().is_socket() && (moved.dev(),moved.ino())==identity {tokio::fs::remove_file(&preserved).await?;return Ok(());}
+    match tokio::fs::symlink_metadata(path).await {Err(error)if error.kind()==std::io::ErrorKind::NotFound=>tokio::fs::rename(&preserved,path).await?,Ok(_)=>{},Err(error)=>return Err(error.into())}
+    Err(ServerError::new("internal_error",&format!("Unix listener path changed during cleanup; preserved replacement at {}",preserved.display())))
+}
+async fn remove_stale_socket(path:&Path)->Result<(),ServerError> {
+    let metadata=match tokio::fs::symlink_metadata(path).await {Ok(metadata)=>metadata,Err(error)if error.kind()==std::io::ErrorKind::NotFound=>return Ok(()),Err(error)=>return Err(error.into())};
+    if !metadata.file_type().is_socket() {return Err(ServerError::new("internal_error","Refusing to remove non-socket Unix listener path"));}
+    match tokio::time::timeout(std::time::Duration::from_secs(1),UnixStream::connect(path)).await {
+        Err(_)|Ok(Ok(_))=>return Err(ServerError::new("internal_error","Unix listener is already running")),
+        Ok(Err(error))if matches!(error.kind(),std::io::ErrorKind::ConnectionRefused|std::io::ErrorKind::NotFound|std::io::ErrorKind::BrokenPipe|std::io::ErrorKind::ConnectionReset)=>{},
+        Ok(Err(error))=>return Err(error.into()),
+    }
+    remove_owned_socket(path,(metadata.dev(),metadata.ino()),"stale").await
+}
 
 pub fn get_unix_socket_path(server_id: &str, directory: &Path) -> Result<PathBuf, ServerError> {
     if !crate::protocol::messages::is_server_id(server_id) {
@@ -46,30 +68,16 @@ impl UnixServer {
             .parent()
             .ok_or_else(|| ServerError::new("invalid_request", "Socket path has no parent"))?;
         tokio::fs::create_dir_all(parent).await?;
-        if let Ok(metadata) = tokio::fs::symlink_metadata(&path).await {
-            if !metadata.file_type().is_socket() {
-                return Err(ServerError::new(
-                    "internal_error",
-                    "Unix listener path is not a socket",
-                ));
-            }
-            match UnixStream::connect(&path).await {
-                Ok(_) => {
-                    return Err(ServerError::new(
-                        "internal_error",
-                        "Unix listener socket is already active",
-                    ));
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
-                    tokio::fs::remove_file(&path).await?
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-        let listener = UnixListener::bind(&path)?;
-        tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await?;
-        let metadata = tokio::fs::symlink_metadata(&path).await?;
+        remove_stale_socket(&path).await?;
+        let hash=format!("{:x}",Sha256::digest(path.to_string_lossy().as_bytes()));
+        let owned=parent.join(format!("bind-{}",&hash[..8]));
+        remove_stale_socket(&owned).await?;
+        let listener = UnixListener::bind(&owned)?;
+        let metadata = tokio::fs::symlink_metadata(&owned).await?;
         let identity = (metadata.dev(), metadata.ino());
+        let publication=async {tokio::fs::hard_link(&owned,&path).await?;tokio::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600)).await?;Ok::<_,ServerError>(())}.await;
+        tokio::fs::remove_file(&owned).await?;
+        if let Err(error)=publication {drop(listener);remove_owned_socket(&path,identity,"cleanup").await?;return Err(error);}
         let (shutdown, mut signal) = watch::channel(false);
         let mut tasks = JoinSet::new();
         let runtime = server.clone();
@@ -110,16 +118,7 @@ impl UnixServer {
             }
         }
         self.server.close().await?;
-        match tokio::fs::symlink_metadata(&self.path).await {
-            Ok(meta)
-                if meta.file_type().is_socket() && (meta.dev(), meta.ino()) == self.identity =>
-            {
-                tokio::fs::remove_file(&self.path).await?
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
+        remove_owned_socket(&self.path,self.identity,"cleanup").await?;
         if let Some(error) = failure {
             Err(error)
         } else {

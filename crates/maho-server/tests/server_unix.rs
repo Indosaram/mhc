@@ -15,6 +15,13 @@ use tokio::{
 };
 const ID: &str = "00000000-0000-4000-8000-000000000001";
 const MAX: u32 = 1024 * 1024;
+#[tokio::test]
+async fn owned_bind_path_avoids_linux_public_path_length_limit() {
+    let dir=tempfile::tempdir().unwrap();let path=dir.path().join(format!("{}.sock","s".repeat(100)));
+    let mut listener=UnixServer::start(Server::new(Arc::new(Host),ID.into(),Some(MAX),None).unwrap(),path.clone()).await.unwrap();
+    assert!(path.exists());assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(),1);
+    listener.close().await.unwrap();assert!(!path.exists());
+}
 struct Host;
 impl ServerHost for Host {
     fn server_services(&self) -> &dyn RoutedServerServiceHost {
