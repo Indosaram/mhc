@@ -1799,6 +1799,7 @@ name = "maho-ext-pi-nested-agents-md"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "serde_json",
  "tempfile",
 ]
 
