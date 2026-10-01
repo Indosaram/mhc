@@ -14,7 +14,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use maho_agent::types::{AgentMessage, AgentTool, AgentState};
+use maho_agent::tool_name_alias::resolve_tool_name_alias;
+use maho_agent::types::{AgentMessage, AgentTool, AgentToolResult, AgentState};
 use maho_agent::Agent;
 use maho_ai::model::Model;
 use maho_ai::models::models_are_equal;
@@ -24,10 +25,13 @@ use maho_ai::types::{
 };
 use maho_ext_api::{
     CompactionRejectionCause, ExtensionError, ExtensionMode, ExtensionUi, FlagValue, InputSource,
-    ServiceTier, SessionReason, SessionStartEvent, SourceInfo, SourceOrigin, SourceScope,
-    StreamingBehavior, ToolDefinition, ToolExposure, ToolInfo,
+    ServiceTier, SessionReason, SessionStartEvent, SourceInfo, SourceOrigin, SourceScope, StreamingBehavior,
+    ToolCallEvent, ToolDefinition, ToolExposure, ToolInfo, normalize_tool_exposure,
 };
+use maho_ext_host::ExtensionRunner;
 use serde_json::{Map, Value};
+
+use crate::event_bus::{EventBus, EventHandler, EventSubscription};
 
 use crate::model_registry::ModelRegistry;
 use crate::model_runtime::ModelRuntime;
@@ -36,6 +40,9 @@ use crate::session_manager::SessionManager;
 use crate::settings_manager::SettingsManager;
 
 /// Sample eval-cell call for an eval-only tool, using the argument name that tool actually takes.
+/// Sample eval-cell call for an eval-only tool, using the argument name that tool actually takes.
+const EVAL_ONLY_TOOL_NAMES: [&str; 2] = ["workflow", "monitor"];
+
 #[allow(dead_code)] // consumed by the eval-only hint publisher in the tool-registry slice
 fn eval_helper_call(name: &str) -> String {
     match name {
@@ -160,6 +167,36 @@ pub struct QueuedInputOptions {
     pub enqueue_order: Option<u64>,
     pub source: Option<InputSource>,
 }
+
+#[derive(Clone)]
+pub struct ToolDefinitionEntry {
+    pub definition: ToolDefinition,
+    pub source_info: SourceInfo,
+}
+
+pub type LazyToolActivator = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+#[derive(Clone, Default)]
+pub struct ExecuteToolOptions {
+    pub signal: Option<maho_ai::utils::abort::AbortSignal>,
+    pub activate_inactive_tool: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecuteToolError {
+    pub code: String,
+    pub tool_name: String,
+    pub message: String,
+    pub active_tools: Vec<String>,
+}
+
+impl std::fmt::Display for ExecuteToolError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ExecuteToolError {}
 
 #[derive(Clone, Default)]
 pub struct PromptOptions {
@@ -292,6 +329,16 @@ struct AgentSessionState {
     allowed_tool_names: Option<BTreeSet<String>>,
     excluded_tool_names: Option<BTreeSet<String>>,
     base_tools_override: Option<BTreeMap<String, AgentTool>>,
+    base_tool_definitions: BTreeMap<String, ToolDefinition>,
+    tool_registry: BTreeMap<String, AgentTool>,
+    tool_definitions: BTreeMap<String, ToolDefinitionEntry>,
+    tool_prompt_snippets: BTreeMap<String, String>,
+    tool_prompt_guidelines: BTreeMap<String, Vec<String>>,
+    lazy_tool_activators: Vec<LazyToolActivator>,
+    eval_only_tool_names_override: Option<BTreeSet<String>>,
+    withheld_eval_only_tool_names: BTreeSet<String>,
+    published_eval_only_hint_names: BTreeSet<String>,
+    requested_active_tool_names: Option<Vec<String>>,
     session_start_event: SessionStartEvent,
     auto_title_sessions: bool,
     uses_default_stream_function: bool,
@@ -319,6 +366,8 @@ pub struct AgentSession {
     settings_manager: Mutex<SettingsManager>,
     model_registry: ModelRegistry,
     state: Mutex<AgentSessionState>,
+    extension_runner: tokio::sync::Mutex<Option<ExtensionRunner>>,
+    event_bus: EventBus,
     fallback_now: Arc<dyn Fn() -> f64 + Send + Sync>,
     retry_random: Arc<dyn Fn() -> f64 + Send + Sync>,
 }
@@ -372,10 +421,20 @@ impl AgentSession {
             custom_tools: config.custom_tools,
             initial_active_tool_names: config.initial_active_tool_names,
             default_tool_names: name_set(config.default_tool_names),
-            eval_only_tool_names: name_set(config.eval_only_tool_names),
+            eval_only_tool_names: name_set(config.eval_only_tool_names.clone()),
             allowed_tool_names: name_set(config.allowed_tool_names),
             excluded_tool_names: name_set(config.excluded_tool_names),
             base_tools_override: config.base_tools_override,
+            base_tool_definitions: BTreeMap::new(),
+            tool_registry: BTreeMap::new(),
+            tool_definitions: BTreeMap::new(),
+            tool_prompt_snippets: BTreeMap::new(),
+            tool_prompt_guidelines: BTreeMap::new(),
+            lazy_tool_activators: Vec::new(),
+            eval_only_tool_names_override: name_set(config.eval_only_tool_names),
+            withheld_eval_only_tool_names: BTreeSet::new(),
+            published_eval_only_hint_names: BTreeSet::new(),
+            requested_active_tool_names: None,
             session_start_event: config.session_start_event.unwrap_or(SessionStartEvent {
                 reason: SessionReason::Startup,
                 initial_model_provenance: None,
@@ -402,6 +461,8 @@ impl AgentSession {
             settings_manager: Mutex::new(config.settings_manager),
             model_registry,
             state: Mutex::new(state),
+            extension_runner: tokio::sync::Mutex::new(None),
+            event_bus: EventBus::new(),
             fallback_now: config
                 .fallback_now
                 .unwrap_or_else(|| Arc::new(|| maho_ai::utils::diagnostics::now_ms() as f64)),
@@ -681,6 +742,292 @@ impl AgentSession {
     pub fn flag_value(&self, name: &str) -> Option<FlagValue> {
         self.state().flag_values.get(name).cloned()
     }
+
+    pub fn get_tool_definition(&self, name: &str) -> Option<ToolDefinition> {
+        self.state().tool_definitions.get(name).map(|entry| entry.definition.clone())
+    }
+
+    /// The tool a call named `requested` runs, by the same rule the agent loop applies (exact name,
+    /// else the unique alias among callable tools), without activating anything.
+    pub fn resolve_tool_call_name(&self, requested: &str) -> String {
+        resolve_tool_name_alias(requested, self.callable_tool_names()).unwrap_or_else(|| requested.to_owned())
+    }
+
+    /// Active tool names plus search-exposed lazy tools; senpi also appends the tool-search catalog,
+    /// which has no Rust counterpart (the service is a TS extension), so it contributes nothing.
+    fn callable_tool_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.agent.state().tools().iter().map(|tool| tool.name().to_owned()).collect();
+        for (name, entry) in &self.state().tool_definitions {
+            let exposure = normalize_tool_exposure(&entry.definition, entry.source_info.clone());
+            if exposure.exposure == ToolExposure::Search && exposure.allow_lazy_activation {
+                names.push(name.clone());
+            }
+        }
+        names
+    }
+
+    /// Resolve an executable tool from the full registry, independent of the active set.
+    pub fn get_registered_tool(&self, name: &str) -> Option<AgentTool> {
+        self.state().tool_registry.get(name).cloned()
+    }
+
+    fn is_eval_only_policy_armed(&self) -> bool {
+        let state = self.state();
+        state.eval_only_tool_names.is_some() && state.tool_registry.contains_key("eval")
+    }
+
+    /// Resolve fixed and declared eval-only tools, unless an SDK embedder supplied an override.
+    pub fn resolve_eval_only_tool_names(&self) -> BTreeSet<String> {
+        let state = self.state();
+        if let Some(overrides) = &state.eval_only_tool_names_override {
+            return overrides.clone();
+        }
+        let mut names: BTreeSet<String> = EVAL_ONLY_TOOL_NAMES.iter().map(|name| (*name).to_owned()).collect();
+        for entry in state.tool_definitions.values() {
+            if normalize_tool_exposure(&entry.definition, entry.source_info.clone()).exposure == ToolExposure::Eval {
+                names.insert(entry.definition.name.clone());
+            }
+        }
+        names
+    }
+
+    fn publish_eval_only_tool_hints(&self) {
+        let armed = self.is_eval_only_policy_armed();
+        let registered: Option<BTreeSet<String>> = armed.then(|| {
+            let state = self.state();
+            state
+                .eval_only_tool_names
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|name| state.tool_registry.contains_key(name))
+                .collect()
+        });
+        let mut hints = self.agent.removed_tool_hints();
+        let published = self.state().published_eval_only_hint_names.clone();
+        for name in published {
+            if registered.as_ref().is_some_and(|registered| registered.contains(&name)) {
+                continue;
+            }
+            hints.remove(&name);
+        }
+        self.state().published_eval_only_hint_names.clear();
+        let Some(registered) = registered else {
+            self.agent.set_removed_tool_hints(hints);
+            return;
+        };
+        for name in registered {
+            hints.insert(
+                name.clone(),
+                format!("Run {name} inside an eval cell via {}; hooks and permissions still apply.", eval_helper_call(&name)),
+            );
+            self.state().published_eval_only_hint_names.insert(name);
+        }
+        self.agent.set_removed_tool_hints(hints);
+    }
+
+    /// Lazily activate a registered inactive tool.
+    ///
+    /// Adaptation: senpi also asks the tool-search service to activate; that service is a TS
+    /// extension with no Rust counterpart, so only the registered activators and the direct
+    /// search-exposure promotion run.
+    fn activate_lazy_tool(&self, tool_name: &str) -> bool {
+        let Some(definition) = self.get_tool_definition(tool_name) else {
+            return false;
+        };
+        let exposure = normalize_tool_exposure(
+            &definition,
+            self.state().tool_definitions.get(tool_name).map(|entry| entry.source_info.clone()).unwrap_or_else(empty_source_info),
+        );
+        if !exposure.allow_lazy_activation {
+            return false;
+        }
+        if self.state().lazy_tool_activators.iter().any(|activate| activate(tool_name)) {
+            return true;
+        }
+        if exposure.exposure == ToolExposure::Search && !self.get_active_tool_names().iter().any(|name| name == tool_name) {
+            let mut names = self.get_active_tool_names();
+            names.push(tool_name.to_owned());
+            self.set_active_tools_by_name(names);
+        }
+        self.get_active_tool_names().iter().any(|name| name == tool_name)
+    }
+
+    /// Set active tools by name; only tools in the registry can be enabled.
+    ///
+    /// Not yet ported: the base system-prompt rebuild and the message-revision bump that follow a
+    /// change (owned by the system-prompt slice).
+    pub fn set_active_tools_by_name(&self, tool_names: Vec<String>) {
+        let policy_armed = self.is_eval_only_policy_armed();
+        self.publish_eval_only_tool_hints();
+        let policy_names = self.state().eval_only_tool_names.clone();
+        let mut withheld = self.state().withheld_eval_only_tool_names.clone();
+        let filtered: Vec<String> = if policy_armed {
+            if let Some(policy_names) = &policy_names {
+                for name in &tool_names {
+                    if policy_names.contains(name) {
+                        withheld.insert(name.clone());
+                    }
+                }
+                tool_names.iter().filter(|name| !policy_names.contains(*name)).cloned().collect()
+            } else {
+                tool_names.clone()
+            }
+        } else {
+            withheld.clear();
+            tool_names.clone()
+        };
+        let mut requested: Vec<String> = tool_names.clone();
+        requested.extend(withheld.iter().cloned());
+        requested.sort();
+        requested.dedup();
+
+        let mut tools = Vec::new();
+        let mut valid_names = Vec::new();
+        for name in filtered {
+            if let Some(tool) = self.state().tool_registry.get(&name).cloned() {
+                tools.push(tool);
+                valid_names.push(name);
+            }
+        }
+        self.agent.set_tools(tools);
+        let mut state = self.state();
+        state.withheld_eval_only_tool_names = withheld;
+        state.requested_active_tool_names = Some(requested);
+    }
+
+    /// The active-tool selection as requested by callers, before eval-only filtering.
+    pub fn requested_active_tool_names(&self) -> Option<Vec<String>> {
+        self.state().requested_active_tool_names.clone()
+    }
+
+    /// Register a tool definition and its executable tool; used by the runtime build and by SDK
+    /// custom tools.
+    pub fn register_tool_definition(&self, definition: ToolDefinition, source_info: SourceInfo, tool: AgentTool) {
+        let mut state = self.state();
+        state.tool_registry.insert(definition.name.clone(), tool);
+        state.base_tool_definitions.insert(definition.name.clone(), definition.clone());
+        state.tool_definitions.insert(definition.name.clone(), ToolDefinitionEntry { definition, source_info });
+    }
+
+    /// Add a lazy-tool activator (extension or SDK supplied).
+    pub fn add_lazy_tool_activator(&self, activator: LazyToolActivator) {
+        self.state().lazy_tool_activators.push(activator);
+    }
+
+    /// Execute a tool by name through the same preparation and hook path the agent loop uses.
+    ///
+    /// Not yet ported: `_emitAfterToolCallHooks`'s image normalization, and the tool-search
+    /// activation fallback (no Rust service).
+    pub async fn execute_tool(
+        &self,
+        tool_name: &str,
+        params: Value,
+        options: ExecuteToolOptions,
+    ) -> Result<AgentToolResult, ExecuteToolError> {
+        let mut active_tools = self.get_active_tool_names();
+        let mut tool = self.agent.state().tools().iter().find(|candidate| candidate.name() == tool_name).cloned();
+        if tool.is_none() && self.is_eval_only_policy_armed() {
+            let armed = self.state().eval_only_tool_names.clone().unwrap_or_default();
+            if armed.contains(tool_name) {
+                tool = self.state().tool_registry.get(tool_name).cloned();
+            }
+        }
+        if tool.is_none()
+            && options.activate_inactive_tool == Some(true)
+            && self.state().tool_definitions.contains_key(tool_name)
+            && self.activate_lazy_tool(tool_name)
+        {
+            active_tools = self.get_active_tool_names();
+            tool = self.agent.state().tools().iter().find(|candidate| candidate.name() == tool_name).cloned();
+        }
+        let Some(tool) = tool else {
+            let known = self.state().tool_definitions.contains_key(tool_name);
+            let code = if known { "inactive_tool" } else { "unknown_tool" };
+            let active_list = if active_tools.is_empty() { "(none)".to_owned() } else { active_tools.join(", ") };
+            let message = if known {
+                format!("Tool {tool_name} is registered but inactive. Active tools: {active_list}")
+            } else {
+                format!("Unknown tool {tool_name}. Active tools: {active_list}")
+            };
+            return Err(ExecuteToolError { code: code.to_owned(), tool_name: tool_name.to_owned(), message, active_tools });
+        };
+        let tool_call = maho_agent::types::AgentToolCall {
+            id: format!("codemode-{}", uuid::Uuid::new_v4()),
+            name: tool_name.to_owned(),
+            arguments: params.as_object().cloned().unwrap_or_default(),
+            ..Default::default()
+        };
+        let prepared = maho_agent::tool_arguments::prepare_agent_tool_call_arguments(&tool, &tool_call);
+        if let Some(block) = self.preflight_tool_call(&prepared, Value::Object(prepared.arguments.clone())).await
+            && block.block == Some(true)
+        {
+            return Err(ExecuteToolError {
+                code: "blocked".to_owned(),
+                tool_name: tool_name.to_owned(),
+                message: block.reason.unwrap_or_else(|| "Tool execution was blocked".to_owned()),
+                active_tools,
+            });
+        }
+        let result = (tool.execute)(
+            prepared.id.clone(),
+            Value::Object(prepared.arguments.clone()),
+            options.signal,
+            None,
+        )
+        .await;
+        Ok(result)
+    }
+
+    /// `preflightToolCall`: run the `tool_call` extension hook. The Rust agent exposes no
+    /// `_agentEventQueue`, so the `waitForEventQueue` wait is not applied.
+    pub async fn preflight_tool_call(
+        &self,
+        tool_call: &maho_agent::types::AgentToolCall,
+        input: Value,
+    ) -> Option<maho_ext_api::ToolCallEventResult> {
+        let mut guard = self.extension_runner.lock().await;
+        let runner = guard.as_mut()?;
+        if !runner.has_handlers(maho_ext_api::EventKind::ToolCall) {
+            return None;
+        }
+        let mut event = ToolCallEvent {
+            tool_call_id: tool_call.id.clone(),
+            tool_name: tool_call.name.clone(),
+            input,
+        };
+        runner.emit_tool_call(&mut event).await.ok().flatten()
+    }
+
+    /// The extension runner currently bound to the session, if any.
+    pub async fn extension_runner_bound(&self) -> bool {
+        self.extension_runner.lock().await.is_some()
+    }
+
+    /// Bind the extension runner the tool hooks read at execution time.
+    pub async fn set_extension_runner(&self, runner: ExtensionRunner) {
+        *self.extension_runner.lock().await = Some(runner);
+    }
+
+    /// Subscribe to the internal event bus shared by this session's extensions.
+    pub fn on_extension_event(&self, channel: &str, handler: EventHandler) -> EventSubscription {
+        self.event_bus.on(channel, handler)
+    }
+
+    /// Publish on the internal event bus shared by this session's extensions.
+    pub fn emit_extension_event(&self, channel: &str, data: &Value) {
+        self.event_bus.emit(channel, data);
+    }
+}
+
+fn empty_source_info() -> SourceInfo {
+    SourceInfo {
+        path: String::new(),
+        source: String::new(),
+        scope: SourceScope::Temporary,
+        origin: SourceOrigin::TopLevel,
+        base_dir: None,
+    }
 }
 
 fn resolve_service_tier(model: &Model, scoped: Option<ServiceTier>) -> Option<ServiceTier> {
@@ -866,6 +1213,103 @@ mod tests {
             auto_title_sessions: None,
         });
         assert!(result.is_err());
+    }
+
+    fn test_tool(name: &str) -> AgentTool {
+        let tool = maho_ai::types::Tool {
+            name: name.to_owned(),
+            description: format!("{name} tool"),
+            parameters: serde_json::json!({ "type": "object" }),
+            freeform: None,
+            constrained_sampling: None,
+        };
+        AgentTool {
+            label: name.to_owned(),
+            prepare_arguments: None,
+            execute: Arc::new(|_, _, _, _| Box::pin(async { AgentToolResult::text("ok") })),
+            replay: None,
+            execution_mode: None,
+            tool,
+        }
+    }
+
+    fn test_definition(name: &str) -> ToolDefinition {
+        ToolDefinition::new(
+            name,
+            &format!("{name} tool"),
+            serde_json::json!({ "type": "object" }),
+            Arc::new(|_| Box::pin(async { Ok(maho_tools::definition::ToolResult::text("ok")) })),
+        )
+    }
+
+    #[test]
+    fn an_unresolvable_tool_name_is_returned_unchanged() {
+        let session = test_session();
+        assert_eq!(session.resolve_tool_call_name("missing"), "missing");
+    }
+
+    #[test]
+    fn registered_tools_are_reachable_by_name() {
+        let session = test_session();
+        session.register_tool_definition(test_definition("read"), empty_source_info(), test_tool("read"));
+        assert!(session.get_registered_tool("read").is_some());
+        assert!(session.get_tool_definition("read").is_some());
+        assert_eq!(session.resolve_tool_call_name("read"), "read");
+    }
+
+    #[test]
+    fn unknown_names_are_ignored_when_setting_active_tools() {
+        let session = test_session();
+        session.register_tool_definition(test_definition("read"), empty_source_info(), test_tool("read"));
+        session.set_active_tools_by_name(vec!["read".to_owned(), "nope".to_owned()]);
+        assert_eq!(session.get_active_tool_names(), vec!["read".to_owned()]);
+    }
+
+    #[test]
+    fn armed_eval_only_tools_are_withheld_and_restorable() {
+        let session = test_session_with_eval_only(vec!["workflow".to_owned()]);
+        session.register_tool_definition(test_definition("eval"), empty_source_info(), test_tool("eval"));
+        session.register_tool_definition(test_definition("workflow"), empty_source_info(), test_tool("workflow"));
+        session.register_tool_definition(test_definition("read"), empty_source_info(), test_tool("read"));
+        session.set_active_tools_by_name(vec!["workflow".to_owned(), "read".to_owned()]);
+        assert_eq!(session.get_active_tool_names(), vec!["read".to_owned()]);
+        assert!(session.requested_active_tool_names().unwrap().contains(&"workflow".to_owned()));
+        assert!(session.agent().removed_tool_hints().contains_key("workflow"));
+    }
+
+    fn test_session_with_eval_only(names: Vec<String>) -> AgentSession {
+        let runtime = ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
+            providers: Some(Vec::new()),
+            ..Default::default()
+        });
+        AgentSession::new(AgentSessionConfig {
+            agent: stub_agent(),
+            session_manager: SessionManager::in_memory("/tmp", None, None),
+            settings_manager: SettingsManager::from_storage(
+                Box::new(crate::settings_manager::InMemorySettingsStorage::default()),
+                false,
+            ),
+            cwd: "/tmp".to_owned(),
+            agent_dir: None,
+            fallback_now: None,
+            retry_random: None,
+            scoped_models: Vec::new(),
+            favorite_models: Vec::new(),
+            flag_values: BTreeMap::new(),
+            custom_tools: Vec::new(),
+            model_runtime: Some(runtime),
+            model_registry: None,
+            uses_default_stream_function: None,
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: Some(names),
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: None,
+            auto_title_sessions: None,
+        })
+        .expect("session")
     }
 
     fn test_model() -> Model {
