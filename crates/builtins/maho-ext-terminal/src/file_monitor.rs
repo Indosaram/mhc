@@ -9,7 +9,7 @@ pub struct FileMonitor {
     event:FileEvent,
     pub checkpoint:TerminalManifestCheckpoint,
     pub paused:bool,
-    settled:bool,
+    pub settled:bool,
 }
 #[cfg(unix)]
 impl FileMonitor {

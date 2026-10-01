@@ -86,19 +86,59 @@ pub struct MonitorRegistry {
     records:std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String,CommandMonitor>>>,
     tasks:Vec<tokio::task::JoinHandle<()>>,
     emit:std::sync::Arc<dyn Fn(MonitorEvent)+Send+Sync>,
+    files:std::collections::BTreeMap<String,(std::sync::Arc<std::sync::Mutex<crate::file_monitor::FileMonitor>>,tokio::task::JoinHandle<()>)>,
+    file_snapshots:std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String,MonitorSnapshotEntry>>>,
+    next_file_id:usize,
 }
 fn now_ms()->f64 {std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("epoch").as_secs_f64()*1000.0}
 impl MonitorRegistry {
-    pub fn new(emit:impl Fn(MonitorEvent)+Send+Sync+'static)->Self {Self {records:Default::default(),tasks:vec![],emit:std::sync::Arc::new(emit)}}
-    pub fn snapshot(&self)->Vec<MonitorSnapshotEntry> {self.records.lock().expect("monitor records").values().map(|record|record.snapshot.clone()).collect()}
+    pub fn new(emit:impl Fn(MonitorEvent)+Send+Sync+'static)->Self {Self {records:Default::default(),tasks:vec![],emit:std::sync::Arc::new(emit),files:Default::default(),file_snapshots:Default::default(),next_file_id:0}}
+    #[cfg(unix)]
+    pub fn register_file(&mut self,description:&str,path:&std::path::Path,event:crate::terminal_manifest_model::FileEvent,timeout_ms:u64)->std::io::Result<(String,String)> {
+        let id=format!("watch_{}",self.next_file_id+1);let monitor_id=allocate_monitor_id()?;
+        let file=std::sync::Arc::new(std::sync::Mutex::new(crate::file_monitor::FileMonitor::register(id.clone(),description.to_owned(),path,event,None)?));
+        let checker=file.clone();let emit=self.emit.clone();let snapshots=self.file_snapshots.clone();let runtime_id=id.clone();
+        snapshots.lock().expect("file snapshots").insert(id.clone(),MonitorSnapshotEntry {id:id.clone(),monitor_id:Some(monitor_id.clone()),description:description.to_owned(),started_at_ms:now_ms(),deadline_ms:Some(now_ms()+timeout_ms as f64),..Default::default()});
+        let watch=tokio::spawn(async move {
+            let period=std::time::Duration::from_millis(crate::monitor_file_watch::FILE_MONITOR_POLL_MS);
+            let mut timer=tokio::time::interval_at(tokio::time::Instant::now()+period,period);timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let deadline=tokio::time::sleep(std::time::Duration::from_millis(timeout_ms));tokio::pin!(deadline);
+            loop {
+                let timed_out=tokio::select! {_=timer.tick()=>false,_=&mut deadline=>true};
+                let (events,settled)={let mut file=checker.lock().expect("file monitor");let events=if timed_out {file.stop("watcher timed_out").into_iter().collect()} else {match file.check() {Ok(events)=>events,Err(error)=>file.stop(&format!("watcher error: {error}")).into_iter().collect()}};(events,file.settled)};
+                if settled {snapshots.lock().expect("file snapshots").remove(&runtime_id);}
+                for event in events {emit(event);}
+                if settled {return;}
+            }
+        });
+        self.files.retain(|_,(_,task)|!task.is_finished());
+        self.next_file_id+=1;self.files.insert(id.clone(),(file,watch));Ok((id,monitor_id))
+    }
+    #[cfg(unix)]
+    pub fn stop_file(&mut self,id:&str)->bool {
+        let Some((file,watch))=self.files.remove(id) else {return false;};watch.abort();self.file_snapshots.lock().expect("file snapshots").remove(id);
+        let event=file.lock().expect("file monitor").stop("watcher killed");if let Some(event)=event {(self.emit)(event);}true
+    }
+    pub fn snapshot(&self)->Vec<MonitorSnapshotEntry> {let mut snapshot=self.records.lock().expect("monitor records").values().map(|record|record.snapshot.clone()).collect::<Vec<_>>();snapshot.extend(self.file_snapshots.lock().expect("file snapshots").values().cloned());snapshot}
     pub fn pause(&self,ids:&[String])->Vec<String> {
         let mut records=self.records.lock().expect("monitor records");
-        ids.iter().filter(|id|records.get_mut(*id).is_some_and(CommandMonitor::pause)).cloned().collect()
+        let mut paused=ids.iter().filter(|id|records.get_mut(*id).is_some_and(CommandMonitor::pause)).cloned().collect::<Vec<_>>();
+        for id in ids {if let Some((file,_))=self.files.get(id) {let mut file=file.lock().expect("file monitor");if !file.paused&&!file.settled {file.paused=true;paused.push(id.clone());if let Some(snapshot)=self.file_snapshots.lock().expect("file snapshots").get_mut(id) {snapshot.paused=true;}}}}
+        paused
     }
     pub fn resume(&self,ids:Option<&[String]>)->Vec<(String,usize)> {
         let mut records=self.records.lock().expect("monitor records");
-        let ids=ids.map(<[String]>::to_vec).unwrap_or_else(||records.keys().cloned().collect());
-        ids.into_iter().filter_map(|id|records.get_mut(&id)?.resume().map(|dropped|(id,dropped))).collect()
+        let ids=ids.map(<[String]>::to_vec).unwrap_or_else(||records.keys().chain(self.files.keys()).cloned().collect());
+        let mut resumed=vec![];
+        for id in ids {
+            if let Some(dropped)=records.get_mut(&id).and_then(CommandMonitor::resume) {resumed.push((id,dropped));continue;}
+            if let Some((file,_))=self.files.get(&id) {
+                let events={let mut file=file.lock().expect("file monitor");if !file.paused||file.settled {continue;}file.paused=false;file.check().unwrap_or_else(|error|file.stop(&format!("watcher error: {error}")).into_iter().collect())};
+                if let Some(snapshot)=self.file_snapshots.lock().expect("file snapshots").get_mut(&id) {snapshot.paused=false;}
+                resumed.push((id,0));for event in events {(self.emit)(event);}
+            }
+        }
+        resumed
     }
     pub fn register(&mut self,runtime:&crate::runtime_session::TerminalRuntimeSession,mut record:CommandMonitor)->Result<(),crate::runtime_session::RuntimeError> {
         let (history,mut output)=runtime.subscribe_output()?;
@@ -109,6 +149,7 @@ impl MonitorRegistry {
         self.records.lock().expect("monitor records").insert(id.clone(),record);
         for event in initial {(self.emit)(event);}
         let records=self.records.clone();let emit=self.emit.clone();
+        self.tasks.retain(|task|!task.is_finished());
         self.tasks.push(tokio::spawn(async move {
             loop {
                 let settled=exit.borrow().clone();
@@ -127,13 +168,22 @@ impl MonitorRegistry {
         }));
         Ok(())
     }
-    pub fn dispose(&mut self) {for task in self.tasks.drain(..) {task.abort();}self.records.lock().expect("monitor records").clear();}
+    pub fn dispose(&mut self) {for (_,(_,task)) in std::mem::take(&mut self.files) {task.abort();}self.file_snapshots.lock().expect("file snapshots").clear();for task in self.tasks.drain(..) {task.abort();}self.records.lock().expect("monitor records").clear();}
 }
 impl Drop for MonitorRegistry {fn drop(&mut self) {self.dispose();}}
 
 #[cfg(test)]
 mod registry_tests {
     use super::*;
+    #[tokio::test]
+    async fn native_file_registration_emits_once_and_releases_live_snapshot() {
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("created");
+        let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let mut registry=MonitorRegistry::new(move |event| {sender.send(event).unwrap();});
+        let (id,_)=registry.register_file("created",&path,crate::terminal_manifest_model::FileEvent::Create,5000).unwrap();
+        assert_eq!(registry.snapshot().len(),1);std::fs::write(&path,b"ready").unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5),async {assert!(matches!(events.recv().await,Some(MonitorEvent::Line {..})));assert!(matches!(events.recv().await,Some(MonitorEvent::Summary {summary,..}) if summary=="watcher completed"));}).await.unwrap();
+        assert!(registry.snapshot().is_empty());registry.stop_file(&id);assert!(events.try_recv().is_err());
+    }
     #[tokio::test]
     async fn native_watch_emits_lines_then_exactly_one_completion() {
         let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();

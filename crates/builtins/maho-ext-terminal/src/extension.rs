@@ -38,10 +38,25 @@ impl Extension for TerminalExtension {
             ("kill_bash","Terminate a background bash session and its process tree.",json!({"bash_id":{"type":"string"},"all":{"type":"boolean"}}),Vec::new()),
         ] {
             let manager=Arc::clone(&manager);
-            api.register_tool(ToolDefinition::new(name,description,json!({"type":"object","properties":properties,"required":required}),Arc::new(move |call| {let manager=Arc::clone(&manager);Box::pin(async move {
+            let monitors=monitors.clone();
+            api.register_tool(ToolDefinition::new(name,description,json!({"type":"object","properties":properties,"required":required}),Arc::new(move |call| {let manager=Arc::clone(&manager);let monitors=monitors.clone();Box::pin(async move {
                 let mut manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
                 let id=call.params.get("bash_id").and_then(Value::as_str);
-                if name=="kill_bash" {return tool_result(execute_kill_bash(&mut manager,id,call.params.get("all").and_then(Value::as_bool).unwrap_or(false)));}
+                if name=="kill_bash" {
+                    let mut monitors=monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?;
+                    let all=call.params.get("all").and_then(Value::as_bool).unwrap_or(false);
+                    if all {
+                        let mut count=manager.size();
+                        for id in monitors.snapshot().into_iter().filter(|record|record.id.starts_with("watch_")).map(|record|record.id) {count+=usize::from(monitors.stop_file(&id));}
+                        manager.teardown().map_err(|error|ToolError::Message(error.to_string()))?;
+                        return tool_result(crate::tools::context::text_result(format!("Killed {count} session(s).")));
+                    }
+                    if let Some(id)=id {
+                        let resolved=manager.resolve_id(id).unwrap_or_else(||id.to_owned());
+                        if monitors.stop_file(&resolved) {return tool_result(crate::tools::context::text_result(format!("Killed {id}.")));}
+                    }
+                    return tool_result(execute_kill_bash(&mut manager,id,all));
+                }
                 let id=id.ok_or_else(||ToolError::Message("bash_id must be a string".to_owned()))?;let resolved=manager.resolve_id(id).unwrap_or_else(||id.to_owned());let runtime=manager.get(&resolved);
                 match name {
                     "bash_output"=>{if call.params.get("view").and_then(Value::as_str)==Some("screen") {return Err(ToolError::Message("Native terminal screen projection is not ported.".to_owned()));}tool_result(execute_bash_output(runtime.as_deref(),id,call.params.get("filter").and_then(Value::as_str)).map_err(|error|ToolError::Message(error.to_string()))?)},

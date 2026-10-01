@@ -22,8 +22,13 @@ pub fn execute_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistr
     let command=input.get("command").and_then(Value::as_str).filter(|value|!value.is_empty());
     let path=input.get("path").and_then(Value::as_str).filter(|value|!value.is_empty());
     if description.is_some()&&command.is_some()&&path.is_some() {return error_result("monitor accepts either command or path, not both.");}
-    if description.is_some()&&path.is_some() {
-        return error_result(if input.get("filter").is_some() {"Native file monitors do not support filter."} else {"Native file monitors require a lifecycle-owned monitor registry."});
+    if let (Some(description),Some(path))=(description,path) {
+        if input.get("filter").is_some() {return error_result("Native file monitors do not support filter.");}
+        let timeout=input.get("timeout_ms").and_then(Value::as_f64).unwrap_or(DEFAULT_MONITOR_TIMEOUT_MS as f64).trunc().clamp(1.0,MAX_MONITOR_TIMEOUT_MS as f64) as u64;
+        let event=if input.get("event").and_then(Value::as_str)==Some("modify") {crate::terminal_manifest_model::FileEvent::Modify} else {crate::terminal_manifest_model::FileEvent::Create};
+        let (id,monitor_id)=match registry.register_file(description,&cwd.join(path),event,timeout) {Ok(ids)=>ids,Err(error)=>return error_result(error.to_string())};
+        manager.bind_monitor_id(&monitor_id,&id);
+        let mut result=text_result(format!("Monitor started with ID: {monitor_id}"));result.details=json!({"monitor_id":monitor_id,"bash_id":id,"monitor":true}).as_object().cloned();return result;
     }
     let (Some(description),Some(command))=(description,command) else {return error_result("monitor requires description and command or path to start a watcher.");};
     let filter=input.get("filter").and_then(Value::as_str);
