@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::types::{ContinueOperationResult, LaneState};
+pub use super::types::{CommitDecision, ContinueOperationResult, Drive, FinishDecision, LaneCommand, LaneState, OperationCommand, ProcedureResult};
 use crate::harness::context::Context;
 use crate::harness::events::{HarnessEvent, HarnessEventBus, HarnessEventPayload};
 use crate::harness::session::session::{SessionError, SessionErrorKind, session_invariant_error};
@@ -13,49 +13,6 @@ use crate::harness::session::types::{
 use crate::harness::session::values::*;
 use maho_ai::types::{BoxFuture, ModelThinkingLevel};
 
-pub type CommitEvents =
-    Arc<dyn Fn(&crate::harness::session::types::CommitResult) -> Vec<HarnessEvent> + Send + Sync>;
-
-pub struct CommitDecision<T> {
-    pub writes: Vec<Write>,
-    pub materialize: Arc<dyn Fn(&crate::harness::session::types::CommitResult) -> T + Send + Sync>,
-    pub events: Option<CommitEvents>,
-}
-
-pub enum LaneCommand<T> {
-    Commit {
-        decision: CommitDecision<T>,
-        next: Box<LaneState>,
-    },
-    Return {
-        result: T,
-    },
-    Reject {
-        error: String,
-    },
-}
-
-pub struct FinishDecision<T> {
-    pub writes: Vec<Write>,
-    pub record: crate::harness::session::types::OperationResultRecord,
-    pub lane: Option<super::types::LanePatch>,
-    pub materialize: Arc<dyn Fn(&crate::harness::session::types::CommitResult) -> T + Send + Sync>,
-    pub events: Option<CommitEvents>,
-}
-
-pub enum OperationCommand<T> {
-    Commit {
-        decision: CommitDecision<T>,
-        operation_state: Box<OperationState>,
-        lane: Option<super::types::LanePatch>,
-    },
-    Finish {
-        decision: Box<FinishDecision<T>>,
-    },
-    Return {
-        result: T,
-    },
-}
 
 pub enum QueuedInput {
     Text(String),

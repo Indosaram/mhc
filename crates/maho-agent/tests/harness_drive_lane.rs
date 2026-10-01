@@ -23,6 +23,31 @@ fn seed() -> LaneConfiguration {
 }
 
 #[tokio::test]
+async fn drive_completion_preserves_first_settlement_and_wakes_all_observers() {
+    use maho_agent::harness::runtime::lane::Drive;
+    use maho_agent::harness::agent_harness::{DriveOptions, DriveOutcome};
+    let drive = Drive::new(&DriveOptions { operation_id: "run".into(), wait_for_retry: Some(true), poll_deferred: Some(true) }, &BACKGROUND_CONTEXT);
+    let outcome = DriveOutcome::WaitingRetry { operation_id: "run".into(), not_before: 10 };
+    drive.settle(outcome.clone());
+    drive.fail("late failure".into());
+    let (left, right) = tokio::join!(drive.completion.wait(), drive.completion.wait());
+    assert_eq!(left.unwrap(), outcome);
+    assert_eq!(right.unwrap(), outcome);
+    assert!(drive.wait_for_retry);
+    assert_eq!(*drive.deferred_permits.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn drive_close_aborts_gate_and_rejects_completion() {
+    use maho_agent::harness::runtime::lane::Drive;
+    use maho_agent::harness::agent_harness::DriveOptions;
+    let drive = Drive::new(&DriveOptions { operation_id: "run".into(), wait_for_retry: None, poll_deferred: None }, &BACKGROUND_CONTEXT);
+    drive.close_gate("closed".into());
+    assert!(drive.close_signal.aborted());
+    assert_eq!(drive.completion.wait().await.unwrap_err(), "closed");
+}
+
+#[tokio::test]
 async fn global_configuration_round_trips_and_rejects_invalid_values() {
     let harness = fixture().await;
     let options = maho_agent::harness::types::AgentHarnessStreamOptions { timeout_ms: Some(42), ..Default::default() };
