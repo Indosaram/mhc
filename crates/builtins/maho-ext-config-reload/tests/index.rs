@@ -21,3 +21,14 @@ fn project_settings_override_only_valid_fields() {
     assert!(!settings.watch["models"]);
     assert!(settings.watch["skills"]);
 }
+#[test]
+fn keybindings_validation_rejects_non_string_values_and_allows_deletion() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("keybindings.json");
+    std::fs::write(&path, "{\"fixture\":1}").unwrap();
+    assert_eq!(validate_builtin_paths(std::slice::from_ref(&path), root.path(), root.path()).len(), 1);
+    std::fs::write(&path, "{\"fixture\":[\"ctrl+x\"]}").unwrap();
+    assert!(validate_builtin_paths(std::slice::from_ref(&path), root.path(), root.path()).is_empty());
+    std::fs::remove_file(&path).unwrap();
+    assert!(validate_builtin_paths(&[path], root.path(), root.path()).is_empty());
+}

@@ -12,6 +12,25 @@ impl<T> ConfigReloadHandoffRegistry<T> {
 }
 pub struct ResolvedConfigReloadSettings { pub enabled: bool, pub debounce_ms: f64, pub watch: BTreeMap<String, bool> }
 pub struct ActiveTarget { pub registration_id: String, pub target: WatchTarget, pub rearm_on_creation: Option<PathBuf> }
+pub fn validate_builtin_paths(paths: &[PathBuf], agent_dir: &Path, cwd: &Path) -> Vec<String> {
+    let mut errors = Vec::new();
+    for path in paths {
+        if !path.exists() { continue; }
+        if crate::routine_settings::is_settings_path(path, agent_dir, cwd) {
+            let parsed = std::fs::read_to_string(path).map_err(|error| error.to_string()).and_then(|content| maho_core::settings_manager::parse_settings_json(&content).map_err(|error| error.to_string()));
+            if let Err(error) = parsed { errors.push(format!("Invalid {}: {error}", path.file_name().unwrap_or_default().to_string_lossy())); }
+        } else if path == &agent_dir.join("models.json") {
+            if let Some(error) = maho_core::model_config::ModelConfig::load_sync(Some(path)).get_error() { errors.push(error.into()); }
+        } else if path == &agent_dir.join("keybindings.json") {
+            match std::fs::read_to_string(path).map_err(|error| error.to_string()).and_then(|content| serde_json::from_str::<Value>(&content).map_err(|error| error.to_string())) {
+                Ok(Value::Object(bindings)) => { if bindings.values().any(|value| !value.is_string() && !value.as_array().is_some_and(|values| values.iter().all(Value::is_string))) { errors.push("keybindings.json bindings must be strings or string arrays".into()); } },
+                Ok(_) => errors.push("keybindings.json must contain an object".into()),
+                Err(error) => errors.push(format!("Invalid keybindings.json: {error}")),
+            }
+        }
+    }
+    errors
+}
 pub fn build_builtin_watch_targets(cwd: &Path, agent_dir: &Path, project_trusted: bool, settings: &ResolvedConfigReloadSettings, skill_paths: &[PathBuf]) -> Vec<ActiveTarget> {
     let mut targets = Vec::new();
     let json: Vec<_> = ["settings.jsonc", "settings.json", "models.json", "keybindings.json"].into_iter().filter(|name| {
