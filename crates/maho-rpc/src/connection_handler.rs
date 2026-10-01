@@ -17,6 +17,18 @@ pub async fn handle_session_command(session:&AgentSession,command:&RpcCommand)->
         RpcCommandBody::SetSessionName{name}=>{session.set_session_name(name);("set_session_name",Ok(None))},
         RpcCommandBody::GetLastAssistantText=>("get_last_assistant_text",Ok(Some(session.get_last_assistant_text().map_or_else(||serde_json::json!({}),|text|serde_json::json!({"text":text}))))),
         RpcCommandBody::GetMessages=>("get_messages",serde_json::to_value(session.messages()).map(|messages|Some(serde_json::json!({"messages":messages}))).map_err(|error|error.to_string())),
+        RpcCommandBody::SetAutoCompaction{enabled}=>{session.set_auto_compaction_enabled(*enabled);("set_auto_compaction",Ok(None))},
+        RpcCommandBody::SetAutoRetry{enabled}=>("set_auto_retry",session.set_auto_retry_enabled(*enabled).map(|()|None)),
+        RpcCommandBody::AbortRetry=>{session.abort_retry();("abort_retry",Ok(None))},
+        RpcCommandBody::AbortCompaction=>{session.abort_compaction();("abort_compaction",Ok(None))},
+        RpcCommandBody::AbortBash=>{session.abort_bash();("abort_bash",Ok(None))},
+        RpcCommandBody::Compact{custom_instructions}=>("compact",session.compact(custom_instructions.as_deref()).await.map(|result|{
+            let mut value=serde_json::json!({"summary":result.summary,"firstKeptEntryId":result.first_kept_entry_id,"tokensBefore":result.tokens_before});
+            if let Some(tokens)=result.estimated_tokens_after{value["estimatedTokensAfter"]=tokens.into();}
+            if let Some(usage)=result.usage{value["usage"]=serde_json::json!(usage);}
+            if let Some(details)=result.details{value["details"]=details;}
+            Some(value)
+        })),
         _=>return None,
     };
     Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:match result{Ok(data)=>RpcResponseResult::Success{data},Err(error)=>RpcResponseResult::Error{error,error_code:None,error_data:None}}})
