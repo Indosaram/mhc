@@ -32,6 +32,7 @@ pub async fn handle_session_command(session:&AgentSession,command:&RpcCommand)->
         RpcCommandBody::AbortRetry=>{session.abort_retry();("abort_retry",Ok(None))},
         RpcCommandBody::AbortCompaction=>{session.abort_compaction();("abort_compaction",Ok(None))},
         RpcCommandBody::AbortBash=>{session.abort_bash();("abort_bash",Ok(None))},
+        RpcCommandBody::SetSteeringMode{mode}|RpcCommandBody::SetFollowUpMode{mode}=>{let mode=match mode{crate::rpc_types::QueueMode::All=>maho_agent::types::QueueMode::All,crate::rpc_types::QueueMode::OneAtATime=>maho_agent::types::QueueMode::OneAtATime};let kind=if matches!(&command.body,RpcCommandBody::SetSteeringMode{..}){session.set_steering_mode(mode);"set_steering_mode"}else{session.set_follow_up_mode(mode);"set_follow_up_mode"};(kind,Ok(None))},
         RpcCommandBody::GetAvailableThinkingLevels=>("get_available_thinking_levels",Ok(Some(serde_json::json!({"levels":session.get_available_thinking_levels()})))),
         RpcCommandBody::CycleThinkingLevel=>("cycle_thinking_level",Ok(Some(session.cycle_thinking_level().map_or(serde_json::Value::Null,|level|serde_json::json!({"level":level}))))),
         RpcCommandBody::SetThinkingLevel{level,scope}=>{

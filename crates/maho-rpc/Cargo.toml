@@ -7,6 +7,7 @@ license = "MIT"
 
 [dependencies]
 maho-core = { path = "../maho-core" }
+maho-agent = { path = "../maho-agent" }
 maho-ai = { path = "../maho-ai" }
 maho-ext-api = { path = "../maho-ext-api" }
 maho-tui = { path = "../maho-tui" }
@@ -23,7 +24,6 @@ rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled
 tokio = { workspace = true, features = ["io-util", "sync", "rt", "macros", "net", "time"] }
 
 [dev-dependencies]
-maho-agent = { path = "../maho-agent" }
 tempfile.workspace = true
 maho-test-support = { path = "../maho-test-support", features = ["sdk"] }
 
