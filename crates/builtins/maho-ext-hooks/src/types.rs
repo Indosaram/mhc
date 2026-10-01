@@ -62,3 +62,42 @@ pub struct HookDiagnostic {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event: Option<String>,
 }
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandHookConfig {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command_windows: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_message: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutableHookHandler {
+    pub event: SupportedHookEvent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matcher: Option<String>,
+    pub group_index: usize,
+    pub handler_index: usize,
+    pub config: CommandHookConfig,
+    pub source: HookSourceMetadata,
+}
+
+#[derive(Debug, Default)]
+pub struct ParsedHookConfig {
+    pub executable_handlers: Vec<ExecutableHookHandler>,
+    pub diagnostics: Vec<HookDiagnostic>,
+}
+
+pub const UNSUPPORTED_KNOWN_HOOK_EVENTS: &[&str] = &[
+    "PermissionRequest", "PermissionDenied", "SubagentStart", "SubagentStop", "Setup",
+    "UserPromptExpansion", "PostToolUseFailure", "PostToolBatch", "TaskCreated", "TaskCompleted",
+    "StopFailure", "TeammateIdle", "InstructionsLoaded", "ConfigChange", "CwdChanged", "FileChanged",
+    "WorktreeCreate", "WorktreeRemove", "MessageDisplay", "SessionEnd", "Elicitation", "ElicitationResult",
+];
