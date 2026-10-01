@@ -19,6 +19,28 @@ pub enum QueuedInput {
     Message(Box<crate::types::AgentMessage>),
 }
 
+pub enum PromptInput {
+    Text { text: String, images: Vec<maho_ai::types::ImageContent> },
+    Messages(Vec<crate::types::AgentMessage>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationAdmission {
+    pub operation_id: String,
+    pub started_at: i64,
+    pub kind: crate::harness::session::types::OperationIntentKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AdmissionError {
+    #[error("Lane {lane:?} already has an active operation")]
+    LaneBusy { lane: String, operation_id: String },
+    #[error("Acceptance must append at least one message")]
+    Empty,
+    #[error("Cannot accept a pending assistant message")]
+    PendingAssistant,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancelQueuedOutcome { Cancelled, AlreadyConsumed, NotFound }
 
@@ -142,6 +164,74 @@ impl Lane {
     pub fn get_tip_id(&self) -> Result<Option<String>, SessionError> {
         self.assert_open()?;
         Ok(self.state().tip_id)
+    }
+
+    pub async fn accept_prompt(&self, input: PromptInput, operation_id: Option<String>, settings: crate::harness::session::types::RunSettings, context: &Context) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
+        use crate::harness::session::types::{OperationIntent, OperationMarker, OperationScope, OperationIntentKind, StartingOperation};
+        self.assert_open()?;
+        let started_at = now_ms();
+        let operation_id = operation_id.unwrap_or_else(|| (self.session.id_generator())(Some(started_at)));
+        let messages = match input {
+            PromptInput::Messages(messages) => messages,
+            PromptInput::Text { text, images } => {
+                if text.is_empty() && images.is_empty() { vec![] } else {
+                    let mut content = vec![];
+                    if !text.is_empty() { content.push(maho_ai::types::ContentBlock::text(text)); }
+                    content.extend(images.into_iter().map(maho_ai::types::ContentBlock::Image));
+                    vec![crate::types::AgentMessage::Llm(maho_ai::types::Message::User(maho_ai::types::UserMessage { content: maho_ai::types::UserContent::Blocks(content), timestamp: started_at }))]
+                }
+            }
+        };
+        if messages.iter().any(|message| matches!(message.try_as_llm(), Some(maho_ai::types::Message::Assistant(assistant)) if assistant.stop_reason == maho_ai::types::StopReason::Pending)) {
+            return Ok(Err(AdmissionError::PendingAssistant));
+        }
+        let prompt: Vec<_> = messages.into_iter().map(|message| NewEntry::message((self.session.id_generator())(Some(started_at)), None, message)).collect();
+        let name = self.name.clone();
+        let read_context = context.clone();
+        self.command(move |mut state, reader| Box::pin(async move {
+            if let Some(operation) = &state.operation { return Ok(LaneCommand::Return { result: Err(AdmissionError::LaneBusy { lane: name, operation_id: operation.meta.operation_id.clone() }) }); }
+            let (selected, remainder) = select_accepted_inbox(&state.inbox, settings.steering_mode, settings.follow_up_mode);
+            let mut entries = vec![];
+            for item in &selected {
+                let stored = reader.get_value(&pending_entry(&item.entry_id), &read_context).await?.ok_or_else(|| session_invariant_error(format!("Pending {:?} entry {} is missing its payload", item.kind, item.entry_id)))?;
+                let pending: PendingEntry = serde_json::from_value(stored.value).map_err(|error| session_invariant_error(error.to_string()))?;
+                queued_item(item, &pending)?;
+                if matches!(&pending, PendingEntry::Message { payload } if matches!(payload.try_as_llm(), Some(maho_ai::types::Message::Assistant(message)) if message.stop_reason == maho_ai::types::StopReason::Pending)) { return Err(session_invariant_error("Pending entry contains a pending assistant")); }
+                entries.push(pending_entry_write(item.entry_id.clone(), pending));
+            }
+            if prompt.is_empty() && !selected.iter().any(|item| item.kind != InboxItemKind::Write) { return Ok(LaneCommand::Return { result: Err(AdmissionError::Empty) }); }
+            let meta = OperationMeta { operation_id: operation_id.clone(), lane: name.clone(), source_tip_id: state.tip_id.clone(), started_at, intent: OperationIntent::Run { prompt_entry_ids: prompt.iter().map(|entry| entry.id.clone()).collect() } };
+            entries.extend(prompt);
+            let mut tip = state.tip_id.clone();
+            for entry in &mut entries { entry.parent_id = tip; tip = Some(entry.id.clone()); }
+            let starting = OperationState::Starting(StartingOperation { at: OperationMarker::Starting, operation: OperationScope { control: Control::Running, settings, latest_assistant_entry_id: None } });
+            state.tip_id = tip;
+            state.inbox = remainder;
+            state.operation = Some(Operation { meta: meta.clone(), state: starting.clone() });
+            let queues = read_lane_queues(reader, &state.inbox, &read_context).await?;
+            let mut writes: Vec<_> = entries.iter().cloned().map(crate::harness::session::commit::insert_entry).collect();
+            writes.extend(selected.iter().map(|item| Write::Value(delete_value(&pending_entry(&item.entry_id)))));
+            writes.extend([
+                Write::Value(set_value(&branch_tip(&name), encoded(&state.tip_id)?)),
+                Write::Value(set_value(&operation_meta(&operation_id), encoded(&meta)?)),
+                Write::Value(set_value(&operation_state(&operation_id), encoded(&starting)?)),
+                Write::Value(set_value(&lane_state(&name), encoded(&durable_lane_state(&state))?)),
+            ]);
+            let admission = OperationAdmission { operation_id: operation_id.clone(), started_at, kind: OperationIntentKind::Run };
+            Ok(LaneCommand::Commit { decision: CommitDecision { writes, materialize: Arc::new(move |_| Ok(admission.clone())), events: Some(Arc::new(move |commit| {
+                let mut events = vec![HarnessEvent::run_start(&operation_id, started_at, &name)];
+                for (entry, seq) in entries.iter().zip(&commit.seqs) {
+                    let entry = crate::harness::session::types::Entry { id: entry.id.clone(), parent_id: entry.parent_id.clone(), seq: *seq, timestamp: commit.timestamp, kind: entry.kind.clone() };
+                    if let crate::harness::session::types::EntryKind::Message { message, .. } = &entry.kind {
+                        events.push(HarnessEvent::new(HarnessEventPayload::MessageStart { run_id: Some(operation_id.clone()), message: message.clone() }, Some(name.clone())));
+                        events.push(HarnessEvent::new(HarnessEventPayload::MessageEnd { run_id: Some(operation_id.clone()), message: message.clone(), entry_id: Some(entry.id.clone()) }, Some(name.clone())));
+                    }
+                    events.push(HarnessEvent::new(HarnessEventPayload::EntryAdded { entry: Box::new(entry) }, Some(name.clone())));
+                }
+                if !selected.is_empty() { events.push(HarnessEvent::new(HarnessEventPayload::QueueUpdate { queues: queues.clone() }, Some(name.clone()))); }
+                events
+            })) }, next: Box::new(state) })
+        }), context).await
     }
 
     /// The Session mutation barrier covers planning, commit and memory publication, but not event delivery.
