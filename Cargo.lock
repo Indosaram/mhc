@@ -1966,6 +1966,9 @@ version = "0.0.0"
 name = "maho-omo-init-deep-advisor"
 version = "0.0.0"
 dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
  "tempfile",
 ]
 
