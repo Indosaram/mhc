@@ -164,6 +164,26 @@ async fn publishes_intent_before_effect_and_persists_arguments() {
 }
 
 #[tokio::test]
+async fn replay_clears_old_checkpoint_and_returns_persisted_arguments() {
+    use maho_agent::harness::context::BACKGROUND_CONTEXT;
+    use maho_agent::harness::session::types::{Control, Session, ToolCall as DurableCall, ToolCallReplay, Write};
+    use maho_agent::harness::session::values::{pending_tool_output, set_value};
+    let lane = lane(Control::Running);
+    let pending = DurableCall::EffectPending { source_index: 0, result_entry_id: "result".into(), replay: ToolCallReplay::Safe };
+    publish_tool_intent(&lane, pending.clone(), serde_json::json!({"path":"saved"}), ToolCallReplay::Safe, &BACKGROUND_CONTEXT).await.unwrap();
+    let checkpoint = maho_agent::types::AgentToolResult { content: vec![maho_ai::types::ContentBlock::text("durable")], details: serde_json::json!({"offset":2}), usage: None, added_tool_names: None, terminate: None, is_error: None };
+    let mutation = lane.session.begin_mutation(&BACKGROUND_CONTEXT).await.unwrap();
+    mutation.commit(vec![Write::Value(set_value(&pending_tool_output("op", "result"), serde_json::to_value(&checkpoint).unwrap()))], &BACKGROUND_CONTEXT).await.unwrap();
+    mutation.end(&BACKGROUND_CONTEXT).await;
+    let drive = maho_agent::harness::runtime::types::Drive::new(&maho_agent::harness::agent_harness::DriveOptions { operation_id: "op".into(), wait_for_retry: None, poll_deferred: None }, &BACKGROUND_CONTEXT);
+    assert_eq!(read_checkpoint(&lane, &drive, &pending).await.unwrap().unwrap().details, checkpoint.details);
+    let maho_agent::harness::session::types::OperationState::Tools(run) = lane.state().operation.unwrap().state else { panic!("tools"); };
+    let arguments = clear_replay_checkpoint(&lane, &drive, &run.batch, &pending, &call()).await.unwrap();
+    assert_eq!(arguments, serde_json::json!({"path":"saved"}));
+    assert!(read_checkpoint(&lane, &drive, &pending).await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn cancellation_diverts_intent_without_invoking_planner() {
     use maho_agent::harness::context::BACKGROUND_CONTEXT;
     use maho_agent::harness::session::types::{

@@ -11,6 +11,29 @@ pub struct ToolOutcome {
 
 pub const INTERRUPTION_MARKER: &str = "[Tool execution was interrupted. The preceding output is the latest durable progress snapshot; newer live output may be missing, and the external outcome is unknown.]";
 
+pub async fn read_checkpoint(lane: &crate::harness::runtime::lane::Lane, drive: &crate::harness::runtime::types::Drive, call: &ToolCall) -> Result<Option<AgentToolResult>, SessionError> {
+    let key = crate::harness::session::values::pending_tool_output(&drive.operation_id, call.result_entry_id());
+    let context = drive.context.clone();
+    lane.command(move |_, reader| Box::pin(async move {
+        let stored = reader.get_value(&key, &context).await?;
+        let result = stored.map(|value| serde_json::from_value(value.value).map_err(|error| session_invariant_error(error.to_string()))).transpose()?;
+        Ok(crate::harness::runtime::lane::LaneCommand::Return { result })
+    }), &drive.context).await
+}
+
+pub async fn clear_replay_checkpoint(lane: &crate::harness::runtime::lane::Lane, drive: &crate::harness::runtime::types::Drive, batch: &ToolBatch, call: &ToolCall, tool_call: &AgentToolCall) -> Result<serde_json::Value, SessionError> {
+    let args_key = crate::harness::session::values::operation_tool_args(&drive.operation_id, &batch.turn_id, call.source_index());
+    let output_key = crate::harness::session::values::pending_tool_output(&drive.operation_id, call.result_entry_id());
+    let result_entry_id = call.result_entry_id().to_owned();
+    let context = drive.context.clone();
+    let name = lane.name.clone();
+    let event = crate::harness::events::HarnessEvent { lane: Some(name), recovery: Some(true), payload: crate::harness::events::HarnessEventPayload::ToolStart { run_id: drive.operation_id.clone(), turn_id: batch.turn_id.clone(), tool_call_id: tool_call.id.clone(), tool_name: tool_call.name.clone() } };
+    lane.command(move |state, reader| Box::pin(async move {
+        let stored = reader.get_value(&args_key, &context).await?.ok_or_else(|| session_invariant_error(format!("Tool call {result_entry_id} is missing persisted arguments")))?;
+        Ok(crate::harness::runtime::lane::LaneCommand::Commit { decision: crate::harness::runtime::lane::CommitDecision { writes: vec![crate::harness::session::types::Write::Value(crate::harness::session::values::delete_value(&output_key))], materialize: std::sync::Arc::new(move |_| stored.value.clone()), events: Some(std::sync::Arc::new(move |_| vec![event.clone()])) }, next: Box::new(state) })
+    }), &drive.context).await
+}
+
 pub fn find_call(
     batch: &ToolBatch,
     source_index: usize,
