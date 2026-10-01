@@ -13,7 +13,7 @@ impl SharedMcpLease {
     pub async fn renew(&self)->Result<(),McpError>{self.bump_generation()?;self.connect().await}
     pub async fn request(&self,method:&str,params:Value,timeout:Duration)->Result<Value,McpError> {
         self.assert_attached()?;let client=self.shared.connect().await?;
-        if method=="tools/call"{self.shared.call_tool(self.owner,client.request(method,params,timeout)).await}else{client.request(method,params,timeout).await}
+        if method=="tools/call"{self.shared.call_tool(self.owner,client.request(method,params,timeout)).await}else{self.shared.run_request(client.request(method,params,timeout)).await}
     }
     pub async fn catalog(&self)->Result<crate::catalog_cache::McpCachedServerCatalog,McpError>{self.assert_attached()?;self.shared.catalog(self.refresh_catalog.swap(false,Ordering::AcqRel)).await}
     pub fn dispose(&self){if !self.released.swap(true,Ordering::AcqRel){self.shared.release(self.owner);}}

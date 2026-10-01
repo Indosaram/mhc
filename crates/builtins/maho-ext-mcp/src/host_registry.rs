@@ -11,7 +11,9 @@ struct RegistryEntry {connection:Arc<ServerConnection>,shareable:bool,owners:BTr
 pub struct HostMcpRegistry {entries:Mutex<BTreeMap<String,Vec<RegistryEntry>>>,shared:Mutex<BTreeMap<String,Arc<crate::shared_connection::SharedMcpConnection>>>}
 impl HostMcpRegistry {
     pub fn attach_shared(&self,key:&str,owner:u64,factory:impl FnOnce()->Arc<crate::shared_connection::SharedMcpConnection>)->Result<Arc<crate::shared_lease::SharedMcpLease>,McpError> {
-        let mut shared=self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);let connection=shared.entry(key.into()).or_insert_with(factory);connection.attach(owner,key.into())
+        let mut shared=self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if shared.get(key).is_some_and(|connection|connection.is_disposed()){shared.remove(key);}
+        let connection=shared.entry(key.into()).or_insert_with(factory);connection.attach(owner,key.into())
     }
     pub fn attach(&self,key:&str,owner:u64,factory:impl FnOnce()->Arc<ServerConnection>,can_share:bool)->Arc<ServerConnection> {
         let mut entries=self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
