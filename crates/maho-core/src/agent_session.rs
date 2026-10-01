@@ -431,6 +431,7 @@ pub struct AgentSessionInner {
     agent_subscription: Mutex<Option<maho_agent::agent::AgentSubscription>>,
     prompt_admission: tokio::sync::Mutex<()>,
     retry_fallback: tokio::sync::Mutex<Option<crate::retry_fallback::controller::RetryFallbackController<SessionFallbackDeps>>>,
+    work_barrier: Arc<crate::session_work_barrier::SessionWorkBarrier>,
 }
 
 struct SessionFallbackDeps(std::sync::Weak<AgentSessionInner>);
@@ -440,6 +441,191 @@ struct SessionExtensionActions(std::sync::Weak<AgentSessionInner>);
 impl SessionExtensionActions {
     fn session(&self) -> Result<AgentSession, maho_ext_api::ExtensionFailure> {
         self.0.upgrade().map(|inner| AgentSession { inner }).ok_or_else(|| maho_ext_api::ExtensionFailure::new("Session disposed"))
+    }
+
+    fn update_retry(&self, update: impl FnOnce(&mut Map<String, Value>)) -> Result<(), maho_ext_api::ExtensionFailure> {
+        let session = self.session()?;
+        let mut retry = session.with_settings_manager(|manager| manager.get_value("retry").and_then(Value::as_object).cloned()).unwrap_or_default();
+        update(&mut retry);
+        session.with_settings_manager_mut(|manager| manager.set(crate::settings_manager::SettingsScope::Global,
+            &Map::from_iter([("retry".to_owned(), Value::Object(retry))]))).map_err(maho_ext_api::ExtensionFailure::new)
+    }
+}
+
+impl maho_ext_api::ExtensionSessionSettings for SessionExtensionActions {
+    fn get_retry_fallback_settings(&self) -> maho_ext_api::RetryFallbackSettings {
+        let raw = self.session().ok().and_then(|session| session.with_settings_manager(|manager| manager.get_value("retry").cloned()));
+        let settings = crate::retry_fallback::settings::resolve_retry_fallback_settings(raw.as_ref());
+        maho_ext_api::RetryFallbackSettings { model_fallback: settings.model_fallback, chains: settings.chains.into_iter().collect(),
+            revert_policy: match settings.revert_policy { crate::retry_fallback::settings::FallbackRevertPolicy::Never => maho_ext_api::FallbackRevertPolicy::Never,
+                crate::retry_fallback::settings::FallbackRevertPolicy::CooldownExpiry => maho_ext_api::FallbackRevertPolicy::CooldownExpiry } }
+    }
+    fn set_fallback_chain<'a>(&'a self, key: &'a str, entries: &'a [String]) -> maho_ext_api::ExtensionFuture<'a, ()> {
+        Box::pin(async move { self.update_retry(|retry| {
+            let mut chains = retry.get("fallbackChains").and_then(Value::as_object).cloned().unwrap_or_default();
+            chains.insert(key.to_owned(), Value::Array(entries.iter().cloned().map(Value::String).collect())); retry.insert("fallbackChains".to_owned(), Value::Object(chains));
+        }) })
+    }
+    fn remove_fallback_chain<'a>(&'a self, key: &'a str) -> maho_ext_api::ExtensionFuture<'a, ()> { Box::pin(async move {
+        self.update_retry(|retry| { if let Some(chains) = retry.get_mut("fallbackChains").and_then(Value::as_object_mut) { chains.remove(key); } })
+    }) }
+    fn set_model_fallback_enabled(&self, enabled: bool) -> maho_ext_api::ExtensionFuture<'_, ()> { Box::pin(async move {
+        self.update_retry(|retry| { retry.insert("modelFallback".to_owned(), Value::Bool(enabled)); })
+    }) }
+    fn set_fallback_revert_policy(&self, policy: maho_ext_api::FallbackRevertPolicy) -> maho_ext_api::ExtensionFuture<'_, ()> { Box::pin(async move {
+        self.update_retry(|retry| { retry.insert("fallbackRevertPolicy".to_owned(), Value::String(match policy {
+            maho_ext_api::FallbackRevertPolicy::Never => "never", maho_ext_api::FallbackRevertPolicy::CooldownExpiry => "cooldown-expiry",
+        }.to_owned())); })
+    }) }
+    fn reload(&self) -> maho_ext_api::ExtensionFuture<'_, ()> { Box::pin(async move { self.session()?.with_settings_manager_mut(|manager| manager.reload()); Ok(()) }) }
+    fn get_fallback_status(&self) -> Option<maho_ext_api::RetryFallbackStatus> {
+        let session = self.session().ok()?;
+        let controller = session.retry_fallback.try_lock().ok()?;
+        let state = controller.as_ref()?.state.as_ref()?;
+        Some(maho_ext_api::RetryFallbackStatus { active: true, current_model: Some(format!("{}/{}",session.model().provider,session.model().id)),
+            original_selector: Some(state.original_selector.clone()), pinned: state.pinned })
+    }
+}
+
+impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
+    fn assert_active(&self) -> Result<(), maho_ext_api::ExtensionFailure> { self.session().map(|_| ()) }
+    fn get_model(&self) -> Option<Model> { self.session().ok().map(|session| session.model()) }
+    fn get_service_tier(&self) -> Option<ServiceTier> { self.session().ok().and_then(|session| session.service_tier()) }
+    fn get_effective_service_tier(&self) -> Option<ServiceTier> { self.session().ok().and_then(|session| session.effective_service_tier()) }
+    fn get_scoped_models(&self) -> Vec<maho_ext_api::ScopedModel> { self.session().map_or_else(|_| Vec::new(), |session| session.scoped_models().into_iter().map(|model|
+        maho_ext_api::ScopedModel { model: model.model, thinking_level: model.thinking_level, service_tier: model.service_tier }).collect()) }
+    fn get_agent_dir(&self) -> std::path::PathBuf { self.session().map_or_else(|_| Default::default(), |session| session.agent_dir().into()) }
+    fn is_idle(&self) -> bool { self.session().is_ok_and(|session| !session.is_streaming() && !session.work_barrier.has_active_work()) }
+    fn is_project_trusted(&self) -> bool { self.session().is_ok_and(|session| session.with_settings_manager(|manager| manager.is_project_trusted())) }
+    fn get_signal(&self) -> Option<maho_ext_api::AbortSignal> { None }
+    fn abort(&self, _source: Option<maho_ext_api::AbortSource>) { if let Ok(session) = self.session() { session.agent.abort(None); session.abort_retry(); session.abort_compaction(); } }
+    fn has_pending_messages(&self) -> bool { self.session().is_ok_and(|session| session.pending_message_count() > 0) }
+    fn request_reload(&self) -> maho_ext_api::ExtensionFuture<'_, ()> { Box::pin(async move { self.session()?.reload().await.map(|_| ()).map_err(maho_ext_api::ExtensionFailure::new) }) }
+    fn is_compacting(&self) -> bool { self.session().is_ok_and(|session| session.is_compacting()) }
+    fn check_reload_veto(&self) -> maho_ext_api::ExtensionFuture<'_, maho_ext_api::ReloadVetoDecision> { Box::pin(async move {
+        let result = self.session()?.session_before(maho_ext_api::ExtensionEvent::SessionBeforeReload).await.map_err(maho_ext_api::ExtensionFailure::new)?;
+        Ok(maho_ext_api::ReloadVetoDecision { cancelled: result.cancel == Some(true), reason: result.reason })
+    }) }
+    fn shutdown(&self) { if let Ok(session) = self.session() { tokio::spawn(async move { session.dispose().await; }); } }
+    fn get_context_usage(&self) -> Option<maho_ext_api::ContextUsage> { self.session().ok()?.get_context_usage().map(|usage|
+        maho_ext_api::ContextUsage { tokens: usage.tokens, context_window: usage.context_window, percent: usage.percent }) }
+    fn get_compaction_settings(&self) -> maho_ext_api::CompactionSettings {
+        let raw = self.session().ok().and_then(|session| session.with_settings_manager(|manager| manager.get_value("compaction").cloned()));
+        maho_ext_api::CompactionSettings { enabled: raw.as_ref().and_then(|raw| raw.get("enabled")).and_then(Value::as_bool).unwrap_or(true),
+            reserve_tokens: raw.as_ref().and_then(|raw| raw.get("reserveTokens")).and_then(Value::as_u64).unwrap_or(16_384),
+            keep_recent_tokens: raw.as_ref().and_then(|raw| raw.get("keepRecentTokens")).and_then(Value::as_u64).unwrap_or(20_000) }
+    }
+    fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { self.session().ok()?.with_settings_manager(|manager| manager.get_number("promptCacheSafeWaitSeconds")) }
+    fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64 { self.session().ok().and_then(|session| session.with_settings_manager(|manager| manager.get_number("promptCacheGoalBackstopMaxSeconds"))).unwrap_or(300.0) }
+    fn get_prompt_cache_keep_alive_settings(&self) -> maho_ext_api::PromptCacheKeepAliveSettings { maho_ext_api::PromptCacheKeepAliveSettings {
+        enabled: false, max_requests_per_session: 3, max_cost_usd_per_session: 0.05, margin_seconds: 60.0,
+    } }
+    fn get_look_at_settings(&self) -> maho_ext_api::LookAtSettings { maho_ext_api::LookAtSettings { enabled: true, models: None } }
+    fn get_ask_user_settings(&self) -> maho_ext_api::AskUserSettings { maho_ext_api::AskUserSettings { enabled: true, timeout_minutes: 30.0 } }
+    fn get_image_settings(&self) -> maho_ext_api::ImageSettings { maho_ext_api::ImageSettings { auto_resize: true, block_images: false } }
+    fn session_settings(&self) -> &dyn maho_ext_api::ExtensionSessionSettings { self }
+    fn compact(&self, options: maho_ext_api::CompactOptions) { if let Ok(session) = self.session() { tokio::spawn(async move {
+        match session.compact(options.custom_instructions.as_deref()).await {
+            Ok(result) => if let Some(callback) = options.on_complete { callback(maho_ext_api::CompactionResult { summary: result.summary,
+                first_kept_entry_id: result.first_kept_entry_id, tokens_before: result.tokens_before as u64, details: result.details }); },
+            Err(error) => if let Some(callback) = options.on_error { callback(maho_ext_api::ExtensionFailure::new(error)); },
+        }
+    }); } }
+    fn prepare_provider_request(&self, messages: Vec<AgentMessage>) -> maho_ext_api::ExtensionFuture<'_, maho_ext_api::ProviderRequestPreparation> {
+        Box::pin(async move { let session = self.session()?;
+            let result = { let mut runner = session.extension_runner.lock().await; match runner.as_mut() {
+                Some(runner) => runner.emit_context(&messages, None).await?, None => messages,
+            }};
+            Ok(maho_ext_api::ProviderRequestPreparation { messages: result,
+                transform_payload: Arc::new(|payload| Box::pin(async move { Ok(payload) })),
+                transform_headers: Arc::new(|headers| Box::pin(async move { Ok(headers) })),
+            })
+        })
+    }
+    fn begin_compaction(&self, _options: maho_ext_api::BeginCompactionOptions) -> Option<maho_ext_api::AbortSignal> {
+        let session = self.session().ok()?;
+        if session.is_compacting() { return None; }
+        session.state().compaction_abort_controller = Some(maho_ai::utils::abort::AbortController::new());
+        Some(maho_ext_api::AbortSignal::default())
+    }
+    fn update_compaction(&self, options: maho_ext_api::UpdateCompactionOptions) { if let Ok(session) = self.session() {
+        session.emit(AgentSessionEvent::CompactionProgress { reason: options.reason, delta: options.delta, text: options.text });
+    } }
+    fn end_compaction(&self, options: maho_ext_api::EndCompactionOptions) { if let Ok(session) = self.session() {
+        session.state().compaction_abort_controller = None;
+        session.emit(AgentSessionEvent::CompactionEnd { reason: options.reason, result: None, aborted: options.aborted.unwrap_or(false),
+            will_retry: false, request_id: None, accepted: None, rejection_cause: None, error_message: options.error_message });
+    } }
+    fn get_message_revision(&self) -> u64 { self.session().map_or(0, |session| session.message_revision()) }
+    fn apply_compaction(&self, result: maho_ext_api::CompactionResult, options: maho_ext_api::ApplyCompactionOptions) -> maho_ext_api::ExtensionFuture<'_, maho_ext_api::ApplyCompactionResult> {
+        Box::pin(async move { let session = self.session()?;
+            if options.expected_revision.is_some_and(|revision| revision != session.message_revision()) { return Ok(maho_ext_api::ApplyCompactionResult::Stale); }
+            if options.signal.as_ref().is_some_and(maho_ext_api::AbortSignal::is_aborted) { return Ok(maho_ext_api::ApplyCompactionResult::Rejected); }
+            session.apply_compaction(&crate::compaction::compaction::CompactionResult { summary: result.summary, first_kept_entry_id: result.first_kept_entry_id,
+                tokens_before: result.tokens_before as i64, estimated_tokens_after: None, usage: None, details: result.details }).map_err(maho_ext_api::ExtensionFailure::new)?;
+            Ok(maho_ext_api::ApplyCompactionResult::Applied)
+        })
+    }
+    fn get_system_prompt(&self) -> String { self.session().map_or_else(|_| String::new(), |session| session.system_prompt()) }
+    fn get_system_prompt_options(&self) -> maho_ext_api::BuildSystemPromptOptions { maho_ext_api::BuildSystemPromptOptions {
+        cwd: self.session().map_or_else(|_| Default::default(), |session| session.cwd().into()), ..Default::default()
+    } }
+    fn get_loaded_hook_sources(&self) -> maho_ext_api::LoadedHookSources {
+        let session = self.session().ok(); let cwd = session.as_ref().map_or_else(std::path::PathBuf::new, |session| session.cwd().into());
+        let dir = session.as_ref().map_or_else(std::path::PathBuf::new, |session| session.agent_dir().into());
+        maho_ext_api::LoadedHookSources { global_hooks_path: dir.join("hooks"), project_hooks_path: cwd.join(".omo/hooks"), cwd, agent_dir: dir,
+            global_settings_hooks: None, project_settings_hooks: None, global_hook_source_paths: Vec::new(), project_hook_source_paths: Vec::new(),
+            pre_session_hook_source_paths: Vec::new(), runtime_hook_source_paths: Vec::new() }
+    }
+    fn kernel_tools(&self) -> Option<&dyn maho_ext_api::ExtensionKernelTools> { None }
+}
+
+impl maho_ext_api::ExtensionActions for SessionExtensionActions {
+    fn send_message(&self, message: maho_ext_api::CustomMessage, options: maho_ext_api::SendMessageOptions) -> Result<(), maho_ext_api::ExtensionFailure> {
+        let session = self.session()?;
+        let custom: maho_agent::harness::messages::CustomMessage = serde_json::from_value(serde_json::json!({
+            "role":"custom","customType":message.custom_type,"content":message.content,"display":message.display,
+            "details":message.details,"timestamp":maho_ai::utils::diagnostics::now_ms(),
+        })).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+        let agent_message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(custom.clone()));
+        if session.is_streaming() {
+            match options.deliver_as { Some(maho_ext_api::DeliverAs::FollowUp) => session.agent.follow_up(agent_message), _ => session.agent.steer(agent_message) }
+        } else {
+            let content = serde_json::to_value(message.content).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+            session.with_session_manager_mut(|manager| manager.append_custom_message(&custom.custom_type,
+                content, custom.display, custom.details));
+            let mut messages = session.messages(); messages.push(agent_message); session.agent.set_messages(messages);
+            session.state().message_revision += 1;
+            if options.trigger_turn { tokio::spawn(async move { session.continue_session().await }); }
+        }
+        Ok(())
+    }
+    fn send_user_message(&self, content: maho_ext_api::UserMessageContent, options: maho_ext_api::SendUserMessageOptions) -> Result<(), maho_ext_api::ExtensionFailure> {
+        let session = self.session()?;
+        let (text, images) = match content {
+            maho_ext_api::UserMessageContent::Text(text) => (text, Vec::new()),
+            maho_ext_api::UserMessageContent::Blocks(blocks) => {
+                let mut text = String::new(); let mut images = Vec::new();
+                for block in blocks { match block {
+                    maho_ext_api::ToolContent::Text { text: part, .. } => text.push_str(&part),
+                    maho_ext_api::ToolContent::Image { data, mime_type } => images.push(ImageContent { data, mime_type }),
+                }} (text, images)
+            }
+        };
+        tokio::spawn(async move { session.prompt(&text, PromptOptions { images: Some(images), source: Some(InputSource::Extension),
+            streaming_behavior: options.deliver_as, expand_prompt_templates: Some(options.expand_prompt_templates), ..Default::default() }).await });
+        Ok(())
+    }
+    fn append_entry(&self, custom_type: &str, data: Option<Value>) -> Result<(), maho_ext_api::ExtensionFailure> {
+        self.session()?.with_session_manager_mut(|manager| manager.append_custom(custom_type, data)); Ok(())
+    }
+    fn get_all_tools(&self) -> Result<Vec<maho_ext_api::ToolInfo>, maho_ext_api::ExtensionFailure> {
+        Ok(self.session()?.get_all_tools().into_iter().map(|tool| maho_ext_api::ToolInfo {
+            name: tool.name.clone(), label: tool.name, description: tool.description,
+            parameters: serde_json::to_value(tool.parameters).unwrap_or(Value::Null), source_info: tool.source_info,
+            prompt_guidelines: tool.prompt_guidelines, exposure: tool.exposure, search_text: tool.search_text,
+            search_keywords: tool.search_keywords, search_group: tool.search_group, allow_lazy_activation: tool.allow_lazy_activation,
+        }).collect())
     }
 }
 
@@ -679,6 +865,7 @@ impl AgentSession {
             agent_subscription: Mutex::new(None),
             prompt_admission: tokio::sync::Mutex::new(()),
             retry_fallback: tokio::sync::Mutex::new(None),
+            work_barrier: Arc::new(crate::session_work_barrier::SessionWorkBarrier::new()),
         }) };
 
         let initial_model = session.agent.state().model;
@@ -910,6 +1097,7 @@ impl AgentSession {
             return Ok(PromptDisposition::Queued);
         }
         let _admission = self.prompt_admission.lock().await;
+        let _work = self.work_barrier.begin();
         self.state().user_aborted = false;
         let Some((text, images)) = self.run_input_handlers(text, options.images, options.source, None).await? else {
             return Ok(PromptDisposition::Handled);
@@ -942,6 +1130,20 @@ impl AgentSession {
                 ThinkingLevel::Max => ModelThinkingLevel::Max,
             });
         }
+        let base_system_prompt = self.state().base_system_prompt.clone();
+        let before = {
+            let mut runner = self.extension_runner.lock().await;
+            match runner.as_mut() { Some(runner) => runner.emit_before_agent_start(maho_ext_api::BeforeAgentStartEvent {
+                prompt: text.clone(), images: images.clone(), system_prompt: base_system_prompt,
+                system_prompt_options: maho_ext_api::BuildSystemPromptOptions { cwd: self.cwd().into(), ..Default::default() },
+            }).await.map_err(|error| error.to_string())?, None => None }
+        };
+        if let Some(before) = before {
+            if let Some(prompt) = before.system_prompt { self.agent.set_system_prompt(prompt); }
+            for message in before.messages { maho_ext_api::ExtensionActions::send_message(
+                &SessionExtensionActions(Arc::downgrade(&self.inner)), message, Default::default(),
+            ).map_err(|error| error.to_string())?; }
+        } else { self.agent.set_system_prompt(self.state().base_system_prompt.clone()); }
         self.agent.prompt(maho_agent::agent::AgentPromptInput::Message(make_user_message(&text, images))).await;
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
@@ -2323,13 +2525,32 @@ impl AgentSession {
 
     /// Bind the extension runner the tool hooks read at execution time.
     pub async fn set_extension_runner(&self, mut runner: ExtensionRunner) {
+        if let Ok(context) = runner.create_context() {
+            runner.bind_core(Arc::new(SessionExtensionActions(Arc::downgrade(&self.inner))), context);
+        }
         if let Err(error) = runner.bind_session_actions(Arc::new(SessionExtensionActions(Arc::downgrade(&self.inner)))) {
+            self.emit(AgentSessionEvent::ContinuationError { error_message: error.message });
+        }
+        if let Err(error) = runner.bind_context_actions(Arc::new(SessionExtensionActions(Arc::downgrade(&self.inner)))) {
             self.emit(AgentSessionEvent::ContinuationError { error_message: error.message });
         }
         if let Err(error) = runner.bind_providers(Arc::new(crate::agent_session_runtime::ExtensionModelRuntimeActions(Mutex::new(self.model_runtime().clone())))) {
             self.emit(AgentSessionEvent::ContinuationError { error_message: error.message });
         }
         *self.extension_runner.lock().await = Some(runner);
+        let weak = Arc::downgrade(&self.inner);
+        self.agent.set_transform_context(Some(Arc::new(move |messages, _signal| {
+            let weak = weak.clone(); Box::pin(async move {
+                let Some(inner) = weak.upgrade() else { return messages; };
+                let session = AgentSession { inner };
+                let mut runner = session.extension_runner.lock().await;
+                match runner.as_mut() {
+                    Some(runner) => match runner.emit_context(&messages, None).await {
+                        Ok(messages) => messages, Err(error) => { session.emit(AgentSessionEvent::ContinuationError { error_message: error.message }); messages }
+                    }, None => messages,
+                }
+            })
+        })));
     }
 
     pub fn get_commands(&self) -> Vec<maho_ext_api::SlashCommandInfo> {
@@ -2337,6 +2558,19 @@ impl AgentSession {
             name: template.name, description: Some(template.description),
             ..Default::default()
         }).collect()
+    }
+
+    pub async fn continue_session(&self) -> Result<(), String> {
+        let _admission = self.prompt_admission.lock().await;
+        let _work = self.work_barrier.begin();
+        self.state().user_aborted = false;
+        self.agent.continue_run(Default::default()).await;
+        self.finish_provider_turn().await?;
+        self.flush_pending_bash_messages();
+        self.dispatch_extension_event(maho_ext_api::ExtensionEvent::AgentSettled).await;
+        self.emit(AgentSessionEvent::AgentSettled);
+        self.emit(AgentSessionEvent::AgentIdle);
+        Ok(())
     }
 
     pub async fn bind_extensions(&self, bindings: ExtensionBindings) {
@@ -2813,7 +3047,7 @@ impl AgentSession {
 
     /// Resolve once the current run and all awaited event listeners have finished.
     pub async fn wait_for_idle(&self) {
-        self.agent.wait_for_idle().await;
+        self.work_barrier.wait_for_settled(|| self.agent.wait_for_idle()).await;
     }
 
     /// Emit a `session_shutdown` event through the bound extension runner.
