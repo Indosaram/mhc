@@ -33,3 +33,7 @@ pub mod model_selection;
 pub mod extension_wiring;
 pub mod openai_remote_model;
 pub mod openai_remote_convert;
+pub mod transient_failure;
+pub mod openai_remote_timeout;
+pub mod log;
+pub mod prompts;
