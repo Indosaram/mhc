@@ -2099,11 +2099,16 @@ dependencies = [
 name = "maho-test-support"
 version = "0.0.0"
 dependencies = [
+ "maho-agent",
+ "maho-ai",
  "maho-core",
+ "maho-ext-api",
  "maho-ext-host",
  "serde",
  "serde_json",
  "similar",
+ "tempfile",
+ "tokio",
  "vt100",
 ]
 
