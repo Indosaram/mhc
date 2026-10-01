@@ -1885,13 +1885,13 @@ impl AgentSession {
         let key = id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         self.state().bash_abort_signals.insert(key.clone(), signal.clone());
         let prefix = self.with_settings_manager(|manager| manager.get_string("shellCommandPrefix"));
-        let shell = self.with_settings_manager(|manager| manager.get_string("shellPath")).unwrap_or_else(|| "/bin/bash".to_owned());
-        let local = maho_tools::bash::LocalShellOperations { shell_name: "bash".to_owned(), shell, args: vec!["-lc".to_owned()], prefix: String::new() };
+        let shell = self.with_settings_manager(|manager| manager.get_string("shellPath"));
+        let local = maho_tools::bash::create_local_bash_operations(shell.as_deref());
         let resolved = prefix.map_or_else(|| command.to_owned(), |prefix| format!("{prefix}\n{command}"));
         let session = self.clone();
         let cwd = self.cwd();
         let result = maho_tools::bash_executor::execute_bash_with_operations(&resolved, std::path::Path::new(&cwd),
-            operations.as_deref().unwrap_or(&local), maho_tools::bash_executor::BashExecutorOptions {
+            operations.as_deref().unwrap_or(local.as_ref()), maho_tools::bash_executor::BashExecutorOptions {
                 signal, on_chunk: Some(Arc::new(move |chunk| {
                     if let Some(callback) = &on_chunk { callback(chunk)?; }
                     session.emit(AgentSessionEvent::BashExecutionUpdate { id: id.clone(), delta: chunk.to_owned() });
