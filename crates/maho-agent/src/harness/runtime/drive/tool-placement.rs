@@ -89,6 +89,7 @@ pub async fn materialize_ready(lane: &dyn RuntimeLane, drive: &Drive, capability
         }
         let config_changed = next_configuration != previous_configuration;
         if config_changed { writes.push(Write::Value(set_value(&lane_config(lane.name()),serde_json::to_value(&next_configuration).map_err(|e|session_invariant_error(e.to_string()))?))); }
+        writes.push(Write::Value(set_value(&branch_tip(lane.name()), serde_json::json!(parent))));
         let complete = current.batch.calls.iter().all(|call| matches!(call, ToolCall::Completed { .. }));
         let next = if complete {
             let all_terminate = current.batch.calls.iter().all(|call| matches!(call, ToolCall::Completed { terminate: true, .. }));
@@ -96,7 +97,6 @@ pub async fn materialize_ready(lane: &dyn RuntimeLane, drive: &Drive, capability
             writes.extend(args.iter().map(|arg| Write::Value(delete_value(&arg.address))));
             OperationState::Checkpoint(CheckpointOperation { operation: current.operation, at: OperationMarker::Checkpoint, checkpoint: CheckpointData { continuation: if all_terminate { Continuation::MayFinish { include_final_assistant: false } } else { Continuation::NeedAssistant { overflow_recovery_used: false } }, trigger_entry_id: parent.clone().ok_or_else(|| session_invariant_error("Completed tools have no tip"))? } })
         } else { OperationState::Tools(current) };
-        writes.push(Write::Value(set_value(&branch_tip(lane.name()), serde_json::json!(parent))));
         let name = lane.name().to_owned();
         let published_configuration = next_configuration.clone();
         Ok(OperationCommand::Commit { decision: CommitDecision { writes, materialize: Arc::new(move |_| complete), events: Some(Arc::new(move |commit| {
@@ -110,7 +110,9 @@ pub async fn materialize_ready(lane: &dyn RuntimeLane, drive: &Drive, capability
         })) }, operation_state: Box::new(next), lane: Some(LanePatch { tip_id: Some(parent), configuration:Some(next_configuration), inbox:None }) })
     }).await?;
     if matches!(committed, ContinueOperationResult::Result { value: true }) {
-        lane.emit(vec![HarnessEvent::new(HarnessEventPayload::TurnEnd { run_id: drive.operation_id.clone(), turn_id: run.batch.turn_id.clone(), message: Box::new(sources.assistant.clone()), tool_results: turn_results }, Some(lane.name().into()))], &drive.context).await;
+        let mut end = HarnessEvent::new(HarnessEventPayload::TurnEnd { run_id: drive.operation_id.clone(), turn_id: run.batch.turn_id.clone(), message: Box::new(sources.assistant.clone()), tool_results: turn_results }, Some(lane.name().into()));
+        end.recovery = recovery.then_some(true);
+        lane.emit(vec![end], &drive.context).await;
     }
     Ok(())
 }

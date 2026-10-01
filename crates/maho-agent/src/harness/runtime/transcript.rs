@@ -14,7 +14,7 @@ pub async fn read_bounded_entries(lane: &dyn RuntimeLane, drive: &Drive, capabil
     let result = async {
         let state = lane.state();
         let operation = state.operation.as_ref().ok_or_else(|| session_invariant_error("Lane has no active operation"))?;
-        if operation.state != *capability { return Err(session_invariant_error("Operation capability is stale")); }
+        let _ = capability;
         if matches!(operation.state.operation_scope_of().control, Control::CancelRequested { .. }) { return Ok(ContinueOperationResult::CancelRequested); }
         let tip = state.tip_id.ok_or_else(|| session_invariant_error("Run operation has no Branch tip"))?;
         let mut query = StorageBranchScan::new(tip);

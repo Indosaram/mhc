@@ -26,16 +26,23 @@ pub async fn drive_operation(lane: &dyn RuntimeDriveLane, drive: &Drive) -> Resu
     }
     loop {
         let state = current_operation(lane, drive)?.state;
-        let result = if matches!(state.operation_scope_of().control, Control::CancelRequested { .. }) { reconcile::reconcile_operation(lane, drive).await? }
+        let result = if matches!(state.operation_scope_of().control, Control::CancelRequested { .. }) { reconcile::reconcile_operation(lane, drive).await }
         else { match &state {
-            OperationState::Starting(_) => checkpoint::start_run(lane, drive, &state).await?,
-            OperationState::Checkpoint(_) => checkpoint::run_checkpoint(lane, drive, &state).await?,
-            OperationState::AssistantReady(_) | OperationState::AssistantRetryWait(_) => generation::run_generation(lane, drive, &state).await?,
-            OperationState::AssistantEffectPending(_) => recovery::recover_assistant_generation(lane, drive, &state).await?,
-            OperationState::Tools(_) => lane.run_tools(drive, state.clone()).await?,
-            OperationState::DeferredSuspended(_) | OperationState::DeferredEffectPending(_) => deferred::run_deferred(lane, drive, &state).await?,
-            OperationState::SummaryDeciding(_) | OperationState::SummaryReady(_) | OperationState::SummaryEffectPending(_) | OperationState::SummaryRetryWait(_) | OperationState::NavigationReadyToCommit(_) => lane.run_structural(drive, state.clone()).await?,
+            OperationState::Starting(_) => checkpoint::start_run(lane, drive, &state).await,
+            OperationState::Checkpoint(_) => checkpoint::run_checkpoint(lane, drive, &state).await,
+            OperationState::AssistantReady(_) | OperationState::AssistantRetryWait(_) => generation::run_generation(lane, drive, &state).await,
+            OperationState::AssistantEffectPending(_) => recovery::recover_assistant_generation(lane, drive, &state).await,
+            OperationState::Tools(_) => lane.run_tools(drive, state.clone()).await,
+            OperationState::DeferredSuspended(_) | OperationState::DeferredEffectPending(_) => deferred::run_deferred(lane, drive, &state).await,
+            OperationState::SummaryDeciding(_) | OperationState::SummaryReady(_) | OperationState::SummaryEffectPending(_) | OperationState::SummaryRetryWait(_) | OperationState::NavigationReadyToCommit(_) => lane.run_structural(drive, state.clone()).await,
         }};
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => match drive.gate.admit(|| ()) {
+                Err(crate::harness::execution::effect_gate::GateRefusal::Abort(abort)) => { abort.cancellation.wait().await; ProcedureResult::Continue },
+                _ => return Err(error),
+            },
+        };
         match result {
             ProcedureResult::Settled { outcome } => return Ok(DriveOutcome::Settled { outcome }),
             ProcedureResult::Waiting { outcome } => return Ok(outcome),
