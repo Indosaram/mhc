@@ -1608,6 +1608,10 @@ dependencies = [
 [[package]]
 name = "maho-ext-ask-user"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-bash-timeout"
