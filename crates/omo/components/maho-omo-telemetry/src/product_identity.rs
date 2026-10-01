@@ -33,6 +33,8 @@ pub const EVENT_PROPERTY_ALLOWLISTS: &[(&str, &[&str])] = &[
     ("delegation_started", &["$session_id", "background", "batch_size_bucket", "kind", "name"]),
     ("feature_used", &["$session_id", "feature"]),
 ];
+pub fn builtin_category_names()->Vec<&'static str> {senpi_task::category::BUILTIN_CATEGORY_DEFAULTS.iter().map(|c|c.name).collect()}
+pub fn curated_agents()->std::collections::BTreeSet<&'static str> {senpi_task::agents::curated_readonly_agent_names()}
 static FALLBACK_SALTS:OnceLock<Mutex<HashMap<PathBuf,[u8;32]>>>=OnceLock::new();
 pub fn get_omo_native_state_dir(env:&telemetry_core::TelemetryEnv)->PathBuf {
     let legacy=crate::index::get_senpi_telemetry_state_dir(env);
@@ -63,6 +65,7 @@ mod identity_tests {
     #[test] fn deleted_salt_recreated() {let t=tempfile::tempdir().unwrap();hash_session_id("s",t.path()).unwrap();std::fs::remove_file(t.path().join("session-id-salt")).unwrap();hash_session_id("s",t.path()).unwrap();assert!(t.path().join("session-id-salt").is_file());}
     #[test] fn histogram_privacy_bound() {let widest=std::iter::repeat_n(crate::wave_assembler::MAX_TRACKED_CALLS.to_string(),8).collect::<Vec<_>>().join(":");assert_eq!(widest.len(),39);assert!(widest.len()<=64);}
     #[test] fn static_allowlists_unique() {assert!(!BUILTIN_SKILL_NAMES.is_empty());for (_,keys) in EVENT_PROPERTY_ALLOWLISTS {let unique:std::collections::HashSet<_>=keys.iter().collect();assert_eq!(unique.len(),keys.len());}}
+    #[test] fn imported_task_names_exact() {assert_eq!(builtin_category_names(),senpi_task::category::BUILTIN_CATEGORY_DEFAULTS.iter().map(|c|c.name).collect::<Vec<_>>());assert_eq!(curated_agents(),senpi_task::agents::curated_readonly_agent_names());}
     #[test] fn salted_hash_stable_private() {let t=tempfile::tempdir().unwrap();let a=hash_session_id("private-session",t.path()).unwrap();assert_eq!(a,hash_session_id("private-session",t.path()).unwrap());assert_ne!(a,hash_session_id("other-session",t.path()).unwrap());assert_eq!(a.len(),64);assert!(!a.contains("private-session"));assert_eq!(std::fs::read(t.path().join("session-id-salt")).unwrap().len(),32);}
     #[test] fn salt_file_private() {use std::os::unix::fs::PermissionsExt;let t=tempfile::tempdir().unwrap();hash_session_id("s",t.path()).unwrap();assert_eq!(std::fs::metadata(t.path().join("session-id-salt")).unwrap().permissions().mode()&0o777,0o600);}
     #[test] fn invalid_salt_repaired() {let t=tempfile::tempdir().unwrap();std::fs::write(t.path().join("session-id-salt"),"invalid").unwrap();hash_session_id("s",t.path()).unwrap();assert_eq!(std::fs::read(t.path().join("session-id-salt")).unwrap().len(),32);}
