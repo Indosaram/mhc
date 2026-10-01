@@ -1,0 +1,30 @@
+use maho_ext_config_reload::watch_engine::*;
+use std::fs;
+fn target(path: &std::path::Path) -> WatchTarget { WatchTarget { id: "fixture".into(), kind: WatchKind::DirRecursive, path: path.into(), allow_list: None, filter: None } }
+#[test]
+fn hash_gate_tracks_creation_edit_deletion_and_close() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("settings.json");
+    let mut engine = ConfigReloadWatchEngine::new(vec![target(root.path())]).unwrap();
+    fs::write(&file, "one").unwrap();
+    assert_eq!(engine.evaluate().unwrap().created, std::slice::from_ref(&file));
+    assert!(engine.evaluate().unwrap().changed_paths.is_empty());
+    fs::write(&file, "two").unwrap();
+    let edit = engine.evaluate().unwrap();
+    assert_eq!(edit.changed_paths, std::slice::from_ref(&file));
+    assert!(edit.created.is_empty());
+    fs::remove_file(&file).unwrap();
+    assert_eq!(engine.evaluate().unwrap().deleted, std::slice::from_ref(&file));
+    engine.close();
+    fs::write(file, "three").unwrap();
+    assert!(engine.evaluate().unwrap().changed_paths.is_empty());
+}
+#[test]
+fn scan_omits_symlinks_dependencies_and_unallowed_dot_directories() {
+    let root = tempfile::tempdir().unwrap();
+    for dir in ["node_modules", ".git", ".hidden", "nested"] { fs::create_dir(root.path().join(dir)).unwrap(); fs::write(root.path().join(dir).join("file"), "fixture").unwrap(); }
+    std::os::unix::fs::symlink(root.path().join("nested"), root.path().join("alias")).unwrap();
+    let engine = ConfigReloadWatchEngine::new(vec![target(root.path())]).unwrap();
+    assert_eq!(engine.get_baseline_snapshot().len(), 1);
+    assert_eq!(engine.watched_directories().len(), 2);
+}
