@@ -210,11 +210,13 @@ async fn execution_inspection_reports_configured_and_current_operation() {
     assert_eq!(idle.configured_model.model_id, "model");
     lane.accept_prompt(PromptInput::Text { text: "hello".into(), images: vec![] }, Some("op".into()), settings(), &BACKGROUND_CONTEXT).await.unwrap().unwrap();
     let open = lane.inspect_execution(&BACKGROUND_CONTEXT).await.unwrap();
-    assert_eq!(open.current.unwrap().meta.operation_id, "op");
-    assert!(open.captured_model.is_none());
+    let current = open.current.unwrap();
+    assert_eq!(current.id, "op");
+    assert!(current.captured_model.is_none());
+    assert_eq!(current.status, maho_agent::harness::agent_harness::OperationStatus::Open);
     lane.request_operation_abort("op".into(), &BACKGROUND_CONTEXT).await.unwrap().unwrap();
     let aborting = lane.inspect_execution(&BACKGROUND_CONTEXT).await.unwrap();
-    assert!(matches!(aborting.current.unwrap().state.operation_scope_of().control, Control::CancelRequested { .. }));
+    assert_eq!(aborting.current.unwrap().status, maho_agent::harness::agent_harness::OperationStatus::Aborting);
 }
 
 #[tokio::test]

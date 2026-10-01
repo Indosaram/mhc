@@ -69,15 +69,7 @@ pub struct OperationMismatch {
     pub last_operation_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct LaneExecutionInfo {
-    pub lane: String,
-    pub tip_id: Option<String>,
-    pub configured_model: LaneModelRef,
-    pub current: Option<Operation>,
-    pub captured_model: Option<LaneModelRef>,
-    pub last_operation_id: Option<String>,
-}
+pub use crate::harness::agent_harness::LaneExecutionInfo;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancelQueuedOutcome { Cancelled, AlreadyConsumed, NotFound }
@@ -222,7 +214,15 @@ impl Lane {
                 };
                 Some(model.clone())
             });
-            Ok(LaneCommand::Return { result: LaneExecutionInfo { lane: name, tip_id: state.tip_id, configured_model: state.configuration.model, current: state.operation, captured_model, last_operation_id: state.last_operation_id } })
+            let identity = |model: LaneModelRef| crate::harness::agent_harness::ModelIdentity { provider: model.provider, model_id: model.model_id };
+            let current = state.operation.map(|operation| crate::harness::agent_harness::CurrentOperationInfo {
+                id: operation.meta.operation_id,
+                kind: operation.meta.intent.kind(),
+                started_at: operation.meta.started_at,
+                status: match operation.state.operation_scope_of().control { Control::Running => crate::harness::agent_harness::OperationStatus::Open, Control::CancelRequested { .. } => crate::harness::agent_harness::OperationStatus::Aborting },
+                captured_model: captured_model.map(identity),
+            });
+            Ok(LaneCommand::Return { result: LaneExecutionInfo { lane: name, tip_id: state.tip_id, configured_model: identity(state.configuration.model), current, last_operation_id: state.last_operation_id } })
         }), context).await
     }
 
