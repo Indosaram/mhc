@@ -1797,9 +1797,11 @@ version = "0.0.0"
 dependencies = [
  "fancy-regex",
  "maho-ai",
+ "maho-core",
  "maho-ext-api",
  "maho-pty",
  "maho-tools",
+ "nix",
  "regex",
  "serde",
  "serde_json",

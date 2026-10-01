@@ -20,4 +20,5 @@ pub mod monitor_file_watch;
 pub mod durable_command;
 pub mod file_monitor;
 pub mod monitor_notify;
+pub mod terminal_manifest;
 pub use extension::TerminalExtension;

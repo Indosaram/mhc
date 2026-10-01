@@ -25,9 +25,17 @@ pub fn acquire_terminal_lease(dir:&Path,encoded_session_id:&str,pid:f64,started_
     unreachable!("second exclusive acquisition always returns")
 }
 pub fn release_terminal_lease(path:&Path,pid:f64)->std::io::Result<()> {if let LeaseRead::Record(record)=read_lease(path)? && record.pid==pid {unlink_if_present(path)?;}Ok(())}
+#[cfg(unix)]
+pub fn probe_alive(pid:f64)->std::io::Result<bool> {
+    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32),None) {
+        Ok(())|Err(nix::errno::Errno::EPERM)=>Ok(true),Err(nix::errno::Errno::ESRCH)=>Ok(false),Err(error)=>Err(std::io::Error::from_raw_os_error(error as i32)),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test] fn default_probe_observes_current_process()->std::io::Result<()> {assert!(probe_alive(f64::from(std::process::id()))?);Ok(())}
     #[test] fn first_acquire_writes_pid()->std::io::Result<()> {let dir=tempfile::tempdir()?;let path=dir.path().join("nested/s.lease");assert_eq!(acquire_terminal_lease(&dir.path().join("nested"),"s",12.0,99.0,|_|Ok(true))?,AcquireTerminalLeaseResult::Acquired {path:path.clone(),pid:12.0});assert!(matches!(read_lease(&path)?,LeaseRead::Record(LeaseRecord {pid:12.0,started_at_ms:99.0})));Ok(())}
     #[test] fn second_acquire_retains_live_holder()->std::io::Result<()> {let dir=tempfile::tempdir()?;acquire_terminal_lease(dir.path(),"s",12.0,99.0,|_|Ok(true))?;assert_eq!(acquire_terminal_lease(dir.path(),"s",13.0,100.0,|_|Ok(true))?,AcquireTerminalLeaseResult::Held {holder:LeaseRecord {pid:12.0,started_at_ms:99.0}});Ok(())}
     #[test] fn reclaims_dead_pid()->std::io::Result<()> {let dir=tempfile::tempdir()?;acquire_terminal_lease(dir.path(),"s",12.0,99.0,|_|Ok(true))?;assert!(matches!(acquire_terminal_lease(dir.path(),"s",13.0,100.0,|_|Ok(false))?,AcquireTerminalLeaseResult::Acquired {pid:13.0,..}));Ok(())}
