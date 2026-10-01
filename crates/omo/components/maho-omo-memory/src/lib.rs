@@ -32,6 +32,9 @@ pub mod status;
 pub mod status_active_runs;
 pub mod supervisor;
 pub mod soul_notice;
+pub mod sandbox_contracts;
+pub mod sandbox_platform;
+pub mod sandbox;
 pub mod tool_receipts;
 pub mod worker;
 
