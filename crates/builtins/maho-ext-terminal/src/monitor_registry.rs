@@ -126,6 +126,7 @@ impl MonitorRegistry {
     pub fn file_checkpoint(&self,id:&str)->Option<crate::terminal_manifest_model::TerminalManifestCheckpoint> {
         let (file,_)=self.files.get(id)?;let file=file.lock().expect("file monitor");if file.settled {None} else {Some(file.checkpoint.clone())}
     }
+    pub fn reserve_file_capacity(&self,id:&str,reservation:crate::manager::CapacityReservation) {if let Some((file,_))=self.files.get(id) {file.lock().expect("file monitor").reserve_capacity(reservation);}}
     pub fn emit_file_line(&self,id:&str,line:String)->bool {
         let Some((file,_))=self.files.get(id) else {return false;};
         let event={let file=file.lock().expect("file monitor");if file.settled {return false;}MonitorEvent::Line {id:file.id.clone(),description:file.description.clone(),line}};

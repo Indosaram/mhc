@@ -10,6 +10,7 @@ pub struct FileMonitor {
     pub checkpoint:TerminalManifestCheckpoint,
     pub paused:bool,
     pub settled:bool,
+    reservation:Option<crate::manager::CapacityReservation>,
 }
 #[cfg(unix)]
 impl FileMonitor {
@@ -19,8 +20,9 @@ impl FileMonitor {
         let parent=std::fs::canonicalize(raw_parent).map_err(|error|std::io::Error::other(format!("Cannot access parent directory {}: {error}",raw_parent.display())))?;
         if approved_parent.is_some_and(|approved|approved!=parent) {return Err(std::io::Error::other(format!("Cannot watch file: parent directory changed during permission approval: {}",raw_parent.display())));}
         let checkpoint=crate::durable_file::file_checkpoint(&path)?;
-        Ok(Self {id,description,path,parent,event,checkpoint,paused:false,settled:false})
+        Ok(Self {id,description,path,parent,event,checkpoint,paused:false,settled:false,reservation:None})
     }
+    pub fn reserve_capacity(&mut self,reservation:crate::manager::CapacityReservation) {if !self.settled {self.reservation=Some(reservation);}}
     pub fn check(&mut self)->std::io::Result<Vec<MonitorEvent>> {
         if self.paused||self.settled {return Ok(vec![]);}
         let parent=std::fs::canonicalize(self.path.parent().expect("registered file parent"))?;
@@ -32,12 +34,12 @@ impl FileMonitor {
         };
         self.checkpoint=current;
         if !changed {return Ok(vec![]);}
-        self.settled=true;
+        self.settled=true;self.reservation.take();
         Ok(vec![MonitorEvent::Line {id:self.id.clone(),description:self.description.clone(),line:format!("{} {}",match self.event {FileEvent::Create=>"create",FileEvent::Modify=>"modify"},self.path.display())},MonitorEvent::Summary {id:self.id.clone(),description:self.description.clone(),summary:"watcher completed".to_owned()}])
     }
     pub fn stop(&mut self,summary:&str)->Option<MonitorEvent> {
         if self.settled {return None;}
-        self.settled=true;Some(MonitorEvent::Summary {id:self.id.clone(),description:self.description.clone(),summary:summary.to_owned()})
+        self.settled=true;self.reservation.take();Some(MonitorEvent::Summary {id:self.id.clone(),description:self.description.clone(),summary:summary.to_owned()})
     }
 }
 #[cfg(all(test,unix))]

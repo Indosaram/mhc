@@ -26,7 +26,9 @@ pub fn execute_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistr
         if input.get("filter").is_some() {return error_result("Native file monitors do not support filter.");}
         let timeout=input.get("timeout_ms").and_then(Value::as_f64).unwrap_or(DEFAULT_MONITOR_TIMEOUT_MS as f64).trunc().clamp(1.0,MAX_MONITOR_TIMEOUT_MS as f64) as u64;
         let event=if input.get("event").and_then(Value::as_str)==Some("modify") {crate::terminal_manifest_model::FileEvent::Modify} else {crate::terminal_manifest_model::FileEvent::Create};
+        let reservation=match manager.reserve() {Ok(Some(reservation))=>reservation,Ok(None)=>return error_result("Cannot create file monitor: terminal capacity is already in use."),Err(error)=>return error_result(error.to_string())};
         let (id,monitor_id)=match registry.register_file(description,&cwd.join(path),event,timeout) {Ok(ids)=>ids,Err(error)=>return error_result(error.to_string())};
+        registry.reserve_file_capacity(&id,reservation);
         manager.bind_monitor_id(&monitor_id,&id);
         let mut result=text_result(format!("Monitor started with ID: {monitor_id}"));result.details=json!({"monitor_id":monitor_id,"bash_id":id,"monitor":true}).as_object().cloned();return result;
     }
@@ -49,6 +51,13 @@ pub fn execute_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistr
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn file_watch_holds_shared_capacity_until_killed() {
+        let dir=tempfile::tempdir().unwrap();let mut manager=TerminalManager::new(1);let mut registry=MonitorRegistry::new(|_|{});
+        let result=execute_monitor(&mut manager,&mut registry,&json!({"description":"file","path":"watched"}),dir.path());assert!(result.is_error.is_none());assert_eq!(manager.active_size().unwrap(),1);
+        let blocked=execute_monitor(&mut manager,&mut registry,&json!({"description":"second","command":"true"}),dir.path());assert_eq!(blocked.is_error,Some(true));assert_eq!(manager.size(),0);
+        assert!(registry.stop_file("watch_1"));assert_eq!(manager.active_size().unwrap(),0);
+    }
     #[tokio::test]
     async fn tool_spawns_and_delivers_native_monitor_completion() {
         let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let mut registry=MonitorRegistry::new(move |event| {sender.send(event).unwrap();});let mut manager=TerminalManager::default();
