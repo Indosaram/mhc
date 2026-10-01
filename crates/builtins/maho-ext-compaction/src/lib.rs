@@ -17,3 +17,4 @@ pub mod overflow_retry;
 pub mod tool_admission;
 pub mod context_reduction;
 pub mod lane_policy;
+pub mod r#yield;
