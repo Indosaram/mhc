@@ -1668,6 +1668,7 @@ dependencies = [
 name = "maho-ext-herdr"
 version = "0.0.0"
 dependencies = [
+ "maho-ext-api",
  "serde",
  "serde_json",
  "tempfile",
