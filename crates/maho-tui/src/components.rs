@@ -11,6 +11,11 @@ pub mod input; // todo 7
 pub mod latex; // todo 9
 pub mod loader; // todo 7
 pub mod markdown; // todo 9
+pub mod markdown_helpers; // todo 9
+pub mod markdown_lexer; // todo 9
+pub mod markdown_lexer_inline; // todo 9
+pub mod markdown_rules; // todo 9
+pub mod markdown_token; // todo 9
 pub mod mouse_region; // todo 7
 pub mod scroll_view; // todo 7
 pub mod select_list; // todo 7

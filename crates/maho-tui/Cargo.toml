@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 crossterm = "=0.29.0"
 dirs = { workspace = true }
+fancy-regex = { workspace = true }
 icu_segmenter = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
 indexmap = { workspace = true }
 jiff = { workspace = true }
