@@ -15,6 +15,7 @@ maho-ext-api = { path = "../../maho-ext-api" }
 maho-agent = { path = "../../maho-agent" }
 maho-ai = { path = "../../maho-ai" }
 regex = "=1.12.3"
+sha2 = "=0.10.9"
 tokio = { version = "=1.52.3", features = ["rt", "macros"] }
 
 [dev-dependencies]

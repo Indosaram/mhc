@@ -16,3 +16,5 @@ pub mod cache_warm;
 pub mod continuation_recovery;
 pub mod parked_wait;
 pub mod format;
+pub mod channel_state_subscriptions;
+pub mod store_ref;
