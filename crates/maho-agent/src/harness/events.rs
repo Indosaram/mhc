@@ -75,7 +75,7 @@ pub enum HarnessEventPayload {
     RetryStart { run_id: String, step: String, attempt: u32 },
     RetryEnd { run_id: String, step: String, attempt: u32, success: bool, final_error: Option<String> },
     MessageStart { run_id: Option<String>, message: AgentMessage },
-    MessageUpdate { run_id: String, message: AgentMessage },
+    MessageUpdate { run_id: String, message: AgentMessage, event: Box<maho_ai::types::AssistantMessageEvent>, frame: Option<maho_ai::utils::assistant_message_frame::AssistantMessageFrame> },
     MessageEnd { run_id: Option<String>, message: AgentMessage, entry_id: Option<String> },
     ToolStart { run_id: String, turn_id: String, tool_call_id: String, tool_name: String },
     ToolUpdate { run_id: String, turn_id: String, tool_call_id: String, tool_name: String },
@@ -647,7 +647,7 @@ impl<T: Clone + Send + Sync + 'static> BufferedEventWatcher<T> {
             .expect("watch snapshot was not set")
     }
 
-    fn set_snapshot(&self, snapshot: T) {
+    pub(crate) fn set_snapshot(&self, snapshot: T) {
         *self.inner.snapshot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot);
     }
 

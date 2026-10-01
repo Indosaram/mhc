@@ -38,6 +38,78 @@ pub type ToProviderMessagesFn = Arc<
 pub type MaterializeFn<TResult> = Arc<dyn Fn(&CommitResult) -> TResult + Send + Sync>;
 pub type CommitEventsFn = Arc<dyn Fn(&CommitResult) -> Vec<HarnessEvent> + Send + Sync>;
 
+pub trait RuntimeLane: Send + Sync {
+    fn name(&self) -> &str;
+    fn session(&self) -> &dyn crate::harness::session::types::Session;
+    fn state(&self) -> LaneState;
+    fn publish_state(&self, state: LaneState);
+    fn emit<'a>(&'a self, events: Vec<HarnessEvent>, context: &'a Context) -> BoxFuture<'a, ()>;
+}
+
+pub struct StructuralPreparation {
+    pub task_id: String,
+    pub preparation: serde_json::Value,
+}
+
+pub trait RuntimeDriveLane: RuntimeLane {
+    fn progress_lane(&self) -> Arc<dyn RuntimeLane>;
+    fn config(&self) -> Arc<Config<()>>;
+    fn hooks(&self) -> &crate::harness::hooks::HookRegistry;
+    fn models(&self) -> &maho_ai::models::Models;
+    fn cancel_deferred<'a>(&'a self, model: &'a maho_ai::model::Model, handle: &'a maho_ai::types::DeferredHandle, options: maho_ai::types::ProviderRequestOptions) -> BoxFuture<'a, Result<(), String>>;
+    fn prepare_compaction_threshold<'a>(&'a self, drive: &'a Drive, state: &'a OperationState) -> BoxFuture<'a, Result<ContinueOperationResult<Option<StructuralPreparation>>, crate::harness::session::session::SessionError>>;
+    fn prepare_overflow_compaction<'a>(&'a self, drive: &'a Drive, state: &'a OperationState) -> BoxFuture<'a, Result<Option<StructuralPreparation>, crate::harness::session::session::SessionError>>;
+    fn run_tools<'a>(&'a self, drive: &'a Drive, state: OperationState) -> BoxFuture<'a, Result<ProcedureResult, crate::harness::session::session::SessionError>>;
+    fn run_structural<'a>(&'a self, drive: &'a Drive, state: OperationState) -> BoxFuture<'a, Result<ProcedureResult, crate::harness::session::session::SessionError>>;
+}
+
+pub async fn settle_operation<T, F, Fut>(lane: &dyn RuntimeLane, capability: &OperationState, context: &Context, continuing: bool, plan: F) -> Result<ContinueOperationResult<T>, crate::harness::session::session::SessionError>
+where F: FnOnce(LaneState, Operation, Arc<dyn crate::harness::session::types::SessionMutation>) -> Fut,
+      Fut: std::future::Future<Output = Result<OperationCommand<T>, crate::harness::session::session::SessionError>> {
+    use crate::harness::session::{session::session_invariant_error, values};
+    let mutation: Arc<dyn crate::harness::session::types::SessionMutation> = Arc::from(lane.session().begin_mutation(context).await?);
+    let result = async {
+        let mut state = lane.state();
+        let operation = state.operation.clone().ok_or_else(|| session_invariant_error("Lane has no active operation"))?;
+        let _ = capability;
+        if continuing && matches!(operation.state.operation_scope_of().control, crate::harness::session::types::Control::CancelRequested { .. }) { return Ok((ContinueOperationResult::CancelRequested, Vec::new())); }
+        let command = plan(state.clone(), operation.clone(), mutation.clone()).await?;
+        let (mut writes, materialize, events, patch) = match command {
+            OperationCommand::Return { result } => return Ok((ContinueOperationResult::Result { value: result }, Vec::new())),
+            OperationCommand::Commit { decision, operation_state, lane } => {
+                let encoded = serde_json::to_value(&operation_state).map_err(|e| session_invariant_error(e.to_string()))?;
+                state.operation = Some(Operation { meta: operation.meta.clone(), state: *operation_state });
+                let mut writes = decision.writes;
+                writes.push(Write::Value(values::set_value(&values::operation_state(&operation.meta.operation_id), encoded)));
+                (writes, decision.materialize, decision.events, lane)
+            }
+            OperationCommand::Finish { decision } => {
+                state.operation = None;
+                state.last_operation_id = Some(operation.meta.operation_id.clone());
+                let mut writes = decision.writes;
+                writes.push(Write::Value(values::set_value(&values::operation_result(&operation.meta.operation_id), serde_json::to_value(&decision.record).map_err(|e| session_invariant_error(e.to_string()))?)));
+                (writes, decision.materialize, decision.events, decision.lane)
+            }
+        };
+        let writes_lane_state = state.operation.is_none() || patch.as_ref().is_some_and(|patch| patch.inbox.is_some());
+        if let Some(patch) = patch {
+            if let Some(tip) = patch.tip_id { state.tip_id = tip; }
+            if let Some(configuration) = patch.configuration { state.configuration = configuration; }
+            if let Some(inbox) = patch.inbox { state.inbox = inbox; }
+        }
+        let durable = crate::harness::session::types::LaneState { current_operation_id: state.operation.as_ref().map(|op| op.meta.operation_id.clone()), last_operation_id: state.last_operation_id.clone(), inbox: state.inbox.clone() };
+        if writes_lane_state { writes.push(Write::Value(values::set_value(&values::lane_state(lane.name()), serde_json::to_value(durable).map_err(|e| session_invariant_error(e.to_string()))?))); }
+        let commit = mutation.commit(writes, context).await?;
+        lane.publish_state(state);
+        let value = materialize(&commit);
+        Ok((ContinueOperationResult::Result { value }, events.map(|emit| emit(&commit)).unwrap_or_default()))
+    }.await;
+    mutation.end(context).await;
+    let (value, events) = result?;
+    lane.emit(events, context).await;
+    Ok(value)
+}
+
 pub struct Config<TContext> {
     pub tools: Vec<Arc<AgentHarnessTool<TContext>>>,
     pub resources: Resources,
@@ -50,7 +122,7 @@ pub struct Config<TContext> {
     pub tool_context: Option<TContext>,
     pub system_prompt: Option<SystemPromptFn>,
     pub to_provider_messages: ToProviderMessagesFn,
-    pub entry_projectors: Vec<crate::harness::session::types::EntryProjector>,
+    pub entry_projectors: std::collections::BTreeMap<String, crate::harness::session::types::EntryProjector>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
