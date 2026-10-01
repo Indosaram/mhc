@@ -449,3 +449,14 @@ async fn new_command_replaces_native_session_and_clears_transcript() {
     assert!(!mode.render(80).join("\n").contains("old-message"));
     assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0));
 }
+
+#[test]
+fn skill_invocation_replay_separates_collapsed_skill_and_user_request() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let text = maho_core::skill_invocation::format_skill_invocation_prompt(&[maho_core::skill_invocation::SkillInvocationPromptSkill { name:"sample".into(), file_path:"/sample/SKILL.md".into(), base_dir:"/sample".into(), body:"private-body".into() }], Some("user-request"));
+    let message = serde_json::from_value(serde_json::json!({"role":"user","content":[{"type":"text","text":text}],"timestamp":1})).expect("message");
+    mode.add_history_message(&message);
+    let lines = mode.render(80).join("\n");
+    assert!(lines.contains("sample")); assert!(lines.contains("user-request")); assert!(!lines.contains("private-body"));
+}

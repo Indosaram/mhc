@@ -419,6 +419,13 @@ impl InteractiveMode {
                 if message.role() == "user" {
                     let value = serde_json::to_value(message).expect("serializable agent message");
                     let text = value["content"].as_array().map(|parts| parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default();
+                    if let Some(block) = maho_core::skill_invocation::parse_skill_block(&text) {
+                        let mut component = crate::components::skill_invocation_message::SkillInvocationMessageComponent::new(block.skills.into_iter().map(|skill| crate::components::skill_invocation_message::InvokedSkill { name:skill.name, content:skill.content }).collect(), self.theme.clone(), get_markdown_theme(&self.theme), crate::components::keybinding_hints::key_display_text("app.tools.expand"));
+                        component.set_expanded(self.tools_expanded);
+                        self.chat.add_child(Rc::new(RefCell::new(component)));
+                        if let Some(text) = block.user_message { self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))); self.chat.add_child(Rc::new(RefCell::new(UserMessageComponent::new(text, self.theme.clone(), get_markdown_theme(&self.theme), 1, self.markdown_transformers.clone())))); }
+                        return;
+                    }
                     let component = Rc::new(RefCell::new(UserMessageComponent::new(text.clone(), self.theme.clone(), get_markdown_theme(&self.theme), 1, self.markdown_transformers.clone())));
                     if let Some(frame) = crate::components::ask_user_answer_chip::parse_ask_user_answer_frame(&text) {
                         let entries = self.session.with_session_manager(|manager| manager.entries());
