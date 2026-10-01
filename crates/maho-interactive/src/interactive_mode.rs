@@ -408,7 +408,12 @@ impl InteractiveMode {
                 if message.role() == "user" {
                     let value = serde_json::to_value(message).expect("serializable agent message");
                     let text = value["content"].as_array().map(|parts| parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default();
-                    self.chat.add_child(Rc::new(RefCell::new(UserMessageComponent::new(text, self.theme.clone(), get_markdown_theme(&self.theme), 1, self.markdown_transformers.clone()))));
+                    let component = Rc::new(RefCell::new(UserMessageComponent::new(text.clone(), self.theme.clone(), get_markdown_theme(&self.theme), 1, self.markdown_transformers.clone())));
+                    if let Some(frame) = crate::components::ask_user_answer_chip::parse_ask_user_answer_frame(&text) {
+                        let entries = self.session.with_session_manager(|manager| manager.entries());
+                        let headers = crate::components::ask_user_answer_chip::get_ask_user_answer_headers(&entries, &frame.request_id);
+                        self.chat.add_child(Rc::new(RefCell::new(crate::components::ask_user_answer_chip::AskUserAnswerChip::new(&frame, &headers, component, self.theme.clone()))));
+                    } else { self.chat.add_child(component); }
                 } else if message.role() == "assistant" {
                     self.assistant_segments.clear();
                     self.reveal.begin(serde_json::to_value(message).expect("assistant"), self.clock.elapsed().as_secs_f64() * 1000.0);

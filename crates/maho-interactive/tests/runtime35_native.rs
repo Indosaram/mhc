@@ -428,3 +428,14 @@ fn extension_expansion_and_keyboard_expansion_share_state() {
     mode.handle_input_at("\x0f", 0);
     assert!(!mode.extension_ui.get_tools_expanded().expect("read"));
 }
+
+#[test]
+fn question_answer_history_uses_existing_collapsed_answer_chip() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let message: maho_agent::types::AgentMessage = serde_json::from_value(serde_json::json!({"role":"user","content":[{"type":"text","text":"[Answer to question request-1]\nThe user did not answer"}],"timestamp":1})).expect("message");
+    mode.add_history_message(&message);
+    let lines = mode.render(80).join("\n");
+    assert!(lines.contains("request-1")); assert!(lines.contains("(no answer)"));
+    assert!(!lines.contains("[Answer to question"));
+}
