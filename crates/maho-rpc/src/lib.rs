@@ -50,4 +50,5 @@ pub mod socket_event_fanout;
 pub mod session_event_fanout;
 pub mod socket_transport;
 pub mod rpc_command_invocation;
+pub mod session_event_writer;
 pub mod host_daemon_registration;
