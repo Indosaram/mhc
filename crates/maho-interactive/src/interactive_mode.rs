@@ -135,7 +135,10 @@ impl InteractiveMode {
         if keys.matches(data, "app.tools.expand") { self.set_tools_expanded(!self.tools_expanded); return; }
         if keys.matches(data, "app.thinking.toggle") {
             self.reveal.hide_thinking = !self.reveal.hide_thinking;
+            let hidden = self.reveal.hide_thinking;
+            if let Err(error) = self.session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &[("hideThinkingBlock".into(), serde_json::json!(hidden))].into_iter().collect())) { self.show_status(error); }
             for component in &self.assistant_cards { component.borrow_mut().set_hide_thinking_block(self.reveal.hide_thinking); }
+            self.show_status(format!("Thinking blocks: {}", if hidden { "hidden" } else { "visible" }));
             return;
         }
         if data == "?" && self.editor.editor.get_text().is_empty() { self.shortcut_overlay = true; return; }
@@ -154,6 +157,7 @@ impl InteractiveMode {
         self.tools_expanded = expanded;
         for component in &self.tool_cards { component.borrow_mut().set_expanded(expanded); }
         for component in &self.assistant_cards { component.borrow_mut().set_expanded(expanded); }
+        self.show_status(format!("Tool output: {}", if expanded { "expanded" } else { "collapsed" }));
     }
 
     pub async fn submit(&mut self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
