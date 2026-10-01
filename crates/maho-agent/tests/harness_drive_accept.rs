@@ -162,3 +162,42 @@ async fn acceptance_publishes_memory_only_after_commit() {
     accept.await.unwrap().unwrap().unwrap();
     assert!(lane.state().operation.is_some());
 }
+
+#[tokio::test]
+async fn durable_abort_removes_conversation_queues_but_preserves_next_run() {
+    let lane = fixture().await.unwrap();
+    lane.accept_prompt(PromptInput::Text { text: "hello".into(), images: vec![] }, Some("op".into()), settings(), &BACKGROUND_CONTEXT).await.unwrap().unwrap();
+    let steer = lane.steer(QueuedInput::Text("steer".into()), vec![], &BACKGROUND_CONTEXT).await.unwrap();
+    let follow = lane.follow_up(QueuedInput::Text("follow".into()), vec![], &BACKGROUND_CONTEXT).await.unwrap();
+    let next = lane.next_run(QueuedInput::Text("next".into()), vec![], &BACKGROUND_CONTEXT).await.unwrap();
+    let result = lane.request_operation_abort("op".into(), &BACKGROUND_CONTEXT).await.unwrap().unwrap();
+    assert!(result.newly_requested);
+    assert_eq!(result.steer.len(), 1);
+    assert_eq!(result.follow_up.len(), 1);
+    assert_eq!(lane.state().inbox, vec![InboxItem { entry_id: next, kind: InboxItemKind::NextRun }]);
+    for id in [steer, follow] { assert!(lane.session.get_value(&maho_agent::harness::session::values::pending_entry(&id), &BACKGROUND_CONTEXT).await.unwrap().is_none()); }
+    assert!(matches!(lane.state().operation.unwrap().state.operation_scope_of().control, Control::CancelRequested { .. }));
+    let repeat = lane.request_operation_abort("op".into(), &BACKGROUND_CONTEXT).await.unwrap().unwrap();
+    assert!(!repeat.newly_requested);
+    assert!(repeat.steer.is_empty());
+}
+
+#[tokio::test]
+async fn stale_abort_does_not_change_current_operation() {
+    let lane = fixture().await.unwrap();
+    lane.accept_prompt(PromptInput::Text { text: "hello".into(), images: vec![] }, Some("current".into()), settings(), &BACKGROUND_CONTEXT).await.unwrap().unwrap();
+    let mismatch = lane.request_operation_abort("stale".into(), &BACKGROUND_CONTEXT).await.unwrap().unwrap_err();
+    assert_eq!(mismatch.current_operation_id.as_deref(), Some("current"));
+    assert!(matches!(lane.state().operation.unwrap().state.operation_scope_of().control, Control::Running));
+}
+
+#[tokio::test]
+async fn cancellation_diverts_continuation_but_allows_settlement() {
+    use maho_agent::harness::runtime::lane::{ContinueOperationResult, OperationCommand};
+    let lane = fixture().await.unwrap();
+    lane.accept_prompt(PromptInput::Text { text: "hello".into(), images: vec![] }, Some("op".into()), settings(), &BACKGROUND_CONTEXT).await.unwrap().unwrap();
+    lane.request_operation_abort("op".into(), &BACKGROUND_CONTEXT).await.unwrap().unwrap();
+    let continued = lane.continue_operation::<(), _>(|_, _, _, _| Box::pin(async { panic!("cancelled continuation must not plan") }), &BACKGROUND_CONTEXT).await.unwrap();
+    assert!(matches!(continued, ContinueOperationResult::CancelRequested));
+    lane.settle_operation(|_, current, _, _| Box::pin(async move { assert!(matches!(current.operation_scope_of().control, Control::CancelRequested { .. })); Ok(OperationCommand::Return { result: () }) }), &BACKGROUND_CONTEXT).await.unwrap();
+}

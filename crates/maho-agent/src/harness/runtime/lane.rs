@@ -41,6 +41,21 @@ pub enum AdmissionError {
     PendingAssistant,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct AbortRequest {
+    pub operation_id: String,
+    pub newly_requested: bool,
+    pub steer: Vec<crate::types::AgentMessage>,
+    pub follow_up: Vec<crate::types::AgentMessage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationMismatch {
+    pub expected: String,
+    pub current_operation_id: Option<String>,
+    pub last_operation_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancelQueuedOutcome { Cancelled, AlreadyConsumed, NotFound }
 
@@ -164,6 +179,43 @@ impl Lane {
     pub fn get_tip_id(&self) -> Result<Option<String>, SessionError> {
         self.assert_open()?;
         Ok(self.state().tip_id)
+    }
+
+    pub async fn request_operation_abort(&self, operation_id: String, context: &Context) -> Result<Result<AbortRequest, OperationMismatch>, SessionError> {
+        let name = self.name.clone();
+        let read_context = context.clone();
+        self.command(move |mut state, reader| Box::pin(async move {
+            let Some(mut operation) = state.operation.clone().filter(|operation| operation.meta.operation_id == operation_id) else {
+                return Ok(LaneCommand::Return { result: Err(OperationMismatch { expected: operation_id, current_operation_id: state.operation.map(|operation| operation.meta.operation_id), last_operation_id: state.last_operation_id }) });
+            };
+            if matches!(operation.state.operation_scope_of().control, Control::CancelRequested { .. }) {
+                return Ok(LaneCommand::Return { result: Ok(AbortRequest { operation_id, newly_requested: false, steer: vec![], follow_up: vec![] }) });
+            }
+            let removed: Vec<_> = state.inbox.iter().filter(|item| matches!(item.kind, InboxItemKind::Steer | InboxItemKind::FollowUp)).cloned().collect();
+            let mut steer = vec![];
+            let mut follow_up = vec![];
+            for item in &removed {
+                let stored = reader.get_value(&pending_entry(&item.entry_id), &read_context).await?.ok_or_else(|| session_invariant_error("Pending abort entry is missing its message"))?;
+                let pending: PendingEntry = serde_json::from_value(stored.value).map_err(|error| session_invariant_error(error.to_string()))?;
+                let PendingEntry::Message { payload } = pending else { return Err(session_invariant_error("Pending abort entry is not a message")); };
+                if item.kind == InboxItemKind::Steer { steer.push(payload); } else { follow_up.push(payload); }
+            }
+            let mut value = encoded(&operation.state)?;
+            value["control"] = encoded(&Control::CancelRequested { requested_at: now_ms() })?;
+            operation.state = serde_json::from_value(value.clone()).map_err(|error| session_invariant_error(error.to_string()))?;
+            state.operation = Some(operation);
+            state.inbox = without_inbox_items(&state.inbox, &removed);
+            let queues = read_lane_queues(reader, &state.inbox, &read_context).await?;
+            let mut writes: Vec<_> = removed.iter().map(|item| Write::Value(delete_value(&pending_entry(&item.entry_id)))).collect();
+            writes.push(Write::Value(set_value(&operation_state(&operation_id), value)));
+            writes.push(Write::Value(set_value(&lane_state(&name), encoded(&durable_lane_state(&state))?)));
+            let result = AbortRequest { operation_id: operation_id.clone(), newly_requested: true, steer: steer.clone(), follow_up: follow_up.clone() };
+            Ok(LaneCommand::Commit { decision: CommitDecision { writes, materialize: Arc::new(move |_| Ok(result.clone())), events: Some(Arc::new(move |_| {
+                let mut events = vec![HarnessEvent::new(HarnessEventPayload::OperationAbort { operation_id: operation_id.clone(), steer: steer.clone(), follow_up: follow_up.clone() }, Some(name.clone()))];
+                if !removed.is_empty() { events.push(HarnessEvent::new(HarnessEventPayload::QueueUpdate { queues: queues.clone() }, Some(name.clone()))); }
+                events
+            })) }, next: Box::new(state) })
+        }), context).await
     }
 
     pub async fn accept_prompt(&self, input: PromptInput, operation_id: Option<String>, settings: crate::harness::session::types::RunSettings, context: &Context) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
