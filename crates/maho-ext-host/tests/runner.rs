@@ -637,6 +637,18 @@ async fn panicking_async_factory_is_isolated_and_rolls_back_registration() {
 }
 
 #[tokio::test]
+async fn inline_factory_names_and_hidden_identities_preserve_load_order() {
+    use maho_ext_host::loader::*;
+    let factory: AsyncExtensionFactory = Arc::new(|_| Box::pin(async { Ok(()) }));
+    let loaded = load_inline_extensions(vec![
+        NativeInlineExtension { name: None, hidden: false, factory: factory.clone() },
+        NativeInlineExtension { name: Some("named".into()), hidden: true, factory },
+    ], Path::new("/tmp"), ExtensionSessionProfile::default()).await;
+    assert_eq!(loaded.loaded.extensions.iter().map(|extension| extension.identity.path.as_str()).collect::<Vec<_>>(), ["<inline:1>", "<inline:named>"]);
+    assert_eq!(loaded.hidden_paths.into_iter().collect::<Vec<_>>(), ["<inline:named>"]);
+}
+
+#[tokio::test]
 async fn invocation_disposes_when_pending_execution_is_dropped() {
     let disposed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let observed = disposed.clone();

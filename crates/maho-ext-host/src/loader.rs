@@ -41,6 +41,26 @@ pub struct NativeAsyncExtensionFactory {
     pub source_info: SourceInfo,
     pub factory: AsyncExtensionFactory,
 }
+pub struct NativeInlineExtension {
+    pub name: Option<String>,
+    pub hidden: bool,
+    pub factory: AsyncExtensionFactory,
+}
+pub struct LoadInlineExtensionsResult {
+    pub loaded: LoadExtensionsResult,
+    pub hidden_paths: std::collections::BTreeSet<String>,
+}
+pub async fn load_inline_extensions(factories: Vec<NativeInlineExtension>, cwd: &std::path::Path, profile: ExtensionSessionProfile) -> LoadInlineExtensionsResult {
+    let mut hidden_paths = std::collections::BTreeSet::new();
+    let factories = factories.into_iter().enumerate().map(|(index, extension)| {
+        let path = format!("<inline:{}>", extension.name.unwrap_or_else(|| index.saturating_add(1).to_string()));
+        if extension.hidden { hidden_paths.insert(path.clone()); }
+        NativeAsyncExtensionFactory { source_info: SourceInfo { path: path.clone(), source: "inline".into(), ..Default::default() }, path, factory: extension.factory }
+    }).collect();
+    let loaded = load_extensions_async(factories, cwd, profile).await;
+    hidden_paths.retain(|path| loaded.extensions.iter().any(|extension| extension.identity.path == *path));
+    LoadInlineExtensionsResult { loaded, hidden_paths }
+}
 pub async fn load_extensions_async(factories: Vec<NativeAsyncExtensionFactory>, cwd: &std::path::Path, profile: ExtensionSessionProfile) -> LoadExtensionsResult {
     let runtime = ExtensionRuntime::default();
     let events = EventBus::default();
