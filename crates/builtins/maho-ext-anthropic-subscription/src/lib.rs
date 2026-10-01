@@ -27,3 +27,4 @@ pub mod executable;
 pub mod config_dir_credentials;
 pub mod failover;
 pub mod auth_lane;
+pub mod auth_attempt;
