@@ -6,6 +6,7 @@ pub mod output_format;
 pub mod runtime_session;
 pub mod tools;
 pub mod monitor_status;
+pub mod monitor_status_ticker;
 pub mod monitor_registry;
 pub mod terminal_manifest_model;
 pub mod restore;
