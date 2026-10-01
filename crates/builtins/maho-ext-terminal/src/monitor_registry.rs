@@ -143,6 +143,11 @@ impl MonitorRegistry {
         let (file,_)=self.files.get(id)?;let file=file.lock().expect("file monitor");if file.settled {None} else {Some(file.checkpoint.clone())}
     }
     pub fn reserve_file_capacity(&self,id:&str,reservation:crate::manager::CapacityReservation) {if let Some((file,_))=self.files.get(id) {file.lock().expect("file monitor").reserve_capacity(reservation);}}
+    pub fn adopt_fire_window(&self,monitor_id:&str,window:&crate::terminal_manifest_model::ManifestFireWindow) {
+        let window=MonitorFireWindow {start_ms:window.start_ms,count:window.count as usize};
+        for record in self.records.lock().expect("monitor records").values_mut() {if record.snapshot.monitor_id.as_deref()==Some(monitor_id) {record.snapshot.fire_window=Some(window.clone());}}
+        for record in self.file_snapshots.lock().expect("file snapshots").values_mut() {if record.monitor_id.as_deref()==Some(monitor_id) {record.fire_window=Some(window.clone());}}
+    }
     pub fn emit_file_line(&self,id:&str,line:String)->bool {
         let Some((file,_))=self.files.get(id) else {return false;};
         let event={let file=file.lock().expect("file monitor");if file.settled {return false;}MonitorEvent::Line {id:file.id.clone(),description:file.description.clone(),line}};

@@ -29,7 +29,9 @@ pub fn restore_file(monitor:&ManifestMonitor,registry:&mut crate::monitor_regist
         registry.emit_file_line(&id,format!("changed while detached: {change} {path}"));
     }
     if let Some(writer)=writer {writer.schedule_checkpoint(&monitor.monitor_id,live);}
-    RestoreOutcome::Restored
+    let outcome=crate::restore::reapply_persisted_mute(monitor,&id,|ids| {registry.pause(ids);});
+    registry.adopt_fire_window(&monitor.monitor_id,&monitor.fire_window);
+    outcome
 }
 #[cfg(unix)]
 pub fn file_checkpoint(path:&std::path::Path)->std::io::Result<TerminalManifestCheckpoint> {
@@ -55,6 +57,14 @@ pub fn file_checkpoint_with_identity(path:&std::path::Path,identity:Option<(f64,
 #[cfg(all(test,unix))]
 mod filesystem_tests {
     use super::*;
+    #[tokio::test]
+    async fn restored_mute_and_fire_window_use_fresh_file_runtime_id()->std::io::Result<()> {
+        let dir=tempfile::tempdir()?;let path=dir.path().join("watched");std::fs::write(&path,b"unchanged")?;let saved=file_checkpoint(&path)?;
+        let manifest=crate::restore::parse_terminal_manifest(&serde_json::json!({"monitors":[{"monitorId":"mon_muted","sessionId":"s","description":"watch","runtimeKind":"file","durabilityClass":"checkpointed-file","path":"watched","cwd":dir.path().to_string_lossy(),"event":"modify","createdAt":1,"expiresAt":null,"persistent":true,"suspended":true,"lastCheckpoint":saved,"deliveryPaused":true,"fireWindow":{"startMs":12,"count":4}}],"backgroundSessions":[],"updatedAt":1}),"s").unwrap();
+        let mut registry=crate::monitor_registry::MonitorRegistry::new(|_|{});let mut manager=crate::manager::TerminalManager::default();assert_eq!(restore_file(&manifest.monitors[0],&mut registry,&mut manager,None,20.0),crate::restore::RestoreOutcome::Muted);
+        let snapshot=registry.snapshot();assert_eq!(snapshot[0].id,"watch_1");assert!(snapshot[0].paused);let window=snapshot[0].fire_window.as_ref().unwrap();assert_eq!(window.start_ms,12.0);assert_eq!(window.count,4);
+        assert_eq!(registry.resume(Some(&["watch_1".to_owned()])),vec![("watch_1".to_owned(),0)]);assert!(!registry.snapshot()[0].paused);registry.dispose();assert_eq!(manager.active_size().unwrap(),0);Ok(())
+    }
     #[tokio::test]
     async fn restore_reports_detached_change_once_and_rebinds_kill_identity()->std::io::Result<()> {
         let dir=tempfile::tempdir()?;let path=dir.path().join("watched");std::fs::write(&path,b"old")?;let saved=file_checkpoint(&path)?;std::fs::write(&path,b"new")?;
