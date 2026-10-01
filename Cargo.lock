@@ -2078,6 +2078,8 @@ name = "maho-server"
 version = "0.0.0"
 dependencies = [
  "maho-agent",
+ "maho-ext-api",
+ "maho-ext-host",
  "rusqlite",
  "serde",
  "serde_json",

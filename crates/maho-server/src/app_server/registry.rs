@@ -47,6 +47,45 @@ pub struct MethodRegistration {
 pub struct MethodRegistry {
     methods: BTreeMap<String, MethodRegistration>,
 }
+pub type ExtensionThreadResolver=Arc<dyn Fn(&str)->Result<Arc<maho_ext_host::ExtensionRunner>,JsonRpcError>+Send+Sync>;
+pub fn register_extension_request_method(
+    registry: &mut MethodRegistry,
+    get_thread: ExtensionThreadResolver,
+) {
+    registry.register(
+        "extension_request".into(),
+        MethodRegistration {
+            requires_init: true,
+            experimental: false,
+            scope: MethodScope::Thread,
+            handler: Arc::new(move |context| {
+                let get_thread = get_thread.clone();
+                Box::pin(async move {
+                    let params = &context.request["params"];
+                    let thread_id = params
+                        .get("threadId")
+                        .and_then(Value::as_str)
+                        .filter(|v| !v.is_empty())
+                        .ok_or_else(|| JsonRpcError::new(-32602, "Invalid params"))?;
+                    let name = params
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .filter(|v| !v.is_empty())
+                        .ok_or_else(|| JsonRpcError::new(-32602, "Invalid params"))?;
+                    let runner = get_thread(thread_id)
+                        .map_err(|error| JsonRpcError::new(-32603, error.message))?;
+                    runner
+                        .handle_rpc_request(
+                            name,
+                            params.get("data").cloned().unwrap_or(Value::Null),
+                        )
+                        .await
+                        .map_err(|error| JsonRpcError::new(-32603, error.message))
+                })
+            }),
+        },
+    );
+}
 impl MethodRegistry {
     pub fn register(&mut self, method: String, registration: MethodRegistration) {
         self.methods.insert(method, registration);
