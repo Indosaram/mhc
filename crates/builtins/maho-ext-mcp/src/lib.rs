@@ -36,3 +36,5 @@ pub mod reconnect;
 pub mod idle;
 pub mod service_exposure;
 pub mod service_connection;
+pub mod shared_connection;
+pub mod shared_lease;
