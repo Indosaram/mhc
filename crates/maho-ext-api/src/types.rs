@@ -738,7 +738,7 @@ pub trait ExtensionSessionActions: Send + Sync {
 }
 
 pub type BusHandler = Arc<dyn Fn(&JsonValue) + Send + Sync>;
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct BusState { next_id: u64, handlers: BTreeMap<String, Vec<(u64, BusHandler)>> }
 #[derive(Clone, Default)]
 pub struct EventBus { state: Arc<Mutex<BusState>> }
@@ -750,6 +750,15 @@ impl Drop for BusSubscription {
     }
 }
 impl EventBus {
+    pub fn registration_checkpoint(&self) -> EventBusCheckpoint {
+        EventBusCheckpoint(self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
+    }
+    pub fn rollback_registration(&self, checkpoint: EventBusCheckpoint) {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let next_id = state.next_id;
+        *state = checkpoint.0;
+        state.next_id = next_id;
+    }
     pub fn on(&self, channel: &str, handler: BusHandler) -> BusSubscription {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let id = state.next_id; state.next_id = state.next_id.wrapping_add(1);
@@ -764,6 +773,7 @@ impl EventBus {
     }
     pub fn clear(&self) { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.clear(); }
 }
+pub struct EventBusCheckpoint(BusState);
 
 /// Native factories are passed by the CLI as an explicit Vec<Box<dyn Extension>>.
 pub trait Extension: Send + Sync { fn register(&self, api: &mut ExtensionApi); }
@@ -786,7 +796,7 @@ impl LoadedExtension {
             shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new() }
     }
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct RuntimeState {
     flags: BTreeMap<String, FlagValue>, actions: Option<Arc<dyn ExtensionActions>>, stale: Option<String>,
     provider_actions: Option<Arc<dyn ExtensionProviderActions>>, pending_providers: Vec<(ProviderRegistration, String)>,
@@ -796,7 +806,17 @@ struct RuntimeState {
 }
 #[derive(Clone, Default)]
 pub struct ExtensionRuntime { state: Arc<Mutex<RuntimeState>> }
+pub struct RuntimeRegistrationCheckpoint(RuntimeState);
 impl ExtensionRuntime {
+    pub fn registration_checkpoint(&self) -> RuntimeRegistrationCheckpoint {
+        RuntimeRegistrationCheckpoint(self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
+    }
+    pub fn rollback_registration(&self, checkpoint: RuntimeRegistrationCheckpoint) {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let next_id = state.next_classifier_id;
+        *state = checkpoint.0;
+        state.next_classifier_id = next_id;
+    }
     pub fn bind_session_actions(&self, actions: Arc<dyn ExtensionSessionActions>) { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions = Some(actions); }
     pub fn session_actions(&self) -> Result<Arc<dyn ExtensionSessionActions>, ExtensionFailure> {
         self.assert_active()?;
@@ -937,18 +957,30 @@ impl ExtensionApi {
     pub fn set_active_tools(&self, names: Vec<String>) -> Result<(), ExtensionFailure> { self.runtime.session_actions()?.set_active_tools(names) }
     pub fn refresh_tools(&self) -> Result<(), ExtensionFailure> { self.runtime.session_actions()?.refresh_tools() }
     pub fn get_commands(&self) -> Result<Vec<SlashCommandInfo>, ExtensionFailure> { self.runtime.session_actions()?.get_commands() }
-    pub async fn set_model(&self, model: Model) -> Result<bool, ExtensionFailure> { self.runtime.session_actions()?.set_model(model).await }
+    pub async fn set_model(&self, model: Model) -> Result<bool, ExtensionFailure> {
+        let result = self.runtime.session_actions()?.set_model(model).await?;
+        self.runtime.assert_active()?;
+        Ok(result)
+    }
     pub fn get_thinking_level(&self) -> Result<ThinkingLevel, ExtensionFailure> { self.runtime.session_actions()?.get_thinking_level() }
     pub fn set_thinking_level(&self, level: ThinkingLevel) -> Result<(), ExtensionFailure> { self.runtime.session_actions()?.set_thinking_level(level) }
-    pub async fn set_session_model(&self, model: Model) -> Result<bool, ExtensionFailure> { self.runtime.session_actions()?.set_session_model(model).await }
+    pub async fn set_session_model(&self, model: Model) -> Result<bool, ExtensionFailure> {
+        let result = self.runtime.session_actions()?.set_session_model(model).await?;
+        self.runtime.assert_active()?;
+        Ok(result)
+    }
     pub fn set_session_thinking_level(&self, level: ThinkingLevel) -> Result<(), ExtensionFailure> { self.runtime.session_actions()?.set_session_thinking_level(level) }
     pub fn set_session_fast_mode(&self, enabled: bool) -> Result<(), ExtensionFailure> { self.runtime.session_actions()?.set_session_fast_mode(enabled) }
     pub async fn execute_tool(&self, name: &str, params: JsonValue, options: ExecuteToolOptions) -> Result<maho_agent::types::AgentToolResult, ExecuteToolError> {
         let actions = self.runtime.session_actions().map_err(|error| ExecuteToolError { code: ExecuteToolErrorCode::Blocked, tool_name: name.into(), message: error.message, active_tools: Vec::new() })?;
-        actions.execute_tool(name, params, options).await
+        let result = actions.execute_tool(name, params, options).await?;
+        self.runtime.assert_active().map_err(|error| ExecuteToolError { code: ExecuteToolErrorCode::Blocked, tool_name: name.into(), message: error.message, active_tools: Vec::new() })?;
+        Ok(result)
     }
     pub async fn exec(&self, command: &str, args: &[String], options: ExecOptions) -> Result<ExecResult, ExtensionFailure> {
-        self.runtime.session_actions()?.exec(command, args, &self.cwd, options).await
+        let result = self.runtime.session_actions()?.exec(command, args, &self.cwd, options).await?;
+        self.runtime.assert_active()?;
+        Ok(result)
     }
 }
 

@@ -533,6 +533,112 @@ fn rpc_events_use_the_shared_channel_and_normalized_envelope() {
     runtime.invalidate("stale"); assert!(api.rpc_emit("progress", &JsonValue::Null).is_err());
 }
 
+#[tokio::test]
+async fn invocation_disposes_when_tool_execution_fails() {
+    let disposed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = disposed.clone();
+    let runtime = ExtensionRuntime::default();
+    runtime.bind_session_actions(Arc::new(SessionActions::default()));
+    let definition = ToolDefinition::new("fail", "fail", JsonValue::Object(Default::default()), Arc::new(|_| {
+        Box::pin(async { Err(ToolError::Message("failed".into())) })
+    }));
+    let factory = Arc::new(move |signal| {
+        let mut ctx = context();
+        ctx.signal = signal;
+        let disposed = disposed.clone();
+        Ok(maho_ext_host::wrapper::ToolInvocation::new(ctx, move || {
+            disposed.store(true, std::sync::atomic::Ordering::SeqCst);
+        }))
+    });
+    let tool = maho_ext_host::wrapper::wrap_registered_tool_with_invocation(
+        RegisteredTool { definition, source_info: SourceInfo::default() }, runtime, factory,
+    );
+    let result = (tool.execute)("call".into(), JsonValue::Null, None, None).await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(observed.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn failed_async_factory_rolls_back_flags_and_subscriptions() {
+    use maho_ext_host::loader::*;
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let observed = calls.clone();
+    let failed = NativeAsyncExtensionFactory {
+        path: "failed".into(), source_info: SourceInfo::default(),
+        factory: Arc::new(move |api| {
+            let calls = calls.clone();
+            Box::pin(async move {
+                api.register_flag("owned", FlagType::Boolean { default: Some(true) }, None);
+                let subscription = api.events.on("test", Arc::new(move |_| calls.lock().unwrap().push("failed")));
+                std::mem::forget(subscription);
+                Err("factory failed".into())
+            })
+        }),
+    };
+    let succeeding = NativeAsyncExtensionFactory {
+        path: "good".into(), source_info: SourceInfo::default(),
+        factory: Arc::new(|api| Box::pin(async move {
+            api.register_flag("owned", FlagType::Boolean { default: Some(false) }, None);
+            Ok(())
+        })),
+    };
+    let loaded = load_extensions_async(vec![failed, succeeding], Path::new("/tmp"), ExtensionSessionProfile::default()).await;
+    loaded.events.emit("test", &JsonValue::Null);
+    assert!(observed.lock().unwrap().is_empty());
+    assert_eq!(loaded.runtime.get_flag("owned"), Some(FlagValue::Boolean(false)));
+    assert_eq!(loaded.extensions.len(), 1);
+    assert_eq!(loaded.extensions[0].identity.path, "good");
+    assert_eq!(loaded.errors[0].extension_path, "failed");
+}
+
+#[test]
+fn protected_shortcut_is_rejected_and_extension_collision_is_reported() {
+    let mut first = LoadedExtension::new("first", "/tmp".into(), SourceInfo::default());
+    let mut second = LoadedExtension::new("second", "/tmp".into(), SourceInfo::default());
+    for extension in [&mut first, &mut second] {
+        for key in ["ctrl+c", "ctrl+x"] {
+            extension.shortcuts.insert(key.into(), ExtensionShortcut {
+                shortcut: key.into(), description: None,
+                handler: Arc::new(|_| Box::pin(async { Ok(()) })),
+                extension_path: extension.identity.path.clone(),
+            });
+        }
+    }
+    let builtins = [("ctrl+c".into(), BuiltinShortcut { keybinding: "interrupt".into(), restrict_override: true })].into_iter().collect();
+    let (shortcuts, diagnostics) = runner(vec![first, second]).resolve_shortcuts(&builtins);
+    assert!(!shortcuts.contains_key("ctrl+c"));
+    assert_eq!(shortcuts["ctrl+x"].extension_path, "second");
+    assert_eq!(diagnostics.len(), 3);
+    assert_eq!(diagnostics.iter().map(|diagnostic| diagnostic.path.as_str()).collect::<Vec<_>>(), ["first", "second", "second"]);
+}
+
+#[tokio::test]
+async fn invocation_disposes_when_pending_execution_is_dropped() {
+    let disposed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = disposed.clone();
+    let runtime = ExtensionRuntime::default();
+    runtime.bind_session_actions(Arc::new(SessionActions::default()));
+    let definition = ToolDefinition::new("pending", "pending", JsonValue::Object(Default::default()), Arc::new(|_| {
+        Box::pin(std::future::pending())
+    }));
+    let factory = Arc::new(move |_| {
+        let disposed = disposed.clone();
+        Ok(maho_ext_host::wrapper::ToolInvocation::new(context(), move || {
+            disposed.store(true, std::sync::atomic::Ordering::SeqCst);
+        }))
+    });
+    let tool = maho_ext_host::wrapper::wrap_registered_tool_with_invocation(
+        RegisteredTool { definition, source_info: SourceInfo::default() }, runtime, factory,
+    );
+    let mut execution = (tool.execute)("call".into(), JsonValue::Null, None, None);
+    std::future::poll_fn(|cx| {
+        assert!(execution.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    }).await;
+    drop(execution);
+    assert!(observed.load(std::sync::atomic::Ordering::SeqCst));
+}
+
 struct ContextActions { revision: std::sync::atomic::AtomicU64, aborted: Mutex<Option<AbortSource>> }
 impl ExtensionSessionSettings for ContextActions {
     fn get_retry_fallback_settings(&self) -> RetryFallbackSettings { RetryFallbackSettings { model_fallback: false, chains: BTreeMap::new(), revert_policy: FallbackRevertPolicy::Never } }

@@ -5,6 +5,10 @@ use std::{collections::{BTreeMap, BTreeSet}, sync::Arc, time::{Duration, SystemT
 pub type ErrorListener = Arc<dyn Fn(&ExtensionError) + Send + Sync>;
 pub type HookObserver = Arc<dyn Fn(&ToolHookLifecycleEvent) + Send + Sync>;
 pub type WarningListener = Arc<dyn Fn(&str) + Send + Sync>;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BuiltinShortcut { pub keybinding: String, pub restrict_override: bool }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShortcutDiagnostic { pub message: String, pub path: String }
 struct HookRun { event: ToolHookLifecycleEvent, state: Arc<std::sync::Mutex<(bool, String)>> }
 struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime }
 impl ToolSessionManager for ContextSessionManager {
@@ -122,6 +126,27 @@ impl ExtensionRunner {
         let mut shortcuts = BTreeMap::new();
         for extension in &self.extensions { for (key, shortcut) in &extension.shortcuts { shortcuts.insert(key.to_lowercase(), shortcut.clone()); } }
         shortcuts
+    }
+    pub fn resolve_shortcuts(&self, builtins: &BTreeMap<String, BuiltinShortcut>) -> (BTreeMap<String, ExtensionShortcut>, Vec<ShortcutDiagnostic>) {
+        let mut shortcuts: BTreeMap<String, ExtensionShortcut> = BTreeMap::new();
+        let mut diagnostics = Vec::new();
+        for extension in &self.extensions {
+            for (key, shortcut) in &extension.shortcuts {
+                let normalized = key.to_lowercase();
+                if let Some(builtin) = builtins.get(&normalized) {
+                    if builtin.restrict_override {
+                        diagnostics.push(ShortcutDiagnostic { message: format!("Extension shortcut '{key}' from {} conflicts with built-in shortcut. Skipping.", shortcut.extension_path), path: shortcut.extension_path.clone() });
+                        continue;
+                    }
+                    diagnostics.push(ShortcutDiagnostic { message: format!("Extension shortcut conflict: '{key}' is built-in shortcut for {} and {}. Using {}.", builtin.keybinding, shortcut.extension_path, shortcut.extension_path), path: shortcut.extension_path.clone() });
+                }
+                if let Some(existing) = shortcuts.get(&normalized) {
+                    diagnostics.push(ShortcutDiagnostic { message: format!("Extension shortcut conflict: '{key}' registered by both {} and {}. Using {}.", existing.extension_path, shortcut.extension_path, shortcut.extension_path), path: shortcut.extension_path.clone() });
+                }
+                shortcuts.insert(normalized, shortcut.clone());
+            }
+        }
+        (shortcuts, diagnostics)
     }
     pub fn transform_markdown(&self, markdown: &str, context: &MarkdownTransformContext) -> String {
         let mut transformed = markdown.to_owned();
