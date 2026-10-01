@@ -12,7 +12,7 @@ pub fn retry_not_before(policy: &RetryPolicy, attempt: u32, now: i64) -> i64 {
     if (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&sum) {
         sum as i64
     } else {
-        i64::MAX
+        9_007_199_254_740_991
     }
 }
 
@@ -25,7 +25,7 @@ pub async fn wait_until(not_before: i64, signal: &AbortSignal) -> Result<(), Abo
         if signal.aborted() {
             return Err(signal.reason().unwrap_or_else(AbortReason::dom_default));
         }
-        let remaining = not_before - now_ms();
+        let remaining = not_before.saturating_sub(now_ms());
         if remaining <= 0 {
             return Ok(());
         }
@@ -40,7 +40,7 @@ pub async fn wait_until(not_before: i64, signal: &AbortSignal) -> Result<(), Abo
     }
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_millis() as i64)
 }
