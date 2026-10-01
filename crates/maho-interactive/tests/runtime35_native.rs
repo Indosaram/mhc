@@ -54,3 +54,25 @@ async fn native_faux_events_include_user_and_final_assistant_before_idle() {
     assert!(matches!(events.last(), Some(maho_agent::types::AgentEvent::AgentEnd { .. })));
     assert_eq!(events.iter().filter(|event| matches!(event, maho_agent::types::AgentEvent::MessageEnd { .. })).count(), 2);
 }
+
+#[test]
+fn tool_lifecycle_updates_one_card_and_replaces_partial_result() {
+    use maho_agent::types::AgentEvent;
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.handle_event(&AgentEvent::ToolExecutionStart { tool_call_id: "call-1".into(), tool_name: "custom".into(), args: serde_json::json!({}) });
+    mode.handle_event(&AgentEvent::ToolExecutionUpdate { tool_call_id: "call-1".into(), tool_name: "custom".into(), args: serde_json::json!({}), partial_result: serde_json::json!({"content":[{"type":"text","text":"partial-value"}]}) });
+    assert!(mode.render(80).join("\n").contains("partial-value"));
+    mode.handle_event(&AgentEvent::ToolExecutionEnd { tool_call_id: "call-1".into(), tool_name: "custom".into(), result: serde_json::json!({"content":[{"type":"text","text":"final-value"}]}), is_error: false });
+    let rendered = mode.render(80).join("\n");
+    assert!(!rendered.contains("partial-value"));
+    assert_eq!(rendered.matches("final-value").count(), 1);
+}
+
+#[test]
+fn tool_end_without_start_still_renders_final_result() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.handle_event(&maho_agent::types::AgentEvent::ToolExecutionEnd { tool_call_id: "orphan".into(), tool_name: "custom".into(), result: serde_json::json!({"content":[{"type":"text","text":"failed-result"}]}), is_error: true });
+    assert!(mode.render(80).join("\n").contains("failed-result"));
+}

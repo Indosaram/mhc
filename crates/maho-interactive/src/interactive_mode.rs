@@ -1,10 +1,11 @@
 //! Native user/assistant transcript slice of interactive-mode.ts.
-//! Command dispatch, tools, runtime replacement and extension UI remain partial.
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+//! Command dispatch, runtime replacement and extension UI remain partial.
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
 use maho_agent::types::AgentEvent;
 use maho_core::agent_session::{AgentSession, AgentSessionSubscription, PromptDisposition, PromptOptions};
 use maho_tui::tui::{Component, Container};
 use crate::{components::{assistant_message::AssistantMessageComponent, user_message::UserMessageComponent, markdown_transform::get_markdown_theme}, theme::Theme};
+use crate::components::{tool_execution::{ToolExecutionComponent, ToolExecutionOptions, ToolExecutionPresentation}, tool_execution_types::ToolExecutionResult};
 
 pub struct InteractiveMode {
     session: Arc<AgentSession>,
@@ -12,6 +13,7 @@ pub struct InteractiveMode {
     _subscription: AgentSessionSubscription,
     chat: Container,
     streaming: Option<Rc<RefCell<AssistantMessageComponent>>>,
+    pending_tools: BTreeMap<String, Rc<RefCell<ToolExecutionComponent>>>,
     theme: Theme,
     pub agent_idle: bool,
 }
@@ -20,7 +22,7 @@ impl InteractiveMode {
     pub fn new(session: Arc<AgentSession>, theme: Theme) -> Self {
         let (sender, events) = tokio::sync::mpsc::unbounded_channel();
         let subscription = session.subscribe(Arc::new(move |event| { drop(sender.send(event.clone())); }));
-        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, theme, agent_idle: true }
+        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, pending_tools: BTreeMap::new(), theme, agent_idle: true }
     }
 
     pub async fn submit(&mut self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
@@ -53,8 +55,8 @@ impl InteractiveMode {
 
     pub fn handle_event(&mut self, event: &AgentEvent) {
         match event {
-            AgentEvent::AgentStart => self.agent_idle = false,
-            AgentEvent::AgentEnd { .. } => self.agent_idle = true,
+            AgentEvent::AgentStart => { self.agent_idle = false; self.pending_tools.clear(); }
+            AgentEvent::AgentEnd { .. } => { self.agent_idle = true; self.pending_tools.clear(); }
             AgentEvent::MessageStart { message } => {
                 if message.role() == "user" {
                     let value = serde_json::to_value(message).expect("serializable agent message");
@@ -67,14 +69,56 @@ impl InteractiveMode {
                 }
             }
             AgentEvent::MessageUpdate { message, .. } | AgentEvent::MessageEnd { message } if message.role() == "assistant" => {
+                if let Some(assistant) = message.as_assistant() {
+                    for content in &assistant.content {
+                        if let maho_ai::types::ContentBlock::ToolCall(call) = content {
+                            let args = serde_json::Value::Object(call.arguments.clone());
+                            let component = self.tool_component(&call.name, &call.id, args.clone());
+                            component.borrow_mut().update_args(args);
+                            if matches!(event, AgentEvent::MessageEnd { .. }) { component.borrow_mut().set_args_complete(); }
+                        }
+                    }
+                    if matches!(event, AgentEvent::MessageEnd { .. }) && matches!(assistant.stop_reason, maho_ai::types::StopReason::Aborted | maho_ai::types::StopReason::Error) {
+                        for component in self.pending_tools.values() {
+                            component.borrow_mut().update_result(ToolExecutionResult { content: vec![maho_tools::definition::ToolContent::text(assistant.error_message.as_deref().unwrap_or("Error"))], details: None, is_error: true }, false);
+                        }
+                        self.pending_tools.clear();
+                    }
+                }
                 if let Some(component) = &self.streaming {
                     let final_message = matches!(event, AgentEvent::MessageEnd { .. });
                     component.borrow_mut().update_content(&serde_json::to_value(message).expect("serializable agent message"), Some(!final_message));
                     if final_message { self.streaming = None; }
                 }
             }
+            AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
+                let component = self.tool_component(tool_name, tool_call_id, args.clone());
+                let mut component = component.borrow_mut();
+                component.update_args(args.clone());
+                component.mark_execution_started();
+            }
+            AgentEvent::ToolExecutionUpdate { tool_call_id, partial_result, .. } => {
+                if let Some(component) = self.pending_tools.get(tool_call_id) { component.borrow_mut().update_result(Self::tool_result(partial_result, false), true); }
+            }
+            AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } => {
+                let component = self.tool_component(tool_name, tool_call_id, serde_json::json!({}));
+                component.borrow_mut().update_result(Self::tool_result(result, *is_error), false);
+                self.pending_tools.remove(tool_call_id);
+            }
             _ => {}
         }
+    }
+
+    fn tool_component(&mut self, name: &str, id: &str, args: serde_json::Value) -> Rc<RefCell<ToolExecutionComponent>> {
+        self.pending_tools.entry(id.into()).or_insert_with(|| {
+            let component = Rc::new(RefCell::new(ToolExecutionComponent::new(name, id, args, ToolExecutionOptions::default(), None, &self.session.cwd(), ToolExecutionPresentation::Classic, None, self.theme.clone())));
+            self.chat.add_child(component.clone());
+            component
+        }).clone()
+    }
+
+    fn tool_result(value: &serde_json::Value, is_error: bool) -> ToolExecutionResult {
+        ToolExecutionResult { content: serde_json::from_value(value["content"].clone()).expect("typed tool result content"), details: value.get("details").cloned(), is_error }
     }
 }
 
