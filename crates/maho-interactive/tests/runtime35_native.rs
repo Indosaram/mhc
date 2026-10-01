@@ -398,3 +398,14 @@ async fn extension_editor_returns_prefill_through_real_multiline_component() {
     mode.handle_input_at("\r", 0);
     assert_eq!(result.await.expect("editor"), Some("prefill".into()));
 }
+
+#[test]
+fn extension_terminal_input_transforms_consumes_and_unsubscribes() {
+    use maho_ext_api::{ExtensionUi, TerminalInputResult};
+    let (mut mode, _directory) = native_mode();
+    let unsubscribe = mode.extension_ui.on_terminal_input(std::sync::Arc::new(|data| Some(TerminalInputResult { consume:Some(data == "blocked"), data:Some("replacement".into()) }))).expect("listener");
+    mode.handle_input_at("blocked", 0); assert!(mode.editor.editor.get_text().is_empty());
+    mode.handle_input_at("original", 1); assert_eq!(mode.editor.editor.get_text(), "replacement");
+    unsubscribe(); mode.editor.editor.set_text(""); mode.handle_input_at("original", 2);
+    assert_eq!(mode.editor.editor.get_text(), "original");
+}

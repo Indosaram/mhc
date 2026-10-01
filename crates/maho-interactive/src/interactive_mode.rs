@@ -123,6 +123,18 @@ impl InteractiveMode {
     }
 
     pub fn handle_input_at(&mut self, data: &str, now_ms: u64) {
+        let listeners = self.extension_ui.terminal_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let mut data = data.to_owned();
+        for listener in listeners {
+            if let Some(result) = listener(&data) {
+                if result.consume.unwrap_or(false) { return; }
+                if let Some(replacement) = result.data { data = replacement; }
+            }
+        }
+        self.handle_filtered_input_at(&data, now_ms);
+    }
+
+    fn handle_filtered_input_at(&mut self, data: &str, now_ms: u64) {
         if self.ui_dialog.is_some() || self.rename_input.is_some() { self.handle_editor_input(data); return; }
         if self.shortcut_overlay { self.shortcut_overlay = false; return; }
         let keys = maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default());

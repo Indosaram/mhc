@@ -22,6 +22,7 @@ pub struct InteractiveExtensionUi {
     pub editor_text: Mutex<String>,
     pub statuses: Mutex<BTreeMap<String, String>>,
     pub theme: Mutex<Theme>,
+    pub terminal_input: Arc<Mutex<Vec<TerminalInputHandler>>>,
 }
 
 impl InteractiveExtensionUi {
@@ -37,11 +38,16 @@ impl InteractiveExtensionUi {
     }
     pub fn channel(theme: Theme) -> (Arc<Self>, tokio::sync::mpsc::UnboundedReceiver<UiRequest>) {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        (Arc::new(Self { sender, editor_text: Mutex::new(String::new()), statuses: Mutex::new(BTreeMap::new()), theme: Mutex::new(theme) }), receiver)
+        (Arc::new(Self { sender, editor_text: Mutex::new(String::new()), statuses: Mutex::new(BTreeMap::new()), theme: Mutex::new(theme), terminal_input:Arc::new(Mutex::new(Vec::new())) }), receiver)
     }
 }
 
 impl ExtensionUi for InteractiveExtensionUi {
+    fn on_terminal_input(&self, handler: TerminalInputHandler) -> Result<UiUnsubscribe, ExtensionFailure> {
+        self.terminal_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(handler.clone());
+        let listeners = self.terminal_input.clone();
+        Ok(Box::new(move || listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|listener| !Arc::ptr_eq(listener, &handler))))
+    }
     fn set_hidden_thinking_label(&self, label: Option<&str>) -> Result<(), ExtensionFailure> { self.send(UiRequest::HiddenThinkingLabel(label.map(str::to_owned))); Ok(()) }
     fn editor<'a>(&'a self, title: &'a str, prefill: Option<&'a str>) -> ExtensionFuture<'a, Option<String>> {
         let (reply, receiver) = tokio::sync::oneshot::channel();
