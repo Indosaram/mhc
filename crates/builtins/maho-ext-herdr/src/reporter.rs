@@ -63,7 +63,10 @@ impl Extension for Herdr{
                             let event=if channel=="herdr:blocked"{
                                 if !is_herdr_blocked_event(value){return;}
                                 HerdrStateEvent::Blocked{active:value["active"].as_bool().expect("validated"),id:value["id"].as_str().expect("validated").into(),label:value.get("label").and_then(Value::as_str).map(str::to_owned)}
-                            }else{let Some(count)=value.get("activeCount").and_then(Value::as_u64)else{return};HerdrStateEvent::Monitors{count}};
+                            }else{
+                                if !maho_ext_builtin_loose::monitor_state_event::is_terminal_monitor_state_event(value){return;}
+                                let count=value["activeCount"].as_u64().or_else(||value["activeCount"].as_f64().and_then(|count|count.to_string().parse().ok())).expect("validated integer count");HerdrStateEvent::Monitors{count}
+                            };
                             guard.state=reduce_herdr_state(guard.state.clone(),event);let callback=callback.clone();guard.pending.push(tokio::spawn(async move{publish(callback).await;}));
                         })));
                     }

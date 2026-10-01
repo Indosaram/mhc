@@ -9,6 +9,7 @@ license = "MIT"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 maho-ext-api = { path = "../../maho-ext-api" }
+maho-ext-builtin-loose = { path = "../maho-ext-builtin-loose" }
 tokio = { workspace = true, features = ["net", "io-util", "sync", "time", "rt", "macros"] }
 
 [dev-dependencies]
