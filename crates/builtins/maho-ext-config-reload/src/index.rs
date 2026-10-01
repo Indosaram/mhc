@@ -14,6 +14,16 @@ pub struct ResolvedConfigReloadSettings { pub enabled: bool, pub debounce_ms: f6
 pub struct ActiveTarget { pub registration_id: String, pub target: WatchTarget, pub rearm_on_creation: Option<PathBuf> }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingChange { pub registration_id: String, pub paths: Vec<PathBuf> }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReloadAdmission { Empty, InFlight, Busy, Compacting, Unavailable, ProbeVeto }
+pub fn reload_admission(pending_empty: bool, in_flight: bool, idle: bool, pending_messages: bool, compacting: bool, request_available: bool) -> ReloadAdmission {
+    if pending_empty { ReloadAdmission::Empty }
+    else if in_flight { ReloadAdmission::InFlight }
+    else if !idle || pending_messages { ReloadAdmission::Busy }
+    else if compacting { ReloadAdmission::Compacting }
+    else if !request_available { ReloadAdmission::Unavailable }
+    else { ReloadAdmission::ProbeVeto }
+}
 #[derive(Default)]
 pub struct PendingChanges { changes: BTreeMap<String, std::collections::BTreeSet<PathBuf>> }
 impl PendingChanges {

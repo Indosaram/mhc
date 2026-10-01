@@ -1,6 +1,16 @@
 use maho_ext_config_reload::index::*;
 use serde_json::json;
 #[test]
+fn reload_admission_probes_veto_only_after_idle_compaction_and_capability_gates() {
+    assert_eq!(reload_admission(true, false, true, false, false, true), ReloadAdmission::Empty);
+    assert_eq!(reload_admission(false, true, true, false, false, true), ReloadAdmission::InFlight);
+    assert_eq!(reload_admission(false, false, false, false, true, true), ReloadAdmission::Busy);
+    assert_eq!(reload_admission(false, false, true, true, false, true), ReloadAdmission::Busy);
+    assert_eq!(reload_admission(false, false, true, false, true, false), ReloadAdmission::Compacting);
+    assert_eq!(reload_admission(false, false, true, false, false, false), ReloadAdmission::Unavailable);
+    assert_eq!(reload_admission(false, false, true, false, false, true), ReloadAdmission::ProbeVeto);
+}
+#[test]
 fn pending_paths_deduplicate_sort_and_remove_per_registration() {
     let mut pending = PendingChanges::default();
     pending.add("first", &["b".into(), "a".into(), "b".into()]);
