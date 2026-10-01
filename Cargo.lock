@@ -1658,6 +1658,8 @@ version = "0.0.0"
 name = "maho-ext-help"
 version = "0.0.0"
 dependencies = [
+ "maho-core",
+ "maho-ext-api",
  "maho-interactive",
  "maho-tui",
 ]
@@ -1813,6 +1815,8 @@ name = "maho-ext-recommended-models"
 version = "0.0.0"
 dependencies = [
  "maho-ai",
+ "maho-core",
+ "maho-ext-api",
 ]
 
 [[package]]
