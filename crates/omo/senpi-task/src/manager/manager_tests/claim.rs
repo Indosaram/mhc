@@ -6,7 +6,8 @@
 use std::sync::{Arc, Mutex};
 
 use super::fakes::{
-    FakeRunner, Harness, HarnessOptions, Project, base_spec, lock, make_manager, named, started,
+    FakeRunner, Harness, HarnessOptions, Project, TeamPortManager, base_spec, lock, make_manager,
+    named, started,
 };
 use crate::manager::execution_mode::ExecutionMode;
 use crate::manager::types::{ManagerStartSpec, StartResult, TaskManagerOptions};
@@ -14,6 +15,9 @@ use crate::state::{
     TaskRecord, TaskRecordInput, TaskStatus, bump_task_id, create_task_record, parse_task_id,
 };
 use crate::store::{StoreError, TaskRecordSaver, TaskRecordStore};
+use crate::team::normalize::normalize_senpi_team_spec;
+use crate::team::spawn_members::{SpawnMembersInput, spawn_team_members};
+use serde_json::json;
 
 type Saver = Arc<dyn TaskRecordSaver + Send + Sync>;
 
@@ -330,6 +334,61 @@ fn given_requested_name_and_foreign_winner_when_started_then_only_loser_keeps_re
     names.dedup();
     assert_eq!(names.len(), records.len());
 }
+
+#[test]
+fn given_duplicate_requested_name_in_one_parent_when_started_then_suffix_and_warning() {
+    let harness = make_manager(HarnessOptions::default());
+    started(harness.manager.start(&named("reviewer")));
+
+    let second = started(harness.manager.start(&named("reviewer")));
+
+    assert_eq!(second.name, "reviewer-2");
+    assert!(second.name_warning.is_some());
+}
+
+#[test]
+fn given_real_manager_under_collision_when_team_members_spawn_then_no_member_start_rejected() {
+    let project = Project::new();
+    let inner = project.store();
+    let collision = CollisionSaver::new(inner);
+    let harness = with_saver(project, collision as Saver, None);
+    let spec = normalize_senpi_team_spec(
+        &json!({
+            "members": [{ "name": "alpha", "kind": "category", "category": "quick", "prompt": "work" }]
+        }),
+        "collision-team",
+        None,
+    )
+    .expect("team spec normalizes");
+    let manager = TeamPortManager::new(harness.manager.clone());
+    let now = || 0i64;
+
+    let result = spawn_team_members(&SpawnMembersInput {
+        spec: &spec,
+        team_run_id: "collision-run",
+        manager: &manager,
+        lead_session_id: "parent-1",
+        spawn_depth: 1,
+        max_parallel: 1,
+        deadline_at: 1_000,
+        now: &now,
+        member_extension: None,
+    });
+
+    if let Some(failure) = &result.failure {
+        assert!(!failure.message.contains("member_start_rejected"), "{}", failure.message);
+    }
+    assert!(result.failure.is_none(), "{:?}", result.failure);
+    assert_eq!(result.spawned.len(), 1);
+}
+
+// `#given bookkeeping fails after a claim #when process mode starts #then it records a terminal
+// failure` has no Rust counterpart to port: the TS case injects a store whose `replace` throws,
+// while the Rust store port (`record_saver`) abstracts `save` alone and `replace`/`transition` stay
+// concrete on `TaskRecordStore`. `manager.rs::bookkeeping_failed` ports the TS handler verbatim
+// (same transitions, same assert, same `SPAWN_BOOKKEEPING_FAILED` message), but an injected store
+// write failure cannot produce the TS outcome: the follow-up transitions would fail too, and the
+// ported assert (`spawn bookkeeping failure transitions were not applied`) would fire first.
 
 #[test]
 fn given_allocation_failure_when_requested_name_retried_then_reservation_released() {

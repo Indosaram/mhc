@@ -28,25 +28,31 @@ use crate::manager::{
 };
 use crate::runners::{RunnerFailure, RunnerFailureKind, RunnerOutcome};
 use crate::shared::ManagedChildEvent;
+use crate::state::ResidencyState;
 use crate::steering::DestructionPort;
 use crate::store::{StateDirConfig, TaskRecordStore};
+use crate::team::member_projection::ResidentSessionRef;
+use crate::team::runtime_types::{
+    TeamCancelOutcome, TeamMemberCancelPort, TeamMemberReadPort, TeamMemberStartSpec,
+    TeamMemberTaskRecord, TeamRuntimeManagerPort, TeamStartResult, TeamStartedMember,
+};
 
-pub(super) const WAIT: Duration = Duration::from_secs(5);
+pub(crate) const WAIT: Duration = Duration::from_secs(5);
 const RECHECK: Duration = Duration::from_millis(5);
 
-pub(super) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 static EVENTS: (Mutex<u64>, Condvar) = (Mutex::new(0), Condvar::new());
 
-pub(super) fn notify() {
+pub(crate) fn notify() {
     *lock(&EVENTS.0) += 1;
     EVENTS.1.notify_all();
 }
 
 /// Waits for fake-event notifications until `condition` holds; panics with `what` after [`WAIT`].
-pub(super) fn wait_until(what: &str, condition: impl Fn() -> bool) {
+pub(crate) fn wait_until(what: &str, condition: impl Fn() -> bool) {
     let deadline = Instant::now() + WAIT;
     loop {
         let seen = *lock(&EVENTS.0);
@@ -78,7 +84,7 @@ struct HandleState {
     dispose_calls: usize,
 }
 
-pub(super) struct FakeHandle {
+pub(crate) struct FakeHandle {
     task_id: String,
     pid: Option<i64>,
     state: Arc<Mutex<HandleState>>,
@@ -222,11 +228,11 @@ impl ManagedChildHandle for FakeHandle {
     }
 }
 
-pub(super) type StartHook =
+pub(crate) type StartHook =
     Arc<dyn Fn(&ManagedStartSpec, usize) -> Option<ManagedRunnerResult> + Send + Sync>;
 
 #[derive(Default)]
-pub(super) struct FakeRunner {
+pub(crate) struct FakeRunner {
     pub handles: Mutex<HashMap<String, Arc<FakeHandle>>>,
     pub started_specs: Mutex<Vec<ManagedStartSpec>>,
     pub start_error: Mutex<Option<ManagedRunnerError>>,
@@ -300,7 +306,7 @@ impl ManagedRunner for FakeRunner {
     }
 }
 
-pub(super) fn config(default_concurrency: usize, max_depth: u32) -> ManagerConfig {
+pub(crate) fn config(default_concurrency: usize, max_depth: u32) -> ManagerConfig {
     ManagerConfig {
         concurrency: TaskConcurrencyConfig {
             default_concurrency: Some(default_concurrency),
@@ -312,7 +318,7 @@ pub(super) fn config(default_concurrency: usize, max_depth: u32) -> ManagerConfi
     }
 }
 
-pub(super) fn category_planner(models: &[(&str, &str)]) -> ChildPlanner {
+pub(crate) fn category_planner(models: &[(&str, &str)]) -> ChildPlanner {
     let models: HashMap<String, String> = models
         .iter()
         .map(|(key, model)| ((*key).to_string(), (*model).to_string()))
@@ -337,7 +343,7 @@ pub(super) fn category_planner(models: &[(&str, &str)]) -> ChildPlanner {
     })
 }
 
-pub(super) fn base_spec() -> ManagerStartSpec {
+pub(crate) fn base_spec() -> ManagerStartSpec {
     ManagerStartSpec {
         prompt: "do the thing".to_string(),
         parent_session_id: "parent-1".to_string(),
@@ -347,7 +353,7 @@ pub(super) fn base_spec() -> ManagerStartSpec {
     }
 }
 
-pub(super) fn named(name: &str) -> ManagerStartSpec {
+pub(crate) fn named(name: &str) -> ManagerStartSpec {
     ManagerStartSpec {
         name: Some(name.to_string()),
         ..base_spec()
@@ -356,7 +362,7 @@ pub(super) fn named(name: &str) -> ManagerStartSpec {
 
 /// A temp project dir; clones share it, so a second manager can reopen the same store.
 #[derive(Clone)]
-pub(super) struct Project {
+pub(crate) struct Project {
     pub dir: Arc<tempfile::TempDir>,
 }
 
@@ -379,7 +385,7 @@ impl Project {
     }
 }
 
-pub(super) struct Harness {
+pub(crate) struct Harness {
     pub manager: TaskManager,
     pub store: TaskRecordStore,
     pub in_process: Arc<FakeRunner>,
@@ -387,10 +393,10 @@ pub(super) struct Harness {
     pub project: Project,
 }
 
-pub(super) type Customize = Box<dyn FnOnce(&mut TaskManagerOptions)>;
+pub(crate) type Customize = Box<dyn FnOnce(&mut TaskManagerOptions)>;
 
 #[derive(Default)]
-pub(super) struct HarnessOptions {
+pub(crate) struct HarnessOptions {
     pub config: Option<ManagerConfig>,
     pub planner: Option<ChildPlanner>,
     pub in_process: Option<Arc<FakeRunner>>,
@@ -400,7 +406,7 @@ pub(super) struct HarnessOptions {
     pub project: Option<Project>,
 }
 
-pub(super) fn make_manager(options: HarnessOptions) -> Harness {
+pub(crate) fn make_manager(options: HarnessOptions) -> Harness {
     let project = options.project.unwrap_or_else(Project::new);
     let store = project.store();
     let in_process = options.in_process.unwrap_or_default();
@@ -427,18 +433,18 @@ pub(super) fn make_manager(options: HarnessOptions) -> Harness {
     }
 }
 
-pub(super) fn default_manager() -> Harness {
+pub(crate) fn default_manager() -> Harness {
     make_manager(HarnessOptions::default())
 }
 
-pub(super) fn started(result: StartResult) -> StartedTask {
+pub(crate) fn started(result: StartResult) -> StartedTask {
     match result {
         StartResult::Started(task) => task,
         other => panic!("expected started, got {other:?}"),
     }
 }
 
-pub(super) fn status_of(
+pub(crate) fn status_of(
     store: &TaskRecordStore,
     task_id: &str,
 ) -> Option<crate::state::TaskStatus> {
@@ -450,13 +456,13 @@ pub(super) fn status_of(
 }
 
 /// Blocks on the manager's own terminal waiter (event-driven, bounded by [`WAIT`]).
-pub(super) fn wait_terminal(manager: &TaskManager, task_id: &str) -> crate::state::TaskRecord {
+pub(crate) fn wait_terminal(manager: &TaskManager, task_id: &str) -> crate::state::TaskRecord {
     manager
         .wait_for(task_id, None, Some(WAIT))
         .unwrap_or_else(|error| panic!("{task_id} never settled: {error}"))
 }
 
-pub(super) fn lifecycle_settings(overrides: Value) -> TaskSettings {
+pub(crate) fn lifecycle_settings(overrides: Value) -> TaskSettings {
     TaskSettings::resolve(&overrides).expect("valid task settings")
 }
 
@@ -546,8 +552,105 @@ impl DestructionPort for LifecycleDestruction {
     }
 }
 
+/// The TS `spawnTeamMembers({ manager })` call hands the real manager straight to the runtime; the
+/// Rust runtime takes the narrow [`TeamRuntimeManagerPort`], so the manager tests adapt a real
+/// [`TaskManager`] here (the same shape `tools/team` uses for its collision test).
+pub(crate) struct TeamPortManager {
+    manager: TaskManager,
+    specs: Mutex<HashMap<String, TeamMemberStartSpec>>,
+}
+
+impl TeamPortManager {
+    pub(crate) fn new(manager: TaskManager) -> Self {
+        Self {
+            manager,
+            specs: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl TeamMemberReadPort for TeamPortManager {
+    fn get(&self, task_id: &str) -> Option<TeamMemberTaskRecord> {
+        let record = self.manager.get(task_id)?;
+        let spec = lock(&self.specs).get(task_id).cloned()?;
+        let child_session_id = self
+            .manager
+            .get_resident_handle(task_id)
+            .and_then(|handle| handle.session_id());
+        Some(TeamMemberTaskRecord {
+            task_id: task_id.to_string(),
+            status: record.status,
+            residency_state: ResidencyState::parse("resident").expect("known residency state"),
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+            parent_session_id: record.parent_session_id,
+            root_session_id: record.root_session_id,
+            depth: record.depth,
+            execution_mode: spec.execution_mode.unwrap_or(ExecutionMode::InProcess),
+            model: record.model,
+            child_session_id,
+            resolved_model: record.resolved_model,
+            name: record.name,
+            category: record.category,
+            agent_type: record.agent_type,
+        })
+    }
+}
+
+impl TeamMemberCancelPort for TeamPortManager {
+    fn cancel_task(&self, id_or_name: &str, _reason: Option<&str>) -> TeamCancelOutcome {
+        TeamCancelOutcome::NotFound {
+            reason: format!("unexpected cancel of {id_or_name}"),
+        }
+    }
+}
+
+impl TeamRuntimeManagerPort for TeamPortManager {
+    fn start(&self, spec: &TeamMemberStartSpec) -> Result<TeamStartResult, String> {
+        let manager_spec = ManagerStartSpec {
+            name: spec.name.clone(),
+            prompt: spec.prompt.clone(),
+            parent_session_id: spec.parent_session_id.clone(),
+            depth: spec.depth,
+            execution_mode: spec.execution_mode,
+            category: spec.category.clone(),
+            subagent_type: spec.subagent_type.clone(),
+            model: spec.model.clone(),
+            ..ManagerStartSpec::default()
+        };
+        match self.manager.start(&manager_spec) {
+            StartResult::Started(task) => {
+                let task_id = task.task_id.clone();
+                lock(&self.specs).insert(task_id.clone(), spec.clone());
+                Ok(TeamStartResult::Started(TeamStartedMember {
+                    name: spec.name.clone().unwrap_or_else(|| task_id.clone()),
+                    task_id,
+                    status: task.status,
+                    resolved_model: task.resolved_model,
+                }))
+            }
+            StartResult::StartFailed(failure) => Ok(TeamStartResult::Rejected {
+                kind: "error".to_string(),
+                reason: failure.error_message,
+            }),
+            other => Ok(TeamStartResult::Rejected {
+                kind: other.kind().to_string(),
+                reason: format!("{other:?}"),
+            }),
+        }
+    }
+
+    fn get_resident_handle(&self, task_id: &str) -> Option<ResidentSessionRef> {
+        self.manager
+            .get_resident_handle(task_id)
+            .map(|handle| ResidentSessionRef {
+                session_id: handle.session_id(),
+            })
+    }
+}
+
 /// `makeLifecycleManager`: manager + lifecycle wired through a live residency registry.
-pub(super) fn make_lifecycle_manager(
+pub(crate) fn make_lifecycle_manager(
     runner: Arc<dyn ManagedRunner>,
     manager_config: ManagerConfig,
     lifecycle_config: Value,
