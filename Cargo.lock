@@ -1767,6 +1767,11 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-openai-image-gen"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-imagegen",
+ "serde_json",
+ "url",
+]
 
 [[package]]
 name = "maho-ext-openai-web-search"
