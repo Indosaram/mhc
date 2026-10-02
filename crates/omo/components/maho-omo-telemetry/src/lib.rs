@@ -16,4 +16,8 @@ pub mod omo_native_parallel_summary;
 pub mod product_identity;
 #[cfg(test)]
 pub mod telemetry_test_support;
+#[cfg(test)]
+mod omo_native_parallel_summary_v2_tests;
+#[cfg(test)]
+mod omo_native_parallel_eval_tests;
 pub use index::SenpiTelemetryComponent;
