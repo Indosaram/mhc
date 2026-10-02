@@ -79,6 +79,22 @@ pub fn parse_models_listing(listing:&str)->Vec<ProviderModelConfig> {
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn legacy_cache_probes_but_preserves_offline_fallback() {
+        let dir=tempfile::tempdir().expect("directory");let cache_dir=dir.path().join("cursor-cli-oauth");std::fs::create_dir(&cache_dir).expect("cache directory");
+        std::fs::write(cache_dir.join("models.json"),serde_json::json!({"cachedAt":1000,"models":[{"id":"legacy-model","name":"Legacy Model"}]}).to_string()).expect("legacy cache");
+        let calls=std::cell::Cell::new(0);
+        let fallback=resolve_catalog(dir.path(),2000.0,None,||async {calls.set(calls.get()+1);anyhow::bail!("offline")}).await;
+        assert_eq!(calls.get(),1);assert_eq!(fallback[0].id,"legacy-model");
+        let refreshed=resolve_catalog(dir.path(),2000.0,None,||async {Ok("new-model - New Model\n".into())}).await;assert_eq!(refreshed[0].id,"new-model");
+        let cached=resolve_catalog(dir.path(),3000.0,None,||async {panic!("listing cache must not probe")}).await;assert_eq!(cached[0].id,"new-model");
+    }
+    #[test]
+    fn listing_cache_ignores_mutable_projection_but_rejects_future_and_expired_records() {
+        let contents=serde_json::json!({"cachedAt":1000,"listing":"observed-model - Observed Model\n","models":[{"id":null,"contextWindow":1}]}).to_string();
+        assert_eq!(cached_catalog(&contents,1500.0,1000.0).expect("listing").1[0].id,"observed-model");
+        assert!(cached_catalog(&contents,999.0,1000.0).is_none());assert!(cached_catalog(&contents,2000.0,1000.0).is_none());
+    }
+    #[tokio::test]
     async fn cache_ttl_and_failed_probe_preserve_listing() {
         let dir=tempfile::tempdir().expect("directory");
         let first=resolve_catalog(dir.path(),1000000.0,Some(2.0),||async {Ok("model-a - Model A\n".into())}).await;assert_eq!(first[0].id,"model-a");
