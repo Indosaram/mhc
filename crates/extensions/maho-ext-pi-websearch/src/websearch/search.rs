@@ -1,8 +1,9 @@
 use super::types::*;
 use super::native::provider_name;
 use super::providers::{build_search_request,normalize_search_response};
-use std::time::{Duration,Instant};
+use std::time::{Duration,SystemTime,UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
+fn now_milliseconds()->f64{SystemTime::now().duration_since(UNIX_EPOCH).map_or_else(|error|-(error.duration().as_millis() as f64),|duration|duration.as_millis() as f64)}
 #[derive(Debug,Default)]
 pub struct SearchRoutingState{pub round_robin_cursor:usize,pub success_counts:Vec<f64>}
 pub fn create_search_routing_state(provider_count:usize)->SearchRoutingState{SearchRoutingState{round_robin_cursor:0,success_counts:vec![0.0;provider_count]}}
@@ -45,7 +46,7 @@ pub fn format_search_text(details:&SearchDetails)->String{
     lines.push(String::new());lines.push("REMINDER: Include relevant sources from the URLs above in the final answer.".into());lines.join("\n")
 }
 pub async fn perform_provider_search(client:&reqwest::Client,config:&SearchProviderEntry,request:&SearchRequest,signal:Option<&CancellationToken>)->Result<SearchDetails,String>{
-    let started=Instant::now();let built=build_search_request(&config.config,request).map_err(|error|error.to_string())?;
+    let started=now_milliseconds();let built=build_search_request(&config.config,request).map_err(|error|error.to_string())?;
     if signal.is_some_and(CancellationToken::is_cancelled){return Err("The operation was aborted.".into());}
     let timeout_ms=config.config.timeout_ms.unwrap_or(60_000.0).trunc().max(1.0);
     let mut details=SearchDetails{provider:config.config.provider,entry_id:config.config.id.clone(),query:request.query.clone(),results:Vec::new(),duration_ms:0.0,truncated:false,strategy:None,attempts:None,answer:None,error:None};
@@ -57,21 +58,22 @@ pub async fn perform_provider_search(client:&reqwest::Client,config:&SearchProvi
     };
     let cancellation=async{match signal{Some(signal)=>signal.cancelled().await,None=>std::future::pending::<()>().await}};
     let response=tokio::select!{biased;()=cancellation=>return Err("The operation was aborted.".into()),result=tokio::time::timeout(Duration::from_secs_f64(timeout_ms/1000.0),operation)=>result.unwrap_or_else(|_|Err(format!("Search timed out after {timeout_ms}ms")))};
-    details.duration_ms=started.elapsed().as_secs_f64()*1000.0;
-    let (status,text)=match response{Ok(response)=>response,Err(error)=>{details.error=Some(error);return Ok(details);}};
+    let (status,text)=match response{Ok(response)=>response,Err(error)=>{details.duration_ms=now_milliseconds()-started;details.error=Some(error);return Ok(details);}};
     let payload=if config.config.provider==SearchProvider::DuckduckgoHtml{serde_json::json!({"html":text})}else{serde_json::from_str(&text).unwrap_or_else(|_|serde_json::json!({}))};
     if !status.is_success(){
+        details.duration_ms=now_milliseconds()-started;
         let detail=payload.get("error").and_then(|value|value.as_str().or_else(||value.get("message").and_then(serde_json::Value::as_str))).filter(|value|!value.is_empty()).or_else(||payload.get("message").and_then(serde_json::Value::as_str).filter(|value|!value.is_empty())).unwrap_or_else(||text.trim());
         let units=detail.encode_utf16().collect::<Vec<_>>();let detail=if units.len()>500{format!("{}…",String::from_utf16_lossy(&units[..499]))}else{detail.into()};
         details.error=Some(if detail.is_empty(){format!("Search failed with HTTP {}",status.as_u16())}else{format!("Search failed with HTTP {}: {detail}",status.as_u16())});return Ok(details);
     }
     let mut results=normalize_search_response(config.config.provider,&payload);details.truncated=results.len() as f64>request.max_results;
     let end=if request.max_results.is_nan(){0}else if request.max_results<0.0{(results.len() as f64+request.max_results.trunc()).max(0.0) as usize}else{request.max_results.trunc() as usize};results.truncate(end);details.results=results;
+    details.duration_ms=now_milliseconds()-started;
     if details.results.is_empty(){details.error=Some(format!("Search provider {} returned no results for \"{}\".",provider_entry_label(provider_name(config.config.provider),config.config.id.as_deref(),None),request.query));}Ok(details)
 }
 pub type SearchAttemptListener<'a>=dyn FnMut(&str,&[SearchAttempt],&[String])+'a;
 pub async fn perform_search(client:&reqwest::Client,config:&WebsearchConfig,request:&SearchRequest,signal:Option<&CancellationToken>,state:&mut SearchRoutingState,mut on_attempt:Option<&mut SearchAttemptListener<'_>>)->Result<SearchDetails,String>{
-    let started=Instant::now();let order=select_order(config.strategy,&config.providers,state);let mut attempts=Vec::new();
+    let started=now_milliseconds();let order=select_order(config.strategy,&config.providers,state);let mut attempts=Vec::new();
     let labels=order.iter().filter_map(|index|config.providers.get(*index)).map(|entry|provider_entry_label(provider_name(entry.config.provider),entry.config.id.as_deref(),None)).collect::<Vec<_>>();
     let mut collected:Vec<SearchResultItem>=Vec::new();let mut selected=None;
     for index in order{
@@ -90,7 +92,7 @@ pub async fn perform_search(client:&reqwest::Client,config:&WebsearchConfig,requ
         }
         selected=Some(details);if collected.len() as f64>=request.max_results{break;}
     }
-    if !collected.is_empty() && let Some(mut details)=selected.take(){details.results=collected;details.duration_ms=started.elapsed().as_secs_f64()*1000.0;details.truncated=details.results.len() as f64>=request.max_results;details.strategy=Some(config.strategy);details.attempts=Some(attempts);details.error=None;return Ok(details);}
+    if !collected.is_empty() && let Some(mut details)=selected.take(){details.results=collected;details.duration_ms=now_milliseconds()-started;details.truncated=details.results.len() as f64>=request.max_results;details.strategy=Some(config.strategy);details.attempts=Some(attempts);details.error=None;return Ok(details);}
     let mut failed=selected.unwrap_or_else(||SearchDetails{provider:config.providers.first().map_or(SearchProvider::Exa,|entry|entry.config.provider),entry_id:None,query:request.query.clone(),results:Vec::new(),duration_ms:0.0,truncated:false,strategy:None,attempts:None,answer:None,error:None});
-    failed.duration_ms=started.elapsed().as_secs_f64()*1000.0;failed.strategy=Some(config.strategy);failed.error=Some(format!("All configured search providers failed: {}",attempts.iter().map(|attempt|format!("{} {}",provider_entry_label(provider_name(attempt.provider),None,attempt.entry_id.as_deref()),attempt.error.as_deref().unwrap_or("failed"))).collect::<Vec<_>>().join("; ")));failed.attempts=Some(attempts);Ok(failed)
+    failed.duration_ms=now_milliseconds()-started;failed.strategy=Some(config.strategy);failed.error=Some(format!("All configured search providers failed: {}",attempts.iter().map(|attempt|format!("{} {}",provider_entry_label(provider_name(attempt.provider),None,attempt.entry_id.as_deref()),attempt.error.as_deref().unwrap_or("failed"))).collect::<Vec<_>>().join("; ")));failed.attempts=Some(attempts);Ok(failed)
 }
