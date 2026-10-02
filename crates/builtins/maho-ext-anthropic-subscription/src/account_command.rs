@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc};
 use maho_ext_api::{ExtensionApi, NotificationType, ExtensionFailure};
-use crate::account_management::{get_provider_accounts, pin_provider_account, remove_provider_account, ANTHROPIC_SUBSCRIPTION_PROVIDER_ID as PROVIDER};
+use crate::account_management::{get_provider_accounts, pin_provider_account_in_runtime, remove_provider_account_in_runtime, ANTHROPIC_SUBSCRIPTION_PROVIDER_ID as PROVIDER};
 static SESSION_PINS: std::sync::LazyLock<std::sync::Mutex<BTreeMap<String, String>>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(BTreeMap::new()));
 pub fn session_pin(session: Option<&str>) -> Option<String> { SESSION_PINS.lock().expect("session pins").get(session?).cloned() }
 
@@ -13,6 +13,7 @@ pub fn register(api: &mut ExtensionApi, oauth: Arc<crate::oauth_login::Anthropic
             let runtime = runtime.clone(); Box::pin(async move {
                 let mut pins = SESSION_PINS.lock().expect("session pins");
                 let session = ctx.session_manager.session_id();
+                crate::guidance::PRESET_APPEND_DEPRECATION.lock().expect("prompt guidance").reset(Some(session));
                 pins.remove(session);
                 if event.kind() == maho_ext_api::EventKind::SessionStart
                     && let Some(maho_ext_api::FlagValue::String(pin)) = runtime.get_flag("claude-account")
@@ -21,13 +22,17 @@ pub fn register(api: &mut ExtensionApi, oauth: Arc<crate::oauth_login::Anthropic
             })
         }));
     }
+    let runtime=api.runtime.clone();
     api.register_command("claude-account", Some("List and manage Anthropic Subscription accounts.".into()), Some("[remove <id> | pin <id> | unpin]".into()), Arc::new(move |raw, ctx| {
-        let store = store.clone(); let environment = environment.clone(); let oauth = oauth.clone();
+        let store = store.clone(); let environment = environment.clone(); let oauth = oauth.clone();let runtime=runtime.clone();
         Box::pin(async move {
+            runtime.assert_active()?;
             let args: Vec<_> = raw.split_whitespace().collect();
             let outcome: anyhow::Result<()> = async {
                 if let Some(command) = maho_ext_builtin_loose::account_display_name::parse_display_name_command(raw).map_err(anyhow::Error::msg)? {
+                    let mutation_runtime=runtime.clone();
                     store.modify(PROVIDER, Box::new(move |current| Box::pin(async move {
+                        mutation_runtime.assert_active()?;
                         let current = current.ok_or_else(|| anyhow::anyhow!("Stored provider account not found: {}", command.account_id))?;
                         let pooled = maho_ai::auth::pool::slots::PooledCredential::from(current.clone());
                         let next = maho_ai::auth::pool::slots::rename_slot_display_name(&pooled, &command.account_id, command.display_name.as_deref()).map_err(anyhow::Error::msg)?;
@@ -41,6 +46,7 @@ pub fn register(api: &mut ExtensionApi, oauth: Arc<crate::oauth_login::Anthropic
                         }
                         Ok(Some(maho_ai::auth::types::Credential::OAuth(current)))
                     })), None).await?;
+                    runtime.assert_active()?;
                     crate::account_events::emit_provider_accounts_changed(PROVIDER);
                     return Ok(());
                 }
@@ -58,23 +64,27 @@ pub fn register(api: &mut ExtensionApi, oauth: Arc<crate::oauth_login::Anthropic
                         })));
                         let interaction = ProviderAuthInteraction::new(interaction.signal().expect("login signal"), interaction);
                         let credential = oauth.login(&interaction).await?;
-                        store.modify(PROVIDER, Box::new(move |_| Box::pin(async move { Ok(Some(Credential::OAuth(credential))) })), None).await?;
+                        runtime.assert_active()?;
+                        let mutation_runtime=runtime.clone();
+                        store.modify(PROVIDER, Box::new(move |_| Box::pin(async move {mutation_runtime.assert_active()?; Ok(Some(Credential::OAuth(credential))) })), None).await?;
+                        runtime.assert_active()?;
                         crate::account_events::emit_provider_accounts_changed(PROVIDER);
                     },
                     [] | ["list"] => {
                         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as f64;
                         let accounts = get_provider_accounts(store.as_ref(), PROVIDER, &environment, now).await?;
                         let message = if accounts.is_empty() { "No Anthropic Subscription accounts configured.".into() } else { accounts.into_iter().map(|account| format!("{}{}{}", account.name, if account.pinned { " (pinned)" } else { "" }, if account.blocked { " (blocked)" } else { "" })).collect::<Vec<_>>().join("\n") };
+                        runtime.assert_active()?;
                         ctx.ui.notify(&message, NotificationType::Info);
                     },
-                    ["pin", "unpin"] | ["unpin"] => pin_provider_account(store.as_ref(), PROVIDER, None, environment).await?,
-                    ["pin", name] => pin_provider_account(store.as_ref(), PROVIDER, Some(name), environment).await?,
-                    ["remove", name] => remove_provider_account(store.as_ref(), PROVIDER, name, environment).await?,
+                    ["pin", "unpin"] | ["unpin"] => pin_provider_account_in_runtime(store.as_ref(), PROVIDER, None, environment, Some(runtime.clone())).await?,
+                    ["pin", name] => pin_provider_account_in_runtime(store.as_ref(), PROVIDER, Some(name), environment, Some(runtime.clone())).await?,
+                    ["remove", name] => remove_provider_account_in_runtime(store.as_ref(), PROVIDER, name, environment, Some(runtime.clone())).await?,
                     _ => ctx.ui.notify("Usage: /claude-account [remove <id> | pin <id> | unpin]", NotificationType::Warning),
                 }
                 Ok(())
             }.await;
-            if let Err(error) = outcome { ctx.ui.notify(&error.to_string(), NotificationType::Error); }
+            if let Err(error) = outcome {runtime.assert_active()?; ctx.ui.notify(&error.to_string(), NotificationType::Error); }
             Ok::<(), ExtensionFailure>(())
         })
     }));

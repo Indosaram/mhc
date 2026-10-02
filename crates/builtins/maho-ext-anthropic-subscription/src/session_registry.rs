@@ -62,7 +62,7 @@ impl SessionEntry {
                     }
                 } else if let Some(signal) = signal {
                     tokio::select! {
-                        message = query.next() => message,
+                        biased;
                         () = signal.cancelled() => {
                             self.pump.active_turn.as_mut().expect("active turn").aborted = true;
                             let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(crate::session_registry_pump::SESSION_TURN_ABORT_GRACE_MS);
@@ -73,6 +73,7 @@ impl SessionEntry {
                             abort_deadline = Some(deadline);
                             continue;
                         }
+                        message = query.next() => message,
                     }
                 } else { query.next().await };
                 let Some(message) = message else { anyhow::bail!("Anthropic Subscription query ended before the active turn result"); };

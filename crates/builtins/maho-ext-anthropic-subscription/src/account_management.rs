@@ -18,8 +18,13 @@ pub async fn get_provider_accounts(store:&dyn CredentialStore,provider:&str,envi
     }).collect())
 }
 pub async fn pin_provider_account(store:&dyn CredentialStore,provider:&str,name:Option<&str>,environment:Arc<BTreeMap<String,String>>)->anyhow::Result<()> {
+    pin_provider_account_in_runtime(store,provider,name,environment,None).await
+}
+pub(crate) async fn pin_provider_account_in_runtime(store:&dyn CredentialStore,provider:&str,name:Option<&str>,environment:Arc<BTreeMap<String,String>>,runtime:Option<maho_ext_api::ExtensionRuntime>)->anyhow::Result<()> {
     assert_managed_provider(provider)?;let name=name.map(str::to_owned);
+    let mutation_runtime=runtime.clone();
     store.modify(provider,Box::new(move |current|Box::pin(async move {
+        if let Some(runtime)=mutation_runtime {runtime.assert_active()?;}
         let mut credential=credential_from(current.clone())?;
         if let Some(name)=name {
             if !list_accounts(&credential,Some(&|key|environment.get(key).cloned()))?.iter().any(|account|account.name==name) {anyhow::bail!("Provider account not found: {name}");}
@@ -27,11 +32,17 @@ pub async fn pin_provider_account(store:&dyn CredentialStore,provider:&str,name:
         } else if credential.extra.remove("pinned").is_none() {return Ok(current);}
         Ok(Some(Credential::OAuth(credential)))
     })),None).await?;
+    if let Some(runtime)=runtime {runtime.assert_active()?;}
     crate::account_events::emit_provider_accounts_changed(provider);Ok(())
 }
 pub async fn remove_provider_account(store:&dyn CredentialStore,provider:&str,name:&str,environment:Arc<BTreeMap<String,String>>)->anyhow::Result<()> {
+    remove_provider_account_in_runtime(store,provider,name,environment,None).await
+}
+pub(crate) async fn remove_provider_account_in_runtime(store:&dyn CredentialStore,provider:&str,name:&str,environment:Arc<BTreeMap<String,String>>,runtime:Option<maho_ext_api::ExtensionRuntime>)->anyhow::Result<()> {
     assert_managed_provider(provider)?;let name=name.to_owned();
+    let mutation_runtime=runtime.clone();
     store.modify(provider,Box::new(move |current|Box::pin(async move {
+        if let Some(runtime)=mutation_runtime {runtime.assert_active()?;}
         let credential=credential_from(current)?;
         let stored=credential.extra.get("accounts").and_then(serde_json::Value::as_array).is_some_and(|accounts|accounts.iter().any(|account|account["name"]==name));
         if !stored {
@@ -40,6 +51,7 @@ pub async fn remove_provider_account(store:&dyn CredentialStore,provider:&str,na
         }
         Ok(Some(Credential::OAuth(remove_account(&credential,&name)?)))
     })),None).await?;
+    if let Some(runtime)=runtime {runtime.assert_active()?;}
     crate::account_events::emit_provider_accounts_changed(provider);Ok(())
 }
 #[cfg(test)]

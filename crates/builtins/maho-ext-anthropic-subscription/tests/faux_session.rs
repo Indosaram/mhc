@@ -5,6 +5,43 @@ use maho_ext_host::loader::NativeExtensionFactory;
 use maho_test_support::{faux::FauxScript, faux_session::FauxSession};
 
 #[tokio::test]
+async fn retired_account_mutations_cannot_write_after_waiting_for_store_lock() {
+    for action in ["pin work", "unpin", "remove work"] {
+        let store=Arc::new(InMemoryCredentialStore::new());
+        let credential=add_account(&empty_credential(),AccountSlot {name:"work".into(),display_name:None,access:"fixture".into(),refresh:"fixture".into(),expires:10000.0,source:AccountSource::Login,blocked_until:None,block_reason:None}).expect("slot");
+        let credential=maho_ext_anthropic_subscription::accounts::pin_account(&credential,"work");
+        store.modify("anthropic-subscription",Box::new(move |_|Box::pin(async move {Ok(Some(Credential::OAuth(credential)))})),None).await.expect("seed");
+        struct RetiredMutation {store:Arc<InMemoryCredentialStore>,action:&'static str}
+        impl maho_ext_api::Extension for RetiredMutation {
+            fn register(&self,api:&mut maho_ext_api::ExtensionApi) {
+                let settings=Arc::new(||maho_ext_anthropic_subscription::settings::load(&serde_json::json!({}),&serde_json::Value::Null,&Default::default()));
+                let oauth=Arc::new(AnthropicSubscriptionOAuth {store:self.store.clone(),flow:Arc::new(maho_ai::auth::oauth::anthropic::AnthropicOAuth::new(maho_ai::auth::oauth::transport::default_transport())),settings,ambient:maho_ext_anthropic_subscription::availability::AmbientAuthStatusReader::new(Arc::new(||Box::pin(async {Ok(false)})),Arc::new(||1),30_000)});
+                maho_ext_anthropic_subscription::account_command::register(api,oauth,Arc::new(Default::default()));
+                let handler=api.registered.commands.iter().find(|command|command.name=="claude-account").expect("command").handler.clone();
+                let runtime=api.runtime.clone();let store=self.store.clone();let action=self.action;
+                api.register_command("assert-retired-mutation",None,None,Arc::new(move |_,ctx| {
+                    let handler=handler.clone();let runtime=runtime.clone();let store=store.clone();Box::pin(async move {
+                        let before=serde_json::to_value(store.read("anthropic-subscription",None).await.expect("before")).expect("serialize");
+                        let (entered,entry)=tokio::sync::oneshot::channel();let (release,released)=tokio::sync::oneshot::channel();
+                        let locked=store.clone();let holder=tokio::spawn(async move {locked.modify("anthropic-subscription",Box::new(move |current|Box::pin(async move {entered.send(()).expect("entry");released.await.expect("release");Ok(current)})),None).await});
+                        tokio::time::timeout(std::time::Duration::from_secs(5),entry).await.expect("bounded entry").expect("entered");
+                        let mut mutation=handler(action,ctx);
+                        std::future::poll_fn(|cx| {assert!(mutation.as_mut().poll(cx).is_pending());std::task::Poll::Ready(())}).await;
+                        runtime.invalidate("retired while mutation queued");release.send(()).expect("release");
+                        tokio::time::timeout(std::time::Duration::from_secs(5),holder).await.expect("bounded holder").expect("join").expect("mutation");
+                        assert!(tokio::time::timeout(std::time::Duration::from_secs(5),mutation).await.expect("bounded command").is_err());
+                        assert_eq!(serde_json::to_value(store.read("anthropic-subscription",None).await.expect("after")).expect("serialize"),before);
+                        Ok(())
+                    })
+                }));
+            }
+        }
+        let session=FauxSession::new(FauxScript {name:"retired-account".into(),prompt:"/assert-retired-mutation".into(),responses:Vec::new()}).with_native_extension(NativeExtensionFactory {path:"<anthropic-subscription>".into(),source_info:Default::default(),extension:Box::new(RetiredMutation {store,action})});
+        tokio::time::timeout(std::time::Duration::from_secs(15),session.run_native()).await.expect("bounded scenario").expect("scenario");
+    }
+}
+
+#[tokio::test]
 async fn native_builtin_command_pins_and_removes_accounts_through_bound_session() {
     let store = Arc::new(InMemoryCredentialStore::new());
     let credential = add_account(&empty_credential(), AccountSlot { name: "work".into(), display_name: None, access: "synthetic".into(), refresh: "synthetic".into(), expires: 999999.0, source: AccountSource::Login, blocked_until: Some(123.0), block_reason: Some("rate_limit".into()) }).expect("slot");

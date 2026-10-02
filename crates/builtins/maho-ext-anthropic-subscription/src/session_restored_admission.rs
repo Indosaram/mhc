@@ -8,7 +8,7 @@ where F: FnOnce(Snapshot, &Path, &str) -> Fut, Fut: std::future::Future<Output =
     if binding.as_ref().is_none_or(|binding| binding.sent_prefix_hash.is_none()) {
         return Ok(RestoredBindingAdmission { binding, transcript_available: true });
     }
-    let transcript_available = if let Some(cwd) = cwd { verify(binding.clone().expect("stored binding"), cwd, auth_lane).await? } else { false };
+    let transcript_available = if let Some(cwd) = cwd { verify(binding.clone().expect("stored binding"), cwd, auth_lane).await.unwrap_or(false) } else { false };
     if !transcript_available { store.forget(session); }
     Ok(RestoredBindingAdmission { binding, transcript_available })
 }
@@ -34,5 +34,13 @@ mod tests {
         let mut store=BindingStore::default();store.remember("s",&Snapshot {sent_prefix_hash:Some("digest".into()),..Default::default()});
         let admission=admit_restored_binding(&mut store,"s",Some(Path::new("/fixture")),"oauth-slots",|_,_,_|async {Ok(true)}).await.expect("admit");
         assert!(admission.transcript_available);assert!(store.get("s").is_some());
+    }
+    #[tokio::test]
+    async fn transcript_reader_failure_forgets_restored_binding() {
+        let mut store=BindingStore::default();store.remember("s",&Snapshot {sdk_session_id:"sdk".into(),sent_prefix_hash:Some("digest".into()),..Default::default()});
+        let admission=admit_restored_binding(&mut store,"s",Some(Path::new("/fixture")),"ambient",|_,_,_|async {Err(anyhow::anyhow!("transcript unavailable"))}).await.expect("reader failure is unavailable, not a failed turn");
+        assert!(!admission.transcript_available);
+        assert_eq!(admission.binding.expect("decision retains rejected snapshot").sdk_session_id,"sdk");
+        assert!(store.get("s").is_none());
     }
 }

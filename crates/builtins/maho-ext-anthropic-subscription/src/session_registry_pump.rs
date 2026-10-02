@@ -74,6 +74,21 @@ mod tests {
         for uuid in [Some("u"),None] {let mut entry=entry();entry.submit("s","u".into(),json!({}),64,262144).expect("submit");let mut result=json!({"type":"result","subtype":"success"});if let Some(uuid)=uuid {result["user_message_uuid"]=json!(uuid);}let outcome=entry.handle(result,true);assert_eq!(outcome.is_ok(),uuid.is_some());}
     }
     #[test]
+    fn aborted_completion_requires_explicit_empty_queue_for_idle_reuse() {
+        for receipt in [json!({"still_queued":[]}),json!({"still_queued":["pending"]}),json!({}),json!({"still_queued":null})] {
+            let mut entry=entry();entry.submit("s","u".into(),json!({}),64,262144).expect("submit");
+            entry.handle(json!({"type":"user","uuid":"u","isReplay":true}),true).expect("claim");
+            let turn=entry.active_turn.as_mut().expect("turn");turn.aborted=true;turn.interrupt_receipt=Some(receipt.clone());
+            let output=entry.handle(json!({"type":"result","subtype":"success","user_message_uuid":"u"}),true).expect("completion");
+            assert!(output.delivered.is_empty());
+            assert!(output.completion.expect("completion").aborted);
+            let keep=receipt["still_queued"].as_array().is_some_and(Vec::is_empty);
+            assert_eq!(entry.state==SessionState::IdleSynced,keep);
+            assert_eq!(output.close_reason.as_deref(),if keep {None}else {Some("abort_uncertain")});
+            assert!(entry.active_turn.is_none());
+        }
+    }
+    #[test]
     fn init_adopts_fork_id_even_without_active_turn_and_stale_turn_does_not_deliver() {
         let mut entry=entry();entry.handle(json!({"type":"system","subtype":"init","session_id":"fork"}),true).expect("init");assert_eq!(entry.sdk_session_id,"fork");entry.submit("s","u".into(),json!({}),64,262144).expect("submit");assert!(entry.handle(json!({"type":"user","uuid":"u","isReplay":true}),false).expect("stale").delivered.is_empty());assert!(entry.abort_uncertain(false).is_none());assert!(entry.abort_uncertain(true).expect("abort").aborted);
     }

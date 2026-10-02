@@ -42,8 +42,13 @@ pub fn stream_cursor_cli(model:Model,context:maho_ai::types::Context,options:Opt
                             if let Some(current)=crate::accounts::list_accounts(credential)?.into_iter().find(|s|s.name==slot.name) {slot=current;}
                             if (now() as f64)>=slot.expires {
                                 let abort=signal.clone().unwrap_or_else(||maho_ai::utils::abort::AbortController::new().signal());
-                                let refreshed=oauth.refresh(credential,&abort).await?;
-                                store.modify(crate::oauth_login::PROVIDER_ID,Box::new(move |_|Box::pin(async move {Ok(Some(maho_ai::auth::types::Credential::OAuth(refreshed)))})),None).await?;
+                                let oauth=oauth.clone();let now=now.clone();
+                                store.modify(crate::oauth_login::PROVIDER_ID,Box::new(move |current|Box::pin(async move {
+                                    let Some(maho_ai::auth::types::Credential::OAuth(current))=current else {return Ok(current);};
+                                    if crate::accounts::list_accounts(&current)?.iter().all(|slot|(now() as f64)<slot.expires) {return Ok(Some(maho_ai::auth::types::Credential::OAuth(current)));}
+                                    let refreshed=oauth.refresh(&current,&abort).await?;
+                                    Ok(Some(maho_ai::auth::types::Credential::OAuth(refreshed)))
+                                })),None).await?;
                                 let current=store.read(crate::oauth_login::PROVIDER_ID,None).await?;
                                 slot=current.as_ref().and_then(maho_ai::auth::types::Credential::as_oauth).map(crate::accounts::list_accounts).transpose()?.unwrap_or_default().into_iter().find(|s|s.name==slot.name).ok_or_else(||anyhow::anyhow!("cursor-cli-oauth account '{}' disappeared during token refresh",slot.name))?;
                             }

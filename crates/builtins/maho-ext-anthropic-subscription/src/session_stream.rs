@@ -38,8 +38,16 @@ impl SessionRegistry {
         let hashes = crate::session_sync::sent_message_hashes(&messages);
         let fingerprint = crate::session_sync::config_fingerprint(input.options, input.context, input.auth_lane, input.account);
         let snapshot = self.entries.get(input.session).map(|entry| crate::session_turn_attempt::binding_from_entry(entry, &entry.sent_hashes));
-        let binding = self.bindings.get(input.session);
-        let decision = crate::session_continuity::decide(&ContinuityInput { entry: snapshot.as_ref(), binding: binding.as_ref(), current_hashes: &hashes, account_name: input.account, model_id: input.model, system_prompt_hash: &fingerprint.system_prompt_hash, toolset_hash: &fingerprint.toolset_hash, transcript_available: input.transcript_available, cross_account_resume_supported: input.auth_lane != "config-dir", idle_expired: self.entries.get(input.session).is_some_and(|entry| entry.idle_expired(input.now)), invalidation_reason: self.bindings.invalidation_reason(input.session) });
+        let admission=crate::session_restored_admission::admit_restored_binding(&mut self.bindings,input.session,input.options["cwd"].as_str().map(std::path::Path::new),input.auth_lane,|binding,cwd,lane| {
+            let cwd=cwd.to_owned();let lane=lane.to_owned();
+            async move {
+                if lane=="config-dir" {return Ok(false);}
+                let messages=crate::sdk_boundary::get_session_messages(&binding.sdk_session_id,&cwd,input.environment).await?;
+                Ok(crate::session_reattach::verify_transcript(&binding,&messages,&lane))
+            }
+        }).await?;
+        let binding=admission.binding;
+        let decision = crate::session_continuity::decide(&ContinuityInput { entry: snapshot.as_ref(), binding: binding.as_ref(), current_hashes: &hashes, account_name: input.account, model_id: input.model, system_prompt_hash: &fingerprint.system_prompt_hash, toolset_hash: &fingerprint.toolset_hash, transcript_available: input.transcript_available && admission.transcript_available, cross_account_resume_supported: input.auth_lane != "config-dir", idle_expired: self.entries.get(input.session).is_some_and(|entry| entry.idle_expired(input.now)), invalidation_reason: self.bindings.invalidation_reason(input.session) });
         let (from, resume, sdk_id) = match &decision {
             Decision::Delta { from } => (*from, None, snapshot.as_ref().expect("live entry").sdk_session_id.clone()),
             Decision::Reattach { from, sdk_session_id, .. } => (*from, Some(None), sdk_session_id.clone()),

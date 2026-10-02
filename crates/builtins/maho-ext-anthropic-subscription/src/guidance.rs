@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use crate::executable::ExecutableSource;
+pub static PRESET_APPEND_DEPRECATION: std::sync::LazyLock<std::sync::Mutex<PresetAppendDeprecation>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(PresetAppendDeprecation::default()));
 
 #[derive(Default)]
 pub struct PresetAppendDeprecation { armed_sessions: HashSet<String> }

@@ -58,6 +58,12 @@ pub fn stream_anthropic_subscription(model: Model, context: Context, options: Op
                 Some(options) => json!({"toolChoice":options.tool_choice,"reasoning":options.reasoning,"thinkingBudgets":options.thinking_budgets}),
                 None => json!({}),
             };
+            if let Some(session) = options.as_ref().and_then(|options|options.stream.session_id.as_deref()) {
+                let mode=crate::settings::resolve_prompt_mode(&deps.settings);
+                if let Some(guidance)=crate::guidance::PRESET_APPEND_DEPRECATION.lock().expect("prompt guidance").guidance(&mode.mode,mode.conflict,session) {
+                    mapper.output.diagnostics.get_or_insert_with(Vec::new).push(maho_ai::utils::diagnostics::create_assistant_message_diagnostic("claude_sdk_oauth_deprecation",&maho_ai::utils::diagnostics::Thrown::Value(json!(guidance)),None));
+                }
+            }
             let mut configuration = crate::options::build_query_configuration(crate::options::QueryOptionsInput { model: &model_json, context: &context_json, stream_options: &options_json, settings: &deps.settings, lane, cwd: &deps.cwd, agent_dir: &deps.agent_dir, config_directory: ".maho", tools: Some(&resolved.sdk_tools), executable: deps.executable.to_str() })?;
             if options.as_ref().is_none_or(|options| options.tool_choice != Some(maho_ai::types::ToolChoice::None)) && !resolved.custom_tools.is_empty() { configuration["customTools"] = json!(resolved.custom_tools); }
             let resident = options.as_ref().filter(|options| options.stream.request.stream_kind == Some(maho_ai::types::StreamKind::Main) && deps.settings.values.get("resumeMode").and_then(serde_json::Value::as_str) != Some("off")).and_then(|options| options.stream.session_id.as_deref());
@@ -153,7 +159,14 @@ pub fn stream_anthropic_subscription(model: Model, context: Context, options: Op
         };
         match outcome {
             Ok(()) => events.push(Event::Done { reason: match mapper.output.stop_reason { StopReason::ToolUse => DoneReason::ToolUse, StopReason::Length => DoneReason::Length, _ => DoneReason::Stop }, message: mapper.output }),
-            Err(error) => { let aborted = signal.as_ref().is_some_and(maho_ai::utils::abort::AbortSignal::aborted); mapper.output.stop_reason = if aborted { StopReason::Aborted } else { StopReason::Error }; mapper.output.error_message = Some(crate::stream_guidance::with_auth_guidance(&error)); events.push(Event::Error { reason: if aborted { ErrorReason::Aborted } else { ErrorReason::Error }, error: mapper.output }); },
+            Err(error) => {
+                let aborted = signal.as_ref().is_some_and(maho_ai::utils::abort::AbortSignal::aborted);
+                mapper.output.stop_reason = if aborted { StopReason::Aborted } else { StopReason::Error };
+                let mut message = crate::stream_guidance::with_auth_guidance(&error);
+                if let Some(guidance) = crate::guidance::version_floor_guidance(&message, None, &deps.executable.to_string_lossy()) { message.push('\n'); message.push_str(&guidance); }
+                mapper.output.error_message = Some(message);
+                events.push(Event::Error { reason: if aborted { ErrorReason::Aborted } else { ErrorReason::Error }, error: mapper.output });
+            },
         }
         events.end(None);
     });

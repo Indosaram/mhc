@@ -39,3 +39,35 @@ printf '%s\n' '{"type":"system","subtype":"init","session_id":"chat","model":"te
     assert!(matches!(&output.content[0],maho_ai::types::ContentBlock::Text(t) if t.text=="hello"));
     assert_eq!(router.lock().await.get_record("cursor-cli-oauth-default").expect("binding").chat_id,"chat");
 }
+
+#[tokio::test]
+async fn retired_native_generation_cancels_live_child_and_rejects_new_spawn() {
+    use maho_ext_cursor_cli_oauth::{extension::CursorCliExtension,oauth_login::CursorCliOAuth};
+    use maho_ai::types::AssistantMessageEvent;
+    let directory=tempfile::tempdir().expect("directory");let executable=directory.path().join("cursor-agent");
+    std::fs::write(&executable,r#"#!/usr/bin/python3
+import json,sys,signal
+signal.signal(signal.SIGTERM,lambda *_: sys.exit(0))
+print(json.dumps({'type':'assistant','message':{'content':[{'type':'text','text':'ready'}]}}),flush=True)
+signal.pause()
+"#).expect("script");std::fs::set_permissions(&executable,std::fs::Permissions::from_mode(0o700)).expect("permissions");
+    let store=Arc::new(maho_ai::auth::credential_store::InMemoryCredentialStore::new());
+    let credential=add_account(&empty_credential(),CursorCliAccountSlot {name:"a".into(),display_name:None,access:"fixture".into(),refresh:"fixture".into(),expires:10000.0,source:AccountSource::Login,blocked_until:None,block_reason:None}).expect("slot");
+    store.modify("cursor-cli-oauth",Box::new(move |_|Box::pin(async move {Ok(Some(Credential::OAuth(credential)))})),None).await.expect("seed");
+    let settings=Arc::new(||CursorCliOauthProviderSettings {execution_mode:maho_ext_cursor_cli_oauth::settings::ExecutionMode::Plan,..Default::default()});
+    let oauth=Arc::new(CursorCliOAuth {store,flow:Arc::new(Flow),settings,resolve:Arc::new(|_|Ok(())),persist_acknowledgement:Arc::new(|_|Ok(())),persist_enabled:Arc::new(|_|Ok(())),now:Arc::new(||1)});
+    let extension=CursorCliExtension::native(oauth,executable,directory.path().into(),directory.path().join("agent"),Default::default());
+    let model=maho_ext_cursor_cli_oauth::models::static_models()[0].clone();
+    let model:Model=serde_json::from_value(serde_json::json!({"id":model.id,"name":model.name,"api":"cursor-agent","provider":"cursor-cli-oauth","baseUrl":"cursor-cli-oauth","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":200000,"maxTokens":64000})).expect("model");
+    let context=Context {messages:vec![Message::User(UserMessage {content:UserContent::Text("hello".into()),timestamp:1})],..Default::default()};
+    let stream=(extension.stream)(&model,&context,None);
+    tokio::time::timeout(std::time::Duration::from_secs(10),async {
+        while let Some(event)=stream.next().await.expect("stream event") {if matches!(event,AssistantMessageEvent::TextDelta {..}) {return;}}
+        panic!("child ended before its readiness text");
+    }).await.expect("bounded child readiness");
+    extension.shutdown.as_ref().expect("generation").abort(None);
+    let output=tokio::time::timeout(std::time::Duration::from_secs(10),stream.result()).await.expect("bounded retirement").expect("output");
+    assert_eq!(output.stop_reason,maho_ai::types::StopReason::Aborted);
+    let next=(extension.stream)(&model,&context,None);
+    assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(10),next.result()).await.expect("bounded retired attempt").expect("output").stop_reason,maho_ai::types::StopReason::Aborted);
+}

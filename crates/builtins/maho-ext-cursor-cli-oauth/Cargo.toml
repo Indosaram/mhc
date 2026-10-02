@@ -9,6 +9,7 @@ license = "MIT"
 maho-ai = { path = "../../maho-ai" }
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-ext-builtin-loose = { path = "../maho-ext-builtin-loose" }
+maho-ext-anthropic-subscription = { path = "../maho-ext-anthropic-subscription" }
 maho-core = { path = "../../maho-core" }
 anyhow = "=1.0.104"
 async-trait = "=0.1.92"
