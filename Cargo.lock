@@ -2055,6 +2055,7 @@ version = "0.0.0"
 dependencies = [
  "maho-boulder-state",
  "maho-ext-api",
+ "serde_json",
  "tempfile",
  "tokio",
 ]

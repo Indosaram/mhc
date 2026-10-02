@@ -120,3 +120,32 @@ async fn continuation_delivery_is_hidden_custom_message() -> Result<(), Box<dyn 
     assert!(!messages[0].display);
     Ok(())
 }
+
+#[tokio::test]
+async fn corrupt_boulder_json_does_not_fail_registered_handler() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir(root.path().join(".omo"))?;
+    std::fs::write(root.path().join(".omo/boulder.json"), "{broken")?;
+    let (api, actions, ctx) = register(root.path(), 8, 1);
+    end(&api, &ctx).await?;
+    assert!(actions.0.lock().expect("messages").is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn changing_signatures_obey_global_cap_and_user_reset() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let plan = write_work(root.path(), "## TODOs\n- [ ] 1. task\n")?;
+    let (api, actions, ctx) = register(root.path(), 8, 1);
+    for total in 1..=9 {
+        std::fs::write(&plan, format!("## TODOs\n{}", "- [ ] 1. task\n".repeat(total)))?;
+        end(&api, &ctx).await?;
+    }
+    assert_eq!(actions.0.lock().expect("messages").len(), 8);
+    let mut event = ExtensionEvent::Input(InputEvent { input_id: "cap-reset".into(), text: "continue".into(),
+        images: None, source: InputSource::Interactive, streaming_behavior: None });
+    api.registered.handlers[&EventKind::Input][0](&mut event, &ctx).await?;
+    end(&api, &ctx).await?;
+    assert_eq!(actions.0.lock().expect("messages").len(), 9);
+    Ok(())
+}
