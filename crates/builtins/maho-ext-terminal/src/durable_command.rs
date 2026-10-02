@@ -1,12 +1,11 @@
 use crate::{manager::TerminalManager,monitor_registry::{CommandMonitor,MonitorSnapshotEntry,MonitorFireWindow},restore::RestoreOutcome,terminal_manifest_model::{ManifestMonitor,MonitorRuntimeKind}};
-use maho_pty::PtySessionOptions;
 use std::path::Path;
 
 pub fn restore_command(monitor:&ManifestMonitor,manager:&mut TerminalManager,mut register:impl FnMut(&str,&crate::runtime_session::TerminalRuntimeSession,CommandMonitor)->Result<(),crate::runtime_session::RuntimeError>)->RestoreOutcome {
     if monitor.runtime_kind!=MonitorRuntimeKind::Command||!monitor.persistent {return RestoreOutcome::Lost;}
     let Some(command)=monitor.command.as_deref().filter(|command|!command.is_empty()) else {return RestoreOutcome::Lost;};
     let Some(cwd)=monitor.cwd.as_deref().filter(|cwd|Path::new(cwd).is_absolute()&&Path::new(cwd).is_dir()) else {return RestoreOutcome::Lost;};
-    let options=PtySessionOptions::new("/bin/sh").arg("-c").arg(command).cwd(cwd);
+    let Ok(options)=crate::tools::spawn::command_options(command,Some(Path::new(cwd)),None)else {return RestoreOutcome::Lost;};
     let Ok(id)=manager.create(command,options) else {return RestoreOutcome::Lost;};
     let mut record=CommandMonitor::new(MonitorSnapshotEntry {id:id.clone(),monitor_id:Some(monitor.monitor_id.clone()),description:monitor.description.clone(),command:monitor.command.clone(),filter:monitor.filter.clone(),persistent:Some(true),deadline_ms:None,expires_at:monitor.expires_at,fire_window:Some(MonitorFireWindow {start_ms:monitor.fire_window.start_ms,count:monitor.fire_window.count as usize}),..Default::default()},monitor.filter.as_deref().and_then(crate::shared::safe_reg_exp));
     if monitor.delivery_paused {record.pause();}

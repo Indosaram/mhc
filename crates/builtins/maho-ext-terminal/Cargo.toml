@@ -23,6 +23,8 @@ thiserror = "=2.0.18"
 tokio = { version = "=1.52.3", features = ["macros", "rt", "sync", "time"] }
 
 [dev-dependencies]
+maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
+maho-ext-host = { path = "../../maho-ext-host" }
 tempfile = "=3.27.0"
 tokio = { version = "=1.52.3", features = ["test-util"] }
 

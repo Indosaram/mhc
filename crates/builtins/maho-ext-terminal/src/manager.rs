@@ -6,12 +6,13 @@ use crate::shared::{DEFAULT_MAX_SESSIONS,KILLED_SESSION_EXIT_GRACE_MS};
 #[derive(Debug,thiserror::Error)]
 pub enum ManagerError {#[error("Cannot create terminal session: capacity limit ({0}) reached.")] Capacity(usize),#[error(transparent)] Runtime(#[from] RuntimeError)}
 struct Entry {runtime:TerminalRuntimeSession,created_at:u64,last_used_at:u64}
-pub struct TerminalManager {entries:BTreeMap<String,Entry>,monitor_ids:BTreeMap<String,String>,max_sessions:usize,next_id:u64,sequence:u64,reservations:std::sync::Arc<std::sync::atomic::AtomicUsize>}
+pub struct TerminalManager {entries:BTreeMap<String,Entry>,monitor_ids:BTreeMap<String,String>,max_sessions:usize,scrollback:usize,next_id:u64,sequence:u64,reservations:std::sync::Arc<std::sync::atomic::AtomicUsize>}
 pub struct CapacityReservation(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 impl Drop for CapacityReservation {fn drop(&mut self) {self.0.fetch_sub(1,std::sync::atomic::Ordering::SeqCst);}}
 impl Default for TerminalManager {fn default()->Self {Self::new(DEFAULT_MAX_SESSIONS)}}
 impl TerminalManager {
-    pub fn new(max_sessions:usize)->Self {Self {entries:BTreeMap::new(),monitor_ids:BTreeMap::new(),max_sessions,next_id:0,sequence:0,reservations:Default::default()}}
+    pub fn new(max_sessions:usize)->Self {Self {entries:BTreeMap::new(),monitor_ids:BTreeMap::new(),max_sessions,scrollback:crate::shared::DEFAULT_SCROLLBACK,next_id:0,sequence:0,reservations:Default::default()}}
+    pub fn configure(&mut self,settings:&crate::settings::ResolvedTerminalSettings) {self.max_sessions=settings.max_sessions as usize;self.scrollback=settings.scrollback as usize;}
     pub fn size(&self)->usize {self.entries.len()}
     pub fn active_size(&self)->Result<usize,RuntimeError> {self.entries.values().try_fold(self.reservations.load(std::sync::atomic::Ordering::SeqCst),|size,entry|Ok(size+usize::from(!entry.runtime.exited()?)))}
     pub fn reserve(&mut self)->Result<Option<CapacityReservation>,RuntimeError> {if self.active_size()?>=self.max_sessions {return Ok(None);}self.reservations.fetch_add(1,std::sync::atomic::Ordering::SeqCst);Ok(Some(CapacityReservation(self.reservations.clone())))}
@@ -23,7 +24,7 @@ impl TerminalManager {
             if let Some(entry)=self.entries.remove(&id) {entry.runtime.dispose()?;}
             self.monitor_ids.retain(|_,runtime_id|runtime_id!=&id);
         }
-        let runtime=TerminalRuntimeSession::start(command,options)?;self.next_id+=1;self.sequence+=1;let id=format!("bash_{}",self.next_id);self.entries.insert(id.clone(),Entry {runtime,created_at:self.sequence,last_used_at:self.sequence});Ok(id)
+        let runtime=TerminalRuntimeSession::start_with_scrollback(command,options,self.scrollback)?;self.next_id+=1;self.sequence+=1;let id=format!("bash_{}",self.next_id);self.entries.insert(id.clone(),Entry {runtime,created_at:self.sequence,last_used_at:self.sequence});Ok(id)
     }
     pub fn get(&mut self,id:&str)->Option<&mut TerminalRuntimeSession> {self.sequence+=1;let entry=self.entries.get_mut(id)?;entry.last_used_at=self.sequence;Some(&mut entry.runtime)}
     pub fn bind_monitor_id(&mut self,monitor_id:&str,session_id:&str) {self.monitor_ids.insert(monitor_id.to_owned(),session_id.to_owned());}
@@ -35,6 +36,14 @@ impl TerminalManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn configured_capacity_and_zero_scrollback_reach_new_sessions()->Result<(),ManagerError> {
+        let mut manager=TerminalManager::default();let mut settings=crate::settings::TERMINAL_SETTINGS_DEFAULTS;settings.max_sessions=1.0;settings.scrollback=0.0;manager.configure(&settings);
+        let id=manager.create("read",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; read start; printf 'one\\r\\ntwo\\r\\nthree'; read end").size(20,2))?;
+        assert!(manager.reserve()?.is_none());let runtime=manager.get(&id).unwrap();let (_,mut output)=runtime.subscribe_output()?;runtime.write(b"start\n")?;
+        tokio::time::timeout(Duration::from_secs(5),async {let mut text=String::new();while !text.contains("three") {text.push_str(&output.recv().await.unwrap());}}).await.unwrap();
+        assert!(manager.get(&id).unwrap().snapshot()?.scrollback.is_empty());manager.teardown()?;Ok(())
+    }
     #[test] fn reservation_counts_until_release()->Result<(),RuntimeError> {let mut manager=TerminalManager::new(1);let reservation=manager.reserve()?.expect("capacity");assert_eq!(manager.active_size()?,1);assert!(manager.reserve()?.is_none());drop(reservation);assert_eq!(manager.active_size()?,0);assert!(manager.reserve()?.is_some());Ok(())}
     #[test] fn capacity_stop_and_monitor_bindings()->Result<(),ManagerError> {let mut manager=TerminalManager::new(1);let id=manager.create("read",PtySessionOptions::new("/bin/sh").arg("-c").arg("read value"))?;manager.bind_monitor_id("mon_1",&id);assert_eq!(manager.resolve_id("mon_1"),Some(id.clone()));assert_eq!(manager.active_size()?,1);assert!(matches!(manager.create("read",PtySessionOptions::new("/bin/sh").arg("-c").arg("read value")),Err(ManagerError::Capacity(1))));assert!(manager.stop(&id)?);assert!(manager.get(&id).is_some());manager.teardown()?;assert_eq!(manager.size(),0);assert_eq!(manager.resolve_id("mon_1"),None);Ok(())}
 }

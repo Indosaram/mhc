@@ -6,6 +6,9 @@ pub const DEFAULT_MONITOR_TIMEOUT_MS:u64=300_000;
 pub const MAX_MONITOR_TIMEOUT_MS:u64=3_600_000;
 pub fn monitor_schema()->Value {json!({"type":"object","properties":{"action":{"type":"string","enum":["create","rearm"]},"description":{"type":"string","minLength":1,"maxLength":200},"command":{"type":"string"},"path":{"type":"string","minLength":1},"event":{"type":"string","enum":["create","modify"]},"filter":{"type":"string"},"timeout_ms":{"type":"number","minimum":1,"maximum":MAX_MONITOR_TIMEOUT_MS},"persistent":{"type":"boolean"},"bash_id":{"type":"string"}}})}
 pub fn execute_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistry,input:&Value,cwd:&std::path::Path)->TerminalToolResult {
+    execute_configured_monitor(manager,registry,input,cwd,None)
+}
+pub fn execute_configured_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistry,input:&Value,cwd:&std::path::Path,shell:Option<&str>)->TerminalToolResult {
     if input.get("action").and_then(Value::as_str)==Some("rearm") {
         let id=input.get("bash_id").and_then(Value::as_str).filter(|id|!id.is_empty());
         if let Some(id)=id {
@@ -40,7 +43,7 @@ pub fn execute_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistr
     let persistent=input.get("persistent").and_then(Value::as_bool)==Some(true);
     let timeout=input.get("timeout_ms").and_then(Value::as_f64).unwrap_or(DEFAULT_MONITOR_TIMEOUT_MS as f64).trunc().clamp(1.0,MAX_MONITOR_TIMEOUT_MS as f64) as u64;
     let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("epoch").as_secs_f64()*1000.0;
-    let mut options=maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg(command).cwd(cwd);
+    let mut options=match super::spawn::command_options(command,Some(cwd),shell) {Ok(options)=>options,Err(error)=>return error_result(error.to_string())};
     if !persistent {options=options.timeout(std::time::Duration::from_millis(timeout));}
     let monitor_id=match allocate_monitor_id() {Ok(id)=>id,Err(error)=>return error_result(error.to_string())};
     let id=match manager.create(command,options) {Ok(id)=>id,Err(error)=>return error_result(error.to_string())};

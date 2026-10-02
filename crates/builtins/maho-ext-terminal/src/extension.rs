@@ -29,6 +29,12 @@ fn tool_result(result:TerminalToolResult)->Result<ToolResult,ToolError> {
 impl Extension for TerminalExtension {
     fn register(&self,api:&mut ExtensionApi) {
         let manager=Arc::new(Mutex::new(TerminalManager::default()));
+        let configuration=Arc::new(Mutex::new((crate::settings::TERMINAL_SETTINGS_DEFAULTS,None::<String>)));
+        let start_configuration=configuration.clone();let configuration_manager=manager.clone();
+        api.on(EventKind::SessionStart,Arc::new(move |_,ctx| {let configuration=start_configuration.clone();let manager=configuration_manager.clone();Box::pin(async move {
+            let loaded=crate::settings::load_session_settings(ctx)?;manager.lock().map_err(|_|ExtensionFailure::new("terminal manager state poisoned"))?.configure(&loaded.0);
+            *configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?=loaded;Ok(EventResult::None)
+        })}));
         let completion_delivery=Arc::new(Mutex::new(None));
         let terminal_notifier=Arc::new(Mutex::new(crate::notify::TerminalNotifier::default()));
         let notifier:Arc<Mutex<Option<crate::monitor_notify::MonitorNotifier>>>=Arc::new(Mutex::new(None));
@@ -38,10 +44,13 @@ impl Extension for TerminalExtension {
         })));
         let status_task:Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>=Arc::new(Mutex::new(None));
         for kind in [EventKind::SessionParked,EventKind::SessionResumed] {
-            let monitors=monitors.clone();
-            api.on(kind,Arc::new(move |_,_| {let monitors=monitors.clone();Box::pin(async move {
+            let monitors=monitors.clone();let status=status_task.clone();
+            api.on(kind,Arc::new(move |_,ctx| {let monitors=monitors.clone();let status=status.clone();Box::pin(async move {
                 let monitors=monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?;
                 if kind==EventKind::SessionParked {monitors.park();}else {monitors.unpark();}
+                let mut status=status.lock().map_err(|_|ExtensionFailure::new("monitor status state poisoned"))?;
+                if let Some(task)=status.take() {task.abort();}
+                if kind==EventKind::SessionResumed {let ui=ctx.ui.clone();*status=Some(crate::monitor_status_ticker::bind_monitor_status(monitors.subscribe_state(),move |text|ui.set_status(crate::monitor_status::MONITOR_STATUS_KEY,text.as_deref())));}
                 Ok(EventResult::None)
             })}));
         }
@@ -62,8 +71,8 @@ impl Extension for TerminalExtension {
         let stepped_aside=Arc::new(std::sync::atomic::AtomicBool::new(false));
         let notice_shown=Arc::new(std::sync::atomic::AtomicBool::new(false));
         for kind in [EventKind::SessionStart,EventKind::ModelSelect] {
-            let sender=sender.clone();let stepped_aside=stepped_aside.clone();let notice_shown=notice_shown.clone();let completion_delivery=completion_delivery.clone();
-            api.on(kind,Arc::new(move |event,ctx| {let sender=sender.clone();let stepped_aside=stepped_aside.clone();let notice_shown=notice_shown.clone();let completion_delivery=completion_delivery.clone();Box::pin(async move {
+            let sender=sender.clone();let stepped_aside=stepped_aside.clone();let notice_shown=notice_shown.clone();let completion_delivery=completion_delivery.clone();let configuration=configuration.clone();
+            api.on(kind,Arc::new(move |event,ctx| {let sender=sender.clone();let stepped_aside=stepped_aside.clone();let notice_shown=notice_shown.clone();let completion_delivery=completion_delivery.clone();let configuration=configuration.clone();Box::pin(async move {
                 let model=match event {maho_ext_api::types::ExtensionEvent::ModelSelect(event)=>Some(&event.model),_=>ctx.model.as_ref()};
                 let enabled=std::env::var("PI_ANTHROPIC_BASH").is_ok_and(|value|matches!(value.trim().to_lowercase().as_str(),"1"|"true"|"yes"|"on"));
                 let step_aside=enabled&&model.is_some_and(|model|serde_json::to_value(&model.api).ok().and_then(|value|value.as_str().map(str::to_owned)).as_deref()==Some("anthropic-messages"));
@@ -74,7 +83,7 @@ impl Extension for TerminalExtension {
                 if step_aside&&!notice_shown.swap(true,std::sync::atomic::Ordering::SeqCst) {ctx.ui.notify("native Anthropic bash active — monitor sessions remain available",maho_ext_api::types::NotificationType::Info);}
                 if !step_aside {notice_shown.store(false,std::sync::atomic::Ordering::SeqCst);}
                 sender.set_active_tools(active)?;
-                *completion_delivery.lock().map_err(|_|ExtensionFailure::new("terminal delivery state poisoned"))?=crate::notify::get_terminal_notification_delivery(crate::settings::TERMINAL_SETTINGS_DEFAULTS.notify,Some(match ctx.mode {maho_ext_api::types::ExtensionMode::Print=>"print",maho_ext_api::types::ExtensionMode::Json=>"json",_=>"interactive"}),model.is_some(),false);
+                *completion_delivery.lock().map_err(|_|ExtensionFailure::new("terminal delivery state poisoned"))?=crate::notify::get_terminal_notification_delivery(configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?.0.notify,Some(match ctx.mode {maho_ext_api::types::ExtensionMode::Print=>"print",maho_ext_api::types::ExtensionMode::Json=>"json",_=>"interactive"}),model.is_some(),false);
                 Ok(EventResult::None)
             })}));
         }
@@ -86,22 +95,28 @@ impl Extension for TerminalExtension {
             Ok(EventResult::BeforeAgentStart(maho_ext_api::types::BeforeAgentStartEventResult {system_prompt:Some(format!("{}\n{}",event.system_prompt,crate::prompt::build_terminal_prompt_section(eval_only))),..Default::default()}))
         })}));
         let bash_sender=sender.clone();let lifecycle_delivery=completion_delivery.clone();
-        let lifecycle_notifier=notifier.clone();let lifecycle_monitors=monitors.clone();
-        api.on(EventKind::SessionStart,Arc::new(move |_,ctx| {let notifier=lifecycle_notifier.clone();let monitors=lifecycle_monitors.clone();let sender=sender.clone();let lifecycle_delivery=lifecycle_delivery.clone();Box::pin(async move {
+        let lifecycle_notifier=notifier.clone();let lifecycle_monitors=monitors.clone();let lifecycle_configuration=configuration.clone();
+        api.on(EventKind::SessionStart,Arc::new(move |_,ctx| {let notifier=lifecycle_notifier.clone();let monitors=lifecycle_monitors.clone();let sender=sender.clone();let lifecycle_delivery=lifecycle_delivery.clone();let configuration=lifecycle_configuration.clone();Box::pin(async move {
             use maho_ext_api::types::{ExtensionMode,CustomMessage,SendMessageOptions,DeliverAs};
-            *lifecycle_delivery.lock().map_err(|_|ExtensionFailure::new("terminal delivery state poisoned"))?=crate::notify::get_terminal_notification_delivery(crate::settings::TERMINAL_SETTINGS_DEFAULTS.notify,Some(match ctx.mode {ExtensionMode::Print=>"print",ExtensionMode::Json=>"json",_=>"interactive"}),ctx.model.is_some(),false);
+            let settings=configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?.0.clone();
+            let delivery_mode=crate::notify::get_terminal_notification_delivery(settings.notify,Some(match ctx.mode {ExtensionMode::Print=>"print",ExtensionMode::Json=>"json",_=>"interactive"}),ctx.model.is_some(),false);
+            *lifecycle_delivery.lock().map_err(|_|ExtensionFailure::new("terminal delivery state poisoned"))?=delivery_mode;
             notifier.lock().map_err(|_|ExtensionFailure::new("monitor notifier state poisoned"))?.take();
-            if matches!(ctx.mode,ExtensionMode::Print|ExtensionMode::Json)||ctx.model.is_none() {return Ok(EventResult::None);}
-            let delivery=crate::monitor_notify::MonitorNotifier::new(crate::settings::TERMINAL_SETTINGS_DEFAULTS.monitor,move |injection| {
+            if matches!(ctx.mode,ExtensionMode::Print|ExtensionMode::Json) {return Ok(EventResult::None);}
+            let available=lifecycle_delivery.clone();
+            let delivery=crate::monitor_notify::MonitorNotifier::with_delivery_guard(settings.monitor,move ||available.lock().expect("terminal delivery").is_some(),move |injection| {
+                let Some(delivery_mode)=*lifecycle_delivery.lock().expect("terminal delivery") else {return;};
                 if !injection.pause_ids.is_empty() {monitors.lock().expect("monitor registry").pause(&injection.pause_ids);}
-                if let Err(error)=sender.send_message(CustomMessage {custom_type:crate::monitor_notify::MONITOR_NOTIFICATION_CUSTOM_TYPE.to_owned(),content:vec![ToolContent::text(injection.content)],display:false,details:Some(injection.details)},SendMessageOptions {trigger_turn:true,deliver_as:Some(DeliverAs::Steer)}) {eprintln!("monitor notification failed: {error}");}
+                let force_wake=!injection.pause_ids.is_empty();
+                if let Err(error)=sender.send_message(CustomMessage {custom_type:crate::monitor_notify::MONITOR_NOTIFICATION_CUSTOM_TYPE.to_owned(),content:vec![ToolContent::text(injection.content)],display:false,details:Some(injection.details)},SendMessageOptions {trigger_turn:true,deliver_as:Some(if delivery_mode==crate::notify::NotificationDelivery::Steer||force_wake {DeliverAs::Steer}else {DeliverAs::FollowUp})}) {eprintln!("monitor notification failed: {error}");}
             });
             *notifier.lock().map_err(|_|ExtensionFailure::new("monitor notifier state poisoned"))?=Some(delivery);Ok(EventResult::None)
         })}));
-        let bash_manager=Arc::clone(&manager);
+        let bash_manager=Arc::clone(&manager);let bash_configuration=configuration.clone();
         let completion_tasks:Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>=Arc::new(Mutex::new(vec![]));let bash_tasks=completion_tasks.clone();let cleanup_terminal_notifier=terminal_notifier.clone();
-        let mut bash=ToolDefinition::new("bash","Execute a shell command in a persistent PTY-backed session.",json!({"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"number"},"description":{"type":"string"},"run_in_background":{"type":"boolean"},"cols":{"type":"number"},"rows":{"type":"number"}},"required":["command"]}),Arc::new(move |call| {let manager=Arc::clone(&bash_manager);let sender=bash_sender.clone();let delivery=completion_delivery.clone();let notifier=terminal_notifier.clone();let tasks=bash_tasks.clone();Box::pin(async move {
-            let result=crate::tools::bash::execute_bash(manager.clone(),call).await.map_err(ToolError::Message)?;
+        let mut bash=ToolDefinition::new("bash","Execute a shell command in a persistent PTY-backed session.",json!({"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"number"},"description":{"type":"string"},"run_in_background":{"type":"boolean"},"cols":{"type":"number"},"rows":{"type":"number"}},"required":["command"]}),Arc::new(move |call| {let manager=Arc::clone(&bash_manager);let sender=bash_sender.clone();let delivery=completion_delivery.clone();let notifier=terminal_notifier.clone();let tasks=bash_tasks.clone();let bash_configuration=bash_configuration.clone();Box::pin(async move {
+            let (settings,shell)=bash_configuration.lock().map_err(|_|ToolError::Message("terminal configuration state poisoned".to_owned()))?.clone();
+            let result=crate::tools::bash::execute_configured_bash(manager.clone(),call,std::env::var("PI_BASH_FOREGROUND_SECONDS").ok().as_deref(),&settings,shell.as_deref()).await.map_err(ToolError::Message)?;
             if let Some(details)=&result.details && details.get("background").and_then(Value::as_bool)==Some(true) && let Some(id)=details.get("bash_id").and_then(Value::as_str) {
                 let id=id.to_owned();let exit=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?.get(&id).map(|runtime|runtime.subscribe_exit());
                 if let Some(mut exit)=exit {let task=tokio::spawn(async move {
@@ -154,13 +169,14 @@ impl Extension for TerminalExtension {
             })}));
             if name=="bash_output" {api.register_tool_with_renderers(tool,crate::tools::render::output_renderers()).expect("valid builtin bash_output registration");} else {api.register_tool(tool);}
         }
-        let tool_manager=manager.clone();let tool_monitors=monitors.clone();let tool_notifier=notifier.clone();
+        let tool_manager=manager.clone();let tool_monitors=monitors.clone();let tool_notifier=notifier.clone();let tool_configuration=configuration.clone();
         api.register_tool(ToolDefinition::new("monitor","Subscribe to command output or file changes instead of polling.",crate::tools::monitor::monitor_schema(),Arc::new(move |call| {
-            let manager=tool_manager.clone();let monitors=tool_monitors.clone();let notifier=tool_notifier.clone();Box::pin(async move {
+            let manager=tool_manager.clone();let monitors=tool_monitors.clone();let notifier=tool_notifier.clone();let configuration=tool_configuration.clone();Box::pin(async move {
                 let mut manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
                 let mut monitors=monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?;
                 let cwd=call.context.map(|context|context.cwd().to_path_buf()).unwrap_or(std::env::current_dir()?);
-                let result=crate::tools::monitor::execute_monitor(&mut manager,&mut monitors,&call.params,&cwd);
+                let shell=configuration.lock().map_err(|_|ToolError::Message("terminal configuration state poisoned".to_owned()))?.1.clone();
+                let result=crate::tools::monitor::execute_configured_monitor(&mut manager,&mut monitors,&call.params,&cwd,shell.as_deref());
                 if call.params.get("action").and_then(Value::as_str)==Some("rearm") && let Some(notifier)=notifier.lock().map_err(|_|ToolError::Message("monitor notifier state poisoned".to_owned()))?.as_ref() {
                     notifier.resume(monitors.snapshot().iter().filter(|record|!record.paused).map(|record|record.id.clone()).collect()).map_err(ToolError::Message)?;
                 }

@@ -19,6 +19,10 @@ futures = "=0.3.34"
 maho-ext-api = { path = "../../maho-ext-api" }
 chrono = { version = "=0.4.43", default-features = false, features = ["clock"] }
 
+[dev-dependencies]
+maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
+maho-ext-host = { path = "../../maho-ext-host" }
+
 [target.'cfg(unix)'.dependencies]
 nix = { version = "=0.28.0", features = ["signal", "process"] }
 

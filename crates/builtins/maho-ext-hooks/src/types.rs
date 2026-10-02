@@ -130,46 +130,75 @@ pub enum HookInputWire {
     SessionStart {
         #[serde(rename="sessionId")] session_id:String,
         cwd:String,
-        #[serde(flatten)] fields:HookInputFields,
+        #[serde(skip_serializing_if="Option::is_none")] reason:Option<String>,
+        #[serde(flatten)] fields:SessionHookFields,
     },
-    UserPromptSubmit {prompt:String,cwd:String,#[serde(flatten)] fields:HookInputFields},
+    UserPromptSubmit {prompt:String,cwd:String,#[serde(flatten)] fields:PromptHookFields},
     PreToolUse {
         #[serde(rename="toolName")] tool_name:String,
         #[serde(rename="toolInput")] tool_input:serde_json::Value,
-        cwd:String,#[serde(flatten)] fields:HookInputFields,
+        cwd:String,#[serde(flatten)] fields:PreToolHookFields,
     },
     PostToolUse {
         #[serde(rename="toolName")] tool_name:String,
         #[serde(rename="toolInput")] tool_input:serde_json::Value,
         #[serde(rename="toolOutput")] tool_output:serde_json::Value,
-        cwd:String,#[serde(flatten)] fields:HookInputFields,
+        cwd:String,#[serde(flatten)] fields:PostToolHookFields,
     },
-    PreCompact {reason:String,cwd:String,#[serde(flatten)] fields:HookInputFields},
-    PostCompact {reason:String,cwd:String,#[serde(flatten)] fields:HookInputFields},
+    PreCompact {reason:String,cwd:String,#[serde(flatten)] fields:PreCompactHookFields},
+    PostCompact {reason:String,cwd:String,#[serde(flatten)] fields:PostCompactHookFields},
     Stop {
         #[serde(rename="stopReason",skip_serializing_if="Option::is_none")] stop_reason:Option<String>,
-        cwd:String,#[serde(flatten)] fields:HookInputFields,
+        cwd:String,#[serde(flatten)] fields:SessionHookFields,
     },
-    Notification {message:String,kind:String,cwd:String,#[serde(flatten)] fields:HookInputFields},
+    Notification {message:String,kind:String,cwd:String,#[serde(flatten)] fields:NotificationHookFields},
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct HookInputFields {
+pub struct SessionHookFields {
     #[serde(skip_serializing_if="Option::is_none")] pub hook_event_name:Option<SupportedHookEvent>,
     #[serde(skip_serializing_if="Option::is_none")] pub session_id:Option<String>,
     #[serde(skip_serializing_if="Option::is_none")] pub transcript_path:Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")] pub reason:Option<String>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PromptHookFields {
+    #[serde(skip_serializing_if="Option::is_none")] pub session_id:Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")] pub transcript_path:Option<String>,
     #[serde(skip_serializing_if="Option::is_none")] pub permission_mode:Option<String>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PreToolHookFields {
+    #[serde(skip_serializing_if="Option::is_none")] pub hook_event_name:Option<SupportedHookEvent>,
+    #[serde(skip_serializing_if="Option::is_none")] pub session_id:Option<String>,
     #[serde(skip_serializing_if="Option::is_none")] pub tool_name:Option<String>,
     #[serde(skip_serializing_if="Option::is_none")] pub tool_input:Option<serde_json::Value>,
-    #[serde(skip_serializing_if="Option::is_none")] pub tool_response:Option<serde_json::Value>,
     #[serde(skip_serializing_if="Option::is_none")] pub tool_use_id:Option<String>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PostToolHookFields {
+    #[serde(flatten)] pub tool:PreToolHookFields,
+    #[serde(skip_serializing_if="Option::is_none")] pub tool_response:Option<serde_json::Value>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PreCompactHookFields {
+    #[serde(flatten)] pub session:SessionHookFields,
     #[serde(skip_serializing_if="Option::is_none")] pub custom_instructions:Option<String>,
     #[serde(skip_serializing_if="Option::is_none")] pub request_id:Option<String>,
     #[serde(skip_serializing_if="Option::is_none")] pub will_retry:Option<bool>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PostCompactHookFields {
+    #[serde(flatten)] pub session:SessionHookFields,
+    #[serde(skip_serializing_if="Option::is_none")] pub request_id:Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")] pub will_retry:Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")] pub accepted:Option<bool>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct NotificationHookFields {
+    #[serde(flatten)] pub session:SessionHookFields,
     #[serde(skip_serializing_if="Option::is_none")] pub title:Option<String>,
     #[serde(skip_serializing_if="Option::is_none")] pub notification_source:Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")] pub request_id:Option<String>,
     #[serde(skip_serializing_if="Option::is_none")] pub status:Option<String>,
 }
 
@@ -182,5 +211,13 @@ mod wire_tests {
         let parsed:HookInputWire=serde_json::from_value(input.clone()).unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(),input);
         assert!(serde_json::from_value::<HookInputWire>(serde_json::json!({"event":"PreToolUse","cwd":"/repo"})).is_err());
+    }
+    #[test]
+    fn lifecycle_builders_round_trip_optional_fields_without_duplicate_reason() {
+        use crate::lifecycle_adapter::*;
+        let context=LifecycleInputContext {cwd:"/repo",session_id:"session",transcript_path:Some("/session.jsonl")};
+        for input in [build_session_start_hook_input("startup",&context),build_pre_compact_hook_input("manual","request",true,Some("brief"),&context),build_post_compact_hook_input("manual","request",false,true,&context),build_notification_hook_input(NotificationHookInput {message:"ready",kind:"tool",title:Some("title"),source:Some("monitor"),request_id:Some("request"),status:Some("completed")},&context)] {
+            let wire:HookInputWire=serde_json::from_value(input.clone()).unwrap();assert_eq!(serde_json::to_value(wire).unwrap(),input);
+        }
     }
 }

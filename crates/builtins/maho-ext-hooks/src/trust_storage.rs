@@ -43,36 +43,51 @@ impl FileHookStateStorage {
             {use std::os::unix::fs::PermissionsExt;file.as_file().set_permissions(std::fs::Permissions::from_mode(mode))?;}
             let mut serialized_state=next.clone();serialized_state.version=1;
             let mut serialized=serde_json::to_string_pretty(&serialized_state).map_err(std::io::Error::other)?;serialized.push('\n');file.write_all(serialized.as_bytes())?;
-            file.persist(path).map_err(|error|error.error)?;Ok(next)
+            if let Err(error)=file.persist(path) {
+                let publication=error.error;
+                if let Err(cleanup)=error.file.close() {return Err(std::io::Error::other(format!("Failed to publish and clean up hook trust state snapshot: {publication}; {cleanup}")));}
+                return Err(publication);
+            }Ok(next)
         })();release_result(lease,result)
     }
 }
 
 fn read_snapshot(path:&Path)->std::io::Result<Option<String>> {match std::fs::read_to_string(path) {Ok(text)=>Ok(Some(text)),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(error)=>Err(error)}}
 struct DirectoryLease {path:PathBuf,held:bool,heartbeat:Option<std::thread::JoinHandle<()>>,state:std::sync::Arc<(std::sync::Mutex<LeaseState>,std::sync::Condvar)>}
-struct LeaseState {released:bool,modified:std::time::SystemTime,compromised:Option<String>}
+struct LeaseState {released:bool,modified:std::time::SystemTime,compromised:Option<String>,second_precision:bool,last_update:std::time::Instant}
 fn refresh_lease(path:&Path,state:&mut LeaseState)->std::io::Result<()> {
     if std::fs::metadata(path)?.modified()?!=state.modified {return Err(std::io::Error::other("ECOMPROMISED: hook state lock modification time changed"));}
-    let file=std::fs::File::open(path)?;file.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()))?;
-    state.modified=file.metadata()?.modified()?;Ok(())
+    let now=std::time::SystemTime::now();
+    let modified=if state.second_precision {let elapsed=now.duration_since(std::time::UNIX_EPOCH).map_err(std::io::Error::other)?;std::time::UNIX_EPOCH+std::time::Duration::from_secs(elapsed.as_secs()+u64::from(elapsed.subsec_nanos()>0))}else {now};
+    let file=std::fs::File::open(path)?;file.set_times(std::fs::FileTimes::new().set_modified(modified))?;
+    state.modified=file.metadata()?.modified()?;state.last_update=std::time::Instant::now();Ok(())
 }
 impl DirectoryLease {
     fn acquire(path:&Path)->std::io::Result<Self> {
         std::fs::create_dir_all(path.parent().ok_or_else(||std::io::Error::other("hook state path has no parent"))?)?;
         let path=PathBuf::from(format!("{}.lock",path.display()));
         retry_lock(||acquire_directory(&path,true),||std::thread::sleep(std::time::Duration::from_millis(20)))?;
-        let file=std::fs::File::open(&path)?;
-        let millis=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(std::io::Error::other)?.as_millis();
-        let probe=std::time::UNIX_EPOCH+std::time::Duration::from_millis(u64::try_from(millis.div_ceil(1000)*1000+5).map_err(std::io::Error::other)?);
-        file.set_times(std::fs::FileTimes::new().set_modified(probe))?;
-        let state=std::sync::Arc::new((std::sync::Mutex::new(LeaseState {released:false,modified:file.metadata()?.modified()?,compromised:None}),std::sync::Condvar::new()));
+        let probe_result=(|| {
+            let file=std::fs::File::open(&path)?;
+            let millis=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(std::io::Error::other)?.as_millis();
+            let probe=std::time::UNIX_EPOCH+std::time::Duration::from_millis(u64::try_from(millis.div_ceil(1000)*1000+5).map_err(std::io::Error::other)?);
+            file.set_times(std::fs::FileTimes::new().set_modified(probe))?;file.metadata()?.modified()
+        })();
+        let modified=match probe_result {Ok(modified)=>modified,Err(error)=>{let _cleanup=std::fs::remove_dir(&path);return Err(error);}};
+        let second_precision=modified.duration_since(std::time::UNIX_EPOCH).map_err(std::io::Error::other)?.subsec_nanos()==0;
+        let state=std::sync::Arc::new((std::sync::Mutex::new(LeaseState {released:false,modified,compromised:None,second_precision,last_update:std::time::Instant::now()}),std::sync::Condvar::new()));
         let progress=state.clone();let lock_path=path.clone();
         let heartbeat=std::thread::spawn(move || {
             let (state,wake)=&*progress;let mut state=state.lock().expect("hook lease state");
+            let mut delay=std::time::Duration::from_secs(5);
             while !state.released {
-                let (next,timeout)=wake.wait_timeout_while(state,std::time::Duration::from_secs(5),|state|!state.released).expect("hook lease heartbeat");state=next;
+                let (next,timeout)=wake.wait_timeout_while(state,delay,|state|!state.released).expect("hook lease heartbeat");state=next;
                 if state.released {break;}
-                if timeout.timed_out()&&let Err(error)=refresh_lease(&lock_path,&mut state) {state.compromised=Some(format!("ECOMPROMISED: {error}"));break;}
+                if timeout.timed_out() {match refresh_lease(&lock_path,&mut state) {
+                    Ok(())=>delay=std::time::Duration::from_secs(5),
+                    Err(error) if error.kind()!=std::io::ErrorKind::NotFound&&!error.to_string().starts_with("ECOMPROMISED:")&&state.last_update.elapsed()<=std::time::Duration::from_secs(10)=>delay=std::time::Duration::from_secs(1),
+                    Err(error)=>{state.compromised=Some(format!("ECOMPROMISED: {error}"));break;}
+                }}
             }
         });
         Ok(Self {path,held:true,heartbeat:Some(heartbeat),state})

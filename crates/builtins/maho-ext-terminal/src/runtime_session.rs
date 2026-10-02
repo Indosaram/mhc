@@ -58,6 +58,7 @@ pub struct TerminalScreenSnapshot {
     pub cols:u16,
     pub rows:u16,
     pub visible_grid:Vec<String>,
+    pub scrollback:Vec<String>,
     pub cursor:(u16,u16),
 }
 
@@ -70,14 +71,18 @@ pub struct TerminalRuntimeSession {
     exit_signal:tokio::sync::watch::Receiver<Option<Result<PtyExit,String>>>,
     observers:Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,
     screen:Arc<Mutex<vt100::Parser>>,
+    scrollback:usize,
 }
 
 impl TerminalRuntimeSession {
     pub fn start(command:&str,options:PtySessionOptions)->Result<Self,RuntimeError> {
+        Self::start_with_scrollback(command,options,crate::shared::DEFAULT_SCROLLBACK)
+    }
+    pub fn start_with_scrollback(command:&str,options:PtySessionOptions,scrollback:usize)->Result<Self,RuntimeError> {
         let output=Arc::new(Mutex::new(OutputState::default()));let sink=Arc::clone(&output);
         let observers:Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>=Arc::new(Mutex::new(vec![]));
         let listeners=observers.clone();
-        let screen=Arc::new(Mutex::new(vt100::Parser::new(options.rows,options.cols,crate::shared::DEFAULT_SCROLLBACK)));
+        let screen=Arc::new(Mutex::new(vt100::Parser::new(options.rows,options.cols,scrollback)));
         let projection=screen.clone();
         let mut session=PtySession::start(options,move |chunk| {
             if let Ok(mut state)=sink.lock() {
@@ -97,7 +102,7 @@ impl TerminalRuntimeSession {
             if let Ok(mut state)=lock.lock() {*state=Some(result.clone());signal.notify_all();}
             exit_sender.send_replace(Some(result));
         });
-        Ok(Self {command:command.to_owned(),session,output,exit,exit_thread:Some(exit_thread),exit_signal,observers,screen})
+        Ok(Self {command:command.to_owned(),session,output,exit,exit_thread:Some(exit_thread),exit_signal,observers,screen,scrollback})
     }
 
     pub fn backend(&self)->&'static str {"native"}
@@ -123,15 +128,19 @@ impl TerminalRuntimeSession {
     pub fn full_output(&self)->Result<String,RuntimeError> {Ok(String::from_utf16_lossy(&self.output.lock().map_err(|_|RuntimeError::Poisoned)?.buffer))}
     pub fn write(&mut self,bytes:&[u8])->Result<(),RuntimeError> {self.session.write(bytes)?;Ok(())}
     pub fn snapshot(&self)->Result<TerminalScreenSnapshot,RuntimeError> {
-        let screen=self.screen.lock().map_err(|_|RuntimeError::Poisoned)?;
-        let screen=screen.screen();let (rows,cols)=screen.size();
-        Ok(TerminalScreenSnapshot {cols,rows,visible_grid:screen.rows(0,cols).collect(),cursor:screen.cursor_position()})
+        let mut parser=self.screen.lock().map_err(|_|RuntimeError::Poisoned)?;
+        let screen=parser.screen_mut();let (rows,cols)=screen.size();
+        let visible_grid=screen.rows(0,cols).collect();let cursor=screen.cursor_position();
+        screen.set_scrollback(usize::MAX);let count=screen.scrollback();let mut scrollback=Vec::with_capacity(count);
+        for offset in (1..=count).rev() {screen.set_scrollback(offset);scrollback.push(screen.rows(0,cols).next().unwrap_or_default());}
+        screen.set_scrollback(0);
+        Ok(TerminalScreenSnapshot {cols,rows,visible_grid,scrollback,cursor})
     }
     pub fn resize(&self,cols:u16,rows:u16)->Result<(),RuntimeError> {
         self.session.resize(cols,rows)?;
         let output=self.output.lock().map_err(|_|RuntimeError::Poisoned)?;
         let mut screen=self.screen.lock().map_err(|_|RuntimeError::Poisoned)?;
-        *screen=vt100::Parser::new(rows,cols,crate::shared::DEFAULT_SCROLLBACK);
+        *screen=vt100::Parser::new(rows,cols,self.scrollback);
         screen.process(String::from_utf16_lossy(&output.buffer).as_bytes());Ok(())
     }
     pub fn kill(&mut self)->Result<(),RuntimeError> {self.session.kill()?;Ok(())}
@@ -154,6 +163,12 @@ impl Drop for TerminalRuntimeSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn snapshot_exposes_scrollback_and_restores_visible_view()->Result<(),RuntimeError> {
+        let runtime=TerminalRuntimeSession::start("screen",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'one\r\ntwo\r\nthree'").size(20,2))?;
+        runtime.wait(Duration::from_secs(5))?;let snapshot=runtime.snapshot()?;
+        assert_eq!(snapshot.scrollback,["one"]);assert_eq!(snapshot.visible_grid,["two","three"]);assert_eq!(runtime.snapshot()?,snapshot);runtime.dispose()
+    }
 
     #[test]
     fn split_utf8_and_delta_cursor() {
