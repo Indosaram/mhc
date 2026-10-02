@@ -1,5 +1,5 @@
 use std::{path::PathBuf,sync::{Arc,Mutex}};
-use maho_ext_api::{BusSubscription,EventKind,EventResult,Extension,ExtensionApi,ExtensionEvent,ExtensionFailure,SessionReason};
+use maho_ext_api::{BusSubscription,EventKind,EventResult,Extension,ExtensionApi,ExtensionEvent,SessionReason};
 use crate::{index::SenpiTelemetryOptions,omo_native_parallel::ParallelTelemetryRegistry,omo_native_parallel_summary::{SummaryCapture,register_omo_native_parallel_summary},product_identity::{get_omo_native_state_dir,hash_session_id}};
 pub type ConfigEnabled=Arc<dyn Fn(&std::path::Path)->bool+Send+Sync>;
 pub struct OmoNativeTelemetryComponent {
@@ -27,7 +27,7 @@ impl Extension for OmoNativeTelemetryComponent {
         api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let result=if enabled(&ctx.cwd) && let ExtensionEvent::SessionStart(event)=event {
             let reason=match event.reason {SessionReason::Startup=>"startup",SessionReason::Reload=>"reload",SessionReason::New=>"new",SessionReason::Resume=>"resume",SessionReason::Fork=>"fork",SessionReason::Quit=>"startup"};
             crate::omo_native_session::start_native_session(&options,ctx.session_manager.session_id(),&serde_json::json!({"reason":reason}),&ctx.agent_dir).map(|session|{*client.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=session;})
-        } else {Ok(())};Box::pin(async move {result.map_err(|e|ExtensionFailure::new(e.to_string()))?;Ok(EventResult::None)})}));
+        } else {Ok(())};Box::pin(async move {if let Err(error)=result {eprintln!("telemetry_capture_failed: omo-native-session: {error}");}Ok(EventResult::None)})}));
         api.on(EventKind::SessionShutdown,Arc::new(move |_,_| {let client=shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();Box::pin(async move {if let Some(client)=client {client.shutdown().await;}Ok(EventResult::None)})}));
         crate::omo_native_turns::register_omo_native_turn_telemetry(api,Arc::clone(&hash),Arc::clone(&capture),Arc::new(||eprintln!("telemetry_event_property_rejected: turn_end assistant usage contained missing or invalid values")));
         crate::omo_native_tools::register_omo_native_tool_telemetry(api,self.skills_root.clone(),hash,capture);
@@ -42,6 +42,7 @@ mod tests {
     fn component(home:&std::path::Path)->(OmoNativeTelemetryComponent,Arc<Mutex<Vec<TelemetryCaptureMessage>>>) {std::fs::write(home.join("models.json"),"{\"providers\":{}}").unwrap();std::fs::write(home.join("settings.json"),"{}").unwrap();let messages=Arc::new(Mutex::new(Vec::new()));let captured=Arc::clone(&messages);let options=SenpiTelemetryOptions {env:Some(env(home)),state_dir:Some(home.join("native")),transport_factory:Some(Arc::new(move |_,_|Ok(Box::new(Recorder(Arc::clone(&captured)))))),..Default::default()};{let mut component=OmoNativeTelemetryComponent::new(options,home.join("skills"),Arc::new(|_|true));let clock=std::sync::atomic::AtomicU64::new(1000);component.clock=Arc::new(move || f64::from(u32::try_from(clock.fetch_add(1,std::sync::atomic::Ordering::SeqCst)).unwrap()));(component,messages)}}
     fn start()->ExtensionEvent {ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None})}
     fn shutdown()->ExtensionEvent {ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent {reason:SessionReason::Quit,target_session_file:None,signal:None})}
+    #[tokio::test] async fn injected_shutdown_bound() {let t=tempfile::tempdir().unwrap();let (mut component,_)=component(t.path());let delays=Arc::new(Mutex::new(Vec::new()));let recorded=Arc::clone(&delays);component.options.set_timeout_fn=Some(Arc::new(move |delay| {recorded.lock().unwrap().push(delay);Box::pin(futures::future::pending())}));let mut api=api();component.register(&mut api);let ctx=context(t.path(),"s");dispatch(&api,start(),&ctx).await;dispatch(&api,shutdown(),&ctx).await;assert_eq!(*delays.lock().unwrap(),vec![std::time::Duration::from_millis(1000)]);}
     #[tokio::test] async fn native_feature_event_stream() {
         let t=tempfile::tempdir().unwrap();let (component,messages)=component(t.path());let mut api=api();component.register(&mut api);let ctx=context(t.path(),"stream");
         dispatch(&api,start(),&ctx).await;
