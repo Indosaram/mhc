@@ -27,6 +27,11 @@ pub struct ToolExecutionRenderer {
     identity: ToolExecutionIdentity,
     built_in: Option<Rc<RefCell<dyn ToolRenderers>>>,
     custom: Option<Rc<RefCell<dyn ToolRenderers>>>,
+    /// `renderShell` of the built-in tool definition found by name, which is where the shell
+    /// actually lives: `maho_tools`'s `edit` definition declares `RenderShell::Own`. The renderer
+    /// registry only supplies `renderCall`/`renderResult`, so the shell has to be read from the
+    /// definition.
+    built_in_shell: RenderShell,
     content_box: TuiBox,
     content_text: Text,
     self_render_container: Container,
@@ -46,10 +51,18 @@ impl ToolExecutionRenderer {
         on_invalidate: Rc<dyn Fn()>,
     ) -> Self {
         let built_in = create_all_tool_renderers().get(identity.tool_name.as_str()).cloned();
+        let built_in_shell = maho_tools::index::create_all_tool_definitions(
+            std::path::Path::new(&identity.cwd),
+            maho_tools::index::ToolsOptions::default(),
+        )
+        .get(&identity.tool_name)
+        .and_then(|definition| definition.render_shell)
+        .unwrap_or(RenderShell::Default);
         Self {
             identity,
             built_in,
             custom,
+            built_in_shell,
             content_box: TuiBox::with_padding(1, 1),
             content_text: Text::with_padding(String::new(), 1, 1),
             self_render_container: Container::new(),
@@ -66,7 +79,13 @@ impl ToolExecutionRenderer {
     }
 
     pub fn has_result_renderer(&self) -> bool {
-        self.custom.is_some() || self.built_in.is_some()
+        // senpi's `hasResultRenderer` asks the renderer the card actually chose: the definition's
+        // own, else the built-in's.
+        match (&self.custom, &self.built_in) {
+            (Some(custom), _) => custom.borrow().has_result_renderer(),
+            (None, Some(built_in)) => built_in.borrow().has_result_renderer(),
+            (None, None) => false,
+        }
     }
 
     pub fn render_shell(&self) -> RenderShell {
@@ -76,10 +95,7 @@ impl ToolExecutionRenderer {
                 return shell;
             }
         }
-        match &self.built_in {
-            Some(built_in) => built_in.borrow().render_shell(),
-            None => RenderShell::Default,
-        }
+        self.built_in_shell
     }
 
     fn get_call_renderer(&self) -> Option<Rc<RefCell<dyn ToolRenderers>>> {
@@ -99,7 +115,7 @@ impl ToolExecutionRenderer {
             is_error: self.state.is_error,
             has_result: self.state.result.is_some(),
             spinner_frame: self.state.spinner_frame,
-            now_ms: 0.,
+            now_ms: self.state.now_ms,
             invalidate: Rc::clone(&self.on_invalidate),
         }
     }
@@ -134,7 +150,7 @@ impl ToolExecutionRenderer {
                 &self.theme,
             );
             if let Some(progress) = &progress {
-                text += &format!("\n{}", format_tool_progress_line(progress, 0., self.state.spinner_frame));
+                text += &format!("\n{}", format_tool_progress_line(progress, self.state.now_ms, self.state.spinner_frame));
             }
             self.content_text.set_text(text);
             return;
@@ -147,18 +163,28 @@ impl ToolExecutionRenderer {
             self.content_box.set_bg_fn(Some(background));
             self.content_box.detach_all();
         }
-        self.render_call(use_self);
-        if self.state.result.is_some() {
-            self.render_result(use_self);
+        // senpi's edit renderer rebuilds its call component inside `renderResult`, because the call
+        // body and its background show the preview the result settles. A renderer that asks for
+        // this gets its call child built after the result has run, then committed first so the
+        // child order still matches senpi's.
+        let rebuild_call_after_result = self
+            .get_call_renderer()
+            .is_some_and(|renderer| renderer.borrow().rebuild_call_after_result());
+        let mut call_child = if rebuild_call_after_result { None } else { self.render_call() };
+        let result_child = if self.state.result.is_some() { self.render_result() } else { None };
+        if rebuild_call_after_result {
+            call_child = self.render_call();
+        }
+        if let Some(child) = call_child {
+            self.add_child(use_self, child);
+        }
+        if let Some(child) = result_child {
+            self.add_child(use_self, child);
         }
         if let Some(progress) = &progress {
-            let line = format_tool_progress_line(progress, 0., self.state.spinner_frame);
+            let line = format_tool_progress_line(progress, self.state.now_ms, self.state.spinner_frame);
             let child = Rc::new(RefCell::new(Text::with_padding(line, 0, 0))) as Rc<RefCell<dyn Component>>;
-            if use_self {
-                self.self_render_container.add_child(child);
-            } else {
-                self.content_box.add_child(child);
-            }
+            self.add_child(use_self, child);
         }
     }
 
@@ -170,11 +196,10 @@ impl ToolExecutionRenderer {
         }
     }
 
-    fn render_call(&mut self, use_self: bool) {
+    fn render_call(&mut self) -> Option<Rc<RefCell<dyn Component>>> {
         let fallback = create_tool_call_fallback(&self.identity.tool_name, &self.theme);
         let Some(renderer) = self.get_call_renderer() else {
-            self.add_child(use_self, fallback);
-            return;
+            return Some(fallback);
         };
         let component = {
             let last = self.call_component.clone();
@@ -189,27 +214,21 @@ impl ToolExecutionRenderer {
                     Some(fallback),
                     Box::new(|| {}),
                 ))) as Rc<RefCell<dyn Component>>;
-                self.add_child(use_self, boundary);
+                Some(boundary)
             }
             None => {
                 self.call_component = None;
-                self.add_child(use_self, fallback);
+                Some(fallback)
             }
         }
     }
 
-    fn render_result(&mut self, use_self: bool) {
-        let result = match self.state.result.clone() {
-            Some(result) => result,
-            None => return,
-        };
+    fn render_result(&mut self) -> Option<Rc<RefCell<dyn Component>>> {
+        let result = self.state.result.clone()?;
         let tool_result = result.as_tool_result();
         let fallback = create_tool_result_fallback(Some(&tool_result), self.state.show_images, &self.theme);
         let Some(renderer) = self.get_call_renderer() else {
-            if let Some(fallback) = fallback {
-                self.add_child(use_self, fallback);
-            }
-            return;
+            return fallback;
         };
         let options = crate::tools::renderers::ToolRenderResultOptions {
             expanded: self.state.expanded,
@@ -228,13 +247,11 @@ impl ToolExecutionRenderer {
                     fallback,
                     Box::new(|| {}),
                 ))) as Rc<RefCell<dyn Component>>;
-                self.add_child(use_self, boundary);
+                Some(boundary)
             }
             None => {
                 self.result_component = None;
-                if let Some(fallback) = fallback {
-                    self.add_child(use_self, fallback);
-                }
+                fallback
             }
         }
     }
