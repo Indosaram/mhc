@@ -4583,7 +4583,7 @@ impl AgentSession {
             let event = maho_ext_api::ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent {
                 reason,
                 target_session_file: None,
-                signal: None,
+                signal: Some(maho_ext_api::AbortSignal::default()),
             });
             let _ = runner.emit(event).await;
         }
@@ -6299,7 +6299,8 @@ mod tests {
         })]);
         session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
         session.runtime_shutdown_to(maho_ext_api::SessionReason::Resume, Some("target.jsonl".to_owned())).await;
-        assert_eq!(*lock(&observed), [Some("target.jsonl".to_owned())]);
+        session.emit_session_shutdown(maho_ext_api::SessionReason::Resume).await;
+        assert_eq!(*lock(&observed), [Some("target.jsonl".to_owned()), None]);
     }
 
     #[tokio::test]
