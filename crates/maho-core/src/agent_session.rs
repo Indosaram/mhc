@@ -699,18 +699,42 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             }
             let Ok(_admission) = session.prompt_admission.try_lock() else { return Ok(maho_ext_api::ApplyCompactionResult::Rejected); };
             if session.is_streaming() { return Ok(maho_ext_api::ApplyCompactionResult::Rejected); }
-            session.apply_compaction_internal(&crate::compaction::compaction::CompactionResult { summary: result.summary, first_kept_entry_id: result.first_kept_entry_id,
-                tokens_before: result.tokens_before as i64, estimated_tokens_after: None, usage: None, details: result.details }, Some(true)).map_err(maho_ext_api::ExtensionFailure::new)?;
-            let lifecycle = session.compaction_state();
-            if let Some(operation) = lifecycle.operation() {
-                let revision = session.message_revision() as i64;
-                session.state().compaction_lifecycle.finish(&crate::compaction::lifecycle::FinishCompactionOperation {
-                    operation_id: operation.operation_id.clone(), status: crate::compaction::lifecycle::CompactionFinishStatus::Completed,
-                    ended_revision: revision, rejection_cause: None, error_message: None,
-                });
-            }
+            let _work = session.work_barrier.begin();
+            let model = session.model();
+            let (request_id, owns_controller) = {
+                let mut state = session.state();
+                let owns = state.compaction_abort_controller.is_none();
+                let controller = state.compaction_abort_controller.clone().unwrap_or_default();
+                let revision = state.message_revision as i64;
+                let request_id = state.compaction_lifecycle.begin(crate::compaction::lifecycle::BeginCompactionOperation {
+                    operation_id: uuid::Uuid::new_v4().to_string(), stage: crate::compaction::lifecycle::CompactionStage::Execution,
+                    reason: format!("{:?}", options.reason), model: Some(crate::compaction::lifecycle::CompactionModelRef {
+                        provider: model.provider, id: model.id,
+                    }), started_revision: revision,
+                }, controller.clone());
+                state.compaction_abort_controller = Some(controller);
+                (request_id, owns)
+            };
+            if owns_controller { session.emit(AgentSessionEvent::CompactionStart { reason: options.reason, request_id: Some(request_id.clone()) }); }
+            let applied = session.apply_compaction_internal(&crate::compaction::compaction::CompactionResult { summary: result.summary.clone(), first_kept_entry_id: result.first_kept_entry_id.clone(),
+                tokens_before: result.tokens_before as i64, estimated_tokens_after: None, usage: None, details: result.details.clone() }, Some(true));
+            let revision = session.message_revision() as i64;
+            session.state().compaction_lifecycle.finish(&crate::compaction::lifecycle::FinishCompactionOperation {
+                operation_id: request_id.clone(), status: if applied.is_ok() { crate::compaction::lifecycle::CompactionFinishStatus::Completed }
+                    else { crate::compaction::lifecycle::CompactionFinishStatus::Failed },
+                ended_revision: revision, rejection_cause: None, error_message: applied.as_ref().err().cloned(),
+            });
             session.state().compaction_abort_controller = None;
             session.state().compaction_extension_signal = None;
+            session.emit(AgentSessionEvent::CompactionEnd { reason: options.reason, request_id: Some(request_id),
+                result: applied.is_ok().then_some(result), aborted: false, will_retry: false,
+                accepted: Some(applied.is_ok()), rejection_cause: None,
+                error_message: applied.as_ref().err().map(|error| format!("Compaction failed: {error}")),
+            });
+            if applied.is_err() {
+                return Ok(maho_ext_api::ApplyCompactionResult::Rejected);
+            }
+            session.state().delegated_compaction_key = None;
             Ok(maho_ext_api::ApplyCompactionResult::Applied)
         })
     }
@@ -6395,6 +6419,11 @@ mod tests {
     async fn precomputed_extension_compaction_preserves_provenance_and_rejects_stale_revision() {
         use maho_ext_api::ExtensionContextActions;
         let session = test_session();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if matches!(event, AgentSessionEvent::CompactionStart { .. } | AgentSessionEvent::CompactionEnd { .. }) { lock(&captured).push(event.clone()); }
+        }));
         session.agent.set_model(test_model());
         let retained = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"recent","timestamp":0})));
         let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
@@ -6404,8 +6433,14 @@ mod tests {
             expected_revision: Some(revision), expected_warm_anchor: None, signal: None };
         assert_eq!(actions.apply_compaction(result.clone(), options(session.message_revision() + 1)).await.expect("stale"), maho_ext_api::ApplyCompactionResult::Stale);
         assert_eq!(session.with_session_manager(|manager| manager.entries()).len(), 1);
+        assert!(lock(&events).is_empty());
         assert_eq!(actions.apply_compaction(result, options(session.message_revision())).await.expect("applied"), maho_ext_api::ApplyCompactionResult::Applied);
         assert_eq!(session.with_session_manager(|manager| manager.entries().last().expect("compaction")["fromHook"].clone()), true);
+        assert_eq!(session.compaction_state().status(), "completed");
+        let events = lock(&events);
+        let AgentSessionEvent::CompactionStart { request_id, .. } = &events[0] else { panic!("start"); };
+        assert!(matches!(&events[1], AgentSessionEvent::CompactionEnd { request_id: completed, accepted: Some(true), .. } if completed == request_id));
+        assert_eq!(events.len(), 2);
     }
 
     #[tokio::test]
