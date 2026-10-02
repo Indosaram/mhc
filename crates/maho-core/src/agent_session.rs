@@ -1843,7 +1843,7 @@ impl AgentSession {
                     .await.map_err(|error| error.to_string())?
                 } else { maho_ext_api::EventResult::None }
             };
-            let (result, from_extension) = match before {
+            let (mut result, from_extension) = match before {
                 maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult { cancel: Some(true), rejection_cause, reason, .. }) => {
                     rejection = Some(rejection_cause.unwrap_or(maho_ext_api::CompactionRejectionCause::CancelledByExtension));
                     rejection_aborted = true;
@@ -1942,6 +1942,8 @@ impl AgentSession {
                 if error == "Compaction rejected: summary-would-overflow" { rejection = Some(maho_ext_api::CompactionRejectionCause::WouldOverflow); }
                 error
             })?;
+            result.estimated_tokens_after = Some(self.with_session_manager(|manager| manager.build_context(manager.leaf_id()))
+                .messages.iter().map(crate::compaction::compaction::estimate_tokens).sum::<u64>() as i64);
             accepted_entry = Some((entry, from_extension));
             Ok(result)
         }.await;
@@ -6068,6 +6070,8 @@ mod tests {
         assert_eq!(result.summary, "digest\n\n---\n\n**Turn Context (split turn):**\n\nprefix digest");
         assert!(result.details.expect("file details")["readFiles"].is_array());
         assert!(result.usage.is_some());
+        assert_eq!(result.estimated_tokens_after, Some(session.with_session_manager(|manager| manager.build_context(manager.leaf_id()))
+            .messages.iter().map(crate::compaction::compaction::estimate_tokens).sum::<u64>() as i64));
         assert!(!session.is_compacting());
         assert_eq!(session.compaction_state().status(), "completed");
         assert_eq!(session.compaction_state().generation(), 1);
