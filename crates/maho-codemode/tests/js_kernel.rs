@@ -230,3 +230,26 @@ async fn forced_worker_retirement_settles_nested_host_wait_as_stale() {
     assert!(fresh);
     assert_eq!(recovered.unwrap()["valueRepr"],"42");
 }
+
+#[tokio::test]
+async fn forced_retirement_retires_tracked_child_outside_worker_group() {
+    use maho_codemode::kernels::js::process_tree_host::*;
+    let kernel=JavaScriptKernel::start(Path::new(env!("CARGO_MANIFEST_DIR")),"bun-owned-child",4,None).await.unwrap();
+    let parent=kernel.run_with_callbacks(KernelRunInput {cell_id:"child-owner".into(),code:"const child = Bun.spawn(['setsid','sh','-c','printf READY; exec sleep 3600'], {stdout:'pipe',stderr:'ignore'}); await child.stdout.getReader().read(); await tool.started({pid:child.pid}); while(true) {}".into(),timeout_ms:None},None,None);
+    let stop=async {
+        let call=kernel.next_tool_call().await.unwrap();
+        let pid=call["args"]["pid"].as_u64().unwrap() as u32;
+        kernel.deliver_tool_reply(serde_json::json!({"type":"tool-reply","callId":call["callId"],"ok":true,"value":null})).unwrap();
+        let retained=kernel.interrupt("child-stop",Some("child-owner")).await;
+        let status=tokio::process::Command::new("ps").args(["-o","stat=","-p",&pid.to_string()]).output().await.unwrap();
+        let state=String::from_utf8_lossy(&status.stdout);
+        let retired=state.trim().is_empty() || state.trim().starts_with('Z');
+        terminate_process_trees(&[pid],TerminateProcessTreesOptions {grace_ms:100,kill_wait_ms:Some(100),owner_pid:None}).await;
+        (retained,retired)
+    };
+    let (parent,(retained,retired))=tokio::join!(parent,stop);
+    kernel.close().await.unwrap();
+    assert_eq!(parent.unwrap()["ok"],false);
+    assert!(!retained.unwrap());
+    assert!(retired,"tracked child in a separate session must retire before stop settles");
+}
