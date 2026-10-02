@@ -64,6 +64,13 @@ impl GoalWaitTicker {
 impl Drop for GoalWaitTicker { fn drop(&mut self) { if let Some(timer)=&self.timer { timer.abort(); } } }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn stale_render_retires_context_and_live_sync_rearms() {
+        let mut ticker=GoalWaitTicker::new(Arc::new(|_,_|Err(ExtensionFailure::new(crate::stale_context::STALE_EXTENSION_CONTEXT_ERROR_PREFIX))),Arc::new(||0.0));
+        let input=||GoalWaitLabelInput { kind:GoalWaitKind::UserGrace,remaining_ms:10000.0,total_ms:10000.0,channel_counts:Default::default() };
+        ticker.sync(crate::test_context::context(),input()).await.unwrap(); assert!(!ticker.running()); assert!(ticker.state.lock().unwrap().ctx.is_none());
+        let (send,mut receive)=tokio::sync::mpsc::unbounded_channel(); ticker.render=Arc::new(move |_,status| { send.send(status.is_some()).unwrap(); Ok(()) });
+        ticker.sync(crate::test_context::context(),input()).await.unwrap(); assert!(receive.recv().await.unwrap()); assert!(ticker.running()); ticker.stop().await.unwrap(); assert!(!receive.recv().await.unwrap());
+    }
     #[tokio::test(start_paused=true)] async fn countdown_updates_channels_without_moving_deadline_and_stop_clears() {
         let start=tokio::time::Instant::now(); let (send,mut receive)=tokio::sync::mpsc::unbounded_channel();
         let mut ticker=GoalWaitTicker::new(Arc::new(move |_,status| { send.send(status.map(str::to_owned)).unwrap(); Ok(()) }),Arc::new(move ||(tokio::time::Instant::now()-start).as_secs_f64()*1000.0));

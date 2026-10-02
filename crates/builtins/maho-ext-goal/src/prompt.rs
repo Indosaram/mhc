@@ -62,3 +62,12 @@ Do not end this turn with only narration about what you intend to do.
     let mut lines=vec!["<goal_stall_check>".into(),format!("System check: this is resumption-channel goal continuation #{count} in a row. Live channel kinds ({}) persisted across {count} consecutive continuation turns with no new user input and no completion. The current situation is likely abnormal - a stalled or dead wait.",sources.join(", ")),"Before waiting on these channels again, actively investigate:".into()]; lines.extend(advice); lines.extend(["- If the goal is waiting on a user decision, ask it with the question tool; if it truly cannot progress, run the blocked audit.".into(),"</goal_stall_check>".into()]); lines.join("\n")
 }
 pub fn build_monitor_stall_notice(count:u64)->String { build_goal_stall_notice(count,&["terminal-monitors".into()]) }
+#[cfg(test)] mod tests {
+    use super::*;
+    #[test] fn upstream_objective_is_escaped_inside_untrusted_sentinel() {
+        let goal:Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"Fix <bug> & ship","status":"active","tokensUsed":5,"timeUsedSeconds":12,"createdAt":0,"updatedAt":0})).unwrap();
+        let prompt=build_continuation_prompt(&goal);
+        let (_,rest)=prompt.split_once("<untrusted_objective>\n").unwrap(); let (objective,_)=rest.split_once("\n</untrusted_objective>").unwrap();
+        assert_eq!(objective,"Fix &lt;bug&gt; &amp; ship"); assert!(!prompt.contains("MAHO_OBJECTIVE_SENTINEL")); assert!(!prompt.contains("MAHO_SECONDS_SENTINEL")); assert!(!prompt.contains("MAHO_TOKENS_SENTINEL"));
+    }
+}
