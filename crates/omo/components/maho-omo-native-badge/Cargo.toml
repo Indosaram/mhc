@@ -8,5 +8,8 @@ license = "LicenseRef-SUL-1.0"
 [dependencies]
 maho-ext-api = { path = "../../../maho-ext-api" }
 
+[dev-dependencies]
+tokio = { version = "=1.52.3", features = ["macros", "rt"] }
+
 [lints]
 workspace = true
