@@ -6,7 +6,7 @@ use crate::{index::*, log::{ConfigReloadLogger, LogEvent, LogLevel}, protocol::*
 pub struct ConfigReload;
 struct WatchRun { cancel: tokio::sync::watch::Sender<bool>, task: tokio::task::JoinHandle<Result<(), String>> }
 #[derive(Default)]
-struct State { generation: u64, run: Option<WatchRun>, pending: PendingChanges, in_flight: bool, deferred_notice: bool }
+struct State { generation: u64, run: Option<WatchRun>, pending: PendingChanges, in_flight: bool, deferred_notice: bool, veto: crate::reload_deferral::ReloadVetoDeferral, flush_generation: Option<u64> }
 impl Extension for ConfigReload {
     fn register(&self, api: &mut ExtensionApi) {
         let state = Arc::new(Mutex::new(State::default()));
@@ -20,7 +20,7 @@ impl Extension for ConfigReload {
             let state = Arc::clone(&state);
             api.on(kind, Arc::new(move |_, ctx| {
                 let state = Arc::clone(&state);
-                Box::pin(async move { flush(state, ctx.clone(), None).await?; Ok(EventResult::None) })
+                Box::pin(async move { schedule_flush(state, ctx.clone(), None)?; Ok(EventResult::None) })
             }));
         }
         let shared = Arc::clone(&state);
@@ -42,6 +42,8 @@ async fn stop(state: &Arc<Mutex<State>>, clear_pending: bool) -> Result<(), Exte
     let run = {
         let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
         state.generation = state.generation.wrapping_add(1);
+        state.flush_generation = None;
+        state.veto.reset();
         if clear_pending { state.pending.clear(); state.in_flight = false; state.deferred_notice = false; }
         state.run.take()
     };
@@ -118,12 +120,7 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
                 logger.lock().map_err(|error| error.to_string())?.log(LogLevel::Info, LogEvent::WatcherStarted { target_count: targets.len() as f64 });
                 events.emit(CONFIG_WATCH_READY, &serde_json::json!({"enabled":true}));
             }
-            let state = Arc::clone(&shared); let context = ctx.clone();
-            let scope = maho_ai::node::provider_scope::active_provider_scope();
-            tokio::spawn(async move {
-                let work = async { if let Err(error) = flush(state, context.clone(), Some(generation)).await { context.ui.notify(&error.to_string(), NotificationType::Error); } };
-                if let Some(scope) = scope { let _ = maho_ai::node::provider_scope::run_with_provider_scope_async(&scope, work).await; } else { work.await; }
-            });
+            schedule_flush(Arc::clone(&shared), ctx.clone(), Some(generation)).map_err(|error| error.to_string())?;
         }
         engine.close_async().await
     };
@@ -134,18 +131,63 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
     ready_events.emit(CONFIG_WATCH_READY, &serde_json::json!({"enabled":true}));
     Ok(())
 }
-async fn flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_generation: Option<u64>) -> Result<(), ExtensionFailure> {
+fn schedule_flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_generation: Option<u64>) -> Result<(), ExtensionFailure> {
+    let (generation, mut cancelled) = {
+        let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
+        if expected_generation.is_some_and(|generation| generation != state.generation) { return Ok(()); }
+        let Some(run) = &state.run else { return Ok(()); };
+        let cancelled = run.cancel.subscribe();
+        let generation = state.generation;
+        if state.flush_generation == Some(generation) { return Ok(()); }
+        state.flush_generation = Some(generation);
+        (generation, cancelled)
+    };
+    let scope = maho_ai::node::provider_scope::active_provider_scope();
+    tokio::spawn(async move {
+        let work = async {
+            loop {
+                if *cancelled.borrow() { break; }
+                let delay = match flush(Arc::clone(&state), ctx.clone(), Some(generation)).await {
+                    Ok(Some(delay)) => delay,
+                    Ok(None) => break,
+                    Err(error) => { ctx.ui.notify(&error.to_string(), NotificationType::Error); break; },
+                };
+                tokio::select! {
+                    () = tokio::time::sleep(delay) => {},
+                    _ = cancelled.changed() => break,
+                }
+            }
+        };
+        if let Some(scope) = scope { let _ = maho_ai::node::provider_scope::run_with_provider_scope_async(&scope, work).await; } else { work.await; }
+        if let Ok(mut state) = state.lock() && state.flush_generation == Some(generation) { state.flush_generation = None; }
+    });
+    Ok(())
+}
+async fn flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_generation: Option<u64>) -> Result<Option<Duration>, ExtensionFailure> {
     let generation = {
         let state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
-        if expected_generation.is_some_and(|generation| generation != state.generation) { return Ok(()); }
-        if reload_admission(state.pending.is_empty(), state.in_flight, ctx.is_idle(), ctx.has_pending_messages()?, ctx.is_compacting(), ctx.actions().is_ok()) != ReloadAdmission::ProbeVeto { return Ok(()); }
+        if expected_generation.is_some_and(|generation| generation != state.generation) { return Ok(None); }
+        match reload_admission(state.pending.is_empty(), state.in_flight, ctx.is_idle(), ctx.has_pending_messages()?, ctx.is_compacting(), ctx.actions().is_ok()) {
+            ReloadAdmission::ProbeVeto => {},
+            ReloadAdmission::Compacting => return Ok(Some(Duration::from_millis(250))),
+            _ => return Ok(None),
+        }
         state.generation
     };
     let veto = ctx.check_reload_veto().await?;
-    if veto.cancelled { return Ok(()); }
+    if veto.cancelled {
+        let notice = {
+            let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
+            if state.generation != generation || state.in_flight || state.pending.is_empty() { return Ok(None); }
+            state.veto.defer(veto.reason.as_deref())
+        };
+        if let Some(notice) = notice { ctx.ui.notify(&notice, NotificationType::Info); }
+        return Ok(Some(Duration::from_millis(1000)));
+    }
     let paths = {
         let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
-        if state.generation != generation || state.in_flight || state.pending.is_empty() { return Ok(()); }
+        if state.generation != generation || state.in_flight || state.pending.is_empty() { return Ok(None); }
+        state.veto.reset();
         state.in_flight = true;
         state.pending.snapshot().into_iter().flat_map(|change| change.paths).collect::<std::collections::BTreeSet<_>>()
     };
@@ -153,5 +195,5 @@ async fn flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_generat
     let result = ctx.request_reload().await;
     let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
     if state.generation == generation { state.in_flight = false; }
-    result
+    result.map(|()| None)
 }
