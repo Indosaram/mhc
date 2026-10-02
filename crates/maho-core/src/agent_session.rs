@@ -403,6 +403,7 @@ struct AgentSessionState {
     cumulative_hinted_wait_ms: f64,
     pending_model_switch: Option<PendingModelSwitch>,
     compaction_abort_controller: Option<crate::compaction::lifecycle::CompactionAbortController>,
+    pending_compaction_admission: Option<crate::compaction::lifecycle::CompactionAbortController>,
     compaction_lifecycle: crate::compaction::lifecycle::CompactionLifecycleCoordinator,
     delegated_compaction_key: Option<(String, String)>,
     prompt_templates: Vec<crate::prompt_templates::PromptTemplate>,
@@ -1165,6 +1166,7 @@ impl AgentSession {
             cumulative_hinted_wait_ms: 0.0,
             pending_model_switch: None,
             compaction_abort_controller: None,
+            pending_compaction_admission: None,
             compaction_lifecycle: Default::default(),
             delegated_compaction_key: None,
             prompt_templates: Vec::new(),
@@ -1719,7 +1721,7 @@ impl AgentSession {
     pub fn is_compacting(&self) -> bool {
         let state = self.state();
         state.compaction_lifecycle.state().status() == "running" || state.compaction_abort_controller.is_some()
-            || state.branch_summary_abort_controller.is_some()
+            || state.pending_compaction_admission.is_some() || state.branch_summary_abort_controller.is_some()
     }
 
     fn is_compaction_delegated(&self) -> bool {
@@ -1732,16 +1734,32 @@ impl AgentSession {
     }
 
     pub fn abort_compaction(&self) {
+        if let Some(controller) = self.state().pending_compaction_admission.as_ref() { controller.abort(); }
         if let Some(controller) = self.state().compaction_abort_controller.as_ref() { controller.abort(); }
         if let Some(signal) = self.state().compaction_extension_signal.as_ref() { signal.abort(); }
     }
 
     pub async fn compact(&self, instructions: Option<&str>) -> Result<crate::compaction::compaction::CompactionResult, String> {
+        let pending = crate::compaction::lifecycle::CompactionAbortController::new();
+        let _work = self.work_barrier.begin();
+        {
+            let mut state = self.state();
+            if let Some(prior) = state.pending_compaction_admission.replace(pending.clone()) { prior.abort(); }
+            if let Some(prior) = &state.compaction_abort_controller { prior.abort(); }
+            if let Some(signal) = &state.compaction_extension_signal { signal.abort(); }
+        }
         self.agent.abort(None);
         self.abort_retry();
         self.agent.wait_for_idle().await;
         let _admission = self.prompt_admission.lock().await;
-        let result = self.compact_for_model(instructions, &self.model(), "manual").await;
+        {
+            let mut state = self.state();
+            if state.pending_compaction_admission.as_ref().is_some_and(|current| current.same(&pending)) {
+                state.pending_compaction_admission = None;
+            }
+        }
+        let result = if pending.aborted() { Err("Compaction cancelled".to_owned()) }
+            else { self.compact_for_model(instructions, &self.model(), "manual").await };
         if result.is_ok() && self.agent.has_queued_messages() {
             let session = self.clone();
             let guard = self.work_barrier.begin();
@@ -6282,6 +6300,25 @@ mod tests {
         assert_eq!(session.session_name().as_deref(), Some("Native Session Recovery"));
         assert_eq!(provider.get_call_log().len(), 2);
         assert!(session.state().session_title_abort_controller.is_none());
+    }
+
+    #[tokio::test]
+    async fn pending_manual_compaction_is_visible_and_abortable_before_admission() {
+        let session = test_session();
+        let admission = session.prompt_admission.lock().await;
+        let compact = session.compact(None);
+        tokio::pin!(compact);
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(compact.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        }).await;
+        assert!(session.is_compacting());
+        session.abort_compaction();
+        drop(admission);
+        assert_eq!(compact.await.expect_err("cancelled admission"), "Compaction cancelled");
+        assert!(!session.is_compacting());
+        assert_eq!(session.compaction_state().generation(), 0);
+        assert!(!session.work_barrier.has_active_work());
     }
 
     #[tokio::test]
