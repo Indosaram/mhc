@@ -37,3 +37,9 @@ fn fixture()->Fixture {
 #[test] fn terminal_snapshot_uses_durable_run_stats() {
     let f=fixture(); let mut record=create_task_record(TaskRecordInput { parent_session_id:"parent".into(),..Default::default() },Some(1)).expect("record"); record.status=senpi_task::state::TaskStatus::Completed; record.run_stats=Some(senpi_task::state::TaskRunStats { runtime_ms:500,..Default::default() }); f.store.save(&record).expect("save"); f.bridge.attach(); assert_eq!(f.events.lock().expect("events")[0]["tasks"][0]["run_stats"]["runtime_ms"],500);
 }
+#[tokio::test] async fn registered_output_reads_owned_record_and_invalid_controls_preserve_state() {
+    let f=fixture(); let record=create_task_record(TaskRecordInput { parent_session_id:"parent".into(),..Default::default() },Some(1)).expect("record"); f.store.save(&record).expect("save"); f.bridge.attach();
+    let result=(f.api.registered.rpc_handlers["omo.task.output"])(json!({"task_id":record.task_id,"mode":"status"})).await.expect("status"); assert_eq!(result["kind"],"status"); assert_eq!(result["snapshot"]["task_id"],record.task_id); assert_eq!(result["snapshot"]["parent_session_id"],"parent");
+    for (name,value) in [("omo.task.send",json!({"to":record.task_id})),("omo.task.send",Value::Null),("omo.task.output",json!({"task_id":record.task_id,"mode":"stream"})),("omo.task.cancel",json!({"task_id":record.task_id,"reason":42}))] { let result=(f.api.registered.rpc_handlers[name])(value).await.expect("invalid"); assert_eq!(result["kind"],"invalid_arguments"); }
+    assert_eq!(f.store.load(&record.task_id).expect("load").expect("record"),record); f.bridge.dispose();
+}

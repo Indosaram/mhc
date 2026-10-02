@@ -2,6 +2,15 @@ use maho_ext_api::InputSource;
 use maho_omo_task::skill_invocation_tracker::SkillInvocationTracker;
 use senpi_task::agents::SkillInvocationState;
 use serde_json::json;
+#[test] fn spawn_policy_reads_current_tracked_gate_and_plan_state() {
+    use senpi_task::tools::task::spawn_policy::{SpawnPolicyDeps,PlanReviewContractOutcome};
+    let tracker=SkillInvocationTracker::new().expect("tracker"); assert!(tracker.invocation_gate_denial("momus","a").is_some()); assert!(tracker.invocation_gate_denial("explore","a").is_none());
+    tracker.input("a","/skill:ulw-plan",InputSource::Interactive); tracker.tool_result("a","write",&json!({"path":"/repo/.omo/plans/a.md"}),false);
+    assert!(tracker.invocation_gate_denial("momus","a").is_none());
+    let Some(PlanReviewContractOutcome::Prompt { prompt })=tracker.plan_review_contract_outcome("momus","ignored caller text","a") else { panic!("canonical prompt"); };
+    assert_eq!(prompt,senpi_task::tools::task::plan_review_contract::build_plan_review_prompt("/repo/.omo/plans/a.md"));
+    tracker.input("a","/skill:start-work",InputSource::Interactive); assert!(tracker.invocation_gate_denial("momus","a").is_some()); assert!(tracker.invocation_gate_denial("momus","foreign").is_some());
+}
 #[test] fn read_skill_arms_invoked_not_requested() { let tracker = SkillInvocationTracker::new().unwrap(); tracker.tool_result("a","read",&json!({"path":"/repo/skills/ulw-plan/SKILL.md"}),false); let state = tracker.state_for("a"); assert!(state.has_invoked("ulw-plan")); assert!(!state.has_user_requested("ulw-plan")); }
 #[test] fn failed_reads_do_not_arm_invocation() { let tracker = SkillInvocationTracker::new().unwrap(); tracker.tool_result("a","read",&json!({"path":"/repo/skills/ulw-plan/SKILL.md"}),true); assert!(!tracker.state_for("a").has_invoked("ulw-plan")); }
 #[test] fn extension_input_never_arms_human_gate() { let tracker = SkillInvocationTracker::new().unwrap(); tracker.input("a","/skill:ulw-plan",InputSource::Extension); assert!(!tracker.state_for("a").has_user_requested("ulw-plan")); }
