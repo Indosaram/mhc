@@ -59,4 +59,39 @@ mod tests {
         let mut binding=record(&session);binding.session_id="x".repeat(1048576);assert!(write_binding(&session,&binding).is_err());
         std::fs::write(&sidecar,"x".repeat(16385)).expect("oversize");assert!(read_binding(&session).expect("read").is_none());
     }
+    #[test]
+    fn retry_checkpoint_is_rejected_by_strict_schema() {
+        let directory=tempfile::tempdir().expect("directory");let session=directory.path().join("session.json");
+        let mut value=serde_json::to_value(record(&session)).expect("value");value["unansweredTurnDigest"]=serde_json::json!("5".repeat(64));
+        assert!(serde_json::from_value::<StoredBinding>(value.clone()).is_err());
+        std::fs::write(sidecar_path(&session).expect("path"),serde_json::to_vec(&value).expect("bytes")).expect("write");
+        assert!(read_binding(&session).expect("read").is_none());
+    }
+    #[test]
+    fn malformed_json_is_not_a_binding() {
+        let directory=tempfile::tempdir().expect("directory");let session=directory.path().join("session.json");
+        std::fs::write(sidecar_path(&session).expect("path"),"not-valid-json").expect("write");
+        assert!(read_binding(&session).expect("read").is_none());
+    }
+    #[test]
+    fn oversized_record_is_rejected_before_creating_sidecar() {
+        let directory=tempfile::tempdir().expect("directory");let session=directory.path().join("session.json");let mut binding=record(&session);
+        binding.session_id="x".repeat(1024*1024);assert!(write_binding(&session,&binding).is_err());
+        assert!(!sidecar_path(&session).expect("path").exists());
+    }
+    #[test]
+    fn symlinked_directory_uses_the_same_canonical_sidecar() {
+        let directory=tempfile::tempdir().expect("directory");let real=directory.path().join("real");std::fs::create_dir(&real).expect("real");
+        let alias=directory.path().join("alias");std::os::unix::fs::symlink(&real,&alias).expect("alias");
+        let session=real.join("session.json");let spelling=alias.join("session.json");
+        write_binding(&spelling,&record(&spelling)).expect("write");
+        assert_eq!(sidecar_path(&session).expect("real path"),sidecar_path(&spelling).expect("alias path"));
+        assert_eq!(read_binding(&session).expect("read").expect("binding").session_path,session.to_string_lossy());
+    }
+    #[test]
+    fn path_mismatch_never_replaces_existing_binding() {
+        let directory=tempfile::tempdir().expect("directory");let session=directory.path().join("session.json");let binding=record(&session);
+        write_binding(&session,&binding).expect("write");let mut other=binding.clone();other.session_path=directory.path().join("other.json").to_string_lossy().into_owned();
+        assert!(write_binding(&session,&other).is_err());assert_eq!(read_binding(&session).expect("read"),Some(binding));
+    }
 }
