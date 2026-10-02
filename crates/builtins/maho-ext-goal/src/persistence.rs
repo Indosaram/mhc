@@ -126,6 +126,25 @@ pub fn migrate_legacy_goal_file(reference: &GoalStoreRef, standalone_agent_dir: 
 #[cfg(test)] mod tests {
     use super::*;
     fn raw() -> String { serde_json::json!({"version":1,"goal":{"id":"g","threadId":"t","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":1,"updatedAt":1}}).to_string() }
+    #[test] fn upstream_standalone_root_migration_publishes_private_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir=tempfile::tempdir().unwrap(); let standalone=tempfile::tempdir().unwrap(); let key="d".repeat(24);
+        let reference=GoalStoreRef { base_dir:dir.path().join("extensions/goal/no-session").join(&key),thread_id:"new".into() };
+        let legacy=standalone.path().join("extensions/pi-goal/no-session").join(key); fs::create_dir_all(&legacy).unwrap(); fs::write(legacy.join("old.json"),raw()).unwrap();
+        let migrated=migrate_legacy_goal_file(&reference,standalone.path()).unwrap().unwrap(); assert_eq!(read_goal_file(&reference).unwrap(),Some(migrated));
+        assert_eq!(fs::metadata(goal_file_path(&reference)).unwrap().permissions().mode()&0o777,0o600); assert!(!legacy.join("old.json").exists()); assert!(legacy.join("old.json.migrated").exists());
+    }
+    #[test] fn upstream_overlapping_writes_leave_exactly_one_submitted_envelope() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"t".into() };
+        let first=parse_goal_file(&raw(),false).unwrap().goal.unwrap(); let mut second=first.clone(); second.objective="replacement".into();
+        let barrier=std::sync::Barrier::new(3);
+        std::thread::scope(|scope| {
+            scope.spawn(|| { barrier.wait(); write_goal_file(&reference,Some(&first)).unwrap(); });
+            scope.spawn(|| { barrier.wait(); write_goal_file(&reference,Some(&second)).unwrap(); });
+            barrier.wait();
+        });
+        let actual=fs::read_to_string(goal_file_path(&reference)).unwrap(); assert!(actual==contents(Some(&first)).unwrap()||actual==contents(Some(&second)).unwrap()); assert_eq!(fs::read_dir(dir.path()).unwrap().count(),1);
+    }
     #[test] fn upstream_atomic_write_accepts_maximum_valid_basename() {
         let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"x".repeat(250) };
         assert_eq!(goal_file_path(&reference).file_name().unwrap().as_encoded_bytes().len(),255);
