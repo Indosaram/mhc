@@ -26,6 +26,13 @@ pub fn matches_scope(scope:&TtsrScope,source:TtsrStreamSource,tool_name:Option<&
 pub fn matches_path_globs(globs:&[String],paths:Option<&[String]>)->bool { globs.is_empty() || globs.iter().any(|glob|matches_any_path(glob,paths)) }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn upstream_keywords_are_case_insensitive_and_toolcall_is_wildcard() {
+        let scope=parse_scope(&["TEXT".into()," Thinking ".into()]); assert!(scope.allow_text); assert!(scope.allow_thinking); assert!(scope.tool_scopes.is_empty());
+        assert_eq!(parse_scope(&["toolcall".into()]).tool_scopes,[TtsrToolScope { tool_name:"*".into(),path_glob:None }]);
+    }
+    #[test] fn upstream_optional_tool_glob_tokens_preserve_order() {
+        assert_eq!(parse_scope(&["tool:Edit(*.ts)".into(),"write".into(),"tool(*.md)".into()]).tool_scopes,[TtsrToolScope { tool_name:"edit".into(),path_glob:Some("*.ts".into()) },TtsrToolScope { tool_name:"write".into(),path_glob:None },TtsrToolScope { tool_name:"*".into(),path_glob:Some("*.md".into()) }]);
+    }
     #[test] fn default_allows_text_and_any_tool() { let scope=parse_scope(&[]); let result=(matches_scope(&scope,TtsrStreamSource::Text,None,None),matches_scope(&scope,TtsrStreamSource::Tool,Some("edit"),None),matches_scope(&scope,TtsrStreamSource::Thinking,None,None)); assert_eq!(result,(true,true,false)); }
     #[test] fn scope_deduplicates_tools() { let scope=parse_scope(&["tool:edit(*.rs)".into(),"EDIT(*.rs)".into(),"thinking".into()]); assert_eq!(scope.tool_scopes.len(),1); assert!(scope.allow_thinking); }
     #[test] fn basename_matches_and_backslashes_normalize() { let scope=parse_scope(&["tool:edit(*.rs)".into()]); let result=matches_scope(&scope,TtsrStreamSource::Tool,Some("EDIT"),Some(&["C:\\src\\lib.rs".into()])); assert!(result); }

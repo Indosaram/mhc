@@ -40,6 +40,19 @@ pub fn parse_rule_file(markdown:&str,meta:RuleFileMeta)->Result<TtsrRule,Skipped
 #[cfg(test)] mod tests {
     use super::*;
     fn meta()->RuleFileMeta { RuleFileMeta { name:"test".into(),path:None,source:RuleSource::Project } }
+    #[test] fn upstream_malformed_scope_reporter_preserves_matching_and_metadata() {
+        let rule=parse_rule_file("---\nname: fix-failures-now\ndescription: prohibits pre-existing classification.\ncondition: \"(?i)(pre.existing|also fails on master|check.*master.*first)\"\nscope: \"text\",\"thinking\"\n---\nbody",RuleFileMeta { name:"fix-failures-now".into(),path:Some("rules/fix-failures-now.md".into()),source:RuleSource::Project }).unwrap();
+        assert!(rule.scope.allow_text); assert!(rule.scope.allow_thinking); assert!(rule.scope.tool_scopes.is_empty());
+        let regex=compile_rule_condition(&rule.condition[0]).regex.unwrap(); assert!(regex.is_match("The CI failure was 4 pre-existing GPS map VR mismatches").unwrap()); assert!(regex.is_match("Everything also fails on master anyway").unwrap());
+        assert_eq!(rule.description.as_deref(),Some("prohibits pre-existing classification.")); assert_eq!(rule.content,"body"); assert_eq!(rule.path.as_deref(),Some("rules/fix-failures-now.md")); assert_eq!(rule.interrupt_mode,TtsrInterruptMode::Always);
+    }
+    #[test] fn upstream_absent_scope_defaults_to_text_and_any_tool() {
+        let rule=parse_rule_file("---\ncondition: bad\n---\nbody",meta()).unwrap(); assert!(rule.scope.allow_text); assert!(!rule.scope.allow_thinking); assert_eq!(rule.scope.tool_scopes[0].tool_name,"*");
+    }
+    #[test] fn upstream_globs_and_never_interrupt_metadata_survive() {
+        let rule=parse_rule_file("---\ncondition: bad\nglobs: ['*.rs', 'src/**']\ninterruptMode: never\n---\nbody",meta()).unwrap(); assert_eq!(rule.globs.unwrap(),["*.rs","src/**"]); assert_eq!(rule.interrupt_mode,TtsrInterruptMode::Never);
+    }
+    #[test] fn upstream_unreachable_scope_rejects_parsed_rule() { assert!(parse_rule_file("---\ncondition: bad\nscope: '???'\n---\nbody",meta()).is_err()); }
     #[test] fn yaml_frontmatter_preserves_body_and_scope() { let rule=parse_rule_file("---\ncondition: bad\nscope: thinking\ninterruptMode: never\n---\n  body  ",meta()).unwrap(); assert_eq!(rule.content,"body"); assert!(rule.scope.allow_thinking); assert!(!rule.scope.allow_text); assert_eq!(rule.interrupt_mode,TtsrInterruptMode::Never); }
     #[test] fn extension_glob_infers_edit_and_write() { let rule=parse_rule_file("---\ncondition: '*.rs'\n---\nbody",meta()).unwrap(); assert_eq!(rule.condition,[".*"]); assert_eq!(rule.scope.tool_scopes.len(),2); assert!(!rule.scope.allow_text); }
     #[test] fn aliases_and_null_condition_are_supported() { let rule=parse_rule_file("---\ncondition: null\nttsrTrigger: bad\n---\nbody",meta()).unwrap(); assert_eq!(rule.condition,["bad"]); }
