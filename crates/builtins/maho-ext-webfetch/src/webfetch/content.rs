@@ -6,6 +6,25 @@ static AFTER_NEWLINE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\n[ \t]+").exp
 static NEWLINES:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\n{3,}").expect("literal pattern"));
 fn markdown_block(name:&str)->bool {matches!(name,"address"|"article"|"aside"|"audio"|"blockquote"|"body"|"canvas"|"center"|"dd"|"dir"|"div"|"dl"|"dt"|"fieldset"|"figcaption"|"figure"|"footer"|"form"|"frameset"|"h1"|"h2"|"h3"|"h4"|"h5"|"h6"|"header"|"hgroup"|"hr"|"html"|"isindex"|"li"|"main"|"menu"|"nav"|"noframes"|"noscript"|"ol"|"output"|"p"|"pre"|"section"|"table"|"tbody"|"td"|"tfoot"|"th"|"thead"|"tr"|"ul")}
 fn markdown_void(name:&str)->bool {matches!(name,"area"|"base"|"br"|"col"|"command"|"embed"|"hr"|"img"|"input"|"keygen"|"link"|"meta"|"param"|"source"|"track"|"wbr")}
+fn markdown_meaningful(name:&str)->bool {matches!(name,"a"|"table"|"thead"|"tbody"|"tfoot"|"th"|"td"|"iframe"|"script"|"audio"|"video")}
+pub fn markdown_blank(node:&dom_query::NodeRef<'_>)->bool {
+    fn contains_meaningful(node:&dom_query::NodeRef<'_>)->bool {node.children().iter().any(|child| {let name=child.node_name();let name=name.as_deref().unwrap_or("");markdown_void(name)||markdown_meaningful(name)||contains_meaningful(child)})}
+    let name=node.node_name();let name=name.as_deref().unwrap_or("");!markdown_void(name)&&!markdown_meaningful(name)&&node.text().chars().all(js_whitespace)&&!contains_meaningful(node)
+}
+pub fn markdown_flanking(node:&dom_query::NodeRef<'_>)->(String,String) {
+    if node.node_name().is_some_and(|name|markdown_block(&name)) {return (String::new(),String::new());}
+    let text=node.text();let leading_len=text.len()-text.trim_start_matches(js_whitespace).len();
+    let trailing_start=if leading_len==text.len() {text.len()} else {text.trim_end_matches(js_whitespace).len()};
+    let mut leading=text[..leading_len].to_owned();let mut trailing=text[trailing_start..].to_owned();
+    let flanked=|sibling:Option<dom_query::NodeRef<'_>>,left:bool|sibling.is_some_and(|sibling| {
+        let name=sibling.node_name();if !sibling.is_text() && (!sibling.is_element() || markdown_block(name.as_deref().unwrap_or(""))) {return false;}
+        if left {sibling.text().ends_with(' ')} else {sibling.text().starts_with(' ')}
+    });
+    let ascii=|character:char|matches!(character,' '|'\t'|'\r'|'\n');
+    if flanked(node.prev_sibling(),true) {leading=leading.trim_start_matches(ascii).into();}
+    if flanked(node.next_sibling(),false) {trailing=trailing.trim_end_matches(ascii).into();}
+    (leading,trailing)
+}
 pub fn collapse_markdown_whitespace(root:&dom_query::NodeRef<'_>) {
     fn next<'a>(previous:Option<dom_query::NodeRef<'a>>,current:dom_query::NodeRef<'a>)->Option<dom_query::NodeRef<'a>> {
         if previous.and_then(|node|node.parent()).is_some_and(|parent|parent.id==current.id) || current.node_name().as_deref()==Some("pre") {current.next_sibling().or_else(||current.parent())}
@@ -93,6 +112,12 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn markdown_blank_keeps_void_and_meaningful_descendants() {
+        let document=dom_query::Document::from("<div id='blank'> \t </div><div id='image'><img src='x'></div><div id='link'><a href='x'></a></div>");assert!(markdown_blank(&document.select("#blank").nodes()[0]));assert!(!markdown_blank(&document.select("#image").nodes()[0]));assert!(!markdown_blank(&document.select("#link").nodes()[0]));
+    }
+    #[test] fn markdown_flanking_drops_only_neighbor_ascii_space() {
+        let document=dom_query::Document::from("<div>left <em id='inline'> \u{00a0}middle\u{00a0} </em> right<p id='block'> block </p><span id='blank'> \t </span></div>");assert_eq!(markdown_flanking(&document.select("#inline").nodes()[0]),("\u{00a0}".into(),"\u{00a0}".into()));assert_eq!(markdown_flanking(&document.select("#block").nodes()[0]),(String::new(),String::new()));assert_eq!(markdown_flanking(&document.select("#blank").nodes()[0]),(" \t ".into(),String::new()));
+    }
     #[test] fn markdown_whitespace_collapses_across_inline_nodes_and_block_edges() {
         let document=dom_query::Document::from("<div id='root'>  one <em>  two </em> three  <p> four\n five </p> six </div>");let root=document.select("#root");collapse_markdown_whitespace(&root.nodes()[0]);assert_eq!(root.inner_html().as_ref(),"one <em>two </em>three<p>four five</p>six");
     }
