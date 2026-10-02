@@ -11,10 +11,7 @@ pub fn register_mcp_lifecycle(api:&mut ExtensionApi,registry:Arc<HostMcpRegistry
             "status"|"list"=>Ok(service.status("MCP servers").await),
             "test"=>service.test_server(name).await.map(|(elapsed,count)|format!("MCP test {name} ok ({elapsed:.0}ms): {count} tools")).map_err(|error|error.to_string()),
             "reconnect"=>service.reconnect_server(name).await.map(|()|format!("MCP reconnect {name} connected")).map_err(|error|error.to_string()),
-            "auth-start"=>service.auth_start(name).await.map(|url|format!("Open this URL, approve, then run /mcp auth-complete {name} <redirect-url>:\n{url}")).map_err(|error|error.to_string()),
-            "auth"=>service.auth(name,ctx.has_ui,|url|async move {ctx.ui.notify(&format!("Open this URL to authorize {name}:\n{url}"),maho_ext_api::NotificationType::Info);Ok(())}).await.map(|url|url.map_or_else(||format!("MCP server {name} authorized"),|url|format!("Open this URL, then /mcp auth-complete {name} <redirect-url>:\n{url}"))).map_err(|error|error.to_string()),
-            "auth-complete"=>service.auth_complete(name,args.get(2).map_or("",String::as_str)).await.map(|()|format!("MCP server {name} authorized")).map_err(|error|error.to_string()),
-            "logout"=>service.logout(name).await.map(|()|format!("MCP server {name} logged out")).map_err(|error|error.to_string()),
+            "auth"|"auth-start"|"auth-complete"|"logout"=>crate::auth::commands_auth_dispatch::handle_mcp_auth_command(subcommand,&args[1..],ctx.has_ui,ctx.ui.clone(),&mut service).await,
             "logs"=>{if let Some(connection)=service.connections.get(name){let entry=connection.entry.lock().await;let lines=entry.logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_ring_buffer();let lines=lines.into_iter().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>();Ok(if lines.is_empty(){format!("MCP logs for {name}: (empty)")}else{lines.join("\n")})}else{Err(format!("Unknown MCP server: {name}"))}},
             "add"=>{
                 if name.is_empty() || args.len()<3 {Err("Usage: /mcp add <name> <command...|url>".into())}
