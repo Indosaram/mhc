@@ -147,12 +147,6 @@ impl Server {
             .server_services()
             .attach_client(presentation.clone())
             .await?;
-        send(
-            &connection,
-            &json!({"type":"hello","version":PROTOCOL_VERSION,"serverId":self.server_id}),
-            self.max_frame_length,
-        )
-        .await?;
         let active = Arc::new(Mutex::new(
             BTreeMap::<String, (Value, watch::Sender<bool>)>::new(),
         ));
@@ -164,6 +158,11 @@ impl Server {
         let subscriptions = Arc::new(Mutex::new(std::collections::BTreeSet::<String>::new()));
         let mut pending = remaining;
         let result=async {
+            send(
+                &connection,
+                &json!({"type":"hello","version":PROTOCOL_VERSION,"serverId":self.server_id}),
+                self.max_frame_length,
+            ).await?;
             loop {
                 for message in pending.drain(..) {
                     match message["type"].as_str() {
