@@ -1827,6 +1827,12 @@ impl AgentSession {
     async fn compact_for_model(&self, instructions: Option<&str>, budget_model: &Model, reason: &str)
         -> Result<crate::compaction::compaction::CompactionResult, String>
     {
+        self.compact_for_model_with_retry(instructions, budget_model, reason, reason != "manual").await
+    }
+
+    async fn compact_for_model_with_retry(&self, instructions: Option<&str>, budget_model: &Model, reason: &str, will_retry: bool)
+        -> Result<crate::compaction::compaction::CompactionResult, String>
+    {
         use crate::compaction::compaction::{CompactionResult, prepare_compaction};
         let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
         let configured = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
@@ -1897,7 +1903,7 @@ impl AgentSession {
                 let mut runner = self.extension_runner.lock().await;
                 if let Some(runner) = runner.as_mut() {
                     runner.emit(maho_ext_api::ExtensionEvent::SessionBeforeCompact(maho_ext_api::SessionBeforeCompactEvent {
-                        reason: compact_reason, will_retry: reason != "manual", request_id: request_id.clone(),
+                        reason: compact_reason, will_retry, request_id: request_id.clone(),
                         preparation: maho_ext_api::CompactionPreparation {
                             settings: maho_ext_api::CompactionSettings { enabled: resolved.enabled, reserve_tokens: resolved.reserve_tokens as u64,
                                 keep_recent_tokens: resolved.keep_recent_tokens as u64 },
@@ -2063,11 +2069,11 @@ impl AgentSession {
                 let value = maho_ext_api::CompactionResult { summary: result.summary.clone(), first_kept_entry_id: result.first_kept_entry_id.clone(),
                     tokens_before: result.tokens_before as u64, details: result.details.clone() };
                 self.emit(AgentSessionEvent::CompactionEnd { reason: compact_reason, request_id: Some(request_id.clone()), aborted: false,
-                    result: Some(value), rejection_cause: None, error_message: None, accepted: Some(true), will_retry: reason != "manual" });
+                    result: Some(value), rejection_cause: None, error_message: None, accepted: Some(true), will_retry });
                 if let Some((entry, from_extension)) = accepted_entry {
                     self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Accepted {
                         reason: compact_reason, request_id, compaction_entry: session_entry_from_value(entry),
-                        from_extension, will_retry: reason != "manual",
+                        from_extension, will_retry,
                     })).await;
                 }
                 let policy = self.with_settings_manager(|manager| crate::retry_fallback::settings::resolve_retry_fallback_settings(
@@ -2230,9 +2236,11 @@ impl AgentSession {
                 && maho_ai::utils::overflow::is_context_overflow(&message, Some(self.model().context_window))
             {
                 overflow_compacted = true;
-                let execution = self.compact_for_model(None, &self.model(), "overflow").await;
+                let will_retry = message.stop_reason != StopReason::Stop;
+                let execution = self.compact_for_model_with_retry(None, &self.model(), "overflow", will_retry).await;
                 if self.is_compaction_delegated() { return Ok(()); }
                 execution?;
+                if !will_retry { return Ok(()); }
                 let mut messages = self.messages();
                 if messages.last().and_then(AgentMessage::as_assistant)
                     .is_some_and(|tail| matches!(tail.stop_reason, StopReason::Error | StopReason::Length))
@@ -7107,6 +7115,38 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), idle_rx).await.expect("bounded idle").expect("idle");
         assert_eq!(session.messages().len(), 4);
         assert_eq!(session.get_last_assistant_text().as_deref(), Some("second"));
+    }
+
+    #[tokio::test]
+    async fn successful_overflow_compacts_without_retrying_completed_assistant() {
+        let mut completed = maho_ai::providers::faux::faux_assistant_message("completed answer", Default::default());
+        completed.usage.input = 200_000;
+        let session = retry_session(Vec::new(), 0);
+        session.with_session_manager_mut(|manager| {
+            manager.append_message(serde_json::json!({"role":"user","content":"task","timestamp":0}));
+            manager.append_message(serde_json::to_value(completed).expect("completed assistant"));
+        });
+        session.rebuild_session_context().expect("context");
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"keepRecentTokens":1,"reserveTokens":0})),
+        ])));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:completed-overflow>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(|event, _| {
+            let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { panic!("preparation"); };
+            let result = maho_ext_api::CompactionResult { summary: "digest".to_owned(), first_kept_entry_id: event.preparation.first_kept_entry_id.clone(),
+                tokens_before: event.preparation.tokens_before, details: None };
+            Box::pin(async move { Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult { compaction: Some(result), ..Default::default() })) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let retries = Arc::new(Mutex::new(Vec::new()));
+        let captured = retries.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::CompactionEnd { will_retry, .. } = event { lock(&captured).push(*will_retry); }
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.finish_provider_turn()).await.expect("bounded completion").expect("completion");
+        assert_eq!(session.get_last_assistant_text().as_deref(), Some("completed answer"));
+        assert_eq!(*lock(&retries), vec![false]);
+        assert_eq!(session.compaction_state().status(), "completed");
     }
 
     #[tokio::test]
