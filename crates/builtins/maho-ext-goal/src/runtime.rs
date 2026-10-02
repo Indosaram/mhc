@@ -59,6 +59,12 @@ impl GoalRuntime {
                 if let Some(goal)=goal.as_ref().filter(|goal|goal.status==GoalStatus::Active) { state.accounting.begin(goal,now); }
             },
             ExtensionEvent::AgentStart=>state.accounting.agent_start(goal.as_ref(),now),
+            ExtensionEvent::MessageStart { message:maho_agent::types::AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(message)) } if message.custom_type=="manual-continue"=>{
+                if goal.as_ref().is_some_and(|goal|goal.status==GoalStatus::Blocked) {
+                    goal=Some(crate::store::update_goal(&reference,&GoalUpdate { status:Some(GoalStatus::Active),..Default::default() },GoalUpdateSource::User,seconds).await.map_err(failure)?);
+                    if let Some(goal)=goal.as_ref() { state.accounting.begin(goal,now); }
+                }
+            },
             ExtensionEvent::MessageEnd { message }=>{ state.accounting.usage.note_message_end(message); return Ok(goal); },
             ExtensionEvent::AgentEnd { messages,aborted,abort_source,will_retry }=>{
                 goal=state.accounting.agent_end(&reference,messages,*aborted==Some(true)&&*abort_source==Some(maho_ext_api::AbortSource::User),now,seconds).await.map_err(failure)?;
@@ -111,6 +117,15 @@ fn failure(error:crate::errors::GoalError)->ExtensionFailure { ExtensionFailure:
     use super::*;
     fn assistant_usage(input:u64,output:u64)->maho_agent::types::AgentMessage {
         serde_json::from_value(serde_json::json!({"role":"assistant","content":[],"api":"faux","provider":"faux","model":"faux","usage":{"input":input,"output":output,"cacheRead":0,"cacheWrite":0,"totalTokens":input+output,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0})).unwrap()
+    }
+    #[tokio::test] async fn manual_continue_resumes_only_blocked_goals_and_preserves_identity() {
+        for status in [GoalStatus::Blocked,GoalStatus::Paused,GoalStatus::Complete] {
+            let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+            let initial=crate::store::create_goal(&reference,"work",None,0).await.unwrap(); crate::store::update_goal(&reference,&GoalUpdate { status:Some(status),reason:(status==GoalStatus::Blocked).then(||"user interrupted the turn".into()),..Default::default() },if status==GoalStatus::Paused { GoalUpdateSource::User } else { GoalUpdateSource::Model },1).await.unwrap();
+            let runtime=GoalRuntime::new(Arc::new(move |_|stored.clone()),Arc::new(||2000.0)); let context=crate::test_context::context();
+            let message=maho_agent::types::AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(maho_agent::harness::messages::CustomMessage { role:"custom".into(),custom_type:"manual-continue".into(),content:maho_agent::harness::messages::CustomMessageContent::Text("continue".into()),display:false,details:None,timestamp:0 }));
+            let goal=runtime.event(&ExtensionEvent::MessageStart { message },&context).await.unwrap().unwrap(); assert_eq!(goal.id,initial.id); assert_eq!(goal.status,if status==GoalStatus::Blocked { GoalStatus::Active } else { status });
+        }
     }
     #[tokio::test] async fn owning_agent_end_accounts_then_blocks_terminal_policy_rejection() {
         let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();

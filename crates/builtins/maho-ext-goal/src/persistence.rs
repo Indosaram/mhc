@@ -98,6 +98,9 @@ fn read_legacy_candidate(path: &Path) -> Result<Option<Goal>, GoalError> {
     }
 }
 pub fn migrate_legacy_goal_file(reference: &GoalStoreRef, standalone_agent_dir: &Path) -> Result<Option<Goal>, GoalError> {
+    migrate_legacy_goal_file_with_publish(reference,standalone_agent_dir,|path,text|write_private(path,text,true))
+}
+fn migrate_legacy_goal_file_with_publish(reference:&GoalStoreRef,standalone_agent_dir:&Path,publish:impl FnOnce(&Path,&str)->std::io::Result<()>)->Result<Option<Goal>,GoalError> {
     match fs::read_to_string(goal_file_path(reference)) { Ok(_) => return Ok(None), Err(error) if error.kind() == std::io::ErrorKind::NotFound => (), Err(error) => return Err(GoalError::Io(error.to_string())) }
     let base = reference.base_dir.to_string_lossy();
     let mut segments: Vec<_> = base.split(['/', '\\']).collect();
@@ -119,13 +122,41 @@ pub fn migrate_legacy_goal_file(reference: &GoalStoreRef, standalone_agent_dir: 
     if candidates.len() > 1 { return Err(GoalError::InvalidMutation(format!("multiple legacy goals found for no-session store: {}", candidates.iter().map(|(p, _)| p.to_string_lossy()).collect::<Vec<_>>().join(", ")))); }
     let Some((path, goal)) = candidates.pop() else { return Ok(None); };
     fs::create_dir_all(&reference.base_dir).map_err(|error| GoalError::Io(error.to_string()))?;
-    let published = match write_private(&goal_file_path(reference), &contents(Some(&goal))?, true) { Ok(()) => true, Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false, Err(error) => return Err(GoalError::Io(error.to_string())) };
+    let published = match publish(&goal_file_path(reference), &contents(Some(&goal))?) { Ok(()) => true, Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false, Err(error) => return Err(GoalError::Io(error.to_string())) };
     retire_legacy(&path);
     Ok(published.then_some(goal))
 }
 #[cfg(test)] mod tests {
     use super::*;
     fn raw() -> String { serde_json::json!({"version":1,"goal":{"id":"g","threadId":"t","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":1,"updatedAt":1}}).to_string() }
+    #[test] fn upstream_current_writer_wins_at_exclusive_migration_publication() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().join("extensions/goal"),thread_id:"t".into() }; let legacy=dir.path().join("extensions/pi-goal"); fs::create_dir_all(&legacy).unwrap(); fs::write(legacy.join("t.json"),raw()).unwrap();
+        let mut current=parse_goal_file(&raw(),false).unwrap().goal.unwrap(); current.objective="current writer".into();
+        let result=migrate_legacy_goal_file_with_publish(&reference,dir.path(),|path,text| { write_goal_file(&reference,Some(&current)).unwrap(); write_private(path,text,true) }).unwrap();
+        assert!(result.is_none()); assert_eq!(read_goal_file(&reference).unwrap(),Some(current)); assert!(legacy.join("t.json.migrated").exists()); assert_eq!(fs::read_dir(&reference.base_dir).unwrap().count(),1);
+    }
+    #[test] fn upstream_adversarial_stale_brace_suffix_preserves_original_error() {
+        let input=format!("{}{}X",raw(),"} ".repeat(24));
+        let original=serde_json::from_str::<Value>(&input).unwrap_err().to_string();
+        assert!(matches!(parse_goal_file(&input,false),Err(GoalError::Json(error)) if error==original));
+    }
+    #[test] fn upstream_supported_legacy_status_drops_budget_and_corrupt_tracking() {
+        let mut input:Value=serde_json::from_str(&raw()).unwrap(); input["goal"]["tokenBudget"]=100.into(); input["goal"]["consecutiveContinuations"]="many".into(); input["goal"]["lastContinuationSignature"]=42.into();
+        let goal=parse_goal_file(&input.to_string(),true).unwrap().goal.unwrap(); assert_eq!(goal.status,crate::types::GoalStatus::Active); assert!(goal.token_budget.is_none()); assert!(goal.consecutive_continuations.is_none()); assert!(goal.last_continuation_signature.is_none());
+    }
+    #[test] fn upstream_nested_legacy_decoy_is_not_migrated() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().join("extensions/goal/no-session").join("b".repeat(24)),thread_id:"t".into() };
+        let decoy=dir.path().join("extensions/goal/no-session/pi-goal"); fs::create_dir_all(&decoy).unwrap(); fs::write(decoy.join("t.json"),raw()).unwrap();
+        assert!(migrate_legacy_goal_file(&reference,dir.path()).unwrap().is_none()); assert!(read_goal_file(&reference).unwrap().is_none());
+    }
+    #[tokio::test] async fn upstream_absent_and_corrupt_tracking_default_to_zero_on_delivery() {
+        for invalid in [None,Some(serde_json::json!("eight")),Some(serde_json::json!(-3))] {
+            let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"t".into() }; let mut value:Value=serde_json::from_str(&raw()).unwrap();
+            if let Some(invalid)=invalid { value["goal"]["consecutiveContinuations"]=invalid; value["goal"]["lastContinuationSignature"]=42.into(); }
+            fs::write(goal_file_path(&reference),value.to_string()).unwrap(); let goal=read_goal_file(&reference).unwrap().unwrap(); assert!(goal.consecutive_continuations.is_none()); assert!(goal.last_continuation_signature.is_none());
+            let delivered=crate::store::record_continuation_delivered(&reference,"signature",Some(&goal.id),true).await.unwrap().unwrap(); assert_eq!(delivered.consecutive_continuations,Some(1));
+        }
+    }
     #[test] fn upstream_standalone_root_migration_publishes_private_file() {
         use std::os::unix::fs::PermissionsExt;
         let dir=tempfile::tempdir().unwrap(); let standalone=tempfile::tempdir().unwrap(); let key="d".repeat(24);

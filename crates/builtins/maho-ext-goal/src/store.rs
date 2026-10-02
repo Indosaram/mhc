@@ -99,6 +99,12 @@ pub async fn reset_continuation_streak(reference: &GoalStoreRef, unattended: boo
 #[cfg(test)] mod tests {
     use super::*;
     fn reference(dir: &tempfile::TempDir) -> GoalStoreRef { GoalStoreRef { base_dir: dir.path().join("goal"), thread_id: "thread".into() } }
+    #[tokio::test] async fn upstream_status_updates_preserve_usage_and_replacement_clears_it() {
+        let dir=tempfile::tempdir().unwrap(); let reference=reference(&dir); let original=create_goal(&reference,"Original",None,1).await.unwrap();
+        account_goal_usage(&reference,&TokenUsageSnapshot { input:23,output:2,cache_read:0,cache_write:4,total_tokens:25 },70.0,GoalAccountingMode::Active,None,2).await.unwrap();
+        let paused=update_goal(&reference,&GoalUpdate { status:Some(GoalStatus::Paused),..Default::default() },GoalUpdateSource::User,3).await.unwrap(); assert_eq!(paused.id,original.id); assert_eq!(paused.tokens_used,25); assert_eq!(paused.time_used_seconds,70.0);
+        let replaced=update_goal(&reference,&GoalUpdate { objective:Some("Replacement".into()),..Default::default() },GoalUpdateSource::User,4).await.unwrap(); assert_ne!(replaced.id,original.id); assert_eq!(replaced.tokens_used,0); assert_eq!(replaced.time_used_seconds,0.0); assert_eq!(replaced.status,GoalStatus::Active);
+    }
     #[tokio::test] async fn upstream_new_goal_and_objective_replacement_reset_all_tracking() {
         let dir=tempfile::tempdir().unwrap(); let reference=reference(&dir); let original=create_goal(&reference,"First",None,1).await.unwrap();
         assert_eq!(original.consecutive_continuations,Some(0)); assert_eq!(original.unattended_continuations,Some(0)); assert!(original.last_continuation_signature.is_none());

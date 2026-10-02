@@ -8,7 +8,7 @@ impl GoalExtension {
 impl Extension for GoalExtension {
     fn register(&self,api:&mut ExtensionApi) {
         let runtime=Arc::new(GoalRuntime::new(self.reference.clone(),self.now.clone()));
-        for kind in [EventKind::SessionStart,EventKind::AgentStart,EventKind::MessageEnd,EventKind::AgentEnd,EventKind::Input,EventKind::InputDisposition,EventKind::SessionAbort,EventKind::SessionShutdown] {
+        for kind in [EventKind::SessionStart,EventKind::AgentStart,EventKind::MessageStart,EventKind::MessageEnd,EventKind::AgentEnd,EventKind::Input,EventKind::InputDisposition,EventKind::SessionAbort,EventKind::SessionShutdown] {
             let runtime=runtime.clone();
             api.on(kind,Arc::new(move |event,context| { let runtime=runtime.clone(); Box::pin(async move { runtime.event(event,context).await?; Ok(EventResult::None) }) }));
         }
