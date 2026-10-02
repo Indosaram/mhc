@@ -289,8 +289,11 @@ impl ExtensionRunner {
         self.runtime.assert_active()?;
         let commands = self.get_registered_commands();
         let resolved = commands.iter().find(|command| command.invocation_name == name).ok_or_else(|| ExtensionFailure::new(format!("Unknown extension command: {name}")))?;
-        let extension = self.extensions.iter().find(|extension| extension.commands.iter().any(|command| Arc::ptr_eq(&command.handler, &resolved.command.handler))).ok_or_else(|| ExtensionFailure::new("Command owner is unavailable"))?;
-        match extension.command_context_handlers.get(&resolved.command.name) {
+        let handlers = self.extensions.iter().find_map(|extension| {
+            let (commands, handlers) = self.runtime.live_commands(&extension.identity.path).unwrap_or_else(|| (extension.commands.clone(), extension.command_context_handlers.clone()));
+            commands.iter().any(|command| Arc::ptr_eq(&command.handler, &resolved.command.handler)).then_some(handlers)
+        }).ok_or_else(|| ExtensionFailure::new("Command owner is unavailable"))?;
+        match handlers.get(&resolved.command.name) {
             Some(handler) => handler(args, context).await,
             None => (resolved.command.handler)(args, &context.context).await,
         }
@@ -369,9 +372,12 @@ impl ExtensionRunner {
     fn report(&mut self, path: &str, kind: EventKind, error: ExtensionFailure) {
         self.emit_error(ExtensionError { extension_path: path.into(), event: kind.as_str().into(), error: error.message, stack: error.stack });
     }
-    pub fn has_handlers(&self, kind: EventKind) -> bool { self.extensions.iter().any(|e| e.handlers.get(&kind).is_some_and(|h| !h.is_empty())) }
+    pub fn has_handlers(&self, kind: EventKind) -> bool { !self.handlers(kind).is_empty() }
     fn handlers(&self, kind: EventKind) -> Vec<(String, ExtensionHandler)> {
-        self.extensions.iter().flat_map(|e| e.handlers.get(&kind).into_iter().flatten().map(|h| (e.identity.path.clone(), Arc::clone(h)))).collect()
+        self.extensions.iter().flat_map(|e| {
+            let handlers = self.runtime.live_handlers(&e.identity.path, kind).unwrap_or_else(|| e.handlers.get(&kind).cloned().unwrap_or_default());
+            handlers.into_iter().map(|handler| (e.identity.path.clone(), handler)).collect::<Vec<_>>()
+        }).collect()
     }
     pub fn get_all_registered_tools(&self) -> Vec<RegisteredTool> {
         let mut tools: Vec<RegisteredTool> = Vec::new();
@@ -395,12 +401,12 @@ impl ExtensionRunner {
         selected?.tool_renderers.get(name)?.clone().downcast::<ToolRenderers<TState, TArgs>>().ok()
     }
     pub fn get_registered_commands(&self) -> Vec<ResolvedCommand> {
-        let commands: Vec<_> = self.extensions.iter().flat_map(|e| &e.commands).collect();
+        let commands: Vec<_> = self.extensions.iter().flat_map(|e| self.runtime.live_commands(&e.identity.path).map_or_else(|| e.commands.clone(), |(commands, _)| commands)).collect();
         let mut counts = BTreeMap::new();
-        for command in &commands { *counts.entry(&command.name).or_insert(0usize) += 1; }
+        for command in &commands { *counts.entry(command.name.clone()).or_insert(0usize) += 1; }
         let mut seen = BTreeMap::new(); let mut taken = BTreeSet::new();
         commands.into_iter().map(|command| {
-            let occurrence = seen.entry(&command.name).or_insert(0usize); *occurrence += 1;
+            let occurrence = seen.entry(command.name.clone()).or_insert(0usize); *occurrence += 1;
             let mut suffix = *occurrence;
             let mut name = if counts[&command.name] > 1 { format!("{}:{suffix}", command.name) } else { command.name.clone() };
             while taken.contains(&name) { suffix += 1; name = format!("{}:{suffix}", command.name); }
@@ -521,20 +527,20 @@ impl ExtensionRunner {
     }
     pub async fn emit_message_end(&mut self, message: AgentMessage) -> Result<Option<AgentMessage>, ExtensionFailure> {
         self.runtime.assert_active()?;
-        let mut event = ExtensionEvent::MessageEnd { message }; let mut modified = false;
+        let mut current_message = message; let mut modified = false;
         for (path, handler) in self.handlers(EventKind::MessageEnd) {
             let context = self.create_context_for_extension(Some(&path))?;
+            let mut event = ExtensionEvent::MessageEnd { message: current_message.clone() };
             match handler(&mut event, &context).await {
-                Ok(EventResult::MessageEnd { message: Some(next) }) => if let ExtensionEvent::MessageEnd { message } = &mut event {
-                    if next.role() != message.role() { self.report(&path, EventKind::MessageEnd, ExtensionFailure::new("message_end handlers must return a message with the same role")); }
-                    else { *message = next; modified = true; }
-                },
+                Ok(EventResult::MessageEnd { message: Some(next) }) => {
+                    if next.role() != current_message.role() { self.report(&path, EventKind::MessageEnd, ExtensionFailure::new("message_end handlers must return a message with the same role")); }
+                    else { current_message = next; modified = true; }
+                }
                 Ok(_) => {}, Err(error) => self.report(&path, EventKind::MessageEnd, error),
             }
             self.runtime.assert_active()?;
         }
-        if let ExtensionEvent::MessageEnd { message } = event { return Ok(modified.then_some(message)); }
-        Err(ExtensionFailure::new("message_end handler replaced event kind"))
+        Ok(modified.then_some(current_message))
     }
     pub async fn emit_context(&mut self, messages: &[AgentMessage], exclude_path: Option<&str>) -> Result<Vec<AgentMessage>, ExtensionFailure> {
         self.runtime.assert_active()?;

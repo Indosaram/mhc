@@ -355,6 +355,30 @@ fn context_print_mode_and_tool_context_contract() { let ctx = context(); assert_
 fn invalidated_runner_rejects_new_context() { let runner = runner(vec![]); runner.invalidate("stale"); assert_eq!(runner.create_context().err().unwrap().message, "stale"); }
 
 #[tokio::test]
+async fn retained_api_event_registration_updates_an_existing_runner() {
+    let mut runner = runner(vec![]);
+    let scope = runner.runtime.registration_scope();
+    let mut api = ExtensionApi::new(LoadedExtension::new("late", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), scope.clone());
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let first = calls.clone();
+    api.on(EventKind::AgentStart, Arc::new(move |_, _| {
+        first.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async { Ok(EventResult::None) })
+    }));
+    scope.commit_registration().unwrap();
+    runner.extensions.push(api.registered.clone());
+    runner.emit(ExtensionEvent::AgentStart).await.unwrap();
+    let second = calls.clone();
+    api.on(EventKind::AgentStart, Arc::new(move |_, _| {
+        second.fetch_add(10, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async { Ok(EventResult::None) })
+    }));
+    assert!(runner.has_handlers(EventKind::AgentStart));
+    runner.emit(ExtensionEvent::AgentStart).await.unwrap();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 12);
+}
+
+#[tokio::test]
 async fn invalidated_empty_dispatch_and_handled_input_reject_stale_results() {
     let mut empty = runner(vec![]);
     empty.invalidate("stale");
@@ -493,6 +517,24 @@ async fn message_end_chains_same_role_replacements() {
 async fn message_end_no_replacement_returns_none() {
     let original = AgentMessage::Llm(Message::User(UserMessage { content: UserContent::Text("original".into()), timestamp: 1 }));
     assert!(runner(vec![extension("a", EventKind::MessageEnd, none())]).emit_message_end(original).await.unwrap().is_none());
+}
+#[tokio::test]
+async fn message_end_event_replacement_does_not_change_later_handler_input() {
+    let original = AgentMessage::Llm(Message::User(UserMessage { content: UserContent::Text("original".into()), timestamp: 1 }));
+    let mutation: ExtensionHandler = Arc::new(|event, _| Box::pin(async move {
+        *event = ExtensionEvent::AgentStart;
+        Ok(EventResult::None)
+    }));
+    let expected = original.clone();
+    let observe: ExtensionHandler = Arc::new(move |event, _| {
+        let expected = expected.clone();
+        Box::pin(async move {
+            let ExtensionEvent::MessageEnd { message } = event else { panic!("event replacement escaped its handler") };
+            assert_eq!(*message, expected);
+            Ok(EventResult::None)
+        })
+    });
+    assert!(runner(vec![extension("mutation", EventKind::MessageEnd, mutation), extension("observe", EventKind::MessageEnd, observe)]).emit_message_end(original).await.unwrap().is_none());
 }
 #[test]
 fn mcp_collision_diagnostic_names_both_owners() {
@@ -1206,6 +1248,21 @@ async fn legacy_command_replacement_removes_prior_context_handler() {
     let context = runner.create_command_context(Arc::new(CommandActions(Mutex::new(vec![])))).unwrap();
     runner.invoke_command("jump", "", &context).await.unwrap();
     assert!(*invoked.lock().unwrap());
+}
+#[tokio::test]
+async fn retained_api_commands_reach_existing_runner_and_replace_context_handlers() {
+    let mut runner = runner(vec![]);
+    let scope = runner.runtime.registration_scope();
+    let mut api = ExtensionApi::new(LoadedExtension::new("late-command", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), scope.clone());
+    scope.commit_registration().unwrap();
+    runner.extensions.push(api.registered.clone());
+    api.register_command_with_context("late", None, None, Arc::new(|_, _| Box::pin(async { Err("context handler".into()) })));
+    let context = runner.create_command_context(Arc::new(CommandActions(Mutex::new(vec![])))).unwrap();
+    assert!(runner.get_command("late").is_some());
+    assert_eq!(runner.invoke_command("late", "", &context).await.unwrap_err().message, "context handler");
+    api.register_command("late", None, None, Arc::new(|_, _| Box::pin(async { Ok(()) })));
+    runner.invoke_command("late", "", &context).await.unwrap();
+    assert_eq!(runner.get_registered_commands().len(), 1);
 }
 
 #[tokio::test]

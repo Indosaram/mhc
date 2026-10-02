@@ -1053,7 +1053,10 @@ struct RuntimeState {
     read_classifiers: Vec<(u64, ReadClassifier)>, next_classifier_id: u64,
     session_actions: Option<Arc<dyn ExtensionSessionActions>>,
     provider_errors: Vec<ExtensionError>,
+    live_handlers: BTreeMap<(String, EventKind), Vec<ExtensionHandler>>,
+    live_commands: BTreeMap<String, LiveCommandRegistrations>,
 }
+pub type LiveCommandRegistrations = (Vec<RegisteredCommand>, BTreeMap<String, CommandContextHandler>);
 #[derive(Clone, Default)]
 pub struct ExtensionRuntime { state: Arc<Mutex<RuntimeState>>, registration_stale: Arc<Mutex<Option<String>>>, registration_pending: Arc<Mutex<Option<RegistrationPending>>>, registration_classifiers: Arc<Mutex<Vec<u64>>> }
 #[derive(Default)]
@@ -1117,6 +1120,8 @@ impl ExtensionRuntime {
     pub fn invalidate(&self, message: &str) {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         state.stale.get_or_insert_with(|| message.into()); state.read_classifiers.clear(); state.pending_providers.clear();
+        state.live_handlers.clear();
+        state.live_commands.clear();
     }
     pub fn bind_providers(&self, actions: Arc<dyn ExtensionProviderActions>) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
@@ -1132,6 +1137,12 @@ impl ExtensionRuntime {
         Ok(())
     }
     pub fn take_provider_errors(&self) -> Vec<ExtensionError> { std::mem::take(&mut self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider_errors) }
+    pub fn live_handlers(&self, path: &str, kind: EventKind) -> Option<Vec<ExtensionHandler>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_handlers.get(&(path.into(), kind)).cloned()
+    }
+    pub fn live_commands(&self, path: &str) -> Option<LiveCommandRegistrations> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_commands.get(path).cloned()
+    }
     pub fn register_provider(&self, registration: ProviderRegistration, path: &str) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
         let config = match &registration {
@@ -1204,7 +1215,14 @@ impl ExtensionApi {
         events.bind_runtime(runtime.clone());
         Self { cwd: registered.registration_cwd.clone(), profile, events, runtime, registered }
     }
-    pub fn on(&mut self, event: EventKind, handler: ExtensionHandler) { self.runtime.assert_active_or_panic(); self.registered.handlers.entry(event).or_default().push(handler); }
+    pub fn on(&mut self, event: EventKind, handler: ExtensionHandler) {
+        self.runtime.assert_active_or_panic();
+        let handlers = self.registered.handlers.entry(event).or_default();
+        handlers.push(handler);
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_handlers.insert((self.registered.identity.path.clone(), event), handlers.clone());
+        }
+    }
     pub fn register_provider(&self, name: &str, config: ProviderConfig) -> Result<(), ExtensionFailure> {
         self.runtime.register_provider(ProviderRegistration::Config { name: name.into(), config: Box::new(config) }, &self.registered.identity.path)
     }
@@ -1286,10 +1304,17 @@ impl ExtensionApi {
         self.registered.command_context_handlers.remove(name);
         let command = RegisteredCommand { name: name.into(), source_info: self.registered.source_info.clone(), description, argument_hint, handler };
         if let Some(existing) = self.registered.commands.iter_mut().find(|c| c.name == name) { *existing = command; } else { self.registered.commands.push(command); }
+        self.publish_commands();
+    }
+    fn publish_commands(&self) {
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_commands.insert(self.registered.identity.path.clone(), (self.registered.commands.clone(), self.registered.command_context_handlers.clone()));
+        }
     }
     pub fn register_command_with_context(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandContextHandler) {
         self.register_command(name, description, argument_hint, Arc::new(|_, _| Box::pin(async { Err(ExtensionFailure::new("Command requires a command-capable context")) })));
         self.registered.command_context_handlers.insert(name.into(), handler);
+        self.publish_commands();
     }
     pub fn register_flag(&mut self, name: &str, kind: FlagType, description: Option<String>) {
         self.runtime.assert_active_or_panic();
