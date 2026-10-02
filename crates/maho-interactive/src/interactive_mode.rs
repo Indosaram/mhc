@@ -169,7 +169,7 @@ impl InteractiveMode {
     fn handle_filtered_input_at(&mut self, data: &str, now_ms: u64) {
         if self.async_question_widget.is_some() {
             let keys = maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default());
-            if crate::components::ask_user_answer_key::matches_ask_user_answer_key(data, &maho_core::keybindings::host_platform(), &keys) { self.async_question_widget = None; }
+            if self.ui_dialog.is_none() && self.rename_input.is_none() && crate::components::ask_user_answer_key::matches_ask_user_answer_key(data, &maho_core::keybindings::host_platform(), &keys) { self.async_question_widget = None; return; }
         }
         if self.async_question_widget.is_none() && let Some(question) = &mut self.question { question.handle_input(data); if self.question_reply.borrow().is_none() { self.question = None; } return; }
         if self.ui_dialog.is_some() || self.rename_input.is_some() { self.handle_editor_input(data); return; }
