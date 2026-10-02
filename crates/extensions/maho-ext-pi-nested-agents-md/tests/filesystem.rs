@@ -15,6 +15,22 @@ fn contained_when_relative_file() {
     assert_eq!(contained.0, tree.path().join("src/deep/file.ts").canonicalize().expect("canonicalize fixture"));
 }
 #[test]
+fn contained_when_absolute_file() {
+    let tree = tree();
+    let file = tree.path().join("src/deep/file.ts");
+    let (canonical_file, canonical_root) = resolve_and_contain(&file, tree.path()).expect("absolute fixture contained");
+    assert_eq!(canonical_file, file.canonicalize().expect("canonicalize absolute fixture"));
+    assert_eq!(canonical_root, tree.path().canonicalize().expect("canonicalize root"));
+}
+#[test]
+fn excluded_when_file_outside_root() {
+    let tree = tree();
+    let outside = tempfile::tempdir().expect("create outside fixture");
+    let file = outside.path().join("file.ts");
+    std::fs::write(&file, "outside").expect("write outside file");
+    assert!(resolve_and_contain(&file, tree.path()).is_none());
+}
+#[test]
 fn excluded_when_root_itself() {
     let tree = tree();
     assert!(resolve_and_contain(tree.path(), tree.path()).is_none());
@@ -40,6 +56,7 @@ fn excluded_when_symlink_escapes_root() {
     let outside = tempfile::tempdir().expect("create outside fixture");
     std::fs::write(outside.path().join("AGENTS.md"), "outside").expect("write outside fixture");
     std::os::unix::fs::symlink(outside.path(), tree.path().join("src/escape")).expect("create escape symlink");
+    assert!(resolve_and_contain(&tree.path().join("src/escape/AGENTS.md"), tree.path()).is_none());
     let result = inject_directory_context(Path::new("src/escape/AGENTS.md"), tree.path(), &mut InjectionCache::default(), "a", &InjectionConfig::default());
     assert!(result.injected_files.is_empty());
     assert!(result.injected_text.is_empty());
