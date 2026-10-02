@@ -25,6 +25,9 @@ impl CredentialReader {
     }
 }
 pub async fn bootstrap_native(store:&dyn CredentialStore,can_bootstrap:bool)->Option<Credential> {
+    bootstrap_native_in_runtime(store,can_bootstrap,None).await
+}
+pub(crate) async fn bootstrap_native_in_runtime(store:&dyn CredentialStore,can_bootstrap:bool,runtime:Option<maho_ext_api::ExtensionRuntime>)->Option<Credential> {
     let current=store.read(crate::oauth_login::PROVIDER_ID,None).await.ok().flatten();
     if let Some(value)=&current {
         if !managed(Some(value)) {return current;}
@@ -33,6 +36,7 @@ pub async fn bootstrap_native(store:&dyn CredentialStore,can_bootstrap:bool)->Op
     if !can_bootstrap {return current;}
     let Some(native)=store.read("cursor",None).await.ok().flatten() else {return current;};
     store.modify(crate::oauth_login::PROVIDER_ID,Box::new(move |latest|Box::pin(async move {
+        if let Some(runtime)=runtime {runtime.assert_active()?;}
         if let Some(value)=&latest {
             if !managed(Some(value)) {return Ok(latest);}
             if value.as_oauth().and_then(|c|list_accounts(c).ok()).is_some_and(|slots|!slots.is_empty()) {return Ok(latest);}
@@ -52,6 +56,20 @@ mod tests {
         let foreign=Credential::OAuth(OAuthCredential::new("test","test",1000.0));let expected=foreign.clone();store.modify(crate::oauth_login::PROVIDER_ID,Box::new(move |_|Box::pin(async move {Ok(Some(foreign))})),None).await.expect("store");assert_eq!(reader.read().await,Some(expected));
     }
     use maho_ai::auth::{credential_store::InMemoryCredentialStore,types::OAuthCredential};
+    #[tokio::test]
+    async fn retired_bootstrap_cannot_mutate_after_waiting_for_store_lock() {
+        let store=std::sync::Arc::new(InMemoryCredentialStore::new());
+        store.modify("cursor",Box::new(|_|Box::pin(async {Ok(Some(Credential::OAuth(OAuthCredential::new("fixture","fixture",1000.0))))})),None).await.expect("native seed");
+        let (entered,entry)=tokio::sync::oneshot::channel();let (release,released)=tokio::sync::oneshot::channel();let locked=store.clone();
+        let holder=tokio::spawn(async move {locked.modify(crate::oauth_login::PROVIDER_ID,Box::new(move |current|Box::pin(async move {entered.send(()).expect("entry");released.await.expect("release");Ok(current)})),None).await});
+        tokio::time::timeout(std::time::Duration::from_secs(5),entry).await.expect("bounded entry").expect("entered");
+        let runtime=maho_ext_api::ExtensionRuntime::default();let bootstrap=bootstrap_native_in_runtime(store.as_ref(),true,Some(runtime.clone()));tokio::pin!(bootstrap);
+        std::future::poll_fn(|cx| {assert!(bootstrap.as_mut().poll(cx).is_pending());std::task::Poll::Ready(())}).await;
+        runtime.invalidate("retired bootstrap");release.send(()).expect("release");
+        tokio::time::timeout(std::time::Duration::from_secs(5),holder).await.expect("bounded holder").expect("join").expect("mutation");
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(5),bootstrap).await.expect("bounded bootstrap").is_none());
+        assert!(store.read(crate::oauth_login::PROVIDER_ID,None).await.expect("read").is_none());
+    }
     #[tokio::test]
     async fn gate_and_foreign_credential_preserved() {
         let store=InMemoryCredentialStore::new();assert!(bootstrap_native(&store,false).await.is_none());

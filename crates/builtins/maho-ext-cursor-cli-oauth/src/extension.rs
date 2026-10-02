@@ -71,7 +71,8 @@ impl Extension for CursorCliExtension {
                     let refresh=async move {
                         let settings=(oauth.settings)();
                         let usable=!settings.explicitly_disabled&&settings.enabled&&(oauth.resolve)(&settings).is_ok();
-                        let credential=crate::native_bootstrap::bootstrap_native(oauth.store.as_ref(),usable).await;
+                        let credential=crate::native_bootstrap::bootstrap_native_in_runtime(oauth.store.as_ref(),usable,Some(runtime.clone())).await;
+                        if runtime.assert_active().is_err() || shutdown.as_ref().is_some_and(|shutdown|shutdown.signal().aborted()) {return;}
                         if let Ok(Some(models))=crate::catalog_refresh::refresh_catalog(&agent_dir,&settings,credential.as_ref(),&executable,&environment,(oauth.now)() as f64,||async {(oauth.resolve)(&settings)}).await
                             && models.iter().map(|model|&model.id).ne(crate::models::static_models().iter().map(|model|&model.id)) && runtime.assert_active().is_ok() && shutdown.as_ref().is_none_or(|shutdown|!shutdown.signal().aborted()) {
                             config.models=Some(models);
