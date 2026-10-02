@@ -1653,6 +1653,18 @@ dependencies = [
 [[package]]
 name = "maho-ext-compaction"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "maho-ai",
+ "maho-core",
+ "maho-ext-api",
+ "reqwest",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "url",
+]
 
 [[package]]
 name = "maho-ext-config-reload"
