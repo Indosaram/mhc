@@ -97,7 +97,7 @@ fn compile_expression(pattern:&str)->String{
             ')'=>if parens>0{parens-=1;result.push(')');}else{result.push_str("\\)");},
             '|'=>result.push('|'),
             '{'=>{let mut depth=1;let mut end=index+1;while end<chars.len(){if chars[end]=='{'{depth+=1;}else if chars[end]=='}'{depth-=1;if depth==0{break;}}end+=1;}if depth==0{let body=chars[index+1..end].iter().collect::<String>();let mut nesting=0;let mut start=0;let mut branches=Vec::new();for (position,ch) in body.char_indices(){match ch{'{'|'('|'['=>nesting+=1,'}'|')'|']'=>nesting-=1,',' if nesting==0=>{branches.push(compile_expression(&body[start..position]));start=position+1;},_=>{}}}branches.push(compile_expression(&body[start..]));result.push_str(&format!("(?:{})",branches.join("|")));index=end;}else{result.push_str("\\{");}},
-            '['=>{if let Some(end)=chars[index+1..].iter().position(|ch|*ch==']'){result.extend(chars[index..=index+1+end].iter());index+=1+end;}else{result.push_str("\\[");}},
+            '['=>{if let Some(end)=chars[index+1..].iter().position(|ch|*ch==']'){let end=index+1+end;let body=chars[index+1..end].iter().collect::<String>();let class=if body.starts_with('^')&&!body.contains('/'){format!("[{body}/]")}else{format!("[{body}]")};if body.chars().any(|ch|"-*+?.^${}(|)[]".contains(ch)){result.push_str(&class);}else{result.push_str(&format!("(?:\\[{body}\\]|{class})"));}index=end;if end+1==chars.len(){result.push_str("/?");}}else{result.push_str("\\[");}},
             '.'|'+'|'$'|'^'|'}'|'\\'=>{result.push('\\');result.push(ch);},
             _=>result.push(ch)
         }index+=1;
