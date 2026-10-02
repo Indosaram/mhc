@@ -242,6 +242,12 @@ pub fn reader_gather_siblings<'a>(top:dom_query::NodeRef<'a>,top_score:f64,score
     }
     article.remove_from_parent();article
 }
+pub fn reader_clean_styles(node:&dom_query::NodeRef<'_>) {
+    if node.node_name().as_deref()==Some("svg") {return;}
+    for attribute in ["align","background","bgcolor","border","cellpadding","cellspacing","frame","hspace","rules","style","valign","vspace"] {node.remove_attr(attribute);}
+    if matches!(node.node_name().as_deref(),Some("table"|"th"|"td"|"hr"|"pre")) {node.remove_attr("width");node.remove_attr("height");}
+    for child in node.element_children() {reader_clean_styles(&child);}
+}
 fn markdown_block(name:&str)->bool {matches!(name,"address"|"article"|"aside"|"audio"|"blockquote"|"body"|"canvas"|"center"|"dd"|"dir"|"div"|"dl"|"dt"|"fieldset"|"figcaption"|"figure"|"footer"|"form"|"frameset"|"h1"|"h2"|"h3"|"h4"|"h5"|"h6"|"header"|"hgroup"|"hr"|"html"|"isindex"|"li"|"main"|"menu"|"nav"|"noframes"|"noscript"|"ol"|"output"|"p"|"pre"|"section"|"table"|"tbody"|"td"|"tfoot"|"th"|"thead"|"tr"|"ul")}
 fn markdown_void(name:&str)->bool {matches!(name,"area"|"base"|"br"|"col"|"command"|"embed"|"hr"|"img"|"input"|"keygen"|"link"|"meta"|"param"|"source"|"track"|"wbr")}
 fn markdown_meaningful(name:&str)->bool {matches!(name,"a"|"table"|"thead"|"tbody"|"tfoot"|"th"|"td"|"iframe"|"script"|"audio"|"video")}
@@ -429,6 +435,9 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_style_cleanup_skips_entire_svg_and_keeps_image_size() {
+        let document=dom_query::Document::from("<div style='color:red' align='left'><pre width='10' height='20' style='x'>code</pre><img width='10' height='20' style='x'><svg style='fill:red'><g style='x'></g></svg></div>");reader_clean_styles(&document.select("div").nodes()[0]);assert!(document.select("div").attr("style").is_none());assert!(document.select("div").attr("align").is_none());assert!(document.select("pre").attr("width").is_none());assert!(document.select("pre").attr("height").is_none());assert_eq!(document.select("img").attr("width").as_deref(),Some("10"));assert!(document.select("img").attr("style").is_none());assert_eq!(document.select("svg").attr("style").as_deref(),Some("fill:red"));assert_eq!(document.select("g").attr("style").as_deref(),Some("x"));
+    }
     #[test] fn reader_gather_moves_scored_and_sentence_siblings_in_original_order() {
         let document=dom_query::Document::from("<main><p>Intro.</p><pre id='top' class='keep'>Code</pre><p>not a sentence</p><section id='scored'>Content</section></main>");let top=document.select("#top").nodes()[0];let scored=document.select("#scored").nodes()[0];let article=reader_gather_siblings(top,100.,&[(scored.id,20.)]);assert_eq!(article.inner_html().as_ref(),"<p>Intro.</p><div id=\"top\" class=\"keep\">Code</div><section id=\"scored\">Content</section>");assert!(article.parent().is_none());assert_eq!(document.select("main").text().as_ref(),"not a sentence");
     }
