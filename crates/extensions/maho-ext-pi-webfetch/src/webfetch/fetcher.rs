@@ -34,8 +34,9 @@ async fn fetch_validated_url(value:&str,format:WebfetchFormat)->Result<FetchResu
     for redirects in 0..=20{
         let mut response=client.get(&current).header("Accept",build_accept_header(format)).header("Accept-Language","en-US,en;q=0.9").header("Sec-CH-UA","\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"").header("Sec-CH-UA-Mobile","?0").header("Sec-CH-UA-Platform","\"Windows\"").header("Sec-Fetch-Dest","document").header("Sec-Fetch-Mode","navigate").header("Sec-Fetch-Site","none").header("Sec-Fetch-User","?1").header("Upgrade-Insecure-Requests","1").header("User-Agent","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36").send().await?;
         let status=response.status();
-        if matches!(status.as_u16(),301|302|303|307|308)&&redirects<20&&let Some(location)=response.headers().get("location").and_then(|v|v.to_str().ok()).filter(|v|!v.is_empty()){
-            current=url::Url::parse(&current).and_then(|url|url.join(location)).map_err(|_|WebfetchError::InvalidUrl(format!("Invalid URL: {location}")))?.into();continue;
+        let location=response.headers().get_all("location").iter().map(|value|value.as_bytes().iter().copied().map(char::from).collect::<String>()).collect::<Vec<_>>().join(", ");
+        if matches!(status.as_u16(),301|302|303|307|308)&&redirects<20&&!location.is_empty(){
+            current=url::Url::parse(&current).and_then(|url|url.join(&location)).map_err(|_|WebfetchError::InvalidUrl(format!("Invalid URL: {location}")))?.into();continue;
         }
         if response.content_length().is_some_and(|length|length>5*1024*1024){return Err(WebfetchError::ResponseTooLarge);}
         let content_type=response.headers().get_all("content-type").iter().map(|value|value.as_bytes().iter().copied().map(char::from).collect::<String>()).collect::<Vec<_>>().join(", ");
