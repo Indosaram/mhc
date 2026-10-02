@@ -34,12 +34,24 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
         else if parsed.continue_session { SessionManager::continue_recent(&cwd_text, parsed.session_dir.as_deref()) }
         else { SessionManager::create(&cwd_text, parsed.session_dir.as_deref(), identity) };
     let created = maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
-        cwd: Some(cwd_text.into_owned()), agent_dir: Some(agent_dir), model_runtime: Some(models),
+        cwd: Some(cwd_text.to_string()), agent_dir: Some(agent_dir.clone()), model_runtime: Some(models),
         settings_manager: Some(settings), session_manager: Some(manager), model: options.options.model,
         tools: options.options.tools, exclude_tools: options.options.exclude_tools, no_tools: options.options.no_tools,
         thinking_selection: options.options.thinking_selection, ..Default::default()
     }).await?;
     let session = Arc::new(created.session);
+    if parsed.no_skills || parsed.no_prompt_templates || !parsed.skills.is_empty() || !parsed.prompt_templates.is_empty() {
+        let templates = maho_core::prompt_templates::load_prompt_templates(&maho_core::prompt_templates::LoadPromptTemplatesOptions {
+            cwd: cwd_text.to_string(), agent_dir: agent_dir.clone(), prompt_paths: parsed.prompt_templates.clone(),
+            include_defaults: !parsed.no_prompt_templates,
+        });
+        let skills = maho_core::skills::load_skills(&maho_core::skills::LoadSkillsOptions {
+            cwd: cwd_text.to_string(), agent_dir, skill_paths: parsed.skills.clone(), include_defaults: !parsed.no_skills,
+        });
+        for diagnostic in &skills.diagnostics { eprintln!("{}", diagnostic.message); }
+        session.set_prompt_resources(templates, skills.skills);
+        session.rebuild_system_prompt();
+    }
     if let Some(level) = options.options.thinking_level { session.set_session_thinking_level(level); }
     if let Some(name) = &parsed.name { session.set_session_name(name); }
     indicator.stop();

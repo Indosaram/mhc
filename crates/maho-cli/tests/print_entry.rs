@@ -6,6 +6,9 @@ fn real_print_entry_streams_loopback_model_and_exits() {
     let dir = tempfile::tempdir().unwrap();
     let agent = dir.path().join("agent");
     std::fs::create_dir(&agent).unwrap();
+    std::fs::create_dir(agent.join("prompts")).unwrap();
+    std::fs::write(agent.join("prompts/default.md"), "default prompt must not load").unwrap();
+    std::fs::write(dir.path().join("acceptance.md"), "expanded acceptance $1").unwrap();
     std::fs::write(agent.join("models.json"), serde_json::json!({"providers":{"offline":{
         "api":"openai-completions", "baseUrl":format!("http://{address}/v1"), "apiKey":"offline-fixture",
         "models":[{"id":"offline","reasoning":false,"input":["text"],"contextWindow":128000,"maxTokens":4096}]
@@ -13,7 +16,7 @@ fn real_print_entry_streams_loopback_model_and_exits() {
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
         .current_dir(dir.path()).env("HOME", dir.path()).env("MAHO_CODING_AGENT_DIR", &agent)
         .env_remove("__PI_INTERNAL_SPAWN")
-        .args(["-p", "--offline", "--no-session", "--no-tools", "--model", "offline/offline", "Respond offline"])
+        .args(["-p", "--offline", "--no-session", "--no-tools", "--no-skills", "--no-prompt-templates", "--prompt-template", "acceptance.md", "--model", "offline/offline", "/acceptance fixture"])
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
         .spawn().unwrap();
     let (accepted, received) = std::sync::mpsc::channel();
@@ -42,6 +45,10 @@ fn real_print_entry_streams_loopback_model_and_exits() {
             if request.len() >= end + 4 + length { break; }
         }
     }
+    let end = request.windows(4).position(|bytes| bytes == b"\r\n\r\n").unwrap() + 4;
+    let payload: serde_json::Value = serde_json::from_slice(&request[end..]).unwrap();
+    let messages = payload["messages"].as_array().unwrap();
+    assert!(messages.iter().any(|message| message["role"] == "user" && message["content"].as_array().is_some_and(|parts| parts.iter().any(|part| part["type"] == "text" && part["text"] == "expanded acceptance fixture"))), "{payload}");
     let body = concat!(
         "data: {\"id\":\"offline\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"offline\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"offline acceptance\"},\"finish_reason\":null}]}\n\n",
         "data: {\"id\":\"offline\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"offline\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
