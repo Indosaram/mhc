@@ -3,7 +3,7 @@ use maho_ext_api::types::{Extension,ExtensionApi,EventKind,EventResult,Extension
 use maho_tools::definition::{ToolDefinition,ToolResult,ToolContent,ToolError};
 use serde_json::{Value,json};
 use crate::manager::TerminalManager;
-use crate::tools::{bash_input::{execute_bash_input,BashInputInput},bash_output::execute_bash_output,bash_resize::execute_bash_resize,kill_bash::execute_kill_bash,context::TerminalToolResult};
+use crate::tools::{bash_input::{execute_bash_input,BashInputInput},bash_output::execute_bash_output_view,bash_resize::execute_bash_resize,kill_bash::execute_kill_bash,context::TerminalToolResult};
 pub struct TerminalExtension;
 pub fn monitor_state_payload(snapshot:&[crate::monitor_registry::MonitorSnapshotEntry])->Value {
     let monitors=snapshot.iter().map(|entry| {
@@ -119,7 +119,7 @@ impl Extension for TerminalExtension {
         ] {
             let manager=Arc::clone(&manager);
             let monitors=monitors.clone();
-            api.register_tool(ToolDefinition::new(name,description,json!({"type":"object","properties":properties,"required":required}),Arc::new(move |call| {let manager=Arc::clone(&manager);let monitors=monitors.clone();Box::pin(async move {
+            let tool=ToolDefinition::new(name,description,json!({"type":"object","properties":properties,"required":required}),Arc::new(move |call| {let manager=Arc::clone(&manager);let monitors=monitors.clone();Box::pin(async move {
                 let mut manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
                 let id=call.params.get("bash_id").and_then(Value::as_str);
                 if name=="kill_bash" {
@@ -139,11 +139,12 @@ impl Extension for TerminalExtension {
                 }
                 let id=id.ok_or_else(||ToolError::Message("bash_id must be a string".to_owned()))?;let resolved=manager.resolve_id(id).unwrap_or_else(||id.to_owned());let runtime=manager.get(&resolved);
                 match name {
-                    "bash_output"=>{if call.params.get("view").and_then(Value::as_str)==Some("screen") {return Err(ToolError::Message("Native terminal screen projection is not ported.".to_owned()));}let mut result=execute_bash_output(runtime.as_deref(),id,call.params.get("filter").and_then(Value::as_str)).map_err(|error|ToolError::Message(error.to_string()))?;let registry=monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?;if runtime.is_some()&&let Some(entry)=registry.snapshot().iter().find(|entry|entry.id==resolved) {result=crate::tools::bash_output::with_monitor_state(result,id,entry.paused,registry.muted_dropped(&resolved));}tool_result(result)},
+                    "bash_output"=>{let mut result=execute_bash_output_view(runtime.as_deref(),id,call.params.get("filter").and_then(Value::as_str),call.params.get("view").and_then(Value::as_str)==Some("screen")).map_err(|error|ToolError::Message(error.to_string()))?;let registry=monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?;if runtime.is_some()&&let Some(entry)=registry.snapshot().iter().find(|entry|entry.id==resolved) {result=crate::tools::bash_output::with_monitor_state(result,id,entry.paused,registry.muted_dropped(&resolved));}tool_result(result)},
                     "bash_input"=>{let keys=call.params.get("keys").and_then(Value::as_array).map(|keys|keys.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>()).unwrap_or_default();tool_result(execute_bash_input(runtime,BashInputInput {bash_id:id,input:call.params.get("input").and_then(Value::as_str),keys:&keys,submit:call.params.get("submit").and_then(Value::as_bool)}))},
                     "bash_resize"=>tool_result(execute_bash_resize(runtime.as_deref(),id,call.params.get("cols").and_then(Value::as_f64).unwrap_or(f64::NAN),call.params.get("rows").and_then(Value::as_f64).unwrap_or(f64::NAN))),_=>unreachable!(),
                 }
-            })})));
+            })}));
+            if name=="bash_output" {api.register_tool_with_renderers(tool,crate::tools::render::output_renderers()).expect("valid builtin bash_output registration");} else {api.register_tool(tool);}
         }
         let tool_manager=manager.clone();let tool_monitors=monitors.clone();let tool_notifier=notifier.clone();
         api.register_tool(ToolDefinition::new("monitor","Subscribe to command output or file changes instead of polling.",crate::tools::monitor::monitor_schema(),Arc::new(move |call| {

@@ -2077,6 +2077,7 @@ dependencies = [
  "maho-ext-api",
  "maho-pty",
  "maho-tools",
+ "maho-tui",
  "nix",
  "regex",
  "serde",
@@ -2085,6 +2086,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "vt100",
 ]
 
 [[package]]

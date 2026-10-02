@@ -47,7 +47,8 @@ async fn dispatch(ctx:&ExtensionContext,input:serde_json::Value)->Result<HookDis
     }
     let platform=if cfg!(windows) {"win32"} else {"linux"};
     let tool_status=matches!(input.get("event").and_then(serde_json::Value::as_str),Some("PreToolUse"|"PostToolUse"));
-    let mut result=dispatch_hook_event_with_status(&state.parsed.executable_handlers,&input,&state.trust,platform,|handler| {let cwd=cwd.clone();let signal=signal.clone();let wire=wire.clone();async move {run_command_hook(&handler,&wire,CommandHookRunOptions {cwd:&cwd,env_passthrough:&[],output_policy:None,signal:signal.as_ref(),source_env:None}).await}},|running| {if tool_status && !running.is_empty() && let Some(update)=&ctx.update_tool_hook_status {update(&crate::dispatcher::running_hook_handlers_status_label(running,platform));}}).await.map_err(|error|ExtensionFailure::new(error.to_string()))?;
+    let update=ctx.update_tool_hook_status.clone();
+    let mut result=dispatch_hook_event_with_status(&state.parsed.executable_handlers,&input,&state.trust,platform,|handler| {let cwd=cwd.clone();let signal=signal.clone();let wire=wire.clone();async move {run_command_hook(&handler,&wire,CommandHookRunOptions {cwd:&cwd,env_passthrough:&[],output_policy:None,signal:signal.as_ref(),source_env:None}).await}},move |running| {if tool_status && !running.is_empty() && let Some(update)=&update {update(&crate::dispatcher::running_hook_handlers_status_label(running,platform));}}).await.map_err(|error|ExtensionFailure::new(error.to_string()))?;
     lifecycle_diagnostics.extend(result.diagnostics);result.diagnostics=lifecycle_diagnostics;Ok(result)
 }
 #[derive(Default)]

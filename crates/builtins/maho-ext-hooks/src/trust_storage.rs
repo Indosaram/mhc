@@ -49,15 +49,44 @@ impl FileHookStateStorage {
 }
 
 fn read_snapshot(path:&Path)->std::io::Result<Option<String>> {match std::fs::read_to_string(path) {Ok(text)=>Ok(Some(text)),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(error)=>Err(error)}}
-struct DirectoryLease {path:PathBuf,held:bool}
+struct DirectoryLease {path:PathBuf,held:bool,heartbeat:Option<std::thread::JoinHandle<()>>,state:std::sync::Arc<(std::sync::Mutex<LeaseState>,std::sync::Condvar)>}
+struct LeaseState {released:bool,modified:std::time::SystemTime,compromised:Option<String>}
+fn refresh_lease(path:&Path,state:&mut LeaseState)->std::io::Result<()> {
+    if std::fs::metadata(path)?.modified()?!=state.modified {return Err(std::io::Error::other("ECOMPROMISED: hook state lock modification time changed"));}
+    let file=std::fs::File::open(path)?;file.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()))?;
+    state.modified=file.metadata()?.modified()?;Ok(())
+}
 impl DirectoryLease {
     fn acquire(path:&Path)->std::io::Result<Self> {
         std::fs::create_dir_all(path.parent().ok_or_else(||std::io::Error::other("hook state path has no parent"))?)?;
         let path=PathBuf::from(format!("{}.lock",path.display()));
         retry_lock(||acquire_directory(&path,true),||std::thread::sleep(std::time::Duration::from_millis(20)))?;
-        Ok(Self {path,held:true})
+        let file=std::fs::File::open(&path)?;
+        let millis=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(std::io::Error::other)?.as_millis();
+        let probe=std::time::UNIX_EPOCH+std::time::Duration::from_millis(u64::try_from(millis.div_ceil(1000)*1000+5).map_err(std::io::Error::other)?);
+        file.set_times(std::fs::FileTimes::new().set_modified(probe))?;
+        let state=std::sync::Arc::new((std::sync::Mutex::new(LeaseState {released:false,modified:file.metadata()?.modified()?,compromised:None}),std::sync::Condvar::new()));
+        let progress=state.clone();let lock_path=path.clone();
+        let heartbeat=std::thread::spawn(move || {
+            let (state,wake)=&*progress;let mut state=state.lock().expect("hook lease state");
+            while !state.released {
+                let (next,timeout)=wake.wait_timeout_while(state,std::time::Duration::from_secs(5),|state|!state.released).expect("hook lease heartbeat");state=next;
+                if state.released {break;}
+                if timeout.timed_out()&&let Err(error)=refresh_lease(&lock_path,&mut state) {state.compromised=Some(format!("ECOMPROMISED: {error}"));break;}
+            }
+        });
+        Ok(Self {path,held:true,heartbeat:Some(heartbeat),state})
     }
-    fn release(mut self)->std::io::Result<()> {std::fs::remove_dir(&self.path)?;self.held=false;Ok(())}
+    fn stop_heartbeat(&mut self)->std::io::Result<()> {
+        {let (state,wake)=&*self.state;state.lock().map_err(|_|std::io::Error::other("hook lease state poisoned"))?.released=true;wake.notify_all();}
+        if let Some(thread)=self.heartbeat.take() {thread.join().map_err(|_|std::io::Error::other("hook lease heartbeat panicked"))?;}Ok(())
+    }
+    fn release(mut self)->std::io::Result<()> {
+        self.stop_heartbeat()?;self.held=false;
+        let state=self.state.0.lock().map_err(|_|std::io::Error::other("hook lease state poisoned"))?;
+        if let Some(error)=&state.compromised {return Err(std::io::Error::other(error.clone()));}
+        match std::fs::remove_dir(&self.path) {Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(()),result=>result}
+    }
 }
 fn retry_lock(mut acquire:impl FnMut()->std::io::Result<()>,mut delay:impl FnMut())->std::io::Result<()> {
     for attempt in 1..=10 {match acquire() {Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists&&attempt<10=>delay(),result=>return result}}
@@ -74,7 +103,10 @@ fn acquire_directory(path:&Path,check_stale:bool)->std::io::Result<()> {
         },result=>result,
     }
 }
-impl Drop for DirectoryLease {fn drop(&mut self) {if self.held && let Err(error)=std::fs::remove_dir(&self.path) {eprintln!("hook state lock release failed: {error}");}}}
+impl Drop for DirectoryLease {fn drop(&mut self) {
+    if let Err(error)=self.stop_heartbeat() {eprintln!("hook state heartbeat release failed: {error}");}
+    if self.held&&self.state.0.lock().is_ok_and(|state|state.compromised.is_none())&&let Err(error)=std::fs::remove_dir(&self.path)&&error.kind()!=std::io::ErrorKind::NotFound {eprintln!("hook state lock release failed: {error}");}
+}}
 fn release_result<T>(lease:DirectoryLease,result:std::io::Result<T>)->std::io::Result<T> {
     match (result,lease.release()) {(Ok(value),Ok(()))=>Ok(value),(Err(error),Ok(()))=>Err(error),(Ok(_),Err(error))=>Err(error),(Err(operation),Err(release))=>Err(std::io::Error::other(format!("Hook state operation and lock release both failed: {operation}; {release}")))}
 }
@@ -82,6 +114,14 @@ fn release_result<T>(lease:DirectoryLease,result:std::io::Result<T>)->std::io::R
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn heartbeat_refreshes_and_detects_changed_lock_without_removing_it()->std::io::Result<()> {
+        let dir=tempfile::tempdir()?;let lease=DirectoryLease::acquire(&dir.path().join("state"))?;
+        {let mut state=lease.state.0.lock().unwrap();refresh_lease(&lease.path,&mut state)?;assert_eq!(state.modified,std::fs::metadata(&lease.path)?.modified()?);
+            std::fs::File::open(&lease.path)?.set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))?;
+            let error=refresh_lease(&lease.path,&mut state).unwrap_err();state.compromised=Some(error.to_string());}
+        assert!(lease.release().unwrap_err().to_string().contains("ECOMPROMISED"));assert!(dir.path().join("state.lock").exists());Ok(())
+    }
     #[test]
     fn operation_error_survives_successful_release_and_combines_with_release_failure()->std::io::Result<()> {
         let dir=tempfile::tempdir()?;let path=dir.path().join("state");let lease=DirectoryLease::acquire(&path)?;

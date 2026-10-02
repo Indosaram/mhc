@@ -53,6 +53,14 @@ impl OutputState {
 
 type ExitState=Arc<(Mutex<Option<Result<PtyExit,String>>>,Condvar)>;
 
+#[derive(Debug,PartialEq,Eq)]
+pub struct TerminalScreenSnapshot {
+    pub cols:u16,
+    pub rows:u16,
+    pub visible_grid:Vec<String>,
+    pub cursor:(u16,u16),
+}
+
 pub struct TerminalRuntimeSession {
     pub command:String,
     session:PtySession,
@@ -61,6 +69,7 @@ pub struct TerminalRuntimeSession {
     exit_thread:Option<std::thread::JoinHandle<()>>,
     exit_signal:tokio::sync::watch::Receiver<Option<Result<PtyExit,String>>>,
     observers:Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,
+    screen:Arc<Mutex<vt100::Parser>>,
 }
 
 impl TerminalRuntimeSession {
@@ -68,9 +77,12 @@ impl TerminalRuntimeSession {
         let output=Arc::new(Mutex::new(OutputState::default()));let sink=Arc::clone(&output);
         let observers:Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>=Arc::new(Mutex::new(vec![]));
         let listeners=observers.clone();
+        let screen=Arc::new(Mutex::new(vt100::Parser::new(options.rows,options.cols,crate::shared::DEFAULT_SCROLLBACK)));
+        let projection=screen.clone();
         let mut session=PtySession::start(options,move |chunk| {
             if let Ok(mut state)=sink.lock() {
                 let decoded=state.ingest(chunk);
+                if let Ok(mut screen)=projection.lock() {screen.process(decoded.as_bytes());}
                 if !decoded.is_empty() && let Ok(mut listeners)=listeners.lock() {
                     listeners.retain(|listener|listener.send(decoded.clone()).is_ok());
                 }
@@ -85,7 +97,7 @@ impl TerminalRuntimeSession {
             if let Ok(mut state)=lock.lock() {*state=Some(result.clone());signal.notify_all();}
             exit_sender.send_replace(Some(result));
         });
-        Ok(Self {command:command.to_owned(),session,output,exit,exit_thread:Some(exit_thread),exit_signal,observers})
+        Ok(Self {command:command.to_owned(),session,output,exit,exit_thread:Some(exit_thread),exit_signal,observers,screen})
     }
 
     pub fn backend(&self)->&'static str {"native"}
@@ -110,7 +122,18 @@ impl TerminalRuntimeSession {
     pub fn read_delta(&self)->Result<DeltaRead,RuntimeError> {Ok(self.output.lock().map_err(|_|RuntimeError::Poisoned)?.read_delta())}
     pub fn full_output(&self)->Result<String,RuntimeError> {Ok(String::from_utf16_lossy(&self.output.lock().map_err(|_|RuntimeError::Poisoned)?.buffer))}
     pub fn write(&mut self,bytes:&[u8])->Result<(),RuntimeError> {self.session.write(bytes)?;Ok(())}
-    pub fn resize(&self,cols:u16,rows:u16)->Result<(),RuntimeError> {self.session.resize(cols,rows)?;Ok(())}
+    pub fn snapshot(&self)->Result<TerminalScreenSnapshot,RuntimeError> {
+        let screen=self.screen.lock().map_err(|_|RuntimeError::Poisoned)?;
+        let screen=screen.screen();let (rows,cols)=screen.size();
+        Ok(TerminalScreenSnapshot {cols,rows,visible_grid:screen.rows(0,cols).collect(),cursor:screen.cursor_position()})
+    }
+    pub fn resize(&self,cols:u16,rows:u16)->Result<(),RuntimeError> {
+        self.session.resize(cols,rows)?;
+        let output=self.output.lock().map_err(|_|RuntimeError::Poisoned)?;
+        let mut screen=self.screen.lock().map_err(|_|RuntimeError::Poisoned)?;
+        *screen=vt100::Parser::new(rows,cols,crate::shared::DEFAULT_SCROLLBACK);
+        screen.process(String::from_utf16_lossy(&output.buffer).as_bytes());Ok(())
+    }
     pub fn kill(&mut self)->Result<(),RuntimeError> {self.session.kill()?;Ok(())}
     pub fn dispose(mut self)->Result<(),RuntimeError> {
         if !self.exited()? {self.kill()?;}
