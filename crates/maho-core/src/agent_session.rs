@@ -2208,8 +2208,25 @@ impl AgentSession {
         loop {
             self.agent.wait_for_idle().await;
             let Some(message) = self.messages().iter().rev().find_map(AgentMessage::as_assistant).cloned() else { return Ok(()); };
+            let model = self.model();
+            let upstream_model_id = self.model_runtime().get_compatibility_request_config(&model).upstream_model_id;
+            let same_overflow_source = message.provider == model.provider
+                && (message.model == model.id || upstream_model_id.as_deref() == Some(message.model.as_str()));
+            let current_context_needs_compaction = if same_overflow_source || !self.auto_compaction_enabled() { false } else {
+                let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
+                let configured = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
+                    .transpose().map_err(|error| error.to_string())?;
+                let resolved = crate::compaction_settings_resolver::resolve_compaction_settings(configured.as_ref(), Some(
+                    crate::compaction_settings_access::CompactionModelSelector { provider: &model.provider, id: &model.id },
+                ))?;
+                let reserve = if resolved.reserve_scaling_enabled {
+                    crate::compaction::compaction::resolve_reserve_tokens(model.context_window as f64, resolved.reserve_tokens as f64) as u64
+                } else { resolved.reserve_tokens as u64 };
+                self.get_context_usage().and_then(|usage| usage.tokens).is_some_and(|tokens| tokens > model.context_window.saturating_sub(reserve))
+            };
             if (self.auto_compaction_enabled() || crate::compaction::is_turn_stuck_on_context_overflow(&message, self.model().context_window))
                 && !self.is_compaction_delegated() && !self.state().user_aborted && !overflow_compacted
+                && (same_overflow_source || current_context_needs_compaction)
                 && maho_ai::utils::overflow::is_context_overflow(&message, Some(self.model().context_window))
             {
                 overflow_compacted = true;
@@ -7090,6 +7107,22 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), idle_rx).await.expect("bounded idle").expect("idle");
         assert_eq!(session.messages().len(), 4);
         assert_eq!(session.get_last_assistant_text().as_deref(), Some("second"));
+    }
+
+    #[tokio::test]
+    async fn overflow_from_previous_model_does_not_compact_small_current_context() {
+        let session = test_session();
+        session.agent.set_model(test_model());
+        let mut failed = maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+            stop_reason: Some(StopReason::Error), error_message: Some("prompt is too long".to_owned()), ..Default::default()
+        });
+        failed.model = "previous-model".to_owned();
+        session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"task","timestamp":0})));
+        session.with_session_manager_mut(|manager| manager.append_message(serde_json::to_value(failed).expect("failure")));
+        session.rebuild_session_context().expect("context");
+        session.finish_provider_turn().await.expect("stale overflow ignored");
+        assert_eq!(session.compaction_state().generation(), 0);
+        assert_eq!(session.with_session_manager(|manager| manager.entries()).len(), 2);
     }
 
     #[tokio::test]
