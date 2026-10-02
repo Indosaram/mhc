@@ -4,7 +4,7 @@ use super::base::{JsonValue,RemoteControlConnectionStatus};
 pub type RemoteControlStatusReadParams=();
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct RemoteControlStatusReadResponse {pub status:RemoteControlConnectionStatus,pub server_name:String,pub installation_id:String,pub environment_id:Option<String>}
+pub struct RemoteControlStatusReadResponse {pub status:RemoteControlConnectionStatus,pub server_name:String,pub installation_id:String,#[serde(deserialize_with="super::nullable::deserialize_required")]pub environment_id:Option<String>}
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="lowercase")]
 pub enum RemoteControlClientListOrder {Asc,Desc}
@@ -17,10 +17,10 @@ pub struct RemoteControlClientListParams {pub environment_id:String,
 }
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct RemoteControlClient {pub client_id:String,pub display_name:Option<String>,pub device_type:Option<String>,pub platform:Option<String>,pub os_version:Option<String>,pub device_model:Option<String>,pub app_version:Option<String>,pub last_seen_at:Option<f64>}
+pub struct RemoteControlClient {pub client_id:String,#[serde(deserialize_with="super::nullable::deserialize_required")]pub display_name:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub device_type:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub platform:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub os_version:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub device_model:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub app_version:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub last_seen_at:Option<f64>}
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct RemoteControlClientListResponse {pub data:Vec<RemoteControlClient>,pub next_cursor:Option<String>}
+pub struct RemoteControlClientListResponse {pub data:Vec<RemoteControlClient>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub next_cursor:Option<String>}
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="lowercase")]
 pub enum SkillScope {User,Repo,System,Admin}
@@ -72,7 +72,7 @@ pub enum McpServerStatusDetail {Full,ToolsAndAuthOnly}
 pub enum McpAuthStatus {Unsupported,NotLoggedIn,BearerToken,#[serde(rename="oAuth")]OAuth}
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct McpServerInfo {pub name:String,pub title:Option<String>,pub version:String,pub description:Option<String>,pub icons:Option<Vec<JsonValue>>,pub website_url:Option<String>}
+pub struct McpServerInfo {pub name:String,#[serde(deserialize_with="super::nullable::deserialize_required")]pub title:Option<String>,pub version:String,#[serde(deserialize_with="super::nullable::deserialize_required")]pub description:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub icons:Option<Vec<JsonValue>>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub website_url:Option<String>}
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct Tool {
@@ -107,7 +107,7 @@ pub struct ResourceTemplate {
 }
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct McpServerStatus {pub name:String,pub server_info:Option<McpServerInfo>,pub tools:BTreeMap<String,Tool>,pub resources:Vec<Resource>,pub resource_templates:Vec<ResourceTemplate>,pub auth_status:McpAuthStatus}
+pub struct McpServerStatus {pub name:String,#[serde(deserialize_with="super::nullable::deserialize_required")]pub server_info:Option<McpServerInfo>,pub tools:BTreeMap<String,Tool>,pub resources:Vec<Resource>,pub resource_templates:Vec<ResourceTemplate>,pub auth_status:McpAuthStatus}
 #[derive(Clone,Debug,Default,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct McpServerStatusListParams {
@@ -118,9 +118,9 @@ pub struct McpServerStatusListParams {
 }
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct McpServerStatusListResponse {pub data:Vec<McpServerStatus>,pub next_cursor:Option<String>}
+pub struct McpServerStatusListResponse {pub data:Vec<McpServerStatus>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub next_cursor:Option<String>}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
-pub struct PermissionProfileSummary {pub id:String,pub description:Option<String>,pub allowed:bool}
+pub struct PermissionProfileSummary {pub id:String,#[serde(deserialize_with="super::nullable::deserialize_required")]pub description:Option<String>,pub allowed:bool}
 #[derive(Clone,Debug,Default,PartialEq,Serialize,Deserialize)]
 pub struct PermissionProfileListParams {
     #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub cursor:Option<Option<String>>,
@@ -129,13 +129,13 @@ pub struct PermissionProfileListParams {
 }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct PermissionProfileListResponse {pub data:Vec<PermissionProfileSummary>,pub next_cursor:Option<String>}
+pub struct PermissionProfileListResponse {pub data:Vec<PermissionProfileSummary>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub next_cursor:Option<String>}
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub enum ExperimentalFeatureStage {Beta,UnderDevelopment,Stable,Deprecated,Removed}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct ExperimentalFeature {pub name:String,pub stage:ExperimentalFeatureStage,pub display_name:Option<String>,pub description:Option<String>,pub announcement:Option<String>,pub enabled:bool,pub default_enabled:bool}
+pub struct ExperimentalFeature {pub name:String,pub stage:ExperimentalFeatureStage,#[serde(deserialize_with="super::nullable::deserialize_required")]pub display_name:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub description:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub announcement:Option<String>,pub enabled:bool,pub default_enabled:bool}
 #[derive(Clone,Debug,Default,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct ExperimentalFeatureListParams {
@@ -145,4 +145,4 @@ pub struct ExperimentalFeatureListParams {
 }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct ExperimentalFeatureListResponse {pub data:Vec<ExperimentalFeature>,pub next_cursor:Option<String>}
+pub struct ExperimentalFeatureListResponse {pub data:Vec<ExperimentalFeature>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub next_cursor:Option<String>}

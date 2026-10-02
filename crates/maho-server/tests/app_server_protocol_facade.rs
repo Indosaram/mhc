@@ -26,6 +26,25 @@ fn facade_numeric_ids_and_optional_json_preserve_wire_values() {
 }
 
 #[test]
+fn catalog_nullable_fields_reject_missing_keys_and_keep_null() {
+    use maho_server::app_server::protocol::catalogs::{McpServerInfo,RemoteControlClient};
+    let info=json!({"name":"server","version":"1","title":null,"description":null,"icons":null,"websiteUrl":null});
+    let decoded:McpServerInfo=serde_json::from_value(info.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(),info);
+    for key in ["title","description","icons","websiteUrl"] {
+        let mut missing=info.clone();missing.as_object_mut().unwrap().remove(key);
+        assert!(serde_json::from_value::<McpServerInfo>(missing).is_err());
+    }
+    let client=json!({"clientId":"client","displayName":null,"deviceType":null,"platform":null,"osVersion":null,"deviceModel":null,"appVersion":null,"lastSeenAt":null});
+    let decoded:RemoteControlClient=serde_json::from_value(client.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(),client);
+    for key in ["displayName","deviceType","platform","osVersion","deviceModel","appVersion","lastSeenAt"] {
+        let mut missing=client.clone();missing.as_object_mut().unwrap().remove(key);
+        assert!(serde_json::from_value::<RemoteControlClient>(missing).is_err());
+    }
+}
+
+#[test]
 fn collaboration_wire_preserves_nullable_snake_case_settings() {
     assert_eq!(serde_json::to_value(build_senpi_collaboration_mode("model".into(),Some("off".into()))).unwrap(),json!({"mode":"default","settings":{"model":"model","reasoning_effort":"off","developer_instructions":null}}));
     assert_eq!(serde_json::to_value(build_senpi_collaboration_mode_preset("model".into())).unwrap(),json!({"name":"default","mode":null,"model":"model","reasoning_effort":null}));
