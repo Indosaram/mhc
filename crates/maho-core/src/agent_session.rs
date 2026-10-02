@@ -2672,7 +2672,7 @@ impl AgentSession {
         self.navigate_tree_internal(entry_id, options, Some(AgentMessage::Llm(maho_ai::types::Message::User(replacement)))).await
     }
 
-    async fn navigate_tree_internal(&self, target_id: &str, options: TreeNavigationOptions, replacement: Option<AgentMessage>) -> Result<AssistantEditResult, String> {
+    async fn navigate_tree_internal(&self, target_id: &str, mut options: TreeNavigationOptions, replacement: Option<AgentMessage>) -> Result<AssistantEditResult, String> {
         if self.is_streaming() { return Err("Cannot navigate the session tree while streaming".to_owned()); }
         if self.is_compacting() { return Err("Cannot navigate the session tree while compacting".to_owned()); }
         let entry = self.with_session_manager(|manager| manager.entry(target_id)).ok_or_else(|| format!("Entry {target_id} not found"))?;
@@ -2688,6 +2688,9 @@ impl AgentSession {
                 replace_instructions: options.replace_instructions, label: options.label.clone() }, signal,
         }).await?;
         if before.cancel == Some(true) { return Ok(AssistantEditResult { cancelled: true, ..Default::default() }); }
+        if let Some(instructions) = before.custom_instructions { options.custom_instructions = Some(instructions); }
+        if let Some(replace) = before.replace_instructions { options.replace_instructions = Some(replace); }
+        if let Some(label) = before.label { options.label = Some(label); }
         let mut summary = if options.summarize == Some(true) { before.summary.clone() } else { None };
         let from_extension = summary.is_some();
         if options.summarize == Some(true) && !collected.entries.is_empty() && summary.is_none() {
