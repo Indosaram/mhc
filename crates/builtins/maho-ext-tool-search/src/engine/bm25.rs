@@ -129,4 +129,11 @@ mod tests {
         let results=build_bm25_index(&documents).search("routing",10,&Bm25SearchOptions{exact_match:Some(false),..Default::default()});
         assert_eq!(results.iter().map(|result|result.name.as_str()).collect::<Vec<_>>(),["group_candidate","owner_candidate","description_candidate"]);assert_eq!(results[0].score,results[1].score);assert!(results[1].score>results[2].score);
     }
+    #[test] fn upstream_relative_score_floor_is_independent_of_coverage() {
+        let mut full=doc("full_match");full.description=Some("alpha beta gamma delta".into());
+        let mut partial=doc("partial_match");partial.description=Some("alpha and a great many other unrelated words fill this description out".into());let index=build_bm25_index(&[full,partial]);
+        let options=|ratio|Bm25SearchOptions{precision:Some(Bm25Precision{min_coverage:0.0,min_score_ratio:ratio}),..Default::default()};
+        let results=index.search("alpha beta",10,&options(0.0));assert_eq!(results.iter().map(|result|result.name.as_str()).collect::<Vec<_>>(),["full_match","partial_match"]);assert_eq!(results[0].coverage,1.0);assert_eq!(results[1].coverage,0.5);
+        let results=index.search("alpha beta",10,&options(0.9));assert_eq!(results.len(),1);assert_eq!(results[0].name,"full_match");
+    }
 }
