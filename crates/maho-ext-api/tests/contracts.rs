@@ -313,6 +313,21 @@ fn typed_renderer_slots_keep_call_and_result_components_separate() {
 }
 
 #[test]
+fn mcp_numeric_options_reject_nonfinite_values_even_when_disabled() {
+    let mut api = api(ExtensionRuntime::default());
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let error = api.try_register_mcp_server("invalid", McpServerDeclaration {
+            enabled: Some(false), request_timeout_ms: Some(value), ..Default::default()
+        }).unwrap_err();
+        assert!(error.message.contains("requestTimeoutMs"));
+    }
+    api.try_register_mcp_server("valid", McpServerDeclaration {
+        enabled: Some(false), request_timeout_ms: Some(-1.0), ..Default::default()
+    }).unwrap();
+    assert_eq!(api.registered.mcp_servers.len(), 1);
+}
+
+#[test]
 fn invalid_registration_bus_cannot_emit_subscribe_or_clear_shared_handlers() {
     let events = EventBus::default();
     let failed = events.registration_scope();

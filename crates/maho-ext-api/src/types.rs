@@ -1280,6 +1280,14 @@ impl ExtensionApi {
     }
     pub fn try_register_mcp_server(&mut self, name: &str, config: McpServerDeclaration) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;
+        for (field, value) in [
+            ("idleTimeoutMin", config.idle_timeout_min), ("requestTimeoutMs", config.request_timeout_ms),
+            ("connectTimeoutMs", config.connect_timeout_ms), ("startupTimeoutMs", config.startup_timeout_ms),
+        ] {
+            if value.is_some_and(|value| !value.is_finite()) {
+                return Err(ExtensionFailure::new(format!("Invalid MCP server declaration \"{name}\": {field}: must be number")));
+            }
+        }
         if config.enabled != Some(false) {
             let transport = config.transport.unwrap_or_else(|| if config.url.as_ref().is_some_and(|url| !url.is_empty()) { McpTransport::Http } else { McpTransport::Stdio });
             let (field, endpoint, kind) = match transport {

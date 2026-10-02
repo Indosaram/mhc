@@ -12,18 +12,32 @@ pub struct ShortcutDiagnostic { pub message: String, pub path: String }
 struct HookRun { event: ToolHookLifecycleEvent, state: Arc<std::sync::Mutex<(bool, String)>> }
 struct ReloadRequest { result: std::sync::Mutex<Option<Result<(), ExtensionFailure>>>, ready: tokio::sync::Notify }
 type ReloadState = Arc<std::sync::Mutex<Option<Arc<ReloadRequest>>>>;
-struct CommandActions { inner: Arc<dyn ExtensionCommandContextActions>, reload: ReloadState }
+struct CommandActions { inner: Arc<dyn ExtensionCommandContextActions>, reload: ReloadState, runtime: ExtensionRuntime }
 impl ExtensionCommandContextActions for CommandActions {
-    fn wait_for_idle(&self) -> ExtensionFuture<'_, ()> { self.inner.wait_for_idle() }
-    fn new_session(&self, options: NewSessionOptions) -> ExtensionFuture<'_, SessionNavigationResult> { self.inner.new_session(options) }
-    fn fork<'a>(&'a self, entry_id: &'a str, options: ForkOptions) -> ExtensionFuture<'a, SessionNavigationResult> { self.inner.fork(entry_id, options) }
-    fn navigate_tree<'a>(&'a self, target_id: &'a str, options: ExtensionTreeNavigationOptions) -> ExtensionFuture<'a, SessionNavigationResult> { self.inner.navigate_tree(target_id, options) }
-    fn edit_assistant_message<'a>(&'a self, entry_id: &'a str, text: &'a str, options: EditMessageOptions) -> ExtensionFuture<'a, EditMessageResult> { self.inner.edit_assistant_message(entry_id, text, options) }
-    fn edit_user_message<'a>(&'a self, entry_id: &'a str, text: &'a str, options: EditMessageOptions) -> ExtensionFuture<'a, EditMessageResult> { self.inner.edit_user_message(entry_id, text, options) }
-    fn switch_session<'a>(&'a self, path: &'a str, options: SwitchSessionOptions) -> ExtensionFuture<'a, SessionNavigationResult> { self.inner.switch_session(path, options) }
+    fn wait_for_idle(&self) -> ExtensionFuture<'_, ()> {
+        Box::pin(async move { self.runtime.assert_active()?; self.inner.wait_for_idle().await?; self.runtime.assert_active() })
+    }
+    fn new_session(&self, options: NewSessionOptions) -> ExtensionFuture<'_, SessionNavigationResult> {
+        Box::pin(async move { self.runtime.assert_active()?; self.inner.new_session(options).await })
+    }
+    fn fork<'a>(&'a self, entry_id: &'a str, options: ForkOptions) -> ExtensionFuture<'a, SessionNavigationResult> {
+        Box::pin(async move { self.runtime.assert_active()?; self.inner.fork(entry_id, options).await })
+    }
+    fn navigate_tree<'a>(&'a self, target_id: &'a str, options: ExtensionTreeNavigationOptions) -> ExtensionFuture<'a, SessionNavigationResult> {
+        Box::pin(async move { self.runtime.assert_active()?; let result = self.inner.navigate_tree(target_id, options).await?; self.runtime.assert_active()?; Ok(result) })
+    }
+    fn edit_assistant_message<'a>(&'a self, entry_id: &'a str, text: &'a str, options: EditMessageOptions) -> ExtensionFuture<'a, EditMessageResult> {
+        Box::pin(async move { self.runtime.assert_active()?; let result = self.inner.edit_assistant_message(entry_id, text, options).await?; self.runtime.assert_active()?; Ok(result) })
+    }
+    fn edit_user_message<'a>(&'a self, entry_id: &'a str, text: &'a str, options: EditMessageOptions) -> ExtensionFuture<'a, EditMessageResult> {
+        Box::pin(async move { self.runtime.assert_active()?; let result = self.inner.edit_user_message(entry_id, text, options).await?; self.runtime.assert_active()?; Ok(result) })
+    }
+    fn switch_session<'a>(&'a self, path: &'a str, options: SwitchSessionOptions) -> ExtensionFuture<'a, SessionNavigationResult> {
+        Box::pin(async move { self.runtime.assert_active()?; self.inner.switch_session(path, options).await })
+    }
     fn reload(&self) -> ExtensionFuture<'_, ()> {
         let actions = self.inner.clone();
-        Box::pin(coalesced_reload(self.reload.clone(), Box::pin(async move { actions.reload().await })))
+        Box::pin(async move { self.runtime.assert_active()?; coalesced_reload(self.reload.clone(), Box::pin(async move { actions.reload().await })).await })
     }
 }
 async fn coalesced_reload(state: ReloadState, operation: ExtensionFuture<'static, ()>) -> Result<(), ExtensionFailure> {
@@ -68,64 +82,83 @@ impl SessionManager for ContextSessionManager {
 }
 impl ExtensionContextActions for ContextSessionManager {
     fn assert_active(&self) -> Result<(), ExtensionFailure> { self.runtime.assert_active() }
-    fn get_model(&self) -> Option<Model> { self.actions.get_model() }
-    fn get_service_tier(&self) -> Option<ServiceTier> { self.actions.get_service_tier() }
-    fn get_effective_service_tier(&self) -> Option<ServiceTier> { self.actions.get_effective_service_tier() }
-    fn get_scoped_models(&self) -> Vec<ScopedModel> { self.actions.get_scoped_models() }
-    fn get_agent_dir(&self) -> std::path::PathBuf { self.actions.get_agent_dir() }
-    fn is_idle(&self) -> bool { self.actions.is_idle() }
-    fn is_project_trusted(&self) -> bool { self.actions.is_project_trusted() }
-    fn get_signal(&self) -> Option<AbortSignal> { self.actions.get_signal() }
-    fn get_steering_signal(&self) -> Option<AbortSignal> { self.actions.get_steering_signal() }
-    fn get_thinking_level(&self) -> Option<ThinkingLevel> { self.actions.get_thinking_level() }
-    fn abort(&self, source: Option<AbortSource>) { self.actions.abort(source); }
-    fn has_pending_messages(&self) -> bool { self.actions.has_pending_messages() }
+    fn get_model(&self) -> Option<Model> { self.active(); self.actions.get_model() }
+    fn get_service_tier(&self) -> Option<ServiceTier> { self.active(); self.actions.get_service_tier() }
+    fn get_effective_service_tier(&self) -> Option<ServiceTier> { self.active(); self.actions.get_effective_service_tier() }
+    fn get_scoped_models(&self) -> Vec<ScopedModel> { self.active(); self.actions.get_scoped_models() }
+    fn get_agent_dir(&self) -> std::path::PathBuf { self.active(); self.actions.get_agent_dir() }
+    fn is_idle(&self) -> bool { self.active(); self.actions.is_idle() }
+    fn is_project_trusted(&self) -> bool { self.active(); self.actions.is_project_trusted() }
+    fn get_signal(&self) -> Option<AbortSignal> { self.active(); self.actions.get_signal() }
+    fn get_steering_signal(&self) -> Option<AbortSignal> { self.active(); self.actions.get_steering_signal() }
+    fn get_thinking_level(&self) -> Option<ThinkingLevel> { self.active(); self.actions.get_thinking_level() }
+    fn abort(&self, source: Option<AbortSource>) { self.active(); self.actions.abort(source); }
+    fn has_pending_messages(&self) -> bool { self.active(); self.actions.has_pending_messages() }
     fn request_reload(&self) -> ExtensionFuture<'_, ()> {
         let actions = self.actions.clone();
-        Box::pin(coalesced_reload(self.reload.clone(), Box::pin(async move { actions.request_reload().await })))
+        Box::pin(async move {
+            self.runtime.assert_active()?;
+            coalesced_reload(self.reload.clone(), Box::pin(async move { actions.request_reload().await })).await?;
+            self.runtime.assert_active()
+        })
     }
-    fn is_compacting(&self) -> bool { self.actions.is_compacting() }
-    fn check_reload_veto(&self) -> ExtensionFuture<'_, ReloadVetoDecision> { self.actions.check_reload_veto() }
-    fn shutdown(&self) { self.actions.shutdown(); }
-    fn get_context_usage(&self) -> Option<ContextUsage> { self.actions.get_context_usage() }
-    fn get_compaction_settings(&self) -> CompactionSettings { self.actions.get_compaction_settings() }
+    fn is_compacting(&self) -> bool { self.active(); self.actions.is_compacting() }
+    fn check_reload_veto(&self) -> ExtensionFuture<'_, ReloadVetoDecision> {
+        Box::pin(async move { self.runtime.assert_active()?; let result = self.actions.check_reload_veto().await?; self.runtime.assert_active()?; Ok(result) })
+    }
+    fn shutdown(&self) { self.active(); self.actions.shutdown(); }
+    fn get_context_usage(&self) -> Option<ContextUsage> { self.active(); self.actions.get_context_usage() }
+    fn get_compaction_settings(&self) -> CompactionSettings { self.active(); self.actions.get_compaction_settings() }
     fn get_compaction_preparation(&self) -> Option<CompactionPreparationDetails> { self.active(); self.actions.get_compaction_preparation() }
-    fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { self.actions.get_prompt_cache_safe_wait_seconds() }
-    fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64 { self.actions.get_prompt_cache_goal_backstop_max_seconds() }
-    fn get_prompt_cache_keep_alive_settings(&self) -> PromptCacheKeepAliveSettings { self.actions.get_prompt_cache_keep_alive_settings() }
-    fn get_look_at_settings(&self) -> LookAtSettings { self.actions.get_look_at_settings() }
-    fn get_ask_user_settings(&self) -> AskUserSettings { self.actions.get_ask_user_settings() }
-    fn get_image_settings(&self) -> ImageSettings { self.actions.get_image_settings() }
+    fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { self.active(); self.actions.get_prompt_cache_safe_wait_seconds() }
+    fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64 { self.active(); self.actions.get_prompt_cache_goal_backstop_max_seconds() }
+    fn get_prompt_cache_keep_alive_settings(&self) -> PromptCacheKeepAliveSettings { self.active(); self.actions.get_prompt_cache_keep_alive_settings() }
+    fn get_look_at_settings(&self) -> LookAtSettings { self.active(); self.actions.get_look_at_settings() }
+    fn get_ask_user_settings(&self) -> AskUserSettings { self.active(); self.actions.get_ask_user_settings() }
+    fn get_image_settings(&self) -> ImageSettings { self.active(); self.actions.get_image_settings() }
     fn session_settings(&self) -> &dyn ExtensionSessionSettings { self.active(); self }
-    fn compact(&self, options: CompactOptions) { self.actions.compact(options); }
+    fn compact(&self, options: CompactOptions) { self.active(); self.actions.compact(options); }
     fn prepare_provider_request(&self, messages: Vec<AgentMessage>) -> ExtensionFuture<'_, ProviderRequestPreparation> {
-        match &self.provider_runner {
-            Some(runner) => Box::pin(async move { runner.prepare_provider_request(messages, self.exclude_provider_path.clone()).await }),
-            None => self.actions.prepare_provider_request(messages),
-        }
+        Box::pin(async move {
+            self.runtime.assert_active()?;
+            let result = match &self.provider_runner {
+                Some(runner) => runner.prepare_provider_request(messages, self.exclude_provider_path.clone()).await?,
+                None => self.actions.prepare_provider_request(messages).await?,
+            };
+            self.runtime.assert_active()?;
+            Ok(result)
+        })
     }
     fn begin_compaction(&self, options: BeginCompactionOptions) -> Option<AbortSignal> {
+        self.active();
         let signal = self.actions.begin_compaction(options);
         *self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = signal.clone();
         signal
     }
     fn update_compaction(&self, mut options: UpdateCompactionOptions) {
+        self.active();
         options.signal = options.signal.or_else(|| self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
         self.actions.update_compaction(options);
     }
     fn end_compaction(&self, mut options: EndCompactionOptions) {
+        self.active();
         options.signal = options.signal.or_else(|| self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
         self.actions.end_compaction(options);
     }
-    fn get_message_revision(&self) -> u64 { self.actions.get_message_revision() }
+    fn get_message_revision(&self) -> u64 { self.active(); self.actions.get_message_revision() }
     fn apply_compaction(&self, result: CompactionResult, mut options: ApplyCompactionOptions) -> ExtensionFuture<'_, ApplyCompactionResult> {
-        options.signal = options.signal.or_else(|| self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
-        self.actions.apply_compaction(result, options)
+        Box::pin(async move {
+            self.runtime.assert_active()?;
+            options.signal = options.signal.or_else(|| self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
+            let result = self.actions.apply_compaction(result, options).await?;
+            self.runtime.assert_active()?;
+            Ok(result)
+        })
     }
-    fn get_system_prompt(&self) -> String { self.actions.get_system_prompt() }
-    fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { self.actions.get_system_prompt_options() }
-    fn get_loaded_hook_sources(&self) -> LoadedHookSources { self.actions.get_loaded_hook_sources() }
-    fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools> { self.kernel_tools.as_deref().or_else(|| self.actions.kernel_tools()) }
+    fn get_system_prompt(&self) -> String { self.active(); self.actions.get_system_prompt() }
+    fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { self.active(); self.actions.get_system_prompt_options() }
+    fn get_loaded_hook_sources(&self) -> LoadedHookSources { self.active(); self.actions.get_loaded_hook_sources() }
+    fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools> { self.active(); self.kernel_tools.as_deref().or_else(|| self.actions.kernel_tools()) }
 }
 
 impl ExtensionSessionSettings for ContextSessionManager {
@@ -206,7 +239,7 @@ impl ExtensionRunner {
         self.runtime.bind_session_actions(actions); Ok(())
     }
     pub fn create_command_context(&self, actions: Arc<dyn ExtensionCommandContextActions>) -> Result<ExtensionCommandContext, ExtensionFailure> {
-        Ok(ExtensionCommandContext { context: self.create_context()?, actions: Arc::new(CommandActions { inner: actions, reload: self.reload.clone() }), runtime: self.runtime.clone() })
+        Ok(ExtensionCommandContext { context: self.create_context()?, actions: Arc::new(CommandActions { inner: actions, reload: self.reload.clone(), runtime: self.runtime.clone() }), runtime: self.runtime.clone() })
     }
     pub async fn prepare_provider_request(&self, messages: Vec<AgentMessage>, exclude_path: Option<String>) -> Result<ProviderRequestPreparation, ExtensionFailure> {
         self.runtime.assert_active()?;

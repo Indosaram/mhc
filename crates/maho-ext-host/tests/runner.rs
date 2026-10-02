@@ -383,6 +383,26 @@ fn retained_tool_context_getters_reject_invalidated_runtime() {
         assert_eq!(panic.downcast_ref::<ExtensionFailure>().unwrap().message, "replaced");
     }
 }
+#[test]
+fn retained_context_actions_cannot_bypass_runtime_invalidation() {
+    let mut runner = runner(vec![]);
+    let host = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) });
+    runner.bind_context_actions(host.clone()).unwrap();
+    let context = runner.create_context().unwrap();
+    let actions = context.actions().unwrap();
+    runner.invalidate("replaced");
+    for operation in [
+        Box::new(|| { actions.get_model(); }) as Box<dyn Fn()>,
+        Box::new(|| { actions.get_message_revision(); }),
+        Box::new(|| { actions.abort(None); }),
+        Box::new(|| { actions.kernel_tools(); }),
+    ] {
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)).unwrap_err();
+        assert_eq!(panic.downcast_ref::<ExtensionFailure>().unwrap().message, "replaced");
+    }
+    assert!(host.aborted.lock().unwrap().is_none());
+}
+
 #[tokio::test(start_paused = true)]
 async fn shutdown_hard_cap_aborts_and_runs_next_handler() {
     let signal = Arc::new(Mutex::new(None)); let capture = Arc::clone(&signal);
@@ -1100,6 +1120,17 @@ async fn command_reload_requests_share_the_same_pending_operation() {
     assert_eq!(*actions.0.lock().unwrap(), ["reload"]);
     first.reload().await.unwrap();
     assert_eq!(*actions.0.lock().unwrap(), ["reload", "reload"]);
+}
+#[tokio::test]
+async fn retained_command_actions_reject_stale_navigation_before_host_call() {
+    let runner = runner(vec![]);
+    let host = Arc::new(CommandActions(Mutex::new(vec![])));
+    let context = runner.create_command_context(host.clone()).unwrap();
+    let actions = context.actions.clone();
+    runner.invalidate("replaced");
+    assert_eq!(actions.navigate_tree("leaf", Default::default()).await.unwrap_err().message, "replaced");
+    assert_eq!(actions.reload().await.unwrap_err().message, "replaced");
+    assert!(host.0.lock().unwrap().is_empty());
 }
 #[tokio::test]
 async fn command_invocation_uses_command_capable_context_without_changing_legacy_handlers() {
