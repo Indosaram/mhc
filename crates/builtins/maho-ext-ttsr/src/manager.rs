@@ -44,6 +44,9 @@ impl TtsrManager {
     pub fn message_count(&self)->u64 { self.message_count }
     pub fn settings(&self)->&TtsrSettings { &self.settings }
 }
+#[cfg(test)]
+#[path="manager_parity_tests.rs"]
+mod parity_tests;
 #[cfg(test)] mod tests {
     use super::*;
     fn rule(name:&str,condition:&str)->TtsrRule { TtsrRule { name:name.into(),path:None,content:String::new(),description:None,globs:None,condition:vec![condition.into()],scope:crate::scope::parse_scope(&[]),interrupt_mode:TtsrInterruptMode::Always,source:RuleSource::Project } }
