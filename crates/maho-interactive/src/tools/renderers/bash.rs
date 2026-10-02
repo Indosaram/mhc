@@ -83,7 +83,7 @@ impl Component for CachedPreview {
         let lines = state.cached_lines.clone().unwrap_or_default();
         if skipped > 0 {
             let hint = format!(
-                "{}{}{}",
+                "{} {}{}",
                 self.theme.fg(ThemeColor::Muted, &format!("... ({skipped} earlier lines,")),
                 key_hint("app.tools.expand", "to expand", &self.theme),
                 self.theme.fg(ThemeColor::Muted, ")")
