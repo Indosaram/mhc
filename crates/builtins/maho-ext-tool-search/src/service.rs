@@ -115,6 +115,13 @@ mod tests {
     }
     #[test] fn missing_parameters_are_absent() { assert_eq!(service().get_tool_parameters("unknown").unwrap(),None); }
     #[test] fn empty_catalog_search_has_no_matches() { assert!(service().search("files",10,&Bm25SearchOptions::default()).unwrap().is_empty()); }
+    #[test] fn native_executor_returns_machine_details_for_empty_catalog() {
+        let tool=crate::tool::create_tool_search_tool(Arc::new(std::sync::Mutex::new(service())));
+        let mut future=(tool.execute)(maho_tools::definition::ToolCall{id:"test",params:serde_json::json!({"query":"files"}),signal:Default::default(),on_update:None,context:None});
+        let waker=std::task::Waker::noop(); let mut context=std::task::Context::from_waker(waker);
+        let std::task::Poll::Ready(result)=future.as_mut().poll(&mut context) else { panic!("synchronous catalog search must settle without external IO") };
+        let details=result.unwrap().details.unwrap(); assert_eq!(details["query"],"files"); assert_eq!(details["matched"],serde_json::json!([]));
+    }
     #[test] fn unbound_activation_is_explicit_failure() { assert!(service().begin_session().is_err()); }
     #[test] fn extension_document_uses_owner_and_group() {
         let doc=extension_document(ToolInfo{name:"search_docs".into(),label:"Docs".into(),description:"Search documentation".into(),parameters:Value::Null,prompt_guidelines:None,source_info:SourceInfo{path:"/extensions/docs.ts".into(),..Default::default()},exposure:ToolExposure::Search,search_text:None,search_keywords:vec![],search_group:None,allow_lazy_activation:true}).unwrap();

@@ -4,3 +4,4 @@ pub mod tool;
 pub mod native_support;
 pub mod native_search;
 pub mod service;
+pub mod index;
