@@ -78,6 +78,46 @@ pub fn native_route_key(model:&NativeModelInfo)->Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    macro_rules! upstream_matrix {
+        ($name:ident,$provider:literal,$id:literal,$base:literal,$expected:expr) => {
+            #[tokio::test] async fn $name() {
+                let model=NativeModelInfo{provider:$provider.into(),id:$id.into(),base_url:$base.into(),api:None};
+                let auth=|_:NativeModelInfo|async {Some("fixture-key".into())};
+                let entry=build_native_entry(Some(&model),Some(&auth),Some("native"),None).await.unwrap();
+                let expected:Option<(SearchProvider,&str)>=$expected;
+                match expected {
+                    None=>assert!(entry.is_none()),
+                    Some((provider,url))=>{let entry=entry.unwrap();assert_eq!(entry.config.provider,provider);assert_eq!(entry.config.base_url.as_deref(),Some(url));assert_eq!(entry.config.model.as_deref(),Some($id));assert_eq!(entry.config.api_key.as_deref(),Some("fixture-key"));assert_eq!(entry.priority,Some(-1.));assert_eq!(entry.config.id.as_deref(),Some("native"));}
+                }
+            }
+        };
+    }
+    upstream_matrix!(matrix_gpt_sol,"openai","gpt-5.6-sol","https://gateway.example.com/v1",Some((SearchProvider::Openai,"https://gateway.example.com/v1/responses")));
+    upstream_matrix!(matrix_gpt_terra,"openai","gpt-5.6-terra","https://gateway.example.com/v1",Some((SearchProvider::Openai,"https://gateway.example.com/v1/responses")));
+    upstream_matrix!(matrix_gpt_55,"openai","gpt-5.5","https://gateway.example.com/v1",Some((SearchProvider::Openai,"https://gateway.example.com/v1/responses")));
+    upstream_matrix!(matrix_gpt_fast,"openai","gpt-5.5-fast","https://gateway.example.com/v1",Some((SearchProvider::Openai,"https://gateway.example.com/v1/responses")));
+    upstream_matrix!(matrix_gpt_54,"openai","gpt-5.4","https://gateway.example.com/v1",Some((SearchProvider::Openai,"https://gateway.example.com/v1/responses")));
+    upstream_matrix!(matrix_gpt_pro,"openai","gpt-5-pro","https://gateway.example.com/v1",Some((SearchProvider::Openai,"https://gateway.example.com/v1/responses")));
+    upstream_matrix!(matrix_gpt_5,"openai","gpt-5","https://gateway.example.com/v1",Some((SearchProvider::Openai,"https://gateway.example.com/v1/responses")));
+    upstream_matrix!(matrix_gpt_41,"openai","gpt-4.1-mini","https://gateway.example.com/v1",Some((SearchProvider::Openai,"https://gateway.example.com/v1/responses")));
+    upstream_matrix!(matrix_gpt_4o,"openai","gpt-4o-mini-2026-01-01","https://gateway.example.com/v1",Some((SearchProvider::Openai,"https://gateway.example.com/v1/responses")));
+    upstream_matrix!(matrix_codex,"openai","gpt-5.3-codex","https://gateway.example.com/v1",None);
+    upstream_matrix!(matrix_codex_spark,"openai","gpt-5.3-codex-spark","https://gateway.example.com/v1",None);
+    upstream_matrix!(matrix_gpt_turbo,"openai","gpt-4-turbo","https://gateway.example.com/v1",None);
+    upstream_matrix!(matrix_o3,"openai","o3","https://gateway.example.com/v1",None);
+    upstream_matrix!(matrix_opus5,"anthropic","claude-opus-5","https://gateway.example.com/v1",Some((SearchProvider::Anthropic,"https://gateway.example.com/v1/messages")));
+    upstream_matrix!(matrix_sonnet5,"anthropic","claude-sonnet-5","https://gateway.example.com/v1",Some((SearchProvider::Anthropic,"https://gateway.example.com/v1/messages")));
+    upstream_matrix!(matrix_fable5,"anthropic","claude-fable-5","https://gateway.example.com/v1",Some((SearchProvider::Anthropic,"https://gateway.example.com/v1/messages")));
+    upstream_matrix!(matrix_haiku,"anthropic","claude-haiku-4-5","https://gateway.example.com/v1",Some((SearchProvider::Anthropic,"https://gateway.example.com/v1/messages")));
+    upstream_matrix!(matrix_opus48,"anthropic","claude-opus-4-8","https://gateway.example.com/v1",Some((SearchProvider::Anthropic,"https://gateway.example.com/v1/messages")));
+    upstream_matrix!(matrix_sonnet_dated,"anthropic","claude-sonnet-4-5-20250929","https://gateway.example.com/v1",Some((SearchProvider::Anthropic,"https://gateway.example.com/v1/messages")));
+    upstream_matrix!(matrix_not_claude,"anthropic","not-a-claude-model","https://gateway.example.com/v1",None);
+    upstream_matrix!(matrix_grok,"xai","grok-4.3","https://gateway.example.com/v1",Some((SearchProvider::Xai,"https://gateway.example.com/v1/responses")));
+    upstream_matrix!(matrix_openrouter,"openrouter","anthropic/claude-opus-5","https://openrouter.example.com/v1",Some((SearchProvider::Anthropic,"https://openrouter.example.com/v1/messages")));
+    upstream_matrix!(matrix_deepseek_flash,"deepseek","deepseek-v4-flash","https://api.deepseek.com",Some((SearchProvider::Deepseek,"https://api.deepseek.com/anthropic/v1/messages")));
+    upstream_matrix!(matrix_deepseek_pro,"deepseek","deepseek-v4-pro","https://api.deepseek.com",Some((SearchProvider::Deepseek,"https://api.deepseek.com/anthropic/v1/messages")));
+    upstream_matrix!(matrix_deepseek_v3,"deepseek","deepseek-v3","https://api.deepseek.com",None);
+    upstream_matrix!(matrix_deepseek_chat,"deepseek","deepseek-chat","https://api.deepseek.com",None);
     fn aliases(provider:&str,prefix:&str,count:usize)->Vec<NativeModelInfo> {(0..count).map(|index|model(provider,&if index==0 && provider=="anthropic" {prefix.into()} else {format!("{prefix}-{index}")})).collect()}
     #[tokio::test] async fn upstream_fourteen_aliases_yield_two_stable_opaque_routes() {
         let models=aliases("anthropic","claude-opus-4",8).into_iter().chain(aliases("z-ai","glm-4.6",6)).collect::<Vec<_>>();
