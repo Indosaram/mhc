@@ -796,8 +796,9 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
             session.append_custom_message(custom);
             if options.trigger_turn {
                 let guard = session.work_barrier.begin();
+                let generation = session.user_abort_generation.load(Ordering::SeqCst);
                 tokio::spawn(async move {
-                    if let Err(error) = session.continue_session().await { session.emit(AgentSessionEvent::ContinuationError { error_message: error }); }
+                    if let Err(error) = session.continue_session_internal(Some(generation)).await { session.emit(AgentSessionEvent::ContinuationError { error_message: error }); }
                     drop(guard);
                 });
             }
@@ -6332,6 +6333,22 @@ mod tests {
         assert!(session.agent.has_queued_messages());
         assert!(session.messages().is_empty());
         assert!(!session.work_barrier.has_active_work());
+    }
+
+    #[tokio::test]
+    async fn idle_custom_trigger_respects_abort_before_scheduled_admission() {
+        let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("unexpected", Default::default())], 0);
+        let admission = session.prompt_admission.lock().await;
+        maho_ext_api::ExtensionActions::send_message(&SessionExtensionActions(Arc::downgrade(&session.inner)),
+            maho_ext_api::CustomMessage { custom_type: "notice".to_owned(), content: vec![maho_tools::definition::ToolContent::text("saved notice")], display: true, details: None },
+            maho_ext_api::SendMessageOptions { trigger_turn: true, deliver_as: None }).expect("custom trigger");
+        session.abort().await;
+        drop(admission);
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.wait_for_idle()).await.expect("settled scheduled work");
+        assert!(session.state().user_aborted);
+        assert_eq!(session.messages().len(), 1);
+        assert_eq!(session.messages()[0].role(), "custom");
+        assert_eq!(session.with_session_manager(|manager| manager.entries()).len(), 1);
     }
 
     #[tokio::test]
