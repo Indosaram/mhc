@@ -1,6 +1,7 @@
 //! Native pi-rules modules, ported from the pinned extension.
 pub mod config;
 pub mod commands;
+pub mod index;
 pub mod rules {
     pub mod cache;
     pub mod constants;
