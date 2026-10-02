@@ -5,6 +5,7 @@ pub mod terminal_snapshot_store;
 pub mod detached_cell_snapshot;
 pub mod detached_cell_status;
 pub mod managed_cell;
+pub mod eval_execution_event;
 pub mod call_capture;
 pub mod cell_deadlines;
 pub mod detached_cell_state;
