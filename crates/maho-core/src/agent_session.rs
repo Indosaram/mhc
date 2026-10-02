@@ -2689,7 +2689,8 @@ impl AgentSession {
 
     pub fn is_idle(&self) -> bool {
         let state = self.agent.state();
-        !state.is_streaming && state.pending_tool_calls.is_empty()
+        !state.is_streaming && state.pending_tool_calls.is_empty() && !self.work_barrier.has_active_work()
+            && !self.is_compacting() && !self.is_retrying()
     }
 
     pub fn system_prompt(&self) -> String {
@@ -2708,8 +2709,10 @@ impl AgentSession {
     pub fn activity_snapshot(&self) -> SessionActivitySnapshot {
         SessionActivitySnapshot {
             is_streaming: self.is_streaming(),
+            is_compacting: self.is_compacting(),
+            is_bash_running: self.is_bash_running(),
+            has_session_work: self.work_barrier.has_active_work() || self.is_retrying(),
             has_active_wake_source: self.state().wake_sources.has_active(),
-            ..SessionActivitySnapshot::default()
         }
     }
 
