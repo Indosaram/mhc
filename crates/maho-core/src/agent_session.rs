@@ -2392,11 +2392,6 @@ impl AgentSession {
         let previous = self.model();
         let context_changed = !models_are_equal(Some(&previous), Some(&model))
             || previous.context_window != model.context_window || previous.api != model.api;
-        if context_changed {
-            self.abort_compaction();
-            self.abort_branch_summary();
-            self.state().message_revision += 1;
-        }
         let (current_budget, _) = self.model_budget(&previous, 0, false)?;
         let (target_budget, _) = self.model_budget(&model, 0, false)?;
         let live = if model.context_window.saturating_sub(target_budget.required_tokens)
@@ -2422,10 +2417,17 @@ impl AgentSession {
             self.emit(AgentSessionEvent::ModelChangePending { model, budget, notice });
             return Ok(None);
         }
+        if context_changed {
+            self.abort_compaction();
+            self.abort_branch_summary();
+            self.state().message_revision += 1;
+        }
         if matches!(source, maho_ext_api::ModelSelectSource::Set | maho_ext_api::ModelSelectSource::Cycle)
             && let Some(controller) = self.retry_fallback.lock().await.as_mut()
         {
+            let had_active_fallback = controller.state.is_some();
             controller.clear_for_manual_model_change(&model);
+            if had_active_fallback { self.abort_retry(); }
         }
         let old_prompt = self.system_prompt();
         let old_thinking = self.thinking_level();
@@ -5689,7 +5691,9 @@ mod tests {
         let mut model = test_model();
         model.id = "tiny".to_owned();
         model.context_window = 4_096;
+        let revision = session.message_revision();
         assert!(session.set_model(model).await.is_err());
+        assert_eq!(session.message_revision(), revision);
         assert_eq!(session.model().id, "faux-1");
         assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
     }
@@ -5702,7 +5706,9 @@ mod tests {
         let mut model = test_model();
         model.id = "smaller".to_owned();
         model.context_window = 64_000;
+        let revision = session.message_revision();
         session.set_model(model).await.expect("held switch");
+        assert_eq!(session.message_revision(), revision);
         assert_eq!(session.model().id, "faux-1");
         assert_eq!(session.pending_model_switch().expect("pending").model.id, "smaller");
         assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
