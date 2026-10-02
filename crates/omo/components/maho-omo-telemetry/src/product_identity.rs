@@ -35,6 +35,41 @@ pub const EVENT_PROPERTY_ALLOWLISTS: &[(&str, &[&str])] = &[
 ];
 pub fn builtin_category_names()->Vec<&'static str> {senpi_task::category::BUILTIN_CATEGORY_DEFAULTS.iter().map(|c|c.name).collect()}
 pub fn curated_agents()->std::collections::BTreeSet<&'static str> {senpi_task::agents::curated_readonly_agent_names()}
+pub fn omo_native_event_schemas()->serde_json::Value {
+    use serde_json::{Value,json};
+    let mut events=serde_json::Map::new();
+    for &(event,keys) in EVENT_PROPERTY_ALLOWLISTS {
+        let mut properties=serde_json::Map::new();
+        for &key in keys {
+            let values:Option<Vec<&str>>=match (event,key) {
+                (_,"default_provider"|"provider")=>Some(KNOWN_MODELS.iter().map(|(p,_)|*p).chain(["custom"]).collect()),
+                (_,"default_model"|"model_id")=>{let mut models=Vec::new();for (_,names) in KNOWN_MODELS {for &name in *names {if !models.contains(&name) {models.push(name);}}}models.push("custom");Some(models)},
+                ("daily_active","reason")=>Some(vec!["session_start"]),
+                ("session_started","reason")=>Some(vec!["startup","reload","new","resume","fork"]),
+                (_,"memory_bucket")=>Some(vec!["lt_8_gb","8_15_gb","16_31_gb","32_63_gb","64_plus_gb"]),
+                (_,"input_source")=>Some(vec!["interactive","rpc","extension"]),
+                (_,"invocation_stage")=>Some(vec!["none","first_arm","remention","post_compact_rearm"]),
+                (_,"keyword_occurrence_bucket")=>Some(vec!["1","2","3_5","6_plus"]),
+                (_,"keyword_variant")=>Some(vec!["none","ulw","ultrawork","both"]),
+                (_,"prompt_length_bucket")=>Some(vec!["lt_100","100_500","500_2000","gte_2000"]),
+                (_,"queue_mode")=>Some(vec!["immediate","follow_up","steer","other"]),
+                (_,"real_prompt_ordinal_bucket")=>Some(vec!["1","2_3","4_10","11_25","26_plus"]),
+                (_,"suppression_reason")=>Some(vec!["none","no_keyword","extension_source","embedded_directive","skill_expansion","skill_name_only"]),
+                (_,"skill_name")=>Some(BUILTIN_SKILL_NAMES.to_vec()),
+                (_,"batch_size_bucket")=>Some(vec!["1","2_4","5_plus"]),
+                (_,"kind")=>Some(vec!["category","subagent"]),
+                (_,"name")=>Some(builtin_category_names().into_iter().chain(curated_agents()).chain(["custom"]).collect()),
+                (_,"feature")=>Some(vec!["goal_tool","team_create","memory_tool"]),
+                _=>None,
+            };
+            let property=if let Some(values)=values {json!({"type":"string","values":values})} else {let kind=if key.starts_with("is_") || matches!(key,"keyword_any"|"keyword_ultrawork_full"|"keyword_ulw_abbrev"|"background") {"boolean"} else if key.ends_with("_count") || key.ends_with("_tokens") || matches!(key,"cost_usd"|"turn_index") {"number"} else {"string"};json!({"type":kind})};
+            properties.insert(key.into(),property);
+        }
+        events.insert(event.into(),Value::Object(properties));
+    }
+    events.insert("parallelism_summary".into(),Value::Object(crate::parallelism_schema::PARALLELISM_SUMMARY_SCHEMA.iter().map(|(key,kind)|((*key).into(),if *key=="schema_kind" {json!({"type":"string","values":["parallelism_v1","parallelism_v2"]})} else {json!({"type":kind})})).collect()));
+    Value::Object(events)
+}
 static FALLBACK_SALTS:OnceLock<Mutex<HashMap<PathBuf,[u8;32]>>>=OnceLock::new();
 pub fn get_omo_native_state_dir(env:&telemetry_core::TelemetryEnv)->PathBuf {
     let legacy=crate::index::get_senpi_telemetry_state_dir(env);
@@ -66,6 +101,8 @@ mod identity_tests {
     #[test] fn histogram_privacy_bound() {let widest=std::iter::repeat_n(crate::wave_assembler::MAX_TRACKED_CALLS.to_string(),8).collect::<Vec<_>>().join(":");assert_eq!(widest.len(),39);assert!(widest.len()<=64);}
     #[test] fn static_allowlists_unique() {assert!(!BUILTIN_SKILL_NAMES.is_empty());for (_,keys) in EVENT_PROPERTY_ALLOWLISTS {let unique:std::collections::HashSet<_>=keys.iter().collect();assert_eq!(unique.len(),keys.len());}}
     #[test] fn imported_task_names_exact() {assert_eq!(builtin_category_names(),senpi_task::category::BUILTIN_CATEGORY_DEFAULTS.iter().map(|c|c.name).collect::<Vec<_>>());assert_eq!(curated_agents(),senpi_task::agents::curated_readonly_agent_names());}
+    #[test] fn schema_keys_match_capture_allowlists() {let schemas=omo_native_event_schemas();for (name,keys) in EVENT_PROPERTY_ALLOWLISTS {let mut actual=schemas[*name].as_object().unwrap().keys().map(String::as_str).collect::<Vec<_>>();let mut expected=keys.to_vec();actual.sort();expected.sort();assert_eq!(actual,expected);}assert_eq!(schemas["parallelism_summary"].as_object().unwrap().len(),crate::parallelism_schema::PARALLELISM_SUMMARY_SCHEMA.len());}
+    #[test] fn schemas_preserve_closed_vocabularies_and_types() {let s=omo_native_event_schemas();assert_eq!(s["session_started"]["cpu_count"]["type"],"number");assert_eq!(s["prompt_submitted"]["keyword_any"]["type"],"boolean");assert_eq!(s["feature_used"]["feature"]["values"],serde_json::json!(["goal_tool","team_create","memory_tool"]));assert_eq!(s["parallelism_summary"]["schema_kind"]["values"],serde_json::json!(["parallelism_v1","parallelism_v2"]));assert!(s["delegation_started"]["name"]["values"].as_array().unwrap().contains(&serde_json::json!(builtin_category_names()[0])));assert!(!s.to_string().contains("prompt_text"));}
     #[test] fn salted_hash_stable_private() {let t=tempfile::tempdir().unwrap();let a=hash_session_id("private-session",t.path()).unwrap();assert_eq!(a,hash_session_id("private-session",t.path()).unwrap());assert_ne!(a,hash_session_id("other-session",t.path()).unwrap());assert_eq!(a.len(),64);assert!(!a.contains("private-session"));assert_eq!(std::fs::read(t.path().join("session-id-salt")).unwrap().len(),32);}
     #[test] fn salt_file_private() {use std::os::unix::fs::PermissionsExt;let t=tempfile::tempdir().unwrap();hash_session_id("s",t.path()).unwrap();assert_eq!(std::fs::metadata(t.path().join("session-id-salt")).unwrap().permissions().mode()&0o777,0o600);}
     #[test] fn invalid_salt_repaired() {let t=tempfile::tempdir().unwrap();std::fs::write(t.path().join("session-id-salt"),"invalid").unwrap();hash_session_id("s",t.path()).unwrap();assert_eq!(std::fs::read(t.path().join("session-id-salt")).unwrap().len(),32);}
