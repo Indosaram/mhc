@@ -66,7 +66,8 @@ pub fn prepare_pending_payload(state:&mut RestorationTrackerState,options:&Prepa
     if !options.kept_messages.is_empty() {let kept=options.kept_messages.iter().map(message_text).collect::<Vec<_>>().join("\n");state.items.retain(|label,_|!kept.contains(label.as_str()));}
     let max=normalize(options.settings.max_tokens_per_item,5000.).floor() as u64;
     let mut candidates:Vec<_>=state.items.values().filter(|i|!state.restored_labels.contains(&i.label)).map(|i|truncate_item(i,max)).collect();
-    candidates.sort_by(|a,b|b.priority.cmp(&a.priority).then(a.tokens.cmp(&b.tokens)).then(a.label.cmp(&b.label)));
+    let collator = icu_collator::Collator::try_new(Default::default(), Default::default()).expect("compiled collation data is available");
+    candidates.sort_by(|a,b|b.priority.cmp(&a.priority).then(a.tokens.cmp(&b.tokens)).then_with(||collator.compare(&a.label, &b.label)));
     let mut selected=Vec::new();let mut total=0;
     for item in candidates {
         if selected.len()>=normalize(options.settings.max_items,10.).floor() as usize {break;}

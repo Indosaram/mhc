@@ -19,3 +19,30 @@ fn project(provider:&str,id:&str,window:u64,max:u64,live:f64)->ModelUsabilityBud
     let before=entries.clone();let slice=maho_ext_compaction::resume_slice::plan_resume_slice(&entries,&p).expect("slice");
     let overhead=p.required_tokens-p.live_context_tokens;assert!(slice.tokens_after+overhead<=p.context_window);assert!(slice.dropped_entries>0);assert_eq!(entries,before);
 }
+#[test]
+fn persisted_resume_slice_reopens_with_budgeted_context_and_complete_transcript() {
+    use maho_core::session_manager::SessionManager;
+    use maho_ext_compaction::resume_slice::*;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().to_str().unwrap();
+    let mut session = SessionManager::create(path, Some(path), None);
+    for index in 0..20 {
+        session.append_message(json!({"role":"user","content":"x".repeat(6000),"timestamp":index}));
+    }
+    session.append_message(json!({"role":"assistant","content":[{"type":"text","text":"recorded"}],"api":"faux-completion","provider":"faux","model":"small","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":20}));
+    let file = session.session_file().unwrap().to_owned();
+    drop(session);
+    let mut reopened = SessionManager::open(&file, Some(path), None, None);
+    let transcript = reopened.entries();
+    let projection = project("faux", "small", 48000, 8000, 25000.);
+    let plan = plan_resume_slice(&reopened.branch(None), &projection).unwrap();
+    reopened.append_compaction(&plan.summary, &plan.first_kept_entry_id, plan.tokens_before as i64,
+        Some(json!({"schema":RESUME_SLICE_SCHEMA,"origin":RESUME_SLICE_ORIGIN})), None, Some(false));
+    drop(reopened);
+    let restored = SessionManager::open(&file, Some(path), None, None);
+    assert_eq!(&restored.entries()[..transcript.len()], transcript.as_slice());
+    let measured: u64 = restored.build_context(None).messages.iter().map(maho_core::compaction::compaction::estimate_tokens).sum();
+    assert_eq!(measured as f64, plan.tokens_after);
+    assert!(measured as f64 + projection.required_tokens - projection.live_context_tokens <= projection.context_window);
+    assert_eq!(restored.entries().last().unwrap()["firstKeptEntryId"], plan.first_kept_entry_id);
+}

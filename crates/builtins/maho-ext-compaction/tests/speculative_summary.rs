@@ -59,7 +59,7 @@ async fn summary_dispatch_uses_native_messages_and_supplied_runtime_runner() {
     let entries = [json!({"type":"message","id":"old","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(500),"timestamp":0}}), json!({"type":"message","id":"keep","parentId":"old","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"continue task","timestamp":0}})];
     let mut settings = default_compaction_settings(); settings.keep_recent_tokens = 1;
     let preparation = prepare_compaction(&entries, &settings, true, false).unwrap();
-    let snapshot = maho_ext_compaction::speculative::SpeculativeCompactionSnapshot { generation: 1, expected_revision: 1, model, context_window: 10000, preparation, branch_entries: entries.to_vec(), prompt_variant: maho_ext_compaction::prompts::PromptVariant::Default, custom_instructions: None, system_prompt: Some("agent prompt".into()), tools: Vec::new() };
+    let snapshot = maho_ext_compaction::speculative::SpeculativeCompactionSnapshot { generation: 1, expected_revision: 1, model, context_window: 10000, preparation, branch_entries: entries.to_vec(), prompt_variant: maho_ext_compaction::prompts::PromptVariant::Default, custom_instructions: None, system_prompt: Some("agent prompt".into()), tools: Vec::new(), origin: None };
     let runner: SummaryStreamRunner = std::sync::Arc::new(|model, context, options| {
         assert_eq!(model.provider, "extension-provider");
         assert_eq!(context.system_prompt.as_deref(), Some("agent prompt"));
@@ -87,7 +87,7 @@ async fn generated_compaction_extracts_task_intent_and_structural_metadata() {
     let entries = [json!({"type":"message","id":"old","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(500),"timestamp":0}}), json!({"type":"message","id":"keep","parentId":"old","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"continue task","timestamp":0}})];
     let mut settings = default_compaction_settings(); settings.keep_recent_tokens = 1;
     let preparation = prepare_compaction(&entries, &settings, true, false).unwrap();
-    let snapshot = maho_ext_compaction::speculative::SpeculativeCompactionSnapshot { generation: 1, expected_revision: 1, model, context_window: 10000, preparation, branch_entries: entries.to_vec(), prompt_variant: maho_ext_compaction::prompts::PromptVariant::Default, custom_instructions: None, system_prompt: None, tools: Vec::new() };
+    let snapshot = maho_ext_compaction::speculative::SpeculativeCompactionSnapshot { generation: 1, expected_revision: 1, model, context_window: 10000, preparation, branch_entries: entries.to_vec(), prompt_variant: maho_ext_compaction::prompts::PromptVariant::Default, custom_instructions: None, system_prompt: None, tools: Vec::new(), origin: None };
     let runner: SummaryStreamRunner = std::sync::Arc::new(|model, _, _| {
         let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
         let mut response = maho_ai::utils::lazy::setup_error_message(model, "");
@@ -102,4 +102,38 @@ async fn generated_compaction_extracts_task_intent_and_structural_metadata() {
     assert_eq!(details["taskIntent"], "original task");
     assert_eq!(details["schema"], "senpi.compaction.summary.v1");
     assert!(details["structuralYield"]["savedTokens"].as_f64().unwrap() > 0.);
+}
+
+#[tokio::test(start_paused = true)]
+async fn blocking_generation_retries_transient_failure_but_warm_generation_does_not() {
+    use maho_core::compaction::{compaction::prepare_compaction, settings::default_compaction_settings};
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    let model: Model = serde_json::from_value(json!({"id":"m","name":"m","provider":"faux","api":"faux","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":10000,"maxTokens":1000})).unwrap();
+    let entries = [json!({"type":"message","id":"old","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(500),"timestamp":0}}), json!({"type":"message","id":"keep","parentId":"old","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"next","timestamp":0}})];
+    let mut settings = default_compaction_settings(); settings.keep_recent_tokens = 1;
+    let preparation = prepare_compaction(&entries, &settings, true, false).unwrap();
+    let mut snapshot = maho_ext_compaction::speculative::SpeculativeCompactionSnapshot { generation: 1, expected_revision: 1, model, context_window: 10000, preparation, branch_entries: entries.to_vec(), prompt_variant: maho_ext_compaction::prompts::PromptVariant::Default, custom_instructions: None, system_prompt: None, tools: Vec::new(), origin: Some("blocking".into()) };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&calls);
+    let runner: SummaryStreamRunner = Arc::new(move |model, _, _| {
+        let attempt = observed.fetch_add(1, Ordering::SeqCst);
+        let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
+        let mut response = maho_ai::utils::lazy::setup_error_message(model, "503 service unavailable");
+        if attempt == 0 {
+            stream.push(maho_ai::types::AssistantMessageEvent::Error { reason: maho_ai::types::ErrorReason::Error, error: response });
+        } else {
+            response.stop_reason = maho_ai::types::StopReason::Stop;
+            response.error_message = None;
+            response.content = vec![maho_ai::types::ContentBlock::text("summary")];
+            stream.push(maho_ai::types::AssistantMessageEvent::Done { reason: maho_ai::types::DoneReason::Stop, message: response });
+        }
+        stream
+    });
+    let result = maho_ext_compaction::speculative::run_extension_compaction(&snapshot, Some("faux".into()), None, None, Some(&runner), &|_| {}).await.unwrap().unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(result.details.unwrap()["origin"], "blocking");
+    calls.store(0, Ordering::SeqCst);
+    snapshot.origin = Some("speculative".into());
+    assert!(maho_ext_compaction::speculative::run_extension_compaction(&snapshot, Some("faux".into()), None, None, Some(&runner), &|_| {}).await.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }

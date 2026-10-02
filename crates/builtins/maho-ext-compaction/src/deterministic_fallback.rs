@@ -64,6 +64,35 @@ fn bounded_value(value: &serde_json::Value, depth: usize) -> bool {
     }
 }
 
+fn has_visible_user_text(text: &str) -> bool {
+    use unicode_normalization::UnicodeNormalization;
+    text.nfkc().any(|character| !character.is_whitespace() && !matches!(character,
+        '\u{00ad}' | '\u{034f}' | '\u{061c}' | '\u{115f}'..='\u{1160}' |
+        '\u{17b4}'..='\u{17b5}' | '\u{180b}'..='\u{180f}' |
+        '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' |
+        '\u{2060}'..='\u{206f}' | '\u{3164}' | '\u{fe00}'..='\u{fe0f}' |
+        '\u{feff}' | '\u{ffa0}' | '\u{fff0}'..='\u{fff8}' |
+        '\u{1bca0}'..='\u{1bca3}' | '\u{1d173}'..='\u{1d17a}' |
+        '\u{e0000}'..='\u{e0fff}'))
+}
+
+#[cfg(test)]
+mod meaningful_user_tests {
+    use super::has_visible_user_text;
+
+    #[test]
+    fn invisible_and_compatibility_blank_requests_are_not_fallback_boundaries() {
+        for text in ["\u{200b}\u{2060}", "\u{3164}\u{ffa0}", "\u{00ad}\u{e0100}", "\u{00a0}\u{3000}"] {
+            assert!(!has_visible_user_text(text), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn visible_compatibility_letters_remain_fallback_boundaries() {
+        assert!(has_visible_user_text("\u{200b}\u{ff21}\u{fe0f}"));
+    }
+}
+
 fn complete_tool_chains(messages: &[serde_json::Value]) -> bool {
     use std::collections::HashMap;
     let mut calls = HashMap::new();
@@ -126,7 +155,7 @@ pub fn create_required_compaction_fallback(
         let entry = &branch_entries[index];
         if entry["type"] != "message" || entry["message"]["role"] != "user" { continue; }
         let content = &entry["message"]["content"];
-        let meaningful = content.as_str().is_some_and(|text| !text.trim().is_empty()) || content.as_array().is_some_and(|blocks| blocks.iter().any(|block| block["type"] == "text" && block["text"].as_str().is_some_and(|text| !text.trim().is_empty())));
+        let meaningful = content.as_str().is_some_and(has_visible_user_text) || content.as_array().is_some_and(|blocks| blocks.iter().any(|block| block["type"] == "text" && block["text"].as_str().is_some_and(has_visible_user_text)));
         if !meaningful { continue; }
         candidates.push((index, "latest-user-turn"));
         for earlier in (prepared_index + 1..index).rev() {
@@ -147,17 +176,40 @@ pub fn create_required_compaction_fallback(
         let retained: Vec<_> = messages.iter().skip(1).cloned().collect();
         let canonical = maho_core::messages::convert_to_llm(&retained);
         let summary_message = messages.first()?;
+        let mut rejection_details = json!({});
         let reason = if context_entries.get(1).and_then(|entry| entry["id"].as_str()) != Some(id) {
             Some("context-reconstruction-failed")
         } else if crate::retained_message_safety::has_unsafe_retained_content(&canonical) || !canonical.iter().all(|message| bounded_value(message, 0)) {
+            if let Some(unsafe_index) = canonical.iter().position(|message| crate::retained_message_safety::has_unsafe_retained_content(std::slice::from_ref(message)) || !bounded_value(message, 0)) {
+                rejection_details["unsafeMessageIndex"] = json!(unsafe_index + 1);
+                if let Some(role) = canonical[unsafe_index].get("role") { rejection_details["unsafeMessageRole"] = role.clone(); }
+                if let Some(entry) = context_entries.get(unsafe_index + 1) { rejection_details["unsafeEntryId"] = entry["id"].clone(); }
+            }
             Some("unsafe-retained-content")
         } else if !complete_tool_chains(&canonical) { Some("atomic-tool-chain-cut") } else {
-            let tokens: u64 = canonical.iter().chain(std::iter::once(summary_message)).map(|message| estimate_tokens(message).max(estimate_tokens(&json!({"role":"user","content":message.to_string(),"timestamp":0})))).sum();
+            let tokens: u64 = canonical.iter().chain(std::iter::once(summary_message)).map(|message| {
+                let mut envelope = message.clone();
+                let mut image_tokens = 0;
+                if envelope["role"] == "toolResult" && let Some(blocks) = envelope["content"].as_array_mut() {
+                    for block in blocks {
+                        if block["type"] == "image" {
+                            let mut single_image = message.clone();
+                            single_image["content"] = json!([block.clone()]);
+                            image_tokens += estimate_tokens(&single_image);
+                            block["data"] = json!("");
+                        }
+                    }
+                }
+                estimate_tokens(message).max(estimate_tokens(&json!({"role":"user","content":envelope.to_string(),"timestamp":0})) + image_tokens)
+            }).sum();
+            rejection_details["estimatedTokens"] = json!(tokens);
             if tokens > diagnostics.budget_tokens { diagnostics.budget_exceeded = true; Some("retained-token-budget-exceeded") } else { None }
         };
         if let Some(reason) = reason {
             diagnostics.rejection_reason = Some(reason);
-            diagnostics.candidate_rejections.push(json!({"firstKeptEntryId":id,"rejectionReason":reason}));
+            rejection_details["firstKeptEntryId"] = json!(id);
+            rejection_details["rejectionReason"] = json!(reason);
+            diagnostics.candidate_rejections.push(rejection_details);
             continue;
         }
         return Some(maho_ext_api::CompactionResult { summary, first_kept_entry_id: id.into(), tokens_before: preparation.tokens_before as u64, details: Some(details) });

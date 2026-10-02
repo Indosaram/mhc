@@ -53,6 +53,87 @@ pub struct CompactionExtension;
 impl maho_ext_api::Extension for CompactionExtension {
     fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
         let state = std::sync::Arc::new(std::sync::Mutex::new(state::create_initial_state()));
+        let restoration = std::sync::Arc::new(std::sync::Mutex::new(restoration_tracker::RestorationTrackerState::default()));
+        let pending = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, (serde_json::Value, serde_json::Value))>::new()));
+        let live_api = std::sync::Arc::new(maho_ext_api::ExtensionApi::new(api.registered.clone(), api.profile.clone(), api.events.clone(), api.runtime.clone()));
+        {
+            let latch = std::sync::Arc::new(std::sync::Mutex::new(emergency_prune::EmergencyPruneLatch::default()));
+            let state = std::sync::Arc::clone(&state);
+            api.on(maho_ext_api::EventKind::Context, std::sync::Arc::new(move |event, context| {
+                let result = (|| {
+                    let maho_ext_api::ExtensionEvent::Context { messages } = event else { return Ok(maho_ext_api::EventResult::None); };
+                    // Todo 24 owns the resolved SDK resume-mode loader. Do not prune
+                    // a provider-owned history until that binding is available.
+                    if context.model.as_ref().is_some_and(|model| model.provider == "anthropic-subscription") {
+                        return Ok(maho_ext_api::EventResult::None);
+                    }
+                    let usage = context.get_context_usage()?;
+                    let window = usage.as_ref().map_or_else(||context.model.as_ref().map_or(200_000, |model|model.context_window), |usage|usage.context_window);
+                    let tokens = usage.and_then(|usage|usage.tokens).map(|tokens|tokens as f64);
+                    let state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let breaker_fallback = circuit_breaker::is_tripped(&state, chrono::Utc::now().timestamp_millis() as f64)
+                        && tokens.is_some_and(|tokens|tokens >= window as f64 * policy::compute_effective_threshold(window as f64, state.last_yield));
+                    let raw = messages.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                    let output = context_pipeline::build_compaction_context(context_pipeline::CompactionContextInput {
+                        messages: &raw, context_window: window,
+                        prompt_context_window: extension_wiring::get_prompt_context_window(window as f64, context.model.as_ref().map(|model|model.max_tokens as f64)) as u64,
+                        usage_tokens: tokens, provider_native_path: openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref()),
+                        tool_admission_enabled: true, breaker_fallback, lane_owns_compaction: false,
+                        emergency_prune_latch: &mut latch.lock().unwrap_or_else(std::sync::PoisonError::into_inner), reminder: None,
+                        now: chrono::Utc::now().timestamp_millis(),
+                    }).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                    let messages = output.messages.into_iter().map(|message|serde_json::to_value(message).and_then(serde_json::from_value)).collect::<Result<Vec<_>, _>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                    Ok(maho_ext_api::EventResult::Context { messages: Some(messages) })
+                })();
+                Box::pin(async move { result })
+            }));
+        }
+        {
+            let restoration = std::sync::Arc::clone(&restoration);
+            api.on(maho_ext_api::EventKind::ToolCall, std::sync::Arc::new(move |event, _context| {
+                if let maho_ext_api::ExtensionEvent::ToolCall(event) = event {
+                    restoration_tracker::track_tool_call(&mut restoration.lock().unwrap_or_else(std::sync::PoisonError::into_inner), &event.tool_name, &event.input);
+                }
+                Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+            }));
+        }
+        {
+            let pending = std::sync::Arc::clone(&pending);
+            let live_api = std::sync::Arc::clone(&live_api);
+            api.on(maho_ext_api::EventKind::SessionBeforeCompact, std::sync::Arc::new(move |event, context| {
+                let result = if let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event {
+                    if event.signal.is_aborted() { Ok(()) } else {
+                        checkpoint_state::capture_live_agent_checkpoint(&live_api, context).map(|checkpoint| {
+                            let mut pending = pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                            let metadata = (checkpoint, todo_bridge::create_todo_snapshot(context));
+                            if let Some((_, value)) = pending.iter_mut().find(|(id, _)| id == &event.request_id) {
+                                *value = metadata;
+                            } else {
+                                pending.push((event.request_id.clone(), metadata));
+                            }
+                            if pending.len() > 8 { pending.remove(0); }
+                        })
+                    }
+                } else { Ok(()) };
+                Box::pin(async move { result?; Ok(maho_ext_api::EventResult::None) })
+            }));
+        }
+        {
+            let pending = std::sync::Arc::clone(&pending);
+            let live_api = std::sync::Arc::clone(&live_api);
+            api.on(maho_ext_api::EventKind::SessionCompact, std::sync::Arc::new(move |event, _context| {
+                let result = if let maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Accepted { request_id, .. }) = event {
+                    let metadata = {
+                        let mut pending = pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        pending.iter().position(|(id, _)| id == request_id).map(|index| pending.remove(index).1)
+                    };
+                    if let Some((checkpoint, todos)) = metadata {
+                        checkpoint_state::persist_checkpoint(&live_api, &checkpoint).and_then(|()| live_api.append_entry(todo_bridge::TODO_SNAPSHOT_CUSTOM_TYPE, Some(todos)))
+                    } else { Ok(()) }
+                } else { Ok(()) };
+                Box::pin(async move { result?; Ok(maho_ext_api::EventResult::None) })
+            }));
+        }
         for kind in [maho_ext_api::EventKind::TurnEnd, maho_ext_api::EventKind::AgentEnd,
             maho_ext_api::EventKind::SessionCompact] {
             let state = std::sync::Arc::clone(&state);

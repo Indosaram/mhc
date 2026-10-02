@@ -67,3 +67,21 @@ async fn registered_lifecycle_handlers_accept_real_api_events() {
     }
 }
 
+#[tokio::test]
+async fn preaborted_compaction_does_not_read_unbound_checkpoint_actions() {
+    let registered = LoadedExtension::new("compaction", "/tmp".into(), SourceInfo::default());
+    let mut api = ExtensionApi::new(registered, ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+    maho_ext_compaction::CompactionExtension.register(&mut api);
+    let signal = AbortSignal::default();
+    signal.abort();
+    let mut event = ExtensionEvent::SessionBeforeCompact(SessionBeforeCompactEvent {
+        reason: CompactionReason::Manual, will_retry: false, request_id: "cancelled".into(),
+        preparation: CompactionPreparation { settings: CompactionSettings { enabled: true, reserve_tokens: 100, keep_recent_tokens: 100 },
+            messages_to_summarize: Vec::new(), turn_prefix_messages: Vec::new(), tokens_before: 1000, first_kept_entry_id: "keep".into(), previous_summary: None },
+        branch_entries: Vec::new(), custom_instructions: None, signal,
+    });
+    for handler in &api.registered.handlers[&EventKind::SessionBeforeCompact] {
+        assert!(matches!(handler(&mut event, &context()).await.unwrap(), EventResult::None));
+    }
+}
+
