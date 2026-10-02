@@ -8,11 +8,11 @@ struct State { consecutive:usize,previous:Option<String> }
 pub type CommandFuture=std::pin::Pin<Box<dyn std::future::Future<Output=std::io::Result<crate::omo_command::CommandResult>>+Send>>;
 pub type CommandRunner=Arc<dyn Fn(String,Vec<String>,std::path::PathBuf)->CommandFuture+Send+Sync>;
 pub struct UlwLoopComponent { pub bin:Option<String>,pub js_runtime:String,pub run_command:Option<CommandRunner> }
-async fn status(bin:&str,runtime:&str,cwd:&std::path::Path,runner:Option<&CommandRunner>)->(String,bool) {
+async fn status(bin:&str,runtime:&str,cwd:&std::path::Path,runner:Option<&CommandRunner>)->Option<(String,bool)> {
     let target=to_spawn_target(bin,&["ulw-loop".into(),"status".into(),"--json".into()],"linux",runtime);
-    let result=if let Some(run)=runner {match run(bin.into(),vec!["ulw-loop".into(),"status".into(),"--json".into()],cwd.into()).await {Ok(result)=>result,Err(_)=>return (String::new(),false)}}else{run_omo_command(&target,cwd).await};
+    let result=if let Some(run)=runner {match run(bin.into(),vec!["ulw-loop".into(),"status".into(),"--json".into()],cwd.into()).await {Ok(result)=>result,Err(_)=>return None}}else{run_omo_command(&target,cwd).await};
     let active=result.code==0 && serde_json::from_str::<serde_json::Value>(&result.stdout).is_ok_and(|value|status_has_active_incomplete_run(&value));
-    (result.stdout,active)
+    Some((result.stdout,active))
 }
 impl Extension for UlwLoopComponent {
     fn register(&self,api:&mut ExtensionApi) {
@@ -27,7 +27,7 @@ impl Extension for UlwLoopComponent {
             let bin=bin.clone();let js=js.clone();let footer=Arc::clone(&footer);let runner=runner.clone();
             api.on(kind,Arc::new(move |event,ctx|{let bin=bin.clone();let js=js.clone();let footer=Arc::clone(&footer);let runner=runner.clone();Box::pin(async move {
                 if let ExtensionEvent::ToolResult(e)=event && !matches!(e.tool_name.as_str(),"create_goal"|"update_goal"|"bash"|"interactive_bash") {return Ok(EventResult::None);}
-                let active=status(&bin,&js,&ctx.cwd,runner.as_ref()).await.1;crate::footer_status::sync_shared(&footer,ctx,active);Ok(EventResult::None)
+                let active=status(&bin,&js,&ctx.cwd,runner.as_ref()).await.is_some_and(|(_,active)|active);crate::footer_status::sync_shared(&footer,ctx,active);Ok(EventResult::None)
             })}));
         }
         for kind in [EventKind::SessionBeforeSwitch,EventKind::SessionShutdown] {
@@ -40,14 +40,15 @@ impl Extension for UlwLoopComponent {
             let ExtensionEvent::Input(input)=event else { return Ok(EventResult::None); };
             if input.source==InputSource::Extension { return Ok(EventResult::Input(InputEventResult::Continue)); }
             *state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=State::default();
-            if input.streaming_behavior.is_some() { let active=status(&bin,&js,&ctx.cwd,runner.as_ref()).await.1;crate::footer_status::sync_shared(&footer,ctx,active);if active { return Ok(EventResult::Input(InputEventResult::Transform{text:format!("{}\n\n{STEERING_REMINDER}",input.text),images:input.images.clone()})); } }
+            if input.streaming_behavior.is_some() { let active=status(&bin,&js,&ctx.cwd,runner.as_ref()).await.is_some_and(|(_,active)|active);crate::footer_status::sync_shared(&footer,ctx,active);if active { return Ok(EventResult::Input(InputEventResult::Transform{text:format!("{}\n\n{STEERING_REMINDER}",input.text),images:input.images.clone()})); } }
             Ok(EventResult::Input(InputEventResult::Continue))
         }) }));
         let runtime=api.runtime.clone();
         api.on(EventKind::AgentEnd,Arc::new(move |_,ctx| { let state=Arc::clone(&state);let bin=bin.clone();let js=js.clone();let runtime=runtime.clone();let footer=Arc::clone(&footer);let runner=runner.clone();Box::pin(async move {
             if state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).consecutive>=8 { return Ok(EventResult::None); }
             if !ctx.session_manager.session_id().is_empty() && maho_omo_start_work_continuation::boulder_eligibility::find_continuable_boulder_work(&ctx.cwd,ctx.session_manager.session_id()).map_err(|e|ExtensionFailure::new(e.to_string()))?.is_some() { return Ok(EventResult::None); }
-            let (raw,active)=status(&bin,&js,&ctx.cwd,runner.as_ref()).await;
+            let result=status(&bin,&js,&ctx.cwd,runner.as_ref()).await;
+            let Some((raw,active))=result else {crate::footer_status::sync_shared(&footer,ctx,false);return Ok(EventResult::None);};
             crate::footer_status::sync_shared(&footer,ctx,active);
             let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if !active { state.previous=None;return Ok(EventResult::None); }

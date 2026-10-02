@@ -97,3 +97,26 @@ async fn unrelated_tool_results_do_not_query_loop_status() {
     api.registered.handlers[&EventKind::ToolResult][0](&mut event, &support::context()).await.expect("dispatch");
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
+
+#[tokio::test]
+async fn rejected_status_keeps_previous_snapshot_guard() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let calls = Arc::new(AtomicUsize::new(0));
+    let captured = calls.clone();
+    let actions = Arc::new(Actions::default());
+    let runtime = ExtensionRuntime::default();
+    runtime.bind(actions.clone());
+    let mut api = ExtensionApi::new(LoadedExtension::new("loop", "/tmp".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(), EventBus::default(), runtime);
+    maho_omo_ulw_loop::index::UlwLoopComponent { bin: Some("/toolkit".into()), js_runtime: "bun".into(),
+        run_command: Some(Arc::new(move |_, _, _| {
+            let call = captured.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                if call == 1 { return Err(std::io::Error::other("rejected status")); }
+                Ok(maho_omo_ulw_loop::omo_command::CommandResult { code: 0,
+                    stdout: r#"{"ok":true,"plan":{"goals":[{"status":"pending"}]}}"#.into() })
+            })
+        })) }.register(&mut api);
+    for _ in 0..3 { end(&api).await; }
+    assert_eq!(actions.0.lock().expect("messages").len(), 1);
+}
