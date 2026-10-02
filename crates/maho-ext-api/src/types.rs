@@ -1073,6 +1073,7 @@ struct RuntimeState {
     read_classifiers: Vec<(u64, ReadClassifier)>, next_classifier_id: u64,
     session_actions: Option<Arc<dyn ExtensionSessionActions>>,
     provider_errors: Vec<ExtensionError>,
+    registered_providers: BTreeMap<String, String>,
     live_handlers: BTreeMap<(String, EventKind), Vec<ExtensionHandler>>,
     live_commands: BTreeMap<String, LiveCommandRegistrations>,
     live_command_argument_completions: BTreeMap<String, BTreeMap<String, CommandArgumentCompletions>>,
@@ -1170,9 +1171,22 @@ impl ExtensionRuntime {
             state.provider_actions = Some(Arc::clone(&actions)); std::mem::take(&mut state.pending_providers)
         };
         for (registration, path) in pending {
+            let name = registration.name().to_owned();
             if let Err(error) = actions.register_provider(registration, &path) {
                 self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider_errors.push(ExtensionError { extension_path: path, event: "register_provider".into(), error: error.message, stack: error.stack });
+            } else {
+                self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).registered_providers.insert(name, path);
             }
+        }
+        Ok(())
+    }
+    pub fn dispose_providers(&self) -> Result<(), ExtensionFailure> {
+        let (actions, providers) = {
+            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            (state.provider_actions.clone(), std::mem::take(&mut state.registered_providers))
+        };
+        if let Some(actions) = actions {
+            for (name, path) in providers { actions.unregister_provider(&name, &path)?; }
         }
         Ok(())
     }
@@ -1244,7 +1258,10 @@ impl ExtensionRuntime {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             match &state.provider_actions { Some(actions) => Arc::clone(actions), None => { state.pending_providers.push((registration, path.into())); return Ok(()); } }
         };
-        actions.register_provider(registration, path)
+        let name = registration.name().to_owned();
+        actions.register_provider(registration, path)?;
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).registered_providers.insert(name, path.into());
+        Ok(())
     }
     pub fn unregister_provider(&self, name: &str, path: &str) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
@@ -1257,7 +1274,9 @@ impl ExtensionRuntime {
             state.pending_providers.retain(|(registration, _)| registration.name() != name);
             state.provider_actions.clone()
         };
-        match actions { Some(actions) => actions.unregister_provider(name, path), None => Ok(()) }
+        if let Some(actions) = actions { actions.unregister_provider(name, path)?; }
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).registered_providers.remove(name);
+        Ok(())
     }
     pub fn classify_read(&self, path: &Path, cwd: &Path) -> Option<CompactReadClassification> {
         let classifiers = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).read_classifiers.clone();

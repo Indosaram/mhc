@@ -425,6 +425,8 @@ struct AgentSessionState {
     extension_event_sender: Option<tokio::sync::mpsc::UnboundedSender<maho_ext_api::ExtensionEvent>>,
     extension_tool_context: Option<(maho_ext_api::ExtensionRuntime, maho_ext_host::wrapper::ToolContextFactory)>,
     extension_tool_backups: BTreeMap<String, Option<(ToolDefinitionEntry, AgentTool)>>,
+    extension_lazy_activators: Vec<LazyToolActivator>,
+    extension_hint_backups: BTreeMap<String, Option<String>>,
     skills: Vec<crate::skills::Skill>,
     bash_abort_signals: BTreeMap<String, maho_ext_api::AbortSignal>,
     pending_bash_messages: Vec<maho_agent::harness::messages::BashExecutionMessage>,
@@ -791,9 +793,17 @@ impl maho_ext_api::ExtensionSessionActions for SessionExtensionActions {
         self.refresh_tools()
     }
     fn register_removed_tool_hint(&self, name: &str, hint: &str) -> Result<(), maho_ext_api::ExtensionFailure> {
-        let session = self.session()?; let mut hints = session.agent.removed_tool_hints(); hints.insert(name.to_owned(), hint.to_owned()); session.agent.set_removed_tool_hints(hints); Ok(())
+        let session = self.session()?;
+        let mut hints = session.agent.removed_tool_hints();
+        session.state().extension_hint_backups.entry(name.to_owned()).or_insert_with(|| hints.get(name).cloned());
+        hints.insert(name.to_owned(), hint.to_owned());
+        session.agent.set_removed_tool_hints(hints); Ok(())
     }
-    fn register_lazy_tool_activator(&self, activator: maho_ext_api::LazyToolActivator) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.add_lazy_tool_activator(activator); Ok(()) }
+    fn register_lazy_tool_activator(&self, activator: maho_ext_api::LazyToolActivator) -> Result<(), maho_ext_api::ExtensionFailure> {
+        let session = self.session()?;
+        session.state().extension_lazy_activators.push(activator.clone());
+        session.add_lazy_tool_activator(activator); Ok(())
+    }
     fn get_commands(&self) -> Result<Vec<maho_ext_api::SlashCommandInfo>, maho_ext_api::ExtensionFailure> { Ok(self.session()?.get_commands()) }
     fn set_model(&self, model: Model) -> maho_ext_api::ExtensionFuture<'_, bool> { Box::pin(async move {
         let session = self.session()?;
@@ -1050,6 +1060,8 @@ impl AgentSession {
             extension_event_sender: None,
             extension_tool_context: None,
             extension_tool_backups: BTreeMap::new(),
+            extension_lazy_activators: Vec::new(),
+            extension_hint_backups: BTreeMap::new(),
             skills: Vec::new(),
             bash_abort_signals: BTreeMap::new(),
             pending_bash_messages: Vec::new(),
@@ -1984,9 +1996,11 @@ impl AgentSession {
         if self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeSwitch {
             reason: maho_ext_api::SessionReason::New, target_session_file: None,
         }).await?.cancel == Some(true) { return Ok(false); }
+        self.ensure_extension_recreation().await?;
         self.abort().await;
         let previous = self.session_file();
         self.emit_session_shutdown(maho_ext_api::SessionReason::New).await;
+        self.invalidate_extension_runtime().await;
         self.with_session_manager_mut(|manager| manager.new_session(options));
         self.finish_session_replacement(maho_ext_api::SessionReason::New, previous).await?;
         Ok(true)
@@ -2000,9 +2014,11 @@ impl AgentSession {
         if self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeSwitch {
             reason: maho_ext_api::SessionReason::Resume, target_session_file: Some(path.to_owned()),
         }).await?.cancel == Some(true) { return Ok(false); }
+        self.ensure_extension_recreation().await?;
         self.abort().await;
         let previous = self.session_file();
         self.emit_session_shutdown(maho_ext_api::SessionReason::Resume).await;
+        self.invalidate_extension_runtime().await;
         self.with_session_manager_mut(|manager| manager.set_session_file(path, None));
         self.finish_session_replacement(maho_ext_api::SessionReason::Resume, previous).await?;
         Ok(true)
@@ -2014,11 +2030,13 @@ impl AgentSession {
         if self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeFork { entry_id: entry_id.to_owned(), position }).await?.cancel == Some(true) {
             return Ok(AssistantEditResult { cancelled: true, ..Default::default() });
         }
+        self.ensure_extension_recreation().await?;
         self.abort().await;
         let leaf = if include_entry { Some(entry_id) } else { entry.get("parentId").and_then(Value::as_str) };
         let entries = self.with_session_manager(|manager| if leaf.is_some() { manager.branch(leaf) } else { Vec::new() });
         let previous = self.session_file();
         self.emit_session_shutdown(maho_ext_api::SessionReason::Fork).await;
+        self.invalidate_extension_runtime().await;
         self.with_session_manager_mut(|manager| {
             manager.new_session(Some(crate::session_manager::NewSessionOptions { parent_session: previous.clone(), ..Default::default() }));
             for entry in entries { manager.append_entry_raw(entry); }
@@ -2203,8 +2221,10 @@ impl AgentSession {
 
     pub async fn reload(&self) -> Result<bool, String> {
         if self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeReload).await?.cancel == Some(true) { return Ok(false); }
+        self.ensure_extension_recreation().await?;
         self.abort().await;
         self.emit_session_shutdown(maho_ext_api::SessionReason::Reload).await;
+        self.invalidate_extension_runtime().await;
         self.with_settings_manager_mut(|manager| manager.reload());
         let templates = crate::prompt_templates::load_prompt_templates(&crate::prompt_templates::LoadPromptTemplatesOptions {
             cwd: self.cwd(), agent_dir: self.agent_dir(), include_defaults: true, ..Default::default()
@@ -2835,13 +2855,17 @@ impl AgentSession {
         let paths: BTreeSet<_> = next.extensions.iter().map(|extension| extension.identity.resolved_path.clone()).collect();
         let removed: Vec<_> = old.extensions.iter().filter(|extension| !paths.contains(&extension.identity.resolved_path))
             .map(|extension| extension.identity.clone()).collect();
-        if !removed.is_empty() {
-            let _ = old.emit(maho_ext_api::ExtensionEvent::SessionExtensionsRemoved { reason, removed }).await;
-        }
         old.invalidate("This extension ctx is stale after session replacement or reload.");
+        old.runtime.dispose_providers().map_err(|error| error.message)?;
         let mut active = self.get_active_tool_names();
+        let mut hints = self.agent.removed_tool_hints();
         {
             let mut state = self.state();
+            let activators = std::mem::take(&mut state.extension_lazy_activators);
+            state.lazy_tool_activators.retain(|activator| !activators.iter().any(|owned| Arc::ptr_eq(owned, activator)));
+            for (name, previous) in std::mem::take(&mut state.extension_hint_backups) {
+                if let Some(previous) = previous { hints.insert(name, previous); } else { hints.remove(&name); }
+            }
             for (name, previous) in std::mem::take(&mut state.extension_tool_backups) {
                 if let Some((entry, tool)) = previous {
                     state.base_tool_definitions.insert(name.clone(), entry.definition.clone());
@@ -2855,9 +2879,24 @@ impl AgentSession {
                 }
             }
         }
+        self.agent.set_removed_tool_hints(hints);
         self.set_active_tools_by_name(active);
         self.set_extension_runner(next).await;
+        if !removed.is_empty() { old.emit_removed_extensions(reason, removed).await; }
         Ok(())
+    }
+
+    async fn ensure_extension_recreation(&self) -> Result<(), String> {
+        if let Some(runner) = self.extension_runner.lock().await.as_ref() {
+            runner.ensure_recreation_available().map_err(|error| error.message)?;
+        }
+        Ok(())
+    }
+
+    async fn invalidate_extension_runtime(&self) {
+        if let Some(runner) = self.extension_runner.lock().await.as_ref() {
+            runner.invalidate("This extension ctx is stale after session replacement or reload.");
+        }
     }
 
     /// Bind the extension runner the tool hooks read at execution time.
@@ -4101,14 +4140,21 @@ mod tests {
     async fn replacement_reloads_factories_invalidates_old_handles_and_removes_old_tools() {
         let session = test_session();
         session.register_tool_definition(test_definition("base"), empty_source_info(), test_tool("base"));
-        let runtimes = Arc::new(Mutex::new(Vec::new()));
+        let runtimes = Arc::new(Mutex::new(Vec::<maho_ext_api::ExtensionRuntime>::new()));
         let captured = runtimes.clone();
         let factory = maho_ext_host::loader::NativeAsyncExtensionFactory {
             path: "replacement".into(), source_info: empty_source_info(),
             factory: Arc::new(move |api| {
                 let first = lock(&captured).is_empty();
+                if let Some(previous) = lock(&captured).last() {
+                    assert!(previous.assert_active().is_err(), "invalidate before invoking replacement factories");
+                }
                 lock(&captured).push(api.runtime.clone());
-                if first { api.register_tool(test_definition("old-only")); }
+                if first {
+                    api.register_tool(test_definition("old-only"));
+                    api.register_lazy_tool_activator(Arc::new(|_| false));
+                    api.register_removed_tool_hint("old-only", "old hint");
+                }
                 api.register_command("generation", Some(lock(&captured).len().to_string()), None, Arc::new(|_, _| Box::pin(async { Ok(()) })));
                 Box::pin(async { Ok(()) })
             }),
@@ -4117,10 +4163,27 @@ mod tests {
         session.set_extension_runner(runner).await;
         let old = session.extension_runner.lock().await.as_ref().unwrap().create_context().unwrap();
         assert!(session.get_registered_tool("old-only").is_some());
-        assert!(session.new_session(None).await.unwrap());
+        assert_eq!(session.state().extension_lazy_activators.len(), 1);
+        assert_eq!(session.agent.removed_tool_hints().get("old-only").map(String::as_str), Some("old hint"));
+        let command = session.extension_runner.lock().await.as_ref().unwrap().create_command_context(Arc::new(SessionExtensionActions(Arc::downgrade(&session.inner)))).unwrap();
+        let callback_id = Arc::new(Mutex::new(None));
+        let captured_id = callback_id.clone();
+        let result = command.new_session(maho_ext_api::NewSessionOptions {
+            with_session: Some(Arc::new(move |ctx| {
+                *lock(&captured_id) = Some(ctx.session_manager.session_id().to_owned());
+                Box::pin(async move {
+                    ctx.send_message(maho_ext_api::CustomMessage { custom_type: "replacement".into(), content: vec![maho_ext_api::ToolContent::text("ready")], display: true, details: None }, Default::default()).await
+                })
+            })), ..Default::default()
+        }).await.unwrap();
+        assert!(!result.cancelled);
+        assert_eq!(*lock(&callback_id), Some(session.session_id()));
+        assert_eq!(session.messages().last().unwrap().role(), "custom");
         assert!(lock(&runtimes)[0].assert_active().is_err());
         assert!(old.actions().is_err());
         assert!(session.get_registered_tool("old-only").is_none());
+        assert!(session.state().extension_lazy_activators.is_empty());
+        assert!(!session.agent.removed_tool_hints().contains_key("old-only"));
         assert!(session.get_registered_tool("base").is_some());
         let current = session.extension_runner.lock().await.as_ref().unwrap().create_context().unwrap();
         assert_eq!(current.session_manager.session_id(), session.session_id());

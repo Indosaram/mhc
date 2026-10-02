@@ -111,6 +111,11 @@ fn providers_queue_in_order_then_register_immediately_after_binding() {
     let providers = Arc::new(Providers::default()); runtime.bind_providers(providers.clone()).unwrap();
     api.register_provider("third", ProviderConfig::default()).unwrap(); api.unregister_provider("first").unwrap();
     assert_eq!(*providers.0.lock().unwrap(), ["first:test", "second:test", "third:test", "remove:first"]);
+    runtime.invalidate("reloaded");
+    runtime.dispose_providers().unwrap();
+    assert_eq!(*providers.0.lock().unwrap(), ["first:test", "second:test", "third:test", "remove:first", "remove:second", "remove:third"]);
+    runtime.dispose_providers().unwrap();
+    assert_eq!(providers.0.lock().unwrap().len(), 6);
 }
 
 #[test]

@@ -264,7 +264,6 @@ impl ExtensionRunner {
         })
     }
     pub async fn recreate(&self) -> Result<Self, ExtensionFailure> {
-        self.runtime.assert_active()?;
         let factory = self.runtime_factory.as_ref().ok_or_else(|| ExtensionFailure::new("Extension runtime factory is not bound"))?;
         let mut runner = factory(self.factory_context.clone()).await?;
         runner.runtime_factory = self.runtime_factory.clone();
@@ -275,6 +274,11 @@ impl ExtensionRunner {
         runner.shutdown_warn_ms = self.shutdown_warn_ms;
         runner.shutdown_timeout_ms = self.shutdown_timeout_ms;
         Ok(runner)
+    }
+    pub fn ensure_recreation_available(&self) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        self.runtime_factory.as_ref().ok_or_else(|| ExtensionFailure::new("Extension runtime factory is not bound"))?;
+        Ok(())
     }
     pub fn bind_core(&mut self, actions: Arc<dyn ExtensionActions>, context: ExtensionContext) {
         self.runtime.bind(actions); self.context = context;
@@ -405,6 +409,14 @@ impl ExtensionRunner {
         Ok(context)
     }
     pub fn invalidate(&self, message: &str) { self.runtime.invalidate(message); self.events.clear(); }
+    pub async fn emit_removed_extensions(&mut self, reason: SessionReason, removed: Vec<ExtensionIdentity>) {
+        let mut event = ExtensionEvent::SessionExtensionsRemoved { reason, removed };
+        for (path, handler) in self.handlers(EventKind::SessionExtensionsRemoved) {
+            if let Err(error) = handler(&mut event, &self.context).await {
+                self.report(&path, EventKind::SessionExtensionsRemoved, error);
+            }
+        }
+    }
     pub fn on_error(&mut self, listener: ErrorListener) { self.error_listeners.push(listener); }
     pub fn set_tool_hook_lifecycle_observer(&mut self, observer: Option<HookObserver>) { self.hook_observer = observer; }
     pub fn set_warning_listener(&mut self, listener: Option<WarningListener>) { self.warning_listener = listener; }

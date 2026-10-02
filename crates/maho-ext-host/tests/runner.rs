@@ -365,6 +365,23 @@ async fn static_runtime_recreation_runs_factories_with_independent_generation() 
     assert_eq!(first.get_command("generation").unwrap().command.description.as_deref(), Some("0"));
 }
 
+#[tokio::test]
+async fn removal_notification_runs_after_invalidation_without_reviving_context() {
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let captured = observed.clone();
+    let handler: ExtensionHandler = Arc::new(move |event, ctx| {
+        assert!(ctx.actions().is_err());
+        if let ExtensionEvent::SessionExtensionsRemoved { removed, .. } = event { captured.lock().unwrap().extend(removed.clone()); }
+        Box::pin(async { Ok(EventResult::None) })
+    });
+    let mut runner = runner(vec![extension("removed", EventKind::SessionExtensionsRemoved, handler)]);
+    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) });
+    runner.bind_context_actions(actions).unwrap();
+    runner.invalidate("replaced");
+    runner.emit_removed_extensions(SessionReason::Reload, vec![ExtensionIdentity { path: "removed".into(), resolved_path: "removed".into() }]).await;
+    assert_eq!(observed.lock().unwrap()[0].path, "removed");
+}
+
 #[test]
 fn mcp_servers_first_wins_and_context_exposes_aggregate() {
     let mut a = extension("a", EventKind::AgentStart, none()); let mut b = extension("b", EventKind::AgentStart, none());
