@@ -15,6 +15,15 @@ pub fn replace_edit_tools_with_apply_patch(names:&[String])->Vec<String> {
     if let Some(index)=insert { filtered.insert(index.min(filtered.len()),"apply_patch".into()); } filtered
 }
 pub fn has_apply_patch_failures(details:&Value)->bool { details.get("result").and_then(|result|result.get("failures")).and_then(Value::as_array).is_some_and(|failures|!failures.is_empty()) }
+pub fn register_failure_hook(api:&mut maho_ext_api::ExtensionApi) {
+    api.on(maho_ext_api::EventKind::ToolResult,std::sync::Arc::new(|event,_context|Box::pin(async move { Ok(failure_hook_result(event)) })));
+}
+fn failure_hook_result(event:&maho_ext_api::ExtensionEvent)->maho_ext_api::EventResult {
+    match event {
+        maho_ext_api::ExtensionEvent::ToolResult(event) if event.tool_name=="apply_patch" && !event.is_error && event.details.as_ref().is_some_and(has_apply_patch_failures)=>maho_ext_api::EventResult::ToolResult(maho_ext_api::ToolResultEventResult{is_error:Some(true),..Default::default()}),
+        _=>maho_ext_api::EventResult::None,
+    }
+}
 pub fn sync_tool_names(mode:ApplyPatchWireMode,current:&[String],registered:&[String],removed_edit_tools:&mut Vec<String>)->Option<Vec<String>> {
     if mode!=ApplyPatchWireMode::None {
         let active:Vec<_>=current.iter().filter(|name|matches!(name.as_str(),"write"|"edit")).cloned().collect();
@@ -29,6 +38,12 @@ pub fn sync_tool_names(mode:ApplyPatchWireMode,current:&[String],registered:&[St
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn native_failure_hook_only_marks_nonerror_patch_failures() {
+        for (name,is_error,failures,expected) in [("apply_patch",false,true,true),("apply_patch",true,true,false),("other",false,true,false),("apply_patch",false,false,false)] {
+            let event=maho_ext_api::ExtensionEvent::ToolResult(maho_ext_api::ToolResultEvent{tool_call_id:"test".into(),tool_name:name.into(),input:Value::Null,content:vec![],details:Some(serde_json::json!({"result":{"failures":if failures {vec![Value::Null]} else {vec![]}}})),is_error,usage:None});
+            match failure_hook_result(&event) { maho_ext_api::EventResult::ToolResult(result)=>{assert!(expected); assert_eq!(result.is_error,Some(true)); assert!(result.content.is_none()); assert!(result.details.is_none());},maho_ext_api::EventResult::None=>assert!(!expected),_=>panic!("unexpected hook result") }
+        }
+    }
     #[test] fn model_switch_restores_only_registered_edit_tools() { let current=["read","write","edit"].map(String::from); let mut removed=vec![]; let patched=sync_tool_names(ApplyPatchWireMode::Freeform,&current,&current,&mut removed).unwrap(); assert_eq!(patched,["read","apply_patch"]); let restored=sync_tool_names(ApplyPatchWireMode::None,&patched,&["read".into(),"edit".into()],&mut removed).unwrap(); assert_eq!(restored,["read","edit"]); assert!(removed.is_empty()); }
     #[test] fn no_mode_no_removed_tools_leaves_active_list_untouched() { assert_eq!(sync_tool_names(ApplyPatchWireMode::None,&["read".into()],&[],&mut vec![]),None); }
     #[test] fn gateway_gpt_ids_use_api_gate() { for id in ["codex/gpt-6-astra","global.openai.gpt-6-astra","gateway:GPT_6_ASTRA","gpt5"] { assert_eq!(get_apply_patch_wire_mode(Some(("openai-responses",id))),ApplyPatchWireMode::Freeform); assert_eq!(get_apply_patch_wire_mode(Some(("openai-completions",id))),ApplyPatchWireMode::Json); } }

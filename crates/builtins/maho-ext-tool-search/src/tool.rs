@@ -40,7 +40,7 @@ pub fn build_tool_search_result_text(query: &str, matches: &[Bm25Result], hints:
     }
     let mut lines=vec![format!("Found {} tool(s) matching \"{query}\"{scope}. Nothing was activated; call one by name and it activates on that first call:",matches.len()),String::new()];
     for m in matches {
-        let description=m.doc.description.as_deref().map(|s|s.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|s|!s.is_empty()).unwrap_or_else(||"(no description)".into());
+        let description=m.doc.description.as_deref().map(|s|s.split(|character|matches!(character,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}')).filter(|piece|!piece.is_empty()).collect::<Vec<_>>().join(" ")).filter(|s|!s.is_empty()).unwrap_or_else(||"(no description)".into());
         let description=if description.encode_utf16().count()>160 { format!("{}...",String::from_utf16_lossy(&description.encode_utf16().take(157).collect::<Vec<_>>())) } else { description };
         lines.push(format!("- {} — {description}",m.name));
         if let Some(parameters)=parameters_of(&m.name).filter(Value::is_object) { lines.push(format!("  parameters: {parameters}")); }
