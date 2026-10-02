@@ -578,6 +578,18 @@ async fn non_wait_question_keeps_composer_until_answer_chord() {
 }
 
 #[tokio::test]
+async fn dropped_async_question_removes_widget_and_keeps_composer() {
+    use maho_ext_api::ExtensionUi; use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode(); let ui = mode.extension_ui.clone();
+    let request = maho_ext_api::QuestionRequest { request_id:"dropped-q".into(), questions:vec![maho_ext_api::Question { id:"item".into(), header:"Header".into(), question:"discard-this-question".into(), options:vec![maho_ext_api::QuestionOption { label:"A".into(), description:None }], multi_select:false }], wait_for_answer:false, timeout_ms:0 };
+    let answer = ui.question(request, Default::default());
+    assert!(mode.render(80).join("\n").contains("discard-this-question"));
+    drop(answer);
+    assert!(!mode.render(80).join("\n").contains("discard-this-question"));
+    mode.handle_input_at("draft", 0); assert_eq!(mode.editor.editor.get_text(), "draft");
+}
+
+#[tokio::test]
 async fn fork_selector_uses_current_user_history_and_cancel_keeps_transcript() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();

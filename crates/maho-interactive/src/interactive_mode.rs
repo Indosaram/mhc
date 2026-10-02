@@ -549,7 +549,7 @@ impl InteractiveMode {
     fn drain_ui_requests(&mut self) {
         while let Ok(request) = self.ui_requests.try_recv() { self.handle_ui_request(request); }
         let closed = self.question_reply.borrow().as_ref().is_some_and(tokio::sync::oneshot::Sender::is_closed);
-        if closed { self.question_reply.borrow_mut().take(); self.question = None; }
+        if closed { self.question_reply.borrow_mut().take(); self.question = None; self.async_question_widget = None; }
         let closed = self.ui_reply.borrow().as_ref().is_some_and(tokio::sync::oneshot::Sender::is_closed);
         if closed { self.ui_reply.borrow_mut().take(); if let Some(mut dialog) = self.ui_dialog.take() { dialog.dispose(); } }
     }
