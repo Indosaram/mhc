@@ -1,0 +1,14 @@
+use maho_ext_compaction::openai_remote_convert::*;
+use serde_json::json;
+fn assistant(content:serde_json::Value)->serde_json::Value {json!({"role":"assistant","content":content,"stopReason":"stop"})}
+#[test] fn native_signatures_preserve_id_phase_and_reasoning() {let output=convert_pending_messages(&[assistant(json!([{"type":"text","text":"answer","textSignature":"{\"v\":1,\"id\":\"msg_native\",\"phase\":\"final_answer\"}"},{"type":"thinking","thinking":"reason","thinkingSignature":"{\"type\":\"reasoning\",\"id\":\"rs_1\"}"}]))],false);assert_eq!(output[0]["id"],"msg_native");assert_eq!(output[0]["phase"],"final_answer");assert_eq!(output[1]["type"],"reasoning");}
+#[test] fn custom_tool_sentinel_does_not_become_item_id() {let output=convert_pending_messages(&[assistant(json!([{"type":"toolCall","id":"call|custom","name":"read","arguments":{"path":"file"}}]))],false);assert_eq!(output[0]["call_id"],"call");assert!(output[0].get("id").is_none());}
+#[test] fn server_function_item_id_is_retained() {let output=convert_pending_messages(&[assistant(json!([{"type":"toolCall","id":"call|fc_1","name":"read","arguments":{}}]))],false);assert_eq!(output[0]["id"],"fc_1");}
+#[test] fn user_images_are_structured_input() {let output=convert_pending_messages(&[json!({"role":"user","content":[{"type":"image","mimeType":"image/png","data":"IMAGE"}]})],true);assert_eq!(output[0]["content"][0]["image_url"],"data:image/png;base64,IMAGE");}
+#[test] fn tool_images_degrade_for_text_only_models() {let input=[json!({"role":"toolResult","toolCallId":"call|fc_1","content":[{"type":"image","mimeType":"image/png","data":"IMAGE"}]})];assert_eq!(convert_pending_messages(&input,false)[0]["output"],"(see attached image)");assert_eq!(convert_pending_messages(&input,true)[0]["output"][0]["type"],"input_image");}
+#[test] fn foreign_thinking_is_skipped_and_native_payload_is_preserved() {let output=convert_pending_messages(&[assistant(json!([{"type":"thinking","thinking":"foreign"},{"type":"providerNative","raw":{"type":"compaction","encrypted_content":"opaque"}}]))],false);assert_eq!(output.len(),1);assert_eq!(output[0]["encrypted_content"],"opaque");}
+#[test] fn branch_native_checkpoint_is_spliced_between_message_batches() {
+    let checkpoint=json!({"type":"compaction","details":{"schema":"senpi.compaction.openai-remote.v1","mode":"openai-remote","provider":"openai","api":"openai-responses","modelId":"m","responseId":"r","createdAt":1,"requestInputItemCount":2,"retainedInputItemCount":1,"replacementInput":[{"type":"compaction","encrypted_content":"opaque"}]}});
+    let entries=[json!({"type":"message","message":{"role":"user","content":"before"}}),checkpoint,json!({"type":"message","message":assistant(json!([{"type":"text","text":"after"}]))})];
+    let output=convert_branch_entries(&entries,false);assert_eq!(output.len(),3);assert_eq!(output[0]["role"],"user");assert_eq!(output[1]["type"],"compaction");assert_eq!(output[2]["id"],"msg_1");
+}
