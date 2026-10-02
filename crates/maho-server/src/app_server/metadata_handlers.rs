@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex,RwLock};
 
 pub async fn register_metadata_handlers(core: &Arc<RwLock<ServerCore>>,threads: Arc<ThreadRegistry>,log: Arc<Mutex<TurnLog>>,archive: Arc<ThreadArchiveState>,version: String) {
-    let state = Arc::new(ThreadMetadataState::default());
+    let state = Arc::new(ThreadMetadataState);
     core.write().await.registry.register("thread/metadata/update".into(),MethodRegistration {requires_init:true,experimental:false,scope:MethodScope::Thread,handler:Arc::new(move |context| {
         let threads = threads.clone();let log = log.clone();let archive = archive.clone();let state = state.clone();let version = version.clone();
         Box::pin(async move {

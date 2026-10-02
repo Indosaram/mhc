@@ -1,5 +1,5 @@
 use super::values::ValueError;
-use maho_agent::harness::session::{Entry, EntryScan, ScanOrder, UsageRow, UsageScan};
+use maho_agent::harness::session::{Entry, EntryStructure, EntryScan, ScanOrder, UsageRow, UsageScan};
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 
@@ -14,6 +14,17 @@ pub fn insert_entry(db: &Connection, session: &str, entry: &Entry) -> Result<(),
     fields.remove("customType");
     db.prepare_cached("INSERT INTO entries (session_id,id,parent_id,seq,type,custom_type,timestamp,payload) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)")?.execute(params![session,entry.id,entry.parent_id,entry.seq,kind,custom,entry.timestamp,serde_json::to_string(&payload)?])?;
     Ok(())
+}
+pub fn read_entry_structures(db: &Connection,session: &str,ids: &[String]) -> Result<Vec<EntryStructure>,ValueError> {
+    let mut statement = db.prepare_cached("SELECT id,parent_id,seq,type,custom_type,timestamp FROM entries WHERE session_id=?1 AND id=?2")?;
+    let mut output = Vec::new();
+    for id in ids {
+        let mut rows = statement.query(params![session,id])?;
+        if let Some(row) = rows.next()? {
+            output.push(EntryStructure {id:row.get(0)?,parent_id:row.get(1)?,seq:row.get(2)?,entry_type:serde_json::from_value(json!(row.get::<_,String>(3)?))?,custom_type:row.get(4)?,timestamp:row.get(5)?});
+        }
+    }
+    Ok(output)
 }
 pub fn scan_entries(
     db: &Connection,

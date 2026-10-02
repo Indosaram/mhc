@@ -5,7 +5,7 @@ fn iso_seconds(value: &str) -> Option<f64> {
     chrono::DateTime::parse_from_rfc3339(value).ok().map(|time| time.timestamp_millis() as f64 / 1000.0)
 }
 pub async fn build_disk_wire_thread(wire: &Value,version: &str) -> Result<Value,MetadataStateError> {
-    let git_info = match wire["sessionPath"].as_str() {Some(path)=>ThreadMetadataState::default().read_git_info(std::path::Path::new(path)).await?,None=>None};
+    let git_info = match wire["sessionPath"].as_str() {Some(path)=>ThreadMetadataState.read_git_info(std::path::Path::new(path)).await?,None=>None};
     let created = wire["createdAt"].as_str().and_then(iso_seconds);
     let updated = wire["updatedAt"].as_str().and_then(iso_seconds);
     Ok(json!({"id":wire["id"],"sessionId":wire["sessionId"],"forkedFromId":null,"parentThreadId":null,"preview":wire["preview"].as_str().unwrap_or_default(),"ephemeral":false,"modelProvider":"unknown","createdAt":created,"updatedAt":updated,"recencyAt":updated,"status":wire["status"],"path":wire["sessionPath"],"cwd":wire["cwd"],"cliVersion":version,"source":"appServer","threadSource":null,"agentNickname":null,"agentRole":null,"gitInfo":git_info,"name":wire["name"],"turns":[]}))
@@ -58,7 +58,7 @@ pub async fn build_wire_thread(entry: &ThreadEntry, log: &mut TurnLog, include_t
     let model = entry.session.model();
     let path = entry.session.session_file();
     let git_info = match &path {
-        Some(path) => ThreadMetadataState::default().read_git_info(std::path::Path::new(path)).await?,
+        Some(path) => ThreadMetadataState.read_git_info(std::path::Path::new(path)).await?,
         None => None,
     };
     let turns = if include_turns {

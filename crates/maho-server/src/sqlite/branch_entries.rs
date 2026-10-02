@@ -1,6 +1,6 @@
 use super::{entries, values::ValueError};
 use maho_agent::harness::session::{BranchOrder, StorageBranchScan};
-use maho_agent::harness::session::{Entry, EntryScan};
+use maho_agent::harness::session::{Entry, EntryStructure, EntryScan};
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub fn scan_branch(
@@ -8,6 +8,15 @@ pub fn scan_branch(
     session: &str,
     query: &StorageBranchScan,
 ) -> Result<Vec<Entry>, ValueError> {
+    let ids = scan_branch_ids(db,session,query)?;
+    let entries = entries::read_entries(db,session,&ids)?;
+    let mut by_id = entries.into_iter().map(|entry|(entry.id.clone(),entry)).collect::<std::collections::BTreeMap<_,_>>();
+    Ok(ids.into_iter().filter_map(|id|by_id.remove(&id)).collect())
+}
+pub fn scan_branch_structure(db: &Connection,session: &str,query: &StorageBranchScan) -> Result<Vec<EntryStructure>,ValueError> {
+    entries::read_entry_structures(db,session,&scan_branch_ids(db,session,query)?)
+}
+fn scan_branch_ids(db: &Connection,session: &str,query: &StorageBranchScan) -> Result<Vec<String>,ValueError> {
     let (mut branch,mut upper)=db.query_row("SELECT b.branch_id,b.entry_seq FROM branch_entries b JOIN branch_meta m ON m.session_id=b.session_id AND m.branch_id=b.branch_id WHERE b.session_id=?1 AND b.entry_id=?2 AND ((m.base_seq IS NULL AND b.entry_seq>0) OR (m.base_seq IS NOT NULL AND b.entry_seq>m.base_seq)) AND b.entry_seq<=m.tip_seq ORDER BY m.tip_seq DESC,b.branch_id LIMIT 1",params![session,query.start],|row|Ok((row.get::<_,String>(0)?,row.get::<_,i64>(1)?)))?;
     let mut segments = Vec::new();
     loop {
@@ -86,12 +95,7 @@ pub fn scan_branch(
                 |row| row.get::<_, String>(0),
             )?
             .collect::<Result<Vec<_>, _>>()?;
-        let mut entries = entries::read_entries(db, session, &ids)?;
-        entries.sort_by_key(|e| e.seq);
-        if !oldest {
-            entries.reverse();
-        }
-        output.extend(entries);
+        output.extend(ids);
         if stop.is_some() {
             break;
         }

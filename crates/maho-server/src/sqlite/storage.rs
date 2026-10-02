@@ -225,18 +225,7 @@ impl Storage for SqliteStorage {
         _context: &'a Context,
     ) -> BoxFuture<'a, Result<Vec<EntryStructure>, SessionError>> {
         Box::pin(async move {
-            Ok(self
-                .branch(&*self.db()?, &query)?
-                .into_iter()
-                .map(|e| EntryStructure {
-                    entry_type: e.entry_type(),
-                    custom_type: e.custom_type().map(str::to_owned),
-                    id: e.id,
-                    parent_id: e.parent_id,
-                    seq: e.seq,
-                    timestamp: e.timestamp,
-                })
-                .collect())
+            super::branch_entries::scan_branch_structure(&*self.db()?,&self.session_id,&query).map_err(error)
         })
     }
     fn scan_entries<'a>(

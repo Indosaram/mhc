@@ -71,4 +71,9 @@ fn root_tip_and_divergent_branch_index_preserves_both_paths() {
         maho_server::sqlite::branch_entries::scan_branch(&db, "s", &query).unwrap()[0].id,
         "right"
     );
+    db.execute("UPDATE entries SET payload='invalid JSON' WHERE session_id='s' AND id='right'",[]).unwrap();
+    assert!(maho_server::sqlite::branch_entries::scan_branch(&db,"s",&query).is_err());
+    let structures = maho_server::sqlite::branch_entries::scan_branch_structure(&db,"s",&query).unwrap();
+    assert_eq!(structures[0].id,"right");
+    assert_eq!(structures[0].custom_type.as_deref(),Some("test"));
 }

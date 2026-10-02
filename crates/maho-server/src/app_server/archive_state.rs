@@ -1,7 +1,6 @@
-use super::metadata_state::{MetadataStateError, write_sidecar_file_atomic};
+use super::metadata_state::{MetadataStateError, write_sidecar_file_atomic,lock_thread_mutation};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, path::{Path, PathBuf}, sync::Arc};
-use tokio::sync::Mutex;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ArchiveStateError {
@@ -14,7 +13,6 @@ pub enum ArchiveStateError {
 }
 pub struct ThreadArchiveState {
     session_dir: Option<PathBuf>,
-    mutations: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
 }
 fn sidecar(thread: &Value) -> Result<PathBuf, ArchiveStateError> {
     thread["sessionPath"].as_str().filter(|path| !path.is_empty()).map(|path| PathBuf::from(format!("{path}.archived"))).ok_or_else(|| ArchiveStateError::State { path:thread["id"].as_str().unwrap_or_default().into(), message:format!("Thread {} has no session path for archive state",thread["id"].as_str().unwrap_or_default()) })
@@ -37,10 +35,9 @@ fn parse_thread(path: &Path, contents: &str) -> Result<Value, ArchiveStateError>
     Ok(wire)
 }
 impl ThreadArchiveState {
-    pub fn new(session_dir: Option<PathBuf>) -> Self { Self { session_dir, mutations:Default::default() } }
+    pub fn new(session_dir: Option<PathBuf>) -> Self { Self { session_dir } }
     pub async fn mark_archived(&self, thread: &Value, archived_at: &str) -> Result<(), ArchiveStateError> {
-        let mutation = self.mutations.lock().await.entry(thread["id"].as_str().unwrap_or_default().into()).or_default().clone();
-        let _guard = mutation.lock().await;
+        let _guard = lock_thread_mutation(thread["id"].as_str().unwrap_or_default()).await;
         write_sidecar_file_atomic(&sidecar(thread)?, &format!("{}\n",json!({"archivedAt":archived_at,"thread":thread}))).await?;
         Ok(())
     }
@@ -68,16 +65,14 @@ impl ThreadArchiveState {
         Ok(threads)
     }
     pub async fn clear_archived(&self, id: &str) -> Result<(), ArchiveStateError> {
-        let mutation = self.mutations.lock().await.entry(id.into()).or_default().clone();
-        let _guard = mutation.lock().await;
+        let _guard = lock_thread_mutation(id).await;
         for thread in self.list_archived_threads().await?.iter().filter(|thread| thread["id"] == id) {
             match tokio::fs::remove_file(sidecar(thread)?).await { Ok(()) => {}, Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}, Err(error) => return Err(error.into()) }
         }
         Ok(())
     }
     pub async fn unarchive(&self, id: &str, now_ms: i64) -> Result<Option<Value>, ArchiveStateError> {
-        let mutation = self.mutations.lock().await.entry(id.into()).or_default().clone();
-        let _guard = mutation.lock().await;
+        let _guard = lock_thread_mutation(id).await;
         let Some(mut thread) = self.list_archived_threads().await?.into_iter().find(|thread| thread["id"] == id) else { return Ok(None); };
         let path = thread["sessionPath"].as_str().unwrap_or_default().to_owned();
         let metadata = tokio::fs::metadata(&path).await?;

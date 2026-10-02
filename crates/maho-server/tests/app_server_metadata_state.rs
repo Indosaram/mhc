@@ -14,11 +14,12 @@ fn git_info_merge_distinguishes_omitted_fields_and_explicit_null() {
 async fn sidecar_updates_serialize_and_leave_only_owner_readable_final_file() {
     let directory = tempfile::tempdir().unwrap();
     let session = directory.path().join("session.jsonl");
-    let state = ThreadMetadataState::default();
+    let state = ThreadMetadataState;
+    let second_state = ThreadMetadataState;
     assert!(state.read_git_info(&session).await.unwrap().is_none());
     let sha = json!({"sha":"commit"});
     let branch = json!({"branch":"main"});
-    let (first, second) = tokio::join!(state.update_git_info("thread", &session, &sha), state.update_git_info("thread", &session, &branch));
+    let (first, second) = tokio::join!(state.update_git_info("thread", &session, &sha), second_state.update_git_info("thread", &session, &branch));
     first.unwrap(); second.unwrap();
     assert_eq!(state.read_git_info(&session).await.unwrap().unwrap(), json!({"sha":"commit","branch":"main","originUrl":null}));
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);

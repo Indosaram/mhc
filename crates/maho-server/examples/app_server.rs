@@ -41,16 +41,17 @@ fn qa_factory() -> maho_server::app_server::thread_registry::SessionFactory {
         use maho_ai::providers::faux::*;
         use maho_core::agent_session::{AgentSession,AgentSessionConfig};
         let cwd = options.cwd.unwrap_or_default();
+        let agent_dir = options.agent_dir.unwrap_or_else(||cwd.clone());
         let provider = faux_provider(RegisterFauxProviderOptions {api:Some("faux".into()),models:Some(vec![FauxModelDefinition {id:"faux-1".into(),reasoning:Some(true),..Default::default()}]),tokens_per_second:Some(0.0),..Default::default()});
         let model = provider.get_model(Some("faux-1")).ok_or("missing faux model")?;
         provider.set_responses(vec![faux_assistant_message("retained managed transcript",FauxAssistantMessageOptions {timestamp:Some(0),..Default::default()}).into()]);
         let streams = faux_streams(provider.core.clone());
         let stream_fn: maho_agent::types::StreamFn = std::sync::Arc::new(move |model,context,options|streams.stream_simple(model,context,options.map(|options|options.simple)));
-        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {models_path:Some(std::path::Path::new(&cwd).join("models.json")),auth_path:Some(std::path::Path::new(&cwd).join("auth.json")),providers:Some(vec![provider.provider.clone()]),..Default::default()});
+        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {models_path:Some(std::path::Path::new(&agent_dir).join("models.json")),auth_path:Some(std::path::Path::new(&agent_dir).join("auth.json")),providers:Some(vec![provider.provider.clone()]),..Default::default()});
         AgentSession::new(AgentSessionConfig {
             agent:maho_agent::Agent::new(maho_agent::AgentOptions {initial_state:Some(maho_agent::agent::PartialAgentState {model:Some(model),..Default::default()}),stream_fn:Some(stream_fn),..Default::default()}),
             session_manager:options.session_manager.ok_or("Missing session manager")?,settings_manager:maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),false),
-            cwd:cwd.clone(),agent_dir:Some(cwd),fallback_now:Some(std::sync::Arc::new(||0.0)),retry_random:Some(std::sync::Arc::new(||0.5)),scoped_models:Vec::new(),favorite_models:Vec::new(),flag_values:Default::default(),custom_tools:Vec::new(),model_runtime:Some(runtime),model_registry:None,uses_default_stream_function:Some(false),initial_active_tool_names:None,default_tool_names:None,eval_only_tool_names:None,allowed_tool_names:None,excluded_tool_names:None,base_tools_override:None,session_start_event:None,auto_title_sessions:Some(false),
+            cwd,agent_dir:Some(agent_dir),fallback_now:Some(std::sync::Arc::new(||0.0)),retry_random:Some(std::sync::Arc::new(||0.5)),scoped_models:Vec::new(),favorite_models:Vec::new(),flag_values:Default::default(),custom_tools:Vec::new(),model_runtime:Some(runtime),model_registry:None,uses_default_stream_function:Some(false),initial_active_tool_names:None,default_tool_names:None,eval_only_tool_names:None,allowed_tool_names:None,excluded_tool_names:None,base_tools_override:None,session_start_event:None,auto_title_sessions:Some(false),
         }).map_err(|error|error.to_string())
     }))
 }
