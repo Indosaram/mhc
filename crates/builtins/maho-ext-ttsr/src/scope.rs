@@ -16,9 +16,75 @@ pub fn parse_scope(tokens:&[String])->TtsrScope {
     scope
 }
 pub fn has_reachable_scope(scope:&TtsrScope)->bool { scope.allow_text || scope.allow_thinking || !scope.tool_scopes.is_empty() }
+pub(crate) fn glob_compilation_error(pattern:&str)->Option<String> {
+    if pattern.is_empty() { return Some("Expected pattern to be a non-empty string".into()); }
+    let length=pattern.encode_utf16().count();
+    (length>65536).then(||format!("Input length: {length}, exceeds maximum allowed length: 65536"))
+}
 fn matches_any_path(pattern:&str,paths:Option<&[String]>)->bool {
-    let Ok(glob)=globset::GlobBuilder::new(pattern).literal_separator(true).build() else { return false; }; let matcher=glob.compile_matcher();
-    paths.is_some_and(|paths|paths.iter().any(|path| { let normalized=path.replace('\\',"/"); matcher.is_match(&normalized) || normalized.rsplit_once('/').is_some_and(|(_,basename)|matcher.is_match(basename)) }))
+    if glob_compilation_error(pattern).is_some() { return false; }
+    paths.is_some_and(|paths|paths.iter().any(|path| {
+        let normalized=path.replace('\\',"/");
+        matches_path(pattern,&normalized) || normalized.rsplit_once('/').is_some_and(|(_,basename)|matches_path(pattern,basename))
+    }))
+}
+fn matches_path(pattern:&str,path:&str)->bool {
+    if path.is_empty() { return false; }
+    if path==pattern { return true; }
+    if pattern.starts_with('!') && !pattern.starts_with("!(") {
+        let bangs=pattern.chars().take_while(|c|*c=='!').count(); let remaining=&pattern[bangs..];
+        let matched=matches_path(remaining,path);
+        return if bangs%2==0 { matched } else { !matched };
+    }
+    if extglob(pattern).is_some() {
+        let Some(fragment)=glob_fragment(pattern) else { return false; };
+        let pattern=format!("^{fragment}$");
+        let Ok(matcher)=regress::Regex::new(&pattern) else { return false; };
+        return matcher.find(path).is_some();
+    }
+    let Ok(glob)=globset::GlobBuilder::new(pattern).literal_separator(true).empty_alternates(true).allow_unclosed_class(true).build() else { return false; }; let matcher=glob.compile_matcher();
+    matcher.is_match(path)
+}
+fn glob_fragment(pattern:&str)->Option<String> {
+    if let Some((start,operator,end))=extglob(pattern) {
+        let body=&pattern[start+2..end]; let suffix=&pattern[end+1..];
+        let mut alternatives=Vec::new(); let mut depth=0; let mut part=0; let mut escaped=false;
+        for (index,value) in body.char_indices() {
+            if escaped { escaped=false; continue; }
+            match value {
+                '\\'=>escaped=true,'('=>depth+=1,')'=>depth-=1,
+                '|' if depth==0=>{ alternatives.push(glob_fragment(&body[part..index])?); part=index+1; },_=>(),
+            }
+        }
+        alternatives.push(glob_fragment(&body[part..])?);
+        let alternatives=alternatives.join("|");
+        let group=match operator {
+            '@'=>format!("(?:{alternatives})"),'+'=>format!("(?:{alternatives})+"),
+            '?'=>format!("(?:{alternatives})?"),'*'=>format!("(?:{alternatives})*"),
+            '!'=>format!("(?:(?!(?:{alternatives}){})[^/]*?)",if suffix.is_empty() { "$" } else { "" }),
+            _=>unreachable!(),
+        };
+        return Some(format!("{}{group}{}",glob_fragment(&pattern[..start])?,glob_fragment(suffix)?));
+    }
+    let glob=globset::GlobBuilder::new(pattern).literal_separator(true).empty_alternates(true).allow_unclosed_class(true).build().ok()?;
+    Some(glob.regex().strip_prefix("(?-u)^")?.strip_suffix('$')?.into())
+}
+fn extglob(pattern:&str)->Option<(usize,char,usize)> {
+    let bytes=pattern.as_bytes(); let mut escaped=false; let mut in_class=false;
+    for (start,operator) in pattern.char_indices() {
+        if escaped { escaped=false; continue; }
+        if operator=='\\' { escaped=true; continue; }
+        if operator=='[' { in_class=true; } else if operator==']' { in_class=false; }
+        if in_class { continue; }
+        if matches!(operator,'@'|'+'|'?'|'*'|'!')&&bytes.get(start+1)==Some(&b'(') {
+            let mut depth=1; let mut escaped=false;
+            for (offset,value) in pattern[start+2..].char_indices() {
+                if escaped { escaped=false; continue; }
+                match value { '\\'=>escaped=true,'('=>depth+=1,')'=>{ depth-=1; if depth==0 { return Some((start,operator,start+2+offset)); } },_=>() }
+            }
+        }
+    }
+    None
 }
 pub fn matches_scope(scope:&TtsrScope,source:TtsrStreamSource,tool_name:Option<&str>,paths:Option<&[String]>)->bool {
     match source { TtsrStreamSource::Text=>scope.allow_text,TtsrStreamSource::Thinking=>scope.allow_thinking,TtsrStreamSource::Tool=>{ let name=tool_name.map(|name|maho_ai::utils::js::trim(name).to_lowercase()); scope.tool_scopes.iter().any(|tool| (tool.tool_name==ANY_TOOL_NAME || Some(tool.tool_name.to_lowercase())==name) && tool.path_glob.as_ref().is_none_or(|glob|matches_any_path(glob,paths))) } }
@@ -26,6 +92,16 @@ pub fn matches_scope(scope:&TtsrScope,source:TtsrStreamSource,tool_name:Option<&
 pub fn matches_path_globs(globs:&[String],paths:Option<&[String]>)->bool { globs.is_empty() || globs.iter().any(|glob|matches_any_path(glob,paths)) }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn picomatch_literal_extglob_and_negated_path_matrix() {
+        for (pattern,path,expected) in [("@(a|b).rs","a.rs",true),("@(a|b).rs","c.rs",false),("+(a|b).rs","aba.rs",true),("?(a|b).rs",".rs",true),("*(a|b).rs","aba.rs",true),("!(a|b).rs","aa.rs",false),("!(a|b).rs","c.rs",true),("!*.rs","a.rs",false),("!*.rs","src/a.rs",true),("!!*.rs","src/a.rs",true),("@(a*|b?).rs","abc.rs",true),("a@(b|c)*.rs","abzz.rs",true),("[abc","[abc",true)] {
+            assert_eq!(matches_path_globs(&[pattern.into()],Some(&[path.into()])),expected,"{pattern}: {path}");
+        }
+    }
+    #[test] fn picomatch_nested_multiple_and_terminal_negative_extglobs() {
+        for (pattern,path,expected) in [("@(a|@(b|c)).rs","c.rs",true),("@(a|b)@(c|d).rs","bd.rs",true),("!(a|b)","aa",true),("!(a|b)","a",false),("!(a|b@(c|d)).rs","bc.rs",false),("!(a|b@(c|d)).rs","e.rs",true)] {
+            assert_eq!(matches_path_globs(&[pattern.into()],Some(&[path.into()])),expected,"{pattern}: {path}");
+        }
+    }
     #[test] fn upstream_keywords_are_case_insensitive_and_toolcall_is_wildcard() {
         let scope=parse_scope(&["TEXT".into()," Thinking ".into()]); assert!(scope.allow_text); assert!(scope.allow_thinking); assert!(scope.tool_scopes.is_empty());
         assert_eq!(parse_scope(&["toolcall".into()]).tool_scopes,[TtsrToolScope { tool_name:"*".into(),path_glob:None }]);

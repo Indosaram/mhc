@@ -16,10 +16,10 @@ impl TtsrManager {
         }
         if conditions.is_empty() { eprintln!("TTSR rule has no valid condition, skipping rule {{ ruleName: {:?} }}",rule.name); return false; }
         if !has_reachable_scope(&rule.scope) { eprintln!("TTSR scope excludes all streams, skipping rule {{ ruleName: {:?} }}",rule.name); return false; }
-        let matching_globs=rule.globs.as_deref().unwrap_or(&[]).iter().filter(|glob|match globset::GlobBuilder::new(glob).literal_separator(true).build() { Ok(_)=>true,Err(error)=>{ eprintln!("TTSR glob pattern is invalid, skipping glob {{ ruleName: {:?}, pattern: {:?}, error: {:?} }}",rule.name,glob,error.to_string()); false } }).cloned().collect();
+        let matching_globs=rule.globs.as_deref().unwrap_or(&[]).iter().filter(|glob|match crate::scope::glob_compilation_error(glob) { None=>true,Some(error)=>{ eprintln!("TTSR glob pattern is invalid, skipping glob {{ ruleName: {:?}, pattern: {:?}, error: {:?} }}",rule.name,glob,error); false } }).cloned().collect();
         let mut matching_scope=rule.scope.clone();
         for tool in &mut matching_scope.tool_scopes {
-            if let Some(glob)=tool.path_glob.as_ref() && let Err(error)=globset::GlobBuilder::new(glob).literal_separator(true).build() { eprintln!("TTSR glob pattern is invalid, skipping glob {{ ruleName: {:?}, pattern: {:?}, error: {:?} }}",rule.name,glob,error.to_string()); tool.path_glob=None; }
+            if let Some(glob)=tool.path_glob.as_ref() && let Some(error)=crate::scope::glob_compilation_error(glob) { eprintln!("TTSR glob pattern is invalid, skipping glob {{ ruleName: {:?}, pattern: {:?}, error: {:?} }}",rule.name,glob,error); tool.path_glob=None; }
         }
         self.can_match_text|=rule.scope.allow_text; self.can_match_thinking|=rule.scope.allow_thinking;
         self.rules.push(Entry { rule,conditions,matching_globs,matching_scope }); true
@@ -76,9 +76,16 @@ mod parity_tests;
     }
     #[test] fn injected_rule_names_trim_ecmascript_bom() { let mut manager=TtsrManager::new(Default::default()); manager.mark_injected_by_names(&["\u{feff}test\u{feff}".into()]); assert_eq!(manager.injected_rule_names(),["test"]); }
     #[test] fn invalid_glob_compilation_does_not_mutate_public_rule() {
-        let mut original=rule("test","x"); original.globs=Some(vec!["[".into()]); original.scope=crate::scope::parse_scope(&["tool:edit([)".into()]);
+        let mut original=rule("test","x"); original.globs=Some(vec!["".into()]); original.scope=TtsrScope { allow_text:false,allow_thinking:false,tool_scopes:vec![TtsrToolScope { tool_name:"edit".into(),path_glob:Some("".into()) }] };
         let mut manager=TtsrManager::new(Default::default()); assert!(manager.add_rule(original.clone())); assert_eq!(manager.rules(),[original.clone()]);
         let context=TtsrMatchContext { source:TtsrStreamSource::Tool,stream_key:"edit".into(),tool_name:Some("edit".into()),file_paths:None };
         assert_eq!(manager.check_delta("x",&context),[original]);
+    }
+    #[test] fn unclosed_class_is_a_valid_literal_path_constraint() {
+        let mut original=rule("literal","x"); original.globs=Some(vec!["[".into()]);
+        let mut manager=TtsrManager::new(Default::default()); assert!(manager.add_rule(original.clone()));
+        assert!(manager.check_delta("x",&context("missing-path")).is_empty());
+        let mut matched=context("literal-path"); matched.file_paths=Some(vec!["src/[".into()]);
+        assert_eq!(manager.check_delta("x",&matched),[original]);
     }
 }
