@@ -13,7 +13,8 @@ pub fn compute_drift(root:&Path,snapshot:&InitDeepSnapshotV1,now:f64) -> io::Res
     let churn_loc=git_churn_loc(root,&snapshot.commit_sha)?;
     let total_loc=git_total_loc(root)?;
     let churn=churn_loc.to_string().parse::<f64>().map_err(io::Error::other)?;
-    Ok(DriftMetrics::Valid(ValidDrift { commits_since,touched_files,tracked_files,touched_ratio:number(touched_files)/number(tracked_files.max(1)),churn_loc,total_loc,churn_loc_ratio:churn/number(total_loc.max(1)),days_since:(now-snapshot.timestamp)/86_400_000.0 }))
+    let day=MS_PER_DAY.to_string().parse::<f64>().map_err(io::Error::other)?;
+    Ok(DriftMetrics::Valid(ValidDrift { commits_since,touched_files,tracked_files,touched_ratio:number(touched_files)/number(tracked_files.max(1)),churn_loc,total_loc,churn_loc_ratio:churn/number(total_loc.max(1)),days_since:(now-snapshot.timestamp)/day }))
 }
 pub fn should_propose_refresh(drift:&DriftMetrics,current_head:&str,last_head:Option<&str>,cooldown_until:f64,now:f64) -> bool {
     if Some(current_head)==last_head || now<cooldown_until { return false; }

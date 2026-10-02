@@ -3,6 +3,7 @@ use serde::{Deserialize,Serialize};
 use serde_json::{Value,json};
 use sha2::{Digest,Sha256};
 use crate::git_helpers::git_common_dir_realpath;
+use crate::constants::{COOLDOWN_DAYS,MS_PER_DAY};
 const GLOBAL: &str="init-deep-advisor-declined-global";
 const PROJECTS: &str="init-deep-advisor-declined-projects";
 const COOLDOWNS: &str="init-deep-advisor-cooldowns";
@@ -30,7 +31,7 @@ pub fn write_global_decline(dir:&Path,now:f64) -> io::Result<()> { write_atomic(
 pub fn is_globally_declined(dir:&Path) -> bool { dir.join(GLOBAL).exists() }
 pub fn write_project_decline(dir:&Path,repo:&str,now:f64) -> io::Result<()> { write_atomic(&dir.join(PROJECTS).join(repo),json!({"declinedAt":now})) }
 pub fn is_project_declined(dir:&Path,repo:&str) -> bool { dir.join(PROJECTS).join(repo).exists() }
-pub fn write_cooldown(dir:&Path,repo:&str,at:f64) -> io::Result<()> { write_atomic(&dir.join(COOLDOWNS).join(repo),json!({"until":at+604_800_000.0})) }
+pub fn write_cooldown(dir:&Path,repo:&str,at:f64) -> io::Result<()> { let duration=(COOLDOWN_DAYS*MS_PER_DAY).to_string().parse::<f64>().map_err(io::Error::other)?;write_atomic(&dir.join(COOLDOWNS).join(repo),json!({"until":at+duration})) }
 pub fn read_cooldown_until(dir:&Path,repo:&str) -> f64 { read_json(&dir.join(COOLDOWNS).join(repo)).and_then(|v|v.get("until").and_then(Value::as_f64)).filter(|n|n.is_finite() && *n>=0.0).unwrap_or(0.0) }
 pub fn is_cooling_down(dir:&Path,repo:&str,now:f64) -> bool { now<read_cooldown_until(dir,repo) }
 pub fn write_last_proposed_head(dir:&Path,repo:&str,head:&str,now:f64) -> io::Result<()> { write_atomic(&dir.join(PROPOSALS).join(repo),json!({"lastProposedHead":head,"lastProposedAt":now})) }
@@ -44,7 +45,6 @@ pub fn read_snapshot(root:&Path) -> SnapshotReadResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::{COOLDOWN_DAYS,MS_PER_DAY};
     use crate::git_helpers::{run,tests::repo};
     fn snapshot(root:&Path,raw:&str) { fs::create_dir_all(root.join(".omo")).unwrap(); fs::write(root.join(".omo/init-deep.json"),raw).unwrap(); }
     fn valid() -> Value { json!({"commitSha":"bbbb","fileCount":12,"loc":3400,"timestamp":1700000000000_u64,"mode":"committed"}) }
