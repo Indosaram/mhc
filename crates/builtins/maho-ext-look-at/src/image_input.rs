@@ -2,12 +2,21 @@ use std::sync::LazyLock;
 use regex::Regex;
 pub const MAX_IMAGE_BYTES:usize=10*1024*1024;
 pub const MAX_TOTAL_BYTES:usize=25*1024*1024;
-static ATTACHMENT:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)^\s*(?:\[?Image #([1-9][0-9]*)(?:,[^\]\n]*)?\]?|(?:attachment|image)://([1-9][0-9]*))\s*$").expect("literal pattern"));
+static ATTACHMENT:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)^[\x09-\x0d\x20\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]*(?:\[?Image #([1-9][0-9]*)(?:,[^\]\n]*)?\]?|(?:attachment|image)://([1-9][0-9]*))[\x09-\x0d\x20\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]*$").expect("literal pattern"));
 static DATA_URI:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?is)^data:([^;,]+)(?:;[^,]*)?,(.*)$").expect("literal pattern"));
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct LoadedLookAtInput { pub data:String,pub label:String,pub mime_type:String }
 #[derive(Clone,Copy,Debug,PartialEq)]
 pub struct AttachmentReference { pub index:f64 }
+pub fn last_user_images(branch:&[serde_json::Value])->Vec<serde_json::Value> {
+    for entry in branch.iter().rev() {
+        if entry.get("type").and_then(serde_json::Value::as_str)!=Some("message") { continue; }
+        let Some(message)=entry.get("message") else { continue; };
+        if message.get("role").and_then(serde_json::Value::as_str)!=Some("user") { continue; }
+        return message.get("content").and_then(serde_json::Value::as_array).map(|blocks|blocks.iter().filter(|block|block.get("type").and_then(serde_json::Value::as_str)==Some("image")).cloned().collect()).unwrap_or_default();
+    }
+    vec![]
+}
 pub fn parse_image_attachment_reference(input:&str)->Option<AttachmentReference> { let capture=ATTACHMENT.captures(input)?; let raw=capture.get(1).or_else(||capture.get(2))?; Some(AttachmentReference{index:raw.as_str().parse().unwrap_or(f64::INFINITY)}) }
 pub fn detect_mime_type(bytes:&[u8])->Option<&'static str> {
     if bytes.starts_with(&[0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]) { Some("image/png") }
@@ -42,6 +51,12 @@ pub fn available_attachment_error(input:&str,count:usize)->String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn attachment_whitespace_matches_ecmascript() { assert!(parse_image_attachment_reference("\u{feff}Image #1\u{feff}").is_some()); assert!(parse_image_attachment_reference("\u{0085}Image #1").is_none()); }
+    #[test] fn latest_user_turn_without_images_does_not_reuse_old_attachments() {
+        let old=serde_json::json!({"type":"message","message":{"role":"user","content":[{"type":"image","data":"AA==","mimeType":"image/png"}]}});
+        assert_eq!(last_user_images(std::slice::from_ref(&old)).len(),1);
+        assert!(last_user_images(&[old,serde_json::json!({"type":"message","message":{"role":"user","content":"text only"}}),serde_json::json!({"type":"message","message":{"role":"assistant","content":[]}})]).is_empty());
+    }
     #[test] fn base64_accepts_node_whitespace_urlsafe_and_missing_padding() { assert_eq!(decode_base64(" aG Vs bG8 ").unwrap(),b"hello"); assert_eq!(decode_base64("-_8").unwrap(),[251,255]); assert_eq!(decode_base64("aGk=ignored").unwrap(),b"hi"); assert!(decode_base64("???").is_err()); assert!(decode_base64(" \u{feff}").unwrap().is_empty()); }
     #[test] fn signature_precedes_supplied_mime_and_limit_is_inclusive() { assert_eq!(input_mime_type(b"%PDF-1.7","file",Some("image/png")).unwrap(),"application/pdf"); assert!(input_mime_type(&vec![1;MAX_IMAGE_BYTES],"file",Some("image/png")).is_ok()); assert!(input_mime_type(&vec![1;MAX_IMAGE_BYTES+1],"file",Some("image/png")).is_err()); assert!(input_mime_type(b"unknown","file",None).is_err()); }
     #[test] fn aggregate_limit_is_inclusive() { assert!(validate_aggregate_bytes(&[MAX_TOTAL_BYTES]).is_ok()); assert!(validate_aggregate_bytes(&[MAX_TOTAL_BYTES,1]).is_err()); }
