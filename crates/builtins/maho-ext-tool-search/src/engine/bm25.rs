@@ -136,4 +136,12 @@ mod tests {
         let results=index.search("alpha beta",10,&options(0.0));assert_eq!(results.iter().map(|result|result.name.as_str()).collect::<Vec<_>>(),["full_match","partial_match"]);assert_eq!(results[0].coverage,1.0);assert_eq!(results[1].coverage,0.5);
         let results=index.search("alpha beta",10,&options(0.9));assert_eq!(results.len(),1);assert_eq!(results[0].name,"full_match");
     }
+    #[test] fn upstream_precision_ignores_stopwords_and_folds_plurals() {
+        let mut task=doc("task_get");task.description=Some("Reads one entry of the shared team task list".into());task.keywords=vec!["task details".into(),"read a task".into()];
+        let mut weather=doc("weather_forecast");weather.description=Some("Get hourly weather forecasts and rain predictions".into());
+        let index=build_bm25_index(&[task,weather]);let options=Bm25SearchOptions{precision:Some(DEFAULT_BM25_PRECISION),..Default::default()};
+        for (query,name) in [("a tool to read the task","task_get"),("weather forecasts","weather_forecast"),("hourly rain forecast","weather_forecast")] {
+            let results=index.search(query,10,&options);assert_eq!(results.len(),1);assert_eq!(results[0].name,name);assert_eq!(results[0].coverage,1.0);
+        }
+    }
 }
