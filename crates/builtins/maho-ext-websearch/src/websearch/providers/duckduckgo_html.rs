@@ -6,9 +6,9 @@ use crate::websearch::provider_endpoints::{provider_url,SearchProvider};
 static LINKS:LazyLock<Regex>=LazyLock::new(||Regex::new(r#"<a\b[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>"#).expect("literal pattern"));
 static SNIPPETS:LazyLock<Regex>=LazyLock::new(||Regex::new(r#"<a\b[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)</a>"#).expect("literal pattern"));
 static TAGS:LazyLock<Regex>=LazyLock::new(||Regex::new(r"<[^>]*>").expect("literal pattern"));
-static SPACE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\s+").expect("literal pattern"));
+static SPACE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"[\x09-\x0d\x20\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]+").expect("literal pattern"));
 fn html_decode(value:&str)->String { value.replace("&amp;","&").replace("&quot;","\"").replace("&#39;","'").replace("&lt;","<").replace("&gt;",">") }
-fn strip_html(value:&str)->String { html_decode(SPACE.replace_all(&TAGS.replace_all(value,"")," ").trim()) }
+fn strip_html(value:&str)->String { html_decode(SPACE.replace_all(&TAGS.replace_all(value,"")," ").trim_matches(' ')) }
 pub fn build_request(ctx:&BuildContext<'_>)->Result<BuiltSearchRequest,url::ParseError> {
     let mut url=url::Url::parse(provider_url(SearchProvider::DuckduckgoHtml,ctx.base_url))?;
     let mut replaced=false; let query=append_domain_filters(ctx.query,ctx.allowed_domains,ctx.blocked_domains);

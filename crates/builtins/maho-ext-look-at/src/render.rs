@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 use regex::Regex;
 use crate::arguments::LookAtArgs;
-static IMAGE_REFERENCE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)^\s*(?:\[?Image #([1-9][0-9]*)(?:,[^\]\n]*)?\]?|(?:attachment|image)://([1-9][0-9]*))\s*$").expect("literal pattern"));
+static IMAGE_REFERENCE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)^[\x09-\x0d\x20\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]*(?:\[?Image #([1-9][0-9]*)(?:,[^\]\n]*)?\]?|(?:attachment|image)://([1-9][0-9]*))[\x09-\x0d\x20\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]*$").expect("literal pattern"));
 fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}') }
 pub fn path_label(path:&str)->String {
     if let Some(captures)=IMAGE_REFERENCE.captures(path) { return format!("Image #{}",captures.get(1).or(captures.get(2)).expect("image index").as_str()); }
