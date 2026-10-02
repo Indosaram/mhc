@@ -43,6 +43,18 @@ fn runtime_invalidation_preserves_first_reason_and_rejects_actions() {
     assert_eq!(runtime.assert_active().unwrap_err().message, "replacement");
 }
 
+#[test]
+fn stale_legacy_registration_throws_without_mutating_extension() {
+    let runtime = ExtensionRuntime::default();
+    let mut api = api(runtime.clone());
+    runtime.invalidate("replacement");
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        api.register_flag("late", FlagType::Boolean { default: Some(true) }, None);
+    })).unwrap_err();
+    assert_eq!(failure.downcast_ref::<ExtensionFailure>().unwrap().message, "replacement");
+    assert!(api.registered.flags.is_empty());
+}
+
 fn api(runtime: ExtensionRuntime) -> ExtensionApi {
     ExtensionApi::new(LoadedExtension::new("test", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), runtime)
 }

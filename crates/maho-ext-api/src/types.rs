@@ -955,6 +955,9 @@ impl ExtensionRuntime {
         self.assert_active()?;
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone().ok_or_else(|| ExtensionFailure::new("Extension session actions are unavailable during registration"))
     }
+    fn assert_active_or_panic(&self) {
+        if let Err(error) = self.assert_active() { std::panic::panic_any(error); }
+    }
     pub fn assert_active(&self) -> Result<(), ExtensionFailure> {
         if let Some(message) = &*self.registration_stale.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
             return Err(ExtensionFailure::new(message.clone()));
@@ -1031,7 +1034,7 @@ impl ExtensionApi {
     pub fn new(registered: LoadedExtension, profile: ExtensionSessionProfile, events: EventBus, runtime: ExtensionRuntime) -> Self {
         Self { cwd: registered.registration_cwd.clone(), profile, events, runtime, registered }
     }
-    pub fn on(&mut self, event: EventKind, handler: ExtensionHandler) { self.registered.handlers.entry(event).or_default().push(handler); }
+    pub fn on(&mut self, event: EventKind, handler: ExtensionHandler) { self.runtime.assert_active_or_panic(); self.registered.handlers.entry(event).or_default().push(handler); }
     pub fn register_provider(&self, name: &str, config: ProviderConfig) -> Result<(), ExtensionFailure> {
         self.runtime.register_provider(ProviderRegistration::Config { name: name.into(), config: Box::new(config) }, &self.registered.identity.path)
     }
@@ -1040,10 +1043,11 @@ impl ExtensionApi {
     }
     pub fn unregister_provider(&self, name: &str) -> Result<(), ExtensionFailure> { self.runtime.unregister_provider(name, &self.registered.identity.path) }
     pub fn register_shortcut(&mut self, shortcut: &str, description: Option<String>, handler: ShortcutHandler) {
+        self.runtime.assert_active_or_panic();
         self.registered.shortcuts.insert(shortcut.into(), ExtensionShortcut { shortcut: shortcut.into(), description, handler, extension_path: self.registered.identity.path.clone() });
     }
-    pub fn register_lazy_tool_activator(&mut self, activator: LazyToolActivator) { self.registered.lazy_tool_activators.push(activator); }
-    pub fn register_markdown_transformer(&mut self, transformer: MarkdownTransformer) { self.registered.markdown_transformer = Some(transformer); }
+    pub fn register_lazy_tool_activator(&mut self, activator: LazyToolActivator) { self.runtime.assert_active_or_panic(); self.registered.lazy_tool_activators.push(activator); }
+    pub fn register_markdown_transformer(&mut self, transformer: MarkdownTransformer) { self.runtime.assert_active_or_panic(); self.registered.markdown_transformer = Some(transformer); }
     pub fn register_read_classifier(&self, classifier: ReadClassifier) -> Result<ReadClassifierSubscription, ExtensionFailure> {
         self.runtime.assert_active()?;
         let mut state = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1080,6 +1084,7 @@ impl ExtensionApi {
         Ok(())
     }
     pub fn register_command(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandHandler) {
+        self.runtime.assert_active_or_panic();
         let command = RegisteredCommand { name: name.into(), source_info: self.registered.source_info.clone(), description, argument_hint, handler };
         if let Some(existing) = self.registered.commands.iter_mut().find(|c| c.name == name) { *existing = command; } else { self.registered.commands.push(command); }
     }
@@ -1088,6 +1093,7 @@ impl ExtensionApi {
         self.registered.command_context_handlers.insert(name.into(), handler);
     }
     pub fn register_flag(&mut self, name: &str, kind: FlagType, description: Option<String>) {
+        self.runtime.assert_active_or_panic();
         let default = match &kind { FlagType::Boolean { default } => default.map(FlagValue::Boolean), FlagType::String { default } => default.clone().map(FlagValue::String) };
         if let Some(value) = default { let mut state = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner); state.flags.entry(name.into()).or_insert(value); }
         let flag = ExtensionFlag { name: name.into(), description, kind, extension_path: self.registered.identity.path.clone() };
@@ -1095,14 +1101,15 @@ impl ExtensionApi {
     }
     pub fn get_flag(&self, name: &str) -> Option<FlagValue> { if self.registered.flags.iter().any(|flag| flag.name == name) { self.runtime.get_flag(name) } else { None } }
     pub fn set_flag(&self, name: &str, value: FlagValue) { self.runtime.set_flag(name, value); }
-    pub fn register_message_renderer(&mut self, custom_type: &str, renderer: MessageRenderer) { self.registered.message_renderers.insert(custom_type.into(), renderer); }
-    pub fn register_entry_renderer(&mut self, custom_type: &str, renderer: EntryRenderer, options: EntryRendererOptions) { self.registered.entry_renderers.insert(custom_type.into(), renderer); self.registered.entry_renderer_options.insert(custom_type.into(), options); }
+    pub fn register_message_renderer(&mut self, custom_type: &str, renderer: MessageRenderer) { self.runtime.assert_active_or_panic(); self.registered.message_renderers.insert(custom_type.into(), renderer); }
+    pub fn register_entry_renderer(&mut self, custom_type: &str, renderer: EntryRenderer, options: EntryRendererOptions) { self.runtime.assert_active_or_panic(); self.registered.entry_renderers.insert(custom_type.into(), renderer); self.registered.entry_renderer_options.insert(custom_type.into(), options); }
     pub fn register_mcp_server(&mut self, name: &str, config: McpServerDeclaration) {
+        self.runtime.assert_active_or_panic();
         let declaration = RegisteredMcpServerDeclaration { name: name.into(), config, extension_path: self.registered.identity.path.clone(), registration_cwd: self.cwd.clone() };
         if let Some(existing) = self.registered.mcp_servers.iter_mut().find(|s| s.name == name) { *existing = declaration; } else { self.registered.mcp_servers.push(declaration); }
     }
-    pub fn register_removed_tool_hint(&mut self, name: &str, hint: &str) { self.registered.removed_tool_hints.insert(name.into(), hint.into()); }
-    pub fn register_filesystem_policy(&mut self, policy: FilesystemPolicy) { self.registered.filesystem_policies.push(policy); }
+    pub fn register_removed_tool_hint(&mut self, name: &str, hint: &str) { self.runtime.assert_active_or_panic(); self.registered.removed_tool_hints.insert(name.into(), hint.into()); }
+    pub fn register_filesystem_policy(&mut self, policy: FilesystemPolicy) { self.runtime.assert_active_or_panic(); self.registered.filesystem_policies.push(policy); }
     pub fn send_message(&self, message: CustomMessage, options: SendMessageOptions) -> Result<(), ExtensionFailure> { self.runtime.actions()?.send_message(message, options) }
     pub fn send_user_message(&self, content: UserMessageContent, options: SendUserMessageOptions) -> Result<(), ExtensionFailure> { self.runtime.actions()?.send_user_message(content, options) }
     pub fn append_entry(&self, custom_type: &str, data: Option<JsonValue>) -> Result<(), ExtensionFailure> { self.runtime.actions()?.append_entry(custom_type, data) }
