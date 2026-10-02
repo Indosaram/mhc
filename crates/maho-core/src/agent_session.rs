@@ -1544,8 +1544,22 @@ impl AgentSession {
         let preparation = prepare_compaction(&entries, &crate::compaction::settings::CompactionSettings {
             enabled: resolved.enabled, reserve_tokens: resolved.reserve_tokens, keep_recent_tokens: resolved.keep_recent_tokens,
             ..crate::compaction::settings::default_compaction_settings()
-        }, false, false).ok_or("Nothing to compact")?;
+        }, false, false);
         let request_id = uuid::Uuid::new_v4().to_string();
+        let Some(preparation) = preparation else {
+            let error = if entries.last().is_some_and(|entry| entry["type"] == "compaction") {
+                "Already compacted"
+            } else { "Nothing to compact (session too small)" };
+            let compact_reason = if reason == "manual" { maho_ext_api::CompactionReason::Manual }
+                else if reason == "overflow" { maho_ext_api::CompactionReason::Overflow }
+                else if reason == "pre-prompt" { maho_ext_api::CompactionReason::PrePrompt }
+                else { maho_ext_api::CompactionReason::Threshold };
+            self.emit(AgentSessionEvent::CompactionStart { reason: compact_reason, request_id: Some(request_id.clone()) });
+            self.emit(AgentSessionEvent::CompactionEnd { reason: compact_reason, request_id: Some(request_id),
+                aborted: false, result: None, rejection_cause: None,
+                error_message: Some(format!("Compaction failed: {error}")), accepted: Some(false), will_retry: false });
+            return Err(error.to_owned());
+        };
         let controller = maho_ai::utils::abort::AbortController::new();
         let signal = controller.signal();
         let extension_signal = maho_ext_api::AbortSignal::default();
@@ -4884,6 +4898,26 @@ mod tests {
         assert_eq!(session.model().id, "second");
         assert_eq!(session.with_session_manager(|manager| manager.entries()[0]["type"].clone()), "model_change");
         assert!(session.with_settings_manager(|manager| manager.get_string("defaultModel")).is_none());
+    }
+
+    #[tokio::test]
+    async fn empty_manual_compaction_emits_matched_terminal_events() {
+        let session = test_session_with_stream_function(false);
+        session.agent.set_model(test_model());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| lock(&captured).push(event.clone())));
+        assert!(session.compact(None).await.is_err());
+        let events = lock(&events);
+        let start = events.iter().find_map(|event| match event {
+            AgentSessionEvent::CompactionStart { reason: maho_ext_api::CompactionReason::Manual, request_id } => request_id.clone(),
+            _ => None,
+        }).expect("start");
+        assert!(events.iter().any(|event| matches!(event,
+            AgentSessionEvent::CompactionEnd { reason: maho_ext_api::CompactionReason::Manual, request_id: Some(id),
+                aborted: false, result: None, will_retry: false, accepted: Some(false), .. } if id == &start)));
+        assert!(!session.is_compacting());
+        assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
     }
 
     #[tokio::test]
