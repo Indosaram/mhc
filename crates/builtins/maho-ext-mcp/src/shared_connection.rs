@@ -69,7 +69,7 @@ impl SharedMcpConnection {
     pub async fn catalog(&self,refresh:bool)->Result<McpCachedServerCatalog,McpError> {
         let client=self.connect().await?;let mut cached=self.catalog.lock().await;let generation=self.connection.generation();
         if !refresh && let Some((previous,catalog))=&*cached && *previous==generation{return Ok(catalog.clone());}
-        let catalog=collect_server_catalog_for_cache(&client,self.request_timeout,&self.config_hash).await?;
+        let catalog=collect_server_catalog_for_cache(&self.connection,self.request_timeout,&self.config_hash).await?;
         if self.connection.generation()==generation {
             if cached.as_ref().is_none_or(|(previous,_)|*previous!=generation){write_mcp_cached_server(&self.agent_dir,&self.connection.server_name,catalog.clone()).map_err(|error|McpError::new(McpErrorKind::Connect,error.to_string()))?;}
             *cached=Some((generation,catalog.clone()));

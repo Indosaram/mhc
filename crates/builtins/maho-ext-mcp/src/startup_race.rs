@@ -6,7 +6,7 @@ pub async fn connect_and_refresh_mcp_catalog(entry:&mut crate::service_types::Mc
     };
     if entry.cache_refreshed_after_connect{return;}
     entry.cache_refreshed_after_connect=true;
-    let result=crate::catalog_cache::collect_server_catalog_for_cache(&client,Duration::from_secs_f64(config.request_timeout_ms.unwrap_or(30000.0)/1000.0),&entry.config_hash).await;
+    let result=crate::catalog_cache::collect_server_catalog_for_cache(&entry.connection,Duration::from_secs_f64(config.request_timeout_ms.unwrap_or(30000.0)/1000.0),&entry.config_hash).await;
     match result {
         Ok(catalog)=>{
             crate::resources::ensure_mcp_resource_subscriptions(client.clone(),&catalog.resources,std::time::Duration::from_secs_f64(config.request_timeout_ms.unwrap_or(30000.0)/1000.0)).await;

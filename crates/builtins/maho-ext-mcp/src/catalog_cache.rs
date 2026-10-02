@@ -45,10 +45,11 @@ pub fn write_mcp_cached_server(agent_dir:&Path,name:&str,server:McpCachedServerC
     writeln!(tmp,"{}",serde_json::to_string_pretty(&cache)?)?;
     tmp.persist(path).map_err(|e|e.error)?; Ok(())
 }
-pub async fn collect_server_catalog_for_cache(client:&crate::transport_sdk::McpClient,timeout:std::time::Duration,config_hash:&str)->Result<McpCachedServerCatalog,crate::errors::McpError> {
+pub async fn collect_server_catalog_for_cache(connection:&crate::connection::ServerConnection,timeout:std::time::Duration,config_hash:&str)->Result<McpCachedServerCatalog,crate::errors::McpError> {
     use crate::catalog::collect_client_pages;
-    let tools=collect_client_pages(client,"tools/list","tools",timeout).await?.items;
-    let resources=collect_client_pages(client,"resources/list","resources",timeout).await.map(|p|p.items).unwrap_or_default();
-    let prompts=collect_client_pages(client,"prompts/list","prompts",timeout).await.map(|p|p.items).unwrap_or_default();
+    let client=connection.client()?;
+    let tools=collect_client_pages(&client,"tools/list","tools",timeout).await?.items;
+    let resources=collect_client_pages(&client,"resources/list","resources",timeout).await.map(|p|p.items).unwrap_or_default();
+    let prompts=collect_client_pages(&client,"prompts/list","prompts",timeout).await.map(|p|p.items).unwrap_or_default();
     Ok(McpCachedServerCatalog {config_hash:config_hash.into(),fetched_at:chrono::Utc::now().timestamp_millis().to_string().parse().unwrap_or(0.0),tools,resources,prompts,instructions:client.instructions.read().await.clone()})
 }

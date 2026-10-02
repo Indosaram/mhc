@@ -17,4 +17,10 @@ pub fn compute_mcp_exposure_policy<T:CatalogIdentity+Clone>(entries:&[T],config:
     let registered = if mode==Exposure::Proxy {Vec::new()} else {filtered.clone()};
     McpExposurePolicyResult {active_entries:active,filtered_entries:filtered,registered_entries:registered,mode,reason,warnings:Vec::new()}
 }
-fn safe_match(pattern:&str,tool:&str)->bool {match globset::GlobBuilder::new(pattern).literal_separator(false).build() {Ok(glob)=>glob.compile_matcher().is_match(tool),Err(_)=>pattern==tool}}
+pub fn matches_mcp_tool_pattern(pattern:&str,tool:&str)->bool {
+    let mut pattern=pattern;let mut negate=false;
+    while pattern.starts_with('!') && !pattern.starts_with("!("){negate = !negate;pattern=&pattern[1..];}
+    let matched=match globset::GlobBuilder::new(pattern).literal_separator(false).build() {Ok(glob)=>glob.compile_matcher().is_match(tool) || pattern==tool,Err(_)=>pattern==tool};
+    matched!=negate
+}
+fn safe_match(pattern:&str,tool:&str)->bool {matches_mcp_tool_pattern(pattern,tool)}

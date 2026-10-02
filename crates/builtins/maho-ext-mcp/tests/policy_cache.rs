@@ -11,6 +11,12 @@ fn exclude_filter_wins_over_include() {
     assert_eq!(result.active_entries,vec![Entry("tool_1".into()),Entry("tool_2".into())]);
 }
 #[test]
+fn picomatch_negation_and_literal_character_classes_match_pinned_behavior() {
+    assert!(!matches_mcp_tool_pattern("!foo","foo"));assert!(matches_mcp_tool_pattern("!foo","bar"));
+    assert!(matches_mcp_tool_pattern("!!foo","foo"));assert!(!matches_mcp_tool_pattern("!!foo","bar"));
+    assert!(matches_mcp_tool_pattern("[abc]","[abc]"));assert!(matches_mcp_tool_pattern("[abc]","a"));assert!(!matches_mcp_tool_pattern("[abc]","d"));
+}
+#[test]
 fn threshold_boundary_selects_search_at_eleven() {
     assert_eq!(compute_mcp_exposure_policy(&entries(10),&McpServerConfig::default(),&default_settings()).mode,Exposure::Direct);
     assert_eq!(compute_mcp_exposure_policy(&entries(11),&McpServerConfig::default(),&default_settings()).mode,Exposure::Search);
