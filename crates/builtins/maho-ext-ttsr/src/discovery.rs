@@ -17,7 +17,7 @@ fn project_root(cwd:&Path,home:&Path)->PathBuf {
 fn load_rules(dir:&Path,source:RuleSource)->TtsrDiscoveryResult {
     let mut result=TtsrDiscoveryResult::default();
     let Ok(entries)=std::fs::read_dir(dir) else { return result; };
-    let mut files=entries.filter_map(Result::ok).filter(|entry|entry.file_type().is_ok_and(|kind|kind.is_file())).filter_map(|entry|entry.file_name().into_string().ok()).filter(|name|name.ends_with(".md")).collect::<Vec<_>>(); files.sort();
+    let mut files=entries.filter_map(Result::ok).filter(|entry|entry.file_type().is_ok_and(|kind|kind.is_file())).filter_map(|entry|entry.file_name().into_string().ok()).filter(|name|name.ends_with(".md")).collect::<Vec<_>>(); files.sort_by(|left,right|left.encode_utf16().cmp(right.encode_utf16()));
     for file in files {
         let path=dir.join(&file); let name=file[..file.len()-3].to_owned();
         let bytes=match std::fs::read(&path) { Ok(bytes)=>bytes,Err(_)=>{ result.warnings.push(format!("rule \"{name}\" at {} could not be read, skipping",path.display())); continue; } };
@@ -48,7 +48,7 @@ async fn load_rules_async(dir:&Path,source:RuleSource)->TtsrDiscoveryResult {
     while let Ok(Some(entry))=entries.next_entry().await {
         if entry.file_type().await.is_ok_and(|kind|kind.is_file()) && let Ok(name)=entry.file_name().into_string() && name.ends_with(".md") { files.push(name); }
     }
-    files.sort();
+    files.sort_by(|left,right|left.encode_utf16().cmp(right.encode_utf16()));
     for file in files {
         let path=dir.join(&file); let name=file[..file.len()-3].to_owned();
         let bytes=match tokio::fs::read(&path).await { Ok(bytes)=>bytes,Err(_)=>{ result.warnings.push(format!("rule \"{name}\" at {} could not be read, skipping",path.display())); continue; } };
@@ -65,6 +65,12 @@ pub async fn discover_ttsr_rules(cwd:&Path,home:&Path)->TtsrDiscoveryResult {
 #[cfg(test)] mod tests {
     use super::*;
     fn write(dir:&Path,name:&str,condition:&str) { std::fs::create_dir_all(dir).unwrap(); std::fs::write(dir.join(name),format!("---\ncondition: {condition}\n---\nbody")).unwrap(); }
+    #[tokio::test] async fn filenames_follow_javascript_utf16_sort_order() {
+        let temp=tempfile::tempdir().unwrap(); let home=temp.path().join("home"); let cwd=temp.path().join("project"); std::fs::create_dir_all(&cwd).unwrap();
+        let rules=home.join(".senpi/ttsr"); write(&rules,"\u{e000}.md","x"); write(&rules,"\u{10000}.md","x");
+        let sync=discover_ttsr_rules_sync(&cwd,&home); assert_eq!(sync.rules.iter().map(|rule|rule.name.as_str()).collect::<Vec<_>>(),["\u{10000}","\u{e000}"]);
+        assert_eq!(discover_ttsr_rules(&cwd,&home).await.rules,sync.rules);
+    }
     #[test] fn nearest_project_overrides_global_and_files_are_sorted() { let temp=tempfile::tempdir().unwrap(); let home=temp.path().join("home"); let project=temp.path().join("project"); let cwd=project.join("nested"); std::fs::create_dir_all(&cwd).unwrap(); write(&home.join(".senpi/ttsr"),"same.md","global"); write(&home.join(".senpi/ttsr"),"a.md","first"); write(&project.join(".senpi/ttsr"),"same.md","project"); let result=discover_ttsr_rules_sync(&cwd,&home); assert_eq!(result.rules.iter().map(|rule|rule.name.as_str()).collect::<Vec<_>>(),["a","same"]); assert_eq!(result.rules[1].condition,["project"]); assert_eq!(result.rules[1].source,RuleSource::Project); }
     #[test] fn home_boundary_prevents_project_origin_duplicate() { let temp=tempfile::tempdir().unwrap(); write(&temp.path().join(".senpi/ttsr"),"test.md","x"); let result=discover_ttsr_rules_sync(temp.path(),temp.path()); assert_eq!(result.rules.len(),1); assert_eq!(result.rules[0].source,RuleSource::Global); }
     #[test] fn symlink_rule_files_are_excluded() { let temp=tempfile::tempdir().unwrap(); let rules=temp.path().join(".senpi/ttsr"); write(&rules,"real.md","x"); std::os::unix::fs::symlink(rules.join("real.md"),rules.join("link.md")).unwrap(); let result=discover_ttsr_rules_sync(temp.path(),temp.path()); assert_eq!(result.rules.len(),1); }
