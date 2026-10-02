@@ -7,6 +7,12 @@ fn parses_python_ruby_julia_versions() {
     for (input, expected) in [("Python 3.12.4", "3.12.4"), ("ruby 3.4.10", "3.4.10"), ("julia version 1.12.6", "1.12.6"), ("JULIA version v1.9.1", "1.9.1")] { assert_eq!(parse_version(input).as_deref(), Some(expected)); }
     assert!(parse_version("").is_none());
 }
+
+#[test]
+fn version_digits_follow_javascript_ascii_digit_class() {
+    assert!(parse_version("Python \u{0663}.\u{0661}\u{0662}").is_none());
+    assert_eq!(parse_version("Python 3.12"),Some("3.12".into()));
+}
 #[test]
 fn platform_candidate_order() {
     assert_eq!(candidates_for(EvalLanguage::Py, true), ["python", "py -3", "python3"]);
