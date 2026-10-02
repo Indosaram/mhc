@@ -45,10 +45,29 @@ pub struct InterpreterDetector {
     cache: HashMap<String, InterpreterDetection>,
     pub node_version: String,
     pub windows: bool,
+    probe: InterpreterProbe,
+    resolve: InterpreterResolver,
 }
 
+pub type InterpreterProbe = std::sync::Arc<dyn Fn(String,Vec<String>,u64)->std::pin::Pin<Box<dyn std::future::Future<Output=Result<(String,String),String>>+Send>>+Send+Sync>;
+pub type InterpreterResolver = std::sync::Arc<dyn Fn(&str)->Option<std::path::PathBuf>+Send+Sync>;
+
 impl InterpreterDetector {
-    pub fn new(node_version: String, windows: bool) -> Self { Self { cache: HashMap::new(), node_version, windows } }
+    pub fn new(node_version: String, windows: bool) -> Self {
+        Self::with_probes(node_version,windows,std::sync::Arc::new(|command,args,timeout_ms|Box::pin(async move {
+            let mut process=tokio::process::Command::new(command);
+            process.args(args).kill_on_drop(true);
+            let output=tokio::time::timeout(Duration::from_millis(timeout_ms),process.output()).await.map_err(|error|error.to_string())?.map_err(|error|error.to_string())?;
+            if !output.status.success() {return Err("interpreter probe failed".into());}
+            Ok((String::from_utf8_lossy(&output.stdout).into_owned(),String::from_utf8_lossy(&output.stderr).into_owned()))
+        })),std::sync::Arc::new(move |command| {
+            let env=std::env::vars().collect();
+            std::env::current_dir().ok().and_then(|cwd|resolve_command_path(command,&env,&cwd,windows))
+        }))
+    }
+    pub fn with_probes(node_version:String,windows:bool,probe:InterpreterProbe,resolve:InterpreterResolver)->Self {
+        Self {cache:HashMap::new(),node_version,windows,probe,resolve}
+    }
     pub async fn detect(&mut self, language: EvalLanguage) -> InterpreterDetection {
         let key = format!("{language:?}");
         if let Some(cached) = self.cache.get(&key) { return cached.clone(); }
@@ -59,13 +78,10 @@ impl InterpreterDetector {
             for candidate in candidates_for(language, self.windows) {
                 let mut words = candidate.split(' ');
                 let command = words.next().unwrap_or(candidate);
-                let mut process = tokio::process::Command::new(command);
-                process.args(words).arg("--version").kill_on_drop(true);
-                if let Ok(Ok(output)) = tokio::time::timeout(Duration::from_secs(3), process.output()).await
-                    && output.status.success()
-                    && let Some(version) = parse_version(&format!("{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr))) {
-                        let env = std::env::vars().collect();
-                        let resolved_path = std::env::current_dir().ok().and_then(|cwd| resolve_command_path(command, &env, &cwd, self.windows));
+                let args=words.chain(std::iter::once("--version")).map(str::to_owned).collect();
+                if let Ok((stdout,stderr))=(self.probe)(command.into(),args,3000).await
+                    && let Some(version)=parse_version(&format!("{stdout}\n{stderr}")) {
+                        let resolved_path=(self.resolve)(command);
                         detected = InterpreterDetection::Detected { path: (*candidate).into(), version, resolved_path };
                         break;
                     }

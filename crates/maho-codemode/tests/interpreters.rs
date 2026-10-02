@@ -24,6 +24,21 @@ async fn javascript_uses_host_version() {
     let mut detector = InterpreterDetector::new("24.1.0".into(), false);
     assert_eq!(detector.detect(EvalLanguage::Js).await, InterpreterDetection::Detected { path: "node".into(), version: "24.1.0".into(), resolved_path: None });
 }
+
+#[tokio::test]
+async fn injected_probes_preserve_candidate_arguments_cache_and_resolution() {
+    use std::sync::{Arc,Mutex};
+    let calls=Arc::new(Mutex::new(Vec::new()));let observed=calls.clone();
+    let mut detector=InterpreterDetector::with_probes("24.1.0".into(),true,Arc::new(move |command,args,budget| {
+        observed.lock().unwrap().push((command.clone(),args,budget));
+        Box::pin(async move {if command=="python" {Err("missing".into())} else {Ok((String::new(),"Python 3.12.4".into()))}})
+    }),Arc::new(|command|Some(std::path::PathBuf::from(format!("/fixture/{command}")))));
+    let detected=detector.detect(EvalLanguage::Py).await;
+    assert_eq!(detected,InterpreterDetection::Detected {path:"py -3".into(),version:"3.12.4".into(),resolved_path:Some("/fixture/py".into())});
+    assert_eq!(detector.detect(EvalLanguage::Py).await,detected);
+    detector.detect(EvalLanguage::Js).await;
+    assert_eq!(*calls.lock().unwrap(),vec![("python".into(),vec!["--version".into()],3000),("py".into(),vec!["-3".into(),"--version".into()],3000)]);
+}
 #[test]
 fn resolves_python_on_path() {
     let env = std::env::vars().collect();
