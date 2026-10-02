@@ -3767,7 +3767,20 @@ impl AgentSession {
             let mut guard = self.extension_runner.lock().await;
             let Some(runner) = guard.as_mut() else { return; };
             if !runner.has_handlers(maho_ext_api::EventKind::ResourcesDiscover) { return; }
-            runner.emit_resources_discover(self.cwd().into(), reason).await
+            let resources = runner.emit_resources_discover(self.cwd().into(), reason).await;
+            resources.map(|mut resources| {
+                for entry in resources.skill_paths.iter_mut().chain(&mut resources.prompt_paths).chain(&mut resources.theme_paths).chain(&mut resources.hook_paths) {
+                    if entry.scope.is_some() { continue; }
+                    let contributor = runner.extensions.iter().find(|extension| extension.identity.path == entry.extension_path);
+                    if contributor.is_some_and(|extension| extension.source_info.scope == maho_ext_api::SourceScope::System
+                        && (extension.identity.path.starts_with("<builtin:") || extension.source_info.base_dir.as_ref().is_some_and(|root| {
+                            let path = crate::paths::lexical_resolve(&entry.path);
+                            let root = crate::paths::lexical_resolve(root);
+                            std::path::Path::new(&path).starts_with(&root)
+                        }))) { entry.scope = Some(maho_ext_api::SourceScope::System); }
+                }
+                resources
+            })
         };
         match discovered {
             Ok(resources) => self.extend_discovered_resources(resources),
