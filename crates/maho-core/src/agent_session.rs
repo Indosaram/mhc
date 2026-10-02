@@ -7201,6 +7201,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejected_required_retry_compaction_retains_follow_up_queue() {
+        let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("unexpected retry", Default::default())], 1);
+        session.agent.set_model(test_model());
+        let mut prior = maho_ai::providers::faux::faux_assistant_message("prior", Default::default());
+        prior.usage.input = 120_000;
+        let failed = maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+            stop_reason: Some(StopReason::Error), error_message: Some("overloaded_error".to_owned()), ..Default::default()
+        });
+        session.with_session_manager_mut(|manager| {
+            manager.append_message(serde_json::json!({"role":"user","content":[{"type":"text","text":"task"}],"timestamp":0}));
+            manager.append_message(serde_json::to_value(prior).expect("prior"));
+            manager.append_message(serde_json::json!({"role":"user","content":[{"type":"text","text":"next task"}],"timestamp":1}));
+            manager.append_message(serde_json::to_value(failed).expect("failed"));
+        });
+        session.rebuild_session_context().expect("context");
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"keepRecentTokens":1,"reserveTokens":20000,"reserveScalingEnabled":false})),
+        ])));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:retry-rejection>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(|_, _| Box::pin(async {
+            Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult { cancel: Some(true), ..Default::default() }))
+        }))]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        session.follow_up("retained input", None, Default::default()).await.expect("queue");
+        let retries = Arc::new(Mutex::new(0));
+        let captured = retries.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if matches!(event, AgentSessionEvent::AutoRetryStart { .. }) { *lock(&captured) += 1; }
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.finish_provider_turn()).await.expect("bounded recovery").expect("recovery");
+        assert_eq!(*lock(&retries), 0);
+        assert_eq!(session.get_follow_up_messages(), vec!["retained input"]);
+        assert!(session.agent.has_queued_messages());
+        assert_eq!(session.get_last_assistant_text().as_deref(), Some("prior"));
+        assert_eq!(session.compaction_state().status(), "failed");
+    }
+
+    #[tokio::test]
     async fn successful_overflow_compacts_without_retrying_completed_assistant() {
         let mut completed = maho_ai::providers::faux::faux_assistant_message("completed answer", Default::default());
         completed.usage.input = 200_000;
