@@ -20,3 +20,4 @@ pub mod run_terminal_precedence;
 pub mod spawn_types;
 pub mod spawn_metadata;
 pub mod spawn_payload;
+pub mod resolve_model;
