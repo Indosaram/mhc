@@ -2062,6 +2062,7 @@ version = "0.0.0"
 dependencies = [
  "dom_query",
  "hyper",
+ "maho-ai",
  "reqwest",
  "serde_json",
  "thiserror 2.0.18",
