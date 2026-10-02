@@ -4,6 +4,12 @@ use std::collections::BTreeMap;
 use senpi_task::dag::{store::{DagFileStore,DagEventReadOptions,DagStoreError},types::DagRunEvent};
 
 pub type DurableDagListener=Arc<dyn Fn(&DagRunEvent)+Send+Sync>;
+pub fn publish_scheduler_event(event:&DagRunEvent,delivered:&mut BTreeMap<String,u64>,listeners:&BTreeMap<String,Vec<DurableDagListener>>,on_event:&DurableDagListener) {
+    if *delivered.get(&event.run_id).unwrap_or(&0)>=event.seq { return; }
+    delivered.insert(event.run_id.clone(),event.seq);
+    deliver_durable_event(on_event,event);
+    for listener in listeners.get(&event.run_id).into_iter().flatten() { deliver_durable_event(listener,event); }
+}
 pub fn publish_durable_events(
     store:&DagFileStore,run_id:&str,delivered:&mut BTreeMap<String,u64>,
     listeners:&BTreeMap<String,Vec<DurableDagListener>>,on_event:&DurableDagListener,

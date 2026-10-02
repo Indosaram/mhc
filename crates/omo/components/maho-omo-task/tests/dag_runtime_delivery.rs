@@ -1,5 +1,5 @@
 use std::{collections::BTreeMap,sync::{Arc,Mutex}};
-use maho_omo_task::dag_runtime::{DurableDagListener,publish_durable_events};
+use maho_omo_task::dag_runtime::{DurableDagListener,publish_durable_events,publish_scheduler_event};
 use senpi_task::dag::{store::{DagStoreConfig,DagStoreOptions,create_dag_file_store},types::{DagRunEvent,DagRunEventPayload,DagEventLane,SchemaVersion1}};
 #[test] fn durable_pages_deliver_in_order_once_and_continue_after_bad_subscriber() {
     let root=tempfile::tempdir().expect("root"); let store=create_dag_file_store(&DagStoreConfig::new(root.path()),DagStoreOptions::default()).expect("store");
@@ -9,3 +9,14 @@ use senpi_task::dag::{store::{DagStoreConfig,DagStoreOptions,create_dag_file_sto
     publish_durable_events(&store,"run",&mut delivered,&listeners,&on_event).expect("republish"); assert_eq!(captured.lock().expect("events").len(),2002);
 }
 #[test] fn empty_run_does_not_advance_delivery_cursor() { let root=tempfile::tempdir().expect("root"); let store=create_dag_file_store(&DagStoreConfig::new(root.path()),DagStoreOptions::default()).expect("store"); let mut delivered=BTreeMap::new(); let listener:DurableDagListener=Arc::new(|_| panic!("no event")); publish_durable_events(&store,"missing",&mut delivered,&BTreeMap::new(),&listener).expect("empty"); assert!(delivered.is_empty()); }
+#[test] fn scheduler_events_share_durable_cursor_and_route_per_run() {
+    let root=tempfile::tempdir().expect("root"); let store=create_dag_file_store(&DagStoreConfig::new(root.path()),DagStoreOptions::default()).expect("store");
+    let mut event=DagRunEvent { schema_version:SchemaVersion1,run_id:"run".into(),seq:1,at:"1970-01-01T00:00:01.000Z".into(),lane:DagEventLane::Boundary,payload:DagRunEventPayload::RunStarted { generation:1 } };
+    store.append_event(&event).expect("append"); let received=Arc::new(Mutex::new(Vec::new())); let sink=received.clone(); let main:DurableDagListener=Arc::new(move |event| sink.lock().expect("events").push((event.run_id.clone(),event.seq)));
+    let foreign_count=Arc::new(std::sync::atomic::AtomicUsize::new(0)); let count=foreign_count.clone(); let foreign:DurableDagListener=Arc::new(move |_| { count.fetch_add(1,std::sync::atomic::Ordering::SeqCst); }); let listeners=BTreeMap::from([("foreign".into(),vec![foreign])]); let mut delivered=BTreeMap::new();
+    publish_durable_events(&store,"run",&mut delivered,&listeners,&main).expect("durable"); publish_scheduler_event(&event,&mut delivered,&listeners,&main);
+    event.seq=2; publish_scheduler_event(&event,&mut delivered,&listeners,&main); event.seq=1; publish_scheduler_event(&event,&mut delivered,&listeners,&main);
+    event.run_id="second".into(); publish_scheduler_event(&event,&mut delivered,&listeners,&main);
+    assert_eq!(*received.lock().expect("events"),[("run".into(),1),("run".into(),2),("second".into(),1)]); assert_eq!(delivered["run"],2); assert_eq!(delivered["second"],1);
+    assert_eq!(foreign_count.load(std::sync::atomic::Ordering::SeqCst),0);
+}

@@ -1,4 +1,5 @@
-use std::sync::Arc;
+pub mod support;
+use std::sync::{Arc,Mutex};
 use maho_omo_task::dag_rpc_handlers::query_dag_rpc;
 use senpi_task::dag::{manager::{DagManager, DagManagerOptions, DagStartParams, create_dag_manager}, store::{DagStoreConfig, DagStoreOptions, create_dag_file_store}};
 use serde_json::{Value, json};
@@ -11,6 +12,16 @@ fn fixture() -> (tempfile::TempDir, DagManager, String) {
     (root, manager, started.snapshot.run_id)
 }
 fn query(manager: &DagManager, name: &str, value: Value) -> Value { query_dag_rpc(manager, Some("parent".into()), name, &value) }
+#[tokio::test] async fn registered_query_handlers_observe_live_session_scope() {
+    let (_root,manager,id)=fixture(); let mut api=support::api(); let session=Arc::new(Mutex::new(Some("parent".to_owned()))); let current=session.clone();
+    maho_omo_task::dag_rpc_handlers::register_dag_rpc_handlers(&mut api,manager,Arc::new(move || current.lock().expect("session").clone())).expect("register");
+    assert_eq!(api.registered.rpc_handlers.len(),4);
+    for name in ["omo.dag.snapshot","omo.dag.history","omo.dag.subscribe"] { let result=(api.registered.rpc_handlers[name])(json!({"runId":id})).await.expect("request"); assert_eq!(result["ok"],true); }
+    *session.lock().expect("session")=Some("foreign".into());
+    let result=(api.registered.rpc_handlers["omo.dag.snapshot"])(json!({"runId":id})).await.expect("foreign"); assert_eq!(result["error"]["code"],"run_not_owned");
+    *session.lock().expect("session")=None;
+    let result=(api.registered.rpc_handlers["omo.dag.list"])(json!({})).await.expect("uncaptured"); assert_eq!(result["value"]["runs"],json!([]));
+}
 #[test] fn list_is_scoped_and_has_default_limit() { let (_root, manager, _) = fixture(); let value = query(&manager, "omo.dag.list", json!({})); assert_eq!(value["ok"], true); assert_eq!(value["value"]["limit"], 100); assert_eq!(value["value"]["runs"].as_array().unwrap().len(), 1); assert_eq!(query_dag_rpc(&manager, Some("other".into()), "omo.dag.list", &json!({}))["value"]["runs"], json!([])); }
 #[test] fn list_filters_statuses() { let (_root, manager, _) = fixture(); assert_eq!(query(&manager, "omo.dag.list", json!({"statuses":["completed"]}))["value"]["runs"], json!([])); }
 #[test] fn list_clamps_limit() { let (_root, manager, _) = fixture(); assert_eq!(query(&manager, "omo.dag.list", json!({"limit":999}))["value"]["limit"], 256); }
