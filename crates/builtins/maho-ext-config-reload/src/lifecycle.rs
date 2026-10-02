@@ -8,7 +8,7 @@ struct ReloadHandoff { hashes: BTreeMap<PathBuf, String>, contents: BTreeMap<Pat
 static HANDOFFS: std::sync::OnceLock<Mutex<ConfigReloadHandoffRegistry<ReloadHandoff>>> = std::sync::OnceLock::new();
 struct WatchRun { cancel: tokio::sync::watch::Sender<bool>, task: tokio::task::JoinHandle<Result<(), String>> }
 #[derive(Default)]
-struct State { generation: u64, run: Option<WatchRun>, pending: PendingChanges, in_flight: bool, deferred_notice: bool, veto: crate::reload_deferral::ReloadVetoDeferral, flush_generation: Option<u64>, hashes: BTreeMap<PathBuf, String>, contents: BTreeMap<PathBuf, String> }
+struct State { generation: u64, run: Option<WatchRun>, pending: PendingChanges, in_flight: bool, deferred_notice: bool, unavailable_logged: bool, veto: crate::reload_deferral::ReloadVetoDeferral, flush_generation: Option<u64>, hashes: BTreeMap<PathBuf, String>, contents: BTreeMap<PathBuf, String> }
 impl Extension for ConfigReload {
     fn register(&self, api: &mut ExtensionApi) {
         let state = Arc::new(Mutex::new(State::default()));
@@ -87,7 +87,7 @@ async fn stop(state: &Arc<Mutex<State>>, clear_pending: bool) -> Result<(), Exte
         state.generation = state.generation.wrapping_add(1);
         state.flush_generation = None;
         state.veto.reset();
-        if clear_pending { state.pending.clear(); state.in_flight = false; state.deferred_notice = false; }
+        if clear_pending { state.pending.clear(); state.in_flight = false; state.deferred_notice = false; state.unavailable_logged = false; }
         state.run.take()
     };
     if let Some(run) = run {
@@ -216,11 +216,19 @@ fn schedule_flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_gene
 }
 async fn flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_generation: Option<u64>) -> Result<Option<Duration>, ExtensionFailure> {
     let generation = {
-        let state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
+        let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
         if expected_generation.is_some_and(|generation| generation != state.generation) { return Ok(None); }
         match reload_admission(state.pending.is_empty(), state.in_flight, ctx.is_idle(), ctx.has_pending_messages()?, ctx.is_compacting(), ctx.actions().is_ok()) {
             ReloadAdmission::ProbeVeto => {},
             ReloadAdmission::Compacting => return Ok(Some(Duration::from_millis(250))),
+            ReloadAdmission::Unavailable => {
+                if !state.unavailable_logged {
+                    state.unavailable_logged = true;
+                    let mut logger = ConfigReloadLogger::new(&ctx.agent_dir, None).map_err(|error| ExtensionFailure::new(error.to_string()))?;
+                    logger.log(LogLevel::Info, LogEvent::ReloadRequested { reason: "requestReload unavailable", paths: &[] });
+                }
+                return Ok(None);
+            },
             _ => return Ok(None),
         }
         state.generation
