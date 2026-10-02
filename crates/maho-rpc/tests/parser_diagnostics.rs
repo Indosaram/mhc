@@ -13,3 +13,11 @@ fn malformed_wire_preserves_javascript_lone_surrogate_error(){
     let output=std::process::Command::new("bun").args(["-e","const actual=JSON.parse(process.argv[1]);let expected;try{JSON.parse(process.argv[2])}catch(error){expected='Failed to parse command: '+error.message}if(actual.type!=='response'||actual.command!=='parse'||actual.success!==false||actual.error!==expected)process.exit(1)",&line,"😀"]).output().unwrap();
     assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
 }
+
+#[test]
+fn deeply_nested_malformed_diagnostics_equal_bun_without_recursive_stack_growth(){
+    let inputs=[format!("{}@{}","[".repeat(20000),"]".repeat(20000)),format!("{}{{\"a\":}}{}","[".repeat(20000),"]".repeat(20000))];
+    let output=std::process::Command::new("bun").args(["-e","console.log(JSON.stringify(JSON.parse(process.argv[1]).map(input=>{try{JSON.parse(input)}catch(error){return error.message}})))",&serde_json::to_string(&inputs).unwrap()]).output().unwrap();
+    assert!(output.status.success());let expected:Vec<String>=serde_json::from_slice(&output.stdout).unwrap();
+    for(input,expected)in inputs.iter().zip(expected){assert_eq!(maho_rpc::connection_handler::json_parse_error_message(input),expected);}
+}

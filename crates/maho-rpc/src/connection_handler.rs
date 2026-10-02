@@ -31,18 +31,6 @@ pub fn json_parse_error_message(input:&str)->String{
             self.space();let Some(&byte)=self.bytes.get(self.at)else{return Err("Unexpected EOF".into());};
             match byte{
                 b'"'=>self.string(),
-                b'{'=>{
-                    self.at+=1;self.space();if self.bytes.get(self.at)==Some(&b'}'){self.at+=1;return Ok(());}
-                    if self.bytes.get(self.at)!=Some(&b'"'){return Err("Expected '}'".into());}
-                    loop{
-                        self.string()?;self.space();if self.bytes.get(self.at)!=Some(&b':'){return Err("Expected ':' before value in object property definition".into());}self.at+=1;self.value()?;self.space();
-                        match self.bytes.get(self.at){Some(b'}')=>{self.at+=1;return Ok(());},Some(b',')=>{self.at+=1;self.space();if self.bytes.get(self.at)!=Some(&b'"'){return Err("Property name must be a string literal".into());}},_=>return Err("Expected '}'".into())}
-                    }
-                },
-                b'['=>{
-                    self.at+=1;self.space();if self.bytes.get(self.at)==Some(&b']'){self.at+=1;return Ok(());}
-                    loop{self.value()?;self.space();match self.bytes.get(self.at){Some(b']')=>{self.at+=1;return Ok(());},Some(b',')=>{self.at+=1;self.space();if self.bytes.get(self.at)==Some(&b']'){return Err("Unexpected comma at the end of array expression".into());}},_=>return Err("Expected ']'".into())}}
-                },
                 b'-'|b'0'..=b'9'=>{
                     if byte==b'-'{self.at+=1;}
                     match self.bytes.get(self.at){Some(b'0')=>self.at+=1,Some(b'1'..=b'9')=>{while self.bytes.get(self.at).is_some_and(u8::is_ascii_digit){self.at+=1;}},_=>return Err("Invalid number".into())}
@@ -62,9 +50,37 @@ pub fn json_parse_error_message(input:&str)->String{
                 },b'}'|b']'|b','|b':'=>Err(format!("Unexpected token '{}'",char::from(byte))),_=>Err(format!("Unrecognized token '{}'",String::from_utf8_lossy(&self.bytes[self.at..]).chars().next().unwrap_or_default()))
             }
         }
+        fn document(&mut self)->Result<(),String>{
+            let mut containers=Vec::new();
+            loop{
+                self.space();
+                match self.bytes.get(self.at){
+                    Some(b'{')=>{
+                        self.at+=1;self.space();
+                        if self.bytes.get(self.at)==Some(&b'}'){self.at+=1;}else{
+                            if self.bytes.get(self.at)!=Some(&b'"'){return Err("Expected '}'".into());}
+                            self.string()?;self.space();if self.bytes.get(self.at)!=Some(&b':'){return Err("Expected ':' before value in object property definition".into());}self.at+=1;containers.push(b'}');continue;
+                        }
+                    },
+                    Some(b'[')=>{self.at+=1;self.space();if self.bytes.get(self.at)==Some(&b']'){self.at+=1;}else{containers.push(b']');continue;}},
+                    _=>self.value()?,
+                }
+                loop{
+                    self.space();let Some(&closing)=containers.last()else{return if self.at==self.bytes.len(){Ok(())}else{Err("Unable to parse JSON string".into())};};
+                    if self.bytes.get(self.at)==Some(&closing){self.at+=1;containers.pop();continue;}
+                    if self.bytes.get(self.at)!=Some(&b','){return Err(format!("Expected '{}'",char::from(closing)));}
+                    self.at+=1;self.space();
+                    if closing==b']'{if self.bytes.get(self.at)==Some(&b']'){return Err("Unexpected comma at the end of array expression".into());}}else{
+                        if self.bytes.get(self.at)!=Some(&b'"'){return Err("Property name must be a string literal".into());}
+                        self.string()?;self.space();if self.bytes.get(self.at)!=Some(&b':'){return Err("Expected ':' before value in object property definition".into());}self.at+=1;
+                    }
+                    break;
+                }
+            }
+        }
     }
     let mut parser=Parser{bytes:input.as_bytes(),at:0};
-    let result=parser.value().and_then(|()|{parser.space();if parser.at==parser.bytes.len(){Ok(())}else{Err("Unable to parse JSON string".into())}});
+    let result=parser.document();
     format!("JSON Parse error: {}",result.err().unwrap_or_else(||"Unable to parse JSON string".into()))
 }
 pub fn json_parse_error_code_units(input:&str)->Vec<u16>{
@@ -102,6 +118,13 @@ pub async fn handle_input_line(session:&AgentSession,line:&str)->Result<Option<S
 }
 pub async fn handle_session_command(session:&AgentSession,command:&RpcCommand)->Option<RpcResponse>{
     let (kind,result)=match &command.body{
+        RpcCommandBody::Abort=>{
+            let owned=session.clone();
+            let mut abort=Box::pin(async move{owned.abort().await;});
+            let completed=std::future::poll_fn(|context|std::task::Poll::Ready(abort.as_mut().poll(context).is_ready())).await;
+            if !completed{tokio::spawn(abort);}
+            ("abort",Ok(None))
+        },
         RpcCommandBody::Reload=>("reload",session.reload().await.map(|result|Some(serde_json::json!({"cancelled":!result})))),
         RpcCommandBody::SetFavoriteModels{models}|RpcCommandBody::SetScopedModels{models}=>{
             #[derive(serde::Deserialize)]#[serde(rename_all="camelCase")]struct WireModel{model:maho_ai::types::Model,thinking_level:Option<maho_ai::types::ThinkingLevel>,thinking_selection:Option<maho_ai::types::ThinkingSelection>,service_tier:Option<String>}
