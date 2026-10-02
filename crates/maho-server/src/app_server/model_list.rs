@@ -15,7 +15,7 @@ pub fn build_model_list_response(wire_models: &[Value], params: &Value) -> Resul
         Some(cursor) => return Err(JsonRpcError::new(-32600, format!("model/list received an invalid cursor: {cursor}"))),
     };
     if start > models.len() { return Err(JsonRpcError::new(-32600, format!("model/list cursor {start} exceeds total models {}", models.len()))); }
-    let limit = params["limit"].as_u64().and_then(|limit| usize::try_from(limit).ok()).unwrap_or(models.len()).max(1).min(models.len());
-    let end = start.saturating_add(limit).min(models.len());
+    let limit = params["limit"].as_f64().unwrap_or(models.len() as f64).max(1.0).min(models.len() as f64);
+    let end = (start as f64 + limit).min(models.len() as f64) as usize;
     Ok(json!({"data":models[start..end],"nextCursor":if end < models.len() { Some(end.to_string()) } else { None }}))
 }

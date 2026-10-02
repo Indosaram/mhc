@@ -11,4 +11,5 @@ fn model_pagination_filters_hidden_before_cursor_and_rejects_invalid_scope() {
     assert_eq!(wire["id"], "p/m");
     assert_eq!(wire["supportedReasoningEfforts"].as_array().unwrap().len(), 1);
     assert_eq!(wire["isDefault"], true);
+    assert_eq!(build_model_list_response(&models, &json!({"limit":1.5})).unwrap()["data"], json!([models[0]]));
 }
