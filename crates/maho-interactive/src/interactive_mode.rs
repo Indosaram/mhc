@@ -252,7 +252,11 @@ impl InteractiveMode {
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/reload" {
-            if self.session.reload().await? { Self::setup_autocomplete(&self.session, &mut self.editor); self.rebuild_history(); self.show_status("Reloaded session resources".into()); }
+            if self.session.reload().await? {
+                let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
+                self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible as usize);
+                Self::setup_autocomplete(&self.session, &mut self.editor); self.rebuild_history(); self.show_status("Reloaded session resources".into());
+            }
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/compact" || text.trim().starts_with("/compact ") {
