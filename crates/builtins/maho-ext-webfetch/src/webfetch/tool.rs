@@ -61,6 +61,20 @@ pub fn create_webfetch_tool()->maho_tools::definition::ToolDefinition {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn native_output_caps_match_upstream_single_line_multiline_and_small_cases() {
+        use tokio::io::{AsyncReadExt,AsyncWriteExt};
+        let bodies=[format!("{{\"data\":\"{}\"}}","x".repeat(2*1024*1024)),(0..5000).map(|index|format!("line-{index}-{}\n","y".repeat(40))).collect::<String>(),"hello world\nsecond line\n".into()];
+        for (index,body) in bodies.into_iter().enumerate() {
+            let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(); let url=format!("http://{}/",listener.local_addr().unwrap());
+            let server=async {let (mut socket,_)=listener.accept().await.unwrap();let mut request=[0;4096];assert!(socket.read(&mut request).await.unwrap()>0);socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).as_bytes()).await.unwrap();socket.write_all(body.as_bytes()).await.unwrap();};
+            let client=async {(create_webfetch_tool().execute)(maho_tools::definition::ToolCall{id:"cap",params:serde_json::json!({"url":url,"format":"text"}),signal:Default::default(),context:None,on_update:None}).await.unwrap()};
+            let (_,result)=tokio::time::timeout(std::time::Duration::from_secs(5),async {tokio::join!(server,client)}).await.unwrap();
+            let details=result.details.unwrap();assert_eq!(details["outputTotalBytes"],body.len());assert_eq!(details["outputTruncated"],index<2);
+            let maho_tools::definition::ToolContent::Text{text,..}=&result.content[0] else {panic!("expected fetched text")};
+            if index<2 {assert!(details["outputBytes"].as_u64().unwrap()<=DEFAULT_OUTPUT_MAX_BYTES as u64);assert!(text.starts_with(if index==0 {"{\"data\":\"xxxx"} else {"line-0-"}));assert!(matches!(&result.content[1],maho_tools::definition::ToolContent::Text{audience:Some(audience),..} if audience=="model"));}
+            else {assert_eq!(text,&body);assert_eq!(result.content.len(),1);}
+        }
+    }
     #[tokio::test] async fn native_executor_fetches_text_and_emits_progress_metadata() {
         use tokio::io::{AsyncReadExt,AsyncWriteExt};
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(); let url=format!("http://{}/",listener.local_addr().unwrap());
