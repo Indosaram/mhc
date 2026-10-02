@@ -1763,8 +1763,9 @@ impl AgentSession {
         if result.is_ok() && self.agent.has_queued_messages() {
             let session = self.clone();
             let guard = self.work_barrier.begin();
+            let generation = self.user_abort_generation.load(Ordering::SeqCst);
             tokio::spawn(async move {
-                if let Err(error) = session.continue_session().await {
+                if let Err(error) = session.continue_session_internal(Some(generation)).await {
                     session.emit(AgentSessionEvent::ContinuationError { error_message: error });
                 }
                 drop(guard);
@@ -3904,13 +3905,23 @@ impl AgentSession {
     }
 
     pub async fn continue_session(&self) -> Result<(), String> {
+        self.continue_session_internal(None).await
+    }
+
+    async fn continue_session_internal(&self, expected_abort_generation: Option<u64>) -> Result<(), String> {
         let _admission = self.prompt_admission.lock().await;
         let _work = self.work_barrier.begin();
+        if expected_abort_generation.is_some_and(|generation| generation != self.user_abort_generation.load(Ordering::SeqCst)) {
+            return Ok(());
+        }
         self.state().user_aborted = false;
         let settings = self.with_settings_manager(|manager| manager.get_value("retry").cloned()).unwrap_or(Value::Null);
         let policy = crate::retry_fallback::settings::resolve_retry_fallback_settings(Some(&settings)).revert_policy;
         if let Some(controller) = self.retry_fallback.lock().await.as_mut() { controller.maybe_restore_primary(policy).await?; }
         self.revalidate_scheduled_continuation_admission().await?;
+        if expected_abort_generation.is_some_and(|generation| generation != self.user_abort_generation.load(Ordering::SeqCst)) {
+            return Ok(());
+        }
         self.agent.continue_with_queued_messages(Default::default()).await;
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
@@ -6300,6 +6311,27 @@ mod tests {
         assert_eq!(session.session_name().as_deref(), Some("Native Session Recovery"));
         assert_eq!(provider.get_call_log().len(), 2);
         assert!(session.state().session_title_abort_controller.is_none());
+    }
+
+    #[tokio::test]
+    async fn scheduled_continuation_does_not_clear_a_later_user_abort() {
+        let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("unexpected", Default::default())], 0);
+        session.agent.follow_up(session_message_from_value(serde_json::json!({"role":"user","content":"queued","timestamp":0})).expect("queued message"));
+        let generation = session.user_abort_generation.load(Ordering::SeqCst);
+        let admission = session.prompt_admission.lock().await;
+        let continuation = session.continue_session_internal(Some(generation));
+        tokio::pin!(continuation);
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(continuation.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        }).await;
+        session.abort().await;
+        drop(admission);
+        continuation.await.expect("suppressed continuation");
+        assert!(session.state().user_aborted);
+        assert!(session.agent.has_queued_messages());
+        assert!(session.messages().is_empty());
+        assert!(!session.work_barrier.has_active_work());
     }
 
     #[tokio::test]
