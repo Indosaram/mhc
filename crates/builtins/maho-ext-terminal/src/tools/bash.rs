@@ -95,6 +95,13 @@ mod tests {
         fn goal_store_file(&self)->Option<&std::path::Path> {Some(std::path::Path::new("/tmp/goal.json"))}
     }
     #[tokio::test]
+    async fn huge_foreground_output_has_model_only_truncation_notice() {
+        let manager=Arc::new(Mutex::new(TerminalManager::default()));
+        let result=execute_bash(manager.clone(),ToolCall {id:"huge",params:json!({"command":"printf '%0204800d' 0","timeout":5}),signal:Default::default(),on_update:None,context:None}).await.unwrap();
+        assert!(result.content.iter().map(|part|part.text.len()).sum::<usize>()<crate::output_format::TERMINAL_TOOL_MAX_BYTES*2);
+        let marker=result.content.last().unwrap();assert_eq!(marker.audience,Some(maho_ai::types::TextAudience::Model));assert!(marker.text.contains("earlier output dropped"));assert!(!result.content.iter().filter(|part|part.audience.is_none()).any(|part|part.text.contains("earlier output dropped")));manager.lock().unwrap().teardown().unwrap();
+    }
+    #[tokio::test]
     async fn subscribed_progress_reports_output_before_child_is_released() {
         let manager=Arc::new(Mutex::new(TerminalManager::default()));let running=manager.clone();
         let (sender,mut updates)=tokio::sync::mpsc::unbounded_channel();
