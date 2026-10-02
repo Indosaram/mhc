@@ -2372,6 +2372,16 @@ dependencies = [
 [[package]]
 name = "maho-ext-pi-goal"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "maho-ext-api",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "maho-ext-pi-nested-agents-md"
@@ -2387,14 +2397,54 @@ dependencies = [
 [[package]]
 name = "maho-ext-pi-rules"
 version = "0.0.0"
+dependencies = [
+ "dirs",
+ "fancy-regex",
+ "globset",
+ "icu_collator",
+ "maho-ext-api",
+ "maho-interactive",
+ "maho-tui",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-pi-webfetch"
 version = "0.0.0"
+dependencies = [
+ "dom_query",
+ "hyper",
+ "maho-ai",
+ "reqwest 0.12.28",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "url",
+]
 
 [[package]]
 name = "maho-ext-pi-websearch"
 version = "0.0.0"
+dependencies = [
+ "dirs",
+ "maho-ai",
+ "maho-ext-api",
+ "maho-interactive",
+ "maho-tui",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "url",
+]
 
 [[package]]
 name = "maho-ext-prompt-preset"
@@ -4779,6 +4829,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]
