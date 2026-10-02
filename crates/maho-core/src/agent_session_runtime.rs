@@ -281,6 +281,10 @@ impl AgentSessionRuntime {
         let (system_prompt, append_system_prompt) = self.session.system_prompt_sources();
         let context = manager.build_context(manager.leaf_id());
         let restored_model = context.model.as_ref().and_then(|(provider, id)| self.services.model_registry.find(provider, id));
+        let launch_model = self.launch_profile.as_ref().and_then(|profile| profile.creation_model.as_ref())
+            .and_then(|(provider, id)| self.services.model_registry.find(provider, id));
+        let launch_thinking = self.launch_profile.as_ref().and_then(|profile| profile.initial_thinking_level.as_deref())
+            .and_then(maho_ai::types::ModelThinkingLevel::parse);
         let thinking_selection = if manager.branch(manager.leaf_id()).iter().any(|entry| entry["type"] == "thinking_level_change") {
             None
         } else { self.session.thinking_selection() };
@@ -288,11 +292,15 @@ impl AgentSessionRuntime {
             system_prompt, append_system_prompt,
             cwd: Some(cwd.clone()), agent_dir: Some(self.services.agent_dir.clone()),
             model_runtime: Some(self.services.model_runtime().clone()), model_registry: Some(self.services.model_registry.clone()),
-            model: restored_model.or_else(|| Some(self.session.model())), thinking_selection,
+            model: launch_model.or(restored_model).or_else(|| Some(self.session.model())),
+            thinking_level: launch_thinking.and_then(|level| serde_json::from_value(serde_json::Value::from(level.as_str())).ok()),
+            thinking_selection: launch_thinking.map(|level| maho_ai::types::ThinkingSelection {
+                level, source: maho_ai::types::ThinkingSelectionSource::Explicit, legacy_variant_id: None,
+            }).or(thinking_selection),
             scoped_models: self.session.scoped_models(), favorite_models: self.session.favorite_models(),
             session_manager: Some(manager), settings_manager: Some(settings), tools: Some(self.session.get_active_tool_names()),
             custom_tools: self.session.replacement_custom_tools(),
-            auto_title_sessions: Some(self.session.replacement_auto_title()),
+            auto_title_sessions: self.launch_profile.as_ref().and_then(|profile| profile.auto_title).or(Some(self.session.replacement_auto_title())),
             session_start_event: Some(maho_ext_api::SessionStartEvent { reason, initial_model_provenance: None,
                 previous_session_file: self.session.session_file() }), ..Default::default()
         };
@@ -448,10 +456,19 @@ mod tests {
         let mut target = crate::session_manager::SessionManager::in_memory(&cwd, None, None);
         target.append_model_change("faux", "saved", None, None);
         target.append_thinking_level_change("high", Some(serde_json::json!({"level":"high","source":"explicit"})));
-        runtime.apply_replacement(target, cwd, maho_ext_api::SessionReason::Resume).await.expect("replacement");
+        runtime.apply_replacement(target, cwd.clone(), maho_ext_api::SessionReason::Resume).await.expect("replacement");
         assert_eq!(runtime.session().model().id, "saved");
         assert_eq!(runtime.session().thinking_level(), maho_ai::types::ModelThinkingLevel::High);
         assert_eq!(runtime.session().thinking_selection().expect("selection").level, maho_ai::types::ModelThinkingLevel::High);
+        runtime.launch_profile = Some(AgentSessionLaunchProfile { cwd: cwd.clone(), creation_model: Some(("faux".to_owned(), "original".to_owned())),
+            initial_thinking_level: Some("off".to_owned()), auto_title: Some(false), ..Default::default() });
+        let mut target = crate::session_manager::SessionManager::in_memory(&cwd, None, None);
+        target.append_model_change("faux", "saved", None, None);
+        target.append_thinking_level_change("high", Some(serde_json::json!({"level":"high","source":"explicit"})));
+        runtime.apply_replacement(target, cwd, maho_ext_api::SessionReason::Resume).await.expect("launch replacement");
+        assert_eq!(runtime.session().model().id, "original");
+        assert_eq!(runtime.session().thinking_level(), maho_ai::types::ModelThinkingLevel::Off);
+        assert!(!runtime.session().replacement_auto_title());
     }
 
     #[tokio::test]

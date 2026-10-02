@@ -72,7 +72,8 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         .or_else(|| settings.get_string("defaultProvider").zip(settings.get_string("defaultModel")).and_then(|(provider,id)| registry.find(&provider,&id)))
         .or_else(|| registry.get_available().into_iter().next()).ok_or("No model available")?;
     let has_thinking_entry = manager.branch(manager.leaf_id()).iter().any(|entry| entry["type"] == "thinking_level_change");
-    let requested_thinking = options.thinking_level.map(ModelThinkingLevel::from).or_else(||
+    let requested_thinking = options.thinking_level.map(ModelThinkingLevel::from)
+        .or_else(|| options.thinking_selection.as_ref().map(|selection| selection.level)).or_else(||
         has_thinking_entry.then(|| ModelThinkingLevel::parse(&context.thinking_level)).flatten());
     let thinking_level = match requested_thinking {
         Some(ModelThinkingLevel::Off) => ModelThinkingLevel::Off,
