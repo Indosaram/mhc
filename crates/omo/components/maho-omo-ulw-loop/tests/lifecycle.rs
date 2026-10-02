@@ -1,6 +1,7 @@
 mod support;
 use std::sync::{Arc,Mutex};
 use maho_ext_api::*;
+#[tokio::test] async fn spawn_failure_does_not_transform_or_inject() {let mut api=ExtensionApi::new(LoadedExtension::new("loop","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());maho_omo_ulw_loop::index::UlwLoopComponent{bin:Some("/nonexistent-maho-test-toolkit".into()),js_runtime:"bun".into()}.register(&mut api);let mut event=ExtensionEvent::Input(InputEvent{input_id:"id".into(),text:"continue".into(),images:None,source:InputSource::Interactive,streaming_behavior:Some(StreamingBehavior::Steer)});assert!(matches!(api.registered.handlers[&EventKind::Input][0](&mut event,&support::context()).await.expect("dispatch"),EventResult::Input(InputEventResult::Continue)));let mut event=ExtensionEvent::AgentEnd{messages:vec![],aborted:Some(false),abort_source:None,will_retry:Some(false)};assert!(matches!(api.registered.handlers[&EventKind::AgentEnd][0](&mut event,&support::context()).await.expect("dispatch"),EventResult::None));}
 #[derive(Default)] struct Actions(Mutex<Vec<(CustomMessage,SendMessageOptions)>>);
 impl ExtensionActions for Actions {
  fn send_message(&self,m:CustomMessage,o:SendMessageOptions)->Result<(),ExtensionFailure>{self.0.lock().expect("messages").push((m,o));Ok(())}
