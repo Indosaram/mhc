@@ -1,6 +1,12 @@
 use crate::{todo_types::{TodoPhase,TodoStatus,TodoItem,DEFAULT_INIT_PHASE},markdown::phases_to_markdown};
 use crate::{todo_types::{TodoOperation,TodoOpEntry},todo_operations::apply_ops_to_phases};
 pub struct TodoCommandMutation { pub phases:Vec<TodoPhase>,pub action:String,pub notification:String,pub removed:bool }
+pub fn commit_command_mutation(ctx:&dyn maho_tools::definition::ToolContext,mutation:&TodoCommandMutation,actions:&dyn maho_ext_api::ExtensionActions,accessors:&dyn crate::tools_todo::TodoAccessors)->Result<(),maho_ext_api::ExtensionFailure> {
+    accessors.set_current_phases(mutation.phases.clone());
+    actions.append_entry(crate::todo_types::TODO_STATE_ENTRY_TYPE,Some(serde_json::json!({"schema":"v2","phases":mutation.phases,"source":"user","action":mutation.action})))?;
+    accessors.sync_widget(ctx,&[])?;
+    actions.send_message(maho_ext_api::CustomMessage{custom_type:"todotools.user-edit".into(),content:vec![maho_ext_api::ToolContent::text(build_user_edit_reminder(&mutation.action,&mutation.phases,mutation.removed))],display:false,details:None},maho_ext_api::SendMessageOptions{trigger_turn:false,deliver_as:Some(maho_ext_api::DeliverAs::NextTurn)})
+}
 pub async fn edit_in_overlay(phases:&[TodoPhase],ctx:&maho_ext_api::ExtensionContext)->Result<Option<TodoCommandMutation>,maho_ext_api::ExtensionFailure> {
     let initial=if phases.is_empty() { format!("# {DEFAULT_INIT_PHASE}\n- [ ] (replace this with your tasks)\n") } else { phases_to_markdown(phases) };
     let edited=ctx.ui.editor("Edit todos (Markdown checklist)",Some(&initial)).await?;

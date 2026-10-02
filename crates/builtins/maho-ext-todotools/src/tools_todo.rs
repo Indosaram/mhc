@@ -95,7 +95,7 @@ mod tests {
         fn sync_widget(&self,_ctx:&dyn maho_tools::definition::ToolContext,_completed:&[crate::todo_types::TodoCompletionTransition])->Result<(),maho_ext_api::ExtensionFailure> { self.events.lock().unwrap().push("widget"); Ok(()) }
     }
     impl maho_ext_api::ExtensionActions for ExecutionFixture {
-        fn send_message(&self,_message:maho_ext_api::CustomMessage,_options:maho_ext_api::SendMessageOptions)->Result<(),maho_ext_api::ExtensionFailure> { panic!("not used") }
+        fn send_message(&self,message:maho_ext_api::CustomMessage,options:maho_ext_api::SendMessageOptions)->Result<(),maho_ext_api::ExtensionFailure> { assert_eq!(message.custom_type,"todotools.user-edit"); assert!(!message.display); assert!(!options.trigger_turn); assert_eq!(options.deliver_as,Some(maho_ext_api::DeliverAs::NextTurn)); self.events.lock().unwrap().push("message"); Ok(()) }
         fn send_user_message(&self,_content:maho_ext_api::UserMessageContent,_options:maho_ext_api::SendUserMessageOptions)->Result<(),maho_ext_api::ExtensionFailure> { panic!("not used") }
         fn append_entry(&self,kind:&str,data:Option<serde_json::Value>)->Result<(),maho_ext_api::ExtensionFailure> { assert_eq!(kind,crate::todo_types::TODO_STATE_ENTRY_TYPE); if self.fail_append { return Err(maho_ext_api::ExtensionFailure::new("append failed")); } self.events.lock().unwrap().push("append"); self.entries.lock().unwrap().push(data.unwrap()); Ok(()) }
         fn get_all_tools(&self)->Result<Vec<maho_ext_api::ToolInfo>,maho_ext_api::ExtensionFailure> { panic!("not used") }
@@ -111,6 +111,16 @@ mod tests {
         fn thinking_level(&self)->Option<maho_ext_api::ThinkingLevel> { None }
         fn session_manager(&self)->&dyn maho_ext_api::ToolSessionManager { self }
         fn goal_store_file(&self)->Option<&std::path::Path> { None }
+    }
+    #[test] fn command_commit_sets_state_before_persistence_and_hidden_reminder() {
+        let fixture=ExecutionFixture::default(); let mutation=crate::commands::status_command(&[],"",crate::todo_types::TodoOperation::Rm).unwrap();
+        crate::commands::commit_command_mutation(&Context{persisted:true},&mutation,&fixture,&fixture).unwrap();
+        assert_eq!(*fixture.events.lock().unwrap(),["set","append","widget","message"]);
+        assert_eq!(fixture.entries.lock().unwrap()[0]["source"],"user");
+        assert_eq!(fixture.entries.lock().unwrap()[0]["action"],"/todo rm (all)");
+        let failed=ExecutionFixture{fail_append:true,..Default::default()};
+        assert!(crate::commands::commit_command_mutation(&Context{persisted:true},&mutation,&failed,&failed).is_err());
+        assert_eq!(*failed.events.lock().unwrap(),["set"]);
     }
     #[tokio::test] async fn native_execution_persists_before_state_and_widget() {
         let fixture=std::sync::Arc::new(ExecutionFixture::default()); let tool=create_todo_tool(fixture.clone(),fixture.clone());
