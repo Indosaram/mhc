@@ -6,9 +6,10 @@ pub const DEFAULT_TIMEOUT_SECONDS:u64=30;
 pub const MAX_TIMEOUT_SECONDS:u64=120;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum WebfetchFormat { Markdown,Text,Html }
+pub type FetchProgressCallback<'a>=dyn Fn(usize,Option<usize>)->Result<(),WebfetchError>+Send+Sync+'a;
 pub struct FetchOptions<'a> {
     pub url:&'a str,pub format:WebfetchFormat,pub timeout_seconds:Option<f64>,pub signal:Option<&'a AbortSignal>,
-    pub on_progress:Option<&'a (dyn Fn(usize,Option<usize>)+Send+Sync)>,
+    pub on_progress:Option<&'a FetchProgressCallback<'a>>,
 }
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct FetchResult { pub url:String,pub status:u16,pub status_text:String,pub content_type:String,pub bytes:usize,pub body:Vec<u8>,pub truncated:bool }
@@ -67,7 +68,7 @@ pub async fn fetch_url(options:FetchOptions<'_>)->Result<FetchResult,WebfetchErr
                 let chunk=chunk.map_err(transport_error)?;
                 if body.len()+chunk.len()>MAX_RESPONSE_SIZE_BYTES { return Err(WebfetchError::ResponseTooLarge("Response too large (exceeds 5MB limit)".into())); }
                 body.extend_from_slice(&chunk);
-                if let Some(progress)=options.on_progress { progress(body.len(),length); }
+                if let Some(progress)=options.on_progress { progress(body.len(),length)?; }
             }
             return Ok(FetchResult{url:current,status:status.as_u16(),status_text:status.canonical_reason().unwrap_or("").into(),content_type,bytes:body.len(),truncated:body.len()==MAX_RESPONSE_SIZE_BYTES,body});
         }

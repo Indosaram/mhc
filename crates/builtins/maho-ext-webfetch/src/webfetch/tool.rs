@@ -23,8 +23,56 @@ pub fn cap_webfetch_output(text:&str)->WebfetchOutputCap {
     let notice=format!("[Output truncated: {} of {} shown ({} limit). Re-fetch a more specific URL or use web_search for targeted content.]",format_byte_size(output_bytes),format_byte_size(total_bytes),format_byte_size(DEFAULT_OUTPUT_MAX_BYTES));
     WebfetchOutputCap{text:head,notice:Some(notice),truncated:true,output_bytes,total_bytes}
 }
+pub fn create_webfetch_tool()->maho_tools::definition::ToolDefinition {
+    use maho_tools::definition::{ToolDefinition,ToolResult,ToolContent,ToolError};
+    use serde_json::json;
+    use std::sync::{Arc,Mutex};
+    let mut tool=ToolDefinition::new("webfetch","Fetches content from a URL and returns it as markdown, plain text, or HTML. Network use is bounded by timeout and response size limits.",parameters(),Arc::new(|call|Box::pin(async move {
+        let url=call.params["url"].as_str().ok_or_else(||ToolError::Message("url is required".into()))?;
+        let format=parse_webfetch_format(call.params["format"].as_str()); let format_name=match format { WebfetchFormat::Markdown=>"markdown",WebfetchFormat::Text=>"text",WebfetchFormat::Html=>"html" };
+        let timeout=super::fetcher::clamp_timeout(call.params["timeout"].as_f64());
+        let started=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error|ToolError::Message(error.to_string()))?.as_millis();
+        let progress=json!({"activity":format!("fetching {url}"),"startedAt":started,"maxWaitMs":timeout*1000});
+        let emit=|phase:&str,bytes:Option<usize>,total:Option<usize>| {
+            if let Some(update)=&call.on_update {
+                let mut details=json!({"phase":phase,"url":url,"format":format_name,"timeoutSeconds":timeout,"progress":progress});
+                if let Some(bytes)=bytes { details["bytesRead"]=json!(bytes); }
+                if let Some(total)=total { details["totalBytes"]=json!(total); }
+                update(ToolResult{content:vec![ToolContent::text(format!("Fetching {url} as {format_name} (timeout {timeout}s)"))],details:Some(details)})?;
+            } Ok::<_,ToolError>(())
+        };
+        emit("fetching",None,None)?;
+        let downloaded=Mutex::new(None);
+        let on_progress=|bytes,total| {
+            *downloaded.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=total;
+            emit("downloading",Some(bytes),total).map_err(|error|super::errors::WebfetchError::Abort(error.to_string()))
+        };
+        let fetched=super::fetcher::fetch_url(super::fetcher::FetchOptions{url,format,timeout_seconds:Some(timeout as f64),signal:Some(&call.signal),on_progress:Some(&on_progress)}).await.map_err(|error|ToolError::Message(error.to_string()))?;
+        emit("converting",Some(fetched.bytes),downloaded.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner))?;
+        if requires_html_conversion(&fetched.content_type,format) { return Err(ToolError::Message("HTML conversion requires source-equivalent DOM, Readability and Turndown bindings".into())); }
+        let raw=String::from_utf8_lossy(&fetched.body); let raw=raw.strip_prefix('\u{feff}').unwrap_or(&raw); let capped=cap_webfetch_output(raw);
+        let details=json!({"url":url,"finalUrl":fetched.url,"format":format_name,"status":fetched.status,"statusText":fetched.status_text,"contentType":fetched.content_type,"bytes":fetched.bytes,"timeoutSeconds":timeout,"converted":false,"truncated":fetched.truncated,"outputTruncated":capped.truncated,"outputBytes":capped.output_bytes,"outputTotalBytes":capped.total_bytes});
+        let mut content=vec![ToolContent::text(if capped.notice.is_some() { format!("{}\n",capped.text) } else { capped.text })];
+        if let Some(notice)=capped.notice { content.push(ToolContent::Text{text:notice,audience:Some("model".into())}); }
+        Ok(ToolResult{content,details:Some(details)})
+    })));
+    tool.label="Web Fetch".into(); tool.prompt_snippet=Some("webfetch: retrieve URL content as markdown, text, or html".into());
+    tool.prompt_guidelines=Some(vec!["Use webfetch when a specific URL must be retrieved.".into(),"Prefer markdown format unless raw HTML or plain text is explicitly needed.".into(),"The tool is read-only and does not modify files.".into()]); tool
+}
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn native_executor_fetches_text_and_emits_progress_metadata() {
+        use tokio::io::{AsyncReadExt,AsyncWriteExt};
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(); let url=format!("http://{}/",listener.local_addr().unwrap());
+        let server=async { let (mut socket,_)=listener.accept().await.unwrap(); let mut buffer=[0;4096]; assert!(socket.read(&mut buffer).await.unwrap()>0); socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello").await.unwrap(); };
+        let updates=std::sync::Arc::new(std::sync::Mutex::new(Vec::new())); let capture=updates.clone();
+        let client=async {
+            let result=(create_webfetch_tool().execute)(maho_tools::definition::ToolCall{id:"fetch",params:serde_json::json!({"url":url}),signal:Default::default(),context:None,on_update:Some(std::sync::Arc::new(move |update| { capture.lock().unwrap().push(update); Ok(()) }))}).await.unwrap();
+            assert_eq!(result.content,[maho_tools::definition::ToolContent::text("hello")]); let details=result.details.unwrap(); assert_eq!(details["status"],200); assert_eq!(details["outputBytes"],5); assert_eq!(details["converted"],false);
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5),async { tokio::join!(server,client); }).await.unwrap();
+        let updates=updates.lock().unwrap(); assert_eq!(updates.first().unwrap().details.as_ref().unwrap()["phase"],"fetching"); assert!(updates.iter().any(|update|update.details.as_ref().unwrap()["phase"]=="downloading")); assert_eq!(updates.last().unwrap().details.as_ref().unwrap()["phase"],"converting");
+    }
     #[test] fn only_html_text_and_markdown_require_conversion() { assert!(requires_html_conversion("Text/HTML; charset=utf-8",WebfetchFormat::Markdown)); assert!(requires_html_conversion("application/xhtml+xml",WebfetchFormat::Text)); assert!(!requires_html_conversion("text/html",WebfetchFormat::Html)); assert!(!requires_html_conversion("application/json",WebfetchFormat::Markdown)); }
     #[test] fn small_output_is_unchanged() { assert_eq!(cap_webfetch_output("hello"),WebfetchOutputCap{text:"hello".into(),notice:None,truncated:false,output_bytes:5,total_bytes:5}); }
     #[test] fn whole_lines_are_kept() { let input=format!("first\n{}", "x".repeat(DEFAULT_OUTPUT_MAX_BYTES)); let result=cap_webfetch_output(&input); assert_eq!(result.text,"first"); assert_eq!(result.output_bytes,5); assert!(result.truncated); }
