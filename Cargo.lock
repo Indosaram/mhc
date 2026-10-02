@@ -1520,6 +1520,9 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tree-sitter",
+ "tree-sitter-typescript",
+ "url",
  "uuid",
 ]
 

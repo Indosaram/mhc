@@ -5,13 +5,16 @@ use crate::kernels::shared::subprocess_kernel::SubprocessKernel;
 use crate::kernels::shared::subprocess_process::ProcessError;
 use serde_json::Value;
 use std::path::Path;
+use super::local_module_loader::{LocalModuleLoader, LocalModuleLoaderOptions, PREPARED_CELL_PREFIX};
 
 pub struct JavaScriptKernel {
     kernel: SubprocessKernel,
+    loader: LocalModuleLoader,
 }
 
 impl JavaScriptKernel {
     pub async fn start(cwd: &Path, session_id: &str, parallel_pool_width: u64, session_env: Option<SessionEnvironment>) -> Result<Self, ProcessError> {
+        let loader = LocalModuleLoader::new(&LocalModuleLoaderOptions { cwd:cwd.into(),local_roots:None,artifacts_dir:None })?;
         let worker = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/js/worker-entry.js");
         let relay = format!(
             "import {{ Worker }} from 'node:worker_threads'; import {{ createInterface }} from 'node:readline'; const worker = new Worker({}, {{ workerData: {{ cwd: {}, parallelPoolWidth: {} }} }}); worker.on('message', message => process.stdout.write(JSON.stringify(message)+'\\n')); worker.on('error', error => {{ process.stdout.write(JSON.stringify({{type:'init-failed',error:{{message:error.message}}}})+'\\n'); process.exitCode=1; }}); worker.on('exit', code => process.exit(code)); const input=createInterface({{input:process.stdin}}); input.on('line', line => worker.postMessage(JSON.parse(line))); input.on('close', () => worker.terminate());",
@@ -23,10 +26,11 @@ impl JavaScriptKernel {
                 port: 1, token: "worker-transport".into(), local_roots: None, artifacts_dir: None, parallel_pool_width: Some(parallel_pool_width),
             },
         }).await?;
-        Ok(Self { kernel })
+        Ok(Self { kernel, loader })
     }
 
-    pub async fn run(&mut self, input: KernelRunInput, on_message: impl FnMut(&Value)) -> Result<Value, ProcessError> {
+    pub async fn run(&mut self, mut input: KernelRunInput, on_message: impl FnMut(&Value)) -> Result<Value, ProcessError> {
+        if !input.code.starts_with(PREPARED_CELL_PREFIX) { input.code = self.loader.prepare_cell(&input.code); }
         self.kernel.run(input, on_message).await
     }
     pub async fn reset(&mut self) -> Result<(), ProcessError> { self.kernel.reset().await }
