@@ -17,7 +17,21 @@ pub async fn signal_process(pid: u32, signal: &str) -> bool {
 }
 
 async fn ps(args: &[&str]) -> String {
-    tokio::process::Command::new("ps").args(args).output().await.map_or_else(|_|String::new(), |output|String::from_utf8_lossy(&output.stdout).into_owned())
+    bounded_process_output(tokio::process::Command::new("ps").args(args),16*1024*1024).await
+}
+
+async fn bounded_process_output(command: &mut tokio::process::Command, max_bytes: u64) -> String {
+    use tokio::io::AsyncReadExt;
+    let Ok(mut child)=command.stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true).spawn() else {return String::new();};
+    let Some(stdout)=child.stdout.take() else {return String::new();};
+    let mut output=Vec::new();
+    if let Err(error)=AsyncReadExt::take(stdout,max_bytes+1).read_to_end(&mut output).await {eprintln!("process table output read failed: {error}");}
+    if output.len() as u64>max_bytes {
+        output.truncate(max_bytes as usize);
+        if let Err(error)=child.start_kill() {eprintln!("process table capture retirement failed: {error}");}
+    }
+    if let Err(error)=child.wait().await {eprintln!("process table capture wait failed: {error}");}
+    String::from_utf8_lossy(&output).into_owned()
 }
 
 pub async fn read_process_table() -> HashMap<u32, Vec<u32>> {
@@ -93,4 +107,19 @@ pub async fn terminate_process_trees(roots: &[u32], options: TerminateProcessTre
     let survivors = wait_for_exit(&targets, options.grace_ms).await;
     for pid in &survivors { signal_process(*pid, "-KILL").await; }
     if !survivors.is_empty() { wait_for_exit(&survivors, options.kill_wait_ms.unwrap_or(options.grace_ms)).await; }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn process_output_is_bounded_and_preserves_nonzero_partial_output() {
+        let mut command=tokio::process::Command::new("sh");
+        command.args(["-c","printf 123456789"]);
+        assert_eq!(bounded_process_output(&mut command,8).await,"12345678");
+        let mut command=tokio::process::Command::new("sh");
+        command.args(["-c","printf '42 1'; exit 1"]);
+        assert_eq!(bounded_process_output(&mut command,8).await,"42 1");
+    }
 }
