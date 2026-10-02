@@ -36,6 +36,10 @@ mod support;
 #[test] fn expanded_plan_skill_records_human_choice() { let tracker = SkillInvocationTracker::new().unwrap(); tracker.input("a","<skill name=\"ulw-plan\">documentation</skill>",InputSource::Rpc); assert!(tracker.state_for("a").has_user_requested("ulw-plan")); }
 #[test] fn own_words_plan_requests_arm_requires_channel_only() { for text in ["write a plan first", "plan this before coding", "before you implement make a plan", "plan this out first", "계획부터 세워줘", "우선 계획을 수립해"] { let tracker = SkillInvocationTracker::new().unwrap(); tracker.input("a",text,InputSource::Interactive); assert!(tracker.state_for("a").has_user_requested("ulw-plan"),"{text}"); assert!(!tracker.state_for("a").has_invoked("ulw-plan")); } }
 #[test] fn ordinary_work_requests_do_not_arm_gate() { let tracker = SkillInvocationTracker::new().unwrap(); tracker.input("a","fix the login bug",InputSource::Interactive); assert!(!tracker.state_for("a").has_user_requested("ulw-plan")); }
+#[test] fn request_tokens_use_javascript_ascii_word_boundaries() {
+    for text in ["한ulw-plan","ulw-plan한","한make a plan first"] { let tracker=SkillInvocationTracker::new().expect("tracker"); tracker.input("a",text,InputSource::Interactive); assert!(tracker.state_for("a").has_user_requested("ulw-plan"),"{text}"); }
+    for text in ["xulw-plan","ulw-planx"] { let tracker=SkillInvocationTracker::new().expect("tracker"); tracker.input("a",text,InputSource::Interactive); assert!(!tracker.state_for("a").has_user_requested("ulw-plan")); }
+}
 #[test] fn remaining_upstream_own_words_requests_arm_request_without_invocation() {
     for text in ["make a plan first","작업 계획을 먼저 세우자","before you code, write a work plan","계획 작성해줘"] { let tracker=SkillInvocationTracker::new().expect("tracker"); tracker.input("a",text,InputSource::Interactive); let state=tracker.state_for("a"); assert!(state.has_user_requested("ulw-plan"),"{text}"); assert!(!state.has_invoked("ulw-plan")); }
 }
