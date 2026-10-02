@@ -411,6 +411,7 @@ struct AgentSessionState {
     bash_abort_signals: BTreeMap<String, maho_ext_api::AbortSignal>,
     pending_bash_messages: Vec<maho_agent::harness::messages::BashExecutionMessage>,
     pending_next_turn_messages: Vec<AgentMessage>,
+    pending_custom_messages: Vec<maho_agent::harness::messages::CustomMessage>,
     extension_event_signal: Option<maho_ext_api::AbortSignal>,
     compaction_extension_signal: Option<maho_ext_api::AbortSignal>,
     branch_summary_abort_controller: Option<maho_ai::utils::abort::AbortController>,
@@ -786,8 +787,10 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
             session.state().pending_next_turn_messages.push(agent_message);
             return Ok(());
         }
-        if session.is_streaming() {
+        if session.is_streaming() && options.trigger_turn {
             match options.deliver_as { Some(maho_ext_api::DeliverAs::FollowUp) => session.agent.follow_up(agent_message), _ => session.agent.steer(agent_message) }
+        } else if session.is_streaming() {
+            session.state().pending_custom_messages.push(custom);
         } else {
             let content = serde_json::to_value(message.content).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
             session.with_session_manager_mut(|manager| manager.append_custom_message(&custom.custom_type,
@@ -1174,6 +1177,7 @@ impl AgentSession {
             bash_abort_signals: BTreeMap::new(),
             pending_bash_messages: Vec::new(),
             pending_next_turn_messages: Vec::new(),
+            pending_custom_messages: Vec::new(),
             extension_event_signal: None,
             compaction_extension_signal: None,
             branch_summary_abort_controller: None,
@@ -1392,6 +1396,20 @@ impl AgentSession {
         }
         if matches!(event, AgentEvent::TurnEnd { .. }) {
             self.state().turn_index += 1;
+            let pending = std::mem::take(&mut self.state().pending_custom_messages);
+            for custom in pending {
+                let message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(custom.clone()));
+                let mut messages = self.messages();
+                messages.push(message.clone());
+                self.agent.set_messages(messages);
+                let content = serde_json::to_value(&custom.content).expect("custom content serializes");
+                let entry = self.with_session_manager_mut(|manager| manager.append_custom_message(
+                    &custom.custom_type, content, custom.display, custom.details));
+                if let Some(id) = entry.get("id").and_then(Value::as_str) { self.emit_entry_appended(id); }
+                self.state().message_revision += 1;
+                self.emit(AgentSessionEvent::Agent(AgentEvent::MessageStart { message: message.clone() }));
+                self.emit(AgentSessionEvent::Agent(AgentEvent::MessageEnd { message }));
+            }
         }
         self.emit(AgentSessionEvent::Agent(event.clone()));
         if end_boundary.is_some() { self.emit_late_user_abort().await; }
@@ -6243,6 +6261,33 @@ mod tests {
         let cleared = session.clear_queue(false);
         assert_eq!(cleared.steering, ["late steering ".repeat(200)]);
         assert_eq!(cleared.follow_up, ["late followup"]);
+    }
+
+    #[tokio::test]
+    async fn non_triggering_custom_message_waits_for_streaming_turn_end() {
+        let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("finished", Default::default())], 0);
+        let captured = session.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:quiet-custom>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::MessageStart, vec![Arc::new(move |event, _| {
+            if let maho_ext_api::ExtensionEvent::MessageStart { message } = event
+                && message.role() == "user"
+            {
+                assert!(captured.is_streaming());
+                maho_ext_api::ExtensionActions::send_message(&SessionExtensionActions(Arc::downgrade(&captured.inner)), maho_ext_api::CustomMessage {
+                    custom_type: "quiet-notice".to_owned(), content: vec![maho_tools::definition::ToolContent::text("notice")],
+                    display: true, details: None,
+                }, maho_ext_api::SendMessageOptions { trigger_turn: false, deliver_as: None }).expect("non-triggering message");
+                assert!(!captured.agent.has_queued_messages());
+                assert!(!captured.messages().iter().any(|message| message.role() == "custom"));
+            }
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("work", Default::default())).await.expect("bounded prompt").expect("prompt");
+        assert_eq!(session.messages().iter().filter(|message| message.role() == "assistant").count(), 1);
+        assert_eq!(session.messages().last().expect("notice").role(), "custom");
+        assert_eq!(session.with_session_manager(|manager| manager.entries()).iter().filter(|entry| entry["customType"] == "quiet-notice").count(), 1);
+        assert!(session.state().pending_custom_messages.is_empty());
     }
 
     #[tokio::test]
