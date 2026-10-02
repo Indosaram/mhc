@@ -1,5 +1,10 @@
 use std::{collections::BTreeMap,io::Read,path::Path};
 pub const OBSERVED_MODEL_FLOORS:[(&str,&str);2]=[("claude-fable-5-1","2.1.251"),("claude-opus-5-5","2.1.280")];
+#[derive(Debug,PartialEq,Eq)]
+pub struct BundledClaudeCodeBinary {pub path:std::path::PathBuf,pub claude_code_version:Option<String>}
+pub fn bundled_claude_code_binary(platform:&str,arch:&str,prefer_musl:bool,resolve:impl Fn(&str)->Option<std::path::PathBuf>,manifest:&Path)->Option<BundledClaudeCodeBinary> {
+    crate::executable::candidates(platform,arch,prefer_musl).into_iter().filter_map(|candidate|resolve(&candidate)).find(|path|path.is_file()).map(|path|BundledClaudeCodeBinary {path,claude_code_version:crate::executable_version::bundled_version(manifest)})
+}
 const CHUNK_BYTES:usize=8*1024*1024;
 fn id_byte(byte:Option<&u8>)->bool {byte.is_some_and(|b|b.is_ascii_alphanumeric()||[b'.',b'_',b'-'].contains(b))}
 fn contains_token(chunk:&[u8],needle:&[u8])->bool {
@@ -16,6 +21,14 @@ pub fn binary_embeds_tokens(path:&Path,tokens:&[String])->std::io::Result<BTreeM
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bundled_support_uses_platform_sidecar_not_path_or_override() {
+        let directory=tempfile::tempdir().expect("directory");let binary=directory.path().join("bundled");std::fs::write(&binary,"").expect("binary");
+        let manifest=directory.path().join("package.json");std::fs::write(&manifest,r#"{"claudeCodeVersion":"2.1.280"}"#).expect("manifest");
+        let found=bundled_claude_code_binary("linux","x64",true,|candidate|candidate.contains("-musl/").then(||binary.clone()),&manifest).expect("bundled");
+        assert_eq!(found.path,binary);assert_eq!(found.claude_code_version.as_deref(),Some("2.1.280"));
+        assert!(bundled_claude_code_binary("win32","x64",false,|_|None,&manifest).is_none());
+    }
     #[test]
     fn whole_tokens_cross_chunk_boundary_without_matching_prefixes() {
         let file=tempfile::NamedTempFile::new().expect("file");let mut bytes=vec![b'x';CHUNK_BYTES-5];bytes.extend_from_slice(b" claude-opus-5-5\0claude-haiku-4-5-20251001\0");std::fs::write(file.path(),bytes).expect("binary");
