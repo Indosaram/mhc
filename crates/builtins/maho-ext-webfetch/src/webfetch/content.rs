@@ -111,6 +111,15 @@ pub fn reader_next_node(mut node:dom_query::NodeRef<'_>,ignore_children:bool)->O
         node=node.parent()?;
     }
 }
+pub fn reader_text_similarity(title:&str,heading:&str)->f64 {
+    let tokens=|text:&str|text.to_lowercase().split(|character:char|!(character.is_ascii_alphanumeric()||character=='_')).filter(|token|!token.is_empty()).map(str::to_owned).collect::<Vec<_>>();
+    let title=tokens(title);let heading=tokens(heading);if title.is_empty()||heading.is_empty() {return 0.;}
+    let unique:Vec<_>=heading.iter().filter(|token|!title.contains(token)).cloned().collect();
+    1.-unique.join(" ").len() as f64/heading.join(" ").len() as f64
+}
+pub fn reader_header_duplicates_title(node:&dom_query::NodeRef<'_>,title:&str)->bool {
+    matches!(node.node_name().as_deref(),Some("h1"|"h2"))&&reader_text_similarity(title,&reader_inner_text(node,false))>0.75
+}
 pub fn score_reader_candidates(elements:&[dom_query::NodeRef<'_>],weight_classes:bool)->Vec<(dom_query::NodeId,f64)> {
     let mut candidates:Vec<(dom_query::NodeRef<'_>,f64)>=Vec::new();
     for element in elements {
@@ -333,6 +342,10 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_similarity_keeps_ascii_word_and_directional_distance_semantics() {
+        assert_eq!(reader_text_similarity("same title","same title"),1.);assert_eq!(reader_text_similarity("한글","한글"),0.);assert_eq!(reader_text_similarity("a","a b"),1.-1./3.);assert_eq!(reader_text_similarity("a b","a"),1.);assert_eq!(reader_text_similarity("Title_name","title_name"),1.);
+        let document=dom_query::Document::from("<h1>same title</h1><h3>same title</h3>");assert!(reader_header_duplicates_title(&document.select("h1").nodes()[0],"same title"));assert!(!reader_header_duplicates_title(&document.select("h3").nodes()[0],"same title"));
+    }
     #[test] fn reader_depth_first_traversal_skips_text_and_survives_removal() {
         let document=dom_query::Document::from("<main id='root'>text<div id='removed'><span id='skip'>child</span></div><section id='next'><b id='last'>child</b></section></main>");let root=document.select("#root").nodes()[0];let removed=reader_next_node(root,false).unwrap();assert_eq!(removed.attr("id").as_deref(),Some("removed"));let next=reader_next_node(removed,true).unwrap();removed.remove_from_parent();assert_eq!(next.attr("id").as_deref(),Some("next"));let last=reader_next_node(next,false).unwrap();assert_eq!(last.attr("id").as_deref(),Some("last"));assert!(reader_next_node(last,false).is_none());
     }
