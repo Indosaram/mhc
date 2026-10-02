@@ -2737,6 +2737,12 @@ impl AgentSession {
         self.rebuild_session_context()?;
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionTree { new_leaf_id: self.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)),
             old_leaf_id: old_leaf, summary_entry: summary_entry.clone().map(session_entry_from_value), from_extension: Some(from_extension) }).await;
+        if options.intent == Some(TreeNavigationIntent::Resume)
+            && self.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)).as_deref() != Some(target_id)
+        {
+            self.with_session_manager_mut(|manager| manager.set_leaf(Some(target_id)));
+            self.rebuild_session_context()?;
+        }
         Ok(AssistantEditResult { editor_text, summary_entry, entry_id: replacement_entry.as_ref().and_then(|entry| entry.get("id")).and_then(Value::as_str).map(str::to_owned), ..Default::default() })
         }.await;
         self.state().branch_summary_abort_controller = None;
@@ -4901,6 +4907,27 @@ mod tests {
             (maho_ext_api::EventKind::SessionStart, maho_ext_api::SessionReason::Reload),
             (maho_ext_api::EventKind::ResourcesDiscover, maho_ext_api::SessionReason::Reload),
         ]);
+    }
+
+    #[tokio::test]
+    async fn exact_tree_resume_retains_hook_metadata_off_conversation_tail() {
+        let session = test_session();
+        let root = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"root","timestamp":0})));
+        session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"branch","timestamp":1})));
+        session.rebuild_session_context().expect("context");
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:tree-metadata>", session.cwd().into(), Default::default());
+        let captured = session.clone();
+        extension.handlers.insert(maho_ext_api::EventKind::SessionTree, vec![Arc::new(move |_, _| {
+            captured.with_session_manager_mut(|manager| manager.append_custom("tree-metadata", Some(serde_json::json!({"retained":true}))));
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        session.navigate_tree(root["id"].as_str().expect("root"), TreeNavigationOptions {
+            intent: Some(TreeNavigationIntent::Resume), ..Default::default()
+        }).await.expect("resume");
+        assert_eq!(session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)), root["id"].as_str().map(str::to_owned));
+        assert_eq!(session.messages().len(), 1);
+        assert!(session.with_session_manager(|manager| manager.entries()).iter().any(|entry| entry["customType"] == "tree-metadata"));
     }
 
     #[test]
