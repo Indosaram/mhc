@@ -67,6 +67,36 @@ fn runtime_session_id_preserves_strings_and_generates_uuid_for_other_values() {
 }
 
 #[tokio::test]
+async fn runtime_preparation_loads_project_settings_applies_language_overrides_and_artifacts() {
+    use maho_codemode::{interpreters::detect::InterpreterDetector,tool::types::{EvalLanguage,EvalRuntimeInfo}};
+    let root=tempfile::tempdir().unwrap();
+    let cwd=root.path().join("project");
+    let home=root.path().join("home");
+    std::fs::create_dir_all(cwd.join(".maho")).unwrap();
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(cwd.join(".maho/codemode.json"),r#"{"languages":{"py":false,"js":false,"rb":false,"jl":false},"parallelPoolWidth":3.9}"#).unwrap();
+    let environment=std::collections::HashMap::from([("SENPI_CODEMODE_JS".into(),"true".into())]);
+    let session_file=root.path().join("session.jsonl");
+    let event=serde_json::json!({"sessionId":"runtime-session"});
+    let mut detector=InterpreterDetector::new("24.0.0".into(),false);
+    let runtime=prepare_runtime(RuntimePreparationOptions {cwd:&cwd,home_dir:&home,environment:&environment,event:&event,session_file:Some(&session_file),js_runtime:EvalRuntimeInfo{name:"bun".into(),version:"1.4.0".into(),path:Some("/usr/bin/bun".into())}},&mut detector).await.unwrap();
+    assert_eq!(runtime.session_id,"runtime-session");
+    assert_eq!(runtime.cwd,cwd);
+    assert_eq!(runtime.parallel_pool_width,3);
+    assert!(runtime.enabled_languages.js);
+    assert!(!runtime.enabled_languages.py);
+    assert!(!runtime.enabled_languages.rb);
+    assert!(!runtime.enabled_languages.jl);
+    assert!(runtime.settings.languages.js);
+    assert_eq!(runtime.artifacts.dir,root.path().join("session-artifacts"));
+    assert!(!runtime.artifacts.temp);
+    assert!(runtime.artifacts.dir.is_dir());
+    assert_eq!(runtime.runtimes.len(),1);
+    assert_eq!(runtime.runtimes[0].0,EvalLanguage::Js);
+    assert_eq!(runtime.runtimes[0].1.name,"bun");
+}
+
+#[tokio::test]
 async fn runtime_executor_keeps_active_snapshot_and_propagates_native_dispatch_errors() {
     use maho_codemode::bridges::output_bridge::OutputExecuteTool;
     let executor=RuntimeExecuteTool {api:Arc::new(api()),active_tools:vec!["task".into()]};
