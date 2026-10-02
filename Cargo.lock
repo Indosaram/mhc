@@ -1727,6 +1727,9 @@ dependencies = [
 [[package]]
 name = "maho-ext-imagegen"
 version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-look-at"
