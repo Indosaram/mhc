@@ -21,6 +21,12 @@ enum ClientTransport {
     Stdio {input:tokio::sync::Mutex<ChildStdin>,child:tokio::sync::Mutex<Child>,reader:JoinHandle<()>,stderr:JoinHandle<()>},
     Http {client:reqwest::Client,url:url::Url,headers:BTreeMap<String,String>,session:tokio::sync::RwLock<Option<String>>},
 }
+fn take_sse_line(buffer:&mut Vec<u8>,skip_lf:&mut bool)->Option<String> {
+    if *skip_lf && !buffer.is_empty(){if buffer[0]==b'\n'{buffer.remove(0);}*skip_lf=false;}
+    let end=buffer.iter().position(|byte|matches!(*byte,b'\n'|b'\r'))?;
+    *skip_lf=buffer[end]==b'\r';
+    let line=buffer.drain(..=end).collect::<Vec<_>>();Some(String::from_utf8_lossy(&line[..line.len()-1]).into_owned())
+}
 fn failure(server:&str,kind:McpErrorKind,message:impl Into<String>,phase:&str)->McpError {
     let mut error=McpError::new(kind,message);error.server_name=Some(server.into());error.phase=Some(phase.into());error
 }
@@ -125,11 +131,10 @@ impl McpClient {
             let reply=response.json::<Value>().await.map_err(|e|failure(&self.server,McpErrorKind::Protocol,e.to_string(),"request"))?;
             return self.http_reply(reply,value.get("id"));
         }
-        let mut buffer=Vec::new();let mut data=String::new();
+        let mut buffer=Vec::new();let mut data=String::new();let mut skip_lf=false;
         while let Some(chunk)=response.chunk().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"request"))? {
             buffer.extend_from_slice(&chunk);
-            while let Some(end)=buffer.iter().position(|byte|*byte==b'\n') {
-                let line=buffer.drain(..=end).collect::<Vec<_>>();let line=String::from_utf8_lossy(&line);let line=line.trim_end_matches(['\r','\n']);
+            while let Some(line)=take_sse_line(&mut buffer,&mut skip_lf) {
                 if let Some(part)=line.strip_prefix("data:"){if !data.is_empty(){data.push('\n');}data.push_str(part.strip_prefix(' ').unwrap_or(part));}
                 if line.is_empty() && !data.is_empty() {
                     let event=serde_json::from_str::<Value>(&data).map_err(|e|failure(&self.server,McpErrorKind::Protocol,e.to_string(),"request"))?;data.clear();
@@ -177,11 +182,10 @@ impl McpClient {
                     Ok(response) if response.status()==reqwest::StatusCode::METHOD_NOT_ALLOWED=>return,
                     Ok(mut response) if response.status().is_success()=>{
                         failed_attempts=0;
-                        let mut buffer=Vec::new();let mut data=String::new();
+                        let mut buffer=Vec::new();let mut data=String::new();let mut skip_lf=false;
                         while let Ok(Some(chunk))=response.chunk().await {
                             buffer.extend_from_slice(&chunk);
-                            while let Some(end)=buffer.iter().position(|byte|*byte==b'\n') {
-                                let line=buffer.drain(..=end).collect::<Vec<_>>();let line=String::from_utf8_lossy(&line);let line=line.trim_end_matches(['\r','\n']);
+                            while let Some(line)=take_sse_line(&mut buffer,&mut skip_lf) {
                                 if let Some(part)=line.strip_prefix("data:"){if !data.is_empty(){data.push('\n');}data.push_str(part.strip_prefix(' ').unwrap_or(part));}
                                 if let Some(id)=line.strip_prefix("id:"){last_event_id=Some(id.trim_start_matches(' ').to_owned());}
                                 if let Some(retry)=line.strip_prefix("retry:").and_then(|retry|retry.trim().parse::<u64>().ok()){retry_ms=retry;}

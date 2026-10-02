@@ -117,3 +117,18 @@ async fn concurrent_shutdowns_coalesce_and_wait_for_the_child() {
     let (first,second)=tokio::join!(shutdown_mcp_transport(&connection),shutdown_mcp_transport(&connection));first.unwrap();second.unwrap();
     assert!(!maho_ext_mcp::process_tree::is_process_alive(pid).await);
 }
+#[tokio::test]
+async fn http_post_sse_accepts_carriage_return_delimiters() {
+    use axum::{Router,routing::post,Json,response::IntoResponse};
+    use serde_json::{Value,json};use std::{sync::{Arc,Mutex},time::Duration};
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let address=listener.local_addr().unwrap();
+    let (stop,stopped)=tokio::sync::oneshot::channel();
+    let server=tokio::spawn(async move {axum::serve(listener,Router::new().route("/mcp",post(|Json(value):Json<Value>|async move {
+        if value.get("id").is_none(){return axum::http::StatusCode::ACCEPTED.into_response();}
+        let result=if value["method"]=="initialize" {json!({"protocolVersion":"2025-11-25","capabilities":{},"serverInfo":{"name":"cr","version":"1"}})}else{json!({"tools":[]})};
+        ([("content-type","text/event-stream")],format!("data: {}\r\r",json!({"jsonrpc":"2.0","id":value["id"],"result":result}))).into_response()
+    }))).with_graceful_shutdown(async {let _=stopped.await;}).await.unwrap();});
+    let root=tempfile::tempdir().unwrap();let client=McpClient::materialize("cr",&McpTransportSpec::Http {url:format!("http://{address}/mcp").parse().unwrap(),headers:Default::default()},Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("cr",root.path(),None).unwrap()))).await.unwrap();
+    client.initialize(Duration::from_secs(2)).await.unwrap();assert_eq!(client.request("tools/list",json!({}),Duration::from_secs(2)).await.unwrap()["tools"],json!([]));
+    client.close().await.unwrap();drop(client);stop.send(()).unwrap();tokio::time::timeout(Duration::from_secs(2),server).await.unwrap().unwrap();
+}
