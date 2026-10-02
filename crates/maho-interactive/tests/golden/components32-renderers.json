@@ -289,5 +289,190 @@
       "\u001b[38;5;244mshot.png\u001b[39m",
       "\u001b[38;5;244m[Image: [image/png]]\u001b[39m"
     ]
+  },
+  {
+    "name": "read",
+    "kind": "result",
+    "args": {
+      "file_path": "src/big.rs"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "row 1\nrow 2\nrow 3\nrow 4\nrow 5\nrow 6\nrow 7\nrow 8\nrow 9\nrow 10\nrow 11\nrow 12\nrow 13\nrow 14\nrow 15\nrow 16\nrow 17\nrow 18\nrow 19\nrow 20"
+        }
+      ]
+    },
+    "expanded": false,
+    "isError": false,
+    "lines": []
+  },
+  {
+    "name": "ls",
+    "kind": "result",
+    "args": {
+      "path": "many"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "file 1\nfile 2\nfile 3\nfile 4\nfile 5\nfile 6\nfile 7\nfile 8\nfile 9\nfile 10\nfile 11\nfile 12\nfile 13\nfile 14\nfile 15\nfile 16\nfile 17\nfile 18\nfile 19\nfile 20\nfile 21\nfile 22\nfile 23\nfile 24\nfile 25\nfile 26\nfile 27\nfile 28\nfile 29\nfile 30"
+        }
+      ]
+    },
+    "expanded": false,
+    "isError": false,
+    "lines": [
+      "",
+      "\u001b[38;5;244mfile 1\u001b[39m",
+      "\u001b[38;5;244mfile 2\u001b[39m",
+      "\u001b[38;5;244mfile 3\u001b[39m",
+      "\u001b[38;5;244mfile 4\u001b[39m",
+      "\u001b[38;5;244mfile 5\u001b[39m",
+      "\u001b[38;5;244mfile 6\u001b[39m",
+      "\u001b[38;5;244mfile 7\u001b[39m",
+      "\u001b[38;5;244mfile 8\u001b[39m",
+      "\u001b[38;5;244mfile 9\u001b[39m",
+      "\u001b[38;5;244mfile 10\u001b[39m",
+      "\u001b[38;5;244mfile 11\u001b[39m",
+      "\u001b[38;5;244mfile 12\u001b[39m",
+      "\u001b[38;5;244mfile 13\u001b[39m",
+      "\u001b[38;5;244mfile 14\u001b[39m",
+      "\u001b[38;5;244mfile 15\u001b[39m",
+      "\u001b[38;5;244mfile 16\u001b[39m",
+      "\u001b[38;5;244mfile 17\u001b[39m",
+      "\u001b[38;5;244mfile 18\u001b[39m",
+      "\u001b[38;5;244mfile 19\u001b[39m",
+      "\u001b[38;5;244mfile 20\u001b[39m\u001b[38;5;244m",
+      "\u001b[38;5;244m... (10 more lines,\u001b[39m \u001b[38;5;241mctrl+o\u001b[39m\u001b[38;5;244m to expand\u001b[39m\u001b[38;5;244m)\u001b[39m"
+    ]
+  },
+  {
+    "name": "find",
+    "kind": "result",
+    "args": {
+      "pattern": "*.rs",
+      "path": "src"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "src/file 1\nsrc/file 2\nsrc/file 3\nsrc/file 4\nsrc/file 5\nsrc/file 6\nsrc/file 7\nsrc/file 8\nsrc/file 9\nsrc/file 10\nsrc/file 11\nsrc/file 12\nsrc/file 13\nsrc/file 14\nsrc/file 15\nsrc/file 16\nsrc/file 17\nsrc/file 18\nsrc/file 19\nsrc/file 20\nsrc/file 21\nsrc/file 22\nsrc/file 23\nsrc/file 24\nsrc/file 25\nsrc/file 26\nsrc/file 27\nsrc/file 28\nsrc/file 29\nsrc/file 30"
+        }
+      ]
+    },
+    "expanded": false,
+    "isError": false,
+    "lines": [
+      "",
+      "\u001b[38;5;244msrc/file 1\u001b[39m",
+      "\u001b[38;5;244msrc/file 2\u001b[39m",
+      "\u001b[38;5;244msrc/file 3\u001b[39m",
+      "\u001b[38;5;244msrc/file 4\u001b[39m",
+      "\u001b[38;5;244msrc/file 5\u001b[39m",
+      "\u001b[38;5;244msrc/file 6\u001b[39m",
+      "\u001b[38;5;244msrc/file 7\u001b[39m",
+      "\u001b[38;5;244msrc/file 8\u001b[39m",
+      "\u001b[38;5;244msrc/file 9\u001b[39m",
+      "\u001b[38;5;244msrc/file 10\u001b[39m",
+      "\u001b[38;5;244msrc/file 11\u001b[39m",
+      "\u001b[38;5;244msrc/file 12\u001b[39m",
+      "\u001b[38;5;244msrc/file 13\u001b[39m",
+      "\u001b[38;5;244msrc/file 14\u001b[39m",
+      "\u001b[38;5;244msrc/file 15\u001b[39m",
+      "\u001b[38;5;244msrc/file 16\u001b[39m",
+      "\u001b[38;5;244msrc/file 17\u001b[39m",
+      "\u001b[38;5;244msrc/file 18\u001b[39m",
+      "\u001b[38;5;244msrc/file 19\u001b[39m",
+      "\u001b[38;5;244msrc/file 20\u001b[39m\u001b[38;5;244m",
+      "\u001b[38;5;244m... (10 more lines,\u001b[39m \u001b[38;5;241mctrl+o\u001b[39m\u001b[38;5;244m to expand\u001b[39m\u001b[38;5;244m)\u001b[39m"
+    ]
+  },
+  {
+    "name": "grep",
+    "kind": "result",
+    "args": {
+      "pattern": "needle",
+      "path": "src"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "hit 1\nhit 2\nhit 3\nhit 4\nhit 5\nhit 6\nhit 7\nhit 8\nhit 9\nhit 10\nhit 11\nhit 12\nhit 13\nhit 14\nhit 15\nhit 16\nhit 17\nhit 18\nhit 19\nhit 20\nhit 21\nhit 22\nhit 23\nhit 24\nhit 25\nhit 26\nhit 27\nhit 28\nhit 29\nhit 30"
+        }
+      ]
+    },
+    "expanded": false,
+    "isError": false,
+    "lines": [
+      "",
+      "\u001b[38;5;244mhit 1\u001b[39m",
+      "\u001b[38;5;244mhit 2\u001b[39m",
+      "\u001b[38;5;244mhit 3\u001b[39m",
+      "\u001b[38;5;244mhit 4\u001b[39m",
+      "\u001b[38;5;244mhit 5\u001b[39m",
+      "\u001b[38;5;244mhit 6\u001b[39m",
+      "\u001b[38;5;244mhit 7\u001b[39m",
+      "\u001b[38;5;244mhit 8\u001b[39m",
+      "\u001b[38;5;244mhit 9\u001b[39m",
+      "\u001b[38;5;244mhit 10\u001b[39m",
+      "\u001b[38;5;244mhit 11\u001b[39m",
+      "\u001b[38;5;244mhit 12\u001b[39m",
+      "\u001b[38;5;244mhit 13\u001b[39m",
+      "\u001b[38;5;244mhit 14\u001b[39m",
+      "\u001b[38;5;244mhit 15\u001b[39m",
+      "\u001b[38;5;244m... (15 more lines,\u001b[39m \u001b[38;5;241mctrl+o\u001b[39m\u001b[38;5;244m to expand\u001b[39m\u001b[38;5;244m)\u001b[39m"
+    ]
+  },
+  {
+    "name": "write",
+    "kind": "result",
+    "args": {
+      "file_path": "src/big.rs",
+      "content": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12\nline 13\nline 14\nline 15\nline 16\nline 17\nline 18\nline 19\nline 20\nline 21\nline 22\nline 23\nline 24\nline 25\nline 26\nline 27\nline 28\nline 29\nline 30\nline 31\nline 32\nline 33\nline 34\nline 35\nline 36\nline 37\nline 38\nline 39\nline 40"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "wrote"
+        }
+      ]
+    },
+    "expanded": false,
+    "isError": false,
+    "lines": []
+  },
+  {
+    "name": "bash",
+    "kind": "result",
+    "args": {
+      "command": "run"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "out 1\nout 2\nout 3\nout 4\nout 5\nout 6\nout 7\nout 8\nout 9\nout 10\nout 11\nout 12"
+        }
+      ]
+    },
+    "expanded": false,
+    "isError": false,
+    "lines": [
+      "",
+      "\u001b[38;5;244m... (7 earlier lines,\u001b[39m \u001b[38;5;241mctrl+o\u001b[39m\u001b[38;5;244m to expand\u001b[39m\u001b[38;5;244m)\u001b[39m",
+      "\u001b[38;5;244mout 8\u001b[39m",
+      "\u001b[38;5;244mout 9\u001b[39m",
+      "\u001b[38;5;244mout 10\u001b[39m",
+      "\u001b[38;5;244mout 11\u001b[39m",
+      "\u001b[38;5;244mout 12\u001b[39m",
+      "",
+      "\u001b[38;5;244mTook <1s\u001b[39m"
+    ]
   }
 ]
