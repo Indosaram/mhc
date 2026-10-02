@@ -4,10 +4,22 @@ use serde_json::Value;
 
 use crate::faux::FauxScript;
 
+mod context;
+
+struct SharedExtension(std::sync::Arc<maho_ext_host::loader::NativeExtensionFactory>);
+
+impl maho_ext_api::Extension for SharedExtension {
+    fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
+        self.0.extension.register(api);
+    }
+}
+
 pub struct FauxSession {
     pub scenario: String,
     pub omo: bool,
     pub script: FauxScript,
+    native_extensions: Vec<std::sync::Arc<maho_ext_host::loader::NativeExtensionFactory>>,
+    native_responses: Option<Vec<maho_ai::types::AssistantMessage>>,
 }
 
 impl FauxSession {
@@ -16,11 +28,25 @@ impl FauxSession {
             scenario: script.name.clone(),
             omo: false,
             script,
+            native_extensions: Vec::new(),
+            native_responses: None,
         }
     }
 
     pub fn with_extension(mut self, _ext: impl Into<String>) -> Self {
         self.omo = true;
+        self
+    }
+
+    /// Register a native extension for each in-process run, before session startup.
+    pub fn with_native_extension(mut self, factory: maho_ext_host::loader::NativeExtensionFactory) -> Self {
+        self.native_extensions.push(std::sync::Arc::new(factory));
+        self
+    }
+
+    /// Supply typed faux responses, including tool calls, instead of the text script responses.
+    pub fn with_native_responses(mut self, responses: Vec<maho_ai::types::AssistantMessage>) -> Self {
+        self.native_responses = Some(responses);
         self
     }
 
@@ -33,7 +59,7 @@ impl FauxSession {
         use maho_ai::providers::faux::{FauxAssistantMessageOptions, RegisterFauxProviderOptions, faux_assistant_message, faux_provider};
         use maho_core::agent_session::{AgentSession, AgentSessionConfig, PromptOptions};
 
-        if self.omo {
+        if self.omo && self.native_extensions.is_empty() {
             return Err("Native faux sessions require native extension registration; the bun golden runner remains available".into());
         }
         let temp = tempfile::tempdir()?;
@@ -48,7 +74,15 @@ impl FauxSession {
                 stop_reason: Some(stop_reason), timestamp: Some(0), ..Default::default()
             }).into())
         }).collect::<Result<Vec<_>, serde_json::Error>>()?;
-        provider.set_responses(responses);
+        provider.set_responses(self.native_responses.as_ref().map_or(responses, |responses| {
+            responses.iter().cloned().map(Into::into).collect()
+        }));
+        let extensions = maho_ext_host::loader::load_extensions(self.native_extensions.iter().map(|factory| {
+            maho_ext_host::loader::NativeExtensionFactory {
+                path: factory.path.clone(), source_info: factory.source_info.clone(),
+                extension: Box::new(SharedExtension(Arc::clone(factory))),
+            }
+        }).collect(), temp.path(), maho_ext_api::ExtensionSessionProfile::default());
         let streams = maho_ai::providers::faux::faux_streams(provider.core.clone());
         let stream_fn: maho_agent::types::StreamFn = Arc::new(move |model, context, options| {
             streams.stream_simple(model, context, options.map(|options| options.simple))
@@ -73,6 +107,27 @@ impl FauxSession {
             allowed_tool_names: None, excluded_tool_names: None, base_tools_override: None,
             session_start_event: None, auto_title_sessions: Some(false),
         })?;
+        if !extensions.extensions.is_empty() {
+            let runner = maho_ext_host::ExtensionRunner::new(
+                extensions.extensions, extensions.runtime, extensions.events, context::create(&session),
+            );
+            let registered = runner.get_all_registered_tools();
+            let runtime = runner.runtime.clone();
+            session.set_extension_runner(runner).await;
+            let mut names = session.get_active_tool_names();
+            for registered in registered {
+                names.push(registered.definition.name.clone());
+                let tool_session = session.weak_accessor();
+                let tool = maho_ext_host::wrapper::wrap_registered_tool(registered.clone(), runtime.clone(),
+                    Arc::new(move || tool_session().map(|session| context::create(&session))
+                        .ok_or_else(|| maho_ext_api::ExtensionFailure::new("Session disposed"))));
+                session.register_tool_definition(registered.definition, registered.source_info, tool);
+            }
+            session.set_active_tools_by_name(names);
+            session.bind_extensions(maho_core::agent_session::ExtensionBindings {
+                mode: Some(maho_ext_api::ExtensionMode::Print), ..Default::default()
+            }).await;
+        }
         let events = Arc::new(Mutex::new(Vec::new()));
         let captured = events.clone();
         let _subscription = session.subscribe(Arc::new(move |event| {
