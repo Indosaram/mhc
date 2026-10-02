@@ -1,4 +1,5 @@
 pub mod runtime_factory;
+pub mod eval_notifier;
 pub mod eval_status;
 pub mod eval_status_ticker;
 pub mod runtime_info;
