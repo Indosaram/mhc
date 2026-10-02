@@ -5,6 +5,17 @@ use std::sync::Arc;
 use tokio_tungstenite::{WebSocketStream, client_async, tungstenite::Message};
 
 type Client = WebSocketStream<tokio::net::UnixStream>;
+#[tokio::test]
+async fn mode_startup_failure_disposes_loaded_native_sessions() {
+    use maho_server::app_server::{cli_args::{Listen,WsAuth},index::run_app_server_mode};
+    let directory=tempfile::tempdir().unwrap();
+    let runtime=AppServerRuntime::new(directory.path().display().to_string(),directory.path().display().to_string(),"1".into(),None,Some(factory())).await;
+    runtime.threads.create_thread(directory.path().display().to_string(),None).await.unwrap();
+    assert_eq!(runtime.threads.list_loaded().await.len(),1);
+    let result=run_app_server_mode(&runtime,Listen::Ws {url:"ws://not-an-ip:0".into(),host:"not-an-ip".into(),port:0},Some(WsAuth::Off),std::future::pending()).await;
+    assert!(result.is_err());
+    assert!(runtime.threads.list_loaded().await.is_empty());
+}
 async fn send(client: &mut Client, value: Value) {
     client.send(Message::Text(value.to_string().into())).await.expect("client frame sent");
 }
