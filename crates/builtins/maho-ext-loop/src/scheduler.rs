@@ -150,3 +150,6 @@ impl LoopScheduler {
     #[test] fn restore_never_duplicates_live_delivery() { let mut scheduler=scheduler(); scheduler.create_dynamic(dynamic(),"one".into(),0.0); scheduler.on_due("one",1.0,false,"live".into()); let result=scheduler.restore(2.0,&[],||"duplicate".into()); assert!(result.recovery_ticks.is_empty()); assert_eq!(scheduler.current_delivery_id("one"),Some("live")); }
     #[test] fn explicit_pause_survives_restore() { let mut scheduler=scheduler(); scheduler.create_dynamic(dynamic(),"one".into(),0.0); let result=scheduler.restore(2.0,&["one".into()],||"unused".into()); assert_eq!(result.still_paused_loop_ids,["one"]); assert_eq!(lifecycle(&scheduler.state.entries["one"]).phase,LoopPhase::Suspended); }
 }
+#[cfg(test)]
+#[path="scheduler_parity_tests.rs"]
+mod parity_tests;
