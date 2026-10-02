@@ -66,6 +66,28 @@ fn real_session()->maho_core::agent_session::AgentSession {
     let crate::types::CronEntry::Dynamic { lifecycle,.. }=&saved.entries[&created.loop_id] else { panic!("expected dynamic") };
     assert_eq!(lifecycle.phase,crate::types::LoopPhase::Suspended); assert!(lifecycle.end_reason.is_none());
 }
+#[tokio::test] async fn registered_command_and_tool_share_live_runtime_attribution() {
+    let dir=tempfile::tempdir().unwrap(); let base=dir.path().to_path_buf();
+    let ready=Arc::new(Mutex::new(None)); let capture=ready.clone();
+    let mut extension=LoopExtension::new(Arc::new(move |ctx|crate::types::LoopStoreRef { base_dir:base.clone(),session_id:ctx.session_manager.session_id().into() }));
+    extension.now=Arc::new(||1000.0); extension.on_controller_ready=Some(Arc::new(move |controller|*capture.lock().unwrap()=Some(controller)));
+    let runtime=ExtensionRuntime::default(); let events=EventBus::default();
+    let mut api=ExtensionApi::new(LoadedExtension::new("loop","/tmp".into(),SourceInfo::default()),Default::default(),events.clone(),runtime.clone()); extension.register(&mut api);
+    let command=api.registered.commands.iter().find(|command|command.name=="loop").unwrap().handler.clone();
+    let tool=api.registered.tools.iter().find(|tool|tool.definition.name=="schedule_wakeup").unwrap().definition.execute.clone();
+    let session=real_session(); let runner=maho_ext_host::ExtensionRunner::new(vec![api.registered],runtime,events,context());
+    session.set_extension_runner(runner).await; session.bind_extensions(Default::default()).await;
+    command("check",&context()).await.unwrap();
+    let controller=ready.lock().unwrap().clone().unwrap(); let target=controller.get_wakeup_target().unwrap();
+    let result=tool(ToolCall { id:"wake",params:serde_json::json!({"delaySeconds":1,"reason":"wait","prompt":"/loop check"}),signal:AbortSignal::default(),on_update:None,context:None }).await.unwrap();
+    assert_eq!(result.details.as_ref().unwrap()["delaySeconds"],60.0); assert_eq!(result.details.as_ref().unwrap()["loopId"],target.loop_id);
+    command(&format!("pause {}",target.loop_id),&context()).await.unwrap();
+    let saved=crate::store::read_loop_state(&crate::types::LoopStoreRef { base_dir:dir.path().into(),session_id:"s".into() }).await.unwrap().unwrap();
+    let crate::types::CronEntry::Dynamic { lifecycle,pending_wakeup,.. }=&saved.entries[&target.loop_id] else { panic!("expected dynamic") };
+    assert_eq!(lifecycle.phase,crate::types::LoopPhase::Suspended); assert_eq!(pending_wakeup.as_ref().unwrap().prompt,"/loop check");
+    command("stop all",&context()).await.unwrap(); assert!(controller.get_wakeup_target().is_none());
+    controller.event(&ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason:SessionReason::Quit,target_session_file:None,signal:None })).await.unwrap();
+}
 #[tokio::test] async fn unreadable_store_fails_closed_without_dispatch() {
     let dir=tempfile::tempdir().unwrap(); let base=dir.path().join("file"); std::fs::write(&base,"not a directory").unwrap();
     let ready=Arc::new(Mutex::new(None)); let capture=ready.clone();
