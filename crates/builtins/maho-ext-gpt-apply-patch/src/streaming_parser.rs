@@ -77,6 +77,12 @@ impl StreamingPatchParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn upstream_complete_lines_are_visible_before_end_marker() {
+        let mut parser=StreamingPatchParser::default();
+        assert_eq!(parser.push_delta("*** Begin Patch\n*** Add File: src/hello.txt\n+hello\n+wor").unwrap(),vec![ParsedPatch::Add{file_path:"src/hello.txt".into(),content:"hello\n".into()}]);
+        assert_eq!(parser.push_delta("ld\n").unwrap(),vec![ParsedPatch::Add{file_path:"src/hello.txt".into(),content:"hello\nworld\n".into()}]);
+        assert!(parser.finish().unwrap_err().contains("*** End Patch"));
+    }
     #[test] fn streaming_envelope_trims_ecmascript_whitespace() { let mut parser=StreamingPatchParser::default(); parser.push_delta("\u{feff}*** Begin Patch\n*** Delete File: a\n*** End Patch\u{feff}").unwrap(); assert_eq!(parser.finish().unwrap(),vec![ParsedPatch::Delete{file_path:"a".into()}]); assert!(StreamingPatchParser::default().push_delta("\u{0085}*** Begin Patch\n").is_err()); }
     #[test] fn split_deltas() { let mut p=StreamingPatchParser::default(); assert!(p.push_delta("*** Begin Pa").unwrap().is_empty()); p.push_delta("tch\n*** Add File: a\n+he").unwrap(); p.push_delta("llo\n*** End Patch").unwrap(); assert_eq!(p.finish().unwrap(),vec![ParsedPatch::Add{file_path:"a".into(),content:"hello\n".into()}]); }
     #[test] fn snapshot_is_detached() { let mut p=StreamingPatchParser::default(); let snapshot=p.push_delta("*** Begin Patch\n*** Add File: a\n").unwrap(); p.push_delta("+new\n").unwrap(); assert!(matches!(&snapshot[0],ParsedPatch::Add{content,..} if content.is_empty())); }
