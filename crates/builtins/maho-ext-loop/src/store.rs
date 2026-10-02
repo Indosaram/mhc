@@ -41,7 +41,7 @@ fn validate_entry(id:&str,entry:&Value)->Result<(),SidecarError> {
     let fingerprint=sentinel.get("lastLoopFileDelivered").ok_or_else(||invalid(id,"loop-file fingerprint"))?;
     if !fingerprint.is_null() && !fingerprint.is_object() { return Err(invalid(id,"loop-file fingerprint")); }
     if !fingerprint.is_null() { for field in ["path","contentHash","anchorDeliveryId"] { string(id,&format!("fingerprint.{field}"),&fingerprint[field],false)?; } number(id,"fingerprint.mtimeMs",&fingerprint["mtimeMs"],false,false)?; number(id,"fingerprint.size",&fingerprint["size"],true,false)?; }
-    let sources=entry["wakeSources"].as_array().ok_or_else(||invalid(id,"wakeSources"))?;
+    let sources=entry["wakeSources"].as_array().ok_or_else(||SidecarError::Invalid(format!("loop entry {id} has invalid wakeSources")))?;
     for source in sources {
         if !source.is_object() { return Err(invalid(id,"wake source")); }
         if !matches!(source["source"].as_str(),Some("terminal-monitor"|"terminal-background-session"|"task"|"other")) { return Err(SidecarError::Invalid(format!("loop entry {id} has an unknown wake source kind"))); }
@@ -49,6 +49,7 @@ fn validate_entry(id:&str,entry:&Value)->Result<(),SidecarError> {
     }
     match entry["kind"].as_str() {
         Some("fixed")=>{
+            for field in ["requestedInterval","effectiveInterval"] { if !entry[field].is_object() { return Err(invalid(id,field)); } }
             string(id,"cronExpression",&entry["cronExpression"],false)?;
             number(id,"nextFireAt",&entry["nextFireAt"],true,false)?; number(id,"intervalMs",&entry["intervalMs"],true,true)?;
             for field in ["requestedInterval","effectiveInterval"] { number(id,&format!("{field}.value"),&entry[field]["value"],true,true)?; }
@@ -79,7 +80,8 @@ fn validate_entry(id:&str,entry:&Value)->Result<(),SidecarError> {
     Ok(())
 }
 fn parse_payload(raw:&Value,reference:&SidecarStoreRef)->Result<Value,SidecarError> {
-    number("store","updatedAt",&raw["updatedAt"],true,false)?;
+    if !raw.is_object() { return Err(SidecarError::Invalid("loop store must be a JSON object".into())); }
+    number("store","updatedAt",&raw["updatedAt"],true,false).map_err(|_|SidecarError::Invalid("loop store has an invalid updatedAt".into()))?;
     let entries=raw["entries"].as_object().ok_or_else(||SidecarError::Invalid("loop store entries must be an object".into()))?;
     for (id,entry) in entries { validate_entry(id,entry)?; }
     let active=raw.get("activeDynamicId").ok_or_else(||SidecarError::Invalid("loop store activeDynamicId must be a string or null".into()))?;
@@ -108,6 +110,20 @@ pub fn clear_loop_state_snapshot(reference:&LoopStoreRef) { store(reference).cle
     use super::*;
     fn reference(dir:&Path)->LoopStoreRef { LoopStoreRef { base_dir:dir.into(),session_id:"session/one".into() } }
     use std::path::Path;
+    #[test] fn upstream_invalid_store_and_interval_containers_report_domain_errors() {
+        let reference=SidecarStoreRef { base_dir:"/tmp".into(),session_id:"s".into() };
+        let mut raw=serde_json::to_value(empty_loop_state("s")).unwrap(); raw["updatedAt"]="bad".into();
+        assert_eq!(parse_payload(&raw,&reference).unwrap_err().to_string(),"loop store has an invalid updatedAt");
+        let mut scheduler=crate::scheduler::LoopScheduler::new("s",None,&BTreeMap::new());
+        crate::creation::create_fixed(&mut scheduler,crate::index::StartFixedRequest { original_args:"1m work".into(),prompt:"work".into(),requested_interval:RequestedInterval { value:1.0,unit:RequestedIntervalUnit::Minutes,raw:"1m".into() } },"f".into(),0.0);
+        let entry=serde_json::to_value(&scheduler.state.entries["f"]).unwrap();
+        for field in ["requestedInterval","effectiveInterval"] {
+            for invalid in [Value::Null,serde_json::json!([]),serde_json::json!(false)] {
+                let mut malformed=entry.clone(); malformed[field]=invalid;
+                assert_eq!(validate_entry("f",&malformed).unwrap_err().to_string(),format!("loop entry f has an invalid {field}"));
+            }
+        }
+    }
     #[test] fn integral_float_keepalive_credit_matches_javascript_numeric_enum() {
         let mut scheduler=crate::scheduler::LoopScheduler::new("s",None,&BTreeMap::new()); scheduler.create_dynamic(crate::scheduler::CreateDynamicRequest { original_args:"check".into(),reentry_prompt:"check".into(),payload:LoopPayload::Prompt { prompt:"check".into() } },"d".into(),1000.0);
         let mut raw=serde_json::to_value(scheduler.state).unwrap(); raw["entries"]["d"]["keepaliveCredit"]=serde_json::json!(1.0);
