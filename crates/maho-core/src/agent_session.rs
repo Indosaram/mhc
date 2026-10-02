@@ -2788,6 +2788,7 @@ impl AgentSession {
             max_tokens: Some(if model.max_tokens == 0 { 4096 } else { model.max_tokens.min(4096) }),
             ..Default::default()
         })).await.map_err(|error| error.to_string())?;
+        if response.stop_reason == maho_ai::types::StopReason::Aborted { return Ok(serde_json::json!({"aborted":true})); }
         if let Some(error) = crate::compaction::compaction::get_summarization_failure(&response, "Branch summarization") { return Err(error); }
         if response.content.iter().any(|content| matches!(content, maho_ai::types::ContentBlock::ToolCall(_))) {
             return Err("Branch summarization attempted to call a tool".to_owned());
@@ -5516,6 +5517,34 @@ mod tests {
         assert_eq!(result["aborted"], true);
         assert!(session.messages().is_empty());
         assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn aborted_branch_provider_response_preserves_navigation_context() {
+        use maho_ai::providers::faux::{faux_provider, RegisterFauxProviderOptions};
+        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
+        provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+            stop_reason: Some(StopReason::Aborted), ..Default::default()
+        }).into()]);
+        let session = test_session_with_stream_function(false);
+        session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
+        runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
+            config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".to_owned()), ..Default::default() },
+            ..Default::default()
+        }).expect("faux auth");
+        let root = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"root","timestamp":0})));
+        let leaf = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"branch","timestamp":1})));
+        session.rebuild_session_context().expect("context");
+        let result = session.navigate_tree(root["id"].as_str().expect("root"), TreeNavigationOptions {
+            summarize: Some(true), ..Default::default()
+        }).await.expect("cancelled navigation");
+        assert!(result.cancelled);
+        assert_eq!(result.aborted, Some(true));
+        assert_eq!(session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)), leaf["id"].as_str().map(str::to_owned));
+        assert_eq!(session.with_session_manager(|manager| manager.entries().len()), 2);
+        assert!(!session.is_compacting());
     }
 
     #[tokio::test]
