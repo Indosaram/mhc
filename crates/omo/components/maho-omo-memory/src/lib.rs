@@ -19,6 +19,7 @@ pub mod facts_run_storage;
 pub mod facts_run_prune;
 pub mod facts_run_reconcile;
 pub mod facts_drain;
+pub mod facts_batch_apply;
 pub mod facts_terminal_writes;
 pub mod prompt;
 pub mod session_model_resolver;
