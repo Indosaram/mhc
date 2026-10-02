@@ -1,0 +1,5 @@
+use maho_ext_pi_webfetch::webfetch::tool::*;
+#[test]fn huge_single_line_preserves_head(){let body=format!("{{\"data\":\"{}\"}}","x".repeat(2*1024*1024));let r=cap_webfetch_output(&body);assert!(r.truncated);assert!(r.total_bytes>2*1024*1024);assert!(r.output_bytes<=DEFAULT_OUTPUT_MAX_BYTES);assert!(r.text.starts_with("{\"data\":\"xxxx"));}
+#[test]fn multiline_keeps_whole_lines(){let body=format!("{}\n",(0..5000).map(|i|format!("line-{i}-{}","y".repeat(40))).collect::<Vec<_>>().join("\n"));let r=cap_webfetch_output(&body);assert!(r.truncated);assert!(r.output_bytes<=DEFAULT_OUTPUT_MAX_BYTES);assert!(r.text.starts_with("line-0-"));assert!(body[..r.output_bytes].ends_with(&"y".repeat(40)));}
+#[test]fn small_body_verbatim(){let body="hello world\nsecond line\n";let r=cap_webfetch_output(body);assert!(!r.truncated);assert_eq!(r.text,body);assert_eq!(r.output_bytes,body.len());}
+#[test]fn utf8_prefix_preserved(){let body="😀".repeat(20000);let r=cap_webfetch_output(&body);assert!(r.truncated);assert_eq!(r.output_bytes,DEFAULT_OUTPUT_MAX_BYTES);assert!(r.text[..r.output_bytes].chars().all(|ch|ch=='😀'));}
