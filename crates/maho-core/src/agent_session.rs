@@ -443,6 +443,16 @@ struct ExtensionSessionManagerView {
     id: String,
     file: Option<std::path::PathBuf>,
 }
+struct ExtensionModelRegistryView(crate::model_registry::ModelRegistry);
+impl maho_ext_api::ModelRegistry for ExtensionModelRegistryView {
+    fn get_all(&self) -> Vec<Model> { self.0.get_all() }
+    fn get_available(&self) -> Vec<Model> { self.0.get_available() }
+    fn find(&self, provider: &str, id: &str) -> Option<Model> { self.0.find(provider, id) }
+    fn has_configured_auth(&self, model: &Model) -> bool { self.0.has_configured_auth(model) }
+    fn get_api_key_for_provider<'a>(&'a self, provider: &'a str) -> maho_ext_api::ExtensionFuture<'a, Option<String>> {
+        Box::pin(async move { Ok(self.0.get_api_key_for_provider(provider).await) })
+    }
+}
 impl maho_ext_api::ToolSessionManager for ExtensionSessionManagerView {
     fn session_id(&self) -> &str { &self.id }
     fn session_file(&self) -> Option<&std::path::Path> { self.file.as_deref() }
@@ -613,6 +623,15 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn apply_compaction(&self, result: maho_ext_api::CompactionResult, options: maho_ext_api::ApplyCompactionOptions) -> maho_ext_api::ExtensionFuture<'_, maho_ext_api::ApplyCompactionResult> {
         Box::pin(async move { let session = self.session()?;
             if options.expected_revision.is_some_and(|revision| revision != session.message_revision()) { return Ok(maho_ext_api::ApplyCompactionResult::Stale); }
+            if let Some(anchor) = options.expected_warm_anchor {
+                let anchor = crate::compaction::warm_anchor::WarmAnchorSnapshot {
+                    first_kept_entry_id: anchor.first_kept_entry_id, prefix_entry_ids: anchor.prefix_entry_ids,
+                    latest_compaction_entry_id: anchor.latest_compaction_entry_id,
+                };
+                if !session.with_session_manager(|manager| crate::compaction::warm_anchor::is_warm_summary_anchor_valid(&anchor, &manager.branch(None))) {
+                    return Ok(maho_ext_api::ApplyCompactionResult::Stale);
+                }
+            }
             if options.signal.as_ref().is_some_and(maho_ext_api::AbortSignal::is_aborted) { return Ok(maho_ext_api::ApplyCompactionResult::Rejected); }
             session.apply_compaction(&crate::compaction::compaction::CompactionResult { summary: result.summary, first_kept_entry_id: result.first_kept_entry_id,
                 tokens_before: result.tokens_before as i64, estimated_tokens_after: None, usage: None, details: result.details }).map_err(maho_ext_api::ExtensionFailure::new)?;
@@ -2707,6 +2726,7 @@ impl AgentSession {
     /// Bind the extension runner the tool hooks read at execution time.
     pub async fn set_extension_runner(&self, mut runner: ExtensionRunner) {
         if let Ok(mut context) = runner.create_context() {
+            context.model_registry = Arc::new(ExtensionModelRegistryView(self.model_registry().clone()));
             context.session_manager = Arc::new(ExtensionSessionManagerView {
                 session: Arc::downgrade(&self.inner), id: self.session_id(), file: self.session_file().map(Into::into),
             });
@@ -3783,6 +3803,10 @@ mod tests {
         let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
         assert!(!actions.set_model(test_model()).await.unwrap());
         assert!(!actions.set_session_model(test_model()).await.unwrap());
+        let registry = ExtensionModelRegistryView(session.model_registry().clone());
+        assert_eq!(maho_ext_api::ModelRegistry::get_all(&registry), session.model_registry().get_all());
+        assert_eq!(maho_ext_api::ModelRegistry::find(&registry, "faux", "faux-1"), session.model_registry().find("faux", "faux-1"));
+        assert!(maho_ext_api::ModelRegistry::get_api_key_for_provider(&registry, "faux").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -3814,6 +3838,23 @@ mod tests {
         assert!(!result.cancelled);
         assert_ne!(session.session_id(), original);
         assert!(session.messages().is_empty());
+    }
+
+    #[tokio::test]
+    async fn extension_compaction_rejects_stale_warm_anchor_before_writing() {
+        use maho_ext_api::ExtensionContextActions;
+        let session = test_session();
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        let result = actions.apply_compaction(maho_ext_api::CompactionResult {
+            summary: "summary".into(), first_kept_entry_id: "missing".into(), tokens_before: 100, details: None,
+        }, maho_ext_api::ApplyCompactionOptions {
+            reason: maho_ext_api::CompactionReason::Extension, expected_revision: None, signal: None,
+            expected_warm_anchor: Some(maho_ext_api::WarmAnchorSnapshot {
+                first_kept_entry_id: "missing".into(), prefix_entry_ids: vec!["old".into()], latest_compaction_entry_id: None,
+            }),
+        }).await.unwrap();
+        assert_eq!(result, maho_ext_api::ApplyCompactionResult::Stale);
+        assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
     }
 
     #[tokio::test]
