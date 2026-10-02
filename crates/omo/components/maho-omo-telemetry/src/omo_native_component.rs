@@ -19,7 +19,11 @@ impl Extension for OmoNativeTelemetryComponent {
         let shared:Arc<Mutex<Option<telemetry_core::EventTelemetryClient>>>=Arc::default();
         let client=Arc::clone(&shared);
         let capture:SummaryCapture=Arc::new(move |name,properties| {if let Some(client)=client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() && let Some(properties)=properties.as_object() {client.capture_event(name,properties);}});
-        let hash:Arc<dyn Fn(&str)->String+Send+Sync>=Arc::new(move |id|hash_session_id(id,&state_dir).unwrap_or_else(|error| {eprintln!("omo-native session identity failed: {error}");String::new()}));
+        let identity_client=Arc::clone(&shared);
+        let hash:Arc<dyn Fn(&str)->String+Send+Sync>=Arc::new(move |id| {
+            if identity_client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {return String::new();}
+            hash_session_id(id,&state_dir).unwrap_or_else(|error| {eprintln!("omo-native session identity failed: {error}");String::new()})
+        });
         let registry=Arc::new(Mutex::new(ParallelTelemetryRegistry::default()));
         let now=Arc::clone(&self.clock);
         let subscription=register_omo_native_parallel_summary(api,registry,now,Arc::clone(&hash),Arc::clone(&capture));

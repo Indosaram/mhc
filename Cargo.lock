@@ -2250,7 +2250,11 @@ name = "maho-omo-ast-grep"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -2289,6 +2293,8 @@ name = "maho-omo-init-deep-advisor"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
  "serde",
  "serde_json",
  "sha2",
@@ -2301,8 +2307,10 @@ name = "maho-omo-lsp"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-ext-host",
  "maho-lsp-core",
  "maho-lsp-daemon",
+ "maho-test-support",
  "serde_json",
  "tempfile",
  "tokio",
@@ -2353,8 +2361,10 @@ dependencies = [
  "chrono",
  "futures",
  "maho-ext-api",
+ "maho-ext-host",
  "maho-senpi-task",
  "maho-telemetry-core",
+ "maho-test-support",
  "serde_json",
  "sha2",
  "tempfile",

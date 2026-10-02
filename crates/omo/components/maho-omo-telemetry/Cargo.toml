@@ -20,3 +20,5 @@ sha2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+maho-test-support = { path = "../../../maho-test-support", features = ["sdk"] }
+maho-ext-host = { path = "../../../maho-ext-host" }
