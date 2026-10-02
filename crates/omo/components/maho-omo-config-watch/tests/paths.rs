@@ -47,3 +47,30 @@ fn runtime_subtrees_do_not_expand_config_filters() -> Result<(), Box<dyn std::er
     assert_eq!(target.filter_globs, ["/omo.jsonc", "/omo.json"]);
     Ok(())
 }
+
+#[test]
+fn every_ancestor_creation_target_is_root_anchored() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    let cwd = home.join("work/project/child");
+    std::fs::create_dir_all(&cwd)?;
+    let env = BTreeMap::from([("SENPI_CODING_AGENT_DIR".into(), root.path().join("agent").to_string_lossy().into_owned())]);
+    let resolution = resolve_omo_config_watch_target_resolution(&cwd, &home, &env);
+    let creation: Vec<_> = resolution.targets.iter().filter(|t| t.filter_globs.iter().any(|g| g == "/.omo")).collect();
+    assert_eq!(creation.len(), 4);
+    for target in creation { assert_eq!(target.filter_globs, ["/.omo", "/.omo/omo.jsonc", "/.omo/omo.json"]); }
+    Ok(())
+}
+
+#[test]
+fn user_creation_target_has_only_the_user_root_filter() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    let cwd = home.join("project");
+    std::fs::create_dir_all(&cwd)?;
+    let env = BTreeMap::from([("SENPI_CODING_AGENT_DIR".into(), root.path().join("agent").to_string_lossy().into_owned())]);
+    let resolution = resolve_omo_config_watch_target_resolution(&cwd, &home, &env);
+    let target = resolution.targets.iter().find(|t| t.path == home && t.filter_globs.iter().any(|g| g == "/.maho")).expect("user target");
+    assert_eq!(target.filter_globs, ["/.maho"]);
+    Ok(())
+}
