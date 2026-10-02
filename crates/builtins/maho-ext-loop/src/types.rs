@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::PathBuf};
+use std::path::PathBuf;
+use indexmap::IndexMap;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RequestedIntervalUnit { #[serde(rename="s")] Seconds, #[serde(rename="m")] Minutes, #[serde(rename="h")] Hours, #[serde(rename="d")] Days }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,7 +64,7 @@ pub enum CronEntry {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct LoopState { pub version: u8, pub session_id: String, pub entries: BTreeMap<LoopId, CronEntry>, pub active_dynamic_id: Option<LoopId>, pub updated_at: EpochMs }
+pub struct LoopState { pub version: u8, pub session_id: String, pub entries: IndexMap<LoopId, CronEntry>, pub active_dynamic_id: Option<LoopId>, pub updated_at: EpochMs }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoopStoreRef { pub base_dir: PathBuf, pub session_id: String }
 pub fn is_record(value: &serde_json::Value) -> bool { value.is_object() }

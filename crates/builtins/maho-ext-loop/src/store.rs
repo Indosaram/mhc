@@ -1,4 +1,6 @@
-use std::{collections::BTreeMap,sync::Arc};
+use std::sync::Arc;
+#[cfg(test)]
+use std::collections::BTreeMap;
 use serde_json::Value;
 use maho_core::session_sidecar_store::{self as sidecar,CreateSidecarStoreOptions,SidecarError,SidecarStore,SidecarStoreRef};
 use crate::types::*;
@@ -61,7 +63,7 @@ fn parse_payload(raw:&Value,reference:&SidecarStoreRef)->Result<Value,SidecarErr
     let mut result=raw.clone(); result["version"]=LOOP_STATE_VERSION.into(); result["sessionId"]=reference.session_id.clone().into(); Ok(result)
 }
 fn store(reference:&LoopStoreRef)->SidecarStore { sidecar::create_sidecar_store(CreateSidecarStoreOptions { base_dir:reference.base_dir.to_string_lossy().into_owned(),session_id:reference.session_id.clone(),version:i64::from(LOOP_STATE_VERSION),temp_prefix:"loop".into(),parse:Arc::new(parse_payload) }) }
-pub fn empty_loop_state(session_id:&str)->LoopState { LoopState { version:LOOP_STATE_VERSION,session_id:session_id.into(),entries:BTreeMap::new(),active_dynamic_id:None,updated_at:0.0 } }
+pub fn empty_loop_state(session_id:&str)->LoopState { LoopState { version:LOOP_STATE_VERSION,session_id:session_id.into(),entries:indexmap::IndexMap::new(),active_dynamic_id:None,updated_at:0.0 } }
 pub fn encoded_session_id(reference:&LoopStoreRef)->String { sidecar::encoded_session_id(&reference.session_id) }
 pub fn loop_state_file_path(reference:&LoopStoreRef)->String { store(reference).file_path().into() }
 fn decode(value:Value)->Result<LoopState,LoopStoreError> { serde_json::from_value(value).map_err(|error|LoopStoreError::Invalid(error.to_string())) }
@@ -95,4 +97,17 @@ pub fn clear_loop_state_snapshot(reference:&LoopStoreRef) { store(reference).cle
     #[tokio::test] async fn malformed_json_fails_closed() { let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path()); std::fs::write(loop_state_file_path(&reference),"{").unwrap(); let result=read_loop_state(&reference).await; assert!(matches!(result,Err(LoopStoreError::Invalid(_)))); }
     #[tokio::test] async fn wrong_version_remaps_shared_error() { let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path()); std::fs::write(loop_state_file_path(&reference),r#"{"version":2,"sessionId":"session/one"}"#).unwrap(); let result=read_loop_state(&reference).await; assert!(matches!(result,Err(LoopStoreError::UnsupportedVersion(message)) if message.contains("loop store"))); }
     #[tokio::test] async fn concurrent_mutations_serialize_per_file() { let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path()); let (first,second)=tokio::join!(mutate_loop_state(&reference,|mut state|{ state.updated_at+=1.0; Ok(state) }),mutate_loop_state(&reference,|mut state|{ state.updated_at+=1.0; Ok(state) })); first.unwrap(); second.unwrap(); let result=load_loop_state(&reference).await.unwrap(); assert_eq!(result.updated_at,2.0); }
+    #[tokio::test] async fn persisted_entries_preserve_creation_order_across_restore() {
+        use crate::scheduler::{CreateDynamicRequest,CreateFixedRequest,LoopScheduler};
+        let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path());
+        let mut scheduler=LoopScheduler::new(&reference.session_id,None,&BTreeMap::new());
+        for id in ["z-first","a-second"] {
+            scheduler.create_fixed(CreateFixedRequest { base:CreateDynamicRequest { original_args:"1m check".into(),reentry_prompt:"check".into(),payload:LoopPayload::Prompt { prompt:"check".into() } },requested_interval:RequestedInterval { value:1.0,unit:RequestedIntervalUnit::Minutes,raw:"1m".into() },effective_interval:EffectiveInterval { value:1.0,unit:EffectiveIntervalUnit::Minutes,human:"1 minute".into(),rounded:false,rounding_notice:None },cron_expression:"* * * * *".into(),interval_ms:60_000.0 },id.into(),1000.0);
+        }
+        write_loop_state(&reference,&scheduler.state).await.unwrap();
+        let loaded=read_loop_state(&reference).await.unwrap().unwrap();
+        assert_eq!(loaded.entries.keys().map(String::as_str).collect::<Vec<_>>(),["z-first","a-second"]);
+        let restored=LoopScheduler::new(&reference.session_id,Some(loaded),&BTreeMap::new());
+        assert_eq!(restored.state.entries.keys().map(String::as_str).collect::<Vec<_>>(),["z-first","a-second"]);
+    }
 }
