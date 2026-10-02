@@ -18,31 +18,51 @@ fn boolean(id:&str,field:&str,value:&Value)->Result<(),SidecarError> { if value.
 fn validate_entry(id:&str,entry:&Value)->Result<(),SidecarError> {
     let Some(object)=entry.as_object() else { return Err(SidecarError::Invalid(format!("loop entry {id} is not an object"))); };
     if entry["id"].as_str()!=Some(id) { return Err(SidecarError::Invalid(format!("loop entry {id} carries a mismatched id"))); }
+    if !matches!(entry["kind"].as_str(),Some("fixed"|"dynamic")) { return Err(SidecarError::Invalid(format!("loop entry {id} has an unknown kind"))); }
+    if !matches!(entry["phase"].as_str(),Some("starting"|"waiting"|"queued"|"running"|"suspended"|"ended")) { return Err(invalid(id,"phase")); }
+    if entry["phase"]=="ended" && !matches!(entry["endReason"].as_str(),Some("stopped"|"keepalive_exhausted"|"expired"|"tick_budget_exhausted"|"error")) { return Err(invalid(id,"endReason")); }
     for field in ["originalArgs","reentryPrompt"] { string(id,field,&entry[field],field=="originalArgs")?; }
     for field in ["createdAt","expiresAt","noopStreak","tickCount"] { number(id,field,&entry[field],true,false)?; }
-    for field in ["lastFiredAt","lastScheduledForAt","queuedForAt"] { let value=object.get(field).ok_or_else(||invalid(id,field))?; if !value.is_null() { number(id,field,value,true,false)?; } }
+    for field in ["lastFiredAt","lastScheduledForAt","queuedForAt"] { if !entry[field].is_null() { number(id,field,&entry[field],true,false)?; } }
     boolean(id,"coalescedFirePending",&entry["coalescedFirePending"])?;
     if entry["phase"]=="ended" { number(id,"endedAt",&entry["endedAt"],true,false)?; string(id,"endReason",&entry["endReason"],false)?; if let Some(detail)=object.get("endDetail") { string(id,"endDetail",detail,true)?; } } else if ["endedAt","endReason","endDetail"].iter().any(|field|object.contains_key(*field)) { return Err(SidecarError::Invalid(format!("loop entry {id} carries terminal fields while not ended"))); }
     let payload=&entry["payload"];
+    if !payload.is_object() { return Err(invalid(id,"payload")); }
+    match payload["type"].as_str() {
+        Some("prompt")=>{},
+        Some("sentinel") if matches!(payload["sentinel"].as_str(),Some("<<autonomous-loop>>"|"<<autonomous-loop-dynamic>>"|"<<loop.md>>"|"<<loop.md-dynamic>>"))=>{},
+        Some("sentinel")=>return Err(SidecarError::Invalid(format!("loop entry {id} has an unknown payload sentinel"))),
+        _=>return Err(SidecarError::Invalid(format!("loop entry {id} has an unknown payload type"))),
+    }
     if payload["type"]=="prompt" { string(id,"payload.prompt",&payload["prompt"],false)?; }
     let sentinel=&entry["sentinelDelivery"];
+    if !sentinel.is_object() { return Err(invalid(id,"sentinelDelivery")); }
     boolean(id,"sentinelDelivery.autonomousPreambleDelivered",&sentinel["autonomousPreambleDelivered"])?; boolean(id,"sentinelDelivery.forceFullDelivery",&sentinel["forceFullDelivery"])?;
     let fingerprint=sentinel.get("lastLoopFileDelivered").ok_or_else(||invalid(id,"loop-file fingerprint"))?;
     if !fingerprint.is_null() { for field in ["path","contentHash","anchorDeliveryId"] { string(id,&format!("fingerprint.{field}"),&fingerprint[field],false)?; } number(id,"fingerprint.mtimeMs",&fingerprint["mtimeMs"],false,false)?; number(id,"fingerprint.size",&fingerprint["size"],true,false)?; }
     let sources=entry["wakeSources"].as_array().ok_or_else(||invalid(id,"wakeSources"))?;
-    for source in sources { string(id,"wakeSource.id",&source["id"],false)?; number(id,"wakeSource.createdAt",&source["createdAt"],true,false)?; if let Some(description)=source.get("description") { string(id,"wake source description",description,true)?; } }
+    for source in sources {
+        if !source.is_object() { return Err(invalid(id,"wake source")); }
+        if !matches!(source["source"].as_str(),Some("terminal-monitor"|"terminal-background-session"|"task"|"other")) { return Err(SidecarError::Invalid(format!("loop entry {id} has an unknown wake source kind"))); }
+        string(id,"wakeSource.id",&source["id"],false)?; number(id,"wakeSource.createdAt",&source["createdAt"],true,false)?; if let Some(description)=source.get("description") { string(id,"wake source description",description,true)?; }
+    }
     match entry["kind"].as_str() {
         Some("fixed")=>{
             string(id,"cronExpression",&entry["cronExpression"],false)?;
             number(id,"nextFireAt",&entry["nextFireAt"],true,false)?; number(id,"intervalMs",&entry["intervalMs"],true,true)?;
             for field in ["requestedInterval","effectiveInterval"] { number(id,&format!("{field}.value"),&entry[field]["value"],true,true)?; }
+            if !matches!(entry["requestedInterval"]["unit"].as_str(),Some("s"|"m"|"h"|"d")) { return Err(invalid(id,"requestedInterval unit")); }
+            if !matches!(entry["effectiveInterval"]["unit"].as_str(),Some("m"|"h"|"d")) { return Err(invalid(id,"effectiveInterval unit")); }
             string(id,"requestedInterval.raw",&entry["requestedInterval"]["raw"],false)?; string(id,"effectiveInterval.human",&entry["effectiveInterval"]["human"],false)?; boolean(id,"effectiveInterval.rounded",&entry["effectiveInterval"]["rounded"])?;
             if let Some(notice)=entry["effectiveInterval"].get("roundingNotice") { string(id,"effectiveInterval roundingNotice",notice,true)?; }
         },
         Some("dynamic")=>{
             if !matches!(entry["keepaliveCredit"].as_f64(),Some(0.0|1.0)) { return Err(invalid(id,"keepaliveCredit")); }
-            let wake=object.get("pendingWakeup").ok_or_else(||invalid(id,"pendingWakeup"))?;
+            let wake=&entry["pendingWakeup"];
             if !wake.is_null() {
+                if !wake.is_object() { return Err(invalid(id,"pendingWakeup")); }
+                if !matches!(wake["source"].as_str(),Some("model"|"keepalive")) { return Err(invalid(id,"pendingWakeup source")); }
+                if wake["kind"]!="dynamic" { return Err(invalid(id,"pendingWakeup kind")); }
                 for field in ["id","loopId","reason","prompt"] { string(id,&format!("pendingWakeup.{field}"),&wake[field],false)?; }
                 number(id,"pendingWakeup.requestedDelaySeconds",&wake["requestedDelaySeconds"],false,false)?;
                 number(id,"pendingWakeup.delaySeconds",&wake["delaySeconds"],true,true)?;
@@ -61,7 +81,9 @@ fn parse_payload(raw:&Value,reference:&SidecarStoreRef)->Result<Value,SidecarErr
     for (id,entry) in entries { validate_entry(id,entry)?; }
     let active=raw.get("activeDynamicId").ok_or_else(||SidecarError::Invalid("loop store activeDynamicId must be a string or null".into()))?;
     if !active.is_null() { let id=active.as_str().ok_or_else(||SidecarError::Invalid("loop store activeDynamicId must be a string or null".into()))?; if entries.get(id).is_none_or(|entry|entry["kind"]!="dynamic") { return Err(SidecarError::Invalid(format!("loop store activeDynamicId {id} does not name a dynamic loop"))); } }
-    let mut result=raw.clone(); result["version"]=LOOP_STATE_VERSION.into(); result["sessionId"]=reference.session_id.clone().into(); Ok(result)
+    let mut result=raw.clone(); result["version"]=LOOP_STATE_VERSION.into(); result["sessionId"]=reference.session_id.clone().into();
+    let state:LoopState=serde_json::from_value(result).map_err(|error|SidecarError::Invalid(error.to_string()))?;
+    serde_json::to_value(state).map_err(|error|SidecarError::Invalid(error.to_string()))
 }
 fn store(reference:&LoopStoreRef)->SidecarStore { sidecar::create_sidecar_store(CreateSidecarStoreOptions { base_dir:reference.base_dir.to_string_lossy().into_owned(),session_id:reference.session_id.clone(),version:i64::from(LOOP_STATE_VERSION),temp_prefix:"loop".into(),parse:Arc::new(parse_payload) }) }
 pub fn empty_loop_state(session_id:&str)->LoopState { LoopState { version:LOOP_STATE_VERSION,session_id:session_id.into(),entries:indexmap::IndexMap::new(),active_dynamic_id:None,updated_at:0.0 } }
@@ -80,12 +102,27 @@ pub fn clear_loop_state_snapshot(reference:&LoopStoreRef) { store(reference).cle
     use super::*;
     fn reference(dir:&Path)->LoopStoreRef { LoopStoreRef { base_dir:dir.into(),session_id:"session/one".into() } }
     use std::path::Path;
-    #[test] fn nullable_required_fields_reject_absence_instead_of_treating_it_as_null() {
+    #[test] fn invalid_enum_fields_report_domain_error_not_serde_diagnostics() {
+        let mut scheduler=crate::scheduler::LoopScheduler::new("s",None,&BTreeMap::new());
+        scheduler.create_dynamic(crate::scheduler::CreateDynamicRequest { original_args:"check".into(),reentry_prompt:"check".into(),payload:LoopPayload::Prompt { prompt:"check".into() } },"d".into(),1000.0);
+        let value=serde_json::to_value(&scheduler.state.entries["d"]).unwrap();
+        let mut invalid_phase=value.clone(); invalid_phase["phase"]="unknown".into(); assert_eq!(validate_entry("d",&invalid_phase).unwrap_err().to_string(),"loop entry d has an invalid phase");
+        let mut invalid_kind=value.clone(); invalid_kind["kind"]="unknown".into(); assert_eq!(validate_entry("d",&invalid_kind).unwrap_err().to_string(),"loop entry d has an unknown kind");
+        let mut invalid_payload=value; invalid_payload["payload"]=serde_json::json!({"type":"sentinel","sentinel":"unknown"}); assert_eq!(validate_entry("d",&invalid_payload).unwrap_err().to_string(),"loop entry d has an unknown payload sentinel");
+    }
+    #[test] fn parser_normalizes_unknown_envelope_and_nested_entry_fields() {
+        let mut scheduler=crate::scheduler::LoopScheduler::new("s",None,&BTreeMap::new());
+        scheduler.create_dynamic(crate::scheduler::CreateDynamicRequest { original_args:"check".into(),reentry_prompt:"check".into(),payload:LoopPayload::Prompt { prompt:"check".into() } },"d".into(),1000.0);
+        let mut raw=serde_json::to_value(scheduler.state).unwrap(); raw["unexpected"]=true.into(); raw["entries"]["d"]["unexpected"]=true.into(); raw["entries"]["d"]["payload"]["unexpected"]=true.into();
+        let parsed=parse_payload(&raw,&SidecarStoreRef { base_dir:"/tmp".into(),session_id:"s".into() }).unwrap();
+        assert!(parsed.get("unexpected").is_none()); assert!(parsed["entries"]["d"].get("unexpected").is_none()); assert!(parsed["entries"]["d"]["payload"].get("unexpected").is_none());
+    }
+    #[test] fn nullable_fields_accept_absence_except_required_fingerprint_and_active_id() {
         let mut scheduler=crate::scheduler::LoopScheduler::new("s",None,&BTreeMap::new());
         scheduler.create_dynamic(crate::scheduler::CreateDynamicRequest { original_args:"check".into(),reentry_prompt:"check".into(),payload:LoopPayload::Prompt { prompt:"check".into() } },"d".into(),1000.0);
         let value=serde_json::to_value(&scheduler.state.entries["d"]).unwrap(); validate_entry("d",&value).unwrap();
         for field in ["lastFiredAt","lastScheduledForAt","queuedForAt","pendingWakeup"] {
-            let mut absent=value.clone(); absent.as_object_mut().unwrap().remove(field); assert!(validate_entry("d",&absent).is_err(),"{field}");
+            let mut absent=value.clone(); absent.as_object_mut().unwrap().remove(field); validate_entry("d",&absent).unwrap();
         }
         let mut absent=value; absent["sentinelDelivery"].as_object_mut().unwrap().remove("lastLoopFileDelivered"); assert!(validate_entry("d",&absent).is_err());
         let mut state=serde_json::to_value(scheduler.state).unwrap(); state.as_object_mut().unwrap().remove("activeDynamicId");
