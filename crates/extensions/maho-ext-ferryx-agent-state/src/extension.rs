@@ -4,11 +4,22 @@ use serde_json::{Value, json};
 use std::{io::Write, net::{SocketAddr, TcpStream}, sync::{Arc, Mutex, mpsc}, thread::JoinHandle, time::Duration};
 
 struct Config { socket: Option<String>, port: Option<u16>, token: Option<String>, session_id: String }
+fn state_port(value: &str) -> Option<u16> {
+    let value = value.trim();
+    let number = if let Some(digits) = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
+        u64::from_str_radix(digits, 16).ok()? as f64
+    } else if let Some(digits) = value.strip_prefix("0o").or_else(|| value.strip_prefix("0O")) {
+        u64::from_str_radix(digits, 8).ok()? as f64
+    } else if let Some(digits) = value.strip_prefix("0b").or_else(|| value.strip_prefix("0B")) {
+        u64::from_str_radix(digits, 2).ok()? as f64
+    } else { value.parse::<f64>().ok()? };
+    (number.is_finite() && number.fract() == 0.0 && number > 0.0 && number <= 65535.0).then_some(number as u16)
+}
 impl Config {
     fn from_env() -> Option<Self> {
         let socket = std::env::var("FERRYX_AGENT_STATE_SOCKET").ok().filter(|value| !value.is_empty());
         let token = std::env::var("FERRYX_AGENT_STATE_TOKEN").ok().filter(|value| !value.is_empty());
-        let port = std::env::var("FERRYX_AGENT_STATE_PORT").ok().and_then(|value| value.trim().parse::<u16>().ok()).filter(|value| *value > 0 && token.is_some());
+        let port = std::env::var("FERRYX_AGENT_STATE_PORT").ok().and_then(|value| state_port(&value)).filter(|_| token.is_some());
         let session_id = std::env::var("FERRYX_SESSION_ID").ok().filter(|value| !value.is_empty())?;
         if socket.is_none() && port.is_none() { return None; }
         Some(Self { socket, port, token, session_id })
@@ -118,6 +129,11 @@ impl Extension for FerryxAgentState {
 mod tests {
     use super::*;
     use std::io::BufRead;
+    #[test]
+    fn port_accepts_javascript_integer_number_forms() {
+        for value in [" 1234 ", "1234.0", "1.234e3", "+1234", "0x4d2", "0o2322", "0b10011010010"] { assert_eq!(state_port(value), Some(1234), "{value}"); }
+        for value in ["", "0", "-1", "65536", "1.2", "NaN", "Infinity", "port", "1234junk"] { assert_eq!(state_port(value), None, "{value}"); }
+    }
     #[test]
     fn tcp_receives_framed_state_payload() {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind fixture listener");
