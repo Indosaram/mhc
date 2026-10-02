@@ -9,5 +9,5 @@ fn mime_selection_prefers_supported_formats_and_preserves_parameters() {
 #[tokio::test]
 async fn termux_returns_without_reading_desktop_clipboard() {
     let env = std::collections::BTreeMap::from([("TERMUX_VERSION".to_owned(), "1".to_owned())]);
-    assert!(read_clipboard_image(&env, "linux").await.is_none());
+    assert!(read_clipboard_image(&env, "linux").await.unwrap().is_none());
 }

@@ -32,12 +32,16 @@ async fn xclip() -> BackendResult {
     }
     BackendResult::Unavailable
 }
-fn native() -> BackendResult {
-    match maho_tui::native_platform::get_native_clipboard().and_then(|clipboard| clipboard.get_image().ok()) {
-        None => BackendResult::Unavailable, Some(None) => BackendResult::Empty,
-        Some(Some(bytes)) if bytes.is_empty() => BackendResult::Empty,
-        Some(Some(bytes)) => { let mime_type = super::mime::detect_supported_image_mime_type(&bytes).unwrap_or("application/octet-stream").to_owned(); BackendResult::Image(ClipboardImage { bytes, mime_type }) }
-    }
+fn native() -> Result<BackendResult, String> {
+    let Some(clipboard) = maho_tui::native_platform::get_native_clipboard() else { return Ok(BackendResult::Unavailable); };
+    native_result(clipboard.get_image())
+}
+fn native_result(result: Result<Option<Vec<u8>>, String>) -> Result<BackendResult, String> {
+    Ok(match result? {
+        None => BackendResult::Empty,
+        Some(bytes) if bytes.is_empty() => BackendResult::Empty,
+        Some(bytes) => { let mime_type = super::mime::detect_supported_image_mime_type(&bytes).unwrap_or("application/octet-stream").to_owned(); BackendResult::Image(ClipboardImage { bytes, mime_type }) }
+    })
 }
 fn is_wsl(env: &BTreeMap<String, String>) -> bool {
     ["WSL_DISTRO_NAME", "WSLENV"].into_iter().any(|key| env.get(key).is_some_and(|value| !value.is_empty()))
@@ -57,21 +61,25 @@ async fn powershell() -> Option<ClipboardImage> {
     let bytes = tokio::fs::read(temporary.path()).await.ok()?;
     (!bytes.is_empty()).then_some(ClipboardImage { bytes, mime_type: "image/png".to_owned() })
 }
-pub async fn read_clipboard_image(env: &BTreeMap<String, String>, platform: &str) -> Option<ClipboardImage> {
-    if env.get("TERMUX_VERSION").is_some_and(|value| !value.is_empty()) { return None; }
+pub async fn read_clipboard_image(env: &BTreeMap<String, String>, platform: &str) -> Result<Option<ClipboardImage>, String> {
+    if env.get("TERMUX_VERSION").is_some_and(|value| !value.is_empty()) { return Ok(None); }
     let wsl = platform == "linux" && is_wsl(env);
-    let mut result = if platform == "linux" { if is_wayland_session(env) || wsl { wayland().await } else { BackendResult::Unavailable } } else { native() };
+    let mut result = if platform == "linux" { if is_wayland_session(env) || wsl { wayland().await } else { BackendResult::Unavailable } } else { native()? };
     if platform == "linux" && matches!(result, BackendResult::Unavailable) { result = xclip().await; }
     if wsl && !matches!(result, BackendResult::Image(_)) && let Some(image) = powershell().await { result = BackendResult::Image(image); }
-    if matches!(result, BackendResult::Unavailable) { result = native(); }
-    match result {
+    if matches!(result, BackendResult::Unavailable) { result = native()?; }
+    Ok(match result {
         BackendResult::Unavailable | BackendResult::Empty => None,
         BackendResult::Image(image) => {
             if SUPPORTED.contains(&base_mime_type(&image.mime_type).as_str()) { Some(image) }
             else {
-                let bytes = std::panic::catch_unwind(|| photon_rs::PhotonImage::new_from_byteslice(image.bytes).get_bytes()).ok()?;
-                Some(ClipboardImage { bytes, mime_type: "image/png".to_owned() })
+                std::panic::catch_unwind(|| photon_rs::PhotonImage::new_from_byteslice(image.bytes).get_bytes()).ok().map(|bytes| ClipboardImage { bytes, mime_type: "image/png".to_owned() })
             }
         }
-    }
+    })
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test] fn native_errors_remain_errors() { assert!(native_result(Err("transfer failed".to_owned())).is_err()); }
 }

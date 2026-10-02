@@ -1,4 +1,9 @@
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+#[path = "coordinator_runtime.rs"]
+mod runtime;
+#[cfg(unix)]
+pub use runtime::{run_coordinator, run_coordinator_ready};
 pub const COORDINATOR_PROTOCOL_VERSION: u32 = 3;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
