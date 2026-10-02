@@ -531,6 +531,25 @@ async fn registered_tool_wrapper_supplies_context_and_reports_new_active_tools()
     let result = (tool.execute)("call".into(), JsonValue::Null, None, None).await;
     assert_eq!(result.added_tool_names, Some(vec!["new".into()])); assert_ne!(result.is_error, Some(true));
 }
+
+#[test]
+fn static_runner_uses_one_based_identity_and_isolates_failed_factories() {
+    struct Failed;
+    impl Extension for Failed { fn register(&self, api: &mut ExtensionApi) {
+        api.register_flag("discarded", FlagType::Boolean { default: Some(true) }, None);
+        panic!("factory failed");
+    } }
+    struct Good;
+    impl Extension for Good { fn register(&self, api: &mut ExtensionApi) {
+        api.register_flag("kept", FlagType::Boolean { default: Some(true) }, None);
+    } }
+    let runner = ExtensionRunner::from_static(vec![Box::new(Failed), Box::new(Good)], context());
+    assert_eq!(runner.extensions.len(), 1);
+    assert_eq!(runner.extensions[0].identity.path, "<inline:2>");
+    assert_eq!(runner.errors[0].extension_path, "<inline:1>");
+    assert_eq!(runner.runtime.get_flag("discarded"), None);
+    assert_eq!(runner.runtime.get_flag("kept"), Some(FlagValue::Boolean(true)));
+}
 #[test]
 fn rpc_events_use_the_shared_channel_and_normalized_envelope() {
     let runtime = ExtensionRuntime::default(); let events = EventBus::default();
@@ -873,6 +892,48 @@ async fn provider_request_metadata_reaches_handlers_while_payloads_chain() {
     let headers = [(String::from("X-Fixture"), Some(String::from("request")))].into_iter().collect();
     let result = runner.emit_before_provider_request_with_metadata(JsonValue::String("payload".into()), None, Some(headers), None).await.unwrap();
     assert_eq!(result, JsonValue::String("payload:next".into()));
+}
+
+#[tokio::test]
+async fn prepared_provider_request_chains_local_transforms_and_rejects_stale_callbacks() {
+    let payload: ExtensionHandler = Arc::new(|event, _| Box::pin(async move {
+        let ExtensionEvent::BeforeProviderRequest { payload, .. } = event else { panic!("payload event") };
+        Ok(EventResult::ProviderPayload(JsonValue::String(format!("{}:next", payload.as_str().unwrap()))))
+    }));
+    let headers: ExtensionHandler = Arc::new(|event, _| Box::pin(async move {
+        let ExtensionEvent::BeforeProviderHeaders { headers } = event else { panic!("headers event") };
+        headers.insert("X-Prepared".into(), Some("yes".into()));
+        Ok(EventResult::None)
+    }));
+    let runner = runner(vec![extension("owner", EventKind::BeforeProviderRequest, payload.clone()),
+        extension("other", EventKind::BeforeProviderRequest, payload), extension("headers", EventKind::BeforeProviderHeaders, headers)]);
+    let preparation = runner.prepare_provider_request(Vec::new(), Some("owner".into())).await.unwrap();
+    assert!(preparation.messages.is_empty());
+    assert_eq!((preparation.transform_payload)(JsonValue::String("base".into())).await.unwrap(), JsonValue::String("base:next".into()));
+    assert_eq!((preparation.transform_headers)(BTreeMap::new()).await.unwrap()["X-Prepared"].as_deref(), Some("yes"));
+    runner.invalidate("reloaded");
+    assert_eq!((preparation.transform_payload)(JsonValue::Null).await.unwrap_err().message, "reloaded");
+    assert_eq!((preparation.transform_headers)(BTreeMap::new()).await.unwrap_err().message, "reloaded");
+}
+
+#[tokio::test]
+async fn handler_provider_preparation_excludes_its_owner_without_reentering_session_actions() {
+    let outer: ExtensionHandler = Arc::new(|_, ctx| Box::pin(async move {
+        let request = ctx.prepare_provider_request(Vec::new()).await?;
+        let payload = (request.transform_payload)(JsonValue::String("base".into())).await?;
+        assert_eq!(payload, JsonValue::String("base:other".into()));
+        Ok(EventResult::None)
+    }));
+    let owner_payload: ExtensionHandler = Arc::new(|_, _| Box::pin(async { panic!("owner must be excluded") }));
+    let other_payload: ExtensionHandler = Arc::new(|event, _| Box::pin(async move {
+        let ExtensionEvent::BeforeProviderRequest { payload, .. } = event else { panic!("payload event") };
+        Ok(EventResult::ProviderPayload(JsonValue::String(format!("{}:other", payload.as_str().unwrap()))))
+    }));
+    let mut owner = extension("owner", EventKind::AgentStart, outer);
+    owner.handlers.insert(EventKind::BeforeProviderRequest, vec![owner_payload]);
+    let mut runner = runner(vec![owner, extension("other", EventKind::BeforeProviderRequest, other_payload)]);
+    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) })).unwrap();
+    runner.emit(ExtensionEvent::AgentStart).await.unwrap();
 }
 
 struct CommandActions(Mutex<Vec<String>>);

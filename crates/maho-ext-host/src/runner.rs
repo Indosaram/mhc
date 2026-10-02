@@ -12,7 +12,7 @@ pub struct ShortcutDiagnostic { pub message: String, pub path: String }
 struct HookRun { event: ToolHookLifecycleEvent, state: Arc<std::sync::Mutex<(bool, String)>> }
 struct ReloadRequest { result: std::sync::Mutex<Option<Result<(), ExtensionFailure>>>, ready: tokio::sync::Notify }
 type ReloadState = Arc<std::sync::Mutex<Option<Arc<ReloadRequest>>>>;
-struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime, compaction_signal: std::sync::Mutex<Option<AbortSignal>>, kernel_tools: Option<Arc<dyn ExtensionKernelTools>>, reload: ReloadState }
+struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime, compaction_signal: std::sync::Mutex<Option<AbortSignal>>, kernel_tools: Option<Arc<dyn ExtensionKernelTools>>, reload: ReloadState, provider_runner: Option<ExtensionRunner>, exclude_provider_path: Option<String> }
 impl ToolSessionManager for ContextSessionManager {
     fn session_id(&self) -> &str { self.session.session_id() }
     fn session_file(&self) -> Option<&std::path::Path> { self.session.session_file() }
@@ -77,7 +77,12 @@ impl ExtensionContextActions for ContextSessionManager {
     fn get_image_settings(&self) -> ImageSettings { self.actions.get_image_settings() }
     fn session_settings(&self) -> &dyn ExtensionSessionSettings { self.actions.session_settings() }
     fn compact(&self, options: CompactOptions) { self.actions.compact(options); }
-    fn prepare_provider_request(&self, messages: Vec<AgentMessage>) -> ExtensionFuture<'_, ProviderRequestPreparation> { self.actions.prepare_provider_request(messages) }
+    fn prepare_provider_request(&self, messages: Vec<AgentMessage>) -> ExtensionFuture<'_, ProviderRequestPreparation> {
+        match &self.provider_runner {
+            Some(runner) => Box::pin(async move { runner.prepare_provider_request(messages, self.exclude_provider_path.clone()).await }),
+            None => self.actions.prepare_provider_request(messages),
+        }
+    }
     fn begin_compaction(&self, options: BeginCompactionOptions) -> Option<AbortSignal> {
         let signal = self.actions.begin_compaction(options);
         *self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = signal.clone();
@@ -102,6 +107,7 @@ impl ExtensionContextActions for ContextSessionManager {
     fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools> { self.kernel_tools.as_deref().or_else(|| self.actions.kernel_tools()) }
 }
 
+#[derive(Clone)]
 pub struct ExtensionRunner {
     pub extensions: Vec<LoadedExtension>, pub runtime: ExtensionRuntime, pub events: EventBus,
     context: ExtensionContext, error_listeners: Vec<ErrorListener>, pub errors: Vec<ExtensionError>,
@@ -116,17 +122,15 @@ impl ExtensionRunner {
             shutdown_warn_ms: 2000, shutdown_timeout_ms: 10000, hook_observer: None, warning_listener: None, next_hook_index: 0, context_actions: None, reload: Arc::new(std::sync::Mutex::new(None)) }
     }
     pub fn from_static(extensions: Vec<Box<dyn Extension>>, context: ExtensionContext) -> Self {
-        let runtime = ExtensionRuntime::default();
-        let events = EventBus::default();
-        let mut loaded = Vec::new();
-        for (index, extension) in extensions.into_iter().enumerate() {
-            let path = format!("<inline:{index}>");
+        let factories = extensions.into_iter().enumerate().map(|(index, extension)| {
+            let path = format!("<inline:{}>", index.saturating_add(1));
             let source_info = SourceInfo { path: path.clone(), source: "inline".into(), ..SourceInfo::default() };
-            let mut api = ExtensionApi::new(LoadedExtension::new(&path, context.cwd.clone(), source_info), ExtensionSessionProfile::default(), events.clone(), runtime.clone());
-            extension.register(&mut api);
-            loaded.push(api.registered);
-        }
-        Self::new(loaded, runtime, events, context)
+            crate::loader::NativeExtensionFactory { path, source_info, extension }
+        }).collect();
+        let loaded = crate::loader::load_extensions(factories, &context.cwd, ExtensionSessionProfile::default());
+        let mut runner = Self::new(loaded.extensions, loaded.runtime, loaded.events, context);
+        for error in loaded.errors { runner.emit_error(error); }
+        runner
     }
     pub fn bind_core(&mut self, actions: Arc<dyn ExtensionActions>, context: ExtensionContext) {
         self.runtime.bind(actions); self.context = context;
@@ -138,7 +142,7 @@ impl ExtensionRunner {
         let option_actions = Arc::clone(&actions);
         self.context.get_system_prompt_options_fn = Arc::new(move || option_actions.get_system_prompt_options());
         self.context_actions = Some(Arc::clone(&actions));
-        self.context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions, runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), kernel_tools: None, reload: Arc::clone(&self.reload) });
+        self.context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions, runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), kernel_tools: None, reload: Arc::clone(&self.reload), provider_runner: None, exclude_provider_path: None });
         Ok(())
     }
     pub fn bind_providers(&mut self, actions: Arc<dyn ExtensionProviderActions>) -> Result<(), ExtensionFailure> {
@@ -156,6 +160,25 @@ impl ExtensionRunner {
     }
     pub fn create_command_context(&self, actions: Arc<dyn ExtensionCommandContextActions>) -> Result<ExtensionCommandContext, ExtensionFailure> {
         Ok(ExtensionCommandContext { context: self.create_context()?, actions, runtime: self.runtime.clone() })
+    }
+    pub async fn prepare_provider_request(&self, messages: Vec<AgentMessage>, exclude_path: Option<String>) -> Result<ProviderRequestPreparation, ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let mut context_runner = self.clone();
+        let messages = context_runner.emit_context(&messages, exclude_path.as_deref()).await?;
+        let payload_runner = self.clone();
+        let header_runner = self.clone();
+        Ok(ProviderRequestPreparation {
+            messages,
+            transform_payload: Arc::new(move |payload| {
+                let mut runner = payload_runner.clone();
+                let exclude = exclude_path.clone();
+                Box::pin(async move { runner.runtime.assert_active()?; runner.emit_before_provider_request(payload, exclude.as_deref()).await })
+            }),
+            transform_headers: Arc::new(move |headers| {
+                let mut runner = header_runner.clone();
+                Box::pin(async move { runner.runtime.assert_active()?; runner.emit_before_provider_headers(headers).await })
+            }),
+        })
     }
     pub async fn invoke_command(&self, name: &str, args: &str, context: &ExtensionCommandContext) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;
@@ -210,10 +233,13 @@ impl ExtensionRunner {
         Ok(result)
     }
     pub fn create_context(&self) -> Result<ExtensionContext, ExtensionFailure> {
+        self.create_context_for_extension(None)
+    }
+    pub fn create_context_for_extension(&self, exclude_path: Option<&str>) -> Result<ExtensionContext, ExtensionFailure> {
         self.runtime.assert_active()?;
         let mut context = self.context.clone();
         if let Some(actions) = &self.context_actions {
-            context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&context.session_manager), actions: Arc::clone(actions), runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), kernel_tools: crate::kernel_tools_context::current_kernel_tools(), reload: Arc::clone(&self.reload) });
+            context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&context.session_manager), actions: Arc::clone(actions), runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), kernel_tools: crate::kernel_tools_context::current_kernel_tools(), reload: Arc::clone(&self.reload), provider_runner: Some(self.clone()), exclude_provider_path: exclude_path.map(str::to_owned) });
         }
         if let Some(actions) = context.session_manager.extension_context_actions() {
             actions.assert_active()?;
@@ -291,7 +317,7 @@ impl ExtensionRunner {
         self.runtime.assert_active()?;
         let kind = event.kind(); let mut result = EventResult::None;
         for (path, handler) in self.handlers(kind) {
-            let context = self.create_context()?;
+            let context = self.create_context_for_extension(Some(&path))?;
             let handled = if kind == EventKind::SessionShutdown { self.run_shutdown(&path, &mut event, &context, &handler).await } else { handler(&mut event, &context).await };
             match handled {
                 Ok(next) => { if kind.is_session_before() && let EventResult::SessionBefore(before) = &next { let cancel = before.cancel == Some(true); result = next; if cancel { return Ok(result); } } }
@@ -325,7 +351,7 @@ impl ExtensionRunner {
     pub async fn emit_before_agent_start(&mut self, event: BeforeAgentStartEvent) -> Result<Option<BeforeAgentStartCombinedResult>, ExtensionFailure> {
         let mut event = ExtensionEvent::BeforeAgentStart(event); let mut combined = BeforeAgentStartCombinedResult::default();
         for (path, handler) in self.handlers(EventKind::BeforeAgentStart) {
-            let mut context = self.create_context()?;
+            let mut context = self.create_context_for_extension(Some(&path))?;
             if let ExtensionEvent::BeforeAgentStart(current) = &event { let prompt = current.system_prompt.clone(); context.get_system_prompt_fn = Arc::new(move || prompt.clone()); }
             match handler(&mut event, &context).await {
                 Ok(EventResult::BeforeAgentStart(next)) => {
@@ -341,7 +367,7 @@ impl ExtensionRunner {
         let original_text = input.text.clone(); let original_images = input.images.clone();
         let mut event = ExtensionEvent::Input(input);
         for (path, handler) in self.handlers(EventKind::Input) {
-            let context = self.create_context()?;
+            let context = self.create_context_for_extension(Some(&path))?;
             match handler(&mut event, &context).await {
                 Ok(EventResult::Input(InputEventResult::Handled)) => return Ok(InputEventResult::Handled),
                 Ok(EventResult::Input(InputEventResult::Transform { text, images })) => if let ExtensionEvent::Input(current) = &mut event { current.text = text; if images.is_some() { current.images = images; } },
@@ -354,7 +380,7 @@ impl ExtensionRunner {
     pub async fn emit_model_select(&mut self, event: ModelSelectEvent) -> Result<Option<ModelSelectEventResult>, ExtensionFailure> {
         let mut event = ExtensionEvent::ModelSelect(event); let mut combined: Option<ModelSelectEventResult> = None;
         for (path, handler) in self.handlers(EventKind::ModelSelect) {
-            let context = self.create_context()?;
+            let context = self.create_context_for_extension(Some(&path))?;
             if let ExtensionEvent::ModelSelect(current) = &mut event { current.system_prompt_options = context.get_system_prompt_options(); }
             match handler(&mut event, &context).await {
                 Ok(EventResult::ModelSelect(next)) if next.system_prompt.is_some() || next.system_prompt_name.is_some() => {
@@ -370,7 +396,7 @@ impl ExtensionRunner {
     pub async fn emit_message_end(&mut self, message: AgentMessage) -> Result<Option<AgentMessage>, ExtensionFailure> {
         let mut event = ExtensionEvent::MessageEnd { message }; let mut modified = false;
         for (path, handler) in self.handlers(EventKind::MessageEnd) {
-            let context = self.create_context()?;
+            let context = self.create_context_for_extension(Some(&path))?;
             match handler(&mut event, &context).await {
                 Ok(EventResult::MessageEnd { message: Some(next) }) => if let ExtensionEvent::MessageEnd { message } = &mut event {
                     if next.role() != message.role() { self.report(&path, EventKind::MessageEnd, ExtensionFailure::new("message_end handlers must return a message with the same role")); }
@@ -386,7 +412,7 @@ impl ExtensionRunner {
         let mut event = ExtensionEvent::Context { messages: messages.to_vec() };
         for (path, handler) in self.handlers(EventKind::Context) {
             if exclude_path == Some(path.as_str()) { continue; }
-            let context = self.create_context()?;
+            let context = self.create_context_for_extension(Some(&path))?;
             match handler(&mut event, &context).await {
                 Ok(EventResult::Context { messages: Some(next) }) => if let ExtensionEvent::Context { messages } = &mut event { *messages = next; },
                 Ok(_) => {}, Err(error) => self.report(&path, EventKind::Context, error),
@@ -403,7 +429,7 @@ impl ExtensionRunner {
         let mut event = ExtensionEvent::BeforeProviderRequest { payload, model, headers };
         for (path, handler) in self.handlers(EventKind::BeforeProviderRequest) {
             if exclude_path == Some(path.as_str()) { continue; }
-            let context = self.create_context()?;
+            let context = self.create_context_for_extension(Some(&path))?;
             match handler(&mut event, &context).await {
                 Ok(EventResult::ProviderPayload(next)) => if let ExtensionEvent::BeforeProviderRequest { payload, .. } = &mut event { *payload = next; },
                 Ok(_) => {}, Err(error) => self.report(&path, EventKind::BeforeProviderRequest, error),
@@ -416,7 +442,7 @@ impl ExtensionRunner {
     pub async fn emit_before_provider_headers(&mut self, headers: BTreeMap<String, Option<String>>) -> Result<BTreeMap<String, Option<String>>, ExtensionFailure> {
         let mut event = ExtensionEvent::BeforeProviderHeaders { headers };
         for (path, handler) in self.handlers(EventKind::BeforeProviderHeaders) {
-            let context = self.create_context()?;
+            let context = self.create_context_for_extension(Some(&path))?;
             if let Err(error) = handler(&mut event, &context).await { self.report(&path, EventKind::BeforeProviderHeaders, error); }
             self.runtime.assert_active()?;
         }
@@ -426,7 +452,7 @@ impl ExtensionRunner {
     pub async fn emit_project_trust(&mut self, cwd: std::path::PathBuf) -> Result<Option<ProjectTrustEventResult>, ExtensionFailure> {
         let mut event = ExtensionEvent::ProjectTrust { cwd };
         for (path, handler) in self.handlers(EventKind::ProjectTrust) {
-            let context = self.create_context()?;
+            let context = self.create_context_for_extension(Some(&path))?;
             match handler(&mut event, &context).await {
                 Ok(EventResult::ProjectTrust(result)) if result.trusted != TrustDecision::Undecided => return Ok(Some(result)),
                 Ok(_) => {}, Err(error) => self.report(&path, EventKind::ProjectTrust, error),
@@ -438,7 +464,7 @@ impl ExtensionRunner {
         let mut event = ExtensionEvent::ResourcesDiscover(ResourcesDiscoverEvent { cwd, reason, scoped_entries: true });
         let mut combined = DiscoveredResources::default();
         for (path, handler) in self.handlers(EventKind::ResourcesDiscover) {
-            let context = self.create_context()?;
+            let context = self.create_context_for_extension(Some(&path))?;
             match handler(&mut event, &context).await {
                 Ok(EventResult::ResourcesDiscover(next)) => {
                     let convert = |entries: Vec<ResourceDiscoverEntry>| entries.into_iter().map(|e| DiscoveredResourceEntry { path: e.path, scope: e.scope, extension_path: path.clone() }).collect::<Vec<_>>();
@@ -453,7 +479,7 @@ impl ExtensionRunner {
     pub async fn emit_user_bash(&mut self, command: String, exclude_from_context: bool, cwd: std::path::PathBuf) -> Result<EventResult, ExtensionFailure> {
         let mut event = ExtensionEvent::UserBash { command, exclude_from_context, cwd };
         for (path, handler) in self.handlers(EventKind::UserBash) {
-            let context = self.create_context()?;
+            let context = self.create_context_for_extension(Some(&path))?;
             match handler(&mut event, &context).await { Ok(EventResult::None) => {}, Ok(result) => return Ok(result), Err(error) => self.report(&path, EventKind::UserBash, error) }
         }
         Ok(EventResult::None)
@@ -483,7 +509,7 @@ impl ExtensionRunner {
     pub async fn emit_tool_call(&mut self, event: &mut ToolCallEvent) -> Result<Option<ToolCallEventResult>, ExtensionFailure> {
         let mut current = ExtensionEvent::ToolCall(event.clone()); let mut combined = None;
         for (path, handler) in self.handlers(EventKind::ToolCall) {
-            let mut context = self.create_context()?; let hook = self.begin_hook(&path, &event.tool_name, &event.tool_call_id, ToolHookName::PreToolUse, &mut context);
+            let mut context = self.create_context_for_extension(Some(&path))?; let hook = self.begin_hook(&path, &event.tool_name, &event.tool_call_id, ToolHookName::PreToolUse, &mut context);
             let result = handler(&mut current, &context).await;
             let (status, error) = match &result { Err(e) => (ToolHookStatus::Failed, Some(e.message.clone())), Ok(EventResult::ToolCall(r)) if r.block == Some(true) => (ToolHookStatus::Blocked, None), Ok(_) => (ToolHookStatus::Completed, None) };
             self.end_hook(hook, status, error);
@@ -496,7 +522,7 @@ impl ExtensionRunner {
         let tool_name = event.tool_name.clone(); let tool_call_id = event.tool_call_id.clone();
         let mut current = ExtensionEvent::ToolResult(event); let mut modified = false;
         for (path, handler) in self.handlers(EventKind::ToolResult) {
-            let mut context = self.create_context()?; let hook = self.begin_hook(&path, &tool_name, &tool_call_id, ToolHookName::PostToolUse, &mut context);
+            let mut context = self.create_context_for_extension(Some(&path))?; let hook = self.begin_hook(&path, &tool_name, &tool_call_id, ToolHookName::PostToolUse, &mut context);
             let result = handler(&mut current, &context).await;
             self.end_hook(hook, if result.is_err() { ToolHookStatus::Failed } else { ToolHookStatus::Completed }, result.as_ref().err().map(|e| e.message.clone()));
             match result {
