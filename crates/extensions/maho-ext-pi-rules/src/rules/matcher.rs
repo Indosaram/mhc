@@ -86,7 +86,8 @@ fn compile_expression(pattern:&str)->String{
     while index<chars.len(){let ch=chars[index];
         if matches!(ch,'@'|'+'|'?'|'*'|'!')&&chars.get(index+1)==Some(&'('){
             let mut depth=1;let mut end=index+2;while end<chars.len(){if chars[end]=='(' {depth+=1;}else if chars[end]==')'{depth-=1;if depth==0{break;}}end+=1;}
-            if depth==0{let body=chars[index+2..end].iter().collect::<String>();if matches!(ch,'+'|'*')&&risky_simple_repeat(&body){for literal in &chars[index..=end]{if ".*+?()[]{}|^$\\".contains(*literal){result.push('\\');}result.push(*literal);}index=end+1;continue;}let inner=compile_expression(&body);let quantifier=match ch{'?'=>"?",'+'=>"+",'*'=>"*",_=>""};if index==0&&ch!='@'{result.push_str("(?=.)");}
+            if depth==0{let body=chars[index+2..end].iter().collect::<String>();if matches!(ch,'+'|'*'){if let Some(flat)=safe_star_repeat(&body){if index==0{result.push_str("(?=.)");}result.push_str(&flat);index=end+1;continue;}
+                if risky_simple_repeat(&body){for literal in &chars[index..=end]{if ".*+?()[]{}|^$\\".contains(*literal){result.push('\\');}result.push(*literal);}index=end+1;continue;}}let inner=compile_expression(&body);let quantifier=match ch{'?'=>"?",'+'=>"+",'*'=>"*",_=>""};if index==0&&ch!='@'{result.push_str("(?=.)");}
                 if ch=='!'{let rest=chars[end+1..].iter().collect::<String>();let suffix=if body.contains('*')&&rest.starts_with('.')&&!rest[1..].contains(['/', '\\', '.']){compile_expression(&rest)}else if rest.is_empty(){"$".into()}else{String::new()};let star=if rest.is_empty()||body.contains('/') {"(?:(?!(?:^|/)\\.{1,2}(?:/|$)).)*?"}else{"[^/]*?"};result.push_str(&format!("(?:(?!(?:{inner}){suffix}){star})"));}else{result.push_str(&format!("(?:{inner}){quantifier}"));}index=end+1;continue;}
             result.push_str("\\(");index+=2;continue;
         }
@@ -102,6 +103,17 @@ fn compile_expression(pattern:&str)->String{
             _=>result.push(ch)
         }index+=1;
     }result
+}
+fn safe_star_repeat(body:&str)->Option<String>{
+    let mut depth=0;let mut start=0;let mut branches=Vec::new();
+    for (index,ch) in body.char_indices(){match ch{'('|'['=>depth+=1,')'|']'=>depth-=1,'|' if depth==0=>{branches.push(body[start..index].trim());start=index+1;},_=>{}}}
+    branches.push(body[start..].trim());let mut chars=Vec::new();let mut saw_star=false;
+    for branch in branches{let mut rest=branch;let mut consumed=false;
+        while let Some(after)=rest.strip_prefix("*("){let end=after.find(')')?;let inner=&after[..end];if inner.chars().count()!=1||inner.contains(['*','?','+','@','!','(','[',']','{','}','|']){return None;}chars.extend(inner.chars());rest=&after[end+1..];consumed=true;saw_star=true;}
+        if consumed{if !rest.is_empty(){return None;}}else if branch.chars().count()==1&&!branch.contains(['*','?','+','@','!','(','[',']','{','}','|']){chars.extend(branch.chars());}else{return None;}
+    }
+    if !saw_star{return None;}chars.sort_unstable();chars.dedup();let escaped=chars.into_iter().map(|ch|if "-*+?.^${}(|)[]\\".contains(ch){format!("\\{ch}")}else{ch.to_string()}).collect::<Vec<_>>();
+    Some(if escaped.len()==1{format!("{}*",escaped[0])}else{format!("[{}]*",escaped.join(""))})
 }
 fn risky_simple_repeat(body:&str)->bool{
     let mut branches=Vec::new();let mut depth=0;let mut start=0;
