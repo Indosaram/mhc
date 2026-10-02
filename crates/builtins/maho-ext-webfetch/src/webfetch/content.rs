@@ -48,6 +48,18 @@ pub fn reader_element_without_content(node:&dom_query::NodeRef<'_>)->bool {
     let children=node.element_children();node.is_element()&&node.text().trim_matches(js_whitespace).is_empty()
         && (children.is_empty()||children.len()==dom_query::Selection::from(*node).select("br, hr").nodes().len())
 }
+pub fn reader_has_child_block(node:&dom_query::NodeRef<'_>)->bool {
+    node.children().iter().any(|child|child.node_name().is_some_and(|name|matches!(name.as_ref(),"blockquote"|"dl"|"div"|"img"|"ol"|"p"|"pre"|"table"|"ul"))||reader_has_child_block(child))
+}
+pub fn reader_is_phrasing(node:&dom_query::NodeRef<'_>)->bool {
+    if node.is_text() {return true;}
+    let name=node.node_name();let name=name.as_deref().unwrap_or("");
+    matches!(name,"abbr"|"audio"|"b"|"bdo"|"br"|"button"|"cite"|"code"|"data"|"datalist"|"dfn"|"em"|"embed"|"i"|"img"|"input"|"kbd"|"label"|"mark"|"math"|"meter"|"noscript"|"object"|"output"|"progress"|"q"|"ruby"|"samp"|"script"|"select"|"small"|"span"|"strong"|"sub"|"sup"|"textarea"|"time"|"var"|"wbr")
+        || (matches!(name,"a"|"del"|"ins")&&node.children().iter().all(reader_is_phrasing))
+}
+pub fn reader_is_whitespace(node:&dom_query::NodeRef<'_>)->bool {
+    (node.is_text()&&node.text().trim_matches(js_whitespace).is_empty())||node.node_name().as_deref()==Some("br")
+}
 pub fn score_reader_candidates(elements:&[dom_query::NodeRef<'_>],weight_classes:bool)->Vec<(dom_query::NodeId,f64)> {
     let mut candidates:Vec<(dom_query::NodeRef<'_>,f64)>=Vec::new();
     for element in elements {
@@ -270,6 +282,13 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_phrasing_recurses_only_for_conditional_inline_tags() {
+        let document=dom_query::Document::from("<a id='inline'><strong>x</strong></a><a id='block'><div>x</div></a><span id='span'><div>x</div></span><a id='comment'><!--comment--></a>");
+        assert!(reader_is_phrasing(&document.select("#inline").nodes()[0]));assert!(!reader_is_phrasing(&document.select("#block").nodes()[0]));assert!(reader_is_phrasing(&document.select("#span").nodes()[0]));assert!(!reader_is_phrasing(&document.select("#comment").nodes()[0]));assert!(reader_has_child_block(&document.select("#span").nodes()[0]));
+    }
+    #[test] fn reader_whitespace_treats_breaks_but_not_empty_elements_as_space() {
+        let document=dom_query::Document::from("<div> \u{feff}<br><span></span><!--comment--></div>");let nodes=document.select("div").nodes()[0].children();assert!(reader_is_whitespace(&nodes[0]));assert!(reader_is_whitespace(&nodes[1]));assert!(!reader_is_whitespace(&nodes[2]));assert!(!reader_is_whitespace(&nodes[3]));
+    }
     #[test] fn reader_single_tag_preserves_source_trailing_whitespace_content_rule() {
         let document=dom_query::Document::from("<div id='single'> <p>x</p> </div><div id='content'>text<p>x</p></div><div id='trailing'>text <p>x</p></div><div id='multiple'><p>x</p><p>y</p></div>");
         assert!(reader_has_single_tag(&document.select("#single").nodes()[0],"p"));assert!(!reader_has_single_tag(&document.select("#content").nodes()[0],"p"));assert!(reader_has_single_tag(&document.select("#trailing").nodes()[0],"p"));assert!(!reader_has_single_tag(&document.select("#multiple").nodes()[0],"p"));
