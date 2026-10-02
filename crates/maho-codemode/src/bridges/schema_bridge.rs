@@ -8,6 +8,8 @@ pub struct EvalSchemaToolInfo {
     pub parameters: Option<Value>,
 }
 
+pub type EvalToolCatalog = std::sync::Arc<dyn Fn() -> Result<Vec<EvalSchemaToolInfo>, String> + Send + Sync>;
+
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum EvalSchemaResult {

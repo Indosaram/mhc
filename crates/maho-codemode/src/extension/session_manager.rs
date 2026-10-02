@@ -1,7 +1,7 @@
 use std::{collections::HashMap, path::PathBuf, sync::{Arc, atomic::{AtomicBool, Ordering}}};
 use serde_json::json;
 use maho_ext_api::ExecuteToolOptions;
-use crate::{bridge::{http_server::{BridgeServerHandle, BridgeServerOptions, BridgeCompletionHandler, start_bridge_server}, protocol::BridgeConnectionConfig}, bridges::{agent_bridge::AgentBridge, output_bridge::OutputExecuteTool, schema_bridge::EvalSchemaToolInfo, reserved_dispatch::{ReservedDispatchContext, is_reserved_tool_name, run_reserved_tool}}, config::settings::CodemodeSettings, kernels::{py::{kernel::PythonKernel, kernel_contract::PythonKernelStartOptions}, session_env::SessionEnvironment}, tool::tool_result_marshal::marshal_tool_result};
+use crate::{bridge::{http_server::{BridgeServerHandle, BridgeServerOptions, BridgeCompletionHandler, start_bridge_server}, protocol::BridgeConnectionConfig}, bridges::{agent_bridge::AgentBridge, output_bridge::OutputExecuteTool, reserved_dispatch::{ReservedDispatchContext, is_reserved_tool_name, run_reserved_tool}}, config::settings::CodemodeSettings, kernels::{py::{kernel::PythonKernel, kernel_contract::PythonKernelStartOptions}, session_env::SessionEnvironment}, tool::tool_result_marshal::marshal_tool_result};
 use super::session_manager_proxy::{SessionManagerLifecycle, SessionDisposeFuture};
 use crate::{interpreters::detect::{InterpreterAvailability,InterpreterDetection},tool::{types::{EvalLanguage,EvalKernel,EvalKernelFuture},eval_tool_options::EvalKernelManager},kernels::{shared::{subprocess_kernel::SubprocessKernel,subprocess_contract::SubprocessKernelOptions},rb::kernel::RubyKernel,jl::kernel::JuliaKernel}};
 
@@ -14,7 +14,7 @@ pub struct CreateCodemodeSessionManagerOptions {
     pub artifacts_dir: Option<PathBuf>,
     pub session_env: Option<SessionEnvironment>,
     pub executor: Arc<dyn OutputExecuteTool>,
-    pub list_tools: Option<Arc<dyn Fn() -> Vec<EvalSchemaToolInfo> + Send + Sync>>,
+    pub list_tools: Option<crate::bridges::schema_bridge::EvalToolCatalog>,
     pub complete: BridgeCompletionHandler,
 }
 
@@ -45,7 +45,7 @@ impl CodemodeSessionManager {
                 Box::pin(async move {
                     let execute_options = ExecuteToolOptions { signal: Some(request.signal), ..Default::default() };
                     if is_reserved_tool_name(&request.tool_name) {
-                        let tools = list_tools.as_ref().map(|list| list());
+                        let tools = list_tools.as_ref().map(|list| list()).transpose().map_err(|error| json!({"name":"Error","message":error}))?;
                         run_reserved_tool(&request.tool_name, ReservedDispatchContext {
                             call_id: &request.call_id, args: &request.args, executor: executor.as_ref(),
                             task_tool_name: &task_tools.task, task_output_tool_name: &task_tools.output,

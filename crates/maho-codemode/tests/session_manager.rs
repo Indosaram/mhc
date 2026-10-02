@@ -24,7 +24,7 @@ async fn persistent_python_calls_native_host_over_owned_bridge() {
         availability: [(maho_codemode::tool::types::EvalLanguage::Py,true),(maho_codemode::tool::types::EvalLanguage::Js,true),(maho_codemode::tool::types::EvalLanguage::Rb,true),(maho_codemode::tool::types::EvalLanguage::Jl,false)].map(|(language,enabled)|(language,maho_codemode::interpreters::detect::LanguageAvailability {enabled,detected:if language==maho_codemode::tool::types::EvalLanguage::Py {maho_codemode::interpreters::detect::InterpreterDetection::Detected {path:"python3".into(),version:"3".into(),resolved_path:None}}else {maho_codemode::interpreters::detect::InterpreterDetection::Unavailable}})),
         local_roots:None, artifacts_dir:Some(artifacts.path().into()), session_env:None,
         executor:Arc::new(Fixture),
-        list_tools:Some(Arc::new(move || {catalog_count.fetch_add(1,std::sync::atomic::Ordering::SeqCst);vec![EvalSchemaToolInfo { name:"echo".into(), description:None, parameters:Some(json!({"type":"object"})) }]})),
+        list_tools:Some(Arc::new(move || {let previous=catalog_count.fetch_add(1,std::sync::atomic::Ordering::SeqCst);if previous>0 {return Err("catalog unavailable".into());}Ok(vec![EvalSchemaToolInfo { name:"echo".into(), description:None, parameters:Some(json!({"type":"object"})) }])})),
         complete:Arc::new(|request|Box::pin(async move { Ok(json!({"text":request.prompt,"details":{"model":"fixture/model","structured":false}})) })),
     }).await.unwrap());
     let port = session.bridge_endpoint().unwrap().0;
@@ -53,9 +53,12 @@ async fn persistent_python_calls_native_host_over_owned_bridge() {
     let next = kernel.run(PythonKernelRunOptions { cell_id:"persistent".into(), code:"print(x + 1)".into(), timeout_ms:Some(5000), on_started:None, on_message:Some(Arc::new(move |message| if let Some(text)=message["data"].as_str() { next_output.lock().expect("next output").push_str(text); })) }).await.unwrap();
     assert_eq!(next["ok"], true);
     assert!(output.lock().unwrap().contains("42"));
+    let failure=kernel.run(PythonKernelRunOptions {cell_id:"catalog-failure".into(),code:"tool_schema('echo')".into(),timeout_ms:Some(5000),on_started:None,on_message:None}).await.unwrap();
+    assert_eq!(failure["ok"],false);
+    assert!(failure["error"]["message"].as_str().unwrap().contains("catalog unavailable"));
     proxy.dispose().await;
     session.dispose().await.unwrap();
-    assert_eq!(catalog_calls.load(std::sync::atomic::Ordering::SeqCst),1,"ordinary tool calls must not query the schema catalog");
+    assert_eq!(catalog_calls.load(std::sync::atomic::Ordering::SeqCst),2,"ordinary tool calls must not query the schema catalog");
     assert!(session.get_python_kernel("python3").await.is_err());
     assert!(tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err());
 }
