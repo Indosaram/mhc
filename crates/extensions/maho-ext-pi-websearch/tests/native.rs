@@ -43,6 +43,12 @@ async fn maps_models_and_preserves_public_id(){
     }
 }
 #[tokio::test]
+async fn supported_upstream_endpoint_variants(){
+    let registry=Registry{calls:AtomicUsize::new(0)};
+    for (provider,id,base,expected,suffix) in [("anthropic","claude-opus-4-7","https://api.anthropic.com",SearchProvider::Anthropic,"/v1/messages"),("anthropic","claude-opus-4-7","https://anthropic.gateway.example.com/proxy",SearchProvider::Anthropic,"/v1/messages"),("kimi-coding","k2p7","https://api.kimi.com/coding",SearchProvider::Kimi,"/v1/search"),("perplexity","sonar-pro","https://gateway.example.com/v1",SearchProvider::Perplexity,"/chat/completions"),("z-ai","glm-4.6","https://gateway.example.com/v1",SearchProvider::Zai,"/chat/completions"),("zai","glm-4.6","https://gateway.example.com/v1",SearchProvider::Zai,"/chat/completions")]{let model=NativeModelInfo{provider:provider.into(),id:id.into(),base_url:base.into()};let entry=build_native_entry(Some(&model),Some(&registry),"native").await.expect("entry").expect("supported model");assert_eq!(entry.config.provider,expected);assert_eq!(entry.config.base_url,Some(format!("{base}{suffix}")));}
+    for (id,expected,suffix) in [("openai/gpt-5.5",SearchProvider::Openai,"responses"),("anthropic/claude-opus-4-7",SearchProvider::Anthropic,"messages"),("xai/grok-4-fast",SearchProvider::Xai,"responses"),("perplexity/sonar-pro",SearchProvider::Perplexity,"chat/completions"),("z-ai/glm-4.6",SearchProvider::Zai,"chat/completions")]{let model=NativeModelInfo{provider:"openrouter".into(),id:id.into(),base_url:"https://gateway.example.com/v1".into()};let entry=build_native_entry(Some(&model),Some(&registry),"native").await.expect("entry").expect("supported model");assert_eq!(entry.config.provider,expected);assert_eq!(entry.config.base_url,Some(format!("https://gateway.example.com/v1/{suffix}")));assert_eq!(entry.config.model.as_deref(),Some(id));}
+}
+#[tokio::test]
 async fn unsafe_and_unsupported_routes_do_not_resolve_auth(){
     let registry=Registry{calls:AtomicUsize::new(0)};
     for base in ["http://127.0.0.1/v1","https://localhost/v1","https://localhost./v1","https://sub.localhost./v1","https://127.1../v1","https://0177.0.0.1../v1","https://2130706433../v1","https://0x7f000001../v1","https://10.1../v1","https://[::1]/v1","https://[fd00::1]/v1","https://[fe80::1]/v1","https://user:pass@gateway.example.com/v1","not-a-url"]{

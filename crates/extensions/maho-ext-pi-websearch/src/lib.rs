@@ -5,4 +5,5 @@ pub mod websearch {
     pub mod types;
     pub mod providers;
     pub mod search;
+    pub mod tool;
 }
