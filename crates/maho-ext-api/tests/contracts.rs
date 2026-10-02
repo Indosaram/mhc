@@ -90,6 +90,40 @@ fn providers_queue_in_order_then_register_immediately_after_binding() {
     api.register_provider("third", ProviderConfig::default()).unwrap(); api.unregister_provider("first").unwrap();
     assert_eq!(*providers.0.lock().unwrap(), ["first:test", "second:test", "third:test", "remove:first"]);
 }
+
+#[test]
+fn factory_runtime_stages_flags_and_provider_changes_until_commit() {
+    let runtime = ExtensionRuntime::default();
+    let providers = Arc::new(Providers::default());
+    runtime.bind_providers(providers.clone()).unwrap();
+    let scope = runtime.registration_scope();
+    let mut api = api(scope.clone());
+    api.register_flag("pending", FlagType::String { default: Some("default".into()) }, None);
+    api.register_provider("one", ProviderConfig::default()).unwrap();
+    api.unregister_provider("one").unwrap();
+    assert_eq!(api.get_flag("pending"), Some(FlagValue::String("default".into())));
+    assert_eq!(runtime.get_flag("pending"), None);
+    assert!(providers.0.lock().unwrap().is_empty());
+    runtime.set_flag("pending", FlagValue::String("external".into()));
+    scope.commit_registration().unwrap();
+    assert_eq!(runtime.get_flag("pending"), Some(FlagValue::String("external".into())));
+    assert_eq!(*providers.0.lock().unwrap(), ["one:test", "remove:one"]);
+    api.register_provider("two", ProviderConfig::default()).unwrap();
+    assert_eq!(providers.0.lock().unwrap().last().unwrap(), "two:test");
+}
+
+#[test]
+fn discarded_factory_does_not_revert_another_runtime_writer() {
+    let runtime = ExtensionRuntime::default();
+    let scope = runtime.registration_scope();
+    let mut api = api(scope.clone());
+    api.register_flag("pending", FlagType::Boolean { default: Some(true) }, None);
+    runtime.set_flag("external", FlagValue::Boolean(false));
+    scope.invalidate_registration("failed");
+    assert_eq!(runtime.get_flag("pending"), None);
+    assert_eq!(runtime.get_flag("external"), Some(FlagValue::Boolean(false)));
+    assert!(scope.commit_registration().is_err());
+}
 #[test]
 fn invalidation_rejects_provider_changes_and_discards_pending_registrations() {
     let runtime = ExtensionRuntime::default(); let api = api(runtime.clone());

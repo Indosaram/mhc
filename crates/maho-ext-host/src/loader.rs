@@ -21,7 +21,16 @@ pub fn load_extensions(factories: Vec<NativeExtensionFactory>, cwd: &std::path::
         let events_checkpoint = events.registration_checkpoint();
         let mut api = ExtensionApi::new(LoadedExtension::new(&factory.path, cwd.to_owned(), factory.source_info), profile.clone(), events.registration_scope(), runtime.registration_scope());
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| factory.extension.register(&mut api))) {
-            Ok(()) => extensions.push(api.registered),
+            Ok(()) => match api.runtime.commit_registration() {
+                Ok(()) => extensions.push(api.registered),
+                Err(error) => {
+                    api.runtime.invalidate_registration("Extension factory failed to load");
+                    api.events.invalidate_registration();
+                    runtime.rollback_registration(runtime_checkpoint);
+                    events.rollback_registration(events_checkpoint);
+                    errors.push(ExtensionError { extension_path: factory.path, event: "load".into(), error: format!("Failed to load extension: {}", error.message), stack: error.stack });
+                }
+            },
             Err(payload) => {
                 api.runtime.invalidate_registration("Extension factory failed to load");
                 api.events.invalidate_registration();
@@ -86,6 +95,7 @@ pub async fn load_extensions_async(factories: Vec<NativeAsyncExtensionFactory>, 
                 }
             }).await
         };
+        let outcome = outcome.and_then(|()| api.runtime.commit_registration());
         match outcome {
             Ok(()) => extensions.push(api.registered),
             Err(error) => {

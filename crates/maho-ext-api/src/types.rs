@@ -940,14 +940,38 @@ struct RuntimeState {
     provider_errors: Vec<ExtensionError>,
 }
 #[derive(Clone, Default)]
-pub struct ExtensionRuntime { state: Arc<Mutex<RuntimeState>>, registration_stale: Arc<Mutex<Option<String>>> }
+pub struct ExtensionRuntime { state: Arc<Mutex<RuntimeState>>, registration_stale: Arc<Mutex<Option<String>>>, registration_pending: Arc<Mutex<Option<RegistrationPending>>> }
+#[derive(Default)]
+struct RegistrationPending { flags: BTreeMap<String, FlagValue>, providers: Vec<ProviderRegistrationChange> }
+enum ProviderRegistrationChange { Register(ProviderRegistration, String), Unregister(String, String) }
 pub struct RuntimeRegistrationCheckpoint(RuntimeState);
 impl ExtensionRuntime {
     pub fn registration_scope(&self) -> Self {
-        Self { state: self.state.clone(), registration_stale: Arc::new(Mutex::new(None)) }
+        Self { state: self.state.clone(), registration_stale: Arc::new(Mutex::new(None)), registration_pending: Arc::new(Mutex::new(Some(RegistrationPending::default()))) }
+    }
+    pub fn commit_registration(&self) -> Result<(), ExtensionFailure> {
+        self.assert_active()?;
+        let pending = self.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(pending) = pending {
+            {
+                let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                for (name, value) in pending.flags { state.flags.entry(name).or_insert(value); }
+            }
+            for change in pending.providers { match change {
+                ProviderRegistrationChange::Register(registration, path) => self.register_provider(registration, &path)?,
+                ProviderRegistrationChange::Unregister(name, path) => self.unregister_provider(&name, &path)?,
+            } }
+        }
+        Ok(())
+    }
+    fn register_flag_default(&self, name: &str, value: FlagValue) {
+        let mut pending = self.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pending) = pending.as_mut() { pending.flags.entry(name.into()).or_insert(value); }
+        else { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.entry(name.into()).or_insert(value); }
     }
     pub fn invalidate_registration(&self, message: &str) {
         self.registration_stale.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(|| message.into());
+        self.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
     }
     pub fn registration_checkpoint(&self) -> RuntimeRegistrationCheckpoint {
         RuntimeRegistrationCheckpoint(self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
@@ -1003,6 +1027,10 @@ impl ExtensionRuntime {
                 }
             }
         }
+        {
+            let mut pending = self.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(pending) = pending.as_mut() { pending.providers.push(ProviderRegistrationChange::Register(registration, path.into())); return Ok(()); }
+        }
         let actions = {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             match &state.provider_actions { Some(actions) => Arc::clone(actions), None => { state.pending_providers.push((registration, path.into())); return Ok(()); } }
@@ -1011,6 +1039,10 @@ impl ExtensionRuntime {
     }
     pub fn unregister_provider(&self, name: &str, path: &str) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
+        {
+            let mut pending = self.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(pending) = pending.as_mut() { pending.providers.push(ProviderRegistrationChange::Unregister(name.into(), path.into())); return Ok(()); }
+        }
         let actions = {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             state.pending_providers.retain(|(registration, _)| registration.name() != name);
@@ -1032,7 +1064,11 @@ impl ExtensionRuntime {
         self.assert_active()?;
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).actions.clone().ok_or_else(|| ExtensionFailure::new("Extension actions are unavailable during registration"))
     }
-    pub fn get_flag(&self, name: &str) -> Option<FlagValue> { self.assert_active_or_panic(); self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.get(name).cloned() }
+    pub fn get_flag(&self, name: &str) -> Option<FlagValue> {
+        self.assert_active_or_panic();
+        let existing = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.get(name).cloned();
+        existing.or_else(|| self.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(|pending| pending.flags.get(name).cloned()))
+    }
     pub fn set_flag(&self, name: &str, value: FlagValue) { self.assert_active_or_panic(); self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.insert(name.into(), value); }
 }
 pub struct ExtensionApi {
@@ -1112,7 +1148,7 @@ impl ExtensionApi {
     pub fn register_flag(&mut self, name: &str, kind: FlagType, description: Option<String>) {
         self.runtime.assert_active_or_panic();
         let default = match &kind { FlagType::Boolean { default } => default.map(FlagValue::Boolean), FlagType::String { default } => default.clone().map(FlagValue::String) };
-        if let Some(value) = default { let mut state = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner); state.flags.entry(name.into()).or_insert(value); }
+        if let Some(value) = default { self.runtime.register_flag_default(name, value); }
         let flag = ExtensionFlag { name: name.into(), description, kind, extension_path: self.registered.identity.path.clone() };
         if let Some(existing) = self.registered.flags.iter_mut().find(|f| f.name == name) { *existing = flag; } else { self.registered.flags.push(flag); }
     }
