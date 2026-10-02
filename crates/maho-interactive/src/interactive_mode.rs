@@ -55,6 +55,7 @@ pub struct InteractiveMode {
 }
 
 impl InteractiveMode {
+    fn output_pad(&self) -> usize { self.session.with_settings_manager(|settings| settings.get_number("outputPad").unwrap_or(1.0) as usize) }
     pub fn new(session: Arc<AgentSession>, theme: Theme, host: Rc<dyn maho_tui::components::editor::EditorTuiHost>) -> Self {
         let (sender, events) = tokio::sync::mpsc::unbounded_channel();
         let subscription = session.subscribe(Arc::new(move |event| { drop(sender.send(event.clone())); }));
@@ -113,7 +114,7 @@ impl InteractiveMode {
                 self.editor.editor.add_to_history(&text);
             }
             AgentMessage::Custom(CustomAgentMessage::Custom(message)) if message.display => {
-                let component = Rc::new(RefCell::new(crate::components::custom_message::CustomMessageComponent::new(serde_json::to_value(message).expect("custom message"), None, self.theme.clone(), get_markdown_theme(&self.theme), 1)));
+                let component = Rc::new(RefCell::new(crate::components::custom_message::CustomMessageComponent::new(serde_json::to_value(message).expect("custom message"), None, self.theme.clone(), get_markdown_theme(&self.theme), self.output_pad())));
                 component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(component.clone());
                 self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
             }
@@ -642,10 +643,10 @@ impl InteractiveMode {
                         component.set_expanded(self.tools_expanded);
                         let component = Rc::new(RefCell::new(component)); self.chat.add_child(component.clone());
                         self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
-                        if let Some(text) = block.user_message { self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))); self.chat.add_child(Rc::new(RefCell::new(UserMessageComponent::new(text, self.theme.clone(), get_markdown_theme(&self.theme), 1, self.markdown_transformers.clone())))); }
+                        if let Some(text) = block.user_message { self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))); self.chat.add_child(Rc::new(RefCell::new(UserMessageComponent::new(text, self.theme.clone(), get_markdown_theme(&self.theme), self.output_pad(), self.markdown_transformers.clone())))); }
                         return;
                     }
-                    let component = Rc::new(RefCell::new(UserMessageComponent::new(text.clone(), self.theme.clone(), get_markdown_theme(&self.theme), 1, self.markdown_transformers.clone())));
+                    let component = Rc::new(RefCell::new(UserMessageComponent::new(text.clone(), self.theme.clone(), get_markdown_theme(&self.theme), self.output_pad(), self.markdown_transformers.clone())));
                     if let Some(frame) = crate::components::ask_user_answer_chip::parse_ask_user_answer_frame(&text) {
                         let entries = self.session.with_session_manager(|manager| manager.entries());
                         let headers = crate::components::ask_user_answer_chip::get_ask_user_answer_headers(&entries, &frame.request_id);
@@ -654,7 +655,7 @@ impl InteractiveMode {
                 } else if message.role() == "assistant" {
                     self.assistant_segments.clear();
                     self.reveal.begin(serde_json::to_value(message).expect("assistant"), self.clock.elapsed().as_secs_f64() * 1000.0);
-                    let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", 1, self.markdown_transformers.clone(), self.theme.clone())));
+                    let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", self.output_pad(), self.markdown_transformers.clone(), self.theme.clone())));
                     self.chat.add_child(component.clone());
                     self.assistant_cards.push(component.clone());
                     component.borrow_mut().set_hidden_thinking_label(&self.hidden_thinking_label);
@@ -720,9 +721,10 @@ impl InteractiveMode {
 
     fn update_assistant_segment(&mut self, message: &maho_ai::types::AssistantMessage, start: usize, end: usize, final_message: bool) {
         if start == end && start != 0 { return; }
+        let output_pad = self.output_pad();
         let component = if start == 0 { self.streaming.clone() } else {
             Some(self.assistant_segments.entry(start).or_insert_with(|| {
-                let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", 1, self.markdown_transformers.clone(), self.theme.clone())));
+                let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", output_pad, self.markdown_transformers.clone(), self.theme.clone())));
                 component.borrow_mut().set_hidden_thinking_label(&self.hidden_thinking_label);
                 self.chat.add_child(component.clone()); self.assistant_cards.push(component.clone()); component
             }).clone())
@@ -777,7 +779,7 @@ impl InteractiveMode {
 impl crate::replay_assistant_tools::ReplayToolHost for InteractiveMode {
     fn expanded(&self) -> bool { self.tools_expanded }
     fn add_message(&mut self, message: maho_ai::types::AssistantMessage) {
-        let component = Rc::new(RefCell::new(AssistantMessageComponent::new(Some(serde_json::to_value(message).expect("assistant")), self.reveal.hide_thinking, get_markdown_theme(&self.theme), "Thinking…", 1, self.markdown_transformers.clone(), self.theme.clone())));
+        let component = Rc::new(RefCell::new(AssistantMessageComponent::new(Some(serde_json::to_value(message).expect("assistant")), self.reveal.hide_thinking, get_markdown_theme(&self.theme), "Thinking…", self.output_pad(), self.markdown_transformers.clone(), self.theme.clone())));
         component.borrow_mut().set_expanded(self.tools_expanded);
         component.borrow_mut().set_hidden_thinking_label(&self.hidden_thinking_label);
         self.chat.add_child(component.clone()); self.assistant_cards.push(component);
