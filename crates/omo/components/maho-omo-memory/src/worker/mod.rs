@@ -33,4 +33,5 @@ pub mod run_finalization_settlement;
 pub mod run_finalization;
 pub mod spawn_supervisor_support;
 pub mod run_sentinel;
+pub mod run_outcome_publication;
 pub mod supervisor_process_identity;
