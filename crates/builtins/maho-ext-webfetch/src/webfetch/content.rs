@@ -248,6 +248,44 @@ pub fn reader_clean_styles(node:&dom_query::NodeRef<'_>) {
     if matches!(node.node_name().as_deref(),Some("table"|"th"|"td"|"hr"|"pre")) {node.remove_attr("width");node.remove_attr("height");}
     for child in node.element_children() {reader_clean_styles(&child);}
 }
+pub fn reader_prepare_article(root:&dom_query::NodeRef<'_>,weight_classes:bool,clean_conditionally:bool) {
+    static VIDEO:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)//(www\.)?((dailymotion|youtube|youtube-nocookie|player\.vimeo|v\.qq)\.com|(archive|upload\.wikimedia)\.org|player\.twitch\.tv)").expect("literal pattern"));
+    static SHARE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)(\b|_)(share|sharedaddy)(\b|_)").expect("literal pattern"));
+    reader_clean_styles(root);let selection=dom_query::Selection::from(*root);let tables:Vec<_>=selection.select("table").nodes().iter().filter(|table|reader_data_table(table)).map(|table|table.id).collect();reader_fix_lazy_images(root);
+    if clean_conditionally {for tag in ["form","fieldset"] {reader_clean_conditionally(root,tag,&tables,weight_classes);}}
+    for tag in ["object","embed","footer","link","aside"] {
+        for node in selection.select(tag).nodes().iter().rev() {
+            let video=matches!(tag,"object"|"embed")&&(node.attrs().iter().any(|attr|VIDEO.is_match(&attr.value))||(tag=="object"&&VIDEO.is_match(&node.inner_html())));
+            if !video {node.remove_from_parent();}
+        }
+    }
+    for top in root.element_children() {
+        let end=reader_next_node(top,true);let mut current=reader_next_node(top,false);
+        while let Some(node)=current {
+            if end.is_some_and(|marker|marker.id==node.id) {break;}
+            let name=format!("{} {}",node.attr("class").unwrap_or_default(),node.attr("id").unwrap_or_default());
+            if SHARE.is_match(&name)&&node.text().encode_utf16().count()<500 {current=reader_next_node(node,true);node.remove_from_parent();} else {current=reader_next_node(node,false);}
+        }
+    }
+    for tag in ["iframe","input","textarea","select","button"] {
+        for node in selection.select(tag).nodes().iter().rev() {if tag!="iframe"||!node.attrs().iter().any(|attr|VIDEO.is_match(&attr.value)) {node.remove_from_parent();}}
+    }
+    for node in selection.select("h1,h2").nodes().iter().rev() {if reader_initial_score(node,weight_classes)-reader_initial_score(node,false)<0 {node.remove_from_parent();}}
+    if clean_conditionally {for tag in ["table","ul","div"] {reader_clean_conditionally(root,tag,&tables,weight_classes);}}
+    reader_finish_article(root);
+}
+pub fn reader_simplify_nested(root:dom_query::NodeRef<'_>) {
+    let mut current=Some(root);
+    while let Some(node)=current {
+        if node.parent().is_some()&&matches!(node.node_name().as_deref(),Some("div"|"section"))&&!node.attr("id").is_some_and(|id|id.starts_with("readability")) {
+            if reader_element_without_content(&node) {current=reader_next_node(node,true);node.remove_from_parent();continue;}
+            if reader_has_single_tag(&node,"div")||reader_has_single_tag(&node,"section") {
+                let child=node.element_children()[0];for attribute in node.attrs() {child.set_attr(attribute.name.local.as_ref(),&attribute.value);}node.replace_with(&child);current=Some(child);continue;
+            }
+        }
+        current=reader_next_node(node,false);
+    }
+}
 pub fn reader_fix_lazy_images(root:&dom_query::NodeRef<'_>) {
     static BASE64:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)^data:\s*([^\s;,]+)\s*;\s*base64\s*,").expect("literal pattern"));
     static IMAGE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)\.(jpg|jpeg|png|webp)").expect("literal pattern"));
@@ -546,6 +584,12 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_article_preparation_preserves_video_and_top_share_candidate() {
+        let document=dom_query::Document::from("<main><section class='share'><p>Article</p><span class='share'>share buttons</span><iframe src='https://youtube.com/embed/x'></iframe><iframe src='https://invalid.test/x'></iframe><footer>footer</footer><h1 class='sidebar'>bad title</h1><h1>Good title</h1><img data-src='real.png'></section></main>");reader_prepare_article(&document.select("main").nodes()[0],true,true);assert_eq!(document.select(".share").length(),1);assert_eq!(document.select("iframe").length(),1);assert!(document.select("footer,h1").is_empty());assert_eq!(document.select("h2").text().as_ref(),"Good title");assert_eq!(document.select("img").attr("src").as_deref(),Some("real.png"));
+    }
+    #[test] fn reader_nested_cleanup_copies_outer_attributes_and_preserves_readability_wrappers() {
+        let document=dom_query::Document::from("<main><div id='outer' class='outer'><section id='inner' class='inner'><p>text</p></section></div><div id='empty'></div><div id='readability-page-1'><div><p>page</p></div></div></main>");reader_simplify_nested(document.select("main").nodes()[0]);assert!(document.select("#inner,#empty").is_empty());assert_eq!(document.select("#outer").nodes()[0].node_name().as_deref(),Some("section"));assert_eq!(document.select("#outer").attr("class").as_deref(),Some("outer"));assert_eq!(document.select("#readability-page-1 > div").length(),1);
+    }
     #[test] fn reader_conditional_cleanup_protects_tables_and_simple_image_lists() {
         let document=dom_query::Document::from("<main><div id='links'><p><a href='x'>linked words only</a></p></div><div id='good'><p>Long readable text with sufficient density.</p></div><div id='protected' class='sidebar'><table summary='data'><tr><td>data</td></tr></table></div><ul><li><img src='x'></li><li><img src='y'></li></ul></main>");let root=document.select("main").nodes()[0];let table=document.select("table").nodes()[0];reader_clean_conditionally(&root,"div",&[table.id],true);reader_clean_conditionally(&root,"ul",&[table.id],true);assert!(document.select("#links").is_empty());assert!(!document.select("#good,#protected,ul").is_empty());assert_eq!(document.select("#good,#protected,ul").length(),3);
     }
