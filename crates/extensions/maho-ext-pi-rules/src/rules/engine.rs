@@ -65,6 +65,7 @@ impl<D:EngineDeps> Engine<D>{
                 for candidate in candidates{
                     let root_single=is_root_single_file(&candidate)&&root.is_some();
                     if root_single&&selected_roots.contains(&root){continue;}
+                    if !candidate_within_project(&candidate,root.as_deref()){result.diagnostics.push(RuleDiagnostic{severity:Severity::Warning,source:candidate.path,message:"Rule file resolves outside project root".into()});continue;}
                     let mut rule=if let Some(cached)=loaded.get(&candidate.real_path){
                         if let Some(diagnostics)=cached_diagnostics.get(&candidate.real_path){result.diagnostics.extend(diagnostics.iter().cloned().map(|mut diagnostic|{diagnostic.source=candidate.path.clone();diagnostic}));}
                         let Some(cached)=cached else{result.diagnostics.push(RuleDiagnostic{severity:Severity::Warning,source:candidate.path,message:"Unable to read rule file".into()});continue;};
@@ -126,13 +127,15 @@ fn relative_path(base:&Path,target:&Path)->String{
     let common=left.iter().zip(&right).take_while(|(a,b)|a==b).count();let mut result=PathBuf::new();
     for _ in common..left.len(){result.push("..");}for component in &right[common..]{result.push(component.as_os_str());}result.to_string_lossy().replace('\\',"/")
 }
-fn load_candidate<D:EngineDeps>(candidate:RuleCandidate,deps:&mut D,diagnostics:&mut Vec<RuleDiagnostic>,root:Option<&str>)->Option<LoadedRule>{
-    let contained=candidate.is_global||root.is_some_and(|root|{
+fn candidate_within_project(candidate:&RuleCandidate,root:Option<&str>)->bool{
+    candidate.is_global||root.is_some_and(|root|{
         let root=Path::new(root).canonicalize().unwrap_or_else(|_|absolute(root));
         let real=absolute(&candidate.real_path);
         real.strip_prefix(root).is_ok_and(|relative|!relative.to_string_lossy().starts_with(".."))
-    });
-    if !contained{diagnostics.push(RuleDiagnostic{severity:Severity::Warning,source:candidate.path,message:"Rule file resolves outside project root".into()});return None;}
+    })
+}
+fn load_candidate<D:EngineDeps>(candidate:RuleCandidate,deps:&mut D,diagnostics:&mut Vec<RuleDiagnostic>,root:Option<&str>)->Option<LoadedRule>{
+    if !candidate_within_project(&candidate,root){diagnostics.push(RuleDiagnostic{severity:Severity::Warning,source:candidate.path,message:"Rule file resolves outside project root".into()});return None;}
     let Some(content)=deps.read_file(&candidate.path)else{diagnostics.push(RuleDiagnostic{severity:Severity::Warning,source:candidate.path,message:"Unable to read rule file".into()});return None;};
     let parsed=parse_rule(&content);
     if let Some(message)=parsed.diagnostic{diagnostics.push(RuleDiagnostic{severity:Severity::Warning,source:candidate.path.clone(),message});}

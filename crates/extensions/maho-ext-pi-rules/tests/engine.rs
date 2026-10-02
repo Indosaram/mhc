@@ -21,6 +21,15 @@ fn engine(config:PiRulesConfig,entries:Vec<(RuleCandidate,Option<&str>)>)->Engin
 #[test]fn nested_single_not_deduped(){let mut nested=candidate("AGENTS.md",true);nested.path="/workspace/project/packages/app/AGENTS.md".into();nested.real_path=nested.path.clone();nested.relative_path="packages/app/AGENTS.md".into();nested.distance=1;let r=engine(default_config(),vec![(candidate("AGENTS.md",true),Some("root")),(nested,Some("nested"))]).load_static_rules("/workspace/project");assert_eq!(r.rules.len(),2);}
 #[test]fn malformed_warns_and_continues(){let r=engine(default_config(),vec![(candidate(".omo/rules/bad.md",false),Some("---\nglobs: [unclosed\n---\nbody")),(candidate("AGENTS.md",true),Some("valid"))]).load_static_rules("/workspace/project");assert_eq!(r.diagnostics.len(),1);assert_eq!(r.rules.len(),1);}
 #[test]fn cached_malformed_content_replays_diagnostic_per_target(){let mut e=engine(default_config(),vec![(candidate(".omo/rules/bad.md",false),Some("---\nglobs: [unclosed\n---\nbody"))]);let result=e.load_dynamic_rules("/workspace/project",&["/workspace/project/src/a.ts".into(),"/workspace/project/src/b.ts".into()]).expect("load");assert_eq!(result.diagnostics.len(),2);assert_eq!(result.diagnostics[0],result.diagnostics[1]);assert_eq!(e.deps.read_calls,1);}
+#[test]fn cached_content_rechecks_membership_for_each_project_root(){
+    struct Roots;
+    impl EngineDeps for Roots{
+        fn find_candidates(&mut self,_:FinderOptions<'_>)->Vec<RuleCandidate>{vec![candidate(".omo/rules/shared.md",false)]}
+        fn read_file(&mut self,_:&str)->Option<String>{Some("---\nalwaysApply: true\n---\nbody".into())}
+        fn find_project_root(&mut self,path:&str)->Option<String>{Some(if path.contains("/other/"){"/workspace/other"}else{"/workspace/project"}.into())}
+    }
+    let mut e=Engine::new(default_config(),Roots);let result=e.load_dynamic_rules("/workspace/project",&["/workspace/project/src/a.ts".into(),"/workspace/other/src/b.ts".into()]).expect("load");assert_eq!(result.rules.len(),1);assert_eq!(result.diagnostics.len(),1);
+}
 #[test]fn unreadable_warns_and_continues(){let r=engine(default_config(),vec![(candidate(".omo/rules/missing.md",false),None),(candidate("AGENTS.md",true),Some("valid"))]).load_static_rules("/workspace/project");assert_eq!(r.diagnostics.len(),1);assert_eq!(r.diagnostics[0].message,"Unable to read rule file");assert_eq!(r.rules.len(),1);}
 #[test]fn escapes_root_before_read(){let mut c=candidate(".omo/rules/leak.md",false);c.real_path="/Users/example/.ssh/id_rsa".into();let r=engine(default_config(),vec![(c,Some("---\nalwaysApply: true\n---\nsecret"))]).load_static_rules("/workspace/project");assert!(r.rules.is_empty());assert_eq!(r.diagnostics[0].message,"Rule file resolves outside project root");}
 #[test]fn static_mode_no_dynamic(){let mut config=default_config();config.mode=Mode::Static;let r=engine(config,vec![(candidate("AGENTS.md",true),Some("body"))]).load_dynamic_rules("/workspace/project",&["/workspace/project/src/index.ts".into()]).unwrap();assert_eq!(r,LoadResult::default());}
