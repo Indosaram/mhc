@@ -248,6 +248,57 @@ pub fn reader_clean_styles(node:&dom_query::NodeRef<'_>) {
     if matches!(node.node_name().as_deref(),Some("table"|"th"|"td"|"hr"|"pre")) {node.remove_attr("width");node.remove_attr("height");}
     for child in node.element_children() {reader_clean_styles(&child);}
 }
+pub fn reader_finish_article(root:&dom_query::NodeRef<'_>) {
+    let selection=dom_query::Selection::from(*root);
+    for heading in selection.select("h1").nodes() {heading.rename("h2");}
+    for paragraph in selection.select("p").nodes().iter().rev() {
+        if dom_query::Selection::from(*paragraph).select("img,embed,object,iframe").is_empty()&&reader_inner_text(paragraph,false).is_empty() {paragraph.remove_from_parent();}
+    }
+    for br in selection.select("br").nodes() {
+        let mut next=br.next_sibling();
+        while let Some(node)=next {if node.is_element()||!node.text().chars().all(js_whitespace) {break;}next=node.next_sibling();}
+        if next.is_some_and(|node|node.node_name().as_deref()==Some("p")) {br.remove_from_parent();}
+    }
+    for table in selection.select("table").nodes() {
+        let tbody=if reader_has_single_tag(table,"tbody") {table.element_children()[0]} else {*table};
+        if reader_has_single_tag(&tbody,"tr") {
+            let row=tbody.element_children()[0];
+            if reader_has_single_tag(&row,"td") {
+                let cell=row.element_children()[0];cell.rename(if cell.children().iter().all(reader_is_phrasing) {"p"} else {"div"});table.replace_with(&cell);
+            }
+        }
+    }
+}
+pub fn reader_clean_classes(node:&dom_query::NodeRef<'_>,preserved:&[&str]) {
+    let classes=node.attr("class").unwrap_or_default();let classes=classes.split(js_whitespace).filter(|class|preserved.contains(class)).collect::<Vec<_>>().join(" ");
+    if classes.is_empty() {node.remove_attr("class");} else {node.set_attr("class",&classes);}
+    for child in node.element_children() {reader_clean_classes(&child,preserved);}
+}
+pub fn reader_article_title(document:&dom_query::Document)->String {
+    static WORDS:LazyLock<Regex>=LazyLock::new(||Regex::new(r"[\s\u{feff}]+").expect("literal pattern"));
+    static SEPARATOR:LazyLock<Regex>=LazyLock::new(||Regex::new(r" [|\-\\/>»] ").expect("literal pattern"));
+    static FIRST:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^[^|\-\\/>»]*[|\-\\/>»]").expect("literal pattern"));
+    static NORMALIZE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"[\s\u{feff}]{2,}").expect("literal pattern"));
+    let original=document.select("title").text().trim_matches(js_whitespace).to_owned();let mut title=original.clone();let mut hierarchical=false;
+    let count=|text:&str|WORDS.split(text).count();
+    if let Some(separator)=SEPARATOR.find_iter(&title).last() {
+        hierarchical=SEPARATOR.find_iter(&title).any(|part|part.as_str().contains(['\\','/','>','»']));title=original[..separator.start()].into();
+        if count(&title)<3 {title=FIRST.replace(&original,"").into_owned();}
+    } else if title.contains(": ") {
+        let matched=document.select("h1,h2").nodes().iter().any(|heading|heading.text().trim_matches(js_whitespace)==title.trim_matches(js_whitespace));
+        if !matched {
+            title=original[original.rfind(':').expect("colon present")+1..].into();
+            if count(&title)<3 {title=original[original.find(':').expect("colon present")+1..].into();}
+            else if count(&original[..original.find(':').expect("colon present")])>5 {title=original.clone();}
+        }
+    } else if !(15..=150).contains(&title.encode_utf16().count()) {
+        let headings=document.select("h1");if headings.length()==1 {title=reader_inner_text(&headings.nodes()[0],true);}
+    }
+    title=NORMALIZE.replace_all(title.trim_matches(js_whitespace)," ").into_owned();let words=count(&title);
+    let stripped=original.chars().filter(|character|!matches!(character,'|'|'-'|'\\'|'/'|'>'|'»')).collect::<String>();
+    if words<=4&&(!hierarchical||words as isize!=count(&stripped) as isize-1) {title=original;}
+    title
+}
 fn markdown_block(name:&str)->bool {matches!(name,"address"|"article"|"aside"|"audio"|"blockquote"|"body"|"canvas"|"center"|"dd"|"dir"|"div"|"dl"|"dt"|"fieldset"|"figcaption"|"figure"|"footer"|"form"|"frameset"|"h1"|"h2"|"h3"|"h4"|"h5"|"h6"|"header"|"hgroup"|"hr"|"html"|"isindex"|"li"|"main"|"menu"|"nav"|"noframes"|"noscript"|"ol"|"output"|"p"|"pre"|"section"|"table"|"tbody"|"td"|"tfoot"|"th"|"thead"|"tr"|"ul")}
 fn markdown_void(name:&str)->bool {matches!(name,"area"|"base"|"br"|"col"|"command"|"embed"|"hr"|"img"|"input"|"keygen"|"link"|"meta"|"param"|"source"|"track"|"wbr")}
 fn markdown_meaningful(name:&str)->bool {matches!(name,"a"|"table"|"thead"|"tbody"|"tfoot"|"th"|"td"|"iframe"|"script"|"audio"|"video")}
@@ -435,6 +486,15 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_finish_article_retains_media_and_unwraps_single_cell_tables() {
+        let document=dom_query::Document::from("<main><h1>Title</h1><p> </p><p><img src='x'></p><br> <p>text</p><table><tbody><tr><td id='cell'><em>inline</em></td></tr></tbody></table><table><tr><td><section>block</section></td></tr></table></main>");reader_finish_article(&document.select("main").nodes()[0]);assert!(document.select("h1, br, table").is_empty());assert_eq!(document.select("h2").text().as_ref(),"Title");assert_eq!(document.select("p").length(),3);assert_eq!(document.select("#cell").nodes()[0].node_name().as_deref(),Some("p"));assert_eq!(document.select("main > div").text().as_ref(),"block");
+    }
+    #[test] fn reader_title_preserves_short_fallback_and_separator_rules() {
+        for (html,expected) in [("<title>A long article title with words | Site</title>","A long article title with words"),("<title>Short | Site</title>","Short | Site"),("<title>Site: A detailed article title with words</title>","A detailed article title with words"),("<title>Short</title><h1>A detailed heading with enough words</h1>","A detailed heading with enough words")] {assert_eq!(reader_article_title(&dom_query::Document::from(html)),expected);}
+    }
+    #[test] fn reader_class_cleanup_preserves_duplicate_exact_names_and_svg_descendants() {
+        let document=dom_query::Document::from("<div class='page PAGE page other'><span class='keep page'>x</span><svg class='other'><g class='page'></g></svg></div>");reader_clean_classes(&document.select("div").nodes()[0],&["page"]);assert_eq!(document.select("div").attr("class").as_deref(),Some("page page"));assert_eq!(document.select("span").attr("class").as_deref(),Some("page"));assert!(document.select("svg").attr("class").is_none());assert_eq!(document.select("g").attr("class").as_deref(),Some("page"));
+    }
     #[test] fn reader_style_cleanup_skips_entire_svg_and_keeps_image_size() {
         let document=dom_query::Document::from("<div style='color:red' align='left'><pre width='10' height='20' style='x'>code</pre><img width='10' height='20' style='x'><svg style='fill:red'><g style='x'></g></svg></div>");reader_clean_styles(&document.select("div").nodes()[0]);assert!(document.select("div").attr("style").is_none());assert!(document.select("div").attr("align").is_none());assert!(document.select("pre").attr("width").is_none());assert!(document.select("pre").attr("height").is_none());assert_eq!(document.select("img").attr("width").as_deref(),Some("10"));assert!(document.select("img").attr("style").is_none());assert_eq!(document.select("svg").attr("style").as_deref(),Some("fill:red"));assert_eq!(document.select("g").attr("style").as_deref(),Some("x"));
     }
