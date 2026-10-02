@@ -142,7 +142,7 @@ pub async fn run_extension_compaction(
                 && crate::summarization_retry::allow_summarization_retry(retry_started.elapsed().as_secs_f64() * 1000., Some(attempt_ms))
                 && match error {
                     SummaryGenerationError::Request(response) => !response.error_message.as_deref().is_some_and(|message|message.starts_with("senpi:no-turn-retry:"))
-                        && matches!(summary_request_failure(response), crate::deterministic_fallback::SummaryFailure::Request { transient: true, truncated: false, .. }),
+                        && matches!(summary_request_failure(response), crate::deterministic_fallback::SummaryFailure::Request { transient: true, refused: false, truncated: false }),
                     SummaryGenerationError::Stream(summary::SummaryStreamError::Provider(error)) => maho_ai::utils::retry::is_retryable_error_message(&error.to_string()),
                     _ => false,
                 },

@@ -83,7 +83,7 @@ pub fn create_live_blocking_remote_compaction_event(
     custom_instructions: String,
     signal: maho_ext_api::AbortSignal,
 ) -> maho_ext_api::SessionBeforeCompactEvent {
-    create_blocking_remote_compaction_event(context, preparation, maho_core::session_manager::create_session_id(), custom_instructions, signal)
+    create_blocking_remote_compaction_event(context, preparation, uuid::Uuid::new_v4().to_string(), custom_instructions, signal)
 }
 
 pub fn summarization_tools(api: &maho_ext_api::ExtensionApi) -> Vec<maho_ai::types::Tool> {
@@ -92,6 +92,34 @@ pub fn summarization_tools(api: &maho_ext_api::ExtensionApi) -> Vec<maho_ai::typ
     active.iter().filter_map(|name|definitions.iter().find(|tool|&tool.name == name)).map(|tool|maho_ai::types::Tool {
         name: tool.name.clone(), description: tool.description.clone(), parameters: tool.parameters.clone(), freeform: None, constrained_sampling: None,
     }).collect()
+}
+
+pub fn prepare_accepted_restoration(
+    state: &mut crate::restoration_tracker::RestorationTrackerState,
+    context: &maho_ext_api::ExtensionContext,
+    event: &maho_ext_api::SessionCompactEvent,
+    settings: &maho_core::compaction::settings::CompactionSettings,
+) -> Result<(), maho_ext_api::ExtensionFailure> {
+    let maho_ext_api::SessionCompactEvent::Accepted { reason, compaction_entry, .. } = event else { return Ok(()); };
+    if settings.restoration_enabled == Some(false) { return Ok(()); }
+    let entries = crate::speculative::branch_values(context);
+    let first_kept = compaction_entry.data["firstKeptEntryId"].as_str();
+    let kept: Vec<_> = entries.iter().position(|entry|entry["id"].as_str() == first_kept).map_or_else(Vec::new, |index| {
+        entries[index..].iter().filter(|entry|entry["type"] == "message").map(|entry|entry["message"].clone()).collect()
+    });
+    let usage = context.get_context_usage()?;
+    let window = usage.as_ref().map_or_else(||context.model.as_ref().map_or(200000,|model|model.context_window),|usage|usage.context_window) as f64;
+    let restoration = crate::restoration_tracker::RestorationSettings {
+        max_items: settings.restoration_max_items.map(|value|value as f64), max_tokens_per_item: settings.restoration_max_tokens_per_item.map(|value|value as f64),
+        max_total_tokens: settings.restoration_max_total_tokens.map(|value|value as f64), context_ratio: settings.restoration_context_ratio,
+    };
+    let reason = match reason { maho_ext_api::CompactionReason::Manual => "manual", maho_ext_api::CompactionReason::Threshold => "threshold", maho_ext_api::CompactionReason::Overflow => "overflow", maho_ext_api::CompactionReason::Branch => "branch", maho_ext_api::CompactionReason::PrePrompt => "pre-prompt", maho_ext_api::CompactionReason::Extension => "extension" };
+    crate::restoration_tracker::prepare_pending_payload(state, &crate::restoration_tracker::PreparePendingPayloadOptions {
+        accepted: true, reason, compaction_entry_id: &compaction_entry.id, context_window: window,
+        usage_tokens: usage.and_then(|usage|usage.tokens).map(|tokens|tokens as f64),
+        reserve_tokens: crate::policy::resolve_effective_reserve_tokens(window,settings.reserve_tokens as f64,settings.ideal.reserve_scaling_enabled), settings: &restoration, kept_messages: &kept,
+    });
+    Ok(())
 }
 
 pub async fn generate_core_route_compaction(
@@ -151,7 +179,7 @@ pub async fn generate_core_route_compaction(
                     return Ok(EventResult::SessionBefore(SessionBeforeEventResult { compaction: Some(compaction), ..Default::default() }));
                 }
             }
-            Ok(EventResult::SessionBefore(SessionBeforeEventResult { cancel: Some(true), reason: Some(error.to_string()), ..Default::default() }))
+            Ok(EventResult::SessionBefore(SessionBeforeEventResult { cancel: Some(true), reason: Some(error.to_string().replace("senpi:no-turn-retry:","")), ..Default::default() }))
         }
     }
 }

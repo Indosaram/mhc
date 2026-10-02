@@ -150,3 +150,16 @@ async fn rejected_compactions_trip_registered_breaker_but_external_owner_does_no
     }
 }
 
+#[test]
+fn disabled_restoration_and_rejected_compaction_never_read_unbound_context() {
+    let mut settings = maho_core::compaction::settings::default_compaction_settings();
+    settings.restoration_enabled = Some(false);
+    let mut state = maho_ext_compaction::restoration_tracker::RestorationTrackerState::default();
+    let accepted = SessionCompactEvent::Accepted { reason: CompactionReason::Manual, request_id: "r".into(), compaction_entry: SessionEntry { id:"c".into(),parent_id:None,timestamp:String::new(),kind:"compaction".into(),data:serde_json::json!({}) },from_extension:true,will_retry:false };
+    maho_ext_compaction::extension_wiring::prepare_accepted_restoration(&mut state,&context(),&accepted,&settings).unwrap();
+    settings.restoration_enabled = Some(true);
+    let rejected = SessionCompactEvent::Rejected { reason:CompactionReason::Manual,request_id:"r".into(),rejection_cause:CompactionRejectionCause::ExternalOwner };
+    maho_ext_compaction::extension_wiring::prepare_accepted_restoration(&mut state,&context(),&rejected,&settings).unwrap();
+    assert!(state.pending_payload.is_none());
+}
+
