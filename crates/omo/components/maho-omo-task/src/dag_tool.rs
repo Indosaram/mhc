@@ -63,5 +63,26 @@ pub fn create_dag_tool(deps: DagToolDeps) -> ToolDefinition {
     let deps = Arc::new(deps);
     let parameters = json!({"type":"object","properties":{"action":{"type":"string","enum":["start","attach","snapshot","wait","cancel"]},"definition":{"type":"object","properties":{"key":{"type":"string"},"name":{"type":"string"},"nodes":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"prompt":{"type":"string"},"label":{"type":"string"},"category":{"type":"string"},"subagent_type":{"type":"string"},"model":{"type":"string"},"dependsOn":{"type":"array","items":{"type":"string"}},"task_summary":{"type":"string"},"description":{"type":"string"},"load_skills":{"type":"array","items":{"type":"string"}}},"required":["id","prompt"]}}},"required":["key","name","nodes"]},"run_id":{"type":"string"},"reason":{"type":"string"}},"required":["action"]});
     let mut tool = ToolDefinition::new(DAG_TOOL_NAME, DESCRIPTION, parameters, Arc::new(move |call| { let deps = deps.clone(); Box::pin(async move { run_dag_tool(&deps, serde_json::from_value(call.params)?) }) }));
+    tool.parameters["properties"]["action"]["description"]=json!("start creates or reuses a run from a definition; attach re-binds to a live run; snapshot reads current state; wait blocks until the run settles; cancel stops it.");
+    tool.parameters["properties"]["definition"]["description"]=json!("Graph to run. Required for action=start, ignored otherwise.");
+    tool.parameters["properties"]["run_id"]["description"]=json!("Run id returned by start. Required for attach, snapshot, wait, and cancel.");
+    tool.parameters["properties"]["reason"]["description"]=json!("Optional human-readable reason recorded when cancelling a run.");
+    let definition=&mut tool.parameters["properties"]["definition"]["properties"];
+    definition["key"]["description"]=json!("Stable idempotency key for this run within the session; re-starting with the same key and definition reuses the existing run.");
+    definition["name"]["description"]=json!("Human-readable run name shown in status views.");
+    definition["nodes"]["description"]=json!("The nodes of the graph. Each node targets EITHER a category OR a subagent_type.");
+    let node=&mut definition["nodes"]["items"]["properties"];
+    for (key,description) in [
+        ("id","Node id, unique within the definition; referenced by dependsOn."),
+        ("prompt","The instruction for this node's child task. MUST be written in English."),
+        ("label","Short human label for this node."),
+        ("category","Category name to route this node through. Mutually exclusive with subagent_type; required unless subagent_type is given."),
+        ("subagent_type","Agent name to invoke directly (e.g. momus). Mutually exclusive with category; required unless category is given."),
+        ("model","Explicit model override. Only valid with subagent_type; rejected alongside category, which takes its model from omo.json."),
+        ("dependsOn","Ids of nodes that must finish before this one is scheduled. Ordering only: no output is substituted into this prompt."),
+        ("task_summary","One-line summary of this node's work, shown in the run widget."),
+        ("description","Short human description of this node."),
+        ("load_skills","Skill names whose SKILL.md content is prepended to this node's prompt."),
+    ] { node[key]["description"]=json!(description); }
     tool.label = "Dag".into(); tool
 }
