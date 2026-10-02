@@ -9,9 +9,9 @@ pub struct MatchResult {pub matched:bool,pub reason:MatchReason}
 #[derive(Debug,PartialEq,Eq)]
 pub struct MatcherCacheStats {pub entries:usize,pub compiled_patterns:usize}
 struct PatternSet {key:String,positive:Vec<(String,PathMatcher)>,negative:Vec<PathMatcher>}
-enum PathMatcher{Glob(globset::GlobMatcher),Expression(fancy_regex::Regex)}
+enum PathMatcher{Glob(globset::GlobMatcher),Expression(fancy_regex::Regex),Never}
 impl PathMatcher{
-    fn is_match(&self,path:&str)->Result<bool,MatcherError>{match self{Self::Glob(matcher)=>Ok(matcher.is_match(path)),Self::Expression(matcher)=>matcher.is_match(path).map_err(|error|MatcherError::Expression(Box::new(error)))}}
+    fn is_match(&self,path:&str)->Result<bool,MatcherError>{match self{Self::Glob(matcher)=>Ok(matcher.is_match(path)),Self::Expression(matcher)=>matcher.is_match(path).map_err(|error|MatcherError::Expression(Box::new(error))),Self::Never=>Ok(false)}}
 }
 #[derive(Debug)]
 pub enum MatcherError{Glob(globset::Error),Expression(Box<fancy_regex::Error>)}
@@ -59,7 +59,7 @@ impl Matcher {
                 let negated=pattern.starts_with('!');
                 let value=pattern.strip_prefix('!').unwrap_or(&pattern);
                 let normalized=normalize_literal_braces(value);
-                let compiled=if value.contains('(')||value.contains(')'){PathMatcher::Expression(fancy_regex::Regex::new(&format!("^(?:{})$",compile_expression(&normalized))).map_err(|error|MatcherError::Expression(Box::new(error)))?)}else{PathMatcher::Glob(GlobBuilder::new(&normalized).literal_separator(false).backslash_escape(false).allow_unclosed_class(true).empty_alternates(true).build()?.compile_matcher())};
+                let compiled=if value.contains(['(',')','"']){match fancy_regex::Regex::new(&format!("^(?:{})$",compile_expression(&normalized))){Ok(expression)=>PathMatcher::Expression(expression),Err(_)=>PathMatcher::Never}}else{PathMatcher::Glob(GlobBuilder::new(&normalized).literal_separator(false).backslash_escape(false).allow_unclosed_class(true).empty_alternates(true).build()?.compile_matcher())};
                 if negated{set.negative.push(compiled);}else{set.positive.push((pattern,compiled));}
             }
             if self.sets.len()>=256{self.sets.pop_front();}
@@ -86,6 +86,7 @@ fn compile_expression(pattern:&str)->String{
     while index<chars.len(){let ch=chars[index];
         if ch=='"'{quoted = !quoted;index+=1;continue;}
         if quoted{if ".*+?()[]{}|^$\\".contains(ch){result.push('\\');}result.push(ch);index+=1;continue;}
+        if ch=='['&&(chars.get(index+1)==Some(&']')||chars.get(index+1)==Some(&'^')&&chars.get(index+2)==Some(&']')){let end=index+if chars.get(index+1)==Some(&'^'){2}else{1};result.push_str("\\[");if end==index+2{result.push('^');}result.push_str("\\]");index=end+1;if index==chars.len(){result.push_str("/?");}continue;}
         if matches!(ch,'@'|'+'|'?'|'*'|'!')&&chars.get(index+1)==Some(&'('){
             let mut depth=1;let mut end=index+2;while end<chars.len(){if chars[end]=='(' {depth+=1;}else if chars[end]==')'{depth-=1;if depth==0{break;}}end+=1;}
             if depth==0{let body=chars[index+2..end].iter().collect::<String>();if matches!(ch,'+'|'*'){if let Some(flat)=safe_star_repeat(&body){if index==0{result.push_str("(?=.)");}result.push_str(&flat);index=end+1;continue;}
