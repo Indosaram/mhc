@@ -22,3 +22,9 @@ fn grep_path(){let r=parse("grep",json!({"path":"/etc","pattern":"TODO"}));asser
 fn list_default(){for name in ["find","ls"]{let r=parse(name,json!({}));assert_eq!(r[0].permission,"list");assert_eq!(r[0].patterns,vec!["."]);}}
 #[test]
 fn fallback(){assert_eq!(parse("unknown",json!({}))[0].patterns,vec!["*"]);}
+#[test]
+fn apply_patch_explicit_file_uses_edit_permission(){
+    let requests=parse("apply_patch",json!({"path":"src/file.rs"}));
+    assert_eq!(requests[0].permission,"edit");
+    assert_eq!(requests[0].patterns,vec!["src/file.rs"]);
+}

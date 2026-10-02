@@ -40,7 +40,7 @@ pub fn create_builtin_parser_registry()->ParserRegistry{
             requests
         }));
     }
-    for (name,permission) in [("edit","edit"),("write","edit"),("multiedit","edit"),("read","read")]{
+    for (name,permission) in [("edit","edit"),("write","edit"),("apply_patch","edit"),("multiedit","edit"),("read","read")]{
         registry.register(name,Arc::new(move|input,cwd,home|{
             let Some(path)=string(input,&["path","file_path"]).filter(|path|!path.is_empty())else{return fallback(permission)};
             let paths=vec![path.into()];external(vec![request(permission,paths.clone(),paths.clone())],&paths,(cwd,home),false)
