@@ -1849,7 +1849,7 @@ impl AgentSession {
         let preparation = prepare_compaction(&entries, &crate::compaction::settings::CompactionSettings {
             enabled: resolved.enabled, reserve_tokens: resolved.reserve_tokens, keep_recent_tokens: resolved.keep_recent_tokens,
             ..crate::compaction::settings::default_compaction_settings()
-        }, false, false);
+        }, reason == "overflow", false);
         let request_id = uuid::Uuid::new_v4().to_string();
         let Some(preparation) = preparation else {
             let error = if entries.last().is_some_and(|entry| entry["type"] == "compaction") {
@@ -2208,13 +2208,22 @@ impl AgentSession {
         loop {
             self.agent.wait_for_idle().await;
             let Some(message) = self.messages().iter().rev().find_map(AgentMessage::as_assistant).cloned() else { return Ok(()); };
-            if self.auto_compaction_enabled() && !self.is_compaction_delegated() && !self.state().user_aborted && !overflow_compacted
+            if (self.auto_compaction_enabled() || crate::compaction::is_turn_stuck_on_context_overflow(&message, self.model().context_window))
+                && !self.is_compaction_delegated() && !self.state().user_aborted && !overflow_compacted
                 && maho_ai::utils::overflow::is_context_overflow(&message, Some(self.model().context_window))
             {
                 overflow_compacted = true;
                 let execution = self.compact_for_model(None, &self.model(), "overflow").await;
                 if self.is_compaction_delegated() { return Ok(()); }
                 execution?;
+                let mut messages = self.messages();
+                if messages.last().and_then(AgentMessage::as_assistant)
+                    .is_some_and(|tail| matches!(tail.stop_reason, StopReason::Error | StopReason::Length))
+                {
+                    messages.pop();
+                    self.agent.set_messages(messages);
+                    self.state().message_revision += 1;
+                }
                 self.agent.continue_run(maho_agent::agent::AgentContinuationOptions { defer_queued_messages: Some(true), ..Default::default() }).await;
                 continue;
             }
@@ -7081,6 +7090,33 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), idle_rx).await.expect("bounded idle").expect("idle");
         assert_eq!(session.messages().len(), 4);
         assert_eq!(session.get_last_assistant_text().as_deref(), Some("second"));
+    }
+
+    #[tokio::test]
+    async fn provider_overflow_recovers_when_proactive_compaction_is_disabled() {
+        let failed = maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+            stop_reason: Some(StopReason::Error), error_message: Some("prompt is too long".to_owned()), ..Default::default()
+        });
+        let session = retry_session(vec![failed, maho_ai::providers::faux::faux_assistant_message("recovered", Default::default())], 0);
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"enabled":false,"keepRecentTokens":1})),
+        ])));
+        session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"previous task","timestamp":0})));
+        session.rebuild_session_context().expect("context");
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:overflow-recovery>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(|event, _| {
+            let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { panic!("preparation"); };
+            assert_eq!(event.reason, maho_ext_api::CompactionReason::Overflow);
+            let result = maho_ext_api::CompactionResult { summary: "digest".to_owned(), first_kept_entry_id: event.preparation.first_kept_entry_id.clone(),
+                tokens_before: event.preparation.tokens_before, details: None };
+            Box::pin(async move { Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {
+                compaction: Some(result), ..Default::default()
+            })) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("current task", Default::default())).await.expect("bounded recovery").expect("prompt");
+        assert_eq!(session.messages().last().and_then(AgentMessage::as_assistant).expect("assistant").stop_reason, StopReason::Stop);
+        assert_eq!(session.compaction_state().status(), "completed");
     }
 
     #[tokio::test]
