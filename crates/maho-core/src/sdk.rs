@@ -72,9 +72,14 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         .or_else(|| settings.get_string("defaultProvider").zip(settings.get_string("defaultModel")).and_then(|(provider,id)| registry.find(&provider,&id)))
         .or_else(|| registry.get_available().into_iter().next()).ok_or("No model available")?;
     let has_thinking_entry = manager.branch(manager.leaf_id()).iter().any(|entry| entry["type"] == "thinking_level_change");
+    let configured_thinking = settings.get_value("modelThinkingLevels")
+        .and_then(|levels| levels.get(format!("{}/{}", model.provider, model.id))).and_then(serde_json::Value::as_str)
+        .and_then(ModelThinkingLevel::parse)
+        .or_else(|| settings.get_string("defaultThinkingLevel").as_deref().and_then(ModelThinkingLevel::parse));
     let requested_thinking = options.thinking_level.map(ModelThinkingLevel::from)
         .or_else(|| options.thinking_selection.as_ref().map(|selection| selection.level)).or_else(||
-        has_thinking_entry.then(|| ModelThinkingLevel::parse(&context.thinking_level)).flatten());
+        has_thinking_entry.then(|| ModelThinkingLevel::parse(&context.thinking_level)).flatten()).or(configured_thinking)
+        .or(Some(ModelThinkingLevel::Medium));
     let thinking_level = match requested_thinking {
         Some(ModelThinkingLevel::Off) => ModelThinkingLevel::Off,
         Some(level) => clamp_thinking_level_to_model(serde_json::from_value(serde_json::Value::from(level.as_str())).ok(), Some(&model)),
@@ -85,6 +90,10 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
             source: maho_ai::types::ThinkingSelectionSource::Explicit, legacy_variant_id: None })
     }).or_else(|| has_thinking_entry.then(|| context.thinking_selection.clone()).flatten()
         .and_then(|value| serde_json::from_value(value).ok()));
+    if thinking_selection.is_none() && !has_thinking_entry && configured_thinking.is_some() {
+        thinking_selection = Some(ThinkingSelection { level: thinking_level,
+            source: maho_ai::types::ThinkingSelectionSource::Explicit, legacy_variant_id: None });
+    }
     if let Some(selection) = thinking_selection.as_mut() { selection.level = thinking_level; }
     let mut definitions = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&cwd), Default::default());
     for definition in &options.custom_tools { definitions.insert(definition.name.clone(), definition.clone()); }
@@ -244,6 +253,31 @@ mod tests {
             let expected = if explicit.is_some() { ModelThinkingLevel::Low } else { ModelThinkingLevel::High };
             assert_eq!(created.session.thinking_level(), expected);
             assert_eq!(created.session.thinking_selection().expect("provenance").level, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn sdk_uses_remembered_thinking_before_configured_and_shipped_defaults() {
+        let dir = tempfile::tempdir().expect("directory");
+        for (configured, remembered, expected, provenance) in [
+            (None, None, ModelThinkingLevel::Medium, false),
+            (Some("high"), None, ModelThinkingLevel::High, true),
+            (Some("high"), Some("low"), ModelThinkingLevel::Low, true),
+            (Some("high"), Some("off"), ModelThinkingLevel::Off, true),
+        ] {
+            let cwd = dir.path().to_string_lossy().into_owned();
+            let agent_dir = dir.path().join("agent").to_string_lossy().into_owned();
+            let mut settings = SettingsManager::create(&cwd, &agent_dir, &cwd, false);
+            let mut overrides = serde_json::Map::new();
+            if let Some(level) = configured { overrides.insert("defaultThinkingLevel".to_owned(), level.into()); }
+            if let Some(level) = remembered { overrides.insert("modelThinkingLevels".to_owned(), serde_json::json!({"faux/faux-1":level})); }
+            settings.apply_overrides(&overrides);
+            let created = create_agent_session(CreateAgentSessionOptions {
+                cwd: Some(cwd.clone()), agent_dir: Some(agent_dir), model: Some(test_model()), settings_manager: Some(settings),
+                session_manager: Some(SessionManager::in_memory(&cwd, None, None)), tools: Some(Vec::new()), ..Default::default()
+            }).await.expect("SDK session");
+            assert_eq!(created.session.thinking_level(), expected);
+            assert_eq!(created.session.thinking_selection().is_some(), provenance);
         }
     }
 
