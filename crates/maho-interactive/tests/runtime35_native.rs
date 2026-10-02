@@ -733,3 +733,111 @@ async fn resume_menu_cancellation_keeps_current_native_transcript() {
     assert_eq!(mode.editor.editor.get_text(), "draft");
     assert!(mode.render(80).join("\n").contains("resume-source"));
 }
+
+#[tokio::test]
+async fn image_payloads_follow_submitted_marker_order() {
+    use maho_tui::tui::Component;
+    let (mut mode, directory) = native_mode();
+    mode.attach_image(maho_ai::types::ImageContent { data:"first".into(), mime_type:"image/png".into() });
+    mode.handle_input_at("\x1b[H", 0);
+    mode.attach_image(maho_ai::types::ImageContent { data:"second".into(), mime_type:"image/png".into() });
+    mode.handle_input("\r");
+    mode.submit_editor().await.expect("image prompt");
+    let path = directory.path().join("images.jsonl");
+    mode.submit(&format!("/export {}", path.display()), Default::default()).await.expect("export");
+    let entries: Vec<serde_json::Value> = std::fs::read_to_string(path).expect("exported session").lines()
+        .map(|line| serde_json::from_str(line).expect("entry")).collect();
+    let user = entries.iter().find(|entry| entry["message"]["role"] == "user").expect("user message");
+    let images: Vec<_> = user["message"]["content"].as_array().expect("content").iter()
+        .filter(|part| part["type"] == "image").map(|part| part["data"].as_str().expect("image data")).collect();
+    assert_eq!(images, ["second", "first"]);
+}
+
+struct ScreenTerminal {
+    screen: maho_test_support::vterm::VirtualTerminal,
+    input: Option<maho_tui::terminal::InputHandler>,
+    stopped: bool,
+}
+impl maho_tui::terminal::Terminal for ScreenTerminal {
+    fn start(&mut self, input:maho_tui::terminal::InputHandler, _:maho_tui::terminal::ResizeHandler) { self.input=Some(input); self.screen.start(); }
+    fn stop(&mut self) -> Result<(), maho_tui::terminal::TerminalError> { self.input=None; self.stopped=true; self.screen.stop(); Ok(()) }
+    fn drain_input(&mut self, _:u64, _:u64) {}
+    fn write(&mut self, data:&str) { self.screen.write(data); }
+    fn columns(&self)->u16 { self.screen.columns() }
+    fn rows(&self)->u16 { self.screen.rows() }
+    fn kitty_protocol_active(&self)->bool { true }
+    fn move_by(&mut self, lines:i64) { self.screen.move_by(i32::try_from(lines).expect("lines")); }
+    fn hide_cursor(&mut self) { self.screen.hide_cursor(); }
+    fn show_cursor(&mut self) { self.screen.show_cursor(); }
+    fn clear_line(&mut self) { self.screen.clear_line(); }
+    fn clear_from_cursor(&mut self) { self.screen.clear_from_cursor(); }
+    fn clear_screen(&mut self) { self.screen.clear_screen(); }
+    fn set_title(&mut self, title:&str) { self.screen.set_title(title); }
+    fn set_progress(&mut self, _:bool) {}
+}
+
+#[tokio::test]
+async fn mounted_terminal_renders_native_turn_and_restores_terminal_on_stop() {
+    for width in [40,80,120] {
+        let (mut mode, _directory) = native_mode();
+        mode.submit("hi",Default::default()).await.expect("turn");
+        let theme = maho_interactive::theme::Theme::builtin("dark", maho_interactive::theme::ColorMode::Truecolor).expect("theme");
+        let renderer = maho_interactive::tui_renderer::create_interactive_tui(maho_interactive::tui_renderer::InteractiveTuiOptions {
+            tui_mode:maho_interactive::tui_renderer::TuiMode::Fullscreen, show_hardware_cursor:false, bottom_shortcut:String::new(),
+        }, theme);
+        let mut mounted = maho_interactive::interactive_terminal::InteractiveTerminal::new(mode, renderer);
+        let mut terminal = ScreenTerminal { screen:maho_test_support::vterm::VirtualTerminal::new(width,36), input:None, stopped:false };
+        mounted.start(&mut terminal,false,false);
+        terminal.input.as_mut().expect("input")("draft");
+        while let Some(input) = mounted.take_input(&mut terminal,0) { mounted.mode.borrow_mut().handle_input_at(&input,0); }
+        assert_eq!(mounted.mode.borrow().editor.editor.get_text(),"draft");
+        mounted.render(&mut terminal);
+        assert!(terminal.screen.viewport().join("\n").contains("hello"));
+        assert!(terminal.screen.bracketed_paste());
+        mounted.stop(&mut terminal,true).expect("stop");
+        assert!(terminal.stopped);
+        assert!(!terminal.screen.bracketed_paste());
+        assert!(!terminal.screen.cursor_hidden());
+    }
+}
+
+#[tokio::test]
+async fn extension_actions_expose_theme_catalog_and_live_working_indicator() {
+    use maho_ext_api::ExtensionUi;
+    use maho_tui::tui::Component;
+    let (mut mode,_directory) = native_mode();
+    let ui = mode.extension_ui.clone();
+    assert!(ui.get_all_themes().expect("themes").iter().any(|theme|theme.name=="light"));
+    assert!(ui.set_theme(maho_ext_api::ThemeSelection::Name("light".into())).expect("theme result").success);
+    mode.render(80);
+    assert_eq!(ui.theme().name.as_deref(),Some("light"));
+    ui.set_working_indicator(Some(maho_ext_api::WorkingIndicatorOptions { frames:Some(vec!["frame-a".into(),"frame-b".into()]), interval_ms:Some(10) })).expect("indicator");
+    mode.render(80);
+    mode.handle_event(&maho_agent::types::AgentEvent::AgentStart);
+    assert!(mode.working_frame(0.0).is_some_and(|frame|frame=="frame-a"));
+}
+
+struct CustomChoice {
+    done: maho_ext_api::CustomUiDone,
+}
+impl maho_tui::tui::Component for CustomChoice {
+    fn render(&mut self,_:usize)->Vec<String> { vec!["custom-choice".into()] }
+    fn handle_input(&mut self,_:&str) { (self.done)(serde_json::json!({"selected":7})); }
+    fn has_input_handler(&self)->bool { true }
+}
+
+#[tokio::test]
+async fn custom_factory_completion_restores_editor_and_returns_value() {
+    use maho_ext_api::ExtensionUi;
+    use maho_tui::tui::Component;
+    let (mut mode,_directory)=native_mode();
+    let ui=mode.extension_ui.clone();
+    let factory:maho_ext_api::CustomComponentFactory=std::sync::Arc::new(|_,_,_,done|Box::pin(async move { Ok(Box::new(CustomChoice{done}) as Box<dyn Component>) }));
+    let result=ui.custom_factory(factory,Default::default());
+    assert!(mode.render(80).join("\n").contains("custom-choice"));
+    mode.handle_input_at("select",0);
+    mode.render(80);
+    assert_eq!(result.await.expect("completed factory"),serde_json::json!({"selected":7}));
+    mode.handle_input_at("draft",1);
+    assert_eq!(mode.editor.editor.get_text(),"draft");
+}
