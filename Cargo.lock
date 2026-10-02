@@ -1501,9 +1501,14 @@ version = "0.0.0"
 dependencies = [
  "maho-ai",
  "maho-core",
+ "maho-interactive",
+ "maho-tools",
  "maho-tui",
+ "regex",
  "serde_json",
+ "sha2",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

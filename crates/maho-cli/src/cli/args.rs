@@ -77,7 +77,7 @@ pub fn parse_args(args: &[String], grok_neo_enabled: bool) -> Result<Args, Strin
                 match next { Some("in-process") => result.session_runtime = Some(SessionRuntime::InProcess), Some("worker") => result.session_runtime = Some(SessionRuntime::Worker), _ => result.diagnostic(true, "--session-runtime must be in-process or worker") }
             }
             "--listen" if result.mode == Some(Mode::Rpc) => if let Some(value) = next.filter(|v| !v.starts_with("--")) { result.listen = Some(value.to_owned()); result.multi_session = true; i += 1; } else { result.diagnostic(true, "--listen requires a value"); },
-            "--list-models" => { result.list_models = Some(next.filter(|v| !v.starts_with('-') && !v.starts_with('@')).unwrap_or("").to_owned()); if result.list_models.as_deref() != Some("") { i += 1; } }
+            "--list-models" => { let search = next.filter(|v| !v.starts_with('-') && !v.starts_with('@')); result.list_models = Some(search.unwrap_or("").to_owned()); if search.is_some() { i += 1; } }
             "--provider" | "--model" | "--api-key" | "--system-prompt" | "--append-system-prompt" | "--mode" | "--session" | "--session-id" | "--fork" | "--session-dir" | "--models" | "--tools" | "-t" | "--exclude-tools" | "-xt" | "--thinking" | "--export" | "--extension" | "-e" | "--skill" | "--prompt-template" | "--theme" if next.is_some() => {
                 if let Some(value) = next { i += 1; match arg {
                     "--provider" => { if let Some(error) = maho_ai::legacy_provider_ids::legacy_provider_id_rejection(value) { return Err(error); } result.provider = Some(value.to_owned()); }

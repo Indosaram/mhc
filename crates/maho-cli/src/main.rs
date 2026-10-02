@@ -4,6 +4,14 @@ fn main() {
         std::process::exit(1);
     }
 }
+fn output(text: &str) -> Result<(), String> {
+    use std::io::Write;
+    match std::io::stdout().lock().write_all(text.as_bytes()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
 fn run() -> Result<(), String> {
     use std::path::PathBuf;
     maho_cli::valid_cwd::ensure_valid_cwd().map_err(|e| e.to_string())?;
@@ -32,15 +40,15 @@ fn run() -> Result<(), String> {
     if parsed.version { println!("{}", maho_core::config::display_version(env!("CARGO_PKG_VERSION"))); return Ok(()); }
     for diagnostic in &parsed.diagnostics { eprintln!("{}: {}", if diagnostic.error { "Error" } else { "Warning" }, diagnostic.message); }
     if parsed.diagnostics.iter().any(|d| d.error) { return Err("Invalid CLI arguments".to_owned()); }
-    if parsed.help { print!("{}", maho_cli::cli::args::help_text(grok, "")); return Ok(()); }
+    if parsed.help { return output(&maho_cli::cli::args::help_text(grok, "")); }
+    if parsed.list_tips { return output(&format!("{}\n", serde_json::to_string_pretty(&maho_cli::cli::list_tips::collect_tips()).map_err(|e| e.to_string())?)); }
     if let Some(search) = parsed.list_models.as_deref() {
         let agent = PathBuf::from(maho_core::config::get_agent_dir());
         let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
             models_path: Some(agent.join("models.json")), auth_path: Some(agent.join("auth.json")), ..Default::default()
         });
         if runtime.get_error().is_some() { eprintln!("Warning: errors loading models.json"); }
-        println!("{}", maho_cli::cli::list_models::list_models(&runtime, Some(search)));
-        return Ok(());
+        return output(&format!("{}\n", maho_cli::cli::list_models::list_models(&runtime, Some(search))));
     }
     Err("Requested mode is not yet available: interactive todo 35, RPC todo 36, server todo 37; native extension assembly todo 48".to_owned())
 }

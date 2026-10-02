@@ -9,7 +9,12 @@ license = "MIT"
 maho-ai = { path = "../maho-ai" }
 maho-core = { path = "../maho-core" }
 maho-tui = { path = "../maho-tui" }
+maho-tools = { path = "../maho-tools" }
+maho-interactive = { path = "../maho-interactive" }
 serde_json.workspace = true
+regex.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["time", "macros", "rt", "process", "io-util"] }
 
 [dev-dependencies]
 tempfile.workspace = true

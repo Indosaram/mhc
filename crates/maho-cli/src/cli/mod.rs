@@ -1,3 +1,7 @@
 pub mod args;
 pub mod initial_message;
 pub mod list_models;
+pub mod list_tips;
+pub mod experimental;
+pub mod auth_command;
+pub mod help_flags_cache;
