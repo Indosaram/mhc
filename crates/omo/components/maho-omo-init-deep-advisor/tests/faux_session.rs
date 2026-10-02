@@ -41,6 +41,12 @@ async fn faux_component_runs_real_session_startup_and_turn() {
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0]["content"][0]["text"], prompt);
     assert_eq!(messages[1]["content"][0]["text"], response);
+    let reference: serde_json::Value = serde_json::from_str(include_str!("reference_hello.json")).expect("generated reference");
+    let expected = reference["entries"].as_array().unwrap().iter().filter_map(|entry| {
+        let message = &entry["message"];
+        matches!(message["role"].as_str(), Some("user" | "assistant")).then(|| message["content"].clone())
+    }).collect::<Vec<_>>();
+    assert_eq!(messages.iter().map(|message| message["content"].clone()).collect::<Vec<_>>(), expected);
     assert_eq!(*events.lock().expect("lifecycle events"), ["session_start", "turn_end"]);
     assert!(std::fs::read_dir(state.path()).expect("component state").next().is_none());
 }

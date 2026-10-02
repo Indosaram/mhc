@@ -2339,6 +2339,8 @@ version = "0.0.0"
 dependencies = [
  "maho-ext-api",
  "maho-ext-host",
+ "maho-omo-onboarding",
+ "maho-omo-telemetry",
  "maho-test-support",
  "serde",
  "serde_json",
@@ -2436,8 +2438,14 @@ version = "0.0.0"
 dependencies = [
  "chrono",
  "futures",
+ "indexmap",
+ "maho-ai",
+ "maho-core",
  "maho-ext-api",
  "maho-ext-host",
+ "maho-omo-config-core",
+ "maho-omo-config-resolution",
+ "maho-omo-ultrawork",
  "maho-senpi-task",
  "maho-telemetry-core",
  "maho-test-support",

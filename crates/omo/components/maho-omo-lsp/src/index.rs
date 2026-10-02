@@ -17,6 +17,7 @@ impl Extension for LspComponent {
         }
         for mut tool in descriptors() {
             let name=tool.name.clone();let cwd=api.cwd.clone();let home=home.clone();
+            let extension_home=home.clone();
             tool.execute=Arc::new(move |call| {let name=name.clone();let cwd=cwd.clone();let home=home.clone();Box::pin(async move {
                 let context=current_senpi_request_context(&cwd,&home)?;
                 let args=call.params.as_object().cloned().unwrap_or_default();
@@ -25,7 +26,15 @@ impl Extension for LspComponent {
                 let content=result.content.into_iter().map(serde_json::from_value::<ToolContent>).collect::<Result<Vec<_>,_>>()?;
                 Ok(ToolResult {content,details:result.details})
             })});
-            api.register_tool(tool);
+            let name=tool.name.clone();let home=extension_home;
+            if let Err(error)=api.register_tool_with_extension_context(tool,Arc::new(move |_,params,_,_,ctx| {
+                let name=name.clone();let home=home.clone();Box::pin(async move {
+                    let context=current_senpi_request_context(&ctx.cwd,&home).map_err(|error|ExtensionFailure::new(error.to_string()))?;
+                    let args=params.as_object().cloned().unwrap_or_default();
+                    let result=call_packaged_daemon_tool(&name,args,context,ctx.signal.clone().unwrap_or_default()).await.map_err(|error|ExtensionFailure::new(error.to_string()))?;
+                    daemon_agent_result(result)
+                })
+            })) {std::panic::panic_any(error);}
         }
         let state=Arc::new(Mutex::new(LspPostEditSessionState::default()));
         if api.get_flag(POST_EDIT_FLAG)!=Some(FlagValue::Boolean(false)) {
@@ -51,11 +60,20 @@ impl Extension for LspComponent {
         api.on(EventKind::SessionShutdown,Arc::new(move |_,ctx| {let state=Arc::clone(&state);Box::pin(async move {state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).delete(Some(ctx.session_manager.session_id()));Ok(EventResult::None)})}));
     }
 }
+fn daemon_agent_result(result:lsp_daemon::daemon_client::ToolExecutionResult)->Result<maho_ext_api::AgentToolResult,ExtensionFailure> {
+    let content=result.content.into_iter().map(serde_json::from_value::<maho_ext_api::ContentBlock>).collect::<Result<Vec<_>,_>>().map_err(|error|ExtensionFailure::new(error.to_string()))?;
+    Ok(maho_ext_api::AgentToolResult {content,details:result.details.unwrap_or(serde_json::Value::Null),is_error:Some(result.is_error),usage:None,added_tool_names:None,terminate:None})
+}
 #[cfg(test)]
 mod tests {
     use super::*;
     use maho_ext_api::{EventBus,ExtensionRuntime,ExtensionSessionProfile,LoadedExtension,SourceInfo};
     fn api()->ExtensionApi {ExtensionApi::new(LoadedExtension::new("lsp",PathBuf::from("/workspace"),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default())}
+    #[test] fn structured_daemon_errors_keep_content_and_details() {
+        let details=serde_json::json!({"error":"missing language server","errorKind":"missing_dependency"});
+        let daemon=lsp_daemon::daemon_client::ToolExecutionResult {content:vec![serde_json::json!({"type":"text","text":"Install the server"})],details:Some(details.clone()),is_error:true};
+        let result=daemon_agent_result(daemon).unwrap();assert_eq!(result.is_error,Some(true));assert_eq!(result.details,details);assert_eq!(serde_json::to_value(&result.content).unwrap()[0]["text"],"Install the server");
+    }
     #[test]
     fn adapter_has_no_vendored_engine_or_project_trust_override() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

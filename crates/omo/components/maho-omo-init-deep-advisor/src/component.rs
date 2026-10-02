@@ -10,6 +10,12 @@ pub fn advisor_preflight(has_ui:bool,disabled:bool,cwd:&Path,onboarding_state_di
 }
 pub type OnboardingMarkerMtime=std::sync::Arc<dyn Fn(&Path)->Option<f64>+Send+Sync>;
 pub struct InitDeepAdvisorComponent {pub state_dir:std::path::PathBuf,pub skills_root:std::path::PathBuf,pub marker_mtime:OnboardingMarkerMtime,pub process_start:f64}
+impl InitDeepAdvisorComponent {
+    pub fn new(skills_root:std::path::PathBuf)->Self {
+        let env=std::env::vars().collect();
+        Self {state_dir:maho_omo_telemetry::product_identity::get_omo_native_state_dir(&env),skills_root,marker_mtime:std::sync::Arc::new(maho_omo_onboarding::state::get_onboarding_marker_mtime),process_start:process_start_time()}
+    }
+}
 impl maho_ext_api::Extension for InitDeepAdvisorComponent {
     fn register(&self,api:&mut maho_ext_api::ExtensionApi) {
         use maho_ext_api::{EventKind,EventResult,ExtensionEvent,FlagValue,SessionReason};
@@ -27,6 +33,7 @@ impl maho_ext_api::Extension for InitDeepAdvisorComponent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn default_component_binds_owner_marker_reader() {let t=tempfile::tempdir().unwrap();let component=InitDeepAdvisorComponent::new(t.path().join("skills"));assert!((component.marker_mtime)(t.path()).is_none());assert!(maho_omo_onboarding::state::claim_onboarding(t.path()));assert_eq!((component.marker_mtime)(t.path()),maho_omo_onboarding::state::get_onboarding_marker_mtime(t.path()));}
     #[test] fn non_ui_gate_preserves_state() {let (t,_)=crate::git_helpers::tests::repo();assert!(advisor_preflight(false,false,t.path(),t.path(),Some(1.0),2.0).unwrap().is_none());assert!(!t.path().join("init-deep-advisor-state").exists());}
     #[test] fn disabled_gate_preserves_state() {let (t,_)=crate::git_helpers::tests::repo();assert!(advisor_preflight(true,true,t.path(),t.path(),Some(1.0),2.0).unwrap().is_none());assert!(!t.path().join("init-deep-advisor-state").exists());}
     #[test] fn missing_onboarding_marker_suppresses() {let (t,_)=crate::git_helpers::tests::repo();assert!(advisor_preflight(true,false,t.path(),t.path(),None,2.0).unwrap().is_none());}
