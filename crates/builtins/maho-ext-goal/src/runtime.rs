@@ -8,12 +8,13 @@ struct State {
 }
 pub struct GoalRuntime {
     state:tokio::sync::Mutex<State>,pub monitor:Arc<Mutex<MonitorAwareGoalContinuation>>,
+    pub events:maho_ext_api::EventBus,
     reference:GoalStoreReference,now:Arc<dyn Fn()->f64+Send+Sync>,
 }
 impl GoalRuntime {
     pub fn new(reference:GoalStoreReference,now:Arc<dyn Fn()->f64+Send+Sync>)->Self {
         let render=Arc::new(|context:&ExtensionContext,goal:&Goal,elapsed:f64| { crate::ui::update_goal_ui(context,Some(goal),Some(elapsed)); Ok(()) });
-        Self { state:tokio::sync::Mutex::new(State { context:None,accounting:Default::default(),input:Default::default(),ticker:crate::elapsed_ticker::GoalElapsedTicker::new(render,now.clone()),subscriptions:Vec::new() }),monitor:Arc::new(Mutex::new(Default::default())),reference,now }
+        Self { state:tokio::sync::Mutex::new(State { context:None,accounting:Default::default(),input:Default::default(),ticker:crate::elapsed_ticker::GoalElapsedTicker::new(render,now.clone()),subscriptions:Vec::new() }),monitor:Arc::new(Mutex::new(Default::default())),events:Default::default(),reference,now }
     }
     pub async fn start_channels(&self,events:&maho_ext_api::EventBus,context:&ExtensionContext)->Result<(),ExtensionFailure> {
         let mut state=self.state.lock().await; state.subscriptions.clear();
@@ -154,7 +155,10 @@ impl GoalRuntime {
     pub async fn dispatch_store_changed(&self,event:&crate::store_changed_event::GoalStoreChangedEvent,queue:&crate::command_registration::QueueGoalContinuation)->Result<Option<Goal>,ExtensionFailure> {
         let context=match &event.ctx { Some(context)=>Some(context.clone()),None=>self.state.lock().await.context.clone() };
         let goal=self.store_changed_with_context(event).await?;
-        if let (Some(context),Some(goal))=(context,goal.as_ref()) { queue(&context,goal).await?; }
+        if let (Some(context),Some(goal))=(context,goal.as_ref()) {
+            self.events.emit(crate::monitor_continuation::GOAL_CONTINUATION_SCHEDULED_EVENT,&serde_json::json!({"goalId":goal.id,"delayMs":0,"activeMonitorCount":0,"wakeSources":{},"reason":crate::store_changed_event::GOAL_STORE_CHANGED_EVENT}));
+            queue(&context,goal).await?;
+        }
         Ok(goal)
     }
     pub async fn maybe_prompt_resume_stopped_goal(&self,context:&ExtensionContext,reason:&str,goal:Option<&Goal>,queue:&crate::command_registration::QueueGoalContinuation)->Result<bool,ExtensionFailure> {
@@ -180,10 +184,15 @@ fn failure(error:crate::errors::GoalError)->ExtensionFailure { ExtensionFailure:
         crate::store::create_goal(&reference,"work",None,0).await.unwrap();
         let mut context=crate::test_context::context(); let session=crate::test_context::bind_session(&mut context);
         let seen=Arc::new(Mutex::new(Vec::new())); let capture=seen.clone();
-        let queue:crate::command_registration::QueueGoalContinuation=Arc::new(move |context,goal| { let capture=capture.clone(); let identity=context.session_manager.session_id().to_owned(); let id=goal.id.clone(); Box::pin(async move { capture.lock().unwrap().push((identity,id)); Ok(()) }) });
+        let scheduled=Arc::new(Mutex::new(Vec::new())); let captured=scheduled.clone();
+        let _subscription=runtime.events.on(crate::monitor_continuation::GOAL_CONTINUATION_SCHEDULED_EVENT,Arc::new(move |data|captured.lock().unwrap().push(data.clone())));
+        let delivered=scheduled.clone();
+        let queue:crate::command_registration::QueueGoalContinuation=Arc::new(move |context,goal| { let capture=capture.clone(); let identity=context.session_manager.session_id().to_owned(); let id=goal.id.clone(); assert_eq!(delivered.lock().unwrap()[0]["goalId"],goal.id); Box::pin(async move { capture.lock().unwrap().push((identity,id)); Ok(()) }) });
         let event=crate::store_changed_event::GoalStoreChangedEvent { thread_id:"s".into(),ctx:Some(context.clone()) };
         let goal=runtime.dispatch_store_changed(&event,&queue).await.unwrap().unwrap();
         assert_eq!(seen.lock().unwrap().as_slice(),&[("s".into(),goal.id)]);
+        assert_eq!(scheduled.lock().unwrap()[0]["reason"],crate::store_changed_event::GOAL_STORE_CHANGED_EVENT);
+        assert_eq!(scheduled.lock().unwrap()[0]["delayMs"],0);
         let wrong=crate::store_changed_event::GoalStoreChangedEvent { thread_id:"other".into(),ctx:Some(context.clone()) };
         assert!(runtime.dispatch_store_changed(&wrong,&queue).await.unwrap().is_none()); assert_eq!(seen.lock().unwrap().len(),1);
         let mut busy=crate::test_context::context(); busy.is_idle_fn=Arc::new(||false);

@@ -12,7 +12,8 @@ impl Extension for GoalExtension {
 }
 impl GoalExtension {
     pub fn register_with_runtime(&self,api:&mut ExtensionApi)->Arc<GoalRuntime> {
-        let runtime=Arc::new(GoalRuntime::new(self.reference.clone(),self.now.clone()));
+        let mut runtime=GoalRuntime::new(self.reference.clone(),self.now.clone()); runtime.events=api.events.clone();
+        let runtime=Arc::new(runtime);
         for (name,label,description,schema) in [
             ("create_goal","Create Goal","Register a goal for work that outlives this turn: it waits on external state, or the user's requested outcome needs more than one verify-and-fix round before it is true. A single answer, lookup, or one-shot edit needs no goal.\nObjectives are limited to 4,000 characters. For longer instructions, put the full objective in a file and refer to that file.\nReplaces the current goal when it is complete and archives it; fails if an unfinished goal exists.",crate::tool_registration::create_goal_schema()),
             ("get_goal","Get Goal","Get the current goal for this thread, including status, token and elapsed-time usage.",crate::tool_registration::get_goal_schema()),
