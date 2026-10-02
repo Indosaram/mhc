@@ -32,10 +32,11 @@ pub fn is_contained(root:&Path,target:&Path)->bool {target==root || target.strip
 
 pub fn resolve_contained_path(plugin_root:&Path,input:&str)->std::io::Result<PathBuf> {
     let root=normalize_path(&std::path::absolute(plugin_root)?);
+    let original_input=input;
     let input=input.replace('\\',"/");let input=Path::new(input.strip_prefix("./").unwrap_or(&input));
     let path=normalize_path(&if input.is_absolute() {input.to_owned()} else {root.join(input)});
     if !is_contained(&root,&path) || path.is_file() && !is_contained(&std::fs::canonicalize(&root)?,&std::fs::canonicalize(&path)?) {
-        return Err(std::io::Error::other(format!("Plugin hook path is outside plugin root: {}",input.display())));
+        return Err(std::io::Error::other(format!("Plugin hook path is outside plugin root: {original_input}")));
     }
     Ok(path)
 }
@@ -43,6 +44,15 @@ pub fn resolve_contained_path(plugin_root:&Path,input:&str)->std::io::Result<Pat
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn normalization_retains_raw_input_for_rejection()->std::io::Result<()> {
+        let root=tempfile::tempdir()?;let input=".\\..\\escape.json";assert_eq!(resolve_contained_path(root.path(),input).unwrap_err().to_string(),format!("Plugin hook path is outside plugin root: {input}"));assert_eq!(resolve_contained_path(root.path(),".\\hooks\\hooks.json")?,root.path().join("hooks/hooks.json"));Ok(())
+    }
+    #[cfg(unix)]
+    #[test]
+    fn existing_manifest_symlink_outside_root_is_rejected()->std::io::Result<()> {
+        let root=tempfile::tempdir()?;let outside=tempfile::NamedTempFile::new()?;std::os::unix::fs::symlink(outside.path(),root.path().join("hooks.json"))?;assert!(resolve_contained_path(root.path(),"./hooks.json").is_err());Ok(())
+    }
     #[test] fn lexical_escape_rejected()->std::io::Result<()> {let root=tempfile::tempdir()?;assert!(resolve_contained_path(root.path(),"../escape.json").is_err());assert_eq!(resolve_contained_path(root.path(),"./hooks/hooks.json")?,root.path().join("hooks/hooks.json"));Ok(())}
     #[test] fn plugin_environment_is_symmetric()->std::io::Result<()> {let root=tempfile::tempdir()?;let env=build_plugin_env(root.path(),None)?;assert_eq!(env["PLUGIN_ROOT"],env["CLAUDE_PLUGIN_ROOT"]);assert_eq!(env["PLUGIN_DATA"],env["CLAUDE_PLUGIN_DATA"]);Ok(())}
 }
