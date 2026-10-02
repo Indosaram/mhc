@@ -140,6 +140,12 @@ mod tests {
         let directory=tempfile::tempdir().unwrap(); let bytes=[0,255,1,2]; tokio::fs::write(directory.path().join("a"),bytes).await.unwrap();
         let result=apply_patch_detailed(directory.path(),"*** Begin Patch\n*** Update File: a\n*** Move to: b\n*** End Patch").await.unwrap(); assert!(result.failures.is_empty()); assert_eq!(tokio::fs::read(directory.path().join("b")).await.unwrap(),bytes); assert!(!directory.path().join("a").exists());
     }
+    #[tokio::test] async fn upstream_context_failure_requires_reread_but_missing_file_does_not() {
+        let directory=tempfile::tempdir().unwrap();let path=directory.path().join("exists.txt");tokio::fs::write(&path,b"line\n").await.unwrap();
+        let result=apply_patch_detailed(directory.path(),"*** Begin Patch\n*** Update File: exists.txt\n@@\n-missing\n+new\n*** Update File: absent.txt\n@@\n-old\n+new\n*** End Patch").await.unwrap();
+        assert_eq!(result.failures.len(),2);assert_eq!(result.recovery_instructions.must_read_files,["exists.txt"]);assert_eq!(result.recovery_instructions.failed_files,["exists.txt","absent.txt"]);
+        assert_eq!(result.failures[1].code.as_deref(),Some("ENOENT"));assert_eq!(tokio::fs::read(&path).await.unwrap(),b"line\n");assert!(result.applied_files.is_empty());
+    }
     #[test] fn empty_envelope_is_rejected_before_any_mutation() { assert_eq!(parse_non_empty_patch("*** Begin Patch\n*** End Patch").unwrap_err(),"patch rejected: empty patch"); assert_eq!(parse_non_empty_patch("*** Begin Patch\nnoise\n*** End Patch").unwrap_err(),"apply_patch verification failed: no hunks found"); }
     #[test] fn compact_result_preserves_recovery_metadata() { let mut result=ApplyPatchResult::default(); result.applied_files.push("a".into()); result.details.applied_operations.push(AppliedPatchOperation{operation_index:1,preview:ApplyPatchPreviewFile{file_path:"a".into(),move_path:None,operation:ApplyPatchOperation::Add,binary:None,diff:"large".into(),patch:Some("large".into()),added:1,removed:0}}); let compact=compact_apply_patch_result(result); assert_eq!(compact.applied_files,["a"]); assert_eq!(compact.details.applied_operations[0].operation_index,1); assert!(compact.details.applied_operations[0].preview.diff.is_empty()); assert_eq!(compact.details.applied_operations[0].preview.patch,None); }
 }
