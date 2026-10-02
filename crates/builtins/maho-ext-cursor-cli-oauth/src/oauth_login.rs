@@ -79,10 +79,51 @@ pub fn import_native_credential(current:&OAuthCredential,native:Option<&Credenti
     let name=std::iter::once("native".to_owned()).chain((2..=10000).map(|i|format!("native-{i}"))).find(|name|!accounts.iter().any(|s|s.name==*name)).ok_or_else(||anyhow::anyhow!("Could not allocate a Cursor CLI OAuth native account name"))?;
     add_account(current,CursorCliAccountSlot {name,display_name:None,access:native.access.clone(),refresh:native.refresh.clone(),expires:native.expires,source:AccountSource::Import,blocked_until:None,block_reason:None})
 }
+pub fn local_auth_path(environment:&std::collections::BTreeMap<String,String>,home:&std::path::Path)->Option<std::path::PathBuf> {
+    match std::env::consts::OS {
+        "macos"=>Some(home.join(".cursor/auth.json")),
+        "linux"=>Some(environment.get("XDG_CONFIG_HOME").map(std::path::PathBuf::from).unwrap_or_else(||home.join(".config")).join("cursor/auth.json")),
+        "windows"=>environment.get("APPDATA").map(|path|std::path::Path::new(path).join("Cursor/auth.json")),
+        _=>None,
+    }
+}
+pub async fn read_local_credential(environment:&std::collections::BTreeMap<String,String>,home:&std::path::Path,now:i64)->anyhow::Result<OAuthCredential> {
+    if std::env::consts::OS=="macos" {
+        async fn keychain(service:&str)->Option<String> {
+            let output=tokio::process::Command::new("security").args(["find-generic-password","-a","cursor-user","-s",service,"-w"]).kill_on_drop(true).output().await.ok()?;
+            if !output.status.success() {return None;}
+            let value=String::from_utf8(output.stdout).ok()?.trim().to_owned();
+            (!value.is_empty()).then_some(value)
+        }
+        let (access,refresh)=tokio::join!(keychain("cursor-access-token"),keychain("cursor-refresh-token"));
+        if let (Some(access),Some(refresh))=(access,refresh) {return Ok(OAuthCredential::new(access,refresh,(now+3600000) as f64));}
+    }
+    let parsed=match local_auth_path(environment,home) {
+        Some(path)=>tokio::fs::read(path).await.ok().and_then(|bytes|serde_json::from_slice::<serde_json::Value>(&bytes).ok()),
+        None=>None,
+    };
+    if let Some(parsed)=parsed
+        && let (Some(access),Some(refresh))=(parsed["accessToken"].as_str().filter(|value|!value.is_empty()),parsed["refreshToken"].as_str().filter(|value|!value.is_empty())) {
+        return Ok(OAuthCredential::new(access,refresh,(now+3600000) as f64));
+    }
+    anyhow::bail!("No local Cursor OAuth credential found")
+}
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::accounts::empty_credential;
+    #[tokio::test]
+    async fn local_file_import_reads_flat_tokens_and_uses_one_hour_expiry() {
+        let directory=tempfile::tempdir().expect("home");
+        let environment=std::collections::BTreeMap::from([("XDG_CONFIG_HOME".into(),directory.path().join("config").to_string_lossy().into_owned()),("APPDATA".into(),directory.path().join("appdata").to_string_lossy().into_owned())]);
+        let path=local_auth_path(&environment,directory.path()).expect("supported platform");
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("directory");
+        std::fs::write(&path,serde_json::json!({"accessToken":"fixture-access","refreshToken":"fixture-refresh"}).to_string()).expect("fixture");
+        let imported=read_local_credential(&environment,directory.path(),123).await.expect("local import");
+        assert_eq!((imported.access.as_str(),imported.refresh.as_str(),imported.expires),("fixture-access","fixture-refresh",3600123.0));
+        std::fs::write(&path,"[]").expect("invalid fixture");
+        assert!(read_local_credential(&environment,directory.path(),123).await.is_err());
+    }
     #[test]
     fn native_import_allocates_names_preserves_sentinel_and_source() {
         let native=Credential::OAuth(OAuthCredential::new("access","refresh",1000.0));

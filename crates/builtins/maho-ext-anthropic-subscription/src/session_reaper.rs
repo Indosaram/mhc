@@ -1,4 +1,22 @@
 use std::collections::BTreeMap;
+pub fn schedule(registry: &std::sync::Arc<tokio::sync::Mutex<crate::session_stream::SessionRegistry>>, session: String, generation: u64, now: std::sync::Arc<dyn Fn() -> i64 + Send + Sync>) -> tokio::task::JoinHandle<()> {
+    let registry = std::sync::Arc::downgrade(registry);
+    tokio::spawn(async move {
+        let mut delay = crate::session_registry::SESSION_REGISTRY_IDLE_TTL_MS;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            let Some(registry) = registry.upgrade() else { return; };
+            let mut registry = registry.lock().await;
+            let Some(entry) = registry.entries.get(&session).filter(|entry| entry.pump.generation == generation && entry.evictable()) else { return; };
+            delay = crate::session_registry::SESSION_REGISTRY_IDLE_TTL_MS.saturating_sub(((now)().max(0) as u64).saturating_sub(entry.last_used_at));
+            if delay == 0 {
+                registry.reapers.remove(&session);
+                if let Err(error) = registry.close(&session).await { eprintln!("Anthropic Subscription idle close failed: {error}"); }
+                return;
+            }
+        }
+    })
+}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct ReapToken {pub generation:u64,pub token:u64,pub delay_ms:i64}
 #[derive(Clone,Copy)]

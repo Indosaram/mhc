@@ -3,6 +3,17 @@ use maho_ai::{auth::{credential_store::InMemoryCredentialStore, types::*}, utils
 use maho_ext_anthropic_subscription::{accounts::*, availability::AmbientAuthStatusReader, oauth_login::AnthropicSubscriptionOAuth};
 
 struct Flow;
+#[tokio::test]
+async fn native_oauth_constructor_probes_configured_executable() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().expect("dir"); let executable = directory.path().join("claude");
+    std::fs::write(&executable,"#!/bin/sh\n[ \"$1\" = auth ] && [ \"$2\" = status ]\n").expect("script");
+    std::fs::set_permissions(&executable,std::fs::Permissions::from_mode(0o700)).expect("permissions");
+    let settings = Arc::new(|| maho_ext_anthropic_subscription::settings::load(&serde_json::json!({"anthropicSubscriptionProvider":{"enabled":true}}),&serde_json::Value::Null,&Default::default()));
+    let oauth = AnthropicSubscriptionOAuth::native(Arc::new(InMemoryCredentialStore::new()),settings,executable);
+    let result = oauth.check(&Context,None,&AbortController::new().signal()).await.expect("check");
+    assert!(result.is_some());
+}
 #[async_trait::async_trait]
 impl OAuthAuth for Flow {
     fn name(&self) -> &str { "synthetic" }

@@ -11,6 +11,13 @@ pub struct AnthropicSubscriptionOAuth {
 }
 
 impl AnthropicSubscriptionOAuth {
+    pub fn native(store: Arc<dyn CredentialStore>, settings: Arc<dyn Fn() -> crate::settings::ProviderSettings + Send + Sync>, executable: std::path::PathBuf) -> Self {
+        let ambient = crate::availability::AmbientAuthStatusReader::new(Arc::new(move || {
+            let executable = executable.clone();
+            Box::pin(async move { Ok(crate::availability::probe_ambient_claude_auth_status(&executable, crate::availability::AMBIENT_PROBE_TIMEOUT_MS).await) })
+        }), Arc::new(|| maho_ai::utils::diagnostics::now_ms().max(0) as u64), crate::availability::AMBIENT_STATUS_TTL_MS);
+        Self { store, settings, ambient, flow: Arc::new(maho_ai::auth::oauth::anthropic::AnthropicOAuth::new(maho_ai::auth::oauth::transport::default_transport())) }
+    }
     async fn environment(ctx: &dyn AuthContext) -> BTreeMap<String, String> {
         let mut environment = BTreeMap::new();
         for name in std::iter::once("CLAUDE_CODE_OAUTH_TOKEN".to_owned()).chain((2..=16).map(|i| format!("CLAUDE_CODE_OAUTH_TOKEN_{i}"))) {

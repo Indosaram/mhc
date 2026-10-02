@@ -7,6 +7,7 @@ pub struct SessionRegistry {
     pub entries: BTreeMap<String, SessionEntry>,
     pub bindings: BindingStore,
     pub last_decisions: BTreeMap<String, crate::session_observability::Observation>,
+    pub reapers: BTreeMap<String, tokio::task::JoinHandle<()>>,
     generation: u64,
 }
 pub struct ResidentInput<'a> {
@@ -19,6 +20,7 @@ pub struct ResidentInput<'a> {
 }
 impl SessionRegistry {
     pub async fn close(&mut self, session: &str) -> anyhow::Result<()> {
+        if let Some(reaper) = self.reapers.remove(session) { reaper.abort(); let _ = reaper.await; }
         if let Some(mut entry) = self.entries.remove(session) {
             self.bindings.remember(session, &crate::session_turn_attempt::binding_from_entry(&entry, &entry.sent_hashes));
             entry.close().await?;
@@ -31,6 +33,7 @@ impl SessionRegistry {
         Ok(())
     }
     pub async fn turn(&mut self, input: ResidentInput<'_>, deliver: impl FnMut(Value)) -> anyhow::Result<crate::session_registry_pump::TurnResult> {
+        if let Some(reaper) = self.reapers.remove(input.session) { reaper.abort(); let _ = reaper.await; }
         let messages = crate::session_sync::sent_messages(input.context);
         let hashes = crate::session_sync::sent_message_hashes(&messages);
         let fingerprint = crate::session_sync::config_fingerprint(input.options, input.context, input.auth_lane, input.account);
@@ -93,4 +96,7 @@ impl SessionRegistry {
         }
         result
     }
+}
+impl Drop for SessionRegistry {
+    fn drop(&mut self) { for reaper in self.reapers.values() { reaper.abort(); } }
 }
