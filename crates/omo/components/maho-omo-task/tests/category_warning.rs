@@ -48,3 +48,12 @@ fn run(config: Value, settings: Value, dead_chain: bool, repetitions: usize) -> 
 #[test] fn user_model_never_warns() {
     assert_eq!(run(json!({"categories":{"quick":{"model":"faux/custom"}}}), json!({}), true, 1), 0);
 }
+#[test] fn session_switch_allows_one_new_warning_without_mutating_error() {
+    let session=Arc::new(Mutex::new(None)); let current=session.clone(); let calls=Arc::new(Mutex::new(Vec::new())); let sink=calls.clone();
+    let mut error=PlanResolutionError::new(PlanResolutionCode::ModelUnavailable,"unavailable"); error.category=Some("quick".into()); error.attempted_chain=Some(vec![]); error.available_categories=Some(vec!["writing".into()]); let expected=error.clone();
+    let planner=create_category_unavailable_warning_planner(Arc::new(move |_| Err(Box::new(error.clone()))),json!({}),json!({}),Arc::new(move || current.lock().expect("session").clone()),Arc::new(move |_,details| sink.lock().expect("calls").push(details)));
+    assert!(calls.lock().expect("calls").is_empty());
+    for _ in 0..2 { assert_eq!(*planner(&Default::default()).expect_err("dead chain"),expected); }
+    *session.lock().expect("session")=Some("next".into()); assert_eq!(*planner(&Default::default()).expect_err("dead chain"),expected);
+    let calls=calls.lock().expect("calls"); assert_eq!(calls.len(),2); assert_eq!(calls[0]["missing_providers"],json!([])); assert_eq!(calls[0]["available_categories"],json!(["writing"]));
+}

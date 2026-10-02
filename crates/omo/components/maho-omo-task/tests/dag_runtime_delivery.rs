@@ -1,0 +1,11 @@
+use std::{collections::BTreeMap,sync::{Arc,Mutex}};
+use maho_omo_task::dag_runtime::{DurableDagListener,publish_durable_events};
+use senpi_task::dag::{store::{DagStoreConfig,DagStoreOptions,create_dag_file_store},types::{DagRunEvent,DagRunEventPayload,DagEventLane,SchemaVersion1}};
+#[test] fn durable_pages_deliver_in_order_once_and_continue_after_bad_subscriber() {
+    let root=tempfile::tempdir().expect("root"); let store=create_dag_file_store(&DagStoreConfig::new(root.path()),DagStoreOptions::default()).expect("store");
+    for seq in 1..=1001 { store.append_event(&DagRunEvent { schema_version:SchemaVersion1,run_id:"run".into(),seq,at:"1970-01-01T00:00:01.000Z".into(),lane:DagEventLane::Boundary,payload:DagRunEventPayload::RunStarted { generation:1 } }).expect("append"); }
+    let captured=Arc::new(Mutex::new(Vec::new())); let sink=captured.clone(); let on_event:DurableDagListener=Arc::new(move |event| sink.lock().expect("events").push(("main",event.seq))); let sink=captured.clone(); let listener:DurableDagListener=Arc::new(move |event| sink.lock().expect("events").push(("subscriber",event.seq))); let bad:DurableDagListener=Arc::new(|event| { if event.seq==1 { panic!("subscriber fixture"); } }); let listeners=BTreeMap::from([("run".into(),vec![bad,listener])]); let mut delivered=BTreeMap::new();
+    publish_durable_events(&store,"run",&mut delivered,&listeners,&on_event).expect("publish"); assert_eq!(delivered["run"],1001); let events=captured.lock().expect("events"); assert_eq!(events.len(),2002); for (index,pair) in events.chunks_exact(2).enumerate() { let seq=u64::try_from(index+1).expect("seq"); assert_eq!(pair,[("main",seq),("subscriber",seq)]); } drop(events);
+    publish_durable_events(&store,"run",&mut delivered,&listeners,&on_event).expect("republish"); assert_eq!(captured.lock().expect("events").len(),2002);
+}
+#[test] fn empty_run_does_not_advance_delivery_cursor() { let root=tempfile::tempdir().expect("root"); let store=create_dag_file_store(&DagStoreConfig::new(root.path()),DagStoreOptions::default()).expect("store"); let mut delivered=BTreeMap::new(); let listener:DurableDagListener=Arc::new(|_| panic!("no event")); publish_durable_events(&store,"missing",&mut delivered,&BTreeMap::new(),&listener).expect("empty"); assert!(delivered.is_empty()); }
