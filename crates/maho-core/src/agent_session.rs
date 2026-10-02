@@ -2324,6 +2324,13 @@ impl AgentSession {
         allow_deferral: bool, thinking: Option<ModelThinkingLevel>) -> Result<Option<SystemPromptChangeEvent>, String>
     {
         let previous = self.model();
+        let context_changed = !models_are_equal(Some(&previous), Some(&model))
+            || previous.context_window != model.context_window || previous.api != model.api;
+        if context_changed {
+            self.abort_compaction();
+            self.abort_branch_summary();
+            self.state().message_revision += 1;
+        }
         let (current_budget, _) = self.model_budget(&previous, 0, false)?;
         let (target_budget, _) = self.model_budget(&model, 0, false)?;
         let live = if model.context_window.saturating_sub(target_budget.required_tokens)
@@ -2362,12 +2369,12 @@ impl AgentSession {
         let result = {
             let mut runner = self.extension_runner.lock().await;
             match runner.as_mut() {
-                Some(runner) => runner.emit_model_select(maho_ext_api::ModelSelectEvent {
+                Some(runner) if context_changed => runner.emit_model_select(maho_ext_api::ModelSelectEvent {
                     model: model.clone(), previous_model: Some(previous.clone()), source,
                     system_prompt: old_prompt.clone(), system_prompt_options: maho_ext_api::ExtensionContextActions::get_system_prompt_options(
                         &SessionExtensionActions(Arc::downgrade(&self.inner))),
                 }).await.map_err(|error| error.to_string()),
-                None => Ok(None),
+                _ => Ok(None),
             }
         };
         let change = match result {
@@ -2375,6 +2382,17 @@ impl AgentSession {
                 let prompt = result.as_ref().and_then(|result| result.system_prompt.clone())
                     .unwrap_or_else(|| Some(old_prompt.clone())).unwrap_or_else(|| self.state().base_system_prompt.clone());
                 self.agent.set_system_prompt(prompt.clone());
+                if prompt != old_prompt {
+                    let system_prompt_name = result.as_ref().and_then(|result| result.system_prompt_name.clone());
+                    self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SystemPromptChange {
+                        system_prompt: prompt.clone(), previous_system_prompt: old_prompt.clone(), system_prompt_name: system_prompt_name.clone(),
+                        model: model.clone(), previous_model: Some(previous.clone()),
+                    }).await;
+                    self.emit(AgentSessionEvent::SystemPromptChange {
+                        system_prompt: prompt.clone(), previous_system_prompt: old_prompt.clone(), system_prompt_name,
+                        model: model.clone(), previous_model: Some(previous.clone()),
+                    });
+                }
                 let (post_hook_budget, post_hook_repairable) = self.model_budget(&model, live, self.messages().is_empty())?;
                 if allow_deferral && post_hook_budget.shortfall_tokens > 0 && post_hook_repairable {
                     self.agent.set_model(previous);
@@ -2421,10 +2439,6 @@ impl AgentSession {
             models_are_equal(Some(&entry.model), Some(&model))).and_then(|entry| entry.service_tier));
         self.emit(AgentSessionEvent::ModelChanged { model: model.clone(), thinking_level: thinking_level_from_model_level(self.thinking_level()).unwrap_or(ThinkingLevel::Minimal), source });
         if old_tier != self.service_tier() { self.emit(AgentSessionEvent::ServiceTierChanged { tier: self.service_tier(), fast_mode: self.is_fast_mode_active() }); }
-        if let Some(change) = &change { self.emit(AgentSessionEvent::SystemPromptChange {
-            system_prompt: change.system_prompt.clone(), previous_system_prompt: change.previous_system_prompt.clone(),
-            system_prompt_name: change.system_prompt_name.clone(), model, previous_model: Some(previous),
-        }); }
         Ok(change)
     }
 
