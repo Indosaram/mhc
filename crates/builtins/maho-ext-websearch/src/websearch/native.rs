@@ -1,4 +1,10 @@
 use super::provider_endpoints::{SearchProvider,is_allowed_provider_base_url};
+pub fn discovered_native_entry_id(provider:SearchProvider,route_key:&str)->String {
+    use sha2::{Digest,Sha256};
+    let digest=Sha256::digest(route_key.as_bytes());
+    let fingerprint=digest[..8].iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+    format!("native-{}-{fingerprint}",provider.as_str())
+}
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct NativeModelInfo { pub provider:String,pub id:String,pub base_url:String,pub api:Option<String> }
 #[derive(Clone,Debug,PartialEq,Eq)]
@@ -38,6 +44,7 @@ pub fn native_route_key(model:&NativeModelInfo)->Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn discovered_ids_use_first_sixteen_sha256_hex_characters() { assert_eq!(discovered_native_entry_id(SearchProvider::Openai,"openai|https://api.example.test/v1/responses"),"native-openai-9c901901d1756287"); }
     fn model(provider:&str,id:&str)->NativeModelInfo { NativeModelInfo{provider:provider.into(),id:id.into(),base_url:"https://api.example.test/v1/".into(),api:None} }
     #[test] fn openrouter_maps_effective_provider() { assert_eq!(native_mapping(&model("openrouter","anthropic/claude-sonnet-4")).unwrap().provider,SearchProvider::Anthropic); assert!(native_mapping(&model("openrouter","openrouter/x")).is_none()); }
     #[test] fn codex_model_is_not_discovered() { assert!(native_mapping(&model("openai","gpt-5-codex")).is_none()); assert!(native_mapping(&model("openai","gpt-5.5")).is_some()); }
