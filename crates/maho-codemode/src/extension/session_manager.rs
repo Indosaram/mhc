@@ -45,7 +45,7 @@ impl CodemodeSessionManager {
                 Box::pin(async move {
                     let execute_options = ExecuteToolOptions { signal: Some(request.signal), ..Default::default() };
                     if is_reserved_tool_name(&request.tool_name) {
-                        let tools = list_tools.as_ref().map(|list| list()).transpose().map_err(|error| json!({"name":"Error","message":error}))?;
+                        let tools = if request.tool_name==crate::bridge::reserved::RESERVED_OUTPUT_TOOL {None} else {list_tools.as_ref().map(|list| list()).transpose().map_err(|error| json!({"name":"Error","message":error}))?};
                         run_reserved_tool(&request.tool_name, ReservedDispatchContext {
                             call_id: &request.call_id, args: &request.args, executor: executor.as_ref(),
                             task_tool_name: &task_tools.task, task_output_tool_name: &task_tools.output,

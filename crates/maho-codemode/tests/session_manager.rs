@@ -8,6 +8,7 @@ impl OutputExecuteTool for Fixture {
     fn execute_tool<'a>(&'a self, name: &'a str, params: Value, options: ExecuteToolOptions) -> ExecuteToolFuture<'a> {
         Box::pin(async move {
             assert!(!options.signal.expect("request signal").aborted());
+            if name=="task_output" {return Ok(AgentToolResult::text("transcript"));}
             assert_eq!(name, "echo");
             Ok(AgentToolResult::text(params["text"].as_str().expect("echo text")))
         })
@@ -56,8 +57,10 @@ async fn persistent_python_calls_native_host_over_owned_bridge() {
     let failure=kernel.run(PythonKernelRunOptions {cell_id:"catalog-failure".into(),code:"tool_schema('echo')".into(),timeout_ms:Some(5000),on_started:None,on_message:None}).await.unwrap();
     assert_eq!(failure["ok"],false);
     assert!(failure["error"]["message"].as_str().unwrap().contains("catalog unavailable"));
+    let helper=kernel.run(PythonKernelRunOptions {cell_id:"output-without-catalog".into(),code:"output('st_fixture')".into(),timeout_ms:Some(5000),on_started:None,on_message:None}).await.unwrap();
     proxy.dispose().await;
     session.dispose().await.unwrap();
+    assert_eq!(helper["ok"],true,"output helper must not consult an unavailable schema registry");
     assert_eq!(catalog_calls.load(std::sync::atomic::Ordering::SeqCst),2,"ordinary tool calls must not query the schema catalog");
     assert!(session.get_python_kernel("python3").await.is_err());
     assert!(tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err());
