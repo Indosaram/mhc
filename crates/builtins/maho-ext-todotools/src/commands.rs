@@ -3,7 +3,7 @@ use crate::{todo_types::{TodoOperation,TodoOpEntry},todo_operations::apply_ops_t
 pub struct TodoCommandMutation { pub phases:Vec<TodoPhase>,pub action:String,pub notification:String,pub removed:bool }
 fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}') }
 pub fn status_command(phases:&[TodoPhase],rest:&str,op:TodoOperation)->Result<TodoCommandMutation,String> {
-    let trimmed=rest.trim();
+    let trimmed=rest.trim_matches(js_whitespace);
     let (task,phase,label)=if trimmed.is_empty() { (None,None,None) }
     else if let Some((p,t))=find_task_fuzzy(phases,trimmed) { (Some(phases[p].tasks[t].content.clone()),None,Some(phases[p].tasks[t].content.clone())) }
     else if op!=TodoOperation::Start { match find_phase_fuzzy(phases,trimmed) { Some(phase)=>(None,Some(phase.name.clone()),Some(phase.name.clone())),None=>return Err(format!("No task or phase matched \"{trimmed}\".")) } }
@@ -26,7 +26,7 @@ pub fn status_command(phases:&[TodoPhase],rest:&str,op:TodoOperation)->Result<To
     Ok(TodoCommandMutation{phases:result.phases,action:format!("/todo {verb} {}",label.as_deref().unwrap_or("(all)")),notification,removed:op==TodoOperation::Rm})
 }
 fn title_case_sentence(text:&str)->String {
-    let text=text.trim(); let mut chars=text.chars(); match chars.next() { Some(first)=>format!("{}{}",first.to_uppercase(),chars.as_str()),None=>String::new() }
+    let text=text.trim_matches(js_whitespace); let mut chars=text.chars(); match chars.next() { Some(first) if first.len_utf16()==2=>text.into(),Some(first)=>format!("{}{}",first.to_uppercase(),chars.as_str()),None=>String::new() }
 }
 pub fn append_command(phases:&[TodoPhase],rest:&str)->Result<(Vec<TodoPhase>,String,String),String> {
     let tokens=tokenize_todo_args(rest); if tokens.is_empty() { return Err("Usage: /todo append [<phase>] <task...>".into()); }
@@ -34,7 +34,7 @@ pub fn append_command(phases:&[TodoPhase],rest:&str)->Result<(Vec<TodoPhase>,Str
     let (phase_name,content)=if tokens.len()==1 { (None,tokens[0].clone()) } else { (Some(tokens[0].as_str()),tokens[1..].join(" ")) };
     let index=if let Some(name)=phase_name {
         if let Some(found)=find_phase_fuzzy(&next,name) { next.iter().position(|phase|std::ptr::eq(phase,found)).expect("phase belongs to list") }
-        else { next.push(TodoPhase{name:name.split_whitespace().map(title_case_sentence).collect::<Vec<_>>().join(" "),tasks:vec![]}); next.len()-1 }
+        else { next.push(TodoPhase{name:name.split(js_whitespace).filter(|word|!word.is_empty()).map(title_case_sentence).collect::<Vec<_>>().join(" "),tasks:vec![]}); next.len()-1 }
     } else if !next.is_empty() { next.len()-1 } else { next.push(TodoPhase{name:DEFAULT_INIT_PHASE.into(),tasks:vec![]}); 0 };
     let content=title_case_sentence(&content); next[index].tasks.push(TodoItem{content:content.clone(),status:TodoStatus::Pending});
     let action=format!("/todo append → {}",next[index].name); let notification=format!("Appended to {}: {content}",next[index].name); Ok((next,action,notification))
@@ -71,6 +71,7 @@ pub fn find_task_fuzzy(phases:&[TodoPhase],query:&str)->Option<(usize,usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn sentence_title_case_preserves_astral_first_code_unit() { assert_eq!(title_case_sentence("\u{10428}task"),"\u{10428}task"); assert_eq!(title_case_sentence("\u{feff}task\u{feff}"),"Task"); }
     #[test] fn tokenizer_uses_javascript_whitespace() { assert_eq!(tokenize_todo_args("a\u{feff}b\u{0085}c"),["a","b\u{0085}c"]); }
     #[test] fn quoted_and_escaped_tokens() { assert_eq!(tokenize_todo_args("append \"two words\" escaped\\ space end\\"),["append","two words","escaped space","end\\"]); }
     #[test] fn empty_quotes_do_not_create_tokens() { assert_eq!(tokenize_todo_args("\"\" a"),["a"]); }

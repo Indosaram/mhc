@@ -73,6 +73,9 @@ async fn apply_hunks(cwd:&Path,hunks:Vec<ParsedPatch>,fail_fast:bool,on_progress
 mod tests {
     use super::*;
     use crate::types::{AppliedPatchOperation,ApplyPatchPreviewFile,ApplyPatchOperation};
+    #[tokio::test] async fn detailed_result_tracks_fuzz_tier() { let directory=tempfile::tempdir().unwrap(); tokio::fs::write(directory.path().join("fuzz.txt"),"value   \n").await.unwrap(); let result=apply_patch_detailed(directory.path(),"*** Begin Patch\n*** Update File: fuzz.txt\n@@\n-value\n+value!\n*** End Patch").await.unwrap(); assert!(result.failures.is_empty()); assert!(result.details.fuzz>0); }
+    #[cfg(unix)]
+    #[tokio::test] async fn directory_symlink_can_target_outside_workspace() { let workspace=tempfile::tempdir().unwrap(); let outside=tempfile::tempdir().unwrap(); std::os::unix::fs::symlink(outside.path(),workspace.path().join("link")).unwrap(); apply_patch(workspace.path(),"*** Begin Patch\n*** Add File: link/outside.txt\n+outside\n*** End Patch").await.unwrap(); assert_eq!(tokio::fs::read_to_string(outside.path().join("outside.txt")).await.unwrap(),"outside\n"); }
     #[tokio::test] async fn directory_failure_is_not_a_context_reread_candidate() { let directory=tempfile::tempdir().unwrap(); tokio::fs::create_dir(directory.path().join("folder")).await.unwrap(); let result=apply_patch_detailed(directory.path(),"*** Begin Patch\n*** Delete File: folder\n*** End Patch").await.unwrap(); assert_eq!(result.failures[0].code.as_deref(),Some("EISDIR")); assert!(result.recovery_instructions.must_read_files.is_empty()); }
     #[tokio::test] async fn progress_errors_do_not_interrupt_mutations() {
         let directory=tempfile::tempdir().unwrap(); tokio::fs::write(directory.path().join("first.txt"),"one\n").await.unwrap(); tokio::fs::write(directory.path().join("second.txt"),"two\n").await.unwrap();

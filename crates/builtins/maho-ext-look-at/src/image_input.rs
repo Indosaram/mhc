@@ -18,6 +18,17 @@ pub fn detect_mime_type(bytes:&[u8])->Option<&'static str> {
 }
 pub fn mime_type_from_name(name:&str)->Option<&'static str> { match std::path::Path::new(name).extension()?.to_str()?.to_lowercase().as_str() { "gif"=>Some("image/gif"),"jpeg"|"jpg"=>Some("image/jpeg"),"json"=>Some("application/json"),"pdf"=>Some("application/pdf"),"png"=>Some("image/png"),"txt"=>Some("text/plain"),"webp"=>Some("image/webp"),_=>None } }
 pub fn parse_base64(input:&str)->(String,Option<String>) { match DATA_URI.captures(input) { Some(capture)=>(capture[2].into(),Some(capture[1].to_lowercase())),None=>(input.into(),None) } }
+pub fn decode_base64(input:&str)->Result<Vec<u8>,String> {
+    let mut data=Vec::new(); let mut bits=0u32; let mut count=0;
+    for byte in input.bytes() {
+        if byte==b'=' { break; }
+        let value=match byte { b'A'..=b'Z'=>byte-b'A',b'a'..=b'z'=>byte-b'a'+26,b'0'..=b'9'=>byte-b'0'+52,b'+'|b'-'=>62,b'/'|b'_'=>63,_=>continue };
+        bits=(bits<<6)|u32::from(value); count+=6;
+        if count>=8 { count-=8; data.push((bits>>count) as u8); bits&=(1<<count)-1; }
+    }
+    if data.is_empty() && !input.trim_matches(|c:char|matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}')).is_empty() { return Err("Error: Could not decode base64 input.".into()); }
+    Ok(data)
+}
 pub fn input_mime_type<'a>(bytes:&[u8],label:&str,supplied:Option<&'a str>)->Result<&'a str,String> {
     if bytes.len()>MAX_IMAGE_BYTES { return Err("Error: Input exceeds the 10MiB per-image limit.".into()); }
     detect_mime_type(bytes).or(supplied).ok_or_else(||format!("Error: Could not determine MIME type for {label}."))
@@ -31,6 +42,7 @@ pub fn available_attachment_error(input:&str,count:usize)->String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn base64_accepts_node_whitespace_urlsafe_and_missing_padding() { assert_eq!(decode_base64(" aG Vs bG8 ").unwrap(),b"hello"); assert_eq!(decode_base64("-_8").unwrap(),[251,255]); assert_eq!(decode_base64("aGk=ignored").unwrap(),b"hi"); assert!(decode_base64("???").is_err()); assert!(decode_base64(" \u{feff}").unwrap().is_empty()); }
     #[test] fn signature_precedes_supplied_mime_and_limit_is_inclusive() { assert_eq!(input_mime_type(b"%PDF-1.7","file",Some("image/png")).unwrap(),"application/pdf"); assert!(input_mime_type(&vec![1;MAX_IMAGE_BYTES],"file",Some("image/png")).is_ok()); assert!(input_mime_type(&vec![1;MAX_IMAGE_BYTES+1],"file",Some("image/png")).is_err()); assert!(input_mime_type(b"unknown","file",None).is_err()); }
     #[test] fn aggregate_limit_is_inclusive() { assert!(validate_aggregate_bytes(&[MAX_TOTAL_BYTES]).is_ok()); assert!(validate_aggregate_bytes(&[MAX_TOTAL_BYTES,1]).is_err()); }
     #[test] fn attachment_reference_forms() { for value in ["Image #2"," [Image #2, size: 10] ","ATTACHMENT://2","image://2"] { assert_eq!(parse_image_attachment_reference(value),Some(AttachmentReference{index:2.})); } for value in ["Image #0","attachment://01","Image #2\ntext"] { assert_eq!(parse_image_attachment_reference(value),None); } }

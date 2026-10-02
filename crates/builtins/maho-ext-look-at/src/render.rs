@@ -2,16 +2,17 @@ use std::sync::LazyLock;
 use regex::Regex;
 use crate::arguments::LookAtArgs;
 static IMAGE_REFERENCE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)^\s*(?:\[?Image #([1-9][0-9]*)(?:,[^\]\n]*)?\]?|(?:attachment|image)://([1-9][0-9]*))\s*$").expect("literal pattern"));
+fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}') }
 pub fn path_label(path:&str)->String {
     if let Some(captures)=IMAGE_REFERENCE.captures(path) { return format!("Image #{}",captures.get(1).or(captures.get(2)).expect("image index").as_str()); }
     let path=path.trim_end_matches('/'); path.rsplit('/').next().unwrap_or("").into()
 }
 pub fn source_labels(args:&LookAtArgs)->Vec<String> {
-    let mut sources:Vec<_>=args.file_paths.iter().flatten().chain(args.file_path.iter()).filter(|value|!value.trim().is_empty()).map(|value|path_label(value)).collect();
-    sources.extend(args.image_data_list.iter().flatten().chain(args.image_data.iter()).filter(|value|!value.trim().is_empty()).map(|_|"base64 input".into())); sources
+    let mut sources:Vec<_>=args.file_paths.iter().flatten().chain(args.file_path.iter()).filter(|value|!value.trim_matches(js_whitespace).is_empty()).map(|value|path_label(value)).collect();
+    sources.extend(args.image_data_list.iter().flatten().chain(args.image_data.iter()).filter(|value|!value.trim_matches(js_whitespace).is_empty()).map(|_|"base64 input".into())); sources
 }
 pub fn goal_preview(goal:&str)->String {
-    let goal=goal.split_whitespace().collect::<Vec<_>>().join(" "); if goal.is_empty() { return "pending".into(); }
+    let goal=goal.split(js_whitespace).filter(|part|!part.is_empty()).collect::<Vec<_>>().join(" "); if goal.is_empty() { return "pending".into(); }
     if goal.encode_utf16().count()<=110 { return goal; }
     let mut units=0; let mut preview=String::new(); for character in goal.chars() { if units+character.len_utf16()>109 { break; } units+=character.len_utf16(); preview.push(character); } preview.push('…'); preview
 }
