@@ -89,6 +89,25 @@ async fn live_kernel_tool_host_pump_describes_and_invokes_worker_definition() {
 }
 
 #[tokio::test]
+async fn bridge_wait_timeout_retains_worker_state() {
+    let kernel=JavaScriptKernel::start(Path::new(env!("CARGO_MANIFEST_DIR")),"bun-timeout-retained",4,None).await.unwrap();
+    let pid=kernel.pid().unwrap();
+    let run=kernel.run_with_callbacks(KernelRunInput {cell_id:"budget".into(),code:"globalThis.timeoutMarker=41; await tool.started({})".into(),timeout_ms:Some(400)},None,None);
+    let observe=async {tokio::time::timeout(std::time::Duration::from_secs(3),kernel.next_tool_call()).await.unwrap().unwrap()};
+    let (result,call)=tokio::join!(run,observe);
+    let next=kernel.run(KernelRunInput {cell_id:"after-budget".into(),code:"timeoutMarker+1".into(),timeout_ms:Some(5000)},|_|{}).await;
+    let same_pid=kernel.pid()==Some(pid);
+    kernel.close().await.unwrap();
+    assert_eq!(call["toolName"],"started");
+    let result=result.unwrap();
+    assert_eq!(result["ok"],false);
+    assert_eq!(result["durationMs"],400);
+    assert!(result["error"]["message"].as_str().unwrap().contains("timed out"));
+    assert!(same_pid);
+    assert_eq!(next.unwrap()["valueRepr"],"42");
+}
+
+#[tokio::test]
 async fn live_name_sources_refresh_before_every_cell_and_recovery() {
     use std::sync::{Arc,Mutex};
     let names=Arc::new(Mutex::new((vec!["host_reserved".to_string()],vec!["foreign_reserved".to_string()])));
