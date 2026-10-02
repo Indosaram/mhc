@@ -62,9 +62,9 @@ fn real_session()->maho_core::agent_session::AgentSession {
     assert_eq!(controller.pause(&created.loop_id).await.unwrap(),vec![created.loop_id.clone()]);
     assert_eq!(controller.resume(&created.loop_id).await.unwrap(),vec![created.loop_id.clone()]);
     controller.event(&ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason:SessionReason::Quit,target_session_file:None,signal:None })).await.unwrap();
-    let saved=crate::store::read_loop_state(&crate::types::LoopStoreRef { base_dir:dir.path().into(),session_id:"s".into() }).await.unwrap().unwrap();
+    let saved=crate::store::read_loop_state(&crate::types::LoopStoreRef { base_dir:dir.path().into(),session_id:session.session_id() }).await.unwrap().unwrap();
     let crate::types::CronEntry::Dynamic { lifecycle,.. }=&saved.entries[&created.loop_id] else { panic!("expected dynamic") };
-    assert_eq!(lifecycle.phase,crate::types::LoopPhase::Suspended); assert!(lifecycle.end_reason.is_none());
+    assert_eq!(lifecycle.phase(),crate::types::LoopPhase::Suspended); assert!(lifecycle.end_reason().is_none());
 }
 #[tokio::test] async fn registered_command_and_tool_share_live_runtime_attribution() {
     let dir=tempfile::tempdir().unwrap(); let base=dir.path().to_path_buf();
@@ -74,6 +74,16 @@ fn real_session()->maho_core::agent_session::AgentSession {
     let runtime=ExtensionRuntime::default(); let events=EventBus::default();
     let mut api=ExtensionApi::new(LoadedExtension::new("loop","/tmp".into(),SourceInfo::default()),Default::default(),events.clone(),runtime.clone()); extension.register(&mut api);
     let command=api.registered.commands.iter().find(|command|command.name=="loop").unwrap().handler.clone();
+    let renderer=&api.registered.entry_renderers[crate::index::LOOP_TICK_ENTRY_TYPE];
+    let mut entry=SessionEntry { id:"tick".into(),parent_id:None,timestamp:String::new(),kind:"custom".into(),data:serde_json::json!({"customType":"loop-tick","data":{"mode":"dynamic","delivery":"full","folded":false,"noopStreak":0}}) };
+    let mut normal=renderer(&entry,&Default::default(),&Theme::default()).unwrap(); assert!(!normal.render(80).is_empty());
+    entry.data["data"]["folded"]=true.into(); entry.data["data"]["noopStreak"]=2.into();
+    let mut folded=renderer(&entry,&Default::default(),&Theme::default()).unwrap(); assert!(!folded.render(80).is_empty());
+    let completions=&api.registered.command_argument_completions["loop"];
+    let items=completions("\u{feff} ST ").await.unwrap().unwrap();
+    assert_eq!(items.iter().map(|item|item.value.as_str()).collect::<Vec<_>>(),["stop","status"]);
+    assert!(items.iter().all(|item|item.value==item.label&&item.description.is_none()));
+    assert!(completions("unknown").await.unwrap().is_none());
     let tool=api.registered.tools.iter().find(|tool|tool.definition.name=="schedule_wakeup").unwrap().definition.execute.clone();
     let session=real_session(); let runner=maho_ext_host::ExtensionRunner::new(vec![api.registered],runtime,events,context());
     session.set_extension_runner(runner).await; session.bind_extensions(Default::default()).await;
@@ -82,9 +92,9 @@ fn real_session()->maho_core::agent_session::AgentSession {
     let result=tool(ToolCall { id:"wake",params:serde_json::json!({"delaySeconds":1,"reason":"wait","prompt":"/loop check"}),signal:AbortSignal::default(),on_update:None,context:None }).await.unwrap();
     assert_eq!(result.details.as_ref().unwrap()["delaySeconds"],60.0); assert_eq!(result.details.as_ref().unwrap()["loopId"],target.loop_id);
     command(&format!("pause {}",target.loop_id),&context()).await.unwrap();
-    let saved=crate::store::read_loop_state(&crate::types::LoopStoreRef { base_dir:dir.path().into(),session_id:"s".into() }).await.unwrap().unwrap();
+    let saved=crate::store::read_loop_state(&crate::types::LoopStoreRef { base_dir:dir.path().into(),session_id:session.session_id() }).await.unwrap().unwrap();
     let crate::types::CronEntry::Dynamic { lifecycle,pending_wakeup,.. }=&saved.entries[&target.loop_id] else { panic!("expected dynamic") };
-    assert_eq!(lifecycle.phase,crate::types::LoopPhase::Suspended); assert_eq!(pending_wakeup.as_ref().unwrap().prompt,"/loop check");
+    assert_eq!(lifecycle.phase(),crate::types::LoopPhase::Suspended); assert_eq!(pending_wakeup.as_ref().unwrap().prompt,"/loop check");
     command("stop all",&context()).await.unwrap(); assert!(controller.get_wakeup_target().is_none());
     controller.event(&ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason:SessionReason::Quit,target_session_file:None,signal:None })).await.unwrap();
 }

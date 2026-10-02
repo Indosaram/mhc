@@ -16,6 +16,7 @@ impl LoopExtension {
 }
 impl Extension for LoopExtension {
     fn register(&self,api:&mut ExtensionApi) {
+        api.register_entry_renderer_optional(crate::index::LOOP_TICK_ENTRY_TYPE,crate::index::render_loop_tick_entry(),None);
         let actions=Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));
         let controller_slot=Arc::new(std::sync::OnceLock::<std::sync::Weak<NativeLoopController>>::new());
         let slot=controller_slot.clone();

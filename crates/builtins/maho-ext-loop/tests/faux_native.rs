@@ -19,5 +19,5 @@ async fn native_faux_restores_and_shutdown_suspends_existing_loop() {
     let state=maho_ext_loop::store::read_loop_state(&reference).await.unwrap().unwrap();
     assert_eq!(state.entries.len(),1);
     let CronEntry::Dynamic { lifecycle,fields,.. }=state.entries.values().next().unwrap() else { panic!("dynamic loop expected") };
-    assert_eq!(lifecycle.phase,LoopPhase::Suspended); assert!(lifecycle.end_reason.is_none()); assert!(fields.reentry_prompt.contains("watch changes"));
+    assert_eq!(lifecycle.phase(),LoopPhase::Suspended); assert!(lifecycle.end_reason().is_none()); assert!(fields.reentry_prompt.contains("watch changes"));
 }

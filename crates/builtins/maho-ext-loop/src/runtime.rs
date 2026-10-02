@@ -73,7 +73,7 @@ impl LoopRuntime {
     pub fn accepted_compaction(&mut self) {
         for (id,entry) in &self.scheduler.state.entries {
             let (fields,lifecycle)=match entry { CronEntry::Fixed { fields,lifecycle,.. }|CronEntry::Dynamic { fields,lifecycle,.. }=>(fields,lifecycle) };
-            if lifecycle.phase!=LoopPhase::Ended { self.delivery_states.entry(id.clone()).or_insert_with(||fields.sentinel_delivery.clone()).force_full_delivery=true; }
+            if lifecycle.phase()!=LoopPhase::Ended { self.delivery_states.entry(id.clone()).or_insert_with(||fields.sentinel_delivery.clone()).force_full_delivery=true; }
         }
     }
     pub fn shutdown(&mut self,now:f64) { self.scheduler.on_shutdown(now); self.deferred_dispatches.clear(); self.attribution.clear(); }
@@ -117,7 +117,7 @@ impl LoopRuntime {
         runtime.persist(&reference).await.unwrap(); let saved=crate::store::read_loop_state(&reference).await.unwrap().unwrap();
         let CronEntry::Dynamic { fields,.. }=&saved.entries["a"] else { panic!("expected dynamic") }; assert!(fields.sentinel_delivery.autonomous_preamble_delivered);
         runtime.shutdown(1.0); runtime.persist(&reference).await.unwrap();
-        let saved=crate::store::read_loop_state(&reference).await.unwrap().unwrap(); let CronEntry::Dynamic { lifecycle,.. }=&saved.entries["a"] else { panic!("expected dynamic") }; assert_eq!(lifecycle.phase,LoopPhase::Suspended); assert_eq!(lifecycle.end_reason,None);
+        let saved=crate::store::read_loop_state(&reference).await.unwrap().unwrap(); let CronEntry::Dynamic { lifecycle,.. }=&saved.entries["a"] else { panic!("expected dynamic") }; assert_eq!(lifecycle.phase(),LoopPhase::Suspended); assert_eq!(lifecycle.end_reason(),None);
     }
     #[tokio::test] async fn unused_runtime_does_not_create_sidecar() {
         let dir=tempfile::tempdir().unwrap(); let reference=LoopStoreRef { base_dir:dir.path().into(),session_id:"s".into() }; let mut runtime=LoopRuntime::new("s",None,&Default::default()); runtime.persist(&reference).await.unwrap(); assert!(crate::store::read_loop_state(&reference).await.unwrap().is_none());

@@ -39,6 +39,7 @@ fn validate_entry(id:&str,entry:&Value)->Result<(),SidecarError> {
     if !sentinel.is_object() { return Err(invalid(id,"sentinelDelivery")); }
     boolean(id,"sentinelDelivery.autonomousPreambleDelivered",&sentinel["autonomousPreambleDelivered"])?; boolean(id,"sentinelDelivery.forceFullDelivery",&sentinel["forceFullDelivery"])?;
     let fingerprint=sentinel.get("lastLoopFileDelivered").ok_or_else(||invalid(id,"loop-file fingerprint"))?;
+    if !fingerprint.is_null() && !fingerprint.is_object() { return Err(invalid(id,"loop-file fingerprint")); }
     if !fingerprint.is_null() { for field in ["path","contentHash","anchorDeliveryId"] { string(id,&format!("fingerprint.{field}"),&fingerprint[field],false)?; } number(id,"fingerprint.mtimeMs",&fingerprint["mtimeMs"],false,false)?; number(id,"fingerprint.size",&fingerprint["size"],true,false)?; }
     let sources=entry["wakeSources"].as_array().ok_or_else(||invalid(id,"wakeSources"))?;
     for source in sources {
@@ -163,6 +164,14 @@ pub fn clear_loop_state_snapshot(reference:&LoopStoreRef) { store(reference).cle
         let mut absent=value; absent["sentinelDelivery"].as_object_mut().unwrap().remove("lastLoopFileDelivered"); assert!(validate_entry("d",&absent).is_err());
         let mut state=serde_json::to_value(scheduler.state).unwrap(); state.as_object_mut().unwrap().remove("activeDynamicId");
         assert!(parse_payload(&state,&SidecarStoreRef { base_dir:"/tmp".into(),session_id:"s".into() }).is_err());
+    }
+    #[test] fn fingerprint_scalar_and_array_report_domain_error() {
+        let mut scheduler=crate::scheduler::LoopScheduler::new("s",None,&BTreeMap::new());
+        scheduler.create_dynamic(crate::scheduler::CreateDynamicRequest { original_args:"check".into(),reentry_prompt:"check".into(),payload:LoopPayload::Prompt { prompt:"check".into() } },"d".into(),1000.0);
+        for fingerprint in [serde_json::json!(true),serde_json::json!(12),serde_json::json!("bad"),serde_json::json!([])] {
+            let mut value=serde_json::to_value(&scheduler.state.entries["d"]).unwrap(); value["sentinelDelivery"]["lastLoopFileDelivered"]=fingerprint;
+            let error=validate_entry("d",&value).unwrap_err(); assert_eq!(error.to_string(),"loop entry d has an invalid loop-file fingerprint");
+        }
     }
     #[tokio::test] async fn fixed_schedule_without_rounding_notice_roundtrips() {
         use crate::scheduler::{CreateDynamicRequest,CreateFixedRequest,LoopScheduler};

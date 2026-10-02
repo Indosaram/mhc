@@ -1,13 +1,21 @@
 use crate::{tick_prompt::{LoopMode,TickDelivery},types::{EpochMs,LoopEndReason,LoopId,LoopSentinel,DeliveryId}};
 use serde::Serialize;
 pub const LOOP_TICK_ENTRY_TYPE:&str="loop-tick";
+pub fn render_loop_tick_entry()->maho_ext_api::EntryRenderer {
+    maho_ext_host::notice::adapters::notice_entry_renderer(|entry| {
+        let data=if entry.data.get("customType").is_some() { entry.data.get("data")? } else { &entry.data };
+        let folded=if data["folded"].as_bool()==Some(true) { crate::status::format_noop_fold(data["noopStreak"].as_f64()?) } else { String::new() };
+        let (title,why)=if !folded.is_empty() { (folded,"Consecutive loop ticks reported no actionable change.") } else { (format!("↻ loop tick ({}) · {}",data["mode"].as_str()?,data["delivery"].as_str()?),"A /loop schedule dispatched this tick.") };
+        Some(maho_ext_host::notice::spec::NoticeSpec { title,tone:None,why:why.into(),extra:Vec::new(),expanded_line:None })
+    })
+}
 pub struct PreparedLoopTick { pub text:String,pub entry:LoopTickEntryData,pub delivery_state:crate::types::SentinelDeliveryState,pub defer:bool }
 pub fn prepare_loop_tick(entry:&crate::types::CronEntry,tick:&crate::scheduler::LoopTick,delivery_state:crate::types::SentinelDeliveryState,loop_file:crate::tick_prompt::LoopFileSnapshot,busy:bool,commands:&[maho_ext_api::SlashCommandInfo])->Option<PreparedLoopTick> {
     let (fields,lifecycle,mode)=match entry {
         crate::types::CronEntry::Fixed { fields,lifecycle,.. }=>(fields,lifecycle,crate::types::LoopKind::Fixed),
         crate::types::CronEntry::Dynamic { fields,lifecycle,.. }=>(fields,lifecycle,crate::types::LoopKind::Dynamic),
     };
-    if lifecycle.phase==crate::types::LoopPhase::Ended { return None; }
+    if lifecycle.phase()==crate::types::LoopPhase::Ended { return None; }
     let built=crate::tick_prompt::build_tick_message(crate::tick_prompt::TickPromptInput { loop_id:fields.id.clone(),delivery_id:tick.delivery_id.clone(),mode,payload:fields.payload.clone(),reentry_prompt:fields.reentry_prompt.clone(),delivery_state,loop_file });
     let command=built.text.strip_prefix('/').and_then(|text|text.split(maho_ai::utils::js::is_js_whitespace).next());
     let defer=busy&&command.is_some_and(|name|commands.iter().any(|command|command.name==name));

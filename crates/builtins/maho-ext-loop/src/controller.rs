@@ -31,7 +31,7 @@ impl NativeLoopController {
         crate::activation::sync_schedule_wakeup_activation(&self.api,&session.runtime.scheduler.state)?;
         session.runtime.sync_timers(&mut session.timers,(self.now)(),self.on_fire.clone());
         let state=session.runtime.snapshot();
-        if state.entries.values().all(|entry|match entry { CronEntry::Fixed { lifecycle,.. }|CronEntry::Dynamic { lifecycle,.. }=>lifecycle.phase==LoopPhase::Ended }) { if session.ticker.running() { session.ticker.dispose().await?; } }
+        if state.entries.values().all(|entry|match entry { CronEntry::Fixed { lifecycle,.. }|CronEntry::Dynamic { lifecycle,.. }=>lifecycle.phase()==LoopPhase::Ended }) { if session.ticker.running() { session.ticker.dispose().await?; } }
         else { session.ticker.sync(state).await?; }
         Ok(())
     }
@@ -132,7 +132,7 @@ impl crate::tools::ScheduleWakeupSchedulerPort for NativeLoopController {
         let snapshot=self.snapshot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let id=snapshot.target.as_ref()?;
         let (kind,lifecycle)=match snapshot.state.entries.get(id)? { CronEntry::Fixed { lifecycle,.. }=>(LoopKind::Fixed,lifecycle),CronEntry::Dynamic { lifecycle,.. }=>(LoopKind::Dynamic,lifecycle) };
-        (lifecycle.phase!=LoopPhase::Ended).then(||crate::tools::ScheduleWakeupTarget { kind,loop_id:id.clone() })
+        (lifecycle.phase()!=LoopPhase::Ended).then(||crate::tools::ScheduleWakeupTarget { kind,loop_id:id.clone() })
     }
     fn schedule_wakeup(&self,request:crate::tools::ScheduleWakeupRequest)->ExtensionFuture<'_,crate::tools::ScheduleWakeupOutcome> { Box::pin(async move {
         let mut owner=self.session.lock().await; let session=owner.as_mut().ok_or_else(no_session)?;

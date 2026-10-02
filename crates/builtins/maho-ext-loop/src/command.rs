@@ -42,8 +42,8 @@ pub fn format_loop_status_listing(status_line:Option<&str>,state:&LoopState)->Re
     let mut entries=Vec::new();
     for entry in state.entries.values() {
         let (fields,lifecycle,mode)=match entry { CronEntry::Fixed { fields,lifecycle,effective_interval,cron_expression,.. }=>(fields,lifecycle,format!("fixed, `{cron_expression}` (every {})",effective_interval.human)),CronEntry::Dynamic { fields,lifecycle,.. }=>(fields,lifecycle,"dynamic".into()) };
-        if lifecycle.phase==LoopPhase::Ended { continue; }
-        entries.push(format!("- {} ({mode}) · expires {}{}",fields.id,format_expiry(Some(fields.expires_at))?,if lifecycle.phase==LoopPhase::Suspended { " · paused" } else { "" }));
+        if lifecycle.phase()==LoopPhase::Ended { continue; }
+        entries.push(format!("- {} ({mode}) · expires {}{}",fields.id,format_expiry(Some(fields.expires_at))?,if lifecycle.phase()==LoopPhase::Suspended { " · paused" } else { "" }));
     }
     if entries.is_empty() { return Ok("No active loops.".into()); }
     let mut lines=Vec::new(); if let Some(status)=status_line { lines.push(status.into()); }
@@ -61,7 +61,7 @@ pub enum TargetResolution { Apply(LoopTarget),None,Ambiguous(Vec<String>) }
 pub fn active_loop_ids(state:&LoopState)->Vec<String> {
     state.entries.values().filter_map(|entry| {
         let (fields,lifecycle)=match entry { CronEntry::Fixed { fields,lifecycle,.. }|CronEntry::Dynamic { fields,lifecycle,.. }=>(fields,lifecycle) };
-        (lifecycle.phase!=LoopPhase::Ended).then(||fields.id.clone())
+        (lifecycle.phase()!=LoopPhase::Ended).then(||fields.id.clone())
     }).collect()
 }
 pub fn resolve_command_target(target:&LoopTarget,state:&LoopState)->TargetResolution {

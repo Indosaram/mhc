@@ -30,8 +30,15 @@ pub enum LoopPhase { Starting, Waiting, Queued, Running, Suspended, Ended }
 #[serde(rename_all="snake_case")]
 pub enum LoopEndReason { Stopped, KeepaliveExhausted, Expired, TickBudgetExhausted, Error }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all="camelCase")]
-pub struct LoopLifecycle { pub phase: LoopPhase, #[serde(skip_serializing_if="Option::is_none")] pub ended_at: Option<EpochMs>, #[serde(skip_serializing_if="Option::is_none")] pub end_reason: Option<LoopEndReason>, #[serde(skip_serializing_if="Option::is_none")] pub end_detail: Option<String> }
+#[serde(tag="phase",rename_all="lowercase")]
+pub enum LoopLifecycle {
+    Starting, Waiting, Queued, Running, Suspended,
+    Ended { #[serde(rename="endedAt")] ended_at:EpochMs, #[serde(rename="endReason")] end_reason:LoopEndReason, #[serde(rename="endDetail",skip_serializing_if="Option::is_none")] end_detail:Option<String> },
+}
+impl LoopLifecycle {
+    pub fn phase(&self)->LoopPhase { match self { Self::Starting=>LoopPhase::Starting,Self::Waiting=>LoopPhase::Waiting,Self::Queued=>LoopPhase::Queued,Self::Running=>LoopPhase::Running,Self::Suspended=>LoopPhase::Suspended,Self::Ended { .. }=>LoopPhase::Ended } }
+    pub fn end_reason(&self)->Option<LoopEndReason> { match self { Self::Ended { end_reason,.. }=>Some(*end_reason),_=>None } }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct LoopFileFingerprint { pub path: String, pub mtime_ms: f64, pub size: f64, pub content_hash: String, pub anchor_delivery_id: DeliveryId }
@@ -70,6 +77,12 @@ pub struct LoopStoreRef { pub base_dir: PathBuf, pub session_id: String }
 pub fn is_record(value: &serde_json::Value) -> bool { value.is_object() }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn terminal_lifecycle_requires_time_and_reason_and_nonterminal_omits_them() {
+        for value in [serde_json::json!({"phase":"ended"}),serde_json::json!({"phase":"ended","endedAt":1})] { assert!(serde_json::from_value::<LoopLifecycle>(value).is_err()); }
+        assert_eq!(serde_json::to_value(LoopLifecycle::Suspended).unwrap(),serde_json::json!({"phase":"suspended"}));
+        let ended=LoopLifecycle::Ended { ended_at:1.0,end_reason:LoopEndReason::Stopped,end_detail:None };
+        let value=serde_json::to_value(&ended).unwrap(); assert_eq!(value,serde_json::json!({"phase":"ended","endedAt":1.0,"endReason":"stopped"})); assert_eq!(serde_json::from_value::<LoopLifecycle>(value).unwrap(),ended);
+    }
     #[test] fn sentinel_tokens_match_wire_contract() { let result = serde_json::to_value(LoopPayload::Sentinel { sentinel: LoopSentinel::LoopFileDynamic }).unwrap(); assert_eq!(result, serde_json::json!({"type":"sentinel","sentinel":"<<loop.md-dynamic>>"})); }
     #[test] fn empty_state_roundtrips() { let value = serde_json::json!({"version":1,"sessionId":"s","entries":{},"activeDynamicId":null,"updatedAt":1.0}); let state: LoopState = serde_json::from_value(value.clone()).unwrap(); let result = serde_json::to_value(state).unwrap(); assert_eq!(result, value); }
     #[test] fn record_excludes_arrays_and_null() { let result = [is_record(&serde_json::json!({})), is_record(&serde_json::json!([])), is_record(&serde_json::Value::Null)]; assert_eq!(result, [true, false, false]); }

@@ -2,13 +2,15 @@ use std::sync::Arc;
 use maho_ext_api::{ExtensionApi,ExtensionContext,ExtensionFailure,ExtensionMode,NotificationType};
 use crate::{command::*,index::{LoopController,LoopCreateOutcome,StartFixedRequest,StartDynamicRequest,StartBareRequest},parse::{parse_loop_args,ParsedLoopInvocation,LoopTarget}};
 pub fn register_loop_command(api:&mut ExtensionApi,controller:Arc<dyn LoopController>) {
-    api.register_command("loop",Some(LOOP_COMMAND_DESCRIPTION.into()),Some(LOOP_ARGUMENT_HINT.into()),Arc::new(move |args,ctx| {
+    api.register_command_with_completions("loop",Some(LOOP_COMMAND_DESCRIPTION.into()),Some(LOOP_ARGUMENT_HINT.into()),Arc::new(move |args,ctx| {
         let controller=Arc::clone(&controller);
         Box::pin(async move {
             if let Err(error)=run_loop_command(args,ctx,controller.as_ref()).await { ctx.ui.notify(&format!("/loop command failed: {}",error.message),NotificationType::Error); }
             Ok(())
         })
-    }));
+    }),Arc::new(|prefix|Box::pin(async move {
+        Ok(complete_loop_arguments(prefix).map(|items|items.into_iter().map(|item|maho_tui::autocomplete::AutocompleteItem { value:item.value,label:item.label,description:None }).collect()))
+    })));
 }
 pub async fn run_loop_command(args:&str,ctx:&ExtensionContext,controller:&dyn LoopController)->Result<(),ExtensionFailure> {
     if matches!(ctx.mode,ExtensionMode::Print|ExtensionMode::Json) {
