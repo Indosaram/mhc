@@ -14,6 +14,13 @@ impl WorkerControls{
 }
 pub fn worker_busy(active_requests:usize,snapshot:Option<&WorkerSnapshot>)->bool{active_requests>0||snapshot.is_some_and(|snapshot|snapshot.busy)}
 pub fn worker_handoff_busy(active_requests:usize,snapshot:Option<&WorkerSnapshot>)->bool{active_requests>0||snapshot.is_some_and(|snapshot|snapshot.handoff_busy.unwrap_or(snapshot.busy))}
+pub fn receive_reservation(message:crate::session_worker_protocol::SessionWorkerToHost,stopped:bool,reserve:impl FnOnce(&str)->crate::session_worker_protocol::SessionWriteGrant)->Option<crate::session_worker_protocol::SessionWorkerToHost>{
+    if stopped{match &message{
+        crate::session_worker_protocol::SessionWorkerToHost::Reserve{signal,..}|crate::session_worker_protocol::SessionWorkerToHost::Snapshot{signal,..}|crate::session_worker_protocol::SessionWorkerToHost::Output{signal,..}|crate::session_worker_protocol::SessionWorkerToHost::Width{signal,..}|crate::session_worker_protocol::SessionWorkerToHost::Capabilities{signal,..}=>signal.acknowledge(false),
+        _=>{},
+    }return None;}
+    match message{crate::session_worker_protocol::SessionWorkerToHost::Reserve{path,signal}=>{signal.acknowledge_grant(reserve(&path));None},message=>Some(message)}
+}
 pub fn commit_output_activity(snapshot:&mut Option<WorkerSnapshot>,replacement:Option<WorkerSnapshot>,busy:bool,handoff_busy:Option<bool>,streaming:bool){
     if let Some(replacement)=replacement{*snapshot=Some(replacement);}else if let Some(snapshot)=snapshot{snapshot.busy=busy;snapshot.handoff_busy=handoff_busy;snapshot.streaming=streaming;snapshot.state["isStreaming"]=streaming.into();}
 }
