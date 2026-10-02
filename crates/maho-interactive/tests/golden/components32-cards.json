@@ -1083,6 +1083,434 @@
       ]
     },
     {
+      "toolName": "find",
+      "width": 40,
+      "expanded": false,
+      "args": {
+        "pattern": "*.rs",
+        "path": "src"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "src/a.rs"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "",
+        "\u001b[48;5;22m                                        \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mfind\u001b[22m\u001b[39m \u001b[38;5;109m*.rs\u001b[39m\u001b[38;5;244m in src\u001b[39m                       \u001b[49m",
+        "\u001b[48;5;22m                                        \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;244msrc/a.rs\u001b[39m                               \u001b[49m",
+        "\u001b[48;5;22m                                        \u001b[49m"
+      ]
+    },
+    {
+      "toolName": "find",
+      "width": 40,
+      "expanded": true,
+      "args": {
+        "pattern": "*.rs",
+        "path": "src"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "src/a.rs"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "",
+        "\u001b[48;5;22m                                        \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mfind\u001b[22m\u001b[39m \u001b[38;5;109m*.rs\u001b[39m\u001b[38;5;244m in src\u001b[39m                       \u001b[49m",
+        "\u001b[48;5;22m                                        \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;244msrc/a.rs\u001b[39m                               \u001b[49m",
+        "\u001b[48;5;22m                                        \u001b[49m"
+      ]
+    },
+    {
+      "toolName": "find",
+      "width": 80,
+      "expanded": false,
+      "args": {
+        "pattern": "*.rs",
+        "path": "src"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "src/a.rs"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "",
+        "\u001b[48;5;22m                                                                                \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mfind\u001b[22m\u001b[39m \u001b[38;5;109m*.rs\u001b[39m\u001b[38;5;244m in src\u001b[39m                                                               \u001b[49m",
+        "\u001b[48;5;22m                                                                                \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;244msrc/a.rs\u001b[39m                                                                       \u001b[49m",
+        "\u001b[48;5;22m                                                                                \u001b[49m"
+      ]
+    },
+    {
+      "toolName": "find",
+      "width": 80,
+      "expanded": true,
+      "args": {
+        "pattern": "*.rs",
+        "path": "src"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "src/a.rs"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "",
+        "\u001b[48;5;22m                                                                                \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mfind\u001b[22m\u001b[39m \u001b[38;5;109m*.rs\u001b[39m\u001b[38;5;244m in src\u001b[39m                                                               \u001b[49m",
+        "\u001b[48;5;22m                                                                                \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;244msrc/a.rs\u001b[39m                                                                       \u001b[49m",
+        "\u001b[48;5;22m                                                                                \u001b[49m"
+      ]
+    },
+    {
+      "toolName": "edit",
+      "width": 40,
+      "expanded": false,
+      "args": {
+        "file_path": "src/main.rs"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Successfully replaced 1 block(s) in src/main.rs."
+          }
+        ],
+        "details": {
+          "diff": "-1 old\n+1 new",
+          "firstChangedLine": 1
+        },
+        "isError": false
+      },
+      "lines": [
+        "",
+        "\u001b[48;5;22m                                        \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1medit\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m                       \u001b[49m",
+        "\u001b[48;5;22m                                        \u001b[49m",
+        "\u001b[48;5;22m \u001b[48;5;52m\u001b[38;5;167m-\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;167m\u001b[7mold\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;22m                                 \u001b[49m",
+        "\u001b[48;5;22m \u001b[48;5;22m\u001b[38;5;143m+\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;143m\u001b[7mnew\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;22m                                 \u001b[49m",
+        "\u001b[48;5;22m                                        \u001b[49m"
+      ]
+    },
+    {
+      "toolName": "edit",
+      "width": 40,
+      "expanded": true,
+      "args": {
+        "file_path": "src/main.rs"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Successfully replaced 1 block(s) in src/main.rs."
+          }
+        ],
+        "details": {
+          "diff": "-1 old\n+1 new",
+          "firstChangedLine": 1
+        },
+        "isError": false
+      },
+      "lines": [
+        "",
+        "\u001b[48;5;22m                                        \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1medit\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m                       \u001b[49m",
+        "\u001b[48;5;22m                                        \u001b[49m",
+        "\u001b[48;5;22m \u001b[48;5;52m\u001b[38;5;167m-\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;167m\u001b[7mold\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;22m                                 \u001b[49m",
+        "\u001b[48;5;22m \u001b[48;5;22m\u001b[38;5;143m+\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;143m\u001b[7mnew\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;22m                                 \u001b[49m",
+        "\u001b[48;5;22m                                        \u001b[49m"
+      ]
+    },
+    {
+      "toolName": "edit",
+      "width": 80,
+      "expanded": false,
+      "args": {
+        "file_path": "src/main.rs"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Successfully replaced 1 block(s) in src/main.rs."
+          }
+        ],
+        "details": {
+          "diff": "-1 old\n+1 new",
+          "firstChangedLine": 1
+        },
+        "isError": false
+      },
+      "lines": [
+        "",
+        "\u001b[48;5;22m                                                                                \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1medit\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m                                                               \u001b[49m",
+        "\u001b[48;5;22m                                                                                \u001b[49m",
+        "\u001b[48;5;22m \u001b[48;5;52m\u001b[38;5;167m-\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;167m\u001b[7mold\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;22m                                                                         \u001b[49m",
+        "\u001b[48;5;22m \u001b[48;5;22m\u001b[38;5;143m+\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;143m\u001b[7mnew\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;22m                                                                         \u001b[49m",
+        "\u001b[48;5;22m                                                                                \u001b[49m"
+      ]
+    },
+    {
+      "toolName": "edit",
+      "width": 80,
+      "expanded": true,
+      "args": {
+        "file_path": "src/main.rs"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Successfully replaced 1 block(s) in src/main.rs."
+          }
+        ],
+        "details": {
+          "diff": "-1 old\n+1 new",
+          "firstChangedLine": 1
+        },
+        "isError": false
+      },
+      "lines": [
+        "",
+        "\u001b[48;5;22m                                                                                \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1medit\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m                                                               \u001b[49m",
+        "\u001b[48;5;22m                                                                                \u001b[49m",
+        "\u001b[48;5;22m \u001b[48;5;52m\u001b[38;5;167m-\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;167m\u001b[7mold\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;22m                                                                         \u001b[49m",
+        "\u001b[48;5;22m \u001b[48;5;22m\u001b[38;5;143m+\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;143m\u001b[7mnew\u001b[27m\u001b[39m\u001b[49m\u001b[48;5;22m                                                                         \u001b[49m",
+        "\u001b[48;5;22m                                                                                \u001b[49m"
+      ]
+    },
+    {
+      "toolName": "write",
+      "width": 40,
+      "expanded": false,
+      "args": {
+        "file_path": "src/new.rs",
+        "content": "fn main() {}\n"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "wrote"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "",
+        "\u001b[48;5;22m                                        \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mwrite\u001b[22m\u001b[39m \u001b[38;5;109msrc/new.rs\u001b[39m                       \u001b[49m",
+        "\u001b[48;5;22m                                        \u001b[49m",
+        "\u001b[48;5;22m \u001b[48;5;22m\u001b[38;5;143m+\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;74mfn\u001b[39m \u001b[38;5;187mmain\u001b[39m() {}\u001b[49m\u001b[48;5;22m                        \u001b[49m",
+        "\u001b[48;5;22m                                        \u001b[49m"
+      ]
+    },
+    {
+      "toolName": "write",
+      "width": 40,
+      "expanded": true,
+      "args": {
+        "file_path": "src/new.rs",
+        "content": "fn main() {}\n"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "wrote"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "",
+        "\u001b[48;5;22m                                        \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mwrite\u001b[22m\u001b[39m \u001b[38;5;109msrc/new.rs\u001b[39m                       \u001b[49m",
+        "\u001b[48;5;22m                                        \u001b[49m",
+        "\u001b[48;5;22m \u001b[48;5;22m\u001b[38;5;143m+\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;74mfn\u001b[39m \u001b[38;5;187mmain\u001b[39m() {}\u001b[49m\u001b[48;5;22m                        \u001b[49m",
+        "\u001b[48;5;22m                                        \u001b[49m"
+      ]
+    },
+    {
+      "toolName": "write",
+      "width": 80,
+      "expanded": false,
+      "args": {
+        "file_path": "src/new.rs",
+        "content": "fn main() {}\n"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "wrote"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "",
+        "\u001b[48;5;22m                                                                                \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mwrite\u001b[22m\u001b[39m \u001b[38;5;109msrc/new.rs\u001b[39m                                                               \u001b[49m",
+        "\u001b[48;5;22m                                                                                \u001b[49m",
+        "\u001b[48;5;22m \u001b[48;5;22m\u001b[38;5;143m+\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;74mfn\u001b[39m \u001b[38;5;187mmain\u001b[39m() {}\u001b[49m\u001b[48;5;22m                                                                \u001b[49m",
+        "\u001b[48;5;22m                                                                                \u001b[49m"
+      ]
+    },
+    {
+      "toolName": "write",
+      "width": 80,
+      "expanded": true,
+      "args": {
+        "file_path": "src/new.rs",
+        "content": "fn main() {}\n"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "wrote"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "",
+        "\u001b[48;5;22m                                                                                \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1mwrite\u001b[22m\u001b[39m \u001b[38;5;109msrc/new.rs\u001b[39m                                                               \u001b[49m",
+        "\u001b[48;5;22m                                                                                \u001b[49m",
+        "\u001b[48;5;22m \u001b[48;5;22m\u001b[38;5;143m+\u001b[39m\u001b[38;5;244m1\u001b[39m \u001b[38;5;74mfn\u001b[39m \u001b[38;5;187mmain\u001b[39m() {}\u001b[49m\u001b[48;5;22m                                                                \u001b[49m",
+        "\u001b[48;5;22m                                                                                \u001b[49m"
+      ]
+    },
+    {
+      "toolName": "bash",
+      "width": 40,
+      "expanded": false,
+      "args": {
+        "command": "echo hi"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "hi\n"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "",
+        "\u001b[48;5;22m                                        \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;79mecho\u001b[39m hi                              \u001b[49m",
+        "\u001b[48;5;22m                                        \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;244mhi\u001b[39m                                     \u001b[49m",
+        "\u001b[48;5;22m                                        \u001b[49m"
+      ]
+    },
+    {
+      "toolName": "bash",
+      "width": 40,
+      "expanded": true,
+      "args": {
+        "command": "echo hi"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "hi\n"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "",
+        "\u001b[48;5;22m                                        \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;79mecho\u001b[39m hi                              \u001b[49m",
+        "\u001b[48;5;22m                                        \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;244mhi\u001b[39m                                     \u001b[49m",
+        "\u001b[48;5;22m                                        \u001b[49m"
+      ]
+    },
+    {
+      "toolName": "bash",
+      "width": 80,
+      "expanded": false,
+      "args": {
+        "command": "echo hi"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "hi\n"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "",
+        "\u001b[48;5;22m                                                                                \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;79mecho\u001b[39m hi                                                                      \u001b[49m",
+        "\u001b[48;5;22m                                                                                \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;244mhi\u001b[39m                                                                             \u001b[49m",
+        "\u001b[48;5;22m                                                                                \u001b[49m"
+      ]
+    },
+    {
+      "toolName": "bash",
+      "width": 80,
+      "expanded": true,
+      "args": {
+        "command": "echo hi"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "hi\n"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "",
+        "\u001b[48;5;22m                                                                                \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;188m\u001b[1m$ \u001b[22m\u001b[39m\u001b[38;5;79mecho\u001b[39m hi                                                                      \u001b[49m",
+        "\u001b[48;5;22m                                                                                \u001b[49m",
+        "\u001b[48;5;22m \u001b[38;5;244mhi\u001b[39m                                                                             \u001b[49m",
+        "\u001b[48;5;22m                                                                                \u001b[49m"
+      ]
+    },
+    {
       "toolName": "read",
       "width": 40,
       "expanded": false,
@@ -1180,6 +1608,30 @@
         "\u001b[48;5;52m                                                                                \u001b[49m",
         "\u001b[48;5;52m \u001b[38;5;244mENOENT: no such file\u001b[39m                                                           \u001b[49m",
         "\u001b[48;5;52m                                                                                \u001b[49m"
+      ]
+    }
+  ],
+  "progress": [
+    {
+      "width": 40,
+      "nowMs": 1000000,
+      "lines": [
+        "",
+        "\u001b[48;5;17m                                        \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m                       \u001b[49m",
+        "\u001b[48;5;17m ⠋ reading · 5s / max 1m 00s            \u001b[49m",
+        "\u001b[48;5;17m                                        \u001b[49m"
+      ]
+    },
+    {
+      "width": 80,
+      "nowMs": 1000000,
+      "lines": [
+        "",
+        "\u001b[48;5;17m                                                                                \u001b[49m",
+        "\u001b[48;5;17m \u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m \u001b[38;5;109msrc/main.rs\u001b[39m                                                               \u001b[49m",
+        "\u001b[48;5;17m ⠋ reading · 5s / max 1m 00s                                                    \u001b[49m",
+        "\u001b[48;5;17m                                                                                \u001b[49m"
       ]
     }
   ]

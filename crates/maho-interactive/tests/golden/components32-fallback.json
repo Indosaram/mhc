@@ -1,0 +1,332 @@
+{
+  "calls": [
+    {
+      "toolName": "read",
+      "lines": [
+        "\u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m"
+      ]
+    },
+    {
+      "toolName": "a_very_long_tool_name_that_exceeds_the_bound",
+      "lines": [
+        "\u001b[38;5;188m\u001b[1ma_very_long_tool_name_that_exceeds_the_bound\u001b[22m\u001b[39m"
+      ]
+    },
+    {
+      "toolName": "  spaced  ",
+      "lines": [
+        "\u001b[38;5;188m\u001b[1m  spaced  \u001b[22m\u001b[39m"
+      ]
+    }
+  ],
+  "results": [
+    {
+      "name": "undefined",
+      "showImages": false,
+      "result": null,
+      "lines": null
+    },
+    {
+      "name": "empty-text",
+      "showImages": false,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": ""
+          }
+        ],
+        "isError": false
+      },
+      "lines": null
+    },
+    {
+      "name": "plain-text",
+      "showImages": false,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "plain output"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "\u001b[38;5;244mplain output\u001b[39m"
+      ]
+    },
+    {
+      "name": "json-object",
+      "showImages": false,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"b\":2,\"a\":1}"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "\u001b[38;5;244mb:\u001b[39m \u001b[38;5;109m2\u001b[39m",
+        "\u001b[38;5;244ma:\u001b[39m \u001b[38;5;109m1\u001b[39m"
+      ]
+    },
+    {
+      "name": "json-array",
+      "showImages": false,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[1,2,3]"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "\u001b[38;5;244m0:\u001b[39m \u001b[38;5;109m1\u001b[39m",
+        "\u001b[38;5;244m1:\u001b[39m \u001b[38;5;109m2\u001b[39m",
+        "\u001b[38;5;244m2:\u001b[39m \u001b[38;5;109m3\u001b[39m"
+      ]
+    },
+    {
+      "name": "json-nested",
+      "showImages": false,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"a\":{\"b\":{\"c\":{\"d\":1}}}}"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "\u001b[38;5;244ma:\u001b[39m",
+        "  \u001b[38;5;244mb:\u001b[39m",
+        "    \u001b[38;5;244mc:\u001b[39m \u001b[38;5;244m{\"d\":1}\u001b[39m"
+      ]
+    },
+    {
+      "name": "json-many-rows",
+      "showImages": false,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"key0\":0,\"key1\":1,\"key2\":2,\"key3\":3,\"key4\":4,\"key5\":5,\"key6\":6,\"key7\":7,\"key8\":8,\"key9\":9,\"key10\":10,\"key11\":11,\"key12\":12,\"key13\":13,\"key14\":14,\"key15\":15,\"key16\":16,\"key17\":17,\"key18\":18,\"key19\":19,\"key20\":20,\"key21\":21,\"key22\":22,\"key23\":23,\"key24\":24,\"key25\":25,\"key26\":26,\"key27\":27,\"key28\":28,\"key29\":29}"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "\u001b[38;5;244mkey0:\u001b[39m \u001b[38;5;109m0\u001b[39m",
+        "\u001b[38;5;244mkey1:\u001b[39m \u001b[38;5;109m1\u001b[39m",
+        "\u001b[38;5;244mkey2:\u001b[39m \u001b[38;5;109m2\u001b[39m",
+        "\u001b[38;5;244mkey3:\u001b[39m \u001b[38;5;109m3\u001b[39m",
+        "\u001b[38;5;244mkey4:\u001b[39m \u001b[38;5;109m4\u001b[39m",
+        "\u001b[38;5;244mkey5:\u001b[39m \u001b[38;5;109m5\u001b[39m",
+        "\u001b[38;5;244mkey6:\u001b[39m \u001b[38;5;109m6\u001b[39m",
+        "\u001b[38;5;244mkey7:\u001b[39m \u001b[38;5;109m7\u001b[39m",
+        "\u001b[38;5;244mkey8:\u001b[39m \u001b[38;5;109m8\u001b[39m",
+        "\u001b[38;5;244mkey9:\u001b[39m \u001b[38;5;109m9\u001b[39m",
+        "\u001b[38;5;244mkey10:\u001b[39m \u001b[38;5;109m10\u001b[39m",
+        "\u001b[38;5;244mkey11:\u001b[39m \u001b[38;5;109m11\u001b[39m",
+        "\u001b[38;5;244mkey12:\u001b[39m \u001b[38;5;109m12\u001b[39m",
+        "\u001b[38;5;244mkey13:\u001b[39m \u001b[38;5;109m13\u001b[39m",
+        "\u001b[38;5;244mkey14:\u001b[39m \u001b[38;5;109m14\u001b[39m",
+        "\u001b[38;5;244mkey15:\u001b[39m \u001b[38;5;109m15\u001b[39m",
+        "\u001b[38;5;244mkey16:\u001b[39m \u001b[38;5;109m16\u001b[39m",
+        "\u001b[38;5;244mkey17:\u001b[39m \u001b[38;5;109m17\u001b[39m",
+        "\u001b[38;5;244mkey18:\u001b[39m \u001b[38;5;109m18\u001b[39m",
+        "\u001b[38;5;244mkey19:\u001b[39m \u001b[38;5;109m19\u001b[39m",
+        "\u001b[38;5;244mkey20:\u001b[39m \u001b[38;5;109m20\u001b[39m",
+        "\u001b[38;5;244mkey21:\u001b[39m \u001b[38;5;109m21\u001b[39m",
+        "\u001b[38;5;244mkey22:\u001b[39m \u001b[38;5;109m22\u001b[39m",
+        "\u001b[38;5;244mkey23:\u001b[39m \u001b[38;5;109m23\u001b[39m",
+        "\u001b[38;5;241m… 6 more\u001b[39m"
+      ]
+    },
+    {
+      "name": "json-long-value",
+      "showImages": false,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"blob\":\"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\"}"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "\u001b[38;5;244mblob:\u001b[39m",
+        "\u001b[38;5;244myyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "\u001b[38;5;244myyyyyyyyyyyyyyyyyyyy…\u001b[39m"
+      ]
+    },
+    {
+      "name": "json-empty-object",
+      "showImages": false,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{}"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "\u001b[38;5;241m(empty)\u001b[39m"
+      ]
+    },
+    {
+      "name": "ansi-stripped",
+      "showImages": false,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "\u001b[31mred\u001b[0m"
+          }
+        ],
+        "isError": false
+      },
+      "lines": [
+        "\u001b[38;5;244mred\u001b[39m"
+      ]
+    },
+    {
+      "name": "model-only",
+      "showImages": false,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "hidden",
+            "audience": "model"
+          }
+        ],
+        "isError": false
+      },
+      "lines": null
+    }
+  ],
+  "formats": [
+    {
+      "name": "string-args",
+      "toolName": "read",
+      "args": {
+        "file_path": "a.rs"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "out"
+          }
+        ],
+        "isError": false
+      },
+      "output": "\u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m\n\n{\n  \"file_path\": \"a.rs\"\n}\nout"
+    },
+    {
+      "name": "invalid-content",
+      "toolName": "read",
+      "args": {
+        "file_path": 42
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "out"
+          }
+        ],
+        "isError": false
+      },
+      "output": "\u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m\n\n{\n  \"file_path\": 42\n}\nout"
+    },
+    {
+      "name": "no-result",
+      "toolName": "read",
+      "args": {
+        "file_path": "a.rs"
+      },
+      "result": null,
+      "output": "\u001b[38;5;188m\u001b[1mread\u001b[22m\u001b[39m\n\n{\n  \"file_path\": \"a.rs\"\n}"
+    },
+    {
+      "name": "long-args",
+      "toolName": "write",
+      "args": {
+        "content": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+      },
+      "result": null,
+      "output": "\u001b[38;5;188m\u001b[1mwrite\u001b[22m\u001b[39m\n\n{\n  \"content\": \"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz...\"\n}"
+    },
+    {
+      "name": "long-output",
+      "toolName": "bash",
+      "args": {
+        "command": "x"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo"
+          }
+        ],
+        "isError": false
+      },
+      "output": "\u001b[38;5;188m\u001b[1mbash\u001b[22m\u001b[39m\n\n{\n  \"command\": \"x\"\n}\nooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo..."
+    },
+    {
+      "name": "control-chars",
+      "toolName": "bash",
+      "args": {
+        "command": "a\tb\u0007c"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "d\ne"
+          }
+        ],
+        "isError": false
+      },
+      "output": "\u001b[38;5;188m\u001b[1mbash\u001b[22m\u001b[39m\n\n{\n  \"command\": \"a b c\"\n}\nd e"
+    },
+    {
+      "name": "empty-args",
+      "toolName": "ls",
+      "args": {},
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "files"
+          }
+        ],
+        "isError": false
+      },
+      "output": "\u001b[38;5;188m\u001b[1mls\u001b[22m\u001b[39m\n\n{}\nfiles"
+    },
+    {
+      "name": "array-args",
+      "toolName": "custom",
+      "args": [
+        1,
+        "two",
+        null
+      ],
+      "result": null,
+      "output": "\u001b[38;5;188m\u001b[1mcustom\u001b[22m\u001b[39m\n\n[\n  1,\n  \"two\",\n  null\n]"
+    }
+  ]
+}
