@@ -699,8 +699,8 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             }
             let Ok(_admission) = session.prompt_admission.try_lock() else { return Ok(maho_ext_api::ApplyCompactionResult::Rejected); };
             if session.is_streaming() { return Ok(maho_ext_api::ApplyCompactionResult::Rejected); }
-            session.apply_compaction(&crate::compaction::compaction::CompactionResult { summary: result.summary, first_kept_entry_id: result.first_kept_entry_id,
-                tokens_before: result.tokens_before as i64, estimated_tokens_after: None, usage: None, details: result.details }).map_err(maho_ext_api::ExtensionFailure::new)?;
+            session.apply_compaction_internal(&crate::compaction::compaction::CompactionResult { summary: result.summary, first_kept_entry_id: result.first_kept_entry_id,
+                tokens_before: result.tokens_before as i64, estimated_tokens_after: None, usage: None, details: result.details }, Some(true)).map_err(maho_ext_api::ExtensionFailure::new)?;
             let lifecycle = session.compaction_state();
             if let Some(operation) = lifecycle.operation() {
                 let revision = session.message_revision() as i64;
@@ -6389,6 +6389,23 @@ mod tests {
         assert!(!session.is_compacting());
         assert_eq!(session.compaction_state().generation(), 0);
         assert!(!session.work_barrier.has_active_work());
+    }
+
+    #[tokio::test]
+    async fn precomputed_extension_compaction_preserves_provenance_and_rejects_stale_revision() {
+        use maho_ext_api::ExtensionContextActions;
+        let session = test_session();
+        session.agent.set_model(test_model());
+        let retained = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"recent","timestamp":0})));
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        let result = maho_ext_api::CompactionResult { summary: "digest".to_owned(), first_kept_entry_id: retained["id"].as_str().expect("retained").to_owned(),
+            tokens_before: 100, details: None };
+        let options = |revision| maho_ext_api::ApplyCompactionOptions { reason: maho_ext_api::CompactionReason::Extension,
+            expected_revision: Some(revision), expected_warm_anchor: None, signal: None };
+        assert_eq!(actions.apply_compaction(result.clone(), options(session.message_revision() + 1)).await.expect("stale"), maho_ext_api::ApplyCompactionResult::Stale);
+        assert_eq!(session.with_session_manager(|manager| manager.entries()).len(), 1);
+        assert_eq!(actions.apply_compaction(result, options(session.message_revision())).await.expect("applied"), maho_ext_api::ApplyCompactionResult::Applied);
+        assert_eq!(session.with_session_manager(|manager| manager.entries().last().expect("compaction")["fromHook"].clone()), true);
     }
 
     #[tokio::test]
