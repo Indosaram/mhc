@@ -253,3 +253,31 @@ async fn forced_retirement_retires_tracked_child_outside_worker_group() {
     assert!(!retained.unwrap());
     assert!(retired,"tracked child in a separate session must retire before stop settles");
 }
+
+#[tokio::test]
+async fn queued_cancel_never_executes_or_starts_and_preserves_parent() {
+    use std::{sync::{Arc,atomic::{AtomicBool,Ordering}},task::Poll,future::Future};
+    let kernel=JavaScriptKernel::start(Path::new(env!("CARGO_MANIFEST_DIR")),"bun-queued-cancel",4,None).await.unwrap();
+    let pid=kernel.pid();
+    let started=Arc::new(AtomicBool::new(false));
+    let seen=started.clone();
+    let parent=kernel.run_with_callbacks(KernelRunInput {cell_id:"queue-parent".into(),code:"globalThis.queueMarker=41; await tool.park({}); queueMarker+1".into(),timeout_ms:Some(5000)},None,None);
+    let cancel=async {
+        let call=kernel.next_tool_call().await.unwrap();
+        let queued=kernel.run_with_callbacks(KernelRunInput {cell_id:"queued-cancel".into(),code:"globalThis.queueMarker=0".into(),timeout_ms:None},None,Some(Arc::new(move ||{seen.store(true,Ordering::SeqCst);} )));
+        tokio::pin!(queued);
+        std::future::poll_fn(|cx| {assert!(queued.as_mut().poll(cx).is_pending());Poll::Ready(())}).await;
+        let removed=kernel.cancel_queued("queued-cancel","cancelled in queue").await;
+        let cancelled=queued.await;
+        kernel.deliver_tool_reply(serde_json::json!({"type":"tool-reply","callId":call["callId"],"ok":true,"value":null})).unwrap();
+        (removed,cancelled)
+    };
+    let (parent,(removed,cancelled))=tokio::join!(parent,cancel);
+    let same_pid=kernel.pid()==pid;
+    kernel.close().await.unwrap();
+    assert!(removed);
+    assert_eq!(cancelled.unwrap()["ok"],false);
+    assert!(!started.load(Ordering::SeqCst));
+    assert_eq!(parent.unwrap()["valueRepr"],"42");
+    assert!(same_pid);
+}
