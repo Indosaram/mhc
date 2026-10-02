@@ -2357,6 +2357,7 @@ dependencies = [
  "maho-core",
  "maho-ext-api",
  "maho-ext-host",
+ "maho-test-support",
  "rand",
  "rusqlite",
  "serde",

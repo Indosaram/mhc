@@ -41,6 +41,14 @@ pub async fn probe_listen(token_file: &Path, listen: &Value, timeout_ms: u64, ve
     Ok(None)
 }
 
+pub async fn poll_probe(token_file: &Path, listen: &Value, timeout_ms: u64, version: &str) -> Result<Option<String>, std::io::Error> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    while tokio::time::Instant::now() <= deadline {
+        if let Some(probe) = probe_listen(token_file,listen,2000,version).await? {return Ok(Some(probe));}
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    Ok(None)
+}
 pub fn read_initialize_probe(text: &str) -> Option<String> {
     let parsed: Value = serde_json::from_str(text).ok()?;
     if parsed.get("id")?.as_f64() != Some(1.0) {

@@ -54,6 +54,6 @@ impl InitializedConnection {
         self.state=Some(json!({"initialized":true,"clientInfo":params["clientInfo"],"capabilities":capabilities,"userAgent":format!("{name}/{server_version} ({os_type} {os_release}; {arch}) senpi_app_server")}));true
     }
     pub fn registry_connection(&self)->super::registry::RegistryConnection {
-        super::registry::RegistryConnection {initialized:self.state.is_some(),experimental_api:self.capabilities()["experimentalApi"].as_bool().unwrap_or(false)}
+        super::registry::RegistryConnection {initialized:self.state.is_some(),experimental_api:self.capabilities()["experimentalApi"].as_bool().unwrap_or(false),..Default::default()}
     }
 }

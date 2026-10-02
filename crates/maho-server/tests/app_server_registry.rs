@@ -59,7 +59,8 @@ async fn experimental_gate_and_registration_replacement() {
             .dispatch(
                 RegistryConnection {
                     initialized: true,
-                    experimental_api: false
+                    experimental_api: false,
+                    ..Default::default()
                 },
                 request.clone()
             )
@@ -71,7 +72,8 @@ async fn experimental_gate_and_registration_replacement() {
             .dispatch(
                 RegistryConnection {
                     initialized: true,
-                    experimental_api: true
+                    experimental_api: true,
+                    ..Default::default()
                 },
                 request.clone()
             )
@@ -84,7 +86,8 @@ async fn experimental_gate_and_registration_replacement() {
             .dispatch(
                 RegistryConnection {
                     initialized: true,
-                    experimental_api: false
+                    experimental_api: false,
+                    ..Default::default()
                 },
                 request
             )

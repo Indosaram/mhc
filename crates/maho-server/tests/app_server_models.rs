@@ -21,7 +21,7 @@ async fn native_model_registry_projects_reasoning_and_validates_integer_limits()
 async fn remote_clients_validate_before_reporting_unavailability() {
     let mut registry = MethodRegistry::default();
     register_model_list_method(&mut registry, Arc::new(Vec::new));
-    let connection = RegistryConnection { initialized:true, experimental_api:true };
+    let connection = RegistryConnection { initialized:true, experimental_api:true, ..Default::default() };
     for params in [json!(null), json!({}), json!({"environmentId":"e","limit":1.5}), json!({"environmentId":"e","order":"invalid"})] {
         let response = registry.dispatch(connection.clone(),json!({"id":1,"method":"remoteControl/client/list","params":params})).await;
         assert_eq!(response["error"]["code"],-32600);

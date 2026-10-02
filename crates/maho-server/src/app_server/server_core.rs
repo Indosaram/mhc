@@ -16,20 +16,24 @@ pub struct ServerCore {
     pub os_release: String,
     pub arch: String,
     pub platform: String,
+    pub on_disconnect: Option<Arc<dyn Fn(String) + Send + Sync>>,
 }
 impl ServerCore {
     pub fn new(agent_home: String, version: String, os_type: String, os_release: String, arch: String, platform: String) -> Self {
-        Self { connections: BTreeMap::new(), registry: MethodRegistry::default(), agent_home, version, os_type, os_release, arch, platform }
+        Self { connections: BTreeMap::new(), registry: MethodRegistry::default(), agent_home, version, os_type, os_release, arch, platform, on_disconnect: None }
     }
     pub fn add_connection(&mut self, id: String, send: SendMessage) -> Arc<CoreConnection> {
         let connection = Arc::new(CoreConnection { initialized: Mutex::new(InitializedConnection::default()), send });
         self.connections.insert(id, connection.clone());
         connection
     }
-    pub fn remove_connection(&mut self, id: &str) { self.connections.remove(id); }
+    pub fn remove_connection(&mut self, id: &str) {
+        if self.connections.remove(id).is_some() && let Some(on_disconnect) = &self.on_disconnect { on_disconnect(id.to_owned()); }
+    }
     pub fn get_connection(&self, id: &str) -> Option<Arc<CoreConnection>> { self.connections.get(id).cloned() }
     pub async fn receive(&self, id: &str, envelope: ClassifiedIncoming) -> Result<(), errors::JsonRpcError> {
         let Some(connection) = self.connections.get(id) else { return Ok(()); };
+        let mut dispatch_connection = None;
         let response = match envelope {
             ClassifiedIncoming::Request(request) => {
                 if request["method"] == "initialize" {
@@ -40,14 +44,18 @@ impl ServerCore {
                         json!({"id":request["id"],"result":state.initialize_response(&self.agent_home, &self.platform)?})
                     } else { json!({"id":request["id"],"error":errors::invalid_params_error()}) }
                 } else {
-                    let state = connection.initialized.lock().await.registry_connection();
+                    let mut state = connection.initialized.lock().await.registry_connection();
+                    state.id = id.to_owned();
+                    dispatch_connection = Some(state.clone());
                     self.registry.dispatch(state, request).await
                 }
             }
             ClassifiedIncoming::ProtocolInvalid(_) => json!({"id":null,"error":errors::invalid_request_error()}),
             ClassifiedIncoming::Notification(_) | ClassifiedIncoming::Response(_) => return Ok(()),
         };
-        (connection.send)(response).await
+        (connection.send)(response).await?;
+        if let Some(connection) = dispatch_connection { connection.finish_response(); }
+        Ok(())
     }
     pub async fn send_notification_to_connection(&self, id: &str, notification: Value, now: u64) -> Result<bool, errors::JsonRpcError> {
         let Some(connection) = self.connections.get(id) else { return Ok(false); };

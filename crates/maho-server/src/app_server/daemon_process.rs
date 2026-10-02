@@ -62,6 +62,14 @@ pub async fn wait_for_gone(file: &DaemonPidFile, timeout_ms: u64) -> Result<bool
     }
     Ok(!process_matches_pid_file(file).await?)
 }
+pub async fn wait_for_start_time(pid: u64, timeout_ms: u64) -> Result<Option<String>, std::io::Error> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    while tokio::time::Instant::now() <= deadline {
+        if let Ok(Some(identity)) = read_process_start_time(pid).await { return Ok(Some(identity)); }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    if process_is_live(pid).await? { Ok(None) } else { Err(std::io::Error::other(format!("spawned daemon pid {pid} had no process start time"))) }
+}
 pub async fn stop_validated_pid(file: &DaemonPidFile, signal: &str) -> Result<(), std::io::Error> {
     if !process_matches_pid_file(file).await? { return Ok(()); }
     let output = tokio::process::Command::new("kill").args([signal, &file.pid.to_string()]).output().await?;

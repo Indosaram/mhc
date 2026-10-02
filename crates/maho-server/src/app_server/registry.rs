@@ -18,10 +18,22 @@ impl JsonRpcError {
         }
     }
 }
+pub type DeferredResponseActions = Arc<std::sync::Mutex<Vec<Box<dyn FnOnce() + Send>>>>;
 #[derive(Clone, Default)]
 pub struct RegistryConnection {
+    pub id: String,
+    pub deferred: DeferredResponseActions,
     pub initialized: bool,
     pub experimental_api: bool,
+}
+impl RegistryConnection {
+    pub fn defer_until_responded(&self, action: impl FnOnce() + Send + 'static) {
+        self.deferred.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(Box::new(action));
+    }
+    pub fn finish_response(&self) {
+        let actions = std::mem::take(&mut *self.deferred.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        for action in actions { action(); }
+    }
 }
 #[derive(Clone)]
 pub struct HandlerContext {

@@ -155,6 +155,7 @@ async fn extension_request_uses_real_registered_runner() {
     let connection = RegistryConnection {
         initialized: true,
         experimental_api: false,
+        ..Default::default()
     };
     let request = serde_json::json!({"id":1,"method":"extension_request","params":{"threadId":"thread","name":"echo","data":{"value":true}}});
     assert_eq!(
