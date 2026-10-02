@@ -26,7 +26,7 @@ pub fn start_native_session(options:&crate::index::SenpiTelemetryOptions,session
     let distinct_id=get_telemetry_distinct_id(&product.machine_id_prefix,os);
     let mut allowlists:EventPropertyAllowlist=EVENT_PROPERTY_ALLOWLISTS.iter().map(|(name,keys)|((*name).into(),keys.iter().map(|k|(*k).into()).collect())).collect();
     allowlists.insert("parallelism_summary".into(),crate::parallelism_schema::PARALLELISM_SUMMARY_SCHEMA.iter().map(|(k,_)|(*k).into()).collect());
-    let client=create_event_telemetry_client(&CreateEventTelemetryClientInput {diagnostics:None,distinct_id:&distinct_id,env:Some(&env),on_capture:None,product:&product,property_allowlist:&allowlists,schema_version:1,set_timeout_fn:None,source:"omo-native-session",transport_factory:options.transport_factory.clone()});
+    let client=create_event_telemetry_client(&CreateEventTelemetryClientInput {diagnostics:None,distinct_id:&distinct_id,env:Some(&env),on_capture:None,product:&product,property_allowlist:&allowlists,schema_version:1,set_timeout_fn:options.set_timeout_fn.clone(),source:"omo-native-session",transport_factory:options.transport_factory.clone()});
     if !client.enabled() {return Ok(None);}
     let state=options.state_dir.clone().unwrap_or_else(||get_omo_native_state_dir(&env));
     let hash=hash_session_id(session_id,&state).map_err(|e|TelemetryError::new(e.to_string()))?;

@@ -5,7 +5,7 @@ use telemetry_core::{TelemetryEnv,TelemetryOsProvider,TelemetryTransportFactory,
 pub const SENPI_TELEMETRY_EVENT_NAME:&str="omo_senpi_daily_active";
 pub const SENPI_MACHINE_ID_PREFIX:&str="omo-senpi:";
 #[derive(Clone,Default)]
-pub struct SenpiTelemetryOptions {pub env:Option<TelemetryEnv>,pub now:Option<DateTime<Utc>>,pub os_provider:Option<Arc<dyn TelemetryOsProvider>>,pub state_dir:Option<PathBuf>,pub timeout_ms:Option<u64>,pub transport_factory:Option<TelemetryTransportFactory>}
+pub struct SenpiTelemetryOptions {pub env:Option<TelemetryEnv>,pub now:Option<DateTime<Utc>>,pub os_provider:Option<Arc<dyn TelemetryOsProvider>>,pub state_dir:Option<PathBuf>,pub timeout_ms:Option<u64>,pub transport_factory:Option<TelemetryTransportFactory>,pub set_timeout_fn:Option<telemetry_core::EventTelemetrySetTimeout>}
 pub fn create_senpi_telemetry_product_config() -> TelemetryProductConfig {TelemetryProductConfig {cache_dir_name:"omo-senpi".into(),default_api_key:DEFAULT_POSTHOG_API_KEY.into(),default_host:DEFAULT_POSTHOG_HOST.into(),event_name:SENPI_TELEMETRY_EVENT_NAME.into(),machine_id_prefix:SENPI_MACHINE_ID_PREFIX.into(),package_name:"@oh-my-opencode/omo-senpi".into(),package_version:"5.0.0-beta.9".into(),platform:"omo-senpi".into(),product_env_prefix:"OMO_SENPI".into(),product_name:"omo-senpi".into(),..Default::default()}}
 pub fn get_senpi_telemetry_state_dir(env:&TelemetryEnv) -> PathBuf {
     let agent=["OMO_CODING_AGENT_DIR","SENPI_CODING_AGENT_DIR","PI_CODING_AGENT_DIR"].iter().find_map(|name|env.get(*name).map(|s|s.trim()).filter(|s|!s.is_empty()));
