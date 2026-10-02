@@ -27,6 +27,15 @@ fn fixture(background:bool,mode:ExtensionMode)->(Arc<TaskStatusUi>,Arc<Timers>,A
     status.sync_now(); let widgets=ui.widgets.lock().expect("widgets"); let Some(WidgetContent::Lines(rows))=&widgets[0].0 else { panic!("rows"); }; assert_eq!(rows.len(),2); assert!(rows[0].contains("한")); assert!(rows[0].contains("category:ultrabrain")); assert!(!rows[0].chars().any(|c| c.is_control())); assert_eq!(timers.count(),0);
 }
 #[test] fn rpc_mode_does_not_render_widget() { let (status,timers,ui,_)=fixture(true,ExtensionMode::Rpc); status.sync_now(); assert_eq!(timers.count(),0); assert!(ui.widgets.lock().expect("widgets").is_empty()); }
+#[test] fn live_solo_and_process_member_render_cost_before_tps_without_cache_rate() {
+    struct Spend;
+    impl StatusUiManager for Spend {
+        fn list(&self,_:&str)->Vec<TaskRecord> { ["st_solo","st_member"].into_iter().map(|id| { let mut record=create_task_record(TaskRecordInput { parent_session_id:"session".into(),..Default::default() },Some(1)).expect("record"); record.task_id=id.into(); record.name=Some(if id=="st_solo" { "Solo" } else { "Member" }.into()); if id=="st_member" { record.execution_mode="process".into(); record.pid=Some(4242); } record }).collect() }
+        fn has_background_surface(&self)->bool { true } fn was_background(&self,_:&str)->bool { true }
+        fn run_stats_snapshot(&self,id:&str)->Option<senpi_task::state::TaskRunStats> { Some(senpi_task::state::TaskRunStats { runtime_ms:1000,turns:1,tool_calls:0,cost_usd:Some(if id=="st_solo" { 0.4213 } else { 0.017 }),tokens_per_second:Some(if id=="st_solo" { 40.0 } else { 12.0 }),cache_hit_rate_last:Some(0.5),cache_hit_rate_run:Some(0.1),..Default::default() }) }
+    }
+    let ui=Arc::new(support::Ui::default()); let mut context=support::context(); context.ui=ui.clone(); context.mode=ExtensionMode::Tui; let mut runtime=TaskRuntimeContext::new("/tmp".into()); runtime.capture_from(&context); let timers=Arc::new(Timers::default()); let status=TaskStatusUi::new(Arc::new(Spend),Arc::new(Mutex::new(runtime)),timers.clone(),Arc::new(|| 1000),Arc::new(|| None)); status.sync_now(); let widgets=ui.widgets.lock().expect("widgets"); let Some(WidgetContent::Lines(rows))=&widgets.last().expect("widget").0 else { panic!("rows") }; assert!(rows[0].contains("$0.4213 · 40 tok/s")); assert!(rows[1].contains("$0.0170 · 12 tok/s")); assert!(!rows.join("\n").contains("CH:")); drop(widgets); status.dispose(); assert_eq!(timers.count(),0);
+}
 #[test] fn uncaptured_runtime_never_queries_manager() {
     struct Unavailable;
     impl StatusUiManager for Unavailable { fn list(&self,_:&str)->Vec<TaskRecord> { panic!("uncaptured runtime must not query tasks") } }
