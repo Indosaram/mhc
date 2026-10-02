@@ -2,6 +2,14 @@ use crate::cache_warm::{GoalCacheWarmupEntryData,GoalCacheWarmupPhase,format_cac
 pub fn is_same_goal_cache_warm_card(previous:Option<&GoalCacheWarmupEntryData>,next:Option<&GoalCacheWarmupEntryData>)->bool {
     next.is_some_and(|next|!next.goal_id.is_empty() && previous.is_some_and(|previous|previous.goal_id==next.goal_id))
 }
+pub fn title_line(data:&GoalCacheWarmupEntryData,expected_wake:&str)->String {
+    let sources=if data.active_monitor_count==1.0 { "1 wake source on duty".into() } else { format!("{} wake sources on duty",maho_ai::utils::js::number_to_string(data.active_monitor_count)) };
+    let iteration=data.iteration.filter(|value|value.is_finite()&&value.fract()==0.0&&*value>0.0).map_or_else(String::new,|value|format!(" · iteration {}",maho_ai::utils::js::number_to_string(value)));
+    match data.phase {
+        GoalCacheWarmupPhase::Scheduled=>format!("⚡ Cache-warm wait{iteration} · {sources}"),
+        GoalCacheWarmupPhase::Resumed=>format!("⚡ Cache-warm wake{iteration} · {expected_wake} · {sources}"),
+    }
+}
 pub fn warm_line(data:&GoalCacheWarmupEntryData)->Option<String> {
     let cache=data.cache.as_ref()?;
     if cache.cached_tokens<=0.0 { return None; }
