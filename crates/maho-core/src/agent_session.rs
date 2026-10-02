@@ -400,7 +400,8 @@ struct AgentSessionState {
     hint_deadline_ms: Option<f64>,
     cumulative_hinted_wait_ms: f64,
     pending_model_switch: Option<PendingModelSwitch>,
-    compaction_abort_controller: Option<maho_ai::utils::abort::AbortController>,
+    compaction_abort_controller: Option<crate::compaction::lifecycle::CompactionAbortController>,
+    compaction_lifecycle: crate::compaction::lifecycle::CompactionLifecycleCoordinator,
     prompt_templates: Vec<crate::prompt_templates::PromptTemplate>,
     skills: Vec<crate::skills::Skill>,
     bash_abort_signals: BTreeMap<String, maho_ext_api::AbortSignal>,
@@ -633,7 +634,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         {
             let mut state = session.state();
             if state.compaction_abort_controller.is_some() { return None; }
-            state.compaction_abort_controller = Some(maho_ai::utils::abort::AbortController::new());
+            state.compaction_abort_controller = Some(crate::compaction::lifecycle::CompactionAbortController::new());
             state.compaction_extension_signal = Some(signal.clone());
         }
         session.emit(AgentSessionEvent::CompactionStart { reason: options.reason, request_id: None });
@@ -1121,6 +1122,7 @@ impl AgentSession {
             cumulative_hinted_wait_ms: 0.0,
             pending_model_switch: None,
             compaction_abort_controller: None,
+            compaction_lifecycle: Default::default(),
             prompt_templates: Vec::new(),
             skills: Vec::new(),
             bash_abort_signals: BTreeMap::new(),
@@ -1586,10 +1588,18 @@ impl AgentSession {
 
     pub fn is_retrying(&self) -> bool { self.state().retry_attempt > 0 }
 
-    pub fn is_compacting(&self) -> bool { self.state().compaction_abort_controller.is_some() }
+    pub fn is_compacting(&self) -> bool {
+        let state = self.state();
+        state.compaction_lifecycle.state().status() == "running" || state.compaction_abort_controller.is_some()
+            || state.branch_summary_abort_controller.is_some()
+    }
+
+    pub fn compaction_state(&self) -> crate::compaction::lifecycle::CompactionLifecycleState {
+        self.state().compaction_lifecycle.state().clone()
+    }
 
     pub fn abort_compaction(&self) {
-        if let Some(controller) = self.state().compaction_abort_controller.as_ref() { controller.abort(None); }
+        if let Some(controller) = self.state().compaction_abort_controller.as_ref() { controller.abort(); }
         if let Some(signal) = self.state().compaction_extension_signal.as_ref() { signal.abort(); }
     }
 
@@ -1646,17 +1656,24 @@ impl AgentSession {
             }).await;
             return Err(error.to_owned());
         };
-        let controller = maho_ai::utils::abort::AbortController::new();
+        let controller = crate::compaction::lifecycle::CompactionAbortController::new();
         let signal = controller.signal();
         let extension_signal = maho_ext_api::AbortSignal::default();
         self.state().compaction_extension_signal = Some(extension_signal.clone());
-        self.state().compaction_abort_controller = Some(controller);
+        self.state().compaction_abort_controller = Some(controller.clone());
         let compact_reason = if reason == "manual" { maho_ext_api::CompactionReason::Manual }
             else if reason == "overflow" { maho_ext_api::CompactionReason::Overflow }
             else if reason == "pre-prompt" { maho_ext_api::CompactionReason::PrePrompt }
             else { maho_ext_api::CompactionReason::Threshold };
         self.emit(AgentSessionEvent::CompactionStart { reason: compact_reason, request_id: Some(request_id.clone()) });
         let revision = self.message_revision();
+        let request_id = self.state().compaction_lifecycle.begin(crate::compaction::lifecycle::BeginCompactionOperation {
+            operation_id: request_id, stage: crate::compaction::lifecycle::CompactionStage::Execution,
+            reason: reason.to_owned(), model: Some(crate::compaction::lifecycle::CompactionModelRef {
+                provider: budget_model.provider.clone(), id: budget_model.id.clone(),
+            }), started_revision: revision as i64,
+        }, controller.clone());
+        let _work = self.work_barrier.begin();
         let execution = async {
             let before = {
                 let mut runner = self.extension_runner.lock().await;
@@ -1751,6 +1768,9 @@ impl AgentSession {
                 }
             };
             signal.throw_if_aborted().map_err(|error| error.to_string())?;
+            if !self.state().compaction_lifecycle.is_current(&request_id, &controller) {
+                return Err("Compaction cancelled".to_owned());
+            }
             if self.message_revision() != revision { return Err("Conversation changed during compaction".to_owned()); }
             let entry = self.apply_compaction(&result)?;
             self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Accepted {
@@ -1759,6 +1779,15 @@ impl AgentSession {
             })).await;
             Ok(result)
         }.await;
+        let ended_revision = self.message_revision() as i64;
+        let owns_terminal = self.state().compaction_lifecycle.finish(&crate::compaction::lifecycle::FinishCompactionOperation {
+            operation_id: request_id.clone(), status: if signal.aborted() {
+                crate::compaction::lifecycle::CompactionFinishStatus::Aborted
+            } else if execution.is_ok() { crate::compaction::lifecycle::CompactionFinishStatus::Completed }
+            else { crate::compaction::lifecycle::CompactionFinishStatus::Failed },
+            ended_revision, rejection_cause: None, error_message: execution.as_ref().err().cloned(),
+        });
+        if !owns_terminal { return execution; }
         self.state().compaction_abort_controller = None;
         self.state().compaction_extension_signal = None;
         match &execution {
@@ -5161,6 +5190,8 @@ mod tests {
         assert!(result.details.expect("file details")["readFiles"].is_array());
         assert!(result.usage.is_some());
         assert!(!session.is_compacting());
+        assert_eq!(session.compaction_state().status(), "completed");
+        assert_eq!(session.compaction_state().generation(), 1);
         assert_eq!(session.with_session_manager(|manager| manager.entries().last().expect("entry")["type"].clone()), "compaction");
     }
 
