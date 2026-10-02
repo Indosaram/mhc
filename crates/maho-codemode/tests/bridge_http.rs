@@ -151,6 +151,20 @@ async fn authenticated_call_marshals_handler_reply() {
 }
 
 #[tokio::test]
+async fn routes_use_whatwg_path_normalization() {
+    for route in ["/unused/../call?query=1", "/unused/%2e%2e/call", "http://127.0.0.1/call", "/call#fragment"] {
+        let (status,reply)=dispatch_bridge_http_request("POST",route,Some("Bearer test"),"test",br#"{"callId":"normalized","toolName":"echo","args":{}}"#,&options(),AbortController::new().signal()).await;
+        assert_eq!(status,200,"{route}");
+        assert_eq!(reply.unwrap()["ok"],true);
+    }
+    let server=start_bridge_server(options()).await.unwrap();
+    let response=post(&server,"/unused/%2e%2e/call",&server.token,r#"{"callId":"live-normalized","toolName":"echo","args":{}}"#).await;
+    server.close().await;
+    assert_eq!(response.0,200);
+    assert_eq!(response.1.unwrap()["ok"],true);
+}
+
+#[tokio::test]
 async fn validates_auth_route_json_and_body_limit() {
     for (method,url,auth,body,status,code) in [
         ("GET","/call",Some("Bearer test"),"{}",404,"not_found"),

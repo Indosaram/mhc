@@ -79,7 +79,8 @@ async fn serve_bridge_request(request: hyper::Request<hyper::body::Incoming>, to
     let (parts, mut body) = request.into_parts();
     let authorization = parts.headers.get(hyper::header::AUTHORIZATION).and_then(|value| value.to_str().ok());
     let url = parts.uri.path_and_query().map_or("/", |value| value.as_str());
-    let route = url.split('?').next().unwrap_or(url);
+    let parsed=bridge_url(url);
+    let route=parsed.as_ref().map_or("",url::Url::path);
     // Reject method and authorization before reading a potentially unbounded body.
     let early = if parts.method != "POST" || !matches!(route, "/call" | "/emit" | "/completion") {
         Some((404, Some(transport_error("not_found", "Bridge route was not found"))))
@@ -142,8 +143,13 @@ pub struct BridgeServerOptions {
 
 fn transport_error(code: &str, message: &str) -> Value { json!({"ok":false,"error":{"code":code,"message":message}}) }
 
+fn bridge_url(raw: &str) -> Result<url::Url,url::ParseError> {
+    url::Url::options().base_url(Some(&url::Url::parse("http://127.0.0.1").expect("static bridge base URL"))).parse(raw)
+}
+
 pub async fn dispatch_bridge_http_request(method: &str, url: &str, authorization: Option<&str>, token: &str, body: &[u8], options: &BridgeServerOptions, signal: AbortSignal) -> (u16, Option<Value>) {
-    let route = url.split(['?', '#']).next().unwrap_or(url);
+    let parsed=bridge_url(url);
+    let route=parsed.as_ref().map_or("",url::Url::path);
     if method != "POST" || !matches!(route,"/call"|"/emit"|"/completion") {
         return (404,Some(transport_error("not_found","Bridge route was not found")));
     }
