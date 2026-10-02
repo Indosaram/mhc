@@ -1579,7 +1579,12 @@ impl AgentSession {
     }
 
     async fn enforce_final_provider_admission(&self, additions: &[AgentMessage]) -> Result<(), String> {
-        if !additions.iter().any(|message| message.role() == "custom") { return Ok(()); }
+        let pending_queued_messages = || {
+            let state = self.state();
+            state.steering_messages.iter().chain(&state.follow_up_messages)
+                .map(|text| make_user_message(text, None)).collect::<Vec<_>>()
+        };
+        if !additions.iter().any(|message| message.role() == "custom") && pending_queued_messages().is_empty() { return Ok(()); }
         let model = self.model();
         let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
         let settings = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
@@ -1592,7 +1597,7 @@ impl AgentSession {
             crate::compaction::compaction::resolve_reserve_tokens(model.context_window as f64, resolved.reserve_tokens as f64) as u64
         } else { resolved.reserve_tokens as u64 };
         let oversized = || -> Result<bool, String> {
-            let messages = self.messages().into_iter().chain(additions.iter().cloned())
+            let messages = self.messages().into_iter().chain(additions.iter().cloned()).chain(pending_queued_messages())
                 .map(|message| match message {
                     AgentMessage::Llm(message) => serde_json::to_value(message),
                     AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(message)) => serde_json::to_value(message),
@@ -1927,7 +1932,14 @@ impl AgentSession {
                 crate::compaction::lifecycle::CompactionFinishStatus::Aborted
             } else if execution.is_ok() { crate::compaction::lifecycle::CompactionFinishStatus::Completed }
             else { crate::compaction::lifecycle::CompactionFinishStatus::Failed },
-            ended_revision, rejection_cause: rejection.map(|cause| format!("{cause:?}")), error_message: execution.as_ref().err().cloned(),
+            ended_revision, rejection_cause: rejection.map(|cause| match cause {
+                CompactionRejectionCause::CancelledByExtension => "cancelled-by-extension",
+                CompactionRejectionCause::ExternalOwner => "external-owner",
+                CompactionRejectionCause::WouldOverflow => "would-overflow",
+                CompactionRejectionCause::CircuitBreaker => "circuit-breaker",
+                CompactionRejectionCause::PerTurnCap => "per-turn-cap",
+                CompactionRejectionCause::StaleRevision => "stale-revision",
+            }.to_owned()), error_message: execution.as_ref().err().cloned(),
         });
         if !owns_terminal { return execution; }
         self.state().compaction_abort_controller = None;
@@ -6171,6 +6183,8 @@ mod tests {
         session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
         assert!(session.compact(None).await.is_err());
         assert_eq!(session.compaction_state().status(), "failed");
+        assert!(matches!(session.compaction_state(), crate::compaction::lifecycle::CompactionLifecycleState::Failed(_, _, Some(cause), _)
+            if cause == "circuit-breaker"));
         let events = lock(&events);
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Rejected {
@@ -6208,6 +6222,27 @@ mod tests {
         session.agent.set_model(model);
         assert!(!session.is_compaction_delegated());
         assert!(session.enforce_final_provider_admission(&additions).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn late_queued_input_requires_final_admission_without_consuming_queue() {
+        let session = test_session();
+        let mut model = test_model();
+        model.context_window = 128;
+        session.agent.set_model(model);
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"reserveTokens":0,"reserveScalingEnabled":false})),
+        ])));
+        let additions = [make_user_message("small prompt", None)];
+        session.enforce_final_provider_admission(&additions).await.expect("user-only admission");
+        session.steer(&"late steering ".repeat(200), None, Default::default()).await.expect("steer");
+        session.follow_up("late followup", None, Default::default()).await.expect("followup");
+        assert!(session.enforce_final_provider_admission(&additions).await.is_err());
+        assert!(session.messages().is_empty());
+        assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
+        let cleared = session.clear_queue(false);
+        assert_eq!(cleared.steering, ["late steering ".repeat(200)]);
+        assert_eq!(cleared.follow_up, ["late followup"]);
     }
 
     #[tokio::test]
