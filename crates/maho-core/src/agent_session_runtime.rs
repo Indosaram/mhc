@@ -279,6 +279,7 @@ impl AgentSessionRuntime {
         let settings = crate::settings_manager::SettingsManager::create(&cwd, &self.services.agent_dir,
             &std::env::var("HOME").unwrap_or_default(), self.services.settings_manager.is_project_trusted());
         let (system_prompt, append_system_prompt) = self.session.system_prompt_sources();
+        let target_session_file = manager.session_file().map(str::to_owned);
         let context = manager.build_context(manager.leaf_id());
         let restored_model = context.model.as_ref().and_then(|(provider, id)| self.services.model_registry.find(provider, id));
         let launch_model = self.launch_profile.as_ref().and_then(|profile| profile.creation_model.as_ref())
@@ -305,7 +306,7 @@ impl AgentSessionRuntime {
                 previous_session_file: self.session.session_file() }), ..Default::default()
         };
         self.session.abort().await;
-        self.session.runtime_shutdown(reason).await;
+        self.session.runtime_shutdown_to(reason, target_session_file).await;
         if let Some(before) = &self.before_session_invalidate { before(); }
         self.session.dispose().await;
         let created = crate::sdk::create_agent_session(options).await?;

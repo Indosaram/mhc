@@ -2675,7 +2675,13 @@ impl AgentSession {
         Ok(self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeSwitch { reason, target_session_file: path }).await?.cancel == Some(true))
     }
 
-    pub(crate) async fn runtime_shutdown(&self, reason: maho_ext_api::SessionReason) { self.emit_session_shutdown(reason).await; }
+    pub async fn runtime_shutdown(&self, reason: maho_ext_api::SessionReason) { self.emit_session_shutdown(reason).await; }
+
+    pub(crate) async fn runtime_shutdown_to(&self, reason: maho_ext_api::SessionReason, target_session_file: Option<String>) {
+        self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent {
+            reason, target_session_file, signal: Some(maho_ext_api::AbortSignal::default()),
+        })).await;
+    }
 
     pub(crate) async fn runtime_before_fork(&self, entry_id: &str, include_entry: bool) -> Result<bool, String> {
         Ok(self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeFork {
@@ -6276,6 +6282,24 @@ mod tests {
         assert_eq!(session.session_name().as_deref(), Some("Native Session Recovery"));
         assert_eq!(provider.get_call_log().len(), 2);
         assert!(session.state().session_title_abort_controller.is_none());
+    }
+
+    #[tokio::test]
+    async fn runtime_shutdown_carries_replacement_target_and_live_signal() {
+        let session = test_session();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:replacement-shutdown>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionShutdown, vec![Arc::new(move |event, _| {
+            let maho_ext_api::ExtensionEvent::SessionShutdown(event) = event else { panic!("shutdown"); };
+            assert_eq!(event.reason, maho_ext_api::SessionReason::Resume);
+            assert!(!event.signal.as_ref().expect("shutdown signal").is_aborted());
+            lock(&captured).push(event.target_session_file.clone());
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        session.runtime_shutdown_to(maho_ext_api::SessionReason::Resume, Some("target.jsonl".to_owned())).await;
+        assert_eq!(*lock(&observed), [Some("target.jsonl".to_owned())]);
     }
 
     #[tokio::test]
