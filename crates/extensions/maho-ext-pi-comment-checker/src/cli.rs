@@ -73,6 +73,10 @@ pub async fn run_checker(input: &HookInput, binary: Option<&Path>) -> RunResult 
 }
 
 pub async fn run_checker_with_prompt(input: &HookInput, binary: Option<&Path>, custom_prompt: Option<&str>) -> RunResult {
+    run_checker_with_timeout(input, binary, custom_prompt, PROCESS_TIMEOUT_MS).await
+}
+
+async fn run_checker_with_timeout(input: &HookInput, binary: Option<&Path>, custom_prompt: Option<&str>, timeout_ms: u64) -> RunResult {
     let Some(binary) = binary else { return RunResult { status: RunStatus::Missing, message: "comment-checker binary not found. Install @code-yeongyu/comment-checker or reload the package.".into(), binary_path: None, exit_code: None, stdout: None, stderr: None }; };
     let mut command = tokio::process::Command::new(binary);
     command.arg("check");
@@ -81,6 +85,7 @@ pub async fn run_checker_with_prompt(input: &HookInput, binary: Option<&Path>, c
         Ok(child) => child,
         Err(error) => return process_result(binary, None, String::new(), error.to_string()),
     };
+    let pid = child.id();
     let operation = async {
         let mut stdin = child.stdin.take().ok_or_else(|| std::io::Error::other("comment-checker stdin missing"))?;
         let payload = serde_json::to_vec(input).map_err(std::io::Error::other)?;
@@ -90,14 +95,25 @@ pub async fn run_checker_with_prompt(input: &HookInput, binary: Option<&Path>, c
         let stderr = child.stderr.take().ok_or_else(|| std::io::Error::other("comment-checker stderr missing"))?;
         tokio::try_join!(read_output(stdout, "stdout"), read_output(stderr, "stderr"), child.wait())
     };
-    match tokio::time::timeout(Duration::from_millis(PROCESS_TIMEOUT_MS), operation).await {
+    tokio::pin!(operation);
+    match tokio::time::timeout(Duration::from_millis(timeout_ms), &mut operation).await {
         Ok(Ok((stdout, stderr, exit))) => {
             process_result(binary, exit.code(), stdout, stderr)
         }
         Ok(Err(error)) => process_result(binary, None, String::new(), error.to_string()),
         Err(_) => {
-            if let Err(error) = child.kill().await { eprintln!("comment-checker cleanup: {error}"); }
-            process_result(binary, None, String::new(), format!("comment-checker process timed out after {PROCESS_TIMEOUT_MS} ms"))
+            #[cfg(unix)]
+            if let Some(id) = pid { let _signal = nix::sys::signal::kill(nix::unistd::Pid::from_raw(id as i32), nix::sys::signal::Signal::SIGTERM); }
+            let output = match tokio::time::timeout(Duration::from_millis(1000), &mut operation).await {
+                Ok(result) => result,
+                Err(_) => {
+                    #[cfg(unix)]
+                    if let Some(id) = pid { let _signal = nix::sys::signal::kill(nix::unistd::Pid::from_raw(id as i32), nix::sys::signal::Signal::SIGKILL); }
+                    operation.await
+                }
+            };
+            let stdout = output.map(|(stdout, _, _)| stdout).unwrap_or_default();
+            process_result(binary, None, stdout, format!("comment-checker process timed out after {timeout_ms} ms"))
         }
     }
 }
@@ -111,6 +127,20 @@ fn process_result(binary: &Path, exit_code: Option<i32>, stdout: String, stderr:
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timeout_retains_reason_after_noisy_process() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().expect("create timeout fixture");
+        let binary = fixture.path().join("checker");
+        std::fs::write(&binary, "#!/bin/sh\nread input\nprintf noisy >&2\nexec sleep 60\n").expect("write timeout process");
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).expect("mark process executable");
+        let input = crate::core::to_hook_input(&crate::core::CommentCheckRequest { source_tool_name: "write".into(), tool_name: "Write".into(), file_path: "file.py".into(), tool_input: Default::default() }, "session", "/tmp");
+        let result = run_checker_with_timeout(&input, Some(&binary), None, 20).await;
+        assert_eq!(result.status, RunStatus::Error);
+        assert_eq!(result.exit_code, None);
+        assert_eq!(result.message, "comment-checker process timed out after 20 ms");
+    }
     #[test]
     fn pass_preserves_process_output() {
         let result = process_result(Path::new("checker"), Some(0), "output".into(), "diagnostic".into());
