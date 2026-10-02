@@ -18,6 +18,13 @@ pub enum InteractiveTui {
     Fullscreen(Box<TuiAltScreen>),
 }
 impl InteractiveTui {
+    pub fn handle_mouse_input(&mut self, data: &str, now_ms: i64, terminal: &mut dyn maho_tui::terminal::Terminal) -> bool {
+        match self {
+            Self::Regular(tui) => tui.handle_mouse_input(data, now_ms, terminal),
+            Self::Fullscreen(tui) => tui.handle_mouse_input(data, now_ms, terminal),
+        }
+    }
+
     pub fn do_render(&mut self, terminal: &mut dyn maho_tui::terminal::Terminal) {
         match self {
             Self::Regular(tui) => { tui.base.do_render(terminal); tui.note_render(terminal); }
