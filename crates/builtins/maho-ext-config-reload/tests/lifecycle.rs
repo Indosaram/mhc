@@ -62,13 +62,22 @@ async fn print_session_emits_disabled_readiness_and_shutdown_joins() {
 }
 #[tokio::test]
 async fn idle_change_reloads_real_session_and_consumes_handoff() {
+    real_reload(false).await;
+}
+
+#[tokio::test]
+async fn vetoed_change_retries_and_completes_real_session_reload() {
+    real_reload(true).await;
+}
+
+async fn real_reload(veto_once: bool) {
     use maho_core::{sdk::{create_agent_session, CreateAgentSessionOptions}, model_runtime::{ModelRuntime, CreateModelRuntimeOptions}};
     use maho_ext_host::{ExtensionRunner, loader::{load_extensions, NativeExtensionFactory}};
     use maho_ext_config_reload::protocol::*;
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().expect("reload fixture operation must succeed");
     let cwd = root.path().to_string_lossy().into_owned();
     let provider = maho_ai::providers::faux::faux_provider(Default::default());
-    let model = provider.get_model(Some("faux-1")).unwrap();
+    let model = provider.get_model(Some("faux-1")).expect("reload fixture operation must succeed");
     let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
         models_path: Some(root.path().join("models.json")), auth_path: Some(root.path().join("auth.json")), providers: Some(vec![provider.provider.clone()]), ..Default::default()
     });
@@ -77,33 +86,60 @@ async fn idle_change_reloads_real_session_and_consumes_handoff() {
         session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
         settings_manager: Some(maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()), false)),
         auto_title_sessions: Some(false), ..Default::default()
-    }).await.unwrap().session;
+    }).await.expect("reload fixture operation must succeed").session;
     let mut ctx = context(root.path());
     ctx.mode = ExtensionMode::Tui;
     ctx.session_manager = Arc::new(BoundSession(session.extension_context_actions()));
     let (sender, mut reloaded) = tokio::sync::mpsc::unbounded_channel();
+    let (veto_sender, mut vetoed) = tokio::sync::mpsc::unbounded_channel();
+    struct Veto { reject: Arc<std::sync::atomic::AtomicBool>, sender: tokio::sync::mpsc::UnboundedSender<()> }
+    impl Extension for Veto {
+        fn register(&self, api: &mut ExtensionApi) {
+            let reject = Arc::clone(&self.reject);
+            let sender = self.sender.clone();
+            api.on(EventKind::SessionBeforeReload, Arc::new(move |_, _| {
+                let reject = Arc::clone(&reject);
+                let sender = sender.clone();
+                Box::pin(async move {
+                    let cancel = reject.swap(false, std::sync::atomic::Ordering::SeqCst);
+                    if cancel { assert!(sender.send(()).is_ok()); }
+                    Ok(EventResult::SessionBefore(SessionBeforeEventResult { cancel: Some(cancel), ..Default::default() }))
+                })
+            }));
+        }
+    }
+    let reject = Arc::new(std::sync::atomic::AtomicBool::new(veto_once));
     let subscriptions = Arc::new(std::sync::Mutex::new(Vec::new()));
     let retained = Arc::clone(&subscriptions);
     let factory: maho_ext_host::runner::RuntimeFactory = Arc::new(move |ctx| {
         let sender = sender.clone();
         let retained = Arc::clone(&retained);
+        let reject = Arc::clone(&reject);
+        let veto_sender = veto_sender.clone();
         Box::pin(async move {
-            let loaded = load_extensions(vec![NativeExtensionFactory { path: "config-reload".into(), source_info: Default::default(), extension: Box::new(maho_ext_config_reload::ConfigReload) }], &ctx.cwd, Default::default());
+            let loaded = load_extensions(vec![
+                NativeExtensionFactory { path: "config-reload".into(), source_info: Default::default(), extension: Box::new(maho_ext_config_reload::ConfigReload) },
+                NativeExtensionFactory { path: "fixture-veto".into(), source_info: Default::default(), extension: Box::new(Veto { reject, sender: veto_sender }) },
+            ], &ctx.cwd, Default::default());
             assert!(loaded.errors.is_empty());
-            let subscription = loaded.events.on(CONFIG_WATCH_RELOADED, Arc::new(move |value| { sender.send(value.clone()).unwrap(); }));
-            retained.lock().unwrap().push(subscription);
+            let subscription = loaded.events.on(CONFIG_WATCH_RELOADED, Arc::new(move |value| { sender.send(value.clone()).expect("reload fixture operation must succeed"); }));
+            retained.lock().expect("reload fixture operation must succeed").push(subscription);
             Ok(ExtensionRunner::new(loaded.extensions, loaded.runtime, loaded.events, ctx))
         })
     });
-    let mut runner = factory(ctx).await.unwrap();
+    let mut runner = factory(ctx).await.expect("reload fixture operation must succeed");
     runner.set_runtime_factory(factory);
     session.set_extension_runner(runner).await;
     session.bind_extensions(maho_core::agent_session::ExtensionBindings { mode: Some(ExtensionMode::Tui), ..Default::default() }).await;
-    let staged = tempfile::NamedTempFile::new_in(root.path()).unwrap();
-    std::fs::write(staged.path(), "{\"fixture\":\"ctrl+x\"}").unwrap();
+    let staged = tempfile::NamedTempFile::new_in(root.path()).expect("reload fixture operation must succeed");
+    std::fs::write(staged.path(), "{\"fixture\":\"ctrl+x\"}").expect("reload fixture operation must succeed");
     let path = root.path().join("keybindings.json");
-    std::fs::rename(staged.path(), &path).unwrap();
-    let result = tokio::time::timeout(std::time::Duration::from_secs(5), reloaded.recv()).await.unwrap().unwrap();
+    std::fs::rename(staged.path(), &path).expect("reload fixture operation must succeed");
+    if veto_once {
+        tokio::time::timeout(std::time::Duration::from_secs(5), vetoed.recv()).await.expect("reload fixture operation must succeed").expect("reload fixture operation must succeed");
+        assert!(reloaded.try_recv().is_err());
+    }
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), reloaded.recv()).await.expect("reload fixture operation must succeed").expect("reload fixture operation must succeed");
     assert_eq!(result, serde_json::json!({"registrationId":"builtin","paths":[path]}));
     session.dispose().await;
 }
