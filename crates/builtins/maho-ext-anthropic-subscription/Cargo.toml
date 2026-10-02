@@ -7,6 +7,8 @@ license = "MIT"
 
 [dependencies]
 maho-ai = { path = "../../maho-ai" }
+maho-ext-api = { path = "../../maho-ext-api" }
+maho-ext-builtin-loose = { path = "../maho-ext-builtin-loose" }
 anyhow = "=1.0.104"
 async-trait = "=0.1.92"
 serde = { version = "=1.0.228", features = ["derive"] }
@@ -18,6 +20,8 @@ tokio = { version = "=1.52.3", features = ["sync", "process", "time", "io-util",
 tempfile = "=3.27.0"
 
 [dev-dependencies]
+maho-ext-host = { path = "../../maho-ext-host" }
+maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
 tokio = { version = "=1.52.3", features = ["macros", "rt", "sync"] }
 
 [lints]
