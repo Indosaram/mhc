@@ -47,7 +47,7 @@ pub async fn consume_summary_stream(
     caller_signal: Option<&maho_ai::utils::abort::AbortSignal>,
     idle_timeout: std::time::Duration,
     max_duration: std::time::Duration,
-    on_progress: &dyn Fn(&str),
+    on_progress: &(dyn Fn(&str) + Sync),
 ) -> Result<Option<maho_ai::types::AssistantMessage>, SummaryStreamError> {
     let idle = tokio::time::sleep(idle_timeout);
     let duration = tokio::time::sleep(max_duration);
@@ -98,7 +98,7 @@ pub struct SummaryRequestOptions<'a> {
     pub stream_runner: Option<&'a SummaryStreamRunner>,
 }
 
-pub async fn generate_summary_message(options: SummaryRequestOptions<'_>, on_progress: &dyn Fn(&str)) -> Result<Option<maho_ai::types::AssistantMessage>, SummaryStreamError> {
+pub async fn generate_summary_message(options: SummaryRequestOptions<'_>, on_progress: &(dyn Fn(&str) + Sync)) -> Result<Option<maho_ai::types::AssistantMessage>, SummaryStreamError> {
     let mut messages = options.messages.to_vec();
     messages.push(json!({"role":"user","content":[{"type":"text","text":options.prompt.user}],"timestamp":chrono::Utc::now().timestamp_millis()}));
     let typed = maho_core::messages::convert_to_llm(&messages).into_iter().map(serde_json::from_value).collect::<Result<Vec<maho_ai::types::Message>, _>>()
@@ -109,7 +109,12 @@ pub async fn generate_summary_message(options: SummaryRequestOptions<'_>, on_pro
     let mut stream_options = maho_ai::types::StreamOptions {
         max_tokens: Some(summary_max_tokens(&options.snapshot.model, options.snapshot.context_window)),
         extra_body: options.extra_body,
-        request: maho_ai::types::ProviderRequestOptions { api_key: options.api_key, headers: options.headers, signal: Some(controller.signal()), ..Default::default() },
+        request: maho_ai::types::ProviderRequestOptions { api_key: options.api_key, headers: options.headers, signal: Some(controller.signal()),
+            on_payload: Some(std::sync::Arc::new(|payload, model, _| {
+                if model.api == "anthropic-messages" {
+                    payload.as_object().map(|payload| Value::Object(maho_ai::api::anthropic_tool_pairs::sanitize_anthropic_tool_pairs(payload)))
+                } else { Some(payload.clone()) }
+            })), ..Default::default() },
         ..Default::default()
     };
     if !options.omit_reasoning_options && let Some(reasoning) = summarization_reasoning_options(&options.snapshot.model).as_object() { stream_options.extra.extend(reasoning.clone()); }

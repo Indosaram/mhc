@@ -2,6 +2,15 @@ use maho_ext_compaction::todo_bridge::*;
 use serde_json::json;
 
 #[test]
+fn legacy_restore_preserves_current_tasks_or_returns_original_snapshot() {
+    let snapshot = vec![json!({"text":"old","status":"blocked"})];
+    let current = vec![json!({"text":"new","status":"completed"})];
+    assert_eq!(restore_legacy_todos_if_missing(&snapshot, &current), (false, current));
+    assert_eq!(restore_legacy_todos_if_missing(&snapshot, &[]), (true, snapshot));
+    assert_eq!(restore_legacy_todos_if_missing(&[], &[]), (false, Vec::new()));
+}
+
+#[test]
 fn snapshot_preserves_arbitrary_legacy_status_strings() {
     let todos = json!([{"id":"one","content":"task","status":"blocked"}]);
     assert_eq!(normalize_snapshot_items(&todos), Some(todos.as_array().unwrap().clone()));

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap,sync::{Arc,Mutex,PoisonError}};
+use std::sync::{Arc,Mutex,PoisonError};
 use maho_ext_api::{ExtensionApi,ExtensionContext,ExtensionEvent,ExtensionFailure,EventKind,EventResult,SessionReason};
 use senpi_task::{manager::{TaskManager,types::ListScope},lifecycle::{TaskLifecycle,SuspendInput},completion::{CompletionNotifier,ReconcileUnnotifiedNotificationsInput,TransitionReason},state::TaskRecord};
 use crate::{runtime_context::TaskRuntimeContext,session_transition_bridge::SessionTransitionBridge,status_ui::TaskStatusUi,task_rpc_bridge::TaskRpcBridge,lead_poller_lifecycle::LeadPollerLifecycle};
@@ -35,10 +35,10 @@ impl EventBridgeDeps {
             ExtensionEvent::SessionStart(_) => {
                 self.transitions.lock().unwrap_or_else(PoisonError::into_inner).resolve(session.as_deref()).map_err(failure)?;
                 let reconciliation=self.lifecycle.reconcile_on_session_start(session.as_deref()).map_err(failure)?;
-                let mut records=BTreeMap::new();
-                for outcome in reconciliation.outcomes { if let Some(record)=self.manager.get(&outcome.task_id) { records.insert(record.task_id.clone(),record); } }
-                if let Some(session)=&session { for entry in self.manager.list(&ListScope::ParentSession(session.clone())) { records.insert(entry.record.task_id.clone(),entry.record); } }
-                for record in records.values() { (self.notify_liveness)(record); }
+                let mut records:Vec<TaskRecord>=Vec::new();
+                for outcome in reconciliation.outcomes { if let Some(record)=self.manager.get(&outcome.task_id) { records.push(record); } }
+                if let Some(session)=&session { for entry in self.manager.list(&ListScope::ParentSession(session.clone())) { if let Some(record)=records.iter_mut().find(|record| record.task_id==entry.record.task_id) { *record=entry.record; } else { records.push(entry.record); } } }
+                for record in &records { (self.notify_liveness)(record); }
                 (self.resumption_start)().map_err(failure)?;
                 if let Err(error)=(self.reconcile_mailbox)() { (self.on_warning)(format!("omo-senpi task session-start team mailbox reclaim failed: {error}")); }
                 if let Some(session)=&session { let parent_state=self.runtime.lock().unwrap_or_else(PoisonError::into_inner).parent_state(); self.notifier.reconcile_unnotified_notifications(ReconcileUnnotifiedNotificationsInput { session_id:session,parent_state }).map_err(failure)?; }
