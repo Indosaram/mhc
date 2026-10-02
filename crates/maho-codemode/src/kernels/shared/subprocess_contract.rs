@@ -11,6 +11,7 @@ pub struct SubprocessKernelOptions {
     pub session_env: Option<SessionEnvironment>,
     pub session_id: String,
     pub connection: BridgeConnectionConfig,
+    pub on_message: Option<super::subprocess_run::KernelMessageCallback>,
 }
 
 #[derive(Clone, Debug)]

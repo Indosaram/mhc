@@ -5,9 +5,28 @@ use maho_codemode::kernels::shared::subprocess_kernel::SubprocessKernel;
 fn options() -> SubprocessKernelOptions {
     SubprocessKernelOptions {
         command: "python3".into(), args: vec!["-u".into(), concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/py/prelude.py").into()],
-        cwd: env!("CARGO_MANIFEST_DIR").into(), env: None, session_env: None, session_id: "kernel-test".into(),
+        cwd: env!("CARGO_MANIFEST_DIR").into(), env: None, session_env: None, on_message: None, session_id: "kernel-test".into(),
         connection: BridgeConnectionConfig { port: 1, token: "test".into(), local_roots: None, artifacts_dir: None, parallel_pool_width: None },
     }
+}
+
+#[tokio::test]
+async fn default_callback_receives_ready_and_run_frames_but_explicit_callback_overrides() {
+    use std::sync::{Arc,Mutex};
+    let defaults=Arc::new(Mutex::new(Vec::new()));
+    let observed=defaults.clone();
+    let mut settings=options();
+    settings.on_message=Some(Arc::new(move |message| observed.lock().unwrap().push(message.clone())));
+    let kernel=SubprocessKernel::start(settings).await.unwrap();
+    assert_eq!(defaults.lock().unwrap()[0]["type"],"ready");
+    kernel.run_with_callbacks(KernelRunInput{cell_id:"fallback".into(),code:"1+1".into(),timeout_ms:Some(5000)},None,None).await.unwrap();
+    assert!(defaults.lock().unwrap().iter().any(|frame|frame["type"]=="result"&&frame["cellId"]=="fallback"));
+    let explicit=Arc::new(Mutex::new(Vec::new()));
+    let observed=explicit.clone();
+    kernel.run_with_callbacks(KernelRunInput{cell_id:"explicit".into(),code:"2+2".into(),timeout_ms:Some(5000)},Some(Arc::new(move |frame| observed.lock().unwrap().push(frame.clone()))),None).await.unwrap();
+    kernel.close().await.unwrap();
+    assert!(explicit.lock().unwrap().iter().any(|frame|frame["type"]=="result"&&frame["cellId"]=="explicit"));
+    assert!(!defaults.lock().unwrap().iter().any(|frame|frame["cellId"]=="explicit"));
 }
 
 #[tokio::test]

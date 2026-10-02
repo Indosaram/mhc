@@ -97,6 +97,7 @@ async fn spawn_process(options: &SubprocessKernelOptions) -> Result<SubprocessPr
     let ready = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let message = process.next_message().await?;
+            if let Some(callback) = &options.on_message { callback(&message); }
             match message["type"].as_str() {
                 Some("ready") => return Ok(()),
                 Some("init-failed") => return Err(ProcessError::Startup(message["error"]["message"].as_str().unwrap_or("initialization failed").into())),
@@ -173,7 +174,7 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
                 None => { runs.settle_all("Kernel is closing", now()); if let Err(error) = process.shutdown(Some(&json!({"type":"close"}))).await { eprintln!("kernel close failed: {error}"); } break; }
             },
             message = process.next_message(), if failure.is_none() => match message {
-                Ok(message) => { if runs.handle_message(message, None) { deadline = None; } }
+                Ok(message) => { if runs.handle_message(message, options.on_message.as_ref()) { deadline = None; } }
                 Err(error) => { failure = Some(error.to_string()); runs.clear_tool_calls(); if let Err(error) = process.terminate("TERM", Duration::from_millis(1500)).await { eprintln!("kernel retirement failed: {error}"); } }
             },
             () = async { match deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending::<()>().await } }, if deadline.is_some() => {

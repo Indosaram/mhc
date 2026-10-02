@@ -21,7 +21,7 @@ impl JavaScriptKernel {
             serde_json::to_string(worker)?, serde_json::to_string(&cwd.to_string_lossy())?, parallel_pool_width,
         );
         let kernel = SubprocessKernel::start(SubprocessKernelOptions {
-            command: "bun".into(), args: vec!["-e".into(), relay], cwd: cwd.into(), env: None, session_env,
+            command: "bun".into(), args: vec!["-e".into(), relay], cwd: cwd.into(), env: None, session_env, on_message: None,
             session_id: session_id.into(), connection: BridgeConnectionConfig {
                 port: 1, token: "worker-transport".into(), local_roots: None, artifacts_dir: None, parallel_pool_width: Some(parallel_pool_width),
             },

@@ -6,7 +6,7 @@ use maho_codemode::bridge::protocol::BridgeConnectionConfig;
 fn missing_options() -> SubprocessKernelOptions {
     SubprocessKernelOptions {
         command: "/absent/optional-interpreter".into(), args: vec![], cwd: env!("CARGO_MANIFEST_DIR").into(),
-        env: None, session_env: None, session_id: "optional-test".into(),
+        env: None, session_env: None, on_message: None, session_id: "optional-test".into(),
         connection: BridgeConnectionConfig { port: 1, token: "test".into(), local_roots: None, artifacts_dir: None, parallel_pool_width: None },
     }
 }

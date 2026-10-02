@@ -91,7 +91,7 @@ impl CodemodeSessionManager {
         if let Some(kernel)=kernels.get(&language) {return Ok(kernel.clone());}
         let roots=self.options.local_roots.clone().or_else(||self.options.artifacts_dir.as_ref().map(|root|HashMap::from([("local".into(),root.join("local").to_string_lossy().into_owned())])));
         let width=self.options.settings.parallel_pool_width;
-        let options=SubprocessKernelOptions {command,args:vec![],cwd:self.options.cwd.clone(),env:None,session_env:self.options.session_env.clone(),session_id:self.options.session_id.clone(),connection:BridgeConnectionConfig {port:self.bridge.port,token:self.bridge.token.clone(),local_roots:roots,artifacts_dir:self.options.artifacts_dir.as_ref().map(|path|path.to_string_lossy().into_owned()),parallel_pool_width:Some(if width.is_finite() {width.trunc().max(1.0) as u64} else {1})}};
+        let options=SubprocessKernelOptions {command,args:vec![],cwd:self.options.cwd.clone(),env:None,session_env:self.options.session_env.clone(),on_message:None,session_id:self.options.session_id.clone(),connection:BridgeConnectionConfig {port:self.bridge.port,token:self.bridge.token.clone(),local_roots:roots,artifacts_dir:self.options.artifacts_dir.as_ref().map(|path|path.to_string_lossy().into_owned()),parallel_pool_width:Some(if width.is_finite() {width.trunc().max(1.0) as u64} else {1})}};
         let kernel=Arc::new(match language {
             EvalLanguage::Rb=>RubyKernel::start(options).await,
             EvalLanguage::Jl=>JuliaKernel::start(options).await,
