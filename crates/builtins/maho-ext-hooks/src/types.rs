@@ -171,14 +171,15 @@ pub struct PreToolHookFields {
     #[serde(skip_serializing_if="Option::is_none")] pub hook_event_name:Option<SupportedHookEvent>,
     #[serde(skip_serializing_if="Option::is_none")] pub session_id:Option<String>,
     #[serde(skip_serializing_if="Option::is_none")] pub tool_name:Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")] pub tool_input:Option<serde_json::Value>,
+    #[serde(default,deserialize_with="present_json_value",skip_serializing_if="Option::is_none")] pub tool_input:Option<serde_json::Value>,
     #[serde(skip_serializing_if="Option::is_none")] pub tool_use_id:Option<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PostToolHookFields {
     #[serde(flatten)] pub tool:PreToolHookFields,
-    #[serde(skip_serializing_if="Option::is_none")] pub tool_response:Option<serde_json::Value>,
+    #[serde(default,deserialize_with="present_json_value",skip_serializing_if="Option::is_none")] pub tool_response:Option<serde_json::Value>,
 }
+fn present_json_value<'de,D:serde::Deserializer<'de>>(deserializer:D)->Result<Option<serde_json::Value>,D::Error> {serde_json::Value::deserialize(deserializer).map(Some)}
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PreCompactHookFields {
     #[serde(flatten)] pub session:SessionHookFields,
@@ -217,6 +218,13 @@ mod wire_tests {
         use crate::lifecycle_adapter::*;
         let context=LifecycleInputContext {cwd:"/repo",session_id:"session",transcript_path:Some("/session.jsonl")};
         for input in [build_session_start_hook_input("startup",&context),build_pre_compact_hook_input("manual","request",true,Some("brief"),&context),build_post_compact_hook_input("manual","request",false,true,&context),build_notification_hook_input(NotificationHookInput {message:"ready",kind:"tool",title:Some("title"),source:Some("monitor"),request_id:Some("request"),status:Some("completed")},&context)] {
+            let wire:HookInputWire=serde_json::from_value(input.clone()).unwrap();assert_eq!(serde_json::to_value(wire).unwrap(),input);
+        }
+    }
+    #[test]
+    fn null_tool_aliases_remain_present_and_absent_aliases_remain_absent() {
+        for aliases in [serde_json::json!({}),serde_json::json!({"tool_input":null,"tool_response":null})] {
+            let mut input=serde_json::json!({"event":"PostToolUse","cwd":"/repo","toolName":"bash","toolInput":null,"toolOutput":null});input.as_object_mut().unwrap().extend(aliases.as_object().unwrap().clone());
             let wire:HookInputWire=serde_json::from_value(input.clone()).unwrap();assert_eq!(serde_json::to_value(wire).unwrap(),input);
         }
     }
