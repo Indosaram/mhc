@@ -57,6 +57,10 @@ pub fn format_goal_tool_response(goal:Option<&Goal>,notice:Option<&str>)->Result
     }
     #[test] fn compact_tokens_select_magnitudes() { let result=[999.9,1000.0,1200.0,1000000.0,1500000.0].map(format_tokens_compact); assert_eq!(result,["999","1K","1.2K","1M","1.5M"]); }
     #[test] fn absent_goal_response_is_machine_readable() { let result=format_goal_tool_response(None,None).unwrap(); let parsed:serde_json::Value=serde_json::from_str(&result).unwrap(); assert_eq!(parsed,serde_json::json!({"goal":null})); }
+    #[test] fn upstream_snapshot_response_contains_only_public_goal_fields() {
+        let goal:Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"thread-1","objective":"Ship the feature","status":"active","tokensUsed":10,"timeUsedSeconds":65,"createdAt":1,"updatedAt":1,"tokenBudget":100})).unwrap();
+        let response=serde_json::to_value(goal_tool_response(Some(&goal))).unwrap(); assert_eq!(response["goal"]["threadId"],"thread-1"); assert_eq!(response["goal"]["tokensUsed"],10.0); assert!(response["goal"].get("id").is_none()); assert!(response["goal"].get("tokenBudget").is_none());
+    }
     #[test] fn one_decimal_uses_exact_binary_value_and_ties_away_from_zero() {
         for (value,expected) in [(1.25,"1.3"),(-1.25,"-1.3"),(1.15,"1.1"),(2.55,"2.5"),(0.0,"0"),(-0.0,"0"),(1e21,"1e+21")] { assert_eq!(one_decimal(value),expected,"{value}"); }
     }
