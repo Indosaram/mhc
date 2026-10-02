@@ -20,3 +20,7 @@ nix = { version = "=0.28.0", features = ["signal", "process"] }
 
 [lints]
 workspace = true
+
+[[example]]
+name = "host_fixture"
+test = true

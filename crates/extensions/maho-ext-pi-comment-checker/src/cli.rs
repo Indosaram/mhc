@@ -5,7 +5,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 pub const MAX_PROCESS_OUTPUT_BYTES: usize = 64 * 1024;
 pub const PROCESS_TIMEOUT_MS: u64 = 30_000;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunStatus { Pass, Warning, Error, Missing }
 pub struct RunResult {
     pub status: RunStatus, pub message: String,
