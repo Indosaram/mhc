@@ -516,13 +516,43 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             keep_recent_tokens: raw.as_ref().and_then(|raw| raw.get("keepRecentTokens")).and_then(Value::as_u64).unwrap_or(20_000) }
     }
     fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { self.session().ok()?.with_settings_manager(|manager| manager.get_number("promptCacheSafeWaitSeconds")) }
-    fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64 { self.session().ok().and_then(|session| session.with_settings_manager(|manager| manager.get_number("promptCacheGoalBackstopMaxSeconds"))).unwrap_or(300.0) }
-    fn get_prompt_cache_keep_alive_settings(&self) -> maho_ext_api::PromptCacheKeepAliveSettings { maho_ext_api::PromptCacheKeepAliveSettings {
-        enabled: false, max_requests_per_session: 3, max_cost_usd_per_session: 0.05, margin_seconds: 60.0,
-    } }
-    fn get_look_at_settings(&self) -> maho_ext_api::LookAtSettings { maho_ext_api::LookAtSettings { enabled: true, models: None } }
-    fn get_ask_user_settings(&self) -> maho_ext_api::AskUserSettings { maho_ext_api::AskUserSettings { enabled: true, timeout_minutes: 30.0 } }
-    fn get_image_settings(&self) -> maho_ext_api::ImageSettings { maho_ext_api::ImageSettings { auto_resize: true, block_images: false } }
+    fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64 {
+        self.session().ok().and_then(|session| session.with_settings_manager(|manager|
+            manager.get_value("promptCache").and_then(|value| value.get("goalBackstopMaxSeconds")).and_then(Value::as_f64))).unwrap_or(270.0)
+    }
+    fn get_prompt_cache_keep_alive_settings(&self) -> maho_ext_api::PromptCacheKeepAliveSettings {
+        let configured = self.session().ok().and_then(|session| session.with_settings_manager(|manager|
+            manager.get_value("promptCache").and_then(|value| value.get("keepAlive")).cloned()));
+        maho_ext_api::PromptCacheKeepAliveSettings {
+            enabled: configured.as_ref().and_then(|value| value.get("enabled")).and_then(Value::as_bool).unwrap_or(false),
+            max_requests_per_session: configured.as_ref().and_then(|value| value.get("maxRequestsPerSession")).and_then(Value::as_u64).unwrap_or(3),
+            max_cost_usd_per_session: configured.as_ref().and_then(|value| value.get("maxCostUsdPerSession")).and_then(Value::as_f64).unwrap_or(0.05),
+            margin_seconds: configured.as_ref().and_then(|value| value.get("marginSeconds")).and_then(Value::as_f64).unwrap_or(60.0),
+        }
+    }
+    fn get_look_at_settings(&self) -> maho_ext_api::LookAtSettings {
+        let configured = self.session().ok().and_then(|session| session.with_settings_manager(|manager| manager.get_value("lookAt").cloned()));
+        maho_ext_api::LookAtSettings {
+            enabled: configured.as_ref().and_then(|value| value.get("enabled")).and_then(Value::as_bool).unwrap_or(true),
+            models: configured.as_ref().and_then(|value| value.get("models")).and_then(Value::as_array)
+                .map(|models| models.iter().filter_map(Value::as_str).map(str::to_owned).collect()),
+        }
+    }
+    fn get_ask_user_settings(&self) -> maho_ext_api::AskUserSettings {
+        let configured = self.session().ok().and_then(|session| session.with_settings_manager(|manager| manager.get_value("askUser").cloned()));
+        maho_ext_api::AskUserSettings {
+            enabled: configured.as_ref().and_then(|value| value.get("enabled")).and_then(Value::as_bool).unwrap_or(true),
+            timeout_minutes: configured.as_ref().and_then(|value| value.get("timeoutMinutes")).and_then(Value::as_f64)
+                .filter(|value| value.is_finite()).map(|value| value.floor().clamp(1.0, 120.0)).unwrap_or(30.0),
+        }
+    }
+    fn get_image_settings(&self) -> maho_ext_api::ImageSettings {
+        let configured = self.session().ok().and_then(|session| session.with_settings_manager(|manager| manager.get_value("images").cloned()));
+        maho_ext_api::ImageSettings {
+            auto_resize: configured.as_ref().and_then(|value| value.get("autoResize")).and_then(Value::as_bool).unwrap_or(true),
+            block_images: configured.as_ref().and_then(|value| value.get("blockImages")).and_then(Value::as_bool).unwrap_or(false),
+        }
+    }
     fn session_settings(&self) -> &dyn maho_ext_api::ExtensionSessionSettings { self }
     fn compact(&self, options: maho_ext_api::CompactOptions) { if let Ok(session) = self.session() { tokio::spawn(async move {
         match session.compact(options.custom_instructions.as_deref()).await {
@@ -639,7 +669,7 @@ impl maho_ext_api::ExtensionSessionActions for SessionExtensionActions {
         Box::pin(async move { let session = self.session().map_err(|error| maho_ext_api::ExecuteToolError {
             code: maho_ext_api::ExecuteToolErrorCode::Blocked, tool_name: name.to_owned(), message: error.message, active_tools: Vec::new(),
         })?;
-            session.execute_tool(name, params, ExecuteToolOptions { signal: options.signal, activate_inactive_tool: options.activate_inactive_tool }).await
+            session.execute_tool_with_updates(name, params, ExecuteToolOptions { signal: options.signal, activate_inactive_tool: options.activate_inactive_tool }, options.on_update).await
                 .map_err(|error| maho_ext_api::ExecuteToolError { code: match error.code.as_str() {
                     "unknown_tool" => maho_ext_api::ExecuteToolErrorCode::UnknownTool, "inactive_tool" => maho_ext_api::ExecuteToolErrorCode::InactiveTool,
                     "invalid_params" => maho_ext_api::ExecuteToolErrorCode::InvalidParams, _ => maho_ext_api::ExecuteToolErrorCode::Blocked,
@@ -2444,6 +2474,16 @@ impl AgentSession {
         params: Value,
         options: ExecuteToolOptions,
     ) -> Result<AgentToolResult, ExecuteToolError> {
+        self.execute_tool_with_updates(tool_name, params, options, None).await
+    }
+
+    async fn execute_tool_with_updates(
+        &self,
+        tool_name: &str,
+        params: Value,
+        options: ExecuteToolOptions,
+        on_update: Option<maho_agent::types::AgentToolUpdateCallback>,
+    ) -> Result<AgentToolResult, ExecuteToolError> {
         let mut active_tools = self.get_active_tool_names();
         let mut tool = self.agent.state().tools().iter().find(|candidate| candidate.name() == tool_name).cloned();
         if tool.is_none() && self.is_eval_only_policy_armed() {
@@ -2492,7 +2532,7 @@ impl AgentSession {
             prepared.id.clone(),
             Value::Object(prepared.arguments.clone()),
             options.signal,
-            None,
+            on_update,
         )
         .await;
         Ok(result)
@@ -3514,6 +3554,52 @@ mod tests {
             auto_title_sessions: None,
         })
         .expect("session")
+    }
+
+    #[tokio::test]
+    async fn extension_tool_execution_forwards_partial_updates() {
+        use maho_ext_api::ExtensionSessionActions;
+        let session = test_session();
+        let tool = AgentTool {
+            label: "updates".to_owned(), prepare_arguments: None, replay: None, execution_mode: None,
+            tool: maho_ai::types::Tool { name: "updates".to_owned(), description: "updates".to_owned(),
+                parameters: serde_json::json!({"type":"object","properties":{}}), freeform: None, constrained_sampling: None },
+            execute: Arc::new(|_, _, _, update| Box::pin(async move {
+                update.expect("update callback")(AgentToolResult::text("partial"));
+                AgentToolResult::text("complete")
+            })),
+        };
+        session.agent.set_tools(vec![tool]);
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let observed = updates.clone();
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        let result = actions.execute_tool("updates", serde_json::json!({}), maho_ext_api::ExecuteToolOptions {
+            on_update: Some(Arc::new(move |result| observed.lock().unwrap().push(result))), ..Default::default()
+        }).await.unwrap();
+        assert_eq!(result, AgentToolResult::text("complete"));
+        assert_eq!(*updates.lock().unwrap(), vec![AgentToolResult::text("partial")]);
+    }
+
+    #[test]
+    fn extension_settings_read_live_configured_values() {
+        use maho_ext_api::ExtensionContextActions;
+        let session = test_session();
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        assert_eq!(actions.get_prompt_cache_goal_backstop_max_seconds(), 270.0);
+        session.with_settings_manager_mut(|manager| manager.set(crate::settings_manager::SettingsScope::Global,
+            &serde_json::json!({
+                "lookAt":{"enabled":false,"models":["faux/faux-1"]},
+                "askUser":{"enabled":false,"timeoutMinutes":200},
+                "images":{"autoResize":false,"blockImages":true},
+                "promptCache":{"goalBackstopMaxSeconds":99,"keepAlive":{"enabled":true,"maxRequestsPerSession":7,"maxCostUsdPerSession":0.3,"marginSeconds":11}}
+            }).as_object().unwrap().clone())).unwrap();
+        assert_eq!(actions.get_look_at_settings(), maho_ext_api::LookAtSettings { enabled: false, models: Some(vec!["faux/faux-1".to_owned()]) });
+        assert_eq!(actions.get_ask_user_settings(), maho_ext_api::AskUserSettings { enabled: false, timeout_minutes: 120.0 });
+        assert_eq!(actions.get_image_settings(), maho_ext_api::ImageSettings { auto_resize: false, block_images: true });
+        assert_eq!(actions.get_prompt_cache_goal_backstop_max_seconds(), 99.0);
+        assert_eq!(actions.get_prompt_cache_keep_alive_settings(), maho_ext_api::PromptCacheKeepAliveSettings {
+            enabled: true, max_requests_per_session: 7, max_cost_usd_per_session: 0.3, margin_seconds: 11.0,
+        });
     }
 
     #[tokio::test]
