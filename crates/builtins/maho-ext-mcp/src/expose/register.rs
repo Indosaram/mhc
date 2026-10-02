@@ -1,10 +1,11 @@
-use std::{sync::Arc,path::PathBuf};
+use std::{sync::{Arc,atomic::{AtomicU64,Ordering}},path::PathBuf};
 use maho_ext_api::{ToolDefinition,ToolExecutionMode,ToolContent,ToolResult,ToolError};
 use serde_json::{Value,json};
 use crate::{catalog::McpToolCatalogEntry,config_schema::OutputGuardSettings,guard::output_guard::{McpOutputArtifacts,McpOutputGuardOptions,apply_mcp_output_guard}};
 use super::schema_compat::{McpToolNameEntry,build_mcp_tool_names,convert_json_schema_to_type_box,map_mcp_tool_result};
 #[derive(Clone)]
 pub struct McpNamedCatalogEntry {pub entry:McpToolCatalogEntry,pub name:String}
+static NEXT_PROGRESS_TOKEN:AtomicU64=AtomicU64::new(0);
 pub fn map_mcp_catalog_names(entries:&[McpToolCatalogEntry])->Vec<McpNamedCatalogEntry> {
     let mut entries=entries.to_vec();entries.sort_by(|left,right|left.server.cmp(&right.server).then(left.tool.cmp(&right.tool)));
     let names=build_mcp_tool_names(&entries.iter().map(|entry|McpToolNameEntry {server_name:entry.server.clone(),tool_name:entry.tool.clone()}).collect::<Vec<_>>(),None);
@@ -21,14 +22,15 @@ pub fn build_mcp_tool_definitions(entries:&[McpToolCatalogEntry],agent_dir:PathB
             Box::pin(async move {
                 call.signal.check()?;
                 let params=if call.params.is_object(){call.params}else{json!({})};
-                let token=format!("native:{}:{}:{}",entry.server,entry.tool,call.id);
+                let token=format!("native:{}:{}:{}:{}",entry.server,entry.tool,call.id,NEXT_PROGRESS_TOKEN.fetch_add(1,Ordering::Relaxed));
                 let mut notifications=entry.client.notifications.subscribe();
+                let mut notifications_open=true;
                 let request=entry.client.request("tools/call",json!({"name":entry.tool,"arguments":params,"_meta":{"progressToken":token}}),entry.request_timeout);tokio::pin!(request);
                 let result=loop {tokio::select! {
                     biased;
                     ()=call.signal.cancelled()=>return Err(ToolError::Aborted),
-                    notification=notifications.recv()=>{
-                        let value=match notification {Ok(value)=>value,Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>continue,Err(_)=>continue};
+                    notification=notifications.recv(),if notifications_open=>{
+                        let value=match notification {Ok(value)=>value,Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>continue,Err(tokio::sync::broadcast::error::RecvError::Closed)=>{notifications_open=false;continue}};
                         let progress=value.get("params").unwrap_or(&Value::Null);
                         if value.get("method").and_then(Value::as_str)==Some("notifications/progress") && progress.get("progressToken")==Some(&json!(token)) && let Some(update)=&call.on_update {
                             let total=progress.get("total").map_or_else(String::new,|total|format!("/{total}"));let message=progress.get("message").and_then(Value::as_str).map_or_else(String::new,|message|format!(" {message}"));

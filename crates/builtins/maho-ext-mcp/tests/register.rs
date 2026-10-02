@@ -16,6 +16,13 @@ async fn native_tool_registration_calls_the_real_fixture_and_rejects_errors_befo
     let result=(tools[0].execute)(ToolCall {id:"native",params:json!({"value":"native"}),signal:AbortSignal::default(),on_update:Some(Arc::new(move |update|{capture.lock().unwrap().push(update);Ok(())})),context:None}).await.unwrap();
     assert_eq!(updates.lock().unwrap().len(),1);assert_eq!(updates.lock().unwrap()[0].details.as_ref().unwrap()["progress"]["progress"],1);
     assert!(matches!(&result.content[0],ToolContent::Text {text,..} if text.contains("value=native")));
+    let left_updates=Arc::new(Mutex::new(Vec::new()));let right_updates=Arc::new(Mutex::new(Vec::new()));let left=left_updates.clone();let right=right_updates.clone();
+    let (left_result,right_result)=tokio::join!(
+        (tools[0].execute)(ToolCall {id:"same",params:json!({"value":"left"}),signal:AbortSignal::default(),on_update:Some(Arc::new(move |update|{left.lock().unwrap().push(update);Ok(())})),context:None}),
+        (tools[0].execute)(ToolCall {id:"same",params:json!({"value":"right"}),signal:AbortSignal::default(),on_update:Some(Arc::new(move |update|{right.lock().unwrap().push(update);Ok(())})),context:None}));
+    left_result.unwrap();right_result.unwrap();{
+        let left=left_updates.lock().unwrap();let right=right_updates.lock().unwrap();assert_eq!(left.len(),1);assert_eq!(right.len(),1);assert_ne!(left[0].details.as_ref().unwrap()["progress"]["progressToken"],right[0].details.as_ref().unwrap()["progress"]["progressToken"]);
+    }
     let guard=OutputGuardSettings {max_bytes:Some(1.0),max_lines:Some(1.0),max_tokens:None};
     let failure=mapped_guarded_result(&catalog[0],&json!({"isError":true,"content":[{"type":"text","text":"error text that would otherwise spill"}]}),root.path(),&artifacts,Some(&guard));
     assert!(failure.is_err());assert!(!root.path().join("tmp/mcp-out").exists());
