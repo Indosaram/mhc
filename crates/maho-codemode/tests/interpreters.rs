@@ -54,6 +54,14 @@ fn ignores_non_executable_and_directories() {
     assert!(resolve_command_path(&root.path().to_string_lossy(), &env, root.path(), false).is_none());
 }
 
+#[test]
+fn windows_extension_candidates_prefer_lowercase_before_original() {
+    let root=tempfile::tempdir().unwrap();
+    for name in ["probe.exe","probe.EXE"] {std::fs::write(root.path().join(name),"fixture").unwrap();}
+    let env=std::collections::HashMap::from([("PATH".into(),root.path().to_string_lossy().into_owned()),("PATHEXT".into(),".EXE".into())]);
+    assert_eq!(resolve_command_path("probe",&env,root.path(),true),Some(root.path().join("probe.exe")));
+}
+
 #[tokio::test]
 async fn disabled_languages_are_unavailable_without_probing() {
     let mut settings = maho_codemode::config::settings::CodemodeSettings::default();

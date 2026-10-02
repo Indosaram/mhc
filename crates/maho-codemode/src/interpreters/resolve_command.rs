@@ -7,8 +7,8 @@ pub fn resolve_command_path(command: &str, env: &HashMap<String, String>, cwd: &
         let mut candidates = vec![base.clone()];
         if windows {
             for extension in env.get("PATHEXT").map(String::as_str).unwrap_or(".COM;.EXE;.BAT;.CMD").split(';').map(str::trim).filter(|s| s.starts_with('.')) {
-                candidates.push(format!("{}{extension}", base.display()).into());
                 candidates.push(format!("{}{}", base.display(), extension.to_lowercase()).into());
+                candidates.push(format!("{}{extension}", base.display()).into());
             }
         }
         candidates.into_iter().find(|candidate| {
