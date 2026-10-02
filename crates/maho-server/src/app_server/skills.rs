@@ -4,7 +4,11 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Mutex;
 
+pub type SkillLoader = Arc<dyn Fn(&str, &str) -> Result<LoadSkillsResult, String> + Send + Sync>;
 pub fn register_skill_methods(registry: &mut MethodRegistry, agent_dir: String, server_cwd: String) {
+    register_skill_methods_with_loader(registry,agent_dir,server_cwd,Arc::new(|cwd,agent_dir|Ok(load_skills(&LoadSkillsOptions {cwd:cwd.into(),agent_dir:agent_dir.into(),skill_paths:Vec::new(),include_defaults:true}))));
+}
+pub fn register_skill_methods_with_loader(registry: &mut MethodRegistry, agent_dir: String, server_cwd: String, loader: SkillLoader) {
     let cache = Arc::new(Mutex::new(BTreeMap::<String, LoadSkillsResult>::new()));
     registry.register("skills/list".into(), MethodRegistration {
         requires_init: true, experimental: false, scope: MethodScope::Global,
@@ -12,6 +16,7 @@ pub fn register_skill_methods(registry: &mut MethodRegistry, agent_dir: String, 
             let cache = cache.clone();
             let agent_dir = agent_dir.clone();
             let server_cwd = server_cwd.clone();
+            let loader = loader.clone();
             Box::pin(async move {
                 let params = &context.request["params"];
                 if !params.is_null() && !params.is_object() {
@@ -41,7 +46,10 @@ pub fn register_skill_methods(registry: &mut MethodRegistry, agent_dir: String, 
                     }
                     let mut cache = cache.lock().await;
                     if params["forceReload"] == true || !cache.contains_key(&cwd) {
-                        cache.insert(cwd.clone(), load_skills(&LoadSkillsOptions { cwd: cwd.clone(), agent_dir: agent_dir.clone(), skill_paths: Vec::new(), include_defaults: true }));
+                        match loader(&cwd,&agent_dir) {
+                            Ok(loaded)=>{cache.insert(cwd.clone(),loaded);},
+                            Err(message)=>{cache.remove(&cwd);data.push(json!({"cwd":cwd,"skills":[],"errors":[{"path":cwd,"message":message}]}));continue;},
+                        }
                     }
                     let loaded = &cache[&cwd];
                     let skills = loaded.skills.iter().map(|skill| {

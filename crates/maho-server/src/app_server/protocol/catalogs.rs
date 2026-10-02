@@ -79,28 +79,28 @@ pub struct Tool {
     pub name:String,pub input_schema:JsonValue,
     #[serde(default,skip_serializing_if="Option::is_none")]pub title:Option<String>,
     #[serde(default,skip_serializing_if="Option::is_none")]pub description:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub output_schema:Option<JsonValue>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub annotations:Option<JsonValue>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub output_schema:Option<JsonValue>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub annotations:Option<JsonValue>,
     #[serde(default,skip_serializing_if="Option::is_none")]pub icons:Option<Vec<JsonValue>>,
-    #[serde(default,skip_serializing_if="Option::is_none",rename="_meta")]pub meta:Option<JsonValue>,
+    #[serde(default,skip_serializing_if="Option::is_none",rename="_meta",deserialize_with="super::nullable::deserialize_present")]pub meta:Option<JsonValue>,
 }
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct Resource {
     pub name:String,pub uri:String,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub annotations:Option<JsonValue>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub annotations:Option<JsonValue>,
     #[serde(default,skip_serializing_if="Option::is_none")]pub description:Option<String>,
     #[serde(default,skip_serializing_if="Option::is_none")]pub mime_type:Option<String>,
     #[serde(default,skip_serializing_if="Option::is_none")]pub size:Option<f64>,
     #[serde(default,skip_serializing_if="Option::is_none")]pub title:Option<String>,
     #[serde(default,skip_serializing_if="Option::is_none")]pub icons:Option<Vec<JsonValue>>,
-    #[serde(default,skip_serializing_if="Option::is_none",rename="_meta")]pub meta:Option<JsonValue>,
+    #[serde(default,skip_serializing_if="Option::is_none",rename="_meta",deserialize_with="super::nullable::deserialize_present")]pub meta:Option<JsonValue>,
 }
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct ResourceTemplate {
     pub uri_template:String,pub name:String,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub annotations:Option<JsonValue>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub annotations:Option<JsonValue>,
     #[serde(default,skip_serializing_if="Option::is_none")]pub title:Option<String>,
     #[serde(default,skip_serializing_if="Option::is_none")]pub description:Option<String>,
     #[serde(default,skip_serializing_if="Option::is_none")]pub mime_type:Option<String>,

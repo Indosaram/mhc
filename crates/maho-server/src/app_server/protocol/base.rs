@@ -13,7 +13,7 @@ pub type DynamicToolSpec=JsonValue;
 pub type SelectedCapabilityRoot=JsonValue;
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(untagged)]
-pub enum RequestId {String(String),Number(f64)}
+pub enum RequestId {String(String),Number(serde_json::Number)}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 pub struct ClientInfo {pub name:String,pub title:Option<String>,pub version:String}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]

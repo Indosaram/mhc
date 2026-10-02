@@ -81,6 +81,7 @@ pub async fn write_sidecar_file_atomic(path: &Path, contents: &str) -> Result<()
         options.mode(0o600);
         let mut file = options.open(&temporary).await?;
         file.write_all(contents.as_bytes()).await?;
+        file.flush().await?;
         drop(file);
         tokio::fs::rename(&temporary, path).await
     }.await;

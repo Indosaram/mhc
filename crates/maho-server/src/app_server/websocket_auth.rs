@@ -28,12 +28,14 @@ pub async fn resolve_websocket_listener_auth(auth: Option<WebSocketListenerAuth>
             #[cfg(unix)]
             options.mode(0o600);
             let mut file = options.open(&path).await?; file.write_all(format!("{token}\n").as_bytes()).await?;
+            file.flush().await?;
             #[cfg(unix)]
             { use std::os::unix::fs::PermissionsExt; tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).await?; }
             token
         },
     };
     if token.is_empty() { return Err(io::Error::other(format!("app-server ws auth token file is empty: {}", path.display()))); }
+    eprintln!("app-server websocket token: {}",path.display());
     Ok(ResolvedWebSocketListenerAuth::Bearer { token, path:Some(path) })
 }
 pub fn is_websocket_request_authorized(header: Option<&str>, auth: &ResolvedWebSocketListenerAuth) -> bool {
