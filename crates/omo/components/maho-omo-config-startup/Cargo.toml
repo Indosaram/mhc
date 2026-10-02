@@ -5,5 +5,18 @@ edition.workspace = true
 publish.workspace = true
 license = "LicenseRef-SUL-1.0"
 
+[dependencies]
+maho-config-migration = { path = "../../config-migration" }
+maho-omo-config-core = { path = "../../omo-config-core" }
+maho-omo-config-resolution = { path = "../maho-omo-config-resolution" }
+maho-ext-api = { path = "../../../maho-ext-api" }
+serde_json = "=1.0.149"
+
+[dev-dependencies]
+maho-test-support = { path = "../../../maho-test-support", features = ["sdk"] }
+maho-ext-host = { path = "../../../maho-ext-host" }
+tempfile = "=3.27.0"
+tokio = { version = "=1.52.3", features = ["macros", "rt"] }
+
 [lints]
 workspace = true

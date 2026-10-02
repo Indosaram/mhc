@@ -5,5 +5,14 @@ edition.workspace = true
 publish.workspace = true
 license = "LicenseRef-SUL-1.0"
 
+[dependencies]
+maho-omo-config-core = { path = "../../omo-config-core" }
+maho-omo-agent-home = { path = "../maho-omo-agent-home" }
+maho-omo-config-resolution = { path = "../maho-omo-config-resolution" }
+sha2 = "=0.10.9"
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+
 [lints]
 workspace = true
