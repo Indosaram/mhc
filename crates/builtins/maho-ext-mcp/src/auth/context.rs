@@ -2,14 +2,24 @@ use crate::config_schema::{Auth,AuthMode,McpServerConfig,Transport};
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub enum ServerAuthMode {None,Bearer,OAuth}
 pub struct ServerAuthPlan {pub mode:ServerAuthMode,pub provider:Option<std::sync::Arc<super::oauth_provider::McpOAuthProvider>>,pub refresh:Option<super::oauth_refresh::McpRefreshManager>}
-pub fn resolve_server_auth(server_name:&str,config:&McpServerConfig,agent_dir:&std::path::Path,redirect_url:Option<&str>,client:reqwest::Client)->ServerAuthPlan {
-    let mode=resolve_auth_mode(config);
+pub struct ServerAuthDeps<'a> {
+    pub server_name:&'a str,pub config:&'a McpServerConfig,pub agent_dir:Option<&'a std::path::Path>,
+    pub logger:Option<std::sync::Arc<std::sync::Mutex<crate::log::McpLogger>>>,pub redirect_url:Option<&'a str>,
+    pub on_redirect:Option<super::oauth_provider::McpRedirectHandler>,pub client:reqwest::Client,
+}
+pub fn resolve_server_auth_with(deps:ServerAuthDeps<'_>)->ServerAuthPlan {
+    let mode=resolve_auth_mode(deps.config);
     if mode!=ServerAuthMode::OAuth{return ServerAuthPlan {mode,provider:None,refresh:None};}
-    let mut provider=super::oauth_provider::McpOAuthProvider::new(super::token_store::McpTokenStore::new(agent_dir,server_name,config.url.as_deref().unwrap_or("")));
-    provider.redirect_url=Some(redirect_url.unwrap_or("http://127.0.0.1:0/callback").into());
-    if let Some(oauth)=&config.oauth {provider.scopes=oauth.scopes.clone();provider.client_id=oauth.client_id.clone();provider.client_metadata_url=oauth.client_metadata_url.clone();}
-    let provider=std::sync::Arc::new(provider);let refresh=super::oauth_refresh::McpRefreshManager::new(provider.clone(),client);
+    let directory=deps.agent_dir.map_or_else(||std::path::PathBuf::from(maho_core::config::get_agent_dir()),std::path::Path::to_path_buf);
+    let mut provider=super::oauth_provider::McpOAuthProvider::new(super::token_store::McpTokenStore::new(&directory,deps.server_name,deps.config.url.as_deref().unwrap_or("")));
+    provider.redirect_url=Some(deps.redirect_url.unwrap_or("http://127.0.0.1:0/callback").into());
+    if let Some(oauth)=&deps.config.oauth {provider.scopes=oauth.scopes.clone();provider.client_id=oauth.client_id.clone();provider.client_metadata_url=oauth.client_metadata_url.clone();}
+    provider.logger=deps.logger;provider.on_redirect=deps.on_redirect;
+    let provider=std::sync::Arc::new(provider);let refresh=super::oauth_refresh::McpRefreshManager::new(provider.clone(),deps.client);
     ServerAuthPlan {mode,provider:Some(provider),refresh:Some(refresh)}
+}
+pub fn resolve_server_auth(server_name:&str,config:&McpServerConfig,agent_dir:&std::path::Path,redirect_url:Option<&str>,client:reqwest::Client)->ServerAuthPlan {
+    resolve_server_auth_with(ServerAuthDeps {server_name,config,agent_dir:Some(agent_dir),logger:None,redirect_url,on_redirect:None,client})
 }
 pub fn resolve_auth_mode(config:&McpServerConfig)->ServerAuthMode {
     match &config.auth {

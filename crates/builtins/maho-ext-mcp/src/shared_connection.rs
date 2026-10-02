@@ -73,6 +73,7 @@ impl SharedMcpConnection {
         if self.connection.generation()==generation {
             if cached.as_ref().is_none_or(|(previous,_)|*previous!=generation){write_mcp_cached_server(&self.agent_dir,&self.connection.server_name,catalog.clone()).map_err(|error|McpError::new(McpErrorKind::Connect,error.to_string()))?;}
             *cached=Some((generation,catalog.clone()));
+            crate::resources::ensure_mcp_resource_subscriptions(client.clone(),&catalog.resources,self.request_timeout).await;
         }
         Ok(catalog)
     }

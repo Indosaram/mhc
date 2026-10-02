@@ -5,7 +5,7 @@ pub struct SessionConnectionOptions<'a> {pub registry:&'a HostMcpRegistry,pub ow
 pub fn create_mcp_session_connection(options:SessionConnectionOptions<'_>)->Result<McpSessionConnection,regex::Error> {
     let SessionConnectionOptions {registry,owner,key,name,config_hash,config,agent_dir,env}=options;
     let logger=Arc::new(Mutex::new(McpLogger::new(name,agent_dir,None)?));
-    let plan=crate::auth::context::resolve_server_auth(name,&config,agent_dir,None,reqwest::Client::new());
+    let plan=crate::auth::context::resolve_server_auth_with(crate::auth::context::ServerAuthDeps {server_name:name,config:&config,agent_dir:Some(agent_dir),logger:Some(logger.clone()),redirect_url:None,on_redirect:None,client:reqwest::Client::new()});
     if let Ok(warnings)=crate::auth::context::detect_literal_bearer_warnings(name,&config) {for warning in warnings {let _=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("warning",&warning,None,None);}}
     let connection=registry.attach(key,owner,||ServerConnection::new(name,config.clone(),env,logger.clone()),false);
     if let Some(refresh)=plan.refresh {connection.set_auth(Arc::new(refresh));}

@@ -100,3 +100,19 @@ fn saved_oauth_tokens_log_only_the_fingerprint() {
     let logger=logger.lock().unwrap();let record:serde_json::Value=serde_json::from_str(&logger.get_ring_buffer()[0]).unwrap();
     assert_eq!(record["data"]["token_fp"],format!("<redacted:{}>",maho_ext_mcp::log::fingerprint_secret(&maho_ext_mcp::log::fingerprint_secret(token))));assert!(!std::fs::read_to_string(&logger.file_path).unwrap().contains(token));
 }
+#[tokio::test]
+async fn injected_redirect_handler_runs_after_authorization_url_is_retained() {
+    let root=tempfile::tempdir().unwrap();let mut provider=maho_ext_mcp::auth::oauth_provider::McpOAuthProvider::new(McpTokenStore::new(root.path(),"redirect","https://fixture.test"));
+    let (sender,receiver)=tokio::sync::oneshot::channel();let sender=std::sync::Mutex::new(Some(sender));
+    provider.on_redirect=Some(std::sync::Arc::new(move |url|{sender.lock().unwrap().take().unwrap().send(url).unwrap();Box::pin(async {Ok(())})}));
+    let url:url::Url="https://fixture.test/authorize?state=synthetic".parse().unwrap();provider.redirect_to_authorization(url.clone()).await.unwrap();
+    assert_eq!(receiver.await.unwrap(),url);assert_eq!(provider.last_authorization_url,Some(url));
+}
+#[test]
+fn auth_dependencies_bind_provider_logger_before_refresh_clones_it() {
+    use maho_ext_mcp::{auth::context::*,config_schema::*};
+    let root=tempfile::tempdir().unwrap();let logger=std::sync::Arc::new(std::sync::Mutex::new(maho_ext_mcp::log::McpLogger::new("deps",root.path(),None).unwrap()));
+    let config=McpServerConfig {transport:Some(Transport::Http),url:Some("https://fixture.test".into()),..Default::default()};
+    let plan=resolve_server_auth_with(ServerAuthDeps {server_name:"deps",config:&config,agent_dir:Some(root.path()),logger:Some(logger.clone()),redirect_url:None,on_redirect:None,client:reqwest::Client::new()});
+    assert!(std::sync::Arc::ptr_eq(plan.provider.unwrap().logger.as_ref().unwrap(),&logger));assert!(plan.refresh.is_some());
+}

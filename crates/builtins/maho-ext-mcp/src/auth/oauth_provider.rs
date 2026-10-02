@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use super::{oauth_errors::{OAuthFailureKind, OAuthFlowError},token_store::{McpStoredAuth,McpTokenStore,TokenStoreError}};
 pub const REFRESH_LEEWAY_MS: f64 = 300000.0;
+pub type McpRedirectHandler=std::sync::Arc<dyn Fn(url::Url)->std::pin::Pin<Box<dyn std::future::Future<Output=Result<(),ProviderError>>+Send>>+Send+Sync>;
 #[derive(Clone, Serialize, Deserialize)]
 pub struct OAuthTokens {
     pub access_token: String,
@@ -26,12 +27,13 @@ pub struct McpOAuthProvider {
     pub store: McpTokenStore, pub redirect_url: Option<String>, pub scopes: Option<Vec<String>>,
     pub client_id: Option<String>, pub client_metadata_url: Option<String>,
     pub logger:Option<std::sync::Arc<std::sync::Mutex<crate::log::McpLogger>>>,
+    pub on_redirect:Option<McpRedirectHandler>,
     expected_state: Option<String>, pub last_authorization_url: Option<url::Url>,
 }
 #[derive(Clone, Copy)]
 pub enum CredentialScope { All, Client, Tokens, Verifier, Discovery }
 impl McpOAuthProvider {
-    pub fn new(store: McpTokenStore) -> Self { Self { store,redirect_url:None,scopes:None,client_id:None,client_metadata_url:None,logger:None,expected_state:None,last_authorization_url:None } }
+    pub fn new(store: McpTokenStore) -> Self { Self { store,redirect_url:None,scopes:None,client_id:None,client_metadata_url:None,logger:None,on_redirect:None,expected_state:None,last_authorization_url:None } }
     pub fn client_metadata(&self) -> Value {
         let mut value = json!({"redirect_uris":self.redirect_url.iter().collect::<Vec<_>>(),"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","client_name":"senpi"});
         if let Some(scopes) = &self.scopes { value["scope"] = Value::String(scopes.join(" ")); }
@@ -59,7 +61,11 @@ impl McpOAuthProvider {
     pub fn code_verifier(&self) -> Result<String, ProviderError> {
         self.store.read()?.and_then(|r| r.code_verifier).filter(|s| !s.is_empty()).ok_or_else(|| ProviderError::OAuth(Box::new(OAuthFlowError::new(OAuthFailureKind::NoVerifier,format!("Missing PKCE code verifier for MCP server {}",self.store.server_name)))))
     }
-    pub fn redirect_to_authorization(&mut self, authorization_url: url::Url) { self.last_authorization_url=Some(authorization_url); }
+    pub async fn redirect_to_authorization(&mut self, authorization_url: url::Url)->Result<(),ProviderError> {
+        self.last_authorization_url=Some(authorization_url.clone());
+        if let Some(handler)=&self.on_redirect {handler(authorization_url).await?;}
+        Ok(())
+    }
     pub fn validate_resource_url(server_url: &str, resource: Option<&str>) -> Result<url::Url,url::ParseError> { url::Url::parse(resource.unwrap_or(server_url)) }
     pub fn invalidate_credentials(&self, scope: CredentialScope) -> Result<(),TokenStoreError> {
         if matches!(scope,CredentialScope::All) { return self.store.clear(); }

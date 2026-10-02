@@ -51,8 +51,9 @@ pub async fn ensure_mcp_resource_subscriptions(client:Arc<McpClient>,resources:&
     let mut pending=tokio::task::JoinSet::new();
     for resource in resources {
         if let Some(uri)=resource.get("uri").and_then(Value::as_str) {
+            if !client.resource_subscriptions.lock().await.insert(uri.into()){continue;}
             let client=client.clone();let uri=uri.to_owned();
-            pending.spawn(async move {let _=client.request("resources/subscribe",json!({"uri":uri}),timeout).await;});
+            pending.spawn(async move {if client.request("resources/subscribe",json!({"uri":uri}),timeout).await.is_err(){client.resource_subscriptions.lock().await.remove(&uri);}});
         }
     }
     while pending.join_next().await.is_some() {}

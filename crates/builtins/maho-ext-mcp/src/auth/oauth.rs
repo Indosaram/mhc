@@ -63,7 +63,7 @@ pub async fn begin_authorization(provider:&mut McpOAuthProvider,client:&reqwest:
     {let mut query=authorization.query_pairs_mut();query.append_pair("response_type","code").append_pair("client_id",client_id).append_pair("code_challenge_method","S256").append_pair("code_challenge",&challenge).append_pair("state",&state).append_pair("resource",&provider.store.server_url);
         if let Some(redirect)=&provider.redirect_url {query.append_pair("redirect_uri",redirect);}
         if let Some(scopes)=&provider.scopes {query.append_pair("scope",&scopes.join(" "));}}
-    provider.redirect_to_authorization(authorization.clone());Ok(BeginAuthResult {authorized:false,authorization_url:Some(authorization)})
+    provider.redirect_to_authorization(authorization.clone()).await?;Ok(BeginAuthResult {authorized:false,authorization_url:Some(authorization)})
 }
 pub async fn complete_authorization(provider:&mut McpOAuthProvider,redirect:&str,client:&reqwest::Client)->Result<(),OAuthRequestError> {
     let (code,state)=parse_redirect(redirect,&provider.store.server_name).map_err(OAuthRequestError::Flow)?;
