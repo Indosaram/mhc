@@ -71,7 +71,6 @@ pub struct TerminalRuntimeSession {
     exit_signal:tokio::sync::watch::Receiver<Option<Result<PtyExit,String>>>,
     observers:Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,
     screen:Arc<Mutex<vt100::Parser>>,
-    scrollback:usize,
 }
 
 impl TerminalRuntimeSession {
@@ -102,7 +101,7 @@ impl TerminalRuntimeSession {
             if let Ok(mut state)=lock.lock() {*state=Some(result.clone());signal.notify_all();}
             exit_sender.send_replace(Some(result));
         });
-        Ok(Self {command:command.to_owned(),session,output,exit,exit_thread:Some(exit_thread),exit_signal,observers,screen,scrollback})
+        Ok(Self {command:command.to_owned(),session,output,exit,exit_thread:Some(exit_thread),exit_signal,observers,screen})
     }
 
     pub fn backend(&self)->&'static str {"native"}
@@ -138,10 +137,8 @@ impl TerminalRuntimeSession {
     }
     pub fn resize(&self,cols:u16,rows:u16)->Result<(),RuntimeError> {
         self.session.resize(cols,rows)?;
-        let output=self.output.lock().map_err(|_|RuntimeError::Poisoned)?;
         let mut screen=self.screen.lock().map_err(|_|RuntimeError::Poisoned)?;
-        *screen=vt100::Parser::new(rows,cols,self.scrollback);
-        screen.process(String::from_utf16_lossy(&output.buffer).as_bytes());Ok(())
+        screen.screen_mut().set_size(rows,cols);Ok(())
     }
     pub fn kill(&mut self)->Result<(),RuntimeError> {self.session.kill()?;Ok(())}
     pub fn dispose(mut self)->Result<(),RuntimeError> {
@@ -163,6 +160,14 @@ impl Drop for TerminalRuntimeSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn resize_preserves_screen_history_even_when_log_buffer_is_empty()->Result<(),RuntimeError> {
+        let mut runtime=TerminalRuntimeSession::start("resize",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; read start; printf 'screen-kept'; read end"))?;
+        let (_,mut output)=runtime.subscribe_output()?;runtime.write(b"begin\n")?;
+        tokio::time::timeout(Duration::from_secs(5),async {let mut observed=String::new();while !observed.contains("screen-kept") {observed.push_str(&output.recv().await.unwrap());}}).await.unwrap();
+        runtime.output.lock().unwrap().buffer.clear();runtime.resize(100,30)?;
+        assert!(runtime.snapshot()?.visible_grid.iter().any(|line|line.contains("screen-kept")));runtime.dispose()
+    }
     #[test]
     fn snapshot_exposes_scrollback_and_restores_visible_view()->Result<(),RuntimeError> {
         let runtime=TerminalRuntimeSession::start("screen",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'one\r\ntwo\r\nthree'").size(20,2))?;

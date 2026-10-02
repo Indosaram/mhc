@@ -5,6 +5,7 @@ impl Component for BashOutputResultComponent {
     fn invalidate(&mut self) {}
     fn render(&mut self,width:usize)->Vec<String> {
         if !self.is_partial||self.expanded {return self.text.split('\n').map(str::to_owned).collect();}
+        if self.text.is_empty() {return vec![];}
         let mut text=maho_tui::components::text::Text::with_padding(&self.text,0,0);
         let lines=text.render(width.max(1));lines.iter().skip(lines.len().saturating_sub(8)).map(|line|line.trim_end().to_owned()).collect()
     }
@@ -34,6 +35,7 @@ mod tests {
         assert_eq!(component.render(40),(4..12).map(|index|format!("row{index}")).collect::<Vec<_>>());
         component.expanded=true;assert_eq!(component.render(40).len(),12);
         component.text="abcdefghij".to_owned();component.expanded=false;assert_eq!(component.render(5),["abcde","fghij"]);
+        component.text.clear();assert!(component.render(5).is_empty());component.expanded=true;assert_eq!(component.render(5),[""]);
     }
     #[test]
     fn renderer_omits_model_only_parts() {

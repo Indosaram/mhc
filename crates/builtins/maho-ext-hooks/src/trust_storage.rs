@@ -18,7 +18,7 @@ impl FileHookStateStorage {
     pub fn new(agent_dir:&Path,cwd:&Path)->Self {Self {global_path:agent_dir.join("hooks-state.json"),project_path:cwd.join(".maho/hooks-state.json")}}
     fn path(&self,scope:HookTrustStorageScope)->&Path {match scope {HookTrustStorageScope::Global=>&self.global_path,HookTrustStorageScope::Project=>&self.project_path}}
     pub async fn read_async(&self,scope:HookTrustStorageScope)->std::io::Result<HookTrustState> {
-        match tokio::fs::read_to_string(self.path(scope)).await {Ok(text)=>Ok(read_hook_trust_state_json(Some(&text))),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(empty_hook_trust_state()),Err(error)=>Err(error)}
+        match tokio::fs::read(self.path(scope)).await {Ok(bytes)=>Ok(read_hook_trust_state_json(Some(&String::from_utf8_lossy(&bytes)))),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(empty_hook_trust_state()),Err(error)=>Err(error)}
     }
     pub fn read(&self,scope:HookTrustStorageScope)->std::io::Result<HookTrustState> {
         let path=self.path(scope);let text=read_snapshot(path)?;
@@ -52,7 +52,7 @@ impl FileHookStateStorage {
     }
 }
 
-fn read_snapshot(path:&Path)->std::io::Result<Option<String>> {match std::fs::read_to_string(path) {Ok(text)=>Ok(Some(text)),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(error)=>Err(error)}}
+fn read_snapshot(path:&Path)->std::io::Result<Option<String>> {match std::fs::read(path) {Ok(bytes)=>Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(error)=>Err(error)}}
 struct DirectoryLease {path:PathBuf,held:bool,heartbeat:Option<std::thread::JoinHandle<()>>,state:std::sync::Arc<(std::sync::Mutex<LeaseState>,std::sync::Condvar)>}
 struct LeaseState {released:bool,modified:std::time::SystemTime,compromised:Option<String>,second_precision:bool,last_update:std::time::Instant}
 fn refresh_lease(path:&Path,state:&mut LeaseState)->std::io::Result<()> {
@@ -129,6 +129,12 @@ fn release_result<T>(lease:DirectoryLease,result:std::io::Result<T>)->std::io::R
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn malformed_utf8_snapshot_authorizes_nothing_and_can_be_replaced()->std::io::Result<()> {
+        let dir=tempfile::tempdir()?;let storage=FileHookStateStorage::new(dir.path(),dir.path());std::fs::write(storage.path(HookTrustStorageScope::Global),[0xff])?;
+        assert!(storage.read(HookTrustStorageScope::Global)?.hooks.is_empty());assert!(storage.read_async(HookTrustStorageScope::Global).await?.hooks.is_empty());
+        let next=storage.update(HookTrustStorageScope::Global,|state|state)?;assert_eq!(next,empty_hook_trust_state());assert_eq!(storage.read(HookTrustStorageScope::Global)?,next);Ok(())
+    }
     #[test]
     fn heartbeat_refreshes_and_detects_changed_lock_without_removing_it()->std::io::Result<()> {
         let dir=tempfile::tempdir()?;let lease=DirectoryLease::acquire(&dir.path().join("state"))?;
