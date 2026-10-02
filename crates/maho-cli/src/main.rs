@@ -60,7 +60,12 @@ fn run() -> Result<(), String> {
         return Err("Resource-package execution blocked: maho-core DefaultPackageManager API request (todo 19); native self-update replaced by mhc import-omo".to_owned());
     }
     match argv.first().map(String::as_str) {
-        Some("host") => { maho_cli::cli::host_command::parse_host_args(&argv[1..])?; return Err("Host execution blocked by unmerged todo 36 (maho-rpc)".to_owned()); }
+        Some("host") => {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+            let code = runtime.block_on(maho_cli::cli::host_command::run_host_command(&argv[1..]))?;
+            if code != 0 { std::process::exit(code); }
+            return Ok(());
+        }
         Some("app-server") => return Err("App-server execution blocked by unmerged todo 37 (maho-server)".to_owned()),
         Some("config") => {
             if maho_cli::package_manager_cli::parse_config_command(&argv)?.is_some_and(|options| options.help) { return output(maho_cli::package_manager_cli::config_command_help()); }
@@ -85,7 +90,8 @@ fn run() -> Result<(), String> {
         if runtime.get_error().is_some() { eprintln!("Warning: errors loading models.json"); }
         return output(&format!("{}\n", maho_cli::cli::list_models::list_models(&runtime, Some(search))));
     }
-    Err("Requested mode is not yet available: interactive todo 35, RPC todo 36, server todo 37; native extension assembly todo 48".to_owned())
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+    runtime.block_on(maho_cli::cli::runtime::run(parsed))
 }
 #[cfg(unix)]
 fn run_coordinator_entry(argv: &[String]) -> Result<(), String> {

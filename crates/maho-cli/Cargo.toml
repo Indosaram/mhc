@@ -12,6 +12,7 @@ maho-core = { path = "../maho-core" }
 maho-tui = { path = "../maho-tui" }
 maho-tools = { path = "../maho-tools" }
 maho-interactive = { path = "../maho-interactive" }
+maho-rpc = { path = "../maho-rpc" }
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }
 regex.workspace = true
@@ -25,7 +26,7 @@ photon-rs = { version = "=0.3.3", default-features = false }
 tempfile.workspace = true
 notify = "=8.2.0"
 nix = { version = "=0.28.0", features = ["signal", "process"] }
-tokio = { workspace = true, features = ["time", "macros", "rt", "process", "io-util", "fs", "signal"] }
+tokio = { workspace = true, features = ["time", "macros", "rt", "process", "io-util", "io-std", "fs", "signal"] }
 
 [dev-dependencies]
 tempfile.workspace = true

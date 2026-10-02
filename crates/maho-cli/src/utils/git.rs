@@ -39,6 +39,15 @@ pub fn parse_generic_git_url(source: &str) -> Option<GitSource> {
     Some(GitSource { repo, host, path, pinned: reference.as_ref().is_some_and(|reference| !reference.is_empty()), reference })
 }
 pub fn parse_git_url(source: &str) -> Option<GitSource> {
+    if let Ok(url) = url::Url::parse(source.trim().strip_prefix("git:").unwrap_or(source.trim()))
+        && url.host_str() == Some("gist.github.com")
+        && url.path().trim_matches('/').split('/').count() == 1
+    {
+        let path = format!("null/{}", url.path().trim_matches('/'));
+        if unsafe_part(&path, true) { return None; }
+        let reference = url.fragment().filter(|value| !value.is_empty()).map(str::to_owned);
+        return Some(GitSource { repo: url.to_string(), host: "gist.github.com".into(), path, pinned: reference.is_some(), reference });
+    }
     if let Some(input) = source.trim().strip_prefix("git:") {
         let input = input.trim();
         if !input.contains("://") && !input.starts_with("git@") {
@@ -66,7 +75,8 @@ pub fn parse_git_url(source: &str) -> Option<GitSource> {
         let (path, fragment) = source.path.split_once('#').map_or((source.path.as_str(), None), |(path, fragment)| (path, Some(fragment)));
         let path = path.split('?').next()?;
         let mut parts: Vec<_> = path.split('/').collect();
-        let reference = if domain == "github.com" && parts.get(2) == Some(&"tree") { parts.get(3).copied() } else { fragment };
+        let url_fragment = url::Url::parse(&source.repo).ok().and_then(|url| url.fragment().map(str::to_owned));
+        let reference = if domain == "github.com" && parts.get(2) == Some(&"tree") { parts.get(3).copied() } else { fragment.or(url_fragment.as_deref()) };
         if domain == "github.com" && parts.len() > 2 && parts[2] != "tree" { return Some(source); }
         if domain == "github.com" || domain == "bitbucket.org" || domain == "git.sr.ht" { parts.truncate(2); }
         let decoded = parts.iter().map(|part| percent_encoding::percent_decode_str(part).decode_utf8().ok().map(|part| part.into_owned())).collect::<Option<Vec<_>>>()?.join("/");
