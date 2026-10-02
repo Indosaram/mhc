@@ -1,0 +1,200 @@
+{
+  "source": "77f3067f157a4f88e6d8ed48b3a6c338654402ed",
+  "cases": [
+    {
+      "name": "category-empty",
+      "renderer": "renderCategoryUnavailable",
+      "message": {},
+      "renders": [
+        {
+          "width": 40,
+          "lines": [
+            "(category unavailable)"
+          ]
+        },
+        {
+          "width": 80,
+          "lines": [
+            "(category unavailable)"
+          ]
+        },
+        {
+          "width": 120,
+          "lines": [
+            "(category unavailable)"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "category-control",
+      "renderer": "renderCategoryUnavailable",
+      "message": {
+        "content": "unavailable\nnext\u001b[31m red\u001b[0m"
+      },
+      "renders": [
+        {
+          "width": 40,
+          "lines": [
+            "unavailable next red"
+          ]
+        },
+        {
+          "width": 80,
+          "lines": [
+            "unavailable next red"
+          ]
+        },
+        {
+          "width": 120,
+          "lines": [
+            "unavailable next red"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "completion-empty",
+      "renderer": "renderTaskCompletion",
+      "message": {},
+      "renders": [
+        {
+          "width": 40,
+          "lines": [
+            "(task completion)"
+          ]
+        },
+        {
+          "width": 80,
+          "lines": [
+            "(task completion)"
+          ]
+        },
+        {
+          "width": 120,
+          "lines": [
+            "(task completion)"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "completion",
+      "renderer": "renderTaskCompletion",
+      "message": {
+        "details": [
+          {
+            "task_id": "st_test",
+            "name": "worker",
+            "status": "completed",
+            "model": "faux/faux-1",
+            "resolved_model": {
+              "source": "explicit",
+              "provider": "faux",
+              "model_id": "faux-1",
+              "display": "faux/faux-1"
+            },
+            "duration_ms": 1000,
+            "tokens": 12,
+            "final_response": "finished",
+            "continuation_hint": "read output"
+          }
+        ]
+      },
+      "renders": [
+        {
+          "width": 40,
+          "lines": [
+            "task completion name:worker...",
+            "duration:1s tokens:12",
+            "result:\"finished\"",
+            "next:read output"
+          ]
+        },
+        {
+          "width": 80,
+          "lines": [
+            "task completion name:worker id:st_test model:faux/faux-1 status:completed",
+            "duration:1s tokens:12",
+            "result:\"finished\"",
+            "next:read output"
+          ]
+        },
+        {
+          "width": 120,
+          "lines": [
+            "task completion name:worker id:st_test model:faux/faux-1 status:completed",
+            "duration:1s tokens:12",
+            "result:\"finished\"",
+            "next:read output"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "liveness-empty",
+      "renderer": "renderTeamMemberLiveness",
+      "message": {},
+      "renders": [
+        {
+          "width": 40,
+          "lines": [
+            "(team member liveness)"
+          ]
+        },
+        {
+          "width": 80,
+          "lines": [
+            "(team member liveness)"
+          ]
+        },
+        {
+          "width": 120,
+          "lines": [
+            "(team member liveness)"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "liveness",
+      "renderer": "renderTeamMemberLiveness",
+      "message": {
+        "details": {
+          "memberName": "worker",
+          "lastKnownState": "lost",
+          "reason": "process exited"
+        }
+      },
+      "renders": [
+        {
+          "width": 40,
+          "lines": [
+            "team member liveness",
+            "member:worker",
+            "last state:lost",
+            "reason:process exited"
+          ]
+        },
+        {
+          "width": 80,
+          "lines": [
+            "team member liveness",
+            "member:worker",
+            "last state:lost",
+            "reason:process exited"
+          ]
+        },
+        {
+          "width": 120,
+          "lines": [
+            "team member liveness",
+            "member:worker",
+            "last state:lost",
+            "reason:process exited"
+          ]
+        }
+      ]
+    }
+  ]
+}

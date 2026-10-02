@@ -15,6 +15,7 @@ pub struct SpeculativeCompactionSnapshot {
     pub custom_instructions: Option<String>,
     pub system_prompt: Option<String>,
     pub tools: Vec<maho_ai::types::Tool>,
+    pub origin: Option<String>,
 }
 
 pub fn get_prompt_variant(reason: &str, preparation: &CompactionPreparation) -> PromptVariant {
@@ -57,7 +58,7 @@ pub fn create_speculative_compaction_snapshot(
     let prompt_variant = get_prompt_variant("extension", &preparation);
     Ok(Some(SpeculativeCompactionSnapshot { generation, expected_revision, model,
         context_window, preparation, branch_entries, prompt_variant, custom_instructions,
-        system_prompt: Some(context.get_system_prompt()), tools }))
+        system_prompt: Some(context.get_system_prompt()), tools, origin: Some("speculative".into()) }))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,13 +74,36 @@ pub enum SummaryGenerationError {
     TotalBudget,
 }
 
+impl std::fmt::Display for SummaryGenerationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auth(message) | Self::EmptySummary(message) => formatter.write_str(message),
+            Self::Request(response) => formatter.write_str(response.error_message.as_deref().unwrap_or("Compaction summary request failed")),
+            Self::Stream(error) => write!(formatter, "{error:?}"),
+            Self::Overflow(error) => write!(formatter, "{error:?}"),
+            Self::TotalBudget => formatter.write_str("summarization total budget exhausted"),
+        }
+    }
+}
+
+pub fn summary_request_failure(response: &maho_ai::types::AssistantMessage) -> crate::deterministic_fallback::SummaryFailure {
+    let refused = matches!(response.stop_details, Some(maho_ai::types::AssistantStopDetails::Refusal { .. } | maho_ai::types::AssistantStopDetails::Sensitive));
+    let message = response.error_message.as_deref().unwrap_or_default();
+    let truncated = !refused && message.match_indices("upstream_stream_truncated").any(|(index, marker)| {
+        let word = |character: char| character.is_ascii_alphanumeric() || character == '_';
+        message[..index].chars().next_back().is_none_or(|character| !word(character))
+            && message[index + marker.len()..].chars().next().is_none_or(|character| !word(character))
+    });
+    crate::deterministic_fallback::SummaryFailure::Request { transient: truncated || maho_ai::utils::retry::is_retryable_assistant_error(response), refused, truncated }
+}
+
 pub async fn run_extension_compaction(
     snapshot: &SpeculativeCompactionSnapshot,
     api_key: Option<String>,
     headers: Option<maho_ai::types::ProviderHeaders>,
     signal: Option<&maho_ai::utils::abort::AbortSignal>,
     stream_runner: Option<&crate::speculative_summary::SummaryStreamRunner>,
-    on_progress: &dyn Fn(&str),
+    on_progress: &(dyn Fn(&str) + Sync),
 ) -> Result<Option<CompactionResult>, SummaryGenerationError> {
     use maho_ai::types::StopReason;
     use crate::{overflow_retry as overflow, speculative_summary as summary};
@@ -102,7 +126,30 @@ pub async fn run_extension_compaction(
         let remaining = total_ms - started.elapsed().as_secs_f64() * 1000.;
         if remaining <= 0. { return Err(SummaryGenerationError::TotalBudget); }
         let attempt_ms = maho_core::compaction::stream_watchdog::summarization_max_duration_ms(overflow::estimate_total_tokens(&messages) as f64, snapshot.preparation.settings.summarization_max_duration_ms).min(remaining);
-        let response = summary::generate_summary_message(summary::SummaryRequestOptions { snapshot, messages: &messages, prompt: &prompt, api_key: api_key.clone(), headers: headers.clone(), extra_body: None, signal, max_duration: std::time::Duration::from_secs_f64(attempt_ms / 1000.), omit_reasoning_options: reasoning_retry_spent, forbid_tool_calls: tool_retry_spent, stream_runner }, on_progress).await.map_err(SummaryGenerationError::Stream)?;
+        let retry_started = tokio::time::Instant::now();
+        let retry_eligible = matches!(snapshot.origin.as_deref(), Some("blocking" | "core-route"));
+        let response = maho_ai::utils::retry::retry_transient_call(
+            || async {
+                let remaining = total_ms - started.elapsed().as_secs_f64() * 1000.;
+                if remaining <= 0. { return Err(SummaryGenerationError::TotalBudget); }
+                let response = summary::generate_summary_message(summary::SummaryRequestOptions { snapshot, messages: &messages, prompt: &prompt, api_key: api_key.clone(), headers: headers.clone(), extra_body: None, signal, max_duration: std::time::Duration::from_secs_f64(attempt_ms.min(remaining) / 1000.), omit_reasoning_options: reasoning_retry_spent, forbid_tool_calls: tool_retry_spent, stream_runner }, on_progress).await.map_err(SummaryGenerationError::Stream)?;
+                if let Some(response) = &response && response.stop_reason == StopReason::Error && !maho_ai::utils::overflow::is_context_overflow(response, Some(snapshot.context_window)) {
+                    return Err(SummaryGenerationError::Request(Box::new(response.clone())));
+                }
+                Ok(response)
+            },
+            |error| retry_eligible && started.elapsed().as_secs_f64() * 1000. < total_ms
+                && crate::summarization_retry::allow_summarization_retry(retry_started.elapsed().as_secs_f64() * 1000., Some(attempt_ms))
+                && match error {
+                    SummaryGenerationError::Request(response) => !response.error_message.as_deref().is_some_and(|message|message.starts_with("senpi:no-turn-retry:"))
+                        && matches!(summary_request_failure(response), crate::deterministic_fallback::SummaryFailure::Request { transient: true, refused: false, truncated: false }),
+                    SummaryGenerationError::Stream(summary::SummaryStreamError::Provider(error)) => maho_ai::utils::retry::is_retryable_error_message(&error.to_string()),
+                    _ => false,
+                },
+            Some(&crate::summarization_retry::DEFAULT_SUMMARIZATION_RETRY_POLICY), signal, None,
+        ).await;
+        if signal.is_some_and(maho_ai::utils::abort::AbortSignal::aborted) { return Ok(None); }
+        let response = response?;
         let Some(response) = response else { return Ok(None); };
         if maho_ai::utils::overflow::is_context_overflow(&response, Some(snapshot.context_window)) {
             overflow_attempts += 1;
@@ -124,6 +171,7 @@ pub async fn run_extension_compaction(
         let structural = crate::r#yield::compute_structural_yield(snapshot.preparation.previous_summary.as_deref().unwrap_or_default(), &snapshot.preparation.messages_to_summarize, &snapshot.preparation.turn_prefix_messages, &parsed.summary_text, snapshot.preparation.tokens_before as f64);
         let mut details = json!({"schema":"senpi.compaction.summary.v1","promptVariant":match snapshot.prompt_variant { PromptVariant::Default=>"default",PromptVariant::Update=>"update",PromptVariant::Branch=>"branch",PromptVariant::TurnPrefix=>"turn_prefix" },"tokenEstimate":maho_core::compaction::compaction::estimate_context_tokens(&maho_core::messages::convert_to_llm(&messages)).tokens + text.encode_utf16().count().div_ceil(4) as u64,"structuralYield":{"savedTokens":structural.saved_tokens,"savingsRatio":structural.savings_ratio,"tokensBefore":structural.tokens_before}});
         if let Some(intent) = parsed.task_intent.or(inherited_intent) { details["taskIntent"] = json!(intent); }
+        if let Some(origin) = &snapshot.origin { details["origin"] = json!(origin); }
         return Ok(Some(CompactionResult { summary: parsed.summary_text, first_kept_entry_id: snapshot.preparation.first_kept_entry_id.clone(), tokens_before: snapshot.preparation.tokens_before as u64, details: Some(details) }));
     }
 }
