@@ -6,6 +6,7 @@ publish.workspace = true
 license = "MIT"
 
 [dependencies]
+maho-interactive = { path = "../../maho-interactive" }
 icu_collator = "=2.3.1"
 maho-tui = { path = "../../maho-tui" }
 maho-ext-api = { path = "../../maho-ext-api" }

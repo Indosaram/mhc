@@ -4,6 +4,7 @@ pub mod commands;
 pub mod index;
 pub mod ui {
     pub mod dynamic_border;
+    pub mod rules_banner;
 }
 pub mod rules {
     pub mod cache;
