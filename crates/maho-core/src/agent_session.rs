@@ -515,14 +515,52 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             reserve_tokens: raw.as_ref().and_then(|raw| raw.get("reserveTokens")).and_then(Value::as_u64).unwrap_or(16_384),
             keep_recent_tokens: raw.as_ref().and_then(|raw| raw.get("keepRecentTokens")).and_then(Value::as_u64).unwrap_or(20_000) }
     }
-    fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { self.session().ok()?.with_settings_manager(|manager| manager.get_number("promptCacheSafeWaitSeconds")) }
-    fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64 { self.session().ok().and_then(|session| session.with_settings_manager(|manager| manager.get_number("promptCacheGoalBackstopMaxSeconds"))).unwrap_or(300.0) }
-    fn get_prompt_cache_keep_alive_settings(&self) -> maho_ext_api::PromptCacheKeepAliveSettings { maho_ext_api::PromptCacheKeepAliveSettings {
-        enabled: false, max_requests_per_session: 3, max_cost_usd_per_session: 0.05, margin_seconds: 60.0,
-    } }
-    fn get_look_at_settings(&self) -> maho_ext_api::LookAtSettings { maho_ext_api::LookAtSettings { enabled: true, models: None } }
-    fn get_ask_user_settings(&self) -> maho_ext_api::AskUserSettings { maho_ext_api::AskUserSettings { enabled: true, timeout_minutes: 30.0 } }
-    fn get_image_settings(&self) -> maho_ext_api::ImageSettings { maho_ext_api::ImageSettings { auto_resize: true, block_images: false } }
+    fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> {
+        let session = self.session().ok()?;
+        let configured = session.with_settings_manager(|manager| manager.get_value("promptCache").cloned());
+        crate::prompt_cache_budget::resolve_prompt_cache_safe_wait_seconds(
+            Some(&session.model()), configured.as_ref().and_then(|value| value.get("cacheAwareTimeouts")).and_then(Value::as_bool).unwrap_or(true),
+            configured.as_ref().and_then(|value| value.get("safetyBufferSeconds")).and_then(Value::as_f64),
+            &std::env::vars().collect(),
+        ).map(|value| value as f64)
+    }
+    fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64 {
+        self.session().ok().and_then(|session| session.with_settings_manager(|manager| manager.get_value("promptCache")
+            .and_then(|value| value.get("goalBackstopMaxSeconds")).and_then(Value::as_f64))).unwrap_or(270.0)
+    }
+    fn get_prompt_cache_keep_alive_settings(&self) -> maho_ext_api::PromptCacheKeepAliveSettings {
+        let configured = self.session().ok().and_then(|session| session.with_settings_manager(|manager| manager.get_value("promptCache")
+            .and_then(|value| value.get("keepAlive")).cloned()));
+        maho_ext_api::PromptCacheKeepAliveSettings {
+            enabled: configured.as_ref().and_then(|value| value.get("enabled")).and_then(Value::as_bool).unwrap_or(false),
+            max_requests_per_session: configured.as_ref().and_then(|value| value.get("maxRequestsPerSession")).and_then(Value::as_u64).unwrap_or(3),
+            max_cost_usd_per_session: configured.as_ref().and_then(|value| value.get("maxCostUsdPerSession")).and_then(Value::as_f64).unwrap_or(0.05),
+            margin_seconds: configured.as_ref().and_then(|value| value.get("marginSeconds")).and_then(Value::as_f64).unwrap_or(60.0),
+        }
+    }
+    fn get_look_at_settings(&self) -> maho_ext_api::LookAtSettings {
+        let configured = self.session().ok().and_then(|session| session.with_settings_manager(|manager| manager.get_value("lookAt").cloned()));
+        maho_ext_api::LookAtSettings {
+            enabled: configured.as_ref().and_then(|value| value.get("enabled")).and_then(Value::as_bool).unwrap_or(true),
+            models: configured.as_ref().and_then(|value| value.get("models")).and_then(Value::as_array)
+                .map(|models| models.iter().filter_map(Value::as_str).map(str::to_owned).collect()),
+        }
+    }
+    fn get_ask_user_settings(&self) -> maho_ext_api::AskUserSettings {
+        let configured = self.session().ok().and_then(|session| session.with_settings_manager(|manager| manager.get_value("askUser").cloned()));
+        maho_ext_api::AskUserSettings {
+            enabled: configured.as_ref().and_then(|value| value.get("enabled")).and_then(Value::as_bool).unwrap_or(true),
+            timeout_minutes: configured.as_ref().and_then(|value| value.get("timeoutMinutes")).and_then(Value::as_f64)
+                .filter(|value| value.is_finite()).map(|value| value.floor().clamp(1.0, 120.0)).unwrap_or(30.0),
+        }
+    }
+    fn get_image_settings(&self) -> maho_ext_api::ImageSettings {
+        let configured = self.session().ok().and_then(|session| session.with_settings_manager(|manager| manager.get_value("images").cloned()));
+        maho_ext_api::ImageSettings {
+            auto_resize: configured.as_ref().and_then(|value| value.get("autoResize")).and_then(Value::as_bool).unwrap_or(true),
+            block_images: configured.as_ref().and_then(|value| value.get("blockImages")).and_then(Value::as_bool).unwrap_or(false),
+        }
+    }
     fn session_settings(&self) -> &dyn maho_ext_api::ExtensionSessionSettings { self }
     fn compact(&self, options: maho_ext_api::CompactOptions) { if let Ok(session) = self.session() { tokio::spawn(async move {
         match session.compact(options.custom_instructions.as_deref()).await {
@@ -536,9 +574,30 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             let result = { let mut runner = session.extension_runner.lock().await; match runner.as_mut() {
                 Some(runner) => runner.emit_context(&messages, None).await?, None => messages,
             }};
+            let payload_session = session.clone();
+            let header_session = session.clone();
             Ok(maho_ext_api::ProviderRequestPreparation { messages: result,
-                transform_payload: Arc::new(|payload| Box::pin(async move { Ok(payload) })),
-                transform_headers: Arc::new(|headers| Box::pin(async move { Ok(headers) })),
+                transform_payload: Arc::new(move |payload| {
+                    let session = payload_session.clone();
+                    Box::pin(async move {
+                        let model = session.model();
+                        let mut runner = session.extension_runner.lock().await;
+                        match runner.as_mut() {
+                            Some(runner) => runner.emit_before_provider_request_with_metadata(payload, Some(model), None, None).await,
+                            None => Ok(payload),
+                        }
+                    })
+                }),
+                transform_headers: Arc::new(move |headers| {
+                    let session = header_session.clone();
+                    Box::pin(async move {
+                        let mut runner = session.extension_runner.lock().await;
+                        match runner.as_mut() {
+                            Some(runner) => runner.emit_before_provider_headers(headers).await,
+                            None => Ok(headers),
+                        }
+                    })
+                }),
             })
         })
     }
@@ -1389,6 +1448,7 @@ impl AgentSession {
 
     async fn will_retry(&self, message: Option<&maho_ai::types::AssistantMessage>) -> bool {
         let Some(message) = message else { return false; };
+        if !self.resolve_retry_profile().turn.enabled { return false; }
         if self.state().user_aborted || !self.with_settings_manager(|manager| manager.get_value("retry")
             .and_then(|settings| settings.get("enabled")).and_then(Value::as_bool).unwrap_or(true)) { return false; }
         if message.error_message.as_deref().is_some_and(|error| error.starts_with(
@@ -1431,9 +1491,14 @@ impl AgentSession {
                 return Ok(());
             }
             let settings = self.with_settings_manager(|manager| manager.get_value("retry").cloned()).unwrap_or(Value::Null);
-            let max_attempts = settings.get("maxRetries").and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok()).unwrap_or(5);
-            let base_delay = settings.get("baseDelayMs").and_then(Value::as_u64).unwrap_or(2_000);
-            let cap = settings.get("maxAgentDelayMs").and_then(Value::as_u64).unwrap_or(60_000);
+            let profile = self.resolve_retry_profile();
+            let max_attempts = profile.turn.max_retries;
+            let base_delay = profile.turn.backoff.base_delay_ms;
+            let profile_cap = match &profile.turn.server_hint {
+                maho_ai::utils::retry_profile::types::RetryServerHintPolicy::Override { ceiling, .. } => ceiling.max_delay_ms,
+                maho_ai::utils::retry_profile::types::RetryServerHintPolicy::Tiered { .. } => Some(60_000),
+            };
+            let cap = settings.get("maxAgentDelayMs").and_then(Value::as_u64).or(profile_cap).unwrap_or(u64::MAX);
             let error = message.error_message.clone().unwrap_or_else(|| "Unknown error".to_owned());
             let hint = parse_retry_after_ms_marker(&error);
             let refusal = maho_ai::utils::stop_details::is_classifier_refusal(&message);
@@ -1442,16 +1507,18 @@ impl AgentSession {
             let attempt = self.state().retry_attempt.saturating_add(1);
             let rate_limited = ["rate limit", "rate_limit", "429", "too many requests", "resource_exhausted"]
                 .iter().any(|marker| error.to_lowercase().contains(marker));
+            let tier_routed = rate_limited && profile.fallback.rate_limited ==
+                maho_ai::utils::retry_profile::types::FallbackRateLimited::Tiered;
             let hint_settings = crate::retry_fallback::settings::resolve_hint_policy_settings(Some(&settings));
             let tier = crate::retry_fallback::hint_policy::classify_rate_limited_wait(hint.map(|hint| hint as f64), hint_settings);
             let mut hint_delay = None;
-            if rate_limited && tier == crate::retry_fallback::hint_policy::HintTier::Tier1InTurn {
+            if tier_routed && tier == crate::retry_fallback::hint_policy::HintTier::Tier1InTurn {
                 let mut state = self.state();
                 let result = crate::retry_fallback::hint_policy::next_in_turn_delay_ms(
                     crate::retry_fallback::hint_policy::InTurnState {
                         probe_phase: state.probe_phase, hint_deadline_ms: state.hint_deadline_ms,
                         attempt, cumulative_hinted_wait_ms: state.cumulative_hinted_wait_ms,
-                    }, hint.map(|hint| hint as f64), base_delay as f64, hint_settings.hinted_wait_cap_ms, self.fallback_now(),
+                    }, hint.map(|hint| hint as f64), base_delay, hint_settings.hinted_wait_cap_ms, self.fallback_now(),
                 );
                 state.probe_phase = result.probe_phase;
                 state.hint_deadline_ms = result.hint_deadline_ms;
@@ -1459,7 +1526,7 @@ impl AgentSession {
                 if !result.demote_to_probe_back { hint_delay = Some(result.delay_ms as u64); }
             }
             let needs_fallback = refusal || !transient || attempt > max_attempts ||
-                if rate_limited { hint_delay.is_none() } else { hint.is_some_and(|hint| hint > cap) };
+                if tier_routed { hint_delay.is_none() } else { hint.is_some_and(|hint| hint > cap) };
             let mut switched = false;
             if needs_fallback {
                 let reason = if refusal { FallbackReason::Refusal } else if transient { FallbackReason::Transient }
@@ -1474,9 +1541,9 @@ impl AgentSession {
                         self.emit(AgentSessionEvent::RetryFallbackExhausted { chain_key, last_error: error.clone() });
                     }
                 }
-                if !switched && rate_limited && attempt <= max_attempts && !refusal {
+                if !switched && tier_routed && attempt <= max_attempts && !refusal {
                     match crate::retry_fallback::hint_policy::degrade_without_fallback(
-                        tier, hint.map(|hint| hint as f64), attempt, base_delay as f64, hint_settings.hinted_wait_cap_ms,
+                        tier, hint.map(|hint| hint as f64), attempt, base_delay, hint_settings.hinted_wait_cap_ms,
                     ) {
                         crate::retry_fallback::hint_policy::DegradedRateLimitAction::InTurn { delay_ms } => hint_delay = Some(delay_ms as u64),
                         crate::retry_fallback::hint_policy::DegradedRateLimitAction::Fail { .. } => {}
@@ -1492,8 +1559,12 @@ impl AgentSession {
             }
             let attempt = if switched { 1 } else { attempt };
             self.state().retry_attempt = attempt;
-            let delay_ms = if switched { 0 } else { hint_delay.or(hint).unwrap_or_else(|| base_delay.saturating_mul(
-                2_u64.saturating_pow(attempt.saturating_sub(1)))).min(cap) };
+            let local_delay = maho_ai::utils::retry_profile::backoff::retry_backoff_delay_ms(
+                &profile.turn.backoff, attempt, (self.retry_random)(),
+            );
+            let delay_ms = if switched { 0 } else {
+                hint_delay.or(hint.filter(|hint| *hint > 0)).unwrap_or(local_delay as u64).min(cap)
+            };
             let abort = maho_ai::utils::abort::AbortController::new();
             self.state().retry_abort_controller = Some(abort.clone());
             self.emit(AgentSessionEvent::AutoRetryStart { attempt, max_attempts, delay_ms, error_message: error });
@@ -1544,6 +1615,11 @@ impl AgentSession {
 
     pub fn model_registry(&self) -> &ModelRegistry {
         &self.model_registry
+    }
+
+    fn resolve_retry_profile(&self) -> maho_ai::utils::retry_profile::types::RetryPolicyProfile {
+        let provider = self.model_runtime().get_provider(&self.model().provider);
+        self.with_settings_manager(|manager| manager.resolve_retry_profile(provider.as_deref()))
     }
 
     pub fn pending_model_switch(&self) -> Option<PendingModelSwitch> { self.state().pending_model_switch.clone() }
@@ -3968,6 +4044,61 @@ mod tests {
             "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
         }))
         .expect("model")
+    }
+
+    #[test]
+    fn declared_retry_profile_ignores_global_budget_and_accepts_provider_override() {
+        let session = test_session();
+        session.agent.set_model(test_model());
+        session.with_settings_manager_mut(|manager| manager.set(
+            crate::settings_manager::SettingsScope::Global,
+            &Map::from_iter([("retry".to_owned(), serde_json::json!({"maxRetries": 2, "baseDelayMs": 1}))]),
+        )).expect("settings");
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
+            retry_policy: Some(maho_ai::utils::retry_profile::profiles::KIMI_CODE_RETRY_PROFILE.clone()),
+            ..Default::default()
+        }).expect("provider");
+        let profile = session.resolve_retry_profile();
+        assert_eq!((profile.turn.max_retries, profile.turn.backoff.base_delay_ms), (9, 500.0));
+        session.with_settings_manager_mut(|manager| manager.set(
+            crate::settings_manager::SettingsScope::Global,
+            &Map::from_iter([("retry".to_owned(), serde_json::json!({"providers": {"faux": {
+                "turn": {"maxRetries": 3, "baseDelayMs": 7, "enabled": false}
+            }}}))]),
+        )).expect("override");
+        let profile = session.resolve_retry_profile();
+        assert_eq!((profile.turn.max_retries, profile.turn.backoff.base_delay_ms), (3, 7.0));
+        assert!(!profile.turn.enabled);
+    }
+
+    #[test]
+    fn extension_context_reads_configured_settings_and_timeout_bounds() {
+        use maho_ext_api::ExtensionContextActions;
+        let session = test_session();
+        session.with_settings_manager_mut(|manager| manager.set(
+            crate::settings_manager::SettingsScope::Global,
+            &Map::from_iter([
+                ("promptCache".to_owned(), serde_json::json!({"goalBackstopMaxSeconds": 99, "cacheAwareTimeouts": false,
+                    "keepAlive": {"enabled": true, "maxRequestsPerSession": 8, "maxCostUsdPerSession": 0.2, "marginSeconds": 12}})),
+                ("lookAt".to_owned(), serde_json::json!({"enabled": false, "models": ["faux/faux-1"]})),
+                ("askUser".to_owned(), serde_json::json!({"enabled": false, "timeoutMinutes": 130.5})),
+                ("images".to_owned(), serde_json::json!({"autoResize": false, "blockImages": true})),
+            ]),
+        )).expect("settings");
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        assert_eq!(actions.get_prompt_cache_safe_wait_seconds(), None);
+        assert_eq!(actions.get_prompt_cache_goal_backstop_max_seconds(), 99.0);
+        let keep_alive = actions.get_prompt_cache_keep_alive_settings();
+        assert!(keep_alive.enabled);
+        assert_eq!((keep_alive.max_requests_per_session, keep_alive.margin_seconds), (8, 12.0));
+        assert_eq!(keep_alive.max_cost_usd_per_session, 0.2);
+        assert!(!actions.get_look_at_settings().enabled);
+        assert_eq!(actions.get_look_at_settings().models, Some(vec!["faux/faux-1".to_owned()]));
+        assert!(!actions.get_ask_user_settings().enabled);
+        assert_eq!(actions.get_ask_user_settings().timeout_minutes, 120.0);
+        assert!(!actions.get_image_settings().auto_resize);
+        assert!(actions.get_image_settings().block_images);
     }
 
     #[tokio::test]

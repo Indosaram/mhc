@@ -602,6 +602,44 @@ impl SettingsManager {
         self.settings.get(key).and_then(Value::as_f64)
     }
 
+    pub fn resolve_retry_profile(
+        &self,
+        provider: Option<&dyn maho_ai::models::Provider>,
+    ) -> maho_ai::utils::retry_profile::types::RetryPolicyProfile {
+        let declared = provider.and_then(maho_ai::models::Provider::retry_policy);
+        let mut profile = declared.cloned().unwrap_or_else(|| {
+            maho_ai::utils::retry_profile::profiles::SENPI_DEFAULT_RETRY_PROFILE.clone()
+        });
+        let retry = self.get_value("retry");
+        if declared.is_none() {
+            if let Some(max_retries) = retry.and_then(|value| value.get("maxRetries"))
+                .and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok())
+            {
+                profile.turn.max_retries = max_retries;
+            }
+            if let Some(base_delay) = retry.and_then(|value| value.get("baseDelayMs")).and_then(Value::as_f64) {
+                profile.turn.backoff.base_delay_ms = base_delay;
+            }
+        }
+        let validated = crate::retry_fallback::profile_override::validate_retry_provider_overrides(
+            retry.and_then(|value| value.get("providers")),
+            &provider.map(|provider| std::collections::HashSet::from([provider.id().to_owned()])).unwrap_or_default(),
+            None,
+        );
+        let overrides = provider.and_then(|provider| validated.overrides.get(provider.id())?.get("turn"));
+        if let Some(max_retries) = overrides.and_then(|value| value.get("maxRetries"))
+            .and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok())
+        {
+            profile.turn.max_retries = max_retries;
+        }
+        if let Some(base_delay) = overrides.and_then(|value| value.get("baseDelayMs")).and_then(Value::as_f64) {
+            profile.turn.backoff.base_delay_ms = base_delay;
+        }
+        profile.turn.enabled = retry.and_then(|value| value.get("enabled")).and_then(Value::as_bool).unwrap_or(true)
+            && overrides.and_then(|value| value.get("enabled")).and_then(Value::as_bool).unwrap_or(profile.turn.enabled);
+        profile
+    }
+
     /// Writes values into the given scope and recomputes the merged view.
     pub fn set(&mut self, scope: SettingsScope, values: &Settings) -> Result<(), String> {
         let values = values.clone();

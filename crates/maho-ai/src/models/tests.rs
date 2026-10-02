@@ -190,6 +190,27 @@ fn test_provider(id: &str, models: Vec<Model>, fetch: Option<FetchModels>) -> Ar
     })
 }
 
+#[test]
+fn provider_collection_retains_declared_retry_policy() {
+    let profile = crate::utils::retry_profile::profiles::KIMI_CODE_RETRY_PROFILE.clone();
+    let provider = create_provider_with_retry_policy(CreateProviderOptions {
+        id: "retry-profile-test".into(),
+        name: None,
+        base_url: None,
+        headers: None,
+        models: Vec::new(),
+        fetch_models: None,
+        restore_models: None,
+        filter_models: None,
+        api: ProviderApi::Single(Arc::new(EchoStreams { calls: AtomicUsize::new(0) })),
+    }, Some(profile));
+    let models = create_models(None);
+    models.set_provider(provider);
+    let retained = models.get_provider("retry-profile-test").expect("registered provider");
+    assert_eq!(retained.retry_policy().expect("declared policy").turn.max_retries, 9);
+    assert!(test_provider("default-profile-test", Vec::new(), None).retry_policy().is_none());
+}
+
 fn with_provider(model: &Model, provider: &str) -> Model {
     let mut model = model.clone();
     model.provider = provider.into();
