@@ -99,6 +99,22 @@ pub async fn reset_continuation_streak(reference: &GoalStoreRef, unattended: boo
 #[cfg(test)] mod tests {
     use super::*;
     fn reference(dir: &tempfile::TempDir) -> GoalStoreRef { GoalStoreRef { base_dir: dir.path().join("goal"), thread_id: "thread".into() } }
+    #[tokio::test] async fn upstream_new_goal_and_objective_replacement_reset_all_tracking() {
+        let dir=tempfile::tempdir().unwrap(); let reference=reference(&dir); let original=create_goal(&reference,"First",None,1).await.unwrap();
+        assert_eq!(original.consecutive_continuations,Some(0)); assert_eq!(original.unattended_continuations,Some(0)); assert!(original.last_continuation_signature.is_none());
+        record_continuation_delivered(&reference,"signature",Some(&original.id),true).await.unwrap();
+        let next=update_goal(&reference,&GoalUpdate { objective:Some("Second".into()),..Default::default() },GoalUpdateSource::User,2).await.unwrap();
+        assert_ne!(next.id,original.id); assert_eq!(next.consecutive_continuations,Some(0)); assert_eq!(next.unattended_continuations,Some(0)); assert!(next.last_continuation_signature.is_none());
+    }
+    #[tokio::test] async fn upstream_clear_preserves_versioned_null_envelope() {
+        let dir=tempfile::tempdir().unwrap(); let reference=reference(&dir); create_goal(&reference,"Work",None,1).await.unwrap(); clear_goal(&reference).await.unwrap();
+        let envelope:serde_json::Value=serde_json::from_str(&fs::read_to_string(goal_file_path(&reference)).unwrap()).unwrap(); assert_eq!(envelope,serde_json::json!({"version":1,"goal":null}));
+    }
+    #[tokio::test] async fn upstream_delivery_roundtrip_keeps_signature_and_both_counters() {
+        let dir=tempfile::tempdir().unwrap(); let reference=reference(&dir); let original=create_goal(&reference,"Work",None,1).await.unwrap();
+        record_continuation_delivered(&reference,"first",Some(&original.id),true).await.unwrap(); let delivered=record_continuation_delivered(&reference,"second",Some(&original.id),true).await.unwrap().unwrap();
+        assert_eq!(read_goal(&reference).unwrap(),Some(delivered.clone())); assert_eq!(delivered.consecutive_continuations,Some(2)); assert_eq!(delivered.unattended_continuations,Some(2)); assert_eq!(delivered.last_continuation_signature.as_deref(),Some("second"));
+    }
     #[tokio::test] async fn upstream_replaced_goal_rejects_stale_continuation_admission() {
         let dir=tempfile::tempdir().unwrap(); let reference=reference(&dir); let original=create_goal(&reference,"Original",None,1).await.unwrap();
         let replacement=update_goal(&reference,&GoalUpdate { objective:Some("Replacement".into()),..Default::default() },GoalUpdateSource::User,2).await.unwrap();
