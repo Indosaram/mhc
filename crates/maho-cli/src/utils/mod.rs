@@ -18,3 +18,4 @@ pub mod syntax_highlight;
 pub mod management_http;
 pub mod changelog;
 pub mod shell;
+pub mod fs_watch;

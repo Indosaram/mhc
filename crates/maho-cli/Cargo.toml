@@ -20,7 +20,7 @@ base64 = "=0.22.1"
 reqwest = { workspace = true, features = ["rustls-tls"] }
 semver = "=1.0.27"
 nix = { version = "=0.28.0", features = ["signal", "process"] }
-tokio = { workspace = true, features = ["time", "macros", "rt", "process", "io-util"] }
+tokio = { workspace = true, features = ["time", "macros", "rt", "process", "io-util", "fs"] }
 
 [dev-dependencies]
 tempfile.workspace = true
