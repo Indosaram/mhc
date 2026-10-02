@@ -8,6 +8,11 @@ async fn websocket_compaction_keeps_leading_prompt_and_retains_user_input_only()
     let request = OpenAiRemoteCompactionRequest {body:json!({"model":"m","input":[{"role":"user","content":"task"},{"type":"function_call","call_id":"discard"}],"prompt_cache_key":"session","service_tier":"priority"}),input_item_count:2,tokens_before:123};
     let runner: maho_ext_compaction::openai_remote_dependencies::OpenAiResponsesStreamRunner = std::sync::Arc::new(|model,context,options| {
         assert!(context.messages.is_empty());
+        if options.stream.transport == Some(maho_ai::types::Transport::Sse) {
+            let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
+            stream.push(maho_ai::types::AssistantMessageEvent::Error {reason:maho_ai::types::ErrorReason::Error,error:maho_ai::utils::lazy::setup_error_message(model,"v2 unavailable")});
+            return stream;
+        }
         assert_eq!(options.stream.transport,Some(maho_ai::types::Transport::Websocket));
         let payload = options.stream.request.on_payload.as_ref().unwrap()(&json!({"model":"wrong","input":[{"role":"system","content":"instructions"},{"role":"user","content":"discard"}]}),model,None).unwrap();
         assert_eq!(payload["model"],"m");
@@ -30,6 +35,16 @@ async fn websocket_compaction_keeps_leading_prompt_and_retains_user_input_only()
     assert_eq!(details["replacementInput"][0]["role"],"user");
     assert_eq!(details["replacementInput"][1]["type"],"context_compaction");
     assert_eq!(details["responseId"],"response-42");
+    let events = std::sync::Mutex::new(Vec::new());
+    let result = run_remote_compaction(RemoteCompactionOptions {
+        model:&model,request:&request,request_id:"route",first_kept_entry_id:"anchor",system_prompt:"system",session_id:"session",api_key:Some("faux".into()),headers:Default::default(),extra_body:None,origin:json!({}),signal:&controller.signal(),timeout:std::time::Duration::from_secs(5),now_ms:42,client:&reqwest::Client::new(),runner:&runner,provider_request:None,
+    },&|event|events.lock().unwrap().push(event)).await.unwrap().unwrap();
+    assert_eq!(result.details.unwrap()["transport"],"websocket");
+    let events = events.lock().unwrap();
+    assert_eq!(events[0]["transport"],"responses-v2");
+    assert_eq!(events[1]["reason"],"responses-v2-missing-compaction-output");
+    assert_eq!(events[2]["transport"],"websocket");
+    assert_eq!(events[3]["action"],"remote_completed");
 }
 
 #[test]
