@@ -248,6 +248,51 @@ pub fn reader_clean_styles(node:&dom_query::NodeRef<'_>) {
     if matches!(node.node_name().as_deref(),Some("table"|"th"|"td"|"hr"|"pre")) {node.remove_attr("width");node.remove_attr("height");}
     for child in node.element_children() {reader_clean_styles(&child);}
 }
+pub fn reader_fix_lazy_images(root:&dom_query::NodeRef<'_>) {
+    static BASE64:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)^data:\s*([^\s;,]+)\s*;\s*base64\s*,").expect("literal pattern"));
+    static IMAGE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)\.(jpg|jpeg|png|webp)").expect("literal pattern"));
+    static SRCSET:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\.(jpg|jpeg|png|webp)\s+\d").expect("literal pattern"));
+    static SRC:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^\s*\S+\.(jpg|jpeg|png|webp)\S*\s*$").expect("literal pattern"));
+    for node in dom_query::Selection::from(*root).select("img,picture,figure").nodes() {
+        let src=node.attr("src").unwrap_or_default();
+        if let Some(parts)=BASE64.captures(&src) {
+            if parts.get(1).is_some_and(|value|value.as_str()=="image/svg+xml") {continue;}
+            if node.attrs().iter().any(|attribute|attribute.name.local.as_ref()!="src"&&IMAGE.is_match(&attribute.value))&&src[parts.get(0).expect("full match").end()..].encode_utf16().count()<133 {node.remove_attr("src");}
+        }
+        if (node.attr("src").is_some_and(|value|!value.is_empty())||node.attr("srcset").is_some_and(|value|!value.is_empty()&&value.as_ref()!="null"))&&!node.attr("class").unwrap_or_default().to_lowercase().contains("lazy") {continue;}
+        for attribute in node.attrs() {
+            if matches!(attribute.name.local.as_ref(),"src"|"srcset"|"alt") {continue;}
+            let target=if SRCSET.is_match(&attribute.value) {"srcset"} else if SRC.is_match(&attribute.value) {"src"} else {continue;};
+            if matches!(node.node_name().as_deref(),Some("img"|"picture")) {node.set_attr(target,&attribute.value);}
+            else if node.node_name().as_deref()==Some("figure")&&dom_query::Selection::from(*node).select("img,picture").is_empty() {node.append_html("<img>");node.children().last().expect("inserted image").set_attr(target,&attribute.value);}
+        }
+    }
+}
+pub fn reader_clean_conditionally(root:&dom_query::NodeRef<'_>,tag:&str,data_tables:&[dom_query::NodeId],weight_classes:bool) {
+    static VIDEO:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)//(www\.)?((dailymotion|youtube|youtube-nocookie|player\.vimeo|v\.qq)\.com|(archive|upload\.wikimedia)\.org|player\.twitch\.tv)").expect("literal pattern"));
+    static SUSPICIOUS:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)^(ad(vertising|vertisement)?|pub(licité)?|werb(ung)?|广告|Реклама|Anuncio|(loading|正在加载|Загрузка|chargement|cargando)(…|\.\.\.)?)$").expect("literal pattern"));
+    for node in dom_query::Selection::from(*root).select(tag).nodes().iter().rev() {
+        let selection=dom_query::Selection::from(*node);let text=reader_inner_text(node,true);let length=text.encode_utf16().count() as f64;
+        let list_length=selection.select("ul,ol").nodes().iter().map(|list|reader_inner_text(list,true).encode_utf16().count()).sum::<usize>() as f64;
+        let is_list=matches!(tag,"ul"|"ol")||list_length/length>0.9;
+        let mut protected=data_tables.contains(&node.id)&&tag=="table";let mut figure=false;let mut ancestor=node.parent();let mut depth=0;
+        while let Some(parent)=ancestor {
+            protected|=data_tables.contains(&parent.id)||(depth<=3&&parent.node_name().as_deref()==Some("code"));figure|=depth<=3&&parent.node_name().as_deref()==Some("figure");ancestor=parent.parent();depth+=1;
+        }
+        protected|=selection.select("table").nodes().iter().any(|table|data_tables.contains(&table.id));if protected {continue;}
+        let base=reader_initial_score(node,false);let weight=reader_initial_score(node,weight_classes)-base;
+        if weight<0 {node.remove_from_parent();continue;}
+        if text.matches(',').count()>=10 {continue;}
+        let p=selection.select("p").length();let img=selection.select("img").length();let li=selection.select("li").length() as isize-100;let input=selection.select("input").length();
+        let embeds=selection.select("object,embed,iframe");
+        if embeds.nodes().iter().any(|embed|embed.attrs().iter().any(|attr|VIDEO.is_match(&attr.value))||(embed.node_name().as_deref()==Some("object")&&VIDEO.is_match(&embed.inner_html()))) {continue;}
+        if SUSPICIOUS.is_match(&text) {node.remove_from_parent();continue;}
+        let density=reader_link_density(node);let heading_density=reader_text_density(node,&["h1","h2","h3","h4","h5","h6"]);let text_density=reader_text_density(node,&["span","li","td","blockquote","dl","div","img","ol","p","pre","table","ul"]);
+        let remove=(!figure&&img>1&&(p as f64)/(img as f64)<0.5)||(!is_list&&li>p as isize)||input>p/3||(!is_list&&!figure&&heading_density<0.9&&length<25.&&(img==0||img>2)&&density>0.)||(!is_list&&weight<25&&density>0.2)||(weight>=25&&density>0.5)||(embeds.length()==1&&length<75.)||embeds.length()>1||(img==0&&text_density==0.);
+        let image_list_exception=is_list&&node.element_children().iter().all(|child|child.element_children().len()<=1)&&img==selection.select("li").length();
+        if remove&&!image_list_exception {node.remove_from_parent();}
+    }
+}
 pub fn reader_data_table(table:&dom_query::NodeRef<'_>)->bool {
     if table.attr("role").as_deref()==Some("presentation")||table.attr("datatable").as_deref()==Some("0") {return false;}
     if table.attr("summary").is_some_and(|value|!value.is_empty()) {return true;}
@@ -501,6 +546,12 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_conditional_cleanup_protects_tables_and_simple_image_lists() {
+        let document=dom_query::Document::from("<main><div id='links'><p><a href='x'>linked words only</a></p></div><div id='good'><p>Long readable text with sufficient density.</p></div><div id='protected' class='sidebar'><table summary='data'><tr><td>data</td></tr></table></div><ul><li><img src='x'></li><li><img src='y'></li></ul></main>");let root=document.select("main").nodes()[0];let table=document.select("table").nodes()[0];reader_clean_conditionally(&root,"div",&[table.id],true);reader_clean_conditionally(&root,"ul",&[table.id],true);assert!(document.select("#links").is_empty());assert!(!document.select("#good,#protected,ul").is_empty());assert_eq!(document.select("#good,#protected,ul").length(),3);
+    }
+    #[test] fn reader_lazy_images_replace_placeholders_and_create_figure_image() {
+        let document=dom_query::Document::from("<main><img id='placeholder' src='data:image/png;base64,a' data-src='real.png'><img id='svg' src='data:image/svg+xml;base64,a' data-src='real.png'><figure data-src='figure.jpg'></figure><picture data-srcset='small.png 1x, large.png 2x'></picture><img id='case' data-src='UPPER.PNG'></main>");reader_fix_lazy_images(&document.select("main").nodes()[0]);assert_eq!(document.select("#placeholder").attr("src").as_deref(),Some("real.png"));assert_eq!(document.select("#svg").attr("src").as_deref(),Some("data:image/svg+xml;base64,a"));assert_eq!(document.select("figure img").attr("src").as_deref(),Some("figure.jpg"));assert_eq!(document.select("picture").attr("srcset").as_deref(),Some("small.png 1x, large.png 2x"));assert!(document.select("#case").attr("src").is_none());
+    }
     #[test] fn reader_data_table_preserves_priority_and_decimal_span_prefixes() {
         for (html,expected) in [("<table role='presentation'><th>x</th></table>",false),("<table summary='data'><table></table></table>",true),("<table><tr rowspan='  +3junk'><td colspan='4.5'>x</td></tr></table>",true),("<table><tr rowspan='10'><td>x</td></tr></table>",false),("<table><caption> </caption></table>",true)] {let document=dom_query::Document::from(html);assert_eq!(reader_data_table(&document.select("table").nodes()[0]),expected);}
     }
