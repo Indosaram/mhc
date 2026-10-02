@@ -37,6 +37,15 @@ const BUILTIN_DIRS = [
 	"ttsr", "video-in", "webfetch", "websearch",
 ];
 
+const OMO_COMPONENT_DIR = "packages/omo-senpi/src/components";
+// The 19 omo-senpi components (plan IS-8); each maps to crates/omo/components/maho-omo-<dir>. Roots marked
+// `omo` are read from OMO_SRC (oh-my-openagent) instead of SENPI_SRC.
+const OMO_COMPONENTS = [
+	"agent-home", "ast-grep", "comment-checker", "config-resolution", "config-startup", "config-watch", "fallback-architect",
+	"init-deep-advisor", "lsp", "mass-ulw", "memory", "native-badge", "onboarding", "start-work-continuation", "task", "telemetry",
+	"todo-fanout-reminder", "ultrawork", "ulw-loop",
+];
+
 // Crates whose parity is measured against senpi TypeScript source roots (plan: "Source roots").
 // Paths are relative to SENPI_SRC. `exclude` entries use the same matching as --only.
 export const SOURCE_ROOTS = {
@@ -69,6 +78,7 @@ export const SOURCE_ROOTS = {
 		},
 	],
 	...Object.fromEntries(BUILTIN_DIRS.map((name) => [`maho-ext-${name}`, [{ root: `${BUILTIN_DIR}/${name}` }]])),
+	...Object.fromEntries(OMO_COMPONENTS.map((name) => [`maho-omo-${name}`, [{ omo: true, root: `${OMO_COMPONENT_DIR}/${name}` }]])),
 };
 
 function usage(message) {
@@ -123,10 +133,23 @@ function walkTs(dir) {
 }
 
 /** Non-test .ts files of a crate, as paths relative to their declared root (first root wins). */
+const OMO_PIN = "77f3067f157a4f88e6d8ed48b3a6c338654402ed";
+let omoChecked = false;
+/** oh-my-openagent checkout for `omo` roots: $OMO_SRC (default /Users/indo/code/oh-my-openagent), pinned like senpi. */
+function omoSrc() {
+	const dir = resolve(process.env.OMO_SRC ?? "/Users/indo/code/oh-my-openagent");
+	if (!omoChecked) {
+		const head = execFileSync("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+		if (head !== OMO_PIN) usage(`OMO_SRC ${dir} is at ${head}, expected ${OMO_PIN}`);
+		omoChecked = true;
+	}
+	return dir;
+}
+
 export function sourceFiles(senpi, roots) {
 	const files = new Map();
 	for (const spec of roots) {
-		const rootAbs = join(senpi, spec.root);
+		const rootAbs = join(spec.omo ? omoSrc() : senpi, spec.root);
 		const candidates = spec.files ? spec.files.map((f) => join(rootAbs, f)).filter(existsSync) : walkTs(rootAbs);
 		for (const abs of candidates) {
 			const rel = (spec.prefix ?? "") + relative(rootAbs, abs);
@@ -230,18 +253,24 @@ function fragmentCount(repo, crate) {
 /** Resolves a crate package name to its directory under crates/ (searches one level of groups). */
 export function crateDir(repo, crate) {
 	const base = join(repo, "crates");
-	if (existsSync(join(base, crate, "Cargo.toml"))) return crate;
-	for (const group of readdirSync(base)) {
-		const g = join(base, group);
-		if (!statSync(g).isDirectory()) continue;
-		for (const name of readdirSync(g)) {
-			const manifest = join(g, name, "Cargo.toml");
-			if (!existsSync(manifest)) continue;
-			const pkg = readFileSync(manifest, "utf8").match(/^name\s*=\s*"([^"]+)"/m)?.[1];
-			if (pkg === crate || name === crate) return `${group}/${name}`;
+	const search = (dir, rel, depth) => {
+		for (const name of readdirSync(dir)) {
+			const abs = join(dir, name);
+			if (!statSync(abs).isDirectory()) continue;
+			const manifest = join(abs, "Cargo.toml");
+			if (existsSync(manifest)) {
+				const pkg = readFileSync(manifest, "utf8").match(/^name\s*=\s*"([^"]+)"/m)?.[1];
+				if (pkg === crate || name === crate) return rel ? `${rel}/${name}` : name;
+			} else if (depth < 3) {
+				const found = search(abs, rel ? `${rel}/${name}` : name, depth + 1);
+				if (found) return found;
+			}
 		}
-	}
-	throw new Error(`crate ${crate} not found under crates/`);
+		return null;
+	};
+	const found = search(base, "", 0);
+	if (!found) throw new Error(`crate ${crate} not found under crates/`);
+	return found;
 }
 
 // ---------- audit ----------
@@ -297,7 +326,8 @@ function findTestFile(senpi, roots, rel) {
 	for (const spec of roots) {
 		const prefix = spec.prefix ?? "";
 		if (!rel.startsWith(prefix)) continue;
-		for (const base of [join(senpi, spec.root), join(senpi, spec.root, "..", "test")]) {
+		const src = spec.omo ? omoSrc() : senpi;
+		for (const base of [join(src, spec.root), join(src, spec.root, "..", "test")]) {
 			const abs = join(base, rel.slice(prefix.length));
 			if (existsSync(abs)) return abs;
 		}
