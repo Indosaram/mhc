@@ -14,6 +14,11 @@ pub struct MemoryLaunchPreflightInput<'a> {
 
 pub async fn resolve_and_preflight_memory_launch<F, Fut>(cache: &mut ModelPreflight, input: MemoryLaunchPreflightInput<'_>, warn: impl FnOnce(&str), attempt: F) -> Result<MemoryModelAttempt, String>
 where F: FnMut(ReflectionModelCandidate, usize, Option<RunAttempt>) -> Fut, Fut: Future<Output = Result<ReflectionChildResult,String>> {
+    resolve_and_preflight_memory_launch_typed(cache,input,warn,attempt).await.map_err(|error|error.to_string())
+}
+pub async fn resolve_and_preflight_memory_launch_typed<F, Fut>(cache: &mut ModelPreflight, input: MemoryLaunchPreflightInput<'_>, warn: impl FnOnce(&str), attempt: F) -> Result<MemoryModelAttempt, super::memory_model_attempts::MemoryModelAttemptError>
+where F: FnMut(ReflectionModelCandidate, usize, Option<RunAttempt>) -> Fut, Fut: Future<Output = Result<ReflectionChildResult,String>> {
+    use super::memory_model_attempts::MemoryModelAttemptError;
     let candidates: Vec<_> = std::iter::once(input.first).chain(input.rest.iter().cloned()).collect();
     let mut env = input.env.clone();
     env.insert(input.env_flag.into(), "1".into());
@@ -22,11 +27,11 @@ where F: FnMut(ReflectionModelCandidate, usize, Option<RunAttempt>) -> Fut, Fut:
     if let Some(warning) = warning { warn(&warning); }
     let candidates = match preflight {
         PreflightResult::Filtered { candidates, .. } | PreflightResult::Unavailable { candidates } => candidates,
-        PreflightResult::NoneVisible { rejected } => return Err(format!("No {} model candidate is visible to the discovery-disabled child: {}", input.surface_name, rejected.iter().map(|model| format!("{model} (model_not_visible)")).collect::<Vec<_>>().join(", "))),
+        PreflightResult::NoneVisible { rejected } => return Err(MemoryModelAttemptError::Launch(format!("No {} model candidate is visible to the discovery-disabled child: {}", input.surface_name, rejected.iter().map(|model| format!("{model} (model_not_visible)")).collect::<Vec<_>>().join(", ")))),
     };
     let mut candidates = candidates.into_iter();
-    let first = candidates.next().ok_or_else(|| "memory model chain must not be empty".to_owned())?;
-    run_memory_model_attempts(first, &candidates.collect::<Vec<_>>(), attempt).await.map_err(|error| error.to_string())
+    let first = candidates.next().ok_or_else(|| MemoryModelAttemptError::Launch("memory model chain must not be empty".to_owned()))?;
+    run_memory_model_attempts(first, &candidates.collect::<Vec<_>>(), attempt).await
 }
 
 #[cfg(test)]

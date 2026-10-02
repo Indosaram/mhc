@@ -18,6 +18,7 @@ notify = "=8.2.0"
 tokio = { version = "=1.52.3", features = ["macros", "rt", "time", "process"] }
 
 [dev-dependencies]
+maho-rpc = { path = "../../../maho-rpc", version = "=0.0.0" }
 maho-test-support = { path = "../../../maho-test-support", features = ["sdk"] }
 maho-ext-host = { path = "../../../maho-ext-host" }
 maho-ai = { path = "../../../maho-ai" }

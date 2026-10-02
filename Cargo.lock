@@ -2332,6 +2332,7 @@ dependencies = [
  "maho-ext-host",
  "maho-memory-core",
  "maho-omo-config-core",
+ "maho-rpc",
  "maho-senpi-task",
  "maho-test-support",
  "maho-tools",

@@ -1,10 +1,20 @@
 use std::path::Path;
-use serde::Serialize;
+use serde::{Serialize,Deserialize};
 pub const REFLECTION_HEALTH_ENTRY_TYPE:&str="senpi-memory.health";
-#[derive(Debug,Serialize)]
+#[derive(Debug,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct ReflectionHealthEntry{pub schema_version:u32,pub identity:String,pub streak:usize,pub fingerprint:String,pub last_reason:String,#[serde(skip_serializing_if="Option::is_none")]pub last_detail:Option<String>,#[serde(rename="sinceISO")]pub since_iso:String,pub recommendation:String}
 pub trait ReflectionHealthLiveSession{fn session_id(&self)->&str;fn has_ui(&self)->bool;fn append_entry(&mut self,name:&str,entry:&ReflectionHealthEntry);fn notify(&mut self,message:&str,level:&str);}
+pub fn register_reflection_health_renderer(api:&mut maho_ext_api::ExtensionApi,theme:super::completion_renderers::ResolveEntryTheme){
+    api.register_entry_renderer(REFLECTION_HEALTH_ENTRY_TYPE,std::sync::Arc::new(move |entry,options,native_theme|{
+        use super::entry_renderers::*;
+        let health:ReflectionHealthEntry=serde_json::from_value(entry.data.get("data")?.clone()).ok()?;
+        let reason=format!("reason {}",normalize_renderer_text(&health.last_reason));
+        let detail=optional_renderer_text(health.last_detail.as_deref()).map(|detail|detail_excerpt(&detail));
+        let since=format!("since {}",normalize_renderer_text(&health.since_iso));let identity=format!("identity {}",normalize_renderer_text(&health.identity));
+        Some(Box::new(NoticeComponent{spec:NoticeSpec{glyph:"✗".into(),title:format!("Memory reflection failing · {} run{} in a row",health.streak,if health.streak==1{""}else{"s"}),tone:"error".into(),why:normalize_renderer_text(&health.recommendation),extra:vec![],detail:Some(join_fields(&[Some(&reason),detail.as_deref(),Some(&since),Some(&identity)]))},expanded:options.expanded,theme:theme(native_theme)}))
+    }),Default::default());
+}
 pub fn emit_reflection_health_alert(completions:&Path,identity:&str,live:Option<&mut dyn ReflectionHealthLiveSession>,once:&mut dyn FnMut(&str)->bool,now:i64)->bool{
     let Some(live)=live.filter(|live|live.has_ui())else{return false;};let health=super::health::read_reflection_health(completions,crate::status::MEMORY_HEALTH_SCAN_LIMIT,now);
     if health.streak<3||health.fingerprint.is_empty()||health.recent_failure_fingerprints.iter().filter(|item|*item==&health.fingerprint).count()<2{return false;}
@@ -15,6 +25,18 @@ pub fn emit_reflection_health_alert(completions:&Path,identity:&str,live:Option<
 }
 #[cfg(test)]mod tests{
     use super::*;
+    #[test]fn native_health_renderer_registers_and_renders_details(){
+        struct Theme;
+        impl super::super::entry_renderers::EntryRenderTheme for Theme{fn fg(&self,tone:&str,text:&str)->String{format!("<{tone}>{text}</{tone}>")}fn italic(&self,text:&str)->String{text.into()}}
+        let mut api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("memory",Default::default(),Default::default()),Default::default(),Default::default(),Default::default());
+        register_reflection_health_renderer(&mut api,std::sync::Arc::new(|_|std::sync::Arc::new(Theme)));
+        let data=ReflectionHealthEntry{schema_version:1,identity:"agent".into(),streak:3,fingerprint:"child_exit:stable".into(),last_reason:"child_exit".into(),last_detail:Some("stable".into()),since_iso:"2026-10-02T00:00:00.000Z".into(),recommendation:"Check the worker logs".into()};
+        let entry=maho_ext_api::SessionEntry{id:"entry".into(),parent_id:None,timestamp:"now".into(),kind:"custom".into(),data:serde_json::json!({"data":data})};
+        let renderer=&api.registered.entry_renderers[REFLECTION_HEALTH_ENTRY_TYPE];
+        let mut collapsed=renderer(&entry,&maho_ext_api::EntryRenderOptions{expanded:false},&Default::default()).unwrap();let lines=collapsed.render(120);assert_eq!(lines.len(),2);assert!(lines[0].starts_with("<error>"));
+        let mut expanded=renderer(&entry,&maho_ext_api::EntryRenderOptions{expanded:true},&Default::default()).unwrap();assert_eq!(expanded.render(120).len(),3);
+        assert!(renderer(&maho_ext_api::SessionEntry{data:serde_json::Value::Null,..entry},&Default::default(),&Default::default()).is_none());
+    }
     struct Live{session:String,ui:bool,entries:Vec<ReflectionHealthEntry>,warnings:usize}
     impl ReflectionHealthLiveSession for Live{fn session_id(&self)->&str{&self.session}fn has_ui(&self)->bool{self.ui}fn append_entry(&mut self,name:&str,entry:&ReflectionHealthEntry){assert_eq!(name,REFLECTION_HEALTH_ENTRY_TYPE);self.entries.push(ReflectionHealthEntry{schema_version:entry.schema_version,identity:entry.identity.clone(),streak:entry.streak,fingerprint:entry.fingerprint.clone(),last_reason:entry.last_reason.clone(),last_detail:entry.last_detail.clone(),since_iso:entry.since_iso.clone(),recommendation:entry.recommendation.clone()});}fn notify(&mut self,_:&str,level:&str){assert_eq!(level,"warning");self.warnings+=1;}}
     fn live(session:&str)->Live{Live{session:session.into(),ui:true,entries:vec![],warnings:0}}

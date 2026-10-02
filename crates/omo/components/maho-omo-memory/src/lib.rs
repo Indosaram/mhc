@@ -8,6 +8,7 @@ pub mod dream_trigger_gates;
 pub mod dream_trigger_fire;
 pub mod dream_trigger;
 pub mod engine_session;
+pub mod identity_runtime;
 pub mod journal_wiring;
 pub mod nudge_wiring;
 pub mod guard;
@@ -55,6 +56,8 @@ pub mod tools;
 pub mod worker;
 pub mod wiring_context;
 pub mod wiring_memory_write;
+pub mod wiring_static;
+pub mod wiring_reflection_live;
 
 // Todo 45 owns these module bodies; declaring the namespaces here keeps lib.rs
 // ownership with todo 43 without adding nonfunctional command implementations.
