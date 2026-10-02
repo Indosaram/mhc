@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -63,6 +63,18 @@ pub struct SettingsSourceSelection {
     pub format: SettingsFormat,
     pub reason: SettingsSourceReason,
     pub scope: SettingsScope,
+}
+
+pub type SettingsSourceListener = Arc<dyn Fn(&SettingsSourceSelection) + Send + Sync>;
+pub struct SettingsSourceSubscription {
+    listeners: Arc<Mutex<Vec<SettingsSourceListener>>>,
+    listener: SettingsSourceListener,
+}
+impl Drop for SettingsSourceSubscription {
+    fn drop(&mut self) {
+        self.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|listener| !Arc::ptr_eq(listener, &self.listener));
+    }
 }
 
 /// Parse JSON or JSONC without changing comment-like text inside strings.
@@ -468,6 +480,7 @@ pub struct SettingsManager {
     settings_paths: HashMap<SettingsScope, String>,
     selected_sources: HashMap<SettingsScope, SettingsSourceSelection>,
     overrides: Settings,
+    source_listeners: Arc<Mutex<Vec<SettingsSourceListener>>>,
 }
 
 impl SettingsManager {
@@ -515,6 +528,7 @@ impl SettingsManager {
             settings_paths,
             selected_sources,
             overrides: Settings::new(),
+            source_listeners: Arc::default(),
         }
     }
 
@@ -588,6 +602,22 @@ impl SettingsManager {
         self.selected_sources.get(&scope)
     }
 
+    pub fn subscribe_to_source_selection(&self, listener: SettingsSourceListener) -> SettingsSourceSubscription {
+        self.source_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(listener.clone());
+        SettingsSourceSubscription { listeners: self.source_listeners.clone(), listener }
+    }
+
+    fn select_and_publish_source(&mut self, scope: SettingsScope) {
+        let Some(source) = self.storage.select_source(scope) else {
+            self.selected_sources.remove(&scope);
+            return;
+        };
+        self.settings_paths.insert(scope, source.path.clone());
+        self.selected_sources.insert(scope, source.clone());
+        let listeners = self.source_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        for listener in listeners { listener(&source); }
+    }
+
     pub fn get_value(&self, key: &str) -> Option<&Value> {
         self.settings.get(key)
     }
@@ -631,7 +661,9 @@ impl SettingsManager {
         let validated = crate::retry_fallback::profile_override::validate_retry_provider_overrides(
             retry.and_then(|value| value.get("providers")),
             &provider.map(|provider| std::collections::HashSet::from([provider.id().to_owned()])).unwrap_or_default(),
-            None,
+            Some(&provider.filter(|_| matches!(profile.turn.server_hint,
+                maho_ai::utils::retry_profile::types::RetryServerHintPolicy::Tiered { .. }))
+                .map(|provider| std::collections::HashSet::from([provider.id().to_owned()])).unwrap_or_default()),
         );
         let overrides = provider.and_then(|provider| validated.overrides.get(provider.id())?.get("turn"));
         if let Some(max_retries) = overrides.and_then(|value| value.get("maxRetries"))
@@ -641,6 +673,25 @@ impl SettingsManager {
         }
         if let Some(base_delay) = overrides.and_then(|value| value.get("baseDelayMs")).and_then(Value::as_f64) {
             profile.turn.backoff.base_delay_ms = base_delay;
+        }
+        if let Some(growth) = overrides.and_then(|value| value.get("growthFactor")).and_then(Value::as_f64) {
+            profile.turn.backoff.growth_factor = growth;
+        }
+        if let Some(cap) = overrides.and_then(|value| value.get("perAttemptCapMs")) {
+            profile.turn.backoff.per_attempt_cap_ms = cap.as_f64();
+        }
+        if let Some(jitter) = overrides.and_then(|value| value.get("jitter")) {
+            use maho_ai::utils::retry_profile::types::RetryJitterPolicy;
+            profile.turn.backoff.jitter = match jitter.get("mode").and_then(Value::as_str) {
+                Some("additive") => RetryJitterPolicy::Additive { ratio: jitter["ratio"].as_f64().expect("validated ratio") },
+                Some("subtractive") => RetryJitterPolicy::Subtractive { ratio: jitter["ratio"].as_f64().expect("validated ratio") },
+                _ => RetryJitterPolicy::None,
+            };
+        }
+        if let Some(cap) = overrides.and_then(|value| value.get("serverHintMaxDelayMs"))
+            && let maho_ai::utils::retry_profile::types::RetryServerHintPolicy::Override { ceiling, .. } = &mut profile.turn.server_hint
+        {
+            ceiling.max_delay_ms = cap.as_u64();
         }
         profile.turn.enabled = retry.and_then(|value| value.get("enabled")).and_then(Value::as_bool).unwrap_or(true)
             && overrides.and_then(|value| value.get("enabled")).and_then(Value::as_bool).unwrap_or(profile.turn.enabled);
@@ -689,7 +740,9 @@ impl SettingsManager {
     }
 
     pub fn reload(&mut self) {
+        self.select_and_publish_source(SettingsScope::Global);
         let global_load = Self::try_load_from_storage(self.storage.as_ref(), SettingsScope::Global, true);
+        if self.project_trusted { self.select_and_publish_source(SettingsScope::Project); }
         let project_load = Self::try_load_from_storage(self.storage.as_ref(), SettingsScope::Project, self.project_trusted);
         self.global_settings = global_load.0;
         self.project_settings = project_load.0;
@@ -945,6 +998,28 @@ mod tests {
         assert!(manager.get_project().is_empty());
         assert!(!manager.is_project_trusted());
         assert!(manager.selected_source(SettingsScope::Project).is_none());
+    }
+
+    #[test]
+    fn reload_publishes_selected_sources_and_drop_unsubscribes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().to_string_lossy();
+        std::fs::write(tmp.path().join("settings.json"), "{}").expect("settings");
+        let mut manager = SettingsManager::create(&path, &path, &path, false);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let captured = seen.clone();
+        let subscription = manager.subscribe_to_source_selection(Arc::new(move |source| {
+            captured.lock().expect("events").push(source.clone());
+        }));
+        assert!(seen.lock().expect("events").is_empty());
+        std::fs::write(tmp.path().join("settings.jsonc"), "{\"theme\":\"dark\"}").expect("jsonc");
+        manager.reload();
+        assert_eq!(manager.get_string("theme").as_deref(), Some("dark"));
+        assert_eq!(seen.lock().expect("events")[0].format, SettingsFormat::Jsonc);
+        assert_eq!(seen.lock().expect("events").len(), 1);
+        drop(subscription);
+        manager.reload();
+        assert_eq!(seen.lock().expect("events").len(), 1);
     }
 
     #[test]

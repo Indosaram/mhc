@@ -435,6 +435,7 @@ pub struct AgentSessionInner {
     retry_fallback: tokio::sync::Mutex<Option<crate::retry_fallback::controller::RetryFallbackController<SessionFallbackDeps>>>,
     work_barrier: Arc<crate::session_work_barrier::SessionWorkBarrier>,
     wake_source_subscription: Mutex<Option<maho_ext_api::BusSubscription>>,
+    settings_source_subscription: Mutex<Option<crate::settings_manager::SettingsSourceSubscription>>,
     settled_delivery: Mutex<crate::agent_settled_delivery::AgentSettledDelivery>,
     user_abort_generation: AtomicU64,
     settlement_epoch: AtomicU64,
@@ -1120,6 +1121,7 @@ impl AgentSession {
             retry_fallback: tokio::sync::Mutex::new(None),
             work_barrier: Arc::new(crate::session_work_barrier::SessionWorkBarrier::new()),
             wake_source_subscription: Mutex::new(None),
+            settings_source_subscription: Mutex::new(None),
             settled_delivery: Mutex::new(crate::agent_settled_delivery::AgentSettledDelivery::new()),
             user_abort_generation: AtomicU64::new(0),
             settlement_epoch: AtomicU64::new(0),
@@ -1147,6 +1149,18 @@ impl AgentSession {
             })
         }));
         *lock(&session.agent_subscription) = Some(subscription);
+
+        let weak = Arc::downgrade(&session.inner);
+        let subscription = session.with_settings_manager(|manager| manager.subscribe_to_source_selection(Arc::new(move |source| {
+            if let Some(inner) = weak.upgrade() {
+                AgentSession { inner }.emit(AgentSessionEvent::SettingsSourceSelected { selection: serde_json::json!({
+                    "path": source.path, "scope": source.scope.as_str(),
+                    "format": match source.format { crate::settings_manager::SettingsFormat::Jsonc => "jsonc", crate::settings_manager::SettingsFormat::Json => "json" },
+                    "reason": match source.reason { crate::settings_manager::SettingsSourceReason::ExplicitJsonc => "explicit-jsonc", crate::settings_manager::SettingsSourceReason::JsonOnly => "json-only" },
+                }) });
+            }
+        })));
+        *lock(&session.settings_source_subscription) = Some(subscription);
 
         let now = session.fallback_now.clone();
         let random = session.retry_random.clone();
@@ -2009,8 +2023,15 @@ impl AgentSession {
         allow_deferral: bool) -> Result<Option<SystemPromptChangeEvent>, String>
     {
         let previous = self.model();
-        let live = if model.context_window < previous.context_window {
-            self.get_context_usage().and_then(|usage| usage.tokens).unwrap_or(0)
+        let (current_budget, _) = self.model_budget(&previous, 0, false)?;
+        let (target_budget, _) = self.model_budget(&model, 0, false)?;
+        let live = if model.context_window.saturating_sub(target_budget.required_tokens)
+            < previous.context_window.saturating_sub(current_budget.required_tokens) {
+            let prefix = maho_ai::utils::estimate::estimate_context_tokens(&maho_ai::types::Context {
+                system_prompt: Some(self.system_prompt()), messages: Vec::new(),
+                tools: Some(self.agent.state().tools().iter().map(|tool| tool.tool.clone()).collect()),
+            }).tokens;
+            self.get_context_usage().and_then(|usage| usage.tokens).unwrap_or(0).saturating_sub(prefix)
         } else { 0 };
         let (budget, repairable) = self.model_budget(&model, live, self.messages().is_empty())?;
         let admission = if model.context_window > 0 && budget.shortfall_tokens > 0 && !repairable {
@@ -2049,6 +2070,18 @@ impl AgentSession {
                 let prompt = result.as_ref().and_then(|result| result.system_prompt.clone())
                     .unwrap_or_else(|| Some(old_prompt.clone())).unwrap_or_else(|| self.state().base_system_prompt.clone());
                 self.agent.set_system_prompt(prompt.clone());
+                let (post_hook_budget, post_hook_repairable) = self.model_budget(&model, live, self.messages().is_empty())?;
+                if allow_deferral && post_hook_budget.shortfall_tokens > 0 && post_hook_repairable {
+                    self.agent.set_model(previous);
+                    self.agent.set_system_prompt(old_prompt);
+                    self.agent.set_thinking_level(old_thinking);
+                    let notice = format!("{} needs {} fewer tokens than this conversation holds. It is compacted on your next message, and the switch applies after that.", model.id, post_hook_budget.shortfall_tokens);
+                    self.state().pending_model_switch = Some(PendingModelSwitch {
+                        model: model.clone(), budget: post_hook_budget.clone(), persist_default, notice: notice.clone(),
+                    });
+                    self.emit(AgentSessionEvent::ModelChangePending { model, budget: post_hook_budget, notice });
+                    return Ok(None);
+                }
                 let admission = self.assert_model_usable(&model, live);
                 if let Err(error) = admission {
                     self.agent.set_model(previous); self.agent.set_system_prompt(old_prompt); self.agent.set_thinking_level(old_thinking);
@@ -3253,6 +3286,7 @@ impl AgentSession {
         self.abort_bash();
         self.agent.abort(None);
         lock(&self.wake_source_subscription).take();
+        lock(&self.settings_source_subscription).take();
         lock(&self.agent_subscription).take();
         {
             let mut guard = self.extension_runner.lock().await;
@@ -4610,6 +4644,31 @@ mod tests {
         assert!(actions.get_image_settings().block_images);
     }
 
+    #[test]
+    fn provider_turn_override_applies_all_validated_backoff_knobs() {
+        let session = test_session();
+        session.agent.set_model(test_model());
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
+            retry_policy: Some(maho_ai::utils::retry_profile::profiles::KIMI_CODE_RETRY_PROFILE.clone()),
+            ..Default::default()
+        }).expect("provider");
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("retry".to_owned(), serde_json::json!({"providers": {"faux": {"turn": {
+                "growthFactor": 3, "perAttemptCapMs": null, "serverHintMaxDelayMs": 45,
+                "jitter": {"mode": "subtractive", "ratio": 0.5}
+            }}}})),
+        ])));
+        let profile = session.resolve_retry_profile();
+        assert_eq!(profile.turn.backoff.growth_factor, 3.0);
+        assert_eq!(profile.turn.backoff.per_attempt_cap_ms, None);
+        assert_eq!(profile.turn.backoff.jitter,
+            maho_ai::utils::retry_profile::types::RetryJitterPolicy::Subtractive { ratio: 0.5 });
+        assert!(matches!(profile.turn.server_hint,
+            maho_ai::utils::retry_profile::types::RetryServerHintPolicy::Override { ceiling, .. }
+                if ceiling.max_delay_ms == Some(45)));
+    }
+
     #[tokio::test]
     async fn extension_compaction_signal_tracks_abort_and_feedback_completion() {
         use maho_ext_api::ExtensionContextActions;
@@ -4850,6 +4909,22 @@ mod tests {
         session.set_model(model).await.expect("held switch");
         assert_eq!(session.model().id, "faux-1");
         assert_eq!(session.pending_model_switch().expect("pending").model.id, "smaller");
+        assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn equal_window_switch_accounts_for_smaller_usable_context() {
+        let session = test_session_with_stream_function(false);
+        session.agent.set_model(test_model());
+        let (budget, _) = session.model_budget(&session.model(), 0, false).expect("budget");
+        let available = budget.context_window - budget.required_tokens;
+        session.agent.set_messages(vec![make_user_message(&"x".repeat((available * 4 - 8_000) as usize), None)]);
+        let mut model = test_model();
+        model.id = "same-window-larger-output".to_owned();
+        model.max_tokens += 8_000;
+        session.set_session_model(model).await.expect("held switch");
+        assert_eq!(session.model().id, "faux-1");
+        assert_eq!(session.pending_model_switch().expect("pending").model.id, "same-window-larger-output");
         assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
     }
 
