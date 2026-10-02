@@ -33,3 +33,5 @@ pub mod member_liveness;
 pub mod owned_member_liveness;
 pub mod lead_poller_lifecycle;
 pub mod task_rpc_bridge;
+pub mod store_mutation_observer;
+pub mod completion_bridge;
