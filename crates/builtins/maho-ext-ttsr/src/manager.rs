@@ -1,21 +1,22 @@
 use std::collections::BTreeMap;
 use crate::{rule_condition::compile_rule_condition,scope::{has_reachable_scope,matches_path_globs,matches_scope},types::*};
 pub struct TtsrMatchContext { pub source:TtsrStreamSource,pub stream_key:String,pub tool_name:Option<String>,pub file_paths:Option<Vec<String>> }
-struct Entry { rule:TtsrRule,conditions:Vec<fancy_regex::Regex> }
+struct Entry { rule:TtsrRule,conditions:Vec<fancy_regex::Regex>,matching_globs:Vec<String>,matching_scope:TtsrScope }
 pub type TtsrCompileCondition=std::sync::Arc<dyn Fn(&str)->Option<fancy_regex::Regex>+Send+Sync>;
 pub struct TtsrManager { settings:TtsrSettings,compile_condition:TtsrCompileCondition,rules:Vec<Entry>,injection_records:Vec<(String,u64)>,buffers:BTreeMap<String,Vec<u16>>,max_condition_length:usize,message_count:u64,can_match_text:bool,can_match_thinking:bool }
 impl TtsrManager {
     pub fn new(settings:TtsrSettings)->Self { Self::with_compiler(settings,std::sync::Arc::new(|pattern|compile_rule_condition(pattern).regex)) }
     pub fn with_compiler(settings:TtsrSettings,compile_condition:TtsrCompileCondition)->Self { Self { settings,compile_condition,rules:vec![],injection_records:vec![],buffers:BTreeMap::new(),max_condition_length:0,message_count:0,can_match_text:false,can_match_thinking:false } }
-    pub fn add_rule(&mut self,mut rule:TtsrRule)->bool {
+    pub fn add_rule(&mut self,rule:TtsrRule)->bool {
         if !self.settings.enabled || self.settings.disabled_rules.contains(&rule.name) || self.rules.iter().any(|entry|entry.rule.name==rule.name) { return false; }
         let mut conditions=Vec::new();
         for pattern in &rule.condition { if let Some(regex)=(self.compile_condition)(pattern) { conditions.push(regex); self.max_condition_length=self.max_condition_length.max(pattern.encode_utf16().count()); } }
         if conditions.is_empty() || !has_reachable_scope(&rule.scope) { return false; }
-        if let Some(globs)=&mut rule.globs { globs.retain(|glob|globset::GlobBuilder::new(glob).literal_separator(true).build().is_ok()); }
-        for tool in &mut rule.scope.tool_scopes { if tool.path_glob.as_ref().is_some_and(|glob|globset::GlobBuilder::new(glob).literal_separator(true).build().is_err()) { tool.path_glob=None; } }
+        let matching_globs=rule.globs.as_deref().unwrap_or(&[]).iter().filter(|glob|globset::GlobBuilder::new(glob).literal_separator(true).build().is_ok()).cloned().collect();
+        let mut matching_scope=rule.scope.clone();
+        for tool in &mut matching_scope.tool_scopes { if tool.path_glob.as_ref().is_some_and(|glob|globset::GlobBuilder::new(glob).literal_separator(true).build().is_err()) { tool.path_glob=None; } }
         self.can_match_text|=rule.scope.allow_text; self.can_match_thinking|=rule.scope.allow_thinking;
-        self.rules.push(Entry { rule,conditions }); true
+        self.rules.push(Entry { rule,conditions,matching_globs,matching_scope }); true
     }
     pub fn check_delta(&mut self,delta:&str,context:&TtsrMatchContext)->Vec<TtsrRule> {
         if (context.source==TtsrStreamSource::Text && !self.can_match_text) || (context.source==TtsrStreamSource::Thinking && !self.can_match_thinking) { return vec![]; }
@@ -27,7 +28,7 @@ impl TtsrManager {
         if !self.settings.enabled { return vec![]; }
         self.rules.iter().filter(|entry| {
             let eligible=self.injection_records.iter().find(|(name,_)|name==&entry.rule.name).is_none_or(|(_,last)|self.settings.repeat_mode!=RepeatMode::Once && self.message_count.saturating_sub(*last)>=self.settings.repeat_gap);
-            eligible && matches_scope(&entry.rule.scope,context.source,context.tool_name.as_deref(),context.file_paths.as_deref()) && matches_path_globs(entry.rule.globs.as_deref().unwrap_or(&[]),context.file_paths.as_deref()) && entry.conditions.iter().any(|condition|condition.is_match(&buffer).unwrap_or(false))
+            eligible && matches_scope(&entry.matching_scope,context.source,context.tool_name.as_deref(),context.file_paths.as_deref()) && matches_path_globs(&entry.matching_globs,context.file_paths.as_deref()) && entry.conditions.iter().any(|condition|condition.is_match(&buffer).unwrap_or(false))
         }).map(|entry|entry.rule.clone()).collect()
     }
     pub fn stream_buffer_lengths(&self)->BTreeMap<String,usize> { self.buffers.iter().map(|(key,value)|(key.clone(),value.len())).collect() }
@@ -61,4 +62,10 @@ impl TtsrManager {
         assert!(manager.check_delta("original",&context("a")).is_empty()); assert_eq!(manager.check_delta("replacement",&context("b"))[0].name,"accepted"); assert_eq!(*seen.lock().unwrap(),["reject","original"]);
     }
     #[test] fn injected_rule_names_trim_ecmascript_bom() { let mut manager=TtsrManager::new(Default::default()); manager.mark_injected_by_names(&["\u{feff}test\u{feff}".into()]); assert_eq!(manager.injected_rule_names(),["test"]); }
+    #[test] fn invalid_glob_compilation_does_not_mutate_public_rule() {
+        let mut original=rule("test","x"); original.globs=Some(vec!["[".into()]); original.scope=crate::scope::parse_scope(&["tool:edit([)".into()]);
+        let mut manager=TtsrManager::new(Default::default()); assert!(manager.add_rule(original.clone())); assert_eq!(manager.rules(),[original.clone()]);
+        let context=TtsrMatchContext { source:TtsrStreamSource::Tool,stream_key:"edit".into(),tool_name:Some("edit".into()),file_paths:None };
+        assert_eq!(manager.check_delta("x",&context),[original]);
+    }
 }
