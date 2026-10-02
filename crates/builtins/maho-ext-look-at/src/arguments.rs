@@ -19,11 +19,19 @@ pub fn normalize_look_at_args(mut args:LookAtArgs,path:Option<String>)->Normaliz
     NormalizedLookAtArgs { args,file_paths_from_singular,image_data_list_from_singular }
 }
 pub fn prepare_look_at_arguments(args:&Value)->Result<Value,serde_json::Error> {
-    let input=if args.is_object() { args.clone() } else { json!({}) };
-    let mut normalized=normalize_look_at_args(serde_json::from_value(input)?,args.get("path").and_then(Value::as_str).map(str::to_owned));
-    if normalized.file_paths_from_singular { normalized.args.file_path=None; }
-    if normalized.image_data_list_from_singular { normalized.args.image_data=None; }
-    serde_json::to_value(normalized.args)
+    let nullish=|key:&str|args.get(key).filter(|value|!value.is_null()).cloned();
+    let file_path=nullish("file_path").or_else(||nullish("path")); let image_data=args.get("image_data").cloned();
+    let truthy=|value:&Value|match value { Value::Null=>false,Value::Bool(value)=>*value,Value::Number(value)=>value.as_f64().is_some_and(|value|value!=0.),Value::String(value)=>!value.is_empty(),Value::Array(_)|Value::Object(_)=>true };
+    let file_paths_from_singular=args.get("file_paths").is_none_or(|value|!truthy(value)) && file_path.as_ref().and_then(Value::as_str).is_some_and(|value|!value.is_empty());
+    let image_data_list_from_singular=args.get("image_data_list").is_none_or(|value|!truthy(value)) && image_data.as_ref().and_then(Value::as_str).is_some_and(|value|!value.is_empty());
+    let mut output=serde_json::Map::new(); output.insert("goal".into(),nullish("goal").unwrap_or_else(||json!("")));
+    let file_paths=nullish("file_paths").or_else(||file_paths_from_singular.then(||json!([file_path])));
+    let image_data_list=nullish("image_data_list").or_else(||image_data_list_from_singular.then(||json!([image_data])));
+    if !file_paths_from_singular && let Some(value)=file_path { output.insert("file_path".into(),value); }
+    if let Some(value)=file_paths { output.insert("file_paths".into(),value); }
+    if !image_data_list_from_singular && let Some(value)=image_data { output.insert("image_data".into(),value); }
+    if let Some(value)=image_data_list { output.insert("image_data_list".into(),value); }
+    Ok(Value::Object(output))
 }
 fn remote(value:&str)->bool { let prefix=value.get(..7).unwrap_or(""); prefix.eq_ignore_ascii_case("http://") || value.get(..8).is_some_and(|p|p.eq_ignore_ascii_case("https://")) }
 pub fn validate_look_at_args(normalized:&NormalizedLookAtArgs)->Option<String> {
@@ -49,6 +57,8 @@ pub fn validate_look_at_args(normalized:&NormalizedLookAtArgs)->Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn raw_preparation_preserves_malformed_values_for_schema_validation() { assert_eq!(prepare_look_at_arguments(&json!({"file_path":42,"goal":false})).unwrap(),json!({"file_path":42,"goal":false})); assert_eq!(prepare_look_at_arguments(&json!({"file_path":"a","file_paths":false,"goal":"read"})).unwrap(),json!({"file_paths":false,"goal":"read"})); }
+    #[test] fn nullish_plural_normalizes_singular_and_nullish_goal_defaults() { assert_eq!(prepare_look_at_arguments(&json!({"file_path":null,"path":"a","file_paths":null,"goal":null})).unwrap(),json!({"file_paths":["a"],"goal":""})); }
     #[test] fn alias_becomes_plural() { assert_eq!(prepare_look_at_arguments(&json!({"path":"a.png","goal":"read"})).unwrap(),json!({"file_paths":["a.png"],"goal":"read"})); }
     #[test] fn singular_image_becomes_plural() { assert_eq!(prepare_look_at_arguments(&json!({"image_data":"abc","goal":"read"})).unwrap(),json!({"image_data_list":["abc"],"goal":"read"})); }
     #[test] fn explicit_plural_conflict_retained() { let n=normalize_look_at_args(LookAtArgs { file_path:Some("a".into()),file_paths:Some(vec!["b".into()]),goal:"read".into(),..Default::default() },None); assert!(validate_look_at_args(&n).is_some()); }

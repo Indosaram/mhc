@@ -36,7 +36,7 @@ pub fn select_order(strategy:RoutingStrategy,providers:&[SearchProviderEntry],st
     }
 }
 fn error_detail(payload:&Value,body:&str)->String {
-    let detail=payload.get("error").and_then(Value::as_str).filter(|s|!s.is_empty()).or_else(||payload.get("error").and_then(|error|error.get("message")).and_then(Value::as_str).filter(|s|!s.is_empty())).or_else(||payload.get("message").and_then(Value::as_str).filter(|s|!s.is_empty())).unwrap_or_else(||body.trim());
+    let detail=payload.get("error").and_then(Value::as_str).filter(|s|!s.is_empty()).or_else(||payload.get("error").and_then(|error|error.get("message")).and_then(Value::as_str).filter(|s|!s.is_empty())).or_else(||payload.get("message").and_then(Value::as_str).filter(|s|!s.is_empty())).unwrap_or_else(||body.trim_matches(|character|matches!(character,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}')));
     if detail.encode_utf16().count()<=500 { return detail.into(); }
     let mut units=0; let mut end=0; for (index,c) in detail.char_indices() { if units+c.len_utf16()>499 { break; } units+=c.len_utf16(); end=index+c.len_utf8(); }
     format!("{}…",&detail[..end])
