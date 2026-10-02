@@ -6,6 +6,7 @@ pub mod dream_scoring;
 pub mod dream_selector;
 pub mod dream_trigger_gates;
 pub mod dream_trigger_fire;
+pub mod dream_trigger;
 pub mod engine_session;
 pub mod journal_wiring;
 pub mod nudge_wiring;

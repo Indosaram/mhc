@@ -2279,10 +2279,14 @@ name = "maho-omo-memory"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "maho-ai",
  "maho-ext-api",
+ "maho-ext-host",
  "maho-memory-core",
  "maho-omo-config-core",
  "maho-senpi-task",
+ "maho-test-support",
+ "maho-tools",
  "nix",
  "notify",
  "serde",

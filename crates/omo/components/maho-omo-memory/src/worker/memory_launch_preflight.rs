@@ -13,7 +13,7 @@ pub struct MemoryLaunchPreflightInput<'a> {
 }
 
 pub async fn resolve_and_preflight_memory_launch<F, Fut>(cache: &mut ModelPreflight, input: MemoryLaunchPreflightInput<'_>, warn: impl FnOnce(&str), attempt: F) -> Result<MemoryModelAttempt, String>
-where F: FnMut(ReflectionModelCandidate, usize, Option<RunAttempt>) -> Fut, Fut: Future<Output = ReflectionChildResult> {
+where F: FnMut(ReflectionModelCandidate, usize, Option<RunAttempt>) -> Fut, Fut: Future<Output = Result<ReflectionChildResult,String>> {
     let candidates: Vec<_> = std::iter::once(input.first).chain(input.rest.iter().cloned()).collect();
     let mut env = input.env.clone();
     env.insert(input.env_flag.into(), "1".into());
@@ -41,7 +41,7 @@ mod tests {
         let rest = [candidate("builtin/fallback")];
         let input = MemoryLaunchPreflightInput { first: candidate("extension/primary"), rest: &rest, launch: &launch, env: &env, env_flag: "SENPI_MEMORY_FACTS", config_sources: &[], surface_name: "facts", now_ms: 0 };
         let mut attempts = vec![];
-        let result = resolve_and_preflight_memory_launch(&mut ModelPreflight::default(), input, |e| panic!("{e}"), |model, number, next| { attempts.push(model.model); assert_eq!(number, 1); assert!(next.is_none()); std::future::ready(success()) }).await.unwrap();
+        let result = resolve_and_preflight_memory_launch(&mut ModelPreflight::default(), input, |e| panic!("{e}"), |model, number, next| { attempts.push(model.model); assert_eq!(number, 1); assert!(next.is_none()); std::future::ready(Ok(success())) }).await.unwrap();
         assert_eq!(attempts, ["builtin/fallback"]);
         assert_eq!(result.candidate.model, "builtin/fallback");
         assert!(env.is_empty());
@@ -52,7 +52,7 @@ mod tests {
         let env = BTreeMap::new();
         let input = MemoryLaunchPreflightInput { first: candidate("builtin/model"), rest: &[], launch: &launch, env: &env, env_flag: "SENPI_MEMORY_REFLECTION", config_sources: &[], surface_name: "reflection", now_ms: 0 };
         let mut launched = false;
-        let error = resolve_and_preflight_memory_launch(&mut ModelPreflight::default(), input, |e| panic!("{e}"), |_, _, _| { launched = true; std::future::ready(success()) }).await.unwrap_err();
+        let error = resolve_and_preflight_memory_launch(&mut ModelPreflight::default(), input, |e| panic!("{e}"), |_, _, _| { launched = true; std::future::ready(Ok(success())) }).await.unwrap_err();
         assert!(!launched);
         assert!(error.contains("builtin/model (model_not_visible)"));
     }
@@ -62,7 +62,7 @@ mod tests {
         let env = BTreeMap::new();
         let input = MemoryLaunchPreflightInput { first: candidate("builtin/model"), rest: &[], launch: &launch, env: &env, env_flag: "SENPI_MEMORY_FACTS", config_sources: &[], surface_name: "facts", now_ms: 0 };
         let mut warning = String::new();
-        let result = resolve_and_preflight_memory_launch(&mut ModelPreflight::default(), input, |e| warning = e.into(), |_, _, _| std::future::ready(success())).await.unwrap();
+        let result = resolve_and_preflight_memory_launch(&mut ModelPreflight::default(), input, |e| warning = e.into(), |_, _, _| std::future::ready(Ok(success()))).await.unwrap();
         assert!(warning.contains('7'));
         assert_eq!(result.candidate.model, "builtin/model");
     }

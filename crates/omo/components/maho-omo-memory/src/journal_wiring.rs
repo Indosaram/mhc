@@ -23,10 +23,21 @@ pub fn project_session_entries(entries:&[Value])->Vec<TranscriptProjection>{
     projections
 }
 pub struct MemoryJournalWiring{transcripts:PathBuf,journals:BTreeMap<String,TranscriptJournal>}
+pub type JournalWarning=std::sync::Arc<dyn Fn(&str,&JournalError)+Send+Sync>;
 impl MemoryJournalWiring{
     pub fn new(transcripts:PathBuf)->Self{Self{transcripts,journals:BTreeMap::new()}}
     pub fn journal_for(&mut self,session_id:&str)->&TranscriptJournal{self.journals.entry(session_id.into()).or_insert_with(||TranscriptJournal::new(TranscriptJournalOptions::new(self.transcripts.join(session_id))))}
     pub fn reconcile_session(&mut self,session_id:Option<&str>,entries:&[Value],warn:impl FnOnce(&str,&JournalError))->Result<AppendResult,JournalError>{let Some(id)=session_id.filter(|id|!id.is_empty())else{return Ok(AppendResult{appended:0,skipped:0});};match self.journal_for(id).reconcile(&project_session_entries(entries)){Err(error) if matches!(&error,JournalError::LockTimeout(_))||matches!(&error,JournalError::Io(error) if error.kind()==std::io::ErrorKind::AlreadyExists)=>{warn(id,&error);Ok(AppendResult{appended:0,skipped:0})},result=>result}}
+    pub fn register(wiring:std::sync::Arc<std::sync::Mutex<Self>>,api:&mut maho_ext_api::ExtensionApi,warn:JournalWarning) {
+        for event in [maho_ext_api::EventKind::SessionStart,maho_ext_api::EventKind::AgentSettled] {
+            let wiring=wiring.clone(); let warn=warn.clone();
+            api.on(event,std::sync::Arc::new(move |_,context| {
+                let entries=context.session_manager.get_branch().into_iter().map(|entry|entry.data).collect::<Vec<_>>();
+                let result=wiring.lock().unwrap_or_else(std::sync::PoisonError::into_inner).reconcile_session(Some(context.session_manager.session_id()),&entries,|id,error|warn(id,error));
+                Box::pin(async move {result.map(|_|maho_ext_api::EventResult::None).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))})
+            }));
+        }
+    }
 }
 #[cfg(test)]
 mod tests{

@@ -31,6 +31,37 @@ pub struct MemoryPromptResult { pub system_prompt: String, pub message: MemoryPr
 
 #[derive(Default)]
 pub struct MemoryPromptHandler { pub cache: MemoryBlockCache }
+pub type PromptContextResolver = std::sync::Arc<dyn Fn(&str) -> Option<crate::context::MemoryIdentityContext> + Send + Sync>;
+pub type PromptNudgeResolver = std::sync::Arc<dyn Fn(&GitMemoryRepo,&str,&str) -> Result<Option<usize>,String> + Send + Sync>;
+pub type PromptSoulResolver = std::sync::Arc<dyn Fn(&GitMemoryRepo,&str,&str) -> Result<Option<String>,String> + Send + Sync>;
+pub type PromptRepoFactory = std::sync::Arc<dyn Fn(&crate::context::MemoryIdentityContext) -> Result<GitMemoryRepo,String> + Send + Sync>;
+pub struct MemoryPromptInjectionOptions {
+    pub resolve_context: PromptContextResolver,
+    pub create_repo: Option<PromptRepoFactory>,
+    pub search_exposure: Option<std::sync::Arc<dyn Fn()->bool+Send+Sync>>,
+    pub resolve_nudge_turns: Option<PromptNudgeResolver>,
+    pub resolve_soul_notice: Option<PromptSoulResolver>,
+}
+pub fn register_memory_prompt_handler(api:&mut maho_ext_api::ExtensionApi,options:MemoryPromptInjectionOptions) {
+    use maho_ext_api::{EventKind,EventResult,ExtensionEvent,ExtensionFailure,BeforeAgentStartEventResult,CustomMessage,ToolContent};
+    let handler=std::sync::Arc::new(MemoryPromptHandler::default());
+    let options=std::sync::Arc::new(options);
+    api.on(EventKind::BeforeAgentStart,std::sync::Arc::new(move |event,context| {
+        let handler=handler.clone(); let options=options.clone();
+        Box::pin(async move {
+            let ExtensionEvent::BeforeAgentStart(event)=event else { return Ok(EventResult::None); };
+            let id=context.session_manager.session_id();
+            if id.is_empty() { return Ok(EventResult::None); }
+            let Some(identity)=(options.resolve_context)(id) else { return Ok(EventResult::None); };
+            let repo=match &options.create_repo {Some(factory)=>factory(&identity),None=>GitMemoryRepo::open(&identity.identity_paths.repo,&identity.identity).map_err(|error|error.to_string())}.map_err(ExtensionFailure::new)?;
+            let nudge=options.resolve_nudge_turns.as_ref().map(|resolve|resolve(&repo,id,&identity.identity)).transpose().map_err(ExtensionFailure::new)?.flatten();
+            let soul=options.resolve_soul_notice.as_ref().map(|resolve|resolve(&repo,id,&identity.identity)).transpose().map_err(ExtensionFailure::new)?.flatten();
+            let input=MemoryPromptInput {system_prompt:&event.system_prompt,session:MemoryPromptSession {id,prior_message_count:context.session_manager.get_branch().len()},repo:&repo,identity:&identity.identity,search_exposure:options.search_exposure.as_ref().is_some_and(|resolve|resolve()),nudge_turns:nudge,soul_sha:soul.as_deref()};
+            let result=handler.inject(Some(&input)).map_err(|error|ExtensionFailure::new(error.to_string()))?;
+            Ok(match result {None=>EventResult::None,Some(result)=>EventResult::BeforeAgentStart(BeforeAgentStartEventResult {system_prompt:Some(result.system_prompt),message:Some(CustomMessage {custom_type:result.message.custom_type.into(),content:vec![ToolContent::Text {text:result.message.content,audience:None}],display:result.message.display,details:None})})})
+        })
+    }));
+}
 impl MemoryPromptHandler {
     pub fn inject(&self, input: Option<&MemoryPromptInput<'_>>) -> Result<Option<MemoryPromptResult>, MemoryPromptError> {
         let Some(input) = input else { return Ok(None); };
