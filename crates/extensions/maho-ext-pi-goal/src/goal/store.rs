@@ -5,7 +5,7 @@ pub fn goal_file_path(reference:&GoalStoreRef)->PathBuf{reference.base_dir.join(
 pub fn goal_history_file_path(reference:&GoalStoreRef)->PathBuf{reference.base_dir.join(format!("{}.history.jsonl",encoded_thread_id(reference)))}
 pub fn objective_full_text_file_name(reference:&GoalStoreRef)->String{format!("{}.objective-full.txt",encoded_thread_id(reference))}
 pub fn objective_full_text_file_path(reference:&GoalStoreRef)->PathBuf{reference.base_dir.join(objective_full_text_file_name(reference))}
-pub fn read_goal(reference:&GoalStoreRef)->Result<Option<Goal>,String>{match std::fs::read_to_string(goal_file_path(reference)){Ok(raw)=>parse_goal_file(&raw),Err(error)if error.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(error)=>Err(error.to_string())}}
+pub fn read_goal(reference:&GoalStoreRef)->Result<Option<Goal>,String>{match std::fs::read(goal_file_path(reference)){Ok(raw)=>parse_goal_file(&String::from_utf8_lossy(&raw)),Err(error)if error.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(error)=>Err(error.to_string())}}
 pub fn write_goal(reference:&GoalStoreRef,goal:Option<&Goal>)->Result<(),String>{std::fs::create_dir_all(&reference.base_dir).map_err(|e|e.to_string())?;let text=serde_json::to_string_pretty(&serde_json::json!({"version":1,"goal":goal})).map_err(|e|e.to_string())?;std::fs::write(goal_file_path(reference),format!("{text}\n")).map_err(|e|e.to_string())}
 pub fn parse_goal_file(raw:&str)->Result<Option<Goal>,String>{
     let value:serde_json::Value=serde_json::from_str(raw).map_err(|e|e.to_string())?;
