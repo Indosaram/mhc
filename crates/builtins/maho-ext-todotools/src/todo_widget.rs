@@ -60,4 +60,28 @@ mod tests {
         let p=phases((1..=3).map(|i|task(&format!("Completed {i}"),TodoStatus::Completed)).chain(std::iter::once(task("Active",TodoStatus::InProgress))).chain((1..=6).map(|i|task(&format!("Pending {i}"),TodoStatus::Pending))).collect());
         assert_eq!(get_todo_widget_lines(&p).unwrap()[2],"... (1 earlier task)");
     }
+    #[test] fn windows_only_active_phase_with_interleaved_terminal_tasks() {
+        let p=vec![
+            TodoPhase{name:"Closed".into(),tasks:vec![task("Old",TodoStatus::Completed)]},
+            TodoPhase{name:"Active phase".into(),tasks:[task("Dropped before",TodoStatus::Abandoned),task("Active",TodoStatus::InProgress),task("Completed ahead",TodoStatus::Completed),task("Dropped ahead",TodoStatus::Abandoned)].into_iter().chain((1..=6).map(|i|task(&format!("Pending {i}"),TodoStatus::Pending))).collect()},
+            TodoPhase{name:"Later".into(),tasks:vec![task("Future",TodoStatus::Pending)]},
+        ];
+        let model=get_todo_widget_model(&p).unwrap();
+        assert_eq!(model.phase_name,"Active phase");
+        let contents:Vec<_>=model.rows.iter().filter_map(|row|match row {TodoWidgetRow::Task(task)=>Some(task.content.as_str()),TodoWidgetRow::Label(_)=>None}).collect();
+        assert_eq!(contents,["Dropped before","Active","Pending 1","Pending 2","Pending 3","Pending 4","Pending 5","Pending 6"]);
+    }
+    #[test] fn every_active_position_preserves_budget_and_omission_totals() {
+        for count in 1..=30 {
+            for active in 0..count {
+                let p=phases((0..count).map(|i|task(&format!("Task {}",i+1),if i<active {TodoStatus::Completed} else if i==active {TodoStatus::InProgress} else {TodoStatus::Pending})).collect());
+                let model=get_todo_widget_model(&p).unwrap();
+                assert!(model.rows.len()<=10);
+                let visible:Vec<_>=model.rows.iter().filter_map(|row|match row {TodoWidgetRow::Task(task)=>Some(task),TodoWidgetRow::Label(_)=>None}).collect();
+                assert!(visible.iter().any(|task|task.status==TodoStatus::InProgress && task.content==format!("Task {}",active+1)));
+                let omitted:usize=model.rows.iter().filter_map(|row|match row {TodoWidgetRow::Label(text)=>text.strip_prefix("... (").and_then(|text|text.split_whitespace().next()).map(|count|count.parse::<usize>().unwrap()),TodoWidgetRow::Task(_)=>None}).sum();
+                assert_eq!(visible.len()+omitted,count);
+            }
+        }
+    }
 }
