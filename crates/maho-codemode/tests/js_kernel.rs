@@ -176,3 +176,28 @@ async fn scoped_kernel_tool_denies_host_call_without_leaking_scope() {
     assert_eq!(call["toolName"],"write","denied invoke must not enqueue a host call");
     assert_eq!(allowed.unwrap(),42);
 }
+
+#[tokio::test]
+async fn cooperative_interrupt_settles_nested_host_wait_as_stale() {
+    use maho_codemode::kernels::js::kernel_tools_types::*;
+    let kernel=JavaScriptKernel::start(Path::new(env!("CARGO_MANIFEST_DIR")),"bun-nested-stop",4,None).await.unwrap();
+    let parent=kernel.run_with_callbacks(KernelRunInput {cell_id:"nested-parent".into(),code:"tool(async function nested_lookup() { return await tool.read({}); }); await tool.parent({})".into(),timeout_ms:Some(5000)},None,None);
+    let child=async {
+        kernel.next_tool_call().await.unwrap();
+        let described=kernel.describe_kernel_tools(&["nested_lookup".into()]).await.unwrap();
+        let descriptor=&described["results"][0]["descriptor"];
+        let invoke=kernel.invoke_kernel_tool(KernelToolsInvokeRequest {name:"nested_lookup".into(),kernel_generation:descriptor["kernel_generation"].as_u64().unwrap(),definition_revision:descriptor["definition_revision"].as_u64().unwrap(),args:serde_json::json!({}),call_id:"nested-stop".into()},KernelToolsInvokeOptions {signal:None,scope:None});
+        let stop=async {
+            let call=kernel.next_tool_call().await.unwrap();
+            assert_eq!(call["toolName"],"read");
+            kernel.interrupt("nested-test",Some("nested-parent")).await
+        };
+        let (invoke,stop)=tokio::join!(async {tokio::time::timeout(std::time::Duration::from_secs(3),invoke).await},stop);
+        (invoke,stop)
+    };
+    let (parent,(child,stop))=tokio::join!(parent,child);
+    kernel.close().await.unwrap();
+    assert_eq!(parent.unwrap()["ok"],false);
+    assert!(stop.unwrap());
+    assert_eq!(child.unwrap().unwrap_err().code,KernelToolErrorCode::KernelToolStale);
+}

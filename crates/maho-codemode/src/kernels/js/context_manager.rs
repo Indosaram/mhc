@@ -115,7 +115,7 @@ fn route(message:Value,runs:&mut JavaScriptRunQueue,calls:&mut SubprocessRunQueu
     true
 }
 
-async fn stop_active(slot:&mut WorkerSlot,runs:&mut JavaScriptRunQueue,calls:&mut SubprocessRunQueue,reason:&str,message:&str,duration:u64)->Result<bool,ProcessError> {
+async fn stop_active(slot:&mut WorkerSlot,runs:&mut JavaScriptRunQueue,calls:&mut SubprocessRunQueue,tools:&super::kernel_tools_host::KernelToolHostPump,reason:&str,message:&str,duration:u64)->Result<bool,ProcessError> {
     let Some(run)=runs.active_mut() else {return Ok(true);};
     let mut result=stopped_result(&run.input.cell_id,message);
     result["durationMs"]=json!(duration);
@@ -126,6 +126,7 @@ async fn stop_active(slot:&mut WorkerSlot,runs:&mut JavaScriptRunQueue,calls:&mu
     loop {
         let frame=tokio::time::timeout_at(deadline,slot.next_message()).await;
         let Ok(Ok(frame))=frame else {break;};
+        if tools.consume(frame.clone()) {continue;}
         if frame["type"]=="status" && frame["event"]["op"]==crate::bridge::reserved::INTERRUPT_ACK_OP && !acknowledged {
             acknowledged=true;
             deadline=tokio::time::Instant::now()+Duration::from_millis(JS_INTERRUPT_GRACE_MS);
@@ -179,7 +180,7 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
                 Some(Command::Interrupt(reason,id,response))=>{
                     let result=if id.as_ref().is_some_and(|id|runs.active().is_none_or(|run|&run.input.cell_id!=id)) {if let Some(id)=id {runs.remove(&id,&reason);}Ok(true)} else {
                         deadline=None;
-                        stop_active(&mut slot,&mut runs,&mut calls,&reason,&format!("JS cell interrupted: {reason}"),0).await.map_err(|error|error.to_string())
+                        stop_active(&mut slot,&mut runs,&mut calls,&tools,&reason,&format!("JS cell interrupted: {reason}"),0).await.map_err(|error|error.to_string())
                     };
                     let _=response.send(result);
                 }
@@ -207,7 +208,7 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
             },
             ()=async {match deadline {Some(deadline)=>tokio::time::sleep_until(deadline).await,None=>std::future::pending().await}},if deadline.is_some()=>{
                 let duration=runs.active().and_then(|run|run.input.timeout_ms).unwrap_or(0);
-                if let Err(error)=stop_active(&mut slot,&mut runs,&mut calls,&format!("timed out after {duration}ms"),&format!("JS cell timed out after {duration}ms"),duration).await {runs.settle_all(&error.to_string());if let Err(error)=slot.retire().await {eprintln!("JS retirement failed: {error}");}}
+                if let Err(error)=stop_active(&mut slot,&mut runs,&mut calls,&tools,&format!("timed out after {duration}ms"),&format!("JS cell timed out after {duration}ms"),duration).await {runs.settle_all(&error.to_string());if let Err(error)=slot.retire().await {eprintln!("JS retirement failed: {error}");}}
                 deadline=None;
             }
         }
