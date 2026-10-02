@@ -94,6 +94,25 @@ pub fn goal_live_elapsed_seconds(goal:&Goal,measured_from_milliseconds:f64,now_m
     fn goal()->Goal { serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":10.0,"createdAt":0,"updatedAt":0})).unwrap() }
     #[test] fn live_elapsed_rounds_positive_half_seconds() { let goal=goal(); let result=[goal_live_elapsed_seconds(&goal,1000.0,1499.0),goal_live_elapsed_seconds(&goal,1000.0,1500.0)]; assert_eq!(result,[10.0,11.0]); }
     #[test] fn backward_clock_never_subtracts_committed_elapsed() { let result=goal_live_elapsed_seconds(&goal(),1000.0,0.0); assert_eq!(result,10.0); }
+    #[test] fn upstream_elapsed_window_examples() {
+        let goal=goal(); assert_eq!([goal_live_elapsed_seconds(&goal,1_000_000.0,1_000_000.0),goal_live_elapsed_seconds(&goal,1_000_000.0,1_000_999.0),goal_live_elapsed_seconds(&goal,1_000_000.0,1_002_400.0)],[10.0,11.0,12.0]);
+    }
+    #[tokio::test] async fn upstream_unchanged_hour_label_skips_ticks() {
+        let renders=Arc::new(Mutex::new(Vec::new())); let captured=renders.clone();
+        let mut ticker=GoalElapsedTicker::new(Arc::new(move |_,_,live| { captured.lock().unwrap().push(live); Ok(()) }),Arc::new(||0.0));
+        let mut goal=goal(); goal.time_used_seconds=3600.0;
+        ticker.sync(crate::test_context::context(),goal,0.0).await.unwrap();
+        for second in 1..=5 { ticker.state.lock().unwrap().tick(&ticker.render,f64::from(second)*1000.0).unwrap(); }
+        assert_eq!(*renders.lock().unwrap(),[3600.0]); ticker.stop().unwrap().unwrap().await.unwrap_err();
+    }
+    #[tokio::test] async fn upstream_resync_keeps_single_timer_and_new_snapshot() {
+        let mut ticker=GoalElapsedTicker::new(Arc::new(|_,_,_|Ok(())),Arc::new(||0.0));
+        ticker.sync(crate::test_context::context(),goal(),0.0).await.unwrap(); let worker=ticker.timer.as_ref().unwrap().id();
+        let mut replacement=goal(); replacement.time_used_seconds=5.0;
+        ticker.sync(crate::test_context::context(),replacement,1000.0).await.unwrap();
+        assert_eq!(ticker.timer.as_ref().unwrap().id(),worker); assert_eq!(ticker.state.lock().unwrap().goal.as_ref().unwrap().time_used_seconds,5.0);
+        ticker.stop().unwrap().unwrap().await.unwrap_err();
+    }
     #[test] fn stopping_before_sync_is_idempotent() {
         let mut ticker=GoalElapsedTicker::new(Arc::new(|_,_,_|Ok(())),Arc::new(||0.0));
         assert!(ticker.stop().unwrap().is_none()); assert!(ticker.stop().unwrap().is_none()); assert!(!ticker.running());
