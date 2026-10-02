@@ -1,5 +1,28 @@
 use maho_cli::cli::{auth_command::{parse_auth_command, AuthCommandKind}, experimental::command::{parse_options, string_option, flag_option}};
 fn args(values: &[&str]) -> Vec<String> { values.iter().map(|v| (*v).to_owned()).collect() }
+#[test] fn syntax_html_uses_innermost_scope_and_prefix_fallback() {
+    use maho_cli::utils::syntax_highlight::*;
+    let mut theme = HighlightTheme::new();
+    theme.insert("string".to_owned(), Box::new(|text| format!("[{text}]")));
+    theme.insert("default".to_owned(), Box::new(|text| format!("({text})")));
+    assert_eq!(render_highlighted_html("plain<span class='hljs-string.special'>a&amp;<span>b</span></span>", &theme), "(plain)[a&][b]");
+    assert_eq!(render_highlighted_html("<spanish>x</span>", &HighlightTheme::new()), "<spanish>x");
+}
+#[test] fn clipboard_osc52_payload_is_bounded() {
+    assert_eq!(maho_cli::utils::clipboard::osc52_sequence("abc").as_deref(), Some("\x1b]52;c;YWJj\x07"));
+    assert!(maho_cli::utils::clipboard::osc52_sequence(&"x".repeat(75_001)).is_none());
+}
+#[tokio::test] async fn clipboard_command_reads_and_enforces_maximum_without_desktop_access() {
+    use maho_cli::utils::clipboard_command::*;
+    assert_eq!(run_clipboard_command("printf", &["abc"], Default::default()).await, Some(b"abc".to_vec()));
+    assert!(run_clipboard_command("printf", &["abcd"], ClipboardCommandOptions { max_buffer_bytes: Some(3), ..Default::default() }).await.is_none());
+}
+#[test] fn auth_help_recognizes_help_before_kind_validation() {
+    use maho_cli::cli::auth_command::*;
+    assert!(is_auth_command_help(&args(&["auth"])));
+    assert!(is_auth_command_help(&args(&["auth", "invalid", "-h"])));
+    assert!(!is_auth_command_help(&args(&["auth", "check"])));
+}
 #[test] fn help_cache_invalidates_when_discovery_inputs_appear() {
     use maho_cli::cli::help_flags_cache::*;
     let home = tempfile::tempdir().unwrap();

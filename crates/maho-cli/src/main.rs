@@ -16,6 +16,9 @@ fn run() -> Result<(), String> {
     use std::path::PathBuf;
     maho_cli::valid_cwd::ensure_valid_cwd().map_err(|e| e.to_string())?;
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    if maho_cli::cli::auth_command::is_auth_command_help(&argv) {
+        return output(maho_cli::cli::auth_command::auth_command_help());
+    }
     if argv.first().is_some_and(|arg| arg == "import-omo") {
         let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
         let mut from = PathBuf::from(&home).join(".omo/agent");

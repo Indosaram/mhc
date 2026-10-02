@@ -3,6 +3,28 @@ use super::args::Args;
 pub enum AuthCommandKind { Check, ApiKey, BearerToken }
 pub struct AuthCommand { pub kind: AuthCommandKind, pub args: Vec<String>, pub json: bool, pub credentials: bool, pub no_refresh: bool, pub min_expiry_ms: Option<u64> }
 pub fn get_auth_command_name(kind: AuthCommandKind) -> &'static str { match kind { AuthCommandKind::Check => "auth check", AuthCommandKind::ApiKey => "auth print-api-key", AuthCommandKind::BearerToken => "auth print-bearer-token" } }
+pub fn get_auth_command_usage(kind: AuthCommandKind) -> &'static str {
+    match kind {
+        AuthCommandKind::Check => "mhc auth check --provider <provider> [--json] [--credentials] [--no-refresh]",
+        AuthCommandKind::ApiKey => "mhc auth print-api-key --provider <provider> [--model <model>]",
+        AuthCommandKind::BearerToken => "mhc auth print-bearer-token --provider <provider> [--model <model>] [--min-expiry <duration>]",
+    }
+}
+pub fn is_auth_command_help(args: &[String]) -> bool {
+    args.first().is_some_and(|arg| arg == "auth") && (args.get(1).is_none_or(|arg| arg == "help") || args.iter().any(|arg| matches!(arg.as_str(), "--help" | "-h")))
+}
+pub fn auth_command_help() -> &'static str {
+    "Usage:\n  mhc auth print-api-key [--provider <provider>] [--model <model>]\n  mhc auth print-bearer-token [--provider <provider>] [--model <model>] [--min-expiry <duration>]\n  mhc auth check [--provider <provider>] [--model <model>] [--json] [--credentials] [--no-refresh]\n\nAuth commands require at least one of --provider or --model. Checks refresh expired OAuth credentials by default; --no-refresh prevents this. --credentials emits the credential, or includes it in JSON output.\n"
+}
+pub fn get_auth_credential(auth: Option<&maho_ai::models::AuthResolution>) -> Option<&str> {
+    let auth = &auth?.auth;
+    if let Some(key) = auth.api_key.as_deref().filter(|key| !key.is_empty()) { return Some(key); }
+    let authorization = auth.headers.as_ref()?.iter().find(|(name, _)| name.eq_ignore_ascii_case("authorization"))?.1.as_deref()?;
+    let separator = authorization.find(char::is_whitespace)?;
+    if !authorization[..separator].eq_ignore_ascii_case("bearer") { return None; }
+    let value = authorization[separator..].trim_start();
+    (!value.is_empty() && !value.contains(['\r', '\n'])).then_some(value)
+}
 pub fn parse_auth_command(args: &[String]) -> Result<Option<AuthCommand>, String> {
     if args.first().is_none_or(|s| s != "auth") { return Ok(None); }
     let kind = match args.get(1).map(String::as_str) { Some("check") => AuthCommandKind::Check, Some("print-api-key") => AuthCommandKind::ApiKey, Some("print-bearer-token") => AuthCommandKind::BearerToken, other => return Err(format!("Unknown auth command \"{}\". Use \"mhc auth print-api-key\", \"mhc auth print-bearer-token\", or \"mhc auth check\".", other.unwrap_or(""))) };

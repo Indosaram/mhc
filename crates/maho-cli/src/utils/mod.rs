@@ -13,3 +13,5 @@ pub mod clipboard_command;
 pub mod ansi;
 pub mod pi_user_agent;
 pub mod exif_orientation;
+pub mod clipboard;
+pub mod syntax_highlight;
