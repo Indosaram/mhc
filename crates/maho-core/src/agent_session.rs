@@ -2205,6 +2205,22 @@ impl AgentSession {
             && self.retry_fallback.lock().await.as_mut().is_some_and(|controller| controller.can_try_fallback())
     }
 
+    fn retire_failed_retry_assistant(&self, failed: &maho_ai::types::AssistantMessage) -> Result<(), String> {
+        let mut messages = self.messages();
+        if messages.last().and_then(AgentMessage::as_assistant) != Some(failed) { return Ok(()); }
+        let failed_value = serde_json::to_value(messages.last().expect("assistant tail")).map_err(|error| error.to_string())?;
+        self.with_session_manager_mut(|manager| {
+            let branch = manager.branch(manager.leaf_id().or(Some("")));
+            if let Some(entry) = branch.last().filter(|entry| entry.get("message") == Some(&failed_value)) {
+                manager.set_leaf(entry.get("parentId").and_then(Value::as_str));
+            }
+        });
+        messages.pop();
+        self.agent.set_messages(messages);
+        self.state().message_revision += 1;
+        Ok(())
+    }
+
     async fn finish_provider_turn(&self) -> Result<(), String> {
         use crate::retry_fallback::controller::FallbackReason;
         use maho_ai::utils::retry_hint::parse_retry_after_ms_marker;
@@ -2273,6 +2289,27 @@ impl AgentSession {
                     }
                 }
                 return Ok(());
+            }
+            if self.auto_compaction_enabled() && !self.is_compaction_delegated() {
+                let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
+                let configured = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
+                    .transpose().map_err(|error| error.to_string())?;
+                let resolved = crate::compaction_settings_resolver::resolve_compaction_settings(configured.as_ref(), Some(
+                    crate::compaction_settings_access::CompactionModelSelector { provider: &model.provider, id: &model.id },
+                ))?;
+                let reserve = if resolved.reserve_scaling_enabled {
+                    crate::compaction::compaction::resolve_reserve_tokens(model.context_window as f64, resolved.reserve_tokens as f64) as u64
+                } else { resolved.reserve_tokens as u64 };
+                if self.get_context_usage().and_then(|usage| usage.tokens).is_some_and(|tokens| tokens > model.context_window.saturating_sub(reserve)) {
+                    self.retire_failed_retry_assistant(&message)?;
+                    if let Err(error) = self.revalidate_continuation_admission(false).await {
+                        let attempt = self.state().retry_attempt;
+                        self.state().retry_attempt = 0;
+                        self.reset_hint_tier_state();
+                        self.emit(AgentSessionEvent::AutoRetryEnd { success: false, attempt, final_error: Some(error) });
+                        return Ok(());
+                    }
+                }
             }
             let settings = self.with_settings_manager(|manager| manager.get_value("retry").cloned()).unwrap_or(Value::Null);
             let profile = self.resolve_retry_profile();
@@ -2361,19 +2398,7 @@ impl AgentSession {
             let abort = maho_ai::utils::abort::AbortController::new();
             self.state().retry_abort_controller = Some(abort.clone());
             self.emit(AgentSessionEvent::AutoRetryStart { attempt, max_attempts, delay_ms, error_message: error });
-            let mut messages = self.messages();
-            if messages.last().is_some_and(|message| message.role() == "assistant") {
-                let failed_value = serde_json::to_value(messages.last().expect("assistant tail")).map_err(|error| error.to_string())?;
-                self.with_session_manager_mut(|manager| {
-                    let branch = manager.branch(manager.leaf_id().or(Some("")));
-                    if let Some(entry) = branch.last().filter(|entry| entry.get("message") == Some(&failed_value)) {
-                        manager.set_leaf(entry.get("parentId").and_then(Value::as_str));
-                    }
-                });
-                messages.pop();
-                self.agent.set_messages(messages);
-                self.state().message_revision += 1;
-            }
+            self.retire_failed_retry_assistant(&message)?;
             let signal = abort.signal();
             tokio::select! {
                 _ = signal.cancelled() => {
@@ -7132,6 +7157,47 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), idle_rx).await.expect("bounded idle").expect("idle");
         assert_eq!(session.messages().len(), 4);
         assert_eq!(session.get_last_assistant_text().as_deref(), Some("second"));
+    }
+
+    #[tokio::test]
+    async fn required_threshold_compaction_precedes_retry_start() {
+        let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("recovered", Default::default())], 1);
+        session.agent.set_model(test_model());
+        let mut prior = maho_ai::providers::faux::faux_assistant_message("prior", Default::default());
+        prior.usage.input = 120_000;
+        let failed = maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+            stop_reason: Some(StopReason::Error), error_message: Some("overloaded_error".to_owned()), ..Default::default()
+        });
+        session.with_session_manager_mut(|manager| {
+            manager.append_message(serde_json::json!({"role":"user","content":[{"type":"text","text":"task"}],"timestamp":0}));
+            manager.append_message(serde_json::to_value(prior).expect("prior"));
+            manager.append_message(serde_json::json!({"role":"user","content":[{"type":"text","text":"next task"}],"timestamp":1}));
+            manager.append_message(serde_json::to_value(failed).expect("failed"));
+        });
+        session.rebuild_session_context().expect("context");
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"keepRecentTokens":1,"reserveTokens":20000,"reserveScalingEnabled":false})),
+        ])));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:retry-order>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(|event, _| {
+            let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { panic!("preparation"); };
+            let result = maho_ext_api::CompactionResult { summary: "digest".to_owned(), first_kept_entry_id: event.preparation.first_kept_entry_id.clone(),
+                tokens_before: event.preparation.tokens_before, details: None };
+            Box::pin(async move { Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult { compaction: Some(result), ..Default::default() })) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let captured = order.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            match event {
+                AgentSessionEvent::CompactionEnd { accepted: Some(true), .. } => lock(&captured).push("compacted"),
+                AgentSessionEvent::AutoRetryStart { .. } => lock(&captured).push("retry"),
+                _ => {}
+            }
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.finish_provider_turn()).await.expect("bounded recovery").expect("recovery");
+        assert_eq!(*lock(&order), vec!["compacted", "retry"]);
+        assert_eq!(session.get_last_assistant_text().as_deref(), Some("recovered"));
     }
 
     #[tokio::test]
