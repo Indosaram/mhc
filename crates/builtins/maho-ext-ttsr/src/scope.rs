@@ -47,6 +47,10 @@ fn matches_path(pattern:&str,path:&str)->bool {
     matcher.is_match(path) || pattern.contains('*')&&path.strip_suffix('/').is_some_and(|path|matcher.is_match(path))
 }
 fn glob_fragment(pattern:&str)->Option<String> {
+    if let Some(start)=pattern.find('\\') && let Some(value)=pattern[start+1..].chars().next() {
+        let end=start+1+value.len_utf8();
+        return Some(format!("{}{}{}",glob_fragment(&pattern[..start])?,regex::escape(&value.to_string()),glob_fragment(&pattern[end..])?));
+    }
     if let Some(start)=pattern.find('[') && !pattern[start..].starts_with("[[:") && let Some(offset)=pattern[start+1..].find(']') {
         let end=start+1+offset; let body=&pattern[start+1..end];
         let class=format!("[{body}]");
@@ -137,6 +141,11 @@ pub fn matches_path_globs(globs:&[String],paths:Option<&[String]>)->bool { globs
     #[test] fn picomatch_plain_group_matrix() {
         for (pattern,path,expected) in [("(a|b).rs","a.rs",true),("(a|b).rs","b.rs",true),("(a|b).rs","c.rs",false),("(a).rs","a.rs",true),("a(b|c).rs","ac.rs",true),("(a|b)*.rs","banana.rs",true)] {
             assert_eq!(matches_path_globs(&[pattern.into()],Some(&[path.into()])),expected,"{pattern}: {path}");
+        }
+    }
+    #[test] fn picomatch_escaped_delimiters_and_group_quantifiers() {
+        for (pattern,path,expected) in [(r"\(a\).rs","(a).rs",true),(r"\[a\].rs","[a].rs",true),(r"\{a\}.rs","{a}.rs",true),("(a(b|c)).rs","ab.rs",true),("(a|b)+.rs","aa.rs",true),("(a|b)?.rs",".rs",true)] {
+            assert_eq!(matches_path(pattern,path),expected,"{pattern}: {path}");
         }
     }
     #[test] fn picomatch_bracket_literal_and_negation_matrix() {
