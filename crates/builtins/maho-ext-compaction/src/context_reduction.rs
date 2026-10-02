@@ -91,13 +91,14 @@ fn classify(call: &ToolCall, options: &CollapseConsecutiveOptions) -> Option<Col
 }
 fn hint(call: &ToolCall, kind: CollapsedGroupKind) -> Option<String> {
     let arg = |keys: &[&str]| keys.iter().find_map(|key| call.arguments.get(*key).and_then(serde_json::Value::as_str));
+    let coalesce = |keys: &[&str]| keys.iter().find_map(|key| call.arguments.get(*key).filter(|value|!value.is_null())).and_then(serde_json::Value::as_str);
     let value = match kind {
-        CollapsedGroupKind::Read => arg(&["path", "file_path", "filePath"]).map(str::to_owned),
-        CollapsedGroupKind::Shell => arg(&["command", "cmd"]).map(str::to_owned),
+        CollapsedGroupKind::Read => coalesce(&["path", "file_path", "filePath"]).map(str::to_owned),
+        CollapsedGroupKind::Shell => coalesce(&["command", "cmd"]).map(str::to_owned),
         CollapsedGroupKind::Search => {
             let path = arg(&["path"]);
             let pattern = ["pattern", "glob", "query"].iter().find_map(|key| arg(&[*key]).filter(|s| !s.is_empty()));
-            match (path, pattern) { (Some(p), Some(q)) => Some(format!("{p}:{q}")), (Some(p), None) => Some(p.into()), (None, Some(q)) => Some(q.into()), (None, None) => None }
+            match (path.filter(|path|!path.is_empty()), pattern) { (Some(p), Some(q)) => Some(format!("{p}:{q}")), (Some(p), None) => Some(p.into()), (None, Some(q)) => Some(q.into()), (None, None) => None }
         }
     }?;
     if value.is_empty() { return None; }

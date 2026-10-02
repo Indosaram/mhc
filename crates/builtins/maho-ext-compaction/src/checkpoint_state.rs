@@ -22,6 +22,18 @@ pub fn capture_agent_checkpoint(agent_name:Option<&str>,model:Option<&Value>,act
 pub fn serialize_checkpoint(checkpoint:&Value)->Value {
     let mut output=checkpoint.clone();output["schema"]=json!(CHECKPOINT_SCHEMA);output["data"]=checkpoint.clone();output
 }
+pub fn capture_live_agent_checkpoint(api: &maho_ext_api::ExtensionApi, context: &maho_ext_api::ExtensionContext) -> Result<Value, maho_ext_api::ExtensionFailure> {
+    let entries = context.session_manager.get_entries();
+    let agent_name = entries.iter().rev().filter(|entry| entry.kind == "custom")
+        .find_map(|entry| entry.data.get("data").unwrap_or(&entry.data).get("agentName").and_then(Value::as_str)
+            .or_else(|| entry.data.get("data").unwrap_or(&entry.data).get("agent").and_then(Value::as_str)));
+    let model = context.model.as_ref().map(|model| json!({"provider":model.provider,"modelId":model.id}));
+    let thinking = serde_json::to_value(api.get_thinking_level()?).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+    Ok(capture_agent_checkpoint(agent_name, model.as_ref(), &api.get_active_tools()?, thinking.as_str(), chrono::Utc::now().timestamp_millis() as f64))
+}
+pub fn persist_checkpoint(api: &maho_ext_api::ExtensionApi, checkpoint: &Value) -> Result<(), maho_ext_api::ExtensionFailure> {
+    api.append_entry(CHECKPOINT_CUSTOM_TYPE, Some(serialize_checkpoint(checkpoint)))
+}
 pub fn get_latest_checkpoint(entries:&[Value])->Option<Value> {
     entries.iter().rev().filter(|e|e.get("type").and_then(Value::as_str)==Some("custom") && e.get("customType").and_then(Value::as_str)==Some(CHECKPOINT_CUSTOM_TYPE)).find_map(|e|e.get("data").and_then(parse_checkpoint))
 }

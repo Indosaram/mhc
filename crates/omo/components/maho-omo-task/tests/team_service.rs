@@ -27,3 +27,20 @@ fn input()->CreateTeamTaskServiceInput { CreateTeamTaskServiceInput { subject:"w
 #[test] fn team_listing_preserves_owner_and_scope() { let f=fixture(); let teams=f.service.list_teams().expect("teams"); assert_eq!(teams.len(),1); assert_eq!(teams[0].team_run_id,f.run); assert_eq!(teams[0].lead_session_id.as_deref(),Some("lead")); }
 #[test] fn malformed_delete_id_rejected_before_runtime_access() { let f=fixture(); assert!(f.service.delete_team(&DeleteTeamToolInput { team_run_id:"../foreign".into(),force:None }).is_err()); }
 #[test] fn absent_lead_session_rejects_team_creation_before_launch() { let f=fixture(); *f.session.lock().expect("session")=None; assert!(f.service.create_team(&CreateTeamToolInput { team_name:None,inline_spec:Some(json!({"members":[]})) }).is_err()); }
+#[test] fn all_scoped_methods_reject_foreign_session_before_side_effects() {
+    let f=fixture(); *f.session.lock().expect("session")=Some("foreign".into());
+    assert!(f.service.get_task(&f.run,"1").is_err());
+    assert!(f.service.update_task(&UpdateTeamTaskServiceInput { team_run_id:f.run.clone(),task_id:"1".into(),status:TaskStatus::Completed,owner:None }).is_err());
+    assert!(f.service.send_message(&f.run,&senpi_task::team::messaging::types::SendTeamMessageInput { from:"lead".into(),to:"beta".into(),body:"work".into(),summary:None }).is_err());
+    assert!(f.service.delete_team(&DeleteTeamToolInput { team_run_id:f.run.clone(),force:None }).is_err());
+    assert!(f.service.request_shutdown(&f.run,"beta").is_err());
+    assert!(f.service.approve_shutdown(&f.run,"beta").is_err());
+    assert!(f.service.reject_shutdown(&f.run,"beta","continue").is_err());
+}
+#[test] fn task_claim_defaults_to_lead_and_filter_reads_persisted_owner() {
+    let f=fixture(); let task=f.service.create_task(&f.run,&input()).expect("create");
+    let claimed=f.service.update_task(&UpdateTeamTaskServiceInput { team_run_id:f.run.clone(),task_id:task.id,status:TaskStatus::Claimed,owner:None }).expect("claim");
+    assert_eq!(claimed.owner.as_deref(),Some("lead"));
+    assert_eq!(f.service.list_tasks(&f.run,Some(&TeamTaskListFilter { status:Some(TaskStatus::Claimed),owner:Some("lead".into()) })).expect("filter"),vec![claimed]);
+    assert!(f.service.list_tasks(&f.run,Some(&TeamTaskListFilter { status:Some(TaskStatus::Pending),owner:None })).expect("pending").is_empty());
+}
