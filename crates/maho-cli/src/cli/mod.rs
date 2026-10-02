@@ -10,3 +10,4 @@ pub mod help_fast_path;
 pub mod host_command;
 pub mod deferred_commands;
 pub mod grok_neo_gate;
+pub mod startup_loading_indicator;
