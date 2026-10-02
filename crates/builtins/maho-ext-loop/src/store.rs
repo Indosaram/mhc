@@ -72,7 +72,9 @@ fn validate_entry(id:&str,entry:&Value)->Result<(),SidecarError> {
         },
         _=>return Err(SidecarError::Invalid(format!("loop entry {id} has an unknown kind"))),
     }
-    serde_json::from_value::<CronEntry>(entry.clone()).map_err(|error|SidecarError::Invalid(format!("loop entry {id}: {error}")))?;
+    let mut normalized=entry.clone();
+    if entry["kind"]=="dynamic" { normalized["keepaliveCredit"]=Value::from(entry["keepaliveCredit"].as_f64().unwrap_or_default() as u8); }
+    serde_json::from_value::<CronEntry>(normalized).map_err(|error|SidecarError::Invalid(format!("loop entry {id}: {error}")))?;
     Ok(())
 }
 fn parse_payload(raw:&Value,reference:&SidecarStoreRef)->Result<Value,SidecarError> {
@@ -82,6 +84,9 @@ fn parse_payload(raw:&Value,reference:&SidecarStoreRef)->Result<Value,SidecarErr
     let active=raw.get("activeDynamicId").ok_or_else(||SidecarError::Invalid("loop store activeDynamicId must be a string or null".into()))?;
     if !active.is_null() { let id=active.as_str().ok_or_else(||SidecarError::Invalid("loop store activeDynamicId must be a string or null".into()))?; if entries.get(id).is_none_or(|entry|entry["kind"]!="dynamic") { return Err(SidecarError::Invalid(format!("loop store activeDynamicId {id} does not name a dynamic loop"))); } }
     let mut result=raw.clone(); result["version"]=LOOP_STATE_VERSION.into(); result["sessionId"]=reference.session_id.clone().into();
+    for entry in result["entries"].as_object_mut().into_iter().flat_map(|entries|entries.values_mut()) {
+        if entry["kind"]=="dynamic" { entry["keepaliveCredit"]=Value::from(entry["keepaliveCredit"].as_f64().unwrap_or_default() as u8); }
+    }
     let state:LoopState=serde_json::from_value(result).map_err(|error|SidecarError::Invalid(error.to_string()))?;
     serde_json::to_value(state).map_err(|error|SidecarError::Invalid(error.to_string()))
 }
@@ -102,6 +107,11 @@ pub fn clear_loop_state_snapshot(reference:&LoopStoreRef) { store(reference).cle
     use super::*;
     fn reference(dir:&Path)->LoopStoreRef { LoopStoreRef { base_dir:dir.into(),session_id:"session/one".into() } }
     use std::path::Path;
+    #[test] fn integral_float_keepalive_credit_matches_javascript_numeric_enum() {
+        let mut scheduler=crate::scheduler::LoopScheduler::new("s",None,&BTreeMap::new()); scheduler.create_dynamic(crate::scheduler::CreateDynamicRequest { original_args:"check".into(),reentry_prompt:"check".into(),payload:LoopPayload::Prompt { prompt:"check".into() } },"d".into(),1000.0);
+        let mut raw=serde_json::to_value(scheduler.state).unwrap(); raw["entries"]["d"]["keepaliveCredit"]=serde_json::json!(1.0);
+        let result=parse_payload(&raw,&SidecarStoreRef { base_dir:"/tmp".into(),session_id:"s".into() }).unwrap(); assert_eq!(result["entries"]["d"]["keepaliveCredit"],1);
+    }
     #[test] fn invalid_enum_fields_report_domain_error_not_serde_diagnostics() {
         let mut scheduler=crate::scheduler::LoopScheduler::new("s",None,&BTreeMap::new());
         scheduler.create_dynamic(crate::scheduler::CreateDynamicRequest { original_args:"check".into(),reentry_prompt:"check".into(),payload:LoopPayload::Prompt { prompt:"check".into() } },"d".into(),1000.0);
