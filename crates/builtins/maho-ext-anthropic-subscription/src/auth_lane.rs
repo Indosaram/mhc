@@ -3,6 +3,17 @@ use crate::{accounts::{AccountSlot,AccountSource,env_slot_token},auth_environmen
 pub const EXPIRING_WITHIN_MS:f64=5.0*60000.0;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum TokenInjection {Ambient,OAuthSlots,ConfigDir}
+pub const PROVIDER_ID:&str="anthropic-subscription";
+pub struct ManagedPool {pub accounts:Vec<AccountSlot>,pub environment:BTreeMap<String,String>,pub lane:TokenInjection,pub pinned_account:Option<String>}
+pub async fn managed_pool(store:&dyn maho_ai::auth::types::CredentialStore,settings:&ProviderSettings,host:&BTreeMap<String,String>,request:Option<&BTreeMap<String,String>>)->anyhow::Result<Option<ManagedPool>> {
+    use maho_ai::auth::types::Credential;
+    let mut credential=store.read(PROVIDER_ID,None).await?;let environment=merge_request_auth_environment(host,request);let read_env=|name:&str|environment.get(name).cloned();let empty=crate::accounts::empty_credential();
+    let mut accounts=crate::accounts::list_accounts(credential.as_ref().and_then(|value|value.as_oauth()).unwrap_or(&empty),Some(&read_env))?;
+    if credential.is_none()&&!accounts.is_empty() {credential=store.modify(PROVIDER_ID,Box::new(|_|Box::pin(async {Ok(Some(Credential::OAuth(crate::accounts::empty_credential())))})),None).await?;accounts=crate::accounts::list_accounts(credential.as_ref().and_then(|value|value.as_oauth()).unwrap_or(&empty),Some(&read_env))?;}
+    let lane=request_lane(settings,&accounts,request)?;if lane==TokenInjection::Ambient {return Ok(None);}
+    let pinned_account=settings.values.get("pinnedAccount").and_then(serde_json::Value::as_str).or_else(||credential.as_ref().and_then(|value|value.as_oauth()).and_then(|value|value.get_extra_str("pinned"))).map(str::to_owned);
+    Ok(Some(ManagedPool {accounts,environment,lane,pinned_account}))
+}
 pub fn resolve_effective_lane(settings:&ProviderSettings,accounts:&[AccountSlot])->TokenInjection {
     match settings.values.get("tokenInjection").and_then(serde_json::Value::as_str) {Some("ambient")=>TokenInjection::Ambient,Some("oauth-slots")=>TokenInjection::OAuthSlots,Some("config-dir")=>TokenInjection::ConfigDir,_=>if accounts.is_empty() {TokenInjection::Ambient}else {TokenInjection::OAuthSlots}}
 }
@@ -22,6 +33,11 @@ pub fn prepared_environment(environment:&BTreeMap<String,String>,lane:TokenInjec
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn env_only_discovery_seeds_sentinel_and_settings_pin_wins() {
+        use maho_ai::auth::{credential_store::InMemoryCredentialStore,types::CredentialStore};
+        let store=InMemoryCredentialStore::new();let environment=[("CLAUDE_CODE_OAUTH_TOKEN".into(),"synthetic".into())].into();let settings=crate::settings::load(&serde_json::json!({"anthropicSubscriptionProvider":{"pinnedAccount":"env"}}),&serde_json::Value::Null,&BTreeMap::new());let pool=managed_pool(&store,&settings,&environment,None).await.expect("pool").expect("managed");assert_eq!(pool.lane,TokenInjection::OAuthSlots);assert_eq!(pool.accounts.len(),1);assert_eq!(pool.pinned_account.as_deref(),Some("env"));let credential=store.read(PROVIDER_ID,None).await.expect("read").expect("credential").into_oauth().expect("oauth");crate::accounts::assert_sentinel_invariant(&credential).expect("sentinel");assert!(crate::accounts::list_accounts(&credential,None).expect("stored accounts").is_empty());
+    }
     fn settings(lane:&str)->ProviderSettings {crate::settings::load(&serde_json::json!({"anthropicSubscriptionProvider":{"tokenInjection":lane}}),&serde_json::Value::Null,&BTreeMap::new())}
     fn slot()->AccountSlot {AccountSlot {name:"env".into(),display_name:None,refresh:String::new(),access:String::new(),expires:0.0,source:AccountSource::Env,blocked_until:None,block_reason:None}}
     #[test]
