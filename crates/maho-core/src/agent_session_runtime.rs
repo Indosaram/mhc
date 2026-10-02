@@ -1,10 +1,5 @@
 //! Port of senpi `packages/coding-agent/src/core/agent-session-runtime.ts`.
 //!
-//! Not ported (documented in `parity.d/21.md`): the session replacement flows (`switchSession`,
-//! `newSession`, `fork`, `importFromJsonl` and `createAgentSessionRuntime`) all call
-//! `AgentSession::abort` and `createReplacedSessionContext` plus a runtime factory from `sdk.ts`,
-//! none of which are ported yet, so only the launch-profile types, the runtime holder's accessors
-//! and `dispose` are here.
 
 use crate::agent_session::AgentSession;
 use crate::agent_session_services::{AgentSessionRuntimeDiagnostic, AgentSessionServices};
@@ -178,13 +173,13 @@ impl AgentSessionRuntime {
     }
 
     pub async fn fork(&mut self, entry_id: &str, include_entry: bool) -> Result<crate::agent_session::AssistantEditResult, String> {
+        if self.session.runtime_before_fork(entry_id, include_entry).await? {
+            return Ok(crate::agent_session::AssistantEditResult { cancelled: true, ..Default::default() });
+        }
         let entry = self.session.with_session_manager(|manager| manager.entry(entry_id))
             .ok_or_else(|| "Invalid entry ID for forking".to_owned())?;
         if !include_entry && (entry["type"] != "message" || entry["message"]["role"] != "user") {
             return Err("Invalid entry ID for forking".to_owned());
-        }
-        if self.session.runtime_before_fork(entry_id, include_entry).await? {
-            return Ok(crate::agent_session::AssistantEditResult { cancelled: true, ..Default::default() });
         }
         let leaf = if include_entry { Some(entry_id) } else { entry["parentId"].as_str() };
         let previous = self.session.session_file();
@@ -194,7 +189,34 @@ impl AgentSessionRuntime {
                 crate::session_manager::SessionManager::create(&self.services.cwd, Some(current.session_dir()), options)
             } else { crate::session_manager::SessionManager::in_memory(&self.services.cwd, options, None) };
             if let Some(leaf) = leaf {
-                for entry in current.branch(Some(leaf)) { manager.append_entry_raw(entry); }
+                let mut parent = serde_json::Value::Null;
+                let mut pending_labels = Vec::new();
+                let mut replacements = std::collections::BTreeMap::new();
+                let mut retained_ids = Vec::new();
+                for mut entry in current.branch(Some(leaf)) {
+                    if entry["type"] == "label" {
+                        if let Some(id) = entry["id"].as_str() { pending_labels.push(id.to_owned()); }
+                        continue;
+                    }
+                    for id in pending_labels.drain(..) { replacements.insert(id, entry["id"].clone()); }
+                    entry["parentId"] = parent;
+                    if entry["type"] == "compaction"
+                        && let Some(replacement) = entry["firstKeptEntryId"].as_str().and_then(|id| replacements.get(id))
+                    { entry["firstKeptEntryId"] = replacement.clone(); }
+                    parent = entry["id"].clone();
+                    if let Some(id) = parent.as_str() { retained_ids.push(id.to_owned()); }
+                    manager.append_entry_raw(entry);
+                }
+                for id in retained_ids {
+                    if let Some(label) = current.label(&id) {
+                        let mut entry = serde_json::json!({"type":"label", "id":uuid::Uuid::new_v4().to_string(),
+                            "parentId":manager.leaf_id(), "targetId":id, "label":label});
+                        if let Some(timestamp) = current.label_timestamp(&id) {
+                            entry["timestamp"] = timestamp.into();
+                        }
+                        manager.append_entry_raw(entry);
+                    }
+                }
             }
             manager
         });
@@ -375,6 +397,21 @@ mod tests {
         assert!(at.editor_text.is_none());
         assert_eq!(runtime.session().messages().len(), 1);
         assert!(runtime.session().get_tool_definition("retained").is_some());
+        let target_id = runtime.session().with_session_manager(|manager| manager.leaf_id().unwrap().to_owned());
+        let label = runtime.session().with_session_manager_mut(|manager| manager.append_label(&target_id, Some("old label")));
+        let descendant = runtime.session().with_session_manager_mut(|manager| manager.append_message(serde_json::json!({
+            "role":"user","content":[{"type":"text","text":"descendant"}],"timestamp":0
+        })));
+        runtime.session().with_session_manager_mut(|manager| manager.append_label(&target_id, Some("resolved label")));
+        let forked = runtime.fork(descendant["id"].as_str().unwrap(), true).await.expect("labeled fork");
+        assert!(!forked.cancelled);
+        runtime.session().with_session_manager(|manager| {
+            assert_eq!(manager.label(&target_id), Some("resolved label"));
+            assert!(manager.entry(label["id"].as_str().unwrap()).is_none());
+            let child = manager.entry(descendant["id"].as_str().unwrap()).unwrap();
+            assert_eq!(child["parentId"], target_id);
+            assert_eq!(manager.branch(manager.leaf_id()).iter().filter(|entry| entry["type"] == "message").count(), 2);
+        });
         assert!(runtime.import_from_jsonl("/missing-import-fixture.jsonl", None).await.unwrap_err().contains("File not found"));
     }
 
