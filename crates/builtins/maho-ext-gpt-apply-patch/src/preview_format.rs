@@ -27,7 +27,8 @@ pub fn truncate_preview(text:&str)->String {
 pub fn display_path(file_path:&str,cwd:&str)->String {
     let path=std::path::Path::new(file_path); if !path.is_absolute() { return file_path.into(); }
     let base=resolve_patch_path(std::path::Path::new(cwd),std::path::Path::new(""));
-    match path.strip_prefix(&base) { Ok(relative)=>if relative.as_os_str().is_empty() { ".".into() } else { relative.to_string_lossy().into_owned() },Err(_)=>file_path.into() }
+    let normalized=resolve_patch_path(std::path::Path::new(""),path);
+    match normalized.strip_prefix(&base) { Ok(relative)=>if relative.as_os_str().is_empty() { ".".into() } else { relative.to_string_lossy().into_owned() },Err(_)=>file_path.into() }
 }
 fn file_path(file:&ApplyPatchPreviewFile,cwd:&str)->String {
     let path=display_path(&file.file_path,cwd); match file.move_path.as_deref().filter(|path|!path.is_empty()) { Some(destination)=>format!("{path} → {}",display_path(destination,cwd)),None=>path }
@@ -42,6 +43,7 @@ pub fn format_patch_preview(preview:&ApplyPatchPreview,cwd:&str,expanded:bool)->
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn absolute_dot_segments_are_normalized_only_inside_cwd() { assert_eq!(display_path("/root/other/../src/a","/root"),"src/a"); assert_eq!(display_path("/root/../elsewhere/a","/root"),"/root/../elsewhere/a"); }
     #[test] fn changed_hunk_is_kept_in_line_window() { let lines=(1..=40).map(|i|format!("{}{:2} line",if i==30 { '+' } else { ' ' },i)).collect::<Vec<_>>().join("\n"); let preview=truncate_preview(&lines); assert!(preview.contains("+30 line")); assert_eq!(preview.lines().count(),16); assert!(preview.starts_with('…')); }
     #[test] fn plain_text_uses_head_and_tail() { let lines=(0..20).map(|i|i.to_string()).collect::<Vec<_>>().join("\n"); let preview=truncate_preview(&lines); assert_eq!(preview.lines().count(),16); assert!(preview.contains("7\n…\n13")); }
     #[test] fn character_limit_counts_utf16() { let preview=truncate_preview(&"a".repeat(5000)); assert_eq!(preview.encode_utf16().count(),4000); assert!(preview.ends_with('…')); }

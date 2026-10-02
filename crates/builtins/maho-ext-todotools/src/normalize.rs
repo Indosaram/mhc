@@ -6,8 +6,9 @@ const CONFLICT:&str="conflicting shapes. Use {\"op\":\"init\",\"list\":[...]} to
 fn error(message:&str)->TodoNormalization { TodoNormalization{entry:None,corrections:vec![],error:Some(message.into())} }
 fn strings(value:Option<&Value>)->Option<Vec<String>> { value?.as_array()?.iter().map(|v|v.as_str().map(String::from)).collect() }
 fn list(value:Option<&Value>)->Option<Vec<TodoPhaseInput>> { value?.as_array()?.iter().map(|v|Some(TodoPhaseInput{phase:v.get("phase")?.as_str()?.into(),items:strings(v.get("items"))?})).collect() }
-fn non_blank(value:Option<&Value>)->Option<String> { value?.as_str().filter(|s|!s.trim().is_empty()).map(String::from) }
-fn blank(value:Option<&Value>)->bool { value.and_then(Value::as_str).is_some_and(|s|s.trim().is_empty()) }
+fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}') }
+fn non_blank(value:Option<&Value>)->Option<String> { value?.as_str().filter(|s|!s.trim_matches(js_whitespace).is_empty()).map(String::from) }
+fn blank(value:Option<&Value>)->bool { value.and_then(Value::as_str).is_some_and(|s|s.trim_matches(js_whitespace).is_empty()) }
 fn op_name(op:TodoOperation)-> &'static str { match op { TodoOperation::Init=>"init",TodoOperation::Start=>"start",TodoOperation::Done=>"done",TodoOperation::Rm=>"rm",TodoOperation::Drop=>"drop",TodoOperation::Append=>"append",TodoOperation::View=>"view" } }
 fn inferred(op:&str,reason:&str,form:&str)->String { format!("[auto-corrected] \"op\" was missing; interpreted as \"{op}\" because {reason}. Always pass op explicitly: {form}") }
 pub fn normalize_todo_params(raw:&Value,current:&[TodoPhase])->TodoNormalization {
@@ -55,6 +56,16 @@ pub fn normalize_todo_params(raw:&Value,current:&[TodoPhase])->TodoNormalization
 #[cfg(test)]
 mod tests {
     use super::*; use serde_json::json;
+    #[test] fn incoherent_fields_are_rejected_for_every_mutating_operation() { for raw in [json!({"op":"init","task":"x"}),json!({"op":"start","phase":"Tasks"}),json!({"op":"start","list":[{"phase":"A","items":["x"]}]}),json!({"op":"drop","items":["x"]}),json!({"op":"rm","list":[{"phase":"A","items":["x"]}]}),json!({"op":"append","list":[{"phase":"A","items":["x"]}]}),json!({"op":"append","task":"x","items":["y"]})] { assert!(normalize_todo_params(&raw,&[]).entry.is_none()); } }
+    #[test] fn alias_append_omits_blank_phase() { let result=normalize_todo_params(&json!({"op":"append","append":["x"],"phase":" \n "}),&[]); assert_eq!(result.entry.unwrap().phase,None); assert_eq!(result.corrections.len(),1); }
+    #[test] fn done_preserves_both_targets_for_task_precedence() { let entry=normalize_todo_params(&json!({"op":"done","task":"Existing task","phase":"Tasks"}),&[]).entry.unwrap(); assert_eq!(entry.task,Some("Existing task".into())); assert_eq!(entry.phase,Some("Tasks".into())); }
+    #[test] fn padded_clear_does_not_mutate_input() { let raw=json!({"op":"rm","list":[],"task":"","phase":"","items":[]}); let before=raw.clone(); let result=normalize_todo_params(&raw,&[]); assert_eq!(result.entry.unwrap().op,TodoOperation::Rm); assert_eq!(result.corrections.len(),1); assert_eq!(raw,before); }
+    #[test] fn both_blank_targets_remain_invalid_for_status_mutations() { for op in ["start","done","drop"] { assert!(normalize_todo_params(&json!({"op":op,"task":"","phase":""}),&[]).entry.is_none()); } }
+    #[test] fn padded_done_preserves_task_and_input() { let raw=json!({"op":"done","list":[],"task":"Existing task","phase":"","items":[]}); let saved=raw.clone(); let normalized=normalize_todo_params(&raw,&[]); assert_eq!(normalized.entry.unwrap().task,Some("Existing task".into())); assert!(normalized.corrections.is_empty()); assert_eq!(raw,saved); }
+    #[test] fn unrelated_empty_placeholders_are_ignored_on_start() { let normalized=normalize_todo_params(&json!({"op":"start","task":"Existing task","list":[],"items":[],"phase":""}),&[]); let entry=normalized.entry.unwrap(); assert_eq!(entry.task,Some("Existing task".into())); assert_eq!(entry.list,None); assert_eq!(entry.items,None); }
+    #[test] fn list_plus_alias_conflicts_before_inference() { assert!(normalize_todo_params(&json!({"list":[{"phase":"A","items":["x"]}],"append":["y"]}),&[]).entry.is_none()); }
+    #[test] fn duplicate_phases_are_left_to_transaction_layer() { let raw=json!({"op":"init","list":[{"phase":"A","items":["x"],"items2":[]},{"phase":"A","items":["y"]}]}); let entry=normalize_todo_params(&raw,&[]).entry.unwrap(); assert_eq!(entry.list.unwrap(),vec![TodoPhaseInput{phase:"A".into(),items:vec!["x".into()]},TodoPhaseInput{phase:"A".into(),items:vec!["y".into()]}]); }
+    #[test] fn blank_targets_use_javascript_whitespace() { assert!(normalize_todo_params(&json!({"op":"done","task":"\u{feff}"}),&[]).error.is_some()); assert_eq!(normalize_todo_params(&json!({"op":"done","task":"\u{0085}"}),&[]).entry.unwrap().task,Some("\u{0085}".into())); }
     #[test] fn rejects_each_single_blank_target() { for op in ["start","done","drop","rm"] { for target in ["task","phase"] { let raw=json!({"op":op,target:" \t "}); assert!(normalize_todo_params(&raw,&[]).error.is_some()); } } }
     #[test] fn padded_rm_is_explicit_clear() { let result=normalize_todo_params(&json!({"op":"rm","task":"","phase":""}),&[]); assert_eq!(result.entry.unwrap().op,TodoOperation::Rm); assert_eq!(result.corrections.len(),1); }
     #[test] fn real_phase_drops_blank_task() { let result=normalize_todo_params(&json!({"op":"done","task":" ","phase":"Tasks"}),&[]); assert_eq!(result.entry.unwrap().phase,Some("Tasks".into())); }

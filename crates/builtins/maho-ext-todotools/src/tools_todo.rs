@@ -1,6 +1,14 @@
 // Copyright (c) 2025 Mario Zechner; Copyright (c) 2025-2026 Can Bölük.
 // Adapted from oh-my-pi's MIT-licensed todo tool via senpi.
 use crate::todo_types::{TodoOpEntry,TodoOperation};
+pub fn parameters()->serde_json::Value {
+    serde_json::json!({"type":"object","properties":{
+        "op":{"anyOf":[{"const":"init","type":"string"},{"const":"start","type":"string"},{"const":"done","type":"string"},{"const":"rm","type":"string"},{"const":"drop","type":"string"},{"const":"append","type":"string"},{"const":"view","type":"string"}],"description":"Operation to perform. Required — always pass it explicitly."},
+        "list":{"type":"array","description":"Phased task list for init","items":{"type":"object","properties":{"phase":{"type":"string","description":"Phase name"},"items":{"type":"array","items":{"type":"string","description":"Task content"},"description":"Tasks for this phase","minItems":1}},"required":["phase","items"]}},
+        "task":{"type":"string","description":"Exact task text copied from the previous todo result"},"phase":{"type":"string","description":"Exact phase name copied from the previous todo result"},
+        "items":{"type":"array","items":{"type":"string","description":"Task content"},"description":"Task texts to append"}
+    }})
+}
 pub fn phase_roman_numeral(mut index:usize)->String {
     let mut output=String::new();
     for (value,symbol) in [(1000,"M"),(900,"CM"),(500,"D"),(400,"CD"),(100,"C"),(90,"XC"),(50,"L"),(40,"XL"),(10,"X"),(9,"IX"),(5,"V"),(4,"IV"),(1,"I")] { while index>=value { output.push_str(symbol); index-=value; } } output
@@ -33,6 +41,7 @@ pub fn render_call_label(params:&TodoOpEntry)->String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn schema_preserves_optional_op_and_unconstrained_items() { let schema=parameters(); assert!(schema.get("required").is_none()); assert!(schema["properties"]["items"].get("minItems").is_none()); assert_eq!(schema["properties"]["list"]["items"]["properties"]["items"]["minItems"],1); }
     #[test] fn planned_done_includes_completion_transition() { let previous=vec![crate::todo_types::TodoPhase{name:"Setup".into(),tasks:vec![crate::todo_types::TodoItem{content:"Task".into(),status:crate::todo_types::TodoStatus::InProgress}]}]; let (_,details)=plan_execution(&serde_json::json!({"op":"done","task":"Task"}),&previous,crate::todo_types::TodoStorage::Memory).unwrap(); assert_eq!(details.completed_tasks.unwrap()[0].content,"Task"); assert_eq!(previous[0].tasks[0].status,crate::todo_types::TodoStatus::InProgress); }
     #[test] fn planned_view_keeps_current_state() { let (_,details)=plan_execution(&serde_json::json!({"op":"view"}),&[],crate::todo_types::TodoStorage::Session).unwrap(); assert_eq!(details.completed_tasks,None); assert_eq!(details.storage,crate::todo_types::TodoStorage::Session); }
     #[test] fn roman_numerals_cover_subtractive_pairs() { assert_eq!(phase_roman_numeral(0),""); assert_eq!(phase_roman_numeral(1994),"MCMXCIV"); assert_eq!(phase_roman_numeral(49),"XLIX"); }

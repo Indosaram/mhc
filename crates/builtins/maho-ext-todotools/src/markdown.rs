@@ -3,12 +3,14 @@ use regex::Regex;
 use std::sync::LazyLock;
 use crate::{todo_types::*,todo_query::normalize_in_progress_task,todo_operations::TodoApplyResult};
 pub const DEFAULT_TODO_MARKDOWN_FILE:&str="TODO.md";
+fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}') }
 pub fn resolve_todo_markdown_path(input:&str,cwd:&Path)->PathBuf {
-    let raw=input.trim();
+    let raw=input.trim_matches(js_whitespace);
     let raw=raw.strip_prefix(['\'','"']).unwrap_or(raw);
     let raw=raw.strip_suffix(['\'','"']).unwrap_or(raw);
     let raw=if raw.is_empty() { DEFAULT_TODO_MARKDOWN_FILE } else { raw };
-    let path=if Path::new(raw).is_absolute() { PathBuf::from(raw) } else { cwd.join(raw) };
+    if Path::new(raw).is_absolute() { return PathBuf::from(raw); }
+    let path=cwd.join(raw);
     let mut resolved=PathBuf::new();
     for part in path.components() { match part { Component::CurDir=>{},Component::ParentDir=>{resolved.pop();},other=>resolved.push(other.as_os_str()) } }
     resolved
@@ -29,12 +31,12 @@ pub fn markdown_to_phases(markdown:&str)->TodoApplyResult {
     let mut phases:Vec<TodoPhase>=vec![];
     let mut errors=vec![];
     for (i,line) in markdown.split('\n').enumerate() {
-        let trimmed=line.trim(); if trimmed.is_empty() { continue; }
-        if let Some(c)=HEADING.captures(trimmed) { phases.push(TodoPhase{name:c[1].trim().into(),tasks:vec![]}); continue; }
+        let trimmed=line.trim_matches(js_whitespace); if trimmed.is_empty() { continue; }
+        if let Some(c)=HEADING.captures(trimmed) { phases.push(TodoPhase{name:c[1].trim_matches(js_whitespace).into(),tasks:vec![]}); continue; }
         if let Some(c)=TASK.captures(trimmed) {
             if phases.is_empty() { phases.push(TodoPhase{name:DEFAULT_INIT_PHASE.into(),tasks:vec![]}); }
             let status=match &c[1] { " "|""=>TodoStatus::Pending,"x"|"X"=>TodoStatus::Completed,"/"|">"=>TodoStatus::InProgress,"-"|"~"=>TodoStatus::Abandoned,_=>{ errors.push(format!("Line {}: unknown status marker \"[{}]\" (use [ ], [x], [/], [-])",i+1,&c[1])); continue; } };
-            let p=phases.len()-1; phases[p].tasks.push(TodoItem{content:c[2].trim().into(),status}); continue;
+            let p=phases.len()-1; phases[p].tasks.push(TodoItem{content:c[2].trim_matches(js_whitespace).into(),status}); continue;
         }
         errors.push(format!("Line {}: unrecognized syntax \"{trimmed}\"",i+1));
     }
@@ -44,6 +46,8 @@ pub fn markdown_to_phases(markdown:&str)->TodoApplyResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn absolute_user_paths_preserve_dot_segments() { assert_eq!(resolve_todo_markdown_path("/tmp/../TODO.md",Path::new("/other")),PathBuf::from("/tmp/../TODO.md")); }
+    #[test] fn bom_wrapped_markdown_is_trimmed_like_javascript() { let result=markdown_to_phases("\u{feff}# Tasks\u{feff}\n\u{feff}- [ ] one\u{feff}"); assert!(result.errors.is_empty()); assert_eq!(result.phases[0].tasks[0].content,"one"); }
     #[test] fn checklist_roundtrip_keeps_all_statuses() { let p=vec![TodoPhase{name:"Foundation".into(),tasks:[TodoStatus::Completed,TodoStatus::InProgress,TodoStatus::Abandoned,TodoStatus::Pending].into_iter().enumerate().map(|(i,status)|TodoItem{content:format!("task {i}"),status}).collect()}]; let result=markdown_to_phases(&phases_to_markdown(&p)); assert_eq!(result.phases,p); assert!(result.errors.is_empty()); }
     #[test] fn headerless_checklist_uses_default_phase() { let result=markdown_to_phases("* [] first\n+ [X] second\n"); assert_eq!(result.phases[0].name,DEFAULT_INIT_PHASE); assert_eq!(result.phases[0].tasks[0].status,TodoStatus::InProgress); assert_eq!(result.phases[0].tasks[1].status,TodoStatus::Completed); }
     #[test] fn unknown_marker_and_unrecognized_syntax_report_lines() { let result=markdown_to_phases("# Tasks\n- [?] unknown\nordinary text\n"); assert_eq!(result.errors.len(),2); assert!(result.phases[0].tasks.is_empty()); }

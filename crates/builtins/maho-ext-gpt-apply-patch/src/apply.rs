@@ -12,7 +12,7 @@ use crate::{preview::{read_patch_file_snapshot,build_patch_preview_file},workspa
 #[derive(Debug)]
 struct MutationError { message:String,code:Option<String> }
 impl From<String> for MutationError { fn from(message:String)->Self { Self{message,code:None} } }
-impl From<std::io::Error> for MutationError { fn from(error:std::io::Error)->Self { Self{message:error.to_string(),code:match error.kind() { std::io::ErrorKind::NotFound=>Some("ENOENT".into()),std::io::ErrorKind::PermissionDenied=>Some("EACCES".into()),std::io::ErrorKind::AlreadyExists=>Some("EEXIST".into()),_=>None }} } }
+impl From<std::io::Error> for MutationError { fn from(error:std::io::Error)->Self { Self{message:error.to_string(),code:match error.kind() { std::io::ErrorKind::NotFound=>Some("ENOENT".into()),std::io::ErrorKind::PermissionDenied=>Some(if error.raw_os_error()==Some(1) { "EPERM" } else { "EACCES" }.into()),std::io::ErrorKind::AlreadyExists=>Some("EEXIST".into()),std::io::ErrorKind::NotADirectory=>Some("ENOTDIR".into()),std::io::ErrorKind::IsADirectory=>Some("EISDIR".into()),_=>None }} } }
 static TEMP_ID:AtomicU64=AtomicU64::new(0);
 async fn write_file_atomic(path:&Path,content:&[u8])->Result<(),MutationError> {
     let temp=std::path::PathBuf::from(format!("{}.tmp.{}.{}",path.display(),std::process::id(),TEMP_ID.fetch_add(1,Ordering::Relaxed)));
@@ -73,6 +73,19 @@ async fn apply_hunks(cwd:&Path,hunks:Vec<ParsedPatch>,fail_fast:bool,on_progress
 mod tests {
     use super::*;
     use crate::types::{AppliedPatchOperation,ApplyPatchPreviewFile,ApplyPatchOperation};
+    #[tokio::test] async fn directory_failure_is_not_a_context_reread_candidate() { let directory=tempfile::tempdir().unwrap(); tokio::fs::create_dir(directory.path().join("folder")).await.unwrap(); let result=apply_patch_detailed(directory.path(),"*** Begin Patch\n*** Delete File: folder\n*** End Patch").await.unwrap(); assert_eq!(result.failures[0].code.as_deref(),Some("EISDIR")); assert!(result.recovery_instructions.must_read_files.is_empty()); }
+    #[tokio::test] async fn progress_errors_do_not_interrupt_mutations() {
+        let directory=tempfile::tempdir().unwrap(); tokio::fs::write(directory.path().join("first.txt"),"one\n").await.unwrap(); tokio::fs::write(directory.path().join("second.txt"),"two\n").await.unwrap();
+        let callback=|_|Box::pin(async { Err("render failed".into()) }) as std::pin::Pin<Box<dyn std::future::Future<Output=Result<(),String>>+Send>>;
+        let result=apply_patch_detailed_with_progress(directory.path(),"*** Begin Patch\n*** Update File: first.txt\n@@\n-one\n+ONE\n*** Update File: second.txt\n@@\n-two\n+TWO\n*** End Patch",Some(&callback)).await.unwrap();
+        assert!(result.failures.is_empty()); assert_eq!(result.applied_files,["first.txt","second.txt"]); assert_eq!(tokio::fs::read_to_string(directory.path().join("first.txt")).await.unwrap(),"ONE\n"); assert_eq!(tokio::fs::read_to_string(directory.path().join("second.txt")).await.unwrap(),"TWO\n");
+    }
+    #[tokio::test] async fn concurrent_patches_to_same_file_preserve_both_updates() {
+        let directory=tempfile::tempdir().unwrap(); let path=directory.path().join("shared.txt"); tokio::fs::write(&path,"first\nsecond\n").await.unwrap();
+        let first=apply_patch_detailed(directory.path(),"*** Begin Patch\n*** Update File: shared.txt\n@@\n-first\n+FIRST\n*** End Patch");
+        let second=apply_patch_detailed(directory.path(),"*** Begin Patch\n*** Update File: shared.txt\n@@\n-second\n+SECOND\n*** End Patch");
+        let (first,second)=tokio::join!(first,second); assert!(first.unwrap().failures.is_empty()); assert!(second.unwrap().failures.is_empty()); assert_eq!(tokio::fs::read_to_string(path).await.unwrap(),"FIRST\nSECOND\n");
+    }
     #[tokio::test] async fn detailed_application_continues_after_failure() {
         let directory=tempfile::tempdir().unwrap();
         let patch="*** Begin Patch\n*** Add File: first\n+one\n*** Update File: missing\n@@\n-old\n+new\n*** Add File: last\n+three\n*** End Patch";

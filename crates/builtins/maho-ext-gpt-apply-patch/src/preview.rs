@@ -41,7 +41,8 @@ pub async fn create_patch_preview(cwd:&Path,hunks:&[ParsedPatch])->ApplyPatchPre
 }
 pub async fn create_pending_patch_update(cwd:&Path,patch_text:&str,progress:Option<crate::types::ApplyPatchProgress>,preview_override:Option<ApplyPatchPreview>)->(String,Option<crate::types::ApplyPatchToolDetails>) {
     let title=progress.as_ref().map_or_else(||"Applying patch...".into(),|progress|format!("Applying patch ({}/{})...",progress.applied+progress.failed,progress.total));
-    let with_preview=|preview:ApplyPatchPreview|{ let text=format!("{title}\n{}",crate::preview_format::format_patch_preview(&preview,"",true)); (text,Some(crate::types::ApplyPatchToolDetails{preview:Some(preview),progress:progress.clone(),result:None})) };
+    let process_cwd=std::env::current_dir().expect("process cwd");
+    let with_preview=|preview:ApplyPatchPreview|{ let text=format!("{title}\n{}",crate::preview_format::format_patch_preview(&preview,&process_cwd.to_string_lossy(),true)); (text,Some(crate::types::ApplyPatchToolDetails{preview:Some(preview),progress:progress.clone(),result:None})) };
     if let Some(preview)=preview_override { return with_preview(preview); }
     if let Ok(hunks)=crate::parser::parse_patch(patch_text) {
         if hunks.is_empty() { return (title,progress.map(|progress|crate::types::ApplyPatchToolDetails{progress:Some(progress),..Default::default()})); }
