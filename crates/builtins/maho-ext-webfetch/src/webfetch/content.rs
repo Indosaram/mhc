@@ -264,6 +264,27 @@ pub fn reader_grab_article<'a>(document:&'a dom_query::Document,title:&str,metad
     }
     attempts.sort_by_key(|(_,length)|std::cmp::Reverse(*length));attempts.into_iter().find(|(_,length)|*length>0).map(|(article,_)|article)
 }
+pub fn reader_unwrap_noscript_images(document:&dom_query::Document) {
+    fn single_image(mut node:dom_query::NodeRef<'_>)->bool {
+        loop {if node.node_name().as_deref()==Some("img") {return true;}let children=node.element_children();if children.len()!=1||!node.text().trim_matches(js_whitespace).is_empty() {return false;}node=children[0];}
+    }
+    static IMAGE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)\.(jpg|jpeg|png|webp)").expect("literal pattern"));
+    for image in document.select("img").nodes() {
+        if !image.attrs().iter().any(|attr|matches!(attr.name.local.as_ref(),"src"|"srcset"|"data-src"|"data-srcset")||IMAGE.is_match(&attr.value)) {image.remove_from_parent();}
+    }
+    for noscript in document.select("noscript").nodes() {
+        if !single_image(*noscript) {continue;}
+        let Some(previous)=noscript.prev_element_sibling().filter(|node|single_image(*node)) else {continue;};
+        let old=if previous.node_name().as_deref()==Some("img") {previous} else {dom_query::Selection::from(previous).select("img").nodes()[0]};
+        noscript.before_html("<div></div>");let temporary=noscript.prev_sibling().expect("inserted container");temporary.set_html(noscript.inner_html().as_ref());let image=dom_query::Selection::from(temporary).select("img").nodes()[0];
+        for attr in old.attrs() {
+            let name=attr.name.local.as_ref();if attr.value.is_empty()||(!matches!(name,"src"|"srcset")&&!IMAGE.is_match(&attr.value)) {continue;}
+            if image.attr(name).is_some_and(|value|value==attr.value) {continue;}
+            let target=if image.has_attr(name) {format!("data-old-{name}")} else {name.to_owned()};image.set_attr(&target,&attr.value);
+        }
+        let replacement=temporary.first_element_child().expect("single image subtree");previous.replace_with(&replacement);temporary.remove_from_parent();
+    }
+}
 pub fn reader_prepare_article(root:&dom_query::NodeRef<'_>,weight_classes:bool,clean_conditionally:bool) {
     static VIDEO:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)//(www\.)?((dailymotion|youtube|youtube-nocookie|player\.vimeo|v\.qq)\.com|(archive|upload\.wikimedia)\.org|player\.twitch\.tv)").expect("literal pattern"));
     static SHARE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)(\b|_)(share|sharedaddy)(\b|_)").expect("literal pattern"));
@@ -600,6 +621,9 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_noscript_prepass_preserves_previous_image_sources() {
+        let document=dom_query::Document::from("<main><img id='empty'><img src='old.png' data-src='lazy.png'><noscript><img src='new.png'></noscript></main>");reader_unwrap_noscript_images(&document);assert!(document.select("#empty").is_empty());assert_eq!(document.select("main > img").attr("src").as_deref(),Some("new.png"));assert_eq!(document.select("main > img").attr("data-old-src").as_deref(),Some("old.png"));assert_eq!(document.select("main > img").attr("data-src").as_deref(),Some("lazy.png"));
+    }
     #[test] fn reader_grab_assembles_article_and_retries_short_unlikely_content() {
         let document=dom_query::Document::from("<div class='sidebar'><p>A short fallback sentence.</p></div>");reader_prepare_document(&document);let article=reader_grab_article(&document,"",None).unwrap();assert_eq!(reader_inner_text(&article,true),"A short fallback sentence.");assert_eq!(dom_query::Selection::from(article).select("#readability-page-1").length(),1);
     }
