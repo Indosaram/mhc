@@ -26,7 +26,12 @@ async fn wait_for_dead(pids:&[u32],timeout:Duration) {
     }
 }
 pub async fn reap_process_tree(root:u32,term_wait:Duration,kill_wait:Duration) {
-    let mut known=collect_process_tree(root).await;kill_pids(&known,"-TERM").await;wait_for_dead(&known,term_wait).await;
+    let mut known=collect_process_tree(root).await;
+    let mut alive=false;for pid in &known {if is_process_alive(*pid).await{alive=true;break;}}
+    if !alive{return;}
+    kill_pids(&known,"-TERM").await;wait_for_dead(&known,term_wait).await;
     for pid in collect_process_tree(root).await {if !known.contains(&pid){known.push(pid);}}
+    let mut alive=false;for pid in &known {if is_process_alive(*pid).await{alive=true;break;}}
+    if !alive{return;}
     kill_pids(&known,"-KILL").await;wait_for_dead(&known,kill_wait).await;
 }

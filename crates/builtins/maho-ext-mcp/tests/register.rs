@@ -61,3 +61,17 @@ async fn native_tool_runtime_suspends_when_reinitialized_session_expires_again()
     assert!(result.is_err());assert_eq!(connection.generation(),1);assert_eq!(connection.state(),maho_ext_mcp::connection::ServerConnectionState::Suspended);assert_eq!(lifecycle.in_flight(),0);
     lifecycle.dispose();connection.dispose().await.unwrap();artifacts.cleanup().unwrap();fixture.kill().await.unwrap();fixture.wait().await.unwrap();
 }
+#[tokio::test]
+async fn cached_native_tool_connects_only_on_execute_and_uses_entry_artifacts() {
+    let root=tempfile::tempdir().unwrap();let artifact_root=tempfile::tempdir().unwrap();
+    let config=McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into(),"--tools".into(),"1".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
+    let connection=maho_ext_mcp::connection::ServerConnection::new("cached",config.clone(),None,Arc::new(Mutex::new(McpLogger::new("cached",root.path(),None).unwrap())));let lifecycle=maho_ext_mcp::idle::McpConnectionLifecycle::configure(connection.clone(),config);
+    let catalog=maho_ext_mcp::catalog_cache::McpCachedServerCatalog {config_hash:"hash".into(),fetched_at:0.0,tools:vec![json!({"name":"tool_1","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None};
+    let runtime=Arc::new(maho_ext_mcp::catalog::McpCatalogRuntime {connection:connection.clone(),lifecycle:lifecycle.clone(),health:Default::default()});let connect=connection.clone();
+    let mut entries=maho_ext_mcp::catalog::cached_mcp_catalog_entries("cached",&catalog,runtime,Duration::from_secs(3),Arc::new(move ||{let connection=connect.clone();Box::pin(async move {connection.connect().await?;Ok(())})}));
+    let artifacts=Arc::new(McpOutputArtifacts::default());entries[0].agent_dir=Some(artifact_root.path().into());entries[0].artifacts=Some(artifacts.clone());entries[0].output_guard=Some(maho_ext_mcp::config_schema::OutputGuardSettings {max_bytes:Some(1.0),max_lines:None,max_tokens:None});
+    let tools=build_mcp_tool_definitions(&entries,root.path().into(),Arc::new(McpOutputArtifacts::default()),None);assert_eq!(connection.state(),maho_ext_mcp::connection::ServerConnectionState::Idle);
+    let result=(tools[0].execute)(ToolCall {id:"lazy",params:json!({"value":"lazy-call"}),signal:AbortSignal::default(),on_update:None,context:None}).await.unwrap();
+    assert!(matches!(&result.content[0],ToolContent::Text {text,..} if text.contains("Full output saved to:")));assert!(artifact_root.path().join("tmp/mcp-out").exists());assert!(!root.path().join("tmp/mcp-out").exists());
+    lifecycle.dispose();connection.dispose().await.unwrap();artifacts.cleanup().unwrap();
+}
