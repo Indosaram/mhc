@@ -300,14 +300,14 @@ impl ExtensionRunner {
     }
     pub fn get_shortcuts(&self) -> BTreeMap<String, ExtensionShortcut> {
         let mut shortcuts = BTreeMap::new();
-        for extension in &self.extensions { for (key, shortcut) in &extension.shortcuts { shortcuts.insert(key.to_lowercase(), shortcut.clone()); } }
+        for extension in &self.extensions { for (key, shortcut) in self.runtime.live_shortcuts(&extension.identity.path).unwrap_or_else(|| extension.shortcuts.clone()) { shortcuts.insert(key.to_lowercase(), shortcut); } }
         shortcuts
     }
     pub fn resolve_shortcuts(&self, builtins: &BTreeMap<String, BuiltinShortcut>) -> (BTreeMap<String, ExtensionShortcut>, Vec<ShortcutDiagnostic>) {
         let mut shortcuts: BTreeMap<String, ExtensionShortcut> = BTreeMap::new();
         let mut diagnostics = Vec::new();
         for extension in &self.extensions {
-            for (key, shortcut) in &extension.shortcuts {
+            for (key, shortcut) in self.runtime.live_shortcuts(&extension.identity.path).unwrap_or_else(|| extension.shortcuts.clone()) {
                 let normalized = key.to_lowercase();
                 if let Some(builtin) = builtins.get(&normalized) {
                     if builtin.restrict_override {
@@ -326,14 +326,14 @@ impl ExtensionRunner {
     }
     pub fn transform_markdown(&self, markdown: &str, context: &MarkdownTransformContext) -> String {
         let mut transformed = markdown.to_owned();
-        for extension in &self.extensions { if let Some(transformer) = &extension.markdown_transformer { transformed = transformer(&transformed, context); } }
+        for extension in &self.extensions { if let Some(transformer) = self.runtime.live_markdown_transformer(&extension.identity.path).or_else(|| extension.markdown_transformer.clone()) { transformed = transformer(&transformed, context); } }
         transformed
     }
     pub async fn handle_rpc_request(&self, name: &str, data: JsonValue) -> Result<JsonValue, ExtensionFailure> {
         self.runtime.assert_active()?;
         let name = name.trim();
         if name.is_empty() { return Err(ExtensionFailure::new("Extension RPC request name must not be empty")); }
-        let mut handlers = self.extensions.iter().filter_map(|extension| extension.rpc_handlers.get(name));
+        let mut handlers = self.extensions.iter().filter_map(|extension| self.runtime.live_rpc_handlers(&extension.identity.path).unwrap_or_else(|| extension.rpc_handlers.clone()).get(name).cloned());
         let handler = handlers.next().ok_or_else(|| ExtensionFailure::new(format!("Unknown extension RPC request: {name}")))?;
         if handlers.next().is_some() { return Err(ExtensionFailure::new(format!("Multiple extension RPC request handlers registered: {name}"))); }
         let result = handler(data).await?;
@@ -381,7 +381,7 @@ impl ExtensionRunner {
     }
     pub fn get_all_registered_tools(&self) -> Vec<RegisteredTool> {
         let mut tools: Vec<RegisteredTool> = Vec::new();
-        for ext in &self.extensions { for tool in &ext.tools {
+        for ext in &self.extensions { for tool in self.runtime.live_tools(&ext.identity.path).unwrap_or_else(|| ext.tools.clone()) {
             if let Some(existing) = tools.iter_mut().find(|t| t.definition.name == tool.definition.name) {
                 if existing.source_info.source == "builtin" && tool.source_info.source != "builtin" { *existing = tool.clone(); }
             } else { tools.push(tool.clone()); }
@@ -392,13 +392,17 @@ impl ExtensionRunner {
     pub fn get_tool_definition(&self, name: &str) -> Option<&ToolDefinition> {
         self.extensions.iter().flat_map(|e| &e.tools).find(|t| t.definition.name == name).map(|t| &t.definition)
     }
+    pub fn get_tool_definition_owned(&self, name: &str) -> Option<ToolDefinition> {
+        self.get_all_registered_tools().into_iter().find(|tool| tool.definition.name == name).map(|tool| tool.definition)
+    }
     pub fn get_tool_renderers<TState: 'static, TArgs: 'static>(&self, name: &str) -> Option<Arc<ToolRenderers<TState, TArgs>>> {
         let mut selected: Option<&LoadedExtension> = None;
         for extension in &self.extensions {
-            if extension.tools.iter().any(|tool| tool.definition.name == name)
+            if self.runtime.live_tools(&extension.identity.path).unwrap_or_else(|| extension.tools.clone()).iter().any(|tool| tool.definition.name == name)
                 && selected.is_none_or(|current| current.source_info.source == "builtin" && extension.source_info.source != "builtin") { selected = Some(extension); }
         }
-        selected?.tool_renderers.get(name)?.clone().downcast::<ToolRenderers<TState, TArgs>>().ok()
+        let selected = selected?;
+        self.runtime.live_tool_renderer(&selected.identity.path, name).unwrap_or_else(|| selected.tool_renderers.get(name).cloned())?.downcast::<ToolRenderers<TState, TArgs>>().ok()
     }
     pub fn get_registered_commands(&self) -> Vec<ResolvedCommand> {
         let commands: Vec<_> = self.extensions.iter().flat_map(|e| self.runtime.live_commands(&e.identity.path).map_or_else(|| e.commands.clone(), |(commands, _)| commands)).collect();
@@ -415,18 +419,18 @@ impl ExtensionRunner {
     }
     pub fn get_command(&self, name: &str) -> Option<ResolvedCommand> { self.get_registered_commands().into_iter().find(|c| c.invocation_name == name) }
     pub fn get_flags(&self) -> BTreeMap<String, ExtensionFlag> {
-        let mut flags = BTreeMap::new(); for ext in &self.extensions { for flag in &ext.flags { flags.entry(flag.name.clone()).or_insert_with(|| flag.clone()); }} flags
+        let mut flags = BTreeMap::new(); for ext in &self.extensions { for flag in self.runtime.live_flags(&ext.identity.path).unwrap_or_else(|| ext.flags.clone()) { flags.entry(flag.name.clone()).or_insert(flag); }} flags
     }
     pub fn get_registered_mcp_servers(&self) -> Vec<RegisteredMcpServerDeclaration> {
         let mut servers: Vec<RegisteredMcpServerDeclaration> = Vec::new();
-        for ext in &self.extensions { for server in &ext.mcp_servers { if !servers.iter().any(|s| s.name == server.name) { servers.push(server.clone()); } }} servers
+        for ext in &self.extensions { for server in self.runtime.live_mcp_servers(&ext.identity.path).unwrap_or_else(|| ext.mcp_servers.clone()) { if !servers.iter().any(|s| s.name == server.name) { servers.push(server); } }} servers
     }
     pub fn get_mcp_server_diagnostics(&self) -> Vec<String> {
-        let mut owners: BTreeMap<&str, &str> = BTreeMap::new(); let mut warnings = Vec::new();
-        for ext in &self.extensions { for server in &ext.mcp_servers {
+        let mut owners: BTreeMap<String, &str> = BTreeMap::new(); let mut warnings = Vec::new();
+        for ext in &self.extensions { for server in self.runtime.live_mcp_servers(&ext.identity.path).unwrap_or_else(|| ext.mcp_servers.clone()) {
             if let Some(owner) = owners.get(server.name.as_str()) {
                 warnings.push(format!("MCP server '{}' declared by both {} and {}; keeping first declaration from {}.", server.name, owner, ext.identity.path, owner));
-            } else { owners.insert(&server.name, &ext.identity.path); }
+            } else { owners.insert(server.name, &ext.identity.path); }
         }} warnings
     }
     pub fn get_message_renderer(&self, custom_type: &str) -> Option<&MessageRenderer> { self.extensions.iter().find_map(|e| e.message_renderers.get(custom_type)) }

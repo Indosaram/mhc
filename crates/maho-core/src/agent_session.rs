@@ -421,6 +421,7 @@ struct AgentSessionState {
     compaction_abort_controller: Option<maho_ai::utils::abort::AbortController>,
     prompt_templates: Vec<crate::prompt_templates::PromptTemplate>,
     extension_commands: Vec<maho_ext_api::SlashCommandInfo>,
+    extension_command_catalog: Option<Arc<dyn Fn() -> Vec<maho_ext_api::SlashCommandInfo> + Send + Sync>>,
     extension_event_sender: Option<tokio::sync::mpsc::UnboundedSender<maho_ext_api::ExtensionEvent>>,
     extension_tool_context: Option<(maho_ext_api::ExtensionRuntime, maho_ext_host::wrapper::ToolContextFactory)>,
     skills: Vec<crate::skills::Skill>,
@@ -1059,6 +1060,7 @@ impl AgentSession {
             compaction_abort_controller: None,
             prompt_templates: Vec::new(),
             extension_commands: Vec::new(),
+            extension_command_catalog: None,
             extension_event_sender: None,
             extension_tool_context: None,
             skills: Vec::new(),
@@ -2890,6 +2892,11 @@ impl AgentSession {
             name: command.invocation_name, description: command.command.description,
             argument_hint: command.command.argument_hint, source_info: Some(command.command.source_info),
         }).collect();
+        let command_runner = runner.clone();
+        self.state().extension_command_catalog = Some(Arc::new(move || command_runner.get_registered_commands().into_iter().map(|command| maho_ext_api::SlashCommandInfo {
+            name: command.invocation_name, description: command.command.description,
+            argument_hint: command.command.argument_hint, source_info: Some(command.command.source_info),
+        }).collect()));
         *self.extension_runner.lock().await = Some(runner);
         let weak = Arc::downgrade(&self.inner);
         self.agent.set_transform_context(Some(Arc::new(move |messages, _signal| {
@@ -2907,7 +2914,10 @@ impl AgentSession {
     }
 
     pub fn get_commands(&self) -> Vec<maho_ext_api::SlashCommandInfo> {
-        let mut commands = self.state().extension_commands.clone();
+        let mut commands = {
+            let state = self.state();
+            state.extension_command_catalog.as_ref().map_or_else(|| state.extension_commands.clone(), |catalog| catalog())
+        };
         let source_info = |source: crate::source_info::SourceInfo| maho_ext_api::SourceInfo {
             path: source.path, source: source.source, base_dir: source.base_dir,
             scope: match source.scope {
@@ -4915,6 +4925,11 @@ mod tests {
         assert_eq!(commands[0].argument_hint.as_deref(), Some("target"));
         assert_eq!(commands[1].source_info.as_ref().unwrap().path, "/tmp/review.md");
         assert_eq!(commands[2].source_info.as_ref().unwrap().path, "/tmp/guide/SKILL.md");
+        let live = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let catalog = live.clone();
+        session.state().extension_command_catalog = Some(Arc::new(move || catalog.lock().unwrap().clone()));
+        live.lock().unwrap().push(maho_ext_api::SlashCommandInfo { name: "late".into(), description: None, argument_hint: None, source_info: None });
+        assert_eq!(session.get_commands().iter().map(|command| command.name.as_str()).collect::<Vec<_>>(), ["late", "review", "skill:guide"]);
     }
 
     #[tokio::test]

@@ -1055,6 +1055,13 @@ struct RuntimeState {
     provider_errors: Vec<ExtensionError>,
     live_handlers: BTreeMap<(String, EventKind), Vec<ExtensionHandler>>,
     live_commands: BTreeMap<String, LiveCommandRegistrations>,
+    live_shortcuts: BTreeMap<String, BTreeMap<String, ExtensionShortcut>>,
+    live_markdown_transformers: BTreeMap<String, MarkdownTransformer>,
+    live_rpc_handlers: BTreeMap<String, BTreeMap<String, ExtensionRpcRequestHandler>>,
+    live_flags: BTreeMap<String, Vec<ExtensionFlag>>,
+    live_tools: BTreeMap<String, Vec<RegisteredTool>>,
+    live_mcp_servers: BTreeMap<String, Vec<RegisteredMcpServerDeclaration>>,
+    live_tool_renderers: BTreeMap<String, BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>>,
 }
 pub type LiveCommandRegistrations = (Vec<RegisteredCommand>, BTreeMap<String, CommandContextHandler>);
 #[derive(Clone, Default)]
@@ -1122,6 +1129,11 @@ impl ExtensionRuntime {
         state.stale.get_or_insert_with(|| message.into()); state.read_classifiers.clear(); state.pending_providers.clear();
         state.live_handlers.clear();
         state.live_commands.clear();
+        state.live_shortcuts.clear();
+        state.live_markdown_transformers.clear(); state.live_rpc_handlers.clear();
+        state.live_flags.clear();
+        state.live_tools.clear(); state.live_tool_renderers.clear();
+        state.live_mcp_servers.clear();
     }
     pub fn bind_providers(&self, actions: Arc<dyn ExtensionProviderActions>) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
@@ -1142,6 +1154,27 @@ impl ExtensionRuntime {
     }
     pub fn live_commands(&self, path: &str) -> Option<LiveCommandRegistrations> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_commands.get(path).cloned()
+    }
+    pub fn live_shortcuts(&self, path: &str) -> Option<BTreeMap<String, ExtensionShortcut>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_shortcuts.get(path).cloned()
+    }
+    pub fn live_markdown_transformer(&self, path: &str) -> Option<MarkdownTransformer> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_markdown_transformers.get(path).cloned()
+    }
+    pub fn live_rpc_handlers(&self, path: &str) -> Option<BTreeMap<String, ExtensionRpcRequestHandler>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_rpc_handlers.get(path).cloned()
+    }
+    pub fn live_flags(&self, path: &str) -> Option<Vec<ExtensionFlag>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_flags.get(path).cloned()
+    }
+    pub fn live_tools(&self, path: &str) -> Option<Vec<RegisteredTool>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_tools.get(path).cloned()
+    }
+    pub fn live_mcp_servers(&self, path: &str) -> Option<Vec<RegisteredMcpServerDeclaration>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_mcp_servers.get(path).cloned()
+    }
+    pub fn live_tool_renderer(&self, path: &str, name: &str) -> Option<Option<Arc<dyn std::any::Any + Send + Sync>>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_tool_renderers.get(path).map(|renderers| renderers.get(name).cloned())
     }
     pub fn register_provider(&self, registration: ProviderRegistration, path: &str) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
@@ -1245,6 +1278,9 @@ impl ExtensionApi {
     pub fn register_shortcut(&mut self, shortcut: &str, description: Option<String>, handler: ShortcutHandler) {
         self.runtime.assert_active_or_panic();
         self.registered.shortcuts.insert(shortcut.into(), ExtensionShortcut { shortcut: shortcut.into(), description, handler, extension_path: self.registered.identity.path.clone() });
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_shortcuts.insert(self.registered.identity.path.clone(), self.registered.shortcuts.clone());
+        }
     }
     pub fn register_lazy_tool_activator(&mut self, activator: LazyToolActivator) {
         self.runtime.assert_active_or_panic();
@@ -1253,7 +1289,12 @@ impl ExtensionApi {
             && let Err(error) = actions.register_lazy_tool_activator(Arc::clone(&activator)) { std::panic::panic_any(error); }
         self.registered.lazy_tool_activators.push(activator);
     }
-    pub fn register_markdown_transformer(&mut self, transformer: MarkdownTransformer) { self.runtime.assert_active_or_panic(); self.registered.markdown_transformer = Some(transformer); }
+    pub fn register_markdown_transformer(&mut self, transformer: MarkdownTransformer) {
+        self.runtime.assert_active_or_panic(); self.registered.markdown_transformer = Some(transformer.clone());
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_markdown_transformers.insert(self.registered.identity.path.clone(), transformer);
+        }
+    }
     pub fn register_read_classifier(&self, classifier: ReadClassifier) -> Result<ReadClassifierSubscription, ExtensionFailure> {
         self.runtime.assert_active()?;
         let mut state = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1266,7 +1307,11 @@ impl ExtensionApi {
         let name = name.trim();
         if name.is_empty() { return Err(ExtensionFailure::new("RPC extension request name must not be empty")); }
         if self.registered.rpc_handlers.contains_key(name) { return Err(ExtensionFailure::new(format!("RPC extension request handler already registered: {name}"))); }
-        self.registered.rpc_handlers.insert(name.into(), handler); Ok(())
+        self.registered.rpc_handlers.insert(name.into(), handler);
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_rpc_handlers.insert(self.registered.identity.path.clone(), self.registered.rpc_handlers.clone());
+        }
+        Ok(())
     }
     pub fn rpc_emit(&self, name: &str, data: &JsonValue) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;
@@ -1282,6 +1327,7 @@ impl ExtensionApi {
         let name = definition.name.clone();
         self.try_register_tool(definition)?;
         self.registered.tool_renderers.insert(name, Arc::new(renderers));
+        self.publish_tools();
         Ok(())
     }
     pub fn try_register_tool(&mut self, definition: ToolDefinition) -> Result<(), ExtensionFailure> {
@@ -1297,7 +1343,15 @@ impl ExtensionApi {
         if let Some(existing) = self.registered.tools.iter_mut().find(|t| t.definition.name == tool.definition.name) { *existing = tool.clone(); } else { self.registered.tools.push(tool.clone()); }
         let actions = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone();
         if let Some(actions) = actions { actions.install_registered_tool(tool)?; }
+        self.publish_tools();
         Ok(())
+    }
+    fn publish_tools(&self) {
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            let mut state = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.live_tools.insert(self.registered.identity.path.clone(), self.registered.tools.clone());
+            state.live_tool_renderers.insert(self.registered.identity.path.clone(), self.registered.tool_renderers.clone());
+        }
     }
     pub fn register_command(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandHandler) {
         self.runtime.assert_active_or_panic();
@@ -1322,6 +1376,9 @@ impl ExtensionApi {
         if let Some(value) = default { self.runtime.register_flag_default(name, value); }
         let flag = ExtensionFlag { name: name.into(), description, kind, extension_path: self.registered.identity.path.clone() };
         if let Some(existing) = self.registered.flags.iter_mut().find(|f| f.name == name) { *existing = flag; } else { self.registered.flags.push(flag); }
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_flags.insert(self.registered.identity.path.clone(), self.registered.flags.clone());
+        }
     }
     pub fn get_flag(&self, name: &str) -> Option<FlagValue> { self.runtime.assert_active_or_panic(); if self.registered.flags.iter().any(|flag| flag.name == name) { self.runtime.get_flag(name) } else { None } }
     pub fn set_flag(&self, name: &str, value: FlagValue) { self.runtime.set_flag(name, value); }
@@ -1352,6 +1409,9 @@ impl ExtensionApi {
         }
         let declaration = RegisteredMcpServerDeclaration { name: name.into(), config, extension_path: self.registered.identity.path.clone(), registration_cwd: self.cwd.clone() };
         if let Some(existing) = self.registered.mcp_servers.iter_mut().find(|s| s.name == name) { *existing = declaration; } else { self.registered.mcp_servers.push(declaration); }
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_mcp_servers.insert(self.registered.identity.path.clone(), self.registered.mcp_servers.clone());
+        }
         Ok(())
     }
     pub fn register_removed_tool_hint(&mut self, name: &str, hint: &str) {
