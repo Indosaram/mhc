@@ -49,6 +49,17 @@ fn context() -> ExtensionContext {
 }
 
 #[tokio::test]
+async fn provider_owned_model_selection_stands_down_before_unbound_actions() {
+    let mut api = ExtensionApi::new(LoadedExtension::new("compaction","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
+    maho_ext_compaction::CompactionExtension.register(&mut api);
+    let mut ctx = context();
+    let model: Model = serde_json::from_value(serde_json::json!({"id":"m","name":"m","api":"anthropic-messages","provider":"anthropic-subscription","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":1000})).unwrap();
+    ctx.model=Some(model.clone());
+    let mut event=ExtensionEvent::ModelSelect(ModelSelectEvent {model,previous_model:None,source:ModelSelectSource::Set,system_prompt:String::new(),system_prompt_options:Default::default()});
+    for handler in &api.registered.handlers[&EventKind::ModelSelect] {assert!(matches!(handler(&mut event,&ctx).await.unwrap(),EventResult::None));}
+}
+
+#[tokio::test]
 async fn native_session_compaction_uses_registered_generator_and_persists_metadata() {
     use maho_core::agent_session::{AgentSession, AgentSessionConfig};
     use maho_ai::providers::faux::{RegisterFauxProviderOptions, FauxAssistantMessageOptions, faux_assistant_message, register_faux_provider};

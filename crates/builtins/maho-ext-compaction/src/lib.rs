@@ -56,6 +56,97 @@ impl maho_ext_api::Extension for CompactionExtension {
         let restoration = std::sync::Arc::new(std::sync::Mutex::new(restoration_tracker::RestorationTrackerState::default()));
         let pending = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, (serde_json::Value, serde_json::Value))>::new()));
         let live_api = std::sync::Arc::new(maho_ext_api::ExtensionApi::new(api.registered.clone(), api.profile.clone(), api.events.clone(), api.runtime.clone()));
+        let warm = std::sync::Arc::new(std::sync::Mutex::new(None::<speculative_job::LiveSpeculativeJob>));
+        let generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let idle_since_end = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reminder = std::sync::Arc::new(std::sync::Mutex::new(token_budget_reminder::create_initial_reminder_state()));
+        let degradation = std::sync::Arc::new(tokio::sync::Mutex::new(degradation_monitor::create_degradation_monitor_state()));
+        {
+            let degradation=std::sync::Arc::clone(&degradation);
+            let warm=std::sync::Arc::clone(&warm);
+            let generation=std::sync::Arc::clone(&generation);
+            let live_api=std::sync::Arc::clone(&live_api);
+            api.on(maho_ext_api::EventKind::MessageEnd,std::sync::Arc::new(move |event,context| {
+                let degradation=std::sync::Arc::clone(&degradation);let warm=std::sync::Arc::clone(&warm);let generation=std::sync::Arc::clone(&generation);let live_api=std::sync::Arc::clone(&live_api);
+                Box::pin(async move {
+                    let maho_ext_api::ExtensionEvent::MessageEnd {message}=event else {return Ok(maho_ext_api::EventResult::None);};
+                    let raw=serde_json::to_value(message).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                    if extension_wiring::is_aborted_assistant_message(&raw) {
+                        generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+                        if let Some(job)=warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {job.controller.abort(None);}
+                    }
+                    if context.model.as_ref().is_some_and(|model|model.provider=="anthropic-subscription") || !extension_wiring::is_monitorable_message(&raw) {return Ok(maho_ext_api::EventResult::None);}
+                    let content:Vec<_>=raw["content"].as_array().into_iter().flatten().map(|part|degradation_monitor::MonitoredMessageContentPart {kind:part["type"].as_str().unwrap_or_default(),text:part["text"].as_str()}).collect();
+                    degradation_monitor::handle_message_end(&mut *degradation.lock().await,degradation_monitor::MonitoredMessageEvent {role:raw["role"].as_str().unwrap_or_default(),content:&content},|instructions|async {
+                        let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
+                        match extension_wiring::apply_live_blocking_compaction(&live_api,context,next,instructions.into()).await {
+                            Ok(result)=>degradation_monitor::RecoveryResult {applied:result==speculative::SpeculativeCompactionResult::Applied,reason:if result==speculative::SpeculativeCompactionResult::Failed {"failed"} else {"rejected"}.into()},
+                            Err(_)=>degradation_monitor::RecoveryResult {applied:false,reason:"failed".into()},
+                        }
+                    },|message|context.ui.notify(message,maho_ext_api::NotificationType::Warning)).await;
+                    Ok(maho_ext_api::EventResult::None)
+                })
+            }));
+        }
+        for kind in [maho_ext_api::EventKind::SessionCompact,maho_ext_api::EventKind::TurnEnd] {
+            let degradation=std::sync::Arc::clone(&degradation);
+            api.on(kind,std::sync::Arc::new(move |event,_| {
+                let degradation=std::sync::Arc::clone(&degradation);
+                Box::pin(async move {
+                    let mut state=degradation.lock().await;
+                    match event {
+                        maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Accepted {..})=>degradation_monitor::reset_on_session_compact(&mut state),
+                        maho_ext_api::ExtensionEvent::TurnEnd {..}=>degradation_monitor::handle_turn_end(&mut state),
+                        _=>{},
+                    }
+                    Ok(maho_ext_api::EventResult::None)
+                })
+            }));
+        }
+        for kind in [maho_ext_api::EventKind::SessionShutdown, maho_ext_api::EventKind::SessionCompact] {
+            let warm = std::sync::Arc::clone(&warm);
+            let generation = std::sync::Arc::clone(&generation);
+            let reminder = std::sync::Arc::clone(&reminder);
+            api.on(kind,std::sync::Arc::new(move |_,_| {
+                *reminder.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=token_budget_reminder::create_initial_reminder_state();
+                generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+                if let Some(job) = warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {job.controller.abort(None);}
+                Box::pin(async {Ok(maho_ext_api::EventResult::None)})
+            }));
+        }
+        {
+            let warm = std::sync::Arc::clone(&warm);
+            let generation = std::sync::Arc::clone(&generation);
+            let state = std::sync::Arc::clone(&state);
+            let live_api = std::sync::Arc::clone(&live_api);
+            api.on(maho_ext_api::EventKind::ModelSelect,std::sync::Arc::new(move |event,context| {
+                let result = (|| {
+                    let maho_ext_api::ExtensionEvent::ModelSelect(event) = event else {return Ok(maho_ext_api::EventResult::None);};
+                    let external = context.model.as_ref().is_some_and(|model|model.provider == "anthropic-subscription");
+                    let mut settings = maho_core::compaction::settings::default_compaction_settings();
+                    if !external {
+                        let live = context.get_compaction_settings()?;
+                        settings.enabled = live.enabled;
+                        settings.reserve_tokens = live.reserve_tokens as i64;
+                        settings.keep_recent_tokens = live.keep_recent_tokens as i64;
+                    }
+                    let mut job = warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let (mut invalidate,mut start) = (false,false);
+                    model_selection::handle_live_compaction_model_select(event,context,&state,job.as_ref().map(|job|&job.snapshot),&settings,external,(||invalidate=true,||start=true))?;
+                    if invalidate {
+                        generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+                        if let Some(previous) = job.take() {previous.controller.abort(None);}
+                    }
+                    if start && job.is_none() {
+                        let next = generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
+                        *job = speculative_job::start_live_speculative_job(&live_api,context,next,"Proactively compact before the next agent turn.".into())?;
+                    }
+                    Ok(maho_ext_api::EventResult::None)
+                })();
+                Box::pin(async move {result})
+            }));
+        }
         {
             let live_api = std::sync::Arc::clone(&live_api);
             api.on(maho_ext_api::EventKind::MessageEnd, std::sync::Arc::new(move |event, _context| {
@@ -71,6 +162,51 @@ impl maho_ext_api::Extension for CompactionExtension {
         }
         {
             let latch = std::sync::Arc::new(std::sync::Mutex::new(emergency_prune::EmergencyPruneLatch::default()));
+            let warm = std::sync::Arc::clone(&warm);
+            let generation = std::sync::Arc::clone(&generation);
+            let idle_state = std::sync::Arc::clone(&state);
+            let live_api = std::sync::Arc::clone(&live_api);
+            let idle_since_end = std::sync::Arc::clone(&idle_since_end);
+            api.on(maho_ext_api::EventKind::AgentEnd,std::sync::Arc::new(move |event,context| {
+                let result = (|| {
+                    let maho_ext_api::ExtensionEvent::AgentEnd {aborted,will_retry,..} = event else {return Ok(maho_ext_api::EventResult::None);};
+                    if context.model.as_ref().is_some_and(|model|model.provider == "anthropic-subscription") || !matches!(context.mode,maho_ext_api::ExtensionMode::Tui | maho_ext_api::ExtensionMode::Rpc | maho_ext_api::ExtensionMode::AppServer) {return Ok(maho_ext_api::EventResult::None);}
+                    let live = context.get_compaction_settings()?;
+                    let mut settings = maho_core::compaction::settings::default_compaction_settings();
+                    settings.enabled = live.enabled;settings.reserve_tokens = live.reserve_tokens as i64;settings.keep_recent_tokens = live.keep_recent_tokens as i64;
+                    let usage = context.get_context_usage()?;
+                    let state = idle_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let decision = idle::IdleCompactionDecision {will_retry:will_retry.unwrap_or(false),aborted:aborted.unwrap_or(false),settings:&settings,tokens:usage.as_ref().and_then(|usage|usage.tokens).map(|tokens|tokens as f64),context_window:usage.as_ref().map_or_else(||context.model.as_ref().map_or(200000,|model|model.context_window),|usage|usage.context_window) as f64,breaker_tripped:circuit_breaker::is_tripped(&state,chrono::Utc::now().timestamp_millis() as f64),last_yield:state.last_yield,mode:context.mode};
+                    let above_threshold = idle::should_run_idle_compaction(&decision);
+                    if !above_threshold && openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref()) {return Ok(maho_ext_api::EventResult::None);}
+                    let mut job = warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let action = orchestration::resolve_idle_warm_action(&decision,job.as_ref().map(|job|job.armed_at_tokens as f64));
+                    if action == orchestration::IdleWarmAction::Replace && let Some(previous) = job.take() {previous.controller.abort(None);}
+                    if (above_threshold || action != orchestration::IdleWarmAction::None) && job.is_none() {
+                        let next = generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
+                        *job = speculative_job::start_live_speculative_job(&live_api,context,next,idle::IDLE_COMPACTION_INSTRUCTIONS.into())?;
+                    }
+                    if let Some(watching) = job.as_ref().cloned() {
+                        idle_since_end.store(true,std::sync::atomic::Ordering::SeqCst);
+                        let context=context.clone();let warm=std::sync::Arc::clone(&warm);let generation=std::sync::Arc::clone(&generation);let idle=std::sync::Arc::clone(&idle_since_end);let state=std::sync::Arc::clone(&idle_state);
+                        tokio::spawn(async move {
+                            let settled=watching.settled().await;
+                            let Some(compaction)=settled.result else {return;};
+                            if !idle.load(std::sync::atomic::Ordering::SeqCst) || !context.is_idle() || generation.load(std::sync::atomic::Ordering::SeqCst)!=watching.generation {return;}
+                            if warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_none_or(|job|job.generation!=watching.generation) {return;}
+                            let (last_yield,tripped)={let state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);(state.last_yield,circuit_breaker::is_tripped(&state,chrono::Utc::now().timestamp_millis() as f64))};
+                            let Ok(Some(usage))=context.get_context_usage() else {return;};
+                            if tripped || !policy::should_trigger_compaction(usage.tokens.map(|tokens|tokens as f64),usage.context_window as f64,&watching.snapshot.preparation.settings,last_yield) {return;}
+                            if matches!(speculative::apply_generated_compaction(&context,Some(&watching.snapshot),generation.load(std::sync::atomic::Ordering::SeqCst),Some(compaction),None).await,Ok(speculative::SpeculativeCompactionResult::Applied)) {
+                                let mut job=warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                if job.as_ref().is_some_and(|job|job.generation==watching.generation) {*job=None;}
+                            }
+                        });
+                    }
+                    Ok(maho_ext_api::EventResult::None)
+                })();
+                Box::pin(async move {result})
+            }));
             let state = std::sync::Arc::clone(&state);
             api.on(maho_ext_api::EventKind::Context, std::sync::Arc::new(move |event, context| {
                 let result = (|| {
@@ -114,7 +250,18 @@ impl maho_ext_api::Extension for CompactionExtension {
             let pending = std::sync::Arc::clone(&pending);
             let live_api = std::sync::Arc::clone(&live_api);
             let state = std::sync::Arc::clone(&state);
+            let warm = std::sync::Arc::clone(&warm);
+            let generation = std::sync::Arc::clone(&generation);
             api.on(maho_ext_api::EventKind::SessionBeforeCompact, std::sync::Arc::new(move |event, context| {
+                let claimed = if let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event {
+                    if event.signal.is_aborted() {None} else {
+                        let mut job = warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let claimed = speculative_job::claim_live_warm_job(&mut job,event,context);
+                        if let Some(job) = job.take() {job.controller.abort(None);}
+                        generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+                        claimed
+                    }
+                } else {None};
                 let gate = if let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event {
                     let state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     if !event.signal.is_aborted() && event.reason != maho_ext_api::CompactionReason::Manual
@@ -126,7 +273,10 @@ impl maho_ext_api::Extension for CompactionExtension {
                         Some(maho_ext_api::SessionBeforeEventResult { cancel: Some(true), rejection_cause: Some(maho_ext_api::CompactionRejectionCause::CircuitBreaker), ..Default::default() })
                     } else { None }
                 } else { None };
-                if let Some(gate) = gate { return Box::pin(async move { Ok(maho_ext_api::EventResult::SessionBefore(gate)) }); }
+                if let Some(gate) = gate {
+                    if let Some(job) = claimed {job.controller.abort(None);}
+                    return Box::pin(async move { Ok(maho_ext_api::EventResult::SessionBefore(gate)) });
+                }
                 let result = if let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event {
                     if event.signal.is_aborted() { Ok(()) } else {
                         checkpoint_state::capture_live_agent_checkpoint(&live_api, context).map(|checkpoint| {
@@ -144,8 +294,21 @@ impl maho_ext_api::Extension for CompactionExtension {
                 let live_api = std::sync::Arc::clone(&live_api);
                 let pending = std::sync::Arc::clone(&pending);
                 Box::pin(async move {
-                    result?;
+                    if let Err(error) = result {
+                        if let Some(job) = claimed {job.controller.abort(None);}
+                        return Err(error);
+                    }
                     let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { return Ok(maho_ext_api::EventResult::None); };
+                    if let Some(job) = claimed {
+                        let settled = tokio::select! {
+                            () = event.signal.cancelled() => {job.controller.abort(None);return Ok(maho_ext_api::EventResult::None);}
+                            settled = job.settled() => settled,
+                        };
+                        job.controller.abort(None);
+                        if let Some(compaction) = settled.result {
+                            return Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {compaction:Some(compaction),..Default::default()}));
+                        }
+                    }
                     let result = extension_wiring::generate_core_route_compaction(&live_api, context, event).await;
                     if !matches!(&result, Ok(maho_ext_api::EventResult::SessionBefore(result)) if result.compaction.is_some()) {
                         pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|(id, _)|id != &event.request_id);
@@ -178,7 +341,14 @@ impl maho_ext_api::Extension for CompactionExtension {
         {
             let directive = std::sync::Arc::new(std::sync::Mutex::new(checkpoint_state::RestorationDirectiveState::default()));
             let restoration = std::sync::Arc::clone(&restoration);
-            api.on(maho_ext_api::EventKind::BeforeAgentStart, std::sync::Arc::new(move |_event, context| {
+            let state = std::sync::Arc::clone(&state);
+            let live_api = std::sync::Arc::clone(&live_api);
+            let warm = std::sync::Arc::clone(&warm);
+            let generation = std::sync::Arc::clone(&generation);
+            let idle_since_end = std::sync::Arc::clone(&idle_since_end);
+            let reminder = std::sync::Arc::clone(&reminder);
+            api.on(maho_ext_api::EventKind::BeforeAgentStart, std::sync::Arc::new(move |event, context| {
+                idle_since_end.store(false,std::sync::atomic::Ordering::SeqCst);
                 let entries: Vec<_> = context.session_manager.get_entries().into_iter().map(|entry| {
                     let mut value = entry.data;
                     value["type"] = serde_json::json!(entry.kind);
@@ -193,7 +363,49 @@ impl maho_ext_api::Extension for CompactionExtension {
                     content: vec![maho_ext_api::ToolContent::text(message["content"].as_str().unwrap_or_default())],
                     display: message["display"].as_bool().unwrap_or(false), details: message.get("details").cloned(),
                 })).transpose().map(|message| maho_ext_api::EventResult::BeforeAgentStart(maho_ext_api::BeforeAgentStartEventResult { message, system_prompt: None }));
-                Box::pin(async move { result })
+                let state = std::sync::Arc::clone(&state);
+                let live_api = std::sync::Arc::clone(&live_api);
+                let warm = std::sync::Arc::clone(&warm);
+                let generation = std::sync::Arc::clone(&generation);
+                let reminder = std::sync::Arc::clone(&reminder);
+                Box::pin(async move {
+                    let external = context.model.as_ref().is_some_and(|model|model.provider == "anthropic-subscription");
+                    if external {return result;}
+                    let maho_ext_api::ExtensionEvent::BeforeAgentStart(event) = event else {return result;};
+                    let live = context.get_compaction_settings()?;
+                    let mut settings = maho_core::compaction::settings::default_compaction_settings();
+                    settings.enabled=live.enabled;settings.reserve_tokens=live.reserve_tokens as i64;settings.keep_recent_tokens=live.keep_recent_tokens as i64;
+                    let usage = context.get_context_usage()?;
+                    let window = usage.as_ref().map_or_else(||context.model.as_ref().map_or(200000,|model|model.context_window),|usage|usage.context_window) as f64;
+                    let tokens = usage.and_then(|usage|usage.tokens).map(|tokens|tokens as f64);
+                    let additional = extension_wiring::estimate_pending_prompt_tokens(Some(&event.prompt),event.images.as_ref().map_or(0,Vec::len)) as f64;
+                    let (last_yield,tripped) = {let state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);(state.last_yield,circuit_breaker::is_tripped(&state,chrono::Utc::now().timestamp_millis() as f64))};
+                    let geometry = orchestration::resolve_compaction_geometry(window,&settings,last_yield);
+                    let hard = policy::is_at_hard_limit(tokens,window,geometry.reserve_tokens,additional);
+                    let threshold = !tripped && policy::should_trigger_compaction(tokens.map(|tokens|tokens+additional),window,&settings,last_yield);
+                    let in_flight = warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_some_and(|job|!job.completed());
+                    if hard || (threshold && !orchestration::should_defer_grace_band(tokens.unwrap_or(0.)+additional,geometry,window,in_flight,None)) {
+                        if let Some(job)=warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {job.controller.abort(None);}
+                        let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
+                        let instructions=if hard {"EMERGENCY: hard context limit reached. Produce an aggressive recovery summary that preserves current goal, constraints, files touched, tool outcomes, and exact next steps. Prefer concise factual state over transcript detail."} else {"Proactively compact before the next agent turn."};
+                        extension_wiring::apply_live_blocking_compaction(&live_api,context,next,instructions.into()).await?;
+                    } else if !tripped && !openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref()) && policy::should_start_speculative_compaction(tokens.map(|tokens|tokens+additional),window,&settings,last_yield,Some(geometry.lead_tokens)) {
+                        let mut job=warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if job.is_none() {let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;*job=speculative_job::start_live_speculative_job(&live_api,context,next,"Proactively compact before the next agent turn.".into())?;}
+                    }
+                    let computed = {
+                        let mut previous=reminder.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let computed=token_budget_reminder::compute_token_budget_reminder(token_budget_reminder::TokenBudgetReminderInput {context_tokens:tokens.unwrap_or(0.)+additional,context_window:window,threshold_tokens:geometry.threshold_tokens,lead_tokens:geometry.lead_tokens,compaction_epoch:generation.load(std::sync::atomic::Ordering::SeqCst),state:std::mem::take(&mut *previous)});
+                        *previous=computed.next_state;computed.message
+                    };
+                    let mut result=result?;
+                    if let maho_ext_api::EventResult::BeforeAgentStart(output)=&mut result {
+                        if let Some(message)=&mut output.message {
+                            if let Some(reminder)=computed {message.content.push(maho_ext_api::ToolContent::text(format!("\n\n{reminder}")));}
+                        } else {output.system_prompt=orchestration::resolve_reminder_system_prompt(&event.system_prompt,computed.as_deref(),None);}
+                    }
+                    Ok(result)
+                })
             }));
         }
         for kind in [maho_ext_api::EventKind::TurnEnd, maho_ext_api::EventKind::AgentEnd,

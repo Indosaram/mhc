@@ -176,10 +176,47 @@ pub async fn generate_core_route_compaction(
                 let mut diagnostics = crate::deterministic_fallback::DeterministicFallbackDiagnostic::default();
                 let intent = crate::task_intent::resolve_inherited_task_intent(&snapshot.branch_entries);
                 if let Some(compaction) = crate::deterministic_fallback::create_required_compaction_fallback(&snapshot.preparation, snapshot.context_window, failure, intent.as_deref(), &snapshot.branch_entries, &mut diagnostics) {
+                    context.ui.notify(&crate::deterministic_fallback::format_required_compaction_fallback_notice(failure,Some(&error.to_string())),maho_ext_api::NotificationType::Warning);
                     return Ok(EventResult::SessionBefore(SessionBeforeEventResult { compaction: Some(compaction), ..Default::default() }));
                 }
             }
             Ok(EventResult::SessionBefore(SessionBeforeEventResult { cancel: Some(true), reason: Some(error.to_string().replace("senpi:no-turn-retry:","")), ..Default::default() }))
+        }
+    }
+}
+
+pub async fn apply_live_blocking_compaction(
+    api: &maho_ext_api::ExtensionApi,
+    context: &maho_ext_api::ExtensionContext,
+    generation: u64,
+    instructions: String,
+) -> Result<crate::speculative::SpeculativeCompactionResult, maho_ext_api::ExtensionFailure> {
+    if context.model.as_ref().is_some_and(|model|matches!(model.provider.as_str(),"cursor" | "cursor-cli-oauth")) && !context.is_idle() {return Ok(crate::speculative::SpeculativeCompactionResult::Rejected);}
+    let signal = context.begin_compaction(maho_ext_api::BeginCompactionOptions {reason:maho_ext_api::CompactionReason::Extension})?;
+    let Some(mut snapshot) = crate::speculative::create_speculative_compaction_snapshot(context,generation,Some(instructions),summarization_tools(api))? else {
+        end_compaction_feedback(context,signal,false,"unavailable",None)?;
+        return Ok(crate::speculative::SpeculativeCompactionResult::Unavailable);
+    };
+    snapshot.origin = Some("blocking".into());
+    let key = context.model_registry.get_api_key_for_provider(&snapshot.model.provider).await?;
+    let controller = maho_ai::utils::abort::AbortController::new();
+    let ai_signal = controller.signal();
+    let progress = |delta: &str| {let _ = context.update_compaction(maho_ext_api::UpdateCompactionOptions {reason:maho_ext_api::CompactionReason::Extension,signal:signal.clone(),delta:Some(delta.into()),text:None});};
+    let cancelled = async {match &signal {Some(signal)=>signal.cancelled().await,None=>std::future::pending::<()>().await}};
+    let generated = tokio::select! {
+        () = cancelled => {controller.abort(None);Ok(None)}
+        result = crate::speculative::run_extension_compaction(&snapshot,key,None,Some(&ai_signal),None,&progress) => result,
+    };
+    match generated {
+        Ok(compaction) => {
+            let result = crate::speculative::apply_generated_compaction(context,Some(&snapshot),generation,compaction,signal.clone()).await?;
+            let reason = match result {crate::speculative::SpeculativeCompactionResult::Applied=>"applied",crate::speculative::SpeculativeCompactionResult::Stale=>"stale",crate::speculative::SpeculativeCompactionResult::Rejected=>"rejected",crate::speculative::SpeculativeCompactionResult::Unavailable=>"unavailable",crate::speculative::SpeculativeCompactionResult::Failed=>"failed"};
+            end_compaction_feedback(context,signal,result == crate::speculative::SpeculativeCompactionResult::Applied,reason,None)?;
+            Ok(result)
+        }
+        Err(error) => {
+            end_compaction_feedback(context,signal,false,"failed",Some(&error.to_string().replace("senpi:no-turn-retry:","")))?;
+            Ok(crate::speculative::SpeculativeCompactionResult::Failed)
         }
     }
 }
