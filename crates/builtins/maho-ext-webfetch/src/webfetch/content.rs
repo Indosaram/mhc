@@ -477,7 +477,7 @@ pub fn reader_article_title(document:&dom_query::Document)->String {
     static SEPARATOR:LazyLock<Regex>=LazyLock::new(||Regex::new(r" [|\-\\/>»] ").expect("literal pattern"));
     static FIRST:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^[^|\-\\/>»]*[|\-\\/>»]").expect("literal pattern"));
     static NORMALIZE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"[\s\u{feff}]{2,}").expect("literal pattern"));
-    let original=document.select("title").text().trim_matches(js_whitespace).to_owned();let mut title=original.clone();let mut hierarchical=false;
+    let original=document.select_single("head title").text().trim_matches(js_whitespace).to_owned();let mut title=original.clone();let mut hierarchical=false;
     let count=|text:&str|WORDS.split(text).count();
     if let Some(separator)=SEPARATOR.find_iter(&title).last() {
         hierarchical=SEPARATOR.find_iter(&title).any(|part|part.as_str().contains(['\\','/','>','»']));title=original[..separator.start()].into();
@@ -605,7 +605,7 @@ pub fn html_fragment_to_markdown(root:&dom_query::NodeRef<'_>)->String {
                 if let Some(parent)=node.parent().filter(|parent|parent.node_name().as_deref()==Some("ol")) {
                     let index=parent.element_children().iter().position(|child|child.id==node.id).unwrap_or(0);
                     let start=parent.attr("start").filter(|value|!value.is_empty()).map_or(1.,|value|ordered_start(&value));
-                    let number=start+index as f64;let label=if number==f64::INFINITY {"Infinity".into()} else if number==f64::NEG_INFINITY {"-Infinity".into()} else if number==0. {"0".into()} else {number.to_string()};prefix=format!("{label}.  ");
+                    let number=start+index as f64;let label=if number==f64::INFINITY {"Infinity".into()} else if number==f64::NEG_INFINITY {"-Infinity".into()} else if number==0. {"0".into()} else if number.abs()>=1e21||number.abs()<1e-6 {let scientific=format!("{number:e}");let (digits,exponent)=scientific.split_once('e').expect("scientific exponent");let exponent=exponent.parse::<i32>().expect("numeric exponent");format!("{digits}e{exponent:+}")} else {number.to_string()};prefix=format!("{label}.  ");
                 }
                 let paragraph=content.ends_with('\n');let content=format!("{}{}",content.trim_matches('\n'),if paragraph {"\n"} else {""});
                 format!("{prefix}{}{}",content.replace('\n',&format!("\n{}"," ".repeat(prefix.encode_utf16().count()))),if node.next_sibling().is_some() {"\n"} else {""})
@@ -671,7 +671,7 @@ pub fn extract_explicit_article(document:&dom_query::Document)->Option<ReadableA
         let candidate=cloned.select_single(selector);let Some(root)=candidate.nodes().first() else {continue;};
         candidate.select("script, style, noscript, iframe, object, embed, meta, link, nav, aside, footer, .another_category, .area_related, .related, .revenue_unit_wrap, .adsbygoogle, .container_postbtn, .postbtn_like, .comments, .comment, .tagTrail, .sidebar").remove();
         if normalize_plain_text(&root.text()).encode_utf16().count()<30 {continue;}
-        let title=select_preferred_title(document,&document.select("title").text());let has_heading=!candidate.select("h1, h2, h3, h4, h5, h6").is_empty();let root=root.id;
+        let title=select_preferred_title(document,&document.select_single("head title").text());let has_heading=!candidate.select("h1, h2, h3, h4, h5, h6").is_empty();let root=root.id;
         return Some(ReadableArticle{document:cloned,root,title,has_heading});
     }
     None
@@ -849,7 +849,7 @@ mod tests {
         let document=dom_query::Document::from("<div id='main' class='article comment'></div><h2 id='sidebar'></h2>");assert_eq!(reader_initial_score(&document.select("div").nodes()[0],true),30);assert_eq!(reader_initial_score(&document.select("h2").nodes()[0],true),-30);assert_eq!(reader_initial_score(&document.select("div").nodes()[0],false),5);
     }
     #[test] fn ordered_start_uses_javascript_number_coercion() {
-        for (start,prefix) in [(" ","0.  "),("0x10","16.  "),("0b11","3.  "),("Infinity","Infinity.  "),("inf","NaN.  ")] {
+        for (start,prefix) in [(" ","0.  "),("0x10","16.  "),("0b11","3.  "),("Infinity","Infinity.  "),("inf","NaN.  "),("1e21","1e+21.  "),("1e-7","1e-7.  ")] {
             let document=dom_query::Document::from(format!("<ol start='{start}'><li>x</li></ol>"));assert!(html_fragment_to_markdown(&document.select("body").nodes()[0]).starts_with(prefix));
         }
     }
