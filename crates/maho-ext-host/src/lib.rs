@@ -6,4 +6,5 @@ pub mod notice;
 pub mod kernel_tools_context;
 pub mod ui;
 pub mod exec;
+pub mod oauth;
 

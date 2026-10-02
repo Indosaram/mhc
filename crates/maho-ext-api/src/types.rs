@@ -146,6 +146,15 @@ pub struct ProviderConfigOptions {
     pub model_options: BTreeMap<String, ProviderModelOptions>,
     pub retry_policy: Option<maho_ai::utils::retry_profile::types::RetryPolicyProfile>,
 }
+pub trait ExtensionOAuthConfig: Send + Sync {
+    fn name(&self) -> &str;
+    fn is_subscription(&self) -> bool { false }
+    fn uses_callback_server(&self) -> Option<bool> { None }
+    fn login<'a>(&'a self, callbacks: &'a dyn maho_ai::oauth::OAuthLoginCallbacks) -> ExtensionFuture<'a, maho_ai::oauth::OAuthCredentials>;
+    fn refresh_token<'a>(&'a self, credentials: &'a maho_ai::oauth::OAuthCredentials, signal: &'a maho_ai::utils::abort::AbortSignal) -> ExtensionFuture<'a, maho_ai::oauth::OAuthCredentials>;
+    fn get_api_key(&self, credentials: &maho_ai::oauth::OAuthCredentials) -> String;
+    fn modify_models(&self, models: Vec<Model>, _: &maho_ai::oauth::OAuthCredentials) -> Vec<Model> { models }
+}
 #[derive(Clone)]
 pub enum ProviderRegistration { Config { name: String, config: Box<ProviderConfig> }, ConfigOptions { name: String, options: Box<ProviderConfigOptions> }, Native(Arc<dyn maho_ai::models::Provider>) }
 /// Object-only request fields for callers that want schema constraints at construction.
