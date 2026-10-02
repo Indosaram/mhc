@@ -13,6 +13,7 @@ maho-senpi-task = { path = "../../senpi-task", version = "=0.0.0" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 chrono = { workspace = true, features = ["std"] }
+notify = "=8.2.0"
 tokio = { version = "=1.52.3", features = ["macros", "rt", "time", "process"] }
 
 [dev-dependencies]
@@ -21,3 +22,6 @@ tokio = { version = "=1.52.3", features = ["macros", "rt", "time", "test-util"] 
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "=0.28.0", features = ["signal", "process"] }
