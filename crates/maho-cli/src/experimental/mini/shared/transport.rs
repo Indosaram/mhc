@@ -1,8 +1,8 @@
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-pub struct JsonConnection<R, W> { input: BufReader<R>, output: W, closed: bool }
+pub struct JsonConnection<R, W> { input: BufReader<R>, output: W, closed: bool, buffered: Vec<u8> }
 impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> JsonConnection<R, W> {
-    pub fn new(input: R, output: W) -> Self { Self { input: BufReader::new(input), output, closed: false } }
+    pub fn new(input: R, output: W) -> Self { Self { input: BufReader::new(input), output, closed: false, buffered: Vec::new() } }
     pub async fn send(&mut self, message: &Value) -> std::io::Result<()> {
         if self.closed { return Ok(()); }
         let mut line = serde_json::to_vec(message)?; line.push(b'\n');
@@ -12,11 +12,11 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> JsonConnection<R, W> {
     pub async fn receive(&mut self) -> std::io::Result<Option<Value>> {
         if self.closed { return Ok(None); }
         loop {
-            let mut line = Vec::new();
-            match self.input.read_until(b'\n', &mut line).await {
+            match self.input.read_until(b'\n', &mut self.buffered).await {
                 Ok(0) => { self.closed = true; return Ok(None); }
                 Err(error) => { self.closed = true; return Err(error); }
                 Ok(_) => {
+                    let mut line = std::mem::take(&mut self.buffered);
                     if line.last() != Some(&b'\n') { self.closed = true; return Ok(None); }
                     line.pop();
                     if line.is_empty() { continue; }
