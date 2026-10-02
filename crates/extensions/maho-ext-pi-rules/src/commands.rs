@@ -1,5 +1,19 @@
 use std::collections::BTreeSet;
+use std::sync::{Arc,Mutex};
+use maho_ext_api::{ExtensionApi,NotificationType};
 use crate::rules::{engine::{Engine,EngineDeps},types::{LoadedRule,MatchReason,RuleDiagnostic,Severity}};
+pub fn register_slash_commands<D:EngineDeps+Send+'static>(api:&mut ExtensionApi,engine:Arc<Mutex<Engine<D>>>){
+    let rules=Arc::clone(&engine);
+    api.register_command("rules",Some("Inspect loaded pi-rules.".into()),None,Arc::new(move|args,ctx|{
+        let (message,severity)={let mut engine=rules.lock().unwrap_or_else(std::sync::PoisonError::into_inner);handle_rules(&mut engine,args,&ctx.cwd.to_string_lossy())};
+        ctx.ui.notify(&message,match severity{Some(Severity::Error)=>NotificationType::Error,Some(Severity::Warning)=>NotificationType::Warning,None=>NotificationType::Info});
+        Box::pin(async{Ok(())})
+    }));
+    api.register_command("reload-rules",Some("Reload pi-rules for the current session.".into()),None,Arc::new(move|_,ctx|{
+        let message={let mut engine=engine.lock().unwrap_or_else(std::sync::PoisonError::into_inner);handle_reload(&mut engine,&ctx.cwd.to_string_lossy())};
+        ctx.ui.notify(&message,NotificationType::Info);Box::pin(async{Ok(())})
+    }));
+}
 pub const RULE_SUBCOMMANDS:[&str;4]=["list","show","paths","status"];
 pub fn argument_completions(prefix:&str)->Option<Vec<(&'static str,&'static str)>>{let result:Vec<_>=RULE_SUBCOMMANDS.into_iter().filter(|command|command.starts_with(prefix)).map(|command|(command,command)).collect();(!result.is_empty()).then_some(result)}
 pub fn handle_rules<D:EngineDeps>(engine:&mut Engine<D>,args:&str,cwd:&str)->(String,Option<Severity>){

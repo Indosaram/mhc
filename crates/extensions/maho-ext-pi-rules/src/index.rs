@@ -19,6 +19,7 @@ pub fn register_rule_injection_hooks_with_engine<D:EngineDeps+Send+'static>(api:
     api.register_flag("pi-rules-disabled",FlagType::Boolean{default:Some(false)},Some("Disable pi-rules hooks.".into()));
     api.register_flag("pi-rules-mode",FlagType::String{default:Some("both".into())},Some("Rule injection mode: static, dynamic, both, or off.".into()));
     let env_disabled=engine.config.disabled;let engine=Arc::new(Mutex::new(engine));
+    crate::commands::register_slash_commands(api,Arc::clone(&engine));
     for kind in [EventKind::SessionStart,EventKind::SessionCompact]{
         let engine=Arc::clone(&engine);let runtime=api.runtime.clone();
         api.on(kind,Arc::new(move|_,ctx|{let mut engine=engine.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if kind==EventKind::SessionStart{sync_flags(&mut engine,&runtime,env_disabled);}engine.reset_session(Some(&ctx.cwd.to_string_lossy()));Box::pin(async{Ok(EventResult::None)})}));

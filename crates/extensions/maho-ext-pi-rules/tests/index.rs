@@ -27,12 +27,14 @@ fn registers_four_injection_hooks_and_presence_flags(){
     register_fixture(&mut api,Path::new("/fixture"));
     for kind in [EventKind::SessionStart,EventKind::SessionCompact,EventKind::BeforeAgentStart,EventKind::ToolResult]{assert_eq!(api.registered.handlers[&kind].len(),1);}
     assert_eq!(api.registered.handlers.len(),4);assert_eq!(api.registered.flags.len(),2);
+    assert_eq!(api.registered.commands.len(),2);assert!(api.registered.commands.iter().any(|command|command.name=="rules"));assert!(api.registered.commands.iter().any(|command|command.name=="reload-rules"));
 }
 #[tokio::test]
 async fn static_hook_is_immutable_deduplicated_and_session_resettable(){
     let temp=tempfile::tempdir().expect("temp");std::fs::create_dir(temp.path().join(".git")).expect("project marker");std::fs::write(temp.path().join("AGENTS.md"),"fixture rule").expect("rule");let ctx=context(temp.path());let mut api=ExtensionApi::new(LoadedExtension::new("pi-rules",temp.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());register_fixture(&mut api,temp.path());
     let mut event=ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent{prompt:"test".into(),images:None,system_prompt:"original".into(),system_prompt_options:BuildSystemPromptOptions::default()});let hook=&api.registered.handlers[&EventKind::BeforeAgentStart][0];let result=hook(&mut event,&ctx).await.expect("first");let EventResult::BeforeAgentStart(result)=result else{panic!("injection")};assert!(result.system_prompt.expect("prompt").starts_with("original"));let ExtensionEvent::BeforeAgentStart(original)=&event else{panic!("event")};assert_eq!(original.system_prompt,"original");assert!(matches!(hook(&mut event,&ctx).await.expect("dedup"),EventResult::None));
     let mut reset=ExtensionEvent::SessionStart(SessionStartEvent{reason:SessionReason::New,initial_model_provenance:None,previous_session_file:None});api.registered.handlers[&EventKind::SessionStart][0](&mut reset,&ctx).await.expect("reset");assert!(matches!(hook(&mut event,&ctx).await.expect("after reset"),EventResult::BeforeAgentStart(_)));
+    (api.registered.commands.iter().find(|command|command.name=="reload-rules").expect("reload registration").handler)("",&ctx).await.expect("reload command");assert!(matches!(hook(&mut event,&ctx).await.expect("after reload"),EventResult::BeforeAgentStart(_)));
 }
 #[tokio::test]
 async fn dynamic_hook_preserves_content_and_deduplicates_target_fingerprint(){
