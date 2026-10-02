@@ -129,6 +129,39 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     #[tokio::test]
+    async fn checker_receives_hook_json_and_custom_prompt() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().expect("checker fixture");
+        let binary = fixture.path().join("checker");
+        std::fs::write(&binary, "#!/bin/sh\nprintf '%s\\n' \"$@\"\ncat\n").expect("write checker recorder");
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).expect("executable recorder");
+        let input = crate::core::to_hook_input(&crate::core::CommentCheckRequest { source_tool_name: "write".into(), tool_name: "Write".into(), file_path: "file.py".into(), tool_input: Default::default() }, "session", "/workspace");
+        let result = run_checker_with_prompt(&input, Some(&binary), Some("fixture prompt")).await;
+        assert_eq!(result.status, RunStatus::Pass);
+        let output = result.stdout.expect("recorded input");
+        let mut lines = output.splitn(4, '\n');
+        assert_eq!(lines.next(), Some("check"));
+        assert_eq!(lines.next(), Some("--prompt"));
+        assert_eq!(lines.next(), Some("fixture prompt"));
+        let payload: serde_json::Value = serde_json::from_str(lines.next().expect("hook JSON")).expect("parse hook");
+        assert_eq!(payload, serde_json::to_value(input).expect("expected hook"));
+    }
+    #[tokio::test]
+    async fn missing_binary_does_not_spawn() {
+        let input = crate::core::to_hook_input(&crate::core::CommentCheckRequest { source_tool_name: "write".into(), tool_name: "Write".into(), file_path: "file.py".into(), tool_input: Default::default() }, "session", "/workspace");
+        let result = run_checker(&input, None).await;
+        assert_eq!(result.status, RunStatus::Missing);
+        assert!(result.binary_path.is_none());
+        assert!(result.exit_code.is_none());
+    }
+    #[tokio::test]
+    async fn oversized_ascii_stderr_is_bounded() {
+        let input = vec![b'x'; MAX_PROCESS_OUTPUT_BYTES + 40];
+        let result = read_output(input.as_slice(), "stderr").await.expect("bounded output");
+        assert_eq!(result, format!("{}\n[stderr truncated after {MAX_PROCESS_OUTPUT_BYTES} bytes]", "x".repeat(MAX_PROCESS_OUTPUT_BYTES)));
+    }
+    #[cfg(unix)]
+    #[tokio::test]
     async fn timeout_retains_reason_after_noisy_process() {
         use std::os::unix::fs::PermissionsExt;
         let fixture = tempfile::tempdir().expect("create timeout fixture");
