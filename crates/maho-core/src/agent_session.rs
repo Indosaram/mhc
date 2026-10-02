@@ -5962,6 +5962,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_compaction_hook_makes_no_summary_request() {
+        use maho_ai::providers::faux::{faux_provider, RegisterFauxProviderOptions};
+        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
+        let session = test_session_with_stream_function(false);
+        session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
+        runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
+            config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".to_owned()), ..Default::default() },
+            ..Default::default()
+        }).expect("auth");
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"keepRecentTokens":1})),
+        ])));
+        for (index, text) in ["old task", "recent task"].into_iter().enumerate() {
+            session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":text,"timestamp":index})));
+        }
+        session.rebuild_session_context().expect("context");
+        let messages = session.messages();
+        let entries = session.with_session_manager(|manager| manager.entries());
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let started = Arc::new(Mutex::new(Some(started)));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:compaction-abort>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(move |event, _| {
+            let started = started.clone();
+            Box::pin(async move {
+                let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { panic!("compaction event"); };
+                lock(&started).take().expect("single hook").send(()).expect("observer");
+                event.signal.cancelled().await;
+                Ok(maho_ext_api::EventResult::None)
+            })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(session.compact(None), async { entered.await.expect("hook started"); session.abort_compaction(); })
+        }).await.expect("bounded compaction cancellation");
+        assert!(result.is_err());
+        assert!(provider.get_call_log().is_empty());
+        assert_eq!(session.messages(), messages);
+        assert_eq!(session.with_session_manager(|manager| manager.entries()), entries);
+        assert_eq!(session.compaction_state().status(), "aborted");
+        assert!(!session.is_compacting());
+    }
+
+    #[tokio::test]
     async fn auto_retry_creates_fresh_invoke_recovery_wrapper() {
         use maho_ai::types::{AssistantMessageEvent as Event, DoneReason, ErrorReason};
         let session = retry_session(Vec::new(), 2);
