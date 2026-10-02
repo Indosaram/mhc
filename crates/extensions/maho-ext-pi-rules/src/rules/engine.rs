@@ -31,7 +31,7 @@ impl<D:EngineDeps> Engine<D>{
             let mut root_single_selected=false;
             for candidate in candidates{
                 if root_single_selected&&is_root_single_file(&candidate){continue;}
-                let Some(mut rule)=load_candidate(candidate,&mut self.deps,&mut result.diagnostics,root.as_deref(),&mut real_paths)else{continue;};
+                let Some(mut rule)=load_candidate(candidate,&mut self.deps,&mut result.diagnostics,root.as_deref(),&mut real_paths,None)else{continue;};
                 let reason=if rule.frontmatter.always_apply==Some(true){MatchReason::AlwaysApply}else if rule.candidate.is_single_file{MatchReason::SingleFile}else{continue;};
                 if is_root_single_file(&rule.candidate){root_single_selected=true;}
                 rule.match_reason=reason;result.rules.push(rule);
@@ -47,6 +47,7 @@ impl<D:EngineDeps> Engine<D>{
         if !self.config.disabled&&!matches!(self.config.mode,Mode::Off|Mode::Static){
             let mut matcher=super::matcher::Matcher::default();
             let mut real_paths=BTreeMap::new();
+            let mut membership=BTreeMap::new();
             let disabled=disabled_sources_for(&self.config);
             let mut seen_targets=BTreeSet::new();let mut seen_rules=BTreeSet::new();let mut selected_roots=BTreeSet::new();
             let mut loaded:BTreeMap<String,Option<LoadedRule>>=BTreeMap::new();
@@ -67,13 +68,13 @@ impl<D:EngineDeps> Engine<D>{
                 for candidate in candidates{
                     let root_single=is_root_single_file(&candidate)&&root.is_some();
                     if root_single&&selected_roots.contains(&root){continue;}
-                    if !candidate_within_project(&candidate,root.as_deref(),&mut real_paths){result.diagnostics.push(RuleDiagnostic{severity:Severity::Warning,source:candidate.path,message:"Rule file resolves outside project root".into()});continue;}
+                    if !candidate_within_project(&candidate,root.as_deref(),&mut real_paths,Some(&mut membership)){result.diagnostics.push(RuleDiagnostic{severity:Severity::Warning,source:candidate.path,message:"Rule file resolves outside project root".into()});continue;}
                     let mut rule=if let Some(cached)=loaded.get(&candidate.real_path){
                         if let Some(diagnostics)=cached_diagnostics.get(&candidate.real_path){result.diagnostics.extend(diagnostics.iter().cloned().map(|mut diagnostic|{diagnostic.source=candidate.path.clone();diagnostic}));}
                         let Some(cached)=cached else{result.diagnostics.push(RuleDiagnostic{severity:Severity::Warning,source:candidate.path,message:"Unable to read rule file".into()});continue;};
                         let mut rule=cached.clone();rule.candidate=candidate;rule
                     }else{
-                        let before=result.diagnostics.len();let rule=load_candidate(candidate.clone(),&mut self.deps,&mut result.diagnostics,root.as_deref(),&mut real_paths);if rule.is_some(){cached_diagnostics.insert(candidate.real_path.clone(),result.diagnostics[before..].to_vec());}loaded.insert(candidate.real_path,rule.clone());let Some(rule)=rule else{continue;};rule
+                        let before=result.diagnostics.len();let rule=load_candidate(candidate.clone(),&mut self.deps,&mut result.diagnostics,root.as_deref(),&mut real_paths,Some(&mut membership));if rule.is_some(){cached_diagnostics.insert(candidate.real_path.clone(),result.diagnostics[before..].to_vec());}loaded.insert(candidate.real_path,rule.clone());let Some(rule)=rule else{continue;};rule
                     };
                     let basename=Path::new(target).file_name().unwrap_or_default().to_string_lossy();
                     let project_relative=root.as_ref().map_or_else(||basename.to_string(),|root|relative_path(Path::new(root),Path::new(target)));
@@ -129,15 +130,19 @@ fn relative_path(base:&Path,target:&Path)->String{
     let common=left.iter().zip(&right).take_while(|(a,b)|a==b).count();let mut result=PathBuf::new();
     for _ in common..left.len(){result.push("..");}for component in &right[common..]{result.push(component.as_os_str());}result.to_string_lossy().replace('\\',"/")
 }
-fn candidate_within_project(candidate:&RuleCandidate,root:Option<&str>,real_paths:&mut BTreeMap<String,PathBuf>)->bool{
-    candidate.is_global||root.is_some_and(|root|{
+fn candidate_within_project(candidate:&RuleCandidate,root:Option<&str>,real_paths:&mut BTreeMap<String,PathBuf>,membership:Option<&mut BTreeMap<String,bool>>)->bool{
+    let key=format!("{}\0{}",root.unwrap_or(""),candidate.real_path);
+    if let Some(cached)=membership.as_ref().and_then(|cache|cache.get(&key)){return *cached;}
+    let within=candidate.is_global||root.is_some_and(|root|{
         let root=real_paths.entry(root.into()).or_insert_with(||Path::new(root).canonicalize().unwrap_or_else(|_|absolute(root)));
         let real=absolute(&candidate.real_path);
         real.strip_prefix(root).is_ok_and(|relative|!relative.to_string_lossy().starts_with(".."))
-    })
+    });
+    if let Some(cache)=membership{cache.insert(key,within);}
+    within
 }
-fn load_candidate<D:EngineDeps>(candidate:RuleCandidate,deps:&mut D,diagnostics:&mut Vec<RuleDiagnostic>,root:Option<&str>,real_paths:&mut BTreeMap<String,PathBuf>)->Option<LoadedRule>{
-    if !candidate_within_project(&candidate,root,real_paths){diagnostics.push(RuleDiagnostic{severity:Severity::Warning,source:candidate.path,message:"Rule file resolves outside project root".into()});return None;}
+fn load_candidate<D:EngineDeps>(candidate:RuleCandidate,deps:&mut D,diagnostics:&mut Vec<RuleDiagnostic>,root:Option<&str>,real_paths:&mut BTreeMap<String,PathBuf>,membership:Option<&mut BTreeMap<String,bool>>)->Option<LoadedRule>{
+    if !candidate_within_project(&candidate,root,real_paths,membership){diagnostics.push(RuleDiagnostic{severity:Severity::Warning,source:candidate.path,message:"Rule file resolves outside project root".into()});return None;}
     let Some(content)=deps.read_file(&candidate.path)else{diagnostics.push(RuleDiagnostic{severity:Severity::Warning,source:candidate.path,message:"Unable to read rule file".into()});return None;};
     let parsed=parse_rule(&content);
     if let Some(message)=parsed.diagnostic{diagnostics.push(RuleDiagnostic{severity:Severity::Warning,source:candidate.path.clone(),message});}
