@@ -37,6 +37,7 @@ async fn fetch_validated_url(value:&str,format:WebfetchFormat)->Result<FetchResu
         let status_text=response.extensions().get::<hyper::ext::ReasonPhrase>().map_or_else(||status.canonical_reason().unwrap_or("").into(),|reason|reason.as_bytes().iter().copied().map(char::from).collect::<String>());
         let location=response.headers().get_all("location").iter().map(|value|value.as_bytes().iter().copied().map(char::from).collect::<String>()).collect::<Vec<_>>().join(", ");
         if matches!(status.as_u16(),301|302|303|307|308)&&redirects<20&&!location.is_empty(){
+            let mut discarded=0;while let Ok(Some(chunk))=response.chunk().await{discarded+=chunk.len();if discarded>1024{break;}}
             current=url::Url::parse(&current).and_then(|url|url.join(&location)).map_err(|_|WebfetchError::InvalidUrl(format!("Invalid URL: {location}")))?.into();continue;
         }
         if response.content_length().is_some_and(|length|length>5*1024*1024){return Err(WebfetchError::ResponseTooLarge);}
