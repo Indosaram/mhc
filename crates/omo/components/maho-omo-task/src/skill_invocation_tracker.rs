@@ -14,9 +14,21 @@ impl SkillInvocationState for SessionSkills {
 pub struct SkillInvocationTracker {
     sessions: Mutex<BTreeMap<String, SessionSkills>>, sequence: Mutex<u64>, expanded: Regex, injected: Vec<Regex>, requested: Regex, own_words: Vec<Regex>, skill_path: Regex, plan_path: Regex, patch_path: Regex,
 }
+impl senpi_task::tools::task::spawn_policy::SpawnPolicyDeps for SkillInvocationTracker {
+    fn invocation_gate_denial(&self,agent:&str,session:&str)->Option<String> {
+        let state=self.state_for(session);
+        let resolver=move |_:&str| Box::new(state.clone()) as Box<dyn SkillInvocationState>;
+        senpi_task::tools::task::invocation_gate::invocation_gate_denial(Some(&resolver),agent,session)
+    }
+    fn plan_review_contract_outcome(&self,agent:&str,prompt:&str,session:&str)->Option<senpi_task::tools::task::spawn_policy::PlanReviewContractOutcome> {
+        let state=self.state_for(session);
+        let resolver=move |_:&str| Box::new(state.clone()) as Box<dyn SkillInvocationState>;
+        senpi_task::tools::task::plan_review_contract::plan_review_contract_outcome(Some(&resolver),agent,prompt,session)
+    }
+}
 impl SkillInvocationTracker {
     pub fn new() -> Result<Arc<Self>, regex::Error> {
-        Ok(Arc::new(Self { sessions: Mutex::new(BTreeMap::new()), sequence: Mutex::new(0), expanded: Regex::new(r#"(?i)<skill\s+name="([^"]+)""#)?, injected: [r"(?is)<ultrawork-mode>.*?</ultrawork-mode>", r"(?is)<system-reminder>.*?</system-reminder>", r#"(?is)<skill\s+name="[^"]*".*?</skill>"#, r#"(?is)<skill\s+name="[^"]*".*$"#].into_iter().map(Regex::new).collect::<Result<_,_>>()?, requested: Regex::new(r"(?i)\bulw[-_ ]?plan\b")?, own_words: [r"(?i)\b(?:make|write|create|draw|draft|build)\s+(?:me\s+)?(?:a|an|the)?\s*(?:work|implementation|action)?\s*plan\b",r"(?i)\bplan\b[^.!?\n]{0,40}\bbefore\s+(?:you\s+)?(?:cod(?:e|ing)|implement|start|work)",r"(?i)\bbefore\s+(?:you\s+)?(?:cod(?:e|ing)|implement|start)\b[^.!?\n]{0,40}\bplan\b",r"(?i)\bplan\s+(?:it|this|that|the\s+work)\s+(?:out\s+)?first\b",r"계획(?:서)?(?:부터|을|를|\s)*\s*(?:먼저\s*)?(?:세워|세우|짜|작성해|수립해)",r"(?:먼저|우선)\s*계획(?:서)?(?:을|를)?\s*(?:세워|세우|짜|작성해|수립해)"].into_iter().map(Regex::new).collect::<Result<_,_>>()?, skill_path: Regex::new(r"(?i)[\\/]skills[\\/]([^\\/]+)[\\/]SKILL\.md$")?, plan_path: Regex::new(r"(?i)(^|[\\/])\.omo[\\/]plans[\\/][^\\/]+\.md$")?, patch_path: Regex::new(r#"(?i)\.omo[\\/]plans[\\/][^\s"'`]+\.md"#)? }))
+        Ok(Arc::new(Self { sessions: Mutex::new(BTreeMap::new()), sequence: Mutex::new(0), expanded: Regex::new(r#"(?i)<skill\s+name="([^"]+)""#)?, injected: [r"(?is)<ultrawork-mode>.*?</ultrawork-mode>", r"(?is)<system-reminder>.*?</system-reminder>", r#"(?is)<skill\s+name="[^"]*".*?</skill>"#, r#"(?is)<skill\s+name="[^"]*".*$"#].into_iter().map(Regex::new).collect::<Result<_,_>>()?, requested: Regex::new(r"(?i)(?-u:\b)ulw[-_ ]?plan(?-u:\b)")?, own_words: [r"(?i)(?-u:\b)(?:make|write|create|draw|draft|build)\s+(?:me\s+)?(?:a|an|the)?\s*(?:work|implementation|action)?\s*plan(?-u:\b)",r"(?i)(?-u:\b)plan(?-u:\b)[^.!?\n]{0,40}(?-u:\b)before\s+(?:you\s+)?(?:cod(?:e|ing)|implement|start|work)",r"(?i)(?-u:\b)before\s+(?:you\s+)?(?:cod(?:e|ing)|implement|start)(?-u:\b)[^.!?\n]{0,40}(?-u:\b)plan(?-u:\b)",r"(?i)(?-u:\b)plan\s+(?:it|this|that|the\s+work)\s+(?:out\s+)?first(?-u:\b)",r"계획(?:서)?(?:부터|을|를|\s)*\s*(?:먼저\s*)?(?:세워|세우|짜|작성해|수립해)",r"(?:먼저|우선)\s*계획(?:서)?(?:을|를)?\s*(?:세워|세우|짜|작성해|수립해)"].into_iter().map(Regex::new).collect::<Result<_,_>>()?, skill_path: Regex::new(r"(?i)[\\/]skills[\\/]([^\\/]+)[\\/]SKILL\.md$")?, plan_path: Regex::new(r"(?i)(^|[\\/])\.omo[\\/]plans[\\/][^\\/]+\.md$")?, patch_path: Regex::new(r#"(?i)\.omo[\\/]plans[\\/][^\s"'`]+\.md"#)? }))
     }
     pub fn state_for(&self, session: &str) -> SessionSkills { self.sessions.lock().unwrap_or_else(PoisonError::into_inner).get(session).cloned().unwrap_or_default() }
     pub fn input(&self, session: &str, text: &str, source: InputSource) {

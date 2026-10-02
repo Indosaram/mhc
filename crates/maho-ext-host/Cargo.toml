@@ -7,7 +7,13 @@ license = "MIT"
 
 [dependencies]
 maho-ext-api = { path = "../maho-ext-api" }
-tokio = { version = "=1.52.3", features = ["time", "sync", "rt", "macros"] }
+maho-ai = { path = "../maho-ai" }
+async-trait = "=0.1.92"
+anyhow = "=1.0.104"
+tokio = { version = "=1.52.3", features = ["time", "sync", "rt", "macros", "process", "io-util"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "=0.28.0", features = ["signal"] }
 
 [dev-dependencies]
 tokio = { version = "=1.52.3", features = ["test-util"] }
