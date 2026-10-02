@@ -2883,17 +2883,31 @@ impl AgentSession {
         let mut guard = self.extension_runner.lock().await;
         let Some(runner) = guard.as_mut() else { return Ok(false); };
         let Some(command) = runner.get_command(name) else { return Ok(false); };
-        self.emit(AgentSessionEvent::CommandInvocation { command: serde_json::json!({"name":name,"source":"extension","syntax":"slash"}) });
+        let info = &command.command.source_info;
+        self.emit(AgentSessionEvent::CommandInvocation { command: serde_json::json!({"name":name,"source":"extension","syntax":"slash",
+            "sourceInfo":{"path":info.path,"source":info.source,"scope":match info.scope {
+                maho_ext_api::SourceScope::User => "user", maho_ext_api::SourceScope::Project => "project",
+                maho_ext_api::SourceScope::Temporary => "temporary", maho_ext_api::SourceScope::System => "system",
+            },"origin":match info.origin { maho_ext_api::SourceOrigin::Package => "package", maho_ext_api::SourceOrigin::TopLevel => "top-level" },
+                "baseDir":info.base_dir}
+        }) });
         let context = runner.create_command_context(Arc::new(SessionExtensionActions(Arc::downgrade(&self.inner))))
             .map_err(|error| error.to_string())?;
         let context_handler = runner.extensions.iter().find(|extension| extension.commands.iter().any(|registered|
             Arc::ptr_eq(&registered.handler, &command.command.handler)))
             .and_then(|extension| extension.command_context_handlers.get(&command.command.name)).cloned();
         drop(guard);
-        match context_handler {
+        let result = match context_handler {
             Some(handler) => handler(args, &context).await,
             None => (command.command.handler)(args, &context.context).await,
-        }.map_err(|error| error.to_string())?;
+        };
+        if let Err(error) = result {
+            let error = ExtensionError { extension_path: format!("command:{name}"), event: "command".to_owned(),
+                error: error.message, stack: error.stack };
+            if let Some(runner) = self.extension_runner.lock().await.as_mut() { runner.emit_error(error.clone()); }
+            let listener = self.state().extension_error_listener.clone();
+            if let Some(listener) = listener { listener(&error); }
+        }
         Ok(true)
     }
 
