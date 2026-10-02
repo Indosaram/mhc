@@ -10,7 +10,7 @@ pub trait DagWakeCoordinator {
     fn flush_soon(&self);
 }
 #[derive(Default)]
-pub struct DagWake { buffered: BTreeMap<String, BTreeMap<String, DagWakeInjection>> }
+pub struct DagWake { buffered: BTreeMap<String, Vec<DagWakeInjection>> }
 pub struct DagWakeRun<'a> { pub run_id: &'a str, pub name: &'a str, pub parent_session_id: &'a str }
 pub struct DagWakeFailure<'a> { pub code: &'a str, pub message: &'a str, pub node_id: Option<&'a str> }
 impl DagWake {
@@ -28,7 +28,10 @@ impl DagWake {
         }
         let injection = DagWakeInjection { key: format!("dag-run:{}", run.run_id), source: "dag-run", custom_type: DAG_WAKE_MESSAGE_TYPE, content, display: false, details };
         match state {
-            ParentState::Compacting | ParentState::SessionSwitching | ParentState::SessionShutdown => { self.buffered.entry(run.parent_session_id.into()).or_default().insert(injection.key.clone(), injection); }
+            ParentState::Compacting | ParentState::SessionSwitching | ParentState::SessionShutdown => {
+                let entries=self.buffered.entry(run.parent_session_id.into()).or_default();
+                if let Some(previous)=entries.iter_mut().find(|previous| previous.key==injection.key) { *previous=injection; } else { entries.push(injection); }
+            }
             ParentState::Idle => { coordinator.enqueue(injection); coordinator.flush_soon(); }
             ParentState::Streaming => { coordinator.enqueue(injection); coordinator.schedule_flush(); }
         }
@@ -36,8 +39,8 @@ impl DagWake {
     pub fn on_session_start(&mut self, session_id: Option<&str>, coordinator: &dyn DagWakeCoordinator) {
         let Some(session) = session_id else { return };
         let Some(entries) = self.buffered.remove(session) else { return };
-        for injection in entries.into_values() { coordinator.enqueue(injection); }
+        for injection in entries { coordinator.enqueue(injection); }
         coordinator.flush_soon();
     }
-    pub fn buffered_count(&self, session: &str) -> usize { self.buffered.get(session).map_or(0, BTreeMap::len) }
+    pub fn buffered_count(&self, session: &str) -> usize { self.buffered.get(session).map_or(0, Vec::len) }
 }
