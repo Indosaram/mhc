@@ -10,6 +10,7 @@ maho-ext-api = { path = "../../../maho-ext-api" }
 maho-omo-ultrawork = { path = "../maho-omo-ultrawork" }
 
 [dev-dependencies]
+serde_json = "=1.0.149"
 maho-test-support = { path = "../../../maho-test-support", features = ["sdk"] }
 maho-ext-host = { path = "../../../maho-ext-host" }
 tokio = { version = "=1.52.3", features = ["macros", "rt"] }
