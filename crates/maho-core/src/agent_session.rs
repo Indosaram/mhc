@@ -1516,11 +1516,15 @@ impl AgentSession {
             }).await.map_err(|error| error.to_string())?, None => None }
         };
         if let Some(before) = before {
-            if let Some(prompt) = before.system_prompt { self.agent.set_system_prompt(prompt); }
+            self.state().system_prompt_override = before.system_prompt.clone();
+            self.agent.set_system_prompt(before.system_prompt.unwrap_or_else(|| self.state().base_system_prompt.clone()));
             for message in before.messages { maho_ext_api::ExtensionActions::send_message(
                 &SessionExtensionActions(Arc::downgrade(&self.inner)), message, Default::default(),
             ).map_err(|error| error.to_string())?; }
-        } else { self.agent.set_system_prompt(self.state().base_system_prompt.clone()); }
+        } else {
+            self.state().system_prompt_override = None;
+            self.agent.set_system_prompt(self.state().base_system_prompt.clone());
+        }
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
             input_id, disposition: maho_ext_api::InputDisposition::Started,
         }).await;
@@ -2804,7 +2808,8 @@ impl AgentSession {
             context_files: Some(crate::resource_loader::load_project_context_files(&self.cwd(), &self.agent_dir())),
         });
         self.state().base_system_prompt = base.clone();
-        self.agent.set_system_prompt(base);
+        let prompt = self.state().system_prompt_override.clone().unwrap_or(base);
+        self.agent.set_system_prompt(prompt);
     }
 
     pub async fn reload(&self) -> Result<bool, String> {
@@ -3320,10 +3325,17 @@ impl AgentSession {
                 tools.push(tool);
             }
         }
+        let changed = self.get_active_tool_names() != tools.iter().map(|tool| tool.tool.name.clone()).collect::<Vec<_>>();
         self.agent.set_tools(tools);
         let mut state = self.state();
         state.withheld_eval_only_tool_names = withheld;
         state.requested_active_tool_names = Some(requested);
+        drop(state);
+        self.rebuild_system_prompt();
+        if changed {
+            self.abort_compaction();
+            self.state().message_revision += 1;
+        }
     }
 
     /// The active-tool selection as requested by callers, before eval-only filtering.
@@ -4938,8 +4950,15 @@ mod tests {
     fn unknown_names_are_ignored_when_setting_active_tools() {
         let session = test_session();
         session.register_tool_definition(test_definition("read"), empty_source_info(), test_tool("read"));
+        let revision = session.message_revision();
         session.set_active_tools_by_name(vec!["read".to_owned(), "nope".to_owned()]);
         assert_eq!(session.get_active_tool_names(), vec!["read".to_owned()]);
+        assert!(!session.system_prompt().is_empty());
+        assert_eq!(session.message_revision(), revision + 1);
+        session.state().system_prompt_override = Some("turn hook override".to_owned());
+        session.set_active_tools_by_name(vec!["read".to_owned()]);
+        assert_eq!(session.system_prompt(), "turn hook override");
+        assert_eq!(session.message_revision(), revision + 1);
     }
 
     #[test]
