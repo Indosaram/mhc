@@ -4607,7 +4607,7 @@ impl AgentSession {
             .filter_map(|message| serde_json::to_value(message).ok())
             .collect();
         let messages = crate::messages::filter_context_excluded_messages(messages);
-        let branch = self.with_session_manager(|manager| manager.branch(None));
+        let branch = self.with_session_manager(|manager| manager.branch(manager.leaf_id().or(Some(""))));
         if let Some(latest) = crate::session_manager::get_latest_compaction_entry(&branch) {
             let compaction_index = branch.iter().rposition(|entry| entry == &latest).unwrap_or(0);
             let has_post_compaction_usage = branch[compaction_index + 1..].iter().rev().any(|entry| {
@@ -6714,6 +6714,23 @@ mod tests {
         let cleared = session.clear_queue(false);
         assert_eq!(cleared.steering, ["late steering ".repeat(200)]);
         assert_eq!(cleared.follow_up, ["late followup"]);
+    }
+
+    #[tokio::test]
+    async fn context_usage_ignores_compaction_on_an_abandoned_branch() {
+        let session = test_session();
+        session.agent.set_model(test_model());
+        let mut assistant = maho_ai::providers::faux::faux_assistant_message("answer", Default::default());
+        assistant.usage.input = 1000;
+        let selected = session.with_session_manager_mut(|manager| {
+            let root = manager.append_message(serde_json::json!({"role":"user","content":"small","timestamp":0}));
+            let selected = manager.append_message(serde_json::to_value(&assistant).expect("assistant"));
+            manager.append_compaction("abandoned digest", root["id"].as_str().expect("root"), 1000, None, None, None);
+            selected
+        });
+        session.with_session_manager_mut(|manager| manager.set_leaf(selected["id"].as_str()));
+        session.rebuild_session_context().expect("selected context");
+        assert_eq!(session.get_context_usage().expect("usage").tokens, Some(1000));
     }
 
     #[tokio::test]
