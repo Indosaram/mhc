@@ -2199,6 +2199,8 @@ impl AgentSession {
             || maho_ai::utils::overflow::is_context_overflow(message, Some(self.model().context_window)) { return false; }
         if maho_ai::utils::retry::is_retryable_assistant_error(message)
             || maho_ai::utils::retry::is_provider_timeout_error(message)
+            || maho_ai::utils::overflow::is_cursor_zero_token_resource_exhausted(
+                &maho_ai::utils::overflow::CursorExhaustionProbe::from_message(message))
             || maho_ai::utils::stop_details::is_classifier_refusal(message) { return true; }
         message.stop_reason == StopReason::Error
             && !message.content.iter().any(|content| matches!(content, maho_ai::types::ContentBlock::ToolCall(_)))
@@ -2327,10 +2329,20 @@ impl AgentSession {
                     Some(self.fallback_now() as i64),
                 ));
             let refusal = maho_ai::utils::stop_details::is_classifier_refusal(&message);
+            let same_model_remint = maho_ai::utils::overflow::is_cursor_zero_token_resource_exhausted(
+                &maho_ai::utils::overflow::CursorExhaustionProbe::from_message(&message));
             let transient = maho_ai::utils::retry::is_retryable_assistant_error(&message)
                 || maho_ai::utils::retry::is_provider_timeout_error(&message);
             let attempt = self.state().retry_attempt.saturating_add(1);
-            let rate_limited = !maho_ai::utils::retry::is_provider_timeout_error(&message)
+            if same_model_remint && attempt > max_attempts {
+                self.state().retry_attempt = 0;
+                self.reset_hint_tier_state();
+                if attempt > 1 {
+                    self.emit(AgentSessionEvent::AutoRetryEnd { success: false, attempt, final_error: Some(error) });
+                }
+                return Ok(());
+            }
+            let rate_limited = !same_model_remint && !maho_ai::utils::retry::is_provider_timeout_error(&message)
                 && rate_limit_pattern.is_match(&error);
             let tier_routed = rate_limited && profile.fallback.rate_limited ==
                 maho_ai::utils::retry_profile::types::FallbackRateLimited::Tiered;
@@ -2350,8 +2362,8 @@ impl AgentSession {
                 state.cumulative_hinted_wait_ms = result.cumulative_hinted_wait_ms;
                 if !result.demote_to_probe_back { hint_delay = Some(result.delay_ms as u64); }
             }
-            let needs_fallback = refusal || !transient || attempt > max_attempts ||
-                if tier_routed { hint_delay.is_none() } else { hint.is_some_and(|hint| hint > cap) };
+            let needs_fallback = !same_model_remint && (refusal || !transient || attempt > max_attempts ||
+                if tier_routed { hint_delay.is_none() } else { hint.is_some_and(|hint| hint > cap) });
             let mut switched = false;
             let mut probe_selector = None;
             if needs_fallback {
@@ -7157,6 +7169,24 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), idle_rx).await.expect("bounded idle").expect("idle");
         assert_eq!(session.messages().len(), 4);
         assert_eq!(session.get_last_assistant_text().as_deref(), Some("second"));
+    }
+
+    #[tokio::test]
+    async fn zero_token_resource_exhaustion_recovers_on_same_model() {
+        let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("reminted", Default::default())], 1);
+        let failed = maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+            stop_reason: Some(StopReason::Error), error_message: Some("RESOURCE_EXHAUSTED".to_owned()), ..Default::default()
+        });
+        session.with_session_manager_mut(|manager| {
+            manager.append_message(serde_json::json!({"role":"user","content":[{"type":"text","text":"task"}],"timestamp":0}));
+            manager.append_message(serde_json::to_value(failed).expect("failed"));
+        });
+        session.rebuild_session_context().expect("context");
+        let model = session.model();
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.finish_provider_turn()).await.expect("bounded recovery").expect("recovery");
+        assert_eq!(session.get_last_assistant_text().as_deref(), Some("reminted"));
+        assert_eq!(session.model().id, model.id);
+        assert_eq!(session.model().provider, model.provider);
     }
 
     #[tokio::test]
