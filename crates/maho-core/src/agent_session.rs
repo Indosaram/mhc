@@ -407,6 +407,7 @@ struct AgentSessionState {
     pending_bash_messages: Vec<maho_agent::harness::messages::BashExecutionMessage>,
     extension_event_signal: Option<maho_ext_api::AbortSignal>,
     compaction_extension_signal: Option<maho_ext_api::AbortSignal>,
+    branch_summary_abort_controller: Option<maho_ai::utils::abort::AbortController>,
 }
 
 fn name_set(names: Option<Vec<String>>) -> Option<BTreeSet<String>> {
@@ -1126,6 +1127,7 @@ impl AgentSession {
             pending_bash_messages: Vec::new(),
             extension_event_signal: None,
             compaction_extension_signal: None,
+            branch_summary_abort_controller: None,
         };
         let session = Self { inner: Arc::new(AgentSessionInner {
             agent,
@@ -1567,6 +1569,7 @@ impl AgentSession {
         if let Some(signal) = self.state().extension_event_signal.as_ref() { signal.abort(); }
         self.abort_retry();
         self.abort_compaction();
+        self.abort_branch_summary();
         let streaming = self.is_streaming();
         let joined = self.state().abort_provenance.join(maho_ext_api::AbortSource::User, streaming);
         if !joined.abort_current_agent && joined.user_owned { return; }
@@ -2543,8 +2546,26 @@ impl AgentSession {
         Ok(AssistantEditResult { editor_text, summary_entry, entry_id: replacement_entry.as_ref().and_then(|entry| entry.get("id")).and_then(Value::as_str).map(str::to_owned), ..Default::default() })
     }
 
+    pub fn abort_branch_summary(&self) {
+        if let Some(controller) = &self.state().branch_summary_abort_controller { controller.abort(None); }
+    }
+
     async fn generate_branch_summary(&self, entries: &[Value], custom_instructions: Option<&str>, replace_instructions: bool) -> Result<Value, String> {
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let signal = controller.signal();
+        self.state().branch_summary_abort_controller = Some(controller);
+        let result = self.generate_branch_summary_with_signal(entries, custom_instructions, replace_instructions, signal.clone()).await;
+        self.state().branch_summary_abort_controller = None;
+        if signal.aborted() { Ok(serde_json::json!({"aborted":true})) } else { result }
+    }
+
+    async fn generate_branch_summary_with_signal(&self, entries: &[Value], custom_instructions: Option<&str>, replace_instructions: bool,
+        signal: maho_ai::utils::abort::AbortSignal) -> Result<Value, String> {
         use crate::compaction::{branch_summarization, utils};
+        let extension_signal = maho_ext_api::AbortSignal::default();
+        let hook_signal = extension_signal.clone();
+        let provider_signal = signal.clone();
+        let _bridge = AbortSignalBridge(tokio::spawn(async move { provider_signal.cancelled().await; hook_signal.abort(); }));
         let model = self.model();
         let reserve = self.with_settings_manager(|manager| manager.get_value("branchSummary")
             .and_then(|value| value.get("reserveTokens")).and_then(Value::as_i64)).unwrap_or(16_384);
@@ -2559,9 +2580,9 @@ impl AgentSession {
                     .map_err(|error| error.to_string())?, turn_prefix_messages: Vec::new(), tokens_before: preparation.total_tokens as u64,
                 first_kept_entry_id: entries.first().and_then(|entry| entry["id"].as_str()).unwrap_or_default().to_owned(), previous_summary: None,
             }, branch_entries: entries.iter().cloned().map(session_entry_from_value).collect(),
-            custom_instructions: custom_instructions.map(str::to_owned), signal: maho_ext_api::AbortSignal::default(),
+            custom_instructions: custom_instructions.map(str::to_owned), signal: extension_signal,
         })).await?;
-        if before.cancel == Some(true) { return Ok(serde_json::json!({"aborted":true})); }
+        if before.cancel == Some(true) || signal.aborted() { return Ok(serde_json::json!({"aborted":true})); }
         if let Some(result) = before.compaction { return Ok(serde_json::json!({"summary":result.summary})); }
         let instructions = match custom_instructions {
             Some(instructions) if replace_instructions => instructions.to_owned(),
@@ -2576,6 +2597,7 @@ impl AgentSession {
             system_prompt: Some(utils::SUMMARIZATION_SYSTEM_PROMPT.to_owned()), messages: vec![message], tools: None,
         }, Some(maho_ai::types::StreamOptions {
             request: maho_ai::types::ProviderRequestOptions { api_key: auth.api_key, env: auth.env,
+                signal: Some(signal),
                 headers: auth.headers.map(|headers| headers.into_iter().map(|(key, value)| (key, Some(value))).collect()), ..Default::default() },
             extra_body: self.model_runtime().get_compatibility_request_config(&model).extra_body,
             max_tokens: Some(if model.max_tokens == 0 { 4096 } else { model.max_tokens.min(4096) }),
@@ -3568,6 +3590,7 @@ impl AgentSession {
         self.cancel_probe_back();
         self.abort_retry();
         self.abort_compaction();
+        self.abort_branch_summary();
         self.abort_bash();
         self.agent.abort(None);
         lock(&self.wake_source_subscription).take();
@@ -5092,6 +5115,21 @@ mod tests {
         assert_eq!(summary["fromHook"], false);
         assert_eq!(session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)), root["id"].as_str().map(str::to_owned));
         assert_eq!(session.messages().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn aborted_branch_summary_does_not_request_or_change_context() {
+        let session = test_session_with_stream_function(false);
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let signal = controller.signal();
+        session.state().branch_summary_abort_controller = Some(controller);
+        session.abort_branch_summary();
+        let result = session.generate_branch_summary_with_signal(&[serde_json::json!({
+            "type":"message","id":"branch","parentId":null,"message":{"role":"user","content":"branch task","timestamp":0}
+        })], None, false, signal).await.unwrap();
+        assert_eq!(result["aborted"], true);
+        assert!(session.messages().is_empty());
+        assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
     }
 
     #[tokio::test]
