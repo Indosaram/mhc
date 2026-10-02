@@ -106,4 +106,9 @@ impl ConfigReloadLogger {
         fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600))
     }
 }
-fn finite_number(number: f64) -> Value { if number.is_finite() { json!(number) } else { json!(0) } }
+fn finite_number(number: f64) -> Value {
+    if !number.is_finite() { return json!(0); }
+    if number == 0.0 { return json!(0); }
+    if number.fract() == 0.0 && number.abs() <= 9_007_199_254_740_991.0 { return json!(number as i64); }
+    json!(number)
+}

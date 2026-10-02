@@ -45,3 +45,11 @@ fn sensitive_paths_are_omitted_and_text_is_redacted() {
     assert!(entry.get("path").is_none());
     assert_eq!(entry["message"], "Authorization: Bearer [redacted]");
 }
+#[test]
+fn numeric_fields_use_javascript_integer_and_zero_spelling() {
+    let root = tempfile::tempdir().unwrap();
+    let mut logger = ConfigReloadLogger::new(root.path(), None).unwrap();
+    for target_count in [2.0, -0.0, f64::INFINITY] { logger.log(LogLevel::Info, LogEvent::WatcherStarted { target_count }); }
+    let values: Vec<serde_json::Value> = fs::read_to_string(root.path().join("logs/config-reload.log")).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(values.iter().map(|entry| entry["targetCount"].as_i64()).collect::<Vec<_>>(), [Some(2), Some(0), Some(0)]);
+}
