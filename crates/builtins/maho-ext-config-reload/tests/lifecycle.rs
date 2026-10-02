@@ -52,6 +52,37 @@ async fn print_session_emits_disabled_readiness_and_shutdown_joins() {
     (api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown, &ctx).await.unwrap();
 }
 #[tokio::test]
+async fn invalid_settings_event_is_rejected_and_logged_without_change_delivery() {
+    use maho_ext_config_reload::protocol::*;
+    let root = tempfile::tempdir().unwrap();
+    let events = EventBus::default();
+    let (rejected_sender, mut rejected) = tokio::sync::mpsc::unbounded_channel();
+    let (changed_sender, mut changed) = tokio::sync::mpsc::unbounded_channel();
+    let _rejected = events.on(CONFIG_WATCH_REJECTED, Arc::new(move |value| { rejected_sender.send(value.clone()).unwrap(); }));
+    let _changed = events.on(CONFIG_WATCH_CHANGED, Arc::new(move |value| { changed_sender.send(value.clone()).unwrap(); }));
+    let mut api = ExtensionApi::new(LoadedExtension::new("config-reload", root.path().into(), SourceInfo::default()), ExtensionSessionProfile::default(), events, ExtensionRuntime::default());
+    maho_ext_config_reload::ConfigReload.register(&mut api);
+    let mut ctx = context(root.path());
+    ctx.mode = ExtensionMode::Tui;
+    let mut start = ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::Startup, initial_model_provenance: None, previous_session_file: None });
+    (api.registered.handlers[&EventKind::SessionStart][0])(&mut start, &ctx).await.unwrap();
+    let staged = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+    std::fs::write(staged.path(), "{ invalid").unwrap();
+    let path = root.path().join("settings.json");
+    std::fs::rename(staged.path(), &path).unwrap();
+    let rejection = tokio::time::timeout(std::time::Duration::from_secs(5), rejected.recv()).await.unwrap().unwrap();
+    assert_eq!(rejection["registrationId"], "builtin");
+    assert_eq!(rejection["paths"], serde_json::json!([path]));
+    assert!(!rejection["errors"].as_array().unwrap().is_empty());
+    let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason: SessionReason::Quit, target_session_file: None, signal: None });
+    (api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown, &ctx).await.unwrap();
+    assert!(changed.try_recv().is_err());
+    let entries: Vec<serde_json::Value> = std::fs::read_to_string(root.path().join("logs/config-reload.log")).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert!(entries.iter().any(|entry| entry["event"] == "validation_rejected"));
+    assert!(!entries.iter().any(|entry| entry["event"] == "reload_requested"));
+}
+
+#[tokio::test]
 async fn external_bus_registration_rebuilds_watches_and_delivers_its_group() {
     // Given
     use maho_ext_config_reload::protocol::*;
