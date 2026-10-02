@@ -60,6 +60,7 @@ impl CellHandler {
             return Ok(());
         }
         let options=ExecuteToolOptions {signal:Some(self.runtime.signal.clone()),..Default::default()};
+        let mut error_code=None;
         let reply:Result<(Value,bool,Option<String>,Option<String>),String> = if name=="eval" {
             Err("recursive eval is not allowed".into())
         } else if is_reserved_tool_name(name) {
@@ -74,7 +75,15 @@ impl CellHandler {
                 let preview=ok.then(||tool_call_result_preview(&result)).flatten();
                 let error=(!ok).then(||result.content.iter().find_map(|part| match part {maho_ext_api::ContentBlock::Text(content)=>Some(cap_code_points(&crate::host_sdk::sanitize_terminal_label(&content.text),512)),_=>None})).flatten();
                 (marshal_tool_result(&result),ok,preview,error)
-            }).map_err(|error|error.to_string())
+            }).map_err(|error| {
+                error_code=Some(match error.code {
+                    maho_ext_api::ExecuteToolErrorCode::UnknownTool=>"unknown_tool",
+                    maho_ext_api::ExecuteToolErrorCode::InactiveTool=>"inactive_tool",
+                    maho_ext_api::ExecuteToolErrorCode::InvalidParams=>"invalid_params",
+                    maho_ext_api::ExecuteToolErrorCode::Blocked=>"blocked",
+                });
+                error.to_string()
+            })
         };
         if !self.builder.state.active {return Ok(());}
         match reply {
@@ -87,7 +96,9 @@ impl CellHandler {
                 let parameters=tools.as_ref().and_then(|tools|tools.iter().find(|tool|tool.name==name)).and_then(|tool|tool.parameters.as_ref());
                 let error=if name=="eval" {error} else {parameters.map_or_else(||error.clone(),|schema|append_schema_hint(&error,name,schema))};
                 record_tool_call(&mut self.builder.state.tool_calls,false,&mut capture,None,Some(&error),now_ms());
-                (self.runtime.deliver_reply)(json!({"type":"tool-reply","callId":call_id,"ok":false,"error":{"message":error}}));
+                let mut payload=json!({"message":error});
+                if let Some(code)=error_code {payload["code"]=json!(code);}
+                (self.runtime.deliver_reply)(json!({"type":"tool-reply","callId":call_id,"ok":false,"error":payload}));
             }
         }
         self.builder.state.tool_call_metrics[metric_index]=capture.metric;
