@@ -3,7 +3,7 @@ use crate::rules::{engine::{Engine,EngineDeps},types::{LoadedRule,MatchReason,Ru
 pub const RULE_SUBCOMMANDS:[&str;4]=["list","show","paths","status"];
 pub fn argument_completions(prefix:&str)->Option<Vec<(&'static str,&'static str)>>{let result:Vec<_>=RULE_SUBCOMMANDS.into_iter().filter(|command|command.starts_with(prefix)).map(|command|(command,command)).collect();(!result.is_empty()).then_some(result)}
 pub fn handle_rules<D:EngineDeps>(engine:&mut Engine<D>,args:&str,cwd:&str)->(String,Option<Severity>){
-    let tokens:Vec<_>=args.split_whitespace().collect();let subcommand=tokens.first().copied().unwrap_or("");let loaded=engine.load_static_rules(cwd);
+    let tokens:Vec<_>=args.split(|ch|matches!(ch,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}')).filter(|token|!token.is_empty()).collect();let subcommand=tokens.first().copied().unwrap_or("");let loaded=engine.load_static_rules(cwd);
     match subcommand{
         ""|"status"=>(build_summary_text(&loaded.rules,&loaded.diagnostics),None),
         "list"=>(format_rule_list(&loaded.rules),None),

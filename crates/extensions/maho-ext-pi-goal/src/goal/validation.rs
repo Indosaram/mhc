@@ -7,9 +7,13 @@ pub fn validate_objective(value:&str,full_text_file_name:&str)->Result<Validated
     let points:Vec<_>=objective.chars().collect();
     if points.len()<=MAX_OBJECTIVE_LENGTH{return Ok(ValidatedObjective{objective:objective.into(),truncated:false,full_text_file_name:None});}
     let marker=truncation_marker(full_text_file_name);
-    let payload_budget=MAX_OBJECTIVE_LENGTH.checked_sub(marker.chars().count()).ok_or_else(||"full objective filename exceeds objective budget".to_owned())?;
-    let minimum=payload_budget.saturating_sub(200);
-    let cut=(minimum..payload_budget).rev().find(|index|js_whitespace(points[*index])).unwrap_or(payload_budget);
+    let marker_length=marker.chars().count();
+    let cut=if let Some(payload_budget)=MAX_OBJECTIVE_LENGTH.checked_sub(marker_length){
+        let minimum=payload_budget.saturating_sub(200);
+        (minimum..payload_budget).rev().find(|index|js_whitespace(points[*index])).unwrap_or(payload_budget)
+    }else{
+        points.len().saturating_sub(marker_length-MAX_OBJECTIVE_LENGTH)
+    };
     let payload:String=points[..cut].iter().collect();
     Ok(ValidatedObjective{objective:format!("{payload}{marker}"),truncated:true,full_text_file_name:Some(full_text_file_name.into())})
 }

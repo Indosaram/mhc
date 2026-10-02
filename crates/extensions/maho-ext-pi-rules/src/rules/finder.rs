@@ -10,7 +10,7 @@ pub fn find_rule_candidates(mut options:FinderOptions<'_>)->Vec<RuleCandidate>{
         let root=absolute(root);let mut walk=vec![(root.clone(),0)];
         if let Some(target)=options.target_file{
             let target=absolute(target);let mut current=target.parent().unwrap_or(&target).to_owned();
-            if current.starts_with(&root){walk.clear();let mut distance=0;loop{walk.push((current.clone(),distance));if current==root{break;}let Some(parent)=current.parent()else{break;};current=parent.to_owned();distance+=1;}}
+            if current.strip_prefix(&root).is_ok_and(|relative|!relative.to_string_lossy().starts_with("..")){walk.clear();let mut distance=0;loop{walk.push((current.clone(),distance));if current==root{break;}let Some(parent)=current.parent()else{break;};current=parent.to_owned();distance+=1;}}
         }
         for (directory,distance) in &walk{
             for (parent,subdir) in PROJECT_RULE_SUBDIRS{

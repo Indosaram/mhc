@@ -3,6 +3,15 @@ use std::{path::{Path,PathBuf},collections::BTreeSet};
 fn write(root:&Path,name:&str)->PathBuf{let p=root.join(name);let parent=p.parent().unwrap_or_else(||panic!("fixture parent"));std::fs::create_dir_all(parent).unwrap_or_else(|e|panic!("mkdir: {e}"));std::fs::write(&p,"rule").unwrap_or_else(|e|panic!("write: {e}"));p}
 fn find(root:Option<&Path>,target:Option<&Path>,home:&Path)->Vec<RuleCandidate>{find_rule_candidates(FinderOptions{project_root:root,target_file:target,home_dir:Some(home),disabled_sources:None,skip_user_home:false,cache:None})}
 fn by<'a>(r:&'a[RuleCandidate],path:&str)->&'a RuleCandidate{r.iter().find(|r|r.relative_path==path).unwrap_or_else(||panic!("missing {path}"))}
+#[test]
+fn dotdot_named_child_uses_root_only(){
+    let d=tempfile::tempdir().unwrap();
+    write(d.path(),"repo/.omo/rules/root.md");
+    write(d.path(),"repo/..foo/.omo/rules/child.md");
+    let target=write(d.path(),"repo/..foo/file.ts");
+    let rules=find(Some(&d.path().join("repo")),Some(&target),&d.path().join("home"));
+    assert_eq!(rules.iter().map(|rule|rule.relative_path.as_str()).collect::<Vec<_>>(),vec![".omo/rules/root.md"]);
+}
 #[test]fn project_core(){let d=tempfile::tempdir().unwrap();let p=write(d.path(),"repo/.omo/rules/core.md");let r=find(Some(&d.path().join("repo")),None,&d.path().join("home"));let c=by(&r,".omo/rules/core.md");assert_eq!(c.path,p.to_string_lossy());assert_eq!(c.source,".omo/rules");assert_eq!(c.distance,0);assert!(!c.is_global);assert!(!c.is_single_file);}
 #[test]fn nested_distances(){let d=tempfile::tempdir().unwrap();write(d.path(),"repo/.omo/rules/root.md");write(d.path(),"repo/packages/app/.omo/rules/nested.md");let t=write(d.path(),"repo/packages/app/src/index.ts");let r=find(Some(&d.path().join("repo")),Some(&t),&d.path().join("home"));assert_eq!(by(&r,".omo/rules/root.md").distance,3);assert_eq!(by(&r,"packages/app/.omo/rules/nested.md").distance,1);}
 #[test]fn agents_single(){let d=tempfile::tempdir().unwrap();write(d.path(),"repo/AGENTS.md");let r=find(Some(&d.path().join("repo")),None,&d.path().join("home"));assert!(by(&r,"AGENTS.md").is_single_file);}
