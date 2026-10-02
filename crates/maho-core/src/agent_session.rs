@@ -3919,9 +3919,21 @@ impl AgentSession {
         let settings = self.with_settings_manager(|manager| manager.get_value("retry").cloned()).unwrap_or(Value::Null);
         let policy = crate::retry_fallback::settings::resolve_retry_fallback_settings(Some(&settings)).revert_policy;
         if let Some(controller) = self.retry_fallback.lock().await.as_mut() { controller.maybe_restore_primary(policy).await?; }
+        let prior_compaction_generation = self.compaction_state().generation();
         self.revalidate_scheduled_continuation_admission().await?;
         if expected_abort_generation.is_some_and(|generation| generation != self.user_abort_generation.load(Ordering::SeqCst)) {
             return Ok(());
+        }
+        let lifecycle = self.compaction_state();
+        if lifecycle.generation() > prior_compaction_generation && lifecycle.status() == "completed" {
+            let mut messages = self.messages();
+            if messages.last().and_then(AgentMessage::as_assistant)
+                .is_some_and(|message| matches!(message.stop_reason, StopReason::Error | StopReason::Aborted))
+            {
+                messages.pop();
+                self.agent.set_messages(messages);
+                self.state().message_revision += 1;
+            }
         }
         self.agent.continue_with_queued_messages(Default::default()).await;
         self.finish_provider_turn().await?;
@@ -6535,6 +6547,38 @@ mod tests {
             session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
             assert_eq!(session.revalidate_scheduled_continuation_admission().await.is_err(), post_boundary);
         }
+    }
+
+    #[tokio::test]
+    async fn recompact_continuation_excludes_failed_assistant_from_provider_context() {
+        let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("resumed", Default::default())], 0);
+        let mut model = session.model();
+        model.context_window = 128_000;
+        session.agent.set_model(model);
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"reserveTokens":0,"reserveScalingEnabled":false,"keepRecentTokens":1})),
+        ])));
+        for text in ["old task".repeat(18_000), "recent task".repeat(18_000)] {
+            session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":text,"timestamp":0})));
+        }
+        let mut failed = maho_ai::providers::faux::faux_assistant_message("failed tail", Default::default());
+        failed.stop_reason = StopReason::Error;
+        failed.error_message = Some("failed request".to_owned());
+        session.with_session_manager_mut(|manager| manager.append_message(serde_json::to_value(failed).expect("failed assistant")));
+        session.rebuild_session_context().expect("context");
+        session.agent.follow_up(session_message_from_value(serde_json::json!({"role":"user","content":"queued","timestamp":0})).expect("queued"));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:retire-failed-tail>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(|event, _| {
+            let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { panic!("preparation"); };
+            Box::pin(async move { Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {
+                compaction: Some(maho_ext_api::CompactionResult { summary: "digest".to_owned(), first_kept_entry_id: event.preparation.first_kept_entry_id.clone(),
+                    tokens_before: event.preparation.tokens_before, details: None }), ..Default::default()
+            })) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        session.continue_session().await.expect("recompacted continuation");
+        assert_eq!(session.messages().iter().filter(|message| message.role() == "assistant").count(), 1);
+        assert!(session.with_session_manager(|manager| manager.entries()).iter().any(|entry| entry["message"]["errorMessage"] == "failed request"));
     }
 
     #[tokio::test]
