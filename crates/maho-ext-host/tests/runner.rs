@@ -837,6 +837,8 @@ async fn context_binding_reads_live_host_state_and_rejects_after_invalidation() 
     }
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.get_system_prompt())).is_err());
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.get_registered_mcp_servers())).is_err());
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.session_manager.get_entries())).is_err());
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.session_manager.session_id())).is_err());
 }
 
 #[tokio::test]

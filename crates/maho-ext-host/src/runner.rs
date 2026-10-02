@@ -52,15 +52,18 @@ async fn coalesced_reload(state: ReloadState, operation: ExtensionFuture<'static
     }
 }
 struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime, compaction_signal: std::sync::Mutex<Option<AbortSignal>>, kernel_tools: Option<Arc<dyn ExtensionKernelTools>>, reload: ReloadState, provider_runner: Option<ExtensionRunner>, exclude_provider_path: Option<String> }
+impl ContextSessionManager {
+    fn active(&self) { if let Err(error) = self.runtime.assert_active() { std::panic::panic_any(error); } }
+}
 impl ToolSessionManager for ContextSessionManager {
-    fn session_id(&self) -> &str { self.session.session_id() }
-    fn session_file(&self) -> Option<&std::path::Path> { self.session.session_file() }
+    fn session_id(&self) -> &str { self.active(); self.session.session_id() }
+    fn session_file(&self) -> Option<&std::path::Path> { self.active(); self.session.session_file() }
 }
 impl SessionManager for ContextSessionManager {
-    fn get_entries(&self) -> Vec<SessionEntry> { self.session.get_entries() }
-    fn get_branch(&self) -> Vec<SessionEntry> { self.session.get_branch() }
-    fn get_leaf_id(&self) -> Option<String> { self.session.get_leaf_id() }
-    fn get_session_name(&self) -> Option<String> { self.session.get_session_name() }
+    fn get_entries(&self) -> Vec<SessionEntry> { self.active(); self.session.get_entries() }
+    fn get_branch(&self) -> Vec<SessionEntry> { self.active(); self.session.get_branch() }
+    fn get_leaf_id(&self) -> Option<String> { self.active(); self.session.get_leaf_id() }
+    fn get_session_name(&self) -> Option<String> { self.active(); self.session.get_session_name() }
     fn extension_context_actions(&self) -> Option<&dyn ExtensionContextActions> { Some(self) }
 }
 impl ExtensionContextActions for ContextSessionManager {
