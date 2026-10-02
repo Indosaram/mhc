@@ -7,7 +7,8 @@ pub trait CatalogIdentity {fn server(&self)->&str;fn tool(&self)->&str;}
 pub fn compute_mcp_exposure_policy<T:CatalogIdentity+Clone>(entries:&[T],config:&McpServerConfig,settings:&McpSettings)->McpExposurePolicyResult<T> {
     let matches = |patterns:&Option<Vec<String>>,tool:&str| patterns.as_ref().is_some_and(|p|p.iter().any(|pattern|safe_match(pattern,tool)));
     let mut filtered:Vec<T> = entries.iter().filter(|e| (config.include_tools.as_ref().is_none_or(Vec::is_empty) || matches(&config.include_tools,e.tool())) && !matches(&config.exclude_tools,e.tool())).cloned().collect();
-    filtered.sort_by(|a,b|a.server().cmp(b.server()).then_with(||a.tool().cmp(b.tool())));
+    let collator=icu_collator::Collator::try_new(Default::default(),Default::default()).expect("compiled collation data is available");
+    filtered.sort_by(|a,b|collator.compare(a.server(),b.server()).then_with(||collator.compare(a.tool(),b.tool())));
     if filtered.is_empty() {return McpExposurePolicyResult {active_entries:Vec::new(),registered_entries:Vec::new(),filtered_entries:filtered,mode:Exposure::Direct,reason:ExposureReason::Explicit,warnings:vec![format!("MCP server {} has 0 exposed tools after includeTools/excludeTools filters.",entries.first().map_or("<unknown>",CatalogIdentity::server))]};}
     let (mode,reason) = if config.direct_tools == Some(DirectTools::All(true)) {(Exposure::Direct,ExposureReason::DirectTools)} else {match config.exposure.unwrap_or(Exposure::Auto) {
         Exposure::Direct=>(Exposure::Direct,ExposureReason::Explicit),Exposure::Search=>(Exposure::Search,ExposureReason::Explicit),Exposure::Proxy=>(Exposure::Proxy,ExposureReason::Explicit),

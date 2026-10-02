@@ -1884,6 +1884,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.2",
  "globset",
+ "icu_collator",
  "maho-ai",
  "maho-core",
  "maho-ext-api",

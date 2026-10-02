@@ -7,7 +7,8 @@ use super::schema_compat::{McpToolNameEntry,build_mcp_tool_names,convert_json_sc
 pub struct McpNamedCatalogEntry {pub entry:McpToolCatalogEntry,pub name:String}
 static NEXT_PROGRESS_TOKEN:AtomicU64=AtomicU64::new(0);
 pub fn map_mcp_catalog_names(entries:&[McpToolCatalogEntry])->Vec<McpNamedCatalogEntry> {
-    let mut entries=entries.to_vec();entries.sort_by(|left,right|left.server.cmp(&right.server).then(left.tool.cmp(&right.tool)));
+    let collator=icu_collator::Collator::try_new(Default::default(),Default::default()).expect("compiled collation data is available");
+    let mut entries=entries.to_vec();entries.sort_by(|left,right|collator.compare(&left.server,&right.server).then_with(||collator.compare(&left.tool,&right.tool)));
     let names=build_mcp_tool_names(&entries.iter().map(|entry|McpToolNameEntry {server_name:entry.server.clone(),tool_name:entry.tool.clone()}).collect::<Vec<_>>(),None);
     entries.into_iter().zip(names).map(|(entry,name)|McpNamedCatalogEntry {entry,name}).collect()
 }

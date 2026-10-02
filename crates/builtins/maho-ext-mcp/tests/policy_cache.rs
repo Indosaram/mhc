@@ -28,6 +28,12 @@ fn direct_tools_in_search_are_sorted() {
     assert_eq!(result.active_entries,vec![Entry("tool_1".into()),Entry("tool_12".into()),Entry("tool_2".into())]);
 }
 #[test]
+fn policy_catalog_order_matches_locale_compare_for_case_and_accents() {
+    let catalog=["Z","z","a","A","é","e","_x","x"].map(|name|Entry(name.into()));
+    let result=compute_mcp_exposure_policy(&catalog,&McpServerConfig::default(),&default_settings());
+    assert_eq!(result.active_entries.iter().map(|entry|entry.0.as_str()).collect::<Vec<_>>(),vec!["_x","a","A","e","é","x","z","Z"]);
+}
+#[test]
 fn large_catalog_has_no_default_active_tools() {
     let result = compute_mcp_exposure_policy(&entries(30),&McpServerConfig::default(),&default_settings());
     assert_eq!(result.registered_entries.len(),30);assert!(result.active_entries.is_empty());

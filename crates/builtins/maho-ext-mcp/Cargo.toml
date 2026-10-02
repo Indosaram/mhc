@@ -26,6 +26,7 @@ fancy-regex.workspace = true
 chrono = { workspace = true, features = ["clock"] }
 reqwest = { workspace = true, features = ["rustls-tls", "json", "stream"] }
 futures = "=0.3.34"
+icu_collator = "=2.3.1"
 
 [dev-dependencies]
 tempfile = "=3.27.0"
