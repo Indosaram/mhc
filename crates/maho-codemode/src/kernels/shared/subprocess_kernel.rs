@@ -174,7 +174,17 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
                 None => { runs.settle_all("Kernel is closing", now()); if let Err(error) = process.shutdown(Some(&json!({"type":"close"}))).await { eprintln!("kernel close failed: {error}"); } break; }
             },
             message = process.next_message(), if failure.is_none() => match message {
-                Ok(message) => { if runs.handle_message(message, options.on_message.as_ref()) { deadline = None; } }
+                Ok(message) => {
+                    let startup_failure = (message["type"] == "init-failed").then(|| message["error"]["message"].as_str().unwrap_or("initialization failed").to_owned());
+                    if runs.handle_message(message, options.on_message.as_ref()) { deadline = None; }
+                    if let Some(error) = startup_failure {
+                        failure = Some(ProcessError::Startup(error).to_string());
+                        runs.clear_tool_calls();
+                        runs.settle_all(failure.as_deref().expect("startup failure"), now());
+                        deadline = None;
+                        if let Err(error) = process.terminate("TERM", Duration::from_millis(1500)).await { eprintln!("kernel retirement failed: {error}"); }
+                    }
+                }
                 Err(error) => { failure = Some(error.to_string()); runs.clear_tool_calls(); if let Err(error) = process.terminate("TERM", Duration::from_millis(1500)).await { eprintln!("kernel retirement failed: {error}"); } }
             },
             () = async { match deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending::<()>().await } }, if deadline.is_some() => {

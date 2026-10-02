@@ -44,6 +44,20 @@ async fn real_kernel_persistence_and_reset() {
 }
 
 #[tokio::test]
+async fn late_initialization_failure_settles_active_and_retires_process() {
+    let mut settings=options();
+    settings.args=vec!["-u".into(),"-c".into(),"import sys; sys.stdin.readline(); print('{\"type\":\"ready\"}',flush=True); sys.stdin.readline(); print('{\"type\":\"init-failed\",\"error\":{\"message\":\"late startup failure\"}}',flush=True); sys.stdin.readline()".into()];
+    let kernel=SubprocessKernel::start(settings).await.unwrap();
+    let pid=kernel.pid().unwrap();
+    let result=tokio::time::timeout(std::time::Duration::from_secs(2),kernel.run_with_callbacks(KernelRunInput{cell_id:"failed".into(),code:"42".into(),timeout_ms:None},None,None)).await;
+    kernel.close().await.unwrap();
+    let result=result.expect("init-failed must settle the active run").unwrap();
+    assert_eq!(result["ok"],false);
+    assert!(result["error"]["message"].as_str().unwrap().contains("late startup failure"));
+    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+}
+
+#[tokio::test]
 async fn real_kernel_timeout_reaps_and_restarts() {
     let kernel = SubprocessKernel::start(options()).await.unwrap();
     let pid = kernel.pid().unwrap();
