@@ -117,8 +117,9 @@ fn safe_star_repeat(body:&str)->Option<String>{
     for (index,ch) in body.char_indices(){match ch{'('|'['=>depth+=1,')'|']'=>depth-=1,'|' if depth==0=>{branches.push(body[start..index].trim());start=index+1;},_=>{}}}
     branches.push(body[start..].trim());let mut chars=Vec::new();let mut saw_star=false;
     for branch in branches{let mut rest=branch;let mut consumed=false;
-        while let Some(after)=rest.strip_prefix("*("){let end=after.find(')')?;let inner=&after[..end];if inner.chars().count()!=1||inner.contains(['*','?','+','@','!','(','[',']','{','}','|']){return None;}chars.extend(inner.chars());rest=&after[end+1..];consumed=true;saw_star=true;}
-        if consumed{if !rest.is_empty(){return None;}}else if branch.chars().count()==1&&!branch.contains(['*','?','+','@','!','(','[',']','{','}','|']){chars.extend(branch.chars());}else{return None;}
+        while let Some(after)=rest.strip_prefix("*("){let mut depth=1;let end=after.char_indices().find_map(|(index,ch)|{if ch=='(' {depth+=1;}else if ch==')'{depth-=1;}
+            if depth==0{Some(index)}else{None}})?;let inner=after[..end].strip_prefix("@(").and_then(|value|value.strip_suffix(')')).unwrap_or(&after[..end]).trim();if inner.chars().count()!=1||inner.contains(['*','?','+','@','!','(','[',']','{','}','|']){return None;}chars.extend(inner.chars());rest=&after[end+1..];consumed=true;saw_star=true;}
+        if consumed{if !rest.is_empty(){return None;}}else{let branch=branch.strip_prefix("@(").and_then(|value|value.strip_suffix(')')).unwrap_or(branch).trim();if branch.chars().count()==1&&!branch.contains(['*','?','+','@','!','(','[',']','{','}','|']){chars.extend(branch.chars());}else{return None;}}
     }
     if !saw_star{return None;}chars.sort_unstable();chars.dedup();let escaped=chars.into_iter().map(|ch|if "-*+?.^${}(|)[]\\".contains(ch){format!("\\{ch}")}else{ch.to_string()}).collect::<Vec<_>>();
     Some(if escaped.len()==1{format!("{}*",escaped[0])}else{format!("[{}]*",escaped.join(""))})
