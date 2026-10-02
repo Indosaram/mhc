@@ -4,6 +4,27 @@ static WHITESPACE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"[\t\x0c\x0b \u{00
 static BEFORE_NEWLINE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"[ \t]+\n").expect("literal pattern"));
 static AFTER_NEWLINE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\n[ \t]+").expect("literal pattern"));
 static NEWLINES:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\n{3,}").expect("literal pattern"));
+pub fn escape_markdown(text:&str)->String {
+    let mut value=text.replace('\\',"\\\\").replace('*',"\\*");
+    if value.starts_with('-') {value.insert(0,'\\');}
+    if value.starts_with("+ ") {value.insert(0,'\\');}
+    if value.starts_with('=') {value.insert(0,'\\');}
+    let hashes=value.bytes().take_while(|byte|*byte==b'#').count();if (1..=6).contains(&hashes) && value.as_bytes().get(hashes)==Some(&b' ') {value.insert(0,'\\');}
+    value=value.replace('`',"\\`");if value.starts_with("~~~") {value.insert(0,'\\');}
+    value=value.replace('[',"\\[").replace(']',"\\]");if value.starts_with('>') {value.insert(0,'\\');}
+    value=value.replace('_',"\\_");let digits=value.bytes().take_while(u8::is_ascii_digit).count();
+    if digits>0 && value.get(digits..).is_some_and(|rest|rest.starts_with(". ")) {value.insert(digits,'\\');}
+    value
+}
+pub fn escape_link_destination(destination:&str)->String {
+    let mut escaped=String::new();for character in destination.chars() {if matches!(character,'<'|'>'|'('|')') {escaped.push('\\');}escaped.push(character);}
+    if escaped.contains(' ') {format!("<{escaped}>")} else {escaped}
+}
+pub fn join_markdown(output:&str,replacement:&str)->String {
+    let left=output.trim_end_matches('\n');let right=replacement.trim_start_matches('\n');
+    let newlines=(output.len()-left.len()).max(replacement.len()-right.len()).min(2);
+    format!("{left}{}{right}","\n".repeat(newlines))
+}
 pub struct ReadableArticle { pub document:dom_query::Document,pub root:dom_query::NodeId,pub title:String,pub has_heading:bool }
 pub fn extract_explicit_article(document:&dom_query::Document)->Option<ReadableArticle> {
     for selector in [".article_view",".tt_article_useless_p_margin",".entry-content",".contents_style",".post-content",".article-content",".content-article","#content .contents_style"] {
@@ -45,6 +66,16 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn markdown_escape_order_preserves_text_node_semantics() {
+        assert_eq!(escape_markdown("\\ * [x] _ `"),"\\\\ \\* \\[x\\] \\_ \\`");
+        for (input,expected) in [("-item","\\-item"),("+ item","\\+ item"),("+item","+item"),("===","\\==="),("### heading","\\### heading"),("####### heading","####### heading"),("~~~code","\\~~~code"),("123. item","123\\. item"),("a\n- item","a\n- item")] {assert_eq!(escape_markdown(input),expected);}
+    }
+    #[test] fn inline_link_destinations_escape_delimiters_before_space_wrapping() {
+        assert_eq!(escape_link_destination("https://example.test/a(b)"),"https://example.test/a\\(b\\)");assert_eq!(escape_link_destination("a <b>"),"<a \\<b\\>>");assert_eq!(escape_link_destination("a\tb"),"a\tb");
+    }
+    #[test] fn markdown_join_uses_maximum_boundary_newlines_capped_at_two() {
+        for (left,right,expected) in [("a\n","\nb","a\nb"),("a\n\n\n","\nb","a\n\nb"),("a","\n\nb","a\n\nb"),("a "," b","a  b"),("","b","b")] {assert_eq!(join_markdown(left,right),expected);}
+    }
     #[test] fn explicit_selector_priority_skips_missing_and_short_candidates() {
         let document=dom_query::Document::from("<div class='article_view'>short</div><div class='entry-content'>Chosen entry content has at least thirty characters.</div><div class='post-content'>Later post content is sufficiently long too.</div>");
         let article=extract_explicit_article(&document).unwrap();assert!(html_fragment_to_plain_text(&dom_query::NodeRef::new(article.root,&article.document.tree)).starts_with("Chosen entry"));
