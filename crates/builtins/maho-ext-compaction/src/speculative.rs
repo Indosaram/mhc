@@ -63,6 +63,71 @@ pub fn create_speculative_compaction_snapshot(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpeculativeCompactionResult { Applied, Stale, Rejected, Unavailable, Failed }
 
+#[derive(Debug)]
+pub enum SummaryGenerationError {
+    Auth(String),
+    EmptySummary(String),
+    Request(Box<maho_ai::types::AssistantMessage>),
+    Stream(crate::speculative_summary::SummaryStreamError),
+    Overflow(crate::overflow_retry::SummarizationOverflowExhaustedError),
+    TotalBudget,
+}
+
+pub async fn run_extension_compaction(
+    snapshot: &SpeculativeCompactionSnapshot,
+    api_key: Option<String>,
+    headers: Option<maho_ai::types::ProviderHeaders>,
+    signal: Option<&maho_ai::utils::abort::AbortSignal>,
+    stream_runner: Option<&crate::speculative_summary::SummaryStreamRunner>,
+    on_progress: &dyn Fn(&str),
+) -> Result<Option<CompactionResult>, SummaryGenerationError> {
+    use maho_ai::types::StopReason;
+    use crate::{overflow_retry as overflow, speculative_summary as summary};
+    if signal.is_some_and(maho_ai::utils::abort::AbortSignal::aborted) { return Ok(None); }
+    if api_key.as_ref().is_none_or(|key| key.is_empty()) && headers.as_ref().is_none_or(|headers| !headers.iter().any(|(key, value)| value.as_ref().is_some_and(|value| !value.is_empty()) && matches!(key.to_ascii_lowercase().as_str(), "authorization" | "x-api-key" | "api-key"))) {
+        return Err(SummaryGenerationError::Auth(format!("summarization credentials unavailable: no credentials resolved for provider \"{}\"", snapshot.model.provider)));
+    }
+    let inherited_intent = crate::task_intent::resolve_inherited_task_intent(&snapshot.branch_entries);
+    let prompt = crate::prompts::build_prompt(&crate::prompts::PromptOptions { variant: snapshot.prompt_variant, previous_summary: snapshot.preparation.previous_summary.as_deref(), task_intent: inherited_intent.as_deref(), prompt_family: None, custom_instructions: snapshot.custom_instructions.as_deref() });
+    let prompt_tokens = prompt.user.encode_utf16().count().div_ceil(4) as u64;
+    let source: Vec<_> = snapshot.preparation.messages_to_summarize.iter().chain(&snapshot.preparation.turn_prefix_messages).cloned().collect();
+    let mut messages = overflow::bound_summarization_input(&crate::emergency_prune::prune_tool_results(&source, snapshot.context_window, 0.6), snapshot.context_window, prompt_tokens);
+    let started = tokio::time::Instant::now();
+    let total_ms = maho_core::compaction::stream_watchdog::summarization_total_budget_ms(snapshot.preparation.settings.summarization_max_duration_ms);
+    let mut overflow_attempts = 0;
+    let mut tool_retry_spent = false;
+    let mut reasoning_retry_spent = false;
+    loop {
+        if signal.is_some_and(maho_ai::utils::abort::AbortSignal::aborted) { return Ok(None); }
+        let remaining = total_ms - started.elapsed().as_secs_f64() * 1000.;
+        if remaining <= 0. { return Err(SummaryGenerationError::TotalBudget); }
+        let attempt_ms = maho_core::compaction::stream_watchdog::summarization_max_duration_ms(overflow::estimate_total_tokens(&messages) as f64, snapshot.preparation.settings.summarization_max_duration_ms).min(remaining);
+        let response = summary::generate_summary_message(summary::SummaryRequestOptions { snapshot, messages: &messages, prompt: &prompt, api_key: api_key.clone(), headers: headers.clone(), extra_body: None, signal, max_duration: std::time::Duration::from_secs_f64(attempt_ms / 1000.), omit_reasoning_options: reasoning_retry_spent, forbid_tool_calls: tool_retry_spent, stream_runner }, on_progress).await.map_err(SummaryGenerationError::Stream)?;
+        let Some(response) = response else { return Ok(None); };
+        if maho_ai::utils::overflow::is_context_overflow(&response, Some(snapshot.context_window)) {
+            overflow_attempts += 1;
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.;
+            let retry = overflow::allow_overflow_retry(overflow_attempts, elapsed_ms).then(|| overflow::shrink_summarization_input_for_overflow_retry(&messages, snapshot.context_window, prompt_tokens)).flatten();
+            let Some(retry) = retry else { return Err(SummaryGenerationError::Overflow(overflow::SummarizationOverflowExhaustedError { attempts: overflow_attempts, elapsed_ms })); };
+            messages = retry; continue;
+        }
+        if response.stop_reason == StopReason::Aborted { return Ok(None); }
+        if response.stop_reason == StopReason::Error { return Err(SummaryGenerationError::Request(Box::new(response))); }
+        let serialized = serde_json::to_value(&response).expect("assistant messages serialize");
+        let text = summary::get_summary_text(&serialized);
+        if text.is_empty() {
+            if response.stop_reason == StopReason::ToolUse && !snapshot.tools.is_empty() && !tool_retry_spent { tool_retry_spent = true; continue; }
+            if response.stop_reason == StopReason::Stop && summary::has_summarization_reasoning_override(&snapshot.model) && !reasoning_retry_spent { reasoning_retry_spent = true; continue; }
+            return Err(SummaryGenerationError::EmptySummary(format!("summarization response contained no text (stopReason: {:?})", response.stop_reason)));
+        }
+        let parsed = crate::task_intent::extract_task_intent(&text);
+        let structural = crate::r#yield::compute_structural_yield(snapshot.preparation.previous_summary.as_deref().unwrap_or_default(), &snapshot.preparation.messages_to_summarize, &snapshot.preparation.turn_prefix_messages, &parsed.summary_text, snapshot.preparation.tokens_before as f64);
+        let mut details = json!({"schema":"senpi.compaction.summary.v1","promptVariant":match snapshot.prompt_variant { PromptVariant::Default=>"default",PromptVariant::Update=>"update",PromptVariant::Branch=>"branch",PromptVariant::TurnPrefix=>"turn_prefix" },"tokenEstimate":maho_core::compaction::compaction::estimate_context_tokens(&maho_core::messages::convert_to_llm(&messages)).tokens + text.encode_utf16().count().div_ceil(4) as u64,"structuralYield":{"savedTokens":structural.saved_tokens,"savingsRatio":structural.savings_ratio,"tokensBefore":structural.tokens_before}});
+        if let Some(intent) = parsed.task_intent.or(inherited_intent) { details["taskIntent"] = json!(intent); }
+        return Ok(Some(CompactionResult { summary: parsed.summary_text, first_kept_entry_id: snapshot.preparation.first_kept_entry_id.clone(), tokens_before: snapshot.preparation.tokens_before as u64, details: Some(details) }));
+    }
+}
+
 pub async fn apply_generated_compaction(
     context: &ExtensionContext,
     snapshot: Option<&SpeculativeCompactionSnapshot>,

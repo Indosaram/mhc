@@ -57,3 +57,33 @@ async fn compact_transport_posts_to_real_local_http_surface() {
     assert_eq!(events[0]["action"], "remote_started");
     assert_eq!(events[1]["action"], "remote_completed");
 }
+
+#[tokio::test]
+async fn caller_abort_interrupts_incomplete_response_body() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
+    let (finish_sender, finish_receiver) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buffer = [0; 4096];
+        let count = socket.read(&mut buffer).await.unwrap();
+        assert!(count > 0);
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{").await.unwrap();
+        ready_sender.send(()).unwrap();
+        finish_receiver.await.unwrap();
+    });
+    let model: Model = serde_json::from_value(json!({"id":"m","name":"m","provider":"openai","api":"openai-responses","baseUrl":format!("http://{address}/v1"),"reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":10000,"maxTokens":8000})).unwrap();
+    let messages = [json!({"role":"user","content":"task","timestamp":0})];
+    let request = create_openai_remote_compaction_request(Some(&model), "", &[], Some(&messages), 999, None, None).unwrap();
+    let controller = maho_ai::utils::abort::AbortController::new();
+    let signal = controller.signal();
+    let client = reqwest::Client::new();
+    let operation = run_openai_compact_endpoint_compaction(CompactEndpointOptions { client: &client, headers: reqwest::header::HeaderMap::new(), model: &model, request: &request, request_id: "request", signal: &signal, first_kept_entry_id: "anchor", now_ms: 0, origin: json!({}) }, &|_| {});
+    let abort = async { ready_receiver.await.unwrap(); controller.abort(None); };
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async { tokio::join!(operation, abort) }).await.unwrap();
+    assert_eq!(result.unwrap_err(), "aborted");
+    finish_sender.send(()).unwrap();
+    server.await.unwrap();
+}

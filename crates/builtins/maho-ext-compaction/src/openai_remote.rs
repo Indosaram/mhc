@@ -36,7 +36,11 @@ pub async fn run_openai_compact_endpoint_compaction(options: CompactEndpointOpti
     if !response.status().is_success() {
         event("remote_fallback", json!({"reason":format!("HTTP {}", response.status().as_u16())})); return Ok(None);
     }
-    let payload = match response.json::<Value>().await {
+    let payload = tokio::select! {
+        () = options.signal.cancelled() => return Err("aborted".into()),
+        payload = response.json::<Value>() => payload,
+    };
+    let payload = match payload {
         Ok(payload) => payload,
         Err(error) => { event("remote_fallback", json!({"reason":error.to_string()})); return Ok(None); }
     };
