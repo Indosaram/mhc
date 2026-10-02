@@ -130,6 +130,6 @@ pub struct ThreadMetadataGitInfoUpdateParams {
 }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct ThreadMetadataUpdateParams {pub thread_id:String,#[serde(default,skip_serializing_if="Option::is_none")]pub git_info:Option<ThreadMetadataGitInfoUpdateParams>}
+pub struct ThreadMetadataUpdateParams {pub thread_id:String,#[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub git_info:Option<Option<ThreadMetadataGitInfoUpdateParams>>}
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 pub struct ThreadMetadataUpdateResponse {pub thread:Thread}

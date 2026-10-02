@@ -1,3 +1,7 @@
-use serde::{Deserialize,Serialize};
-#[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
-pub struct ToolRequestUserInputOption {pub label:String,pub description:String}
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ToolRequestUserInputOption {
+    #[serde(rename = "label")]
+    pub label: String,
+    #[serde(rename = "description")]
+    pub description: String,
+}

@@ -270,3 +270,30 @@ async fn native_compaction_success_emits_completed_item_and_keeps_synthetic_hist
     assert!(entry.lock().await.session.with_session_manager(|manager|manager.entries()).iter().any(|entry|entry["type"]=="compaction"));
     client.close(None).await.unwrap();drop(client);listener.close().await.unwrap();runtime.dispose().await;
 }
+
+#[tokio::test(start_paused=true)]
+async fn idle_lifecycle_unloads_only_unsubscribed_inactive_threads_and_dispose_cancels() {
+    use maho_server::app_server::{handlers::ThreadLifecycleController,registry::RegistryConnection};
+    let directory=tempfile::tempdir().unwrap();
+    let runtime=AppServerRuntime::new(directory.path().display().to_string(),directory.path().display().to_string(),"1".into(),None,Some(factory())).await;
+    let (send,mut receive)=tokio::sync::mpsc::unbounded_channel();
+    let connection=runtime.core.write().await.add_connection("observer".into(),Arc::new(move|message|{let send=send.clone();Box::pin(async move {send.send(message).unwrap();Ok(())})}));
+    connection.initialized.lock().await.initialize(&json!({"clientInfo":{"name":"qa","version":"1"}}),"1","Linux","","x64");
+    let entry=runtime.threads.create_thread(directory.path().display().to_string(),None).await.unwrap();let id=entry.lock().await.id.clone();
+    let lifecycle=ThreadLifecycleController::new(Arc::downgrade(&runtime.core),runtime.threads.clone(),std::time::Duration::from_secs(60));
+    entry.lock().await.subscribers.insert("observer".into());lifecycle.schedule_idle_unload_for_thread(&id).await;
+    tokio::time::advance(std::time::Duration::from_secs(60)).await;assert!(runtime.threads.get_loaded_thread(&id).await.is_ok());
+    entry.lock().await.subscribers.clear();lifecycle.schedule_idle_unload_for_thread(&id).await;
+    lifecycle.clear_idle_timer(&id);tokio::time::advance(std::time::Duration::from_secs(60)).await;assert!(runtime.threads.get_loaded_thread(&id).await.is_ok());
+    entry.lock().await.active_turn=Some("active".into());lifecycle.schedule_idle_unload_for_thread(&id).await;
+    tokio::time::advance(std::time::Duration::from_secs(60)).await;assert!(runtime.threads.get_loaded_thread(&id).await.is_ok());
+    entry.lock().await.active_turn=None;lifecycle.schedule_idle_unload_for_thread(&id).await;
+    tokio::time::advance(std::time::Duration::from_secs(60)).await;
+    assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(1),receive.recv()).await.unwrap().unwrap()["method"],"thread/closed");
+    assert_eq!(receive.recv().await.unwrap()["params"]["status"]["type"],"notLoaded");assert!(runtime.threads.get_loaded_thread(&id).await.is_err());
+    let entry=runtime.threads.create_thread(directory.path().display().to_string(),None).await.unwrap();let id=entry.lock().await.id.clone();
+    lifecycle.schedule_idle_unload_for_thread(&id).await;lifecycle.dispose();tokio::time::advance(std::time::Duration::from_secs(60)).await;
+    assert!(runtime.threads.get_loaded_thread(&id).await.is_ok());
+    let result=runtime.core.read().await.registry.dispatch(RegistryConnection {initialized:true,id:"observer".into(),..Default::default()},json!({"id":1,"method":"thread/read","params":{"threadId":id}})).await;assert!(result.get("result").is_some());
+    runtime.core.write().await.remove_connection("observer");runtime.dispose().await;
+}

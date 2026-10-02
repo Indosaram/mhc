@@ -1,3 +1,5 @@
-use serde::{Deserialize,Serialize};
-#[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
-pub struct ToolRequestUserInputAnswer {pub answers:Vec<String>}
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ToolRequestUserInputAnswer {
+    #[serde(rename = "answers")]
+    pub answers: Vec<String>,
+}

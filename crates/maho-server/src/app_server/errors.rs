@@ -8,22 +8,22 @@ pub enum NonSteerableTurnKind {
     Review,
     Compact,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CodexErrorInfo {
     ContextWindowExceeded,
     SessionBudgetExceeded,
     UsageLimitExceeded,
     ServerOverloaded,
     CyberPolicy,
-    HttpConnectionFailed(Option<i64>),
-    ResponseStreamConnectionFailed(Option<i64>),
+    HttpConnectionFailed(Option<f64>),
+    ResponseStreamConnectionFailed(Option<f64>),
     InternalServerError,
     Unauthorized,
     BadRequest,
     ThreadRollbackFailed,
     SandboxError,
-    ResponseStreamDisconnected(Option<i64>),
-    ResponseTooManyFailedAttempts(Option<i64>),
+    ResponseStreamDisconnected(Option<f64>),
+    ResponseTooManyFailedAttempts(Option<f64>),
     ActiveTurnNotSteerable(NonSteerableTurnKind),
     Other,
 }

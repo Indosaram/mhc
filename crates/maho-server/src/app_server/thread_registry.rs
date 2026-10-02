@@ -96,9 +96,11 @@ impl ThreadRegistry {
         let next = offset.saturating_add(page.len());
         json!({"threads":page,"nextCursor":if next < threads.len() {Some(super::registry_listing::encode_cursor(next))} else {None}})
     }
-    pub async fn remove_connection(&self, id: &str) {
+    pub async fn remove_connection(&self, id: &str)->Vec<String> {
         let entries = self.entries.lock().await.values().cloned().collect::<Vec<_>>();
-        for entry in entries { entry.lock().await.subscribers.remove(id); }
+        let mut affected=Vec::new();
+        for entry in entries {let mut entry=entry.lock().await;if entry.subscribers.remove(id) {affected.push(entry.id.clone());}}
+        affected
     }
     pub async fn abort_active_turns(&self) {
         let entries = self.entries.lock().await.values().cloned().collect::<Vec<_>>();
@@ -110,6 +112,14 @@ impl ThreadRegistry {
     pub async fn unload_thread(&self, id: &str) -> bool {
         let entry = self.entries.lock().await.shift_remove(id);
         if let Some(entry) = entry { entry.lock().await.session.dispose().await; true } else { false }
+    }
+    pub async fn unload_if_idle(&self,id:&str)->bool {
+        let mut entries=self.entries.lock().await;
+        let Some(entry)=entries.get(id).cloned() else {return false;};
+        let entry=entry.lock().await;
+        if !entry.subscribers.is_empty()||entry.active_turn.is_some() {return false;}
+        entries.shift_remove(id);drop(entries);
+        entry.session.dispose().await;true
     }
     pub async fn delete_thread(&self,id: &str) -> std::io::Result<bool> {
         let loaded = self.entries.lock().await.shift_remove(id);

@@ -3,6 +3,50 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+pub struct ThreadLifecycleController {
+    timers: std::sync::Mutex<std::collections::BTreeMap<String,tokio::task::JoinHandle<()>>>,
+    core: std::sync::Weak<RwLock<ServerCore>>,
+    threads: Arc<ThreadRegistry>,
+    idle_unload: std::time::Duration,
+}
+impl ThreadLifecycleController {
+    pub fn new(core:std::sync::Weak<RwLock<ServerCore>>,threads:Arc<ThreadRegistry>,idle_unload:std::time::Duration)->Arc<Self> {
+        Arc::new(Self {timers:Default::default(),core,threads,idle_unload})
+    }
+    pub fn clear_idle_timer(&self,id:&str) {
+        if let Some(timer)=self.timers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(id) {timer.abort();}
+    }
+    pub async fn schedule_idle_unload_for_thread(self:&Arc<Self>,id:&str) {
+        let Ok(entry)=self.threads.get_loaded_thread(id).await else {return;};
+        let entry=entry.lock().await;
+        self.clear_idle_timer(id);
+        if !entry.subscribers.is_empty()||entry.active_turn.is_some() {return;}
+        let deadline=tokio::time::Instant::now()+self.idle_unload;
+        let controller=Arc::downgrade(self);let id=id.to_owned();
+        let mut timers=self.timers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let task_id=id.clone();
+        let task=tokio::spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            let Some(controller)=controller.upgrade() else {return;};
+            controller.timers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&task_id);
+            if !controller.threads.unload_if_idle(&task_id).await {return;}
+            if let Some(core)=controller.core.upgrade() {
+                let core=core.read().await;
+                for notification in [json!({"method":"thread/closed","params":{"threadId":task_id}}),json!({"method":"thread/status/changed","params":{"threadId":task_id,"status":{"type":"notLoaded"}}})] {
+                    if let Err(error)=core.broadcast_notification(notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server idle notification: {}",error.message);}
+                }
+            }
+        });
+        timers.insert(id,task);
+    }
+    pub fn dispose(&self) {
+        for timer in std::mem::take(&mut *self.timers.lock().unwrap_or_else(std::sync::PoisonError::into_inner)).into_values() {timer.abort();}
+    }
+}
+impl Drop for ThreadLifecycleController {
+    fn drop(&mut self) {self.dispose();}
+}
+
 pub async fn register_storage_lifecycle_handlers(core: &Arc<RwLock<ServerCore>>,threads: Arc<ThreadRegistry>,archive: Arc<ThreadArchiveState>,version: String) {
     let weak = Arc::downgrade(core);
     for method in ["thread/archive","thread/unarchive","thread/delete"] {

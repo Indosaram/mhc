@@ -67,3 +67,15 @@ fn nullable_protocol_fields_distinguish_absent_from_explicit_clear() {
     let params:ToolRequestUserInputParams=serde_json::from_value(json!({"threadId":"thread","turnId":"turn","itemId":"item","questions":[{"id":"q","header":"h","question":"question","isOther":true,"isSecret":false,"options":null}],"autoResolutionMs":null})).unwrap();
     assert!(params.questions[0].options.is_none());
 }
+
+#[test]
+fn facade_method_sets_reject_unknown_and_malformed_typed_notifications() {
+    use maho_server::app_server::protocol::{requests::ServerRequest,notifications::ServerNotification,thread_parity::ThreadMetadataUpdateParams};
+    assert!(serde_json::from_value::<ServerRequest>(json!({"method":"unknown","id":1})).is_err());
+    assert!(serde_json::from_value::<ServerNotification>(json!({"method":"unknown"})).is_err());
+    assert!(serde_json::from_value::<ServerNotification>(json!({"method":"thread/unarchived","params":{}})).is_err());
+    let notification:ServerNotification=serde_json::from_value(json!({"method":"thread/started","params":{"thread":{}}})).unwrap();
+    assert_eq!(serde_json::to_value(notification).unwrap(),json!({"method":"thread/started","params":{"thread":{}}}));
+    let metadata:ThreadMetadataUpdateParams=serde_json::from_value(json!({"threadId":"thread","gitInfo":null})).unwrap();
+    assert_eq!(serde_json::to_value(metadata).unwrap(),json!({"threadId":"thread","gitInfo":null}));
+}

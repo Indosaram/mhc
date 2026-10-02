@@ -11,8 +11,8 @@ fn terminal_error_wire_shapes_and_rpc_codes() {
         json!({"httpConnectionFailed":{"httpStatusCode":null}})
     );
     assert_eq!(
-        serialize_codex_error_info(&CodexErrorInfo::ResponseStreamDisconnected(Some(502))),
-        json!({"responseStreamDisconnected":{"httpStatusCode":502}})
+        serialize_codex_error_info(&CodexErrorInfo::ResponseStreamDisconnected(Some(502.5))),
+        json!({"responseStreamDisconnected":{"httpStatusCode":502.5}})
     );
     assert_eq!(
         serialize_codex_error_info(&CodexErrorInfo::ActiveTurnNotSteerable(
