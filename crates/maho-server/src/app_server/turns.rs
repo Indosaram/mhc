@@ -14,18 +14,18 @@ pub async fn register_turn_methods(core: &Arc<RwLock<ServerCore>>, threads: Arc<
             let threads = threads.clone();
             let log = log.clone(); let weak = weak.clone();
             Box::pin(async move {
-                let params = &context.request["params"];
-                let id = params["threadId"].as_str().ok_or_else(||JsonRpcError::new(-32602,"Invalid params"))?;
+                let input_params = if method == "turn/steer" {Some(super::turn_adapter::turn_input_params(&context.request,true)?)} else {None};
+                let (id,expected) = if let Some(params) = &input_params {(params.thread_id.clone(),params.expected_turn_id.clone().ok_or_else(||JsonRpcError::new(-32602,"Invalid params: expectedTurnId is required"))?)} else {super::turn_adapter::turn_interrupt_params(&context.request)?};
+                let id = id.as_str();
                 let entry = threads.get_loaded_thread(id).await.map_err(|error|JsonRpcError::new(-32600,error))?;
                 let (session,active) = {let entry = entry.lock().await;(entry.session.clone(),entry.active_turn.clone())};
                 let Some(active) = active else {return Err(JsonRpcError::new(-32600,format!("No active turn for thread {id}")));};
-                let expected = if method == "turn/steer" {"expectedTurnId"} else {"turnId"};
-                if params[expected].as_str() != Some(&active) {return Err(JsonRpcError::new(-32600,format!("Turn id mismatch: expected {} but active turn is {active}",params[expected].as_str().unwrap_or_default())));}
+                if expected != active {return Err(JsonRpcError::new(-32600,format!("Turn id mismatch: expected {expected} but active turn is {active}")));}
                 if method == "turn/interrupt" {entry.lock().await.interrupted = true;session.abort().await;return Ok(json!({}));}
-                let input = params["input"].as_array().ok_or_else(||JsonRpcError::new(-32602,"Invalid params"))?;
-                let parsed = parse_input(input)?;
+                let params = input_params.ok_or_else(||JsonRpcError::new(-32602,"Invalid params"))?;
+                let parsed = parse_input(&params.input)?;
                 session.steer(&parsed.text,None,maho_core::agent_session::QueuedInputOptions {source:Some(maho_ext_api::InputSource::Rpc),..Default::default()}).await.map_err(|error|JsonRpcError::new(-32603,error))?;
-                let user = build_user_message(params["clientUserMessageId"].as_str(),&parsed.content);
+                let user = build_user_message(params.client_user_message_id.as_deref(),&parsed.content);
                 log.lock().await.append_item(id,&active,user.as_object().cloned().ok_or_else(||JsonRpcError::new(-32603,"Invalid user message"))?).map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
                 if let Some(core) = weak.upgrade() {
                     let now = chrono::Utc::now().timestamp_millis();
@@ -39,16 +39,15 @@ pub async fn register_turn_methods(core: &Arc<RwLock<ServerCore>>, threads: Arc<
     core.registry.register("turn/start".into(), MethodRegistration { requires_init: true, experimental: false, scope: MethodScope::Thread, handler: Arc::new(move |context| {
         let threads = threads.clone(); let log = log.clone(); let weak = weak.clone();
         Box::pin(async move {
-            let params = &context.request["params"];
-            let id = params["threadId"].as_str().ok_or_else(|| JsonRpcError::new(-32602,"Invalid params"))?.to_owned();
-            let input = params["input"].as_array().ok_or_else(|| JsonRpcError::new(-32602,"Invalid params"))?;
-            let parsed = parse_input(input)?;
+            let params = super::turn_adapter::turn_input_params(&context.request,false)?;
+            let id = params.thread_id;
+            let parsed = parse_input(&params.input)?;
             let entry = threads.get_loaded_thread(&id).await.map_err(|error|JsonRpcError::new(-32600,error))?;
             let (session, cwd, tasks) = { let entry = entry.lock().await; (entry.session.clone(), entry.cwd.clone(), entry.tasks.clone()) };
             let guard = tasks.lock_owned().await;
             let turn_id = create_turn_id(); let now = chrono::Utc::now(); let started = now.timestamp_millis() as f64;
             { let mut entry = entry.lock().await; entry.active_turn = Some(turn_id.clone()); entry.interrupted = false; entry.updated_at = now.to_rfc3339_opts(chrono::SecondsFormat::Millis,true); }
-            let user = build_user_message(params["clientUserMessageId"].as_str(), &parsed.content);
+            let user = build_user_message(params.client_user_message_id.as_deref(), &parsed.content);
             { let mut log = log.lock().await; log.record_turn(&id, RecordTurnOptions { turn_id:turn_id.clone(), started_at:now.to_rfc3339_opts(chrono::SecondsFormat::Millis,true), status:None, completed_at:None, error:None }); log.append_item(&id,&turn_id,user.as_object().cloned().ok_or_else(||JsonRpcError::new(-32603,"Invalid user message"))?).map_err(|error|JsonRpcError::new(-32603,error.to_string()))?; }
             let turn = build_turn(&turn_id,"inProgress",started,None,&[],None);
             let response = json!({"turn":turn});
