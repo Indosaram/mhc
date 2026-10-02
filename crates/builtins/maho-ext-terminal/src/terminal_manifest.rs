@@ -30,6 +30,26 @@ impl TerminalManifestWriter {
     }
     pub fn adopt_restored(&mut self,mut entry:ManifestMonitor) {entry.suspended=false;self.entries.insert(entry.monitor_id.clone(),entry);}
     pub fn durable_count(&self)->usize {self.entries.values().filter(|entry|entry.durability_class!=MonitorDurabilityClass::Ephemeral).count()}
+    #[cfg(unix)]
+    pub async fn restore_live(&mut self,manager:&mut crate::manager::TerminalManager,registry:&mut crate::monitor_registry::MonitorRegistry,now:f64)->crate::restore::RestoreDigest {
+        use crate::restore::{RestoreDigest,RestoreOutcome};
+        let mut digest=RestoreDigest::default();
+        let state=match self.store.read().await {Ok(None)=>return digest,Ok(Some(value))=>match crate::restore::parse_terminal_manifest(&value,&self.session_id) {Ok(state)=>state,Err(_)=>{digest.store_error=true;return digest;}},Err(_)=>{digest.store_error=true;return digest;}};
+        for monitor in state.monitors {
+            if monitor.expires_at.is_some_and(|expiry|expiry<=now) {digest.expired+=1;continue;}
+            let outcome=match monitor.durability_class {
+                MonitorDurabilityClass::Ephemeral=>RestoreOutcome::Lost,
+                MonitorDurabilityClass::RestartableCommand=>crate::durable_command::restore_command(&monitor,manager,|_,runtime,record|registry.register(runtime,record)),
+                MonitorDurabilityClass::CheckpointedFile=>crate::durable_file::restore_file(&monitor,registry,manager,None,now),
+            };
+            match outcome {RestoreOutcome::Restored=>digest.restored+=1,RestoreOutcome::Muted=>digest.muted+=1,RestoreOutcome::Lost=>digest.lost+=1,RestoreOutcome::AttachedElsewhere=>digest.attached_elsewhere+=1}
+            if matches!(outcome,RestoreOutcome::Restored|RestoreOutcome::Muted) {
+                self.adopt_restored(monitor.clone());registry.adopt_fire_window(&monitor.monitor_id,&monitor.fire_window);
+                if let Some(id)=manager.resolve_id(&monitor.monitor_id)&&let Some(checkpoint)=registry.file_checkpoint(&id) {self.schedule_checkpoint(&monitor.monitor_id,checkpoint);}
+            }
+        }
+        digest.lost+=state.background_sessions.len();digest
+    }
     pub async fn observe_monitor_state(&mut self,snapshot:&[crate::monitor_registry::MonitorSnapshotEntry],now:f64)->Result<(),String> {
         let mut live=BTreeMap::new();
         for entry in snapshot {
@@ -81,6 +101,15 @@ impl Drop for CheckpointDebouncer {fn drop(&mut self) {if let Some(task)=self.ta
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn restore_store_adopts_live_file_and_preserves_mute_deadline_and_checkpoint() {
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("watch");std::fs::write(&path,b"same").unwrap();let checkpoint=crate::durable_file::file_checkpoint(&path).unwrap();let mut writer=TerminalManifestWriter::new(dir.path(),"s");
+        writer.record_register(MonitorRegistration {monitor_id:"mon_saved".to_owned(),spec:MonitorSpec::File {description:"watch".to_owned(),path:"watch".to_owned(),event:FileEvent::Modify,timeout_ms:300_000.0,cwd:dir.path().to_string_lossy().into_owned(),approved_parent:None,persistent:true}},10.0).await;writer.entries.get_mut("mon_saved").unwrap().delivery_paused=true;writer.schedule_checkpoint("mon_saved",checkpoint.clone());writer.record_shutdown(20.0).await;
+        let expiry=writer.entries["mon_saved"].expires_at;let mut next=TerminalManifestWriter::new(dir.path(),"s");let mut manager=crate::manager::TerminalManager::default();let mut registry=crate::monitor_registry::MonitorRegistry::new(|_|{});let digest=next.restore_live(&mut manager,&mut registry,30.0).await;
+        assert_eq!(digest,crate::restore::RestoreDigest {muted:1,..Default::default()});assert_eq!(next.durable_count(),1);assert!(!next.entries["mon_saved"].suspended);assert_eq!(next.entries["mon_saved"].expires_at,expiry);assert!(registry.snapshot()[0].paused);assert_eq!(manager.resolve_id("mon_saved"),Some("watch_1".to_owned()));next.flush(40.0).await;
+        let persisted=crate::restore::parse_terminal_manifest(&next.store.read().await.unwrap().unwrap(),"s").unwrap();assert_eq!(persisted.monitors[0].last_checkpoint,Some(checkpoint));registry.dispose();manager.teardown().unwrap();
+    }
     #[tokio::test]
     async fn background_records_follow_insertion_order() {
         let dir=tempfile::tempdir().unwrap();let mut writer=TerminalManifestWriter::new(dir.path(),"s");
