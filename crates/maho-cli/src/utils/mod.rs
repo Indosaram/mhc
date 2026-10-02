@@ -17,3 +17,4 @@ pub mod clipboard;
 pub mod syntax_highlight;
 pub mod management_http;
 pub mod changelog;
+pub mod shell;
