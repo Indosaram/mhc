@@ -1,3 +1,4 @@
+pub mod index;
 pub mod websearch {
     pub mod config;
     pub mod native;

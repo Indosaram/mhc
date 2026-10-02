@@ -1,0 +1,4 @@
+use maho_ext_api::*;
+use maho_ext_pi_websearch::index::*;
+#[test]fn bypass_matches_only_native_provider_extensions(){assert!(is_provider_native_bypass(Some("openai")));assert!(is_provider_native_bypass(Some("anthropic")));for provider in [None,Some("openrouter"),Some("custom"),Some("OpenAI")]{assert!(!is_provider_native_bypass(provider));}}
+#[test]fn registers_lifecycle_and_status_command(){let mut api=ExtensionApi::new(LoadedExtension::new("pi-websearch","/fixture".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());register_search_lifecycle(&mut api);assert_eq!(api.registered.handlers[&EventKind::SessionStart].len(),1);assert_eq!(api.registered.handlers[&EventKind::SessionShutdown].len(),1);assert!(api.registered.commands.iter().any(|command|command.name=="websearch"));}
