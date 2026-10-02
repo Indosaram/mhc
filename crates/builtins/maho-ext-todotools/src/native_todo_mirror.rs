@@ -5,7 +5,7 @@ use crate::todo_types::{TodoItem, TodoPhase, TodoStatus};
 pub fn phases_from_cursor_todos(todos: &Value) -> Option<Vec<TodoPhase>> {
     let items = todos.as_array()?;
     let tasks: Vec<TodoItem> = items.iter().filter_map(|item| {
-        let content = item.get("content")?.as_str()?.trim();
+        let content = item.get("content")?.as_str()?.trim_matches(|c:char|matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}'));
         if content.is_empty() { return None; }
         let status = match item.get("status").and_then(Value::as_str) {
             Some("in_progress") => TodoStatus::InProgress,
@@ -22,6 +22,11 @@ pub fn phases_from_cursor_todos(todos: &Value) -> Option<Vec<TodoPhase>> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn native_content_uses_ecmascript_trim() {
+        let phases=phases_from_cursor_todos(&json!([{"content":"\u{feff}Task\u{feff}"},{"content":"\u{0085}"},{"content":"\u{feff}"}])).unwrap();
+        assert_eq!(phases[0].tasks.iter().map(|task|task.content.as_str()).collect::<Vec<_>>(),["Task","\u{0085}"]);
+    }
     #[test]
     fn absent_payload_differs_from_empty_list() {
         assert_eq!(phases_from_cursor_todos(&Value::Null), None);
