@@ -26,6 +26,7 @@ impl WorkerOptions {
 
 pub struct JavaScriptKernel {
     commands: mpsc::UnboundedSender<Command>,
+    tools: Arc<super::kernel_tools_host::KernelToolHostPump>,
     loader: LocalModuleLoader,
     snapshot: Arc<Mutex<Snapshot>>,
     pid: Arc<Mutex<Option<u32>>>,
@@ -40,8 +41,10 @@ impl JavaScriptKernel {
         let pid=Arc::new(Mutex::new(slot.pid()));
         let snapshot=Arc::new(Mutex::new((None,vec![])));
         let (commands,receiver)=mpsc::unbounded_channel();
-        tokio::spawn(run_actor(options,slot,receiver,snapshot.clone(),pid.clone()));
-        Ok(Self {commands,loader,snapshot,pid})
+        let posts=commands.clone();let worker_pid=pid.clone();
+        let tools=Arc::new(super::kernel_tools_host::KernelToolHostPump::new(Arc::new(move |message| {let _=posts.send(Command::Reply(message));}),Arc::new(move ||worker_pid.lock().expect("JS pid lock").is_some())));
+        tokio::spawn(run_actor(options,slot,receiver,snapshot.clone(),pid.clone(),tools.clone()));
+        Ok(Self {commands,tools,loader,snapshot,pid})
     }
 
     pub async fn run(&self, input: KernelRunInput, mut on_message: impl FnMut(&Value)) -> Result<Value, ProcessError> {
@@ -86,6 +89,9 @@ impl JavaScriptKernel {
         receiver.await.map_err(|_|ProcessError::Closed)?.map_err(ProcessError::Startup)
     }
     pub fn pid(&self)->Option<u32> {*self.pid.lock().expect("JS pid lock")}
+    pub fn kernel_tool_events(&self)->tokio::sync::broadcast::Receiver<&'static str> {self.tools.events()}
+    pub async fn describe_kernel_tools(&self,names:&[String])->Result<Value,super::kernel_tools_errors::KernelToolError> {self.tools.describe(names).await}
+    pub async fn invoke_kernel_tool(&self,request:super::kernel_tools_types::KernelToolsInvokeRequest,options:super::kernel_tools_types::KernelToolsInvokeOptions)->Result<Value,super::kernel_tools_errors::KernelToolError> {self.tools.invoke(request,options).await}
 }
 
 fn route(message:Value,runs:&mut JavaScriptRunQueue,calls:&mut SubprocessRunQueue)->bool {
@@ -127,7 +133,7 @@ async fn stop_active(slot:&mut WorkerSlot,runs:&mut JavaScriptRunQueue,calls:&mu
     Ok(false)
 }
 
-async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::UnboundedReceiver<Command>,snapshot:Arc<Mutex<Snapshot>>,pid:Arc<Mutex<Option<u32>>>) {
+async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::UnboundedReceiver<Command>,snapshot:Arc<Mutex<Snapshot>>,pid:Arc<Mutex<Option<u32>>>,tools:Arc<super::kernel_tools_host::KernelToolHostPump>) {
     let mut runs=JavaScriptRunQueue::default();
     let mut calls=SubprocessRunQueue::default();
     let origin=tokio::time::Instant::now();
@@ -147,6 +153,7 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
         }
         *snapshot.lock().expect("JS queue lock")=runs.snapshot();
         *pid.lock().expect("JS pid lock")=slot.pid();
+        if !slot.present() {tools.reject_all(super::kernel_tools_errors::kernel_tool_error(super::kernel_tools_errors::KernelToolErrorCode::KernelToolStale,"JavaScript worker reset",None));}
         tokio::select! {
             command=commands.recv()=>match command {
                 Some(Command::Run(input,message,started,response))=>{
@@ -164,11 +171,13 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
                     let _=response.send(result);
                 }
                 Some(Command::Reset(response))=>{
+                    tools.reject_all(super::kernel_tools_errors::kernel_tool_error(super::kernel_tools_errors::KernelToolErrorCode::KernelToolStale,"JavaScript worker reset",None));
                     runs.settle_all("JS kernel reset");calls.clear_tool_calls();deadline=None;
                     let result=async {slot.retire().await?;slot.ensure_ready(options.startup(),&maho_ai::utils::abort::AbortController::new().signal()).await}.await.map_err(|error|error.to_string());
                     let _=response.send(result);
                 }
                 Some(Command::Close(response))=>{
+                    tools.reject_all(super::kernel_tools_errors::kernel_tool_error(super::kernel_tools_errors::KernelToolErrorCode::KernelToolStale,"JS kernel closed",None));
                     runs.settle_all("JS kernel closed");calls.clear_tool_calls();
                     let _=slot.post_message(&json!({"type":"close"})).await;
                     let result=slot.retire().await.map(|_|()).map_err(|error|error.to_string());
@@ -177,7 +186,10 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
                 None=>{runs.settle_all("JS kernel closed");if let Err(error)=slot.retire().await {eprintln!("JS retirement failed: {error}");}break;}
             },
             message=slot.next_message(),if slot.present()=>match message {
-                Ok(message)=>{if route(message,&mut runs,&mut calls) {deadline=None;}}
+                Ok(message)=>{
+                    if tools.consume(message.clone()) {continue;}
+                    if route(message,&mut runs,&mut calls) {deadline=None;}
+                }
                 Err(error)=>{if let Some(mut run)=runs.release_active() {let result=stopped_result(&run.input.cell_id,&error.to_string());JavaScriptRunQueue::settle(&mut run,result);}calls.clear_tool_calls();deadline=None;if let Err(error)=slot.retire().await {eprintln!("JS retirement failed: {error}");}}
             },
             ()=async {match deadline {Some(deadline)=>tokio::time::sleep_until(deadline).await,None=>std::future::pending().await}},if deadline.is_some()=>{
@@ -189,4 +201,5 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
     }
     *snapshot.lock().expect("JS queue lock")=(None,vec![]);
     *pid.lock().expect("JS pid lock")=None;
+    tools.reject_all(super::kernel_tools_errors::kernel_tool_error(super::kernel_tools_errors::KernelToolErrorCode::KernelToolStale,"JS kernel closed",None));
 }

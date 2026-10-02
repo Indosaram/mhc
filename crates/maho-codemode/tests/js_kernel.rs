@@ -74,3 +74,16 @@ async fn cooperative_interrupt_preserves_live_worker_globals() {
     assert!(same_pid);
     assert_eq!(after.unwrap()["valueRepr"],"42");
 }
+
+#[tokio::test]
+async fn live_kernel_tool_host_pump_describes_and_invokes_worker_definition() {
+    use maho_codemode::kernels::js::kernel_tools_types::*;
+    let kernel=JavaScriptKernel::start(Path::new(env!("CARGO_MANIFEST_DIR")),"bun-tools",4,None).await.unwrap();
+    let defined=kernel.run(KernelRunInput {cell_id:"define".into(),code:"tool(function increment(value) { return value+1; })".into(),timeout_ms:Some(5000)},|_|{}).await.unwrap();
+    let described=tokio::time::timeout(std::time::Duration::from_secs(5),kernel.describe_kernel_tools(&["increment".into()])).await.unwrap();
+    let descriptor=described.as_ref().unwrap()["results"][0]["descriptor"].clone();
+    let result=tokio::time::timeout(std::time::Duration::from_secs(5),kernel.invoke_kernel_tool(KernelToolsInvokeRequest {name:"increment".into(),kernel_generation:descriptor["kernel_generation"].as_u64().unwrap(),definition_revision:descriptor["definition_revision"].as_u64().unwrap(),args:serde_json::json!({"value":41}),call_id:"native-invoke".into()},KernelToolsInvokeOptions {signal:None,scope:None})).await.unwrap();
+    kernel.close().await.unwrap();
+    assert_eq!(defined["ok"],true);
+    assert_eq!(result.unwrap(),42);
+}
