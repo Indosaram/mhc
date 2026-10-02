@@ -1737,6 +1737,7 @@ name = "maho-ext-pi-goal"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "maho-ext-api",
  "serde",
  "serde_json",
  "tempfile",
