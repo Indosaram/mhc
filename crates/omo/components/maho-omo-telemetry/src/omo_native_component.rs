@@ -31,7 +31,7 @@ impl Extension for OmoNativeTelemetryComponent {
         } else {Ok(())};Box::pin(async move {if let Err(error)=result {eprintln!("telemetry_capture_failed: omo-native-session: {error}");}Ok(EventResult::None)})}));
         api.on(EventKind::SessionShutdown,Arc::new(move |_,_| {let client=shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();Box::pin(async move {if let Some(client)=client {client.shutdown().await;}Ok(EventResult::None)})}));
         crate::omo_native_turns::register_omo_native_turn_telemetry(api,Arc::clone(&hash),Arc::clone(&capture),Arc::new(||eprintln!("telemetry_event_property_rejected: turn_end assistant usage contained missing or invalid values")));
-        crate::omo_native_tools::register_omo_native_tool_telemetry(api,self.skills_root.clone(),hash,capture);
+        crate::omo_native_tools::register_omo_native_tool_telemetry(api,self.skills_root.clone(),hash,capture,Some(Arc::new(|message,details|eprintln!("{message}: {details}"))));
         crate::omo_native_notice::register_omo_native_notice(api,env,notice_state_dir,Arc::clone(&self.is_config_enabled));
     }
 }
