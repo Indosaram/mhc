@@ -104,6 +104,13 @@ pub fn reader_prepare_document(document:&dom_query::Document) {
     if let Some(body)=document.select("body").nodes().first() {reader_replace_breaks(body);}
     for node in document.select("font").nodes() {node.rename("span");}
 }
+pub fn reader_next_node(mut node:dom_query::NodeRef<'_>,ignore_children:bool)->Option<dom_query::NodeRef<'_>> {
+    if !ignore_children && let Some(child)=node.first_element_child() {return Some(child);}
+    loop {
+        if let Some(sibling)=node.next_element_sibling() {return Some(sibling);}
+        node=node.parent()?;
+    }
+}
 pub fn score_reader_candidates(elements:&[dom_query::NodeRef<'_>],weight_classes:bool)->Vec<(dom_query::NodeId,f64)> {
     let mut candidates:Vec<(dom_query::NodeRef<'_>,f64)>=Vec::new();
     for element in elements {
@@ -326,6 +333,9 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_depth_first_traversal_skips_text_and_survives_removal() {
+        let document=dom_query::Document::from("<main id='root'>text<div id='removed'><span id='skip'>child</span></div><section id='next'><b id='last'>child</b></section></main>");let root=document.select("#root").nodes()[0];let removed=reader_next_node(root,false).unwrap();assert_eq!(removed.attr("id").as_deref(),Some("removed"));let next=reader_next_node(removed,true).unwrap();removed.remove_from_parent();assert_eq!(next.attr("id").as_deref(),Some("next"));let last=reader_next_node(next,false).unwrap();assert_eq!(last.attr("id").as_deref(),Some("last"));assert!(reader_next_node(last,false).is_none());
+    }
     #[test] fn reader_document_preparation_removes_styles_and_preserves_font_attributes() {
         let document=dom_query::Document::from("<style>bad</style><div><font color='red'>text</font><br><br>after<style>bad</style></div>");reader_prepare_document(&document);
         assert!(document.select("style, font").is_empty());assert_eq!(document.select("span").attr("color").as_deref(),Some("red"));assert_eq!(document.select("span").text().as_ref(),"text");assert_eq!(document.select("p").text().as_ref(),"after");
