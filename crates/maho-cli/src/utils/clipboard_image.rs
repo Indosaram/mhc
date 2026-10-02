@@ -39,10 +39,30 @@ fn native() -> BackendResult {
         Some(Some(bytes)) => { let mime_type = super::mime::detect_supported_image_mime_type(&bytes).unwrap_or("application/octet-stream").to_owned(); BackendResult::Image(ClipboardImage { bytes, mime_type }) }
     }
 }
+fn is_wsl(env: &BTreeMap<String, String>) -> bool {
+    ["WSL_DISTRO_NAME", "WSLENV"].into_iter().any(|key| env.get(key).is_some_and(|value| !value.is_empty()))
+        || std::fs::read_to_string("/proc/version").is_ok_and(|release| { let release = release.to_lowercase(); release.contains("microsoft") || release.contains("wsl") })
+}
+async fn powershell() -> Option<ClipboardImage> {
+    let temporary = tempfile::Builder::new().prefix("pi-wsl-clip-").suffix(".png").tempfile().ok()?;
+    let path = temporary.path().to_str()?;
+    let windows_path = run_clipboard_command("wslpath", &["-w", path], ClipboardCommandOptions { timeout_ms: Some(1000), ..Default::default() }).await?;
+    let windows_path = String::from_utf8_lossy(&windows_path);
+    let windows_path = windows_path.trim();
+    if windows_path.is_empty() { return None; }
+    let quoted = windows_path.replace('\'', "''");
+    let script = format!("Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $path = '{quoted}'; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img) {{ $img.Save($path, [System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'ok' }} else {{ Write-Output 'empty' }}");
+    let output = run_clipboard_command("powershell.exe", &["-NoProfile", "-Command", &script], ClipboardCommandOptions { timeout_ms: Some(5000), ..Default::default() }).await?;
+    if String::from_utf8_lossy(&output).trim() != "ok" { return None; }
+    let bytes = tokio::fs::read(temporary.path()).await.ok()?;
+    (!bytes.is_empty()).then_some(ClipboardImage { bytes, mime_type: "image/png".to_owned() })
+}
 pub async fn read_clipboard_image(env: &BTreeMap<String, String>, platform: &str) -> Option<ClipboardImage> {
     if env.get("TERMUX_VERSION").is_some_and(|value| !value.is_empty()) { return None; }
-    let mut result = if platform == "linux" { if is_wayland_session(env) { wayland().await } else { BackendResult::Unavailable } } else { native() };
+    let wsl = platform == "linux" && is_wsl(env);
+    let mut result = if platform == "linux" { if is_wayland_session(env) || wsl { wayland().await } else { BackendResult::Unavailable } } else { native() };
     if platform == "linux" && matches!(result, BackendResult::Unavailable) { result = xclip().await; }
+    if wsl && !matches!(result, BackendResult::Image(_)) && let Some(image) = powershell().await { result = BackendResult::Image(image); }
     if matches!(result, BackendResult::Unavailable) { result = native(); }
     match result {
         BackendResult::Unavailable | BackendResult::Empty => None,
