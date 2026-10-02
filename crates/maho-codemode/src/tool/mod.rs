@@ -29,3 +29,4 @@ pub mod run_eval_cell;
 pub mod eval_tool;
 pub mod json_tree;
 pub mod tool_widgets;
+pub mod render;

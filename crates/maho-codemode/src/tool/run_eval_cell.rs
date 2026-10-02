@@ -118,7 +118,18 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
                         work_execution.pause();work_manager.lock().expect("cell manager lock").pause(&work_cell);
                     } else if message["type"]=="status" && message["event"]["op"]==crate::bridge::reserved::TIMEOUT_RESUME_OP {
                         work_execution.resume();work_manager.lock().expect("cell manager lock").resume(&work_cell);
-                    } else if let Err(error)=handler.handle(&message).await {work_execution.cancel(AbortReason::new("Error",error));}
+                    } else {
+                        let pending=work_execution.wait(handler.handle(&message));
+                        tokio::pin!(pending);
+                        let handled=tokio::select! {
+                            result=&mut pending=>result,
+                            changed=deadline.changed()=>{
+                                if changed.is_ok() && let Some(expiry)=deadline.borrow_and_update().clone() {work_execution.cancel(AbortReason::new("TimeoutError",expiry.error));}
+                                pending.await
+                            }
+                        };
+                        if let Err(error)=handled {work_execution.cancel(AbortReason::new("Error",error));}
+                    }
                     *live.lock().expect("live result lock")=handler.builder.live_result();
                 },
                 changed=deadline.changed()=>if changed.is_ok() && let Some(expiry)=deadline.borrow_and_update().clone() {work_execution.cancel(AbortReason::new("TimeoutError",expiry.error));}
@@ -129,7 +140,7 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
             if message["type"]=="host-started" {
                 handler.builder.state.run_started_at=work_cell.lock().expect("managed cell lock").source.run_started_at_ms;
                 handler.builder.state.status="running".into();handler.builder.state.queued_behind=None;
-            } else if active.load(std::sync::atomic::Ordering::SeqCst) && let Err(error)=handler.handle(&message).await {
+            } else if active.load(std::sync::atomic::Ordering::SeqCst) && let Err(error)=work_execution.wait(handler.handle(&message)).await {
                 work_execution.cancel(AbortReason::new("Error",error.clone()));
                 result=Err(error);
             }

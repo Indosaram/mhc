@@ -45,6 +45,42 @@ impl EvalKernelManager for FinalFrameManager {
     fn get_kernel(&self,_:EvalLanguage)->EvalKernelFuture<'_,Arc<dyn EvalKernel>> {Box::pin(async {Ok(Arc::new(FinalFrameKernel) as Arc<dyn EvalKernel>)})}
 }
 
+struct ParkedToolKernel;
+impl EvalKernel for ParkedToolKernel {
+    fn run(&self,input:EvalKernelRunInput)->EvalKernelFuture<'_,serde_json::Value> {Box::pin(async move {
+        input.on_started.expect("start callback")();
+        input.on_message.expect("message callback")(&json!({"type":"tool-call","toolName":"park","callId":"parked","args":{}}));
+        std::future::pending().await
+    })}
+    fn cancel_queued<'a>(&'a self,_:&'a str,_:&'a str)->EvalKernelFuture<'a,bool> {Box::pin(async {Ok(false)})}
+    fn interrupt<'a>(&'a self,_:&'a str,_:Option<&'a str>)->EvalKernelFuture<'a,KernelInterruptHandle> {Box::pin(async {Ok(KernelInterruptHandle {state_retained:Box::pin(async {Ok(true)}),note:None})})}
+    fn queue_snapshot(&self)->(Option<String>,Vec<String>) {(None,vec![])}
+    fn deliver_tool_reply(&self,_:serde_json::Value)->Result<(),String> {panic!("cancelled tool must not publish reply")}
+    fn reset(&self)->EvalKernelFuture<'_,()> {Box::pin(async {Ok(())})}
+    fn close(&self)->EvalKernelFuture<'_,()> {Box::pin(async {Ok(())})}
+}
+struct ParkedToolManager;
+impl EvalKernelManager for ParkedToolManager {
+    fn get_kernel(&self,_:EvalLanguage)->EvalKernelFuture<'_,Arc<dyn EvalKernel>> {Box::pin(async {Ok(Arc::new(ParkedToolKernel) as Arc<dyn EvalKernel>)})}
+}
+struct ParkedExecutor(tokio::sync::mpsc::UnboundedSender<()>);
+impl maho_codemode::bridges::output_bridge::OutputExecuteTool for ParkedExecutor {
+    fn execute_tool<'a>(&'a self,_:&'a str,_:serde_json::Value,_:maho_ext_api::ExecuteToolOptions)->maho_ext_api::ExecuteToolFuture<'a> {Box::pin(async {self.0.send(()).expect("tool start receiver");std::future::pending().await})}
+}
+
+#[tokio::test]
+async fn caller_abort_settles_while_host_tool_remains_pending() {
+    let (started,mut events)=tokio::sync::mpsc::unbounded_channel();
+    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(ParkedToolManager),executor:Arc::new(ParkedExecutor(started)),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+    let controller=maho_ai::utils::abort::AbortController::new();
+    let mut input=invocation("parked","await tool.park()");input.signal=controller.signal();
+    let run=tokio::spawn(run_eval_cell(options,input));
+    tokio::time::timeout(std::time::Duration::from_secs(2),events.recv()).await.unwrap().unwrap();
+    controller.abort(Some(maho_ai::utils::abort::AbortReason::new("AbortError","caller cancelled")));
+    let result=tokio::time::timeout(std::time::Duration::from_secs(2),run).await.expect("caller abort must not wait for host tool").unwrap().unwrap();
+    assert_eq!(result.details["isError"],true);
+}
+
 #[tokio::test]
 async fn invalid_final_frame_cannot_settle_as_success() {
     let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(FinalFrameManager),executor:Arc::new(Executor),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
