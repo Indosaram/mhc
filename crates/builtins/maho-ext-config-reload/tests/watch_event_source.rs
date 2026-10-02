@@ -1,6 +1,42 @@
 use maho_ext_config_reload::watch_event_source::subscribe;
 use std::{path::PathBuf, sync::{Arc, mpsc}, time::Duration};
 #[test]
+fn direct_platform_creates_and_disposes_on_calling_thread() {
+    use maho_ext_config_reload::watch_event_source::{FsWatchEventSource, NativeEventCallback};
+    use std::sync::Mutex;
+    struct Handle(mpsc::Sender<std::thread::ThreadId>);
+    impl Drop for Handle {
+        fn drop(&mut self) { assert!(self.0.send(std::thread::current().id()).is_ok()); }
+    }
+    let caller = std::thread::current().id();
+    let callback: Arc<Mutex<Option<NativeEventCallback>>> = Arc::default();
+    let registered = Arc::clone(&callback);
+    let (disposed, teardown) = mpsc::channel();
+    let source = FsWatchEventSource::with_platform_factory("win32", Arc::new(move |_, recursive, listener| {
+        assert_eq!(std::thread::current().id(), caller);
+        assert!(!recursive);
+        *registered.lock().unwrap() = Some(listener);
+        Ok(Box::new(Handle(disposed.clone())))
+    }));
+    let (delivered, events) = mpsc::channel();
+    let mut subscription = source.subscribe("/fixture".into(), false, Arc::new(move |_, filename| { delivered.send(filename).unwrap(); }), Arc::new(|error, _| panic!("{error}"))).unwrap();
+    subscription.ready().unwrap();
+    {
+        let mut callback = callback.lock().expect("callback mutex");
+        callback.as_mut().expect("registered callback")(Ok(notify::Event::new(notify::EventKind::Any)));
+    }
+    assert_eq!(events.try_recv().unwrap(), None);
+    subscription.close().unwrap();
+    assert_eq!(teardown.try_recv().unwrap(), caller);
+    {
+        let mut callback = callback.lock().expect("callback mutex");
+        callback.as_mut().expect("registered callback")(Ok(notify::Event::new(notify::EventKind::Any)));
+    }
+    assert!(events.try_recv().is_err());
+    subscription.close().unwrap();
+}
+
+#[test]
 fn worker_dispatch_crash_rebuilds_surviving_watchers() {
     use maho_ext_config_reload::watch_event_source::{FsWatchEventSource, NativeEventCallback};
     use std::sync::{Mutex, atomic::{AtomicBool, Ordering}};
