@@ -61,6 +61,7 @@ impl maho_ext_api::Extension for CompactionExtension {
         let idle_since_end = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reminder = std::sync::Arc::new(std::sync::Mutex::new(token_budget_reminder::create_initial_reminder_state()));
         let degradation = std::sync::Arc::new(tokio::sync::Mutex::new(degradation_monitor::create_degradation_monitor_state()));
+        let logger = std::sync::Arc::new(std::sync::Mutex::new(None::<log::CompactionLogger>));
         {
             let degradation=std::sync::Arc::clone(&degradation);
             let warm=std::sync::Arc::clone(&warm);
@@ -186,11 +187,28 @@ impl maho_ext_api::Extension for CompactionExtension {
                         let next = generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
                         *job = speculative_job::start_live_speculative_job(&live_api,context,next,idle::IDLE_COMPACTION_INSTRUCTIONS.into())?;
                     }
-                    if let Some(watching) = job.as_ref().cloned() {
+                    if let Some(mut watching) = job.as_ref().cloned() {
                         idle_since_end.store(true,std::sync::atomic::Ordering::SeqCst);
-                        let context=context.clone();let warm=std::sync::Arc::clone(&warm);let generation=std::sync::Arc::clone(&generation);let idle=std::sync::Arc::clone(&idle_since_end);let state=std::sync::Arc::clone(&idle_state);
+                        let context=context.clone();let warm=std::sync::Arc::clone(&warm);let generation=std::sync::Arc::clone(&generation);let idle=std::sync::Arc::clone(&idle_since_end);let state=std::sync::Arc::clone(&idle_state);let api=std::sync::Arc::clone(&live_api);
                         tokio::spawn(async move {
-                            let settled=watching.settled().await;
+                            let mut attempt=0;
+                            let settled=loop {
+                                let settled=watching.settled().await;
+                                if settled.error.is_none() {break settled;}
+                                if !idle.load(std::sync::atomic::Ordering::SeqCst) || generation.load(std::sync::atomic::Ordering::SeqCst)!=watching.generation {return;}
+                                let Ok(Some(usage))=context.get_context_usage() else {return;};
+                                let (last_yield,tripped)={let state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);(state.last_yield,circuit_breaker::is_tripped(&state,chrono::Utc::now().timestamp_millis() as f64))};
+                                let decision=idle::IdleCompactionDecision {will_retry:false,aborted:false,settings:&watching.snapshot.preparation.settings,tokens:usage.tokens.map(|tokens|tokens as f64),context_window:usage.context_window as f64,breaker_tripped:tripped,last_yield,mode:context.mode};
+                                if !idle_retry::should_retry_idle_warmup(&idle_retry::IdleWarmupRetryDecision {attempt,transient:settled.error.as_ref().is_some_and(|error|maho_ai::utils::retry::is_retryable_error_message(error)),is_idle:context.is_idle(),breaker_tripped:tripped,still_warm_eligible:idle::should_warm_at_idle(&decision)}) {return;}
+                                tokio::time::sleep(std::time::Duration::from_millis(idle_retry::IDLE_WARMUP_RETRY_DELAY_MS)).await;
+                                if !idle.load(std::sync::atomic::Ordering::SeqCst) || !context.is_idle() || generation.load(std::sync::atomic::Ordering::SeqCst)!=watching.generation {return;}
+                                let mut current=warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                if current.as_ref().is_none_or(|job|job.generation!=watching.generation) {return;}
+                                watching.controller.abort(None);
+                                let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
+                                let Ok(Some(replacement))=speculative_job::start_live_speculative_job(&api,&context,next,idle::IDLE_COMPACTION_INSTRUCTIONS.into()) else {return;};
+                                watching=replacement.clone();*current=Some(replacement);attempt+=1;
+                            };
                             let Some(compaction)=settled.result else {return;};
                             if !idle.load(std::sync::atomic::Ordering::SeqCst) || !context.is_idle() || generation.load(std::sync::atomic::Ordering::SeqCst)!=watching.generation {return;}
                             if warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_none_or(|job|job.generation!=watching.generation) {return;}
@@ -208,6 +226,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                 Box::pin(async move {result})
             }));
             let state = std::sync::Arc::clone(&state);
+            let logger = std::sync::Arc::clone(&logger);
             api.on(maho_ext_api::EventKind::Context, std::sync::Arc::new(move |event, context| {
                 let result = (|| {
                     let maho_ext_api::ExtensionEvent::Context { messages } = event else { return Ok(maho_ext_api::EventResult::None); };
@@ -231,6 +250,10 @@ impl maho_ext_api::Extension for CompactionExtension {
                         emergency_prune_latch: &mut latch.lock().unwrap_or_else(std::sync::PoisonError::into_inner), reminder: None,
                         now: chrono::Utc::now().timestamp_millis(),
                     }).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                    let mut logger=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let logger=logger.get_or_insert_with(||log::CompactionLogger::new(Some(&context.agent_dir),None,None));
+                    if breaker_fallback {logger.debug("breaker_deterministic_fallback",serde_json::json!({"route":"context-event","tokens":tokens.unwrap_or(0.)}).as_object());}
+                    if let Some((before,after))=output.emergency_prune_tokens {logger.debug("emergency_prune",serde_json::json!({"route":"context-event","tokensBefore":before,"tokens":after}).as_object());}
                     let messages = output.messages.into_iter().map(|message|serde_json::to_value(message).and_then(serde_json::from_value)).collect::<Result<Vec<_>, _>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                     Ok(maho_ext_api::EventResult::Context { messages: Some(messages) })
                 })();
