@@ -57,6 +57,19 @@ impl maho_ext_api::Extension for CompactionExtension {
         let pending = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, (serde_json::Value, serde_json::Value))>::new()));
         let live_api = std::sync::Arc::new(maho_ext_api::ExtensionApi::new(api.registered.clone(), api.profile.clone(), api.events.clone(), api.runtime.clone()));
         {
+            let live_api = std::sync::Arc::clone(&live_api);
+            api.on(maho_ext_api::EventKind::MessageEnd, std::sync::Arc::new(move |event, _context| {
+                let result = if let maho_ext_api::ExtensionEvent::MessageEnd { message: maho_ext_api::AgentMessage::Llm(message) } = event {
+                        lane_policy::collect_compact_boundary_entries(message).into_iter().try_for_each(|entry| {
+                            live_api.append_entry(lane_policy::ANTHROPIC_SUBSCRIPTION_COMPACT_ENTRY_TYPE, Some(serde_json::json!({
+                                "schema":entry.schema,"sdkSessionId":entry.sdk_session_id,"uuid":entry.uuid,"compactMetadata":entry.compact_metadata,
+                            })))
+                        })
+                } else { Ok(()) };
+                Box::pin(async move { result?; Ok(maho_ext_api::EventResult::None) })
+            }));
+        }
+        {
             let latch = std::sync::Arc::new(std::sync::Mutex::new(emergency_prune::EmergencyPruneLatch::default()));
             let state = std::sync::Arc::clone(&state);
             api.on(maho_ext_api::EventKind::Context, std::sync::Arc::new(move |event, context| {
@@ -104,7 +117,10 @@ impl maho_ext_api::Extension for CompactionExtension {
             api.on(maho_ext_api::EventKind::SessionBeforeCompact, std::sync::Arc::new(move |event, context| {
                 let gate = if let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event {
                     let state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if !event.signal.is_aborted() && per_turn_cap::should_reject_by_cap(&state).cancel {
+                    if !event.signal.is_aborted() && event.reason != maho_ext_api::CompactionReason::Manual
+                        && context.model.as_ref().is_some_and(|model|model.provider == "anthropic-subscription") {
+                        Some(maho_ext_api::SessionBeforeEventResult { cancel: Some(true), rejection_cause: Some(maho_ext_api::CompactionRejectionCause::ExternalOwner), reason: Some(lane_policy::SDK_NATIVE_LANE_REJECTION_REASON.into()), ..Default::default() })
+                    } else if !event.signal.is_aborted() && per_turn_cap::should_reject_by_cap(&state).cancel {
                         Some(maho_ext_api::SessionBeforeEventResult { cancel: Some(true), rejection_cause: Some(maho_ext_api::CompactionRejectionCause::PerTurnCap), reason: Some("absolute compaction cap reached for this session".into()), ..Default::default() })
                     } else if !event.signal.is_aborted() && circuit_breaker::is_tripped(&state, chrono::Utc::now().timestamp_millis() as f64) && !circuit_breaker::should_bypass(&state, false, Some(event.reason)) {
                         Some(maho_ext_api::SessionBeforeEventResult { cancel: Some(true), rejection_cause: Some(maho_ext_api::CompactionRejectionCause::CircuitBreaker), ..Default::default() })
@@ -142,6 +158,9 @@ impl maho_ext_api::Extension for CompactionExtension {
             let pending = std::sync::Arc::clone(&pending);
             let live_api = std::sync::Arc::clone(&live_api);
             api.on(maho_ext_api::EventKind::SessionCompact, std::sync::Arc::new(move |event, context| {
+                if let maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Rejected { request_id, .. }) = event {
+                    pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|(id, _)|id != request_id);
+                }
                 let result = if let maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Accepted { request_id, .. }) = event {
                     let metadata = {
                         let mut pending = pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

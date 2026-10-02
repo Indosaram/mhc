@@ -18,7 +18,7 @@ impl ModelRegistry for TestRegistry {
     fn get_available(&self) -> Vec<Model> { Vec::new() }
     fn find(&self, _: &str, _: &str) -> Option<Model> { None }
     fn has_configured_auth(&self, _: &Model) -> bool { false }
-    fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<String>> { Box::pin(async { Ok(None) }) }
+    fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<String>> { Box::pin(async { Ok(Some("faux".into())) }) }
 }
 struct TestUi;
 impl ExtensionUi for TestUi {
@@ -46,6 +46,50 @@ fn context() -> ExtensionContext {
         is_compacting_fn: Arc::new(|| false), get_system_prompt_fn: Arc::new(|| "base".into()),
         get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions { cwd: "/tmp".into(), ..Default::default() }),
         registered_mcp_servers: Vec::new(), update_tool_hook_status: None }
+}
+
+#[tokio::test]
+async fn native_session_compaction_uses_registered_generator_and_persists_metadata() {
+    use maho_core::agent_session::{AgentSession, AgentSessionConfig};
+    use maho_ai::providers::faux::{RegisterFauxProviderOptions, FauxAssistantMessageOptions, faux_assistant_message, register_faux_provider};
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().to_string_lossy().into_owned();
+    let provider = register_faux_provider(RegisterFauxProviderOptions { api: Some("compaction-registration-faux".into()), tokens_per_second: Some(0.), ..Default::default() });
+    let model = provider.get_model(None).unwrap();
+    provider.set_responses(vec![faux_assistant_message(vec![ContentBlock::text("<summary>native checkpoint</summary>")], FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into()]);
+    let mut credentials = maho_core::auth_storage::AuthStorage::in_memory(Default::default());
+    credentials.set_runtime_api_key(&model.provider,"faux");
+    let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
+        models_path: Some(temp.path().join("models.json")), credentials: Some(Arc::new(credentials)), ..Default::default()
+    });
+    let mut manager = maho_core::session_manager::SessionManager::in_memory(&cwd,None,None);
+    manager.append_message(serde_json::json!({"role":"user","content":"old ".repeat(30000),"timestamp":0}));
+    manager.append_message(serde_json::json!({"role":"assistant","content":[{"type":"text","text":"reply"}],"api":model.api,"provider":model.provider,"model":model.id,"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0}));
+    manager.append_message(serde_json::json!({"role":"user","content":"continue","timestamp":0}));
+    let storage = maho_core::settings_manager::InMemorySettingsStorage::default();
+    maho_core::settings_manager::SettingsStorage::with_lock(&storage, maho_core::settings_manager::SettingsScope::Global,
+        &mut |_|Some(serde_json::json!({"compaction":{"keepRecentTokens":1}}).to_string())).unwrap();
+    let session = AgentSession::new(AgentSessionConfig {
+        agent: maho_agent_for_test(model), session_manager: manager,
+        settings_manager: maho_core::settings_manager::SettingsManager::from_storage(Box::new(storage),false),
+        cwd: cwd.clone(), agent_dir: Some(cwd), fallback_now: Some(Arc::new(||0.)), retry_random: Some(Arc::new(||0.5)),
+        scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: Default::default(), custom_tools: Vec::new(), model_runtime: Some(runtime), model_registry: None,
+        uses_default_stream_function: Some(false), initial_active_tool_names: None, default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: None, base_tools_override: None, session_start_event: None, auto_title_sessions: Some(false),
+    }).unwrap();
+    session.set_extension_runner(maho_ext_host::ExtensionRunner::from_static(vec![Box::new(maho_ext_compaction::CompactionExtension)],context())).await;
+    let result = session.compact(None).await.unwrap();
+    assert_eq!(result.details.as_ref().unwrap()["origin"],"core-route");
+    let entries = session.with_session_manager(|manager|manager.entries());
+    assert!(entries.iter().any(|entry|entry["customType"] == "compaction.agent-checkpoint"));
+    assert!(entries.iter().any(|entry|entry["customType"] == "compaction.todo-snapshot"));
+    assert_eq!(provider.get_call_log().len(),1);
+    session.dispose().await;
+    provider.unregister();
+}
+
+fn maho_agent_for_test(model: Model) -> maho_agent::Agent {
+    maho_agent::Agent::new(maho_agent::AgentOptions { initial_state: Some(maho_agent::agent::PartialAgentState { model: Some(model), ..Default::default() }),
+        stream_fn: Some(Arc::new(|model, context, options|maho_ai::stream::stream_simple(model,context,options.map(|options|options.simple)))), ..Default::default() })
 }
 #[tokio::test]
 async fn registered_lifecycle_handlers_accept_real_api_events() {

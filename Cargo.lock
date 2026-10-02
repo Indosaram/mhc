@@ -1650,9 +1650,11 @@ version = "0.0.0"
 dependencies = [
  "chrono",
  "icu_collator",
+ "maho-agent",
  "maho-ai",
  "maho-core",
  "maho-ext-api",
+ "maho-ext-host",
  "reqwest",
  "serde_json",
  "sha2",
