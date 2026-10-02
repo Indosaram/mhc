@@ -7,3 +7,9 @@ license = "LicenseRef-SUL-1.0"
 
 [lints]
 workspace = true
+
+[dependencies]
+maho-ext-api = { path = "../../../maho-ext-api" }
+
+[dev-dependencies]
+tempfile.workspace = true

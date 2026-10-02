@@ -1,0 +1,8 @@
+use maho_ext_herdr::reporter::{has_user_reporter,count_running_child_tasks,Herdr};
+use maho_ext_api::*;
+#[test]
+fn reporter_registration(){let mut api=ExtensionApi::new(LoadedExtension::new("herdr","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());Herdr.register(&mut api);for kind in [EventKind::SessionStart,EventKind::SessionInfoChanged,EventKind::AgentStart,EventKind::AgentSettled,EventKind::SessionShutdown]{assert_eq!(api.registered.handlers[&kind].len(),1);}}
+#[test]
+fn managed_and_user_reporters(){let directory=tempfile::tempdir().expect("dir");let path=directory.path().join("herdr-managed.ts");std::fs::write(&path,b"HERDR_INTEGRATION_ID=managed").expect("fixture");assert!(!has_user_reporter(&[path.to_string_lossy().into_owned()]));std::fs::write(&path,b"user reporter").expect("fixture");assert!(has_user_reporter(&[path.to_string_lossy().into_owned()]));assert!(has_user_reporter(&[directory.path().join("herdr-missing.js").to_string_lossy().into_owned()]));}
+#[test]
+fn child_ownership(){let directory=tempfile::tempdir().expect("dir");let tasks=directory.path().join(".omo/senpi-task/tasks");std::fs::create_dir_all(&tasks).expect("mkdir");for (name,value) in [("root",serde_json::json!({"status":"running","root_session_id":"root"})),("parent",serde_json::json!({"status":"pending","parent_session_id":"root"})),("other",serde_json::json!({"status":"running","parent_session_id":"other"})),("done",serde_json::json!({"status":"done","root_session_id":"root"}))]{std::fs::write(tasks.join(format!("{name}.json")),value.to_string()).expect("fixture");}std::fs::write(tasks.join("partial.json"),"{").expect("fixture");assert_eq!(count_running_child_tasks(directory.path(),"root"),2);}
