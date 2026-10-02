@@ -85,6 +85,24 @@ pub fn available_attachment_error(input:&str,count:usize)->String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test] async fn non_image_media_passes_through_with_auto_resize_enabled() {
+        let ctx=LookAtImageInputContext{cwd:std::path::Path::new("/tmp"),branch:&[],auto_resize:true,block_images:false};
+        let inputs=load_look_at_inputs(&ctx,&[],&["JVBERi0xLjcKZXhhbXBsZQ==".into()]).await.unwrap();
+        assert_eq!(inputs[0].mime_type,"application/pdf");
+        assert_eq!(inputs[0].data,"JVBERi0xLjcKZXhhbXBsZQ==");
+    }
+    #[tokio::test] async fn loader_enforces_raw_aggregate_limit_after_individual_inputs() {
+        use base64::Engine;
+        let mut bytes=vec![0;9*1024*1024]; bytes[..8].copy_from_slice(b"GIF89a00");
+        let image=base64::engine::general_purpose::STANDARD.encode(bytes);
+        let ctx=LookAtImageInputContext{cwd:std::path::Path::new("/tmp"),branch:&[],auto_resize:false,block_images:false};
+        assert_eq!(load_look_at_inputs(&ctx,&[],&[image.clone(),image.clone(),image]).await.unwrap_err(),"Error: Inputs exceed the 25MiB aggregate limit.");
+    }
+    #[tokio::test] async fn loader_detects_file_magic_before_misleading_extension() {
+        let directory=tempfile::tempdir().unwrap(); std::fs::write(directory.path().join("misnamed.txt"),[0xff,0xd8,0xff,0x00]).unwrap();
+        let ctx=LookAtImageInputContext{cwd:directory.path(),branch:&[],auto_resize:false,block_images:false};
+        assert_eq!(load_look_at_inputs(&ctx,&["misnamed.txt".into()],&[]).await.unwrap()[0].mime_type,"image/jpeg");
+    }
     #[tokio::test] async fn loader_preserves_file_attachment_and_base64_order() {
         let directory=tempfile::tempdir().unwrap(); std::fs::write(directory.path().join("note.txt"),b"notes").unwrap();
         let branch=[serde_json::json!({"type":"message","message":{"role":"user","content":[{"type":"image","data":"R0lGOA==","mimeType":"IMAGE/GIF"}]}})];
