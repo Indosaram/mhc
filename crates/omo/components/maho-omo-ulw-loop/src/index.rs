@@ -5,10 +5,12 @@ pub const STEERING_REMINDER:&str="<omo-senpi-ulw-loop>\nAn active omo-agent-tool
 pub const CONTINUATION_PROMPT:&str="Continue the active omo-agent-toolkit ulw-loop run.\nRun `omo-agent-toolkit ulw-loop status --json` in this session cwd, inspect the active incomplete goals, and keep working until the run is complete or safely checkpointed.";
 #[derive(Default)]
 struct State { consecutive:usize,previous:Option<String> }
-pub struct UlwLoopComponent { pub bin:Option<String>,pub js_runtime:String }
-async fn status(bin:&str,runtime:&str,cwd:&std::path::Path)->(String,bool) {
+pub type CommandFuture=std::pin::Pin<Box<dyn std::future::Future<Output=std::io::Result<crate::omo_command::CommandResult>>+Send>>;
+pub type CommandRunner=Arc<dyn Fn(String,Vec<String>,std::path::PathBuf)->CommandFuture+Send+Sync>;
+pub struct UlwLoopComponent { pub bin:Option<String>,pub js_runtime:String,pub run_command:Option<CommandRunner> }
+async fn status(bin:&str,runtime:&str,cwd:&std::path::Path,runner:Option<&CommandRunner>)->(String,bool) {
     let target=to_spawn_target(bin,&["ulw-loop".into(),"status".into(),"--json".into()],"linux",runtime);
-    let result=run_omo_command(&target,cwd).await;
+    let result=if let Some(run)=runner {match run(bin.into(),vec!["ulw-loop".into(),"status".into(),"--json".into()],cwd.into()).await {Ok(result)=>result,Err(_)=>return (String::new(),false)}}else{run_omo_command(&target,cwd).await};
     let active=result.code==0 && serde_json::from_str::<serde_json::Value>(&result.stdout).is_ok_and(|value|status_has_active_incomplete_run(&value));
     (result.stdout,active)
 }
@@ -20,11 +22,12 @@ impl Extension for UlwLoopComponent {
         };
         let bin=bin.clone();let js=self.js_runtime.clone();let state=Arc::new(Mutex::new(State::default()));
         let footer=Arc::new(Mutex::new(crate::footer_status::FooterStatus::default()));
+        let runner=self.run_command.clone();
         for kind in [EventKind::SessionStart,EventKind::ToolResult] {
-            let bin=bin.clone();let js=js.clone();let footer=Arc::clone(&footer);
-            api.on(kind,Arc::new(move |event,ctx|{let bin=bin.clone();let js=js.clone();let footer=Arc::clone(&footer);Box::pin(async move {
+            let bin=bin.clone();let js=js.clone();let footer=Arc::clone(&footer);let runner=runner.clone();
+            api.on(kind,Arc::new(move |event,ctx|{let bin=bin.clone();let js=js.clone();let footer=Arc::clone(&footer);let runner=runner.clone();Box::pin(async move {
                 if let ExtensionEvent::ToolResult(e)=event && !matches!(e.tool_name.as_str(),"create_goal"|"update_goal"|"bash"|"interactive_bash") {return Ok(EventResult::None);}
-                let active=status(&bin,&js,&ctx.cwd).await.1;crate::footer_status::sync_shared(&footer,ctx,active);Ok(EventResult::None)
+                let active=status(&bin,&js,&ctx.cwd,runner.as_ref()).await.1;crate::footer_status::sync_shared(&footer,ctx,active);Ok(EventResult::None)
             })}));
         }
         for kind in [EventKind::SessionBeforeSwitch,EventKind::SessionShutdown] {
@@ -32,18 +35,19 @@ impl Extension for UlwLoopComponent {
         }
         let input_state=Arc::clone(&state);let input_bin=bin.clone();let input_js=js.clone();
         let input_footer=Arc::clone(&footer);
-        api.on(EventKind::Input,Arc::new(move |event,ctx| { let state=Arc::clone(&input_state);let bin=input_bin.clone();let js=input_js.clone();let footer=Arc::clone(&input_footer);Box::pin(async move {
+        let input_runner=runner.clone();
+        api.on(EventKind::Input,Arc::new(move |event,ctx| { let state=Arc::clone(&input_state);let bin=input_bin.clone();let js=input_js.clone();let footer=Arc::clone(&input_footer);let runner=input_runner.clone();Box::pin(async move {
             let ExtensionEvent::Input(input)=event else { return Ok(EventResult::None); };
             if input.source==InputSource::Extension { return Ok(EventResult::Input(InputEventResult::Continue)); }
             *state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=State::default();
-            if input.streaming_behavior.is_some() { let active=status(&bin,&js,&ctx.cwd).await.1;crate::footer_status::sync_shared(&footer,ctx,active);if active { return Ok(EventResult::Input(InputEventResult::Transform{text:format!("{}\n\n{STEERING_REMINDER}",input.text),images:input.images.clone()})); } }
+            if input.streaming_behavior.is_some() { let active=status(&bin,&js,&ctx.cwd,runner.as_ref()).await.1;crate::footer_status::sync_shared(&footer,ctx,active);if active { return Ok(EventResult::Input(InputEventResult::Transform{text:format!("{}\n\n{STEERING_REMINDER}",input.text),images:input.images.clone()})); } }
             Ok(EventResult::Input(InputEventResult::Continue))
         }) }));
         let runtime=api.runtime.clone();
-        api.on(EventKind::AgentEnd,Arc::new(move |_,ctx| { let state=Arc::clone(&state);let bin=bin.clone();let js=js.clone();let runtime=runtime.clone();let footer=Arc::clone(&footer);Box::pin(async move {
+        api.on(EventKind::AgentEnd,Arc::new(move |_,ctx| { let state=Arc::clone(&state);let bin=bin.clone();let js=js.clone();let runtime=runtime.clone();let footer=Arc::clone(&footer);let runner=runner.clone();Box::pin(async move {
             if state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).consecutive>=8 { return Ok(EventResult::None); }
             if !ctx.session_manager.session_id().is_empty() && maho_omo_start_work_continuation::boulder_eligibility::find_continuable_boulder_work(&ctx.cwd,ctx.session_manager.session_id()).map_err(|e|ExtensionFailure::new(e.to_string()))?.is_some() { return Ok(EventResult::None); }
-            let (raw,active)=status(&bin,&js,&ctx.cwd).await;
+            let (raw,active)=status(&bin,&js,&ctx.cwd,runner.as_ref()).await;
             crate::footer_status::sync_shared(&footer,ctx,active);
             let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if !active { state.previous=None;return Ok(EventResult::None); }
