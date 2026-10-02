@@ -85,6 +85,17 @@ mod tests {
         let root=tempfile::tempdir()?;let handler=plugin_handler(root.path(),"exit 0",Some("exit 0"));let source=BTreeMap::from([("PATH".to_owned(),"/bin".to_owned()),("HOME".to_owned(),"home".to_owned()),("ALLOWED".to_owned(),"allow".to_owned()),("DENIED".to_owned(),"deny".to_owned()),("PLUGIN_ROOT".to_owned(),"wrong".to_owned())]);
         let env=build_hook_environment(&handler,SupportedHookEvent::PreToolUse,&source,&["ALLOWED".to_owned()]);assert_eq!(env["PATH"],"/bin");assert_eq!(env["HOME"],"home");assert_eq!(env["ALLOWED"],"allow");assert!(!env.contains_key("DENIED"));assert_eq!(env["PLUGIN_ROOT"],root.path().to_string_lossy());assert_eq!(env["CLAUDE_PLUGIN_ROOT"],env["PLUGIN_ROOT"]);assert_eq!(env["SENPI_HOOK_EVENT"],"PreToolUse");assert_eq!(env["SENPI_HOOK_SOURCE"],handler.source.source_path);Ok(())
     }
+    #[tokio::test]
+    async fn command_runner_redacts_tokens_before_spill_and_truncation()->std::io::Result<()> {
+        let root=tempfile::tempdir()?;let classic="ghp_0123456789abcdef0123456789abcdef0123";let fine="github_pat_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let command=format!("printf '%s\\n' 'SECRET_TOKEN=stdout-secret' '{classic}' 'ghp_short' '{}'; printf '%s\\n' 'Authorization: Bearer stderr-secret' '{fine}' 'github_pat_short' '{}' >&2","o".repeat(200),"e".repeat(200));
+        let handler=plugin_handler(root.path(),&command,Some("exit 0"));let policy=HookOutputPolicy {max_stdout_bytes:Some(192),max_stderr_bytes:Some(192),spill_dir:Some(root.path().join("spill"))};
+        let result=crate::command_runner::run_command_hook(&handler,&serde_json::json!({"event":"PreToolUse"}),crate::command_runner::CommandHookRunOptions {cwd:root.path(),env_passthrough:&[],output_policy:Some(&policy),signal:None,source_env:None}).await?;
+        for (text,metadata,secret,token,short) in [(&result.stdout,&result.output_safety.stdout,"stdout-secret",classic,"ghp_short"),(&result.stderr,&result.output_safety.stderr,"stderr-secret",fine,"github_pat_short")] {
+            assert!(text.contains("[REDACTED]"));assert!(text.contains(short));assert!(!text.contains(secret));assert!(!text.contains(token));assert!(metadata.redacted&&metadata.spilled&&metadata.truncated);
+            let spill=std::fs::read_to_string(metadata.spill_path.as_ref().unwrap())?;assert!(spill.contains(short));assert!(!spill.contains(secret));assert!(!spill.contains(token));
+        }assert_eq!(result.timeout_seconds,600.0);assert!(!result.timed_out);Ok(())
+    }
     #[test] fn quoted_suffix_keeps_escape_for_validation() {assert_eq!(read_command_words("node \"${PLUGIN_ROOT}\"/../escape.mjs"),vec![("node".to_owned(),"node".to_owned()),("\"${PLUGIN_ROOT}\"/../escape.mjs".to_owned(),"${PLUGIN_ROOT}/../escape.mjs".to_owned())]);}
     #[test] fn default_timeout_and_invalid_numbers() {assert!(!is_valid_hook_timeout_seconds(f64::NAN));assert!(!is_valid_hook_timeout_seconds(0.0));assert!(is_valid_hook_timeout_seconds(600.0));}
 }
