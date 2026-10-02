@@ -12,6 +12,8 @@ maho-ext-api = { path = "../../../maho-ext-api" }
 maho-omo-start-work-continuation = { path = "../maho-omo-start-work-continuation" }
 
 [dev-dependencies]
+maho-test-support = { path = "../../../maho-test-support", features = ["sdk"] }
+maho-ext-host = { path = "../../../maho-ext-host" }
 tempfile = "=3.27.0"
 tokio = { version = "=1.52.3", features = ["macros", "rt"] }
 

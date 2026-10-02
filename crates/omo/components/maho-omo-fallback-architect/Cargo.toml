@@ -15,6 +15,8 @@ maho-omo-config-core = { path = "../../omo-config-core" }
 maho-senpi-task = { path = "../../senpi-task" }
 
 [dev-dependencies]
+maho-test-support = { path = "../../../maho-test-support", features = ["sdk"] }
+maho-ext-host = { path = "../../../maho-ext-host" }
 tokio = { version = "=1.52.3", features = ["macros", "rt"] }
 tempfile = "=3.27.0"
 
