@@ -1,4 +1,18 @@
 pub struct ReadableArticle{pub title:String,pub content:String,pub has_heading:bool}
+pub fn escape_markdown(text:&str)->String{
+    let mut escaped=text.replace('\\',"\\\\").replace('*',"\\*");
+    if escaped.starts_with('-')||escaped.starts_with("+ ")||escaped.starts_with('='){escaped.insert(0,'\\');}
+    let hashes=escaped.chars().take_while(|ch|*ch=='#').count();
+    if (1..=6).contains(&hashes)&&escaped.as_bytes().get(hashes)==Some(&b' '){escaped.insert(0,'\\');}
+    escaped=escaped.replace('`',"\\`");
+    if escaped.starts_with("~~~"){escaped.insert(0,'\\');}
+    escaped=escaped.replace('[',"\\[").replace(']',"\\]");
+    if escaped.starts_with('>'){escaped.insert(0,'\\');}
+    escaped=escaped.replace('_',"\\_");
+    let digits=escaped.bytes().take_while(u8::is_ascii_digit).count();
+    if digits>0&&escaped.get(digits..).is_some_and(|tail|tail.starts_with(". ")){escaped.insert(digits,'\\');}
+    escaped
+}
 pub fn extract_explicit_article(html:&str)->Option<ReadableArticle>{
     let document=dom_query::Document::from(html);
     for selector in [".article_view",".tt_article_useless_p_margin",".entry-content",".contents_style",".post-content",".article-content",".content-article","#content .contents_style"]{
