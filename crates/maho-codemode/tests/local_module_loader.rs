@@ -33,3 +33,19 @@ async fn prepared_imports_execute_in_external_worker() {
     assert_eq!(result["valueRepr"], "\"value\"");
     kernel.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn local_import_rejects_encoded_traversal_and_recovers() {
+    use maho_codemode::{bridge::protocol::BridgeConnectionConfig,kernels::{js::context_manager::JavaScriptKernel,shared::subprocess_contract::KernelRunInput}};
+    let cwd=std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let kernel=JavaScriptKernel::start_with_connection(cwd,"local-traversal",4,None,BridgeConnectionConfig {port:1,token:"test".into(),local_roots:Some(HashMap::from([("local".into(),cwd.to_string_lossy().into_owned())])),artifacts_dir:None,parallel_pool_width:None}).await.unwrap();
+    let mut failures=Vec::new();
+    for specifier in ["local://../outside.mjs","local://%2e%2e/outside.mjs","local:///absolute.mjs","local://%ZZ","unsupported://module.mjs"] {
+        let code=format!("await import({})",serde_json::to_string(specifier).unwrap());
+        failures.push(kernel.run(KernelRunInput {cell_id:"bad-import".into(),code,timeout_ms:Some(5000)},|_|{}).await.unwrap());
+    }
+    let recovered=kernel.run(KernelRunInput {cell_id:"after-import".into(),code:"42".into(),timeout_ms:Some(5000)},|_|{}).await.unwrap();
+    kernel.close().await.unwrap();
+    for failure in failures {assert_eq!(failure["ok"],false);}
+    assert_eq!(recovered["valueRepr"],"42");
+}
