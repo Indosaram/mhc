@@ -27,6 +27,17 @@ pub async fn probe_listen(token_file: &Path, listen: &Value, timeout_ms: u64, ve
         Err(error) => return Err(error),
     };
     if listen["kind"] == "ws" { return Ok(probe_websocket(listen["url"].as_str().unwrap_or_default(), token.as_deref(), timeout_ms, version).await); }
+    if listen["kind"] == "unix" && let Some(path) = listen["path"].as_str() {
+        let operation = async {
+            let stream = tokio::net::UnixStream::connect(path).await.ok()?;
+            let mut request = "ws://localhost/".into_client_request().ok()?;
+            if let Some(token) = token.as_deref().filter(|token| !token.is_empty()) { request.headers_mut().insert("authorization", format!("Bearer {token}").parse().ok()?); }
+            let (mut socket, _) = client_async(request, stream).await.ok()?;
+            socket.send(Message::Text(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"senpi_app_server_daemon","title":"senpi app-server daemon","version":version}}}).to_string().into())).await.ok()?;
+            match socket.next().await?.ok()? { Message::Text(text) => read_initialize_probe(&text), _ => None }
+        };
+        return Ok(tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), operation).await.ok().flatten());
+    }
     Ok(None)
 }
 

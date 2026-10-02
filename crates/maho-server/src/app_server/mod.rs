@@ -24,6 +24,7 @@ pub mod websocket_auth;
 pub mod websocket_connection_handler;
 pub mod websocket;
 pub mod start_options;
+pub mod unix_socket;
 pub mod errors;
 pub mod daemon_probe;
 pub mod cli_args;
