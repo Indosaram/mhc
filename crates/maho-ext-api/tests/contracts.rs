@@ -256,6 +256,13 @@ fn typed_tool_renderer_retains_state_across_render_calls() {
     context.last_component = Some(first);
     let mut second = renderer(&"input".into(), &Theme::default(), &mut context);
     assert_eq!(second.render(80), ["input:2"]);
+    let mut api = api(ExtensionRuntime::default());
+    api.register_tool_with_renderers(ToolDefinition::new("rendered", "rendered", JsonValue::Object(Default::default()),
+        Arc::new(|_| Box::pin(async { Ok(ToolResult::text("complete")) }))), ToolRenderers { render_call: Some(renderer), render_result: None }).unwrap();
+    let renderers = api.registered.tool_renderers["rendered"].clone().downcast::<ToolRenderers<usize, String>>().unwrap();
+    let mut session = ToolRendererSession { renderers, context };
+    assert_eq!(session.render_call(&Theme::default(), 80).unwrap(), ["input:3"]);
+    assert!(session.context.last_component.is_some());
 }
 
 #[test]

@@ -40,6 +40,28 @@ pub struct ToolRenderers<TState, TArgs> {
     pub render_call: Option<ToolCallRenderer<TState, TArgs>>,
     pub render_result: Option<ToolResultRenderer<TState, TArgs>>,
 }
+pub struct ToolRendererSession<TState, TArgs> {
+    pub renderers: Arc<ToolRenderers<TState, TArgs>>,
+    pub context: ToolRenderContext<TState, TArgs>,
+}
+impl<TState, TArgs: Clone> ToolRendererSession<TState, TArgs> {
+    pub fn render_call(&mut self, theme: &Theme, width: usize) -> Option<Vec<String>> {
+        let renderer = self.renderers.render_call.as_ref()?;
+        let args = self.context.args.clone();
+        let mut component = renderer(&args, theme, &mut self.context);
+        let lines = component.render(width);
+        self.context.last_component = Some(component);
+        Some(lines)
+    }
+    pub fn render_result(&mut self, result: &AgentToolResult, theme: &Theme, width: usize) -> Option<Vec<String>> {
+        let renderer = self.renderers.render_result.as_ref()?;
+        let options = ToolRenderResultOptions { expanded: self.context.expanded, is_partial: self.context.is_partial };
+        let mut component = renderer(result, options, theme, &mut self.context);
+        let lines = component.render(width);
+        self.context.last_component = Some(component);
+        Some(lines)
+    }
+}
 
 pub type LazyToolActivator = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 pub type ShortcutHandler = Arc<dyn for<'a> Fn(&'a ExtensionContext) -> ExtensionFuture<'a, ()> + Send + Sync>;
@@ -931,13 +953,14 @@ pub struct LoadedExtension {
     pub shortcuts: BTreeMap<String, ExtensionShortcut>, pub lazy_tool_activators: Vec<LazyToolActivator>,
     pub markdown_transformer: Option<MarkdownTransformer>, pub rpc_handlers: BTreeMap<String, ExtensionRpcRequestHandler>,
     pub command_context_handlers: BTreeMap<String, CommandContextHandler>,
+    pub tool_renderers: BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>,
 }
 impl LoadedExtension {
     pub fn new(path: &str, cwd: PathBuf, source_info: SourceInfo) -> Self {
         Self { identity: ExtensionIdentity { path: path.into(), resolved_path: path.into() }, source_info, registration_cwd: cwd,
             handlers: BTreeMap::new(), tools: Vec::new(), commands: Vec::new(), flags: Vec::new(), message_renderers: BTreeMap::new(),
             entry_renderers: BTreeMap::new(), entry_renderer_options: BTreeMap::new(), mcp_servers: Vec::new(), removed_tool_hints: BTreeMap::new(), filesystem_policies: Vec::new(),
-            shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new() }
+            shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new(), tool_renderers: BTreeMap::new() }
     }
 }
 #[derive(Clone, Default)]
@@ -1133,6 +1156,12 @@ impl ExtensionApi {
     }
     pub fn register_tool(&mut self, definition: ToolDefinition) {
         if let Err(error) = self.try_register_tool(definition) { std::panic::panic_any(error); }
+    }
+    pub fn register_tool_with_renderers<TState: 'static, TArgs: Clone + 'static>(&mut self, definition: ToolDefinition, renderers: ToolRenderers<TState, TArgs>) -> Result<(), ExtensionFailure> {
+        let name = definition.name.clone();
+        self.try_register_tool(definition)?;
+        self.registered.tool_renderers.insert(name, Arc::new(renderers));
+        Ok(())
     }
     pub fn try_register_tool(&mut self, definition: ToolDefinition) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;

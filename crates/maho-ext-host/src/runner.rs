@@ -282,6 +282,14 @@ impl ExtensionRunner {
     pub fn get_tool_definition(&self, name: &str) -> Option<&ToolDefinition> {
         self.extensions.iter().flat_map(|e| &e.tools).find(|t| t.definition.name == name).map(|t| &t.definition)
     }
+    pub fn get_tool_renderers<TState: 'static, TArgs: 'static>(&self, name: &str) -> Option<Arc<ToolRenderers<TState, TArgs>>> {
+        let mut selected: Option<&LoadedExtension> = None;
+        for extension in &self.extensions {
+            if extension.tools.iter().any(|tool| tool.definition.name == name)
+                && selected.is_none_or(|current| current.source_info.source == "builtin" && extension.source_info.source != "builtin") { selected = Some(extension); }
+        }
+        selected?.tool_renderers.get(name)?.clone().downcast::<ToolRenderers<TState, TArgs>>().ok()
+    }
     pub fn get_registered_commands(&self) -> Vec<ResolvedCommand> {
         let commands: Vec<_> = self.extensions.iter().flat_map(|e| &e.commands).collect();
         let mut counts = BTreeMap::new();
