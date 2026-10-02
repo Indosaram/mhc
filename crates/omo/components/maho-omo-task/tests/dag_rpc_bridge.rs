@@ -15,6 +15,13 @@ fn fixture() -> (Arc<maho_omo_task::dag_rpc_bridge::DagRpcBridge>, Arc<Timers>, 
     (bridge,timers,events)
 }
 #[test] fn ledger_dedupes_sequences_per_run() { let (bridge,_,events) = fixture(); bridge.attach(); bridge.forward(&json!({"runId":"run","seq":1})); bridge.forward(&json!({"runId":"run","seq":1})); bridge.forward(&json!({"runId":"run","seq":0})); assert_eq!(events.lock().unwrap().len(), 1); }
+#[test] fn configured_heartbeat_stops_after_live_run_becomes_terminal() {
+    let timers=Arc::new(Timers::default()); let events:Events=Arc::new(Mutex::new(vec![])); let sink=events.clone(); let status=Arc::new(Mutex::new("running".to_owned())); let current=status.clone();
+    let bridge=create_dag_rpc_bridge(DagRpcBridgeDeps { live_runs:Arc::new(move || vec![DagBridgeRun { run_id:"run".into(),status:current.lock().expect("status").clone(),subscribe:Arc::new(|_| Box::new(|| {})) }]),run_snapshots:None,parent_session_id:Arc::new(|| Some("parent".into())),emit:Arc::new(move |name,value| sink.lock().expect("events").push((name.into(),value))),timers:timers.clone(),now:Arc::new(|| 0),heartbeat_ms:Some(123),activity_coalesce_ms:None,snapshot_debounce_ms:None });
+    bridge.attach(); timers.fire(50); timers.fire(123); assert_eq!(events.lock().expect("events").len(),1);
+    *status.lock().expect("status")="completed".into(); timers.fire(123); assert_eq!(events.lock().expect("events").len(),1); assert_eq!(timers.count(),0);
+    bridge.detach(); bridge.attach(); timers.fire(50); assert_eq!(timers.count(),0); assert_eq!(events.lock().expect("events").len(),1); bridge.dispose();
+}
 #[test] fn telemetry_coalesces_latest_per_node() { let (bridge,timers,events) = fixture(); bridge.attach(); bridge.publish_activity(json!({"runId":"run","nodeId":"a","activity":"first"})); bridge.publish_activity(json!({"runId":"run","nodeId":"a","activity":"last"})); timers.fire(150); let events = events.lock().unwrap(); assert_eq!(events.len(), 1); assert_eq!(events[0].0, "omo.dag.activity"); assert_eq!(events[0].1["activity"], "last"); }
 #[test] fn snapshot_fingerprint_suppresses_duplicate_flush() { let (bridge,timers,events) = fixture(); bridge.attach(); timers.fire(50); bridge.notify_store_mutation(); timers.fire(50); assert_eq!(events.lock().unwrap().len(), 1); }
 #[test] fn heartbeat_reports_last_delivered_sequence() { let (bridge,timers,events) = fixture(); bridge.attach(); bridge.forward(&json!({"runId":"run","seq":4})); timers.fire(15000); let events = events.lock().unwrap(); assert_eq!(events[1].0,"omo.dag.heartbeat"); assert_eq!(events[1].1["runs"][0]["headSeq"],4); assert_eq!(events[1].1["at"],"1970-01-01T00:00:00.000Z"); }

@@ -22,6 +22,19 @@ fn fixture(mode:ExtensionMode)->(Arc<DagStatusUi>,Arc<Timers>,Arc<support::Ui>,A
 #[test] fn live_run_renders_below_editor_and_reuses_refresh_timer() { let (status,timers,ui,_,_root)=fixture(ExtensionMode::Tui); status.sync_now(); assert_eq!(timers.count(),1); status.on_activity("run-1","a","reading"); assert_eq!(timers.count(),1); timers.fire(1000); let widgets=ui.widgets.lock().expect("widgets"); assert_eq!(widgets.len(),2); assert_eq!(widgets[0].1,WidgetPlacement::BelowEditor); assert!(matches!(&widgets[0].0,Some(WidgetContent::Lines(rows)) if rows.len()==2)); status.dispose(); assert_eq!(timers.count(),0); }
 #[test] fn terminal_run_clears_widget_and_live_refresh() { let (status,timers,ui,runs,_root)=fixture(ExtensionMode::Tui); status.sync_now(); runs.0.lock().expect("run").as_mut().expect("run").status=DagRunStatus::Completed; timers.fire(1000); assert_eq!(timers.count(),0); assert!(ui.widgets.lock().expect("widgets").last().expect("widget").0.is_none()); }
 #[test] fn headless_mode_produces_no_widget_or_refresh() { let (status,timers,ui,_,_root)=fixture(ExtensionMode::Rpc); status.sync_now(); assert_eq!(timers.count(),0); assert!(ui.widgets.lock().expect("widgets").is_empty()); }
+#[test] fn latest_node_activity_replaces_prior_and_terminal_node_hides_it() {
+    let (status,timers,ui,runs,_root)=fixture(ExtensionMode::Tui);
+    runs.0.lock().expect("run").as_mut().expect("run").nodes[0].state=senpi_task::dag::types::DagNodeState::Running;
+    status.on_activity("run-1","a","read file"); status.on_activity("run-1","a","edit file"); timers.fire(250);
+    { let widgets=ui.widgets.lock().expect("widgets"); let Some(WidgetContent::Lines(rows))=&widgets.last().expect("widget").0 else { panic!("rows"); }; assert!(rows[1].contains("edit file")); assert!(!rows[1].contains("read file")); }
+    runs.0.lock().expect("run").as_mut().expect("run").nodes[0].state=senpi_task::dag::types::DagNodeState::Completed; status.sync_now();
+    { let widgets=ui.widgets.lock().expect("widgets"); let Some(WidgetContent::Lines(rows))=&widgets.last().expect("widget").0 else { panic!("rows"); }; assert!(!rows[1].contains("edit file")); }
+    status.dispose(); assert_eq!(timers.count(),0);
+}
+#[test] fn unknown_run_activity_never_appears_in_owned_widget() {
+    let (status,timers,ui,_,_root)=fixture(ExtensionMode::Tui); status.on_activity("unknown","ghost","wandering"); timers.fire(250);
+    let widgets=ui.widgets.lock().expect("widgets"); let Some(WidgetContent::Lines(rows))=&widgets.last().expect("widget").0 else { panic!("rows"); }; assert_eq!(rows.len(),2); assert!(!rows.join("\n").contains("wandering")); drop(widgets); status.dispose(); assert_eq!(timers.count(),0);
+}
 #[test] fn pending_sync_debounces_and_disposal_prevents_render() { let (status,timers,ui,_,_root)=fixture(ExtensionMode::Tui); for _ in 0..3 { status.schedule_sync(); } assert_eq!(timers.count(),1); status.dispose(); timers.fire(250); assert_eq!(timers.count(),0); assert!(ui.widgets.lock().expect("widgets").is_empty()); }
 #[test] fn pruned_run_clears_widget_on_next_refresh() { let (status,timers,ui,runs,_root)=fixture(ExtensionMode::Tui); status.sync_now(); *runs.0.lock().expect("run")=None; timers.fire(1000); assert_eq!(timers.count(),0); assert!(ui.widgets.lock().expect("widgets").last().expect("widget").0.is_none()); }
 #[test] fn scheduled_burst_renders_once_before_live_refresh() { let (status,timers,ui,_,_root)=fixture(ExtensionMode::Tui); for _ in 0..3 { status.schedule_sync(); } assert_eq!(timers.count(),1); timers.fire(250); assert_eq!(ui.widgets.lock().expect("widgets").len(),1); assert_eq!(timers.count(),1); status.dispose(); }
