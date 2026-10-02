@@ -22,6 +22,7 @@ impl AppServerRuntime {
         let mut core = ServerCore::new(agent_dir.clone(), version.clone(), "Linux".into(), String::new(), "x64".into(), "linux".into());
         super::account::register_account_methods(&mut core.registry, agent_dir.clone());
         super::config::register_config_methods(&mut core.registry, agent_dir.clone(), cwd.clone());
+        super::models::register_remote_status_method(&mut core.registry,agent_dir.clone());
         let model_directory = agent_dir.clone();
         super::models::register_model_list_method(&mut core.registry,Arc::new(move || {
             let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {models_path:Some(std::path::Path::new(&model_directory).join("models.json")),auth_path:Some(std::path::Path::new(&model_directory).join("auth.json")),..Default::default()});

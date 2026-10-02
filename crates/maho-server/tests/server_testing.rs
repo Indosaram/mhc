@@ -48,3 +48,9 @@ async fn testing_host_open_service_close_gates_and_release_failure_keep_native_l
         let handle=host.open_session(host.resolve_session("session-1").await.unwrap()).await.unwrap();handle.close().await.unwrap();
     }).await.unwrap();
 }
+
+#[tokio::test]
+async fn deferred_keeps_first_resolution_for_all_waiters() {
+    let deferred=Deferred::default();deferred.resolve(1);deferred.resolve(2);
+    assert_eq!(deferred.wait().await,1);assert_eq!(deferred.wait().await,1);
+}

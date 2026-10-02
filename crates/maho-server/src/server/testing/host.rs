@@ -8,7 +8,7 @@ use tokio::sync::{Mutex,watch};
 pub struct Deferred<T:Clone> {sender:watch::Sender<Option<T>>}
 impl<T:Clone> Default for Deferred<T> {fn default()->Self {Self {sender:watch::channel(None).0}}}
 impl<T:Clone> Deferred<T> {
-    pub fn resolve(&self,value:T) {self.sender.send_replace(Some(value));}
+    pub fn resolve(&self,value:T) {self.sender.send_if_modified(|current| {if current.is_some() {false} else {*current=Some(value);true}});}
     pub async fn wait(&self)->T {
         let mut receiver=self.sender.subscribe();
         loop {if let Some(value)=receiver.borrow_and_update().clone() {return value;}

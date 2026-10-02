@@ -48,6 +48,7 @@ pub mod fuzzy_search_methods;
 pub mod account;
 pub mod config;
 pub mod models;
+pub mod installation_id;
 pub mod skills;
 pub mod archive_state;
 pub mod daemon_occupancy;

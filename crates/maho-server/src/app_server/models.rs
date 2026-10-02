@@ -9,6 +9,14 @@ pub fn native_wire_model(model: &Model) -> Result<Value, JsonRpcError> {
     let model = serde_json::to_value(model).map_err(|error| JsonRpcError::new(-32603,error.to_string()))?;
     Ok(build_wire_model(&model,&levels,default))
 }
+pub fn register_remote_status_method(registry:&mut MethodRegistry,agent_dir:String) {
+    registry.register("remoteControl/status/read".into(),MethodRegistration {requires_init:true,experimental:true,scope:MethodScope::None,handler:Arc::new(move |_| {
+        let agent_dir=agent_dir.clone();Box::pin(async move {
+            let id=super::installation_id::ensure_installation_id(std::path::Path::new(&agent_dir)).await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
+            Ok(json!({"status":"disabled","serverName":"senpi app-server","installationId":id,"environmentId":null}))
+        })
+    })});
+}
 pub fn register_model_list_method(registry: &mut MethodRegistry, models: Arc<dyn Fn() -> Vec<Model> + Send + Sync>) {
     registry.register("model/list".into(), MethodRegistration { requires_init:true, experimental:false, scope:MethodScope::None, handler:Arc::new(move |context| {
         let models = models.clone(); Box::pin(async move {
