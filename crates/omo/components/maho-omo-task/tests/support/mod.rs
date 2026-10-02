@@ -14,12 +14,13 @@ pub struct Ui {
     pub confirmed:bool,
     pub selections:Mutex<Vec<Vec<String>>>,
     pub notifications:Mutex<Vec<String>>,
+    pub widgets:Mutex<Vec<(Option<WidgetContent>,WidgetPlacement)>>,
 }
 impl ExtensionUi for Ui {
     fn select<'a>(&'a self,_:&'a str,options:&'a [String],_:ExtensionUiDialogOptions)->UiFuture<'a,Option<String>> { self.selections.lock().expect("selections").push(options.to_vec()); Box::pin(async move { self.select_first.then(|| options.first().cloned()).flatten() }) }
     fn confirm<'a>(&'a self,_:&'a str,_:&'a str,_:ExtensionUiDialogOptions)->UiFuture<'a,bool> { Box::pin(async move { self.confirmed }) }
     fn input<'a>(&'a self,_:&'a str,_:Option<&'a str>,_:ExtensionUiDialogOptions)->UiFuture<'a,Option<String>> { Box::pin(async { None }) }
-    fn notify(&self,message:&str,_:NotificationType) { self.notifications.lock().expect("notifications").push(message.to_owned()); } fn set_status(&self,_:&str,_:Option<&str>) {} fn set_widget(&self,_:&str,_:Option<WidgetContent>,_:ExtensionWidgetOptions) {}
+    fn notify(&self,message:&str,_:NotificationType) { self.notifications.lock().expect("notifications").push(message.to_owned()); } fn set_status(&self,_:&str,_:Option<&str>) {} fn set_widget(&self,_:&str,content:Option<WidgetContent>,options:ExtensionWidgetOptions) { self.widgets.lock().expect("widgets").push((content,options.placement)); }
     fn set_header(&self,_:Option<ComponentFactory>) {} fn set_footer(&self,_:Option<ComponentFactory>) {} fn set_title(&self,_:&str) {} fn paste_to_editor(&self,_:&str) {} fn set_editor_text(&self,_:&str) {} fn get_editor_text(&self)->String { String::new() }
     fn custom(&self,_:ComponentFactory,_:CustomUiOptions)->ExtensionFuture<'_,JsonValue> { Box::pin(async { Err(ExtensionFailure::new("no UI")) }) }
     fn theme(&self)->Theme { Theme::default() }
