@@ -43,6 +43,18 @@ pub fn is_resume_of_stopped_goal(ctx:&ExtensionContext,reason:&str,goal:Option<&
 pub fn last_assistant_text(messages:&[AgentMessage])->String {
     crate::last_assistant_message::last_assistant_message(messages).map_or_else(String::new,|message|message.content.iter().filter_map(|block|match block { ContentBlock::Text(text)=>Some(text.text.as_str()),_=>None }).collect::<Vec<_>>().join("\n"))
 }
+pub fn last_assistant_from_entries(entries:&[maho_ext_api::SessionEntry])->Option<maho_ai::types::AssistantMessage> {
+    entries.iter().rev().filter(|entry|entry.kind=="message").find_map(|entry| {
+        let message=entry.data.get("message")?; if message.get("role").and_then(serde_json::Value::as_str)!=Some("assistant") { return None; }
+        serde_json::from_value(message.clone()).ok()
+    })
+}
+pub fn last_assistant_text_from_entries(entries:&[maho_ext_api::SessionEntry])->String {
+    last_assistant_from_entries(entries).map_or_else(String::new,|message|message.content.iter().filter_map(|block|match block { ContentBlock::Text(text)=>Some(text.text.as_str()),_=>None }).collect::<Vec<_>>().join("\n"))
+}
+pub fn is_last_turn_stuck_on_context_overflow(context:&ExtensionContext,last_assistant:Option<&maho_ai::types::AssistantMessage>)->bool {
+    last_assistant.is_some_and(|message|maho_core::compaction::is_turn_stuck_on_context_overflow(message,context.model.as_ref().map_or(0,|model|model.context_window)))
+}
 pub fn blocked_reason_for_continuation_guard(reason:DenyReason)->Option<&'static str> {
     match reason {
         DenyReason::Cap=>Some(CONTINUATION_CAP_BLOCKED_REASON),
@@ -61,6 +73,12 @@ pub fn report_denied_continuation(api:&maho_ext_api::ExtensionApi,ctx:&Extension
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn branch_assistant_extraction_ignores_user_and_notice_entries_and_preserves_text_order() {
+        let message=maho_ai::providers::faux::faux_assistant_message("first",Default::default()); let mut value=serde_json::to_value(message).unwrap(); value["role"]="assistant".into(); value["content"]=serde_json::json!([{"type":"text","text":"first"},{"type":"text","text":"second"}]);
+        let entry=|kind:&str,data|maho_ext_api::SessionEntry { id:String::new(),parent_id:None,timestamp:String::new(),kind:kind.into(),data };
+        let entries=vec![entry("message",serde_json::json!({"message":value})),entry("message",serde_json::json!({"message":{"role":"user","content":"question"}})),entry("custom_message",serde_json::json!({"customType":"notice"}))];
+        assert_eq!(last_assistant_text_from_entries(&entries),"first\nsecond"); assert!(last_assistant_from_entries(&[]).is_none()); assert!(!is_last_turn_stuck_on_context_overflow(&crate::test_context::context(),last_assistant_from_entries(&entries).as_ref()));
+    }
     #[tokio::test] async fn guard_notification_event_observes_persisted_block_and_original_counters() {
         use maho_ext_api::*;
         let dir=tempfile::tempdir().unwrap(); let reference=crate::types::GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() };
