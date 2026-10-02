@@ -3750,6 +3750,15 @@ impl AgentSession {
         let reason = if event.reason == maho_ext_api::SessionReason::Reload { maho_ext_api::SessionReason::Reload }
             else { maho_ext_api::SessionReason::Startup };
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionStart(event)).await;
+        let defaults = self.state().default_tool_names.clone();
+        if let Some(defaults) = defaults {
+            let active = self.get_active_tool_names().into_iter().filter(|name| {
+                if defaults.contains(name) { return true; }
+                self.state().tool_definitions.get(name).is_some_and(|entry|
+                    entry.source_info.source != "builtin" && !entry.source_info.path.starts_with("<builtin:"))
+            }).collect();
+            self.set_active_tools_by_name(active);
+        }
         self.extend_resources_from_extensions(reason).await;
     }
 
@@ -5274,6 +5283,22 @@ mod tests {
         session.set_active_tools_by_name(vec!["read".to_owned()]);
         assert_eq!(session.system_prompt(), "turn hook override");
         assert_eq!(session.message_revision(), revision + 1);
+    }
+
+    #[tokio::test]
+    async fn binding_enforces_builtin_defaults_without_removing_user_tools() {
+        let session = test_session();
+        session.state().default_tool_names = Some(BTreeSet::from(["read".to_owned()]));
+        for (name, builtin) in [("read", true), ("bash", true), ("user-tool", false)] {
+            let mut source = empty_source_info();
+            source.source = if builtin { "builtin" } else { "inline" }.to_owned();
+            source.path = if builtin { format!("<builtin:{name}>") } else { format!("<inline:{name}>") };
+            session.register_tool_definition(test_definition(name), source, test_tool(name));
+        }
+        session.set_active_tools_by_name(vec!["read".to_owned(), "bash".to_owned(), "user-tool".to_owned()]);
+        session.bind_extensions(Default::default()).await;
+        assert_eq!(session.get_active_tool_names(), ["read", "user-tool"]);
+        assert!(session.get_tool_definition("bash").is_some());
     }
 
     #[test]
