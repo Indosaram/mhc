@@ -16,3 +16,13 @@ fn fixture(ghost:bool)->(tempfile::TempDir,DagWakeSource,Arc<Mutex<Vec<Value>>>,
 #[test] fn pruned_run_does_not_hide_surviving_channel() { let (_root,source,events,_subscription)=fixture(true); source.publish_live(); let events=events.lock().expect("events"); assert_eq!(events[0]["activeCount"],1); assert_eq!(events[0]["channels"][0]["id"],"run-1"); }
 #[test] fn missing_session_publishes_cleared_state() { let (_root,mut source,events,_subscription)=fixture(false); source.session_id=Arc::new(|| None); source.publish_live(); assert_eq!(events.lock().expect("events")[0],json!({"source":"omo-dag","activeCount":0,"channels":[]})); }
 #[test] fn shutdown_clears_live_channels() { let (_root,source,events,_subscription)=fixture(false); source.publish_live(); source.emit_shutdown(); let events=events.lock().expect("events"); assert_eq!(events.len(),2); assert_eq!(events[1],json!({"source":"omo-dag","activeCount":0,"channels":[]})); }
+#[test] fn multiple_live_runs_aggregate_and_terminal_runs_clear_channels() {
+    struct Snapshots(Mutex<Vec<DagRunSnapshot>>);
+    impl DagStatusUiManager for Snapshots {
+        fn list(&self,session:&str)->Vec<DagRunSummary> { self.0.lock().expect("runs").iter().filter(|run| run.parent_session_id==session).map(|run| DagRunSummary { run_id:run.run_id.clone(),run_key:run.run_key.clone(),name:run.name.clone(),parent_session_id:run.parent_session_id.clone(),status:run.status,created_at:run.created_at.clone(),updated_at:run.created_at.clone(),counts:run.counts }).collect() }
+        fn snapshot(&self,id:&str,session:&str)->Option<DagRunSnapshot> { self.0.lock().expect("runs").iter().find(|run| run.run_id==id&&run.parent_session_id==session).cloned() }
+    }
+    let (_root,mut source,events,_subscription)=fixture(false); let original=source.manager.snapshot("run-1","parent").expect("snapshot"); let mut second=original.clone(); second.run_id="run-2".into(); second.name="second".into(); second.started_at=Some("1970-01-01T00:00:02.000Z".into()); let runs=Arc::new(Snapshots(Mutex::new(vec![original]))); source.manager=runs.clone(); source.publish_live(); runs.0.lock().expect("runs").push(second); source.publish_live();
+    { let events=events.lock().expect("events"); assert_eq!(events[0]["activeCount"],1); assert_eq!(events[1]["activeCount"],2); assert_eq!(events[1]["channels"][1]["startedAtMs"],2000); }
+    for run in runs.0.lock().expect("runs").iter_mut() { run.status=senpi_task::dag::types::DagRunStatus::Completed; } source.publish_live(); assert_eq!(events.lock().expect("events")[2],json!({"source":"omo-dag","activeCount":0,"channels":[]}));
+}
