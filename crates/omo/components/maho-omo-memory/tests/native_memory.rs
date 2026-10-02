@@ -6,6 +6,37 @@ use maho_omo_memory::{context::MemoryIdentityContext,binding::MemorySessionBindi
 use memory_core::git::{GitMemoryRepo,InitializeGitRepoOptions,GitSeedFile};
 
 struct MemoryExtension { identity:MemoryIdentityContext,captured:Arc<Mutex<Vec<String>>> }
+struct IdleDreamExtension;
+impl Extension for IdleDreamExtension{
+    fn register(&self,api:&mut ExtensionApi){
+        use maho_omo_memory::dream_trigger::{DreamTriggerOptions,DreamTriggerWiring};
+        let timers=Arc::new(Mutex::new(Vec::new()));let scheduled=timers.clone();
+        let (fired,receipt)=tokio::sync::oneshot::channel();let fired=Arc::new(Mutex::new(Some(fired)));let receipt=Arc::new(Mutex::new(Some(receipt)));
+        let dream=DreamTriggerWiring::with_scheduler(DreamTriggerOptions{
+            resolve_session:Arc::new(|ctx|Some((ctx.session_manager.session_id().into(),"agent".into()))),resolve_active_session:Arc::new(||None),resolve_settings:Arc::new(|_|Default::default()),
+            launch:Arc::new(move|_,_,_,_|panic!("settled hook is still busy; idle launch must be rejected")),warn:Arc::new(|error|panic!("{error}")),
+        },Arc::new(move|delay|{assert_eq!(delay,1_800_000.0);let(sender,receiver)=tokio::sync::oneshot::channel();scheduled.lock().unwrap_or_else(|error|panic!("timer capture: {error}")).push(sender);let fired=fired.clone();Box::pin(async move{if receiver.await.is_ok()&&let Some(fired)=fired.lock().unwrap_or_else(|error|panic!("timer receipt: {error}")).take(){let _=fired.send(());}})}));
+        dream.register(api);
+        let reset=api.registered.handlers[&EventKind::AgentStart][0].clone();let arm=api.registered.handlers[&EventKind::AgentSettled][0].clone();
+        api.on(EventKind::AgentSettled,Arc::new(move|_,context|{
+            let reset=reset.clone();let arm=arm.clone();let timers=timers.clone();let receipt=receipt.clone();
+            Box::pin(async move{
+                assert!(!context.is_idle());
+                reset(&mut ExtensionEvent::AgentStart,context).await?;
+                arm(&mut ExtensionEvent::AgentSettled,context).await?;
+                let latest=timers.lock().unwrap_or_else(|error|panic!("timer capture: {error}")).pop().unwrap_or_else(||panic!("rearmed timer missing"));latest.send(()).unwrap_or_else(|_|panic!("rearmed timer dropped"));
+                for cancelled in timers.lock().unwrap_or_else(|error|panic!("timer capture: {error}")).drain(..){let _=cancelled.send(());}
+                let receipt=receipt.lock().unwrap_or_else(|error|panic!("timer receipt: {error}")).take().unwrap_or_else(||panic!("receipt missing"));tokio::time::timeout(std::time::Duration::from_secs(5),receipt).await.unwrap_or_else(|error|panic!("timer did not fire: {error}")).unwrap_or_else(|error|panic!("receipt closed: {error}"));
+                Ok(EventResult::None)
+            })
+        }));
+    }
+}
+#[tokio::test]
+async fn native_idle_dream_resets_and_rearms_but_rejects_busy_host(){
+    let session=FauxSession::new(FauxScript{name:"idle-dream".into(),prompt:"hello".into(),responses:vec![FauxResponse{content:"answer".into(),stop_reason:"stop".into()}]}).with_native_extension(NativeExtensionFactory{path:"<idle-dream>".into(),source_info:Default::default(),extension:Box::new(IdleDreamExtension)});
+    tokio::time::timeout(std::time::Duration::from_secs(10),session.run_native()).await.unwrap().unwrap();
+}
 struct RootExtension { component:Arc<maho_omo_memory::index::MemoryComponent>,bound:Arc<Mutex<Vec<String>>> }
 struct WiredRootExtension{
     component:Arc<maho_omo_memory::index::MemoryComponent>,

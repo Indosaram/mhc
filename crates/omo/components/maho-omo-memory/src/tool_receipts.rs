@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use memory_core::support::sha256::sha256_hex;
-use crate::worker::run_artifacts::{ArtifactError, unlink_run_artifact, write_run_json_atomic};
+use crate::worker::run_artifacts::{ArtifactError, unlink_run_artifact};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -14,7 +14,12 @@ pub fn write_tool_receipt(receipts_dir: &Path, receipt: &MemoryToolReceipt) -> R
     let mut builder = std::fs::DirBuilder::new(); builder.recursive(true);
     #[cfg(unix)] { use std::os::unix::fs::DirBuilderExt; builder.mode(0o700); }
     builder.create(receipts_dir)?;
-    write_run_json_atomic(&tool_receipt_path(receipts_dir, &receipt.tool_call_id), receipt, 0o600)
+    let target=tool_receipt_path(receipts_dir,&receipt.tool_call_id);
+    let temporary=target.with_file_name(format!("{}.tmp-{}",target.file_name().unwrap_or_default().to_string_lossy(),std::process::id()));
+    let mut options=std::fs::OpenOptions::new();options.write(true).create(true).truncate(true);
+    #[cfg(unix)]{use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+    {use std::io::Write;let mut file=options.open(&temporary)?;file.write_all(serde_json::to_string(receipt)?.as_bytes())?;file.write_all(b"\n")?;}
+    std::fs::rename(temporary,target)?;Ok(())
 }
 pub fn consume_tool_receipt(receipts_dir: &Path, tool_call_id: &str) -> Result<Option<MemoryToolReceipt>, ArtifactError> {
     let path = tool_receipt_path(receipts_dir, tool_call_id);
@@ -29,7 +34,9 @@ mod tests {
     #[test]
     fn receipt_consumed_once() {
         let root = tempfile::tempdir().unwrap(); let receipt = MemoryToolReceipt { version: 1, tool_call_id: "call-1".into(), sha: "abc".into(), subject: "save".into(), affected_paths: vec!["system/human.md".into()] };
-        write_tool_receipt(root.path(), &receipt).unwrap(); assert_eq!(consume_tool_receipt(root.path(), "call-1").unwrap(), Some(receipt)); assert!(consume_tool_receipt(root.path(), "call-1").unwrap().is_none());
+        write_tool_receipt(root.path(), &receipt).unwrap();
+        assert_eq!(std::fs::read(tool_receipt_path(root.path(),"call-1")).unwrap(),format!("{}\n",serde_json::to_string(&receipt).unwrap()).as_bytes());assert_eq!(std::fs::read_dir(root.path()).unwrap().count(),1);
+        assert_eq!(consume_tool_receipt(root.path(), "call-1").unwrap(), Some(receipt)); assert!(consume_tool_receipt(root.path(), "call-1").unwrap().is_none());
     }
     #[test]
     fn corrupt_and_mismatched_consumed_silently() {

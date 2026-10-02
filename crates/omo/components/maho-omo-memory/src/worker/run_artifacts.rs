@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs::{File, OpenOptions}, io::{Read, Seek, SeekFrom, Write}, path::Path, sync::atomic::{AtomicU64, Ordering}};
+use std::{collections::BTreeMap, fs::{File, OpenOptions}, io::{Read, Seek, SeekFrom, Write}, path::Path};
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -38,19 +38,23 @@ impl std::error::Error for ArtifactError {}
 impl From<std::io::Error> for ArtifactError { fn from(error: std::io::Error) -> Self { Self::Io(error) } }
 impl From<serde_json::Error> for ArtifactError { fn from(error: serde_json::Error) -> Self { Self::Json(error) } }
 pub fn read_run_json<T: DeserializeOwned>(path: &Path) -> Result<T, ArtifactError> { Ok(serde_json::from_slice(&std::fs::read(path)?)?) }
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 pub fn write_run_json_atomic<T: Serialize>(path: &Path, value: &T, mode: u32) -> Result<(), ArtifactError> {
     let mut options = OpenOptions::new(); options.write(true).create_new(true);
     #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(mode); }
     #[cfg(not(unix))] let _ = mode;
-    let temporary = path.with_file_name(format!("{}.tmp-{}-{}", path.file_name().unwrap_or_default().to_string_lossy(), std::process::id(), NEXT_TEMP.fetch_add(1, Ordering::Relaxed)));
+    let temporary = path.with_file_name(format!("{}.tmp-{}-{}", path.file_name().unwrap_or_default().to_string_lossy(), std::process::id(), memory_core::support::random::random_uuid()));
     let mut file = options.open(&temporary)?;
     file.write_all(serde_json::to_string_pretty(value)?.as_bytes())?;
     file.write_all(b"\n")?;
     file.sync_all()?;
     drop(file);
     std::fs::rename(&temporary, path)?;
-    #[cfg(unix)] File::open(path.parent().unwrap_or(Path::new(".")))?.sync_all()?;
+    match File::open(path.parent().unwrap_or(Path::new("."))).and_then(|directory|directory.sync_all()){
+        Ok(())=>{},
+        #[cfg(windows)]
+        Err(error)if matches!(error.kind(),std::io::ErrorKind::PermissionDenied|std::io::ErrorKind::IsADirectory)=>{},
+        Err(error)=>return Err(error.into()),
+    }
     Ok(())
 }
 pub fn read_run_text_tail(path: &Path, max_bytes: usize) -> Result<String, ArtifactError> {

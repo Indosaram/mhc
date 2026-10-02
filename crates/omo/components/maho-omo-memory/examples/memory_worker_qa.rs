@@ -79,6 +79,7 @@ async fn qa(executable: &Path) -> Result<i32, String> {
     qa_facts(executable).await?;
     qa_reflection(executable,false).await?;
     qa_reflection(executable,true).await?;
+    qa_outcome_authority(executable).await?;
     for platform in memory_run_supervisor_ic8_harness::IC8_PLATFORMS {
         for mode in ["graceful", "stubborn"] {
             let mut harness = memory_run_supervisor_ic8_harness::Ic8Harness::new(executable.into(), vec![]);
@@ -108,6 +109,30 @@ async fn qa(executable: &Path) -> Result<i32, String> {
     Ok(0)
 }
 
+async fn qa_outcome_authority(executable:&Path)->Result<(),String>{
+    use maho_omo_memory::worker::spawn_supervisor::{run_supervised_child,SupervisedChildInput};
+    for fixture in ["--fixture-outcome-fail","--fixture-incomplete-outcome","--fixture-outcome-linger","--fixture-never-publishes"]{
+        let root=tempfile::tempdir().map_err(|error|error.to_string())?;let args=vec![fixture.into()];let env=BTreeMap::new();
+        let lingering=matches!(fixture,"--fixture-outcome-linger"|"--fixture-never-publishes");
+        let now=chrono::Utc::now().timestamp_millis() as f64;
+        let result=tokio::time::timeout(std::time::Duration::from_secs(10),run_supervised_child(SupervisedChildInput{run_dir:root.path(),run_id:"authority",attempt:1,model:"fixture/model",thinking:None,next_attempt:None,kind:run_artifacts::RunKind::Reflection,command:"unused",args:&[],cwd:root.path(),env:&env,hard_deadline_at:if fixture=="--fixture-never-publishes"{now-5001.0}else{now+10000.0},termination_grace_ms:0.0,max_output_bytes:1024,supervisor_command:executable,supervisor_args:&args,ledger:serde_json::Map::new()})).await;
+        let cleanup=if lingering{
+            run_artifacts::write_run_json_atomic(&root.path().join("release"),&true,0o600).map_err(|error|error.to_string())?;
+            maho_omo_memory::worker::supervisor_test_signals::wait_for_filesystem_state(root.path(),||async{Ok(root.path().join("released.json").exists().then_some(()))},5000,"fixture release receipt").await
+        }else{Ok(())};
+        let result=result.map_err(|error|error.to_string())?;cleanup?;
+        match fixture{
+            "--fixture-outcome-fail"=>{let child=result?;if child.code.is_some()||child.signal.as_deref()!=Some("SIGTERM")||!child.timed_out{return Err("durable outcome did not override failed supervisor".into());}},
+            "--fixture-incomplete-outcome"=>if result.err().as_deref()!=Some("memory run supervisor exited with 1"){return Err("incomplete outcome authorized supervisor exit".into());},
+            "--fixture-outcome-linger"=>{let child=result?;if child.code!=Some(0)||child.signal.is_some()||child.timed_out{return Err("durable outcome did not complete before supervisor close".into());}},
+            "--fixture-never-publishes"=>if result.err().as_deref()!=Some("memory run supervisor did not publish an outcome before its deadline"){return Err("missing publication deadline was not reported".into());},
+            _=>unreachable!(),
+        }
+        println!("PASS supervisor authority {fixture}; release receipt cleaned");
+    }
+    Ok(())
+}
+
 async fn qa_facts(executable:&Path)->Result<(),String>{
     use maho_omo_memory::{facts_wiring::FactsExtractorPort,facts_runner::{FactsExtractorRunner,NativeFactsAttemptOptions}};
     use memory_core::journal::entries::{TranscriptEntry,TextTranscriptEntry};
@@ -117,7 +142,7 @@ async fn qa_facts(executable:&Path)->Result<(),String>{
     runner.queue.enqueue(memory_core::facts::queue::FactsEnqueueRequest{identity:"agent".into(),session_id:"session".into(),conversation_id:"conversation".into(),signal:None,entries:vec![TranscriptEntry::Text(TextTranscriptEntry::new("user","Question","1970-01-01T00:00:00.000Z","m:user","m")),TranscriptEntry::Text(TextTranscriptEntry::new("assistant","Answer","1970-01-01T00:00:00.000Z","m:assistant","m"))]}).map_err(|error|error.to_string())?;
     let warnings=std::sync::Arc::new(std::sync::Mutex::new(vec![]));let seen=warnings.clone();
     let mut port=runner.clone().native_extractor(NativeFactsAttemptOptions{
-        resolution:maho_omo_memory::worker::resolve_model::ReflectionModelResolution::Resolved{category:"quick".into(),model:"fixture/facts".into(),thinking:None,source:None,fallbacks:vec![]},env:std::env::vars().collect(),config_sources:vec![],launch:maho_omo_memory::worker::model_preflight::Launcher{command:executable.to_string_lossy().into_owned(),prefix_args:vec!["--qa-facts-model".into()]},supervisor_command:executable.into(),supervisor_args:vec![],deadline_ms:60_000,termination_grace_ms:100,max_output_bytes:4096,people:memory_core::facts::person_routing::FactsPeopleRouting{enabled:true,max_entries:40,max_entry_chars:200},sandbox:None,warn:std::sync::Arc::new(move|error|{seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(error.to_owned());}),
+        resolve_model:std::sync::Arc::new(||Ok(maho_omo_memory::worker::resolve_model::ReflectionModelResolution::Resolved{category:"quick".into(),model:"fixture/facts".into(),thinking:None,source:None,fallbacks:vec![]})),env:std::env::vars().collect(),config_sources:vec![],launch:maho_omo_memory::worker::model_preflight::Launcher{command:executable.to_string_lossy().into_owned(),prefix_args:vec!["--qa-facts-model".into()]},supervisor_command:executable.into(),supervisor_args:vec![],deadline_ms:60_000,termination_grace_ms:100,max_output_bytes:4096,people:memory_core::facts::person_routing::FactsPeopleRouting{enabled:true,max_entries:40,max_entry_chars:200},sandbox:None,warn:std::sync::Arc::new(move|error|{seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(error.to_owned());}),
     });
     tokio::time::timeout(std::time::Duration::from_secs(15),port.launch_pending(None)).await.map_err(|error|error.to_string())??;
     if !runner.queue.list_pending().map_err(|error|error.to_string())?.is_empty(){return Err("facts QA queue was not consumed".into());}

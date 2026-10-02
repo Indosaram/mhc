@@ -5,13 +5,14 @@ pub use crate::dream_trigger_gates::*;
 pub use crate::dream_trigger_fire::{ManualDreamRequest,DreamFireOutcome};
 pub type DreamLaunch=Arc<dyn Fn(String,DreamOrigin,ManualDreamRequest,Option<maho_ext_api::AbortSignal>)->Pin<Box<dyn Future<Output=Result<DreamFireOutcome,String>>+Send>>+Send+Sync>;
 pub type DreamSessionResolver=Arc<dyn Fn(&ExtensionContext)->Option<(String,String)>+Send+Sync>;
+pub type DreamIdleScheduler=Arc<dyn Fn(f64)->Pin<Box<dyn Future<Output=()>+Send>>+Send+Sync>;
 pub struct DreamTriggerOptions {
     pub resolve_session:DreamSessionResolver,
     pub resolve_active_session:Arc<dyn Fn()->Option<String>+Send+Sync>,
     pub resolve_settings:Arc<dyn Fn(&str)->DreamTriggerSettings+Send+Sync>,
     pub launch:DreamLaunch,pub warn:Arc<dyn Fn(&str)+Send+Sync>,
 }
-pub struct DreamTriggerWiring {options:Arc<DreamTriggerOptions>,timers:Arc<Mutex<BTreeMap<String,maho_ext_api::AbortSignal>>>,in_flight:Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>}
+pub struct DreamTriggerWiring {options:Arc<DreamTriggerOptions>,timers:Arc<Mutex<BTreeMap<String,maho_ext_api::AbortSignal>>>,in_flight:Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,scheduler:DreamIdleScheduler}
 struct DreamShutdownEvaluator(Arc<DreamTriggerWiring>);
 struct AbortDreamOnReturn(maho_ext_api::AbortSignal);
 impl Drop for AbortDreamOnReturn { fn drop(&mut self) { self.0.abort(); } }
@@ -25,23 +26,25 @@ impl crate::shutdown_drain::ShutdownEvaluator for DreamShutdownEvaluator {
     }
 }
 impl DreamTriggerWiring {
-    pub fn new(options:DreamTriggerOptions)->Self{Self{options:Arc::new(options),timers:Default::default(),in_flight:Default::default()}}
+    pub fn new(options:DreamTriggerOptions)->Self{Self::with_scheduler(options,Arc::new(|delay|Box::pin(tokio::time::sleep(std::time::Duration::from_secs_f64(delay/1000.0)))))}
+    pub fn with_scheduler(options:DreamTriggerOptions,scheduler:DreamIdleScheduler)->Self{Self{options:Arc::new(options),timers:Default::default(),in_flight:Default::default(),scheduler}}
     pub fn shutdown_evaluator(self:&Arc<Self>)->Box<dyn crate::shutdown_drain::ShutdownEvaluator>{Box::new(DreamShutdownEvaluator(self.clone()))}
     pub fn register(&self,api:&mut ExtensionApi) {
         for kind in [EventKind::AgentSettled,EventKind::Input,EventKind::AgentStart,EventKind::SessionCompact,EventKind::SessionShutdown,EventKind::SessionAbort] {
-            let options=self.options.clone();let timers=self.timers.clone();let in_flight=self.in_flight.clone();
+            let options=self.options.clone();let timers=self.timers.clone();let in_flight=self.in_flight.clone();let scheduler=self.scheduler.clone();
             api.on(kind,Arc::new(move |_,context| {
                 if let Some((conversation,identity))=(options.resolve_session)(context) {
                     let mut timer_state=timers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     if let Some(signal)=timer_state.remove(&conversation){signal.abort();}
-                    let delay=(options.resolve_settings)(&identity).idle_minutes;
-                    if kind==EventKind::AgentSettled&&delay>0.0 {
+                    if kind==EventKind::AgentSettled {
+                        let delay=(options.resolve_settings)(&identity).idle_minutes;if delay<=0.0{return Box::pin(async{Ok(EventResult::None)});}
                         let signal=maho_ext_api::AbortSignal::default();timer_state.insert(conversation.clone(),signal.clone());
+                        let timer=scheduler(delay*60_000.0);
                         let context=context.clone();let options=options.clone();let timers=timers.clone();
                         let in_flight=in_flight.clone();
                         tokio::spawn(async move {
-                            tokio::select! {_=signal.cancelled()=>return,_=tokio::time::sleep(std::time::Duration::from_secs_f64(delay*60.0))=>{}}
-                            timers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&conversation);
+                            tokio::select! {biased;_=signal.cancelled()=>return,_=timer=>{}}
+                            {let mut timers=timers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if signal.is_aborted(){return;}timers.remove(&conversation);}
                             if !context.is_idle()||!matches!(context.has_pending_messages(),Ok(false)){return;}
                             let Some((current,_))=(options.resolve_session)(&context)else{return;};if current!=conversation{return;}
                             let task=tokio::spawn(async move {if let Err(error)=(options.launch)(conversation,DreamOrigin::Idle,ManualDreamRequest::default(),None).await{(options.warn)(&error);}});

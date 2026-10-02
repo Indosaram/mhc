@@ -3,11 +3,11 @@ use memory_core::{identity::resolve::MemoryIdentity,facts::{queue::{FactsQueue,F
 use crate::{facts_runner_types::FactsLaunchResult,worker::resolve_model::ReflectionModelResolution};
 pub struct FactsExtractorRunner{pub identity:MemoryIdentity,pub queue:FactsQueue,pub failures:FactsFailureStore,active:AtomicBool,now:Arc<dyn Fn()->i64+Send+Sync>}
 struct ActiveLaunch<'a>(&'a AtomicBool);impl Drop for ActiveLaunch<'_>{fn drop(&mut self){self.0.store(false,Ordering::Release);}}
-pub struct FactsAttemptInput<'a>{pub resolution:&'a ReflectionModelResolution,pub deadline_ms:i64,pub termination_grace_ms:i64}
+pub struct FactsAttemptInput<'a>{pub resolve_model:&'a (dyn Fn()->Result<ReflectionModelResolution,String>+Sync),pub deadline_ms:i64,pub termination_grace_ms:i64}
 pub type FactsAttemptWork=std::pin::Pin<Box<dyn Future<Output=Result<FactsLaunchResult,String>>+Send>>;
 pub type NativeFactsSandbox=Arc<dyn Fn(crate::worker::spawn_types::FactsSpawnArgs)->Result<crate::worker::spawn_types::FactsSpawnArgs,String>+Send+Sync>;
 pub struct NativeFactsAttemptOptions{
-    pub resolution:crate::worker::resolve_model::ReflectionModelResolution,
+    pub resolve_model:Arc<dyn Fn()->Result<ReflectionModelResolution,String>+Send+Sync>,
     pub env:std::collections::BTreeMap<String,String>,
     pub config_sources:Vec<crate::worker::model_preflight::ConfigSource>,
     pub launch:crate::worker::model_preflight::Launcher,
@@ -44,7 +44,7 @@ impl FactsExtractorRunner{
             let options=options.clone();let cache=cache.clone();
             Box::pin(async move{
                 let mut warn=|message:&str|(options.warn)(message);
-                runner.launch_pending_once(FactsAttemptInput{resolution:&options.resolution,deadline_ms:options.deadline_ms,termination_grace_ms:options.termination_grace_ms},signal.as_ref(),||runner.reconcile_runs(&options.people,&mut |message|(options.warn)(message)),|dir,payload,batch|{
+                runner.launch_pending_once(FactsAttemptInput{resolve_model:options.resolve_model.as_ref(),deadline_ms:options.deadline_ms,termination_grace_ms:options.termination_grace_ms},signal.as_ref(),||runner.reconcile_runs(&options.people,&mut |message|(options.warn)(message)),|dir,payload,batch,resolution|{
                     let runner=runner.clone();let options=options.clone();let cache=cache.clone();
                     async move{
                         let run_id=dir.file_name().ok_or("Facts run directory has no name")?.to_string_lossy().into_owned();
@@ -52,7 +52,7 @@ impl FactsExtractorRunner{
                         let mut cache=cache.lock().await;
                         runner.execute_child(&mut cache,crate::worker::facts_child_launch::FactsChildLaunchInput{
                             sandbox:options.sandbox.as_deref().map(|sandbox|sandbox as &(dyn Fn(crate::worker::spawn_types::FactsSpawnArgs)->Result<crate::worker::spawn_types::FactsSpawnArgs,String>+Sync)),
-                            run_id:&run_id,run_dir:&dir,payload:&payload,resolution:&options.resolution,env:&options.env,config_sources:&options.config_sources,launch:&options.launch,hard_deadline_at:chrono::Utc::now().timestamp_millis() as f64+options.deadline_ms as f64,
+                            run_id:&run_id,run_dir:&dir,payload:&payload,resolution:&resolution,env:&options.env,config_sources:&options.config_sources,launch:&options.launch,hard_deadline_at:chrono::Utc::now().timestamp_millis() as f64+options.deadline_ms as f64,
                             options:crate::worker::spawn_supervisor::FactsChildOptions{termination_grace_ms:options.termination_grace_ms as f64,max_output_bytes:options.max_output_bytes,supervisor_command:&options.supervisor_command,supervisor_args:&options.supervisor_args,batch_id:&batch,queued:&ledger.queued,launched_at:chrono::DateTime::parse_from_rfc3339(&ledger.started_at).map_err(|error|error.to_string())?.timestamp_millis()},
                         },&options.people,&mut |message|(options.warn)(message)).await
                     }
@@ -68,7 +68,7 @@ impl FactsExtractorRunner{
     }
     pub async fn launch_pending_once<F:Future<Output=Result<FactsLaunchResult,String>>>(
         &self,input:FactsAttemptInput<'_>,signal:Option<&FactsAbortSignal>,reconcile:impl FnOnce()->Result<bool,String>,
-        execute:impl FnOnce(std::path::PathBuf,FactsPayload,String)->F,warn:&mut (dyn FnMut(&str)+Send),
+        execute:impl FnOnce(std::path::PathBuf,FactsPayload,String,ReflectionModelResolution)->F,warn:&mut (dyn FnMut(&str)+Send),
     )->Result<FactsLaunchResult,String>{
         let aborted=||signal.is_some_and(FactsAbortSignal::is_aborted);
         if aborted(){return Ok(FactsLaunchResult::Skipped);}
@@ -79,7 +79,8 @@ impl FactsExtractorRunner{
         let failures=match crate::facts_launch_selection::read_launchable_failures(&self.failures,|message,error,_|warn(&format!("{message}: {error}"))){crate::facts_launch_selection::FactsFailuresRead::Read{failures}=>failures,_=>return Ok(FactsLaunchResult::Skipped)};
         let now=(self.now)();let instant=chrono::DateTime::from_timestamp_millis(now).ok_or("Invalid facts clock")?.to_rfc3339_opts(chrono::SecondsFormat::Millis,true);
         let selected=memory_core::facts::select_launchable(&pending,Some(&failures),&instant).selected;if selected.is_empty(){return Ok(FactsLaunchResult::Empty);}
-        if let ReflectionModelResolution::CategoryUnavailable{cause,..}=input.resolution{let mut io=FactsIo{queue:&self.queue,instant:&instant,warn};let terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};terminal.preflight_fail(&crate::facts_failure_recording::queue_entry_targets(&selected),&crate::facts_failure_recording::preflight_failure_id(None),memory_core::facts::FactsFailureReason::QuickCategoryUnavailable,cause).map_err(|error|error.to_string())?;return Ok(FactsLaunchResult::Skipped);}
+        let resolution=(input.resolve_model)()?;
+        if let ReflectionModelResolution::CategoryUnavailable{cause,..}=&resolution{let mut io=FactsIo{queue:&self.queue,instant:&instant,warn};let terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};terminal.preflight_fail(&crate::facts_failure_recording::queue_entry_targets(&selected),&crate::facts_failure_recording::preflight_failure_id(None),memory_core::facts::FactsFailureReason::QuickCategoryUnavailable,cause).map_err(|error|error.to_string())?;return Ok(FactsLaunchResult::Skipped);}
         crate::engine_session::prepare_memory_engine_session(&self.identity.id,&self.identity.paths,Default::default()).map_err(|error|error.to_string())?;
         let people=crate::facts_people_payload::read_facts_people_payload(&self.identity.paths.repo);
         let envelope=memory_core::facts::FactsPayloadEnvelope{version:1,identity:self.identity.id.clone(),today:instant[..10].into(),known_people:people.known_people,primary_human:people.primary_human};
@@ -94,7 +95,7 @@ impl FactsExtractorRunner{
         let Some(dir)=dir else{return Ok(FactsLaunchResult::Active);};if aborted(){return Ok(FactsLaunchResult::Skipped);}
         let run_id=dir.file_name().ok_or("Facts run directory has no name")?.to_string_lossy().into_owned();
         let targets=crate::facts_failure_recording::queue_entry_targets(&capped.selected);
-        let result=match execute(dir.clone(),envelope.to_payload(capped.selected),batch.clone()).await{
+        let result=match execute(dir.clone(),envelope.to_payload(capped.selected),batch.clone(),resolution).await{
             Ok(result)=>result,
             Err(error)=>{let mut io=FactsIo{queue:&self.queue,instant:&instant,warn};let mut terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};terminal.fail(&crate::facts_terminal_writes::FactsFailureWrite{run_dir:&dir,run_id:&run_id,batch_id:&batch,targets:&targets,reason:memory_core::facts::FactsFailureReason::ChildExit,detail:&error,outcome:None}).map_err(|error|error.to_string())?;FactsLaunchResult::Failed{run_id}},
         };
@@ -185,15 +186,17 @@ pub fn sweep_runner_artifacts(facts:&Path,warn:&mut dyn FnMut(&str)){crate::fact
         use crate::facts_wiring::FactsExtractorPort;
         use memory_core::journal::entries::{TranscriptEntry,TextTranscriptEntry};
         let root=tempfile::tempdir().unwrap();let runner=Arc::new(runner(root.path()));
+        let resolutions=Arc::new(std::sync::atomic::AtomicUsize::new(0));let calls=resolutions.clone();
         let mut port=runner.clone().native_extractor(NativeFactsAttemptOptions{
-            resolution:ReflectionModelResolution::CategoryUnavailable{category:"quick".into(),cause:"no_registry",attempted_chain:None,missing_providers:None},
+            resolve_model:Arc::new(move||{calls.fetch_add(1,Ordering::SeqCst);Ok(ReflectionModelResolution::CategoryUnavailable{category:"quick".into(),cause:"no_registry",attempted_chain:None,missing_providers:None})}),
             env:Default::default(),config_sources:vec![],launch:crate::worker::model_preflight::Launcher{command:"missing-child-must-not-run".into(),prefix_args:vec![]},supervisor_command:"missing-supervisor-must-not-run".into(),supervisor_args:vec![],deadline_ms:900000,termination_grace_ms:5000,max_output_bytes:1024,people:memory_core::facts::person_routing::FactsPeopleRouting{enabled:true,max_entries:40,max_entry_chars:200},sandbox:None,warn:Arc::new(|error|panic!("{error}")),
         });
-        port.launch_pending(None).await.unwrap();assert!(!runner.identity.paths.repo.exists());
+        port.launch_pending(None).await.unwrap();assert!(!runner.identity.paths.repo.exists());assert_eq!(resolutions.load(Ordering::SeqCst),0);
         runner.queue.enqueue(memory_core::facts::queue::FactsEnqueueRequest{identity:"agent".into(),session_id:"session".into(),conversation_id:"conversation".into(),signal:None,entries:vec![TranscriptEntry::Text(TextTranscriptEntry::new("user","Question","1970-01-01T00:00:00.000Z","m:user","m")),TranscriptEntry::Text(TextTranscriptEntry::new("assistant","Answer","1970-01-01T00:00:00.000Z","m:assistant","m"))]}).unwrap();
         port.launch_pending(None).await.unwrap();assert_eq!(runner.queue.list_pending().unwrap().len(),1);
         assert!(!runner.identity.paths.repo.exists());assert!(!runner.identity.paths.facts.join("runs").exists());
-        let failures=runner.failures.read_failures().unwrap();assert_eq!(failures.entries.len(),1);
+        let failures=runner.failures.read_failures().unwrap();assert_eq!(failures.entries.len(),1);assert_eq!(resolutions.load(Ordering::SeqCst),1);
+        port.launch_pending(None).await.unwrap();assert_eq!(resolutions.load(Ordering::SeqCst),1);
     }
     #[test]fn abandoned_sentinel_replays_without_outcome_or_payload(){
         let root=tempfile::tempdir().unwrap();let runner=runner(root.path());
@@ -216,5 +219,5 @@ pub fn sweep_runner_artifacts(facts:&Path,warn:&mut dyn FnMut(&str)){crate::fact
     }
     fn runner(root:&Path)->FactsExtractorRunner{FactsExtractorRunner::new(MemoryIdentity{id:"agent".into(),safe_slug:"agent".into(),paths:memory_core::identity::layout::build_identity_paths(root,"agent")},Arc::new(||0))}
     #[tokio::test]async fn launch_latch_spans_drain_and_releases_after_error(){let root=tempfile::tempdir().unwrap();let runner=runner(root.path());let result=runner.launch_pending(None,||async{assert_eq!(runner.launch_pending(None,||async{panic!("active")}).await.unwrap(),FactsLaunchResult::Active);Err("launch".into())}).await;assert_eq!(result,Err("launch".into()));assert_eq!(runner.launch_pending(None,||std::future::ready(Ok(FactsLaunchResult::Empty))).await.unwrap(),FactsLaunchResult::Empty);}
-    #[tokio::test]async fn empty_queue_does_not_initialize_repository(){let root=tempfile::tempdir().unwrap();let runner=runner(root.path());let resolution=ReflectionModelResolution::CategoryUnavailable{category:"quick".into(),cause:"no_registry",attempted_chain:None,missing_providers:None};assert_eq!(runner.launch_pending_once(FactsAttemptInput{resolution:&resolution,deadline_ms:900000,termination_grace_ms:5000},None,||Ok(false),|_,_,_|async{panic!("empty")},&mut |_|panic!("warning")).await.unwrap(),FactsLaunchResult::Empty);assert!(!runner.identity.paths.repo.exists());}
+    #[tokio::test]async fn empty_queue_does_not_initialize_repository(){let root=tempfile::tempdir().unwrap();let runner=runner(root.path());assert_eq!(runner.launch_pending_once(FactsAttemptInput{resolve_model:&||panic!("empty queue must not resolve model"),deadline_ms:900000,termination_grace_ms:5000},None,||Ok(false),|_,_,_,_|async{panic!("empty")},&mut |_|panic!("warning")).await.unwrap(),FactsLaunchResult::Empty);assert!(!runner.identity.paths.repo.exists());}
 }
