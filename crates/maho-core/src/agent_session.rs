@@ -15,6 +15,25 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+tokio::task_local! {
+    static EXTENSION_EVENT_SIGNAL: maho_ext_api::AbortSignal;
+}
+struct ExtensionEventSignalSubscription {
+    signal: maho_ai::utils::abort::AbortSignal,
+    listener: maho_ai::utils::abort::ListenerId,
+}
+impl ExtensionEventSignalSubscription {
+    fn new(signal: maho_ai::utils::abort::AbortSignal) -> (Self, maho_ext_api::AbortSignal) {
+        let extension_signal = maho_ext_api::AbortSignal::default();
+        let cancellation = extension_signal.clone();
+        let listener = signal.add_abort_listener(move |_| cancellation.abort());
+        (Self { signal, listener }, extension_signal)
+    }
+}
+impl Drop for ExtensionEventSignalSubscription {
+    fn drop(&mut self) { self.signal.remove_abort_listener(self.listener); }
+}
+
 use maho_agent::tool_name_alias::resolve_tool_name_alias;
 use maho_agent::types::{AgentMessage, AgentTool, AgentToolResult, AgentState};
 use maho_agent::Agent;
@@ -536,7 +555,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn get_agent_dir(&self) -> std::path::PathBuf { self.session().map_or_else(|_| Default::default(), |session| session.agent_dir().into()) }
     fn is_idle(&self) -> bool { self.session().is_ok_and(|session| !session.is_streaming() && !session.work_barrier.has_active_work()) }
     fn is_project_trusted(&self) -> bool { self.session().is_ok_and(|session| session.with_settings_manager(|manager| manager.is_project_trusted())) }
-    fn get_signal(&self) -> Option<maho_ext_api::AbortSignal> { None }
+    fn get_signal(&self) -> Option<maho_ext_api::AbortSignal> { EXTENSION_EVENT_SIGNAL.try_with(Clone::clone).ok() }
     fn abort(&self, source: Option<maho_ext_api::AbortSource>) {
         if let Ok(session) = self.session() {
             if source.unwrap_or(maho_ext_api::AbortSource::User) == maho_ext_api::AbortSource::User {
@@ -1107,9 +1126,14 @@ impl AgentSession {
 
     async fn process_agent_event(
         &self,
-        mut event: maho_agent::types::AgentEvent,
-        _signal: maho_ai::utils::abort::AbortSignal,
+        event: maho_agent::types::AgentEvent,
+        signal: maho_ai::utils::abort::AbortSignal,
     ) {
+        let (_subscription, extension_signal) = ExtensionEventSignalSubscription::new(signal);
+        EXTENSION_EVENT_SIGNAL.scope(extension_signal, self.process_agent_event_inner(event)).await;
+    }
+
+    async fn process_agent_event_inner(&self, mut event: maho_agent::types::AgentEvent) {
         use maho_agent::types::AgentEvent;
         {
             let mut state = self.state();
@@ -4023,6 +4047,23 @@ mod tests {
         assert!(!session.state().user_aborted);
         actions.abort(None);
         assert!(session.state().user_aborted);
+    }
+
+    #[tokio::test]
+    async fn event_context_signal_observes_cancellation_only_during_invocation() {
+        use maho_ext_api::ExtensionContextActions;
+        let session = test_session();
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let (subscription, signal) = ExtensionEventSignalSubscription::new(controller.signal());
+        EXTENSION_EVENT_SIGNAL.scope(signal, async {
+            let captured = actions.get_signal().unwrap();
+            assert!(!captured.is_aborted());
+            controller.abort(None);
+            assert!(captured.is_aborted());
+        }).await;
+        drop(subscription);
+        assert!(actions.get_signal().is_none());
     }
 
     #[tokio::test]
