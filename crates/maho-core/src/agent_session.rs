@@ -1815,6 +1815,15 @@ impl AgentSession {
                 }, true),
                 _ => {
                     let model = self.model();
+                    let override_model = self.with_settings_manager(|manager| manager.get_value("compaction")
+                        .and_then(|settings| settings.get("model")).and_then(Value::as_str).map(str::to_owned));
+                    let model = override_model.as_deref().and_then(|selector| selector.split_once('/'))
+                        .filter(|(provider, id)| !provider.is_empty() && !id.is_empty())
+                        .and_then(|(provider, id)| self.model_runtime().get_model(provider, id)).unwrap_or(model);
+                    signal.throw_if_aborted().map_err(|error| error.to_string())?;
+                    if !self.state().compaction_lifecycle.is_current(&request_id, &controller) {
+                        return Err("Compaction cancelled".to_owned());
+                    }
                     let auth = self.get_summarization_request_auth(&model).await?;
                     let split = preparation.is_split_turn && !preparation.turn_prefix_messages.is_empty();
                     let messages = &preparation.messages_to_summarize;
@@ -5914,7 +5923,12 @@ mod tests {
     #[tokio::test]
     async fn manual_compaction_runs_faux_summary_and_records_file_details() {
         use maho_ai::providers::faux::{faux_provider, RegisterFauxProviderOptions};
-        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
+        let provider = faux_provider(RegisterFauxProviderOptions {
+            tokens_per_second: Some(0.0), models: Some(vec![
+                maho_ai::providers::faux::FauxModelDefinition { id: "faux-1".to_owned(), ..Default::default() },
+                maho_ai::providers::faux::FauxModelDefinition { id: "summary".to_owned(), ..Default::default() },
+            ]), ..Default::default()
+        });
         provider.set_responses(vec![
             maho_ai::providers::faux::faux_assistant_message("digest", Default::default()).into(),
             maho_ai::providers::faux::faux_assistant_message("prefix digest", Default::default()).into(),
@@ -5928,7 +5942,7 @@ mod tests {
             ..Default::default()
         }).expect("auth");
         session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
-            ("compaction".to_owned(), serde_json::json!({"keepRecentTokens":1})),
+            ("compaction".to_owned(), serde_json::json!({"keepRecentTokens":1,"model":"faux/summary"})),
         ])));
         session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"old task","timestamp":0})));
         session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"recent task","timestamp":1})));
@@ -5942,6 +5956,8 @@ mod tests {
         assert!(!session.is_compacting());
         assert_eq!(session.compaction_state().status(), "completed");
         assert_eq!(session.compaction_state().generation(), 1);
+        assert_eq!(session.model().id, "faux-1");
+        assert_eq!(provider.get_call_log().iter().map(|call| call.model_id.as_str()).collect::<Vec<_>>(), ["summary", "summary"]);
         assert_eq!(session.with_session_manager(|manager| manager.entries().last().expect("entry")["type"].clone()), "compaction");
     }
 
