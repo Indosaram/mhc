@@ -71,6 +71,77 @@ pub fn join_markdown(output:&str,replacement:&str)->String {
     let newlines=(output.len()-left.len()).max(replacement.len()-right.len()).min(2);
     format!("{left}{}{right}","\n".repeat(newlines))
 }
+pub fn html_fragment_to_markdown(root:&dom_query::NodeRef<'_>)->String {
+    fn process(parent:&dom_query::NodeRef<'_>,is_code:bool)->String {
+        let mut output=String::new();
+        for node in parent.children() {
+            let name=node.node_name();let name=name.as_deref().unwrap_or("");let code=is_code||name=="code";
+            let replacement=if node.is_text() {if code {node.text().into()} else {escape_markdown(&node.text())}}
+                else if node.is_element() {replace(&node,code)} else {String::new()};
+            output=join_markdown(&output,&replacement);
+        }
+        output
+    }
+    fn clean_attribute(value:&str)->String {
+        static BREAKS:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?:\n+[\t-\r \u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}]*)+").expect("literal pattern"));
+        BREAKS.replace_all(value,"\n").into_owned()
+    }
+    fn replace(node:&dom_query::NodeRef<'_>,is_code:bool)->String {
+        let name=node.node_name();let name=name.as_deref().unwrap_or("");let block=markdown_block(name);
+        let (leading,trailing)=markdown_flanking(node);let mut content=process(node,is_code);
+        if !leading.is_empty() || !trailing.is_empty() {content=content.trim_matches(js_whitespace).into();}
+        let replacement=if markdown_blank(node) {if block {"\n\n".into()} else {String::new()}}
+        else {match name {
+            "p"=>format!("\n\n{content}\n\n"),"br"=>"  \n".into(),
+            "h1"|"h2"|"h3"|"h4"|"h5"|"h6"=>format!("\n\n{} {content}\n\n","#".repeat(usize::from(name.as_bytes()[1]-b'0'))),
+            "blockquote"=>format!("\n\n{}\n\n",content.trim_matches('\n').split('\n').map(|line|format!("> {line}")).collect::<Vec<_>>().join("\n")),
+            "ul"|"ol"=>{
+                let nested=node.parent().is_some_and(|parent|parent.node_name().as_deref()==Some("li") && parent.element_children().last().is_some_and(|last|last.id==node.id));
+                if nested {format!("\n{content}")} else {format!("\n\n{content}\n\n")}
+            },
+            "li"=>{
+                let mut prefix="-   ".to_owned();
+                if let Some(parent)=node.parent().filter(|parent|parent.node_name().as_deref()==Some("ol")) {
+                    let index=parent.element_children().iter().position(|child|child.id==node.id).unwrap_or(0);
+                    let start=parent.attr("start").filter(|value|!value.is_empty()).map_or(1.,|value|value.trim_matches(js_whitespace).parse::<f64>().unwrap_or(f64::NAN));
+                    prefix=format!("{}.  ",start+index as f64);
+                }
+                let paragraph=content.ends_with('\n');let content=format!("{}{}",content.trim_matches('\n'),if paragraph {"\n"} else {""});
+                format!("{prefix}{}{}",content.replace('\n',&format!("\n{}"," ".repeat(prefix.encode_utf16().count()))),if node.next_sibling().is_some() {"\n"} else {""})
+            },
+            "pre" if node.children().first().is_some_and(|child|child.node_name().as_deref()==Some("code"))=>{
+                let child=node.children()[0];let code=child.text();let class=child.attr("class").unwrap_or_default();
+                let language=class.find("language-").map(|index|class[index+9..].split(js_whitespace).next().unwrap_or("")).unwrap_or("");
+                let size=code.split('\n').map(|line|line.bytes().take_while(|byte|*byte==b'`').count()).filter(|size|*size>=3).max().map_or(3,|size|size+1);let fence="`".repeat(size);
+                format!("\n\n{fence}{language}\n{}\n{fence}\n\n",code.strip_suffix('\n').unwrap_or(&code))
+            },
+            "hr"=>"\n\n---\n\n".into(),
+            "a" if node.attr("href").is_some_and(|value|!value.is_empty())=>{
+                let href=escape_link_destination(&node.attr("href").unwrap_or_default());let title=clean_attribute(&node.attr("title").unwrap_or_default()).replace('"',"\\\"");
+                format!("[{content}]({href}{})",if title.is_empty() {String::new()} else {format!(" \"{title}\"")})
+            },
+            "em"|"i"=>if content.trim_matches(js_whitespace).is_empty() {String::new()} else {format!("*{content}*")},
+            "strong"|"b"=>if content.trim_matches(js_whitespace).is_empty() {String::new()} else {format!("**{content}**")},
+            "code" if !(node.parent().is_some_and(|parent|parent.node_name().as_deref()==Some("pre")) && node.prev_sibling().is_none() && node.next_sibling().is_none())=>{
+                if content.is_empty() {String::new()} else {
+                    let content=content.replace("\r\n"," ").replace(['\r','\n']," ");
+                    let pad=content.starts_with('`')||content.ends_with('`')||(content.starts_with(' ')&&content.ends_with(' ')&&content.chars().any(|character|character!=' '));
+                    let runs:Vec<_>=content.split(|character|character!='`').filter(|run|!run.is_empty()).map(str::len).collect();let mut size=1;while runs.contains(&size) {size+=1;}
+                    let delimiter="`".repeat(size);let space=if pad {" "} else {""};format!("{delimiter}{space}{content}{space}{delimiter}")
+                }
+            },
+            "img"=>{
+                let src=escape_link_destination(&node.attr("src").unwrap_or_default());let alt=escape_markdown(&clean_attribute(&node.attr("alt").unwrap_or_default()));let title=clean_attribute(&node.attr("title").unwrap_or_default()).replace('"',"\\\"");
+                if src.is_empty() {String::new()} else {format!("![{alt}]({src}{})",if title.is_empty() {String::new()} else {format!(" \"{title}\"")})}
+            },
+            "script"|"style"|"noscript"|"iframe"|"object"|"embed"|"meta"|"link"=>String::new(),
+            _=>if block {format!("\n\n{content}\n\n")} else {content},
+        }};
+        format!("{leading}{replacement}{trailing}")
+    }
+    let cloned=root.tree.clone();let root=dom_query::NodeRef::new(root.id,&cloned);collapse_markdown_whitespace(&root);
+    process(&root,false).trim_start_matches(['\t','\r','\n']).trim_end_matches(js_whitespace).into()
+}
 pub struct ReadableArticle { pub document:dom_query::Document,pub root:dom_query::NodeId,pub title:String,pub has_heading:bool }
 pub fn extract_explicit_article(document:&dom_query::Document)->Option<ReadableArticle> {
     for selector in [".article_view",".tt_article_useless_p_margin",".entry-content",".contents_style",".post-content",".article-content",".content-article","#content .contents_style"] {
@@ -112,6 +183,19 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn recursive_markdown_rules_preserve_source_tree() {
+        let document=dom_query::Document::from("<h2>Heading</h2><p>one <em>two</em> <strong>three</strong><br>four</p><hr>");let before=document.html();let output=html_fragment_to_markdown(&document.select("body").nodes()[0]);
+        assert!(output.starts_with("## Heading\n\n"));assert!(output.contains("*two* **three**  \nfour"));assert!(output.ends_with("\n\n---"));assert_eq!(document.html(),before);
+    }
+    #[test] fn recursive_markdown_lists_keep_ordered_start_and_nested_indentation() {
+        let document=dom_query::Document::from("<ol start='3'><li>First</li><li><p>Second</p><ul><li>Nested</li></ul></li></ol>");let output=html_fragment_to_markdown(&document.select("body").nodes()[0]);assert!(output.starts_with("3.  First\n4.  Second"));assert!(output.contains("\n    -   Nested"));
+    }
+    #[test] fn recursive_markdown_code_expands_fence_and_pads_backtick_edges() {
+        let document=dom_query::Document::from("<pre><code class='language-rust'>a\n```\nb\n</code></pre><p><code>`x`</code></p>");let output=html_fragment_to_markdown(&document.select("body").nodes()[0]);assert!(output.starts_with("````rust\na\n```\nb\n````"));assert!(output.ends_with("`` `x` ``"));
+    }
+    #[test] fn recursive_markdown_links_and_images_escape_attributes() {
+        let document=dom_query::Document::from("<p><a href='a(b)' title='a &quot;b&quot;'>Link</a><img src='a b' alt='[x]'></p>");let output=html_fragment_to_markdown(&document.select("body").nodes()[0]);assert!(output.contains("[Link](a\\(b\\) \"a \\\"b\\\"\")"));assert!(output.contains("![\\[x\\]](<a b>)"));
+    }
     #[test] fn markdown_blank_keeps_void_and_meaningful_descendants() {
         let document=dom_query::Document::from("<div id='blank'> \t </div><div id='image'><img src='x'></div><div id='link'><a href='x'></a></div>");assert!(markdown_blank(&document.select("#blank").nodes()[0]));assert!(!markdown_blank(&document.select("#image").nodes()[0]));assert!(!markdown_blank(&document.select("#link").nodes()[0]));
     }
