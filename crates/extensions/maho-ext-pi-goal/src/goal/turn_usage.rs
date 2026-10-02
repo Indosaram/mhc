@@ -13,7 +13,8 @@ impl TurnUsageTracker{
         let collected=collect_assistant_usage(messages);
         let mut remaining=empty_usage();
         for (collected,flushed,remaining) in [(collected.input,&mut self.flushed.input,&mut remaining.input),(collected.output,&mut self.flushed.output,&mut remaining.output),(collected.cache_read,&mut self.flushed.cache_read,&mut remaining.cache_read),(collected.cache_write,&mut self.flushed.cache_write,&mut remaining.cache_write),(collected.total_tokens,&mut self.flushed.total_tokens,&mut remaining.total_tokens)]{
-            *remaining=(collected-*flushed).max(0.0);*flushed=flushed.max(collected);
+            let difference=collected-*flushed;
+            *remaining=if difference.is_nan(){f64::NAN}else{difference.max(0.0)};*flushed=if flushed.is_nan()||collected.is_nan(){f64::NAN}else{flushed.max(collected)};
         }
         self.pending=empty_usage();remaining
     }
