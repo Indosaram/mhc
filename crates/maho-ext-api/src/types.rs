@@ -39,6 +39,12 @@ impl<TDetails: serde::Serialize> TypedAgentToolResult<TDetails> {
             usage: self.usage, added_tool_names: self.added_tool_names, terminate: self.terminate, is_error: self.is_error })
     }
 }
+impl<TDetails: serde::de::DeserializeOwned> TypedAgentToolResult<TDetails> {
+    pub fn from_agent_result(result: &AgentToolResult) -> Result<Self, ExtensionFailure> {
+        Ok(Self { content: result.content.clone(), details: serde_json::from_value(result.details.clone()).map_err(|error| ExtensionFailure::new(error.to_string()))?,
+            usage: result.usage, added_tool_names: result.added_tool_names.clone(), terminate: result.terminate, is_error: result.is_error })
+    }
+}
 pub type TypedToolUpdateCallback<TDetails> = Arc<dyn Fn(TypedAgentToolResult<TDetails>) -> Result<(), ExtensionFailure> + Send + Sync>;
 pub type TypedExtensionToolExecutor<TArgs, TDetails> = Arc<dyn for<'a> Fn(&'a str, TArgs, Option<maho_ai::utils::abort::AbortSignal>, Option<TypedToolUpdateCallback<TDetails>>, &'a ExtensionContext) -> ExtensionFuture<'a, TypedAgentToolResult<TDetails>> + Send + Sync>;
 
@@ -63,6 +69,15 @@ pub struct ToolRenderContext<TState, TArgs> {
 }
 pub type ToolCallRenderer<TState, TArgs> = Arc<dyn Fn(&TArgs, &Theme, &mut ToolRenderContext<TState, TArgs>) -> Box<dyn Component> + Send + Sync>;
 pub type ToolResultRenderer<TState, TArgs> = Arc<dyn Fn(&AgentToolResult, ToolRenderResultOptions, &Theme, &mut ToolRenderContext<TState, TArgs>) -> Box<dyn Component> + Send + Sync>;
+pub type TypedToolResultRenderer<TState, TArgs, TDetails> = Arc<dyn Fn(&TypedAgentToolResult<TDetails>, ToolRenderResultOptions, &Theme, &mut ToolRenderContext<TState, TArgs>) -> Box<dyn Component> + Send + Sync>;
+pub fn typed_tool_result_renderer<TState: 'static, TArgs: 'static, TDetails: serde::de::DeserializeOwned + 'static>(renderer: TypedToolResultRenderer<TState, TArgs, TDetails>) -> ToolResultRenderer<TState, TArgs> {
+    Arc::new(move |result, options, theme, context| {
+        match TypedAgentToolResult::from_agent_result(result) {
+            Ok(result) => renderer(&result, options, theme, context),
+            Err(error) => std::panic::panic_any(error),
+        }
+    })
+}
 pub struct ToolRenderers<TState, TArgs> {
     pub render_call: Option<ToolCallRenderer<TState, TArgs>>,
     pub render_result: Option<ToolResultRenderer<TState, TArgs>>,

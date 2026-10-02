@@ -339,6 +339,23 @@ fn typed_tool_renderer_retains_state_across_render_calls() {
 }
 
 #[test]
+fn typed_result_renderer_receives_decoded_details_and_result_metadata() {
+    let renderer = typed_tool_result_renderer(Arc::new(|result: &TypedAgentToolResult<u64>, _, _, context: &mut ToolRenderContext<usize, String>| {
+        assert_eq!(result.terminate, Some(true)); context.state += 1;
+        Box::new(FactoryComponent(format!("{}:{}", result.details, context.state)))
+    }));
+    let context = ToolRenderContext { args: String::new(), tool_call_id: "call".into(), invalidate: std::rc::Rc::new(|| {}), last_component: None,
+        state: 0, cwd: "/tmp".into(), execution_started: true, args_complete: true, is_partial: false, expanded: false,
+        show_images: false, image_protocol: None, is_error: false, has_result: Some(true), spinner_frame: None };
+    let mut session = ToolRendererSession { renderers: Arc::new(ToolRenderers { render_call: None, render_result: Some(renderer) }), context };
+    let mut result = AgentToolResult::text("done"); result.details = JsonValue::from(7u64); result.terminate = Some(true);
+    assert_eq!(session.render_result(&result, &Theme::default(), 80).unwrap(), ["7:1"]);
+    assert_eq!(session.render_result(&result, &Theme::default(), 80).unwrap(), ["7:2"]);
+    result.details = JsonValue::Null;
+    assert!(TypedAgentToolResult::<u64>::from_agent_result(&result).is_err());
+}
+
+#[test]
 fn typed_renderer_slots_keep_call_and_result_components_separate() {
     let renderers = Arc::new(ToolRenderers {
         render_call: Some(Arc::new(|_: &String, _: &Theme, context: &mut ToolRenderContext<usize, String>| {
