@@ -2,6 +2,26 @@
 pub enum PackageCommand { Install, Remove, Update, List }
 #[derive(Debug, PartialEq, Eq)]
 pub enum UpdateTarget { SelfOnly, Extensions { source: Option<String> }, Models, All }
+pub fn package_command_usage(command: PackageCommand) -> &'static str {
+    match command {
+        PackageCommand::Install => "mhc install <source> [-l] [--approve|--no-approve]",
+        PackageCommand::Remove => "mhc remove <source> [-l] [--approve|--no-approve]",
+        PackageCommand::Update => "mhc update [source|self|mhc] [--self|--extensions|--models|--all] [--extension <source>] [--approve|--no-approve] [--force]",
+        PackageCommand::List => "mhc list [--approve|--no-approve]",
+    }
+}
+pub fn package_command_help(command: PackageCommand) -> String {
+    let body = match command {
+        PackageCommand::Install => "Install a package and add it to settings.\n\nOptions:\n  -l, --local       Install project-locally (.maho/settings.json)\n  -a, --approve     Trust project-local files for this command\n  -na, --no-approve Ignore project-local files for this command\n\nExamples:\n  mhc install npm:@foo/bar\n  mhc install git:github.com/user/repo\n  mhc install git:git@github.com:user/repo\n  mhc install https://github.com/user/repo\n  mhc install ssh://git@github.com/user/repo\n  mhc install ./local/path\n",
+        PackageCommand::Remove => "Remove a package and its source from settings.\nAlias: mhc uninstall <source> [-l]\n\nOptions:\n  -l, --local       Remove from project settings (.maho/settings.json)\n  -a, --approve     Trust project-local files for this command\n  -na, --no-approve Ignore project-local files for this command\n\nExamples:\n  mhc remove npm:@foo/bar\n  mhc uninstall npm:@foo/bar\n",
+        PackageCommand::Update => "Update resource packages or model catalogs.\n\nOptions:\n  --extensions            Update installed packages only\n  --models                Refresh model catalogs only\n  --extension <source>    Update one package only\n  -a, --approve           Trust project-local files for this command\n  -na, --no-approve       Ignore project-local files for this command\n\nNative self-update is replaced by mhc import-omo.\n",
+        PackageCommand::List => "List installed packages from user and project settings.\n\nOptions:\n  -a, --approve      Trust project-local files for this command\n  -na, --no-approve  Ignore project-local files for this command\n",
+    };
+    format!("Usage:\n  {}\n\n{body}\n", package_command_usage(command))
+}
+pub fn config_command_help() -> &'static str {
+    "Usage:\n  mhc config [-l] [--approve|--no-approve]\n\nOpen the resource configuration TUI to enable or disable package resources.\nWithout -l, starts in global settings (~/.maho/agent/settings.json).\nPress Tab in the TUI to switch between global and project-local modes.\n\nOptions:\n  -l, --local       Edit project overrides (.maho/settings.json)\n  -a, --approve     Trust project-local files for this command with -l\n  -na, --no-approve Ignore project-local files for this command with -l\n\n"
+}
 pub struct PackageCommandOptions {
     pub command: PackageCommand, pub source: Option<String>, pub local: bool,
     pub update_target: Option<UpdateTarget>, pub show_extensions_skipped_note: bool,

@@ -45,6 +45,7 @@ fn run() -> Result<(), String> {
         return Err("Auth execution blocked: maho-core ModelRuntime check_auth/list_credentials/model-aware get_auth API request (todo 16)".to_owned());
     }
     if let Some(command) = maho_cli::package_manager_cli::parse_package_command(&argv) {
+        if command.help { return output(&maho_cli::package_manager_cli::package_command_help(command.command)); }
         if let Some(option) = command.invalid_option { return Err(format!("Unknown package option: {option}")); }
         if let Some(argument) = command.invalid_argument { return Err(format!("Unexpected package argument: {argument}")); }
         if let Some(option) = command.missing_option_value { return Err(format!("{option} requires a value")); }
@@ -54,7 +55,10 @@ fn run() -> Result<(), String> {
     match argv.first().map(String::as_str) {
         Some("host") => { maho_cli::cli::host_command::parse_host_args(&argv[1..])?; return Err("Host execution blocked by unmerged todo 36 (maho-rpc)".to_owned()); }
         Some("app-server") => return Err("App-server execution blocked by unmerged todo 37 (maho-server)".to_owned()),
-        Some("config") => return Err("Config TUI execution blocked by unmerged todo 35 and DefaultPackageManager API request (todo 19)".to_owned()),
+        Some("config") => {
+            if argv.iter().any(|argument| matches!(argument.as_str(), "--help" | "-h")) { return output(maho_cli::package_manager_cli::config_command_help()); }
+            return Err("Config TUI execution blocked by unmerged todo 35 and DefaultPackageManager API request (todo 19)".to_owned());
+        }
         _ => {},
     }
     let parsed = maho_cli::cli::args::parse_args(&argv, grok)?;
