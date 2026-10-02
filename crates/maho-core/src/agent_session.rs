@@ -792,11 +792,7 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
         } else if session.is_streaming() {
             session.state().pending_custom_messages.push(custom);
         } else {
-            let content = serde_json::to_value(message.content).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
-            session.with_session_manager_mut(|manager| manager.append_custom_message(&custom.custom_type,
-                content, custom.display, custom.details));
-            let mut messages = session.messages(); messages.push(agent_message); session.agent.set_messages(messages);
-            session.state().message_revision += 1;
+            session.append_custom_message(custom);
             if options.trigger_turn {
                 let guard = session.work_barrier.begin();
                 tokio::spawn(async move {
@@ -1398,17 +1394,7 @@ impl AgentSession {
             self.state().turn_index += 1;
             let pending = std::mem::take(&mut self.state().pending_custom_messages);
             for custom in pending {
-                let message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(custom.clone()));
-                let mut messages = self.messages();
-                messages.push(message.clone());
-                self.agent.set_messages(messages);
-                let content = serde_json::to_value(&custom.content).expect("custom content serializes");
-                let entry = self.with_session_manager_mut(|manager| manager.append_custom_message(
-                    &custom.custom_type, content, custom.display, custom.details));
-                if let Some(id) = entry.get("id").and_then(Value::as_str) { self.emit_entry_appended(id); }
-                self.state().message_revision += 1;
-                self.emit(AgentSessionEvent::Agent(AgentEvent::MessageStart { message: message.clone() }));
-                self.emit(AgentSessionEvent::Agent(AgentEvent::MessageEnd { message }));
+                self.append_custom_message(custom);
             }
         }
         self.emit(AgentSessionEvent::Agent(event.clone()));
@@ -4003,6 +3989,20 @@ impl AgentSession {
     }
 
     /// Append a transport-provided entry and publish it on the RPC event stream.
+    fn append_custom_message(&self, custom: maho_agent::harness::messages::CustomMessage) {
+        let message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(custom.clone()));
+        let mut messages = self.messages();
+        messages.push(message.clone());
+        self.agent.set_messages(messages);
+        let content = serde_json::to_value(&custom.content).expect("custom content serializes");
+        let entry = self.with_session_manager_mut(|manager| manager.append_custom_message(
+            &custom.custom_type, content, custom.display, custom.details));
+        if let Some(id) = entry.get("id").and_then(Value::as_str) { self.emit_entry_appended(id); }
+        self.state().message_revision += 1;
+        self.emit(AgentSessionEvent::Agent(maho_agent::types::AgentEvent::MessageStart { message: message.clone() }));
+        self.emit(AgentSessionEvent::Agent(maho_agent::types::AgentEvent::MessageEnd { message }));
+    }
+
     pub fn append_session_entry(&self, entry: Value) {
         let entry_id = entry.get("id").and_then(Value::as_str).map(str::to_owned);
         self.with_session_manager_mut(|manager| manager.append_entry_raw(entry));
@@ -6288,6 +6288,33 @@ mod tests {
         assert_eq!(session.messages().last().expect("notice").role(), "custom");
         assert_eq!(session.with_session_manager(|manager| manager.entries()).iter().filter(|entry| entry["customType"] == "quiet-notice").count(), 1);
         assert!(session.state().pending_custom_messages.is_empty());
+    }
+
+    #[test]
+    fn idle_custom_message_persists_before_paired_message_events() {
+        let session = test_session();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = session.clone();
+        let observed = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::Agent(event) = event {
+                match event {
+                    maho_agent::types::AgentEvent::MessageStart { message } | maho_agent::types::AgentEvent::MessageEnd { message } => {
+                        assert_eq!(message.role(), "custom");
+                        assert_eq!(captured.messages().as_slice(), std::slice::from_ref(message));
+                        assert_eq!(captured.with_session_manager(|manager| manager.entries())[0]["customType"], "idle-notice");
+                        lock(&observed).push(matches!(event, maho_agent::types::AgentEvent::MessageEnd { .. }));
+                    }
+                    _ => {}
+                }
+            }
+        }));
+        maho_ext_api::ExtensionActions::send_message(&SessionExtensionActions(Arc::downgrade(&session.inner)), maho_ext_api::CustomMessage {
+            custom_type: "idle-notice".to_owned(), content: vec![maho_tools::definition::ToolContent::text("notice")],
+            display: true, details: None,
+        }, maho_ext_api::SendMessageOptions { trigger_turn: false, deliver_as: None }).expect("append");
+        assert_eq!(*lock(&events), [false, true]);
+        assert_eq!(session.with_session_manager(|manager| manager.entries()).len(), 1);
     }
 
     #[tokio::test]
