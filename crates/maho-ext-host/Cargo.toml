@@ -7,7 +7,10 @@ license = "MIT"
 
 [dependencies]
 maho-ext-api = { path = "../maho-ext-api" }
-tokio = { version = "=1.52.3", features = ["time", "sync", "rt", "macros"] }
+tokio = { version = "=1.52.3", features = ["time", "sync", "rt", "macros", "process", "io-util"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "=0.28.0", features = ["signal"] }
 
 [dev-dependencies]
 tokio = { version = "=1.52.3", features = ["test-util"] }

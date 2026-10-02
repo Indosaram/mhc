@@ -1665,6 +1665,7 @@ name = "maho-ext-host"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "nix",
  "tokio",
 ]
 

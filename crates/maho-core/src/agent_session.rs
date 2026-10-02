@@ -811,22 +811,7 @@ impl maho_ext_api::ExtensionSessionActions for SessionExtensionActions {
     fn exec<'a>(&'a self, command: &'a str, args: &'a [String], cwd: &'a std::path::Path, options: maho_ext_api::ExecOptions) -> maho_ext_api::ExtensionFuture<'a, maho_ext_api::ExecResult> {
         Box::pin(async move {
             self.session()?;
-            let signal = options.signal.clone();
-            let cwd = options.cwd.as_deref().unwrap_or(cwd).to_string_lossy();
-            let exec_options = crate::exec::ExecOptions {
-                timeout_ms: options.timeout_ms, ..Default::default()
-            };
-            let operation = crate::exec::exec_command(command, args, &cwd, &exec_options);
-            let output = if let Some(signal) = signal {
-                tokio::select! {
-                    biased;
-                    () = signal.cancelled() => return Ok(maho_ext_api::ExecResult {
-                        stdout: String::new(), stderr: String::new(), code: 0, killed: true,
-                    }),
-                    output = operation => output,
-                }
-            } else { operation.await };
-            Ok(maho_ext_api::ExecResult { stdout: output.stdout, stderr: output.stderr, code: output.code, killed: output.killed })
+            Ok(maho_ext_host::exec::exec_command(command, args, cwd, options).await)
         })
     }
 }
