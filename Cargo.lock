@@ -1714,6 +1714,8 @@ dependencies = [
  "maho-ai",
  "maho-core",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
  "regex",
  "serde",
  "serde_json",
@@ -1829,6 +1831,7 @@ dependencies = [
  "maho-core",
  "maho-ext-api",
  "maho-ext-host",
+ "maho-test-support",
  "regex",
  "serde",
  "serde_json",
@@ -1844,7 +1847,10 @@ version = "0.0.0"
 dependencies = [
  "maho-ai",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -2061,6 +2067,8 @@ dependencies = [
  "globset",
  "maho-ai",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
  "regex",
  "serde",
  "serde_json",
