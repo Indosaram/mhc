@@ -38,3 +38,22 @@ pub fn parse_generic_git_url(source: &str) -> Option<GitSource> {
     if repo.is_empty() { repo = input.to_owned(); }
     Some(GitSource { repo, host, path, pinned: reference.as_ref().is_some_and(|reference| !reference.is_empty()), reference })
 }
+pub fn parse_git_url(source: &str) -> Option<GitSource> {
+    let mut source = parse_generic_git_url(source)?;
+    let domain = source.host.strip_prefix("www.").unwrap_or(&source.host);
+    if matches!(domain, "github.com" | "bitbucket.org" | "gitlab.com" | "gist.github.com" | "git.sr.ht") {
+        let (path, fragment) = source.path.split_once('#').map_or((source.path.as_str(), None), |(path, fragment)| (path, Some(fragment)));
+        let path = path.split('?').next()?;
+        let mut parts: Vec<_> = path.split('/').collect();
+        let reference = if domain == "github.com" && parts.get(2) == Some(&"tree") { parts.get(3).copied() } else { fragment };
+        if domain == "github.com" && parts.len() > 2 && parts[2] != "tree" { return Some(source); }
+        if domain == "github.com" || domain == "bitbucket.org" || domain == "git.sr.ht" { parts.truncate(2); }
+        let decoded = parts.iter().map(|part| percent_encoding::percent_decode_str(part).decode_utf8().ok().map(|part| part.into_owned())).collect::<Option<Vec<_>>>()?.join("/");
+        if unsafe_part(&decoded, true) { return None; }
+        source.reference = reference.filter(|reference| !reference.is_empty()).and_then(|reference| percent_encoding::percent_decode_str(reference).decode_utf8().ok().map(|reference| reference.into_owned())).or(source.reference);
+        source.path = decoded.strip_suffix(".git").unwrap_or(&decoded).to_owned();
+        source.pinned = source.reference.is_some();
+        source.host = domain.to_owned();
+    }
+    Some(source)
+}
