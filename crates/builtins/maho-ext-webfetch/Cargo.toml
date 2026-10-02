@@ -12,6 +12,7 @@ maho-tools = { path = "../../maho-tools" }
 thiserror = "=2.0.18"
 reqwest = { version = "=0.13.2", default-features = false, features = ["rustls", "stream"] }
 url = "=2.5.8"
+regex = "=1.12.3"
 
 [lints]
 workspace = true

@@ -3,3 +3,4 @@ pub mod providers;
 pub mod types;
 pub mod search;
 pub mod config;
+pub mod native;

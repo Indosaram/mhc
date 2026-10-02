@@ -1900,6 +1900,7 @@ version = "0.0.0"
 dependencies = [
  "futures",
  "maho-tools",
+ "regex",
  "reqwest 0.13.2",
  "thiserror 2.0.18",
  "tokio",
