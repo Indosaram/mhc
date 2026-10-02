@@ -1,6 +1,45 @@
 use crate::{todo_types::{TodoPhase,TodoStatus,TodoItem,DEFAULT_INIT_PHASE},markdown::phases_to_markdown};
 use crate::{todo_types::{TodoOperation,TodoOpEntry},todo_operations::apply_ops_to_phases};
 pub struct TodoCommandMutation { pub phases:Vec<TodoPhase>,pub action:String,pub notification:String,pub removed:bool }
+pub const TODO_COMMAND_USAGE:&str="Usage: /todo <verb> [args]\n  /todo                              Show current todos\n  /todo edit                         Edit todos as Markdown in an overlay\n  /todo copy                         Copy todos as Markdown to clipboard\n  /todo export [<path>]              Write todos to file (default: TODO.md)\n  /todo import [<path>]              Replace todos from file (default: TODO.md)\n  /todo append [<phase>] <task...>   Append a task; phase fuzzy-matched or created\n  /todo start  <task>                Mark task in_progress (fuzzy match)\n  /todo done   [<task|phase>]        Mark task/phase/all completed\n  /todo drop   [<task|phase>]        Mark task/phase/all abandoned\n  /todo rm     [<task|phase>]        Remove task/phase/all";
+pub type CopyTodoMarkdown=std::sync::Arc<dyn Fn(String)->maho_ext_api::ExtensionFuture<'static,()>+Send+Sync>;
+pub fn register_todo_command(api:&mut maho_ext_api::ExtensionApi,actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,accessors:std::sync::Arc<dyn crate::tools_todo::TodoAccessors>,copy_markdown:CopyTodoMarkdown) {
+    api.register_command("todo",Some("Show or edit the todo list (edit/copy/export/import/append/start/done/drop/rm)".into()),None,std::sync::Arc::new(move |args,ctx| {
+        let actions=actions.clone(); let accessors=accessors.clone(); let copy_markdown=copy_markdown.clone();
+        Box::pin(async move {
+            use maho_ext_api::NotificationType::{Info,Warning,Error};
+            let current=accessors.get_current_phases();
+            let Some((verb,rest))=split_command(args) else {
+                let text=if current.is_empty() { "No todos. Use /todo append <task> to start one.".to_owned() } else { phases_to_markdown(&current).trim_end().to_owned() };
+                ctx.ui.notify(&text,Info);
+                return Ok(());
+            };
+            let mutation=match verb.as_str() {
+                "help"|"?"=>{ctx.ui.notify(TODO_COMMAND_USAGE,Info);return Ok(());},
+                "copy"=>{
+                    if current.is_empty() { ctx.ui.notify("No todos to copy.",Warning); }
+                    else { match copy_markdown(phases_to_markdown(&current)).await { Ok(())=>ctx.ui.notify("Copied todos as Markdown to clipboard.",Info),Err(error)=>ctx.ui.notify(&error.to_string(),Error) } }
+                    return Ok(());
+                },
+                "export"=>{
+                    match export_to_file(&current,rest,&ctx.cwd).await { Ok(Some(path))=>ctx.ui.notify(&format!("Wrote todos to {}",path.display()),Info),Ok(None)=>ctx.ui.notify("No todos to export.",Warning),Err(error)=>ctx.ui.notify(&error,Error) }
+                    return Ok(());
+                },
+                "import"=>import_from_file(rest,&ctx.cwd).await.map(Some),
+                "edit"=>match edit_in_overlay(&current,ctx).await { Ok(mutation)=>Ok(mutation),Err(error)=>Err(error.to_string()) },
+                "append"=>append_command(&current,rest).map(|(phases,action,notification)|Some(TodoCommandMutation{phases,action,notification,removed:false})),
+                "start"|"done"|"drop"|"rm"=>status_command(&current,rest,match verb.as_str() {"start"=>TodoOperation::Start,"done"=>TodoOperation::Done,"drop"=>TodoOperation::Drop,_=>TodoOperation::Rm}).map(Some),
+                _=>{ctx.ui.notify(&format!("Unknown /todo verb \"{verb}\".\n{TODO_COMMAND_USAGE}"),Error);return Ok(());},
+            };
+            match mutation {
+                Ok(Some(mutation))=>{commit_command_mutation(ctx,&mutation,actions.as_ref(),accessors.as_ref())?;ctx.ui.notify(&mutation.notification,Info);},
+                Ok(None)=>ctx.ui.notify("Todos unchanged.",Info),
+                Err(error)=>ctx.ui.notify(&error,Error),
+            }
+            Ok(())
+        })
+    }));
+}
 pub fn commit_command_mutation(ctx:&dyn maho_tools::definition::ToolContext,mutation:&TodoCommandMutation,actions:&dyn maho_ext_api::ExtensionActions,accessors:&dyn crate::tools_todo::TodoAccessors)->Result<(),maho_ext_api::ExtensionFailure> {
     accessors.set_current_phases(mutation.phases.clone());
     actions.append_entry(crate::todo_types::TODO_STATE_ENTRY_TYPE,Some(serde_json::json!({"schema":"v2","phases":mutation.phases,"source":"user","action":mutation.action})))?;

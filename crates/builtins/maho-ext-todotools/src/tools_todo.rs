@@ -101,6 +101,55 @@ mod tests {
         fn get_all_tools(&self)->Result<Vec<maho_ext_api::ToolInfo>,maho_ext_api::ExtensionFailure> { panic!("not used") }
     }
     struct Context { persisted:bool }
+    impl maho_ext_api::SessionManager for Context {
+        fn get_entries(&self)->Vec<maho_ext_api::SessionEntry> {vec![]}
+        fn get_branch(&self)->Vec<maho_ext_api::SessionEntry> {vec![]}
+        fn get_leaf_id(&self)->Option<String> {None}
+        fn get_session_name(&self)->Option<String> {None}
+    }
+    struct Registry;
+    impl maho_ext_api::ModelRegistry for Registry {
+        fn get_all(&self)->Vec<maho_ext_api::Model> {vec![]}
+        fn get_available(&self)->Vec<maho_ext_api::Model> {vec![]}
+        fn find(&self,_provider:&str,_id:&str)->Option<maho_ext_api::Model> {None}
+        fn has_configured_auth(&self,_model:&maho_ext_api::Model)->bool {false}
+        fn get_api_key_for_provider<'a>(&'a self,_provider:&'a str)->maho_ext_api::ExtensionFuture<'a,Option<String>> {panic!("commands do not read credentials")}
+    }
+    #[derive(Default)] struct CommandUi(std::sync::Mutex<Vec<maho_ext_api::NotificationType>>);
+    impl maho_ext_api::ExtensionUi for CommandUi {
+        fn select<'a>(&'a self,_title:&'a str,_options:&'a [String],_opts:maho_ext_api::ExtensionUiDialogOptions)->maho_ext_api::UiFuture<'a,Option<String>> {panic!("not used")}
+        fn confirm<'a>(&'a self,_title:&'a str,_message:&'a str,_opts:maho_ext_api::ExtensionUiDialogOptions)->maho_ext_api::UiFuture<'a,bool> {panic!("not used")}
+        fn input<'a>(&'a self,_title:&'a str,_placeholder:Option<&'a str>,_opts:maho_ext_api::ExtensionUiDialogOptions)->maho_ext_api::UiFuture<'a,Option<String>> {panic!("not used")}
+        fn notify(&self,_message:&str,kind:maho_ext_api::NotificationType) {self.0.lock().unwrap().push(kind);}
+        fn set_status(&self,_key:&str,_text:Option<&str>) {panic!("not used")}
+        fn set_widget(&self,_key:&str,_content:Option<maho_ext_api::WidgetContent>,_options:maho_ext_api::ExtensionWidgetOptions) {panic!("accessor owns widget")}
+        fn set_header(&self,_factory:Option<maho_ext_api::ComponentFactory>) {panic!("not used")}
+        fn set_footer(&self,_factory:Option<maho_ext_api::ComponentFactory>) {panic!("not used")}
+        fn set_title(&self,_title:&str) {panic!("not used")}
+        fn paste_to_editor(&self,_text:&str) {panic!("not used")}
+        fn set_editor_text(&self,_text:&str) {panic!("not used")}
+        fn get_editor_text(&self)->String {panic!("not used")}
+        fn custom(&self,_factory:maho_ext_api::ComponentFactory,_options:maho_ext_api::CustomUiOptions)->maho_ext_api::ExtensionFuture<'_,serde_json::Value> {panic!("not used")}
+        fn theme(&self)->maho_ext_api::Theme {panic!("not used")}
+    }
+    fn command_context(ui:std::sync::Arc<CommandUi>,cwd:std::path::PathBuf)->maho_ext_api::ExtensionContext {
+        maho_ext_api::ExtensionContext{ui,mode:Default::default(),has_ui:true,cwd,agent_dir:Default::default(),session_manager:std::sync::Arc::new(Context{persisted:true}),model_registry:std::sync::Arc::new(Registry),model:None,thinking_level:None,service_tier:None,effective_service_tier:None,scoped_models:vec![],goal_store_file:None,loaded_extension_paths:vec![],signal:None,steering_signal:None,is_idle_fn:std::sync::Arc::new(||true),wait_for_idle_fn:std::sync::Arc::new(||Box::pin(async {})),is_project_trusted_fn:std::sync::Arc::new(||true),is_compacting_fn:std::sync::Arc::new(||false),get_system_prompt_fn:std::sync::Arc::new(String::new),get_system_prompt_options_fn:std::sync::Arc::new(Default::default),registered_mcp_servers:vec![],update_tool_hook_status:None}
+    }
+    #[tokio::test] async fn registered_command_executes_mutations_copy_and_file_roundtrip() {
+        let fixture=std::sync::Arc::new(ExecutionFixture::default()); let copied=std::sync::Arc::new(std::sync::Mutex::new(vec![])); let captured=copied.clone();
+        let mut api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("todotools",Default::default(),Default::default()),Default::default(),Default::default(),Default::default());
+        crate::commands::register_todo_command(&mut api,fixture.clone(),fixture.clone(),std::sync::Arc::new(move |text| {captured.lock().unwrap().push(text);Box::pin(async {Ok(())})}));
+        let temp=tempfile::tempdir().unwrap(); let ui=std::sync::Arc::new(CommandUi::default()); let ctx=command_context(ui.clone(),temp.path().into()); let handler=&api.registered.commands[0].handler;
+        handler("append Work",&ctx).await.unwrap();
+        assert_eq!(fixture.get_current_phases()[0].tasks[0].content,"Work");
+        handler("copy",&ctx).await.unwrap(); assert_eq!(copied.lock().unwrap()[0],crate::markdown::phases_to_markdown(&fixture.get_current_phases()));
+        handler("export",&ctx).await.unwrap(); assert!(temp.path().join("TODO.md").is_file());
+        handler("rm",&ctx).await.unwrap(); assert!(fixture.get_current_phases().is_empty());
+        handler("import",&ctx).await.unwrap(); assert_eq!(fixture.get_current_phases()[0].tasks[0].content,"Work");
+        let count=fixture.entries.lock().unwrap().len(); handler("start missing",&ctx).await.unwrap(); assert_eq!(fixture.entries.lock().unwrap().len(),count);
+        assert_eq!(*ui.0.lock().unwrap().last().unwrap(),maho_ext_api::NotificationType::Error);
+        assert_eq!(fixture.events.lock().unwrap().iter().filter(|event|**event=="message").count(),3);
+    }
     impl maho_ext_api::ToolSessionManager for Context {
         fn session_id(&self)->&str { "test" }
         fn session_file(&self)->Option<&std::path::Path> { self.persisted.then(||std::path::Path::new("/session.jsonl")) }
@@ -136,10 +185,13 @@ mod tests {
         crate::index::register_state_hooks(&mut api,fixture.clone(),fixture.clone());
         for event in [maho_ext_api::EventKind::SessionStart,maho_ext_api::EventKind::SessionTree,maho_ext_api::EventKind::MessageEnd] { assert_eq!(api.registered.handlers[&event].len(),1); }
         assert!(api.registered.tools.is_empty());
-        register_todo_tool(&mut api,fixture.clone(),fixture);
+        register_todo_tool(&mut api,fixture.clone(),fixture.clone());
         assert_eq!(api.registered.tools.len(),1);
         assert_eq!(api.registered.tools[0].definition.name,"todo");
         assert_eq!(api.registered.tools[0].definition.execution_mode,Some(maho_ext_api::ToolExecutionMode::Sequential));
+        crate::commands::register_todo_command(&mut api,fixture.clone(),fixture,std::sync::Arc::new(|_|Box::pin(async {panic!("clipboard must only run on copy")})));
+        assert_eq!(api.registered.commands.len(),1);
+        assert_eq!(api.registered.commands[0].name,"todo");
     }
     #[tokio::test] async fn native_view_and_invalid_operations_do_not_mutate() {
         let fixture=std::sync::Arc::new(ExecutionFixture::default()); let tool=create_todo_tool(fixture.clone(),fixture.clone());
