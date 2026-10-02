@@ -16,3 +16,15 @@ pub fn decode_html_entities(text:&str)->String{
     output.push_str(rest);output
 }
 fn decode_code_point(point:Option<u32>)->String{point.and_then(char::from_u32).map_or_else(String::new,|point|point.to_string())}
+pub fn normalize_plain_text(text:&str)->String{
+    let mut output=String::new();let mut whitespace=false;
+    for ch in text.chars(){if matches!(ch,'\t'|'\u{000c}'|'\u{000b}'|' '|'\u{00a0}'){if !whitespace{output.push(' ');}whitespace=true;}else{output.push(ch);whitespace=false;}}
+    normalize_breaks(&output)
+}
+pub fn normalize_markdown(markdown:&str)->String{normalize_breaks(&markdown.replace("\r\n","\n").replace('\r',"\n"))}
+fn normalize_breaks(text:&str)->String{
+    let mut output=String::new();let mut newlines=0;
+    for (index,line) in text.split('\n').enumerate(){let line=if index==0{line.trim_end_matches([' ','\t'])}else{line.trim_matches([' ','\t'])};if index!=0{newlines+=1;if newlines<=2{output.push('\n');}}
+        if !line.is_empty(){output.push_str(line);newlines=0;}}
+    output.trim_matches(|ch|matches!(ch,'\u{0009}'..='\u{000d}'|' '|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}')).into()
+}
