@@ -195,6 +195,11 @@ impl AgentSessionRuntime {
                 crate::session_manager::SessionManager::create(&self.services.cwd, Some(current.session_dir()), options)
             } else { crate::session_manager::SessionManager::in_memory(&self.services.cwd, options, None) };
             if let Some(leaf) = leaf {
+                let persisted;
+                let current = if current.is_persisted() {
+                    persisted = crate::session_manager::SessionManager::open(previous.as_deref().expect("validated session file"), Some(current.session_dir()), None, None);
+                    &persisted
+                } else { current };
                 let mut parent = serde_json::Value::Null;
                 let mut pending_labels = Vec::new();
                 let mut replacements = std::collections::BTreeMap::new();
@@ -369,6 +374,29 @@ mod tests {
     fn a_missing_import_file_names_the_path() {
         let error = SessionImportFileNotFoundError { file_path: "/tmp/missing.jsonl".to_owned() };
         assert_eq!(error.to_string(), "File not found: /tmp/missing.jsonl");
+    }
+
+    #[tokio::test]
+    async fn persisted_fork_reads_durable_history_instead_of_modified_mirror() {
+        let dir = tempfile::tempdir().expect("directory");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let services = crate::agent_session_services::create_agent_session_services(
+            crate::agent_session_services::CreateAgentSessionServicesOptions {
+                cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), ..Default::default()
+            });
+        let provider = maho_ai::providers::faux::faux_provider(Default::default());
+        let mut manager = crate::session_manager::SessionManager::create(&cwd, dir.path().join("sessions").to_str(), None);
+        let user = manager.append_message(serde_json::json!({"role":"user","content":"durable","timestamp":0}));
+        let assistant = manager.append_message(serde_json::to_value(maho_ai::providers::faux::faux_assistant_message("answer", Default::default())).expect("assistant"));
+        let mut durable = crate::session_manager::SessionManager::open(manager.session_file().expect("file"), None, None, None);
+        durable.append_label(user["id"].as_str().expect("user"), Some("durable label"));
+        let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()), agent_dir: Some(services.agent_dir.clone()), model: provider.get_model(Some("faux-1")),
+            session_manager: Some(manager), tools: Some(Vec::new()), ..Default::default()
+        }).await.expect("session");
+        let mut runtime = AgentSessionRuntime::new(created.session, services, Vec::new(), None, None);
+        runtime.fork(assistant["id"].as_str().expect("assistant"), true).await.expect("persisted fork");
+        assert_eq!(runtime.session().with_session_manager(|manager| manager.label(user["id"].as_str().expect("user")).map(str::to_owned)), Some("durable label".to_owned()));
     }
 
     #[tokio::test]
