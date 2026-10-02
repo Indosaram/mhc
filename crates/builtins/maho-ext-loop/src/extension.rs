@@ -1,6 +1,6 @@
 use std::sync::{Arc,atomic::{AtomicU64,Ordering}};
 use maho_ext_api::{Extension,ExtensionApi,EventKind,ExtensionEvent,EventResult};
-use crate::{controller::{NativeLoopController,LoopStoreReference},index::LoopController};
+use crate::controller::{NativeLoopController,LoopStoreReference};
 pub struct LoopExtension {
     pub reference:LoopStoreReference,
     pub now:Arc<dyn Fn()->f64+Send+Sync>,
@@ -21,9 +21,7 @@ impl Extension for LoopExtension {
         let slot=controller_slot.clone();
         let on_fire=Arc::new(move |id:String| {
             let Some(controller)=slot.get().and_then(std::sync::Weak::upgrade) else { return; };
-            tokio::spawn(async move {
-                if let Err(error)=controller.fire_due(&id).await { eprintln!("/loop timer failed: {}",error.message); }
-            });
+            tokio::spawn(async move { controller.timer_fire(&id).await; });
         });
         let controller=Arc::new(NativeLoopController::new(actions,self.reference.clone(),self.now.clone(),self.ids.clone(),self.home.clone(),on_fire));
         let _=controller_slot.set(Arc::downgrade(&controller));

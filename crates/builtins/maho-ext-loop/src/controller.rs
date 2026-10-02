@@ -67,8 +67,18 @@ impl NativeLoopController {
         let busy=!session.context.is_idle()||session.context.has_pending_messages()?;
         let result=session.runtime.due(id,(self.now)(),busy,(self.ids)());
         self.persist(session).await?;
-        if let DueResult::Dispatch(tick)=result { self.dispatch(session,&tick).await?; }
+        match result {
+            DueResult::Dispatch(tick)=>self.dispatch(session,&tick).await?,
+            DueResult::Expire=>session.context.ui.notify("Loop expired after 7 days and is no longer armed.",maho_ext_api::NotificationType::Info),
+            DueResult::Coalesce=>{},
+        }
         Ok(())
+    }
+    pub async fn timer_fire(&self,id:&str) {
+        if let Err(error)=self.fire_due(id).await {
+            let owner=self.session.lock().await;
+            if let Some(session)=owner.as_ref() { session.context.ui.notify(&format!("Loop tick failed: {}",error.message),maho_ext_api::NotificationType::Error); }
+        }
     }
     async fn created(&self,session:&mut Session,outcome:&LoopCreateOutcome,name:&str)->Result<(),ExtensionFailure> {
         if let LoopCreateOutcome::Created(created)=outcome {
@@ -96,10 +106,8 @@ impl NativeLoopController {
             ExtensionEvent::AgentEnd { aborted,.. }=>{ self.settle(session,if *aborted==Some(true) { crate::scheduler::TickOutcome::Error } else { crate::scheduler::TickOutcome::Completed }).await?; return Ok(()); },
             ExtensionEvent::AgentSettled=>{
                 self.settle(session,crate::scheduler::TickOutcome::Completed).await?;
-                if session.context.is_idle()&&!session.context.has_pending_messages()? {
-                    let deferred=std::mem::take(&mut session.runtime.deferred_dispatches);
-                    for tick in deferred { self.dispatch(session,&tick).await?; }
-                }
+                let deferred=std::mem::take(&mut session.runtime.deferred_dispatches);
+                for tick in deferred { self.dispatch(session,&tick).await?; }
                 return self.refresh(session).await;
             },
             ExtensionEvent::SessionShutdown(_)=>{
