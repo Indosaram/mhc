@@ -162,7 +162,14 @@ pub async fn dispatch_bridge_http_request(method: &str, url: &str, authorization
             _=>false,
         };
         if !valid {return (400,Some(transport_error("invalid_request","Bridge emit request was invalid")));}
-        return match (options.on_emit)(body,signal).await {
+        let event = match body["kind"].as_str() {
+            Some("text") => json!({"kind":"text","stream":body["stream"],"data":body["data"]}),
+            Some("display") => json!({"kind":"display","mimeType":body["mimeType"],"dataBase64":body["dataBase64"]}),
+            Some("log") => json!({"kind":"log","message":body["message"]}),
+            Some("phase") => json!({"kind":"phase","title":body["title"]}),
+            _ => unreachable!("validated emit kind"),
+        };
+        return match (options.on_emit)(event,signal).await {
             Ok(())=>(204,None),Err(error)=>(200,Some(json!({"ok":false,"error":error}))),
         };
     }

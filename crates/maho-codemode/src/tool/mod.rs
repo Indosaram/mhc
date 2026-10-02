@@ -1,4 +1,5 @@
 pub mod detached_cell_contract;
+pub mod detached_cell_manager;
 pub mod detached_eval_result;
 pub mod detached_cell_notification;
 pub mod terminal_snapshot_store;

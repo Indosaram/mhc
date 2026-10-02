@@ -174,3 +174,15 @@ async fn emit_has_empty_success_body_and_completion_preserves_options() {
     let (_,reply)=dispatch_bridge_http_request("POST","/completion",Some("Bearer test"),"test",br#"{"prompt":"hello","opts":{"model":"default"}}"#,&options(),AbortController::new().signal()).await;
     assert_eq!(reply.unwrap()["value"]["opts"]["model"],"default");
 }
+
+#[tokio::test]
+async fn emit_handler_receives_only_protocol_fields() {
+    let mut options = options();
+    options.on_emit = Arc::new(|event, _| Box::pin(async move {
+        assert_eq!(event, json!({"kind":"phase","title":"working"}));
+        Ok(())
+    }));
+    let (status, reply) = dispatch_bridge_http_request("POST", "/emit", Some("Bearer test"), "test", br#"{"kind":"phase","title":"working","extra":"discard"}"#, &options, AbortController::new().signal()).await;
+    assert_eq!(status, 204);
+    assert!(reply.is_none());
+}

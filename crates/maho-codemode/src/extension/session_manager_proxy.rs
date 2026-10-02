@@ -117,7 +117,6 @@ impl SessionManagerProxy {
             let mut state = self.state.lock().expect("session proxy poisoned");
             if state.generation == generation { state.current.take() } else { None }
         };
-        if !self.is_current(generation) { self.dispose_quietly(Some(next)).await; return false; }
         self.dispose_quietly(outgoing).await;
         let installed = {
             let mut state = self.state.lock().expect("session proxy poisoned");
