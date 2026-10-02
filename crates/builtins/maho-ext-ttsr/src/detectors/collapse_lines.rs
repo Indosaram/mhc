@@ -39,13 +39,20 @@ fn complete_line(state: &mut LineCycleState, entry: &ScalarEntry) -> Option<Dete
         let period_number = u32::try_from(period).unwrap_or(u32::MAX);
         if state.matched[period] < (LINE_CYCLE_MIN_CYCLES - 1) * period_number || state.repeated_chars[period] < LINE_MIN_REPEATED_CHARS { continue; }
         let cycles = state.matched[period] / period_number + 1;
-        return Some(DetectorMatch { rule: DetectorRule::CollapseRepetition, reason: format!("line cycle with period {period} over {cycles} cycles ({} repeated chars)", state.repeated_chars[period]), anomaly_start_offset: state.block_start[period], garbage_start_offset: state.block_start[period] + state.cycle_width[period], detail: [("mechanism".into(), DetailValue::String("line-cycle".into())), ("period".into(), DetailValue::Number(f64::from(period_number))), ("cycles".into(), DetailValue::Number(f64::from(cycles))), ("repeatedChars".into(), DetailValue::Number(f64::from(u32::try_from(state.repeated_chars[period]).unwrap_or(u32::MAX)))), ("sample".into(), DetailValue::String(sample))].into() });
+        return Some(DetectorMatch { rule: DetectorRule::CollapseRepetition, reason: format!("line cycle with period {period} over {cycles} cycles ({} repeated chars)", state.repeated_chars[period]), anomaly_start_offset: state.block_start[period], garbage_start_offset: state.block_start[period] + state.cycle_width[period], detail: [("mechanism".into(), DetailValue::String("line-cycle".into())), ("period".into(), DetailValue::Number(f64::from(period_number))), ("cycles".into(), DetailValue::Number(f64::from(cycles))), ("repeatedChars".into(), DetailValue::Number(state.repeated_chars[period] as f64)), ("sample".into(), DetailValue::String(sample))].into() });
     }
     None
 }
 #[cfg(test)] mod tests {
     use super::*;
     use crate::stream_utils::ScalarScanner;
+    #[test] fn repeated_character_detail_preserves_lengths_above_u32() {
+        let mut state=create_line_cycle_state();
+        state.ring.push(LineEntry { hash_a:HASH_A_OFFSET,hash_b:HASH_B_OFFSET,utf16_length:0,start_offset:0,eligible:true,text:None });
+        state.has_content=true; state.matched[1]=4; state.repeated_chars[1]=u32::MAX as usize+100;
+        let newline=ScalarScanner::default().push(&[CharCode::LINE_FEED]).remove(0);
+        let detection=update_line_cycles(&mut state,&newline).unwrap(); assert_eq!(detection.detail["repeatedChars"],DetailValue::Number((u32::MAX as usize+100) as f64));
+    }
     fn feed(text: &str) -> Option<DetectorMatch> { let mut state = create_line_cycle_state(); ScalarScanner::default().push(&text.encode_utf16().collect::<Vec<_>>()).iter().find_map(|entry| update_line_cycles(&mut state, entry)) }
     #[test] fn six_long_lines_fire_single_line_cycle() { let line = format!("hello {}", "x".repeat(70)); let input = format!("{line}\n").repeat(6); let result = feed(&input).unwrap(); assert_eq!(result.detail["period"], DetailValue::Number(1.0)); assert_eq!(result.garbage_start_offset, line.len() + 1); }
     #[test] fn alternating_long_lines_fire_period_two() { let a = format!("first {}", "x".repeat(70)); let b = format!("second {}", "y".repeat(70)); let input = format!("{a}\n{b}\n").repeat(6); let result = feed(&input).unwrap(); assert_eq!(result.detail["period"], DetailValue::Number(2.0)); assert_eq!(result.garbage_start_offset, a.len() + b.len() + 2); }
