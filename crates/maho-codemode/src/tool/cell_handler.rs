@@ -33,7 +33,7 @@ pub struct PendingCellToolResult {
 pub type PendingCellToolCall = std::pin::Pin<Box<dyn std::future::Future<Output=PendingCellToolResult> + Send>>;
 
 impl CellHandler {
-    pub fn new(builder: CellResultBuilder, runtime: CellBridgeRuntime) -> Self { Self {builder,runtime,agent_bridge:Arc::new(AgentBridge::default())} }
+    pub fn new(builder: CellResultBuilder, runtime: CellBridgeRuntime) -> Self { let agent_bridge=AgentBridge::for_executor(&runtime.executor);Self {builder,runtime,agent_bridge} }
 
     pub async fn handle(&mut self, message: &Value) -> Result<(), String> {
         if !self.builder.state.active { return Ok(()); }

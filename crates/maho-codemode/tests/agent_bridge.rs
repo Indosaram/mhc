@@ -18,6 +18,19 @@ fn fixture(text: &str, details: Value) -> Fixture {
     let mut result = AgentToolResult::text(text); result.details = details;
     Fixture { result, available: true, calls: Mutex::new(vec![]) }
 }
+
+#[tokio::test]
+async fn isolation_cache_is_shared_by_executor_not_cell() {
+    let executor:Arc<dyn OutputExecuteTool>=Arc::new(fixture("ok",json!({})));
+    let bridge=AgentBridge::for_executor(&executor);
+    let next=AgentBridge::for_executor(&executor);
+    assert!(Arc::ptr_eq(&bridge,&next));
+    let other:Arc<dyn OutputExecuteTool>=Arc::new(fixture("ok",json!({})));
+    assert!(!Arc::ptr_eq(&bridge,&AgentBridge::for_executor(&other)));
+    let owner=Arc::downgrade(&executor);
+    drop(executor);
+    assert!(owner.upgrade().is_none(),"capability cache must not retain executor");
+}
 async fn invoke(args: Value, fixture: &Fixture) -> Result<Value, AgentBridgeError> {
     AgentBridge::default().run(&args, AgentBridgeOptions { call_id: "call", task_tool_name: "task", executor: fixture, tools: None, execute_options: ExecuteToolOptions::default(), emit_status: None }).await
 }

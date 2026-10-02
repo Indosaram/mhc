@@ -38,6 +38,18 @@ pub struct AgentBridgeOptions<'a> {
 }
 
 impl AgentBridge {
+    pub fn for_executor(executor:&Arc<dyn OutputExecuteTool>) -> Arc<Self> {
+        type Entry=(std::sync::Weak<dyn OutputExecuteTool>,Arc<AgentBridge>);
+        static BRIDGES:std::sync::OnceLock<Mutex<Vec<Entry>>>=std::sync::OnceLock::new();
+        let mut bridges=BRIDGES.get_or_init(||Mutex::new(Vec::new())).lock().expect("executor bridge cache lock");
+        bridges.retain(|(owner,_)|owner.strong_count()>0);
+        let owner=Arc::downgrade(executor);
+        if let Some((_,bridge))=bridges.iter().find(|(existing,_)|std::sync::Weak::ptr_eq(existing,&owner)) {return bridge.clone();}
+        let bridge=Arc::new(Self::default());
+        bridges.push((owner,bridge.clone()));
+        bridge
+    }
+
     pub async fn run(&self, args: &Value, options: AgentBridgeOptions<'_>) -> Result<Value, AgentBridgeError> {
         let object = args.as_object().ok_or_else(|| AgentBridgeError::Arguments("Expected object".into()))?;
         for (key, value) in object {
