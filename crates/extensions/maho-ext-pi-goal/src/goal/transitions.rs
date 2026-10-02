@@ -9,7 +9,7 @@ pub fn transition_goal_status(current:&Goal,status:GoalStatus,source:GoalUpdateS
     let mut next=current.clone();next.status=status;next.updated_at=updated_at;
     if status==GoalStatus::Blocked{
         if current.status!=GoalStatus::Blocked{
-            let reason=reason.map(str::trim).filter(|reason|!reason.is_empty()).ok_or_else(||"reason is required when status is blocked".to_owned())?;
+            let reason=reason.map(|reason|reason.trim_matches(super::validation::js_whitespace)).filter(|reason|!reason.is_empty()).ok_or_else(||"reason is required when status is blocked".to_owned())?;
             next.blocked_reason=Some(reason.into());next.blocked_at=Some(updated_at);
         }
     }else{next.blocked_reason=None;next.blocked_at=None;}
