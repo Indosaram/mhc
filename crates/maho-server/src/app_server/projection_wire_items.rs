@@ -50,3 +50,22 @@ pub fn mcp_tool_call_item(tool: &ActiveToolItem, status: ToolExecutionStatus, re
 pub fn dynamic_tool_call_item(tool: &ActiveToolItem, status: ToolExecutionStatus, result: &Value, is_error: bool) -> Value {
     json!({"type":"dynamicToolCall","id":tool.id,"namespace":null,"tool":tool.name,"arguments":tool.args,"status":status,"contentItems":if status == ToolExecutionStatus::InProgress { Value::Null } else { json!([{"type":"inputText","text":extract_tool_text(result)}]) },"success":if status == ToolExecutionStatus::InProgress { None } else { Some(!is_error) },"durationMs":null})
 }
+
+pub fn tool_wire_projection(tool: &ActiveToolItem, status: ToolExecutionStatus, cwd: &str, result: &Value, is_error: bool) -> (Value, String) {
+    match classify_tool(&tool.name) {
+        ToolItemType::CommandExecution => (command_execution_item(tool, status, cwd, result), String::new()),
+        ToolItemType::FileChange => super::projection_file_changes::file_change_projection(&tool.id, &tool.name, &tool.args, status, result),
+        ToolItemType::McpToolCall => (mcp_tool_call_item(tool, status, result), String::new()),
+        ToolItemType::DynamicToolCall => (dynamic_tool_call_item(tool, status, result, is_error), String::new()),
+    }
+}
+pub fn provider_native_item(id: &str, message: &Value, content: &Value) -> Value {
+    if content["kind"] == "web_search_call" { return super::projection_web_search::web_search_item(id, content); }
+    json!({"type":"providerNative","id":id,"provider":message["provider"],"api":message["api"],"nativeType":content["kind"],"payload":content["raw"]})
+}
+pub fn build_wire_item(mut item: Value) -> Value {
+    if item["type"] == "commandExecution" && let Some(output) = item["aggregatedOutput"].as_str() {
+        item["aggregatedOutput"] = json!(cap_command_output(output, MAX_TOOL_OUTPUT_BYTES));
+    }
+    item
+}
