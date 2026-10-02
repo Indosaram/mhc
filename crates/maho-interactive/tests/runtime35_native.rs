@@ -720,3 +720,16 @@ async fn settings_menu_toggles_native_compaction_and_releases_composer() {
     mode.handle_input_at("draft", 3);
     assert_eq!(mode.editor.editor.get_text(), "draft");
 }
+
+#[tokio::test]
+async fn resume_menu_cancellation_keeps_current_native_transcript() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("resume-source", Default::default()).await.expect("turn");
+    assert_eq!(mode.submit("/resume", Default::default()).await.expect("resume menu"), maho_core::agent_session::PromptDisposition::Handled);
+    for width in [40, 80, 120] { mode.render(width); }
+    mode.handle_input_at("\x1b", 0);
+    mode.handle_input_at("draft", 1);
+    assert_eq!(mode.editor.editor.get_text(), "draft");
+    assert!(mode.render(80).join("\n").contains("resume-source"));
+}

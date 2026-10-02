@@ -379,6 +379,29 @@ impl InteractiveMode {
 
     fn dispatch_command(&mut self, text: &str) -> Result<bool, String> {
         let text = text.trim();
+        if text == "/resume" {
+            use crate::components::session_selector::SessionSelectorComponent;
+            let (directory, default_directory) = self.session.with_session_manager(|manager| (manager.session_dir().to_owned(), manager.uses_default_session_dir()));
+            let current_directory = directory.clone();
+            let all_directory = if default_directory { std::path::Path::new(&self.session.agent_dir()).join("sessions") } else { std::path::PathBuf::from(directory) };
+            let convert = |info: maho_core::session_discovery::SessionInfo| crate::components::session_selector_search::SessionInfo { path:info.path, id:info.id, cwd:info.cwd, name:info.name, parent_session_path:info.parent_session_path, modified_ms:info.modified.timestamp_millis(), message_count:info.message_count, first_message:info.first_message, all_messages_text:info.all_messages_text };
+            let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+            let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let exited = selected.clone(); let submissions = self.submissions.clone(); let exit_submissions = self.submissions.clone(); let host = self.editor_host.clone();
+            self.ui_dialog = Some(Box::new(SessionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()),
+                Box::new(move |_| maho_core::session_discovery::list_sessions_from_dir(&current_directory, None, 0, None).into_iter().map(convert).collect()),
+                Box::new(move |_| {
+                    let mut sessions = maho_core::session_discovery::list_sessions_from_dir(&all_directory.to_string_lossy(), None, 0, None);
+                    if default_directory && let Ok(directories) = std::fs::read_dir(&all_directory) {
+                        for directory in directories.flatten().filter(|entry| entry.path().is_dir()) { sessions.extend(maho_core::session_discovery::list_sessions_from_dir(&directory.path().to_string_lossy(), None, 0, None)); }
+                    }
+                    sessions.into_iter().map(convert).collect()
+                }),
+                Box::new(move |path| { submissions.borrow_mut().push_back(format!("/resume \"{path}\"")); selected.borrow_mut().take(); }),
+                Box::new(move || { cancelled.borrow_mut().take(); }), Box::new(move || { exit_submissions.borrow_mut().push_back("/quit".into()); exited.borrow_mut().take(); }),
+                Box::new(move || host.request_render()), Some(Box::new(|path, name| { let mut manager = maho_core::session_manager::SessionManager::open(path, None, None, None); manager.append_session_info(name); })), Some(true),
+                self.session.session_file().as_deref(), std::env::var("HOME").ok())));
+            return Ok(true);
+        }
         if text == "/settings" {
             use crate::components::settings_selector::{SettingsSelectorComponent, SettingsConfig, SettingsCallbacks, ThinkingLevel};
             let mut config = SettingsConfig { auto_compact:self.session.auto_compaction_enabled(),
