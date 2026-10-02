@@ -24,12 +24,13 @@ impl NativeLoopController {
     async fn refresh(&self,session:&mut Session)->Result<(),ExtensionFailure> {
         self.publish(session);
         if let Some(failure)=&session.runtime.store_failure {
-            session.timers.cancel_all(); session.ticker.dispose().await?;
+            for worker in session.timers.cancel_all() { match worker.await { Ok(())=>(),Err(error) if error.is_cancelled()=>(),Err(error)=>return Err(ExtensionFailure::new(error.to_string())) } }
+            session.ticker.dispose().await?;
             session.context.ui.notify(&format!("/loop state could not be used and the affected loops were ended: {}",failure.message),maho_ext_api::NotificationType::Error);
             return Ok(());
         }
         crate::activation::sync_schedule_wakeup_activation(&self.api,&session.runtime.scheduler.state)?;
-        session.runtime.sync_timers(&mut session.timers,(self.now)(),self.on_fire.clone());
+        for worker in session.runtime.sync_timers(&mut session.timers,(self.now)(),self.on_fire.clone()) { match worker.await { Ok(())=>(),Err(error) if error.is_cancelled()=>(),Err(error)=>return Err(ExtensionFailure::new(error.to_string())) } }
         let state=session.runtime.snapshot();
         if state.entries.values().all(|entry|match entry { CronEntry::Fixed { lifecycle,.. }|CronEntry::Dynamic { lifecycle,.. }=>lifecycle.phase()==LoopPhase::Ended }) { if session.ticker.running() { session.ticker.dispose().await?; } }
         else { session.ticker.sync(state).await?; }
@@ -43,7 +44,10 @@ impl NativeLoopController {
     }
     pub async fn session_start(&self,context:&ExtensionContext)->Result<(),ExtensionFailure> {
         let mut owner=self.session.lock().await;
-        if let Some(old)=owner.as_mut() { old.timers.cancel_all(); old.ticker.dispose().await?; }
+        if let Some(old)=owner.as_mut() {
+            for worker in old.timers.cancel_all() { match worker.await { Ok(())=>(),Err(error) if error.is_cancelled()=>(),Err(error)=>return Err(ExtensionFailure::new(error.to_string())) } }
+            old.ticker.dispose().await?;
+        }
         let reference=(self.reference)(context);
         let initial=crate::store::read_loop_state(&reference).await;
         let mut runtime=LoopRuntime::new(context.session_manager.session_id(),initial.as_ref().ok().cloned().flatten(),&std::env::vars().collect::<BTreeMap<_,_>>());
@@ -112,7 +116,8 @@ impl NativeLoopController {
             },
             ExtensionEvent::SessionShutdown(_)=>{
                 session.runtime.shutdown((self.now)()); self.persist(session).await?;
-                session.timers.cancel_all(); session.ticker.dispose().await?; *owner=None; return Ok(());
+                for worker in session.timers.cancel_all() { match worker.await { Ok(())=>(),Err(error) if error.is_cancelled()=>(),Err(error)=>return Err(ExtensionFailure::new(error.to_string())) } }
+                session.ticker.dispose().await?; *owner=None; return Ok(());
             },_=>return Ok(()),
         }
         self.persist(session).await
