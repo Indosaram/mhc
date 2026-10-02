@@ -802,6 +802,27 @@ async fn extension_executor_receives_full_context_and_preserves_agent_result_fie
 }
 
 #[tokio::test]
+async fn wrapper_deduplicates_existing_added_names_when_tools_are_activated() {
+    let actions = Arc::new(SessionActions::default());
+    actions.set_active_tools(vec!["read".into()]).unwrap();
+    let runtime = ExtensionRuntime::default(); runtime.bind_session_actions(actions.clone());
+    let mut api = ExtensionApi::new(LoadedExtension::new("names", "/tmp".into(), SourceInfo::default()), Default::default(), EventBus::default(), runtime.clone());
+    let definition = ToolDefinition::new("names", "names", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { panic!("legacy executor must not run") })));
+    api.register_tool_with_extension_context(definition, Arc::new(move |_, _, _, _, _| {
+        let actions = actions.clone();
+        Box::pin(async move {
+            actions.set_active_tools(vec!["read".into(), "new".into()])?;
+            let mut result = AgentToolResult::text("done");
+            result.added_tool_names = Some(vec!["custom".into(), "custom".into(), "new".into()]);
+            Ok(result)
+        })
+    })).unwrap();
+    let tool = maho_ext_host::wrapper::wrap_registered_tool(api.registered.tools[0].clone(), runtime, Arc::new(|| Ok(context())));
+    let result = (tool.execute)("call".into(), JsonValue::Null, None, None).await;
+    assert_eq!(result.added_tool_names, Some(vec!["custom".into(), "new".into()]));
+}
+
+#[tokio::test]
 async fn retained_extension_executor_rejects_replaced_runtime() {
     let runtime = ExtensionRuntime::default();
     let mut api = ExtensionApi::new(LoadedExtension::new("retained", "/tmp".into(), SourceInfo::default()), Default::default(), EventBus::default(), runtime.clone());
