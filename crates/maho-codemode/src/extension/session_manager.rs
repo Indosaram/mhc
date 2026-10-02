@@ -39,12 +39,13 @@ impl CodemodeSessionManager {
             on_completion: options.complete.clone(),
             on_call: Arc::new(move |request| {
                 let executor = executor.clone();
-                let tools = list_tools.as_ref().map(|list| list());
+                let list_tools = list_tools.clone();
                 let task_tools = task_tools.clone();
                 let agent_bridge = agent_bridge.clone();
                 Box::pin(async move {
                     let execute_options = ExecuteToolOptions { signal: Some(request.signal), ..Default::default() };
                     if is_reserved_tool_name(&request.tool_name) {
+                        let tools = list_tools.as_ref().map(|list| list());
                         run_reserved_tool(&request.tool_name, ReservedDispatchContext {
                             call_id: &request.call_id, args: &request.args, executor: executor.as_ref(),
                             task_tool_name: &task_tools.task, task_output_tool_name: &task_tools.output,
