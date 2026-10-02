@@ -41,6 +41,7 @@ pub struct CommandMonitor {
 }
 impl CommandMonitor {
     pub fn new(snapshot:MonitorSnapshotEntry,filter:Option<fancy_regex::Regex>)->Self {
+        let mut snapshot=snapshot;snapshot.fire_count=Some(0);
         Self {snapshot,muted_dropped:0,filter,lines:Default::default(),settled:false}
     }
     fn record_fire(&mut self,now:f64) {
@@ -127,6 +128,7 @@ impl MonitorRegistry {
         let file=std::sync::Arc::new(std::sync::Mutex::new(crate::file_monitor::FileMonitor::register(id.clone(),description.to_owned(),path,event,approved_parent)?));
         let checker=file.clone();let emit=self.emit.clone();let snapshots=self.file_snapshots.clone();let runtime_id=id.clone();
         snapshots.lock().expect("file snapshots").insert(id.clone(),MonitorSnapshotEntry {id:id.clone(),monitor_id:Some(monitor_id.clone()),description:description.to_owned(),started_at_ms:now_ms(),persistent:Some(persistent),deadline_ms:(!persistent).then_some(now_ms()+timeout_ms as f64),expires_at:persistent.then_some(now_ms()+timeout_ms as f64),..Default::default()});
+        snapshots.lock().expect("file snapshots").get_mut(&id).expect("registered file snapshot").fire_count=Some(0);
         self.publish_state();let records=self.records.clone();let transitions=self.transitions.clone();
         let mut state=self.subscribe_state();
         let expires=tokio::time::Instant::now()+std::time::Duration::from_millis(timeout_ms);
@@ -169,7 +171,8 @@ impl MonitorRegistry {
     pub fn emit_file_line(&self,id:&str,line:String)->bool {
         let Some((file,_))=self.files.get(id) else {return false;};
         let event={let file=file.lock().expect("file monitor");if file.settled {return false;}MonitorEvent::Line {id:file.id.clone(),description:file.description.clone(),line}};
-        (self.emit)(event);true
+        if let Some(snapshot)=self.file_snapshots.lock().expect("file snapshots").get_mut(id) {snapshot.fire_count=Some(snapshot.fire_count.unwrap_or(0)+1);snapshot.last_fired_at_ms=Some(now_ms());}
+        self.publish_state();(self.emit)(event);true
     }
     pub fn snapshot(&self)->Vec<MonitorSnapshotEntry> {let mut snapshot=self.records.lock().expect("monitor records").values().map(|record|record.snapshot.clone()).collect::<Vec<_>>();snapshot.extend(self.file_snapshots.lock().expect("file snapshots").values().cloned());snapshot}
     pub fn pause(&self,ids:&[String])->Vec<String> {

@@ -7,7 +7,7 @@ use crate::tools::{bash_input::{execute_bash_input,BashInputInput},bash_output::
 pub struct TerminalExtension;
 pub fn monitor_state_payload(snapshot:&[crate::monitor_registry::MonitorSnapshotEntry])->Value {
     let monitors=snapshot.iter().map(|entry| {
-        let mut value=json!({"id":entry.id,"description":entry.description,"paused":entry.paused,"startedAtMs":entry.started_at_ms});
+        let mut value=json!({"id":entry.id,"description":entry.description,"paused":entry.paused,"startedAtMs":entry.started_at_ms,"command":entry.command,"filter":entry.filter,"deadlineMs":entry.deadline_ms,"lastFiredAtMs":entry.last_fired_at_ms});
         for (key,field) in [("command",entry.command.as_ref().map(|value|json!(value))),("filter",entry.filter.as_ref().map(|value|json!(value))),("persistent",entry.persistent.map(|value|json!(value))),("deadlineMs",entry.deadline_ms.map(|value|json!(value))),("fireCount",entry.fire_count.map(|value|json!(value))),("lastFiredAtMs",entry.last_fired_at_ms.map(|value|json!(value)))] {if let Some(field)=field {value[key]=field;}}
         value
     }).collect::<Vec<_>>();json!({"activeCount":snapshot.len(),"monitors":monitors})
@@ -184,7 +184,7 @@ mod tests {
         let api=Arc::new(ExtensionApi::new(LoadedExtension::new("terminal",dir.path().to_owned(),SourceInfo::default()),ExtensionSessionProfile::default(),bus,ExtensionRuntime::default()));let mut registry=crate::monitor_registry::MonitorRegistry::new(|_|{});let task=bind_monitor_events(registry.subscribe_state(),api);
         tokio::time::timeout(std::time::Duration::from_secs(5),async {
             let (_,initial)=events.recv().await.unwrap();assert_eq!(initial["activeCount"],0);let (kind,rpc)=events.recv().await.unwrap();assert_eq!(kind,"rpc");assert_eq!(rpc["data"],initial);
-            let (id,_)=registry.register_persistent_file("watch",&dir.path().join("file"),crate::terminal_manifest_model::FileEvent::Create).unwrap();let (kind,live)=events.recv().await.unwrap();assert_eq!(kind,"state");assert_eq!(live["activeCount"],1);assert_eq!(live["monitors"][0]["id"],id);assert_eq!(live["monitors"][0]["persistent"],true);assert!(live["monitors"][0].get("command").is_none());let (_,rpc)=events.recv().await.unwrap();assert_eq!(rpc["data"],live);
+            let (id,_)=registry.register_persistent_file("watch",&dir.path().join("file"),crate::terminal_manifest_model::FileEvent::Create).unwrap();let (kind,live)=events.recv().await.unwrap();assert_eq!(kind,"state");assert_eq!(live["activeCount"],1);assert_eq!(live["monitors"][0]["id"],id);assert_eq!(live["monitors"][0]["persistent"],true);assert_eq!(live["monitors"][0].get("command"),Some(&Value::Null));assert_eq!(live["monitors"][0]["fireCount"],0);let (_,rpc)=events.recv().await.unwrap();assert_eq!(rpc["data"],live);
             registry.stop_file(&id);let (_,empty)=events.recv().await.unwrap();assert_eq!(empty["activeCount"],0);assert_eq!(events.recv().await.unwrap().1["data"],empty);
         }).await.unwrap();task.abort();assert!(task.await.unwrap_err().is_cancelled());
     }
