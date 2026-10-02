@@ -18,6 +18,35 @@ pub enum InteractiveTui {
     Fullscreen(Box<TuiAltScreen>),
 }
 impl InteractiveTui {
+    pub fn handle_mouse_input(&mut self, data: &str, now_ms: i64, terminal: &mut dyn maho_tui::terminal::Terminal) -> bool {
+        match self {
+            Self::Regular(tui) => tui.handle_mouse_input(data, now_ms, terminal),
+            Self::Fullscreen(tui) => tui.handle_mouse_input(data, now_ms, terminal),
+        }
+    }
+
+    pub fn do_render(&mut self, terminal: &mut dyn maho_tui::terminal::Terminal) {
+        match self {
+            Self::Regular(tui) => { tui.base.do_render(terminal); tui.note_render(terminal); }
+            Self::Fullscreen(tui) => tui.do_render(terminal),
+        }
+    }
+
+    pub fn before_terminal_start(&mut self, terminal: &mut dyn maho_tui::terminal::Terminal, mouse_enabled: bool, multiplexer: bool) {
+        if let Self::Fullscreen(tui) = self { tui.before_terminal_start(terminal, mouse_enabled, multiplexer); }
+    }
+
+    pub fn before_terminal_stop(&mut self, terminal: &mut dyn maho_tui::terminal::Terminal, mouse_enabled: bool) {
+        match self {
+            Self::Regular(tui) => tui.before_terminal_stop(terminal),
+            Self::Fullscreen(tui) => tui.before_terminal_stop(terminal, mouse_enabled),
+        }
+    }
+
+    pub fn after_terminal_stop(&mut self, terminal: &mut dyn maho_tui::terminal::Terminal, preserve_screen: bool) {
+        if let Self::Fullscreen(tui) = self { tui.after_terminal_stop(terminal, preserve_screen); }
+    }
+
     pub fn base(&self) -> &TuiBase {
         match self {
             Self::Regular(t) => &t.base,

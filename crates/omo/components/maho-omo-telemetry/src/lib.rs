@@ -1,1 +1,23 @@
-
+pub mod eval_classifier;
+pub mod savings_math;
+pub mod wave_assembler;
+pub mod omo_native_eval;
+pub mod eval_cell_correlation;
+pub mod index;
+pub mod omo_native_parallel;
+pub mod parallelism_schema;
+pub mod omo_native_turns;
+pub mod omo_native_component;
+pub mod omo_native_prompt;
+pub mod omo_native_tools;
+pub mod omo_native_notice;
+pub mod omo_native_session;
+pub mod omo_native_parallel_summary;
+pub mod product_identity;
+#[cfg(test)]
+pub mod telemetry_test_support;
+#[cfg(test)]
+mod omo_native_parallel_summary_v2_tests;
+#[cfg(test)]
+mod omo_native_parallel_eval_tests;
+pub use index::SenpiTelemetryComponent;
