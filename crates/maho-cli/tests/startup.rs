@@ -44,3 +44,14 @@ fn scoped_startup_model_and_tool_suppression_preserve_explicit_thinking_off() {
     assert!(matches!(built.options.no_tools, Some(maho_core::sdk::NoToolsMode::Builtin))); assert_eq!(built.options.tools.unwrap(), ["read"]);
     assert!(build_session_options(&parsed, &scoped, true, &runtime, &settings).options.model.is_none());
 }
+
+#[test]
+fn startup_theme_respects_terminal_background_and_auto_pairs() {
+    use maho_cli::cli::startup_ui::resolve_startup_theme;
+    assert_eq!(resolve_startup_theme(None, Some("0;15")).unwrap().name, "light");
+    assert_eq!(resolve_startup_theme(None, Some("15;0")).unwrap().name, "dark");
+    assert_eq!(resolve_startup_theme(Some("light/dark"), Some("0;15")).unwrap().name, "light");
+    assert_eq!(resolve_startup_theme(Some("light/dark"), Some("15;0")).unwrap().name, "dark");
+    assert_eq!(resolve_startup_theme(Some("light"), Some("15;0")).unwrap().name, "light");
+    assert!(resolve_startup_theme(Some("missing-theme"), None).is_err());
+}

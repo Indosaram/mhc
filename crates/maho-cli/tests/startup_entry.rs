@@ -46,7 +46,7 @@ fn real_rpc_entry_dispatches_message_query_and_preserves_correlation() {
 #[test]
 fn native_startup_registers_shipped_api_streams() {
     maho_cli::cli::setup::register_builtin_apis();
-    for api in ["anthropic-messages", "openai-completions", "openai-responses", "google-generative-ai", "cursor-agent"] {
+    for api in ["anthropic-messages", "azure-openai-responses", "bedrock-converse-stream", "cursor-agent", "devin-agent", "google-generative-ai", "google-vertex", "mistral-conversations", "openai-codex-responses", "openai-completions", "openai-responses", "pi-messages"] {
         assert!(maho_ai::api_registry::get_builtin_api_provider(api).is_some(), "{api}");
     }
 }

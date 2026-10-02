@@ -14,9 +14,9 @@ impl Component for RenderedMode {
 }
 
 pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &super::args::Args, initial: super::initial_message::InitialMessageResult) -> Result<(), String> {
-    use maho_interactive::{interactive_mode::InteractiveMode, theme::{ColorMode, Theme}, tui_renderer::{create_interactive_tui, InteractiveTuiOptions, TuiMode}};
-    let theme_name = parsed.use_theme.clone().or_else(|| session.with_settings_manager(|settings| settings.get_string("theme"))).unwrap_or_else(|| "dark".into());
-    let theme = Theme::builtin(&theme_name, ColorMode::Truecolor).map_err(|error| error.to_string())?;
+    use maho_interactive::{interactive_mode::InteractiveMode, tui_renderer::{create_interactive_tui, InteractiveTuiOptions, TuiMode}};
+    let theme_setting = parsed.use_theme.clone().or_else(|| session.with_settings_manager(|settings| settings.get_string("theme")));
+    let theme = super::startup_ui::resolve_startup_theme(theme_setting.as_deref(), std::env::var("COLORFGBG").ok().as_deref())?;
     let mut terminal = ProcessTerminal::default();
     let host = Rc::new(EditorHost { rows: Cell::new(usize::from(terminal.rows())), render: Cell::new(true) });
     let mut mode = InteractiveMode::new(session, theme.clone(), host.clone());

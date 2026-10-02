@@ -80,11 +80,15 @@ async fn run_print(session: &maho_core::agent_session::AgentSession, mode: AppMo
             })
         })))
     } else { None };
-    if let Some(text) = initial.initial_message { session.prompt(&text, PromptOptions { images: initial.initial_images, ..Default::default() }).await?; }
-    for message in messages { session.prompt(message, PromptOptions::default()).await?; }
-    session.wait_for_idle().await;
+    let result = async {
+        if let Some(text) = initial.initial_message { session.prompt(&text, PromptOptions { images: initial.initial_images, ..Default::default() }).await?; }
+        for message in messages { session.prompt(message, PromptOptions::default()).await?; }
+        session.wait_for_idle().await;
+        Ok::<(), String>(())
+    }.await;
     drop(subscription);
     if let Some(subscription) = json_subscription { session.agent().unsubscribe(&subscription); }
+    result?;
     if mode == AppMode::Print {
         let messages = session.messages();
         let assistant = messages.iter().rev().find_map(|message| match message { maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(message)) => Some(message), _ => None });
