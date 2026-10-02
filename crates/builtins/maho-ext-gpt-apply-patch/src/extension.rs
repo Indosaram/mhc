@@ -15,9 +15,22 @@ pub fn replace_edit_tools_with_apply_patch(names:&[String])->Vec<String> {
     if let Some(index)=insert { filtered.insert(index.min(filtered.len()),"apply_patch".into()); } filtered
 }
 pub fn has_apply_patch_failures(details:&Value)->bool { details.get("result").and_then(|result|result.get("failures")).and_then(Value::as_array).is_some_and(|failures|!failures.is_empty()) }
+pub fn sync_tool_names(mode:ApplyPatchWireMode,current:&[String],registered:&[String],removed_edit_tools:&mut Vec<String>)->Option<Vec<String>> {
+    if mode!=ApplyPatchWireMode::None {
+        let active:Vec<_>=current.iter().filter(|name|matches!(name.as_str(),"write"|"edit")).cloned().collect();
+        if !active.is_empty() { *removed_edit_tools=active; }
+        return Some(replace_edit_tools_with_apply_patch(current));
+    }
+    if removed_edit_tools.is_empty() { return current.iter().any(|name|name=="apply_patch").then(||without_apply_patch(current)); }
+    let mut restored=without_apply_patch(current);
+    restored.extend(removed_edit_tools.iter().filter(|name|registered.contains(name)).cloned()); removed_edit_tools.clear();
+    let mut unique=Vec::new(); for name in restored { if !unique.contains(&name) { unique.push(name); } } Some(unique)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn model_switch_restores_only_registered_edit_tools() { let current=["read","write","edit"].map(String::from); let mut removed=vec![]; let patched=sync_tool_names(ApplyPatchWireMode::Freeform,&current,&current,&mut removed).unwrap(); assert_eq!(patched,["read","apply_patch"]); let restored=sync_tool_names(ApplyPatchWireMode::None,&patched,&["read".into(),"edit".into()],&mut removed).unwrap(); assert_eq!(restored,["read","edit"]); assert!(removed.is_empty()); }
+    #[test] fn no_mode_no_removed_tools_leaves_active_list_untouched() { assert_eq!(sync_tool_names(ApplyPatchWireMode::None,&["read".into()],&[],&mut vec![]),None); }
     #[test] fn gateway_gpt_ids_use_api_gate() { for id in ["codex/gpt-6-astra","global.openai.gpt-6-astra","gateway:GPT_6_ASTRA","gpt5"] { assert_eq!(get_apply_patch_wire_mode(Some(("openai-responses",id))),ApplyPatchWireMode::Freeform); assert_eq!(get_apply_patch_wire_mode(Some(("openai-completions",id))),ApplyPatchWireMode::Json); } }
     #[test] fn false_gpt_substrings_are_rejected() { for id in ["xgpt-5.6-proxy","deepseek-v3-gptq","gpt"] { assert_eq!(get_apply_patch_wire_mode(Some(("openai-responses",id))),ApplyPatchWireMode::None); } assert!(!is_openai_gpt_model(Some(("anthropic-messages","gpt-5")))); }
     #[test] fn replacement_preserves_first_edit_position() { let names=["read","write","bash","edit","apply_patch"].map(String::from); assert_eq!(replace_edit_tools_with_apply_patch(&names),["read","apply_patch","bash"]); assert_eq!(replace_edit_tools_with_apply_patch(&["read".into()]),["read"]); }

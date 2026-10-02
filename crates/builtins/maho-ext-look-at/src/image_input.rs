@@ -18,9 +18,21 @@ pub fn detect_mime_type(bytes:&[u8])->Option<&'static str> {
 }
 pub fn mime_type_from_name(name:&str)->Option<&'static str> { match std::path::Path::new(name).extension()?.to_str()?.to_lowercase().as_str() { "gif"=>Some("image/gif"),"jpeg"|"jpg"=>Some("image/jpeg"),"json"=>Some("application/json"),"pdf"=>Some("application/pdf"),"png"=>Some("image/png"),"txt"=>Some("text/plain"),"webp"=>Some("image/webp"),_=>None } }
 pub fn parse_base64(input:&str)->(String,Option<String>) { match DATA_URI.captures(input) { Some(capture)=>(capture[2].into(),Some(capture[1].to_lowercase())),None=>(input.into(),None) } }
+pub fn input_mime_type<'a>(bytes:&[u8],label:&str,supplied:Option<&'a str>)->Result<&'a str,String> {
+    if bytes.len()>MAX_IMAGE_BYTES { return Err("Error: Input exceeds the 10MiB per-image limit.".into()); }
+    detect_mime_type(bytes).or(supplied).ok_or_else(||format!("Error: Could not determine MIME type for {label}."))
+}
+pub fn validate_aggregate_bytes(lengths:&[usize])->Result<(),String> { if lengths.iter().sum::<usize>()>MAX_TOTAL_BYTES { Err("Error: Inputs exceed the 25MiB aggregate limit.".into()) } else { Ok(()) } }
+pub fn available_attachment_error(input:&str,count:usize)->String {
+    if count==0 { return format!("Error: No image attachments are available in this turn. \"{input}\" must be a readable file path or attachment URI."); }
+    let available=(1..=count).map(|index|format!("Image #{index} -> attachment://{index}")).collect::<Vec<_>>().join(", ");
+    format!("Error: Could not resolve image attachment '{input}'. Available image attachments: {available}.")
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn signature_precedes_supplied_mime_and_limit_is_inclusive() { assert_eq!(input_mime_type(b"%PDF-1.7","file",Some("image/png")).unwrap(),"application/pdf"); assert!(input_mime_type(&vec![1;MAX_IMAGE_BYTES],"file",Some("image/png")).is_ok()); assert!(input_mime_type(&vec![1;MAX_IMAGE_BYTES+1],"file",Some("image/png")).is_err()); assert!(input_mime_type(b"unknown","file",None).is_err()); }
+    #[test] fn aggregate_limit_is_inclusive() { assert!(validate_aggregate_bytes(&[MAX_TOTAL_BYTES]).is_ok()); assert!(validate_aggregate_bytes(&[MAX_TOTAL_BYTES,1]).is_err()); }
     #[test] fn attachment_reference_forms() { for value in ["Image #2"," [Image #2, size: 10] ","ATTACHMENT://2","image://2"] { assert_eq!(parse_image_attachment_reference(value),Some(AttachmentReference{index:2.})); } for value in ["Image #0","attachment://01","Image #2\ntext"] { assert_eq!(parse_image_attachment_reference(value),None); } }
     #[test] fn mime_signatures_and_extensions() { assert_eq!(detect_mime_type(b"%PDF-1.7"),Some("application/pdf")); assert_eq!(detect_mime_type(b"RIFF1234WEBP"),Some("image/webp")); assert_eq!(detect_mime_type(b"RIFF"),None); assert_eq!(mime_type_from_name("IMAGE.JPEG"),Some("image/jpeg")); assert_eq!(mime_type_from_name("unknown"),None); }
     #[test] fn data_uri_preserves_multiline_payload() { assert_eq!(parse_base64("DATA:IMAGE/PNG;charset=utf8;base64,abc\ndef"),("abc\ndef".into(),Some("image/png".into()))); assert_eq!(parse_base64("abc"),("abc".into(),None)); }

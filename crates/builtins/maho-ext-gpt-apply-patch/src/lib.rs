@@ -15,3 +15,5 @@ pub mod apply;
 pub mod patch_diff;
 pub mod preview;
 pub mod tool;
+pub mod streaming_render;
+pub mod index;
