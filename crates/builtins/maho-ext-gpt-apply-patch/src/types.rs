@@ -6,6 +6,12 @@ pub enum ParsedPatch {
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PatchChunk { pub change_contexts:Vec<String>, pub old_lines:Vec<String>, pub new_lines:Vec<String>, pub is_end_of_file:bool }
+pub type AtomicWriteFuture<'a>=std::pin::Pin<Box<dyn std::future::Future<Output=std::io::Result<()>>+Send+'a>>;
+pub trait AtomicWriteOperations:Send+Sync {
+    fn write_file<'a>(&'a self,path:&'a std::path::Path,content:&'a [u8])->AtomicWriteFuture<'a>;
+    fn rename<'a>(&'a self,from:&'a std::path::Path,to:&'a std::path::Path)->AtomicWriteFuture<'a>;
+    fn unlink<'a>(&'a self,path:&'a std::path::Path)->AtomicWriteFuture<'a>;
+}
 
 use serde::{Serialize,Deserialize};
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]

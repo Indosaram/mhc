@@ -14,10 +14,19 @@ struct MutationError { message:String,code:Option<String> }
 impl From<String> for MutationError { fn from(message:String)->Self { Self{message,code:None} } }
 impl From<std::io::Error> for MutationError { fn from(error:std::io::Error)->Self { Self{message:error.to_string(),code:match error.kind() { std::io::ErrorKind::NotFound=>Some("ENOENT".into()),std::io::ErrorKind::PermissionDenied=>Some(if error.raw_os_error()==Some(1) { "EPERM" } else { "EACCES" }.into()),std::io::ErrorKind::AlreadyExists=>Some("EEXIST".into()),std::io::ErrorKind::NotADirectory=>Some("ENOTDIR".into()),std::io::ErrorKind::IsADirectory=>Some("EISDIR".into()),_=>None }} } }
 static TEMP_ID:AtomicU64=AtomicU64::new(0);
+struct FileOperations;
+impl crate::types::AtomicWriteOperations for FileOperations {
+    fn write_file<'a>(&'a self,path:&'a Path,content:&'a [u8])->crate::types::AtomicWriteFuture<'a> { Box::pin(tokio::fs::write(path,content)) }
+    fn rename<'a>(&'a self,from:&'a Path,to:&'a Path)->crate::types::AtomicWriteFuture<'a> { Box::pin(tokio::fs::rename(from,to)) }
+    fn unlink<'a>(&'a self,path:&'a Path)->crate::types::AtomicWriteFuture<'a> { Box::pin(tokio::fs::remove_file(path)) }
+}
 async fn write_file_atomic(path:&Path,content:&[u8])->Result<(),MutationError> {
+    write_file_atomic_with_operations(path,content,&FileOperations).await.map_err(MutationError::from)
+}
+pub async fn write_file_atomic_with_operations(path:&Path,content:&[u8],operations:&dyn crate::types::AtomicWriteOperations)->std::io::Result<()> {
     let temp=std::path::PathBuf::from(format!("{}.tmp.{}.{}",path.display(),std::process::id(),TEMP_ID.fetch_add(1,Ordering::Relaxed)));
-    tokio::fs::write(&temp,content).await?;
-    match tokio::fs::rename(&temp,path).await { Ok(())=>Ok(()),Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists=>{ tokio::fs::remove_file(path).await?; tokio::fs::rename(&temp,path).await?; Ok(()) },Err(error)=>Err(error.into()) }
+    operations.write_file(&temp,content).await?;
+    match operations.rename(&temp,path).await { Ok(())=>Ok(()),Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists=>{ operations.unlink(path).await?; operations.rename(&temp,path).await?; Ok(()) },Err(error)=>Err(error) }
 }
 async fn apply_single_hunk(cwd:&Path,hunk:&ParsedPatch)->Result<(String,String,usize,crate::types::ApplyPatchPreviewFile),MutationError> {
     let file=match hunk { ParsedPatch::Add{file_path,..}|ParsedPatch::Delete{file_path}|ParsedPatch::Update{file_path,..}=>file_path };
@@ -73,6 +82,16 @@ async fn apply_hunks(cwd:&Path,hunks:Vec<ParsedPatch>,fail_fast:bool,on_progress
 mod tests {
     use super::*;
     use crate::types::{AppliedPatchOperation,ApplyPatchPreviewFile,ApplyPatchOperation};
+    #[tokio::test] async fn atomic_rename_retries_eexist_after_unlink() {
+        struct Operations {renames:AtomicU64,unlinks:AtomicU64}
+        impl crate::types::AtomicWriteOperations for Operations {
+            fn write_file<'a>(&'a self,path:&'a Path,content:&'a [u8])->crate::types::AtomicWriteFuture<'a> { FileOperations.write_file(path,content) }
+            fn rename<'a>(&'a self,from:&'a Path,to:&'a Path)->crate::types::AtomicWriteFuture<'a> { Box::pin(async move { if self.renames.fetch_add(1,Ordering::Relaxed)==0 { return Err(std::io::ErrorKind::AlreadyExists.into()); } tokio::fs::rename(from,to).await }) }
+            fn unlink<'a>(&'a self,path:&'a Path)->crate::types::AtomicWriteFuture<'a> { self.unlinks.fetch_add(1,Ordering::Relaxed); FileOperations.unlink(path) }
+        }
+        let directory=tempfile::tempdir().unwrap(); let path=directory.path().join("atomic.txt"); tokio::fs::write(&path,b"old\n").await.unwrap(); let operations=Operations{renames:AtomicU64::new(0),unlinks:AtomicU64::new(0)};
+        write_file_atomic_with_operations(&path,b"new\n",&operations).await.unwrap(); assert_eq!(tokio::fs::read(&path).await.unwrap(),b"new\n"); assert_eq!(operations.renames.load(Ordering::Relaxed),2); assert_eq!(operations.unlinks.load(Ordering::Relaxed),1); assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(),1);
+    }
     #[tokio::test] async fn detailed_result_tracks_fuzz_tier() { let directory=tempfile::tempdir().unwrap(); tokio::fs::write(directory.path().join("fuzz.txt"),"value   \n").await.unwrap(); let result=apply_patch_detailed(directory.path(),"*** Begin Patch\n*** Update File: fuzz.txt\n@@\n-value\n+value!\n*** End Patch").await.unwrap(); assert!(result.failures.is_empty()); assert!(result.details.fuzz>0); }
     #[cfg(unix)]
     #[tokio::test] async fn directory_symlink_can_target_outside_workspace() { let workspace=tempfile::tempdir().unwrap(); let outside=tempfile::tempdir().unwrap(); std::os::unix::fs::symlink(outside.path(),workspace.path().join("link")).unwrap(); apply_patch(workspace.path(),"*** Begin Patch\n*** Add File: link/outside.txt\n+outside\n*** End Patch").await.unwrap(); assert_eq!(tokio::fs::read_to_string(outside.path().join("outside.txt")).await.unwrap(),"outside\n"); }
