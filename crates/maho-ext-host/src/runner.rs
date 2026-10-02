@@ -12,6 +12,45 @@ pub struct ShortcutDiagnostic { pub message: String, pub path: String }
 struct HookRun { event: ToolHookLifecycleEvent, state: Arc<std::sync::Mutex<(bool, String)>> }
 struct ReloadRequest { result: std::sync::Mutex<Option<Result<(), ExtensionFailure>>>, ready: tokio::sync::Notify }
 type ReloadState = Arc<std::sync::Mutex<Option<Arc<ReloadRequest>>>>;
+struct CommandActions { inner: Arc<dyn ExtensionCommandContextActions>, reload: ReloadState }
+impl ExtensionCommandContextActions for CommandActions {
+    fn wait_for_idle(&self) -> ExtensionFuture<'_, ()> { self.inner.wait_for_idle() }
+    fn new_session(&self, options: NewSessionOptions) -> ExtensionFuture<'_, SessionNavigationResult> { self.inner.new_session(options) }
+    fn fork<'a>(&'a self, entry_id: &'a str, options: ForkOptions) -> ExtensionFuture<'a, SessionNavigationResult> { self.inner.fork(entry_id, options) }
+    fn navigate_tree<'a>(&'a self, target_id: &'a str, options: ExtensionTreeNavigationOptions) -> ExtensionFuture<'a, SessionNavigationResult> { self.inner.navigate_tree(target_id, options) }
+    fn edit_assistant_message<'a>(&'a self, entry_id: &'a str, text: &'a str, options: EditMessageOptions) -> ExtensionFuture<'a, EditMessageResult> { self.inner.edit_assistant_message(entry_id, text, options) }
+    fn edit_user_message<'a>(&'a self, entry_id: &'a str, text: &'a str, options: EditMessageOptions) -> ExtensionFuture<'a, EditMessageResult> { self.inner.edit_user_message(entry_id, text, options) }
+    fn switch_session<'a>(&'a self, path: &'a str, options: SwitchSessionOptions) -> ExtensionFuture<'a, SessionNavigationResult> { self.inner.switch_session(path, options) }
+    fn reload(&self) -> ExtensionFuture<'_, ()> {
+        let actions = self.inner.clone();
+        Box::pin(coalesced_reload(self.reload.clone(), Box::pin(async move { actions.reload().await })))
+    }
+}
+async fn coalesced_reload(state: ReloadState, operation: ExtensionFuture<'static, ()>) -> Result<(), ExtensionFailure> {
+    let request = {
+        let mut current = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(request) = current.as_ref() { Arc::clone(request) } else {
+            let request = Arc::new(ReloadRequest { result: std::sync::Mutex::new(None), ready: tokio::sync::Notify::new() });
+            *current = Some(Arc::clone(&request));
+            let state = state.clone();
+            let pending = request.clone();
+            tokio::spawn(async move {
+                let result = operation.await;
+                *pending.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+                *state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                pending.ready.notify_waiters();
+            });
+            request
+        }
+    };
+    loop {
+        let notified = request.ready.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if let Some(result) = request.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() { return result; }
+        notified.await;
+    }
+}
 struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime, compaction_signal: std::sync::Mutex<Option<AbortSignal>>, kernel_tools: Option<Arc<dyn ExtensionKernelTools>>, reload: ReloadState, provider_runner: Option<ExtensionRunner>, exclude_provider_path: Option<String> }
 impl ToolSessionManager for ContextSessionManager {
     fn session_id(&self) -> &str { self.session.session_id() }
@@ -39,32 +78,8 @@ impl ExtensionContextActions for ContextSessionManager {
     fn abort(&self, source: Option<AbortSource>) { self.actions.abort(source); }
     fn has_pending_messages(&self) -> bool { self.actions.has_pending_messages() }
     fn request_reload(&self) -> ExtensionFuture<'_, ()> {
-        Box::pin(async move {
-            let request = {
-                let mut current = self.reload.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(request) = current.as_ref() { Arc::clone(request) } else {
-                    let request = Arc::new(ReloadRequest { result: std::sync::Mutex::new(None), ready: tokio::sync::Notify::new() });
-                    *current = Some(Arc::clone(&request));
-                    let actions = Arc::clone(&self.actions);
-                    let state = Arc::clone(&self.reload);
-                    let pending = Arc::clone(&request);
-                    tokio::spawn(async move {
-                        let result = actions.request_reload().await;
-                        *pending.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
-                        *state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-                        pending.ready.notify_waiters();
-                    });
-                    request
-                }
-            };
-            loop {
-                let notified = request.ready.notified();
-                tokio::pin!(notified);
-                notified.as_mut().enable();
-                if let Some(result) = request.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() { return result; }
-                notified.await;
-            }
-        })
+        let actions = self.actions.clone();
+        Box::pin(coalesced_reload(self.reload.clone(), Box::pin(async move { actions.request_reload().await })))
     }
     fn is_compacting(&self) -> bool { self.actions.is_compacting() }
     fn check_reload_veto(&self) -> ExtensionFuture<'_, ReloadVetoDecision> { self.actions.check_reload_veto() }
@@ -166,7 +181,7 @@ impl ExtensionRunner {
         self.runtime.bind_session_actions(actions); Ok(())
     }
     pub fn create_command_context(&self, actions: Arc<dyn ExtensionCommandContextActions>) -> Result<ExtensionCommandContext, ExtensionFailure> {
-        Ok(ExtensionCommandContext { context: self.create_context()?, actions, runtime: self.runtime.clone() })
+        Ok(ExtensionCommandContext { context: self.create_context()?, actions: Arc::new(CommandActions { inner: actions, reload: self.reload.clone() }), runtime: self.runtime.clone() })
     }
     pub async fn prepare_provider_request(&self, messages: Vec<AgentMessage>, exclude_path: Option<String>) -> Result<ProviderRequestPreparation, ExtensionFailure> {
         self.runtime.assert_active()?;

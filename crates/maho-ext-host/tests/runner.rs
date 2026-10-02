@@ -967,7 +967,19 @@ impl ExtensionCommandContextActions for CommandActions {
     fn edit_assistant_message<'a>(&'a self, _: &'a str, _: &'a str, _: EditMessageOptions) -> ExtensionFuture<'a, EditMessageResult> { Box::pin(async { Ok(EditMessageResult { unchanged: Some(true), ..Default::default() }) }) }
     fn edit_user_message<'a>(&'a self, _: &'a str, _: &'a str, _: EditMessageOptions) -> ExtensionFuture<'a, EditMessageResult> { Box::pin(async { Ok(EditMessageResult { entry_id: Some("edited".into()), ..Default::default() }) }) }
     fn switch_session<'a>(&'a self, _: &'a str, _: SwitchSessionOptions) -> ExtensionFuture<'a, SessionNavigationResult> { Box::pin(async { Ok(SessionNavigationResult { cancelled: false }) }) }
-    fn reload(&self) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
+    fn reload(&self) -> ExtensionFuture<'_, ()> { Box::pin(async move { self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("reload".into()); Ok(()) }) }
+}
+#[tokio::test]
+async fn command_reload_requests_share_the_same_pending_operation() {
+    let runner = runner(vec![]);
+    let actions = Arc::new(CommandActions(Mutex::new(vec![])));
+    let first = runner.create_command_context(actions.clone()).unwrap();
+    let second = runner.create_command_context(actions.clone()).unwrap();
+    let (one, two) = tokio::join!(first.reload(), second.reload());
+    one.unwrap(); two.unwrap();
+    assert_eq!(*actions.0.lock().unwrap(), ["reload"]);
+    first.reload().await.unwrap();
+    assert_eq!(*actions.0.lock().unwrap(), ["reload", "reload"]);
 }
 #[tokio::test]
 async fn command_invocation_uses_command_capable_context_without_changing_legacy_handlers() {
@@ -985,7 +997,7 @@ async fn command_invocation_uses_command_capable_context_without_changing_legacy
     assert!(runner.invoke_command("missing", "", &ctx).await.is_err());
     runner.invalidate("replaced command context");
     assert_eq!(ctx.navigate_tree("old leaf", ExtensionTreeNavigationOptions::default()).await.unwrap_err().message, "replaced command context");
-    assert_eq!(*actions.0.lock().unwrap(), ["leaf"]);
+    assert_eq!(*actions.0.lock().unwrap(), ["leaf", "reload"]);
 }
 #[tokio::test]
 async fn question_without_ui_returns_unavailable_and_preserves_unanswered_ids() {
