@@ -27,3 +27,4 @@ pub mod git;
 pub mod tools_manager;
 pub mod image_process;
 pub mod tool_result_images;
+pub mod version_check;

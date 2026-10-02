@@ -5,3 +5,4 @@ pub mod list_tips;
 pub mod experimental;
 pub mod auth_command;
 pub mod help_flags_cache;
+pub mod file_processor;
