@@ -41,8 +41,8 @@ impl JavaScriptKernel {
         let pid=Arc::new(Mutex::new(slot.pid()));
         let snapshot=Arc::new(Mutex::new((None,vec![])));
         let (commands,receiver)=mpsc::unbounded_channel();
-        let posts=commands.clone();let worker_pid=pid.clone();
-        let tools=Arc::new(super::kernel_tools_host::KernelToolHostPump::new(Arc::new(move |message| {let _=posts.send(Command::Reply(message));}),Arc::new(move ||worker_pid.lock().expect("JS pid lock").is_some())));
+        let posts=commands.downgrade();let worker_pid=pid.clone();
+        let tools=Arc::new(super::kernel_tools_host::KernelToolHostPump::new(Arc::new(move |message| {if let Some(posts)=posts.upgrade() {let _=posts.send(Command::Reply(message));}}),Arc::new(move ||worker_pid.lock().expect("JS pid lock").is_some())));
         tokio::spawn(run_actor(options,slot,receiver,snapshot.clone(),pid.clone(),tools.clone()));
         Ok(Self {commands,tools,loader,snapshot,pid})
     }
@@ -202,4 +202,17 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
     *snapshot.lock().expect("JS queue lock")=(None,vec![]);
     *pid.lock().expect("JS pid lock")=None;
     tools.reject_all(super::kernel_tools_errors::kernel_tool_error(super::kernel_tools_errors::KernelToolErrorCode::KernelToolStale,"JS kernel closed",None));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn host_pump_does_not_own_actor_admission_lifetime() {
+        let kernel=JavaScriptKernel::start(Path::new(env!("CARGO_MANIFEST_DIR")),"pump-owner",4,None).await.unwrap();
+        let owners=kernel.commands.strong_count();
+        kernel.close().await.unwrap();
+        assert_eq!(owners,1,"only the public kernel should retain command admission");
+    }
 }
