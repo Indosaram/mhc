@@ -52,6 +52,19 @@ async fn write_frame(stdin: &mut tokio::process::ChildStdin, frame: &Value) -> a
     stdin.write_all(&bytes).await?; Ok(())
 }
 
+async fn settle_child(child: &mut tokio::process::Child, commands: &mut mpsc::UnboundedReceiver<Command>, closed: &mut bool) -> std::io::Result<std::process::ExitStatus> {
+    loop {
+        tokio::select! {
+            status = child.wait() => return status,
+            command = commands.recv(), if !*closed => match command {
+                Some(Command::Close) | None => { *closed = true; child.start_kill()?; },
+                Some(Command::Send(_, reply)) => { let _ = reply.send(Err(anyhow::anyhow!("Query output closed"))); },
+                Some(Command::Request(_, reply)) => { let _ = reply.send(Err(anyhow::anyhow!("Query output closed"))); },
+            },
+        }
+    }
+}
+
 impl SdkQueryHandle {
     pub async fn spawn(executable: &Path, options: &Value, environment: &BTreeMap<String, String>) -> anyhow::Result<Self> {
         let mut env = environment.clone();
@@ -128,7 +141,7 @@ impl SdkQueryHandle {
             }.await;
             // Reap before surfacing terminal failures or closing the event channel.
             if outcome.is_err() { let _ = child.start_kill(); }
-            let status = child.wait().await;
+            let status = settle_child(&mut child, &mut command_rx, &mut closed).await;
             let result = outcome.and_then(|()| {
                 let status = status?;
                 if !closed && !status.success() { anyhow::bail!("Claude Code process exited with {status}"); }
@@ -229,5 +242,16 @@ mod tests {
         let mut query = SdkQueryHandle::spawn(&script,&options,&BTreeMap::new()).await.expect("query");
         let result = tokio::time::timeout(std::time::Duration::from_secs(5),query.next()).await.expect("bounded callbacks").expect("frame").expect("result");
         assert_eq!(result["result"],"callbacks checked"); query.close().await.expect("close");
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn settlement_accepts_close_while_child_remains_alive_after_stdout_eof() {
+        let mut child = tokio::process::Command::new("/usr/bin/python3").args(["-c", "import sys; sys.stdin.read()"]).stdin(Stdio::piped()).stdout(Stdio::null()).kill_on_drop(true).spawn().expect("child");
+        let (send, mut receive) = mpsc::unbounded_channel();
+        let (reply, response) = oneshot::channel(); send.send(Command::Send(json!({}),reply)).expect("send");
+        let cleanup = tokio::spawn(async move { let mut closed = false; let status = settle_child(&mut child,&mut receive,&mut closed).await.expect("settle"); assert!(closed); assert!(!status.success()); });
+        response.await.expect("reply").expect_err("stdout closed");
+        send.send(Command::Close).expect("close signal");
+        tokio::time::timeout(std::time::Duration::from_secs(5),cleanup).await.expect("bounded cleanup").expect("reaped");
     }
 }
