@@ -230,13 +230,19 @@ impl MonitorRegistry {
         }));
         Ok(())
     }
-    pub fn dispose(&mut self) {for (_,(file,task)) in std::mem::take(&mut self.files) {task.abort();file.lock().expect("file monitor").stop("watcher disposed");}self.file_snapshots.lock().expect("file snapshots").clear();for task in self.tasks.drain(..) {task.abort();}self.records.lock().expect("monitor records").clear();self.publish_state();}
+    pub fn dispose(&mut self) {let mut events=vec![];for (_,(file,task)) in std::mem::take(&mut self.files) {task.abort();if let Some(event)=file.lock().expect("file monitor").stop("watcher disposed") {events.push(event);}}self.file_snapshots.lock().expect("file snapshots").clear();for task in self.tasks.drain(..) {task.abort();}self.records.lock().expect("monitor records").clear();self.publish_state();for event in events {(self.emit)(event);}}
 }
 impl Drop for MonitorRegistry {fn drop(&mut self) {self.dispose();}}
 
 #[cfg(test)]
 mod registry_tests {
     use super::*;
+    #[tokio::test]
+    async fn file_disposal_emits_summary_once_after_releasing_capacity() {
+        let dir=tempfile::tempdir().unwrap();let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let mut registry=MonitorRegistry::new(move |event| {sender.send(event).unwrap();});let mut manager=crate::manager::TerminalManager::default();
+        let (id,_)=registry.register_persistent_file("watch",&dir.path().join("file"),crate::terminal_manifest_model::FileEvent::Create).unwrap();registry.reserve_file_capacity(&id,manager.reserve().unwrap().unwrap());registry.dispose();
+        assert_eq!(manager.active_size().unwrap(),0);assert!(registry.snapshot().is_empty());assert!(matches!(events.try_recv(),Ok(MonitorEvent::Summary {summary,..}) if summary=="watcher disposed"));registry.dispose();assert!(events.try_recv().is_err());
+    }
     #[tokio::test(start_paused=true)]
     async fn paused_file_preserves_checkpoint_and_resume_checks_immediately() {
         let dir=tempfile::tempdir().unwrap();let path=dir.path().join("file");std::fs::write(&path,b"old").unwrap();let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let mut registry=MonitorRegistry::new(move |event| {sender.send(event).unwrap();});
