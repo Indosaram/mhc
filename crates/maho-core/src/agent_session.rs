@@ -1934,6 +1934,13 @@ impl AgentSession {
                         from_extension, will_retry: reason != "manual",
                     })).await;
                 }
+                let policy = self.with_settings_manager(|manager| crate::retry_fallback::settings::resolve_retry_fallback_settings(
+                    manager.get_value("retry")).revert_policy);
+                let mut guard = self.retry_fallback.lock().await;
+                if let Some(controller) = guard.as_mut() {
+                    let released = controller.notify_compaction_applied();
+                    if released && !self.is_streaming() { controller.maybe_restore_primary(policy).await?; }
+                }
             }
             Err(error) => {
                 let error_message = (!signal.aborted()).then(|| format!("Compaction failed: {error}"));
@@ -6102,8 +6109,19 @@ mod tests {
             Box::pin(async { Ok(maho_ext_api::EventResult::None) })
         })]);
         session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("retry".to_owned(), serde_json::json!({"revertPolicy":"never"})),
+        ])));
+        session.retry_fallback.lock().await.as_mut().expect("controller").state = Some(crate::retry_fallback::controller::ActiveFallbackState {
+            chain_key: "fixture".to_owned(), original_selector: "faux/primary".to_owned(), original_thinking_level: None,
+            last_applied_thinking_level: None, pinned_by_refusal: true, pinned_by_billing: false, pinned: true,
+        });
         session.compact(None).await.expect("compaction");
         assert_eq!(*lock(&order), ["end", "hook"]);
+        let guard = session.retry_fallback.lock().await;
+        let fallback = guard.as_ref().expect("controller").state.as_ref().expect("fallback remains for never policy");
+        assert!(!fallback.pinned_by_refusal);
+        assert!(!fallback.pinned);
     }
 
     #[tokio::test]
