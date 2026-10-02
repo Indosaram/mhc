@@ -1728,7 +1728,11 @@ dependencies = [
 name = "maho-ext-imagegen"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
+ "libc",
+ "maho-ai",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
