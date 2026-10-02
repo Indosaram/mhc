@@ -6416,6 +6416,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn precomputed_compaction_reuses_feedback_id_and_reports_rejection() {
+        use maho_ext_api::ExtensionContextActions;
+        for reject in [false, true] {
+            let session = test_session();
+            session.agent.set_model(test_model());
+            let retained = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"recent","timestamp":0})));
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let captured = events.clone();
+            let _subscription = session.subscribe(Arc::new(move |event| {
+                if matches!(event, AgentSessionEvent::CompactionStart { .. } | AgentSessionEvent::CompactionEnd { .. }) { lock(&captured).push(event.clone()); }
+            }));
+            let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+            let signal = actions.begin_compaction(maho_ext_api::BeginCompactionOptions { reason: maho_ext_api::CompactionReason::Extension }).expect("feedback");
+            let applied = actions.apply_compaction(maho_ext_api::CompactionResult { summary: if reject { "x".repeat(600_000) } else { "digest".to_owned() },
+                first_kept_entry_id: retained["id"].as_str().expect("retained").to_owned(), tokens_before: 100, details: None },
+                maho_ext_api::ApplyCompactionOptions { reason: maho_ext_api::CompactionReason::Extension,
+                    expected_revision: Some(session.message_revision()), expected_warm_anchor: None, signal: Some(signal) }).await.expect("application result");
+            assert_eq!(applied, if reject { maho_ext_api::ApplyCompactionResult::Rejected } else { maho_ext_api::ApplyCompactionResult::Applied });
+            assert!(!session.is_compacting());
+            assert_eq!(session.compaction_state().generation(), 1);
+            assert_eq!(session.compaction_state().status(), if reject { "failed" } else { "completed" });
+            let events = lock(&events);
+            assert_eq!(events.len(), 2);
+            let AgentSessionEvent::CompactionStart { request_id, .. } = &events[0] else { panic!("start"); };
+            assert!(matches!(&events[1], AgentSessionEvent::CompactionEnd { request_id: end, accepted: Some(accepted), error_message, .. }
+                if end == request_id && *accepted != reject && error_message.is_some() == reject));
+            assert_eq!(session.with_session_manager(|manager| manager.entries()).len(), if reject { 1 } else { 2 });
+        }
+    }
+
+    #[tokio::test]
     async fn precomputed_extension_compaction_preserves_provenance_and_rejects_stale_revision() {
         use maho_ext_api::ExtensionContextActions;
         let session = test_session();
