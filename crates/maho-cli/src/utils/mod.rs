@@ -26,3 +26,4 @@ pub mod clipboard_image;
 pub mod git;
 pub mod tools_manager;
 pub mod image_process;
+pub mod tool_result_images;
