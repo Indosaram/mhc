@@ -179,6 +179,9 @@ pub async fn generate_core_route_compaction(
                     context.ui.notify(&crate::deterministic_fallback::format_required_compaction_fallback_notice(failure,Some(&error.to_string())),maho_ext_api::NotificationType::Warning);
                     return Ok(EventResult::SessionBefore(SessionBeforeEventResult { compaction: Some(compaction), ..Default::default() }));
                 }
+                return Ok(EventResult::SessionBefore(SessionBeforeEventResult {
+                    cancel: Some(true), reason: Some(crate::deterministic_fallback::format_required_compaction_fallback_rejection(&diagnostics)), ..Default::default()
+                }));
             }
             Ok(EventResult::SessionBefore(SessionBeforeEventResult { cancel: Some(true), reason: Some(error.to_string().replace("senpi:no-turn-retry:","")), ..Default::default() }))
         }

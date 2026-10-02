@@ -20,6 +20,7 @@ icu_collator = "=2.3.1"
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
 maho-agent = { path = "../../maho-agent" }
 maho-ext-host = { path = "../../maho-ext-host" }
 tokio = { version = "=1.52.3", features = ["macros", "rt", "test-util"] }

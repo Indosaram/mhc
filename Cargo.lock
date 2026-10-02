@@ -1709,6 +1709,7 @@ dependencies = [
  "maho-core",
  "maho-ext-api",
  "maho-ext-host",
+ "maho-test-support",
  "reqwest",
  "serde_json",
  "sha2",

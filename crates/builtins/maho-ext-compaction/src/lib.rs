@@ -91,14 +91,33 @@ impl maho_ext_api::Extension for CompactionExtension {
         }
         for kind in [maho_ext_api::EventKind::SessionCompact,maho_ext_api::EventKind::TurnEnd] {
             let degradation=std::sync::Arc::clone(&degradation);
-            api.on(kind,std::sync::Arc::new(move |event,_| {
+            let compaction_state=std::sync::Arc::clone(&state);
+            let live_api=std::sync::Arc::clone(&live_api);
+            let generation=std::sync::Arc::clone(&generation);
+            api.on(kind,std::sync::Arc::new(move |event,context| {
                 let degradation=std::sync::Arc::clone(&degradation);
+                let compaction_state=std::sync::Arc::clone(&compaction_state);
+                let live_api=std::sync::Arc::clone(&live_api);
+                let generation=std::sync::Arc::clone(&generation);
                 Box::pin(async move {
                     let mut state=degradation.lock().await;
                     match event {
                         maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Accepted {..})=>degradation_monitor::reset_on_session_compact(&mut state),
                         maho_ext_api::ExtensionEvent::TurnEnd {..}=>degradation_monitor::handle_turn_end(&mut state),
                         _=>{},
+                    }
+                    let recover=matches!(event,maho_ext_api::ExtensionEvent::TurnEnd {..})
+                        && context.model.as_ref().is_none_or(|model|model.provider!="anthropic-subscription")
+                        && !state.recovery_triggered_this_cycle
+                        && compaction_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).last_yield.is_some_and(|last|last.saved_tokens<=0.);
+                    drop(state);
+                    if recover {
+                        let api=std::sync::Arc::clone(&live_api);
+                        let context=context.clone();
+                        let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
+                        tokio::spawn(async move {
+                            let _result=extension_wiring::apply_live_blocking_compaction(&api,&context,next,degradation_monitor::RECOVERY_INSTRUCTIONS.into()).await;
+                        });
                     }
                     Ok(maho_ext_api::EventResult::None)
                 })
@@ -108,7 +127,9 @@ impl maho_ext_api::Extension for CompactionExtension {
             let warm = std::sync::Arc::clone(&warm);
             let generation = std::sync::Arc::clone(&generation);
             let reminder = std::sync::Arc::clone(&reminder);
+            let idle = std::sync::Arc::clone(&idle_since_end);
             api.on(kind,std::sync::Arc::new(move |_,_| {
+                idle.store(false,std::sync::atomic::Ordering::SeqCst);
                 *reminder.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=token_budget_reminder::create_initial_reminder_state();
                 generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
                 if let Some(job) = warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {job.controller.abort(None);}
@@ -199,7 +220,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                                 let Ok(Some(usage))=context.get_context_usage() else {return;};
                                 let (last_yield,tripped)={let state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);(state.last_yield,circuit_breaker::is_tripped(&state,chrono::Utc::now().timestamp_millis() as f64))};
                                 let decision=idle::IdleCompactionDecision {will_retry:false,aborted:false,settings:&watching.snapshot.preparation.settings,tokens:usage.tokens.map(|tokens|tokens as f64),context_window:usage.context_window as f64,breaker_tripped:tripped,last_yield,mode:context.mode};
-                                if !idle_retry::should_retry_idle_warmup(&idle_retry::IdleWarmupRetryDecision {attempt,transient:settled.error.as_ref().is_some_and(|error|maho_ai::utils::retry::is_retryable_error_message(error)),is_idle:context.is_idle(),breaker_tripped:tripped,still_warm_eligible:idle::should_warm_at_idle(&decision)}) {return;}
+                                if !idle_retry::should_retry_idle_warmup(&idle_retry::IdleWarmupRetryDecision {attempt,transient:settled.error.as_ref().is_some_and(|error|transient_failure::is_transient_summarization_failure(error.classification,&error.message)),is_idle:context.is_idle(),breaker_tripped:tripped,still_warm_eligible:idle::should_warm_at_idle(&decision)}) {return;}
                                 tokio::time::sleep(std::time::Duration::from_millis(idle_retry::IDLE_WARMUP_RETRY_DELAY_MS)).await;
                                 if !idle.load(std::sync::atomic::Ordering::SeqCst) || !context.is_idle() || generation.load(std::sync::atomic::Ordering::SeqCst)!=watching.generation {return;}
                                 let mut current=warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

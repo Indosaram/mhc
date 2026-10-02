@@ -17,7 +17,34 @@ pub struct SpeculativeJob<S, R, E> {
     completion: tokio::sync::watch::Receiver<bool>,
 }
 
-pub type LiveSpeculativeJob = SpeculativeJob<crate::speculative::SpeculativeCompactionSnapshot, maho_ext_api::CompactionResult, String>;
+#[derive(Clone, Debug)]
+pub struct LiveSummaryFailure {
+    pub message: String,
+    pub classification: crate::transient_failure::SummarizationFailure,
+}
+
+impl From<crate::speculative::SummaryGenerationError> for LiveSummaryFailure {
+    fn from(error: crate::speculative::SummaryGenerationError) -> Self {
+        use crate::{speculative::SummaryGenerationError, speculative_summary::SummaryStreamError,
+            transient_failure::SummarizationFailure};
+        let classification = match &error {
+            SummaryGenerationError::Stream(SummaryStreamError::DurationBudget) => SummarizationFailure::StreamDurationBudget,
+            SummaryGenerationError::Stream(SummaryStreamError::IdleTimeout) => SummarizationFailure::StreamIdleTimeout,
+            SummaryGenerationError::TotalBudget => SummarizationFailure::TotalBudget,
+            SummaryGenerationError::Overflow(_) => SummarizationFailure::OverflowExhausted,
+            SummaryGenerationError::Request(response) => {
+                let transient = matches!(crate::speculative::summary_request_failure(response),
+                    crate::deterministic_fallback::SummaryFailure::Request { transient: true, .. });
+                SummarizationFailure::SummaryRequest { transient }
+            }
+            SummaryGenerationError::Auth(_) | SummaryGenerationError::EmptySummary(_)
+                | SummaryGenerationError::Stream(SummaryStreamError::Provider(_)) => SummarizationFailure::Other,
+        };
+        Self { message: error.to_string(), classification }
+    }
+}
+
+pub type LiveSpeculativeJob = SpeculativeJob<crate::speculative::SpeculativeCompactionSnapshot, maho_ext_api::CompactionResult, LiveSummaryFailure>;
 
 pub fn start_live_speculative_job(
     api: &maho_ext_api::ExtensionApi,
@@ -33,8 +60,8 @@ pub fn start_live_speculative_job(
     let armed = context.get_context_usage()?.and_then(|usage|usage.tokens).unwrap_or(0);
     let settled = async move {
         let result = match registry.get_api_key_for_provider(&task_snapshot.model.provider).await {
-            Ok(key) => crate::speculative::run_extension_compaction(&task_snapshot,key,None,Some(&signal),None,&|_|{}).await.map_err(|error|error.to_string()),
-            Err(error) => Err(error.to_string()),
+            Ok(key) => crate::speculative::run_extension_compaction(&task_snapshot,key,None,Some(&signal),None,&|_|{}).await.map_err(LiveSummaryFailure::from),
+            Err(error) => Err(LiveSummaryFailure { message: error.to_string(), classification: crate::transient_failure::SummarizationFailure::Other }),
         };
         match result { Ok(result) => JobSettlement {result,error:None}, Err(error) => JobSettlement {result:None,error:Some(error)} }
     };

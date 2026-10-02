@@ -120,6 +120,29 @@ pub struct DeterministicFallbackDiagnostic {
     pub candidate_rejections: Vec<serde_json::Value>,
 }
 
+pub fn format_required_compaction_fallback_rejection(diagnostics: &DeterministicFallbackDiagnostic) -> String {
+    use serde_json::json;
+    let reason = diagnostics.rejection_reason.unwrap_or("context-reconstruction-failed");
+    let recovery = match reason {
+        "retained-token-budget-exceeded" => "The retained turn exceeds the usable context. Select a model with a larger context and run /compact, or start a new session with an explicit checkpoint.",
+        "atomic-tool-chain-cut" => "The retained tool calls and results do not form complete pairs. Finish the pending tool operation before /compact; if the transcript is damaged, start a new session with an explicit checkpoint.",
+        "unsafe-retained-content" => "The retained message cannot be replayed safely. Inspect the identified entry; start a new session with an explicit checkpoint if it cannot be repaired.",
+        "missing-preparation-boundary" => "The prepared boundary is absent from the branch. Reload the session and run /compact.",
+        _ => "The retained context could not be reconstructed. Reload the session and run /compact.",
+    };
+    let mut diagnostic = json!({"rejectionReason":reason,"contextWindow":diagnostics.context_window,
+        "reserveTokens":diagnostics.reserve_tokens,"budgetTokens":diagnostics.budget_tokens,
+        "budgetExceeded":diagnostics.budget_exceeded,"candidatesChecked":diagnostics.candidates_checked});
+    if let Some(candidate) = diagnostics.candidate_rejections.last() {
+        let mut candidate = candidate.clone();
+        for (key, max) in [("firstKeptEntryId",128), ("unsafeEntryId",128), ("unsafeMessageRole",32)] {
+            if let Some(text) = candidate[key].as_str() { candidate[key] = json!(crate::task_intent::cap_utf8_bytes(text,max)); }
+        }
+        diagnostic["candidate"] = candidate;
+    }
+    format!("deterministic compaction fallback could not retain a safe suffix\n{diagnostic}\n{recovery} The original transcript has not been changed.")
+}
+
 pub fn create_required_compaction_fallback(
     preparation: &maho_core::compaction::compaction::CompactionPreparation,
     context_window: u64,
@@ -164,6 +187,20 @@ pub fn create_required_compaction_fallback(
         }
         break;
     }
+    let projection_preview = json!({"type":"compaction","id":"__senpi_deterministic_fallback_preview__","parentId":branch_entries.last().and_then(|entry| entry.get("id")),"timestamp":"1970-01-01T00:00:00.000Z","summary":summary,"firstKeptEntryId":branch_entries.first().and_then(|entry|entry.get("id")),"tokensBefore":preparation.tokens_before,"fromHook":true});
+    let mut projection_entries = branch_entries.to_vec();
+    projection_entries.push(projection_preview);
+    let projected: Vec<_> = build_context_entries(&projection_entries, None).iter()
+        .flat_map(|entry| session_entry_to_context_messages(entry).into_iter().map(|message| (entry["id"].clone(), message))).collect();
+    let projected_messages: Vec<_> = projected.iter().map(|(_, message)| message.clone()).collect();
+    let normalized = maho_core::messages::drop_failed_assistant_turns(projected_messages.clone());
+    let mut next = 0;
+    let retained_positions: Vec<_> = normalized.iter().map(|message| {
+        let offset = projected_messages[next..].iter().position(|candidate|candidate == message)
+            .expect("normalization preserves original message order");
+        next += offset + 1;
+        next - 1
+    }).collect();
     for (index, retained_suffix) in candidates {
         diagnostics.candidates_checked += 1;
         let id = branch_entries[index]["id"].as_str().unwrap_or_default();
@@ -173,35 +210,21 @@ pub fn create_required_compaction_fallback(
         let mut entries = branch_entries.to_vec(); entries.push(preview);
         let context_entries = build_context_entries(&entries, None);
         let messages: Vec<_> = context_entries.iter().flat_map(session_entry_to_context_messages).collect();
-        let retained: Vec<_> = messages.iter().skip(1).cloned().collect();
-        let canonical = maho_core::messages::convert_to_llm(&retained);
-        let mut kept_ids = std::collections::HashSet::new();
-        let mut failed_ids = std::collections::HashSet::new();
-        for message in &retained {
-            if message["role"] == "assistant" {
-                let ids = if matches!(message["stopReason"].as_str(), Some("error" | "aborted")) { &mut failed_ids } else { &mut kept_ids };
-                for block in message["content"].as_array().into_iter().flatten() {
-                    if block["type"] == "toolCall" && let Some(id) = block["id"].as_str() { ids.insert(id); }
-                }
-            }
-        }
-        failed_ids.retain(|id|!kept_ids.contains(id));
-        let retained_indexes: Vec<_> = retained.iter().enumerate().filter_map(|(index,message)| {
-            let dropped = (message["role"] == "assistant" && matches!(message["stopReason"].as_str(), Some("error" | "aborted")))
-                || (message["role"] == "toolResult" && message["toolCallId"].as_str().is_some_and(|id|failed_ids.contains(id)))
-                || (message["role"] == "bashExecution" && message["excludeFromContext"] == true);
-            (!dropped).then_some(index+1)
-        }).collect();
+        // Preserve the raw session envelope for safety and token accounting.
+        // convert_to_llm would erase custom/bash fields before they are checked.
+        let start = projected.iter().position(|(entry_id,_)| entry_id.as_str() == Some(id));
+        let retained_indexes: Vec<_> = retained_positions.iter().copied().filter(|position|start.is_some_and(|start|*position >= start)).collect();
+        let canonical: Vec<_> = retained_indexes.iter().map(|position|projected[*position].1.clone()).collect();
         let summary_message = messages.first()?;
         let mut rejection_details = json!({});
-        let reason = if context_entries.get(1).and_then(|entry| entry["id"].as_str()) != Some(id) {
+        let reason = if start.is_none() {
             Some("context-reconstruction-failed")
         } else if crate::retained_message_safety::has_unsafe_retained_content(&canonical) || !canonical.iter().all(|message| bounded_value(message, 0)) {
             if let Some(unsafe_index) = canonical.iter().position(|message| crate::retained_message_safety::has_unsafe_retained_content(std::slice::from_ref(message)) || !bounded_value(message, 0)) {
                 let projected_index = retained_indexes[unsafe_index];
                 rejection_details["unsafeMessageIndex"] = json!(projected_index);
                 if let Some(role) = canonical[unsafe_index].get("role") { rejection_details["unsafeMessageRole"] = role.clone(); }
-                if let Some(entry) = context_entries.get(projected_index) { rejection_details["unsafeEntryId"] = entry["id"].clone(); }
+                rejection_details["unsafeEntryId"] = projected[projected_index].0.clone();
             }
             Some("unsafe-retained-content")
         } else if !complete_tool_chains(&canonical) { Some("atomic-tool-chain-cut") } else {
