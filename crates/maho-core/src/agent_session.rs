@@ -828,12 +828,7 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
         self.session()?.with_session_manager_mut(|manager| manager.append_custom(custom_type, data)); Ok(())
     }
     fn get_all_tools(&self) -> Result<Vec<maho_ext_api::ToolInfo>, maho_ext_api::ExtensionFailure> {
-        Ok(self.session()?.get_all_tools().into_iter().map(|tool| maho_ext_api::ToolInfo {
-            name: tool.name.clone(), label: tool.name, description: tool.description,
-            parameters: serde_json::to_value(tool.parameters).unwrap_or(Value::Null), source_info: tool.source_info,
-            prompt_guidelines: tool.prompt_guidelines, exposure: tool.exposure, search_text: tool.search_text,
-            search_keywords: tool.search_keywords, search_group: tool.search_group, allow_lazy_activation: tool.allow_lazy_activation,
-        }).collect())
+        Ok(self.session()?.get_all_tools())
     }
 }
 
@@ -3151,30 +3146,8 @@ impl AgentSession {
     }
 
     pub fn get_all_tools(&self) -> Vec<ToolInfo> {
-        self.agent
-            .state()
-            .tools()
-            .iter()
-            .map(|tool| ToolInfo {
-                name: tool.name().to_owned(),
-                label: tool.label.clone(),
-                description: tool.tool.description.clone(),
-                parameters: tool.tool.parameters.clone(),
-                prompt_guidelines: None,
-                source_info: SourceInfo {
-                    path: String::new(),
-                    source: String::new(),
-                    scope: SourceScope::Temporary,
-                    origin: SourceOrigin::TopLevel,
-                    base_dir: None,
-                },
-                exposure: ToolExposure::Direct,
-                search_text: None,
-                search_keywords: Vec::new(),
-                search_group: None,
-                allow_lazy_activation: false,
-            })
-            .collect()
+        self.state().tool_definitions.values().map(|entry|
+            normalize_tool_exposure(&entry.definition, entry.source_info.clone())).collect()
     }
 
     pub fn get_active_tool_names(&self) -> Vec<String> {
@@ -4973,6 +4946,27 @@ mod tests {
         session.set_active_tools_by_name(vec!["read".to_owned()]);
         assert_eq!(session.system_prompt(), "turn hook override");
         assert_eq!(session.message_revision(), revision + 1);
+    }
+
+    #[test]
+    fn all_tools_includes_inactive_definitions_with_source_metadata() {
+        let session = test_session();
+        let mut definition = test_definition("inactive");
+        definition.label = "Inactive label".to_owned();
+        definition.exposure = Some(ToolExposure::Search);
+        definition.prompt_guidelines = Some(vec!["use with context".to_owned()]);
+        let source = SourceInfo { path: "inline-extension".to_owned(), source: "inline".to_owned(),
+            scope: SourceScope::Project, origin: SourceOrigin::Package, base_dir: Some("/tmp".to_owned()) };
+        session.register_tool_definition(definition, source.clone(), test_tool("inactive"));
+        assert!(!session.get_active_tool_names().contains(&"inactive".to_owned()));
+        let tools = session.get_all_tools();
+        let info = tools.iter().find(|tool| tool.name == "inactive").unwrap();
+        assert_eq!(info.label, "Inactive label");
+        assert_eq!(info.source_info, source);
+        assert_eq!(info.exposure, ToolExposure::Search);
+        assert_eq!(info.prompt_guidelines, Some(vec!["use with context".to_owned()]));
+        let exposed = maho_ext_api::ExtensionActions::get_all_tools(&SessionExtensionActions(Arc::downgrade(&session.inner))).unwrap();
+        assert_eq!(exposed.iter().find(|tool| tool.name == "inactive").unwrap().label, "Inactive label");
     }
 
     #[test]
