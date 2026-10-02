@@ -60,6 +60,23 @@ pub fn reader_is_phrasing(node:&dom_query::NodeRef<'_>)->bool {
 pub fn reader_is_whitespace(node:&dom_query::NodeRef<'_>)->bool {
     (node.is_text()&&node.text().trim_matches(js_whitespace).is_empty())||node.node_name().as_deref()==Some("br")
 }
+pub fn reader_prepare_div<'a>(node:dom_query::NodeRef<'a>)->dom_query::NodeRef<'a> {
+    let mut paragraph:Option<dom_query::NodeRef<'a>>=None;
+    for child in node.children() {
+        if reader_is_phrasing(&child) {
+            if let Some(paragraph)=paragraph {paragraph.append_child(&child);}
+            else if !reader_is_whitespace(&child) {
+                child.before_html("<p></p>");let created=child.prev_sibling().expect("inserted paragraph");created.append_child(&child);paragraph=Some(created);
+            }
+        } else if let Some(current)=paragraph {
+            while let Some(last)=current.children().last().copied().filter(reader_is_whitespace) {last.remove_from_parent();}
+            paragraph=None;
+        }
+    }
+    if reader_has_single_tag(&node,"p")&&reader_link_density(&node)<0.25 {
+        let paragraph=node.element_children()[0];node.replace_with(&paragraph);paragraph
+    } else if !reader_has_child_block(&node) {node.rename("p");node} else {node}
+}
 pub fn score_reader_candidates(elements:&[dom_query::NodeRef<'_>],weight_classes:bool)->Vec<(dom_query::NodeId,f64)> {
     let mut candidates:Vec<(dom_query::NodeRef<'_>,f64)>=Vec::new();
     for element in elements {
@@ -282,6 +299,14 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_div_preparation_groups_inline_runs_around_blocks() {
+        let document=dom_query::Document::from("<div id='root'>one <em>two</em> <br><section>block</section> three <strong>four</strong> </div>");let node=document.select("#root").nodes()[0];reader_prepare_div(node);
+        assert_eq!(document.select("#root").inner_html().as_ref(),"<p>one <em>two</em></p><section>block</section><p> three <strong>four</strong> </p>");
+    }
+    #[test] fn reader_div_preparation_replaces_single_paragraph_only_below_density_limit() {
+        let document=dom_query::Document::from("<div id='plain'>text</div><div id='linked'><p><a href='x'>linked</a></p></div>");let node=document.select("#plain").nodes()[0];let result=reader_prepare_div(node);assert_eq!(result.node_name().as_deref(),Some("p"));assert!(document.select("#plain").is_empty());assert_eq!(result.text().as_ref(),"text");
+        reader_prepare_div(document.select("#linked").nodes()[0]);assert_eq!(document.select("#linked").nodes()[0].node_name().as_deref(),Some("div"));
+    }
     #[test] fn reader_phrasing_recurses_only_for_conditional_inline_tags() {
         let document=dom_query::Document::from("<a id='inline'><strong>x</strong></a><a id='block'><div>x</div></a><span id='span'><div>x</div></span><a id='comment'><!--comment--></a>");
         assert!(reader_is_phrasing(&document.select("#inline").nodes()[0]));assert!(!reader_is_phrasing(&document.select("#block").nodes()[0]));assert!(reader_is_phrasing(&document.select("#span").nodes()[0]));assert!(!reader_is_phrasing(&document.select("#comment").nodes()[0]));assert!(reader_has_child_block(&document.select("#span").nodes()[0]));
