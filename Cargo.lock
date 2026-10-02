@@ -2045,6 +2045,7 @@ name = "maho-ext-pi-rules"
 version = "0.0.0"
 dependencies = [
  "dirs",
+ "fancy-regex",
  "globset",
  "icu_collator",
  "maho-ext-api",

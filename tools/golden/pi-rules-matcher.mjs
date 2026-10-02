@@ -1,0 +1,15 @@
+import { createRequire } from "node:module";
+import { writeFileSync } from "node:fs";
+const root = process.env.PI_RULES_SRC;
+if (!root) throw new Error("PI_RULES_SRC is required");
+const picomatch = createRequire(`${root}/package.json`)("picomatch");
+const patterns = ["@(foo|bar).ts", "+(foo|bar).ts", "?(foo|bar).ts", "*(foo|bar).ts", "a@(b|c)d", "@(a|+(b|c))", "a(b|c)", "@(a|b", "{1..12}", "{1..9..2}", "{a..z}", "[abc", "a{b", "a{b,c", "a{b}", "a}b"];
+const paths = ["foo.ts", "bar.ts", ".ts", "foobar.ts", "foofoo.ts", "xfoo.ts", "abd", "acd", "ad", "a", "b", "bb", "bc", "ab", "ac", "(a", "1", "2", "9", "12", "z", "[abc", "a{b", "a{b,c", "a{b}", "a}b"];
+patterns.push("src/*(foo|bar).ts", "a?(b)c", "a+(b)c", "@(a|b){1..3}", "a(b", "a)b", "{z..a}");
+paths.push("src/foo.ts", "src/.ts", "abc", "abbc", "a1", "b2", "a(b", "a)b");
+patterns.push("+(a|aa)", "*(a|aa)");
+paths.push("aa", "+(a|aa)", "*(a|aa)");
+const cases = patterns.flatMap(pattern => { const matches = picomatch(pattern, { bash: true, dot: true }); return paths.map(path => ({ pattern, path, matched: matches(path) })); });
+const output = `${JSON.stringify(cases, null, 2)}\n`;
+if (process.argv[2]) writeFileSync(process.argv[2], output);
+else console.log(output);

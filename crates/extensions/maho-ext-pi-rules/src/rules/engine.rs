@@ -9,7 +9,7 @@ pub trait EngineDeps {
         use std::os::unix::fs::MetadataExt;
         std::fs::metadata(path).map_or_else(|_|"missing".into(),|stats|format!("{}:{}:{}",i128::from(stats.mtime())*1_000_000_000+i128::from(stats.mtime_nsec()),i128::from(stats.ctime())*1_000_000_000+i128::from(stats.ctime_nsec()),stats.len()))
     }
-    fn match_rule(&mut self,matcher:&mut super::matcher::Matcher,input:super::matcher::MatcherInput<'_>)->Result<super::matcher::MatchResult,globset::Error>{matcher.match_rule(input)}
+    fn match_rule(&mut self,matcher:&mut super::matcher::Matcher,input:super::matcher::MatcherInput<'_>)->Result<super::matcher::MatchResult,super::matcher::MatcherError>{matcher.match_rule(input)}
 }
 #[derive(Default,Debug,PartialEq,Eq)]
 pub struct LoadResult{pub rules:Vec<LoadedRule>,pub diagnostics:Vec<RuleDiagnostic>}
@@ -41,7 +41,7 @@ impl<D:EngineDeps> Engine<D>{
         self.state.loaded_rules=result.rules.clone();self.state.diagnostics=result.diagnostics.clone();result
     }
     pub fn format_static(&self,rules:&[LoadedRule])->String{formatter::format_static_block(rules,&self.format_options())}
-    pub fn load_dynamic_rules(&mut self,cwd:&str,targets:&[String])->Result<LoadResult,globset::Error>{
+    pub fn load_dynamic_rules(&mut self,cwd:&str,targets:&[String])->Result<LoadResult,super::matcher::MatcherError>{
         self.state.cwd=Some(cwd.into());
         let mut result=LoadResult::default();
         if !self.config.disabled&&!matches!(self.config.mode,Mode::Off|Mode::Static){

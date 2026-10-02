@@ -15,7 +15,7 @@ impl EngineDeps for Deps{
     fn read_file(&mut self,path:&str)->Option<String>{self.read_calls+=1;self.files.get(path).cloned()}
     fn find_project_root(&mut self,_:&str)->Option<String>{self.root_calls+=1;Some("/workspace/project".into())}
     fn file_fingerprint(&mut self,_:&str)->String{self.fingerprint.clone()}
-    fn match_rule(&mut self,matcher:&mut maho_ext_pi_rules::rules::matcher::Matcher,input:maho_ext_pi_rules::rules::matcher::MatcherInput<'_>)->Result<maho_ext_pi_rules::rules::matcher::MatchResult,globset::Error>{self.match_calls+=1;matcher.match_rule(input)}
+    fn match_rule(&mut self,matcher:&mut maho_ext_pi_rules::rules::matcher::Matcher,input:maho_ext_pi_rules::rules::matcher::MatcherInput<'_>)->Result<maho_ext_pi_rules::rules::matcher::MatchResult,maho_ext_pi_rules::rules::matcher::MatcherError>{self.match_calls+=1;matcher.match_rule(input)}
 }
 fn candidate(source:&str,single:bool)->RuleCandidate{let path=format!("/workspace/project/{source}");RuleCandidate{path:path.clone(),real_path:path,source:source.into(),distance:0,is_global:false,is_single_file:single,relative_path:source.into()}}
 fn engine(config:PiRulesConfig,entries:Vec<(RuleCandidate,Option<&str>)>)->Engine<Deps>{let files=entries.iter().filter_map(|(candidate,body)|body.map(|body|(candidate.path.clone(),body.into()))).collect();Engine::new(config,Deps{candidates:entries.into_iter().map(|(c,_)|c).collect(),files,root_calls:0,candidate_calls:0,read_calls:0,match_calls:0,fingerprint:"stable".into()})}

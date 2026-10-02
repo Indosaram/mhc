@@ -21,6 +21,16 @@ impl maho_ext_pi_rules::rules::engine::EngineDeps for FixtureFilesystem{
     fn find_project_root(&mut self,path:&str)->Option<String>{maho_ext_pi_rules::rules::project_root::find_project_root(Path::new(path),None).map(|path|path.to_string_lossy().into_owned())}
 }
 fn register_fixture(api:&mut ExtensionApi,root:&Path){maho_ext_pi_rules::index::register_rule_injection_hooks_with_engine(api,maho_ext_pi_rules::rules::engine::Engine::new(maho_ext_pi_rules::config::config_from_values(|_|None),FixtureFilesystem{home:root.join("fixture-home")}));}
+#[tokio::test]
+async fn hook_discovers_only_its_injected_home_rules(){
+    let first=tempfile::tempdir().expect("first");let second=tempfile::tempdir().expect("second");
+    for (root,body) in [(first.path(),"first isolated home rule"),(second.path(),"second isolated home rule")]{std::fs::create_dir(root.join(".git")).expect("marker");std::fs::create_dir_all(root.join("fixture-home/.omo/rules")).expect("home rules");std::fs::write(root.join("fixture-home/.omo/rules/global.md"),format!("---\nalwaysApply: true\n---\n{body}")).expect("rule");}
+    for (root,expected,excluded) in [(first.path(),"first isolated home rule","second isolated home rule"),(second.path(),"second isolated home rule","first isolated home rule")]{
+        let ctx=context(root);let mut api=ExtensionApi::new(LoadedExtension::new("pi-rules",root.into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());register_fixture(&mut api,root);
+        let mut event=ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent{prompt:"test".into(),images:None,system_prompt:String::new(),system_prompt_options:BuildSystemPromptOptions::default()});
+        let result=api.registered.handlers[&EventKind::BeforeAgentStart][0](&mut event,&ctx).await.expect("hook");let EventResult::BeforeAgentStart(result)=result else{panic!("injection")};let prompt=result.system_prompt.expect("prompt");assert!(prompt.contains(expected));assert!(!prompt.contains(excluded));
+    }
+}
 #[test]
 fn registers_four_injection_hooks_and_presence_flags(){
     let mut api=ExtensionApi::new(LoadedExtension::new("pi-rules","/fixture".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
