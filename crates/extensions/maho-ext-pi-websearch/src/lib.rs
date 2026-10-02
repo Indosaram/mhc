@@ -7,4 +7,5 @@ pub mod websearch {
     pub mod providers;
     pub mod search;
     pub mod tool;
+    pub mod renderers;
 }

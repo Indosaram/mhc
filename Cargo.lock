@@ -2076,6 +2076,8 @@ version = "0.0.0"
 dependencies = [
  "dirs",
  "maho-ext-api",
+ "maho-interactive",
+ "maho-tui",
  "regex",
  "reqwest",
  "serde",
