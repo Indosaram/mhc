@@ -746,7 +746,7 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
     }
     fn get_all_tools(&self) -> Result<Vec<maho_ext_api::ToolInfo>, maho_ext_api::ExtensionFailure> {
         Ok(self.session()?.get_all_tools().into_iter().map(|tool| maho_ext_api::ToolInfo {
-            name: tool.name.clone(), label: tool.name, description: tool.description,
+            name: tool.name, label: tool.label, description: tool.description,
             parameters: serde_json::to_value(tool.parameters).unwrap_or(Value::Null), source_info: tool.source_info,
             prompt_guidelines: tool.prompt_guidelines, exposure: tool.exposure, search_text: tool.search_text,
             search_keywords: tool.search_keywords, search_group: tool.search_group, allow_lazy_activation: tool.allow_lazy_activation,
@@ -2510,11 +2510,16 @@ impl AgentSession {
     }
 
     pub fn get_all_tools(&self) -> Vec<ToolInfo> {
-        self.agent
+        let state = self.state();
+        let mut tools: BTreeMap<String, ToolInfo> = state.tool_definitions.iter().map(|(name, entry)| {
+            (name.clone(), normalize_tool_exposure(&entry.definition, entry.source_info.clone()))
+        }).collect();
+        for tool in self.agent
             .state()
             .tools()
             .iter()
-            .map(|tool| ToolInfo {
+        {
+            tools.entry(tool.name().to_owned()).or_insert_with(|| ToolInfo {
                 name: tool.name().to_owned(),
                 label: tool.label.clone(),
                 description: tool.tool.description.clone(),
@@ -2532,8 +2537,9 @@ impl AgentSession {
                 search_keywords: Vec::new(),
                 search_group: None,
                 allow_lazy_activation: false,
-            })
-            .collect()
+            });
+        }
+        tools.into_values().collect()
     }
 
     pub fn get_active_tool_names(&self) -> Vec<String> {
@@ -4549,6 +4555,21 @@ mod tests {
         session.register_tool_definition(test_definition("read"), empty_source_info(), test_tool("read"));
         session.set_active_tools_by_name(vec!["read".to_owned(), "nope".to_owned()]);
         assert_eq!(session.get_active_tool_names(), vec!["read".to_owned()]);
+    }
+
+    #[test]
+    fn all_tools_includes_inactive_definitions_and_preserves_labels() {
+        use maho_ext_api::ExtensionActions;
+        let session = test_session();
+        let mut definition = test_definition("read");
+        definition.label = "Read files".into();
+        definition.search_keywords = Some(vec!["files".into()]);
+        session.register_tool_definition(definition, empty_source_info(), test_tool("read"));
+        assert!(session.get_active_tool_names().is_empty());
+        let tools = SessionExtensionActions(Arc::downgrade(&session.inner)).get_all_tools().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].label, "Read files");
+        assert_eq!(tools[0].search_keywords, ["files"]);
     }
 
     #[test]
