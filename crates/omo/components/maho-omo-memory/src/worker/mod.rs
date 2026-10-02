@@ -16,3 +16,4 @@ pub mod run_liveness;
 pub mod remediation;
 pub mod reservation_run_ledger;
 pub mod run_terminal_claim;
+pub mod run_terminal_precedence;
