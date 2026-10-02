@@ -30,6 +30,11 @@ pub async fn admit_and_queue_goal_continuation(api:&maho_ext_api::ExtensionApi,r
     if recorded.is_some()&&matches!(verdict,crate::continuation::GoalContinuationVerdict::Continue { .. }) { mark_pending(); queue_hidden_goal_prompt(api,content(verdict))?; }
     Ok(recorded)
 }
+pub async fn admit_and_report_goal_continuation(api:&maho_ext_api::ExtensionApi,ctx:&ExtensionContext,reference:&crate::types::GoalStoreRef,input:&crate::continuation::GoalContinuationInput<'_>,now:u64)->Result<(Option<Goal>,crate::continuation::GoalContinuationVerdict),ExtensionFailure> {
+    let result=admit_and_record_goal_continuation(reference,input,now).await?;
+    if let crate::continuation::GoalContinuationVerdict::Deny(reason)=result.1&&let Some(goal)=input.goal { report_denied_continuation(api,ctx,goal,input,reason); }
+    Ok(result)
+}
 
 pub fn is_resume_of_stopped_goal(ctx:&ExtensionContext,reason:&str,goal:Option<&Goal>)->Result<bool,ExtensionFailure> {
     if reason!="resume" || !goal.is_some_and(|goal|matches!(goal.status,GoalStatus::Paused|GoalStatus::Blocked)) || !ctx.has_ui || !ctx.is_idle() { return Ok(false); }
@@ -56,6 +61,18 @@ pub fn report_denied_continuation(api:&maho_ext_api::ExtensionApi,ctx:&Extension
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn guard_notification_event_observes_persisted_block_and_original_counters() {
+        use maho_ext_api::*;
+        let dir=tempfile::tempdir().unwrap(); let reference=crate::types::GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() };
+        let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap();
+        let api=ExtensionApi::new(LoadedExtension::new("goal","/tmp".into(),SourceInfo::default()),Default::default(),Default::default(),Default::default());
+        let seen=std::sync::Arc::new(std::sync::Mutex::new(Vec::new())); let capture=seen.clone(); let stored=reference.clone();
+        let _subscription=api.events.on("goal_continuation_guard_tripped",std::sync::Arc::new(move |data| { assert_eq!(crate::store::read_goal(&stored).unwrap().unwrap().status,GoalStatus::Blocked); capture.lock().unwrap().push(data.clone()); }));
+        let mut input=admission(&goal); input.consecutive_continuations=crate::continuation::GOAL_CONTINUATION_CAP;
+        let (blocked,verdict)=admit_and_report_goal_continuation(&api,&crate::test_context::context(),&reference,&input,1).await.unwrap();
+        assert_eq!(verdict,crate::continuation::GoalContinuationVerdict::Deny(DenyReason::Cap)); assert_eq!(blocked.unwrap().status,GoalStatus::Blocked);
+        assert_eq!(seen.lock().unwrap()[0]["count"],8);
+    }
     #[test] fn guard_trip_reports_machine_reason_and_counts_only_for_guardrail_denial() {
         use maho_ext_api::*;
         let goal:Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"blocked","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap();
