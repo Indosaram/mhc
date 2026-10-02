@@ -71,7 +71,20 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     let model = options.model.take().or_else(|| context.model.as_ref().and_then(|(provider, id)| registry.find(provider, id)))
         .or_else(|| settings.get_string("defaultProvider").zip(settings.get_string("defaultModel")).and_then(|(provider,id)| registry.find(&provider,&id)))
         .or_else(|| registry.get_available().into_iter().next()).ok_or("No model available")?;
-    let thinking_level = clamp_thinking_level_to_model(options.thinking_level, Some(&model));
+    let has_thinking_entry = manager.branch(manager.leaf_id()).iter().any(|entry| entry["type"] == "thinking_level_change");
+    let requested_thinking = options.thinking_level.map(ModelThinkingLevel::from).or_else(||
+        has_thinking_entry.then(|| ModelThinkingLevel::parse(&context.thinking_level)).flatten());
+    let thinking_level = match requested_thinking {
+        Some(ModelThinkingLevel::Off) => ModelThinkingLevel::Off,
+        Some(level) => clamp_thinking_level_to_model(serde_json::from_value(serde_json::Value::from(level.as_str())).ok(), Some(&model)),
+        None => clamp_thinking_level_to_model(None, Some(&model)),
+    };
+    let mut thinking_selection = options.thinking_selection.take().or_else(|| {
+        options.thinking_level.map(|_| ThinkingSelection { level: thinking_level,
+            source: maho_ai::types::ThinkingSelectionSource::Explicit, legacy_variant_id: None })
+    }).or_else(|| has_thinking_entry.then(|| context.thinking_selection.clone()).flatten()
+        .and_then(|value| serde_json::from_value(value).ok()));
+    if let Some(selection) = thinking_selection.as_mut() { selection.level = thinking_level; }
     let mut definitions = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&cwd), Default::default());
     for definition in &options.custom_tools { definitions.insert(definition.name.clone(), definition.clone()); }
     let registered_definitions = definitions.clone();
@@ -111,7 +124,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         .collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
     let agent = maho_agent::agent::Agent::new(maho_agent::agent::AgentOptions {
         initial_state: Some(maho_agent::agent::PartialAgentState { model: Some(model), thinking_level: Some(thinking_level),
-            thinking_selection: options.thinking_selection, messages: Some(messages), tools: Some(active_tools), ..Default::default() }),
+            thinking_selection, messages: Some(messages), tools: Some(active_tools), ..Default::default() }),
         stream_fn: Some(Arc::new(move |model, context, options| runtime_for_stream.stream_simple(model, context, options.map(|options| options.simple)))),
         get_api_key: Some(Arc::new(move |provider| { let runtime = runtime_for_auth.clone(); Box::pin(async move {
             runtime.get_auth(&provider).await.ok().flatten().and_then(|auth| auth.auth.api_key)
@@ -215,6 +228,22 @@ mod tests {
     #[test]
     fn a_missing_model_clamps_to_off() {
         assert_eq!(clamp_thinking_level_to_model(Some(ThinkingLevel::High), None), ModelThinkingLevel::Off);
+    }
+
+    #[tokio::test]
+    async fn sdk_restores_saved_thinking_without_overriding_explicit_launch_level() {
+        let dir = tempfile::tempdir().expect("directory");
+        for explicit in [None, Some(ThinkingLevel::Low)] {
+            let mut manager = SessionManager::in_memory(&dir.path().to_string_lossy(), None, None);
+            manager.append_thinking_level_change("high", Some(serde_json::json!({"level":"high","source":"explicit"})));
+            let created = create_agent_session(CreateAgentSessionOptions {
+                cwd: Some(dir.path().to_string_lossy().into_owned()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+                model: Some(test_model()), session_manager: Some(manager), thinking_level: explicit, tools: Some(Vec::new()), ..Default::default()
+            }).await.expect("restored SDK session");
+            let expected = if explicit.is_some() { ModelThinkingLevel::Low } else { ModelThinkingLevel::High };
+            assert_eq!(created.session.thinking_level(), expected);
+            assert_eq!(created.session.thinking_selection().expect("provenance").level, expected);
+        }
     }
 
     #[tokio::test]
