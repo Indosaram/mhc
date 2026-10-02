@@ -1259,6 +1259,10 @@ async fn retained_api_commands_reach_existing_runner_and_replace_context_handler
     api.register_command_with_context("late", None, None, Arc::new(|_, _| Box::pin(async { Err("context handler".into()) })));
     api.register_filesystem_policy(FilesystemPolicy { check: Arc::new(|_| Box::pin(async { Ok(FilesystemPolicyDecision::Allow) })), denied_roots: Some(vec!["/late-root".into()]) });
     assert_eq!(runner.get_filesystem_policy_denied_roots(), vec![std::path::PathBuf::from("/late-root")]);
+    api.register_command_with_completions("complete", None, None, Arc::new(|_, _| Box::pin(async { Ok(()) })), Arc::new(|prefix| Box::pin(async move { Ok(Some(vec![AutocompleteItem { value: prefix.into(), label: "choice".into(), description: None }])) })));
+    assert_eq!(runner.get_command_argument_completions("complete", "prefix").await.unwrap().unwrap()[0].value, "prefix");
+    api.register_command("complete", None, None, Arc::new(|_, _| Box::pin(async { Ok(()) })));
+    assert!(runner.get_command_argument_completions("complete", "prefix").await.unwrap().is_none());
     api.register_shortcut("CTRL+K", Some("late shortcut".into()), Arc::new(|_| Box::pin(async { Ok(()) })));
     assert_eq!(runner.get_shortcuts()["ctrl+k"].description.as_deref(), Some("late shortcut"));
     assert!(runner.resolve_shortcuts(&Default::default()).0.contains_key("ctrl+k"));
@@ -1294,7 +1298,7 @@ async fn retained_api_commands_reach_existing_runner_and_replace_context_handler
     assert_eq!(runner.invoke_command("late", "", &context).await.unwrap_err().message, "context handler");
     api.register_command("late", None, None, Arc::new(|_, _| Box::pin(async { Ok(()) })));
     runner.invoke_command("late", "", &context).await.unwrap();
-    assert_eq!(runner.get_registered_commands().len(), 1);
+    assert_eq!(runner.get_registered_commands().len(), 2);
 }
 
 #[tokio::test]

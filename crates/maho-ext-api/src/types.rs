@@ -10,6 +10,7 @@ pub use maho_tools::{ToolContext, ToolDefinition, FilesystemPolicy, FilesystemPo
 pub use maho_tools::definition::{AbortSignal, ToolContent, ToolResult, ToolSessionManager, ToolExposure, ToolExecutionMode, ToolError, ToolCall};
 pub use maho_tools::filesystem_policy::FilesystemOperation;
 pub use maho_tui::tui::Component;
+pub use maho_tui::autocomplete::AutocompleteItem;
 pub use maho_tools::{bash::BashToolInput, read::ReadToolInput, edit::EditToolInput, write::WriteToolInput, grep::index::GrepToolInput, find::FindToolInput, ls::LsToolInput};
 
 pub fn define_tool(tool: ToolDefinition) -> ToolDefinition { tool }
@@ -825,6 +826,7 @@ pub enum FlagType { Boolean { default: Option<bool> }, String { default: Option<
 #[derive(Clone, Debug)]
 pub struct ExtensionFlag { pub name: String, pub description: Option<String>, pub kind: FlagType, pub extension_path: String }
 pub type CommandHandler = Arc<dyn for<'a> Fn(&'a str, &'a ExtensionContext) -> ExtensionFuture<'a, ()> + Send + Sync>;
+pub type CommandArgumentCompletions = Arc<dyn for<'a> Fn(&'a str) -> ExtensionFuture<'a, Option<Vec<maho_tui::autocomplete::AutocompleteItem>>> + Send + Sync>;
 pub type CommandContextHandler = Arc<dyn for<'a> Fn(&'a str, &'a ExtensionCommandContext) -> ExtensionFuture<'a, ()> + Send + Sync>;
 #[derive(Clone, Debug, Default)]
 pub struct ExtensionTreeNavigationOptions { pub summarize: Option<bool>, pub custom_instructions: Option<String>, pub replace_instructions: Option<bool>, pub label: Option<String>, pub expected_leaf_id: Option<String> }
@@ -1053,6 +1055,7 @@ pub struct LoadedExtension {
     pub shortcuts: BTreeMap<String, ExtensionShortcut>, pub lazy_tool_activators: Vec<LazyToolActivator>,
     pub markdown_transformer: Option<MarkdownTransformer>, pub rpc_handlers: BTreeMap<String, ExtensionRpcRequestHandler>,
     pub command_context_handlers: BTreeMap<String, CommandContextHandler>,
+    pub command_argument_completions: BTreeMap<String, CommandArgumentCompletions>,
     pub tool_renderers: BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>,
 }
 impl LoadedExtension {
@@ -1060,7 +1063,7 @@ impl LoadedExtension {
         Self { identity: ExtensionIdentity { path: path.into(), resolved_path: path.into() }, source_info, registration_cwd: cwd,
             handlers: BTreeMap::new(), tools: Vec::new(), commands: Vec::new(), flags: Vec::new(), message_renderers: BTreeMap::new(),
             entry_renderers: BTreeMap::new(), entry_renderer_options: BTreeMap::new(), mcp_servers: Vec::new(), removed_tool_hints: BTreeMap::new(), filesystem_policies: Vec::new(),
-            shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new(), tool_renderers: BTreeMap::new() }
+            shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new(), command_argument_completions: BTreeMap::new(), tool_renderers: BTreeMap::new() }
     }
 }
 #[derive(Clone, Default)]
@@ -1072,6 +1075,7 @@ struct RuntimeState {
     provider_errors: Vec<ExtensionError>,
     live_handlers: BTreeMap<(String, EventKind), Vec<ExtensionHandler>>,
     live_commands: BTreeMap<String, LiveCommandRegistrations>,
+    live_command_argument_completions: BTreeMap<String, BTreeMap<String, CommandArgumentCompletions>>,
     live_shortcuts: BTreeMap<String, BTreeMap<String, ExtensionShortcut>>,
     live_markdown_transformers: BTreeMap<String, MarkdownTransformer>,
     live_rpc_handlers: BTreeMap<String, BTreeMap<String, ExtensionRpcRequestHandler>>,
@@ -1150,6 +1154,7 @@ impl ExtensionRuntime {
         state.stale.get_or_insert_with(|| message.into()); state.read_classifiers.clear(); state.pending_providers.clear();
         state.live_handlers.clear();
         state.live_commands.clear();
+        state.live_command_argument_completions.clear();
         state.live_shortcuts.clear();
         state.live_markdown_transformers.clear(); state.live_rpc_handlers.clear();
         state.live_flags.clear();
@@ -1198,6 +1203,9 @@ impl ExtensionRuntime {
     }
     pub fn live_filesystem_policies(&self, path: &str) -> Option<Vec<FilesystemPolicy>> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_filesystem_policies.get(path).cloned()
+    }
+    pub fn live_command_argument_completions(&self, path: &str) -> Option<BTreeMap<String, CommandArgumentCompletions>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_command_argument_completions.get(path).cloned()
     }
     pub fn live_message_renderers(&self, path: &str) -> Option<BTreeMap<String, MessageRenderer>> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_message_renderers.get(path).cloned()
@@ -1388,14 +1396,22 @@ impl ExtensionApi {
     pub fn register_command(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandHandler) {
         self.runtime.assert_active_or_panic();
         self.registered.command_context_handlers.remove(name);
+        self.registered.command_argument_completions.remove(name);
         let command = RegisteredCommand { name: name.into(), source_info: self.registered.source_info.clone(), description, argument_hint, handler };
         if let Some(existing) = self.registered.commands.iter_mut().find(|c| c.name == name) { *existing = command; } else { self.registered.commands.push(command); }
         self.publish_commands();
     }
     fn publish_commands(&self) {
         if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
-            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_commands.insert(self.registered.identity.path.clone(), (self.registered.commands.clone(), self.registered.command_context_handlers.clone()));
+            let mut state = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.live_commands.insert(self.registered.identity.path.clone(), (self.registered.commands.clone(), self.registered.command_context_handlers.clone()));
+            state.live_command_argument_completions.insert(self.registered.identity.path.clone(), self.registered.command_argument_completions.clone());
         }
+    }
+    pub fn register_command_with_completions(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandHandler, completions: CommandArgumentCompletions) {
+        self.register_command(name, description, argument_hint, handler);
+        self.registered.command_argument_completions.insert(name.into(), completions);
+        self.publish_commands();
     }
     pub fn register_command_with_context(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandContextHandler) {
         self.register_command(name, description, argument_hint, Arc::new(|_, _| Box::pin(async { Err(ExtensionFailure::new("Command requires a command-capable context")) })));

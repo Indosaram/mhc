@@ -418,6 +418,17 @@ impl ExtensionRunner {
         }).collect()
     }
     pub fn get_command(&self, name: &str) -> Option<ResolvedCommand> { self.get_registered_commands().into_iter().find(|c| c.invocation_name == name) }
+    pub async fn get_command_argument_completions(&self, name: &str, prefix: &str) -> Result<Option<Vec<AutocompleteItem>>, ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let resolved = self.get_command(name).ok_or_else(|| ExtensionFailure::new(format!("Unknown extension command: {name}")))?;
+        let completions = self.extensions.iter().find_map(|extension| {
+            let commands = self.runtime.live_commands(&extension.identity.path).map_or_else(|| extension.commands.clone(), |(commands, _)| commands);
+            commands.iter().any(|command| Arc::ptr_eq(&command.handler, &resolved.command.handler)).then(|| self.runtime.live_command_argument_completions(&extension.identity.path).unwrap_or_else(|| extension.command_argument_completions.clone()))
+        }).and_then(|completions| completions.get(&resolved.command.name).cloned());
+        let result = match completions { Some(completions) => completions(prefix).await?, None => None };
+        self.runtime.assert_active()?;
+        Ok(result)
+    }
     pub fn get_flags(&self) -> BTreeMap<String, ExtensionFlag> {
         let mut flags = BTreeMap::new(); for ext in &self.extensions { for flag in self.runtime.live_flags(&ext.identity.path).unwrap_or_else(|| ext.flags.clone()) { flags.entry(flag.name.clone()).or_insert(flag); }} flags
     }
