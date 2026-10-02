@@ -50,16 +50,18 @@ pub trait LoopController:Send+Sync {
     fn is_ended_with_error(&self,loop_id:&str)->bool;
 }
 
-use std::{collections::BTreeMap,sync::{Arc,atomic::{AtomicU64,Ordering}}};
+use std::{collections::BTreeMap,sync::{Arc,atomic::{AtomicBool,AtomicU64,Ordering}}};
 pub struct NodeTimerPort {
     handles:BTreeMap<String,tokio::task::JoinHandle<()>>,
     generations:BTreeMap<String,Arc<AtomicU64>>,
+    active:BTreeMap<String,Arc<AtomicBool>>,
 }
 impl Default for NodeTimerPort { fn default()->Self { Self::new() } }
 impl NodeTimerPort {
-    pub fn new()->Self { Self { handles:BTreeMap::new(),generations:BTreeMap::new() } }
-    pub fn keys(&self)->Vec<String> { self.handles.keys().cloned().collect() }
+    pub fn new()->Self { Self { handles:BTreeMap::new(),generations:BTreeMap::new(),active:BTreeMap::new() } }
+    pub fn keys(&self)->Vec<String> { self.active.iter().filter(|(_,active)|active.load(Ordering::SeqCst)).map(|(key,_)|key.clone()).collect() }
     pub fn cancel(&mut self,key:&str)->Option<tokio::task::JoinHandle<()>> {
+        if let Some(active)=self.active.remove(key) { active.store(false,Ordering::SeqCst); }
         let handle=self.handles.remove(key); if let Some(handle)=&handle { handle.abort(); }
         self.generations.entry(key.into()).or_default().fetch_add(1,Ordering::SeqCst);
         handle
@@ -68,9 +70,11 @@ impl NodeTimerPort {
         let replaced=self.cancel(key);
         let generation=Arc::clone(self.generations.entry(key.into()).or_default());
         let expected=generation.load(Ordering::SeqCst);
+        let active=Arc::new(AtomicBool::new(true)); self.active.insert(key.into(),active.clone());
         let delay=std::time::Duration::from_secs_f64((due_at-now).max(0.0)/1000.0);
         self.handles.insert(key.into(),tokio::spawn(async move {
             tokio::time::sleep(delay).await;
+            active.store(false,Ordering::SeqCst);
             if generation.load(Ordering::SeqCst)==expected { callback(); }
         }));
         replaced
@@ -114,6 +118,7 @@ impl Drop for NodeTimerPort { fn drop(&mut self) { for handle in self.handles.va
         let cancelled=timers.cancel("b").unwrap();
         assert!(replaced.await.unwrap_err().is_cancelled()); assert!(cancelled.await.unwrap_err().is_cancelled());
         tokio::time::timeout(std::time::Duration::from_secs(1),receive).await.unwrap().unwrap();
+        assert!(timers.keys().is_empty());
         timers.cancel("a").unwrap().await.unwrap();
     }
     #[tokio::test] async fn cancel_all_observes_every_cancelled_worker() {
