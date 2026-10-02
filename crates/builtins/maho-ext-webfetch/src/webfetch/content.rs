@@ -230,6 +230,18 @@ pub fn reader_include_sibling(sibling:&dom_query::NodeRef<'_>,top:&dom_query::No
     let text=reader_inner_text(sibling,true);let length=text.encode_utf16().count();let density=reader_link_density(sibling);
     (length>80&&density<0.25)||(length<80&&length>0&&density==0.&&(text.ends_with('.')||text.contains(". ")))
 }
+pub fn reader_gather_siblings<'a>(top:dom_query::NodeRef<'a>,top_score:f64,scores:&[(dom_query::NodeId,f64)])->dom_query::NodeRef<'a> {
+    let parent=top.parent().expect("candidate has parent");let siblings=parent.element_children();
+    parent.append_html("<div></div>");let article=parent.children().last().copied().expect("inserted article");
+    for sibling in siblings {
+        let score=scores.iter().find(|(id,_)|*id==sibling.id).map(|(_,value)|*value);
+        if reader_include_sibling(&sibling,&top,top_score,score) {
+            if !matches!(sibling.node_name().as_deref(),Some("div"|"article"|"section"|"p"|"ol"|"ul")) {sibling.rename("div");}
+            article.append_child(&sibling);
+        }
+    }
+    article.remove_from_parent();article
+}
 fn markdown_block(name:&str)->bool {matches!(name,"address"|"article"|"aside"|"audio"|"blockquote"|"body"|"canvas"|"center"|"dd"|"dir"|"div"|"dl"|"dt"|"fieldset"|"figcaption"|"figure"|"footer"|"form"|"frameset"|"h1"|"h2"|"h3"|"h4"|"h5"|"h6"|"header"|"hgroup"|"hr"|"html"|"isindex"|"li"|"main"|"menu"|"nav"|"noframes"|"noscript"|"ol"|"output"|"p"|"pre"|"section"|"table"|"tbody"|"td"|"tfoot"|"th"|"thead"|"tr"|"ul")}
 fn markdown_void(name:&str)->bool {matches!(name,"area"|"base"|"br"|"col"|"command"|"embed"|"hr"|"img"|"input"|"keygen"|"link"|"meta"|"param"|"source"|"track"|"wbr")}
 fn markdown_meaningful(name:&str)->bool {matches!(name,"a"|"table"|"thead"|"tbody"|"tfoot"|"th"|"td"|"iframe"|"script"|"audio"|"video")}
@@ -417,6 +429,9 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_gather_moves_scored_and_sentence_siblings_in_original_order() {
+        let document=dom_query::Document::from("<main><p>Intro.</p><pre id='top' class='keep'>Code</pre><p>not a sentence</p><section id='scored'>Content</section></main>");let top=document.select("#top").nodes()[0];let scored=document.select("#scored").nodes()[0];let article=reader_gather_siblings(top,100.,&[(scored.id,20.)]);assert_eq!(article.inner_html().as_ref(),"<p>Intro.</p><div id=\"top\" class=\"keep\">Code</div><section id=\"scored\">Content</section>");assert!(article.parent().is_none());assert_eq!(document.select("main").text().as_ref(),"not a sentence");
+    }
     #[test] fn reader_refinement_joins_close_candidates_at_shared_parent() {
         let document=dom_query::Document::from("<main><section><p id='a'>a</p><p id='b'>b</p><p id='c'>c</p><p id='d'>d</p></section><aside>x</aside></main>");let nodes:Vec<_>=["#a","#b","#c","#d"].iter().map(|selector|document.select(selector).nodes()[0]).collect();let scores:Vec<_>=nodes.iter().enumerate().map(|(index,node)|(node.id,100.-index as f64)).collect();let top=reader_refine_candidate(nodes[0],&scores,&scores,true);assert_eq!(top.node_name().as_deref(),Some("section"));
     }
