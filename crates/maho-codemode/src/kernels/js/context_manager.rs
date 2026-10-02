@@ -1,47 +1,192 @@
 use crate::bridge::protocol::BridgeConnectionConfig;
 use crate::kernels::session_env::SessionEnvironment;
-use crate::kernels::shared::subprocess_contract::{KernelRunInput, SubprocessKernelOptions};
-use crate::kernels::shared::subprocess_kernel::SubprocessKernel;
-use crate::kernels::shared::subprocess_process::ProcessError;
-use serde_json::Value;
-use std::path::Path;
-use super::local_module_loader::{LocalModuleLoader, LocalModuleLoaderOptions, PREPARED_CELL_PREFIX};
+use crate::kernels::shared::{subprocess_contract::KernelRunInput, subprocess_process::ProcessError, subprocess_run::{KernelMessageCallback, KernelStartedCallback}, subprocess_queue::SubprocessRunQueue};
+use serde_json::{Value, json};
+use std::{path::{Path, PathBuf}, sync::{Arc, Mutex}, time::Duration};
+use tokio::sync::{mpsc, oneshot};
+use super::{local_module_loader::{LocalModuleLoader, LocalModuleLoaderOptions, PREPARED_CELL_PREFIX}, run_queue::{JavaScriptRunQueue, stopped_result}, worker_slot::WorkerSlot, worker_startup::WorkerStartupOptions, interrupt_bounds::{INTERRUPT_ACK_MS, JS_INTERRUPT_GRACE_MS}};
+
+type Snapshot = (Option<String>, Vec<String>);
+enum Command {
+    Run(KernelRunInput, Option<KernelMessageCallback>, Option<KernelStartedCallback>, oneshot::Sender<Result<Value, String>>),
+    Cancel(String, String, oneshot::Sender<bool>),
+    Reply(Value),
+    Pull(oneshot::Sender<oneshot::Receiver<Value>>),
+    Interrupt(String, Option<String>, oneshot::Sender<Result<bool, String>>),
+    Reset(oneshot::Sender<Result<(), String>>),
+    Close(oneshot::Sender<Result<(), String>>),
+}
+
+struct WorkerOptions { cwd: PathBuf, session_id: String, width: u64, environment: Option<SessionEnvironment>, connection: BridgeConnectionConfig, executable: PathBuf }
+impl WorkerOptions {
+    fn startup(&self) -> WorkerStartupOptions<'_> {
+        WorkerStartupOptions {cwd:&self.cwd, session_id:&self.session_id, parallel_pool_width:self.width, connection:&self.connection, generation:0, host_tool_names:&[], foreign_language_names:&[], session_env:self.environment.as_ref(), worker_entry:None, environment:crate::kernels::shared::runtime_asset::CodemodeRuntimeAssetEnvironment {bun_version:None,executable_path:&self.executable}}
+    }
+}
 
 pub struct JavaScriptKernel {
-    kernel: SubprocessKernel,
+    commands: mpsc::UnboundedSender<Command>,
     loader: LocalModuleLoader,
+    snapshot: Arc<Mutex<Snapshot>>,
+    pid: Arc<Mutex<Option<u32>>>,
 }
 
 impl JavaScriptKernel {
     pub async fn start(cwd: &Path, session_id: &str, parallel_pool_width: u64, session_env: Option<SessionEnvironment>) -> Result<Self, ProcessError> {
-        let loader = LocalModuleLoader::new(&LocalModuleLoaderOptions { cwd:cwd.into(),local_roots:None,artifacts_dir:None })?;
-        let worker = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/js/worker-entry.js");
-        let relay = format!(
-            "import {{ Worker }} from 'node:worker_threads'; import {{ createInterface }} from 'node:readline'; const worker = new Worker({}, {{ workerData: {{ cwd: {}, parallelPoolWidth: {} }} }}); worker.on('message', message => process.stdout.write(JSON.stringify(message)+'\\n')); worker.on('error', error => {{ process.stdout.write(JSON.stringify({{type:'init-failed',error:{{message:error.message}}}})+'\\n'); process.exitCode=1; }}); worker.on('exit', code => process.exit(code)); const input=createInterface({{input:process.stdin}}); input.on('line', line => worker.postMessage(JSON.parse(line))); input.on('close', () => worker.terminate());",
-            serde_json::to_string(worker)?, serde_json::to_string(&cwd.to_string_lossy())?, parallel_pool_width,
-        );
-        let kernel = SubprocessKernel::start(SubprocessKernelOptions {
-            command: "bun".into(), args: vec!["-e".into(), relay], cwd: cwd.into(), env: None, session_env, on_message: None,
-            session_id: session_id.into(), connection: BridgeConnectionConfig {
-                port: 1, token: "worker-transport".into(), local_roots: None, artifacts_dir: None, parallel_pool_width: Some(parallel_pool_width),
-            },
-        }).await?;
-        Ok(Self { kernel, loader })
+        let loader=LocalModuleLoader::new(&LocalModuleLoaderOptions {cwd:cwd.into(),local_roots:None,artifacts_dir:None})?;
+        let options=WorkerOptions {cwd:cwd.into(),session_id:session_id.into(),width:parallel_pool_width,environment:session_env,executable:std::env::current_exe()?,connection:BridgeConnectionConfig {port:1,token:"worker-transport".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:Some(parallel_pool_width)}};
+        let mut slot=WorkerSlot::default();
+        slot.ensure_ready(options.startup(),&maho_ai::utils::abort::AbortController::new().signal()).await?;
+        let pid=Arc::new(Mutex::new(slot.pid()));
+        let snapshot=Arc::new(Mutex::new((None,vec![])));
+        let (commands,receiver)=mpsc::unbounded_channel();
+        tokio::spawn(run_actor(options,slot,receiver,snapshot.clone(),pid.clone()));
+        Ok(Self {commands,loader,snapshot,pid})
     }
 
-    pub async fn run(&self, mut input: KernelRunInput, on_message: impl FnMut(&Value)) -> Result<Value, ProcessError> {
-        if !input.code.starts_with(PREPARED_CELL_PREFIX) { input.code = self.loader.prepare_cell(&input.code); }
-        self.kernel.run(input, on_message).await
+    pub async fn run(&self, input: KernelRunInput, mut on_message: impl FnMut(&Value)) -> Result<Value, ProcessError> {
+        let (sender,mut frames)=mpsc::unbounded_channel();
+        let operation=self.run_with_callbacks(input,Some(Arc::new(move |message| {let _=sender.send(message.clone());})),None);
+        tokio::pin!(operation);
+        let result=loop {tokio::select! {result=&mut operation=>break result,Some(message)=frames.recv()=>on_message(&message)}};
+        while let Ok(message)=frames.try_recv() {on_message(&message);}
+        result
     }
-    pub async fn run_with_callbacks(&self, mut input: super::super::shared::subprocess_contract::KernelRunInput, on_message: Option<crate::kernels::shared::subprocess_run::KernelMessageCallback>, on_started: Option<crate::kernels::shared::subprocess_run::KernelStartedCallback>) -> Result<Value,ProcessError> {
-        if !input.code.starts_with(PREPARED_CELL_PREFIX) { input.code=self.loader.prepare_cell(&input.code); }
-        self.kernel.run_with_callbacks(input,on_message,on_started).await
+    pub async fn run_with_callbacks(&self, mut input: KernelRunInput, on_message: Option<KernelMessageCallback>, on_started: Option<KernelStartedCallback>) -> Result<Value,ProcessError> {
+        if !input.code.starts_with(PREPARED_CELL_PREFIX) {input.code=self.loader.prepare_cell(&input.code);}
+        let (sender,receiver)=oneshot::channel();
+        self.commands.send(Command::Run(input,on_message,on_started,sender)).map_err(|_|ProcessError::Closed)?;
+        receiver.await.map_err(|_|ProcessError::Closed)?.map_err(ProcessError::Startup)
     }
-    pub fn queue_snapshot(&self)->(Option<String>,Vec<String>) {self.kernel.queue_snapshot()}
-    pub async fn cancel_queued(&self,id:&str,reason:&str)->bool {self.kernel.cancel_queued(id,reason).await}
-    pub fn deliver_tool_reply(&self,message:Value)->Result<(),String> {self.kernel.deliver_tool_reply(message)}
-    pub async fn next_tool_call(&self)->Result<Value,ProcessError> {self.kernel.next_tool_call().await}
-    pub async fn reset(&self) -> Result<(), ProcessError> { self.kernel.reset().await }
-    pub async fn close(&self) -> Result<(), ProcessError> { self.kernel.close().await }
-    pub fn pid(&self) -> Option<u32> { self.kernel.pid() }
+    pub fn queue_snapshot(&self)->Snapshot {self.snapshot.lock().expect("JS queue lock").clone()}
+    pub async fn cancel_queued(&self,id:&str,reason:&str)->bool {
+        let (sender,receiver)=oneshot::channel();
+        if self.commands.send(Command::Cancel(id.into(),reason.into(),sender)).is_err() {return false;}
+        receiver.await.unwrap_or(false)
+    }
+    pub fn deliver_tool_reply(&self,message:Value)->Result<(),String> {self.commands.send(Command::Reply(message)).map_err(|_|"JavaScript kernel is closed".into())}
+    pub async fn next_tool_call(&self)->Result<Value,ProcessError> {
+        let (sender,receiver)=oneshot::channel();
+        self.commands.send(Command::Pull(sender)).map_err(|_|ProcessError::Closed)?;
+        receiver.await.map_err(|_|ProcessError::Closed)?.await.map_err(|_|ProcessError::Closed)
+    }
+    pub async fn interrupt(&self,reason:&str,id:Option<&str>)->Result<bool,String> {
+        let (sender,receiver)=oneshot::channel();
+        self.commands.send(Command::Interrupt(reason.into(),id.map(str::to_owned),sender)).map_err(|_|"JavaScript kernel is closed".to_string())?;
+        receiver.await.map_err(|_|"JavaScript interrupt outcome unavailable".to_string())?
+    }
+    pub async fn reset(&self)->Result<(),ProcessError> {
+        let (sender,receiver)=oneshot::channel();
+        self.commands.send(Command::Reset(sender)).map_err(|_|ProcessError::Closed)?;
+        receiver.await.map_err(|_|ProcessError::Closed)?.map_err(ProcessError::Startup)
+    }
+    pub async fn close(&self)->Result<(),ProcessError> {
+        let (sender,receiver)=oneshot::channel();
+        if self.commands.send(Command::Close(sender)).is_err() {return Ok(());}
+        receiver.await.map_err(|_|ProcessError::Closed)?.map_err(ProcessError::Startup)
+    }
+    pub fn pid(&self)->Option<u32> {*self.pid.lock().expect("JS pid lock")}
+}
+
+fn route(message:Value,runs:&mut JavaScriptRunQueue,calls:&mut SubprocessRunQueue)->bool {
+    if message["type"]=="status" && message["event"]["op"]==crate::bridge::reserved::INTERRUPT_ACK_OP {return false;}
+    if let Some(run)=runs.active() && let Some(callback)=&run.on_message {callback(&message);}
+    if message["type"]=="tool-call" {calls.push_tool_call(message);return false;}
+    if message["type"]!="result" || runs.active().is_none_or(|run|message["cellId"]!=run.input.cell_id) {return false;}
+    if let Some(mut run)=runs.release_active() {
+        run.settled_by_worker=true;
+        let result=run.interrupt_result.take().unwrap_or(message);
+        JavaScriptRunQueue::settle(&mut run,result);
+    }
+    true
+}
+
+async fn stop_active(slot:&mut WorkerSlot,runs:&mut JavaScriptRunQueue,calls:&mut SubprocessRunQueue,reason:&str,message:&str,duration:u64)->Result<bool,ProcessError> {
+    let Some(run)=runs.active_mut() else {return Ok(true);};
+    let mut result=stopped_result(&run.input.cell_id,message);
+    result["durationMs"]=json!(duration);
+    run.interrupt_result=Some(result);
+    slot.post_message(&json!({"type":"interrupt","reason":reason})).await?;
+    let mut deadline=tokio::time::Instant::now()+Duration::from_millis(INTERRUPT_ACK_MS);
+    let mut acknowledged=false;
+    loop {
+        let frame=tokio::time::timeout_at(deadline,slot.next_message()).await;
+        let Ok(Ok(frame))=frame else {break;};
+        if frame["type"]=="status" && frame["event"]["op"]==crate::bridge::reserved::INTERRUPT_ACK_OP && !acknowledged {
+            acknowledged=true;
+            deadline=tokio::time::Instant::now()+Duration::from_millis(JS_INTERRUPT_GRACE_MS);
+        }
+        if route(frame,runs,calls) {calls.clear_tool_calls();return Ok(true);}
+    }
+    slot.retire().await?;
+    if let Some(mut run)=runs.release_active() {
+        let result=run.interrupt_result.take().expect("interrupt result");
+        JavaScriptRunQueue::settle(&mut run,result);
+    }
+    calls.clear_tool_calls();
+    Ok(false)
+}
+
+async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::UnboundedReceiver<Command>,snapshot:Arc<Mutex<Snapshot>>,pid:Arc<Mutex<Option<u32>>>) {
+    let mut runs=JavaScriptRunQueue::default();
+    let mut calls=SubprocessRunQueue::default();
+    let origin=tokio::time::Instant::now();
+    let mut deadline=None;
+    loop {
+        if runs.active().is_none() && runs.has_waiting() {
+            let ready=slot.ensure_ready(options.startup(),&maho_ai::utils::abort::AbortController::new().signal()).await;
+            if let Err(error)=ready {runs.reject_waiting(&error.to_string());}
+            else if let Some(run)=runs.start_next(origin.elapsed().as_secs_f64()*1000.0) {
+                deadline=run.input.timeout_ms.filter(|ms|*ms>0).map(|ms|tokio::time::Instant::now()+Duration::from_millis(ms));
+                if let Err(error)=slot.post_message(&json!({"type":"run","cellId":run.input.cell_id,"code":run.input.code})).await {
+                    runs.settle_all(&error.to_string());
+                    if let Err(error)=slot.retire().await {eprintln!("JS retirement failed: {error}");}
+                    deadline=None;
+                }
+            }
+        }
+        *snapshot.lock().expect("JS queue lock")=runs.snapshot();
+        *pid.lock().expect("JS pid lock")=slot.pid();
+        tokio::select! {
+            command=commands.recv()=>match command {
+                Some(Command::Run(input,message,started,response))=>{
+                    let mut result=runs.enqueue(input,started,message);
+                    tokio::spawn(async move {let outcome=result.wait_for(Option::is_some).await.map(|value|value.as_ref().expect("run outcome").clone()).unwrap_or_else(|_|Err("JavaScript kernel is closed".into()));let _=response.send(outcome);});
+                }
+                Some(Command::Cancel(id,reason,response))=>{let _=response.send(runs.remove(&id,&reason));}
+                Some(Command::Reply(message))=>{if let Err(error)=slot.post_message(&message).await {runs.settle_all(&error.to_string());if let Err(error)=slot.retire().await {eprintln!("JS retirement failed: {error}");}deadline=None;}}
+                Some(Command::Pull(response))=>{let _=response.send(calls.next_tool_call());}
+                Some(Command::Interrupt(reason,id,response))=>{
+                    let result=if id.as_ref().is_some_and(|id|runs.active().is_none_or(|run|&run.input.cell_id!=id)) {if let Some(id)=id {runs.remove(&id,&reason);}Ok(true)} else {
+                        deadline=None;
+                        stop_active(&mut slot,&mut runs,&mut calls,&reason,&format!("JS cell interrupted: {reason}"),0).await.map_err(|error|error.to_string())
+                    };
+                    let _=response.send(result);
+                }
+                Some(Command::Reset(response))=>{
+                    runs.settle_all("JS kernel reset");calls.clear_tool_calls();deadline=None;
+                    let result=async {slot.retire().await?;slot.ensure_ready(options.startup(),&maho_ai::utils::abort::AbortController::new().signal()).await}.await.map_err(|error|error.to_string());
+                    let _=response.send(result);
+                }
+                Some(Command::Close(response))=>{
+                    runs.settle_all("JS kernel closed");calls.clear_tool_calls();
+                    let _=slot.post_message(&json!({"type":"close"})).await;
+                    let result=slot.retire().await.map(|_|()).map_err(|error|error.to_string());
+                    let _=response.send(result);break;
+                }
+                None=>{runs.settle_all("JS kernel closed");if let Err(error)=slot.retire().await {eprintln!("JS retirement failed: {error}");}break;}
+            },
+            message=slot.next_message(),if slot.present()=>match message {
+                Ok(message)=>{if route(message,&mut runs,&mut calls) {deadline=None;}}
+                Err(error)=>{if let Some(mut run)=runs.release_active() {let result=stopped_result(&run.input.cell_id,&error.to_string());JavaScriptRunQueue::settle(&mut run,result);}calls.clear_tool_calls();deadline=None;if let Err(error)=slot.retire().await {eprintln!("JS retirement failed: {error}");}}
+            },
+            ()=async {match deadline {Some(deadline)=>tokio::time::sleep_until(deadline).await,None=>std::future::pending().await}},if deadline.is_some()=>{
+                let duration=runs.active().and_then(|run|run.input.timeout_ms).unwrap_or(0);
+                if let Err(error)=stop_active(&mut slot,&mut runs,&mut calls,&format!("timed out after {duration}ms"),&format!("JS cell timed out after {duration}ms"),duration).await {runs.settle_all(&error.to_string());if let Err(error)=slot.retire().await {eprintln!("JS retirement failed: {error}");}}
+                deadline=None;
+            }
+        }
+    }
+    *snapshot.lock().expect("JS queue lock")=(None,vec![]);
+    *pid.lock().expect("JS pid lock")=None;
 }

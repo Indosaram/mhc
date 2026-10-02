@@ -15,6 +15,7 @@ impl Default for WorkerSlot {
 impl WorkerSlot {
     pub fn mode(&self) -> JavaScriptKernelMode { self.mode }
     pub fn present(&self) -> bool { self.worker.is_some() }
+    pub fn pid(&self) -> Option<u32> { self.worker.as_ref().and_then(WorkerHost::pid) }
     pub fn generation(&self) -> u64 { self.generation }
     pub async fn ensure_ready(&mut self, mut options: WorkerStartupOptions<'_>, signal: &maho_ai::utils::abort::AbortSignal) -> Result<(), ProcessError> {
         if self.worker.is_some() { return Ok(()); }
