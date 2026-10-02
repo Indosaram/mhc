@@ -135,6 +135,12 @@ async fn thread_settings_validate_before_mutation_and_respond_before_notificatio
     let found = read(&mut client).await;
     assert_eq!(found["id"],9);
     assert_eq!(found["result"]["files"].as_array().unwrap().len(),1);
+    send(&mut client,json!({"id":10,"method":"permissionProfile/list","params":{"limit":1}})).await;
+    assert_eq!(read(&mut client).await["result"]["data"][0]["id"],"dangerFullAccess");
+    send(&mut client,json!({"id":11,"method":"experimentalFeature/list","params":{"threadId":"missing"}})).await;
+    assert_eq!(read(&mut client).await["error"]["code"],-32600);
+    send(&mut client,json!({"id":12,"method":"mcpServerStatus/list","params":{"detail":"toolsAndAuthOnly"}})).await;
+    assert!(read(&mut client).await["result"]["data"].as_array().unwrap().is_empty());
     client.close(None).await.unwrap();drop(client);
     listener.close().await.unwrap();runtime.dispose().await;
     assert!(!path.exists());

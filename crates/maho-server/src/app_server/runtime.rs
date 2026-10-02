@@ -8,6 +8,7 @@ pub struct AppServerRuntime {
     pub threads: Arc<ThreadRegistry>,
     pub turn_log: Arc<Mutex<TurnLog>>,
     fuzzy_search: super::fuzzy_search_service::FuzzyFileSearchService,
+    pub mcp_inventory: Arc<Mutex<super::mcp_wire_status::McpWireStatusRegistry>>,
 }
 fn required_string<'a>(params: &'a Value, key: &str) -> Result<&'a str, JsonRpcError> {
     params[key].as_str().filter(|value| !value.is_empty()).ok_or_else(|| JsonRpcError::new(-32603, format!("Invalid params: {key} is required")))
@@ -24,6 +25,9 @@ impl AppServerRuntime {
             let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {models_path:Some(std::path::Path::new(&model_directory).join("models.json")),auth_path:Some(std::path::Path::new(&model_directory).join("auth.json")),..Default::default()});
             maho_core::model_registry::ModelRegistry::new(runtime).get_available()
         }));
+        let process_inventory = super::mcp_wire_status::create_process_mcp_wire_status_adapter(std::path::Path::new(&agent_dir),std::path::Path::new(&cwd),&std::env::vars().collect()).unwrap_or_else(|error| {eprintln!("app-server MCP configuration: {error}");super::mcp_wire_status::McpWireStatusAdapter::new(Default::default())});
+        let mcp_inventory = Arc::new(Mutex::new(super::mcp_wire_status::McpWireStatusRegistry::new(Some(process_inventory))));
+        super::catalogs::register_catalog_methods(&mut core.registry,threads.clone(),mcp_inventory.clone(),agent_dir.clone(),cwd.clone());
         super::skills::register_skill_methods(&mut core.registry, agent_dir, cwd.clone());
         let notification_core = Arc::new(std::sync::OnceLock::<std::sync::Weak<RwLock<ServerCore>>>::new());
         let fuzzy_core = notification_core.clone();
@@ -89,7 +93,7 @@ impl AppServerRuntime {
         super::list_handlers::register_list_handlers(&core,threads.clone(),archive.clone(),version.clone()).await;
         super::search::register_search_handler(&core,threads.clone(),archive.clone(),turn_log.clone(),version).await;
         super::history_handlers::register_history_handlers(&core,threads.clone(),archive,turn_log.clone()).await;
-        Self { core, threads, turn_log, fuzzy_search }
+        Self { core, threads, turn_log, fuzzy_search, mcp_inventory }
     }
     pub async fn dispose(&self) { self.fuzzy_search.dispose();self.threads.dispose().await; }
 }
