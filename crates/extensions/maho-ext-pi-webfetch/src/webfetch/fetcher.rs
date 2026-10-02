@@ -38,7 +38,7 @@ async fn fetch_validated_url(value:&str,format:WebfetchFormat)->Result<FetchResu
             current=url::Url::parse(&current).and_then(|url|url.join(location)).map_err(|_|WebfetchError::InvalidUrl(format!("Invalid URL: {location}")))?.into();continue;
         }
         if response.content_length().is_some_and(|length|length>5*1024*1024){return Err(WebfetchError::ResponseTooLarge);}
-        let content_type=response.headers().get("content-type").and_then(|v|v.to_str().ok()).unwrap_or("").to_owned();
+        let content_type=response.headers().get_all("content-type").iter().map(|value|String::from_utf8_lossy(value.as_bytes())).collect::<Vec<_>>().join(", ");
         let mut body=Vec::new();
         while let Some(chunk)=response.chunk().await?{if body.len()+chunk.len()>MAX_RESPONSE_SIZE_BYTES{return Err(WebfetchError::ResponseTooLarge);}body.extend_from_slice(&chunk);}
         let bytes=body.len();return Ok(FetchResult{url:current,status:status.as_u16(),status_text:status.canonical_reason().unwrap_or("").into(),content_type,bytes,body,truncated:bytes==MAX_RESPONSE_SIZE_BYTES});
