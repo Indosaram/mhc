@@ -89,7 +89,7 @@ pub fn tokenize_tool_text(text: &str) -> Vec<String> {
     }
     separated.split(|c: char| !c.is_ascii_alphanumeric()).filter(|s| !s.is_empty()).map(str::to_ascii_lowercase).collect()
 }
-pub fn normalize_tool_name(name: &str) -> String { name.to_lowercase().chars().filter(|c| *c != '-' && *c != '_' && !c.is_whitespace()).collect() }
+pub fn normalize_tool_name(name: &str) -> String { name.to_lowercase().chars().filter(|c| !matches!(*c,'-'|'_'|'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}')).collect() }
 
 #[cfg(test)]
 mod tests {
@@ -97,6 +97,7 @@ mod tests {
     fn doc(name: &str) -> ToolSearchDocument { ToolSearchDocument { name: name.into(), label: name.into(), aliases: vec![], description: None, search_text: None, keywords: vec![], source: ToolSearchSource::Extension, group: "utilities".into(), owner_label: "Utilities".into(), registration_id: format!("registration:{name}") } }
     #[test] fn tokenizer() { assert_eq!(tokenize_tool_text("HTTPServerV2 resolveLibraryId get-library-docs"), ["http","server","v2","resolve","library","id","get","library","docs"]); }
     #[test] fn normalized() { assert_eq!(normalize_tool_name("Get-Library_Docs"), "getlibrarydocs"); }
+    #[test] fn normalization_uses_ecmascript_whitespace() { assert_eq!(normalize_tool_name("Get\u{feff}Library\u{0085}Docs"),"getlibrary\u{0085}docs"); }
     #[test] fn generalized_exact_names() { let mut d=doc("lookup"); d.label="Find Package".into(); d.aliases.push("resolve-library-id".into()); d.keywords.push("dependency catalog".into()); let index=build_bm25_index(&[d]); for q in ["find_package","RESOLVE LIBRARY ID","dependency-catalog"] { assert!(index.search(q,25,&Default::default())[0].exact); } }
     #[test] fn keyword_weights() { let mut a=doc("keyword"); a.keywords.push("ledger".into()); let mut b=doc("description"); b.description=Some("ledger".into()); let r=build_bm25_index(&[a,b]).search("ledger",25,&Bm25SearchOptions { exact_match:Some(false), ..Default::default() }); assert_eq!(r[0].name,"keyword"); assert!(r[0].score>=r[1].score); }
     #[test] fn optional_fields() { let i=build_bm25_index(&[doc("bare_tool")]); for q in [""," ","--- !!!","the and or"] { assert!(i.search(q,25,&Default::default()).is_empty()); } assert!(build_bm25_index(&[]).search("anything",25,&Default::default()).is_empty()); }

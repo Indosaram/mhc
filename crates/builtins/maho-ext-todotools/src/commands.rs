@@ -2,13 +2,28 @@ use crate::{todo_types::{TodoPhase,TodoStatus,TodoItem,DEFAULT_INIT_PHASE},markd
 use crate::{todo_types::{TodoOperation,TodoOpEntry},todo_operations::apply_ops_to_phases};
 pub struct TodoCommandMutation { pub phases:Vec<TodoPhase>,pub action:String,pub notification:String,pub removed:bool }
 fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}') }
+pub fn argument_completions(prefix:&str)->Option<Vec<&'static str>> {
+    let prefix=prefix.trim_matches(js_whitespace).to_lowercase();
+    let matches:Vec<_>=["edit","copy","export","import","append","start","done","drop","rm","help"].into_iter().filter(|verb|verb.starts_with(&prefix)).collect();
+    (!matches.is_empty()).then_some(matches)
+}
+pub fn split_command(args:&str)->Option<(String,&str)> {
+    let trimmed=args.trim_matches(js_whitespace); if trimmed.is_empty() { return None; }
+    match trimmed.char_indices().find(|(_,character)|js_whitespace(*character)) {
+        Some((index,character))=>Some((trimmed[..index].to_lowercase(),trimmed[index+character.len_utf8()..].trim_matches(js_whitespace))),
+        None=>Some((trimmed.to_lowercase(),"")),
+    }
+}
 pub fn status_command(phases:&[TodoPhase],rest:&str,op:TodoOperation)->Result<TodoCommandMutation,String> {
+    if op==TodoOperation::Start {
+        if rest.is_empty() { return Err("Usage: /todo start <task>".into()); }
+        if find_task_fuzzy(phases,rest).is_none() { return Err(format!("No task matched \"{rest}\". Use /todo to list current tasks.")); }
+    }
     let trimmed=rest.trim_matches(js_whitespace);
     let (task,phase,label)=if trimmed.is_empty() { (None,None,None) }
     else if let Some((p,t))=find_task_fuzzy(phases,trimmed) { (Some(phases[p].tasks[t].content.clone()),None,Some(phases[p].tasks[t].content.clone())) }
     else if op!=TodoOperation::Start { match find_phase_fuzzy(phases,trimmed) { Some(phase)=>(None,Some(phase.name.clone()),Some(phase.name.clone())),None=>return Err(format!("No task or phase matched \"{trimmed}\".")) } }
     else { return Err(format!("No task matched \"{rest}\". Use /todo to list current tasks.")); };
-    if op==TodoOperation::Start && rest.is_empty() { return Err("Usage: /todo start <task>".into()); }
     if op==TodoOperation::Rm && trimmed.is_empty() { return Ok(TodoCommandMutation{phases:vec![],action:"/todo rm (all)".into(),notification:"Cleared all todos.".into(),removed:true}); }
     let is_phase=phase.is_some();
     let result=apply_ops_to_phases(phases,&[TodoOpEntry{op,list:None,task,phase,items:None}]);
@@ -71,6 +86,9 @@ pub fn find_task_fuzzy(phases:&[TodoPhase],query:&str)->Option<(usize,usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn command_dispatch_uses_javascript_whitespace_and_preserves_arguments() { assert_eq!(split_command(" \u{feff}APPEND\u{feff}\"two words\" "),Some(("append".into(),"\"two words\""))); assert_eq!(split_command("\u{feff}"),None); assert_eq!(split_command("help"),Some(("help".into(),""))); }
+    #[test] fn completion_preserves_source_order_and_no_match_is_absent() { assert_eq!(argument_completions("\u{feff}D"),Some(vec!["done","drop"])); assert_eq!(argument_completions("missing"),None); assert_eq!(argument_completions("").unwrap().len(),10); }
+    #[test] fn whitespace_start_is_an_unmatched_target_not_an_untargeted_operation() { let phases=vec![TodoPhase{name:"Build".into(),tasks:vec![TodoItem{content:"Run tests".into(),status:TodoStatus::Pending}]}]; assert!(status_command(&phases," \u{feff}",TodoOperation::Start).is_err()); assert_eq!(phases[0].tasks[0].status,TodoStatus::Pending); }
     #[test] fn sentence_title_case_preserves_astral_first_code_unit() { assert_eq!(title_case_sentence("\u{10428}task"),"\u{10428}task"); assert_eq!(title_case_sentence("\u{feff}task\u{feff}"),"Task"); }
     #[test] fn tokenizer_uses_javascript_whitespace() { assert_eq!(tokenize_todo_args("a\u{feff}b\u{0085}c"),["a","b\u{0085}c"]); }
     #[test] fn quoted_and_escaped_tokens() { assert_eq!(tokenize_todo_args("append \"two words\" escaped\\ space end\\"),["append","two words","escaped space","end\\"]); }
