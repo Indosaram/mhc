@@ -164,6 +164,19 @@ fn session_actions_fail_explicitly_before_host_binding() {
 }
 
 #[test]
+fn mcp_registration_requires_the_enabled_transport_endpoint() {
+    let mut api = api(ExtensionRuntime::default());
+    assert!(api.try_register_mcp_server("stdio", McpServerDeclaration::default()).is_err());
+    assert!(api.try_register_mcp_server("http", McpServerDeclaration { transport: Some(McpTransport::Http), url: Some("  ".into()), ..Default::default() }).is_err());
+    api.try_register_mcp_server("disabled", McpServerDeclaration { enabled: Some(false), ..Default::default() }).unwrap();
+    api.try_register_mcp_server("inferred", McpServerDeclaration { url: Some("https://example.invalid/mcp".into()), ..Default::default() }).unwrap();
+    api.try_register_mcp_server("explicit", McpServerDeclaration { transport: Some(McpTransport::Stdio), command: Some("server".into()), url: Some("ignored".into()), ..Default::default() }).unwrap();
+    assert_eq!(api.registered.mcp_servers.len(), 3);
+    api.runtime.invalidate("reloaded");
+    assert!(api.try_register_mcp_server("late", McpServerDeclaration { enabled: Some(false), ..Default::default() }).is_err());
+}
+
+#[test]
 fn failed_queued_provider_does_not_discard_later_registrations() {
     struct Selective(Providers);
     impl ExtensionProviderActions for Selective {

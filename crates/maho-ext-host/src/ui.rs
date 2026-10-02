@@ -43,8 +43,8 @@ impl LifecycleUi {
     }
 }
 impl ExtensionUi for LifecycleUi {
-    fn actions(&self) -> Option<&dyn ExtensionUiActions> { self.active(); self.inner.actions() }
-    fn factories(&self) -> Option<&dyn ExtensionUiFactories> { self.active(); self.inner.factories() }
+    fn actions(&self) -> Option<&dyn ExtensionUiActions> { self.active(); self.inner.actions().map(|_| self as &dyn ExtensionUiActions) }
+    fn factories(&self) -> Option<&dyn ExtensionUiFactories> { self.active(); self.inner.factories().map(|_| self as &dyn ExtensionUiFactories) }
     fn select<'a>(&'a self, title: &'a str, options: &'a [String], dialog: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
         Box::pin(async move { let _guard = self.begin(UiPromptKind::Select, Some(title)).unwrap_or_else(|error| std::panic::panic_any(error)); self.inner.select(title, options, dialog).await })
     }
@@ -76,4 +76,40 @@ impl ExtensionUi for LifecycleUi {
     fn set_editor_text(&self, text: &str) { self.active(); self.inner.set_editor_text(text); }
     fn get_editor_text(&self) -> String { self.active(); self.inner.get_editor_text() }
     fn theme(&self) -> Theme { self.active(); self.inner.theme() }
+}
+
+impl ExtensionUiFactories for LifecycleUi {
+    fn set_widget_factory(&self, key: &str, factory: Option<TuiComponentFactory>, options: ExtensionWidgetOptions) {
+        self.active();
+        if let Some(factories) = self.inner.factories() { factories.set_widget_factory(key, factory, options); }
+    }
+    fn set_header_factory(&self, factory: Option<TuiComponentFactory>) {
+        self.active();
+        if let Some(factories) = self.inner.factories() { factories.set_header_factory(factory); }
+    }
+    fn set_footer_factory(&self, factory: Option<FooterComponentFactory>) {
+        self.active();
+        if let Some(factories) = self.inner.factories() { factories.set_footer_factory(factory); }
+    }
+    fn custom_factory(&self, factory: CustomComponentFactory, options: CustomUiFactoryOptions) -> ExtensionFuture<'_, JsonValue> {
+        ExtensionUi::custom_factory(self, factory, options)
+    }
+}
+
+impl ExtensionUiActions for LifecycleUi {
+    fn question(&self, request: QuestionRequest, options: QuestionOptions) -> ExtensionFuture<'_, QuestionResponse> { ExtensionUi::question(self, request, options) }
+    fn editor<'a>(&'a self, title: &'a str, prefill: Option<&'a str>) -> ExtensionFuture<'a, Option<String>> { ExtensionUi::editor(self, title, prefill) }
+    fn on_terminal_input(&self, handler: TerminalInputHandler) -> UiUnsubscribe { self.active(); self.inner.actions().expect("bound UI actions").on_terminal_input(handler) }
+    fn set_working_message(&self, message: Option<&str>) { self.active(); self.inner.actions().expect("bound UI actions").set_working_message(message); }
+    fn set_working_visible(&self, visible: bool) { self.active(); self.inner.actions().expect("bound UI actions").set_working_visible(visible); }
+    fn set_working_indicator(&self, options: Option<WorkingIndicatorOptions>) { self.active(); self.inner.actions().expect("bound UI actions").set_working_indicator(options); }
+    fn set_hidden_thinking_label(&self, label: Option<&str>) { self.active(); self.inner.actions().expect("bound UI actions").set_hidden_thinking_label(label); }
+    fn add_autocomplete_provider(&self, factory: AutocompleteProviderFactory) { self.active(); self.inner.actions().expect("bound UI actions").add_autocomplete_provider(factory); }
+    fn set_editor_component(&self, factory: Option<EditorFactory>) { self.active(); self.inner.actions().expect("bound UI actions").set_editor_component(factory); }
+    fn get_editor_component(&self) -> Option<EditorFactory> { self.active(); self.inner.actions().expect("bound UI actions").get_editor_component() }
+    fn get_all_themes(&self) -> Vec<ThemeInfo> { self.active(); self.inner.actions().expect("bound UI actions").get_all_themes() }
+    fn get_theme(&self, name: &str) -> Option<Theme> { self.active(); self.inner.actions().expect("bound UI actions").get_theme(name) }
+    fn set_theme(&self, theme: ThemeSelection) -> SetThemeResult { self.active(); self.inner.actions().expect("bound UI actions").set_theme(theme) }
+    fn get_tools_expanded(&self) -> bool { self.active(); self.inner.actions().expect("bound UI actions").get_tools_expanded() }
+    fn set_tools_expanded(&self, expanded: bool) { self.active(); self.inner.actions().expect("bound UI actions").set_tools_expanded(expanded); }
 }

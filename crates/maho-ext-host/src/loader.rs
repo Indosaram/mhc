@@ -30,10 +30,11 @@ pub fn load_extensions(factories: Vec<NativeExtensionFactory>, cwd: &std::path::
             Err(payload) => {
                 api.runtime.invalidate_registration("Extension factory failed to load");
                 api.events.invalidate_registration();
-                let message = payload.downcast_ref::<String>().cloned()
+                let failure = payload.downcast_ref::<ExtensionFailure>();
+                let message = failure.map(|error| error.message.clone()).or_else(|| payload.downcast_ref::<String>().cloned())
                     .or_else(|| payload.downcast_ref::<&str>().map(|message| (*message).to_owned()))
                     .unwrap_or_else(|| "Native extension factory panicked".into());
-                errors.push(ExtensionError { extension_path: factory.path, event: "load".into(), error: format!("Failed to load extension: {message}"), stack: None });
+                errors.push(ExtensionError { extension_path: factory.path, event: "load".into(), error: format!("Failed to load extension: {message}"), stack: failure.and_then(|error| error.stack.clone()) });
             }
         }
     }
@@ -79,6 +80,7 @@ pub async fn load_extensions_async(factories: Vec<NativeAsyncExtensionFactory>, 
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| future.as_mut().poll(cx))) {
                     Ok(poll) => poll,
                     Err(payload) => {
+                        if let Some(error) = payload.downcast_ref::<ExtensionFailure>() { return std::task::Poll::Ready(Err(error.clone())); }
                         let message = payload.downcast_ref::<String>().cloned()
                             .or_else(|| payload.downcast_ref::<&str>().map(|message| (*message).to_owned()))
                             .unwrap_or_else(|| "Native extension factory panicked".into());

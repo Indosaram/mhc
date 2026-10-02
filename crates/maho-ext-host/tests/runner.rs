@@ -23,6 +23,7 @@ impl ModelRegistry for TestRegistry {
 }
 struct TestUi;
 impl ExtensionUi for TestUi {
+    fn factories(&self) -> Option<&dyn ExtensionUiFactories> { Some(self) }
     fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
     fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> { Box::pin(async { false }) }
     fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
@@ -37,6 +38,12 @@ impl ExtensionUi for TestUi {
     fn get_editor_text(&self) -> String { String::new() }
     fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Err("UI not available".into()) }) }
     fn theme(&self) -> Theme { Theme::default() }
+}
+impl ExtensionUiFactories for TestUi {
+    fn set_widget_factory(&self, _: &str, _: Option<TuiComponentFactory>, _: ExtensionWidgetOptions) {}
+    fn set_header_factory(&self, _: Option<TuiComponentFactory>) {}
+    fn set_footer_factory(&self, _: Option<FooterComponentFactory>) {}
+    fn custom_factory(&self, _: CustomComponentFactory, _: CustomUiFactoryOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Err("UI not available".into()) }) }
 }
 fn context() -> ExtensionContext {
     ExtensionContext { ui: Arc::new(TestUi), mode: ExtensionMode::Print, has_ui: false, cwd: "/tmp".into(), agent_dir: "/tmp/agent".into(),
@@ -62,7 +69,18 @@ async fn lifecycle_ui_emits_prompt_pair_and_rejects_stale_prompts() {
         assert!(matches!(&events[1], ExtensionEvent::UiPromptEnd { kind: UiPromptKind::Confirm, title: Some(title) } if title == "Confirm"));
     }
     runtime.invalidate("reloaded");
-    assert_eq!(ui.editor("late", None).await.unwrap_err().message, "reloaded");
+    assert_eq!(ExtensionUi::editor(&ui, "late", None).await.unwrap_err().message, "reloaded");
+}
+
+#[test]
+fn retained_ui_factory_interface_cannot_bypass_stale_guard() {
+    let runtime = ExtensionRuntime::default();
+    let ui = maho_ext_host::ui::LifecycleUi::new(Arc::new(TestUi), runtime.clone(), Arc::new(|_| {}));
+    let factories = ui.factories().unwrap();
+    factories.set_header_factory(None);
+    runtime.invalidate("replaced");
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| factories.set_header_factory(None))).unwrap_err();
+    assert_eq!(failure.downcast_ref::<ExtensionFailure>().unwrap().message, "replaced");
 }
 fn extension(path: &str, kind: EventKind, handler: ExtensionHandler) -> LoadedExtension {
     let mut ext = LoadedExtension::new(path, "/tmp".into(), SourceInfo { path: path.into(), source: "inline".into(), ..Default::default() });
@@ -700,6 +718,23 @@ async fn panicking_async_factory_is_isolated_and_rolls_back_registration() {
     assert_eq!(loaded.extensions.len(), 1);
     assert_eq!(loaded.errors.len(), 1);
     assert_eq!(loaded.errors[0].extension_path, "panic");
+}
+
+#[tokio::test]
+async fn registration_failure_preserves_typed_factory_diagnostic() {
+    use maho_ext_host::loader::*;
+    let factory = NativeAsyncExtensionFactory {
+        path: "invalid-mcp".into(), source_info: SourceInfo::default(),
+        factory: Arc::new(|api| Box::pin(async move {
+            api.register_mcp_server("missing", McpServerDeclaration::default());
+            Ok(())
+        })),
+    };
+    let loaded = load_extensions_async(vec![factory], Path::new("/tmp"), ExtensionSessionProfile::default()).await;
+    assert!(loaded.extensions.is_empty());
+    assert_eq!(loaded.errors.len(), 1);
+    assert_eq!(loaded.errors[0].extension_path, "invalid-mcp");
+    assert!(loaded.errors[0].error.contains("mcpServers.missing.command"));
 }
 
 #[tokio::test]

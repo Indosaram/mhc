@@ -1215,9 +1215,23 @@ impl ExtensionApi {
     pub fn register_message_renderer(&mut self, custom_type: &str, renderer: MessageRenderer) { self.runtime.assert_active_or_panic(); self.registered.message_renderers.insert(custom_type.into(), renderer); }
     pub fn register_entry_renderer(&mut self, custom_type: &str, renderer: EntryRenderer, options: EntryRendererOptions) { self.runtime.assert_active_or_panic(); self.registered.entry_renderers.insert(custom_type.into(), renderer); self.registered.entry_renderer_options.insert(custom_type.into(), options); }
     pub fn register_mcp_server(&mut self, name: &str, config: McpServerDeclaration) {
-        self.runtime.assert_active_or_panic();
+        if let Err(error) = self.try_register_mcp_server(name, config) { std::panic::panic_any(error); }
+    }
+    pub fn try_register_mcp_server(&mut self, name: &str, config: McpServerDeclaration) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        if config.enabled != Some(false) {
+            let transport = config.transport.unwrap_or_else(|| if config.url.as_ref().is_some_and(|url| !url.is_empty()) { McpTransport::Http } else { McpTransport::Stdio });
+            let (field, endpoint, kind) = match transport {
+                McpTransport::Stdio => ("command", config.command.as_deref(), "stdio"),
+                McpTransport::Http => ("url", config.url.as_deref(), "http"),
+            };
+            if endpoint.is_none_or(|endpoint| endpoint.trim().is_empty()) {
+                return Err(ExtensionFailure::new(format!("Invalid MCP server declaration \"{name}\": mcpServers.{name}.{field}: Required for enabled {kind} server")));
+            }
+        }
         let declaration = RegisteredMcpServerDeclaration { name: name.into(), config, extension_path: self.registered.identity.path.clone(), registration_cwd: self.cwd.clone() };
         if let Some(existing) = self.registered.mcp_servers.iter_mut().find(|s| s.name == name) { *existing = declaration; } else { self.registered.mcp_servers.push(declaration); }
+        Ok(())
     }
     pub fn register_removed_tool_hint(&mut self, name: &str, hint: &str) {
         self.runtime.assert_active_or_panic();
