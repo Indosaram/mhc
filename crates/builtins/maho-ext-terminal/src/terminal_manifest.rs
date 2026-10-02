@@ -116,6 +116,18 @@ mod tests {
         writer.record_background_start("bash_9","nine",1.0,1.0).await;writer.record_background_start("bash_2","two",2.0,2.0).await;
         let state=crate::restore::parse_terminal_manifest(&writer.store.read().await.unwrap().unwrap(),"s").unwrap();assert_eq!(state.background_sessions.iter().map(|entry|entry.id.as_str()).collect::<Vec<_>>(),["bash_9","bash_2"]);
     }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn expired_and_ephemeral_store_entries_never_spawn_or_adopt() {
+        let dir=tempfile::tempdir().unwrap();let mut writer=TerminalManifestWriter::new(dir.path(),"s");
+        for (id,persistent) in [("mon_expired",true),("mon_ephemeral",false)] {
+            writer.record_register(MonitorRegistration {monitor_id:id.to_owned(),spec:MonitorSpec::Command {description:id.to_owned(),command:"read value".to_owned(),filter:None,cwd:Some(dir.path().to_string_lossy().into_owned()),persistent}},1.0).await;
+        }
+        writer.record_background_start("bash_old","old",1.0,1.0).await;
+        let mut next=TerminalManifestWriter::new(dir.path(),"s");let mut manager=crate::manager::TerminalManager::default();let mut registry=crate::monitor_registry::MonitorRegistry::new(|_|{});
+        let digest=next.restore_live(&mut manager,&mut registry,1.0+DURABLE_MONITOR_EXPIRY_MS as f64).await;
+        assert_eq!(digest,crate::restore::RestoreDigest {expired:1,lost:2,..Default::default()});assert_eq!(manager.size(),0);assert!(registry.snapshot().is_empty());assert_eq!(next.durable_count(),0);assert!(next.entries.is_empty());registry.dispose();
+    }
     #[tokio::test]
     async fn registration_checkpoint_shutdown_and_adoption_preserve_deadline() {
         let dir=tempfile::tempdir().unwrap();let mut writer=TerminalManifestWriter::new(dir.path(),"s");
