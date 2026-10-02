@@ -31,6 +31,16 @@ fn invalid_arrays_are_rejected() {
     assert_eq!(validate_raw(json!({"mcpServers":{"x":{"command":"node","args":"not-array"}}})).unwrap_err().to_string(), "Invalid MCP config at mcpServers.x.args: Expected array");
 }
 #[test]
+fn typebox_boundary_errors_preserve_machine_consumed_paths_and_kinds() {
+    for (value,path,message) in [
+        (json!({"mcpServers":{"x":{"command":1}}}),"mcpServers.x.command","must be string"),
+        (json!({"mcpServers":{"x":{"command":"node","auth":true}}}),"mcpServers.x.auth","must be string"),
+        (json!({"mcpServers":{"x":{"command":"node","oauth":{"foo":1}}}}),"mcpServers.x.oauth.foo","schema is false"),
+        (json!({"settings":{"outputGuard":{"maxBytes":"ten"}}}),"settings.outputGuard.maxBytes","must be number"),
+    ] {assert_eq!(validate_raw(value).unwrap_err().to_string(),format!("Invalid MCP config at {path}: {message}"));}
+    assert!(validate_raw(json!({"mcpServers":{"x":{"command":"node","connectTimeoutMs":-1}},"settings":{"searchThreshold":1.5}})).is_ok());
+}
+#[test]
 fn hashes_ignore_key_order_and_startup_policy() {
     let a = normalize_server(serde_json::from_value(json!({"command":"node","env":{"A":"1","B":"2"}})).unwrap());
     let mut b = a.clone(); b.startup_timeout_ms = Some(9000.0);

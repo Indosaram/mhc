@@ -8,6 +8,7 @@ use crate::config_schema::*;
 #[error("{0}")]
 pub struct McpConfigValidationError(pub String);
 pub fn validate_raw(raw: Value) -> Result<RawConfig, McpConfigValidationError> {
+    validate_schema_value(&raw,"$")?;
     let config: RawConfig = serde_path_to_error::deserialize(raw).map_err(|e| {
         let path = e.path().to_string();
         let message = if e.inner().to_string().contains("expected a sequence") { "Expected array".into() } else { e.inner().to_string() };
@@ -26,6 +27,76 @@ pub fn validate_raw(raw: Value) -> Result<RawConfig, McpConfigValidationError> {
         if matches!(server.auth, Some(Auth::Disabled(true))) { return Err(McpConfigValidationError(format!("Invalid MCP config at mcpServers.{name}.auth"))); }
     }
     Ok(config)
+}
+fn schema_error(path:&str,message:&str)->McpConfigValidationError {McpConfigValidationError(format!("Invalid MCP config at {path}: {message}"))}
+fn validate_schema_value(raw:&Value,path:&str)->Result<(),McpConfigValidationError> {
+    let object=raw.as_object().ok_or_else(||schema_error(path,"must be object"))?;
+    for name in object.keys(){if !["mcpServers","settings"].contains(&name.as_str()){return Err(schema_error(name,"schema is false"));}}
+    for (name,value) in object {
+        match name.as_str() {
+            "mcpServers"=>{
+                let servers=value.as_object().ok_or_else(||schema_error("mcpServers","must be object"))?;
+                for (name,server) in servers {
+                    let path=format!("mcpServers.{name}");let server=server.as_object().ok_or_else(||schema_error(&path,"must be object"))?;
+                    for name in server.keys(){if !["type","command","args","cwd","env","url","headers","bearerTokenEnv","auth","oauth","enabled","lifecycle","connectTimeoutMs","requestTimeoutMs","startupTimeoutMs","idleTimeoutMin","exposure","directTools","includeTools","excludeTools","logLevel"].contains(&name.as_str()){return Err(schema_error(&format!("{path}.{name}"),"schema is false"));}}
+                    for (field,value) in server {
+                        let path=format!("{path}.{field}");
+                        match field.as_str() {
+                            "command"|"cwd"|"url"|"bearerTokenEnv"=>check_type(value,&path,"string")?,
+                            "enabled"=>check_type(value,&path,"boolean")?,
+                            "connectTimeoutMs"|"requestTimeoutMs"|"startupTimeoutMs"|"idleTimeoutMin"=>check_type(value,&path,"number")?,
+                            "args"|"includeTools"|"excludeTools"=>check_strings(value,&path)?,
+                            "env"|"headers"=>{let map=value.as_object().ok_or_else(||schema_error(&path,"must be object"))?;for (name,value) in map {check_type(value,&format!("{path}.{name}"),"string")?;}}
+                            "type"=>check_literals(value,&path,&["stdio","http"] )?,
+                            "lifecycle"=>check_literals(value,&path,&["lazy","eager","keep-alive"] )?,
+                            "exposure"=>check_literals(value,&path,&["auto","direct","search","proxy"] )?,
+                            "logLevel"=>check_literals(value,&path,&["debug","info","notice","warning","error","critical","alert","emergency"] )?,
+                            "auth" if value!=&Value::Bool(false)=>check_literals(value,&path,&["bearer","oauth"] )?,
+                            "directTools" if value.as_array().is_none_or(|array|array.iter().any(|value|!value.is_string()))=>check_type(value,&path,"boolean")?,
+                            "oauth"=>{
+                                let oauth=value.as_object().ok_or_else(||schema_error(&path,"must be object"))?;
+                                for name in oauth.keys() {if !["clientId","callbackPort","scopes","clientMetadataUrl","flow"].contains(&name.as_str()){return Err(schema_error(&format!("{path}.{name}"),"schema is false"));}}
+                                for (name,value) in oauth {let path=format!("{path}.{name}");match name.as_str(){
+                                    "clientId"|"clientMetadataUrl"=>check_type(value,&path,"string")?,"scopes"=>check_strings(value,&path)?,
+                                    "flow"=>check_literals(value,&path,&["code","client_credentials"] )?,
+                                    "callbackPort"=>{
+                                        check_type(value,&path,"integer")?;let number=value.as_f64().unwrap_or(0.0);
+                                        if number<0.0{return Err(schema_error(&path,"must be >= 0"));}
+                                        if number>65535.0{return Err(schema_error(&path,"must be <= 65535"));}
+                                    },_=>(),
+                                }}
+                            }
+                            _=>(),
+                        }
+                    }
+                }
+            }
+            "settings"=>{
+                let settings=value.as_object().ok_or_else(||schema_error("settings","must be object"))?;
+                for name in settings.keys(){if !["toolPrefix","searchThreshold","outputGuard","importConfigs","oauthCallbackUrl","stubSwap","nativeToolSearch"].contains(&name.as_str()){return Err(schema_error(&format!("settings.{name}"),"schema is false"));}}
+                for (field,value) in settings {let path=format!("settings.{field}");match field.as_str(){
+                    "toolPrefix"|"oauthCallbackUrl"=>check_type(value,&path,"string")?,"searchThreshold"=>check_type(value,&path,"number")?,"stubSwap"=>check_type(value,&path,"boolean")?,
+                    "nativeToolSearch" if value!=&Value::String("auto".into()) && !value.is_boolean()=>return Err(schema_error(&path,if value.is_string(){"must be equal to constant"}else{"must be string"})),
+                    "importConfigs"=>{let array=value.as_array().ok_or_else(||schema_error(&path,"Expected array"))?;for (index,value) in array.iter().enumerate(){let path=format!("{path}.{index}");check_type(value,&path,"string")?;if value!=&Value::String("claude".into()){return Err(schema_error(&path,"must be equal to constant"));}}},
+                    "outputGuard"=>{let guard=value.as_object().ok_or_else(||schema_error(&path,"must be object"))?;for field in guard.keys(){if !["maxBytes","maxLines","maxTokens"].contains(&field.as_str()){return Err(schema_error(&format!("{path}.{field}"),"schema is false"));}}for (field,value) in guard {check_type(value,&format!("{path}.{field}"),"number")?;}},_=>(),
+                }}
+            }
+            _=>(),
+        }
+    }
+    Ok(())
+}
+fn check_type(value:&Value,path:&str,kind:&str)->Result<(),McpConfigValidationError> {
+    let valid=match kind {"string"=>value.is_string(),"boolean"=>value.is_boolean(),"number"=>value.is_number(),"integer"=>value.as_f64().is_some_and(|number|number.fract()==0.0),_=>false};
+    if valid{Ok(())}else{Err(schema_error(path,&format!("must be {kind}")))}
+}
+fn check_strings(value:&Value,path:&str)->Result<(),McpConfigValidationError> {
+    let array=value.as_array().ok_or_else(||schema_error(path,"Expected array"))?;
+    for (index,value) in array.iter().enumerate(){check_type(value,&format!("{path}.{index}"),"string")?;}Ok(())
+}
+fn check_literals(value:&Value,path:&str,literals:&[&str])->Result<(),McpConfigValidationError> {
+    if value.as_str().is_some_and(|value|literals.contains(&value)){return Ok(());}
+    check_type(value,path,"string")?;Err(schema_error(path,"must be equal to constant"))
 }
 pub fn validate_mcp_server_declaration(name: &str, raw: Value) -> Option<String> {
     validate_raw(serde_json::json!({"mcpServers": {name: raw}})).err().map(|e| format!("Invalid MCP server declaration \"{name}\": {}", e.0.trim_start_matches("Invalid MCP config at ").trim_start_matches("Invalid MCP config: ")))
