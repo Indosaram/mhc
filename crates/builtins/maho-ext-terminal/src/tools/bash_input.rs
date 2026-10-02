@@ -15,6 +15,14 @@ pub fn execute_bash_input(runtime:Option<&mut TerminalRuntimeSession>,input:Bash
 #[cfg(test)]
 mod tests {
     use super::*;use maho_pty::PtySessionOptions;use std::time::Duration;
+    #[tokio::test]
+    async fn literal_input_and_enter_reach_live_pty_without_polling()->Result<(),crate::runtime_session::RuntimeError> {
+        let mut runtime=TerminalRuntimeSession::start("read",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'ready\\n'; read value; printf 'received:%s\\n' \"$value\""))?;
+        let (history,mut output)=runtime.subscribe_output()?;let mut observed=history;
+        tokio::time::timeout(Duration::from_secs(5),async {while !observed.contains("ready") {observed.push_str(&output.recv().await.unwrap());}}).await.unwrap();
+        let mut exit=runtime.subscribe_exit();let result=execute_bash_input(Some(&mut runtime),BashInputInput {bash_id:"mon_saved",input:Some("hello"),keys:&[],submit:None});assert_eq!(result.is_error,None);
+        tokio::time::timeout(Duration::from_secs(5),async {while exit.borrow_and_update().is_none() {exit.changed().await.unwrap();}}).await.unwrap();assert!(runtime.full_output()?.contains("received:hello"));assert_eq!(execute_bash_input(Some(&mut runtime),BashInputInput {bash_id:"mon_saved",input:Some("late"),keys:&[],submit:None}).is_error,Some(true));runtime.dispose()
+    }
     #[test] fn missing_input_and_real_pty_resize()->Result<(),crate::runtime_session::RuntimeError> {
         assert_eq!(execute_bash_input(None,BashInputInput {bash_id:"bash_999",input:Some("x"),keys:&[],submit:None}).is_error,Some(true));
         let runtime=TerminalRuntimeSession::start("read",PtySessionOptions::new("/bin/sh").arg("-c").arg("read value").timeout(Duration::from_secs(5)))?;
