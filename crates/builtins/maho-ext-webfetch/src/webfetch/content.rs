@@ -99,6 +99,11 @@ pub fn reader_replace_breaks(root:&dom_query::NodeRef<'_>) {
         if let Some(parent)=br.parent().filter(|parent|parent.node_name().as_deref()==Some("p")) {parent.rename("div");}
     }
 }
+pub fn reader_prepare_document(document:&dom_query::Document) {
+    document.select("style").remove();
+    if let Some(body)=document.select("body").nodes().first() {reader_replace_breaks(body);}
+    for node in document.select("font").nodes() {node.rename("span");}
+}
 pub fn score_reader_candidates(elements:&[dom_query::NodeRef<'_>],weight_classes:bool)->Vec<(dom_query::NodeId,f64)> {
     let mut candidates:Vec<(dom_query::NodeRef<'_>,f64)>=Vec::new();
     for element in elements {
@@ -321,6 +326,10 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_document_preparation_removes_styles_and_preserves_font_attributes() {
+        let document=dom_query::Document::from("<style>bad</style><div><font color='red'>text</font><br><br>after<style>bad</style></div>");reader_prepare_document(&document);
+        assert!(document.select("style, font").is_empty());assert_eq!(document.select("span").attr("color").as_deref(),Some("red"));assert_eq!(document.select("span").text().as_ref(),"text");assert_eq!(document.select("p").text().as_ref(),"after");
+    }
     #[test] fn reader_break_chains_create_paragraphs_until_next_chain_or_block() {
         let document=dom_query::Document::from("<div id='root'>foo<br>bar<br> <br><br>abc <em>inline</em> <br><br>last<section>block</section></div>");reader_replace_breaks(&document.select("#root").nodes()[0]);assert_eq!(document.select("#root").inner_html().as_ref(),"foo<br>bar<p> abc <em>inline</em></p><p>last</p><section>block</section>");
     }
