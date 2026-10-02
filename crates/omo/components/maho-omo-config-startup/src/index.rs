@@ -17,17 +17,20 @@ pub struct SenpiStartupMigrationOptions<'a> {
 pub fn run_senpi_startup_migration(cwd:&str,environment:&BTreeMap<String,String>,home_dir:&str) -> SenpiStartupMigrationResult {
     run_senpi_startup_migration_with_options(cwd,environment,home_dir,SenpiStartupMigrationOptions::default())
 }
-pub fn run_senpi_startup_migration_with_options<'a>(cwd:&str,environment:&BTreeMap<String,String>,home_dir:&str,options:SenpiStartupMigrationOptions<'a>) -> SenpiStartupMigrationResult {
+pub fn run_senpi_startup_migration_with_options<'a>(cwd:&'a str,environment:&'a BTreeMap<String,String>,home_dir:&'a str,options:SenpiStartupMigrationOptions<'a>) -> SenpiStartupMigrationResult {
     if home_dir.is_empty() { return SenpiStartupMigrationResult{error:Some("Cannot migrate configuration because no home directory is available".into()),..Default::default()}; }
-    let plans=match create_legacy_config_migration_plans(&CreateLegacyConfigMigrationPlansOptions{backup_timestamp:options.backup_timestamp,discovery:ConfigMigrationDiscoveryOptions{cwd,environment,file_system:options.discovery_file_system,home_dir,path_operations:if options.platform==Some(config_migration::Platform::Win32){PathOperations::Win32}else{PathOperations::Posix},platform:options.platform,tauri_config_dirs:None}}) {
-        Ok(plans)=>plans,Err(error)=>return SenpiStartupMigrationResult{error:Some(error.to_string()),..Default::default()},
-    };
+    let discovery_error=std::cell::RefCell::new(None);
     let batch=run_migrations(RunMigrationsOptions{
-        after_migrations:None,clock:options.clock,discover:Box::new(move ||plans.iter().map(|plan| {
+        after_migrations:None,clock:options.clock,discover:Box::new(|| {
+            let plans=match create_legacy_config_migration_plans(&CreateLegacyConfigMigrationPlansOptions{backup_timestamp:options.backup_timestamp,discovery:ConfigMigrationDiscoveryOptions{cwd,environment,file_system:options.discovery_file_system,home_dir,path_operations:if options.platform==Some(config_migration::Platform::Win32){PathOperations::Win32}else{PathOperations::Posix},platform:options.platform,tauri_config_dirs:None}}) {
+                Ok(plans)=>plans,Err(error)=>{*discovery_error.borrow_mut()=Some(error.to_string());return Vec::new();},
+            };
+            plans.iter().map(|plan| {
             let transform=Rc::clone(&plan.transform);
             MigrationPlan{id:plan.id.clone(),mode:plan.mode,sources:plan.sources.clone(),target_path:plan.target_path.clone(),transform:Box::new(move |loaded| { let result=transform(loaded)?; Ok(MigrationTransformResult{diagnostics:result.diagnostics,document:serde_json::Value::Object(result.document)}) })}
-        }).collect()),dry_run:false,env:Some(environment.clone()),file_system:options.file_system,is_process_alive:options.is_process_alive,lease_duration_ms:None,on_boundary:options.on_boundary,pid:options.pid,write_target:None,
+        }).collect()}),dry_run:false,env:Some(environment.clone()),file_system:options.file_system,is_process_alive:options.is_process_alive,lease_duration_ms:None,on_boundary:options.on_boundary,pid:options.pid,write_target:None,
     });
+    if let Some(error)=discovery_error.into_inner() {return SenpiStartupMigrationResult{error:Some(error),..Default::default()};}
     match batch {
         Err(error)=>SenpiStartupMigrationResult{error:Some(error.to_string()),..Default::default()},
         Ok(batch)=>{
