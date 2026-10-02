@@ -64,7 +64,7 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
         result=&mut acquisition=>result,
         changed=acquisition_deadline.changed()=>{
             let expiry=if changed.is_ok() {acquisition_deadline.borrow_and_update().clone()} else {None};
-            if let Some(expiry)=expiry {execution.cancel(AbortReason::new("TimeoutError",expiry.error));}
+            if let Some(expiry)=expiry {cell.lock().expect("managed cell lock").record_deadline_expiry(expiry.kind);execution.cancel(AbortReason::new("TimeoutError",expiry.error));}
             acquisition.await
         }
     };
@@ -139,7 +139,7 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
                         let handled=tokio::select! {
                             result=&mut pending=>result,
                             changed=deadline.changed()=>{
-                                if changed.is_ok() && let Some(expiry)=deadline.borrow_and_update().clone() {work_execution.cancel(AbortReason::new("TimeoutError",expiry.error));}
+                                if changed.is_ok() && let Some(expiry)=deadline.borrow_and_update().clone() {work_cell.lock().expect("managed cell lock").record_deadline_expiry(expiry.kind);work_execution.cancel(AbortReason::new("TimeoutError",expiry.error));}
                                 pending.await
                             }
                         };
@@ -147,7 +147,7 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
                     }
                     *live.lock().expect("live result lock")=handler.builder.live_result();
                 },
-                changed=deadline.changed()=>if changed.is_ok() && let Some(expiry)=deadline.borrow_and_update().clone() {work_execution.cancel(AbortReason::new("TimeoutError",expiry.error));}
+                changed=deadline.changed()=>if changed.is_ok() && let Some(expiry)=deadline.borrow_and_update().clone() {work_cell.lock().expect("managed cell lock").record_deadline_expiry(expiry.kind);work_execution.cancel(AbortReason::new("TimeoutError",expiry.error));}
             }
         };
         // Kernel results can become ready together with their final output frames.
@@ -180,7 +180,7 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
                 let completed=tokio::select! {
                     result=&mut settlement=>result,
                     changed=deadline.changed()=>{
-                        if changed.is_ok() && let Some(expiry)=deadline.borrow_and_update().clone() {work_execution.cancel(AbortReason::new("TimeoutError",expiry.error));}
+                        if changed.is_ok() && let Some(expiry)=deadline.borrow_and_update().clone() {work_cell.lock().expect("managed cell lock").record_deadline_expiry(expiry.kind);work_execution.cancel(AbortReason::new("TimeoutError",expiry.error));}
                         settlement.await
                     }
                 };

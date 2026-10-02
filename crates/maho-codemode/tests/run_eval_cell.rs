@@ -134,6 +134,23 @@ async fn invalid_final_frame_cannot_settle_as_success() {
     assert!(result.details["cells"][0]["output"].as_str().unwrap().contains("Unhandled kernel message"));
 }
 
+#[tokio::test(start_paused = true)]
+async fn deadline_expiry_records_limit_metadata_before_terminal_snapshot() {
+    for (hard,budget) in [(1.0,10.0),(10.0,1.0)] {
+        let (started,mut events)=tokio::sync::mpsc::unbounded_channel();
+        let cells=Arc::new(Mutex::new(EvalDetachedCellManager::new(DetachedCellManagerOptions {hard_limit_seconds:hard,run_budget_seconds:budget,..Default::default()})));
+        let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(ParkedToolManager),executor:Arc::new(ParkedExecutor(started)),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:cells.clone(),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+        let run=tokio::spawn(run_eval_cell(options,invocation("expired","await tool.park()")));
+        events.recv().await.unwrap();
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        let result=run.await.unwrap().unwrap();
+        assert_eq!(result.details["isError"],true);
+        let snapshot=cells.lock().unwrap().peek("expired").unwrap();
+        assert_eq!(snapshot.hard_limit_seconds,(hard==1.0).then_some(hard));
+        assert_eq!(snapshot.run_budget_seconds,(budget==1.0).then_some(budget));
+    }
+}
+
 #[tokio::test]
 async fn real_eval_chain_preserves_output_state_and_terminal_snapshot() {
     let (kernel,options)=fixture().await;
