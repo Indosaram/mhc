@@ -1,6 +1,15 @@
 use maho_ai::types::{ContentBlock, ImageContent};
 use maho_cli::utils::tool_result_images::*;
 use base64::Engine;
+#[test]
+fn buffer_base64_accepts_url_alphabet_noise_and_partial_groups() {
+    use maho_cli::utils::image_convert::decode_base64;
+    assert_eq!(decode_base64("Y! W\nJjZA"), b"abcd");
+    assert_eq!(decode_base64("YQb"), [97, 6]);
+    assert_eq!(decode_base64("YQbAA"), [97, 6, 192]);
+    assert_eq!(decode_base64("-_8"), [251, 255]);
+    assert_eq!(decode_base64("YQ==ignored"), b"a");
+}
 #[tokio::test]
 async fn unchanged_text_and_failed_images_borrow_original_content() {
     let content = vec![ContentBlock::text("text")];

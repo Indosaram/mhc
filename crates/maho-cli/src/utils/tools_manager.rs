@@ -125,6 +125,11 @@ async fn download_tool(tool: Tool, bin: &Path, platform: &str, architecture: &st
     install_archive(&archive, bin, &binary, &asset, platform).await
 }
 pub struct ToolStatus { pub kind: &'static str, pub message: String }
+pub async fn ensure_tool(tool: Tool, on_status: impl FnMut(ToolStatus)) -> Option<String> {
+    let platform = if cfg!(windows) { "win32" } else if cfg!(target_os = "macos") { "darwin" } else { std::env::consts::OS };
+    let architecture = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
+    ensure_tool_in(tool, Path::new(&crate::config::get_bin_dir()), &std::env::vars().collect(), platform, architecture, on_status).await
+}
 pub async fn ensure_tool_in(tool: Tool, bin: &Path, env: &BTreeMap<String, String>, platform: &str, architecture: &str, mut on_status: impl FnMut(ToolStatus)) -> Option<String> {
     if let Some(path) = get_tool_path_in(tool, bin, env, platform) { return Some(path); }
     let name = if matches!(tool, Tool::Fd) { "fd" } else { "ripgrep" };

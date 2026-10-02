@@ -85,3 +85,15 @@ pub fn kill_tracked_detached_children() {
 pub fn kill_process_tree(pid: i32) {
     if nix::sys::signal::kill(nix::unistd::Pid::from_raw(-pid), nix::sys::signal::Signal::SIGKILL).is_err() { let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), nix::sys::signal::Signal::SIGKILL); }
 }
+pub fn windows_taskkill_candidates(env: &BTreeMap<String, String>) -> Vec<String> {
+    let drive = env.get("SystemDrive").filter(|drive| !drive.is_empty()).map(|drive| format!("{drive}\\Windows"));
+    let roots = [env.get("SystemRoot"), env.get("SYSTEMROOT"), env.get("windir"), drive.as_ref()];
+    let mut paths = Vec::new();
+    for root in roots.into_iter().flatten().filter(|root| !root.is_empty()) {
+        for directory in ["System32", "Sysnative"] {
+            let path = std::path::Path::new(root).join(directory).join("taskkill.exe").to_string_lossy().into_owned();
+            if !paths.contains(&path) && std::path::Path::new(&path).exists() { paths.push(path); }
+        }
+    }
+    paths.push("taskkill.exe".to_owned()); paths
+}

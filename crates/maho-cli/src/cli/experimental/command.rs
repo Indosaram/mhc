@@ -1,10 +1,15 @@
 use std::collections::BTreeMap;
+type OptionParser = std::sync::Arc<dyn Fn(&str) -> Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, String> + Send + Sync>;
 #[derive(Clone)]
-pub struct CommandOption { pub name: String, pub flag: bool, pub repeatable: bool }
-pub struct ParsedCommandInput { pub values: BTreeMap<String, Vec<String>>, pub remaining_args: Vec<String>, pub errors: Vec<String> }
-impl ParsedCommandInput { pub fn value(&self, name: &str) -> Option<&str> { self.values.get(name).and_then(|v| v.first()).map(String::as_str) } }
+pub struct CommandOption { pub name: String, pub flag: bool, pub repeatable: bool, parser: OptionParser }
+pub struct ParsedCommandInput { pub values: BTreeMap<String, Vec<String>>, pub remaining_args: Vec<String>, pub errors: Vec<String>, typed: BTreeMap<String, Vec<std::sync::Arc<dyn std::any::Any + Send + Sync>>> }
+impl ParsedCommandInput {
+    pub fn value(&self, name: &str) -> Option<&str> { self.values.get(name).and_then(|v| v.first()).map(String::as_str) }
+    pub fn typed_value<T: 'static>(&self, name: &str) -> Option<&T> { self.typed.get(name)?.first()?.downcast_ref() }
+    pub fn typed_values<T: 'static>(&self, name: &str) -> Vec<&T> { self.typed.get(name).into_iter().flatten().filter_map(|value| value.downcast_ref()).collect() }
+}
 pub fn parse_options(argv: &[String], options: &[CommandOption]) -> ParsedCommandInput {
-    let mut parsed = ParsedCommandInput { values: BTreeMap::new(), remaining_args: Vec::new(), errors: Vec::new() }; let mut index = 0;
+    let mut parsed = ParsedCommandInput { values: BTreeMap::new(), typed: BTreeMap::new(), remaining_args: Vec::new(), errors: Vec::new() }; let mut index = 0;
     while index < argv.len() {
         let argument = &argv[index]; if argument == "--" { parsed.remaining_args.extend_from_slice(&argv[index..]); break; }
         let (name, inline) = argument.split_once('=').map_or((argument.as_str(), None), |(name, value)| (name, Some(value)));
@@ -13,11 +18,20 @@ pub fn parse_options(argv: &[String], options: &[CommandOption]) -> ParsedComman
             let candidate = if let Some(value) = inline { Some(value) } else if let Some(value) = argv.get(index + 1).filter(|v| !v.starts_with('-')) { index += 1; Some(value.as_str()) } else { None };
             let Some(value) = candidate.filter(|value| !value.is_empty()) else { parsed.errors.push(format!("{name} requires a value")); index += 1; continue; }; value.to_owned()
         };
-        let values = parsed.values.entry(name.to_owned()).or_default(); if !values.is_empty() && !option.repeatable { parsed.errors.push(format!("{name} may only be specified once")); } else { values.push(value); } index += 1;
+        let values = parsed.values.entry(name.to_owned()).or_default();
+        if !values.is_empty() && !option.repeatable { parsed.errors.push(format!("{name} may only be specified once")); }
+        else { match (option.parser)(&value) {
+            Ok(typed) => { values.push(value); parsed.typed.entry(name.to_owned()).or_default().push(typed); }
+            Err(error) => parsed.errors.push(error),
+        } }
+        index += 1;
     } parsed
 }
-pub fn string_option(name: &str, repeatable: bool) -> CommandOption { CommandOption { name: name.to_owned(), flag: false, repeatable } }
-pub fn flag_option(name: &str) -> CommandOption { CommandOption { name: name.to_owned(), flag: true, repeatable: false } }
+pub fn value_option<T: std::any::Any + Send + Sync>(name: &str, parser: impl Fn(&str) -> Result<T, String> + Send + Sync + 'static, repeatable: bool) -> CommandOption {
+    CommandOption { name: name.to_owned(), flag: false, repeatable, parser: std::sync::Arc::new(move |value| parser(value).map(|value| std::sync::Arc::new(value) as std::sync::Arc<dyn std::any::Any + Send + Sync>)) }
+}
+pub fn string_option(name: &str, repeatable: bool) -> CommandOption { value_option(name, |value| Ok(value.to_owned()), repeatable) }
+pub fn flag_option(name: &str) -> CommandOption { let mut option = value_option(name, |_| Ok(true), false); option.flag = true; option }
 type CommandBuilder<I> = Box<dyn Fn(&ParsedCommandInput) -> Result<I, Vec<String>> + Send + Sync>;
 type CommandAction<I, C> = Box<dyn Fn(I, C) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> + Send + Sync>;
 pub struct Command<I, C> {
