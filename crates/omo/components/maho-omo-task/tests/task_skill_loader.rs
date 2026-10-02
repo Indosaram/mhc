@@ -7,3 +7,9 @@ fn resolved_plugin_directory_uses_existing_filesystem_loader() {
     assert_eq!(result.resolved,["sample"]); assert_eq!(result.missing,["missing"]);
     let skills=result.skills.expect("loaded skills"); assert_eq!(skills[0].name,"sample"); assert!(skills[0].location.as_deref().expect("location").ends_with("sample/SKILL.md"));
 }
+#[test]
+fn canonical_agent_skill_wins_over_packaged_collision() {
+    let root=tempfile::tempdir().expect("root"); let fixtures=std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures"); let canonical=fixtures.join("agent");
+    let loader=create_task_skill_loader(TaskSkillLoaderOptions { home_dir:root.path().join("home"),agent_dir:canonical.clone(),plugin_skills_dirs:vec![fixtures.join("skills")] });
+    let result=loader(&["sample".into()],root.path().to_str().expect("path")); assert_eq!(result.resolved,["sample"]); let skills=result.skills.expect("skills"); assert_eq!(std::path::Path::new(skills[0].location.as_deref().expect("location")),canonical.join("skills/sample/SKILL.md"));
+}

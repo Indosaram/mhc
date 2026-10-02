@@ -13,6 +13,12 @@
           ]
         },
         {
+          "width": 54,
+          "lines": [
+            "(category unavailable)"
+          ]
+        },
+        {
           "width": 80,
           "lines": [
             "(category unavailable)"
@@ -20,6 +26,12 @@
         },
         {
           "width": 120,
+          "lines": [
+            "(category unavailable)"
+          ]
+        },
+        {
+          "width": 140,
           "lines": [
             "(category unavailable)"
           ]
@@ -40,6 +52,12 @@
           ]
         },
         {
+          "width": 54,
+          "lines": [
+            "unavailable next red"
+          ]
+        },
+        {
           "width": 80,
           "lines": [
             "unavailable next red"
@@ -47,6 +65,12 @@
         },
         {
           "width": 120,
+          "lines": [
+            "unavailable next red"
+          ]
+        },
+        {
+          "width": 140,
           "lines": [
             "unavailable next red"
           ]
@@ -65,6 +89,12 @@
           ]
         },
         {
+          "width": 54,
+          "lines": [
+            "(task completion)"
+          ]
+        },
+        {
           "width": 80,
           "lines": [
             "(task completion)"
@@ -72,6 +102,12 @@
         },
         {
           "width": 120,
+          "lines": [
+            "(task completion)"
+          ]
+        },
+        {
+          "width": 140,
           "lines": [
             "(task completion)"
           ]
@@ -112,6 +148,15 @@
           ]
         },
         {
+          "width": 54,
+          "lines": [
+            "task completion name:worker id:st_test...",
+            "duration:1s tokens:12",
+            "result:\"finished\"",
+            "next:read output"
+          ]
+        },
+        {
           "width": 80,
           "lines": [
             "task completion name:worker id:st_test model:faux/faux-1 status:completed",
@@ -126,6 +171,224 @@
             "task completion name:worker id:st_test model:faux/faux-1 status:completed",
             "duration:1s tokens:12",
             "result:\"finished\"",
+            "next:read output"
+          ]
+        },
+        {
+          "width": 140,
+          "lines": [
+            "task completion name:worker id:st_test model:faux/faux-1 status:completed",
+            "duration:1s tokens:12",
+            "result:\"finished\"",
+            "next:read output"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "completion-stats",
+      "renderer": "renderTaskCompletion",
+      "message": {
+        "details": [
+          {
+            "task_id": "st_test",
+            "name": "stats-member",
+            "status": "completed",
+            "model": "apitopia/z-ai/glm-5.2-ultrafast-unlocked",
+            "duration_ms": 65000,
+            "tokens": 12,
+            "final_response": "team statistics member complete",
+            "continuation_hint": "Use task_send({ to: \"stats-member\", message: \"...\" }) to continue.",
+            "category": "quick",
+            "run_stats": {
+              "runtime_ms": 65000,
+              "turns": 3,
+              "tool_calls": 4,
+              "output_tokens": 840,
+              "tokens_per_second": 250
+            }
+          }
+        ]
+      },
+      "renders": [
+        {
+          "width": 40,
+          "lines": [
+            "task completion name:stats-member...",
+            "duration:1m 5s tokens:12 tools:4 tps:250",
+            "result:\"team statistics member complete\"",
+            "next:Use task_send({ to:..."
+          ]
+        },
+        {
+          "width": 54,
+          "lines": [
+            "task completion name:stats-member id:st_test...",
+            "duration:1m 5s tokens:12 tools:4 tps:250",
+            "result:\"team statistics member complete\"",
+            "next:Use task_send({ to: \"stats-member\", message:..."
+          ]
+        },
+        {
+          "width": 80,
+          "lines": [
+            "task completion name:stats-member id:st_test...",
+            "duration:1m 5s tokens:12 tools:4 tps:250",
+            "result:\"team statistics member complete\"",
+            "next:Use task_send({ to: \"stats-member\", message: \"...\" }) to continue."
+          ]
+        },
+        {
+          "width": 120,
+          "lines": [
+            "task completion name:stats-member id:st_test category:quick(apitopia/z-ai/glm-5.2-ultrafast-unlocked) status:completed",
+            "duration:1m 5s tokens:12 tools:4 tps:250",
+            "result:\"team statistics member complete\"",
+            "next:Use task_send({ to: \"stats-member\", message: \"...\" }) to continue."
+          ]
+        },
+        {
+          "width": 140,
+          "lines": [
+            "task completion name:stats-member id:st_test category:quick(apitopia/z-ai/glm-5.2-ultrafast-unlocked) status:completed",
+            "duration:1m 5s tokens:12 tools:4 tps:250",
+            "result:\"team statistics member complete\"",
+            "next:Use task_send({ to: \"stats-member\", message: \"...\" }) to continue."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "completion-wide-continuation",
+      "renderer": "renderTaskCompletion",
+      "message": {
+        "details": [
+          {
+            "task_id": "st_test",
+            "name": "worker",
+            "status": "completed",
+            "model": "quotio-openai/gpt-5.6-luna-fast",
+            "duration_ms": 1250,
+            "tokens": 12,
+            "final_response": "검증 작업을 완료했습니다.",
+            "continuation_hint": "Use task_send({ to: \"st_done\", message: \"continue with the remaining evidence and report the result\" }) to continue."
+          }
+        ]
+      },
+      "renders": [
+        {
+          "width": 40,
+          "lines": [
+            "task completion name:worker...",
+            "duration:1.25s tokens:12",
+            "result:\"검증 작업을 완료했습니다.\"",
+            "next:Use task_send({ to: \"st_done\",..."
+          ]
+        },
+        {
+          "width": 54,
+          "lines": [
+            "task completion name:worker id:st_test...",
+            "duration:1.25s tokens:12",
+            "result:\"검증 작업을 완료했습니다.\"",
+            "next:Use task_send({ to: \"st_done\", message:..."
+          ]
+        },
+        {
+          "width": 80,
+          "lines": [
+            "task completion name:worker id:st_test model:quotio-openai/gpt-5.6-luna-fast...",
+            "duration:1.25s tokens:12",
+            "result:\"검증 작업을 완료했습니다.\"",
+            "next:Use task_send({ to: \"st_done\", message: \"continue with the remaining..."
+          ]
+        },
+        {
+          "width": 120,
+          "lines": [
+            "task completion name:worker id:st_test model:quotio-openai/gpt-5.6-luna-fast status:completed",
+            "duration:1.25s tokens:12",
+            "result:\"검증 작업을 완료했습니다.\"",
+            "next:Use task_send({ to: \"st_done\", message: \"continue with the remaining evidence and report the result\" }) to..."
+          ]
+        },
+        {
+          "width": 140,
+          "lines": [
+            "task completion name:worker id:st_test model:quotio-openai/gpt-5.6-luna-fast status:completed",
+            "duration:1.25s tokens:12",
+            "result:\"검증 작업을 완료했습니다.\"",
+            "next:Use task_send({ to: \"st_done\", message: \"continue with the remaining evidence and report the result\" }) to continue."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "completion-controls",
+      "renderer": "renderTaskCompletion",
+      "message": {
+        "details": [
+          {
+            "task_id": "st_test",
+            "name": "한글\u001b[31m worker",
+            "status": "completed",
+            "model": "faux/faux-1",
+            "resolved_model": {
+              "source": "explicit",
+              "provider": "faux",
+              "model_id": "faux-1",
+              "display": "faux/faux-1"
+            },
+            "duration_ms": 1000,
+            "tokens": 12,
+            "final_response": "결과\u0007 complete",
+            "continuation_hint": "read output"
+          }
+        ]
+      },
+      "renders": [
+        {
+          "width": 40,
+          "lines": [
+            "task completion name:한글 worker...",
+            "duration:1s tokens:12",
+            "result:\"결과 complete\"",
+            "next:read output"
+          ]
+        },
+        {
+          "width": 54,
+          "lines": [
+            "task completion name:한글 worker id:st_test...",
+            "duration:1s tokens:12",
+            "result:\"결과 complete\"",
+            "next:read output"
+          ]
+        },
+        {
+          "width": 80,
+          "lines": [
+            "task completion name:한글 worker id:st_test model:faux/faux-1 status:completed",
+            "duration:1s tokens:12",
+            "result:\"결과 complete\"",
+            "next:read output"
+          ]
+        },
+        {
+          "width": 120,
+          "lines": [
+            "task completion name:한글 worker id:st_test model:faux/faux-1 status:completed",
+            "duration:1s tokens:12",
+            "result:\"결과 complete\"",
+            "next:read output"
+          ]
+        },
+        {
+          "width": 140,
+          "lines": [
+            "task completion name:한글 worker id:st_test model:faux/faux-1 status:completed",
+            "duration:1s tokens:12",
+            "result:\"결과 complete\"",
             "next:read output"
           ]
         }
@@ -143,6 +406,12 @@
           ]
         },
         {
+          "width": 54,
+          "lines": [
+            "(team member liveness)"
+          ]
+        },
+        {
           "width": 80,
           "lines": [
             "(team member liveness)"
@@ -150,6 +419,12 @@
         },
         {
           "width": 120,
+          "lines": [
+            "(team member liveness)"
+          ]
+        },
+        {
+          "width": 140,
           "lines": [
             "(team member liveness)"
           ]
@@ -177,6 +452,15 @@
           ]
         },
         {
+          "width": 54,
+          "lines": [
+            "team member liveness",
+            "member:worker",
+            "last state:lost",
+            "reason:process exited"
+          ]
+        },
+        {
           "width": 80,
           "lines": [
             "team member liveness",
@@ -187,6 +471,15 @@
         },
         {
           "width": 120,
+          "lines": [
+            "team member liveness",
+            "member:worker",
+            "last state:lost",
+            "reason:process exited"
+          ]
+        },
+        {
+          "width": 140,
           "lines": [
             "team member liveness",
             "member:worker",

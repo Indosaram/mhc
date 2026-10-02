@@ -11,6 +11,19 @@ pub trait ResumptionChannelManager: Send + Sync {
     fn was_background(&self, task_id: &str) -> bool;
     fn is_owned_team_member(&self, record: &TaskRecord, session_id: &str) -> bool;
 }
+pub struct TaskResumptionChannelManager {
+    pub manager: Arc<senpi_task::manager::TaskManager>,
+    pub ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps,
+}
+impl ResumptionChannelManager for TaskResumptionChannelManager {
+    fn list(&self,session:&str)->Vec<TaskRecord> {
+        self.manager.list(&senpi_task::manager::types::ListScope::ParentSession(session.into())).into_iter().map(|entry| entry.record).collect()
+    }
+    fn was_background(&self,id:&str)->bool { self.manager.was_background(id) }
+    fn is_owned_team_member(&self,record:&TaskRecord,session:&str)->bool {
+        senpi_task::team::liveness_ownership::is_owned_team_member_task(record.name.as_deref(),Some(session),&self.ownership)
+    }
+}
 
 pub struct ResumptionChannelEmitter {
     pub events: EventBus,

@@ -30,11 +30,14 @@ const cases = [
     { name: "category-control", renderer: "renderCategoryUnavailable", message: { content: "unavailable\nnext\u001b[31m red\u001b[0m" } },
     { name: "completion-empty", renderer: "renderTaskCompletion", message: {} },
     { name: "completion", renderer: "renderTaskCompletion", message: { details: [completion] } },
+    { name: "completion-stats", renderer: "renderTaskCompletion", message: { details: [{...completion,name:"stats-member",category:"quick",model:"apitopia/z-ai/glm-5.2-ultrafast-unlocked",resolved_model:undefined,duration_ms:65000,run_stats:{runtime_ms:65000,turns:3,tool_calls:4,output_tokens:840,tokens_per_second:250},final_response:"team statistics member complete",continuation_hint:'Use task_send({ to: "stats-member", message: "..." }) to continue.'}] } },
+    { name: "completion-wide-continuation", renderer: "renderTaskCompletion", message: { details: [{...completion,model:"quotio-openai/gpt-5.6-luna-fast",resolved_model:undefined,duration_ms:1250,final_response:"검증 작업을 완료했습니다.",continuation_hint:'Use task_send({ to: "st_done", message: "continue with the remaining evidence and report the result" }) to continue.'}] } },
+    { name: "completion-controls", renderer: "renderTaskCompletion", message: { details: [{...completion,name:"한글\u001b[31m worker",final_response:"결과\u0007 complete"}] } },
     { name: "liveness-empty", renderer: "renderTeamMemberLiveness", message: {} },
     { name: "liveness", renderer: "renderTeamMemberLiveness", message: { details: { memberName: "worker", lastKnownState: "lost", reason: "process exited" } } },
 ];
-const outputs = cases.map(test => ({ ...test, renders: [40, 80, 120].map(width => ({ width, lines: renderers[test.renderer](test.message, {}, {}).render(width) })) }));
+const outputs = cases.map(test => ({ ...test, renders: [40, 54, 80, 120, 140].map(width => ({ width, lines: renderers[test.renderer](test.message, {}, {}).render(width) })) }));
 const out = resolve(import.meta.dir, "../../crates/omo/components/maho-omo-task/tests/golden");
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, "renderers.json"), JSON.stringify({ source: expected, cases: outputs }, null, 2) + "\n");
-console.log(`Generated ${outputs.length * 3} renderer goldens from ${expected}`);
+console.log(`Generated ${outputs.length * 5} renderer goldens from ${expected}`);

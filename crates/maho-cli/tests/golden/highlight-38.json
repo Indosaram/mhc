@@ -1,0 +1,32 @@
+[
+  {
+    "language": "typescript",
+    "code": "const value = 1",
+    "result": "[keyword:const] value = [number:1]"
+  },
+  {
+    "language": "python",
+    "code": "# hello\nreturn 42",
+    "result": "[comment:# hello]\n[keyword:return] [number:42]"
+  },
+  {
+    "language": "rust",
+    "code": "// hello\nlet value = 42;",
+    "result": "[comment:// hello]\n[keyword:let] [variable:value] = [number:42];"
+  },
+  {
+    "language": "javascript",
+    "code": "const re = /foo+/gi;",
+    "result": "[keyword:const] re = [regexp:/foo+/gi];"
+  },
+  {
+    "language": "bash",
+    "code": "echo 'hello'",
+    "result": "[built_in:echo] [string:'hello']"
+  },
+  {
+    "language": "go",
+    "code": "package main\nfunc main() {}",
+    "result": "[keyword:package] main\n[keyword:func] [title:main][params:()] {}"
+  }
+]

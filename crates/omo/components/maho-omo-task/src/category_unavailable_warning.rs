@@ -4,6 +4,10 @@ use senpi_task::manager::types::{ChildPlanner, PlanResolutionCode};
 use crate::usage_guidance::OncePerSessionGuard;
 
 pub type WarningSink = Arc<dyn Fn(&str, Value) + Send + Sync>;
+pub fn deliver_category_warning(actions: &dyn maho_ext_api::ExtensionActions, ui: Option<&dyn maho_ext_api::ExtensionUi>, text: &str, details: Value) -> Result<(), maho_ext_api::ExtensionFailure> {
+    if let Some(ui) = ui { ui.notify(text, maho_ext_api::NotificationType::Warning); }
+    actions.send_message(maho_ext_api::CustomMessage { custom_type: crate::renderers::CATEGORY_UNAVAILABLE_MESSAGE_TYPE.into(), content: vec![maho_ext_api::ToolContent::text(text)], display: true, details: Some(details) }, maho_ext_api::SendMessageOptions { trigger_turn: false, deliver_as: None })
+}
 
 pub fn create_category_unavailable_warning_planner(
     planner: ChildPlanner,

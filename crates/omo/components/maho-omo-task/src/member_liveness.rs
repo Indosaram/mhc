@@ -15,6 +15,25 @@ pub struct TeamMemberLivenessDeps {
     pub max_delivery_retries: Option<usize>,
     pub max_persistence_retries: Option<usize>,
 }
+pub fn bind_liveness_store_markers(mut deps:TeamMemberLivenessDeps,store:senpi_task::store::TaskRecordStore)->TeamMemberLivenessDeps {
+    let read_store=store.clone(); let read_error=deps.on_error.clone();
+    deps.was_delivered=Arc::new(move |record| {
+        match read_store.load(&record.task_id) {
+            Ok(fresh) => fresh.as_ref().unwrap_or(record).notification.liveness_notified_epoch.unwrap_or(-1)>=record.notification.run_epoch,
+            Err(error) => { read_error(format!("omo-senpi team liveness marker read failed: taskId={} error={error}",record.task_id)); false }
+        }
+    });
+    let write_error=deps.on_error.clone();
+    deps.mark_delivered=Arc::new(move |record| {
+        let epoch=record.notification.run_epoch;
+        if let Err(error)=store.mutate(&record.task_id,|fresh| {
+            let mut updated=fresh.clone();
+            if fresh.status==record.status && fresh.notification.run_epoch==epoch && fresh.notification.liveness_notified_epoch.unwrap_or(-1)<epoch { updated.notification.liveness_notified_epoch=Some(epoch); }
+            updated
+        }) { write_error(format!("omo-senpi team liveness marker write failed: taskId={} error={error}",record.task_id)); }
+    });
+    deps
+}
 #[derive(Default)] struct State { delivered: BTreeSet<String>, pending: BTreeMap<String, TaskRecord>, retries: BTreeMap<String, usize>, persistence_active: bool, session_file: Option<Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>> }
 pub struct TeamMemberLivenessNotifier { deps: TeamMemberLivenessDeps, state: Mutex<State>, markers: SessionMarkerIndex }
 pub fn liveness_details(record: &TaskRecord) -> Option<Value> {

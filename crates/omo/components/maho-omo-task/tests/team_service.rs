@@ -10,18 +10,47 @@ impl TeamMemberReadPort for Members { fn get(&self,_:&str)->Option<TeamMemberTas
 impl TeamMemberCancelPort for Members { fn cancel_task(&self,_:&str,_:Option<&str>)->TeamCancelOutcome { panic!("unexpected cancellation") } }
 impl TeamRuntimeManagerPort for Members { fn start(&self,_:&TeamMemberStartSpec)->Result<TeamStartResult,String> { panic!("unexpected member launch") } fn get_resident_handle(&self,_:&str)->Option<ResidentSessionRef> { None } }
 impl TeamMemberDestructionPort for Members { fn destroy_resident_task(&self,_:&str,_:DestroyCause)->Result<(),String> { panic!("unexpected destruction") } }
-struct Fixture { service:TeamService,run:String,session:Arc<Mutex<Option<String>>>,_root:tempfile::TempDir }
+struct Fixture { service:TeamService,run:String,session:Arc<Mutex<Option<String>>>,state_dir:StateDirConfig,events:Arc<Mutex<Vec<(String,senpi_task::store::PersistedTaskEvent)>>>,_root:tempfile::TempDir }
 fn fixture()->Fixture {
+    fixture_with_members(Arc::new(Members))
+}
+fn fixture_with_members(members:Arc<dyn TeamRuntimeManagerPort+Send+Sync>)->Fixture {
+    fixture_with_config(members,json!({}))
+}
+fn fixture_with_config(members:Arc<dyn TeamRuntimeManagerPort+Send+Sync>,omo_config:serde_json::Value)->Fixture {
     let root=tempfile::tempdir().expect("team root"); let state_dir=StateDirConfig { project_dir:root.path().into(),task_state_dir:None }; let bounds=TeamTaskBounds { max_members:4,max_parallel_members:2,max_wall_clock_minutes:10 };
     let manager=create_task_manager(TaskManagerOptions::new(TaskRecordStore::new(&state_dir),ManagedRunners { in_process:Arc::new(NoLaunch),process:Arc::new(NoLaunch) },Arc::new(|_| Ok(ResolvedChildPlan { model:"faux/faux".into(),..Default::default() })),root.path().to_string_lossy()));
     let config=to_team_core_config(&bounds,&team_storage_base_dir(&state_dir).to_string_lossy()).expect("config"); let spec=normalize_senpi_team_spec(&json!({"members":[{"name":"beta","kind":"category","category":"quick","prompt":"work"}]}),"squad",None).expect("spec");
     let state=create_runtime_state(&spec,Some("lead"),SpecSource::Project,&config).expect("runtime"); let run=state.team_run_id;
     transition_runtime_state(&run,|mut state| { state.status=RuntimeStatus::Active; state },&config).expect("active");
-    let session=Arc::new(Mutex::new(Some("lead".into()))); let id=session.clone(); let service=create_team_service(TeamServiceDeps { manager:Arc::new(manager),member_manager:Arc::new(Members),destruction:Arc::new(Members),session_id:Arc::new(move || id.lock().expect("session").clone()),state_dir,bounds,omo_config:json!({}),agent_names:BTreeSet::new(),member_extension:TeamMemberExtensionConfig::default(),append_task_event:Some(Arc::new(|_,_| {})),now:Some(Arc::new(|| 1000)),new_message_id:None }).expect("service");
-    Fixture { service,run,session,_root:root }
+    let events=Arc::new(Mutex::new(Vec::new())); let sink=events.clone(); let session=Arc::new(Mutex::new(Some("lead".into()))); let id=session.clone(); let service=create_team_service(TeamServiceDeps { manager:Arc::new(manager),member_manager:members,destruction:Arc::new(Members),session_id:Arc::new(move || id.lock().expect("session").clone()),state_dir:state_dir.clone(),bounds,omo_config,agent_names:BTreeSet::new(),member_extension:TeamMemberExtensionConfig::default(),append_task_event:Some(Arc::new(move |id,event| sink.lock().expect("events").push((id.into(),event)))),now:Some(Arc::new(|| 1000)),new_message_id:Some(Arc::new(|| "77777777-7777-4777-8777-777777777777".into())) }).expect("service");
+    Fixture { service,run,session,state_dir,events,_root:root }
 }
 fn input()->CreateTeamTaskServiceInput { CreateTeamTaskServiceInput { subject:"work".into(),description:"do work".into(),status:TaskStatus::Pending,owner:None,blocked_by:None } }
+#[test] fn unknown_named_team_preserves_spec_error_without_starting_members() {
+    let f=fixture_with_config(Arc::new(Members),json!({"teams":{"declared-a":{"members":[{"name":"alpha","kind":"category","category":"quick","prompt":"work"}]},"declared-b":{"members":[{"name":"beta","kind":"category","category":"quick","prompt":"work"}]}}}));
+    let error=f.service.create_team(&CreateTeamToolInput { team_name:Some("missing-team".into()),inline_spec:None }).expect_err("missing team");
+    assert_eq!(error.code.as_deref(),Some("INVALID_SPEC")); assert_eq!(f.service.list_teams().expect("teams").len(),1); assert!(f.events.lock().expect("events").is_empty());
+}
+#[test] fn rejected_member_start_preserves_code_and_does_not_activate_team() {
+    #[derive(Default)] struct Reject(Mutex<Vec<TeamMemberStartSpec>>);
+    impl TeamMemberReadPort for Reject { fn get(&self,_:&str)->Option<TeamMemberTaskRecord> { None } }
+    impl TeamMemberCancelPort for Reject { fn cancel_task(&self,_:&str,_:Option<&str>)->TeamCancelOutcome { panic!("no child was started") } }
+    impl TeamRuntimeManagerPort for Reject { fn start(&self,spec:&TeamMemberStartSpec)->Result<TeamStartResult,String> { self.0.lock().expect("starts").push(spec.clone()); Ok(TeamStartResult::Rejected { kind:"error".into(),reason:"launch denied".into() }) } fn get_resident_handle(&self,_:&str)->Option<ResidentSessionRef> { None } }
+    let members=Arc::new(Reject::default()); let f=fixture_with_members(members.clone()); let error=f.service.create_team(&CreateTeamToolInput { team_name:None,inline_spec:Some(json!({"name":"denied","members":[{"name":"alpha","kind":"category","category":"quick","prompt":"work"},{"name":"beta","kind":"category","category":"quick","prompt":"work"}]})) }).expect_err("rejected");
+    assert_eq!(error.code.as_deref(),Some("member_start_rejected")); let starts=members.0.lock().expect("starts"); assert_eq!(starts.len(),1); assert_eq!(starts[0].parent_session_id,"lead"); assert_eq!(starts[0].root_session_id.as_deref(),Some("lead")); assert_eq!(starts[0].depth,1); assert_eq!(starts[0].category.as_deref(),Some("quick")); drop(starts); assert_eq!(f.service.list_teams().expect("active teams").len(),1);
+}
 #[test] fn task_create_list_get_share_real_persisted_state() { let f=fixture(); let task=f.service.create_task(&f.run,&input()).expect("task"); assert_eq!(f.service.get_task(&f.run,&task.id).expect("get"),task); assert_eq!(f.service.list_tasks(&f.run,None).expect("list"),vec![task]); }
+#[test] fn successful_member_creation_persists_active_team_and_member_map() {
+    #[derive(Default)] struct Launch(Mutex<Vec<TeamMemberStartSpec>>);
+    impl TeamMemberReadPort for Launch { fn get(&self,_:&str)->Option<TeamMemberTaskRecord> { None } }
+    impl TeamMemberCancelPort for Launch { fn cancel_task(&self,_:&str,_:Option<&str>)->TeamCancelOutcome { panic!("successful launch has no rollback") } }
+    impl TeamRuntimeManagerPort for Launch {
+        fn start(&self,spec:&TeamMemberStartSpec)->Result<TeamStartResult,String> { self.0.lock().expect("specs").push(spec.clone()); Ok(TeamStartResult::Started(TeamStartedMember { task_id:"st_00000001".into(),status:senpi_task::state::TaskStatus::Running,name:spec.name.clone().expect("member name"),resolved_model:None })) }
+        fn get_resident_handle(&self,_:&str)->Option<ResidentSessionRef> { None }
+    }
+    let members=Arc::new(Launch::default()); let f=fixture_with_members(members.clone()); f.service.create_team(&CreateTeamToolInput { team_name:None,inline_spec:Some(json!({"name":"created","members":[{"name":"alpha","kind":"category","category":"quick","prompt":"work"}]})) }).expect("create"); let teams=f.service.list_teams().expect("teams"); let created=teams.iter().find(|team| team.team_name=="created").expect("new team"); assert_eq!(created.lead_session_id.as_deref(),Some("lead")); assert_eq!(created.member_count,1); let state=f.service.status(&created.team_run_id).expect("state"); assert_eq!(state.status,RuntimeStatus::Active); assert_eq!(state.members[0].name,"alpha"); let dirs=senpi_task::team::storage::resolve_team_runtime_dirs(&f.state_dir,&created.team_run_id).expect("dirs"); assert_eq!(senpi_task::team::member_map::read_member_task_map(&dirs.runtime_dir).get("alpha").map(String::as_str),Some("st_00000001")); let specs=members.0.lock().expect("specs"); assert_eq!(specs.len(),1); assert_eq!(specs[0].depth,1); assert_eq!(specs[0].parent_session_id,"lead"); assert_eq!(specs[0].category.as_deref(),Some("quick"));
+}
 #[test] fn foreign_session_cannot_read_or_mutate_tasklist() { let f=fixture(); *f.session.lock().expect("session")=Some("foreign".into()); assert!(f.service.create_task(&f.run,&input()).is_err()); assert!(f.service.list_tasks(&f.run,None).is_err()); assert!(f.service.status(&f.run).is_err()); }
 #[test] fn uncaptured_session_can_read_existing_team() { let f=fixture(); *f.session.lock().expect("session")=None; assert!(f.service.list_tasks(&f.run,None).expect("list").is_empty()); }
 #[test] fn team_listing_preserves_owner_and_scope() { let f=fixture(); let teams=f.service.list_teams().expect("teams"); assert_eq!(teams.len(),1); assert_eq!(teams[0].team_run_id,f.run); assert_eq!(teams[0].lead_session_id.as_deref(),Some("lead")); }
@@ -43,4 +72,36 @@ fn input()->CreateTeamTaskServiceInput { CreateTeamTaskServiceInput { subject:"w
     assert_eq!(claimed.owner.as_deref(),Some("lead"));
     assert_eq!(f.service.list_tasks(&f.run,Some(&TeamTaskListFilter { status:Some(TaskStatus::Claimed),owner:Some("lead".into()) })).expect("filter"),vec![claimed]);
     assert!(f.service.list_tasks(&f.run,Some(&TeamTaskListFilter { status:Some(TaskStatus::Pending),owner:None })).expect("pending").is_empty());
+}
+#[test] fn unknown_canonical_delete_succeeds_but_uppercase_fails_shape_guard() {
+    let f=fixture(); let unknown="11111111-1111-4111-8111-111111111111";
+    let result=f.service.delete_team(&DeleteTeamToolInput { team_run_id:unknown.into(),force:None }).expect("unknown delete"); assert_eq!(result.team_run_id,unknown); assert!(result.cancelled_task_ids.is_empty());
+    assert!(f.service.delete_team(&DeleteTeamToolInput { team_run_id:"AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA".into(),force:None }).is_err());
+}
+#[test] fn mapped_recipient_receives_message_and_correlation_event() {
+    let f=fixture(); let dirs=senpi_task::team::storage::resolve_team_runtime_dirs(&f.state_dir,&f.run).expect("dirs"); senpi_task::team::member_map::write_member_task_map(&dirs.runtime_dir,&[("beta".into(),"st_00000001".into())].into()).expect("map");
+    let result=f.service.send_message(&f.run,&senpi_task::team::messaging::types::SendTeamMessageInput { from:"lead".into(),to:"beta".into(),body:"continue".into(),summary:None }).expect("message"); assert_eq!(result.message_id(),"77777777-7777-4777-8777-777777777777");
+    let events=f.events.lock().expect("events"); assert_eq!(events.len(),1); assert_eq!(events[0].0,"st_00000001"); assert_eq!(events[0].1.event_type,"team_message_sent"); assert_eq!(events[0].1.payload,json!({"message_id":"77777777-7777-4777-8777-777777777777","from":"lead","to":"beta","kind":"message"}));
+}
+#[test] fn unmapped_active_member_delivery_does_not_invent_correlation_event() {
+    let f=fixture(); let result=f.service.send_message(&f.run,&senpi_task::team::messaging::types::SendTeamMessageInput { from:"lead".into(),to:"beta".into(),body:"continue".into(),summary:None }).expect("message"); assert!(matches!(result,senpi_task::team::messaging::types::SendTeamMessageResult::ToMembers { recipients,.. } if recipients==vec!["beta"])); assert!(f.events.lock().expect("events").is_empty());
+    let inbox=senpi_task::team::storage::resolve_team_member_inbox_dir(&f.state_dir,&f.run,"beta").expect("inbox"); assert!(inbox.join("77777777-7777-4777-8777-777777777777.json").exists());
+}
+#[test] fn curated_read_only_agent_rejected_before_member_launch() {
+    let f=fixture(); assert!(f.service.create_team(&CreateTeamToolInput { team_name:None,inline_spec:Some(json!({"name":"curated-team","members":[{"name":"momus","kind":"subagent_type","subagent_type":"momus","prompt":"review"}]})) }).is_err()); assert_eq!(f.service.list_teams().expect("teams").len(),1);
+}
+#[test] fn shutdown_request_rejection_and_approval_persist_through_service() {
+    let f=fixture(); let requested=f.service.request_shutdown(&f.run,"beta").expect("request");
+    assert_eq!(requested.shutdown_requests.len(),1); assert_eq!(requested.shutdown_requests[0].requested_at,1000);
+    let rejected=f.service.reject_shutdown(&f.run,"beta","continue work").expect("reject");
+    assert_eq!(rejected.shutdown_requests[0].rejected_reason.as_deref(),Some("continue work")); assert_eq!(rejected.shutdown_requests[0].rejected_at,Some(1000));
+    f.service.request_shutdown(&f.run,"beta").expect("new request");
+    let approved=f.service.approve_shutdown(&f.run,"beta").expect("approve");
+    assert_eq!(approved.shutdown_requests.last().expect("latest").approved_at,Some(1000));
+    let persisted=f.service.status(&f.run).expect("status"); assert_eq!(persisted.shutdown_requests,approved.shutdown_requests);
+}
+#[test] fn shutdown_errors_preserve_native_machine_codes() {
+    let f=fixture(); let unknown=f.service.request_shutdown(&f.run,"missing").expect_err("unknown member"); assert_eq!(unknown.code.as_deref(),Some("unknown_member"));
+    let no_request=f.service.approve_shutdown(&f.run,"beta").expect_err("no request"); assert_eq!(no_request.code.as_deref(),Some("no_pending_request"));
+    assert!(f.service.status(&f.run).expect("status").shutdown_requests.is_empty());
 }
