@@ -77,6 +77,10 @@ impl DetachedNotificationQueue {
             receiver.changed().await.map_err(|_| "notification queue retired".to_string())?;
         }
     }
+
+    pub(crate) fn flush_signal(&self) -> Option<watch::Receiver<Option<Result<(),String>>>> {
+        self.state.lock().expect("notification queue poisoned").flush.clone()
+    }
 }
 
 impl Drop for DetachedNotificationQueue {

@@ -192,6 +192,42 @@ impl EvalDetachedCellManager {
 
     pub async fn flush_notifications(&self) -> Result<(), String> { self.notification_queue.flush().await }
 
+    pub async fn dispose(manager: &Arc<Mutex<Self>>) -> Result<(),String> {
+        let cells={
+            let locked=manager.lock().expect("cell manager lock");
+            locked.detached.values().map(|cell| {
+                let cell=cell.lock().expect("managed cell lock");
+                (cell.source.cell_id.clone(),cell.source.state==EvalDetachedCellState::Queued)
+            }).collect::<Vec<_>>()
+        };
+        let reason="Session ended; detached eval cell cancelled";
+        for (id,queued) in &cells {
+            if *queued {let _=Self::stop(manager,id,reason).await;}
+        }
+        let mut stops=cells.iter().map(|(id,_)|Box::pin(Self::stop(manager,id,reason))).collect::<Vec<_>>();
+        let mut settled=vec![false;stops.len()];
+        std::future::poll_fn(|context| {
+            for (stop,settled) in stops.iter_mut().zip(&mut settled) {
+                if !*settled && stop.as_mut().poll(context).is_ready() {*settled=true;}
+            }
+            if settled.iter().all(|settled|*settled) {std::task::Poll::Ready(())} else {std::task::Poll::Pending}
+        }).await;
+        let flush={
+            let locked=manager.lock().expect("cell manager lock");
+            if cells.is_empty() {locked.publish_wake_source_state();}
+            locked.notification_queue.flush_signal()
+        };
+        if let Some(mut flush)=flush {
+            loop {
+                if let Some(result)=flush.borrow().clone() {result?;break;}
+                flush.changed().await.map_err(|_|"notification queue retired".to_string())?;
+            }
+        }
+        let mut locked=manager.lock().expect("cell manager lock");
+        locked.cells.clear();locked.terminal_snapshots.clear();
+        Ok(())
+    }
+
     pub fn cancel_without_interrupt(&mut self, cell: &ManagedCellHandle) -> bool {
         let result = current_detached_result(&cell.lock().expect("managed cell poisoned").source);
         self.settle(cell, EvalDetachedCellState::Cancelled, result)
