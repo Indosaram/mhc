@@ -1,5 +1,11 @@
 pub const REGION_START:&str="<!--senpi:project-rules:1:start-->";
 pub const REGION_END:&str="<!--senpi:project-rules:1:end-->";
+pub fn agents(cwd:&std::path::Path,agent_dir:&std::path::Path,config_directory:&str)->Option<String> {
+    let mut current=std::path::absolute(cwd).ok()?;
+    let path=loop {let candidate=current.join("AGENTS.md");if candidate.exists() {break candidate;}
+        if !current.pop() {break agent_dir.join("AGENTS.md");}};
+    let content=std::fs::read_to_string(path).ok()?;let config=regex::escape(config_directory.trim_start_matches('.'));let content=regex::Regex::new(&format!(r"(?i)~/{config}\b")).ok()?.replace_all(content.trim(),"~/.claude");let content=regex::Regex::new(&format!(r#"(^|[\s'"`])\.{config}/"#)).ok()?.replace_all(&content,"${1}.claude/");let content=regex::Regex::new(&format!(r"(?i)\b{config}\b")).ok()?.replace_all(&content,"environment").into_owned();if content.is_empty() {None}else {Some(format!("# CLAUDE.md\n\n{content}"))}
+}
 pub fn project_rules(prompt:Option<&str>)->Option<&str> {
     let prompt=prompt?;let mut search=0;
     while search<=prompt.len() {
@@ -18,6 +24,10 @@ pub fn skills(prompt:Option<&str>,global_root:&std::path::Path,project_root:&std
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn nearest_agents_wins_and_empty_file_does_not_fall_back() {
+        let directory=tempfile::tempdir().expect("dir");let global=directory.path().join("global");let project=directory.path().join("project");let child=project.join("child");std::fs::create_dir_all(&global).expect("global");std::fs::create_dir_all(&child).expect("child");std::fs::write(global.join("AGENTS.md"),"global").expect("global file");std::fs::write(project.join("AGENTS.md")," ~/omo/skills ~/.omo/skills .omo/file omo ").expect("project file");assert_eq!(agents(&child,&global,".omo").expect("agents"),"# CLAUDE.md\n\n~/.claude/skills ~/.environment/skills .claude/file environment");std::fs::write(child.join("AGENTS.md"),"  ").expect("empty");assert!(agents(&child,&global,".omo").is_none());
+    }
     #[test]
     fn reserved_region_rejects_false_candidate_and_unterminated_region() {
         let valid="<project_rules>\n## Project Instructions\nrule\n</project_rules>";let prompt=format!("{REGION_START}invalid{REGION_END} unrelated {REGION_START}{valid}{REGION_END} tail");assert_eq!(project_rules(Some(&prompt)),Some(valid));assert_eq!(project_rules(Some(&format!("{REGION_START}{valid}"))),None);
