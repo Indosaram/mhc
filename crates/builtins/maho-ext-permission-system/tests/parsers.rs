@@ -19,6 +19,17 @@ fn grep_pattern(){assert_eq!(parse("grep",json!({"pattern":"TODO"}))[0].patterns
 #[test]
 fn grep_path(){let r=parse("grep",json!({"path":"/etc","pattern":"TODO"}));assert_eq!(r[0].patterns,vec!["/etc"]);assert_eq!(r[1].always,vec!["/etc/*"]);}
 #[test]
+fn grep_empty_path_does_not_fall_back_to_pattern(){
+    // Given an explicitly empty path and a nonempty pattern.
+    let input=json!({"path":"","pattern":"TODO"});
+    // When the grep permission is parsed.
+    let requests=parse("grep",input);
+    // Then upstream's nullish selection uses the empty path and falls back.
+    assert_eq!(requests.len(),1);
+    assert_eq!(requests[0].permission,"grep");
+    assert_eq!(requests[0].patterns,vec!["*"]);
+}
+#[test]
 fn list_default(){for name in ["find","ls"]{let r=parse(name,json!({}));assert_eq!(r[0].permission,"list");assert_eq!(r[0].patterns,vec!["."]);}}
 #[test]
 fn fallback(){assert_eq!(parse("unknown",json!({}))[0].patterns,vec!["*"]);}

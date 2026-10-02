@@ -49,7 +49,7 @@ pub fn create_builtin_parser_registry()->ParserRegistry{
     registry.register("grep",Arc::new(|input,cwd,home|{
         let path=string(input,&["path"]);let Some(pattern)=path.or_else(||string(input,&["pattern"])).filter(|pattern|!pattern.is_empty())else{return fallback("grep")};
         let requests=vec![request("grep",vec![pattern.into()],vec!["*".into()])];
-        path.map_or(requests.clone(),|path|external(requests,&[path.into()],(cwd,home),true))
+        path.filter(|path|!path.is_empty()).map_or(requests.clone(),|path|external(requests,&[path.into()],(cwd,home),true))
     }));
     for name in ["find","ls"]{registry.register(name,Arc::new(|input,cwd,home|{
         let path=string(input,&["path"]).unwrap_or(".");let paths=vec![path.into()];external(vec![request("list",paths.clone(),paths.clone())],&paths,(cwd,home),true)
