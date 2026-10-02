@@ -14,7 +14,14 @@ pub fn format_tokens_compact(value:f64)->String{
     if value.trunc()==0.0{return "0".into();}
     let abs=value.abs();if abs>=1_000_000.0{format!("{}M",one_decimal(value/1_000_000.0))}else if abs>=1000.0{format!("{}K",one_decimal(value/1000.0))}else{format!("{:.0}",value.trunc())}
 }
-fn one_decimal(value:f64)->String{let rounded=format!("{value:.1}");rounded.strip_suffix(".0").unwrap_or(&rounded).into()}
+fn one_decimal(value:f64)->String{
+    // At one decimal place the only exactly representable binary ties
+    // have fractional part .25 or .75. Do not multiply other inputs
+    // before checking: that would erase the binary error in e.g. 1.15.
+    let fraction=value.abs().fract();
+    let value=if fraction==0.25||fraction==0.75{(value*10.0).round()/10.0}else{value};
+    let rounded=format!("{value:.1}");rounded.strip_suffix(".0").unwrap_or(&rounded).into()
+}
 pub const fn goal_status_label(status:GoalStatus)->&'static str{match status{GoalStatus::Active=>"active",GoalStatus::Paused=>"paused",GoalStatus::Blocked=>"blocked",GoalStatus::Complete=>"complete"}}
 fn number(value:u64)->f64{value.to_string().parse().unwrap_or_else(|_|unreachable!("u64 decimal fits f64"))}
 pub fn format_goal_for_tool(goal:Option<&Goal>)->Result<String,String>{
