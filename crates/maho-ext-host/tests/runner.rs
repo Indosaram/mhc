@@ -304,6 +304,25 @@ fn context_signal_observes_cancellation() { let mut ctx = context(); let signal 
 fn context_print_mode_and_tool_context_contract() { let ctx = context(); assert_eq!(ctx.mode, ExtensionMode::Print); assert!(!ctx.has_ui); assert_eq!(ToolContext::cwd(&ctx), Path::new("/tmp")); assert_eq!(ToolContext::session_manager(&ctx).session_id(), "session"); }
 #[test]
 fn invalidated_runner_rejects_new_context() { let runner = runner(vec![]); runner.invalidate("stale"); assert_eq!(runner.create_context().err().unwrap().message, "stale"); }
+
+#[test]
+fn retained_tool_context_getters_reject_invalidated_runtime() {
+    let mut runner = runner(vec![]);
+    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) })).unwrap();
+    let context = runner.create_context().unwrap();
+    runner.invalidate("replaced");
+    let tool: &dyn ToolContext = &context;
+    for getter in [
+        Box::new(|| { tool.cwd(); }) as Box<dyn Fn()>,
+        Box::new(|| { tool.model(); }),
+        Box::new(|| { tool.thinking_level(); }),
+        Box::new(|| { tool.session_manager(); }),
+        Box::new(|| { tool.goal_store_file(); }),
+    ] {
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(getter)).unwrap_err();
+        assert_eq!(panic.downcast_ref::<ExtensionFailure>().unwrap().message, "replaced");
+    }
+}
 #[tokio::test(start_paused = true)]
 async fn shutdown_hard_cap_aborts_and_runs_next_handler() {
     let signal = Arc::new(Mutex::new(None)); let capture = Arc::clone(&signal);

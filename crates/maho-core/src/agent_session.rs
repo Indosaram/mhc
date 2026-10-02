@@ -401,9 +401,12 @@ struct AgentSessionState {
     compaction_abort_controller: Option<maho_ai::utils::abort::AbortController>,
     prompt_templates: Vec<crate::prompt_templates::PromptTemplate>,
     extension_commands: Vec<maho_ext_api::SlashCommandInfo>,
+    extension_tool_context: Option<(maho_ext_api::ExtensionRuntime, maho_ext_host::wrapper::ToolContextFactory)>,
     skills: Vec<crate::skills::Skill>,
     bash_abort_signals: BTreeMap<String, maho_ext_api::AbortSignal>,
     pending_bash_messages: Vec<maho_agent::harness::messages::BashExecutionMessage>,
+    pending_next_turn_messages: Vec<maho_agent::harness::messages::CustomMessage>,
+    pending_custom_messages: Vec<maho_agent::harness::messages::CustomMessage>,
 }
 
 fn name_set(names: Option<Vec<String>>) -> Option<BTreeSet<String>> {
@@ -651,8 +654,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     }
     fn get_loaded_hook_sources(&self) -> maho_ext_api::LoadedHookSources {
         let session = self.session().ok(); let cwd = session.as_ref().map_or_else(std::path::PathBuf::new, |session| session.cwd().into());
-        let dir = session.as_ref().map_or_else(std::path::PathBuf::new, |session| session.agent_dir().into());
-        maho_ext_api::LoadedHookSources { global_hooks_path: dir.join("hooks"), project_hooks_path: cwd.join(".omo/hooks"), cwd, agent_dir: dir,
+        maho_ext_api::LoadedHookSources { global_hooks_path: cwd.join("hooks.json"), project_hooks_path: cwd.join(".maho/hooks.json"), agent_dir: cwd.clone(), cwd,
             global_settings_hooks: None, project_settings_hooks: None, global_hook_source_paths: Vec::new(), project_hook_source_paths: Vec::new(),
             pre_session_hook_source_paths: Vec::new(), runtime_hook_source_paths: Vec::new() }
     }
@@ -670,14 +672,14 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
             "details":message.details,"timestamp":maho_ai::utils::diagnostics::now_ms(),
         })).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
         let agent_message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(custom.clone()));
-        if session.is_streaming() {
+        if options.deliver_as == Some(maho_ext_api::DeliverAs::NextTurn) {
+            session.state().pending_next_turn_messages.push(custom);
+        } else if session.is_streaming() && !options.trigger_turn {
+            session.state().pending_custom_messages.push(custom);
+        } else if session.is_streaming() {
             match options.deliver_as { Some(maho_ext_api::DeliverAs::FollowUp) => session.agent.follow_up(agent_message), _ => session.agent.steer(agent_message) }
         } else {
-            let content = serde_json::to_value(message.content).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
-            session.with_session_manager_mut(|manager| manager.append_custom_message(&custom.custom_type,
-                content, custom.display, custom.details));
-            let mut messages = session.messages(); messages.push(agent_message); session.agent.set_messages(messages);
-            session.state().message_revision += 1;
+            session.append_extension_custom_message(custom).map_err(maho_ext_api::ExtensionFailure::new)?;
             if options.trigger_turn { tokio::spawn(async move { session.continue_session().await }); }
         }
         Ok(())
@@ -731,6 +733,20 @@ impl maho_ext_api::ExtensionSessionActions for SessionExtensionActions {
     fn get_active_tools(&self) -> Result<Vec<String>, maho_ext_api::ExtensionFailure> { Ok(self.session()?.get_active_tool_names()) }
     fn set_active_tools(&self, names: Vec<String>) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.set_active_tools_by_name(names); Ok(()) }
     fn refresh_tools(&self) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.publish_eval_only_tool_hints(); Ok(()) }
+    fn install_registered_tool(&self, registered: maho_ext_api::RegisteredTool) -> Result<(), maho_ext_api::ExtensionFailure> {
+        let session = self.session()?;
+        let binding = session.state().extension_tool_context.clone();
+        if let Some((runtime, factory)) = binding {
+            let definition = registered.definition.clone();
+            let source = registered.source_info.clone();
+            let tool = maho_ext_host::wrapper::wrap_registered_tool(registered, runtime, factory);
+            let mut active = session.get_active_tool_names();
+            if !active.contains(&definition.name) { active.push(definition.name.clone()); }
+            session.register_tool_definition(definition, source, tool);
+            session.set_active_tools_by_name(active);
+        }
+        self.refresh_tools()
+    }
     fn register_removed_tool_hint(&self, name: &str, hint: &str) -> Result<(), maho_ext_api::ExtensionFailure> {
         let session = self.session()?; let mut hints = session.agent.removed_tool_hints(); hints.insert(name.to_owned(), hint.to_owned()); session.agent.set_removed_tool_hints(hints); Ok(())
     }
@@ -1002,9 +1018,12 @@ impl AgentSession {
             compaction_abort_controller: None,
             prompt_templates: Vec::new(),
             extension_commands: Vec::new(),
+            extension_tool_context: None,
             skills: Vec::new(),
             bash_abort_signals: BTreeMap::new(),
             pending_bash_messages: Vec::new(),
+            pending_next_turn_messages: Vec::new(),
+            pending_custom_messages: Vec::new(),
         };
         let session = Self { inner: Arc::new(AgentSessionInner {
             agent,
@@ -1303,6 +1322,7 @@ impl AgentSession {
                 &SessionExtensionActions(Arc::downgrade(&self.inner)), message, Default::default(),
             ).map_err(|error| error.to_string())?; }
         } else { self.agent.set_system_prompt(self.state().base_system_prompt.clone()); }
+        self.flush_pending_next_turn_messages()?;
         self.agent.prompt(maho_agent::agent::AgentPromptInput::Message(make_user_message(&text, images))).await;
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
@@ -1562,6 +1582,8 @@ impl AgentSession {
     }
 
     async fn finish_provider_turn(&self) -> Result<(), String> {
+        let pending = std::mem::take(&mut self.state().pending_custom_messages);
+        for message in pending { self.append_extension_custom_message(message)?; }
         use crate::retry_fallback::controller::FallbackReason;
         use maho_ai::utils::retry_hint::parse_retry_after_ms_marker;
         let mut overflow_compacted = false;
@@ -2763,6 +2785,7 @@ impl AgentSession {
         }
         let tool_runner = runner.clone();
         let context_factory: maho_ext_host::wrapper::ToolContextFactory = Arc::new(move || tool_runner.create_context());
+        self.state().extension_tool_context = Some((runner.runtime.clone(), context_factory.clone()));
         let mut active = self.get_active_tool_names();
         for registered in runner.get_all_registered_tools() {
             let definition = registered.definition.clone();
@@ -2978,7 +3001,24 @@ impl AgentSession {
 
     pub fn pending_message_count(&self) -> usize {
         let state = self.state();
-        state.steering_messages.len() + state.follow_up_messages.len()
+        state.steering_messages.len() + state.follow_up_messages.len() + state.pending_next_turn_messages.len() + state.pending_custom_messages.len()
+    }
+
+    fn flush_pending_next_turn_messages(&self) -> Result<(), String> {
+        let pending = std::mem::take(&mut self.state().pending_next_turn_messages);
+        for message in pending { self.append_extension_custom_message(message)?; }
+        Ok(())
+    }
+
+    fn append_extension_custom_message(&self, message: maho_agent::harness::messages::CustomMessage) -> Result<(), String> {
+        let content = serde_json::to_value(&message.content).map_err(|error| error.to_string())?;
+        self.with_session_manager_mut(|manager| manager.append_custom_message(&message.custom_type, content, message.display, message.details.clone()));
+        let message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(message));
+        let mut messages = self.messages(); messages.push(message.clone()); self.agent.set_messages(messages);
+        self.state().message_revision += 1;
+        self.emit(AgentSessionEvent::Agent(maho_agent::types::AgentEvent::MessageStart { message: message.clone() }));
+        self.emit(AgentSessionEvent::Agent(maho_agent::types::AgentEvent::MessageEnd { message }));
+        Ok(())
     }
 
     pub fn get_steering_messages(&self) -> Vec<String> {
@@ -3865,6 +3905,22 @@ mod tests {
         assert!(session.messages().is_empty());
     }
 
+    #[test]
+    fn extension_next_turn_message_is_retained_until_next_admission() {
+        use maho_ext_api::ExtensionActions;
+        let session = test_session();
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        actions.send_message(maho_ext_api::CustomMessage {
+            custom_type: "notice".into(), content: vec![maho_ext_api::ToolContent::text("later")], display: true, details: None,
+        }, maho_ext_api::SendMessageOptions { trigger_turn: false, deliver_as: Some(maho_ext_api::DeliverAs::NextTurn) }).unwrap();
+        assert!(session.messages().is_empty());
+        assert_eq!(session.pending_message_count(), 1);
+        session.flush_pending_next_turn_messages().unwrap();
+        assert_eq!(session.messages()[0].role(), "custom");
+        assert_eq!(session.pending_message_count(), 0);
+        assert_eq!(session.with_session_manager(|manager| manager.entries())[0]["type"], "custom_message");
+    }
+
     #[tokio::test]
     async fn extension_compaction_rejects_stale_warm_anchor_before_writing() {
         use maho_ext_api::ExtensionContextActions;
@@ -4278,6 +4334,20 @@ mod tests {
         assert!(session.get_registered_tool("read").is_some());
         assert!(session.get_tool_definition("read").is_some());
         assert_eq!(session.resolve_tool_call_name("read"), "read");
+    }
+
+    #[test]
+    fn late_extension_tool_registration_installs_into_live_agent() {
+        use maho_ext_api::ExtensionSessionActions;
+        let session = test_session();
+        let runtime = maho_ext_api::ExtensionRuntime::default();
+        let factory: maho_ext_host::wrapper::ToolContextFactory = Arc::new(|| Err(maho_ext_api::ExtensionFailure::new("unused context")));
+        session.state().extension_tool_context = Some((runtime, factory));
+        SessionExtensionActions(Arc::downgrade(&session.inner)).install_registered_tool(maho_ext_api::RegisteredTool {
+            definition: test_definition("late"), source_info: empty_source_info(),
+        }).unwrap();
+        assert!(session.get_registered_tool("late").is_some());
+        assert!(session.get_active_tool_names().contains(&"late".to_owned()));
     }
 
     #[test]

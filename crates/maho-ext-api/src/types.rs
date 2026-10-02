@@ -538,11 +538,11 @@ impl ExtensionContext {
     pub fn get_registered_mcp_servers(&self) -> &[RegisteredMcpServerDeclaration] { self.assert_active_or_panic(); &self.registered_mcp_servers }
 }
 impl ToolContext for ExtensionContext {
-    fn cwd(&self) -> &Path { &self.cwd }
-    fn model(&self) -> Option<&Model> { self.model.as_ref() }
-    fn thinking_level(&self) -> Option<ThinkingLevel> { self.thinking_level }
-    fn session_manager(&self) -> &dyn ToolSessionManager { self.session_manager.as_ref() }
-    fn goal_store_file(&self) -> Option<&Path> { self.goal_store_file.as_deref() }
+    fn cwd(&self) -> &Path { self.assert_active_or_panic(); &self.cwd }
+    fn model(&self) -> Option<&Model> { self.assert_active_or_panic(); self.model.as_ref() }
+    fn thinking_level(&self) -> Option<ThinkingLevel> { self.assert_active_or_panic(); self.thinking_level }
+    fn session_manager(&self) -> &dyn ToolSessionManager { self.assert_active_or_panic(); self.session_manager.as_ref() }
+    fn goal_store_file(&self) -> Option<&Path> { self.assert_active_or_panic(); self.goal_store_file.as_deref() }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -877,6 +877,7 @@ pub trait ExtensionSessionActions: Send + Sync {
     fn get_active_tools(&self) -> Result<Vec<String>, ExtensionFailure>;
     fn set_active_tools(&self, names: Vec<String>) -> Result<(), ExtensionFailure>;
     fn refresh_tools(&self) -> Result<(), ExtensionFailure>;
+    fn install_registered_tool(&self, _tool: RegisteredTool) -> Result<(), ExtensionFailure> { self.refresh_tools() }
     fn register_removed_tool_hint(&self, name: &str, hint: &str) -> Result<(), ExtensionFailure>;
     fn register_lazy_tool_activator(&self, activator: LazyToolActivator) -> Result<(), ExtensionFailure>;
     fn get_commands(&self) -> Result<Vec<SlashCommandInfo>, ExtensionFailure>;
@@ -1188,9 +1189,9 @@ impl ExtensionApi {
             return Err(ExtensionFailure::new(format!("Tool \"{}\" registered by extension \"{}\" must define an object parameter schema.", definition.name, self.registered.identity.path)));
         }
         let tool = RegisteredTool { definition, source_info: self.registered.source_info.clone() };
-        if let Some(existing) = self.registered.tools.iter_mut().find(|t| t.definition.name == tool.definition.name) { *existing = tool; } else { self.registered.tools.push(tool); }
+        if let Some(existing) = self.registered.tools.iter_mut().find(|t| t.definition.name == tool.definition.name) { *existing = tool.clone(); } else { self.registered.tools.push(tool.clone()); }
         let actions = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone();
-        if let Some(actions) = actions { actions.refresh_tools()?; }
+        if let Some(actions) = actions { actions.install_registered_tool(tool)?; }
         Ok(())
     }
     pub fn register_command(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandHandler) {
