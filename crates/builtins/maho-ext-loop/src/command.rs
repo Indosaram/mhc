@@ -86,4 +86,10 @@ pub fn resolve_command_target(target:&LoopTarget,state:&LoopState)->TargetResolu
     }
     #[test] fn implicit_target_on_empty_state_applies_nothing() { let state=crate::store::empty_loop_state("s"); assert_eq!(resolve_command_target(&LoopTarget::Implicit,&state),TargetResolution::None); }
     #[test] fn explicit_target_is_not_changed_by_missing_entry() { let state=crate::store::empty_loop_state("s"); assert_eq!(resolve_command_target(&LoopTarget::Id("missing".into()),&state),TargetResolution::Apply(LoopTarget::Id("missing".into()))); }
+    #[test] fn implicit_targets_preserve_creation_order_and_exclude_ended_entries() {
+        let mut scheduler=crate::scheduler::LoopScheduler::new("s",None,&Default::default());
+        for id in ["z","a"] { scheduler.create_fixed(crate::scheduler::CreateFixedRequest { base:crate::scheduler::CreateDynamicRequest { original_args:"1m check".into(),reentry_prompt:"check".into(),payload:crate::types::LoopPayload::Prompt { prompt:"check".into() } },requested_interval:crate::types::RequestedInterval { value:1.0,unit:crate::types::RequestedIntervalUnit::Minutes,raw:"1m".into() },effective_interval:crate::types::EffectiveInterval { value:1.0,unit:crate::types::EffectiveIntervalUnit::Minutes,human:"1m".into(),rounded:false,rounding_notice:None },cron_expression:"* * * * *".into(),interval_ms:60000.0 },id.into(),0.0); }
+        assert_eq!(resolve_command_target(&LoopTarget::Implicit,&scheduler.state),TargetResolution::Ambiguous(vec!["z".into(),"a".into()]));
+        scheduler.stop("z","user-stop",0.0); assert_eq!(resolve_command_target(&LoopTarget::Implicit,&scheduler.state),TargetResolution::Apply(LoopTarget::Id("a".into())));
+    }
 }
