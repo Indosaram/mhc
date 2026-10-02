@@ -1,0 +1,21 @@
+use maho_ext_pi_rules::rules::{matcher::*,types::*};
+fn patterns(values:&[&str])->Option<PatternList>{Some(PatternList::Multiple(values.iter().map(|v|(*v).into()).collect()))}
+fn run(frontmatter:&RuleFrontmatter,single:bool)->MatchResult {Matcher::default().match_rule(MatcherInput{frontmatter,is_single_file:single,project_relative:"src/rules/foo.ts",scope_relative:Some("rules/foo.ts"),basename:"foo.ts"}).unwrap_or_else(|error|panic!("matcher: {error}"))}
+#[test]fn compiled_once(){let f=RuleFrontmatter{globs:patterns(&["**/*.ts","!**/*.test.ts"]),..Default::default()};let mut m=Matcher::default();for _ in 0..20{assert!(m.match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"src/rules/foo.ts",scope_relative:Some("rules/foo.ts"),basename:"foo.ts"}).unwrap().matched);}assert_eq!(m.cache_stats(),MatcherCacheStats{entries:1,compiled_patterns:2});}
+#[test]fn cache_bounded(){let mut m=Matcher::default();for i in 0..300{let p=format!("src/file-{i}.ts");let f=RuleFrontmatter{globs:Some(PatternList::Single(p.clone())),..Default::default()};m.match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:&p,scope_relative:None,basename:&p}).unwrap();}assert!(m.cache_stats().entries<=256);}
+#[test]fn single_file(){let f=RuleFrontmatter{globs:patterns(&["never-matches"]),..Default::default()};assert_eq!(run(&f,true),MatchResult{matched:true,reason:MatchReason::SingleFile});}
+#[test]fn always_apply(){let f=RuleFrontmatter{globs:patterns(&["never-matches"]),always_apply:Some(true),..Default::default()};assert_eq!(run(&f,false),MatchResult{matched:true,reason:MatchReason::AlwaysApply});}
+#[test]fn false_always_glob(){let f=RuleFrontmatter{globs:patterns(&["src/**/*.ts"]),always_apply:Some(false),..Default::default()};assert_eq!(run(&f,false).reason,MatchReason::Glob{pattern:"src/**/*.ts".into()});}
+#[test]fn single_pattern(){let f=RuleFrontmatter{globs:Some(PatternList::Single("**/*.ts".into())),..Default::default()};assert_eq!(run(&f,false).reason,MatchReason::Glob{pattern:"**/*.ts".into()});}
+#[test]fn first_matching_positive(){let f=RuleFrontmatter{globs:patterns(&["**/*.md","src/**/*.ts","**/*.ts"]),..Default::default()};assert_eq!(run(&f,false).reason,MatchReason::Glob{pattern:"src/**/*.ts".into()});}
+#[test]fn only_negative(){let f=RuleFrontmatter{globs:patterns(&["!**/foo.ts","!src/**/*.ts"]),..Default::default()};assert!(!run(&f,false).matched);}
+#[test]fn excluded_file(){let f=RuleFrontmatter{globs:patterns(&["**/*.ts","!**/foo.ts"]),..Default::default()};assert!(!run(&f,false).matched);}
+#[test]fn paths_alias(){let f=RuleFrontmatter{paths:patterns(&["src/**/*.ts"]),..Default::default()};assert_eq!(normalize_globs(&f),["src/**/*.ts"]);}
+#[test]fn apply_to_alias(){let f=RuleFrontmatter{apply_to:patterns(&["**/*.md","**/*.ts"]),..Default::default()};assert_eq!(normalize_globs(&f),["**/*.md","**/*.ts"]);}
+#[test]fn aliases_merged(){let f=RuleFrontmatter{globs:patterns(&["**/*.ts"]),paths:patterns(&["src/**"]),apply_to:patterns(&["test/**"]),..Default::default()};assert_eq!(normalize_globs(&f),["**/*.ts","src/**","test/**"]);}
+#[test]fn empty_patterns(){let f=RuleFrontmatter{globs:patterns(&[]),..Default::default()};assert!(!run(&f,false).matched);}
+#[test]fn basename_pattern(){let f=RuleFrontmatter{globs:patterns(&["foo.ts"]),..Default::default()};assert_eq!(run(&f,false).reason,MatchReason::Glob{pattern:"foo.ts".into()});}
+#[test]fn windows_path_normalized(){let f=RuleFrontmatter{globs:patterns(&["src/**/*.ts"]),..Default::default()};let r=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"src\\rules\\foo.ts",scope_relative:Some("rules\\foo.ts"),basename:"foo.ts"}).unwrap();assert!(r.matched);}
+#[test]fn duplicate_patterns(){let f=RuleFrontmatter{globs:patterns(&["**/*.ts","src/**"]),paths:patterns(&["**/*.ts"]),apply_to:patterns(&["src/**","test/**"]),..Default::default()};assert_eq!(normalize_globs(&f),["**/*.ts","src/**","test/**"]);}
+#[test]fn deterministic_hash(){let a=hash_content("Use strict TypeScript.");let b=hash_content("Use strict TypeScript.");assert_eq!(a,b);assert_eq!(a.len(),64);assert!(a.bytes().all(|v|v.is_ascii_hexdigit()));}
+#[test]fn empty_hash(){assert_eq!(hash_content(""),"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");}

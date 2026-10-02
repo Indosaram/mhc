@@ -1744,7 +1744,10 @@ version = "0.0.0"
 name = "maho-ext-pi-rules"
 version = "0.0.0"
 dependencies = [
+ "dirs",
+ "globset",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 

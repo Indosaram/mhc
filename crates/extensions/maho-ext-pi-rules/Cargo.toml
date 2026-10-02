@@ -7,6 +7,9 @@ license = "MIT"
 
 [dependencies]
 serde_json = "=1.0.149"
+globset = "=0.4.20"
+sha2 = "=0.10.9"
+dirs = "=6.0.0"
 
 [dev-dependencies]
 tempfile = "=3.27.0"
