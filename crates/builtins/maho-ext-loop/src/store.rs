@@ -20,14 +20,14 @@ fn validate_entry(id:&str,entry:&Value)->Result<(),SidecarError> {
     if entry["id"].as_str()!=Some(id) { return Err(SidecarError::Invalid(format!("loop entry {id} carries a mismatched id"))); }
     for field in ["originalArgs","reentryPrompt"] { string(id,field,&entry[field],field=="originalArgs")?; }
     for field in ["createdAt","expiresAt","noopStreak","tickCount"] { number(id,field,&entry[field],true,false)?; }
-    for field in ["lastFiredAt","lastScheduledForAt","queuedForAt"] { if !entry[field].is_null() { number(id,field,&entry[field],true,false)?; } }
+    for field in ["lastFiredAt","lastScheduledForAt","queuedForAt"] { let value=object.get(field).ok_or_else(||invalid(id,field))?; if !value.is_null() { number(id,field,value,true,false)?; } }
     boolean(id,"coalescedFirePending",&entry["coalescedFirePending"])?;
     if entry["phase"]=="ended" { number(id,"endedAt",&entry["endedAt"],true,false)?; string(id,"endReason",&entry["endReason"],false)?; if let Some(detail)=object.get("endDetail") { string(id,"endDetail",detail,true)?; } } else if ["endedAt","endReason","endDetail"].iter().any(|field|object.contains_key(*field)) { return Err(SidecarError::Invalid(format!("loop entry {id} carries terminal fields while not ended"))); }
     let payload=&entry["payload"];
     if payload["type"]=="prompt" { string(id,"payload.prompt",&payload["prompt"],false)?; }
     let sentinel=&entry["sentinelDelivery"];
     boolean(id,"sentinelDelivery.autonomousPreambleDelivered",&sentinel["autonomousPreambleDelivered"])?; boolean(id,"sentinelDelivery.forceFullDelivery",&sentinel["forceFullDelivery"])?;
-    let fingerprint=&sentinel["lastLoopFileDelivered"];
+    let fingerprint=sentinel.get("lastLoopFileDelivered").ok_or_else(||invalid(id,"loop-file fingerprint"))?;
     if !fingerprint.is_null() { for field in ["path","contentHash","anchorDeliveryId"] { string(id,&format!("fingerprint.{field}"),&fingerprint[field],false)?; } number(id,"fingerprint.mtimeMs",&fingerprint["mtimeMs"],false,false)?; number(id,"fingerprint.size",&fingerprint["size"],true,false)?; }
     let sources=entry["wakeSources"].as_array().ok_or_else(||invalid(id,"wakeSources"))?;
     for source in sources { string(id,"wakeSource.id",&source["id"],false)?; number(id,"wakeSource.createdAt",&source["createdAt"],true,false)?; if let Some(description)=source.get("description") { string(id,"wake source description",description,true)?; } }
@@ -41,7 +41,7 @@ fn validate_entry(id:&str,entry:&Value)->Result<(),SidecarError> {
         },
         Some("dynamic")=>{
             if !matches!(entry["keepaliveCredit"].as_f64(),Some(0.0|1.0)) { return Err(invalid(id,"keepaliveCredit")); }
-            let wake=&entry["pendingWakeup"];
+            let wake=object.get("pendingWakeup").ok_or_else(||invalid(id,"pendingWakeup"))?;
             if !wake.is_null() {
                 for field in ["id","loopId","reason","prompt"] { string(id,&format!("pendingWakeup.{field}"),&wake[field],false)?; }
                 number(id,"pendingWakeup.requestedDelaySeconds",&wake["requestedDelaySeconds"],false,false)?;
@@ -59,7 +59,8 @@ fn parse_payload(raw:&Value,reference:&SidecarStoreRef)->Result<Value,SidecarErr
     number("store","updatedAt",&raw["updatedAt"],true,false)?;
     let entries=raw["entries"].as_object().ok_or_else(||SidecarError::Invalid("loop store entries must be an object".into()))?;
     for (id,entry) in entries { validate_entry(id,entry)?; }
-    if !raw["activeDynamicId"].is_null() { let id=raw["activeDynamicId"].as_str().ok_or_else(||SidecarError::Invalid("loop store activeDynamicId must be a string or null".into()))?; if entries.get(id).is_none_or(|entry|entry["kind"]!="dynamic") { return Err(SidecarError::Invalid(format!("loop store activeDynamicId {id} does not name a dynamic loop"))); } }
+    let active=raw.get("activeDynamicId").ok_or_else(||SidecarError::Invalid("loop store activeDynamicId must be a string or null".into()))?;
+    if !active.is_null() { let id=active.as_str().ok_or_else(||SidecarError::Invalid("loop store activeDynamicId must be a string or null".into()))?; if entries.get(id).is_none_or(|entry|entry["kind"]!="dynamic") { return Err(SidecarError::Invalid(format!("loop store activeDynamicId {id} does not name a dynamic loop"))); } }
     let mut result=raw.clone(); result["version"]=LOOP_STATE_VERSION.into(); result["sessionId"]=reference.session_id.clone().into(); Ok(result)
 }
 fn store(reference:&LoopStoreRef)->SidecarStore { sidecar::create_sidecar_store(CreateSidecarStoreOptions { base_dir:reference.base_dir.to_string_lossy().into_owned(),session_id:reference.session_id.clone(),version:i64::from(LOOP_STATE_VERSION),temp_prefix:"loop".into(),parse:Arc::new(parse_payload) }) }
@@ -79,6 +80,17 @@ pub fn clear_loop_state_snapshot(reference:&LoopStoreRef) { store(reference).cle
     use super::*;
     fn reference(dir:&Path)->LoopStoreRef { LoopStoreRef { base_dir:dir.into(),session_id:"session/one".into() } }
     use std::path::Path;
+    #[test] fn nullable_required_fields_reject_absence_instead_of_treating_it_as_null() {
+        let mut scheduler=crate::scheduler::LoopScheduler::new("s",None,&BTreeMap::new());
+        scheduler.create_dynamic(crate::scheduler::CreateDynamicRequest { original_args:"check".into(),reentry_prompt:"check".into(),payload:LoopPayload::Prompt { prompt:"check".into() } },"d".into(),1000.0);
+        let value=serde_json::to_value(&scheduler.state.entries["d"]).unwrap(); validate_entry("d",&value).unwrap();
+        for field in ["lastFiredAt","lastScheduledForAt","queuedForAt","pendingWakeup"] {
+            let mut absent=value.clone(); absent.as_object_mut().unwrap().remove(field); assert!(validate_entry("d",&absent).is_err(),"{field}");
+        }
+        let mut absent=value; absent["sentinelDelivery"].as_object_mut().unwrap().remove("lastLoopFileDelivered"); assert!(validate_entry("d",&absent).is_err());
+        let mut state=serde_json::to_value(scheduler.state).unwrap(); state.as_object_mut().unwrap().remove("activeDynamicId");
+        assert!(parse_payload(&state,&SidecarStoreRef { base_dir:"/tmp".into(),session_id:"s".into() }).is_err());
+    }
     #[tokio::test] async fn fixed_schedule_without_rounding_notice_roundtrips() {
         use crate::scheduler::{CreateDynamicRequest,CreateFixedRequest,LoopScheduler};
         let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path());
