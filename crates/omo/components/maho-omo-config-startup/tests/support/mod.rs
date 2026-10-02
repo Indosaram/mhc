@@ -21,13 +21,12 @@ impl ModelRegistry for TestRegistry {
     fn has_configured_auth(&self, _: &Model) -> bool { false }
     fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<String>> { Box::pin(async { Ok(None) }) }
 }
-pub static NOTICES: Mutex<Vec<String>>=Mutex::new(Vec::new());
-struct TestUi;
+pub struct TestUi(pub Arc<Mutex<Vec<String>>>);
 impl ExtensionUi for TestUi {
     fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
     fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> { Box::pin(async { false }) }
     fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
-    fn notify(&self, message: &str, _: NotificationType) { NOTICES.lock().expect("notices").push(message.into()); }
+    fn notify(&self, message: &str, _: NotificationType) { self.0.lock().expect("notices").push(message.into()); }
     fn set_status(&self, _: &str, _: Option<&str>) {}
     fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
     fn set_header(&self, _: Option<ComponentFactory>) {}
@@ -40,7 +39,7 @@ impl ExtensionUi for TestUi {
     fn theme(&self) -> Theme { Theme::default() }
 }
 pub fn context() -> ExtensionContext {
-    ExtensionContext { ui: Arc::new(TestUi), mode: ExtensionMode::Print, has_ui: false, cwd: "/tmp".into(), agent_dir: "/tmp/agent".into(),
+    ExtensionContext { ui: Arc::new(TestUi(Arc::new(Mutex::new(Vec::new())))), mode: ExtensionMode::Print, has_ui: false, cwd: "/tmp".into(), agent_dir: "/tmp/agent".into(),
         session_manager: Arc::new(TestSession), model_registry: Arc::new(TestRegistry), model: None, thinking_level: None,
         service_tier: None, effective_service_tier: None, scoped_models: Vec::new(), goal_store_file: None,
         loaded_extension_paths: Vec::new(), signal: None, steering_signal: None,
