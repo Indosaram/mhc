@@ -56,13 +56,15 @@ pub async fn fetch_url(options:FetchOptions<'_>)->Result<FetchResult,WebfetchErr
             let location=response.headers().get("location").and_then(|v|v.to_str().ok()).filter(|s|!s.is_empty());
             if matches!(status.as_u16(),301|302|303|307|308) && redirect<20 && let Some(location)=location {
                 let next=url::Url::parse(&current).and_then(|base|base.join(location)).map_err(|e|WebfetchError::InvalidUrl(e.to_string()))?;
-                let mut stream=response.bytes_stream(); let mut discarded=0;
-                while let Some(chunk)=stream.next().await { discarded+=chunk.map_err(transport_error)?.len(); if discarded>=MAX_RESPONSE_SIZE_BYTES { break; } }
+                super::response_body::discard_body(response.bytes_stream().map(|chunk|chunk.map(|bytes|bytes.to_vec())),MAX_RESPONSE_SIZE_BYTES,Some(&signal)).await;
                 current=next.into(); continue;
             }
             let content_type=response.headers().get("content-type").and_then(|v|v.to_str().ok()).unwrap_or("").to_owned();
             let length=response.headers().get("content-length").and_then(|v|v.to_str().ok()).and_then(parse_content_length);
-            if length.is_some_and(|n|n>MAX_RESPONSE_SIZE_BYTES) { return Err(WebfetchError::ResponseTooLarge("Response too large (exceeds 5MB limit)".into())); }
+            if length.is_some_and(|n|n>MAX_RESPONSE_SIZE_BYTES) {
+                super::response_body::discard_body(response.bytes_stream().map(|chunk|chunk.map(|bytes|bytes.to_vec())),MAX_RESPONSE_SIZE_BYTES,Some(&signal)).await;
+                return Err(WebfetchError::ResponseTooLarge("Response too large (exceeds 5MB limit)".into()));
+            }
             let mut stream=response.bytes_stream(); let mut body=vec![];
             while let Some(chunk)=stream.next().await {
                 let chunk=chunk.map_err(transport_error)?;
@@ -94,7 +96,7 @@ mod tests {
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address=listener.local_addr().unwrap();
         let server=async {
-            for response in ["HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n","HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"] {
+            for response in ["HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 4\r\nConnection: close\r\n\r\nx","HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"] {
                 let (mut socket,_)=listener.accept().await.unwrap();
                 let mut buffer=[0u8;4096]; let mut request=vec![];
                 loop { let n=socket.read(&mut buffer).await.unwrap(); assert!(n>0); request.extend_from_slice(&buffer[..n]); if request.windows(4).any(|w|w==b"\r\n\r\n") { break; } }
