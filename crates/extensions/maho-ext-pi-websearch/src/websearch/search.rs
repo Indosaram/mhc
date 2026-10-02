@@ -62,7 +62,7 @@ pub async fn perform_provider_search(client:&reqwest::Client,config:&SearchProvi
     let payload=if config.config.provider==SearchProvider::DuckduckgoHtml{serde_json::json!({"html":text})}else{serde_json::from_str(&text).unwrap_or_else(|_|serde_json::json!({}))};
     if !status.is_success(){
         details.duration_ms=now_milliseconds()-started;
-        let detail=payload.get("error").and_then(|value|value.as_str().or_else(||value.get("message").and_then(serde_json::Value::as_str))).filter(|value|!value.is_empty()).or_else(||payload.get("message").and_then(serde_json::Value::as_str).filter(|value|!value.is_empty())).unwrap_or_else(||text.trim());
+        let detail=payload.get("error").and_then(|value|value.as_str().or_else(||value.get("message").and_then(serde_json::Value::as_str))).filter(|value|!value.is_empty()).or_else(||payload.get("message").and_then(serde_json::Value::as_str).filter(|value|!value.is_empty())).unwrap_or_else(||text.trim_matches(|ch|matches!(ch,'\u{0009}'..='\u{000d}'|' '|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}')));
         let units=detail.encode_utf16().collect::<Vec<_>>();let detail=if units.len()>500{format!("{}…",String::from_utf16_lossy(&units[..499]))}else{detail.into()};
         details.error=Some(if detail.is_empty(){format!("Search failed with HTTP {}",status.as_u16())}else{format!("Search failed with HTTP {}: {detail}",status.as_u16())});return Ok(details);
     }
