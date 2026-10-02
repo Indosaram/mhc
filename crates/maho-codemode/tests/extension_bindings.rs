@@ -95,7 +95,13 @@ async fn runtime_preparation_loads_project_settings_applies_language_overrides_a
     assert_eq!(runtime.runtimes[0].0,EvalLanguage::Js);
     assert_eq!(runtime.runtimes[0].1.name,"bun");
     let executor=Arc::new(RuntimeExecuteTool {api:Arc::new(api()),active_tools:vec!["task".into()]});
-    let session=create_runtime(runtime,RuntimeHostOptions {executor:executor.clone(),active_tools:vec!["task".into()],list_tools:None,complete:Arc::new(|request|Box::pin(async move {Ok(serde_json::json!({"text":request.prompt}))})),session_env:std::collections::HashMap::from([("PI_SESSION_ID".into(),"context-session".into())])}).await.unwrap();
+    let session=create_runtime_with_factory(runtime,RuntimeHostOptions {executor:executor.clone(),active_tools:vec!["task".into()],list_tools:None,complete:Arc::new(|request|Box::pin(async move {Ok(serde_json::json!({"text":request.prompt}))})),session_env:std::collections::HashMap::from([("PI_SESSION_ID".into(),"context-session".into())])},|options| {
+        assert_eq!(options.session_id,"runtime-session");
+        assert_eq!(options.cwd,cwd);
+        assert_eq!(options.session_env.as_ref().unwrap()["PI_SESSION_ID"],"context-session");
+        assert_eq!(options.artifacts_dir.as_ref().unwrap(),&root.path().join("session-artifacts"));
+        maho_codemode::extension::session_manager::CodemodeSessionManager::start(options)
+    }).await.unwrap();
     assert!(session.spawns);
     assert_eq!(session.session_id,"runtime-session");
     assert_eq!(session.parallel_pool_width,3);

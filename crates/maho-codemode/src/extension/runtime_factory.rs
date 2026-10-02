@@ -98,8 +98,16 @@ pub struct SessionRuntime {
 }
 
 pub async fn create_runtime(prepared: PreparedRuntime, host: RuntimeHostOptions) -> Result<SessionRuntime, std::io::Error> {
+    create_runtime_with_factory(prepared, host, super::session_manager::CodemodeSessionManager::start).await
+}
+
+pub async fn create_runtime_with_factory<F, Fut>(prepared: PreparedRuntime, host: RuntimeHostOptions, create: F) -> Result<SessionRuntime, std::io::Error>
+where
+    F: FnOnce(super::session_manager::CreateCodemodeSessionManagerOptions) -> Fut,
+    Fut: std::future::Future<Output = Result<super::session_manager::CodemodeSessionManager, std::io::Error>>,
+{
     let spawns = host.active_tools.iter().any(|name| name == &prepared.settings.task_tools.task);
-    let manager = super::session_manager::CodemodeSessionManager::start(super::session_manager::CreateCodemodeSessionManagerOptions {
+    let manager = create(super::session_manager::CreateCodemodeSessionManagerOptions {
         session_id: prepared.session_id.clone(), cwd: prepared.cwd.clone(), settings: prepared.settings.clone(),
         availability: prepared.availability, local_roots: None, artifacts_dir: Some(prepared.artifacts.dir.clone()),
         session_env: Some(host.session_env), executor: host.executor.clone(), list_tools: host.list_tools, complete: host.complete,
