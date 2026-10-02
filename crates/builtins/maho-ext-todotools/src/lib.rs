@@ -10,3 +10,5 @@ pub mod normalize;
 pub mod markdown;
 pub mod todo_widget;
 pub mod state;
+pub mod commands;
+pub mod prompt;
