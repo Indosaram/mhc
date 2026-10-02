@@ -36,9 +36,7 @@ pub fn register_mcp_lifecycle(api:&mut ExtensionApi,registry:Arc<HostMcpRegistry
     let before=service.clone();api.on(EventKind::BeforeAgentStart,Arc::new(move |event,_|{let service=before.clone();Box::pin(async move {
         let ExtensionEvent::BeforeAgentStart(event)=event else{return Ok(EventResult::None);};let service=service.lock().await;
         service.wait_for_deferred_attach(std::time::Duration::from_millis(crate::startup_race::MCP_ATTACH_SETTLE_TIMEOUT_MS)).await;
-        let mut instructions=Vec::new();
-        for (name,connection) in &service.connections {let entry=connection.entry.lock().await;if let Some(cached)=&entry.cached_catalog && let Some(text)=&cached.instructions {instructions.push((name.clone(),text.clone()));}}
-        let block=crate::instructions::build_mcp_instructions_block(instructions.iter().map(|(name,text)|(name.as_str(),text.as_str())));
+        let block=crate::instructions::refresh_mcp_instructions_for_session(&service).await;
         Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult {message:None,system_prompt:crate::instructions::inject_mcp_instructions(&block,&event.system_prompt)}))
     })}));
     service

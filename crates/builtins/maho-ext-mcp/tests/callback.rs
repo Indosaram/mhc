@@ -45,3 +45,10 @@ async fn unrelated_path_does_not_complete_callback() {
     assert_eq!(reqwest::get(format!("{}?code=abc&state=good",channel.redirect_url)).await.unwrap().status(),200);
     assert_eq!(channel.wait_for_code().await.unwrap().code,"abc");
 }
+#[tokio::test]
+async fn callback_server_starts_lazily_and_reuses_its_listener() {
+    let mut server=McpOAuthCallbackServer::new(options());
+    let url=server.start().await.unwrap();assert_eq!(server.start().await.unwrap(),url);
+    assert_eq!(reqwest::get(format!("{url}?code=lazy&state=good")).await.unwrap().status(),200);
+    assert_eq!(server.wait_for_code().await.unwrap().code,"lazy");server.close().await;
+}

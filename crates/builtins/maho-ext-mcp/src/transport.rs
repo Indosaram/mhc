@@ -25,11 +25,12 @@ pub struct McpTransportConnection {
     pub auth:Option<Arc<crate::auth::oauth_refresh::McpRefreshManager>>,
     pub elicitation_ui:Option<Arc<dyn maho_ext_api::ExtensionUi>>,
     server_requests:Mutex<Option<tokio::task::JoinHandle<()>>>,
+    shutdown:tokio::sync::Mutex<bool>,
 }
 pub fn create_mcp_transport(server:&str,config:&McpServerConfig,env:Option<&BTreeMap<String,String>>,logger:Arc<Mutex<McpLogger>>)->Result<McpTransportConnection,McpError> {
     let spec=create_mcp_transport_spec(server,config,env)?;
     let timeout=config.connect_timeout_ms.unwrap_or(15000.0);
-    Ok(McpTransportConnection {server_name:server.into(),spec,connect_timeout:Duration::from_secs_f64(timeout.max(0.0)/1000.0),logger,client:tokio::sync::OnceCell::new(),auth:None,elicitation_ui:None,server_requests:Mutex::new(None)})
+    Ok(McpTransportConnection {server_name:server.into(),spec,connect_timeout:Duration::from_secs_f64(timeout.max(0.0)/1000.0),logger,client:tokio::sync::OnceCell::new(),auth:None,elicitation_ui:None,server_requests:Mutex::new(None),shutdown:tokio::sync::Mutex::new(false)})
 }
 impl McpTransportConnection {
     pub async fn materialize(&self)->Result<Arc<McpClient>,McpError> {
@@ -58,6 +59,8 @@ pub async fn connect_mcp_transport(connection:&McpTransportConnection)->Result<A
     }
 }
 pub async fn shutdown_mcp_transport(connection:&McpTransportConnection)->Result<(),McpError> {
+    let mut shutdown=connection.shutdown.lock().await;
+    if *shutdown{return Ok(());}
     if let Some(task)=connection.server_requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(){task.abort();}
     if let Some(client)=connection.client.get() {
         if let Some(pid)=client.root_pid {
@@ -65,6 +68,6 @@ pub async fn shutdown_mcp_transport(connection:&McpTransportConnection)->Result<
             let (result,())=tokio::join!(client.close(),reaper);result?;
         }else{client.close().await?;}
     }
-    Ok(())
+    *shutdown=true;Ok(())
 }
 impl Drop for McpTransportConnection {fn drop(&mut self){if let Some(task)=self.server_requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(){task.abort();}}}

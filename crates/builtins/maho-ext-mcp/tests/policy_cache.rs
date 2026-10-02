@@ -62,3 +62,10 @@ fn atomic_cache_write_round_trips_catalog() {
     write_mcp_cached_server(root.path(),"fx",server.clone()).unwrap();
     assert_eq!(read_mcp_catalog_cache(root.path()).servers["fx"],server);
 }
+#[tokio::test]
+async fn disconnected_server_exposure_returns_unknown_without_connecting() {
+    let root=tempfile::tempdir().unwrap();
+    let connection=maho_ext_mcp::connection::ServerConnection::new("idle",McpServerConfig {enabled:Some(true),..Default::default()},None,std::sync::Arc::new(std::sync::Mutex::new(maho_ext_mcp::log::McpLogger::new("idle",root.path(),None).unwrap())));
+    let result=maho_ext_mcp::expose::status::get_mcp_server_exposure_status("idle",&connection,&McpServerConfig::default(),&default_settings()).await;
+    assert!(result.tool_count.is_none());assert!(result.mode.is_none());assert_eq!(connection.state(),maho_ext_mcp::connection::ServerConnectionState::Idle);
+}

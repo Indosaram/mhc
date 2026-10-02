@@ -20,12 +20,23 @@ pub async fn discover(provider:&McpOAuthProvider,client:&reqwest::Client)->Resul
     if let Some(cached)=provider.discovery_state()? {return Ok(serde_json::from_value(cached)?);}
     let resource=url::Url::parse(&provider.store.server_url)?;
     let mut metadata_url=resource.clone();metadata_url.set_path(&format!("/.well-known/oauth-protected-resource{}",resource.path()));metadata_url.set_query(None);
-    let response=client.get(metadata_url.clone()).send().await?;
-    let metadata=if response.status().is_success(){response.json::<Value>().await?}else{metadata_url.set_path("/.well-known/oauth-protected-resource");client.get(metadata_url).send().await?.error_for_status()?.json::<Value>().await?};
-    let issuer=metadata.get("authorization_servers").and_then(Value::as_array).and_then(|servers|servers.first()).and_then(Value::as_str).ok_or_else(||OAuthRequestError::Invalid("OAuth resource metadata has no authorization server".into()))?;
-    let mut discovery=url::Url::parse(issuer)?;discovery.set_path(&format!("/.well-known/oauth-authorization-server{}",discovery.path().trim_end_matches('/')));
-    let metadata_response=client.get(discovery.clone()).send().await?;
-    let authorization=if metadata_response.status().is_success(){metadata_response.json::<Value>().await?}else{discovery.set_path("/.well-known/openid-configuration");client.get(discovery).send().await?.error_for_status()?.json::<Value>().await?};
+    let mut metadata=Value::Null;
+    for path in [metadata_url.path().to_owned(),"/.well-known/oauth-protected-resource".into()] {
+        metadata_url.set_path(&path);
+        if let Ok(response)=client.get(metadata_url.clone()).header("accept","application/json").header("mcp-protocol-version","2025-11-25").send().await && response.status().is_success() && let Ok(value)=response.json::<Value>().await {metadata=value;break;}
+    }
+    let fallback=resource.join("/")?.to_string();
+    let issuer=metadata.get("authorization_servers").and_then(Value::as_array).and_then(|servers|servers.first()).and_then(Value::as_str).unwrap_or(&fallback);
+    let mut discovery=url::Url::parse(issuer)?;let path=discovery.path().trim_end_matches('/').to_owned();discovery.set_query(None);discovery.set_fragment(None);
+    let mut paths=vec![format!("/.well-known/oauth-authorization-server{path}"),format!("/.well-known/openid-configuration{path}")];
+    if !path.is_empty(){paths.push(format!("{path}/.well-known/openid-configuration"));}
+    let mut authorization=Value::Null;
+    for path in paths {
+        discovery.set_path(&path);
+        let response=client.get(discovery.clone()).header("accept","application/json").header("mcp-protocol-version","2025-11-25").send().await?;
+        if response.status().is_client_error(){continue;}
+        authorization=response.error_for_status()?.json::<Value>().await?;break;
+    }
     let info=OAuthServerInfo {authorization_server_url:issuer.into(),authorization_server_metadata:authorization,resource_metadata:metadata};
     provider.save_discovery_state(serde_json::to_value(&info)?)?;Ok(info)
 }
@@ -76,10 +87,30 @@ pub async fn finish_authorization(provider:&McpOAuthProvider,code:&str,client:&r
 pub async fn request_tokens(client:&reqwest::Client,info:&OAuthServerInfo,client_info:&Value,mut form:Vec<(String,String)>)->Result<OAuthTokens,OAuthRequestError> {
     let endpoint=info.authorization_server_metadata.get("token_endpoint").and_then(Value::as_str).ok_or_else(||OAuthRequestError::Invalid("OAuth metadata has no token endpoint".into()))?;
     let id=client_info.get("client_id").and_then(Value::as_str).ok_or_else(||OAuthRequestError::Invalid("OAuth client has no client_id".into()))?;
-    form.push(("client_id".into(),id.into()));
-    if let Some(secret)=client_info.get("client_secret").and_then(Value::as_str){form.push(("client_secret".into(),secret.into()));}
+    let secret=client_info.get("client_secret").and_then(Value::as_str);
+    let methods=info.authorization_server_metadata.get("token_endpoint_auth_methods_supported").and_then(Value::as_array).map_or(&[][..],Vec::as_slice);
+    let supported=|method:&str|methods.iter().any(|value|value.as_str()==Some(method));
+    let preferred=client_info.get("token_endpoint_auth_method").and_then(Value::as_str).filter(|method|["client_secret_basic","client_secret_post","none"].contains(method) && (methods.is_empty() || supported(method)));
+    let method=preferred.unwrap_or_else(|| {
+        if methods.is_empty(){if secret.is_some(){"client_secret_basic"}else{"none"}}
+        else if secret.is_some() && supported("client_secret_basic"){"client_secret_basic"}
+        else if secret.is_some() && supported("client_secret_post"){"client_secret_post"}
+        else if supported("none") || secret.is_none(){"none"}else{"client_secret_post"}
+    });
+    let mut request=client.post(endpoint).header("content-type","application/x-www-form-urlencoded");
+    match method {
+        "client_secret_basic"=>{
+            let secret=secret.filter(|secret|!secret.is_empty()).ok_or_else(||OAuthRequestError::Invalid("client_secret_basic authentication requires a client_secret".into()))?;
+            request=request.basic_auth(id,Some(secret));
+        }
+        "client_secret_post"=>{
+            form.push(("client_id".into(),id.into()));
+            if let Some(secret)=secret.filter(|secret|!secret.is_empty()){form.push(("client_secret".into(),secret.into()));}
+        }
+        _=>form.push(("client_id".into(),id.into())),
+    }
     let body=url::form_urlencoded::Serializer::new(String::new()).extend_pairs(&form).finish();
-    let response=client.post(endpoint).header("content-type","application/x-www-form-urlencoded").body(body).send().await?;
+    let response=request.body(body).send().await?;
     let status=response.status();let body=response.json::<Value>().await?;
     if !status.is_success() {
         let code=body.get("error").and_then(Value::as_str).unwrap_or("token_error");

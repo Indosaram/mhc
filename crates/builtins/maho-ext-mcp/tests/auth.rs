@@ -89,3 +89,14 @@ fn csrf_state_is_single_use() {
     let state = provider.state().unwrap();
     assert!(provider.consume_state(Some(&state))); assert!(!provider.consume_state(Some(&state)));
 }
+#[test]
+fn saved_oauth_tokens_log_only_the_fingerprint() {
+    use std::sync::{Arc,Mutex};
+    let root=tempfile::tempdir().unwrap();
+    let logger=Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("fingerprint",root.path(),None).unwrap()));
+    let mut provider=maho_ext_mcp::auth::oauth_provider::McpOAuthProvider::new(maho_ext_mcp::auth::token_store::McpTokenStore::new(root.path(),"fingerprint","https://fixture.test"));provider.logger=Some(logger.clone());
+    let token="synthetic-private-access";
+    provider.save_tokens(&maho_ext_mcp::auth::oauth_provider::OAuthTokens {access_token:token.into(),refresh_token:None,token_type:"Bearer".into(),expires_in:None},0.0).unwrap();
+    let logger=logger.lock().unwrap();let record:serde_json::Value=serde_json::from_str(&logger.get_ring_buffer()[0]).unwrap();
+    assert_eq!(record["data"]["token_fp"],format!("<redacted:{}>",maho_ext_mcp::log::fingerprint_secret(&maho_ext_mcp::log::fingerprint_secret(token))));assert!(!std::fs::read_to_string(&logger.file_path).unwrap().contains(token));
+}

@@ -107,3 +107,13 @@ async fn http_get_stream_delivers_unsolicited_notifications() {
     client.close().await.unwrap();drop(client);drop(sender);stop.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(3),server).await.unwrap().unwrap();
 }
+#[tokio::test]
+async fn concurrent_shutdowns_coalesce_and_wait_for_the_child() {
+    use std::sync::{Arc,Mutex};
+    let root=tempfile::tempdir().unwrap();
+    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
+    let connection=create_mcp_transport("shutdown",&config,None,Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("shutdown",root.path(),None).unwrap()))).unwrap();
+    connect_mcp_transport(&connection).await.unwrap();let pid=connection.get_root_pid().unwrap();
+    let (first,second)=tokio::join!(shutdown_mcp_transport(&connection),shutdown_mcp_transport(&connection));first.unwrap();second.unwrap();
+    assert!(!maho_ext_mcp::process_tree::is_process_alive(pid).await);
+}

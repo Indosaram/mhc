@@ -6,6 +6,7 @@ use super::oauth_errors::{OAuthFailureKind,OAuthFlowError};
 const SUCCESS_HTML:&str="<!doctype html><title>senpi</title><p>Authorization complete. You can close this tab.</p>";
 const FAILURE_HTML:&str="<!doctype html><title>senpi</title><p>Authorization failed. Return to senpi and retry.</p>";
 pub type StateValidator=Arc<dyn Fn(Option<&str>)->bool+Send+Sync>;
+#[derive(Clone)]
 pub struct CallbackServerOptions {
     pub server_name:String,pub port:Option<u16>,pub host:Option<String>,pub path:Option<String>,
     pub timeout:Option<Duration>,pub validate_state:StateValidator,
@@ -31,6 +32,19 @@ impl CallbackChannel {
     pub async fn close(&mut self) {if let Some(task)=self.task.take(){task.abort();let _=task.await;}}
 }
 impl Drop for CallbackChannel {fn drop(&mut self){if let Some(task)=&self.task {task.abort();}}}
+pub struct McpOAuthCallbackServer {options:CallbackServerOptions,channel:Option<CallbackChannel>}
+impl McpOAuthCallbackServer {
+    pub fn new(options:CallbackServerOptions)->Self {Self {options,channel:None}}
+    pub async fn start(&mut self)->Result<String,OAuthFlowError> {
+        if self.channel.is_none(){self.channel=Some(open_callback_channel(self.options.clone(),None).await?);}
+        Ok(self.channel.as_ref().map_or_else(String::new,|channel|channel.redirect_url.clone()))
+    }
+    pub async fn wait_for_code(&mut self)->Result<CallbackResult,OAuthFlowError> {
+        self.start().await?;
+        self.channel.as_mut().ok_or_else(||OAuthFlowError::new(OAuthFailureKind::NeedsAuth,"OAuth callback listener did not start"))?.wait_for_code().await
+    }
+    pub async fn close(&mut self) {if let Some(mut channel)=self.channel.take(){channel.close().await;}}
+}
 pub async fn open_callback_channel(options:CallbackServerOptions,override_url:Option<&str>)->Result<CallbackChannel,OAuthFlowError> {
     let (sender,receiver)=watch::channel(None);
     if let Some(url)=override_url.filter(|url|!url.is_empty()) {return Ok(CallbackChannel {redirect_url:url.into(),uses_loopback:false,result:receiver,task:None,server_name:options.server_name});}

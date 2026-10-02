@@ -17,3 +17,14 @@ async fn repeated_attach_retains_connections_and_disabled_config_detaches_them()
     service.attach_session(cwd.path(),root.path(),&BTreeMap::new(),true,&[eager]).await.unwrap();
     assert_eq!(service.wait_for_deferred_attach(std::time::Duration::from_secs(15)).await,maho_ext_mcp::startup_race::McpStartupRaceResult::Settled);assert!(service.connections["eager"].entry.lock().await.cached_catalog.is_some());service.dispose().await.unwrap();
 }
+#[tokio::test]
+async fn session_instructions_prefer_live_values_and_fall_back_only_when_disconnected() {
+    let root=tempfile::tempdir().unwrap();let cwd=tempfile::tempdir().unwrap();let mut service=McpService::new(Arc::new(HostMcpRegistry::default()),1);
+    let declaration=maho_ext_api::RegisteredMcpServerDeclaration {name:"instructions".into(),config:maho_ext_api::McpServerDeclaration {transport:Some(maho_ext_api::McpTransport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into(),"--instructions".into(),"cached".into()]),..Default::default()},extension_path:"fixture-extension".into(),registration_cwd:cwd.path().into()};
+    service.attach_session(cwd.path(),root.path(),&BTreeMap::new(),true,&[declaration]).await.unwrap();service.connect_server("instructions").await.unwrap();
+    let connection=service.connections["instructions"].entry.lock().await.connection.clone();let client=connection.client().unwrap();
+    *client.instructions.write().await=Some("live".into());
+    let live=maho_ext_mcp::instructions::refresh_mcp_instructions_for_session(&service).await;assert!(live.contains("live"));assert!(!live.contains("cached"));
+    *client.instructions.write().await=None;assert!(maho_ext_mcp::instructions::refresh_mcp_instructions_for_session(&service).await.is_empty());
+    connection.bump_generation().await.unwrap();assert!(maho_ext_mcp::instructions::refresh_mcp_instructions_for_session(&service).await.contains("cached"));service.dispose().await.unwrap();
+}

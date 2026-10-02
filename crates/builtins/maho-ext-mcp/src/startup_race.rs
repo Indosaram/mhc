@@ -9,6 +9,7 @@ pub async fn connect_and_refresh_mcp_catalog(entry:&mut crate::service_types::Mc
     let result=crate::catalog_cache::collect_server_catalog_for_cache(&client,Duration::from_secs_f64(config.request_timeout_ms.unwrap_or(30000.0)/1000.0),&entry.config_hash).await;
     match result {
         Ok(catalog)=>{
+            crate::resources::ensure_mcp_resource_subscriptions(client.clone(),&catalog.resources,std::time::Duration::from_secs_f64(config.request_timeout_ms.unwrap_or(30000.0)/1000.0)).await;
             if let Some(agent_dir)=&entry.agent_dir && let Err(error)=crate::catalog_cache::write_mcp_cached_server(agent_dir,&entry.name,catalog.clone()) {let _=entry.logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("warning",&format!("Failed to refresh MCP catalog cache: {error}"),None,None);}
             crate::resources::ensure_mcp_resource_subscriptions(client.clone(),&catalog.resources,Duration::from_secs_f64(config.request_timeout_ms.unwrap_or(30000.0)/1000.0)).await;
             entry.cached_catalog=Some(catalog);

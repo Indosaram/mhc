@@ -1,6 +1,7 @@
 use std::{future::Future,pin::Pin,sync::{Arc,Mutex},time::Duration};
 use serde_json::{Value,json};
 use tokio::task::JoinHandle;
+use futures::FutureExt;
 use crate::{errors::McpError,log::{McpLogger,redact_mcp_log_text}};
 pub type ErrorNotify=Arc<dyn Fn(String,McpError)->Pin<Box<dyn Future<Output=Result<(),McpError>>+Send>>+Send+Sync>;
 pub type ErrorLogger=Arc<dyn Fn(&str,&Value)->Result<(),String>+Send+Sync>;
@@ -12,15 +13,27 @@ impl McpAsyncErrorSink {
     }
 }
 pub async fn wrap_async(scope:&str,callback:impl Future<Output=Result<(),McpError>>,sink:&McpAsyncErrorSink) {
-    if let Err(error)=callback.await {report_mcp_async_error(scope,error,sink).await;}
+    let result=std::panic::AssertUnwindSafe(callback).catch_unwind().await;
+    match result {
+        Ok(Ok(()))=>(),
+        Ok(Err(error))=>report_mcp_async_error(scope,error,sink).await,
+        Err(payload)=>report_mcp_async_error(scope,panic_error(payload),sink).await,
+    }
+}
+fn panic_error(payload:Box<dyn std::any::Any+Send>)->McpError {
+    let message=payload.downcast_ref::<String>().cloned().or_else(||payload.downcast_ref::<&str>().map(|message|(*message).to_owned())).unwrap_or_else(||"Non-string panic".into());
+    McpError::new(crate::errors::McpErrorKind::Protocol,message)
 }
 pub async fn report_mcp_async_error(scope:&str,error:McpError,sink:&McpAsyncErrorSink) {
     log_error(scope,&error,sink);
-    if let Some(notify)=&sink.notify && let Err(error)=notify(format!("MCP {scope} failed: {}",error.message),error).await {log_error(&format!("{scope}.notify"),&error,sink);}
+    if let Some(notify)=&sink.notify {
+        let result=std::panic::AssertUnwindSafe(async {notify(format!("MCP {scope} failed: {}",error.message),error).await}).catch_unwind().await;
+        match result {Ok(Ok(()))=>(),Ok(Err(error))=>log_error(&format!("{scope}.notify"),&error,sink),Err(payload)=>log_error(&format!("{scope}.notify"),&panic_error(payload),sink)}
+    }
 }
 fn log_error(scope:&str,error:&McpError,sink:&McpAsyncErrorSink) {
     let data=json!({"name":"Error","message":error.message});
-    if (sink.logger)(scope,&data).is_err() {
+    if !matches!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(||(sink.logger)(scope,&data))),Ok(Ok(()))) {
         match redact_mcp_log_text(scope) {
             Ok(scope)=>eprintln!("MCP {scope} logger failed; suppressed async error details"),
             Err(_)=>eprintln!("MCP logger failed; suppressed async error details"),

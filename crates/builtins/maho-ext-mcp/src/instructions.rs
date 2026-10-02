@@ -7,4 +7,15 @@ pub fn build_mcp_instructions_block<'a>(servers:impl IntoIterator<Item=(&'a str,
         format!("<mcp_instructions server=\"{}\">\n{}\n</mcp_instructions>",escape_xml(name),escape_xml(&capped))
     }).collect::<Vec<_>>().join("\n\n")
 }
+pub async fn refresh_mcp_instructions_for_session(service:&crate::service::McpService)->String {
+    let mut instructions=Vec::new();
+    for (name,connection) in &service.connections {
+        let entry=connection.entry.lock().await;
+        let text=if entry.connection.state()==crate::connection::ServerConnectionState::Connected {
+            match entry.connection.client(){Ok(client)=>client.instructions.read().await.clone(),Err(_)=>None}
+        }else{entry.cached_catalog.as_ref().and_then(|catalog|catalog.instructions.clone())};
+        if let Some(text)=text {instructions.push((name.clone(),text));}
+    }
+    build_mcp_instructions_block(instructions.iter().map(|(name,text)|(name.as_str(),text.as_str())))
+}
 fn escape_xml(value:&str)->String {value.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;").replace('"',"&quot;").replace('\'',"&apos;")}

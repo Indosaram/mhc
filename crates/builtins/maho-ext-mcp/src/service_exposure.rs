@@ -13,8 +13,5 @@ pub async fn get_mcp_service_exposure_status(name:&str,config:Option<&ResolvedMc
         }
         return empty();
     }
-    match entry.connection.client() {
-        Ok(client)=>get_mcp_server_exposure_status(name,client,server_config,&config.settings).await,
-        Err(_)=>empty(),
-    }
+    get_mcp_server_exposure_status(name,&entry.connection,server_config,&config.settings).await
 }

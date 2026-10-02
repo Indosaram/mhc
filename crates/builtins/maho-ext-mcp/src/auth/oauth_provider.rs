@@ -25,12 +25,13 @@ pub fn merge_tokens_into_stored_auth(current: Option<McpStoredAuth>, tokens: &OA
 pub struct McpOAuthProvider {
     pub store: McpTokenStore, pub redirect_url: Option<String>, pub scopes: Option<Vec<String>>,
     pub client_id: Option<String>, pub client_metadata_url: Option<String>,
+    pub logger:Option<std::sync::Arc<std::sync::Mutex<crate::log::McpLogger>>>,
     expected_state: Option<String>, pub last_authorization_url: Option<url::Url>,
 }
 #[derive(Clone, Copy)]
 pub enum CredentialScope { All, Client, Tokens, Verifier, Discovery }
 impl McpOAuthProvider {
-    pub fn new(store: McpTokenStore) -> Self { Self { store,redirect_url:None,scopes:None,client_id:None,client_metadata_url:None,expected_state:None,last_authorization_url:None } }
+    pub fn new(store: McpTokenStore) -> Self { Self { store,redirect_url:None,scopes:None,client_id:None,client_metadata_url:None,logger:None,expected_state:None,last_authorization_url:None } }
     pub fn client_metadata(&self) -> Value {
         let mut value = json!({"redirect_uris":self.redirect_url.iter().collect::<Vec<_>>(),"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","client_name":"senpi"});
         if let Some(scopes) = &self.scopes { value["scope"] = Value::String(scopes.join(" ")); }
@@ -49,7 +50,11 @@ impl McpOAuthProvider {
     pub fn save_discovery_state(&self, state: Value) -> Result<(),TokenStoreError> { self.store.update(|r| { let mut next = r.unwrap_or_default(); next.discovery_state=Some(state); Some(next) })?; Ok(()) }
     pub fn discovery_state(&self) -> Result<Option<Value>,TokenStoreError> { Ok(self.store.read()?.and_then(|r| r.discovery_state)) }
     pub fn tokens(&self, now: f64) -> Result<Option<OAuthTokens>,TokenStoreError> { Ok(stored_auth_to_tokens(self.store.read()?.as_ref(),now)) }
-    pub fn save_tokens(&self, tokens: &OAuthTokens, now: f64) -> Result<(),TokenStoreError> { self.store.update(|r| Some(merge_tokens_into_stored_auth(r,tokens,&self.store.server_url,now)))?; Ok(()) }
+    pub fn save_tokens(&self, tokens: &OAuthTokens, now: f64) -> Result<(),TokenStoreError> {
+        self.store.update(|r| Some(merge_tokens_into_stored_auth(r,tokens,&self.store.server_url,now)))?;
+        if let Some(logger)=&self.logger {let _=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("info","oauth saveTokens",Some(&json!({"token_fp":crate::log::fingerprint_secret(&tokens.access_token)})),None);}
+        Ok(())
+    }
     pub fn save_code_verifier(&self, verifier: &str) -> Result<(),TokenStoreError> { self.store.update(|r| { let mut next = r.unwrap_or_default(); next.code_verifier=Some(verifier.into()); Some(next) })?; Ok(()) }
     pub fn code_verifier(&self) -> Result<String, ProviderError> {
         self.store.read()?.and_then(|r| r.code_verifier).filter(|s| !s.is_empty()).ok_or_else(|| ProviderError::OAuth(Box::new(OAuthFlowError::new(OAuthFailureKind::NoVerifier,format!("Missing PKCE code verifier for MCP server {}",self.store.server_name)))))

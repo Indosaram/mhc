@@ -33,3 +33,23 @@ async fn interval_waits_for_first_tick_and_continues_after_error() {
     let task=safe_interval("interval".into(),std::time::Duration::from_millis(10),||async{Err(error())},sink);
     assert_eq!(receiver.recv().await.unwrap()-started,std::time::Duration::from_millis(10));assert_eq!(receiver.recv().await.unwrap()-started,std::time::Duration::from_millis(20));task.abort();let _=task.await;
 }
+#[tokio::test]
+async fn panicking_callback_is_reported_without_rejecting_the_task() {
+    let entries=Arc::new(Mutex::new(Vec::new()));let records=entries.clone();
+    let sink=McpAsyncErrorSink {logger:Arc::new(move|scope,data|{records.lock().unwrap().push((scope.to_owned(),data["message"].as_str().unwrap().to_owned()));Ok(())}),notify:None};
+    wrap_async("panic",async {panic!("callback failure");},&sink).await;
+    assert_eq!(*entries.lock().unwrap(),vec![("panic".into(),"callback failure".into())]);
+}
+#[tokio::test]
+async fn panicking_notification_is_reported_under_notify_scope() {
+    let entries=Arc::new(Mutex::new(Vec::new()));let records=entries.clone();
+    let sink=McpAsyncErrorSink {logger:Arc::new(move|scope,_|{records.lock().unwrap().push(scope.to_owned());Ok(())}),notify:Some(Arc::new(|_,_|panic!("notification failure")))};
+    wrap_async("unit",async {Err(error())},&sink).await;
+    assert_eq!(*entries.lock().unwrap(),vec!["unit","unit.notify"]);
+}
+#[tokio::test]
+async fn panicking_logger_does_not_prevent_error_notification() {
+    let (sender,receiver)=tokio::sync::oneshot::channel();let sender=Mutex::new(Some(sender));
+    let sink=McpAsyncErrorSink {logger:Arc::new(|_,_|panic!("logger failure")),notify:Some(Arc::new(move|_,_|{sender.lock().unwrap().take().unwrap().send(()).unwrap();Box::pin(async {Ok(())})}))};
+    wrap_async("unit",async {Err(error())},&sink).await;receiver.await.unwrap();
+}

@@ -22,10 +22,15 @@ pub fn build_mcp_tool_definitions(entries:&[McpToolCatalogEntry],agent_dir:PathB
             Box::pin(async move {
                 call.signal.check()?;
                 let params=if call.params.is_object(){call.params}else{json!({})};
+                let operation=||async {
+                let client=if let Some(runtime)=&entry.runtime {
+                    runtime.health.ensure_connection(&runtime.connection).await?;
+                    runtime.connection.client()?
+                }else{entry.client.clone()};
                 let token=format!("native:{}:{}:{}:{}",entry.server,entry.tool,call.id,NEXT_PROGRESS_TOKEN.fetch_add(1,Ordering::Relaxed));
-                let mut notifications=entry.client.notifications.subscribe();
+                let mut notifications=client.notifications.subscribe();
                 let mut notifications_open=true;
-                let request=entry.client.request_with_signal("tools/call",json!({"name":entry.tool,"arguments":params,"_meta":{"progressToken":token}}),entry.request_timeout,&call.signal);tokio::pin!(request);
+                let request=client.request_with_signal("tools/call",json!({"name":entry.tool,"arguments":params,"_meta":{"progressToken":token}}),entry.request_timeout,&call.signal);tokio::pin!(request);
                 let result=loop {tokio::select! {
                     biased;
                     notification=notifications.recv(),if notifications_open=>{
@@ -33,11 +38,16 @@ pub fn build_mcp_tool_definitions(entries:&[McpToolCatalogEntry],agent_dir:PathB
                         let progress=value.get("params").unwrap_or(&Value::Null);
                         if value.get("method").and_then(Value::as_str)==Some("notifications/progress") && progress.get("progressToken")==Some(&json!(token)) && let Some(update)=&call.on_update {
                             let total=progress.get("total").map_or_else(String::new,|total|format!("/{total}"));let message=progress.get("message").and_then(Value::as_str).map_or_else(String::new,|message|format!(" {message}"));
-                            update(ToolResult {content:vec![ToolContent::text(format!("{}/{} progress {}{total}{message}",entry.server,entry.tool,progress.get("progress").unwrap_or(&Value::Null)))],details:Some(json!({"progress":progress,"server":entry.server,"tool":entry.tool}))})?;
+                            update(ToolResult {content:vec![ToolContent::text(format!("{}/{} progress {}{total}{message}",entry.server,entry.tool,progress.get("progress").unwrap_or(&Value::Null)))],details:Some(json!({"progress":progress,"server":entry.server,"tool":entry.tool}))}).map_err(|error|crate::errors::McpError::new(crate::errors::McpErrorKind::ToolExec,error.to_string()))?;
                         }
                     }
-                    result=&mut request=>{call.signal.check()?;break result.map_err(|error|ToolError::Message(format!("ToolExecError: {error}")))?;},
+                    result=&mut request=>{call.signal.check().map_err(|error|crate::errors::McpError::new(crate::errors::McpErrorKind::ToolExec,error.to_string()))?;break result?;},
                 }};
+                Ok::<_,crate::errors::McpError>(result)
+                };
+                let result=if let Some(runtime)=&entry.runtime {
+                    runtime.lifecycle.run_call(crate::health::with_mcp_session_expiry_retry(&runtime.connection,||crate::health::with_mcp_retriable_failed_send_retry(&runtime.connection,operation))).await
+                }else{operation().await}.map_err(|error|ToolError::Message(format!("ToolExecError: {error}")))?;
                 mapped_guarded_result(&entry,&result,&agent_dir,&artifacts,output_guard.as_ref())
             })
         }));
