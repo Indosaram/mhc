@@ -10,8 +10,9 @@ pub fn register_search_lifecycle(api:&mut ExtensionApi)->Arc<Mutex<ConfigLoadRes
     let current=Arc::clone(&state);
     api.on(EventKind::SessionStart,Arc::new(move|_,ctx|{let current=Arc::clone(&current);Box::pin(async move{
         let loaded=if is_provider_native_bypass(ctx.model.as_ref().map(|model|model.provider.as_str())){ConfigLoadResult::Failure{reason:ConfigLoadFailureReason::ProviderNativeBypass,message:NATIVE_BYPASS_MESSAGE.into(),source:None}}else{let home=dirs::home_dir().ok_or_else(||ExtensionFailure::new("Home directory unavailable"))?;load_websearch_config(&ctx.cwd,&home).map_err(|error|ExtensionFailure::new(error.to_string()))?};
+        *current.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=loaded.clone();
         clear_ui(ctx);if ctx.has_ui&&let ConfigLoadResult::Failure{reason,message,..}=&loaded&&!matches!(reason,ConfigLoadFailureReason::ProviderNativeBypass){ctx.ui.notify(message,NotificationType::Error);}
-        *current.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=loaded;Ok(EventResult::None)
+        Ok(EventResult::None)
     })}));
     api.on(EventKind::SessionShutdown,Arc::new(|_,ctx|{clear_ui(ctx);Box::pin(async{Ok(EventResult::None)})}));
     let current=Arc::clone(&state);
