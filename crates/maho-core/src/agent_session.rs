@@ -1751,14 +1751,22 @@ impl AgentSession {
         }
         self.agent.abort(None);
         self.abort_retry();
-        self.agent.wait_for_idle().await;
-        let _admission = self.prompt_admission.lock().await;
+        let signal = pending.signal();
+        let admission = tokio::select! {
+            biased;
+            _ = signal.cancelled() => None,
+            admission = async {
+                self.agent.wait_for_idle().await;
+                self.prompt_admission.lock().await
+            } => Some(admission),
+        };
         {
             let mut state = self.state();
             if state.pending_compaction_admission.as_ref().is_some_and(|current| current.same(&pending)) {
                 state.pending_compaction_admission = None;
             }
         }
+        let _admission = admission;
         let result = if pending.aborted() { Err("Compaction cancelled".to_owned()) }
             else { self.compact_for_model(instructions, &self.model(), "manual").await };
         if result.is_ok() && self.agent.has_queued_messages() {
@@ -6375,8 +6383,9 @@ mod tests {
         }).await;
         assert!(session.is_compacting());
         session.abort_compaction();
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(1), compact).await.expect("cancellation without lock release")
+            .expect_err("cancelled admission"), "Compaction cancelled");
         drop(admission);
-        assert_eq!(compact.await.expect_err("cancelled admission"), "Compaction cancelled");
         assert!(!session.is_compacting());
         assert_eq!(session.compaction_state().generation(), 0);
         assert!(!session.work_barrier.has_active_work());
