@@ -1743,9 +1743,11 @@ name = "maho-ext-orca-agent-status"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-ext-host",
  "reqwest",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
