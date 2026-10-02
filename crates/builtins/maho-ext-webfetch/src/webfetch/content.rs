@@ -16,6 +16,16 @@ pub fn reader_link_density(node:&dom_query::NodeRef<'_>)->f64 {
     for link in links.nodes() {let coefficient=if link.attr("href").is_some_and(|href|href.starts_with('#')&&href.len()>1) {0.3} else {1.};linked+=reader_inner_text(link,true).encode_utf16().count() as f64*coefficient;}
     linked/length as f64
 }
+pub fn reader_text_density(node:&dom_query::NodeRef<'_>,tags:&[&str])->f64 {
+    fn descendants_length(node:&dom_query::NodeRef<'_>,tags:&[&str])->usize {
+        node.element_children().iter().map(|child| {
+            let length=if child.node_name().is_some_and(|name|tags.contains(&name.as_ref())) {reader_inner_text(child,true).encode_utf16().count()} else {0};
+            length+descendants_length(child,tags)
+        }).sum()
+    }
+    let length=reader_inner_text(node,true).encode_utf16().count();if length==0 {return 0.;}
+    descendants_length(node,tags) as f64/length as f64
+}
 pub fn reader_initial_score(node:&dom_query::NodeRef<'_>,weight_classes:bool)->i32 {
     static POSITIVE:LazyLock<Regex>=LazyLock::new(||Regex::new("(?i)article|body|content|entry|hentry|h-entry|main|page|pagination|post|text|blog|story").expect("literal pattern"));
     static NEGATIVE:LazyLock<Regex>=LazyLock::new(||Regex::new("(?i)-ad-|hidden|^hid$| hid$| hid |^hid |banner|combx|comment|com-|contact|footer|gdpr|masthead|media|meta|outbrain|promo|related|scroll|share|shoutbox|sidebar|skyscraper|sponsor|shopping|tags|widget").expect("literal pattern"));
@@ -252,6 +262,10 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_text_density_counts_nested_selected_tags_separately() {
+        let document=dom_query::Document::from("<div id='root'>a<span>😀<span>b</span></span><p>cc</p></div>");let root=document.select("#root");assert_eq!(reader_text_density(&root.nodes()[0],&["span"]),4./6.);assert_eq!(reader_text_density(&root.nodes()[0],&["div"]),0.);
+        let empty=dom_query::Document::from("<div></div>");assert_eq!(reader_text_density(&empty.select("div").nodes()[0],&["span"]),0.);
+    }
     #[test] fn reader_sibling_selection_preserves_exact_length_and_score_boundaries() {
         let document=dom_query::Document::from(format!("<div id='top' class='article'></div><div id='same' class='article'></div><p id='short'>Sentence.</p><p id='exact'>{}</p><p id='long'>{}</p><p id='linked'><a href='x'>Sentence.</a></p>","x".repeat(80),"x".repeat(81)));let top=document.select("#top");let top=&top.nodes()[0];
         assert!(reader_include_sibling(top,top,50.,None));assert!(reader_include_sibling(&document.select("#same").nodes()[0],top,50.,Some(0.)));assert!(!reader_include_sibling(&document.select("#same").nodes()[0],top,50.,None));
