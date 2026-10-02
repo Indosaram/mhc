@@ -1,3 +1,4 @@
+pub mod session;
 pub mod proxy;
 pub mod naming;
 pub mod pagination;
