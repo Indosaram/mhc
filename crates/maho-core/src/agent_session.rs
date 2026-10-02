@@ -404,6 +404,7 @@ struct AgentSessionState {
     pending_model_switch: Option<PendingModelSwitch>,
     compaction_abort_controller: Option<crate::compaction::lifecycle::CompactionAbortController>,
     compaction_lifecycle: crate::compaction::lifecycle::CompactionLifecycleCoordinator,
+    delegated_compaction_key: Option<(String, String)>,
     prompt_templates: Vec<crate::prompt_templates::PromptTemplate>,
     skills: Vec<crate::skills::Skill>,
     discovered_resources: maho_ext_api::DiscoveredResources,
@@ -1166,6 +1167,7 @@ impl AgentSession {
             pending_model_switch: None,
             compaction_abort_controller: None,
             compaction_lifecycle: Default::default(),
+            delegated_compaction_key: None,
             prompt_templates: Vec::new(),
             skills: Vec::new(),
             discovered_resources: maho_ext_api::DiscoveredResources::default(),
@@ -1483,7 +1485,7 @@ impl AgentSession {
             return Ok(PromptDisposition::Handled);
         };
         let text = self.expand_input(&text, options.expand_prompt_templates.unwrap_or(true))?;
-        if self.auto_compaction_enabled() && self.pending_model_switch().is_none() {
+        if self.auto_compaction_enabled() && !self.is_compaction_delegated() && self.pending_model_switch().is_none() {
             let model = self.model();
             let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
             let settings = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
@@ -1496,7 +1498,8 @@ impl AgentSession {
                     if resolved.reserve_scaling_enabled { crate::compaction::compaction::resolve_reserve_tokens(
                         model.context_window as f64, resolved.reserve_tokens as f64,
                     ) as u64 } else { resolved.reserve_tokens as u64 })) {
-                self.compact_for_model(None, &model, "pre-prompt").await?;
+                let result = self.compact_for_model(None, &model, "pre-prompt").await;
+                if !self.is_compaction_delegated() { result?; }
             }
         }
         if let Some(pending) = self.pending_model_switch() {
@@ -1584,7 +1587,7 @@ impl AgentSession {
         let resolved = crate::compaction_settings_resolver::resolve_compaction_settings(settings.as_ref(), Some(
             crate::compaction_settings_access::CompactionModelSelector { provider: &model.provider, id: &model.id },
         ))?;
-        if !self.auto_compaction_enabled() { return Ok(()); }
+        if !self.auto_compaction_enabled() || self.is_compaction_delegated() { return Ok(()); }
         let reserve = if resolved.reserve_scaling_enabled {
             crate::compaction::compaction::resolve_reserve_tokens(model.context_window as f64, resolved.reserve_tokens as f64) as u64
         } else { resolved.reserve_tokens as u64 };
@@ -1608,7 +1611,9 @@ impl AgentSession {
         if !self.messages().iter().any(|message| message.role() == "assistant") {
             return Err("Compaction required before provider request".to_owned());
         }
-        self.compact_for_model(None, &model, "pre-prompt").await?;
+        let result = self.compact_for_model(None, &model, "pre-prompt").await;
+        if self.is_compaction_delegated() { return Ok(()); }
+        result?;
         if oversized()? { return Err("Compaction required before provider request".to_owned()); }
         Ok(())
     }
@@ -1706,6 +1711,11 @@ impl AgentSession {
         let state = self.state();
         state.compaction_lifecycle.state().status() == "running" || state.compaction_abort_controller.is_some()
             || state.branch_summary_abort_controller.is_some()
+    }
+
+    fn is_compaction_delegated(&self) -> bool {
+        let model = self.model();
+        self.state().delegated_compaction_key.as_ref().is_some_and(|(provider, id)| *provider == model.provider && *id == model.id)
     }
 
     pub fn compaction_state(&self) -> crate::compaction::lifecycle::CompactionLifecycleState {
@@ -1924,6 +1934,7 @@ impl AgentSession {
         self.state().compaction_extension_signal = None;
         match &execution {
             Ok(result) => {
+                self.state().delegated_compaction_key = None;
                 let value = maho_ext_api::CompactionResult { summary: result.summary.clone(), first_kept_entry_id: result.first_kept_entry_id.clone(),
                     tokens_before: result.tokens_before as u64, details: result.details.clone() };
                 self.emit(AgentSessionEvent::CompactionEnd { reason: compact_reason, request_id: Some(request_id.clone()), aborted: false,
@@ -1948,6 +1959,10 @@ impl AgentSession {
                     aborted: signal.aborted() || rejection == Some(maho_ext_api::CompactionRejectionCause::CancelledByExtension),
                     result: None, rejection_cause: rejection, error_message: error_message.clone(), accepted: Some(false), will_retry: false });
                 if let Some(rejection_cause) = rejection {
+                    if rejection_cause == maho_ext_api::CompactionRejectionCause::ExternalOwner {
+                        let model = self.model();
+                        self.state().delegated_compaction_key = Some((model.provider, model.id));
+                    }
                     self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Rejected {
                         reason: compact_reason, request_id, rejection_cause,
                     })).await;
@@ -2060,17 +2075,18 @@ impl AgentSession {
         loop {
             self.agent.wait_for_idle().await;
             let Some(message) = self.messages().iter().rev().find_map(AgentMessage::as_assistant).cloned() else { return Ok(()); };
-            if self.auto_compaction_enabled() && !self.state().user_aborted && !overflow_compacted
+            if self.auto_compaction_enabled() && !self.is_compaction_delegated() && !self.state().user_aborted && !overflow_compacted
                 && maho_ai::utils::overflow::is_context_overflow(&message, Some(self.model().context_window))
             {
                 overflow_compacted = true;
                 let execution = self.compact_for_model(None, &self.model(), "overflow").await;
+                if self.is_compaction_delegated() { return Ok(()); }
                 execution?;
                 self.agent.continue_run(maho_agent::agent::AgentContinuationOptions { defer_queued_messages: Some(true), ..Default::default() }).await;
                 continue;
             }
             if !self.will_retry(Some(&message)).await {
-                if self.auto_compaction_enabled() && !self.state().user_aborted
+                if self.auto_compaction_enabled() && !self.is_compaction_delegated() && !self.state().user_aborted
                     && !matches!(message.stop_reason, StopReason::Error | StopReason::Aborted)
                 {
                     let model = self.model();
@@ -2085,7 +2101,8 @@ impl AgentSession {
                     } else { resolved.reserve_tokens as u64 };
                     let threshold = model.context_window.saturating_sub(reserve);
                     if self.get_context_usage().and_then(|usage| usage.tokens).is_some_and(|tokens| tokens > threshold) {
-                        self.compact_for_model(None, &model, "threshold").await?;
+                        let result = self.compact_for_model(None, &model, "threshold").await;
+                        if !self.is_compaction_delegated() { result?; }
                     }
                 }
                 return Ok(());
@@ -2455,6 +2472,7 @@ impl AgentSession {
         if context_changed {
             self.abort_compaction();
             self.abort_branch_summary();
+            self.state().delegated_compaction_key = None;
             self.state().message_revision += 1;
         }
         if matches!(source, maho_ext_api::ModelSelectSource::Set | maho_ext_api::ModelSelectSource::Cycle)
@@ -6158,6 +6176,38 @@ mod tests {
         assert!(matches!(&events[0], maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Rejected {
             rejection_cause: maho_ext_api::CompactionRejectionCause::CircuitBreaker, ..
         })));
+    }
+
+    #[tokio::test]
+    async fn provider_owned_compaction_bypasses_native_final_admission() {
+        let session = test_session();
+        let mut model = test_model();
+        model.context_window = 128;
+        session.agent.set_model(model.clone());
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"keepRecentTokens":1,"reserveTokens":0,"reserveScalingEnabled":false})),
+        ])));
+        for text in ["old task", "recent task"] {
+            session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":text,"timestamp":0})));
+        }
+        session.rebuild_session_context().expect("context");
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:provider-owner>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(|_, _| Box::pin(async {
+            Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {
+                cancel: Some(true), rejection_cause: Some(maho_ext_api::CompactionRejectionCause::ExternalOwner), ..Default::default()
+            }))
+        }))]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        assert!(session.compact(None).await.is_err());
+        assert!(session.is_compaction_delegated());
+        let additions = [session_message_from_value(serde_json::json!({
+            "role":"custom", "customType":"admission-aside", "content":"large input ".repeat(200), "display":true, "timestamp":0,
+        })).expect("custom addition")];
+        session.enforce_final_provider_admission(&additions).await.expect("provider owns oversized admission");
+        model.id = "other-model".to_owned();
+        session.agent.set_model(model);
+        assert!(!session.is_compaction_delegated());
+        assert!(session.enforce_final_provider_admission(&additions).await.is_err());
     }
 
     #[tokio::test]
