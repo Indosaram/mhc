@@ -61,7 +61,9 @@ pub fn rehydrate(messages: &[Value], docs: &BTreeMap<String, RehydratableToolSea
             ParsedActivationMarker::V1(names)=>for name in names { if docs.get(&name).is_some_and(|d| d.source==ToolSearchSource::Mcp && d.allow_lazy_activation!=Some(false)) { restored.insert(name); } },
         }
     }
-    restored.into_iter().collect()
+    let mut restored:Vec<_>=restored.into_iter().collect();
+    restored.sort_by(|left,right|left.encode_utf16().cmp(right.encode_utf16()));
+    restored
 }
 
 #[cfg(test)]
@@ -69,6 +71,11 @@ mod tests {
     use super::*;
     use serde_json::json;
     #[test] fn identity_uses_owner() { assert_eq!(derive_mcp_registration_id("docs","read"),"mcp\0docs\0read"); assert_eq!(derive_extension_registration_id("alias",Some("canonical"),"read"),"canonical\0read"); }
+    #[test] fn history_replay_sorts_names_by_utf16_units() {
+        let names=["\u{e000}","\u{10000}"];
+        let docs=names.iter().map(|name|((*name).into(),RehydratableToolSearchDocument{registration_id:(*name).into(),source:ToolSearchSource::Mcp,allow_lazy_activation:None})).collect();
+        assert_eq!(rehydrate(&[json!(format!("[tool_search:activated] {} {}",names[0],names[1]))],&docs),["\u{10000}","\u{e000}"]);
+    }
     #[test] fn v2_round_trip() { let a=ToolActivationIdentity { name:"read".into(),registration_id:"owner\0read".into() }; let message=json!({"content":[{"text":emit_activation_marker(std::slice::from_ref(&a)).unwrap()}]}); assert_eq!(parse_activation_markers(&[message]),vec![ParsedActivationMarker::V2(vec![a])]); }
     #[test] fn malformed_history_is_ignored() { assert!(parse_activation_markers(&[json!("[tool_search:activated:v2] [invalid]")]).is_empty()); }
     #[test] fn history_marker_uses_ecmascript_whitespace() { assert_eq!(parse_activation_markers(&[json!("[tool_search:activated]\u{feff}a\u{0085}b")]),vec![ParsedActivationMarker::V1(vec!["a\u{0085}b".into()])]); }

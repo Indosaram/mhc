@@ -108,6 +108,13 @@ mod tests {
         fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure> { Ok(self.0.clone()) }
     }
     fn service()->ToolSearchService { ToolSearchService::new(ExtensionRuntime::default(),Arc::new(Catalog(vec![]))) }
+    #[test] fn lifecycle_hooks_register_without_eager_tool_registration() {
+        let mut api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("tool-search",Default::default(),Default::default()),Default::default(),Default::default(),Default::default());
+        crate::index::register_session_hooks(&mut api,Arc::new(std::sync::Mutex::new(service())));
+        assert_eq!(api.registered.handlers[&maho_ext_api::EventKind::SessionStart].len(),1);
+        assert_eq!(api.registered.handlers[&maho_ext_api::EventKind::Context].len(),1);
+        assert!(api.registered.tools.is_empty());
+    }
     #[test] fn native_failure_is_consumed_once() { let mut service=service(); service.note_native_injection_failure("rejected".into()); assert_eq!(service.take_native_injection_failure(),Some("rejected".into())); assert_eq!(service.take_native_injection_failure(),None); }
     #[test] fn hidden_hints_follow_query_order_without_duplicates() {
         let mut service=service(); service.bind_removed_tool_hints(Arc::new(||BTreeMap::from([("bash".into(),"use eval".into()),("write".into(),"use patch".into())])));
