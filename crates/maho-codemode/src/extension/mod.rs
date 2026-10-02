@@ -1,4 +1,6 @@
 pub mod runtime_factory;
+pub mod session_manager_proxy;
+pub mod session_manager;
 pub mod eval_notifier;
 pub mod eval_status;
 pub mod eval_status_ticker;
