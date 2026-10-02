@@ -1283,6 +1283,10 @@ async fn retained_api_commands_reach_existing_runner_and_replace_context_handler
     let (registered_renderer, options) = runner.get_entry_renderer_owned("late").unwrap();
     assert!(Arc::ptr_eq(&registered_renderer, &entry_renderer));
     assert!(options.is_some());
+    api.register_entry_renderer_optional("late", entry_renderer.clone(), None);
+    let (registered_renderer, options) = runner.get_entry_renderer_owned("late").unwrap();
+    assert!(Arc::ptr_eq(&registered_renderer, &entry_renderer));
+    assert!(options.is_none());
     let context = runner.create_command_context(Arc::new(CommandActions(Mutex::new(vec![])))).unwrap();
     assert!(runner.get_command("late").is_some());
     assert_eq!(runner.invoke_command("late", "", &context).await.unwrap_err().message, "context handler");

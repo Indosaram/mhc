@@ -10,6 +10,18 @@ pub use maho_tools::{ToolContext, ToolDefinition, FilesystemPolicy, FilesystemPo
 pub use maho_tools::definition::{AbortSignal, ToolContent, ToolResult, ToolSessionManager, ToolExposure, ToolExecutionMode, ToolError, ToolCall};
 pub use maho_tools::filesystem_policy::FilesystemOperation;
 pub use maho_tui::tui::Component;
+pub use maho_tools::{bash::BashToolInput, read::ReadToolInput, edit::EditToolInput, write::WriteToolInput, grep::index::GrepToolInput, find::FindToolInput, ls::LsToolInput};
+
+pub fn define_tool(tool: ToolDefinition) -> ToolDefinition { tool }
+pub fn is_tool_call_event_type(name: &str, event: &ToolCallEvent) -> bool { event.tool_name == name }
+pub fn is_bash_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "bash" }
+pub fn is_power_shell_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "powershell" }
+pub fn is_read_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "read" }
+pub fn is_edit_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "edit" }
+pub fn is_write_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "write" }
+pub fn is_grep_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "grep" }
+pub fn is_find_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "find" }
+pub fn is_ls_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "ls" }
 
 pub type ExtensionFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ExtensionFailure>> + Send + 'a>>;
 pub type UiFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -905,6 +917,11 @@ pub type EntryReplaces = Arc<dyn Fn(&SessionEntry, &SessionEntry) -> bool + Send
 pub struct EntryRendererOptions { pub replaces: Option<EntryReplaces> }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum SessionKind { #[default] Interactive, Worker }
+pub type SessionContext = BTreeMap<String, String>;
+pub const EMPTY_SESSION_CONTEXT: SessionContext = BTreeMap::new();
+pub const DEFAULT_EXTENSION_SESSION_PROFILE: ExtensionSessionProfile = ExtensionSessionProfile {
+    shared_host_enabled: false, session_kind: SessionKind::Interactive, session_context: EMPTY_SESSION_CONTEXT,
+};
 #[derive(Clone, Debug, Default)]
 pub struct ExtensionSessionProfile { pub shared_host_enabled: bool, pub session_kind: SessionKind, pub session_context: BTreeMap<String, String> }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1399,7 +1416,12 @@ impl ExtensionApi {
         }
     }
     pub fn register_entry_renderer(&mut self, custom_type: &str, renderer: EntryRenderer, options: EntryRendererOptions) {
-        self.runtime.assert_active_or_panic(); self.registered.entry_renderers.insert(custom_type.into(), renderer); self.registered.entry_renderer_options.insert(custom_type.into(), options);
+        self.register_entry_renderer_optional(custom_type, renderer, Some(options));
+    }
+    pub fn register_entry_renderer_optional(&mut self, custom_type: &str, renderer: EntryRenderer, options: Option<EntryRendererOptions>) {
+        self.runtime.assert_active_or_panic(); self.registered.entry_renderers.insert(custom_type.into(), renderer);
+        if let Some(options) = options { self.registered.entry_renderer_options.insert(custom_type.into(), options); }
+        else { self.registered.entry_renderer_options.remove(custom_type); }
         if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
             let renderers = self.registered.entry_renderers.iter().map(|(name, renderer)| (name.clone(), (renderer.clone(), self.registered.entry_renderer_options.get(name).cloned()))).collect();
             self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_entry_renderers.insert(self.registered.identity.path.clone(), renderers);

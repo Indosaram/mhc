@@ -2,6 +2,28 @@ use maho_ext_api::*;
 use std::sync::{Arc, Mutex};
 
 #[test]
+fn public_tool_guards_and_default_profile_preserve_contract_values() {
+    let call = ToolCallEvent { tool_call_id: "call".into(), tool_name: "bash".into(), input: JsonValue::Null };
+    assert!(is_tool_call_event_type("bash", &call));
+    assert!(!is_tool_call_event_type("read", &call));
+    let mut result = ToolResultEvent { tool_call_id: "call".into(), tool_name: String::new(), input: JsonValue::Null, content: vec![], details: None, is_error: false, usage: None };
+    type ResultGuard = fn(&ToolResultEvent) -> bool;
+    let guards: [(&str, ResultGuard); 8] = [("bash", is_bash_tool_result), ("powershell", is_power_shell_tool_result), ("read", is_read_tool_result), ("edit", is_edit_tool_result), ("write", is_write_tool_result), ("grep", is_grep_tool_result), ("find", is_find_tool_result), ("ls", is_ls_tool_result)];
+    for (name, guard) in guards {
+        result.tool_name = name.into(); assert!(guard(&result));
+        result.tool_name = "custom".into(); assert!(!guard(&result));
+    }
+    let profile = std::hint::black_box(DEFAULT_EXTENSION_SESSION_PROFILE);
+    assert_eq!(profile.session_context, EMPTY_SESSION_CONTEXT);
+    assert!(!profile.shared_host_enabled);
+    assert_eq!(profile.session_kind, SessionKind::Interactive);
+    let execute: maho_tools::definition::ToolExecutor = Arc::new(|_| Box::pin(async { Ok(ToolResult::text("done")) }));
+    let tool = ToolDefinition::new("identity", "identity", JsonValue::Object(Default::default()), execute);
+    let retained = tool.execute.clone();
+    assert!(Arc::ptr_eq(&define_tool(tool).execute, &retained));
+}
+
+#[test]
 fn every_event_kind_roundtrips_without_duplicate_names() {
     let names: std::collections::BTreeSet<_> = EventKind::ALL.iter().map(|kind| kind.as_str()).collect();
     assert_eq!(names.len(), 43);
