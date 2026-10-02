@@ -1061,9 +1061,12 @@ struct RuntimeState {
     live_flags: BTreeMap<String, Vec<ExtensionFlag>>,
     live_tools: BTreeMap<String, Vec<RegisteredTool>>,
     live_mcp_servers: BTreeMap<String, Vec<RegisteredMcpServerDeclaration>>,
+    live_message_renderers: BTreeMap<String, BTreeMap<String, MessageRenderer>>,
+    live_entry_renderers: BTreeMap<String, LiveEntryRenderers>,
     live_tool_renderers: BTreeMap<String, BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>>,
 }
 pub type LiveCommandRegistrations = (Vec<RegisteredCommand>, BTreeMap<String, CommandContextHandler>);
+pub type LiveEntryRenderers = BTreeMap<String, (EntryRenderer, Option<EntryRendererOptions>)>;
 #[derive(Clone, Default)]
 pub struct ExtensionRuntime { state: Arc<Mutex<RuntimeState>>, registration_stale: Arc<Mutex<Option<String>>>, registration_pending: Arc<Mutex<Option<RegistrationPending>>>, registration_classifiers: Arc<Mutex<Vec<u64>>> }
 #[derive(Default)]
@@ -1134,6 +1137,7 @@ impl ExtensionRuntime {
         state.live_flags.clear();
         state.live_tools.clear(); state.live_tool_renderers.clear();
         state.live_mcp_servers.clear();
+        state.live_message_renderers.clear(); state.live_entry_renderers.clear();
     }
     pub fn bind_providers(&self, actions: Arc<dyn ExtensionProviderActions>) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
@@ -1172,6 +1176,12 @@ impl ExtensionRuntime {
     }
     pub fn live_mcp_servers(&self, path: &str) -> Option<Vec<RegisteredMcpServerDeclaration>> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_mcp_servers.get(path).cloned()
+    }
+    pub fn live_message_renderers(&self, path: &str) -> Option<BTreeMap<String, MessageRenderer>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_message_renderers.get(path).cloned()
+    }
+    pub fn live_entry_renderers(&self, path: &str) -> Option<LiveEntryRenderers> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_entry_renderers.get(path).cloned()
     }
     pub fn live_tool_renderer(&self, path: &str, name: &str) -> Option<Option<Arc<dyn std::any::Any + Send + Sync>>> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_tool_renderers.get(path).map(|renderers| renderers.get(name).cloned())
@@ -1382,8 +1392,19 @@ impl ExtensionApi {
     }
     pub fn get_flag(&self, name: &str) -> Option<FlagValue> { self.runtime.assert_active_or_panic(); if self.registered.flags.iter().any(|flag| flag.name == name) { self.runtime.get_flag(name) } else { None } }
     pub fn set_flag(&self, name: &str, value: FlagValue) { self.runtime.set_flag(name, value); }
-    pub fn register_message_renderer(&mut self, custom_type: &str, renderer: MessageRenderer) { self.runtime.assert_active_or_panic(); self.registered.message_renderers.insert(custom_type.into(), renderer); }
-    pub fn register_entry_renderer(&mut self, custom_type: &str, renderer: EntryRenderer, options: EntryRendererOptions) { self.runtime.assert_active_or_panic(); self.registered.entry_renderers.insert(custom_type.into(), renderer); self.registered.entry_renderer_options.insert(custom_type.into(), options); }
+    pub fn register_message_renderer(&mut self, custom_type: &str, renderer: MessageRenderer) {
+        self.runtime.assert_active_or_panic(); self.registered.message_renderers.insert(custom_type.into(), renderer);
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_message_renderers.insert(self.registered.identity.path.clone(), self.registered.message_renderers.clone());
+        }
+    }
+    pub fn register_entry_renderer(&mut self, custom_type: &str, renderer: EntryRenderer, options: EntryRendererOptions) {
+        self.runtime.assert_active_or_panic(); self.registered.entry_renderers.insert(custom_type.into(), renderer); self.registered.entry_renderer_options.insert(custom_type.into(), options);
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            let renderers = self.registered.entry_renderers.iter().map(|(name, renderer)| (name.clone(), (renderer.clone(), self.registered.entry_renderer_options.get(name).cloned()))).collect();
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_entry_renderers.insert(self.registered.identity.path.clone(), renderers);
+        }
+    }
     pub fn register_mcp_server(&mut self, name: &str, config: McpServerDeclaration) {
         if let Err(error) = self.try_register_mcp_server(name, config) { std::panic::panic_any(error); }
     }

@@ -1275,6 +1275,14 @@ async fn retained_api_commands_reach_existing_runner_and_replace_context_handler
     api.register_mcp_server("late", McpServerDeclaration { command: Some("late-command".into()), ..Default::default() });
     assert_eq!(runner.get_registered_mcp_servers()[0].config.command.as_deref(), Some("late-command"));
     assert_eq!(runner.create_context().unwrap().registered_mcp_servers[0].name, "late");
+    let message_renderer: MessageRenderer = Arc::new(|_, _, _| None);
+    api.register_message_renderer("late", message_renderer.clone());
+    assert!(Arc::ptr_eq(&runner.get_message_renderer_owned("late").unwrap(), &message_renderer));
+    let entry_renderer: EntryRenderer = Arc::new(|_, _, _| None);
+    api.register_entry_renderer("late", entry_renderer.clone(), EntryRendererOptions::default());
+    let (registered_renderer, options) = runner.get_entry_renderer_owned("late").unwrap();
+    assert!(Arc::ptr_eq(&registered_renderer, &entry_renderer));
+    assert!(options.is_some());
     let context = runner.create_command_context(Arc::new(CommandActions(Mutex::new(vec![])))).unwrap();
     assert!(runner.get_command("late").is_some());
     assert_eq!(runner.invoke_command("late", "", &context).await.unwrap_err().message, "context handler");
