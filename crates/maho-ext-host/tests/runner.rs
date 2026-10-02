@@ -323,6 +323,21 @@ fn context_print_mode_and_tool_context_contract() { let ctx = context(); assert_
 #[test]
 fn invalidated_runner_rejects_new_context() { let runner = runner(vec![]); runner.invalidate("stale"); assert_eq!(runner.create_context().err().unwrap().message, "stale"); }
 
+#[tokio::test]
+async fn shutdown_budget_is_resolved_only_when_handlers_exist() {
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = reads.clone();
+    let mut runner = runner(vec![]);
+    runner.set_shutdown_budget_resolver(Arc::new(move || { observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst); (0, 25) }));
+    let event = || ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason: SessionReason::Quit, target_session_file: None, signal: None });
+    runner.emit(event()).await.unwrap();
+    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+    runner.extensions.push(extension("handler", EventKind::SessionShutdown, none()));
+    runner.emit(event()).await.unwrap();
+    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!((runner.shutdown_warn_ms, runner.shutdown_timeout_ms), (0, 25));
+}
+
 #[test]
 fn retained_tool_context_getters_reject_invalidated_runtime() {
     let mut runner = runner(vec![]);

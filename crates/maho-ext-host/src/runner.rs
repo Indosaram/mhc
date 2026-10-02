@@ -155,11 +155,12 @@ pub struct ExtensionRunner {
     hook_observer: Option<HookObserver>, warning_listener: Option<WarningListener>, next_hook_index: u64,
     context_actions: Option<Arc<dyn ExtensionContextActions>>,
     reload: ReloadState,
+    shutdown_budget: Option<Arc<dyn Fn() -> (u64, u64) + Send + Sync>>,
 }
 impl ExtensionRunner {
     pub fn new(extensions: Vec<LoadedExtension>, runtime: ExtensionRuntime, events: EventBus, context: ExtensionContext) -> Self {
         Self { extensions, runtime, events, context, error_listeners: Vec::new(), errors: Vec::new(), warnings: Vec::new(),
-            shutdown_warn_ms: 2000, shutdown_timeout_ms: 10000, hook_observer: None, warning_listener: None, next_hook_index: 0, context_actions: None, reload: Arc::new(std::sync::Mutex::new(None)) }
+            shutdown_warn_ms: 2000, shutdown_timeout_ms: 10000, hook_observer: None, warning_listener: None, next_hook_index: 0, context_actions: None, reload: Arc::new(std::sync::Mutex::new(None)), shutdown_budget: None }
     }
     pub fn from_static(extensions: Vec<Box<dyn Extension>>, context: ExtensionContext) -> Self {
         let factories = extensions.into_iter().enumerate().map(|(index, extension)| {
@@ -301,6 +302,7 @@ impl ExtensionRunner {
     pub fn on_error(&mut self, listener: ErrorListener) { self.error_listeners.push(listener); }
     pub fn set_tool_hook_lifecycle_observer(&mut self, observer: Option<HookObserver>) { self.hook_observer = observer; }
     pub fn set_warning_listener(&mut self, listener: Option<WarningListener>) { self.warning_listener = listener; }
+    pub fn set_shutdown_budget_resolver(&mut self, resolver: Arc<dyn Fn() -> (u64, u64) + Send + Sync>) { self.shutdown_budget = Some(resolver); }
     pub fn emit_error(&mut self, error: ExtensionError) {
         for listener in &self.error_listeners { listener(&error); }
         self.errors.push(error);
@@ -370,6 +372,9 @@ impl ExtensionRunner {
     pub async fn emit(&mut self, mut event: ExtensionEvent) -> Result<EventResult, ExtensionFailure> {
         self.runtime.assert_active()?;
         let kind = event.kind(); let mut result = EventResult::None;
+        if kind == EventKind::SessionShutdown && self.has_handlers(kind) && let Some(resolve) = &self.shutdown_budget {
+            (self.shutdown_warn_ms, self.shutdown_timeout_ms) = resolve();
+        }
         for (path, handler) in self.handlers(kind) {
             let context = self.create_context_for_extension(Some(&path))?;
             let handled = if kind == EventKind::SessionShutdown { self.run_shutdown(&path, &mut event, &context, &handler).await } else { handler(&mut event, &context).await };

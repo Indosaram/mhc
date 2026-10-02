@@ -2768,6 +2768,19 @@ impl AgentSession {
 
     /// Bind the extension runner the tool hooks read at execution time.
     pub async fn set_extension_runner(&self, mut runner: ExtensionRunner) {
+        let weak = Arc::downgrade(&self.inner);
+        runner.set_shutdown_budget_resolver(Arc::new(move || {
+            let Some(inner) = weak.upgrade() else { return (2_000, 10_000); };
+            AgentSession { inner }.with_settings_manager(|manager| {
+                let parse = |key: &str, default| match manager.get_value(key) {
+                    None => Some(default), Some(value) => crate::http_dispatcher::parse_http_idle_timeout_ms(value),
+                };
+                match (parse("sessionShutdownHandlerWarnMs", 2_000), parse("sessionShutdownHandlerTimeoutMs", 10_000)) {
+                    (Some(warn), Some(timeout)) => (warn, timeout),
+                    _ => (2_000, 10_000),
+                }
+            })
+        }));
         if let Ok(mut context) = runner.create_context() {
             context.model_registry = Arc::new(ExtensionModelRegistryView(self.model_registry().clone()));
             context.session_manager = Arc::new(ExtensionSessionManagerView {
