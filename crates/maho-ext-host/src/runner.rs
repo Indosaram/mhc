@@ -65,19 +65,22 @@ async fn coalesced_reload(state: ReloadState, operation: ExtensionFuture<'static
         notified.await;
     }
 }
-struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime, compaction_signal: std::sync::Mutex<Option<AbortSignal>>, kernel_tools: Option<Arc<dyn ExtensionKernelTools>>, reload: ReloadState, provider_runner: Option<ExtensionRunner>, exclude_provider_path: Option<String> }
+struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime, compaction_signal: std::sync::Mutex<Option<AbortSignal>>, reload: ReloadState, provider_runner: Option<ExtensionRunner>, exclude_provider_path: Option<String> }
 impl ContextSessionManager {
     fn active(&self) { if let Err(error) = self.runtime.assert_active() { std::panic::panic_any(error); } }
 }
 impl ExtensionKernelTools for ContextSessionManager {
     fn invoke_scope(&self) -> bool {
         self.active();
-        self.kernel_tools.as_deref().or_else(|| self.actions.kernel_tools()).expect("bound kernel tools").invoke_scope()
+        let current = crate::kernel_tools_context::current_kernel_tools();
+        current.as_deref().or_else(|| self.actions.kernel_tools()).expect("bound kernel tools").invoke_scope()
     }
     fn describe<'a>(&'a self, names: &'a [String]) -> ExtensionFuture<'a, JsonValue> {
         Box::pin(async move {
             self.runtime.assert_active()?;
-            let result = self.kernel_tools.as_deref().or_else(|| self.actions.kernel_tools()).expect("bound kernel tools").describe(names).await?;
+            let current = crate::kernel_tools_context::current_kernel_tools();
+            let tools = current.as_deref().or_else(|| self.actions.kernel_tools()).ok_or_else(|| ExtensionFailure::new("Kernel tools are not available outside an invocation"))?;
+            let result = tools.describe(names).await?;
             self.runtime.assert_active()?;
             Ok(result)
         })
@@ -85,7 +88,9 @@ impl ExtensionKernelTools for ContextSessionManager {
     fn invoke(&self, request: KernelToolInvokeRequest, options: KernelToolInvokeOptions) -> ExtensionFuture<'_, JsonValue> {
         Box::pin(async move {
             self.runtime.assert_active()?;
-            let result = self.kernel_tools.as_deref().or_else(|| self.actions.kernel_tools()).expect("bound kernel tools").invoke(request, options).await?;
+            let current = crate::kernel_tools_context::current_kernel_tools();
+            let tools = current.as_deref().or_else(|| self.actions.kernel_tools()).ok_or_else(|| ExtensionFailure::new("Kernel tools are not available outside an invocation"))?;
+            let result = tools.invoke(request, options).await?;
             self.runtime.assert_active()?;
             Ok(result)
         })
@@ -182,7 +187,7 @@ impl ExtensionContextActions for ContextSessionManager {
     fn get_loaded_hook_sources(&self) -> LoadedHookSources { self.active(); self.actions.get_loaded_hook_sources() }
     fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools> {
         self.active();
-        self.kernel_tools.as_deref().or_else(|| self.actions.kernel_tools()).map(|_| self as &dyn ExtensionKernelTools)
+        if crate::kernel_tools_context::current_kernel_tools().is_some() || self.actions.kernel_tools().is_some() { Some(self) } else { None }
     }
 }
 
@@ -242,7 +247,7 @@ impl ExtensionRunner {
         let option_actions = Arc::clone(&actions);
         self.context.get_system_prompt_options_fn = Arc::new(move || option_actions.get_system_prompt_options());
         self.context_actions = Some(Arc::clone(&actions));
-        self.context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions, runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), kernel_tools: None, reload: Arc::clone(&self.reload), provider_runner: None, exclude_provider_path: None });
+        self.context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions, runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), reload: Arc::clone(&self.reload), provider_runner: None, exclude_provider_path: None });
         Ok(())
     }
     pub fn bind_providers(&mut self, actions: Arc<dyn ExtensionProviderActions>) -> Result<(), ExtensionFailure> {
@@ -347,7 +352,7 @@ impl ExtensionRunner {
         self.runtime.assert_active()?;
         let mut context = self.context.clone();
         if let Some(actions) = &self.context_actions {
-            context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&context.session_manager), actions: Arc::clone(actions), runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), kernel_tools: crate::kernel_tools_context::current_kernel_tools(), reload: Arc::clone(&self.reload), provider_runner: Some(self.clone()), exclude_provider_path: exclude_path.map(str::to_owned) });
+            context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&context.session_manager), actions: Arc::clone(actions), runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), reload: Arc::clone(&self.reload), provider_runner: Some(self.clone()), exclude_provider_path: exclude_path.map(str::to_owned) });
         }
         if let Some(actions) = context.session_manager.extension_context_actions() {
             actions.assert_active()?;

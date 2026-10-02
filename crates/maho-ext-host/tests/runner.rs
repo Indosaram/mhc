@@ -1121,14 +1121,18 @@ async fn nested_kernel_invocations_restore_outer_capability_scope() {
     let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(actions).unwrap();
+    let retained = runner.create_context().unwrap();
     with_kernel_tools(Arc::new(KernelCapabilities(true)), async {
+        assert!(retained.kernel_tools().unwrap().unwrap().invoke_scope());
         assert!(runner.create_context().unwrap().kernel_tools().unwrap().unwrap().invoke_scope());
         with_kernel_tools(Arc::new(KernelCapabilities(false)), async {
+            assert!(!retained.kernel_tools().unwrap().unwrap().invoke_scope());
             assert!(!runner.create_context().unwrap().kernel_tools().unwrap().unwrap().invoke_scope());
         }).await;
         assert!(current_kernel_tools().unwrap().invoke_scope());
     }).await;
     assert!(current_kernel_tools().is_none());
+    assert!(retained.kernel_tools().unwrap().is_none());
     assert!(runner.create_context().unwrap().kernel_tools().unwrap().is_none());
 }
 
