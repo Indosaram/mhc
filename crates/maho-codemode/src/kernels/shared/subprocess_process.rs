@@ -85,6 +85,7 @@ impl SubprocessProcess {
         Ok(true)
     }
     pub async fn next_message(&mut self) -> Result<Value, ProcessError> {
+        if self.retiring { return Err(ProcessError::Exited); }
         self.output.recv().await.ok_or(ProcessError::Exited)
     }
     pub fn retire(&mut self) {

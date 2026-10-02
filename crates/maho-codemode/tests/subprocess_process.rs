@@ -58,3 +58,14 @@ async fn shutdown_reaps_child_even_when_close_frame_cannot_be_written() {
     assert!(shutdown.is_ok(),"a broken stdin must not prevent shutdown retirement");
     assert!(!Path::new(&format!("/proc/{pid}")).exists());
 }
+
+#[tokio::test]
+async fn retired_process_cannot_deliver_buffered_frames() {
+    let env=std::env::vars().collect();
+    let mut process=SubprocessProcess::spawn("python3", &["-u".into(),"-c".into(),"import sys; print('{\"type\":\"ready\"}\\n{\"type\":\"text\",\"stream\":\"stdout\",\"data\":\"stale\"}',flush=True); sys.stdin.readline()".into()],Path::new("/tmp"),&env).unwrap();
+    assert_eq!(tokio::time::timeout(Duration::from_secs(5),process.next_message()).await.unwrap().unwrap()["type"],"ready");
+    process.retire();
+    let message=tokio::time::timeout(Duration::from_secs(2),process.next_message()).await;
+    process.terminate("TERM",Duration::from_millis(1500)).await.unwrap();
+    assert!(matches!(message,Ok(Err(ProcessError::Exited))),"retirement must fence every buffered frame");
+}
