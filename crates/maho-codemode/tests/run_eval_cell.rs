@@ -171,3 +171,23 @@ async fn detached_real_eval_can_be_stopped_without_losing_python_state() {
     assert_eq!(result.details["cells"][0]["output"],"42");
     kernel.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn disposal_stops_real_detached_python_and_preserves_kernel_state() {
+    let (kernel,options)=fixture().await;
+    let mut options=Arc::try_unwrap(options).ok().expect("fixture options ownership");
+    options.settings.cell_timeout_seconds=0.02;
+    options.settings.foreground_window_seconds=0.06;
+    let options=Arc::new(options);
+    let mut input=invocation("dispose-detached","value=41\nwhile True: pass");
+    input.input.on_timeout=Some(TimeoutBehavior::Detach);input.mode="interactive".into();
+    let detached=tokio::time::timeout(std::time::Duration::from_secs(5),run_eval_cell(options.clone(),input)).await.unwrap().unwrap();
+    let terminal=options.cell_manager.lock().unwrap().terminal_signal("dispose-detached").unwrap();
+    let disposed=tokio::time::timeout(std::time::Duration::from_secs(7),EvalDetachedCellManager::dispose(&options.cell_manager)).await;
+    let recovered=run_eval_cell(options.clone(),invocation("after-dispose","value+1")).await;
+    kernel.close().await.unwrap();
+    assert_eq!(detached.details["cells"][0]["status"],"detached");
+    disposed.unwrap().unwrap();
+    assert_eq!(terminal.borrow().as_ref().unwrap().state,maho_codemode::tool::detached_cell_contract::EvalDetachedCellState::Cancelled);
+    assert_eq!(recovered.unwrap().details["cells"][0]["output"],"42");
+}
