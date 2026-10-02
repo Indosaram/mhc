@@ -1,6 +1,13 @@
 use std::collections::BTreeMap;
 use maho_ai::types::Model;
 use maho_ext_compaction::openai_remote_model::*;
+#[test]
+fn live_codex_headers_include_the_running_kernel_and_native_architecture() {
+    let m = model("chatgpt-subscription", "openai-codex-responses", "");
+    let headers = create_live_openai_remote_compaction_headers(&m, Some("fixture"), &BTreeMap::new(), None).unwrap().unwrap();
+    let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap();
+    assert_eq!(headers["user-agent"], format!("senpi (linux {}; {})", release.trim_end(), "x64"));
+}
 use serde_json::json;
 fn model(provider:&str,api:&str,base:&str)->Model {serde_json::from_value(json!({"id":"m","name":"m","api":api,"provider":provider,"baseUrl":base,"reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":200000,"maxTokens":4000})).expect("model")}
 #[test] fn remote_identity_is_provider_scoped() {assert!(is_openai_remote_compaction_model(Some(&model("openai","openai-responses",""))));assert!(!is_openai_remote_compaction_model(Some(&model("foreign","openai-responses",""))));assert!(!is_openai_remote_compaction_model(None));}

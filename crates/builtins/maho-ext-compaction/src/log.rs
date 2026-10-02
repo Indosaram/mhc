@@ -4,6 +4,46 @@ use serde_json::{Map, Value, json};
 const ALLOWED_KEYS: &[&str] = &["origin", "reason", "route", "variant", "generation", "requestId", "tokens", "tokensBefore", "savedTokens", "savingsRatio", "contextWindow", "threshold", "remainingSec", "count", "durationMs"];
 const EVENTS: &[&str] = &["speculative_started", "speculative_applied", "speculative_stale", "speculative_invalidated", "idle_trigger", "idle_applied", "blocking_started", "warm_consumed", "core_route_generated", "skip_cap", "skip_breaker", "skip_cursor_mid_turn", "threshold_trigger", "hard_limit_trigger", "grace_deferred", "breaker_deterministic_fallback", "emergency_prune", "ineffective_counted", "summary_failed", "remote_aborted", "blocking_aborted"];
 
+/// Object references retain JavaScript identity, including shared and cyclic values.
+pub enum LogValue {
+    Undefined,
+    Json(Value),
+    BigInt(String),
+    Symbol(String),
+    Function(String),
+    Object(Vec<(String, usize)>),
+    Array(Vec<usize>),
+}
+
+pub fn safe_graph_value(values: &[LogValue], root: usize) -> Option<Value> {
+    fn visit(values: &[LogValue], index: usize, seen: &mut std::collections::HashSet<usize>) -> Option<Value> {
+        match &values[index] {
+            LogValue::Undefined => None,
+            LogValue::Json(value) => Some(safe_value(value)),
+            LogValue::BigInt(value) | LogValue::Symbol(value) | LogValue::Function(value) => Some(Value::String(value.clone())),
+            LogValue::Object(fields) => {
+                if !seen.insert(index) { return Some(Value::String("[Circular]".into())); }
+                Some(Value::Object(fields.iter().filter(|(key, _)|ALLOWED_KEYS.contains(&key.as_str()))
+                    .filter_map(|(key, child)|visit(values, *child, seen).map(|value|(key.clone(), value))).collect()))
+            }
+            LogValue::Array(items) => {
+                if !seen.insert(index) { return Some(Value::String("[Circular]".into())); }
+                Some(Value::Array(items.iter().map(|child|visit(values, *child, seen).unwrap_or(Value::Null)).collect()))
+            }
+        }
+    }
+    visit(values, root, &mut std::collections::HashSet::new())
+}
+pub fn format_graph_line(timestamp: &str, level: &str, event: &str, values: &[LogValue], data: &[(String, usize)]) -> String {
+    let mut entry = json!({"ts":timestamp,"level":level,"event":event});
+    for (key, index) in data {
+        if ALLOWED_KEYS.contains(&key.as_str()) && let Some(value) = safe_graph_value(values, *index) {
+            entry[key] = value;
+        }
+    }
+    entry.to_string()
+}
+
 fn safe_value(value: &Value) -> Value {
     match value {
         Value::Object(object) => Value::Object(object.iter().filter(|(key, _)| ALLOWED_KEYS.contains(&key.as_str())).map(|(key, value)| (key.clone(), safe_value(value))).collect()),
@@ -62,4 +102,9 @@ impl CompactionLogger {
 
     pub fn debug(&mut self, event: &str, data: Option<&Map<String, Value>>) { self.log("debug", event, data, None); }
     pub fn info(&mut self, event: &str, data: Option<&Map<String, Value>>) { self.log("info", event, data, None); }
+    pub fn log_graph(&mut self, level: &str, event: &str, values: &[LogValue], data: &[(String, usize)], sink: Option<&dyn Fn(&str)>) {
+        let data = data.iter().filter(|(key, _)|ALLOWED_KEYS.contains(&key.as_str()))
+            .filter_map(|(key, index)|safe_graph_value(values, *index).map(|value|(key.clone(),value))).collect();
+        self.log(level, event, Some(&data), sink);
+    }
 }

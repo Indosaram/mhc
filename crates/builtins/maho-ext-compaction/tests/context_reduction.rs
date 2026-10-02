@@ -9,6 +9,18 @@ fn user(text: &str) -> Message { serde_json::from_value(json!({"role":"user","co
 fn pair(id: usize, name: &str) -> [Message; 2] {
     [assistant(json!([{"type":"toolCall","id":id.to_string(),"name":name,"arguments":{"path":format!("f{id}.ts"),"pattern":"foo","command":"ls"}}])), serde_json::from_value(json!({"role":"toolResult","toolCallId":id.to_string(),"toolName":name,"content":[{"type":"text","text":"X".repeat(2000)}],"isError":false,"timestamp":1})).expect("fixture")]
 }
+#[test]
+fn hint_nullish_coalescing_does_not_skip_nonstring_primary_argument() {
+    let mut input: Vec<_> = (0..2).flat_map(|index|pair(index,"read")).collect();
+    for index in [0,2] {
+        if let Message::Assistant(message) = &mut input[index]
+            && let ContentBlock::ToolCall(call) = &mut message.content[0] {
+            call.arguments = serde_json::from_value(json!({"path":17,"file_path":"must-not-use"})).unwrap();
+        }
+    }
+    let result = collapse_consecutive_tool_results(&input,&CollapseConsecutiveOptions {protect_recent_messages:0,..Default::default()});
+    assert_eq!(result.groups[0].label,"[2 read results]");
+}
 #[test] fn older_reads_collapse_when_tail_is_protected() {
     // Given
     let mut input: Vec<_> = (0..5).flat_map(|i| pair(i,"read")).collect(); input.extend([user("recent"),answer("recent")]);
