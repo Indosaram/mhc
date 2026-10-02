@@ -1,0 +1,5 @@
+use maho_ext_pi_goal::goal::validation::*;
+#[test]fn exact_limit(){let objective="a".repeat(4000);let r=validate_objective(&objective,"thread.objective-full.txt").unwrap();assert_eq!(r,ValidatedObjective{objective,truncated:false,full_text_file_name:None});}
+#[test]fn whitespace_cut(){let objective=format!("{}words","word ".repeat(839));let name="thread%2Fwith%20space.objective-full.txt";let marker=truncation_marker(name);let r=validate_objective(&objective,name).unwrap();assert!(r.truncated);assert_eq!(r.full_text_file_name.as_deref(),Some(name));assert!(r.objective.chars().count()<=4000);let payload=r.objective.strip_suffix(&marker).unwrap();assert!(payload.chars().count()>=4000-marker.chars().count()-200);assert!(!payload.ends_with(' '));}
+#[test]fn hard_cut(){let name="thread.objective-full.txt";let marker=truncation_marker(name);let r=validate_objective(&"a".repeat(5000),name).unwrap();assert_eq!(r.objective,format!("{}{marker}","a".repeat(4000-marker.chars().count())));assert!(r.truncated);}
+#[test]fn empty_rejected(){assert_eq!(validate_objective("   ","thread.objective-full.txt").unwrap_err(),"objective must not be empty");}
