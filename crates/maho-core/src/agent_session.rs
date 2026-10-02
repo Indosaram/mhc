@@ -2523,6 +2523,15 @@ impl AgentSession {
         self.extension_runner.lock().await.is_some()
     }
 
+    pub fn extension_context_actions(&self) -> Arc<dyn maho_ext_api::ExtensionContextActions> {
+        Arc::new(SessionExtensionActions(Arc::downgrade(&self.inner)))
+    }
+
+    pub fn weak_accessor(&self) -> Arc<dyn Fn() -> Option<Self> + Send + Sync> {
+        let inner = Arc::downgrade(&self.inner);
+        Arc::new(move || inner.upgrade().map(|inner| Self { inner }))
+    }
+
     /// Bind the extension runner the tool hooks read at execution time.
     pub async fn set_extension_runner(&self, mut runner: ExtensionRunner) {
         if let Ok(context) = runner.create_context() {
