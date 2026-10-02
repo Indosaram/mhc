@@ -52,7 +52,7 @@ pub fn create_web_search_tool(get_config:std::sync::Arc<dyn Fn()->super::types::
             };
             if config.auto {
                 call.signal.check()?;
-                return Err(ToolError::Message("Native search discovery requires ModelRegistry.getApiKeyAndHeaders binding".into()));
+                if call.context.is_some() { return Err(ToolError::Message("Native search discovery requires ModelRegistry.getApiKeyAndHeaders binding".into())); }
             }
             let request=request_from_arguments(query.clone(),allowed.clone(),blocked.clone(),&config).map_err(ToolError::Message)?;
             let labels:Vec<_>=config.providers.iter().map(|entry|super::search::provider_entry_label(entry.config.provider.as_str(),entry.config.id.as_deref(),None)).collect();
@@ -92,7 +92,7 @@ mod tests {
             let body=r#"{"results":[{"title":"Docs","url":"https://example.com/docs","text":"documentation"}]}"#;
             socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
         };
-        let mut config=config(); config.auto=false; config.providers[0].config.base_url=Some(format!("http://{address}/search"));
+        let mut config=config(); config.providers[0].config.base_url=Some(format!("http://{address}/search"));
         let tool=create_web_search_tool(std::sync::Arc::new(move ||super::super::types::ConfigLoadResult::Ok{config:config.clone(),source:"test".into()}));
         let updates=std::sync::Arc::new(std::sync::Mutex::new(Vec::new())); let captured=updates.clone();
         let client=async {
@@ -108,8 +108,20 @@ mod tests {
         assert_eq!(result.details.unwrap()["phase"],"error");
     }
     #[tokio::test] async fn native_executor_does_not_shim_unbound_auto_discovery() {
+        struct Context;
+        impl maho_tools::definition::ToolSessionManager for Context {
+            fn session_id(&self)->&str {"test"}
+            fn session_file(&self)->Option<&std::path::Path> {None}
+        }
+        impl maho_tools::definition::ToolContext for Context {
+            fn cwd(&self)->&std::path::Path {std::path::Path::new("/tmp")}
+            fn model(&self)->Option<&maho_ext_api::Model> {None}
+            fn thinking_level(&self)->Option<maho_ext_api::ThinkingLevel> {None}
+            fn session_manager(&self)->&dyn maho_tools::definition::ToolSessionManager {self}
+            fn goal_store_file(&self)->Option<&std::path::Path> {None}
+        }
         let tool=create_web_search_tool(std::sync::Arc::new(||super::super::types::ConfigLoadResult::Ok{config:config(),source:"test".into()}));
-        assert!(matches!((tool.execute)(maho_tools::definition::ToolCall{id:"auto",params:json!({"query":"docs"}),signal:Default::default(),context:None,on_update:None}).await,Err(maho_tools::definition::ToolError::Message(_))));
+        assert!(matches!((tool.execute)(maho_tools::definition::ToolCall{id:"auto",params:json!({"query":"docs"}),signal:Default::default(),context:Some(&Context),on_update:None}).await,Err(maho_tools::definition::ToolError::Message(_))));
     }
     #[tokio::test] async fn aborted_auto_route_without_context_preserves_cancellation() {
         let tool=create_web_search_tool(std::sync::Arc::new(||super::super::types::ConfigLoadResult::Ok{config:config(),source:"test".into()}));
