@@ -24,7 +24,7 @@ fn factory() -> SessionFactory {
         use maho_ai::providers::faux::{FauxAssistantMessageOptions, RegisterFauxProviderOptions, faux_assistant_message, faux_provider, faux_streams};
         use maho_core::agent_session::{AgentSession, AgentSessionConfig};
         let cwd = options.cwd.unwrap_or_default();
-        let provider = faux_provider(RegisterFauxProviderOptions {api:Some("faux".into()),tokens_per_second:Some(0.0),..Default::default()});
+        let provider = faux_provider(RegisterFauxProviderOptions {api:Some("faux".into()),models:Some(vec![maho_ai::providers::faux::FauxModelDefinition {id:"faux-1".into(),reasoning:Some(true),..Default::default()}]),tokens_per_second:Some(0.0),..Default::default()});
         let model = provider.get_model(Some("faux-1")).ok_or("Missing faux model")?;
         provider.set_responses(vec![faux_assistant_message("retained transcript",FauxAssistantMessageOptions {timestamp:Some(0),..Default::default()}).into()]);
         let streams = faux_streams(provider.core.clone());
@@ -70,5 +70,42 @@ async fn daemon_socket_faux_turn_detach_and_reattach_retains_transcript() {
     client.close(None).await.unwrap(); drop(client);
     listener.close().await.unwrap();
     runtime.dispose().await;
+    assert!(!path.exists());
+}
+
+#[tokio::test]
+async fn thread_settings_validate_before_mutation_and_respond_before_notification() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("settings.sock");
+    let runtime = AppServerRuntime::new(directory.path().display().to_string(),directory.path().display().to_string(),"1".into(),Some(directory.path().join("sessions").display().to_string()),Some(factory())).await;
+    let listener = start_unix_socket_listener(path.clone(),true,ResolvedWebSocketListenerAuth::Off,runtime.core.clone(),None).await.unwrap();
+    let (mut client,_) = client_async("ws://localhost/",tokio::net::UnixStream::connect(&path).await.unwrap()).await.unwrap();
+    send(&mut client,json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"},"capabilities":{"experimentalApi":true}}})).await;
+    assert_eq!(read(&mut client).await["id"],1);
+    send(&mut client,json!({"id":2,"method":"thread/start","params":{}})).await;
+    let response = read(&mut client).await;
+    let id = response["result"]["thread"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(read(&mut client).await["method"],"thread/started");
+    send(&mut client,json!({"id":3,"method":"thread/settings/update","params":{"threadId":id,"effort":"unrecognized"}})).await;
+    assert_eq!(read(&mut client).await["error"]["code"],-32603);
+    let entry = runtime.threads.get_loaded_thread(&id).await.unwrap();
+    assert_eq!(serde_json::to_value(entry.lock().await.session.thinking_level()).unwrap(),"off");
+    send(&mut client,json!({"id":4,"method":"thread/settings/update","params":{"threadId":id,"effort":"minimal"}})).await;
+    let response = read(&mut client).await;
+    assert_eq!(response["id"],4);
+    assert_eq!(response["result"],json!({}));
+    let notification = read(&mut client).await;
+    assert_eq!(notification["method"],"thread/settings/updated");
+    assert_eq!(notification["params"]["threadSettings"]["effort"],"minimal");
+    send(&mut client,json!({"id":5,"method":"thread/metadata/update","params":{"threadId":id,"gitInfo":{"branch":"feature"}}})).await;
+    let metadata = read(&mut client).await;
+    assert_eq!(metadata["result"]["thread"]["gitInfo"]["branch"],"feature");
+    send(&mut client,json!({"id":6,"method":"thread/metadata/update","params":{"threadId":id,"gitInfo":{}}})).await;
+    assert_eq!(read(&mut client).await["error"]["code"],-32600);
+    let listing = runtime.threads.list_threads(None,1).await;
+    assert_eq!(listing["threads"][0]["id"],id);
+    assert!(listing["nextCursor"].is_null());
+    client.close(None).await.unwrap();drop(client);
+    listener.close().await.unwrap();runtime.dispose().await;
     assert!(!path.exists());
 }

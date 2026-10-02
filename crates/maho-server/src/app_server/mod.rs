@@ -1,4 +1,8 @@
 pub mod envelope;
+pub mod search_cache;
+pub mod metadata_handlers;
+pub mod registry_listing;
+pub mod settings_handlers;
 pub mod connection;
 pub mod methods;
 pub mod notifications;

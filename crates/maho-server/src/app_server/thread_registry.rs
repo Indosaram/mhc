@@ -59,8 +59,7 @@ impl ThreadRegistry {
     pub async fn resume_thread(&self, id: &str) -> Result<Arc<Mutex<ThreadEntry>>, String> {
         if let Ok(entry) = self.get_loaded_thread(id).await { return Ok(entry); }
         if self.deleted.lock().await.contains(id) { return Err(format!("Thread not found: {id}")); }
-        let directory = self.session_dir.as_deref().ok_or_else(|| format!("Thread not found: {id}"))?;
-        let info = maho_core::session_discovery::list_sessions_from_dir(directory, None, 0, None).into_iter().find(|info| info.id == id).ok_or_else(|| format!("Thread not found: {id}"))?;
+        let info = self.list_session_infos().await.into_iter().find(|info| info.id == id).ok_or_else(|| format!("Thread not found: {id}"))?;
         let manager = SessionManager::open(&info.path, self.session_dir.as_deref(), Some(&info.cwd), None);
         let session = (self.factory)(CreateAgentSessionOptions { cwd: Some(info.cwd.clone()), agent_dir: Some(self.agent_dir.clone()), session_manager: Some(manager), ..Default::default() }).await?;
         let timestamps = (info.created.to_rfc3339_opts(chrono::SecondsFormat::Millis, true), info.modified.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
@@ -71,6 +70,30 @@ impl ThreadRegistry {
         let mut wires = Vec::new();
         for entry in entries { wires.push(entry.lock().await.wire()); }
         wires
+    }
+    pub async fn list_session_infos(&self) -> Vec<maho_core::session_discovery::SessionInfo> {
+        let directories = if let Some(directory) = &self.session_dir {vec![directory.clone()]} else {
+            let root = std::path::Path::new(&self.agent_dir).join("sessions");
+            let mut directories = Vec::new();
+            if let Ok(mut entries) = tokio::fs::read_dir(root).await {while let Ok(Some(entry)) = entries.next_entry().await {if entry.file_type().await.is_ok_and(|kind|kind.is_dir() || kind.is_symlink()) {directories.push(entry.path().display().to_string());}}}
+            directories
+        };
+        let mut sessions = Vec::new();
+        for directory in directories {sessions.extend(maho_core::session_discovery::list_sessions_from_dir(&directory,None,0,None));}
+        sessions.sort_by_key(|info|std::cmp::Reverse(info.modified));
+        sessions
+    }
+    pub async fn list_threads(&self,cursor: Option<&str>,limit: usize) -> Value {
+        let offset = super::registry_listing::decode_cursor(cursor);
+        let deleted = self.deleted.lock().await.clone();
+        let mut threads = BTreeMap::new();
+        for info in self.list_session_infos().await {if !deleted.contains(&info.id) {threads.insert(info.id.clone(),super::registry_listing::build_disk_thread(&info));}}
+        for entry in self.list_loaded().await {if let Some(id) = entry["id"].as_str() {threads.insert(id.to_owned(),entry);}}
+        let mut threads = threads.into_values().collect::<Vec<_>>();
+        threads.sort_by(super::registry_listing::compare_threads);
+        let page = threads.iter().skip(offset).take(limit).cloned().collect::<Vec<_>>();
+        let next = offset.saturating_add(page.len());
+        json!({"threads":page,"nextCursor":if next < threads.len() {Some(super::registry_listing::encode_cursor(next))} else {None}})
     }
     pub async fn remove_connection(&self, id: &str) {
         let entries = self.entries.lock().await.values().cloned().collect::<Vec<_>>();

@@ -77,6 +77,9 @@ impl AppServerRuntime {
         let core = Arc::new(RwLock::new(core));
         if notification_core.set(Arc::downgrade(&core)).is_err() {unreachable!("notification core is initialized once");}
         super::turns::register_turn_methods(&core, threads.clone(), turn_log.clone()).await;
+        super::settings_handlers::register_thread_settings(&core,threads.clone()).await;
+        let archive = Arc::new(super::archive_state::ThreadArchiveState::new(threads.session_dir.as_ref().map(Into::into)));
+        super::metadata_handlers::register_metadata_handlers(&core,threads.clone(),turn_log.clone(),archive,version).await;
         Self { core, threads, turn_log }
     }
     pub async fn dispose(&self) { self.threads.dispose().await; }
