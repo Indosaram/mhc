@@ -31,6 +31,9 @@ pub fn scan_entries(
     session: &str,
     query: &EntryScan,
 ) -> Result<Vec<Entry>, ValueError> {
+    scan_selected_entries(db,session,query,None)
+}
+fn scan_selected_entries(db: &Connection,session: &str,query: &EntryScan,ids: Option<&[String]>) -> Result<Vec<Entry>,ValueError> {
     let kind = query
         .entry_type
         .map(serde_json::to_value)
@@ -47,7 +50,8 @@ pub fn scan_entries(
         .transpose()
         .map_err(|e| ValueError::Options(e.to_string()))?
         .unwrap_or(-1);
-    let mut statement=db.prepare(&format!("SELECT id,parent_id,seq,type,custom_type,timestamp,payload FROM entries WHERE session_id=?1 AND (?2 IS NULL OR type=?2) AND (?3 IS NULL OR custom_type=?3) AND (?4 IS NULL OR seq>=?4) AND (?5 IS NULL OR seq<=?5) ORDER BY seq {order} LIMIT ?6"))?;
+    let ids = ids.map(serde_json::to_string).transpose()?;
+    let mut statement=db.prepare_cached(&format!("SELECT id,parent_id,seq,type,custom_type,timestamp,payload FROM entries WHERE session_id=?1 AND (?2 IS NULL OR type=?2) AND (?3 IS NULL OR custom_type=?3) AND (?4 IS NULL OR seq>=?4) AND (?5 IS NULL OR seq<=?5) AND (?7 IS NULL OR id IN (SELECT value FROM json_each(?7))) ORDER BY seq {order} LIMIT ?6"))?;
     let rows = statement.query_map(
         params![
             session,
@@ -55,7 +59,8 @@ pub fn scan_entries(
             query.custom_type,
             query.from_seq,
             query.to_seq,
-            limit
+            limit,
+            ids
         ],
         |row| {
             Ok((
@@ -105,10 +110,7 @@ pub fn read_entries(
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    Ok(scan_entries(db, session, &EntryScan::default())?
-        .into_iter()
-        .filter(|entry| ids.contains(&entry.id))
-        .collect())
+    scan_selected_entries(db,session,&EntryScan::default(),Some(ids))
 }
 pub fn insert_usage(db: &Connection, session: &str, usage: &UsageRow) -> Result<(), ValueError> {
     db.prepare_cached("INSERT INTO usage_ledger (session_id,id,seq,entry_id,adjustment,usage,details) VALUES (?1,?2,?3,?4,?5,?6,?7)")?.execute(params![session,usage.id,usage.seq,usage.entry_id,usage.adjustment,serde_json::to_string(&usage.usage)?,usage.details.as_ref().map(serde_json::to_string).transpose()?])?;

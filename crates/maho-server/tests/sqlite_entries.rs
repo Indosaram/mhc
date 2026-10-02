@@ -60,6 +60,17 @@ fn entry_roundtrip_scan_filters_and_parent_integrity() {
             .is_empty()
     );
 }
+
+#[test]
+fn selected_entry_reads_do_not_decode_corrupt_unrequested_payloads() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();apply_initial_schema(&db).unwrap();
+    let entry = Entry {id:"valid".into(),parent_id:None,seq:1,timestamp:0,kind:EntryKind::Custom {custom_type:"test".into(),data:None}};
+    insert_entry(&db,"s",&entry).unwrap();
+    let corrupt = Entry {id:"corrupt".into(),seq:2,..entry.clone()};insert_entry(&db,"s",&corrupt).unwrap();
+    db.execute("UPDATE entries SET payload='invalid JSON' WHERE id='corrupt'",[]).unwrap();
+    assert_eq!(read_entries(&db,"s",&["valid".into()]).unwrap(),vec![entry]);
+    assert!(read_entries(&db,"s",&["corrupt".into()]).is_err());
+}
 #[test]
 fn usage_roundtrip_preserves_adjustment_details_and_range() {
     let db = rusqlite::Connection::open_in_memory().unwrap();
