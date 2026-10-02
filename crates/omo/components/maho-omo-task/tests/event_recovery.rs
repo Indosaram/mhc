@@ -7,7 +7,7 @@ struct NoLaunch; impl ManagedRunner for NoLaunch { fn start(&self,_:&ManagedStar
 struct Parent; impl ParentNotifier for Parent { fn enqueue(&self,_:&ParentNotifierMessage)->Result<(),HostError> { Ok(()) } }
 struct Timers; impl StatusUiTimers for Timers { fn set(&self,_:Box<dyn FnOnce()+Send>,_:u64)->u64 { 1 } fn clear(&self,_:u64) {} }
 struct Sink; impl LeadInjectionSink for Sink { fn enqueue(&self,_:LeadInjection) {} }
-struct Fixture { api:ExtensionApi,events:Arc<Mutex<Vec<String>>>,runtime:Arc<Mutex<TaskRuntimeContext>>,_root:tempfile::TempDir }
+struct Fixture { api:ExtensionApi,events:Arc<Mutex<Vec<String>>>,runtime:Arc<Mutex<TaskRuntimeContext>>,store:TaskRecordStore,_root:tempfile::TempDir }
 fn fixture(mailbox_fails:bool)->Fixture {
     let root=tempfile::tempdir().expect("root"); let store=TaskRecordStore::new(&StateDirConfig { project_dir:root.path().into(),task_state_dir:None });
     let manager=Arc::new(create_task_manager(TaskManagerOptions::new(store.clone(),ManagedRunners { in_process:Arc::new(NoLaunch),process:Arc::new(NoLaunch) },Arc::new(|_| Ok(ResolvedChildPlan { model:"faux/faux".into(),..Default::default() })),root.path().to_string_lossy())));
@@ -17,9 +17,9 @@ fn fixture(mailbox_fails:bool)->Fixture {
     let status=TaskStatusUi::new(manager.clone(),runtime.clone(),Arc::new(Timers),Arc::new(|| 1000),Arc::new(|| None));
     let config=to_team_core_config(&TeamTaskBounds { max_members:4,max_parallel_members:2,max_wall_clock_minutes:10 },root.path().to_str().expect("path")).expect("config"); let path=root.path().to_path_buf();
     let pollers=create_lead_poller_lifecycle(LeadPollerLifecycleDeps { list_teams:Arc::new(|| Ok(vec![])),session_id:Arc::new(|| Some("session".into())),session_file:Arc::new(|| None),parent_state:Arc::new(|| ParentState::Idle),config,runtime_dir:Arc::new(move |id| path.join(id)),delivery_journal:None,append_event:Arc::new(|_,_| {}),sink:Arc::new(Sink),factory:None,timers:Arc::new(Timers),on_error:Arc::new(|error| panic!("{error}")) });
-    let start=events.clone(); let mailbox=events.clone(); let shutdown=events.clone(); let acknowledge=events.clone(); let warning=events.clone(); let unsubscribe=events.clone();
-    wire_event_bridge(&mut api,Arc::new(EventBridgeDeps { runtime:runtime.clone(),manager,lifecycle,notifier:notifier.clone(),transitions:Mutex::new(SessionTransitionBridge::new(runtime.clone(),notifier)),status_ui:status,task_rpc:rpc,lead_pollers:pollers,notify_liveness:Arc::new(|_| {}),resumption_start:Arc::new(move || { start.lock().expect("events").push("start".into()); Ok(()) }),reconcile_mailbox:Arc::new(move || { mailbox.lock().expect("events").push("mailbox".into()); if mailbox_fails { Err("fixture".into()) } else { Ok(()) } }),resumption_shutdown:Arc::new(move || { shutdown.lock().expect("events").push("shutdown".into()); Ok(()) }),acknowledge_liveness:Arc::new(move || { acknowledge.lock().expect("events").push("ack".into()); Ok(()) }),on_warning:Arc::new(move |_| warning.lock().expect("events").push("warning".into())),unsubscribe_snapshots:Mutex::new(Some(Box::new(move || unsubscribe.lock().expect("events").push("unsubscribe".into())))) }));
-    Fixture { api,events,runtime,_root:root }
+    let start=events.clone(); let mailbox=events.clone(); let shutdown=events.clone(); let acknowledge=events.clone(); let warning=events.clone(); let unsubscribe=events.clone(); let liveness=events.clone();
+    wire_event_bridge(&mut api,Arc::new(EventBridgeDeps { runtime:runtime.clone(),manager,lifecycle,notifier:notifier.clone(),transitions:Mutex::new(SessionTransitionBridge::new(runtime.clone(),notifier)),status_ui:status,task_rpc:rpc,lead_pollers:pollers,notify_liveness:Arc::new(move |record| liveness.lock().expect("events").push(format!("liveness:{}",record.task_id))),resumption_start:Arc::new(move || { start.lock().expect("events").push("start".into()); Ok(()) }),reconcile_mailbox:Arc::new(move || { mailbox.lock().expect("events").push("mailbox".into()); if mailbox_fails { Err("fixture".into()) } else { Ok(()) } }),resumption_shutdown:Arc::new(move || { shutdown.lock().expect("events").push("shutdown".into()); Ok(()) }),acknowledge_liveness:Arc::new(move || { acknowledge.lock().expect("events").push("ack".into()); Ok(()) }),on_warning:Arc::new(move |_| warning.lock().expect("events").push("warning".into())),unsubscribe_snapshots:Mutex::new(Some(Box::new(move || unsubscribe.lock().expect("events").push("unsubscribe".into())))) }));
+    Fixture { api,events,runtime,store,_root:root }
 }
 async fn dispatch(f:&Fixture,kind:EventKind,event:&mut ExtensionEvent) { let context=support::context(); for handler in &f.api.registered.handlers[&kind] { handler(event,&context).await.expect("dispatch"); } }
 #[tokio::test]
@@ -47,4 +47,10 @@ async fn session_start_releases_switch_transition_before_resumption() {
 async fn agent_end_acknowledges_liveness_with_captured_context() {
     let f=fixture(false); let mut event=ExtensionEvent::AgentEnd { messages:vec![],aborted:None,will_retry:None,abort_source:None }; dispatch(&f,EventKind::AgentEnd,&mut event).await;
     assert_eq!(*f.events.lock().expect("events"),["ack"]); assert_eq!(f.runtime.lock().expect("runtime").session_id(),Some("session"));
+}
+#[tokio::test]
+async fn persisted_terminal_is_reobserved_before_mailbox_and_rpc_on_restart() {
+    let f=fixture(false); let mut record=senpi_task::state::create_task_record(senpi_task::state::TaskRecordInput { parent_session_id:"session".into(),root_session_id:"session".into(),..Default::default() },Some(1)).expect("record"); record.status=senpi_task::state::TaskStatus::Completed; record.created_at="1970-01-01T00:00:01.000Z".into(); record.updated_at=record.created_at.clone(); f.store.save(&record).expect("save");
+    let mut event=ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None }); dispatch(&f,EventKind::SessionStart,&mut event).await;
+    assert_eq!(*f.events.lock().expect("events"),[format!("liveness:{}",record.task_id),"start".into(),"mailbox".into(),"rpc".into()]);
 }

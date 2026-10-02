@@ -4,6 +4,28 @@ use crate::status_ui::StatusUiTimers;
 pub type TeamListing = Arc<dyn Fn() -> Result<Vec<ActiveTeamSummary>, String> + Send + Sync>;
 pub type LeadPollerFactory = Arc<dyn Fn(LeadPollerDeps) -> Arc<dyn LeadPoller + Send + Sync> + Send + Sync>;
 pub type AppendTeamEvent = Arc<dyn Fn(&str, TeamTaskEvent) + Send + Sync>;
+pub trait LeadInjectionCoordinator: Send + Sync {
+    fn enqueue(&self,injection:senpi_task::team::messaging::lead_poller_types::LeadInjection,custom_type:&str,display:bool);
+    fn schedule_flush(&self);
+    fn flush_soon(&self);
+}
+pub struct LeadMessageSink {
+    pub actions:Arc<dyn maho_ext_api::ExtensionActions>,
+    pub coordinator:Option<Arc<dyn LeadInjectionCoordinator>>,
+    pub parent_state:Arc<dyn Fn()->ParentState+Send+Sync>,
+    pub on_error:Arc<dyn Fn(maho_ext_api::ExtensionFailure)+Send+Sync>,
+}
+impl LeadInjectionSink for LeadMessageSink {
+    fn enqueue(&self,mut injection:senpi_task::team::messaging::lead_poller_types::LeadInjection) {
+        if let Some(coordinator)=&self.coordinator {
+            coordinator.enqueue(injection,"senpi-task:team-message",false);
+            match (self.parent_state)() { ParentState::Streaming=>coordinator.schedule_flush(),ParentState::Idle=>coordinator.flush_soon(),ParentState::Compacting|ParentState::SessionSwitching|ParentState::SessionShutdown=>{} }
+        } else {
+            let sent=self.actions.send_message(maho_ext_api::CustomMessage { custom_type:"senpi-task:team-message".into(),content:vec![maho_ext_api::ToolContent::text(&injection.content)],display:false,details:None },maho_ext_api::SendMessageOptions { trigger_turn:true,deliver_as:Some(maho_ext_api::DeliverAs::Steer) });
+            match sent { Ok(())=>{ if let Some(flushed)=injection.on_flushed.take() { flushed(); } },Err(error)=>(self.on_error)(error) }
+        }
+    }
+}
 pub struct LeadPollerLifecycleDeps {
     pub list_teams: TeamListing, pub session_id: Arc<dyn Fn() -> Option<String> + Send + Sync>, pub session_file: Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>, pub parent_state: Arc<dyn Fn() -> ParentState + Send + Sync>, pub config: TeamCoreConfig,
     pub runtime_dir: Arc<dyn Fn(&str) -> PathBuf + Send + Sync>, pub delivery_journal: Option<Arc<LeadDeliveryJournal>>, pub append_event: AppendTeamEvent, pub sink: Arc<dyn LeadInjectionSink>, pub factory: Option<LeadPollerFactory>, pub timers: Arc<dyn StatusUiTimers>, pub on_error: Arc<dyn Fn(String) + Send + Sync>,
