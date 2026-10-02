@@ -1943,7 +1943,11 @@ impl AgentSession {
             if !self.state().compaction_lifecycle.is_current(&request_id, &controller) {
                 return Err("Compaction cancelled".to_owned());
             }
-            if self.message_revision() != revision + diagnostic_messages.len() as u64 {
+            let current_messages = self.messages();
+            if self.message_revision() != revision + diagnostic_messages.len() as u64
+                || !current_messages.starts_with(&messages_before_extension)
+                || current_messages[messages_before_extension.len()..] != diagnostic_messages
+            {
                 rejection = Some(maho_ext_api::CompactionRejectionCause::StaleRevision);
                 return Err("Conversation changed during compaction".to_owned());
             }
@@ -6341,7 +6345,7 @@ mod tests {
 
     #[tokio::test]
     async fn compaction_preserves_only_its_matching_hook_diagnostic() {
-        for matching_request in [true, false] {
+        for (matching_request, replace_prefix) in [(true, false), (false, false), (true, true)] {
             let session = test_session();
             session.agent.set_model(test_model());
             session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
@@ -6360,6 +6364,11 @@ mod tests {
                     display: true, details: Some(serde_json::json!({"event":"PreCompact", "compactionRequestId":
                         if matching_request { event.request_id.as_str() } else { "stale-request" }})),
                 }, maho_ext_api::SendMessageOptions { trigger_turn: false, deliver_as: None }).expect("diagnostic");
+                if replace_prefix {
+                    let mut messages = captured.messages();
+                    messages[0] = make_user_message("revision-neutral replacement", None);
+                    captured.agent.set_messages(messages);
+                }
                 let result = maho_ext_api::CompactionResult { summary: "digest".to_owned(),
                     first_kept_entry_id: event.preparation.first_kept_entry_id.clone(), tokens_before: event.preparation.tokens_before, details: None };
                 Box::pin(async move { Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {
@@ -6368,11 +6377,11 @@ mod tests {
             })]);
             session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
             let result = session.compact(None).await;
-            assert_eq!(result.is_ok(), matching_request);
+            assert_eq!(result.is_ok(), matching_request && !replace_prefix);
             assert_eq!(session.messages().iter().filter(|message| message.role() == "custom").count(), 1);
             let entries = session.with_session_manager(|manager| manager.entries());
             assert_eq!(entries.iter().filter(|entry| entry["customType"] == "senpi.hook").count(), 1);
-            assert_eq!(entries.iter().any(|entry| entry["type"] == "compaction"), matching_request);
+            assert_eq!(entries.iter().any(|entry| entry["type"] == "compaction"), matching_request && !replace_prefix);
         }
     }
 
