@@ -1735,6 +1735,10 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-pi-goal"
 version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-pi-nested-agents-md"
