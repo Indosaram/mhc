@@ -19,3 +19,18 @@ async fn failed_probe_returns_exit_status() {
     let result=run_models_probe(&executable,&dir.path().join("stdout"),15000,dir.path().to_str().expect("home"),&BTreeMap::new()).await;
     assert!(matches!(result,Err(ModelProbeError::Exit {exit_code:Some(7),signal:None})));
 }
+#[tokio::test]
+async fn failed_spawn_preserves_io_error_and_closes_output() {
+    let dir=tempfile::tempdir().expect("directory");let stdout=dir.path().join("stdout");
+    let result=run_models_probe(&dir.path().join("missing"),&stdout,15000,dir.path().to_str().expect("home"),&BTreeMap::new()).await;
+    assert!(matches!(result,Err(ModelProbeError::Io(error)) if error.kind()==std::io::ErrorKind::NotFound));
+    assert_eq!(std::fs::metadata(&stdout).expect("created output").len(),0);
+    std::fs::remove_file(stdout).expect("output released");
+}
+#[tokio::test]
+async fn signalled_probe_reports_signal_after_settlement() {
+    let dir=tempfile::tempdir().expect("directory");let executable=dir.path().join("cursor-agent");
+    std::fs::write(&executable,"#!/bin/sh\nkill -TERM $$\n").expect("script");std::fs::set_permissions(&executable,std::fs::Permissions::from_mode(0o700)).expect("permissions");
+    let result=run_models_probe(&executable,&dir.path().join("stdout"),15000,dir.path().to_str().expect("home"),&BTreeMap::new()).await;
+    assert!(matches!(result,Err(ModelProbeError::Exit {exit_code:None,signal:Some(15)})));
+}
