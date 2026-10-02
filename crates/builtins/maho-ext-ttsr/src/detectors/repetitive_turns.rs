@@ -23,7 +23,7 @@ fn word_trigrams(normalized: &str) -> BTreeSet<String> {
 fn jaccard(a: &BTreeSet<String>, b: &BTreeSet<String>) -> f64 {
     if a.is_empty() || b.is_empty() { return 0.0; }
     let intersection = a.intersection(b).count();
-    f64::from(u32::try_from(intersection).unwrap_or(u32::MAX)) / f64::from(u32::try_from(a.len() + b.len() - intersection).unwrap_or(u32::MAX))
+    intersection as f64 / (a.len() + b.len() - intersection) as f64
 }
 pub fn trigram_jaccard(a: &str, b: &str) -> f64 { jaccard(&word_trigrams(a), &word_trigrams(b)) }
 pub fn is_near_duplicate_of_previous_turn(candidate: &str, previous: &str) -> bool { trigram_jaccard(candidate, previous) >= REPETITIVE_TURNS_SIMILARITY_THRESHOLD }
