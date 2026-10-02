@@ -20,3 +20,15 @@ async fn initialize_dispatch_correlates_errors_and_gates_notifications() {
     core.remove_connection("client");
     assert_eq!(core.broadcast_notification(json!({"method":"turn/started"}), 124).await.unwrap(), 0);
 }
+
+#[tokio::test]
+async fn history_and_search_methods_require_experimental_capability() {
+    use maho_server::app_server::{runtime::AppServerRuntime,registry::RegistryConnection};
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = AppServerRuntime::new(directory.path().display().to_string(),directory.path().display().to_string(),"1".into(),Some(directory.path().display().to_string()),None).await;
+    for method in ["thread/search","thread/searchOccurrences","thread/turns/list","thread/items/list"] {
+        let response = runtime.core.read().await.registry.dispatch(RegistryConnection {initialized:true,..Default::default()},json!({"id":1,"method":method,"params":{}})).await;
+        assert_eq!(response["error"]["code"],-32600);
+    }
+    runtime.dispose().await;
+}

@@ -110,6 +110,19 @@ impl ThreadRegistry {
         let entry = self.entries.lock().await.remove(id);
         if let Some(entry) = entry { entry.lock().await.session.dispose().await; true } else { false }
     }
+    pub async fn delete_thread(&self,id: &str) -> std::io::Result<bool> {
+        let loaded = self.entries.lock().await.remove(id);
+        let path = if let Some(entry) = loaded {
+            let entry = entry.lock().await;
+            entry.session.dispose().await;
+            let path = entry.session.session_file();
+            self.deleted.lock().await.insert(id.into());
+            if let Some(path) = path {match tokio::fs::remove_file(path).await {Ok(())=>{},Err(error) if error.kind() == std::io::ErrorKind::NotFound=>{},Err(error)=>return Err(error)}}
+            return Ok(true);
+        } else {self.list_session_infos().await.into_iter().find(|info|info.id == id).map(|info|info.path)};
+        self.deleted.lock().await.insert(id.into());
+        if let Some(path) = path {match tokio::fs::remove_file(path).await {Ok(())=>{},Err(error) if error.kind() == std::io::ErrorKind::NotFound=>{},Err(error)=>return Err(error)}Ok(true)} else {Ok(false)}
+    }
     pub async fn dispose(&self) {
         let entries = std::mem::take(&mut *self.entries.lock().await);
         for entry in entries.into_values() {

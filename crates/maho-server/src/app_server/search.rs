@@ -26,7 +26,7 @@ pub fn search_window(records: &mut Vec<SearchSessionRecord>,params: &ParsedSearc
 }
 pub async fn register_search_handler(core: &Arc<RwLock<ServerCore>>,threads: Arc<ThreadRegistry>,archive: Arc<ThreadArchiveState>,log: Arc<Mutex<TurnLog>>,version: String) {
     let cache = Arc::new(Mutex::new(ThreadSearchCache::default()));
-    core.write().await.registry.register("thread/search".into(),MethodRegistration {requires_init:true,experimental:false,scope:MethodScope::Thread,handler:Arc::new(move |context| {
+    core.write().await.registry.register("thread/search".into(),MethodRegistration {requires_init:true,experimental:true,scope:MethodScope::Thread,handler:Arc::new(move |context| {
         let threads = threads.clone();let archive = archive.clone();let log = log.clone();let cache = cache.clone();let version = version.clone();
         Box::pin(async move {
             let params = parse_search_params(&context.request["params"])?;

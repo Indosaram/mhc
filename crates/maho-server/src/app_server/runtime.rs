@@ -89,6 +89,7 @@ impl AppServerRuntime {
         super::turns::register_turn_methods(&core, threads.clone(), turn_log.clone()).await;
         super::settings_handlers::register_thread_settings(&core,threads.clone()).await;
         let archive = Arc::new(super::archive_state::ThreadArchiveState::new(threads.session_dir.as_ref().map(Into::into)));
+        super::handlers::register_storage_lifecycle_handlers(&core,threads.clone(),archive.clone(),version.clone()).await;
         super::metadata_handlers::register_metadata_handlers(&core,threads.clone(),turn_log.clone(),archive.clone(),version.clone()).await;
         super::list_handlers::register_list_handlers(&core,threads.clone(),archive.clone(),version.clone()).await;
         super::search::register_search_handler(&core,threads.clone(),archive.clone(),turn_log.clone(),version).await;

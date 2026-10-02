@@ -19,7 +19,7 @@ pub async fn thread_history_turns(id: &str,threads: &ThreadRegistry,archive: &Th
 pub async fn register_history_handlers(core: &Arc<RwLock<ServerCore>>,threads: Arc<ThreadRegistry>,archive: Arc<ThreadArchiveState>,log: Arc<Mutex<TurnLog>>) {
     for method in ["thread/turns/list","thread/items/list","thread/searchOccurrences"] {
         let threads = threads.clone();let archive = archive.clone();let log = log.clone();
-        core.write().await.registry.register(method.into(),MethodRegistration {requires_init:true,experimental:false,scope:MethodScope::Thread,handler:Arc::new(move |context| {
+        core.write().await.registry.register(method.into(),MethodRegistration {requires_init:true,experimental:true,scope:MethodScope::Thread,handler:Arc::new(move |context| {
             let threads = threads.clone();let archive = archive.clone();let log = log.clone();
             Box::pin(async move {
                 let params = &context.request["params"];

@@ -15,7 +15,7 @@ async fn read(client: &mut Client) -> Value {
 }
 async fn attach(path: &std::path::Path) -> Client {
     let (mut client, _) = client_async("ws://localhost/", tokio::net::UnixStream::connect(path).await.expect("Unix listener reachable")).await.expect("websocket handshake");
-    send(&mut client,json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}})).await;
+    send(&mut client,json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"},"capabilities":{"experimentalApi":true}}})).await;
     assert_eq!(read(&mut client).await["id"],1);
     client
 }
@@ -141,6 +141,29 @@ async fn thread_settings_validate_before_mutation_and_respond_before_notificatio
     assert_eq!(read(&mut client).await["error"]["code"],-32600);
     send(&mut client,json!({"id":12,"method":"mcpServerStatus/list","params":{"detail":"toolsAndAuthOnly"}})).await;
     assert!(read(&mut client).await["result"]["data"].as_array().unwrap().is_empty());
+    send(&mut client,json!({"id":17,"method":"turn/start","params":{"threadId":id,"input":[{"type":"text","text":"persist before archive"}]}})).await;
+    assert_eq!(read(&mut client).await["id"],17);
+    loop {if read(&mut client).await["method"] == "turn/completed" {break;}}
+    let entry = runtime.threads.get_loaded_thread(&id).await.unwrap();
+    assert!(std::path::Path::new(&entry.lock().await.session.session_file().unwrap()).exists());
+    send(&mut client,json!({"id":13,"method":"thread/archive","params":{"threadId":id}})).await;
+    assert_eq!(read(&mut client).await["method"],"thread/status/changed");
+    assert_eq!(read(&mut client).await["id"],13);
+    assert_eq!(read(&mut client).await["method"],"thread/archived");
+    assert!(runtime.threads.get_loaded_thread(&id).await.is_err());
+    send(&mut client,json!({"id":14,"method":"thread/list","params":{"archived":true}})).await;
+    assert_eq!(read(&mut client).await["result"]["data"][0]["id"],id);
+    send(&mut client,json!({"id":15,"method":"thread/unarchive","params":{"threadId":id}})).await;
+    let restored = read(&mut client).await;
+    assert_eq!(restored["id"],15);
+    assert_eq!(restored["result"]["thread"]["status"]["type"],"notLoaded","{restored}");
+    assert_eq!(read(&mut client).await["method"],"thread/unarchived");
+    assert!(runtime.threads.get_loaded_thread(&id).await.is_err());
+    send(&mut client,json!({"id":16,"method":"thread/delete","params":{"threadId":id}})).await;
+    assert_eq!(read(&mut client).await["method"],"thread/status/changed");
+    assert_eq!(read(&mut client).await["id"],16);
+    assert_eq!(read(&mut client).await["method"],"thread/deleted");
+    assert!(runtime.threads.resume_thread(&id).await.is_err());
     client.close(None).await.unwrap();drop(client);
     listener.close().await.unwrap();runtime.dispose().await;
     assert!(!path.exists());

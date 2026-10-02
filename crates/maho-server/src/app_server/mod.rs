@@ -1,4 +1,5 @@
 pub mod envelope;
+pub mod handlers;
 pub mod catalogs;
 pub mod mcp_wire_status;
 pub mod search_occurrences;
