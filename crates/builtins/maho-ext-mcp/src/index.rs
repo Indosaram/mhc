@@ -31,7 +31,8 @@ pub fn register_mcp_lifecycle(api:&mut ExtensionApi,registry:Arc<HostMcpRegistry
     })}));
     let start=service.clone();api.on(EventKind::SessionStart,Arc::new(move |_,ctx|{let service=start.clone();Box::pin(async move {
         let env=std::env::vars().collect();
-        service.lock().await.attach_session(&ctx.cwd,&ctx.agent_dir,&env,ctx.is_project_trusted(),&ctx.registered_mcp_servers).await.map_err(|error|ExtensionFailure::new(error.to_string()))?;
+        let mut service=service.lock().await;service.set_elicitation_ui(if ctx.has_ui{Some(ctx.ui.clone())}else{None});
+        service.attach_session(&ctx.cwd,&ctx.agent_dir,&env,ctx.is_project_trusted(),&ctx.registered_mcp_servers).await.map_err(|error|ExtensionFailure::new(error.to_string()))?;
         Ok(EventResult::None)
     })}));
     let shutdown=service.clone();api.on(EventKind::SessionShutdown,Arc::new(move |_,_|{let service=shutdown.clone();Box::pin(async move {service.lock().await.dispose().await.map_err(|error|ExtensionFailure::new(error.to_string()))?;Ok(EventResult::None)})}));

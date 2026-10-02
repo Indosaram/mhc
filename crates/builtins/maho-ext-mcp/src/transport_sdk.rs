@@ -40,6 +40,7 @@ impl McpClient {
             let mut lines=BufReader::new(output).lines();
             while let Ok(Some(line))=lines.next_line().await {
                 let Ok(value)=serde_json::from_str::<Value>(&line) else{continue;};
+                if value.get("id").is_some() && value.get("method").is_some(){let _=events.send(value);continue;}
                 if let Some(id)=value.get("id").and_then(Value::as_u64) {
                     if let Some(sender)=replies.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id) {
                         let result=if let Some(error)=value.get("error") {let mut failure=failure(&name,McpErrorKind::Protocol,error.get("message").and_then(Value::as_str).unwrap_or("MCP protocol error"),"request");failure.cause=Some(Box::new(error.clone()));Err(failure)}else{Ok(value.get("result").cloned().unwrap_or(Value::Null))};
@@ -69,6 +70,9 @@ impl McpClient {
     pub async fn request(&self,method:&str,params:Value,timeout:Duration)->Result<Value,McpError> {
         let id=self.next_id.fetch_add(1,Ordering::Relaxed);let (sender,receiver)=oneshot::channel();
         self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id,sender);
+        struct PendingRequest {pending:Arc<Mutex<BTreeMap<u64,oneshot::Sender<Result<Value,McpError>>>>>,id:u64}
+        impl Drop for PendingRequest {fn drop(&mut self){self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&self.id);}}
+        let _pending=PendingRequest {pending:self.pending.clone(),id};
         let result=async {
             let message=json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
             if matches!(self.io,ClientTransport::Http {..}) {return self.http_send(&message).await;}
@@ -131,6 +135,19 @@ impl McpClient {
         *self.server_info.write().await=response.get("serverInfo").cloned().unwrap_or(Value::Null);
         *self.instructions.write().await=response.get("instructions").and_then(Value::as_str).map(str::to_owned);
         self.send(&json!({"jsonrpc":"2.0","method":"notifications/initialized"})).await
+    }
+    pub fn install_elicitation(self:&Arc<Self>,ui:Option<Arc<dyn maho_ext_api::ExtensionUi>>)->tokio::task::JoinHandle<()> {
+        let mut requests=self.notifications.subscribe();let weak=Arc::downgrade(self);
+        tokio::spawn(async move {loop {
+            let value=match requests.recv().await {Ok(value)=>value,Err(broadcast::error::RecvError::Lagged(_))=>continue,Err(_)=>return};
+            let (Some(id),Some(method))=(value.get("id"),value.get("method").and_then(Value::as_str)) else{continue;};
+            let Some(client)=weak.upgrade() else{return;};
+            let response=if method=="elicitation/create" {
+                let result=crate::elicitation::handle_mcp_elicitation(ui.as_deref(),value.get("params").unwrap_or(&Value::Null),Duration::from_millis(crate::elicitation::MCP_ELICITATION_TIMEOUT_MS)).await;
+                json!({"jsonrpc":"2.0","id":id,"result":result})
+            }else{json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Method not found"}})};
+            if let Err(error)=client.send(&response).await {eprintln!("MCP server request response failed: {error}");}
+        }})
     }
     pub async fn close(&self)->Result<(),McpError> {
         let ClientTransport::Stdio {input,child,..}=&self.io else{

@@ -48,3 +48,14 @@ async fn headless_and_url_mode_requests_decline() {
     assert_eq!(handle_mcp_elicitation(None,&json!({"requestedSchema":schema()}),Duration::from_secs(5)).await.action,ElicitationAction::Decline);
     assert_eq!(handle_mcp_elicitation(Some(&ui),&json!({"url":"https://example.test"}),Duration::from_secs(5)).await.action,ElicitationAction::Decline);
 }
+#[tokio::test]
+async fn stdio_server_request_with_colliding_client_id_reaches_native_form() {
+    use std::sync::{Arc,Mutex};
+    use maho_ext_mcp::{config_schema::{McpServerConfig,Transport},transport::*,log::McpLogger};
+    let root=tempfile::tempdir().unwrap();
+    let script=r#"const readline=require('node:readline'); let initialize; const send=x=>process.stdout.write(JSON.stringify(x)+'\n'); readline.createInterface({input:process.stdin}).on('line',line=>{const x=JSON.parse(line); if(x.method==='initialize'){initialize=x.id;send({jsonrpc:'2.0',id:1,method:'elicitation/create',params:{message:'Ask',requestedSchema:{type:'object',properties:{name:{type:'string'}},required:['name']}}});}else if(x.id===1 && x.result){send({jsonrpc:'2.0',id:initialize,result:{protocolVersion:'2025-11-25',capabilities:{},serverInfo:{name:x.result.action+':'+x.result.content.name,version:'1'}}});}});"#;
+    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["-e".into(),script.into()]),..Default::default()};
+    let mut transport=create_mcp_transport("elicitation",&config,None,Arc::new(Mutex::new(McpLogger::new("elicitation",root.path(),None).unwrap()))).unwrap();
+    transport.elicitation_ui=Some(Arc::new(ScriptedUi {answer:Some("42"),hanging:false}));
+    let client=connect_mcp_transport(&transport).await.unwrap();assert_eq!(client.server_info.read().await["name"],"accept:Ada");shutdown_mcp_transport(&transport).await.unwrap();
+}

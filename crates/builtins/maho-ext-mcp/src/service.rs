@@ -8,9 +8,10 @@ pub enum McpServiceError {
     #[error(transparent)] Connection(#[from] crate::errors::McpError),
     #[error(transparent)] OAuth(#[from] crate::auth::oauth::OAuthRequestError),
 }
-pub struct McpService {pub registry:Arc<HostMcpRegistry>,pub config:Option<ResolvedMcpConfig>,pub connections:BTreeMap<String,McpSessionConnection>,owner:u64,agent_dir:Option<PathBuf>,deferred:crate::startup_race::McpDeferredAttach,pending_auth:BTreeMap<String,crate::auth::oauth_provider::McpOAuthProvider>}
+pub struct McpService {pub registry:Arc<HostMcpRegistry>,pub config:Option<ResolvedMcpConfig>,pub connections:BTreeMap<String,McpSessionConnection>,owner:u64,agent_dir:Option<PathBuf>,deferred:crate::startup_race::McpDeferredAttach,pending_auth:BTreeMap<String,crate::auth::oauth_provider::McpOAuthProvider>,elicitation_ui:Option<Arc<dyn maho_ext_api::ExtensionUi>>}
 impl McpService {
-    pub fn new(registry:Arc<HostMcpRegistry>,owner:u64)->Self {Self {registry,config:None,connections:BTreeMap::new(),owner,agent_dir:None,deferred:Default::default(),pending_auth:BTreeMap::new()}}
+    pub fn new(registry:Arc<HostMcpRegistry>,owner:u64)->Self {Self {registry,config:None,connections:BTreeMap::new(),owner,agent_dir:None,deferred:Default::default(),pending_auth:BTreeMap::new(),elicitation_ui:None}}
+    pub fn set_elicitation_ui(&mut self,ui:Option<Arc<dyn maho_ext_api::ExtensionUi>>){self.elicitation_ui=ui;}
     pub async fn attach_session(&mut self,cwd:&Path,agent_dir:&Path,env:&BTreeMap<String,String>,project_trusted:bool,declarations:&[maho_ext_api::RegisteredMcpServerDeclaration])->Result<(),McpServiceError> {
         let mut config=load_mcp_config(LoadMcpConfigOptions {cwd,agent_dir,env,project_trusted})?;
         crate::config::merge_extension_mcp_servers(&mut config,declarations)?;
@@ -25,6 +26,7 @@ impl McpService {
             let (Some(server_config),Some(hash))=(&server.config,&server.config_hash) else{continue;};
             let key=format!("{name}:{hash}");
             let connection=create_mcp_session_connection(SessionConnectionOptions {registry:&self.registry,owner:self.owner,key:&key,name,config_hash:hash,config:server_config.clone(),agent_dir,env:Some(env.clone())})?;
+            connection.entry.lock().await.connection.set_elicitation_ui(self.elicitation_ui.clone());
             let cache=crate::catalog_cache::read_mcp_catalog_cache(agent_dir);
             if let Some(cached)=crate::catalog_cache::get_valid_cached_server(&cache,name,hash,chrono::Utc::now().timestamp_millis() as f64){connection.entry.lock().await.cached_catalog=Some(cached.clone());}
             if crate::startup_race::should_race_mcp_startup(server_config.lifecycle.unwrap_or(crate::config_schema::Lifecycle::Lazy)) {
