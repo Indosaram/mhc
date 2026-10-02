@@ -4,6 +4,18 @@ use tokio::sync::{oneshot, broadcast};
 use super::{kernel_tools_types::*, kernel_tools_errors::{KernelToolError, kernel_tool_error}};
 
 type Waiter = oneshot::Sender<Result<Value, KernelToolError>>;
+struct RequestGuard<'a> {
+    pump: &'a KernelToolHostPump,
+    request_id: String,
+}
+
+impl Drop for RequestGuard<'_> {
+    fn drop(&mut self) {
+        let removed = self.pump.waiters.lock().expect("kernel tool waiters poisoned").remove(&self.request_id).is_some();
+        if removed { (self.pump.post)(json!({"type":"kernel-tool-cancel","requestId":self.request_id})); }
+    }
+}
+
 pub struct KernelToolHostPump {
     waiters: Mutex<HashMap<String, Waiter>>,
     post: Arc<dyn Fn(Value) + Send + Sync>,
@@ -35,6 +47,7 @@ impl KernelToolHostPump {
         let request_id = message["requestId"].as_str().expect("host request id").to_owned();
         let (sender, mut receiver) = oneshot::channel();
         self.waiters.lock().expect("kernel tool waiters poisoned").insert(request_id.clone(), sender);
+        let _guard = RequestGuard { pump: self, request_id: request_id.clone() };
         if !signal.as_ref().is_some_and(|signal|signal.is_aborted()) { (self.post)(message); }
         if let Some(signal) = signal {
             tokio::select! {

@@ -24,13 +24,36 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
         let cap=manager.lock().expect("cell manager lock").max_detached_cells();
         let cell_id=invocation.cell_id.clone();
         let foreground_ms=options.settings.foreground_window_seconds*1000.0;
+        let foreground_start=tokio::time::Instant::now();
         execution.rearm_idle((options.settings.cell_timeout_seconds.min(options.settings.foreground_window_seconds)*1000.0) as u64,foreground_ms as u64,Arc::new(move |error| {
             let Some(execution)=weak.upgrade() else {return;};
-            let mut manager=manager.lock().expect("cell manager lock");
-            if manager.detach(&cell) {execution.detach();return;}
-            let live=manager.live_cells(None,Some(&cell_id)).into_iter().map(|cell|cell.cell_id).collect::<Vec<_>>();
-            let capacity=EvalBackgroundCapacityError::new(cap,&cell_id,foreground_ms,&live);
-            execution.cancel(AbortReason::new("EvalBackgroundCapacityError",if live.len()>=cap {capacity.to_string()} else {error}));
+            let mut locked=manager.lock().expect("cell manager lock");
+            if locked.detach(&cell) {execution.detach();return;}
+            let remaining=(foreground_ms-foreground_start.elapsed().as_secs_f64()*1000.0).max(0.0);
+            if remaining>0.0 {
+                drop(locked);
+                let manager=manager.clone();let cell=cell.clone();let weak=Arc::downgrade(&execution);let cell_id=cell_id.clone();
+                execution.rearm_idle(remaining.ceil() as u64,remaining.ceil() as u64,Arc::new(move |_| {
+                    let Some(execution)=weak.upgrade() else {return;};
+                    let mut locked=manager.lock().expect("cell manager lock");
+                    if locked.detach(&cell) {execution.detach();return;}
+                    let live=locked.live_cells(None,Some(&cell_id));
+                    let detached_count=live.iter().filter(|cell|cell.state==super::detached_cell_contract::EvalDetachedCellState::Detached).count();
+                    let ids=live.into_iter().map(|cell|cell.cell_id).collect::<Vec<_>>();
+                    let capacity=EvalBackgroundCapacityError::new(cap,&cell_id,foreground_start.elapsed().as_secs_f64()*1000.0,&ids);
+                    let can_detach=cell.lock().expect("managed cell lock").can_detach;
+                    drop(locked);
+                    execution.cancel(AbortReason::new(if !can_detach && detached_count<cap {"TimeoutError"} else {"EvalBackgroundCapacityError"},if !can_detach && detached_count<cap {error.clone()} else {capacity.to_string()}));
+                }));
+                return;
+            }
+            let live=locked.live_cells(None,Some(&cell_id));
+            let detached_count=live.iter().filter(|cell|cell.state==super::detached_cell_contract::EvalDetachedCellState::Detached).count();
+            let ids=live.into_iter().map(|cell|cell.cell_id).collect::<Vec<_>>();
+            let capacity=EvalBackgroundCapacityError::new(cap,&cell_id,foreground_start.elapsed().as_secs_f64()*1000.0,&ids);
+            let can_detach=cell.lock().expect("managed cell lock").can_detach;
+            drop(locked);
+            execution.cancel(AbortReason::new(if !can_detach && detached_count<cap {"TimeoutError"} else {"EvalBackgroundCapacityError"},if !can_detach && detached_count<cap {error} else {capacity.to_string()}));
         }));
     }
     let mut detached=execution.detached();
@@ -83,7 +106,7 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
         let operation=kernel.run(run_input);
         let guarded=work_execution.wait(operation);
         tokio::pin!(guarded);
-        let result=loop {
+        let mut result=loop {
             tokio::select! {
                 result=&mut guarded=>break result,
                 message=messages.recv()=>if let Some(message)=message {
@@ -107,7 +130,8 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
                 handler.builder.state.run_started_at=work_cell.lock().expect("managed cell lock").source.run_started_at_ms;
                 handler.builder.state.status="running".into();handler.builder.state.queued_behind=None;
             } else if active.load(std::sync::atomic::Ordering::SeqCst) && let Err(error)=handler.handle(&message).await {
-                work_execution.cancel(AbortReason::new("Error",error));
+                work_execution.cancel(AbortReason::new("Error",error.clone()));
+                result=Err(error);
             }
         }
         if !active.load(std::sync::atomic::Ordering::SeqCst) {handler.builder.state.active=false;}

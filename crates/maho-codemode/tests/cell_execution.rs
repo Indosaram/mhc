@@ -38,3 +38,14 @@ async fn bridge_pause_cannot_extend_the_foreground_watchdog_deadline() {
     assert!(expiries.recv().await.expect("deadline expiry").contains("waiting on a host tool call"));
     execution.finish();
 }
+
+#[tokio::test(start_paused = true)]
+async fn finished_execution_cannot_arm_a_new_watchdog() {
+    let caller=AbortController::new();
+    let (sender,mut expiries)=tokio::sync::mpsc::unbounded_channel();
+    let execution=CellExecution::new(caller.signal(),"finished".into(),None,Arc::new(|_|{}));
+    execution.finish();
+    execution.rearm_idle(20,60,Arc::new(move |error|{sender.send(error).expect("expiry receiver");}));
+    tokio::time::advance(std::time::Duration::from_millis(60)).await;
+    assert!(matches!(expiries.try_recv(),Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)));
+}

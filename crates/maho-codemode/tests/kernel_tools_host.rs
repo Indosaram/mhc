@@ -4,6 +4,26 @@ use maho_ext_api::AbortSignal;
 use maho_codemode::kernels::js::{kernel_tools_host::KernelToolHostPump, kernel_tools_types::*, kernel_tools_errors::KernelToolErrorCode};
 
 #[tokio::test]
+async fn dropped_request_cancels_once_and_late_reply_does_not_affect_next_request() {
+    let (post, mut frames) = tokio::sync::mpsc::unbounded_channel();
+    let pump = Arc::new(KernelToolHostPump::new(Arc::new(move |frame| { post.send(frame).expect("posted frame"); }), Arc::new(||true)));
+    let owner = pump.clone();
+    let request = tokio::spawn(async move { owner.describe(&[]).await });
+    let first = frames.recv().await.unwrap();
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
+    assert_eq!(frames.recv().await.unwrap(), json!({"type":"kernel-tool-cancel","requestId":first["requestId"]}));
+    pump.consume(json!({"type":"kernel-tool-describe-reply","requestId":first["requestId"],"ok":true,"results":[]}));
+    let owner = pump.clone();
+    let next = tokio::spawn(async move { owner.describe(&[]).await });
+    let second = frames.recv().await.unwrap();
+    assert_ne!(first["requestId"], second["requestId"]);
+    pump.consume(json!({"type":"kernel-tool-describe-reply","requestId":second["requestId"],"ok":true,"results":[]}));
+    assert_eq!(next.await.unwrap().unwrap(), json!({"results":[]}));
+    assert!(frames.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn describe_reply_and_invoke_scope_roundtrip() {
     let (post, mut frames) = tokio::sync::mpsc::unbounded_channel();
     let pump = Arc::new(KernelToolHostPump::new(Arc::new(move |frame| { post.send(frame).expect("posted frame"); }), Arc::new(||true)));

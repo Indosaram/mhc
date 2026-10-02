@@ -26,6 +26,34 @@ fn invocation(id:&str,code:&str)->EvalCellInvocation {
     EvalCellInvocation {cell_id:id.into(),input:EvalToolInput {language:EvalLanguage::Py,code:code.into(),summary:"compute a value".into(),action:None,timeout:None,on_timeout:Some(TimeoutBehavior::Error),reset:None},signal:maho_ai::utils::abort::AbortController::new().signal(),on_update:None,mode:"print".into()}
 }
 
+struct FinalFrameKernel;
+impl EvalKernel for FinalFrameKernel {
+    fn run(&self,input:EvalKernelRunInput)->EvalKernelFuture<'_,serde_json::Value> {Box::pin(async move {
+        if let Some(started)=input.on_started {started();}
+        if let Some(message)=input.on_message {message(&json!({"type":"unsupported-final-frame"}));}
+        Ok(json!({"type":"result","cellId":input.cell_id,"ok":true,"valueRepr":"42","durationMs":0}))
+    })}
+    fn cancel_queued<'a>(&'a self,_:&'a str,_:&'a str)->EvalKernelFuture<'a,bool> {Box::pin(async {Ok(false)})}
+    fn interrupt<'a>(&'a self,_:&'a str,_:Option<&'a str>)->EvalKernelFuture<'a,KernelInterruptHandle> {Box::pin(async {Ok(KernelInterruptHandle {state_retained:Box::pin(async {Ok(true)}),note:None})})}
+    fn queue_snapshot(&self)->(Option<String>,Vec<String>) {(None,vec![])}
+    fn deliver_tool_reply(&self,_:serde_json::Value)->Result<(),String> {Ok(())}
+    fn reset(&self)->EvalKernelFuture<'_,()> {Box::pin(async {Ok(())})}
+    fn close(&self)->EvalKernelFuture<'_,()> {Box::pin(async {Ok(())})}
+}
+struct FinalFrameManager;
+impl EvalKernelManager for FinalFrameManager {
+    fn get_kernel(&self,_:EvalLanguage)->EvalKernelFuture<'_,Arc<dyn EvalKernel>> {Box::pin(async {Ok(Arc::new(FinalFrameKernel) as Arc<dyn EvalKernel>)})}
+}
+
+#[tokio::test]
+async fn invalid_final_frame_cannot_settle_as_success() {
+    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(FinalFrameManager),executor:Arc::new(Executor),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+    let result=run_eval_cell(options.clone(),invocation("invalid-final","42")).await.unwrap();
+    assert_eq!(result.details["isError"],true);
+    assert_ne!(result.details["cells"][0]["status"],"complete");
+    assert!(result.details["cells"][0]["output"].as_str().unwrap().contains("Unhandled kernel message"));
+}
+
 #[tokio::test]
 async fn real_eval_chain_preserves_output_state_and_terminal_snapshot() {
     let (kernel,options)=fixture().await;

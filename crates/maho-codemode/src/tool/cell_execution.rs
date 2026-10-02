@@ -38,6 +38,7 @@ impl CellExecution {
     }
     pub fn rearm_idle(&self, timeout_ms:u64, max_pause_grace_ms:u64, on_timeout:Arc<dyn Fn(String)+Send+Sync>) {
         let mut state=self.state.lock().expect("execution lock");
+        if !state.active {return;}
         if let Some(task)=state.watchdog_task.take() {task.abort();}
         if let Some(watchdog)=state.watchdog.take() {watchdog.dispose();}
         let watchdog=IdleTimeout::new(IdleTimeoutOptions {cell_id:self.cell_id.clone(),timeout_ms,max_pause_grace_ms:Some(max_pause_grace_ms),deadline:Some(tokio::time::Instant::now()+Duration::from_millis(max_pause_grace_ms))});
