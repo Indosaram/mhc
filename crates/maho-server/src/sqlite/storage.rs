@@ -49,6 +49,29 @@ impl SqliteStorage {
             usage: serde_json::from_str(&row.usage_payload).map_err(error)?,
         })
     }
+    pub fn snapshot(&self,options:&ForkOptions)->Result<ForkSourceSnapshot,SessionError> {
+        let mut db=self.db()?;
+        let tx=db.transaction().map_err(error)?;
+        let scalar_values=values::read_all_scalars(&tx,&self.session_id).map_err(error)?;
+        let entries=match options {
+            ForkOptions::Tree {..}=>entries::scan_entries(&tx,&self.session_id,&EntryScan::default()).map_err(error)?,
+            ForkOptions::Branch {branch,..}=>{
+                let address=branch_tip(branch);
+                let tip=scalar_values.iter().find(|stored|stored.address==address).ok_or_else(||session_invariant_error(format!("Unknown source branch: {branch}")))?;
+                match &tip.value {
+                    serde_json::Value::Null=>Vec::new(),
+                    serde_json::Value::String(start)=>{
+                        let mut query=StorageBranchScan::new(start);
+                        query.order=Some(BranchOrder::OldestFirst);
+                        super::branch_entries::scan_branch(&tx,&self.session_id,&query).map_err(error)?
+                    },
+                    _=>return Err(session_invariant_error("Invalid source branch tip")),
+                }
+            },
+        };
+        tx.commit().map_err(error)?;
+        Ok(ForkSourceSnapshot {entries,scalar_values,entries_complete:Some(matches!(options,ForkOptions::Tree {..}))})
+    }
     fn branch(
         &self,
         db: &Connection,

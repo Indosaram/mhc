@@ -20,6 +20,7 @@ pub struct SqliteSessionRepo {
     database_path: Option<PathBuf>,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
     sessions: Arc<Mutex<BTreeMap<String, Arc<StorageBackedSession>>>>,
+    storages: Arc<Mutex<BTreeMap<String,Arc<SqliteStorage>>>>,
     closed: AtomicBool,
 }
 impl SqliteSessionRepo {
@@ -33,6 +34,7 @@ impl SqliteSessionRepo {
             database_path,
             now,
             sessions: Arc::new(Mutex::new(BTreeMap::new())),
+            storages: Arc::new(Mutex::new(BTreeMap::new())),
             closed: AtomicBool::new(false),
         }
     }
@@ -96,6 +98,8 @@ impl SqliteSessionRepo {
             Box::new(move || (now)()),
         ));
         let tracking = Arc::downgrade(&self.sessions);
+        self.storages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id.clone(),storage.clone());
+        let storage_tracking=Arc::downgrade(&self.storages);
         let session = Arc::new(StorageBackedSession::new(
             metadata,
             storage,
@@ -107,6 +111,7 @@ impl SqliteSessionRepo {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .remove(&id);
                     }
+                    if let Some(tracking)=storage_tracking.upgrade() {tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);}
                 })),
                 ..Default::default()
             },
@@ -312,7 +317,10 @@ impl SessionRepo for SqliteSessionRepo {
     ) -> BoxFuture<'a, Result<Box<dyn Session>, SessionError>> {
         Box::pin(async move {
             self.assert_open()?;
-            let snapshot = {
+            let active=self.storages.lock().map_err(error)?.get(&source.id).cloned();
+            let snapshot = if let Some(storage)=active {
+                create_fork_snapshot(storage.snapshot(&options)?,&options)?
+            } else {
                 let mut db = super::open_read_only(&self.path(&source.id)).map_err(error)?;
                 db.execute_batch("PRAGMA busy_timeout=5000;")
                     .map_err(error)?;

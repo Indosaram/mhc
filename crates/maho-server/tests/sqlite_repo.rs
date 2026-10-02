@@ -3,6 +3,25 @@ use maho_server::sqlite::SqliteSessionRepo;
 use serde_json::json;
 use std::sync::Arc;
 #[tokio::test]
+async fn active_source_fork_uses_storage_connection_after_path_is_renamed() {
+    let directory=tempfile::tempdir().unwrap();
+    let repo=SqliteSessionRepo::new(directory.path().into(),None,Arc::new(||123));
+    let context=background_context();
+    let source=repo.create(SessionCreateOptions {id:Some("source".into()),..Default::default()},&context).await.unwrap();
+    source.set_name(Some("live".into()),&context).await.unwrap();
+    let path=directory.path().join("source.sqlite");
+    let moved=directory.path().join("preserved.sqlite");
+    std::fs::rename(&path,&moved).unwrap();
+    let result=repo.fork(source.metadata().clone(),ForkOptions::Tree {id:Some("copy".into())},&context).await;
+    std::fs::rename(&moved,&path).unwrap();
+    let fork=result.unwrap();
+    assert_eq!(fork.get_name(&context).await.unwrap(),Some("live".into()));
+    fork.close(&context).await;
+    source.close(&context).await;
+    repo.close(&context).await;
+}
+
+#[tokio::test]
 async fn repository_creates_reopens_forks_and_deletes_unicode_sessions() {
     let directory = tempfile::tempdir().unwrap();
     let repo = SqliteSessionRepo::new(directory.path().into(), None, Arc::new(|| 123));

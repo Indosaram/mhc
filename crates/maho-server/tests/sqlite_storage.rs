@@ -66,6 +66,10 @@ async fn durable_storage_reopens_and_failed_commit_rolls_back_sequences() {
         .await
         .unwrap();
     assert_eq!(result.first_seq, 3);
+    let snapshot=storage.snapshot(&ForkOptions::Tree {id:None}).unwrap();
+    assert_eq!(snapshot.entries.len(),2);
+    assert_eq!(snapshot.entries_complete,Some(true));
+    assert!(storage.snapshot(&ForkOptions::Branch {branch:"missing".into(),entry_id:None,position:None,id:None}).is_err());
     assert_eq!(
         storage
             .scan_branch(StorageBranchScan::new("child"), &context)
@@ -77,6 +81,7 @@ async fn durable_storage_reopens_and_failed_commit_rolls_back_sequences() {
         vec!["child", "root"]
     );
     storage.close(&context).await;
+    assert!(storage.snapshot(&ForkOptions::Tree {id:None}).is_err());
     assert!(storage.get_stats(&context).await.is_err());
     drop(storage);
     let storage = SqliteStorage::new(
