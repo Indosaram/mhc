@@ -4,3 +4,7 @@ pub mod seek_sequence;
 pub mod parser;
 pub mod patch_replace;
 pub mod streaming_parser;
+pub mod params;
+pub mod workspace;
+pub mod errors;
+pub mod recovery;

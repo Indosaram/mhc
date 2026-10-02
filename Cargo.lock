@@ -1641,6 +1641,8 @@ name = "maho-ext-gpt-apply-patch"
 version = "0.0.0"
 dependencies = [
  "regex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
