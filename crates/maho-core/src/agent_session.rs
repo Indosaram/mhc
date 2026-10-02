@@ -3823,6 +3823,10 @@ impl AgentSession {
     }
 
     fn extend_discovered_resources(&self, mut resources: maho_ext_api::DiscoveredResources) {
+        let refresh_prompts = !resources.prompt_paths.is_empty();
+        let refresh_skills = !resources.skill_paths.is_empty();
+        let rebuild_prompt = refresh_prompts || refresh_skills || !resources.theme_paths.is_empty();
+        if !rebuild_prompt && resources.hook_paths.is_empty() { return; }
         let cwd = self.cwd();
         for entry in resources.skill_paths.iter_mut().chain(&mut resources.prompt_paths).chain(&mut resources.theme_paths).chain(&mut resources.hook_paths) {
             entry.path = crate::paths::resolve_path(&entry.path, &cwd, &crate::paths::PathInputOptions::default());
@@ -3833,7 +3837,10 @@ impl AgentSession {
             (&mut stored.prompt_paths, resources.prompt_paths),
             (&mut stored.theme_paths, resources.theme_paths),
             (&mut stored.hook_paths, resources.hook_paths)] {
-            for entry in additions { if !existing.iter().any(|known| known.path == entry.path) { existing.push(entry); } }
+            for entry in additions {
+                if let Some(known) = existing.iter_mut().find(|known| known.path == entry.path) { *known = entry; }
+                else { existing.push(entry); }
+            }
         }
         let resources = state.discovered_resources.clone();
         drop(state);
@@ -3854,7 +3861,7 @@ impl AgentSession {
                     }, ..Default::default()
                 })
         };
-        for entry in resources.prompt_paths {
+        for entry in resources.prompt_paths.into_iter().filter(|_| refresh_prompts) {
             for mut template in crate::prompt_templates::load_prompt_templates(&crate::prompt_templates::LoadPromptTemplatesOptions {
                 cwd: cwd.clone(), agent_dir: self.agent_dir(), prompt_paths: vec![entry.path.clone()], include_defaults: false,
             }) {
@@ -3864,7 +3871,7 @@ impl AgentSession {
                 } else { templates.push(template); }
             }
         }
-        for entry in resources.skill_paths {
+        for entry in resources.skill_paths.into_iter().filter(|_| refresh_skills) {
             for mut skill in crate::skills::load_skills(&crate::skills::LoadSkillsOptions {
                 cwd: cwd.clone(), agent_dir: self.agent_dir(), skill_paths: vec![entry.path.clone()], include_defaults: false,
             }).skills {
@@ -3874,8 +3881,10 @@ impl AgentSession {
                 } else { skills.push(skill); }
             }
         }
-        self.set_prompt_resources(templates, skills);
-        self.rebuild_system_prompt();
+        if rebuild_prompt {
+            self.set_prompt_resources(templates, skills);
+            self.rebuild_system_prompt();
+        }
     }
 
     /// Subscribe to the internal event bus shared by this session's extensions.
@@ -6291,6 +6300,21 @@ mod tests {
         });
         assert_eq!(session.prompt_templates().len(), 1);
         assert_eq!(session.expand_input("/discovered file", true).expect("updated expansion"), "updated file");
+        let mut updated = entry(&prompt);
+        updated.scope = Some(maho_ext_api::SourceScope::Project);
+        session.extend_discovered_resources(maho_ext_api::DiscoveredResources {
+            prompt_paths: vec![updated], ..Default::default()
+        });
+        assert_eq!(session.prompt_templates()[0].source_info.scope, crate::source_info::SourceScope::Project);
+        let revision = session.message_revision();
+        session.state().system_prompt_override = Some("active turn prompt".to_owned());
+        session.agent.set_system_prompt("active turn prompt".to_owned());
+        session.extend_discovered_resources(Default::default());
+        session.extend_discovered_resources(maho_ext_api::DiscoveredResources {
+            hook_paths: vec![entry(&dir.path().join("other-hooks.json"))], ..Default::default()
+        });
+        assert_eq!(session.system_prompt(), "active turn prompt");
+        assert_eq!(session.message_revision(), revision);
     }
 
     #[tokio::test]
