@@ -54,6 +54,7 @@ fn real_session()->maho_core::agent_session::AgentSession {
     let LoopCreateOutcome::Created(created)=controller.start_dynamic(StartDynamicRequest { original_args:"check".into(),prompt:"check".into() }).await.unwrap() else { panic!("creation rejected") };
     let entries=session.with_session_manager(|manager|manager.entries().to_vec());
     assert!(entries.iter().any(|entry|entry["customType"]=="loop-tick"&&entry["data"]["loopId"]==created.loop_id));
+    assert!(entries.iter().find(|entry|entry["customType"]=="loop-tick").unwrap()["data"]["deliveryId"].as_str().unwrap().starts_with("delivery-"));
     let target=controller.get_wakeup_target().unwrap(); assert_eq!(target.loop_id,created.loop_id);
     crate::tools::ScheduleWakeupSchedulerPort::schedule_wakeup(controller.as_ref(),crate::tools::ScheduleWakeupRequest { loop_id:created.loop_id.clone(),requested_delay_seconds:60.0,delay_seconds:60.0,reason:"wait".into(),prompt:"check".into(),noop:false }).await.unwrap();
     controller.event(&ExtensionEvent::AgentEnd { messages:Vec::new(),aborted:Some(false),abort_source:None,will_retry:Some(false) }).await.unwrap();

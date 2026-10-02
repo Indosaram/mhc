@@ -43,7 +43,7 @@ impl LoopRuntime {
         let prepared=crate::index::prepare_loop_tick(entry,tick,delivery,file,busy,commands)?;
         self.delivery_states.insert(tick.loop_id.clone(),prepared.delivery_state.clone());
         if prepared.defer { self.deferred_dispatches.push(tick.clone()); return None; }
-        self.attribution.dispatched(tick); Some(prepared)
+        Some(prepared)
     }
     pub fn due(&mut self,id:&str,now:f64,busy:bool,delivery:DeliveryId)->DueResult { self.scheduler.on_due(id,now,busy,delivery) }
     pub async fn dispatch_tick(&mut self,api:&maho_ext_api::ExtensionApi,ctx:&maho_ext_api::ExtensionContext,reference:&LoopStoreRef,tick:&LoopTick,home:&str)->Result<(),maho_ext_api::ExtensionFailure> {
@@ -57,8 +57,10 @@ impl LoopRuntime {
         let busy=!ctx.is_idle()||ctx.has_pending_messages()?;
         let commands=api.get_commands()?;
         let Some(prepared)=self.prepare_tick(tick,file,busy,&commands) else { return Ok(()); };
+        api.append_entry(crate::index::LOOP_TICK_ENTRY_TYPE,Some(serde_json::to_value(prepared.entry).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?))?;
+        self.attribution.dispatched(tick);
         crate::activation::sync_schedule_wakeup_activation(api,&self.scheduler.state)?;
-        crate::index::deliver_loop_tick(api,prepared,busy)?;
+        api.send_user_message(maho_ext_api::UserMessageContent::Text(prepared.text),maho_ext_api::SendUserMessageOptions { expand_prompt_templates:true,deliver_as:busy.then_some(maho_ext_api::StreamingBehavior::FollowUp) })?;
         self.persist(reference).await.map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))
     }
     pub fn settled(&mut self,outcome:TickOutcome,now:f64,next_delivery:DeliveryId,wakeup:WakeupId)->Option<crate::attribution::AttributedSettlement> { self.attribution.settle(&mut self.scheduler,outcome,now,next_delivery,wakeup) }
