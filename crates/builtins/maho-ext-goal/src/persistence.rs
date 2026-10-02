@@ -174,6 +174,9 @@ fn migrate_legacy_goal_file_with_publish(reference:&GoalStoreRef,standalone_agen
         let original=serde_json::from_str::<Value>(&input).unwrap_err().to_string();
         assert!(matches!(parse_goal_file(&input,false),Err(GoalError::Json(error)) if error==original));
     }
+    #[test] fn upstream_stale_brace_recovery_still_rejects_unsupported_versions() {
+        assert!(matches!(parse_goal_file("{\"version\":2,\"goal\":null}\n}\n",false),Err(GoalError::UnsupportedStoreVersion(_))));
+    }
     #[test] fn upstream_supported_legacy_status_drops_budget_and_corrupt_tracking() {
         let mut input:Value=serde_json::from_str(&raw()).unwrap(); input["goal"]["tokenBudget"]=100.into(); input["goal"]["consecutiveContinuations"]="many".into(); input["goal"]["lastContinuationSignature"]=42.into();
         let goal=parse_goal_file(&input.to_string(),true).unwrap().goal.unwrap(); assert_eq!(goal.status,crate::types::GoalStatus::Active); assert!(goal.token_budget.is_none()); assert!(goal.consecutive_continuations.is_none()); assert!(goal.last_continuation_signature.is_none());
