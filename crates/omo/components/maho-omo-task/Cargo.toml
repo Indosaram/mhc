@@ -12,6 +12,8 @@ maho-tui = { path = "../../../maho-tui" }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
 chrono = "=0.4.43"
+team-core = { package = "maho-team-core", path = "../../team-core" }
+regex = "=1.12.3"
 
 [dev-dependencies]
 tempfile = "=3.27.0"

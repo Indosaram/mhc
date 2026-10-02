@@ -77,3 +77,20 @@ pub fn register_task_tools(api: &mut ExtensionApi, deps: TaskToolsDeps) {
 }
 
 pub fn tool_text(text: String, details: Value) -> ToolResult { ToolResult { content: vec![ToolContent::text(text)], details: Some(details) } }
+
+pub fn register_lead_team_tools(api: &mut ExtensionApi, service: Arc<dyn senpi_task::tools::team::types::TeamToolsService>) {
+    let deps = senpi_task::tools::team::types::TeamToolDeps { service };
+    for tool in senpi_task::tools::team::index::build_lead_team_tools(&deps) {
+        let name = tool.name(); let label = tool.label(); let description = tool.description(); let parameters = tool.parameters().clone();
+        let tool = Arc::new(MutexTeamTool(std::sync::Mutex::new(tool)));
+        let mut definition = ToolDefinition::new(name, description, parameters, Arc::new(move |call| {
+            let tool = tool.clone();
+            Box::pin(async move {
+                let result = tool.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).execute_json(call.id, &call.params).map_err(|error| ToolError::Message(error.to_string()))?;
+                Ok(serde_json::from_value(result)?)
+            })
+        }));
+        definition.label = label.into(); api.register_tool(definition);
+    }
+}
+struct MutexTeamTool(std::sync::Mutex<senpi_task::tools::team::index::LeadTeamTool>);
