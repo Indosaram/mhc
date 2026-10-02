@@ -11,7 +11,7 @@ pub enum Account {ApiKey,Chatgpt {email:Option<String>,plan_type:PlanType},Amazo
 pub struct AccountReadParams {#[serde(default,skip_serializing_if="Option::is_none")]pub refresh_token:Option<bool>}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct AccountReadResponse {pub account:Option<Account>,pub requires_openai_auth:bool}
+pub struct AccountReadResponse {#[serde(deserialize_with="super::nullable::deserialize_required")]pub account:Option<Account>,pub requires_openai_auth:bool}
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="lowercase")]
 pub enum ProviderAccountSource {Login,Import,Env}
@@ -23,7 +23,7 @@ pub struct ProviderAccountsReadParams {pub provider:String}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 pub struct ProviderAccountsReadResponse {pub provider:String,pub accounts:Vec<ProviderAccount>}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
-pub struct ProviderAccountsPinParams {pub provider:String,pub name:Option<String>}
+pub struct ProviderAccountsPinParams {pub provider:String,#[serde(deserialize_with="super::nullable::deserialize_required")]pub name:Option<String>}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 pub struct ProviderAccountsRemoveParams {pub provider:String,pub name:String}
 pub type ProviderAccountsUpdatedNotification=ProviderAccountsReadParams;
@@ -31,10 +31,10 @@ pub type ProviderAccountsUpdatedNotification=ProviderAccountsReadParams;
 pub struct ProviderAccountFailoverNotification {pub provider:String,pub from:String,pub to:String,pub reason:String}
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct RateLimitWindow {pub used_percent:f64,pub window_duration_mins:Option<f64>,pub resets_at:Option<f64>}
+pub struct RateLimitWindow {pub used_percent:f64,#[serde(deserialize_with="super::nullable::deserialize_required")]pub window_duration_mins:Option<f64>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub resets_at:Option<f64>}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct CreditsSnapshot {pub has_credits:bool,pub unlimited:bool,pub balance:Option<String>}
+pub struct CreditsSnapshot {pub has_credits:bool,pub unlimited:bool,#[serde(deserialize_with="super::nullable::deserialize_required")]pub balance:Option<String>}
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct SpendControlLimitSnapshot {pub limit:String,pub used:String,pub remaining_percent:f64,pub resets_at:f64}
@@ -44,8 +44,8 @@ pub enum RateLimitReachedType {RateLimitReached,WorkspaceOwnerCreditsDepleted,Wo
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct RateLimitSnapshot {
-    pub limit_id:Option<String>,pub limit_name:Option<String>,pub primary:Option<RateLimitWindow>,pub secondary:Option<RateLimitWindow>,pub credits:Option<CreditsSnapshot>,
-    pub individual_limit:Option<SpendControlLimitSnapshot>,pub spend_control_reached:Option<bool>,pub plan_type:Option<PlanType>,pub rate_limit_reached_type:Option<RateLimitReachedType>,
+    #[serde(deserialize_with="super::nullable::deserialize_required")]pub limit_id:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub limit_name:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub primary:Option<RateLimitWindow>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub secondary:Option<RateLimitWindow>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub credits:Option<CreditsSnapshot>,
+    #[serde(deserialize_with="super::nullable::deserialize_required")]pub individual_limit:Option<SpendControlLimitSnapshot>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub spend_control_reached:Option<bool>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub plan_type:Option<PlanType>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub rate_limit_reached_type:Option<RateLimitReachedType>,
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
@@ -55,21 +55,21 @@ pub enum RateLimitResetType {CodexRateLimits,Unknown}
 pub enum RateLimitResetCreditStatus {Available,Redeeming,Redeemed,Unknown}
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct RateLimitResetCredit {pub id:String,pub reset_type:RateLimitResetType,pub status:RateLimitResetCreditStatus,pub granted_at:f64,pub expires_at:Option<f64>,pub title:Option<String>,pub description:Option<String>}
+pub struct RateLimitResetCredit {pub id:String,pub reset_type:RateLimitResetType,pub status:RateLimitResetCreditStatus,pub granted_at:f64,#[serde(deserialize_with="super::nullable::deserialize_required")]pub expires_at:Option<f64>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub title:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub description:Option<String>}
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct RateLimitResetCreditsSummary {pub available_count:f64,pub credits:Option<Vec<RateLimitResetCredit>>}
+pub struct RateLimitResetCreditsSummary {pub available_count:f64,#[serde(deserialize_with="super::nullable::deserialize_required")]pub credits:Option<Vec<RateLimitResetCredit>>}
 pub type AccountRateLimitsReadParams=();
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct AccountRateLimitsReadResponse {pub rate_limits:RateLimitSnapshot,pub rate_limits_by_limit_id:Option<BTreeMap<String,RateLimitSnapshot>>,pub rate_limit_reset_credits:Option<RateLimitResetCreditsSummary>}
+pub struct AccountRateLimitsReadResponse {pub rate_limits:RateLimitSnapshot,#[serde(deserialize_with="super::nullable::deserialize_required")]pub rate_limits_by_limit_id:Option<BTreeMap<String,RateLimitSnapshot>>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub rate_limit_reset_credits:Option<RateLimitResetCreditsSummary>}
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct AccountTokenUsageSummary {pub lifetime_tokens:Option<f64>,pub peak_daily_tokens:Option<f64>,pub longest_running_turn_sec:Option<f64>,pub current_streak_days:Option<f64>,pub longest_streak_days:Option<f64>}
+pub struct AccountTokenUsageSummary {#[serde(deserialize_with="super::nullable::deserialize_required")]pub lifetime_tokens:Option<f64>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub peak_daily_tokens:Option<f64>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub longest_running_turn_sec:Option<f64>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub current_streak_days:Option<f64>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub longest_streak_days:Option<f64>}
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct AccountTokenUsageDailyBucket {pub start_date:String,pub tokens:f64}
 pub type AccountUsageReadParams=();
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct AccountUsageReadResponse {pub summary:AccountTokenUsageSummary,pub daily_usage_buckets:Option<Vec<AccountTokenUsageDailyBucket>>}
+pub struct AccountUsageReadResponse {pub summary:AccountTokenUsageSummary,#[serde(deserialize_with="super::nullable::deserialize_required")]pub daily_usage_buckets:Option<Vec<AccountTokenUsageDailyBucket>>}

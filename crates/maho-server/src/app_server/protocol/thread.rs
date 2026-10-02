@@ -7,9 +7,9 @@ pub enum ThreadSortKey {CreatedAt,UpdatedAt,RecencyAt}
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct Thread {
-    pub id:String,pub session_id:String,pub forked_from_id:Option<String>,pub parent_thread_id:Option<String>,pub preview:String,pub ephemeral:bool,pub model_provider:String,
-    pub created_at:f64,pub updated_at:f64,pub recency_at:Option<f64>,pub status:ThreadStatus,pub path:Option<String>,pub cwd:AbsolutePathBuf,pub cli_version:String,
-    pub source:SessionSource,pub thread_source:Option<ThreadSource>,pub agent_nickname:Option<String>,pub agent_role:Option<String>,pub git_info:Option<GitInfo>,pub name:Option<String>,pub turns:Vec<Turn>,
+    pub id:String,pub session_id:String,#[serde(deserialize_with="super::nullable::deserialize_required")]pub forked_from_id:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub parent_thread_id:Option<String>,pub preview:String,pub ephemeral:bool,pub model_provider:String,
+    pub created_at:f64,pub updated_at:f64,#[serde(deserialize_with="super::nullable::deserialize_required")]pub recency_at:Option<f64>,pub status:ThreadStatus,#[serde(deserialize_with="super::nullable::deserialize_required")]pub path:Option<String>,pub cwd:AbsolutePathBuf,pub cli_version:String,
+    pub source:SessionSource,#[serde(deserialize_with="super::nullable::deserialize_required")]pub thread_source:Option<ThreadSource>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub agent_nickname:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub agent_role:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub git_info:Option<GitInfo>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub name:Option<String>,pub turns:Vec<Turn>,
 }
 #[derive(Clone,Debug,Default,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
@@ -30,8 +30,8 @@ pub struct ThreadRuntimeOverrides {
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct ThreadRuntimeResponse {
-    pub thread:Thread,pub model:String,pub model_provider:String,pub service_tier:Option<String>,pub cwd:AbsolutePathBuf,pub runtime_workspace_roots:Vec<AbsolutePathBuf>,pub instruction_sources:Vec<LegacyAppPathString>,
-    pub approval_policy:AskForApproval,pub approvals_reviewer:ApprovalsReviewer,pub sandbox:SandboxPolicy,pub active_permission_profile:Option<ActivePermissionProfile>,pub reasoning_effort:Option<ReasoningEffort>,pub multi_agent_mode:MultiAgentMode,
+    pub thread:Thread,pub model:String,pub model_provider:String,#[serde(deserialize_with="super::nullable::deserialize_required")]pub service_tier:Option<String>,pub cwd:AbsolutePathBuf,pub runtime_workspace_roots:Vec<AbsolutePathBuf>,pub instruction_sources:Vec<LegacyAppPathString>,
+    pub approval_policy:AskForApproval,pub approvals_reviewer:ApprovalsReviewer,pub sandbox:SandboxPolicy,#[serde(deserialize_with="super::nullable::deserialize_required")]pub active_permission_profile:Option<ActivePermissionProfile>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub reasoning_effort:Option<ReasoningEffort>,pub multi_agent_mode:MultiAgentMode,
 }
 #[derive(Clone,Debug,Default,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
@@ -62,7 +62,7 @@ pub struct ThreadResumeParams {
 }
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct ThreadResumeResponse {#[serde(flatten)]pub runtime:ThreadRuntimeResponse,pub initial_turns_page:Option<TurnsPage>}
+pub struct ThreadResumeResponse {#[serde(flatten)]pub runtime:ThreadRuntimeResponse,#[serde(deserialize_with="super::nullable::deserialize_required")]pub initial_turns_page:Option<TurnsPage>}
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct ThreadForkParams {
@@ -98,7 +98,7 @@ pub struct ThreadListParams {
 }
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct ThreadListResponse {pub data:Vec<Thread>,pub next_cursor:Option<String>,pub backwards_cursor:Option<String>}
+pub struct ThreadListResponse {pub data:Vec<Thread>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub next_cursor:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub backwards_cursor:Option<String>}
 #[derive(Clone,Debug,Default,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct ThreadLoadedListParams {
@@ -107,7 +107,7 @@ pub struct ThreadLoadedListParams {
 }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct ThreadLoadedListResponse {pub data:Vec<String>,pub next_cursor:Option<String>}
+pub struct ThreadLoadedListResponse {pub data:Vec<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub next_cursor:Option<String>}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct ThreadSetNameParams {pub thread_id:ThreadId,pub name:String}

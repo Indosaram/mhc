@@ -94,10 +94,10 @@ pub enum UserInput {
     Skill {name:String,path:String},Mention {name:String,path:String},
 }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
-pub struct ActivePermissionProfile {pub id:String,pub extends:Option<String>}
+pub struct ActivePermissionProfile {pub id:String,#[serde(deserialize_with="super::nullable::deserialize_required")]pub extends:Option<String>}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct GitInfo {pub sha:Option<String>,pub branch:Option<String>,pub origin_url:Option<String>}
+pub struct GitInfo {#[serde(deserialize_with="super::nullable::deserialize_required")]pub sha:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub branch:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub origin_url:Option<String>}
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="lowercase")]
 pub enum RemoteControlConnectionStatus {Disabled,Connecting,Connected,Errored}

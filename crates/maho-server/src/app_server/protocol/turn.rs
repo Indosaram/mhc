@@ -7,7 +7,7 @@ pub type TurnsPage=JsonValue;
 pub enum TurnItemsView {NotLoaded,Summary,Full}
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct Turn {pub id:String,pub items:Vec<JsonValue>,pub items_view:TurnItemsView,pub status:TurnStatus,pub error:Option<TurnError>,pub started_at:Option<f64>,pub completed_at:Option<f64>,pub duration_ms:Option<f64>}
+pub struct Turn {pub id:String,pub items:Vec<JsonValue>,pub items_view:TurnItemsView,pub status:TurnStatus,#[serde(deserialize_with="super::nullable::deserialize_required")]pub error:Option<TurnError>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub started_at:Option<f64>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub completed_at:Option<f64>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub duration_ms:Option<f64>}
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct TurnCommonParams {

@@ -4,11 +4,11 @@ use serde::{Deserialize,Serialize};
 #[serde(rename_all="lowercase")]
 pub enum CollaborationModeKind {Plan,Default}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
-pub struct CollaborationModeSettings {pub model:String,pub reasoning_effort:Option<String>,pub developer_instructions:Option<String>}
+pub struct CollaborationModeSettings {pub model:String,#[serde(deserialize_with="super::nullable::deserialize_required")]pub reasoning_effort:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub developer_instructions:Option<String>}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 pub struct CollaborationMode {pub mode:CollaborationModeKind,pub settings:CollaborationModeSettings}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
-pub struct CollaborationModeMask {pub name:String,pub mode:Option<CollaborationModeKind>,pub model:Option<String>,pub reasoning_effort:Option<String>}
+pub struct CollaborationModeMask {pub name:String,#[serde(deserialize_with="super::nullable::deserialize_required")]pub mode:Option<CollaborationModeKind>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub model:Option<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub reasoning_effort:Option<String>}
 #[derive(Clone,Debug,Default,PartialEq,Eq,Serialize,Deserialize)]
 pub struct CollaborationModeListParams {}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]

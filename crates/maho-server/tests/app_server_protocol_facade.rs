@@ -1,6 +1,26 @@
 use maho_server::app_server::protocol::{collaboration_mode::*,fuzzy_search::*};
 use serde_json::json;
 #[test]
+fn remaining_facade_nullable_keys_reject_omission_and_roundtrip_null() {
+    use maho_server::app_server::protocol::{base::GitInfo,turn::Turn,account::RateLimitWindow,models::ModelUpgradeInfo,terminal::TurnError};
+    fn check<T:serde::de::DeserializeOwned+serde::Serialize>(value:serde_json::Value,keys:&[&str]) {
+        let decoded:T=serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(),value);
+        for key in keys {
+            let mut missing=value.clone();missing.as_object_mut().unwrap().remove(*key);
+            assert!(serde_json::from_value::<T>(missing).is_err(),"missing {key}");
+        }
+    }
+    check::<GitInfo>(json!({"sha":null,"branch":null,"originUrl":null}),&["sha","branch","originUrl"]);
+    check::<Turn>(json!({"id":"turn","items":[],"itemsView":"full","status":"completed","error":null,"startedAt":null,"completedAt":null,"durationMs":null}),&["error","startedAt","completedAt","durationMs"]);
+    check::<RateLimitWindow>(json!({"usedPercent":0.0,"windowDurationMins":null,"resetsAt":null}),&["windowDurationMins","resetsAt"]);
+    check::<ModelUpgradeInfo>(json!({"model":"native","upgradeCopy":null,"modelLink":null,"migrationMarkdown":null}),&["upgradeCopy","modelLink","migrationMarkdown"]);
+    check::<TurnError>(json!({"message":"failure","codexErrorInfo":null,"additionalDetails":null}),&["codexErrorInfo","additionalDetails"]);
+    check::<CollaborationModeSettings>(json!({"model":"native","reasoning_effort":null,"developer_instructions":null}),&["reasoning_effort","developer_instructions"]);
+    check::<FuzzyFileSearchParams>(json!({"query":"q","roots":[],"cancellationToken":null}),&["cancellationToken"]);
+}
+
+#[test]
 fn facade_nullable_fields_require_keys() {
     use maho_server::app_server::protocol::{base::ClientInfo,config::Config};
     assert!(serde_json::from_value::<ClientInfo>(json!({"name":"client","version":"1"})).is_err());

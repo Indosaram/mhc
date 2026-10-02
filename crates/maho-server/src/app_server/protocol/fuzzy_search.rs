@@ -3,10 +3,10 @@ use serde::{Deserialize,Serialize};
 #[serde(rename_all="lowercase")]
 pub enum FuzzyFileSearchMatchType {File,Directory}
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
-pub struct FuzzyFileSearchResult {pub root:String,pub path:String,pub match_type:FuzzyFileSearchMatchType,pub file_name:String,pub score:f64,pub indices:Option<Vec<f64>>}
+pub struct FuzzyFileSearchResult {pub root:String,pub path:String,pub match_type:FuzzyFileSearchMatchType,pub file_name:String,pub score:f64,#[serde(deserialize_with="super::nullable::deserialize_required")]pub indices:Option<Vec<f64>>}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct FuzzyFileSearchParams {pub query:String,pub roots:Vec<String>,pub cancellation_token:Option<String>}
+pub struct FuzzyFileSearchParams {pub query:String,pub roots:Vec<String>,#[serde(deserialize_with="super::nullable::deserialize_required")]pub cancellation_token:Option<String>}
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 pub struct FuzzyFileSearchResponse {pub files:Vec<FuzzyFileSearchResult>}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
