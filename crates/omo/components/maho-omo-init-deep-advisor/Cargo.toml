@@ -7,3 +7,14 @@ license = "LicenseRef-SUL-1.0"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[dependencies]
+maho-ext-api = { path = "../../../maho-ext-api" }
+tokio = { workspace = true, features = ["rt", "time"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true

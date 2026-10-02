@@ -5,5 +5,16 @@ edition.workspace = true
 publish.workspace = true
 license = "MIT"
 
+[dependencies]
+serde_json.workspace = true
+maho-ext-api = { path = "../../maho-ext-api" }
+maho-agent = { path = "../../maho-agent" }
+maho-ai = { path = "../../maho-ai" }
+anyhow = "=1.0.104"
+async-trait = "=0.1.92"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
 [lints]
 workspace = true
