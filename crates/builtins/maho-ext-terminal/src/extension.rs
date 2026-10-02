@@ -179,6 +179,15 @@ impl Extension for TerminalExtension {
 mod tests {
     use super::*;use maho_ext_api::types::*;
     #[tokio::test]
+    async fn registered_file_monitor_stable_id_kill_releases_shared_capacity()->Result<(),ToolError> {
+        let dir=tempfile::tempdir()?;let mut api=ExtensionApi::new(LoadedExtension::new("terminal",dir.path().to_owned(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());TerminalExtension.register(&mut api);
+        let result=(api.registered.tools[5].definition.execute)(maho_tools::definition::ToolCall {id:"file",params:json!({"description":"watch","path":dir.path().join("file"),"persistent":true}),signal:Default::default(),on_update:None,context:None}).await?;
+        let id=result.details.as_ref().unwrap()["monitor_id"].as_str().unwrap();assert!(id.starts_with("mon_"));
+        let result=(api.registered.tools[4].definition.execute)(maho_tools::definition::ToolCall {id:"kill",params:json!({"bash_id":id}),signal:Default::default(),on_update:None,context:None}).await?;assert!(matches!(&result.content[0],ToolContent::Text {text,..} if text==&format!("Killed {id}.")));
+        let result=(api.registered.tools[5].definition.execute)(maho_tools::definition::ToolCall {id:"next",params:json!({"description":"next","path":dir.path().join("next"),"persistent":true}),signal:Default::default(),on_update:None,context:None}).await?;assert!(result.details.as_ref().unwrap()["monitor_id"].as_str().unwrap().starts_with("mon_"));
+        (api.registered.tools[4].definition.execute)(maho_tools::definition::ToolCall {id:"all",params:json!({"all":true}),signal:Default::default(),on_update:None,context:None}).await?;Ok(())
+    }
+    #[tokio::test]
     async fn registry_state_reaches_native_event_bus_and_rpc() {
         let dir=tempfile::tempdir().unwrap();let bus=EventBus::default();let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let state_sender=sender.clone();let rpc_sender=sender;
         let _state=bus.on("terminal_monitor_state",Arc::new(move |data| {state_sender.send(("state",data.clone())).unwrap();}));let _rpc=bus.on("senpi:extension-rpc-event",Arc::new(move |data| {rpc_sender.send(("rpc",data.clone())).unwrap();}));
