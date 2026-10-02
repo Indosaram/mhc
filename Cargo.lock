@@ -1970,6 +1970,10 @@ version = "0.0.0"
 [[package]]
 name = "maho-omo-ast-grep"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "tempfile",
+]
 
 [[package]]
 name = "maho-omo-comment-checker"
@@ -2005,10 +2009,27 @@ version = "0.0.0"
 [[package]]
 name = "maho-omo-init-deep-advisor"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-lsp"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-lsp-core",
+ "maho-lsp-daemon",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "url",
+]
 
 [[package]]
 name = "maho-omo-mass-ulw"
@@ -2037,6 +2058,17 @@ version = "0.0.0"
 [[package]]
 name = "maho-omo-telemetry"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "maho-ext-api",
+ "maho-senpi-task",
+ "maho-telemetry-core",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-todo-fanout-reminder"
