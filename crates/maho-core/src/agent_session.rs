@@ -1702,6 +1702,7 @@ impl AgentSession {
             }), started_revision: revision as i64,
         }, controller.clone());
         let _work = self.work_barrier.begin();
+        let mut rejection = None;
         let execution = async {
             let before = {
                 let mut runner = self.extension_runner.lock().await;
@@ -1724,7 +1725,11 @@ impl AgentSession {
                 } else { maho_ext_api::EventResult::None }
             };
             let (result, from_extension) = match before {
-                maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult { cancel: Some(true), .. }) => return Err("Compaction cancelled".to_owned()),
+                maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult { cancel: Some(true), rejection_cause, reason, .. }) => {
+                    rejection = Some(rejection_cause.unwrap_or(maho_ext_api::CompactionRejectionCause::CancelledByExtension));
+                    return Err(reason.filter(|reason| !reason.trim().is_empty()).map_or_else(|| "Compaction cancelled".to_owned(),
+                        |reason| format!("Compaction rejected: {}", reason.trim())));
+                }
                 maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult { compaction: Some(result), .. }) => (CompactionResult {
                     summary: result.summary, first_kept_entry_id: result.first_kept_entry_id, tokens_before: result.tokens_before as i64,
                     details: result.details, usage: None, estimated_tokens_after: None,
@@ -1799,8 +1804,14 @@ impl AgentSession {
             if !self.state().compaction_lifecycle.is_current(&request_id, &controller) {
                 return Err("Compaction cancelled".to_owned());
             }
-            if self.message_revision() != revision { return Err("Conversation changed during compaction".to_owned()); }
-            let entry = self.apply_compaction(&result)?;
+            if self.message_revision() != revision {
+                rejection = Some(maho_ext_api::CompactionRejectionCause::StaleRevision);
+                return Err("Conversation changed during compaction".to_owned());
+            }
+            let entry = self.apply_compaction(&result).map_err(|error| {
+                if error == "Compaction rejected: summary-would-overflow" { rejection = Some(maho_ext_api::CompactionRejectionCause::WouldOverflow); }
+                error
+            })?;
             self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Accepted {
                 reason: compact_reason, request_id: request_id.clone(), compaction_entry: session_entry_from_value(entry),
                 from_extension, will_retry: reason != "manual",
@@ -1813,7 +1824,7 @@ impl AgentSession {
                 crate::compaction::lifecycle::CompactionFinishStatus::Aborted
             } else if execution.is_ok() { crate::compaction::lifecycle::CompactionFinishStatus::Completed }
             else { crate::compaction::lifecycle::CompactionFinishStatus::Failed },
-            ended_revision, rejection_cause: None, error_message: execution.as_ref().err().cloned(),
+            ended_revision, rejection_cause: rejection.map(|cause| format!("{cause:?}")), error_message: execution.as_ref().err().cloned(),
         });
         if !owns_terminal { return execution; }
         self.state().compaction_abort_controller = None;
@@ -1827,8 +1838,14 @@ impl AgentSession {
             }
             Err(error) => {
                 let error_message = (!signal.aborted()).then(|| format!("Compaction failed: {error}"));
-                self.emit(AgentSessionEvent::CompactionEnd { reason: compact_reason, request_id: Some(request_id),
-                    aborted: signal.aborted(), result: None, rejection_cause: None, error_message: error_message.clone(), accepted: Some(false), will_retry: false });
+                self.emit(AgentSessionEvent::CompactionEnd { reason: compact_reason, request_id: Some(request_id.clone()),
+                    aborted: signal.aborted() || rejection == Some(maho_ext_api::CompactionRejectionCause::CancelledByExtension),
+                    result: None, rejection_cause: rejection, error_message: error_message.clone(), accepted: Some(false), will_retry: false });
+                if let Some(rejection_cause) = rejection {
+                    self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Rejected {
+                        reason: compact_reason, request_id, rejection_cause,
+                    })).await;
+                }
                 self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionCompactFailed {
                     reason: compact_reason, error_message, aborted: signal.aborted(), will_retry: false, from_extension: false,
                 }).await;
