@@ -193,6 +193,22 @@ mod tests {
         assert_eq!(api.registered.commands.len(),1);
         assert_eq!(api.registered.commands[0].name,"todo");
     }
+    #[tokio::test] async fn registered_state_hooks_reload_and_mirror_in_source_order() {
+        let fixture=std::sync::Arc::new(ExecutionFixture::default());
+        let mut api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("todotools",Default::default(),Default::default()),Default::default(),Default::default(),Default::default());
+        crate::index::register_state_hooks(&mut api,fixture.clone(),fixture.clone());
+        let ctx=command_context(std::sync::Arc::new(CommandUi::default()),Default::default());
+        let mut tree=maho_ext_api::ExtensionEvent::SessionTree{new_leaf_id:None,old_leaf_id:None,summary_entry:None,from_extension:None};
+        (api.registered.handlers[&maho_ext_api::EventKind::SessionTree][0])(&mut tree,&ctx).await.unwrap();
+        assert_eq!(*fixture.events.lock().unwrap(),["set","widget"]);
+        fixture.events.lock().unwrap().clear();
+        let message=serde_json::from_value(serde_json::json!({"role":"assistant","content":[{"type":"toolCall","id":"native","name":"todo","arguments":{"todos":[{"content":" Native task ","status":"in_progress"}]}}],"api":"test","provider":"test","model":"test","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":0})).unwrap();
+        let mut event=maho_ext_api::ExtensionEvent::MessageEnd{message};
+        (api.registered.handlers[&maho_ext_api::EventKind::MessageEnd][0])(&mut event,&ctx).await.unwrap();
+        assert_eq!(*fixture.events.lock().unwrap(),["set","append","widget"]);
+        assert_eq!(fixture.get_current_phases()[0].tasks[0].content,"Native task");
+        assert_eq!(fixture.entries.lock().unwrap()[0]["schema"],"v2");
+    }
     #[tokio::test] async fn native_view_and_invalid_operations_do_not_mutate() {
         let fixture=std::sync::Arc::new(ExecutionFixture::default()); let tool=create_todo_tool(fixture.clone(),fixture.clone());
         let viewed=(tool.execute)(maho_ext_api::ToolCall{id:"view",params:serde_json::json!({"op":"view"}),signal:Default::default(),on_update:None,context:Some(&Context{persisted:false})}).await.unwrap();
