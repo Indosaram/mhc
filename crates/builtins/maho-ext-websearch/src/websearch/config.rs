@@ -55,6 +55,16 @@ pub async fn load_websearch_config(cwd:&Path,home:&Path)->Result<ConfigLoadResul
 #[cfg(test)]
 mod tests {
     use super::*; use serde_json::json;
+    #[tokio::test] async fn upstream_project_config_path_priority() {
+        for (paths,winner) in [(vec![".senpi/websearch.json"],".senpi/websearch.json"),(vec![".pi/websearch.json"],".pi/websearch.json"),(vec![".senpi/websearch.json",".pi/websearch.json"],".senpi/websearch.json")] {
+            let cwd=tempfile::tempdir().unwrap(); let home=tempfile::tempdir().unwrap();
+            std::fs::create_dir(home.path().join(".senpi")).unwrap();
+            std::fs::write(home.path().join(".senpi/websearch.json"),r#"{"provider":"duckduckgo-html","id":"home"}"#).unwrap();
+            for path in paths { let path=cwd.path().join(path); std::fs::create_dir_all(path.parent().unwrap()).unwrap(); std::fs::write(path,r#"{"provider":"duckduckgo-html","id":"project"}"#).unwrap(); }
+            let ConfigLoadResult::Ok{config,source}=load_websearch_config(cwd.path(),home.path()).await.unwrap() else { panic!("expected project config"); };
+            assert_eq!(source,cwd.path().join(winner).to_string_lossy()); assert_eq!(config.providers[0].config.id.as_deref(),Some("project"));
+        }
+    }
     #[test] fn backend_alias_and_false_auto_are_preserved() { let config=config_from_object(&json!({"backend":"duckduckgo-html","auto":false,"maxResults":0,"timeoutMs":0})).unwrap(); assert!(!config.auto); assert_eq!(config.providers[0].config.max_results,None); assert_eq!(config.providers[0].config.timeout_ms,Some(0.)); assert!(validate_websearch_config(&config).is_err()); }
     #[test] fn invalid_entries_are_filtered_before_validation() { let config=config_from_object(&json!({"providers":[null,{"provider":"invalid"},{"provider":"duckduckgo-html"}],"strategy":"round-robin"})).unwrap(); assert_eq!(config.providers.len(),1); assert_eq!(config.strategy,RoutingStrategy::RoundRobin); assert!(validate_websearch_config(&config).is_ok()); }
     #[test] fn mixed_single_and_list_is_rejected() { assert!(config_from_object(&json!({"provider":"exa","providers":[]})).is_none()); }
