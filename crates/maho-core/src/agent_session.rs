@@ -6392,6 +6392,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn superseded_pending_compaction_cannot_release_the_new_admission() {
+        let session = test_session();
+        let admission = session.prompt_admission.lock().await;
+        let first = session.compact(None);
+        tokio::pin!(first);
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(first.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        }).await;
+        let second = session.compact(None);
+        tokio::pin!(second);
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(second.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        }).await;
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(1), first).await.expect("superseded claimant")
+            .expect_err("superseded"), "Compaction cancelled");
+        assert!(session.is_compacting());
+        assert!(session.work_barrier.has_active_work());
+        session.abort_compaction();
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(1), second).await.expect("current claimant")
+            .expect_err("aborted"), "Compaction cancelled");
+        drop(admission);
+        assert!(!session.is_compacting());
+        assert!(!session.work_barrier.has_active_work());
+    }
+
+    #[tokio::test]
     async fn runtime_shutdown_carries_replacement_target_and_live_signal() {
         let session = test_session();
         let observed = Arc::new(Mutex::new(Vec::new()));
