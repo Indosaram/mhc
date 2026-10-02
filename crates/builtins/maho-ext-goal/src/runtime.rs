@@ -83,6 +83,14 @@ impl GoalRuntime {
                 if route==crate::agent_end_continuation::GoalAgentEndRoute::ProviderFailure {
                     self.monitor.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?.after_provider_failure(context,goal.as_ref(),&ended);
                 }
+                if route==crate::agent_end_continuation::GoalAgentEndRoute::SystemAbort {
+                    let active_sources=self.monitor.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?.has_active_wake_sources();
+                    let (backstop_seconds,question_idle_ms)=if active_sources&&goal.as_ref().is_some_and(|goal|goal.status==GoalStatus::Active)&&!ended.will_retry {
+                        let minutes=context.get_ask_user_settings()?.timeout_minutes;
+                        (context.get_prompt_cache_goal_backstop_max_seconds()?,if minutes.is_finite()&&minutes>0.0 { minutes*60000.0 } else { 1800000.0 })
+                    } else { (0.0,0.0) };
+                    self.monitor.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?.after_system_abort(context,goal.as_ref(),&ended,now,backstop_seconds,question_idle_ms);
+                }
                 if route==crate::agent_end_continuation::GoalAgentEndRoute::PolicyBlock {
                     goal=Some(crate::store::update_goal(&reference,&GoalUpdate { status:Some(GoalStatus::Blocked),reason:Some("provider policy rejection ended the turn".into()),..Default::default() },GoalUpdateSource::Model,seconds).await.map_err(failure)?);
                     state.accounting.clear();
@@ -142,6 +150,28 @@ impl GoalRuntime {
 fn failure(error:crate::errors::GoalError)->ExtensionFailure { ExtensionFailure::new(error.to_string()) }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn owning_system_abort_stages_only_error_without_live_sources_or_retry() {
+        for (stop,will_retry,staged) in [(maho_ai::types::StopReason::Error,false,true),(maho_ai::types::StopReason::Aborted,false,false),(maho_ai::types::StopReason::Error,true,false)] {
+            let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+            let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap();
+            let runtime=GoalRuntime::new(Arc::new(move |_|stored.clone()),Arc::new(||2000.0)); let context=crate::test_context::context();
+            let mut assistant=maho_ai::providers::faux::faux_assistant_message("",Default::default()); assistant.stop_reason=stop;
+            let message=maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(assistant)));
+            runtime.event(&ExtensionEvent::AgentEnd { messages:vec![message],aborted:Some(true),abort_source:Some(maho_ext_api::AbortSource::System),will_retry:Some(will_retry) },&context).await.unwrap();
+            let mut monitor=runtime.monitor.lock().unwrap(); let pending=monitor.take_settled_recovery(); assert_eq!(pending.is_some(),staged);
+            if let Some((path,pending))=pending { assert_eq!(path,crate::continuation::GoalContinuationPath::SystemRecovery); assert_eq!(pending.goal.id,goal.id); }
+            assert!(monitor.take_settled_recovery().is_none()); assert!(monitor.recent_normalized_output_hashes.is_empty());
+        }
+    }
+    #[tokio::test] async fn owning_system_abort_uses_bound_backstop_settings_for_live_channels() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+        let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap();
+        let runtime=GoalRuntime::new(Arc::new(move |_|stored.clone()),Arc::new(||2000.0)); let mut context=crate::test_context::context(); let session=crate::test_context::bind_session(&mut context);
+        { let mut monitor=runtime.monitor.lock().unwrap(); monitor.sync_goal(Some(&goal)); monitor.set_wake_source_count("task",1.0,&[],2000.0,1800000.0); }
+        runtime.event(&ExtensionEvent::AgentEnd { messages:vec![],aborted:Some(true),abort_source:Some(maho_ext_api::AbortSource::System),will_retry:Some(false) },&context).await.unwrap();
+        { let monitor=runtime.monitor.lock().unwrap(); let timer=monitor.armed_timer.unwrap(); assert_eq!(timer.due_at_ms,2000.0+crate::cache_warm::resolve_goal_monitor_continuation_delay_ms(Some(context.get_prompt_cache_goal_backstop_max_seconds().unwrap()))); }
+        runtime.event(&ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent { reason:maho_ext_api::SessionReason::Quit,target_session_file:None,signal:None }),&context).await.unwrap(); session.dispose().await;
+    }
     #[tokio::test] async fn provider_failure_stages_runtime_recovery_only_without_core_retry() {
         for will_retry in [false,true] {
             let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
