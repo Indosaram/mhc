@@ -96,6 +96,13 @@ pub struct ProviderConfig {
 }
 #[derive(Clone)]
 pub enum ProviderRegistration { Config { name: String, config: Box<ProviderConfig> }, Native(Arc<dyn maho_ai::models::Provider>) }
+/// Object-only request fields for callers that want schema constraints at construction.
+#[derive(Clone, Default)]
+pub struct ProviderObjectConfig {
+    pub config: ProviderConfig,
+    pub extra_body: Option<BTreeMap<String, JsonValue>>,
+    pub model_extra_bodies: BTreeMap<String, BTreeMap<String, JsonValue>>,
+}
 impl ProviderRegistration {
     pub fn name(&self) -> &str { match self { Self::Config { name, .. } => name, Self::Native(provider) => provider.id() } }
 }
@@ -1116,6 +1123,15 @@ impl ExtensionApi {
     pub fn on(&mut self, event: EventKind, handler: ExtensionHandler) { self.runtime.assert_active_or_panic(); self.registered.handlers.entry(event).or_default().push(handler); }
     pub fn register_provider(&self, name: &str, config: ProviderConfig) -> Result<(), ExtensionFailure> {
         self.runtime.register_provider(ProviderRegistration::Config { name: name.into(), config: Box::new(config) }, &self.registered.identity.path)
+    }
+    pub fn register_provider_object(&self, name: &str, mut config: ProviderObjectConfig) -> Result<(), ExtensionFailure> {
+        if let Some(body) = config.extra_body { config.config.extra_body = Some(JsonValue::Object(body.into_iter().collect())); }
+        if let Some(models) = &mut config.config.models {
+            for model in models {
+                if let Some(body) = config.model_extra_bodies.remove(&model.id) { model.extra_body = Some(JsonValue::Object(body.into_iter().collect())); }
+            }
+        }
+        self.register_provider(name, config.config)
     }
     pub fn register_native_provider(&self, provider: Arc<dyn maho_ai::models::Provider>) -> Result<(), ExtensionFailure> {
         self.runtime.register_provider(ProviderRegistration::Native(provider), &self.registered.identity.path)

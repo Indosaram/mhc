@@ -237,6 +237,10 @@ fn provider_extra_body_rejects_nonobjects_before_queuing_registration() {
     assert!(providers.0.lock().unwrap().is_empty());
     api.register_provider("valid", ProviderConfig { extra_body: Some(JsonValue::Object(Default::default())), ..Default::default() }).unwrap();
     assert_eq!(*providers.0.lock().unwrap(), ["valid:test"]);
+    api.register_provider_object("typed", ProviderObjectConfig {
+        extra_body: Some([("enabled".into(), JsonValue::Bool(true))].into_iter().collect()), ..Default::default()
+    }).unwrap();
+    assert_eq!(*providers.0.lock().unwrap(), ["valid:test", "typed:test"]);
 }
 
 #[test]
