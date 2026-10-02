@@ -2817,9 +2817,26 @@ impl AgentSession {
 
     pub fn get_commands(&self) -> Vec<maho_ext_api::SlashCommandInfo> {
         let mut commands = self.state().extension_commands.clone();
+        let source_info = |source: crate::source_info::SourceInfo| maho_ext_api::SourceInfo {
+            path: source.path, source: source.source, base_dir: source.base_dir,
+            scope: match source.scope {
+                crate::source_info::SourceScope::User => maho_ext_api::SourceScope::User,
+                crate::source_info::SourceScope::Project => maho_ext_api::SourceScope::Project,
+                crate::source_info::SourceScope::Temporary => maho_ext_api::SourceScope::Temporary,
+                crate::source_info::SourceScope::System => maho_ext_api::SourceScope::System,
+            },
+            origin: match source.origin {
+                crate::source_info::SourceOrigin::Package => maho_ext_api::SourceOrigin::Package,
+                crate::source_info::SourceOrigin::TopLevel => maho_ext_api::SourceOrigin::TopLevel,
+            },
+        };
         commands.extend(self.prompt_templates().into_iter().map(|template| maho_ext_api::SlashCommandInfo {
             name: template.name, description: Some(template.description), argument_hint: template.argument_hint,
-            ..Default::default()
+            source_info: Some(source_info(template.source_info)),
+        }));
+        commands.extend(self.state().skills.clone().into_iter().map(|skill| maho_ext_api::SlashCommandInfo {
+            name: format!("skill:{}", skill.name), description: Some(skill.description), argument_hint: None,
+            source_info: Some(source_info(skill.source_info)),
         }));
         commands
     }
@@ -4643,9 +4660,16 @@ mod tests {
         session.state().extension_commands.push(maho_ext_api::SlashCommandInfo {
             name: "extension".into(), description: Some("extension command".into()), argument_hint: Some("target".into()), source_info: None,
         });
+        session.state().skills.push(crate::skills::Skill {
+            name: "guide".into(), description: "guide skill".into(), file_path: "/tmp/guide/SKILL.md".into(), base_dir: "/tmp/guide".into(),
+            source_info: crate::source_info::create_synthetic_source_info("/tmp/guide/SKILL.md", crate::source_info::SyntheticSourceInfoOptions::default()),
+            disable_model_invocation: true,
+        });
         let commands = session.get_commands();
-        assert_eq!(commands.iter().map(|command| command.name.as_str()).collect::<Vec<_>>(), ["extension", "review"]);
+        assert_eq!(commands.iter().map(|command| command.name.as_str()).collect::<Vec<_>>(), ["extension", "review", "skill:guide"]);
         assert_eq!(commands[0].argument_hint.as_deref(), Some("target"));
+        assert_eq!(commands[1].source_info.as_ref().unwrap().path, "/tmp/review.md");
+        assert_eq!(commands[2].source_info.as_ref().unwrap().path, "/tmp/guide/SKILL.md");
     }
 
     #[tokio::test]
