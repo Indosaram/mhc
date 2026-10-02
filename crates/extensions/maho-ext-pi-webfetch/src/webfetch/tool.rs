@@ -1,4 +1,7 @@
 pub const DEFAULT_OUTPUT_MAX_BYTES:usize=50*1024;
+pub fn parse_webfetch_format(value:Option<&serde_json::Value>)->super::fetcher::WebfetchFormat{
+    match value.and_then(serde_json::Value::as_str){Some("text")=>super::fetcher::WebfetchFormat::Text,Some("html")=>super::fetcher::WebfetchFormat::Html,_=>super::fetcher::WebfetchFormat::Markdown}
+}
 #[derive(Debug,PartialEq,Eq)]
 pub struct WebfetchOutputCap{pub text:String,pub truncated:bool,pub output_bytes:usize,pub total_bytes:usize}
 pub fn cap_webfetch_output(text:&str)->WebfetchOutputCap{

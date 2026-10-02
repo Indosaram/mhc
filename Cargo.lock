@@ -1960,6 +1960,7 @@ name = "maho-ext-pi-webfetch"
 version = "0.0.0"
 dependencies = [
  "reqwest",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
