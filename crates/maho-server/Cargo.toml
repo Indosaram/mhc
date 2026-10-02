@@ -15,7 +15,9 @@ maho-agent = { path = "../maho-agent" }
 maho-core = { path = "../maho-core" }
 maho-rpc = { path = "../maho-rpc" }
 maho-tui = { path = "../maho-tui" }
+maho-interactive = { path = "../maho-interactive" }
 maho-ext-mcp = { path = "../builtins/maho-ext-mcp" }
+maho-ext-ask-user = { path = "../builtins/maho-ext-ask-user" }
 maho-ai = { path = "../maho-ai" }
 maho-ext-host = { path = "../maho-ext-host" }
 maho-ext-api = { path = "../maho-ext-api" }

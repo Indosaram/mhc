@@ -32,3 +32,25 @@ async fn history_and_search_methods_require_experimental_capability() {
     }
     runtime.dispose().await;
 }
+
+#[tokio::test]
+async fn initialized_core_routes_user_input_responses_and_reports_unknown_ids() {
+    use maho_server::app_server::user_input_bridge::UserInputBridge;
+    use maho_ext_api::{QuestionRequest,QuestionOptions};
+    let mut core = ServerCore::new("/tmp/home".into(),"1".into(),"Linux".into(),"test".into(),"x64".into(),"linux".into());
+    let bridge = Arc::new(std::sync::Mutex::new(UserInputBridge::new(Arc::new(|_,_|1))));
+    core.user_input = Some(bridge.clone());
+    let (send,mut receive) = tokio::sync::mpsc::unbounded_channel();
+    core.add_connection("qa".into(),Arc::new(move |message| {send.send(message).unwrap();Box::pin(async {Ok(())})}));
+    core.receive("qa",classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}}))).await.unwrap();
+    receive.try_recv().unwrap();
+    let answered = UserInputBridge::request_user_input(&bridge,"thread","turn","item",QuestionRequest {request_id:"q".into(),questions:Vec::new(),wait_for_answer:true,timeout_ms:10000},QuestionOptions::default());
+    core.receive("qa",classify_incoming(json!({"id":"user-input-0","result":{"answers":false}}))).await.unwrap();
+    assert_eq!(receive.try_recv().unwrap()["error"]["code"],-32602);
+    core.receive("qa",classify_incoming(json!({"id":"user-input-0","result":{"answers":{}}}))).await.unwrap();
+    assert_eq!(answered.await.unwrap().status,maho_ext_api::QuestionStatus::Answered);
+    core.receive("qa",classify_incoming(json!({"id":"user-input-0","result":{}}))).await.unwrap();
+    assert_eq!(receive.try_recv().unwrap()["error"]["code"],-32600);
+    assert_eq!(bridge.lock().unwrap().pending_count(),0);
+    core.remove_connection("qa");
+}

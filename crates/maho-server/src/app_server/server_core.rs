@@ -17,10 +17,12 @@ pub struct ServerCore {
     pub arch: String,
     pub platform: String,
     pub on_disconnect: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    pub approvals: Option<Arc<std::sync::Mutex<super::approval_bridge::ApprovalBridge>>>,
+    pub user_input: Option<Arc<std::sync::Mutex<super::user_input_bridge::UserInputBridge>>>,
 }
 impl ServerCore {
     pub fn new(agent_home: String, version: String, os_type: String, os_release: String, arch: String, platform: String) -> Self {
-        Self { connections: BTreeMap::new(), registry: MethodRegistry::default(), agent_home, version, os_type, os_release, arch, platform, on_disconnect: None }
+        Self { connections: BTreeMap::new(), registry: MethodRegistry::default(), agent_home, version, os_type, os_release, arch, platform, on_disconnect: None, approvals:None, user_input:None }
     }
     pub fn add_connection(&mut self, id: String, send: SendMessage) -> Arc<CoreConnection> {
         let connection = Arc::new(CoreConnection { initialized: Mutex::new(InitializedConnection::default()), send });
@@ -33,6 +35,29 @@ impl ServerCore {
     pub fn get_connection(&self, id: &str) -> Option<Arc<CoreConnection>> { self.connections.get(id).cloned() }
     pub async fn receive(&self, id: &str, envelope: ClassifiedIncoming) -> Result<(), errors::JsonRpcError> {
         let Some(connection) = self.connections.get(id) else { return Ok(()); };
+        if connection.initialized.lock().await.state.is_some() && let Some(input) = &self.user_input {
+            let routed = match &envelope {
+                ClassifiedIncoming::Notification(message) if message["method"] == "item/tool/userInputProgress" => Some(input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).progress(&message["params"])),
+                ClassifiedIncoming::Response(message) if !message["id"].is_null() => {
+                    let result = input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).resolve_response(message);
+                    match result {
+                        Ok(false) if self.approvals.as_ref().is_some_and(|bridge|bridge.lock().unwrap_or_else(std::sync::PoisonError::into_inner).resolve_response(message))=>Some(Ok(true)),
+                        Ok(false)=>{(connection.send)(json!({"id":message["id"],"error":{"code":-32600,"message":"Unknown server request id"}})).await?;return Ok(());},
+                        result=>Some(result),
+                    }
+                },
+                _=>None,
+            };
+            if let Some(result) = routed {
+                if let Err(error) = result {
+                    let response_id = match &envelope {ClassifiedIncoming::Response(message)=>message["id"].clone(),_=>Value::Null};
+                    (connection.send)(json!({"id":response_id,"error":{"code":-32602,"message":error.to_string()}})).await?;
+                }
+                return Ok(());
+            }
+        }
+        if self.user_input.is_none() && let ClassifiedIncoming::Response(message) = &envelope
+            && self.approvals.as_ref().is_some_and(|bridge|bridge.lock().unwrap_or_else(std::sync::PoisonError::into_inner).resolve_response(message)) {return Ok(());}
         let mut dispatch_connection = None;
         let response = match envelope {
             ClassifiedIncoming::Request(request) => {
