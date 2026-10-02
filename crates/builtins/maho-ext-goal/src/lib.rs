@@ -40,4 +40,6 @@ pub mod index;
 pub mod accounting_hooks;
 pub mod input_hooks;
 pub mod runtime;
+pub mod extension;
+pub use extension::GoalExtension;
 #[cfg(test)] mod test_context;

@@ -36,7 +36,7 @@ impl GoalRuntime {
     }
     pub async fn event(&self,event:&ExtensionEvent,context:&ExtensionContext)->Result<Option<Goal>,ExtensionFailure> {
         let mut state=self.state.lock().await; let reference=(self.reference)(context); let now=(self.now)(); let seconds=(now/1000.0).floor() as u64;
-        let mut goal=crate::store::read_goal(&reference).map_err(failure)?;
+        let mut goal=if matches!(event,ExtensionEvent::SessionStart(_)) { None } else { crate::store::read_goal(&reference).map_err(failure)? };
         match event {
             ExtensionEvent::SessionStart(_)=>{
                 state.accounting.clear(); state.input.reset();
