@@ -51,3 +51,9 @@ fn query(manager: &DagManager, name: &str, value: Value) -> Value { query_dag_rp
     loop { sequences.extend(page["events"].as_array().expect("events").iter().map(|event| event["seq"].as_u64().expect("seq"))); if page["hasMore"]!=true { break; } journal.append(DagRunEventPayload::RunStarted { generation:1 }).expect("append while paging"); let response=query(&manager,"omo.dag.history",json!({"runId":id,"sinceSeq":page["nextSinceSeq"],"throughSeq":5,"limit":2})); assert_eq!(response["ok"],true); page=response["value"].clone(); }
     assert_eq!(sequences,[1,2,3,4,5]); assert!(query(&manager,"omo.dag.history",json!({"runId":id}))["value"]["headSeq"].as_u64().expect("head")>5);
 }
+#[test] fn unreadable_journal_returns_history_unavailable_without_losing_snapshot() {
+    let (root,manager,id)=fixture(); let store=create_dag_file_store(&DagStoreConfig::new(root.path()),DagStoreOptions::default()).expect("store"); let path=store.paths.event(&id);
+    std::fs::rename(&path,path.with_extension("saved")).expect("preserve journal"); std::fs::create_dir(&path).expect("unreadable journal directory");
+    assert_eq!(query(&manager,"omo.dag.snapshot",json!({"runId":id}))["ok"],true);
+    for method in ["omo.dag.history","omo.dag.subscribe"] { let response=query(&manager,method,json!({"runId":id})); assert_eq!(response["ok"],false); assert_eq!(response["error"]["code"],"history_unavailable"); }
+}
