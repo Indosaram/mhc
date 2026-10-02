@@ -30,6 +30,9 @@ pub fn receive_snapshot(snapshot:&mut Option<WorkerSnapshot>,replacement:WorkerS
     signal.acknowledge(true);
     if settled{notify_settled();}
 }
+pub async fn settle_output_credit(signal:&crate::session_worker_signals::WorkerSignal,consumed:impl std::future::Future<Output=Result<(),String>>,fail:impl FnOnce(&str)){
+    match consumed.await{Ok(())=>signal.acknowledge(true),Err(error)=>{signal.acknowledge(false);fail(&error);}}
+}
 #[cfg(test)]mod tests{
     use super::*;fn display(revision:f64)->WorkerControl{WorkerControl::Display(WorkerDisplay{revision,width:80.,rendered:false,capabilities:vec![]})}
     #[test]fn output_activity_updates_identity_before_publication_without_creating_runtime(){let mut snapshot=None;commit_output_activity(&mut snapshot,None,true,Some(true),true);assert!(snapshot.is_none());let replacement=WorkerSnapshot{state:serde_json::json!({"sessionId":"durable","isStreaming":false}),session_path:Some("/session".into()),live_session_paths:vec!["/session".into()],busy:false,handoff_busy:Some(false),streaming:false};commit_output_activity(&mut snapshot,Some(replacement),true,Some(true),true);assert!(!snapshot.as_ref().unwrap().busy);commit_output_activity(&mut snapshot,None,true,Some(true),true);let snapshot=snapshot.unwrap();assert_eq!(snapshot.state["sessionId"],"durable");assert_eq!(snapshot.state["isStreaming"],true);assert!(snapshot.busy);assert_eq!(snapshot.session_path.as_deref(),Some("/session"));}
