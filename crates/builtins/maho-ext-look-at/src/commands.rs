@@ -5,7 +5,7 @@ use maho_core::model_resolver::parse_model_pattern;
 use crate::{settings::{LookAtStore,load_look_at_chain,load_look_at_enabled},model_selector::resolve_vision_model};
 pub type LookAtResync=Arc<dyn Fn(&ExtensionContext)->Result<(),ExtensionFailure>+Send+Sync>;
 const MENU:[&str;4]=["Show current chain","Edit chain","Reset session override","Toggle look_at"];
-pub fn parse_entries(raw:&str)->Vec<String> { raw.split_whitespace().map(String::from).collect() }
+pub fn parse_entries(raw:&str)->Vec<String> { raw.split(|character:char|matches!(character,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}')).filter(|entry|!entry.is_empty()).map(String::from).collect() }
 pub fn validate_entries(entries:&[String],available:&[Model])->Vec<String> {
     let vision:Vec<_>=available.iter().filter(|model|model.input.contains(&InputModality::Image)).cloned().collect();
     entries.iter().filter_map(|entry| {
@@ -70,6 +70,6 @@ pub fn register_look_at_command(api:&mut ExtensionApi,store:Arc<Mutex<LookAtStor
 }
 #[cfg(test)] mod tests {
     use super::*;
-    #[test] fn whitespace_separates_entries() { assert_eq!(parse_entries("  one\n two\tthree  "),vec!["one","two","three"]); }
+    #[test] fn whitespace_separates_entries() { assert_eq!(parse_entries("  one\n two\tthree  "),vec!["one","two","three"]); assert_eq!(parse_entries("one\u{feff}two\u{0085}three"),vec!["one","two\u{0085}three"]); }
     #[test] fn unavailable_entries_are_saved_with_warning() { assert_eq!(validate_entries(&["missing".into()],&[]).len(),1); }
 }
