@@ -33,3 +33,4 @@ pub mod prompt_append;
 pub mod custom_tools;
 pub mod sdk_boundary;
 pub mod session_sync;
+pub mod session_commit_boundary;
