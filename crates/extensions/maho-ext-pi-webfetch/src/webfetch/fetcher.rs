@@ -19,8 +19,17 @@ pub const fn build_accept_header(format:WebfetchFormat)->&'static str{match form
     WebfetchFormat::Html=>"text/html;q=1.0, application/xhtml+xml;q=0.9, text/plain;q=0.8, text/markdown;q=0.7, */*;q=0.1",
 }}
 pub async fn fetch_url(value:&str,format:WebfetchFormat,timeout:Option<f64>)->Result<FetchResult,WebfetchError>{
+    fetch_url_with_signal(value,format,timeout,None).await
+}
+pub async fn fetch_url_with_signal(value:&str,format:WebfetchFormat,timeout:Option<f64>,signal:Option<&tokio_util::sync::CancellationToken>)->Result<FetchResult,WebfetchError>{
     validate_url(value)?;
-    let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(std::time::Duration::from_secs(clamp_timeout(timeout))).build()?;
+    let seconds=clamp_timeout(timeout);
+    let operation=fetch_validated_url(value,format);
+    let cancellation=async{match signal{Some(signal)=>signal.cancelled().await,None=>std::future::pending::<()>().await}};
+    tokio::select!{biased;()=cancellation=>Err(WebfetchError::Aborted),result=tokio::time::timeout(std::time::Duration::from_secs(seconds),operation)=>result.unwrap_or(Err(WebfetchError::Timeout(seconds)))}
+}
+async fn fetch_validated_url(value:&str,format:WebfetchFormat)->Result<FetchResult,WebfetchError>{
+    let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?;
     let mut current=value.to_owned();
     for redirects in 0..=20{
         let mut response=client.get(&current).header("Accept",build_accept_header(format)).header("Accept-Language","en-US,en;q=0.9").header("Sec-CH-UA","\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"").header("Sec-CH-UA-Mobile","?0").header("Sec-CH-UA-Platform","\"Windows\"").header("Sec-Fetch-Dest","document").header("Sec-Fetch-Mode","navigate").header("Sec-Fetch-Site","none").header("Sec-Fetch-User","?1").header("Upgrade-Insecure-Requests","1").header("User-Agent","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36").send().await?;

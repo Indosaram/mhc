@@ -4,6 +4,8 @@ pub enum WebfetchError {
     InvalidUrl(String),
     #[error("Request aborted")]
     Aborted,
+    #[error("Request timed out after {0}s")]
+    Timeout(u64),
     #[error("Response too large (exceeds 5MB limit)")]
     ResponseTooLarge,
     #[error(transparent)]
