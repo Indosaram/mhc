@@ -3911,7 +3911,9 @@ impl AgentSession {
         let over_proactive_threshold = model.context_window > 0 && tokens as f64 >= model.context_window as f64 * ratio;
         if !at_hard_limit && !over_proactive_threshold { return Ok(()); }
         let result = self.compact_for_model(None, &model, "pre-prompt").await;
-        if result.is_err() && at_hard_limit && !self.is_compaction_delegated() {
+        let on_cooldown = matches!(self.compaction_state(), crate::compaction::lifecycle::CompactionLifecycleState::Failed(_, _, Some(cause), _)
+            if cause == "circuit-breaker");
+        if result.is_err() && at_hard_limit && !self.is_compaction_delegated() && !on_cooldown {
             return Err("Compaction required before provider request".to_owned());
         }
         Ok(())
@@ -6359,7 +6361,7 @@ mod tests {
 
     #[tokio::test]
     async fn continuation_admission_only_hard_failure_blocks() {
-        for (hard_limit, reject) in [(false, false), (false, true), (true, true)] {
+        for (hard_limit, reject, cooldown) in [(false, false, false), (false, true, false), (true, true, false), (true, true, true)] {
             let session = test_session();
             let mut model = test_model();
             model.context_window = 128;
@@ -6379,12 +6381,13 @@ mod tests {
                 let result = maho_ext_api::CompactionResult { summary: "digest".to_owned(),
                     first_kept_entry_id: event.preparation.first_kept_entry_id.clone(), tokens_before: event.preparation.tokens_before, details: None };
                 Box::pin(async move { Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {
-                    cancel: reject.then_some(true), compaction: (!reject).then_some(result), ..Default::default()
+                    cancel: reject.then_some(true), rejection_cause: cooldown.then_some(maho_ext_api::CompactionRejectionCause::CircuitBreaker),
+                    compaction: (!reject).then_some(result), ..Default::default()
                 })) })
             })]);
             session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
             let result = session.revalidate_scheduled_continuation_admission().await;
-            assert_eq!(result.is_err(), hard_limit && reject);
+            assert_eq!(result.is_err(), hard_limit && reject && !cooldown);
             assert_eq!(session.compaction_state().generation(), 1);
         }
     }
