@@ -7,6 +7,16 @@ pub fn active_turns_for_idle_decision(input:&UnknownActivityInput)->u64{
 #[derive(Default)]
 pub struct ObserverLink{current:Option<u64>,healthy:bool,unhealthy_since:Option<f64>,retry_armed:bool}
 impl ObserverLink{
+    pub async fn run<S,E,O,L,F>(&mut self,mut open:O,mut lost:L,settled:impl Fn()->bool,retry_delay:std::time::Duration,mut now:impl FnMut()->f64)->Result<(),E>
+    where O:FnMut()->F,F:std::future::Future<Output=Result<S,E>>,L:FnMut(S)->std::pin::Pin<Box<dyn std::future::Future<Output=()>>> {
+        let socket=open().await?;
+        let mut socket=Some(socket);let mut identity=0;
+        loop{
+            if let Some(current)=socket.take(){identity+=1;self.opened(identity);lost(current).await;if !self.lost(identity,settled(),now()){return Ok(());}}
+            tokio::time::sleep(retry_delay).await;self.retry_fired();
+            match open().await{Ok(current)=>socket=Some(current),Err(_) if self.arm_retry(settled())=>{},Err(_)=>return Ok(())}
+        }
+    }
     pub fn opened(&mut self,socket:u64){self.current=Some(socket);self.healthy=true;self.unhealthy_since=None;}
     pub const fn healthy(&self)->bool{self.healthy}
     pub const fn unhealthy_since(&self)->Option<f64>{self.unhealthy_since}

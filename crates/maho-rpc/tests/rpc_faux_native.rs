@@ -2,7 +2,7 @@ use maho_test_support::{faux::{FauxResponse,FauxScript},faux_session::FauxSessio
 use maho_rpc::{json_event::to_json_event,jsonl::{serialize_json_line,JsonlLineReader,LineRecord},print_mode::format_print_result};
 
 #[tokio::test]
-async fn native_prompt_events_survive_rpc_jsonl_and_print_formatting(){
+async fn rpc_faux_native_prompt_events_survive_rpc_jsonl_and_print_formatting(){
     let session=FauxSession::new(FauxScript{name:"rpc-native".into(),prompt:"hello".into(),responses:vec![FauxResponse{content:"native response".into(),stop_reason:"stop".into()}]});
     let result=tokio::time::timeout(std::time::Duration::from_secs(10),session.run_native()).await.expect("native turn settles").expect("native session runs");
     let events=result["events"].as_array().expect("events");

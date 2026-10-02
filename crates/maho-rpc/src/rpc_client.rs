@@ -6,6 +6,28 @@ pub struct RpcSocketClient{stream:tokio::net::UnixStream,pub frames:RpcClientFra
 impl RpcSocketClient{
     pub async fn connect(path:&std::path::Path)->std::io::Result<Self>{Ok(Self::from_stream(tokio::net::UnixStream::connect(path).await?))}
     pub fn from_stream(stream:tokio::net::UnixStream)->Self{Self{stream,frames:RpcClientFrames::default(),reader:crate::jsonl::JsonlLineReader::default(),lines:VecDeque::new()}}
+    pub async fn prompt(&mut self,message:&str,options:Value,on_event:impl FnMut(Value),mut disposition:impl FnMut(&str),mut preflight:impl FnMut(bool))->std::io::Result<()>{
+        let mut command=options;
+        command["type"]="prompt".into();command["message"]=message.into();
+        let response=self.request(command,true,on_event,|response|{
+            if response["success"]==true{disposition(response["data"]["disposition"].as_str().unwrap_or("handled"));preflight(true);}else{preflight(false);}
+        }).await;
+        match response{
+            Err(error)=>{preflight(false);Err(error)},
+            Ok(response) if response["success"]==true=>Ok(()),
+            Ok(response)=>Err(std::io::Error::other(response["error"].as_str().unwrap_or_default())),
+        }
+    }
+    pub async fn collect_events(&mut self,timeout:std::time::Duration)->std::io::Result<Vec<Value>>{
+        tokio::time::timeout(timeout,async{
+            let mut events=Vec::new();
+            loop{match self.receive().await?{
+                Some(ClientFrame::Event(event))=>{let settled=event["type"]=="agent_settled";events.push(event);if settled{return Ok(events);}},
+                Some(ClientFrame::Response(_)|ClientFrame::Ignored)=>{},
+                None=>return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe,"RPC transport is gone")),
+            }}
+        }).await.map_err(|_|std::io::Error::new(std::io::ErrorKind::TimedOut,"Timeout waiting for agent events. Stderr: "))?
+    }
     pub async fn send(&mut self,command:Value,route:bool,expect_response:bool)->std::io::Result<Value>{
         use tokio::io::AsyncWriteExt;
         let command=self.frames.command(command,route,expect_response);
