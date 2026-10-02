@@ -70,3 +70,28 @@ async fn event_subscription_contains_errors_and_finishes_when_emitter_closes() {
     assert_eq!(received.recv().await.unwrap(),("event".into(),serde_json::json!("event 2")));
     assert!(received.recv().await.is_none());
 }
+
+#[tokio::test]
+async fn event_subscription_dispatches_next_event_while_previous_callback_is_pending() {
+    let (events,receiver)=tokio::sync::broadcast::channel(4);
+    let (started,mut starts)=tokio::sync::mpsc::unbounded_channel();
+    let (release,released)=tokio::sync::oneshot::channel();
+    let mut released=Some(released);
+    let sink=McpAsyncErrorSink {logger:Arc::new(|_,_|Ok(())),notify:None};
+    let subscription=safe_on(receiver,"concurrent".into(),move |value:u32| {
+        let pending=if value==1 {released.take()}else{None};
+        let started=started.clone();
+        async move {
+            started.send(value).unwrap();
+            if let Some(pending)=pending {pending.await.unwrap();}
+            Ok(())
+        }
+    },sink);
+    events.send(1).unwrap();
+    assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(2),starts.recv()).await.unwrap(),Some(1));
+    events.send(2).unwrap();
+    let second=tokio::time::timeout(std::time::Duration::from_secs(2),starts.recv()).await;
+    release.send(()).unwrap();drop(events);
+    tokio::time::timeout(std::time::Duration::from_secs(2),subscription).await.unwrap().unwrap();
+    assert_eq!(second.unwrap(),Some(2));
+}
