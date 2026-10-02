@@ -2,6 +2,14 @@
 #[serde(rename_all = "lowercase")]
 pub enum EvalLanguage { Js, Py, Rb, Jl }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EvalRuntimeInfo {
+    pub name: String,
+    pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
 pub const EVAL_LANGUAGE_ORDER: [EvalLanguage; 4] = [EvalLanguage::Js, EvalLanguage::Py, EvalLanguage::Rb, EvalLanguage::Jl];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
