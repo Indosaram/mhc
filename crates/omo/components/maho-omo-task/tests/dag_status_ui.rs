@@ -70,3 +70,11 @@ fn fixture(mode:ExtensionMode)->(Arc<DagStatusUi>,Arc<Timers>,Arc<support::Ui>,A
 #[test] fn pruned_run_clears_widget_on_next_refresh() { let (status,timers,ui,runs,_root)=fixture(ExtensionMode::Tui); status.sync_now(); *runs.0.lock().expect("run")=None; timers.fire(1000); assert_eq!(timers.count(),0); assert!(ui.widgets.lock().expect("widgets").last().expect("widget").0.is_none()); }
 #[test] fn scheduled_burst_renders_once_before_live_refresh() { let (status,timers,ui,_,_root)=fixture(ExtensionMode::Tui); for _ in 0..3 { status.schedule_sync(); } assert_eq!(timers.count(),1); timers.fire(250); assert_eq!(ui.widgets.lock().expect("widgets").len(),1); assert_eq!(timers.count(),1); status.dispose(); }
 #[test] fn disposal_cancels_active_refresh_without_further_paint() { let (status,timers,ui,_,_root)=fixture(ExtensionMode::Tui); status.sync_now(); status.dispose(); timers.fire(1000); assert_eq!(timers.count(),0); assert_eq!(ui.widgets.lock().expect("widgets").len(),1); }
+#[test] fn run_missing_between_list_and_snapshot_does_not_hide_surviving_run() {
+    struct Missing(Arc<Runs>);
+    impl DagStatusUiManager for Missing {
+        fn list(&self,session:&str)->Vec<DagRunSummary> { let mut runs=self.0.list(session); let mut missing=runs[0].clone(); missing.run_id="gone".into(); runs.push(missing); runs }
+        fn snapshot(&self,run:&str,session:&str)->Option<DagRunSnapshot> { self.0.snapshot(run,session) }
+    }
+    let (_original,timers,ui,runs,_root)=fixture(ExtensionMode::Tui); let mut context=support::context(); context.ui=ui.clone(); context.mode=ExtensionMode::Tui; let mut runtime=TaskRuntimeContext::new("/tmp".into()); runtime.capture_from(&context); let status=DagStatusUi::new(Arc::new(Missing(runs)),Arc::new(Mutex::new(runtime)),timers.clone()); status.sync_now(); let widgets=ui.widgets.lock().expect("widgets"); let Some(WidgetContent::Lines(rows))=&widgets.last().expect("widget").0 else { panic!("rows") }; assert_eq!(rows.len(),2); assert!(rows[0].contains("release")); assert!(!rows.join("\n").contains("gone")); drop(widgets); status.dispose(); assert_eq!(timers.count(),0);
+}
