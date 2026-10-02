@@ -51,7 +51,7 @@ pub struct GoalFile { pub version: u8, pub goal: Option<Goal> }
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsageSnapshot { pub input: u64, pub output: u64, pub cache_read: u64, pub cache_write: u64, pub total_tokens: u64 }
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct GoalUpdate { pub objective: Option<String>, pub status: Option<GoalStatus>, pub reason: Option<String>, pub token_budget: Option<Option<u64>> }
+pub struct GoalUpdate { pub objective: Option<String>, pub status: Option<GoalStatus>, pub reason: Option<String>, pub token_budget: Option<Option<f64>> }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GoalToolSnapshot {

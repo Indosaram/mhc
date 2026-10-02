@@ -27,8 +27,8 @@ pub fn validate_token_budget(value: u64) -> Result<u64, GoalError> {
     if value > 9_007_199_254_740_991 { return Err(GoalError::InvalidMutation("token budget must be a non-negative integer".into())); }
     Ok(value)
 }
-pub fn resolve_token_budget(current: Option<u64>, update: Option<Option<u64>>) -> Result<Option<u64>, GoalError> {
-    match update { None => Ok(current), Some(None) => Ok(None), Some(Some(value)) => validate_token_budget(value).map(Some) }
+pub fn resolve_token_budget(current: Option<u64>, update: Option<Option<f64>>) -> Result<Option<u64>, GoalError> {
+    match update { None => Ok(current), Some(None) => Ok(None), Some(Some(value)) if is_non_negative_safe_integer(value)=>Ok(Some(value as u64)),Some(Some(_))=>Err(GoalError::InvalidMutation("token budget must be a non-negative integer".into())) }
 }
 #[cfg(test)]
 mod tests {
@@ -41,6 +41,6 @@ mod tests {
     #[test] fn objective_is_trimmed_without_truncation() { let value = "  build it  "; let result = validate_objective(value, "full.txt").unwrap(); assert_eq!(result.objective, "build it"); assert!(!result.truncated); }
     #[test] fn unicode_objective_uses_code_points() { let value = "😀".repeat(4001); let result = validate_objective(&value, "full.txt").unwrap(); assert_eq!(result.objective.chars().count(), 4000); assert!(result.truncated); }
     #[test] fn whitespace_cut_stays_within_lookback() { let value = format!("{} {}", "a".repeat(3800), "b".repeat(300)); let result = validate_objective(&value, "full.txt").unwrap(); assert_eq!(result.objective, format!("{}{}", "a".repeat(3800), truncation_marker("full.txt"))); }
-    #[test] fn budget_update_preserves_clears_and_rejects_unsafe_values() { let current = Some(100); let result = (resolve_token_budget(current, None), resolve_token_budget(current, Some(None)), resolve_token_budget(current, Some(Some(u64::MAX)))); assert_eq!(result.0.unwrap(), Some(100)); assert_eq!(result.1.unwrap(), None); assert!(result.2.is_err()); }
+    #[test] fn budget_update_preserves_clears_and_rejects_unsafe_values() { let current = Some(100); let result = (resolve_token_budget(current, None), resolve_token_budget(current, Some(None)), resolve_token_budget(current, Some(Some(u64::MAX as f64)))); assert_eq!(result.0.unwrap(), Some(100)); assert_eq!(result.1.unwrap(), None); assert!(result.2.is_err()); }
     #[test] fn trim_uses_javascript_whitespace() { let value = "\u{feff}work\u{0085}"; let result = validate_objective(value, "full.txt").unwrap(); assert_eq!(result.objective, "work\u{0085}"); }
 }

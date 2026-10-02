@@ -140,13 +140,22 @@ impl GoalRuntime {
         self.refresh(&mut state,context,goal.as_ref()).await?; Ok(goal)
     }
     pub async fn store_changed(&self,thread_id:&str)->Result<Option<Goal>,ExtensionFailure> {
+        self.store_changed_with_context(&crate::store_changed_event::GoalStoreChangedEvent { thread_id:thread_id.into(),ctx:None }).await
+    }
+    pub async fn store_changed_with_context(&self,event:&crate::store_changed_event::GoalStoreChangedEvent)->Result<Option<Goal>,ExtensionFailure> {
         let mut state=self.state.lock().await;
-        let Some(context)=state.context.clone().filter(|context|context.session_manager.session_id()==thread_id) else { return Ok(None); };
+        let Some(context)=event.ctx.clone().or_else(||state.context.clone()).filter(|context|context.session_manager.session_id()==event.thread_id) else { return Ok(None); };
         if !context.is_idle()||context.has_pending_messages()? { return Ok(None); }
         let goal=crate::store::read_goal(&(self.reference)(&context)).map_err(failure)?;
         if !goal.as_ref().is_some_and(|goal|goal.status==GoalStatus::Active) { return Ok(None); }
         if let Some(goal)=goal.as_ref().filter(|goal|goal.status==GoalStatus::Active) { state.accounting.begin(goal,(self.now)()); }
         self.refresh(&mut state,&context,goal.as_ref()).await?; Ok(goal)
+    }
+    pub async fn dispatch_store_changed(&self,event:&crate::store_changed_event::GoalStoreChangedEvent,queue:&crate::command_registration::QueueGoalContinuation)->Result<Option<Goal>,ExtensionFailure> {
+        let context=match &event.ctx { Some(context)=>Some(context.clone()),None=>self.state.lock().await.context.clone() };
+        let goal=self.store_changed_with_context(event).await?;
+        if let (Some(context),Some(goal))=(context,goal.as_ref()) { queue(&context,goal).await?; }
+        Ok(goal)
     }
     pub async fn maybe_prompt_resume_stopped_goal(&self,context:&ExtensionContext,reason:&str,goal:Option<&Goal>,queue:&crate::command_registration::QueueGoalContinuation)->Result<bool,ExtensionFailure> {
         if !crate::lifecycle_helpers::is_resume_of_stopped_goal(context,reason,goal)? { return Ok(false); }
@@ -165,6 +174,23 @@ impl GoalRuntime {
 fn failure(error:crate::errors::GoalError)->ExtensionFailure { ExtensionFailure::new(error.to_string()) }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn typed_store_change_uses_actual_context_and_awaits_owner_delivery() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+        let runtime=GoalRuntime::new(Arc::new(move |_|stored.clone()),Arc::new(||0.0));
+        crate::store::create_goal(&reference,"work",None,0).await.unwrap();
+        let mut context=crate::test_context::context(); let session=crate::test_context::bind_session(&mut context);
+        let seen=Arc::new(Mutex::new(Vec::new())); let capture=seen.clone();
+        let queue:crate::command_registration::QueueGoalContinuation=Arc::new(move |context,goal| { let capture=capture.clone(); let identity=context.session_manager.session_id().to_owned(); let id=goal.id.clone(); Box::pin(async move { capture.lock().unwrap().push((identity,id)); Ok(()) }) });
+        let event=crate::store_changed_event::GoalStoreChangedEvent { thread_id:"s".into(),ctx:Some(context.clone()) };
+        let goal=runtime.dispatch_store_changed(&event,&queue).await.unwrap().unwrap();
+        assert_eq!(seen.lock().unwrap().as_slice(),&[("s".into(),goal.id)]);
+        let wrong=crate::store_changed_event::GoalStoreChangedEvent { thread_id:"other".into(),ctx:Some(context.clone()) };
+        assert!(runtime.dispatch_store_changed(&wrong,&queue).await.unwrap().is_none()); assert_eq!(seen.lock().unwrap().len(),1);
+        let mut busy=crate::test_context::context(); busy.is_idle_fn=Arc::new(||false);
+        assert!(runtime.dispatch_store_changed(&crate::store_changed_event::GoalStoreChangedEvent { thread_id:"s".into(),ctx:Some(busy) },&queue).await.unwrap().is_none());
+        runtime.event(&maho_ext_api::ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent { reason:maho_ext_api::SessionReason::Quit,target_session_file:None,signal:None }),&context).await.unwrap();
+        session.dispose().await;
+    }
     #[tokio::test] async fn owning_channels_replace_subscriptions_and_shutdown_unsubscribes() {
         let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
         let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap();

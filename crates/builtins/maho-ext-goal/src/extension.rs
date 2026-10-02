@@ -7,6 +7,11 @@ impl GoalExtension {
 }
 impl Extension for GoalExtension {
     fn register(&self,api:&mut ExtensionApi) {
+        self.register_with_runtime(api);
+    }
+}
+impl GoalExtension {
+    pub fn register_with_runtime(&self,api:&mut ExtensionApi)->Arc<GoalRuntime> {
         let runtime=Arc::new(GoalRuntime::new(self.reference.clone(),self.now.clone()));
         for (name,label,description,schema) in [
             ("create_goal","Create Goal","Register a goal for work that outlives this turn: it waits on external state, or the user's requested outcome needs more than one verify-and-fix round before it is true. A single answer, lookup, or one-shot edit needs no goal.\nObjectives are limited to 4,000 characters. For longer instructions, put the full objective in a file and refer to that file.\nReplaces the current goal when it is complete and archives it; fails if an unfinished goal exists.",crate::tool_registration::create_goal_schema()),
@@ -36,6 +41,7 @@ impl Extension for GoalExtension {
             let events=api.events.clone();
             api.on(kind,Arc::new(move |event,context| { let runtime=runtime.clone(); let events=events.clone(); Box::pin(async move { runtime.event(event,context).await?; if matches!(event,maho_ext_api::ExtensionEvent::SessionStart(_)) { runtime.start_channels(&events,context).await?; } Ok(EventResult::None) }) }));
         }
+        runtime
     }
 }
 #[cfg(test)] mod tests {
