@@ -87,7 +87,7 @@ fn compile_expression(pattern:&str)->String{
         if matches!(ch,'@'|'+'|'?'|'*'|'!')&&chars.get(index+1)==Some(&'('){
             let mut depth=1;let mut end=index+2;while end<chars.len(){if chars[end]=='(' {depth+=1;}else if chars[end]==')'{depth-=1;if depth==0{break;}}end+=1;}
             if depth==0{let body=chars[index+2..end].iter().collect::<String>();if matches!(ch,'+'|'*')&&risky_simple_repeat(&body){for literal in &chars[index..=end]{if ".*+?()[]{}|^$\\".contains(*literal){result.push('\\');}result.push(*literal);}index=end+1;continue;}let inner=compile_expression(&body);let quantifier=match ch{'?'=>"?",'+'=>"+",'*'=>"*",_=>""};if index==0&&ch!='@'{result.push_str("(?=.)");}
-                if ch=='!'{result.push_str(&format!("(?:(?!(?:{inner}){})[^/]*?)",if end+1==chars.len(){"$"}else{""}));}else{result.push_str(&format!("(?:{inner}){quantifier}"));}index=end+1;continue;}
+                if ch=='!'{let rest=chars[end+1..].iter().collect::<String>();let suffix=if body.contains('*')&&rest.starts_with('.')&&!rest[1..].contains(['/', '\\', '.']){compile_expression(&rest)}else if rest.is_empty(){"$".into()}else{String::new()};let star=if rest.is_empty()||body.contains('/') {"(?:(?!(?:^|/)\\.{1,2}(?:/|$)).)*?"}else{"[^/]*?"};result.push_str(&format!("(?:(?!(?:{inner}){suffix}){star})"));}else{result.push_str(&format!("(?:{inner}){quantifier}"));}index=end+1;continue;}
             result.push_str("\\(");index+=2;continue;
         }
         match ch{
@@ -96,8 +96,9 @@ fn compile_expression(pattern:&str)->String{
             '('=>{let mut depth=1;let mut end=index+1;while end<chars.len(){if chars[end]=='(' {depth+=1;}else if chars[end]==')'{depth-=1;if depth==0{break;}}end+=1;}if depth==0{parens+=1;result.push('(');}else{result.push_str("\\(");}},
             ')'=>if parens>0{parens-=1;result.push(')');}else{result.push_str("\\)");},
             '|'=>result.push('|'),
+            '{'=>{let mut depth=1;let mut end=index+1;while end<chars.len(){if chars[end]=='{'{depth+=1;}else if chars[end]=='}'{depth-=1;if depth==0{break;}}end+=1;}if depth==0{let body=chars[index+1..end].iter().collect::<String>();let mut nesting=0;let mut start=0;let mut branches=Vec::new();for (position,ch) in body.char_indices(){match ch{'{'|'('|'['=>nesting+=1,'}'|')'|']'=>nesting-=1,',' if nesting==0=>{branches.push(compile_expression(&body[start..position]));start=position+1;},_=>{}}}branches.push(compile_expression(&body[start..]));result.push_str(&format!("(?:{})",branches.join("|")));index=end;}else{result.push_str("\\{");}},
             '['=>{if let Some(end)=chars[index+1..].iter().position(|ch|*ch==']'){result.extend(chars[index..=index+1+end].iter());index+=1+end;}else{result.push_str("\\[");}},
-            '.'|'+'|'$'|'^'|'{'|'}'|'\\'=>{result.push('\\');result.push(ch);},
+            '.'|'+'|'$'|'^'|'}'|'\\'=>{result.push('\\');result.push(ch);},
             _=>result.push(ch)
         }index+=1;
     }result
