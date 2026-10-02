@@ -10,6 +10,11 @@ fn from(key: &str, value: &str) -> maho_ext_pi_rules::rules::types::PiRulesConfi
 #[test] fn invalid_numbers_keep_defaults() { let values=["abc","0","-5","","   "]; let results:Vec<_>=values.iter().map(|v|config_from_values(|_|Some((*v).into()))).collect(); assert!(results.iter().all(|r| r.max_rule_chars==12000 && r.max_result_chars==40000)); }
 #[test] fn malformed_numbers_keep_defaults() { let values=["1.5","50abc","1e3","+50","0x10"]; let results:Vec<_>=values.iter().map(|v|config_from_values(|_|Some((*v).into()))).collect(); assert!(results.iter().all(|r| r.max_rule_chars==12000 && r.max_result_chars==40000)); }
 #[test] fn whitespace_trimmed() { let r=from("PI_RULES_MAX_RULE_CHARS"," 50 "); assert_eq!(r.max_rule_chars,50); }
+#[test] fn ecmascript_environment_whitespace() {
+    assert_eq!(from("PI_RULES_MAX_RULE_CHARS","\u{feff}50\u{feff}").max_rule_chars,50);
+    assert!(from("PI_RULES_DISABLED","\u{feff}TRUE\u{feff}").disabled);
+    assert_eq!(from("PI_RULES_MAX_RULE_CHARS","\u{85}50\u{85}").max_rule_chars,12000);
+}
 #[test] fn process_env_is_read_in_isolated_child() {
     let output=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","environment_child","--nocapture"]).env("PI_RULES_MAX_RULE_CHARS","77").env("PI_RULES_CONFIG_CHILD","1").output().unwrap();
     assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
