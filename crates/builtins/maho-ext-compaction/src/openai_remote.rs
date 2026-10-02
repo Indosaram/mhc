@@ -87,6 +87,46 @@ fn formatted_count(count: usize) -> String {
     })
 }
 
+pub fn create_openai_responses_stream_compaction_payload(payload: &Value, request: &OpenAiRemoteCompactionRequest) -> Option<Value> {
+    let mut payload = payload.as_object()?.clone();
+    let mut input: Vec<_> = payload.get("input").and_then(Value::as_array).into_iter().flatten()
+        .take_while(|item|matches!(item.get("role").and_then(Value::as_str), Some("system" | "developer")))
+        .map(|item|crate::openai_remote_convert::provider_native_item(item).unwrap_or_else(||json!({"role":item["role"],"content":item.get("content").filter(|value|value.is_string()).cloned().unwrap_or(json!([]))}))).collect();
+    input.extend(request.body["input"].as_array()?.iter().cloned());
+    input.push(json!({"type":"context_compaction"}));
+    payload.insert("input".into(),json!(input));
+    payload.insert("model".into(),request.body["model"].clone());
+    for key in ["prompt_cache_key","service_tier"] {
+        if let Some(value) = request.body.get(key).filter(|value|value.as_str().is_some_and(|value|!value.is_empty())) { payload.insert(key.into(),value.clone()); }
+    }
+    Some(Value::Object(payload))
+}
+
+pub fn build_openai_responses_stream_compaction_result(model: &Model, first_kept_entry_id: &str, request: &OpenAiRemoteCompactionRequest, response: &maho_ai::types::AssistantMessage, now_ms: u64, origin: Option<Value>) -> Result<CompactionResult, &'static str> {
+    let serialized = serde_json::to_value(response).expect("assistant messages serialize");
+    let item = serialized["content"].as_array().into_iter().flatten().filter(|block|block["type"] == "providerNative")
+        .filter_map(|block|crate::openai_remote_convert::provider_native_item(&block["raw"]))
+        .find(crate::openai_remote_schema::is_openai_context_compaction_item).ok_or("OpenAI Responses stream compaction did not return a context_compaction item")?;
+    let mut replacement: Vec<_> = request.body["input"].as_array().into_iter().flatten().filter(|item|crate::openai_remote_schema::is_retained_responses_stream_input_item(item)).cloned().collect();
+    replacement.push(item);
+    let mut details = json!({"schema":OPENAI_REMOTE_COMPACTION_SCHEMA,"mode":"openai-remote","provider":"openai","api":"openai-responses","transport":"websocket","modelId":model.id,"responseId":response.response_id.clone().unwrap_or_else(||format!("response-{now_ms}")),"createdAt":response.timestamp/1000,"requestInputItemCount":request.input_item_count,"retainedInputItemCount":replacement.len(),"replacementInput":replacement,"usage":{"input":response.usage.input,"output":response.usage.output,"cacheRead":response.usage.cache_read,"cacheWrite":response.usage.cache_write,"totalTokens":response.usage.total_tokens}});
+    if let Some(origin) = origin { details["origin"] = origin; }
+    Ok(CompactionResult { summary:format!("OpenAI remote compaction checkpoint.\nNative Responses WebSocket replay is active for {} retained item(s).\nOriginal OpenAI input items compacted: {}.",formatted_count(replacement.len()),formatted_count(request.input_item_count)), first_kept_entry_id:first_kept_entry_id.into(),tokens_before:request.tokens_before,details:Some(details) })
+}
+
+pub async fn run_openai_responses_stream_compaction(options: crate::openai_remote_responses_v2::ResponsesV2Options<'_>, now_ms: u64) -> Result<Option<CompactionResult>,maho_ai::utils::event_stream::StreamError> {
+    let request_body = options.request.body.clone();
+    let stream_options = maho_ai::types::SimpleStreamOptions { stream: maho_ai::types::StreamOptions {
+        request: maho_ai::types::ProviderRequestOptions { api_key:options.api_key,headers:Some(options.headers.into_iter().map(|(key,value)|(key,Some(value))).collect()),signal:Some(options.signal),
+            on_payload:Some(std::sync::Arc::new(move |payload,_,_|create_openai_responses_stream_compaction_payload(payload,&OpenAiRemoteCompactionRequest {body:request_body.clone(),input_item_count:0,tokens_before:0}))), ..Default::default() },
+        cache_retention:Some(maho_ai::types::CacheRetention::Short),extra_body:options.extra_body,session_id:Some(options.session_id),transport:Some(maho_ai::types::Transport::Websocket),..Default::default()
+    },..Default::default() };
+    let context = maho_ai::types::Context {system_prompt:Some(options.system_prompt),messages:Vec::new(),tools:None};
+    let response = (options.runner)(options.model,&context,&stream_options).result().await?;
+    if matches!(response.stop_reason,maho_ai::types::StopReason::Error | maho_ai::types::StopReason::Aborted) { return Ok(None); }
+    build_openai_responses_stream_compaction_result(options.model,options.first_kept_entry_id,options.request,&response,now_ms,Some(options.origin)).map(Some).map_err(maho_ai::utils::event_stream::StreamError::new)
+}
+
 pub fn build_openai_remote_compaction_result(model: &Model, first_kept_entry_id: &str, request: &OpenAiRemoteCompactionRequest, response: &Value, origin: Option<Value>) -> Result<CompactionResult, &'static str> {
     let replacement: Vec<_> = response.get("output").and_then(Value::as_array).into_iter().flatten().filter(|item| is_retained_remote_output_item(item)).cloned().collect();
     if !replacement.iter().any(is_openai_remote_compaction_output_item) { return Err("OpenAI remote compaction did not return a compaction item"); }
