@@ -172,4 +172,10 @@ mod tests {
         let original=documents.clone();let index=build_bm25_index(&documents);let first=index.search("same words",10,&Default::default());let second=index.search("same words",10,&Default::default());
         assert_eq!(first,second);assert_eq!(documents,original);assert_eq!(first.iter().map(|result|result.name.as_str()).collect::<Vec<_>>(),["a_tool","b_tool","c_tool"]);
     }
+    #[test] fn upstream_mcp_exact_name_overrides_length_penalty() {
+        let filler=vec!["alpha beta gamma delta epsilon zeta eta theta";40].join(" ");
+        let documents:Vec<_>=[("mcp_docs_get-library-docs",format!("get library docs {filler}")),("mcp_docs_get_library_docs_helper","get library docs".into()),("mcp_docs_get_library_docs_alt","get library docs".into())].into_iter().map(|(name,description)|{let mut document=doc(name);let label=name.strip_prefix("mcp_docs_").expect("fixture prefix");document.label=label.into();document.aliases=vec![label.into()];document.description=Some(description);document.source=ToolSearchSource::Mcp;document.group="docs".into();document.owner_label="docs".into();document.registration_id=format!("mcp:docs:{label}");document}).collect();let index=build_bm25_index(&documents);
+        assert_ne!(index.search("get library docs",10,&Bm25SearchOptions{exact_match:Some(false),..Default::default()})[0].name,"mcp_docs_get-library-docs");
+        for query in ["get-library-docs","get_library_docs","GET-LIBRARY-DOCS","mcp_docs_get-library-docs"] {let results=index.search(query,25,&Default::default());assert_eq!(results[0].name,"mcp_docs_get-library-docs");assert!(results[0].exact);}
+    }
 }
