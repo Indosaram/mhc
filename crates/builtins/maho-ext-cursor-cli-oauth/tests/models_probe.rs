@@ -34,3 +34,14 @@ async fn signalled_probe_reports_signal_after_settlement() {
     let result=run_models_probe(&executable,&dir.path().join("stdout"),15000,dir.path().to_str().expect("home"),&BTreeMap::new()).await;
     assert!(matches!(result,Err(ModelProbeError::Exit {exit_code:None,signal:Some(15)})));
 }
+#[tokio::test(start_paused = true)]
+async fn probe_deadline_kills_and_settles_child() {
+    let dir=tempfile::tempdir().expect("directory");let executable=dir.path().join("cursor-agent");
+    std::fs::write(&executable,"#!/usr/bin/python3\nimport signal\nsignal.pause()\n").expect("script");std::fs::set_permissions(&executable,std::fs::Permissions::from_mode(0o700)).expect("permissions");
+    let stdout=dir.path().join("stdout");let environment=BTreeMap::new();
+    let mut probe=Box::pin(run_models_probe(&executable,&stdout,15000,dir.path().to_str().expect("home"),&environment));
+    std::future::poll_fn(|cx| {assert!(probe.as_mut().poll(cx).is_pending());std::task::Poll::Ready(())}).await;
+    tokio::time::advance(std::time::Duration::from_millis(15000)).await;
+    assert!(matches!(probe.await,Err(ModelProbeError::Timeout {timeout_ms:15000})));
+    std::fs::remove_file(stdout).expect("output released after deadline settlement");
+}
