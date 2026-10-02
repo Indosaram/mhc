@@ -77,6 +77,28 @@ pub fn reader_prepare_div<'a>(node:dom_query::NodeRef<'a>)->dom_query::NodeRef<'
         let paragraph=node.element_children()[0];node.replace_with(&paragraph);paragraph
     } else if !reader_has_child_block(&node) {node.rename("p");node} else {node}
 }
+pub fn reader_replace_breaks(root:&dom_query::NodeRef<'_>) {
+    fn next_nonspace(mut node:Option<dom_query::NodeRef<'_>>)->Option<dom_query::NodeRef<'_>> {
+        while let Some(current)=node {if current.is_element()||!current.text().chars().all(js_whitespace) {break;}node=current.next_sibling();}node
+    }
+    let selection=dom_query::Selection::from(*root).select("br");
+    for br in selection.nodes() {
+        if br.parent().is_none() {continue;}
+        let mut next=br.next_sibling();let mut replaced=false;
+        while let Some(current)=next_nonspace(next).filter(|node|node.node_name().as_deref()==Some("br")) {
+            replaced=true;next=current.next_sibling();current.remove_from_parent();
+        }
+        if !replaced {continue;}
+        br.rename("p");br.remove_all_attrs();next=br.next_sibling();
+        while let Some(current)=next {
+            if current.node_name().as_deref()==Some("br")&&next_nonspace(current.next_sibling()).is_some_and(|node|node.node_name().as_deref()==Some("br")) {break;}
+            if !reader_is_phrasing(&current) {break;}
+            next=current.next_sibling();br.append_child(&current);
+        }
+        while let Some(last)=br.children().last().copied().filter(reader_is_whitespace) {last.remove_from_parent();}
+        if let Some(parent)=br.parent().filter(|parent|parent.node_name().as_deref()==Some("p")) {parent.rename("div");}
+    }
+}
 pub fn score_reader_candidates(elements:&[dom_query::NodeRef<'_>],weight_classes:bool)->Vec<(dom_query::NodeId,f64)> {
     let mut candidates:Vec<(dom_query::NodeRef<'_>,f64)>=Vec::new();
     for element in elements {
@@ -299,6 +321,12 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_break_chains_create_paragraphs_until_next_chain_or_block() {
+        let document=dom_query::Document::from("<div id='root'>foo<br>bar<br> <br><br>abc <em>inline</em> <br><br>last<section>block</section></div>");reader_replace_breaks(&document.select("#root").nodes()[0]);assert_eq!(document.select("#root").inner_html().as_ref(),"foo<br>bar<p> abc <em>inline</em></p><p>last</p><section>block</section>");
+    }
+    #[test] fn reader_break_chain_renames_parent_paragraph_and_drops_break_attributes() {
+        let document=dom_query::Document::from("<p id='root'>before<br class='ignored'><br>after</p>");reader_replace_breaks(&document.select("#root").nodes()[0]);assert_eq!(document.select("#root").nodes()[0].node_name().as_deref(),Some("div"));assert_eq!(document.select("#root").inner_html().as_ref(),"before<p>after</p>");
+    }
     #[test] fn reader_div_preparation_groups_inline_runs_around_blocks() {
         let document=dom_query::Document::from("<div id='root'>one <em>two</em> <br><section>block</section> three <strong>four</strong> </div>");let node=document.select("#root").nodes()[0];reader_prepare_div(node);
         assert_eq!(document.select("#root").inner_html().as_ref(),"<p>one <em>two</em></p><section>block</section><p> three <strong>four</strong> </p>");
