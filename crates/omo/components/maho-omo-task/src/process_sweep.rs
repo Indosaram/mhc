@@ -13,7 +13,11 @@ pub fn sweep_omo_families(current_version:&str,warn:&(dyn Fn(&str)+Sync)) {
 }
 pub fn run_session_start_process_sweep(options:&SessionStartProcessSweepOptions) {
     if options.env.contains_key(SENPI_RPC_CHILD_MARKER_ENV) { (options.info)("omo-senpi process sweep skipped: running inside a senpi-task RPC child"); return; }
-    if let Err(error)=(options.sweep)() { (options.warn)(&format!("omo-senpi process sweep failed: {error}")); }
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (options.sweep)())) {
+        Ok(Ok(()))=>{},
+        Ok(Err(error))=>(options.warn)(&format!("omo-senpi process sweep failed: {error}")),
+        Err(_)=>(options.warn)("omo-senpi process sweep panicked"),
+    }
 }
 pub fn wire_session_start_process_sweep(api:&mut ExtensionApi,options:SessionStartProcessSweepOptions) {
     let options=Arc::new(options);
