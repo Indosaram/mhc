@@ -8,7 +8,7 @@ pub struct MatcherInput<'a> {pub frontmatter:&'a RuleFrontmatter,pub is_single_f
 pub struct MatchResult {pub matched:bool,pub reason:MatchReason}
 #[derive(Debug,PartialEq,Eq)]
 pub struct MatcherCacheStats {pub entries:usize,pub compiled_patterns:usize}
-struct PatternSet {key:String,positive:Vec<(String,PathMatcher)>,negative:Vec<PathMatcher>}
+struct PatternSet {key:String,positive:Vec<(String,PathMatcher)>,negative:Vec<(String,PathMatcher)>}
 enum PathMatcher{Glob(globset::GlobMatcher),Expression(fancy_regex::Regex),Never}
 impl PathMatcher{
     fn is_match(&self,path:&str)->Result<bool,MatcherError>{match self{Self::Glob(matcher)=>Ok(matcher.is_match(path)),Self::Expression(matcher)=>matcher.is_match(path).map_err(|error|MatcherError::Expression(Box::new(error))),Self::Never=>Ok(false)}}
@@ -59,8 +59,8 @@ impl Matcher {
                 let negated=pattern.starts_with('!');
                 let value=pattern.strip_prefix('!').unwrap_or(&pattern);
                 let normalized=normalize_literal_braces(value);
-                let compiled=if value.contains(['(',')','"']){match fancy_regex::Regex::new(&format!("^(?:{})$",compile_expression(&normalized))){Ok(expression)=>PathMatcher::Expression(expression),Err(_)=>PathMatcher::Never}}else{PathMatcher::Glob(GlobBuilder::new(&normalized).literal_separator(false).backslash_escape(false).allow_unclosed_class(true).empty_alternates(true).build()?.compile_matcher())};
-                if negated{set.negative.push(compiled);}else{set.positive.push((pattern,compiled));}
+                let compiled=if value.contains(['(',')','"','[']){match fancy_regex::Regex::new(&format!("^(?:{})$",compile_expression(&normalized))){Ok(expression)=>PathMatcher::Expression(expression),Err(_)=>PathMatcher::Never}}else{PathMatcher::Glob(GlobBuilder::new(&normalized).literal_separator(false).backslash_escape(false).allow_unclosed_class(true).empty_alternates(true).build()?.compile_matcher())};
+                if negated{set.negative.push((value.into(),compiled));}else{set.positive.push((pattern,compiled));}
             }
             if self.sets.len()>=256{self.sets.pop_front();}
             set
@@ -71,8 +71,8 @@ impl Matcher {
         for (pattern,matcher) in &set.positive{
             for base in bases.into_iter().flatten(){
                 let base=base.replace('\\',"/");
-                if matcher.is_match(&base)?{
-                    for matcher in &set.negative{if matcher.is_match(&base)?{return Ok(no_match());}}
+                if !base.is_empty()&&(base==*pattern||matcher.is_match(&base)?){
+                    for (pattern,matcher) in &set.negative{if base==*pattern||matcher.is_match(&base)?{return Ok(no_match());}}
                     return Ok(MatchResult{matched:true,reason:MatchReason::Glob{pattern:pattern.clone()}});
                 }
             }
