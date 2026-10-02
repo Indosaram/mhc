@@ -10,6 +10,7 @@ pub mod grok;
 pub mod grok_mermaid;
 pub mod help_content;
 pub mod interactive_host_runtime;
+pub mod interactive_extension_ui;
 pub mod interactive_mode;
 pub mod interactive_stderr_guard;
 pub mod jsdiff;
