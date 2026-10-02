@@ -1,11 +1,18 @@
 use crate::{types::{ApplyPatchOperation,ApplyPatchPreview,ApplyPatchPreviewFile},workspace::resolve_patch_path};
 pub const PATCH_PREVIEW_MAX_LINES:usize=16;
 pub const PATCH_PREVIEW_MAX_CHARS:usize=4000;
+fn js_whitespace(character:char)->bool { matches!(character,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}') }
+pub fn format_in_flight_call_text(patch_text:&str)->String {
+    let paths=crate::text::extract_patched_paths(patch_text);
+    if paths.is_empty() { return "Patching".into(); }
+    let count=if paths.len()>1 { format!(" ({} files)",paths.len()) } else { String::new() };
+    format!("Patching{count}: {}",paths.join(", "))
+}
 fn changed(line:&str)->bool {
     let Some(first)=line.chars().next() else { return false; }; if first!='+' && first!='-' { return false; }
-    let mut chars=line[first.len_utf8()..].chars().peekable(); while chars.peek().is_some_and(|c|c.is_whitespace()) { chars.next(); }
+    let mut chars=line[first.len_utf8()..].chars().peekable(); while chars.peek().is_some_and(|c|js_whitespace(*c)) { chars.next(); }
     let mut digits=0; while chars.peek().is_some_and(|c|c.is_ascii_digit()) { chars.next(); digits+=1; }
-    digits>0 && chars.next().is_some_and(char::is_whitespace)
+    digits>0 && chars.next().is_some_and(js_whitespace)
 }
 fn window_count(len:usize,start:usize,end:usize)->usize { end-start+usize::from(start>0)+usize::from(end<len) }
 pub fn truncate_preview(text:&str)->String {
@@ -22,7 +29,7 @@ pub fn truncate_preview(text:&str)->String {
     } else { lines.iter().take(8).copied().chain(std::iter::once("…")).chain(lines.iter().skip(lines.len().saturating_sub(7)).copied()).collect::<Vec<_>>().join("\n") };
     if preview.encode_utf16().count()<=PATCH_PREVIEW_MAX_CHARS { return preview; }
     let mut units=0; let mut end=0; for (index,c) in preview.char_indices() { if units+c.len_utf16()>PATCH_PREVIEW_MAX_CHARS-1 { break; } units+=c.len_utf16(); end=index+c.len_utf8(); }
-    format!("{}…",preview[..end].trim_end())
+    format!("{}…",preview[..end].trim_end_matches(js_whitespace))
 }
 pub fn display_path(file_path:&str,cwd:&str)->String {
     let path=std::path::Path::new(file_path); if !path.is_absolute() { return file_path.into(); }

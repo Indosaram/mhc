@@ -27,6 +27,12 @@ pub const fn build_accept_header(format:WebfetchFormat)-> &'static str {
     }
 }
 fn transport_error(error:reqwest::Error)->WebfetchError { WebfetchError::Abort(error.to_string()) }
+pub fn parse_content_length(value:&str)->Option<usize> {
+    let value=value.trim_start_matches(|character:char|matches!(character,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}'));
+    let (negative,digits)=if let Some(rest)=value.strip_prefix('-') { (true,rest) } else { (false,value.strip_prefix('+').unwrap_or(value)) };
+    let count=digits.bytes().take_while(u8::is_ascii_digit).count(); if count==0 { return None; }
+    let parsed=digits[..count].parse::<f64>().ok()?; if !parsed.is_finite() || (negative && parsed!=0.) { return None; } Some(parsed as usize)
+}
 pub async fn fetch_url(options:FetchOptions<'_>)->Result<FetchResult,WebfetchError> {
     validate_url(options.url)?;
     let seconds=clamp_timeout(options.timeout_seconds);
@@ -54,7 +60,7 @@ pub async fn fetch_url(options:FetchOptions<'_>)->Result<FetchResult,WebfetchErr
                 current=next.into(); continue;
             }
             let content_type=response.headers().get("content-type").and_then(|v|v.to_str().ok()).unwrap_or("").to_owned();
-            let length=response.headers().get("content-length").and_then(|v|v.to_str().ok()).and_then(|v|v.trim().parse::<usize>().ok());
+            let length=response.headers().get("content-length").and_then(|v|v.to_str().ok()).and_then(parse_content_length);
             if length.is_some_and(|n|n>MAX_RESPONSE_SIZE_BYTES) { return Err(WebfetchError::ResponseTooLarge("Response too large (exceeds 5MB limit)".into())); }
             let mut stream=response.bytes_stream(); let mut body=vec![];
             while let Some(chunk)=stream.next().await {
@@ -76,6 +82,7 @@ pub async fn fetch_url(options:FetchOptions<'_>)->Result<FetchResult,WebfetchErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn content_length_uses_decimal_prefix_and_accepts_negative_zero() { assert_eq!(parse_content_length("\u{feff}+12bytes"),Some(12)); assert_eq!(parse_content_length("1e6"),Some(1)); assert_eq!(parse_content_length("0x10"),Some(0)); assert_eq!(parse_content_length("-0"),Some(0)); assert_eq!(parse_content_length("-1"),None); assert_eq!(parse_content_length("garbage"),None); }
     #[test] fn first_error_path_rejects_non_http_url() { assert!(matches!(validate_url("file:///tmp/file"),Err(WebfetchError::InvalidUrl(_)))); }
     #[test] fn malformed_http_url_is_rejected() { assert!(matches!(validate_url("http://"),Err(WebfetchError::InvalidUrl(_)))); }
     #[test] fn timeout_clamps_rounds_and_defaults() { for value in [None,Some(0.0),Some(-1.0),Some(f64::NAN),Some(f64::INFINITY)] { assert_eq!(clamp_timeout(value),30); } assert_eq!(clamp_timeout(Some(1.1)),2); assert_eq!(clamp_timeout(Some(200.0)),120); }
