@@ -1,5 +1,19 @@
 use serde_json::Value;
 use crate::todo_types::TodoPhase;
+pub fn register_prompt_hook(api:&mut maho_ext_api::ExtensionApi) {
+    api.on(maho_ext_api::EventKind::BeforeAgentStart,std::sync::Arc::new(|event,_ctx|Box::pin(async move {
+        Ok(prompt_hook_result(event))
+    })));
+}
+fn prompt_hook_result(event:&maho_ext_api::ExtensionEvent)->maho_ext_api::EventResult {
+    match event {
+        maho_ext_api::ExtensionEvent::BeforeAgentStart(event)=>maho_ext_api::EventResult::BeforeAgentStart(maho_ext_api::BeforeAgentStartEventResult {
+            system_prompt:Some(format!("{}\n{}",event.system_prompt,crate::prompt::TASK_MANAGEMENT_SECTION)),
+            message:None,
+        }),
+        _=>maho_ext_api::EventResult::None,
+    }
+}
 pub fn native_todo_updates(message:&Value)->Vec<Vec<TodoPhase>> {
     if message.get("role").and_then(Value::as_str)!=Some("assistant") { return vec![]; }
     let Some(content)=message.get("content").and_then(Value::as_array) else { return vec![]; };
@@ -9,6 +23,26 @@ fn js_truthy(value:&Value)->bool { match value { Value::Null=>false,Value::Bool(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn prompt_hook_registers_only_before_agent_start() {
+        let mut api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("todotools",std::path::PathBuf::new(),Default::default()),Default::default(),Default::default(),Default::default());
+        register_prompt_hook(&mut api);
+        assert_eq!(api.registered.handlers.len(),1);
+        assert_eq!(api.registered.handlers[&maho_ext_api::EventKind::BeforeAgentStart].len(),1);
+    }
+    #[test] fn prompt_hook_preserves_host_prompt_and_appends_shipped_section() {
+        let event=maho_ext_api::ExtensionEvent::BeforeAgentStart(maho_ext_api::BeforeAgentStartEvent {
+            prompt:"work".into(),images:None,system_prompt:"host prompt".into(),
+            system_prompt_options:maho_ext_api::BuildSystemPromptOptions {cwd:Default::default(),custom_prompt:None,append_system_prompt:None,tools:vec![],skills:vec![],context_files:vec![]},
+        });
+        match prompt_hook_result(&event) {
+            maho_ext_api::EventResult::BeforeAgentStart(result)=>{
+                assert_eq!(result.system_prompt.unwrap(),format!("host prompt\n{}",crate::prompt::TASK_MANAGEMENT_SECTION));
+                assert!(result.message.is_none());
+            },
+            _=>panic!("expected prompt transformation"),
+        }
+        assert!(matches!(prompt_hook_result(&maho_ext_api::ExtensionEvent::SessionAbort),maho_ext_api::EventResult::None));
+    }
     #[test] fn native_updates_skip_explicit_ops_and_nonassistant_messages() { let message=serde_json::json!({"role":"assistant","content":[{"type":"toolCall","name":"todo","arguments":{"todos":[]}},{"type":"toolCall","name":"todo","arguments":{"op":"view","todos":[]}}]}); assert_eq!(native_todo_updates(&message),vec![vec![]]); assert!(native_todo_updates(&serde_json::json!({"role":"user","content":message["content"]})).is_empty()); }
     #[test] fn empty_op_is_not_an_explicit_operation() { assert_eq!(native_todo_updates(&serde_json::json!({"role":"assistant","content":[{"type":"toolCall","name":"todo","arguments":{"op":"","todos":[]}}]})),vec![vec![]]); }
 }
