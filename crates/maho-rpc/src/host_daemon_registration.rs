@@ -44,6 +44,13 @@ pub fn release_generation(paths:&HostDaemonPaths,instance_id:&str,pid:u32)->std:
     match std::fs::remove_dir_all(&generation.dir){Err(error)if error.kind()==std::io::ErrorKind::NotFound=>Ok(()),result=>result}
 }
 fn remove_file(path:&std::path::Path)->std::io::Result<()>{match std::fs::remove_file(path){Err(error)if error.kind()==std::io::ErrorKind::NotFound=>Ok(()),result=>result}}
+pub fn clear_host_registration(paths:&HostDaemonPaths)->std::io::Result<()>{
+    let pointer=read_file_or_undefined(&paths.pointer_file)?;
+    if let Some(instance_id)=parse_json(pointer.as_deref()).as_ref().and_then(|pointer|pointer.get("instance_id")).and_then(Value::as_str){
+        match std::fs::remove_dir_all(generation_paths(paths,instance_id).dir){Err(error)if error.kind()==std::io::ErrorKind::NotFound=>{},result=>result?}
+    }
+    remove_file(&paths.pointer_file)?;remove_file(&paths.settings_file)
+}
 #[cfg(test)]mod tests{
     use super::*;
     #[test]fn registration_requires_guard_shape_and_owner_matches_live_process(){let temp=tempfile::tempdir().unwrap();let paths=crate::host_daemon_paths::create_host_daemon_paths("socket",temp.path());crate::host_daemon_paths::create_daemon_directories(&paths).unwrap();let generation=generation_paths(&paths,"one");crate::host_daemon_paths::create_generation_directory(&generation).unwrap();std::fs::write(&paths.pointer_file,r#"{"instance_id":"one"}"#).unwrap();assert!(read_host_registration(&paths).unwrap().is_none());let pid=std::process::id();let record=serde_json::json!({"pid":pid,"processStartTime":read_process_start_time(pid),"socket":"socket","generation":3});std::fs::write(&generation.pid_file,record.to_string()).unwrap();let registered=read_host_registration(&paths).unwrap().unwrap();assert_eq!(registered.generation,3.);assert!(proven_owner(Some(&registered),"socket").is_some());assert!(proven_owner(Some(&registered),"other").is_none());let mut stale=registered;stale.process_start_time=Some("stale".into());assert!(proven_owner(Some(&stale),"socket").is_none());std::fs::write(&generation.pid_file,serde_json::json!({"pid":pid,"processStartTime":null}).to_string()).unwrap();let unguarded=read_host_registration(&paths).unwrap().unwrap();assert!(proven_owner(Some(&unguarded),"socket").is_none());}
