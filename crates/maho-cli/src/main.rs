@@ -16,6 +16,13 @@ fn run() -> Result<(), String> {
     use std::path::PathBuf;
     maho_cli::valid_cwd::ensure_valid_cwd().map_err(|e| e.to_string())?;
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    use maho_cli::experimental::process::{parse_internal_process_role, InternalProcessRole, INTERNAL_PROCESS_ENV};
+    if let Some(role) = parse_internal_process_role(std::env::var(INTERNAL_PROCESS_ENV).ok().as_deref())? {
+        return match role {
+            InternalProcessRole::Coordinator => run_coordinator_entry(&argv),
+            InternalProcessRole::Server | InternalProcessRole::SessionWorker => Err("Experimental server and session-worker entrypoints require excluded chord runtime (D-M5)".to_owned()),
+        };
+    }
     if maho_cli::cli::auth_command::is_auth_command_help(&argv) {
         return output(maho_cli::cli::auth_command::auth_command_help());
     }
@@ -77,3 +84,19 @@ fn run() -> Result<(), String> {
     }
     Err("Requested mode is not yet available: interactive todo 35, RPC todo 36, server todo 37; native extension assembly todo 48".to_owned())
 }
+#[cfg(unix)]
+fn run_coordinator_entry(argv: &[String]) -> Result<(), String> {
+    let [public, control, ..] = argv else { return Err("Coordinator requires public and control socket paths".to_owned()); };
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+    runtime.block_on(async {
+        let shutdown = maho_ai::utils::abort::AbortController::new();
+        let signal = shutdown.signal();
+        let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).map_err(|error| error.to_string())?;
+        let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(|error| error.to_string())?;
+        let coordinator = maho_cli::experimental::coordinator::run_coordinator(std::path::Path::new(public), std::path::Path::new(control), &signal);
+        tokio::pin!(coordinator);
+        tokio::select! { result = &mut coordinator => result, _ = interrupt.recv() => { shutdown.abort(None); coordinator.await }, _ = terminate.recv() => { shutdown.abort(None); coordinator.await } }
+    })
+}
+#[cfg(not(unix))]
+fn run_coordinator_entry(_argv: &[String]) -> Result<(), String> { Err("Coordinator named-pipe transport has not been ported on this platform".to_owned()) }

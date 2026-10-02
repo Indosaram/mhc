@@ -20,3 +20,12 @@ pub async fn terminate_internal_process(child: &mut tokio::process::Child) -> st
     if child.try_wait()?.is_none() { child.start_kill()?; child.wait().await?; }
     Ok(())
 }
+pub fn spawn_internal_process(role: InternalProcessRole, args: &[String], cwd: &std::path::Path, env: &std::collections::BTreeMap<String, String>) -> std::io::Result<tokio::process::Child> {
+    let mut env = env.clone(); normalize_agent_dir_lane(&mut env);
+    env.insert(INTERNAL_PROCESS_ENV.to_owned(), match role { InternalProcessRole::Coordinator => "coordinator", InternalProcessRole::Server => "server", InternalProcessRole::SessionWorker => "session-worker" }.to_owned());
+    let mut command = tokio::process::Command::new(std::env::current_exe()?);
+    command.args(args).current_dir(cwd).env_clear().envs(env).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    command.process_group(0);
+    command.spawn()
+}

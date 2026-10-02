@@ -23,3 +23,12 @@ fn generic_git_install_paths_reject_encoded_traversal_and_invalid_escapes() {
 #[test] fn upstream_unprefixed_scp_rejected() { assert!(parse_git_url("git@github.com:user/repo").is_none()); }
 #[test] fn upstream_unprefixed_host_rejected() { assert!(parse_git_url("github.com/user/repo").is_none()); }
 #[test] fn upstream_user_repo_rejected() { assert!(parse_git_url("user/repo").is_none()); }
+#[test]
+fn hosted_shorthands_preserve_upstream_clone_address() {
+    for (input, host, path) in [("git:user/repo", "github.com", "user/repo"), ("git:github:user/repo", "github.com", "user/repo"), ("git:gitlab:group/sub/repo", "gitlab.com", "group/sub/repo"), ("git:bitbucket:user/repo", "bitbucket.org", "user/repo"), ("git:gist:abcdef", "gist.github.com", "null/abcdef")] {
+        let parsed = parse_git_url(input).unwrap();
+        assert_eq!(parsed.host, host); assert_eq!(parsed.path, path);
+        assert_eq!(parsed.repo, format!("https://{}", &input[4..])); assert!(!parsed.pinned);
+    }
+    let parsed = parse_git_url("git:user/repo@release").unwrap(); assert_eq!(parsed.repo, "https://user/repo"); assert_eq!(parsed.reference.as_deref(), Some("release"));
+}

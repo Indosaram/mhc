@@ -24,7 +24,7 @@ photon-rs = { version = "=0.3.3", default-features = false }
 tempfile.workspace = true
 notify = "=8.2.0"
 nix = { version = "=0.28.0", features = ["signal", "process"] }
-tokio = { workspace = true, features = ["time", "macros", "rt", "process", "io-util", "fs"] }
+tokio = { workspace = true, features = ["time", "macros", "rt", "process", "io-util", "fs", "signal"] }
 
 [dev-dependencies]
 tempfile.workspace = true

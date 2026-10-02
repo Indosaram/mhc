@@ -39,6 +39,27 @@ pub fn parse_generic_git_url(source: &str) -> Option<GitSource> {
     Some(GitSource { repo, host, path, pinned: reference.as_ref().is_some_and(|reference| !reference.is_empty()), reference })
 }
 pub fn parse_git_url(source: &str) -> Option<GitSource> {
+    if let Some(input) = source.trim().strip_prefix("git:") {
+        let input = input.trim();
+        if !input.contains("://") && !input.starts_with("git@") {
+            let (domain, path) = if let Some(path) = input.strip_prefix("github:") { ("github.com", path) }
+                else if let Some(path) = input.strip_prefix("gitlab:") { ("gitlab.com", path) }
+                else if let Some(path) = input.strip_prefix("bitbucket:") { ("bitbucket.org", path) }
+                else if let Some(path) = input.strip_prefix("gist:") { ("gist.github.com", path) }
+                else if input.split('/').next().is_some_and(|host| !host.contains('.') && host != "localhost" && !host.contains(':')) { ("github.com", input) }
+                else { ("", "") };
+            if !domain.is_empty() {
+                let (path, reference) = path.split_once('@').filter(|(path, reference)| !path.is_empty() && !reference.is_empty()).map_or((path, None), |(path, reference)| (path, Some(reference)));
+                let (path, fragment) = path.split_once('#').map_or((path, None), |(path, fragment)| (path, Some(fragment)));
+                let path = if domain == "gist.github.com" && !path.contains('/') { format!("null/{path}") } else { path.to_owned() };
+                let mut result = parse_git_url(&format!("https://{domain}/{path}"))?;
+                result.repo = format!("https://{}", if reference.is_some() { input.split_once('@')?.0 } else { input });
+                result.reference = reference.or(fragment).map(str::to_owned).or(result.reference);
+                result.pinned = result.reference.is_some();
+                return Some(result);
+            }
+        }
+    }
     let mut source = parse_generic_git_url(source)?;
     let domain = source.host.strip_prefix("www.").unwrap_or(&source.host);
     if matches!(domain, "github.com" | "bitbucket.org" | "gitlab.com" | "gist.github.com" | "git.sr.ht") {
