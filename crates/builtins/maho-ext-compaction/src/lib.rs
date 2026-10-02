@@ -121,17 +121,40 @@ impl maho_ext_api::Extension for CompactionExtension {
         {
             let pending = std::sync::Arc::clone(&pending);
             let live_api = std::sync::Arc::clone(&live_api);
-            api.on(maho_ext_api::EventKind::SessionCompact, std::sync::Arc::new(move |event, _context| {
+            api.on(maho_ext_api::EventKind::SessionCompact, std::sync::Arc::new(move |event, context| {
                 let result = if let maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Accepted { request_id, .. }) = event {
                     let metadata = {
                         let mut pending = pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         pending.iter().position(|(id, _)| id == request_id).map(|index| pending.remove(index).1)
                     };
                     if let Some((checkpoint, todos)) = metadata {
-                        checkpoint_state::persist_checkpoint(&live_api, &checkpoint).and_then(|()| live_api.append_entry(todo_bridge::TODO_SNAPSHOT_CUSTOM_TYPE, Some(todos)))
+                        checkpoint_state::persist_checkpoint(&live_api, &checkpoint)
+                            .and_then(|()| live_api.append_entry(todo_bridge::TODO_SNAPSHOT_CUSTOM_TYPE, Some(todos)))
+                            .and_then(|()| todo_bridge::restore_todos_if_missing(&live_api, context))
                     } else { Ok(()) }
                 } else { Ok(()) };
                 Box::pin(async move { result?; Ok(maho_ext_api::EventResult::None) })
+            }));
+        }
+        {
+            let directive = std::sync::Arc::new(std::sync::Mutex::new(checkpoint_state::RestorationDirectiveState::default()));
+            let restoration = std::sync::Arc::clone(&restoration);
+            api.on(maho_ext_api::EventKind::BeforeAgentStart, std::sync::Arc::new(move |_event, context| {
+                let entries: Vec<_> = context.session_manager.get_entries().into_iter().map(|entry| {
+                    let mut value = entry.data;
+                    value["type"] = serde_json::json!(entry.kind);
+                    value["id"] = serde_json::json!(entry.id);
+                    value
+                }).collect();
+                let checkpoint = extension_wiring::recent_checkpoint(&entries, chrono::Utc::now().timestamp_millis() as f64);
+                let pending = restoration_tracker::consume_pending_payload(&mut restoration.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+                let message = checkpoint_state::attach_restoration_directive(&mut directive.lock().unwrap_or_else(std::sync::PoisonError::into_inner), checkpoint.as_ref(), pending);
+                let result = message.map(|message| Ok(maho_ext_api::CustomMessage {
+                    custom_type: message["customType"].as_str().unwrap_or_default().to_owned(),
+                    content: vec![maho_ext_api::ToolContent::text(message["content"].as_str().unwrap_or_default())],
+                    display: message["display"].as_bool().unwrap_or(false), details: message.get("details").cloned(),
+                })).transpose().map(|message| maho_ext_api::EventResult::BeforeAgentStart(maho_ext_api::BeforeAgentStartEventResult { message, system_prompt: None }));
+                Box::pin(async move { result })
             }));
         }
         for kind in [maho_ext_api::EventKind::TurnEnd, maho_ext_api::EventKind::AgentEnd,

@@ -109,7 +109,12 @@ pub async fn generate_summary_message(options: SummaryRequestOptions<'_>, on_pro
     let mut stream_options = maho_ai::types::StreamOptions {
         max_tokens: Some(summary_max_tokens(&options.snapshot.model, options.snapshot.context_window)),
         extra_body: options.extra_body,
-        request: maho_ai::types::ProviderRequestOptions { api_key: options.api_key, headers: options.headers, signal: Some(controller.signal()), ..Default::default() },
+        request: maho_ai::types::ProviderRequestOptions { api_key: options.api_key, headers: options.headers, signal: Some(controller.signal()),
+            on_payload: Some(std::sync::Arc::new(|payload, model, _| {
+                if model.api == "anthropic-messages" {
+                    payload.as_object().map(|payload| Value::Object(maho_ai::api::anthropic_tool_pairs::sanitize_anthropic_tool_pairs(payload)))
+                } else { Some(payload.clone()) }
+            })), ..Default::default() },
         ..Default::default()
     };
     if !options.omit_reasoning_options && let Some(reasoning) = summarization_reasoning_options(&options.snapshot.model).as_object() { stream_options.extra.extend(reasoning.clone()); }
