@@ -82,6 +82,28 @@ mod tests {
     use super::*;
     use super::super::types::{SearchProvider,SearchProviderConfig,SearchProviderEntry};
     fn config()->WebsearchConfig { WebsearchConfig{strategy:RoutingStrategy::Priority,fallback:true,auto:true,providers:vec![SearchProviderEntry{config:SearchProviderConfig::new(SearchProvider::Exa),priority:None,weight:None}]} }
+    #[tokio::test] async fn upstream_fallback_emits_initial_and_per_attempt_progress() {
+        use tokio::io::{AsyncReadExt,AsyncWriteExt};
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let address=listener.local_addr().unwrap();
+        let server=async {
+            for (status,body) in [("500 Internal Server Error","boom"),("200 OK",r#"{"results":[{"title":"Result","url":"https://example.com/a","text":"snippet"}]}"#)] {
+                let (mut socket,_)=listener.accept().await.unwrap();let mut request=Vec::new();let mut chunk=[0;1024];
+                loop {let count=socket.read(&mut chunk).await.unwrap();assert!(count>0);request.extend_from_slice(&chunk[..count]);if request.windows(4).any(|part|part==b"\r\n\r\n") {break}}
+                socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+            }
+        };
+        let mut config=config();config.auto=false;
+        config.providers[0].config.id=Some("primary".into());config.providers[0].config.base_url=Some(format!("http://{address}/search"));
+        let mut backup=config.providers[0].clone();backup.config.id=Some("backup".into());config.providers.push(backup);
+        let tool=create_web_search_tool(std::sync::Arc::new(move ||super::super::types::ConfigLoadResult::Ok{config:config.clone(),source:"fixture".into()}));
+        let updates=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));let observed=updates.clone();
+        let client=async {(tool.execute)(maho_tools::definition::ToolCall{id:"progress",params:json!({"query":"attempt progress"}),signal:Default::default(),context:None,on_update:Some(std::sync::Arc::new(move |update| {observed.lock().unwrap().push(update.details.unwrap());Ok(())}))}).await.unwrap()};
+        let (_,result)=tokio::time::timeout(std::time::Duration::from_secs(5),async {tokio::join!(server,client)}).await.unwrap();
+        assert_eq!(result.details.unwrap()["entryId"],"backup");let updates=updates.lock().unwrap();assert_eq!(updates.len(),3);
+        assert!(updates[0].get("currentProvider").is_none());assert_eq!(updates[0]["providerLabels"],json!(["exa/primary","exa/backup"]));
+        assert_eq!(updates[1]["currentProvider"],"exa/primary");assert_eq!(updates[1]["attempts"],json!([]));
+        assert_eq!(updates[2]["currentProvider"],"exa/backup");assert_eq!(updates[2]["attempts"].as_array().unwrap().len(),1);assert!(updates[2]["attempts"][0]["error"].as_str().unwrap().contains("HTTP 500"));assert_eq!(updates[2]["routeLabels"],json!(["exa/primary","exa/backup"]));
+    }
     #[tokio::test] async fn native_executor_searches_http_and_emits_source_result_details() {
         use tokio::io::{AsyncReadExt,AsyncWriteExt};
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(); let address=listener.local_addr().unwrap();
