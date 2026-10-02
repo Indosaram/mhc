@@ -51,17 +51,16 @@ impl CodemodeSessionManager {
                             call_id: &request.call_id, args: &request.args, executor: executor.as_ref(),
                             task_tool_name: &task_tools.task, task_output_tool_name: &task_tools.output,
                             tools: tools.as_deref(), execute_options, emit_status: None, agent_bridge: &agent_bridge,
-                        }).await.map_err(|error| json!({"name":"Error","message":error.to_string()}))
+                        }).await.map_err(|error| {
+                            let mut payload=json!({"name":"Error","message":error.to_string()});
+                            if let Some(code)=error.code() {payload["code"]=json!(code);}
+                            payload
+                        })
                     } else {
                         executor.execute_tool(&request.tool_name, request.args, execute_options).await
                             .map(|result| marshal_tool_result(&result))
                             .map_err(|error| {
-                                let code=match error.code {
-                                    maho_ext_api::ExecuteToolErrorCode::UnknownTool=>"unknown_tool",
-                                    maho_ext_api::ExecuteToolErrorCode::InactiveTool=>"inactive_tool",
-                                    maho_ext_api::ExecuteToolErrorCode::InvalidParams=>"invalid_params",
-                                    maho_ext_api::ExecuteToolErrorCode::Blocked=>"blocked",
-                                };
+                                let code=crate::bridges::reserved_dispatch::execute_tool_error_code(&error.code);
                                 json!({"name":"Error","message":error.to_string(),"code":code})
                             })
                     }

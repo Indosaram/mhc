@@ -66,7 +66,7 @@ impl CellHandler {
         } else if is_reserved_tool_name(name) {
             let tools=if name==crate::bridge::reserved::RESERVED_OUTPUT_TOOL {Ok(None)} else {self.runtime.tools.as_ref().map(|list|list()).transpose()};
             match tools {
-                Ok(tools)=>run_reserved_tool(name,ReservedDispatchContext {call_id,args:&message["args"],executor:self.runtime.executor.as_ref(),task_tool_name:&self.runtime.settings.task_tools.task,task_output_tool_name:&self.runtime.settings.task_tools.output,tools:tools.as_deref(),execute_options:options,emit_status:None,agent_bridge:&self.agent_bridge}).await.map(|value|(value,true,None,None)).map_err(|error|error.to_string()),
+                Ok(tools)=>run_reserved_tool(name,ReservedDispatchContext {call_id,args:&message["args"],executor:self.runtime.executor.as_ref(),task_tool_name:&self.runtime.settings.task_tools.task,task_output_tool_name:&self.runtime.settings.task_tools.output,tools:tools.as_deref(),execute_options:options,emit_status:None,agent_bridge:&self.agent_bridge}).await.map(|value|(value,true,None,None)).map_err(|error| {error_code=error.code();error.to_string()}),
                 Err(error)=>Err(error),
             }
         } else {
@@ -76,12 +76,7 @@ impl CellHandler {
                 let error=(!ok).then(||result.content.iter().find_map(|part| match part {maho_ext_api::ContentBlock::Text(content)=>Some(cap_code_points(&crate::host_sdk::sanitize_terminal_label(&content.text),512)),_=>None})).flatten();
                 (marshal_tool_result(&result),ok,preview,error)
             }).map_err(|error| {
-                error_code=Some(match error.code {
-                    maho_ext_api::ExecuteToolErrorCode::UnknownTool=>"unknown_tool",
-                    maho_ext_api::ExecuteToolErrorCode::InactiveTool=>"inactive_tool",
-                    maho_ext_api::ExecuteToolErrorCode::InvalidParams=>"invalid_params",
-                    maho_ext_api::ExecuteToolErrorCode::Blocked=>"blocked",
-                });
+                error_code=Some(crate::bridges::reserved_dispatch::execute_tool_error_code(&error.code));
                 error.to_string()
             })
         };

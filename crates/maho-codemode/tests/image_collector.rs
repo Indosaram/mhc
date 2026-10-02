@@ -67,7 +67,7 @@ async fn cell_handler_dispatches_native_tools_and_blocks_recursive_eval() {
     struct Executor;
     impl maho_codemode::bridges::output_bridge::OutputExecuteTool for Executor {
         fn execute_tool<'a>(&'a self, name:&'a str, _:serde_json::Value, _:maho_ext_api::ExecuteToolOptions) -> maho_ext_api::ExecuteToolFuture<'a> {
-            Box::pin(async move {if name=="inactive" {return Err(maho_ext_api::ExecuteToolError {code:maho_ext_api::ExecuteToolErrorCode::InactiveTool,tool_name:name.into(),message:"inactive fixture".into(),active_tools:vec!["echo".into()]});}assert_eq!(name,"echo");Ok(maho_ext_api::AgentToolResult::text("reply"))})
+            Box::pin(async move {if matches!(name,"inactive"|"task_output") {return Err(maho_ext_api::ExecuteToolError {code:if name=="task_output" {maho_ext_api::ExecuteToolErrorCode::Blocked} else {maho_ext_api::ExecuteToolErrorCode::InactiveTool},tool_name:name.into(),message:"failure fixture".into(),active_tools:vec!["echo".into()]});}assert_eq!(name,"echo");Ok(maho_ext_api::AgentToolResult::text("reply"))})
         }
     }
     let state=CellState {input:EvalToolInput {language:EvalLanguage::Js,code:"tool.echo({})".into(),summary:"dispatch tool".into(),action:None,timeout:None,on_timeout:None,reset:None},runtime:None,started_at:0.0,run_started_at:None,queued_behind:None,on_update:None,tool_calls:vec![],tool_call_metrics:vec![],status_events:vec![],active:true,output:String::new(),phase:None,error:None,duration_ms:0.0,status:"running".into()};
@@ -86,6 +86,8 @@ async fn cell_handler_dispatches_native_tools_and_blocks_recursive_eval() {
     handler.handle(&serde_json::json!({"type":"tool-call","toolName":"inactive","callId":"inactive-call","args":{}})).await.unwrap();
     let failed=replies.recv().await.unwrap();
     assert_eq!(failed["error"]["code"],"inactive_tool");
+    handler.handle(&serde_json::json!({"type":"tool-call","toolName":"__output__","callId":"reserved-inactive","args":{"ids":["st_fixture"]}})).await.unwrap();
+    assert_eq!(replies.recv().await.unwrap()["error"]["code"],"blocked");
     let state=handler.builder.state;
     let builder=CellResultBuilder::new(state,EvalOutputOptions {artifact_path:None,head_bytes:20480,max_columns:768,provider:None,api:None,image_sdk:Arc::new(Sdk)});
     let mut handler=CellHandler::new(builder,CellBridgeRuntime {executor:Arc::new(Executor),tools:Some(Arc::new(||Err("native catalog unavailable".into()))),complete:None,settings:Default::default(),signal:controller.signal(),deliver_reply:Arc::new(|_|panic!("a failed schema-hint lookup cannot publish a reply"))});
