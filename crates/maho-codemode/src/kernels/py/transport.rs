@@ -129,6 +129,19 @@ impl PythonKernelTransport {
         self.messages.recv().await.ok_or_else(|| PythonTransportError::Startup("Python kernel exited (unknown)".into()))
     }
 
+    pub async fn interrupt(&mut self, reason: &str) -> Result<(), PythonTransportError> {
+        let write_result = self.write(&json!({"type":"interrupt","reason":reason})).await;
+        #[cfg(unix)]
+        if let Some(pid) = self.child.id() {
+            let status = tokio::process::Command::new("kill").args(["-INT", "--", &pid.to_string()])
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().await?;
+            if !status.success() { return Err(PythonTransportError::Closed); }
+        }
+        #[cfg(not(unix))]
+        self.child.start_kill()?;
+        write_result
+    }
+
     pub async fn retire(&mut self) -> Result<(), PythonTransportError> {
         self.active = false;
         let result = hard_kill(&mut self.child, Duration::from_millis(500)).await;
