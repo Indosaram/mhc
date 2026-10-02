@@ -25,6 +25,7 @@ async fn concurrent_refresh_reads_current_credential_under_store_lock() {
         second_calls.fetch_add(1,Ordering::SeqCst);Ok(OAuthCredential::new("newer","newer",60000.0))
     },AbortController::new().signal(),|expires| expires<=1000.0));
     assert!(matches!(std::future::poll_fn(|cx| std::task::Poll::Ready(second.as_mut().poll(cx))).await,std::task::Poll::Pending));
-    release_tx.send(()).unwrap(); first.await.unwrap().unwrap(); second.await.unwrap();
+    release_tx.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5),async { first.await.unwrap().unwrap(); second.await.unwrap(); }).await.unwrap();
     assert_eq!(calls.load(Ordering::SeqCst),1,"second serialized mutation must see the already-refreshed slot");
 }
