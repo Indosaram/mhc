@@ -19,9 +19,15 @@ pub async fn register_turn_methods(core: &Arc<RwLock<ServerCore>>, threads: Arc<
                 let id = id.as_str();
                 let entry = threads.get_loaded_thread(id).await.map_err(|error|JsonRpcError::new(-32600,error))?;
                 let (session,active) = {let entry = entry.lock().await;(entry.session.clone(),entry.active_turn.clone())};
-                let Some(active) = active else {return Err(JsonRpcError::new(-32600,format!("No active turn for thread {id}")));};
+                let Some(active) = active else {
+                    return if method == "turn/interrupt" {Ok(json!({}))} else {Err(JsonRpcError::new(-32600,format!("No active turn for thread {id}")))};
+                };
                 if expected != active {return Err(JsonRpcError::new(-32600,format!("Turn id mismatch: expected {expected} but active turn is {active}")));}
-                if method == "turn/interrupt" {entry.lock().await.interrupted = true;session.abort().await;return Ok(json!({}));}
+                if method == "turn/interrupt" {
+                    entry.lock().await.interrupted = true;
+                    context.connection.defer_until_responded(move || {tokio::spawn(async move {session.abort().await;});});
+                    return Ok(json!({}));
+                }
                 let params = input_params.ok_or_else(||JsonRpcError::new(-32602,"Invalid params"))?;
                 let parsed = parse_input(&params.input)?;
                 session.steer(&parsed.text,None,maho_core::agent_session::QueuedInputOptions {source:Some(maho_ext_api::InputSource::Rpc),..Default::default()}).await.map_err(|error|JsonRpcError::new(-32603,error))?;

@@ -80,7 +80,7 @@ async fn tcp_listener_http_readiness_rejects_origin_before_path_and_does_not_req
     ] {
         let scenario = async {
             let mut stream = tokio::net::TcpStream::connect(listener.address).await.unwrap();
-            stream.write_all(format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\n{origin}\r\n").as_bytes()).await.unwrap();
+            stream.write_all(format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n{origin}\r\n").as_bytes()).await.unwrap();
             let mut response = String::new();stream.read_to_string(&mut response).await.unwrap();
             assert!(response.starts_with(&format!("HTTP/1.1 {status} ")),"{response}");
             assert!(response.contains("content-type: text/plain; charset=utf-8\r\n"));
@@ -88,5 +88,22 @@ async fn tcp_listener_http_readiness_rejects_origin_before_path_and_does_not_req
         };
         tokio::time::timeout(std::time::Duration::from_secs(3),scenario).await.unwrap();
     }
+    listener.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn readiness_keeps_http_connection_for_pipelined_requests_and_consumes_body() {
+    use maho_server::app_server::websocket::start_websocket_listener;
+    use tokio::io::{AsyncReadExt,AsyncWriteExt};
+    let listener = start_websocket_listener("127.0.0.1",0,ResolvedWebSocketListenerAuth::Off,core(),None).await.unwrap();
+    let scenario = async {
+        let mut stream = tokio::net::TcpStream::connect(listener.address).await.unwrap();
+        stream.write_all(b"POST /readyz HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\n\r\ndataGET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").await.unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        assert_eq!(response.matches("HTTP/1.1 200 OK").count(), 2);
+        assert_eq!(response.matches("connection: close").count(), 1);
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(3),scenario).await.unwrap();
     listener.close().await.unwrap();
 }

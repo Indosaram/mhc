@@ -6,7 +6,7 @@ pub struct SearchSessionRecord {pub thread: Value,pub recency_at: String,pub sea
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct SearchCacheStats {pub hits: usize,pub misses: usize,pub entries: usize}
 pub struct ThreadSearchCache {
-    entries: VecDeque<(String,i64,SearchSessionRecord)>,max_entries: usize,hits: usize,misses: usize,
+    entries: VecDeque<(String,std::time::SystemTime,SearchSessionRecord)>,max_entries: usize,hits: usize,misses: usize,
 }
 impl Default for ThreadSearchCache {fn default() -> Self {Self::new(512)}}
 impl ThreadSearchCache {
@@ -22,7 +22,7 @@ impl ThreadSearchCache {
         let key = path.display().to_string();
         let modified = match tokio::fs::metadata(path).await {Ok(metadata)=>metadata.modified()?,Err(error) if error.kind() == std::io::ErrorKind::NotFound=>{self.entries.retain(|(name,_,_)|name != &key);return Ok(None)},Err(error)=>return Err(error)};
         let mtime = chrono::DateTime::<chrono::Utc>::from(modified).timestamp_millis();
-        if let Some(index) = self.entries.iter().position(|(name,time,_)|name == &key && *time == mtime) {
+        if let Some(index) = self.entries.iter().position(|(name,time,_)|name == &key && *time == modified) {
             self.hits += 1;
             if let Some(entry) = self.entries.remove(index) {let record = entry.2.clone();self.entries.push_back(entry);return Ok(Some(record));}
         }
@@ -30,7 +30,7 @@ impl ThreadSearchCache {
         let contents = match tokio::fs::read_to_string(path).await {Ok(contents)=>contents,Err(error) if error.kind() == std::io::ErrorKind::NotFound=>{self.entries.retain(|(name,_,_)|name != &key);return Ok(None)},Err(error)=>return Err(error)};
         let record = parse_search_session(&key,mtime,&contents);
         self.entries.retain(|(name,_,_)|name != &key);
-        if let Some(record) = &record {self.entries.push_back((key,mtime,record.clone()));while self.entries.len() > self.max_entries {self.entries.pop_front();}}
+        if let Some(record) = &record {self.entries.push_back((key,modified,record.clone()));while self.entries.len() > self.max_entries {self.entries.pop_front();}}
         Ok(record)
     }
 }

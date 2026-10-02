@@ -308,7 +308,7 @@ impl SessionRepo for SqliteSessionRepo {
         &'a self,
         source: SessionMetadata,
         options: ForkOptions,
-        context: &'a Context,
+        _context: &'a Context,
     ) -> BoxFuture<'a, Result<Box<dyn Session>, SessionError>> {
         Box::pin(async move {
             self.assert_open()?;
@@ -329,27 +329,21 @@ impl SessionRepo for SqliteSessionRepo {
                 tx.commit().map_err(error)?;
                 snapshot
             };
-            let destination = self
-                .create(
-                    SessionCreateOptions {
-                        id: options.id().map(str::to_owned),
-                        parent_session_id: Some(source.id),
-                    },
-                    context,
-                )
-                .await?;
-            let metadata = destination.metadata().clone();
-            destination.close(context).await;
-            {
-                let mut db = Self::writable(&self.path(&metadata.id), false)?;
+            let mut sessions = self.sessions.lock().map_err(error)?;
+            let id = options.id().map(str::to_owned).unwrap_or_else(||uuid::Uuid::now_v7().to_string());
+            if sessions.contains_key(&id) {return Err(session_invariant_error(format!("Session is already open: {id}")));}
+            let path = self.path(&id);
+            std::fs::create_dir_all(path.parent().ok_or_else(||error("Missing database parent"))?).map_err(error)?;
+            let reserved = self.database_path.is_none();
+            if reserved {std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(error)?;}
+            let initialize = || -> Result<_,SessionError> {
+                let mut db = Self::writable(&path, true)?;
+                super::apply_initial_schema(&db).map_err(error)?;
+                let metadata = SessionMetadata {id:id.clone(),created_at:(self.now)(),storage_version:SQLITE_STORAGE_VERSION,parent_session_id:Some(source.id),cwd:None,legacy_parent_session_path:None};
                 let tx = db
                     .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                     .map_err(error)?;
-                tx.execute(
-                    "DELETE FROM scalar_values WHERE session_id=?1",
-                    [&metadata.id],
-                )
-                .map_err(error)?;
+                session_row::insert_session(&tx,&metadata,snapshot.next_seq).map_err(error)?;
                 let mut copied = snapshot.entries.into_values().collect::<Vec<_>>();
                 copied.sort_by_key(|e| e.seq);
                 let messages = copied
@@ -381,8 +375,23 @@ impl SessionRepo for SqliteSessionRepo {
                 )
                 .map_err(error)?;
                 tx.commit().map_err(error)?;
+                Ok((metadata,db))
+            };
+            match initialize() {
+                Ok((metadata,db))=>Ok(self.session(metadata,db,&mut sessions)),
+                Err(failure)=>{
+                    if reserved {
+                        for suffix in ["", "-wal", "-shm"] {
+                            match std::fs::remove_file(format!("{}{suffix}",path.display())) {
+                                Ok(())=>{},
+                                Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound=>{},
+                                Err(cleanup)=>return Err(error(format!("{failure}; failed fork cleanup: {cleanup}"))),
+                            }
+                        }
+                    }
+                    Err(failure)
+                },
             }
-            self.open(metadata, context).await
         })
     }
 }

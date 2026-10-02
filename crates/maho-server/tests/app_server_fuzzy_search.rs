@@ -3,6 +3,33 @@ use serde_json::json;
 use std::{sync::{Arc, Mutex, atomic::Ordering}, time::Duration};
 
 #[tokio::test]
+async fn injected_ranker_receives_collected_entries_for_search_and_session() {
+    let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
+    let queries = Arc::new(Mutex::new(Vec::new()));
+    let recorded = queries.clone();
+    let service = FuzzyFileSearchService::with_ranker(
+        Arc::new(move |message| { send.send(message).unwrap(); }),
+        Arc::new(|_, _| Box::pin(async { vec![FuzzyFileEntry {
+            root:"r".into(), path:"file.rs".into(), file_name:"file.rs".into(), match_type:"file".into(),
+        }] })),
+        Arc::new(move |query, entries| {
+            assert_eq!(entries.len(), 1);
+            recorded.lock().unwrap().push(query.to_owned());
+            Vec::new()
+        }),
+    );
+    assert!(service.search("direct", vec!["r".into()], None).await.is_empty());
+    service.start_session("session".into(), vec!["r".into()]).unwrap();
+    service.update_session("session".into(), "session-query".into()).unwrap();
+    let updated = tokio::time::timeout(Duration::from_secs(5), receive.recv()).await.unwrap().unwrap();
+    assert_eq!(updated["params"]["files"], json!([]));
+    let completed = tokio::time::timeout(Duration::from_secs(5), receive.recv()).await.unwrap().unwrap();
+    assert_eq!(completed["method"], "fuzzyFileSearch/sessionCompleted");
+    assert_eq!(*queries.lock().unwrap(), ["direct", "session-query"]);
+    service.dispose();
+}
+
+#[tokio::test]
 async fn sessions_emit_latest_query_in_order_and_reject_after_stop() {
     let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
     let (ready, signal) = tokio::sync::oneshot::channel();
@@ -26,6 +53,23 @@ async fn sessions_emit_latest_query_in_order_and_reject_after_stop() {
     assert_eq!(completed["method"], "fuzzyFileSearch/sessionCompleted");
     service.stop_session("s");
     assert_eq!(service.update_session("s".into(), "x".into()).unwrap_err().code, -32600);
+    service.dispose();
+}
+
+#[tokio::test]
+async fn dropping_pending_search_cancels_its_collector() {
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let service = FuzzyFileSearchService::with_collector(Arc::new(|_| {}), Arc::new(move |_, cancelled| {
+        events.send(cancelled).unwrap();
+        Box::pin(std::future::pending())
+    }));
+    let search = service.search("query", vec![], Some("token".into()));
+    let mut search = Box::pin(search);
+    assert!(futures_util::poll!(&mut search).is_pending());
+    let cancelled = received.try_recv().unwrap();
+    assert!(!cancelled.load(Ordering::Acquire));
+    drop(search);
+    assert!(cancelled.load(Ordering::Acquire));
     service.dispose();
 }
 

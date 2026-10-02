@@ -54,7 +54,7 @@ async fn serve_tcp_connection(mut stream: TcpStream, core: Arc<RwLock<ServerCore
         let mut request = httparse::Request::new(&mut headers);
         match request.parse(&buffered).map_err(|error|JsonRpcError::new(-32603,error.to_string()))? {
             httparse::Status::Partial => {},
-            httparse::Status::Complete(_) => {
+            httparse::Status::Complete(header_bytes) => {
                 let upgrade = request.headers.iter().any(|header|header.name.eq_ignore_ascii_case("upgrade"));
                 if upgrade {
                     let (reader,writer) = tokio::io::split(stream);
@@ -63,10 +63,24 @@ async fn serve_tcp_connection(mut stream: TcpStream, core: Arc<RwLock<ServerCore
                 let (status,body) = if request.headers.iter().any(|header|header.name.eq_ignore_ascii_case("origin")) {("403 Forbidden","forbidden\n")}
                     else if matches!(request.path,Some("/readyz"|"/healthz")) {("200 OK","ok\n")}
                     else {("400 Bad Request","websocket upgrade required\n")};
-                let response = format!("HTTP/1.1 {status}\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",body.len());
+                let close = request.headers.iter().any(|header|header.name.eq_ignore_ascii_case("connection") && header.value.eq_ignore_ascii_case(b"close")) || request.version == Some(0);
+                let body_bytes = request.headers.iter().find(|header|header.name.eq_ignore_ascii_case("content-length")).map(|header|std::str::from_utf8(header.value).ok().and_then(|value|value.parse::<usize>().ok()).ok_or_else(||JsonRpcError::new(-32603,"Invalid content length"))).transpose()?.unwrap_or(0);
+                let connection = if close {"connection: close\r\n"} else {""};
+                let response = format!("HTTP/1.1 {status}\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: {}\r\n{connection}\r\n{body}",body.len());
                 stream.write_all(response.as_bytes()).await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
-                stream.shutdown().await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
-                return Ok(());
+                if close {
+                    stream.shutdown().await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
+                    return Ok(());
+                }
+                let consumed = header_bytes.checked_add(body_bytes).ok_or_else(||JsonRpcError::new(-32603,"Invalid content length"))?;
+                while buffered.len() < consumed {
+                    let mut bytes = [0;4096];
+                    let read = stream.read(&mut bytes).await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
+                    if read == 0 {return Ok(());}
+                    buffered.extend_from_slice(&bytes[..read]);
+                }
+                buffered.drain(..consumed);
+                continue;
             },
         }
         let mut bytes = [0;4096];

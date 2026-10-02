@@ -195,8 +195,23 @@ impl UnixServer {
                     result=connections.join_next(),if !connections.is_empty()=>{ if let Some(result)=result { match result { Ok(Ok(()))=>{},Ok(Err(error))=>eprintln!("{}",error.message),Err(error)=>eprintln!("{error}") } } }
                 }
             }
-            while let Some(result)=connections.join_next().await { result.map_err(|e| ServerError::new("internal_error",&e.to_string()))??; }
-            Ok(())
+            let mut failures = Vec::new();
+            let drained = tokio::time::timeout(std::time::Duration::from_millis(u64::from(options.graceful_close_timeout_ms)),async {
+                while let Some(result)=connections.join_next().await {
+                    match result {
+                        Ok(Ok(()))=>{},
+                        Ok(Err(error))=>failures.push(error.message),
+                        Err(error)=>failures.push(error.to_string()),
+                    }
+                }
+            }).await;
+            if drained.is_err() {
+                connections.abort_all();
+                while let Some(result)=connections.join_next().await {
+                    if let Err(error)=result && !error.is_cancelled() {failures.push(error.to_string());}
+                }
+            }
+            if failures.is_empty() {Ok(())} else {Err(ServerError::new("internal_error",&failures.join("; ")))}
         });
         Ok(Self {
             server,
@@ -217,8 +232,8 @@ impl UnixServer {
                 failure = Some(error);
             }
         }
-        self.server.close().await?;
-        remove_owned_socket(&self.path, self.identity, "cleanup").await?;
+        if let Err(error)=self.server.close().await {failure=Some(error);}
+        if let Err(error)=remove_owned_socket(&self.path, self.identity, "cleanup").await {failure=Some(error);}
         if let Some(error) = failure {
             Err(error)
         } else {

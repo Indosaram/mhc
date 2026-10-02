@@ -1,5 +1,5 @@
 use maho_agent::harness::{context::background_context, session::*};
-use maho_server::sqlite::repo::SqliteSessionRepo;
+use maho_server::sqlite::SqliteSessionRepo;
 use serde_json::json;
 use std::sync::Arc;
 #[tokio::test]
@@ -57,6 +57,25 @@ async fn repository_creates_reopens_forks_and_deletes_unicode_sessions() {
     repo.close(&context).await;
     assert!(repo.list(None, &context).await.is_err());
 }
+#[tokio::test]
+async fn failed_fork_initialization_rolls_back_destination_and_allows_retry() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("shared.sqlite");
+    let repo = SqliteSessionRepo::new(directory.path().into(),Some(path.clone()),Arc::new(||123));
+    let context = background_context();
+    let source = repo.create(SessionCreateOptions {id:Some("source".into()),..Default::default()},&context).await.unwrap();
+    let metadata = source.metadata().clone();
+    source.close(&context).await;
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TRIGGER reject_fork BEFORE INSERT ON scalar_values WHEN NEW.session_id='copy' BEGIN SELECT RAISE(ABORT,'faux copy failure'); END;").unwrap();
+    assert!(repo.fork(metadata.clone(),ForkOptions::Tree {id:Some("copy".into())},&context).await.is_err());
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM sessions WHERE id='copy'",[],|row|row.get::<_,i64>(0)).unwrap(),0);
+    db.execute_batch("DROP TRIGGER reject_fork").unwrap();
+    let fork = repo.fork(metadata,ForkOptions::Tree {id:Some("copy".into())},&context).await.unwrap();
+    fork.close(&context).await;
+    repo.close(&context).await;
+}
+
 #[tokio::test]
 async fn shared_container_deletion_preserves_other_session() {
     let directory = tempfile::tempdir().unwrap();

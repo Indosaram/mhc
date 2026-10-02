@@ -61,6 +61,16 @@ impl SqlQuery {
             .query_map(params_from_iter(self.params.iter()), map)?
             .collect()
     }
+    pub fn iterate<T, R>(
+        &self,
+        db: &Connection,
+        map: impl FnMut(&Row<'_>) -> rusqlite::Result<T>,
+        consume: impl FnOnce(&mut dyn Iterator<Item = rusqlite::Result<T>>) -> rusqlite::Result<R>,
+    ) -> rusqlite::Result<R> {
+        let mut statement = db.prepare(&self.query_text)?;
+        let mut rows = statement.query_map(params_from_iter(self.params.iter()), map)?;
+        consume(&mut rows)
+    }
 }
 pub fn join_sql_fragments(fragments: Vec<SqlQuery>, separator: &str) -> SqlQuery {
     let mut query_text = String::new();

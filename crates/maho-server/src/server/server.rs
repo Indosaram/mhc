@@ -161,6 +161,7 @@ impl Server {
             super::state_codec::ServiceStateEncoder,
         >::new()));
         let mut requests = JoinSet::new();
+        let subscriptions = Arc::new(Mutex::new(std::collections::BTreeSet::<String>::new()));
         let mut pending = remaining;
         let result=async {
             loop {
@@ -174,16 +175,21 @@ impl Server {
                             }
                         },
                         Some("request")=>{
+                            let subscribing=(message["call"]["serviceId"]=="$chord.service" && message["call"]["member"]=="subscribe").then(||message["call"]["args"][0].as_str().unwrap_or_default().to_owned());
+                            if let Some(subscription_id)=&subscribing && !subscriptions.lock().await.insert(subscription_id.clone()) {
+                                send(&connection,&json!({"type":"response","id":message["id"],"ok":false,"error":{"code":"invalid_request","message":"Duplicate service subscription"}}),self.max_frame_length).await?;
+                                continue;
+                            }
                             let id=message["id"].as_str().unwrap_or_default().to_owned(); let (cancel,signal)=watch::channel(false);
                             { let mut active=active.lock().await;
-                                if active.contains_key(&id) { send(&connection,&json!({"type":"response","id":id,"ok":false,"error":{"code":"invalid_request","message":"Request ID is already active"}}),self.max_frame_length).await?; continue; }
+                                if active.contains_key(&id) { if let Some(subscription_id)=&subscribing {subscriptions.lock().await.remove(subscription_id);} send(&connection,&json!({"type":"response","id":id,"ok":false,"error":{"code":"invalid_request","message":"Request ID is already active"}}),self.max_frame_length).await?; continue; }
                                 active.insert(id.clone(),(message["target"].clone(),cancel));
                             }
                             let server=self.clone(); let connection=connection.clone(); let services=services.clone(); let presentation=presentation.clone(); let active=active.clone(); let encoders=encoders.clone();
+                            let subscriptions=subscriptions.clone();
                             requests.spawn(async move {
                                 let context=Context { cancelled:signal.clone() }; let mut cancelled=signal;
                                 let publisher_connection=connection.clone(); let max=server.max_frame_length;
-                                let subscribing=(message["call"]["serviceId"]=="$chord.service" && message["call"]["member"]=="subscribe").then(||message["call"]["args"][0].as_str().unwrap_or_default().to_owned());
                                 let queued=Arc::new(Mutex::new(Some(Vec::<(String,Value)>::new())));
                                 let pending=queued.clone();let publishing_encoders=encoders.clone();let subscribing_id=subscribing.clone();
                                 let publish:Publisher=Arc::new(move |subscription_id,update| {
@@ -223,10 +229,11 @@ impl Server {
                                     Ok(None)=>json!({"type":"response","id":id,"ok":true}),
                                     Err(error)=>json!({"type":"response","id":id,"ok":false,"error":{"code":error.code,"message":error.message}}),
                                 };
+                                if response["ok"]!=true && let Some(subscription_id)=&subscribing {subscriptions.lock().await.remove(subscription_id);}
                                 let sent:Result<(),ServerError>=async {
                                     send(&connection,&response,max).await?;
                                     if response["ok"]==true {
-                                        if message["call"]["serviceId"]=="$chord.service" && message["call"]["member"]=="unsubscribe" { encoders.lock().await.remove(message["call"]["args"][0].as_str().unwrap_or_default()); }
+                                        if message["call"]["serviceId"]=="$chord.service" && message["call"]["member"]=="unsubscribe" { let subscription_id=message["call"]["args"][0].as_str().unwrap_or_default(); encoders.lock().await.remove(subscription_id); subscriptions.lock().await.remove(subscription_id); }
                                         let mut pending=queued.lock().await;
                                         if let Some(updates)=pending.take() { for (subscription_id,update) in updates {
                                             let mut codecs=encoders.lock().await;let codec=codecs.get_mut(&subscription_id).ok_or_else(||ServerError::new("invalid_request","Unknown service subscription"))?;

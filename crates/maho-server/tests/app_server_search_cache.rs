@@ -13,6 +13,24 @@ fn parser_distinguishes_user_recency_from_assistant_activity() {
 }
 
 #[tokio::test]
+async fn cache_invalidates_submillisecond_file_modification() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("session.jsonl");
+    let first = json!({"type":"session","id":"first","cwd":"/work","timestamp":"2020-01-01T00:00:00.000Z"}).to_string();
+    let second = json!({"type":"session","id":"second","cwd":"/work","timestamp":"2020-01-01T00:00:00.000Z"}).to_string();
+    let baseline = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1700000000);
+    std::fs::write(&path, first).unwrap();
+    let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    file.set_times(std::fs::FileTimes::new().set_modified(baseline)).unwrap();
+    let mut cache = ThreadSearchCache::default();
+    assert_eq!(cache.load_file(&path).await.unwrap().unwrap().thread["id"], "first");
+    std::fs::write(&path, second).unwrap();
+    file.set_times(std::fs::FileTimes::new().set_modified(baseline + std::time::Duration::from_nanos(500000))).unwrap();
+    assert_eq!(cache.load_file(&path).await.unwrap().unwrap().thread["id"], "second");
+    assert_eq!(cache.stats().misses, 2);
+}
+
+#[tokio::test]
 async fn cache_hits_evicts_and_removes_deleted_files_without_timing_delays() {
     let directory = tempfile::tempdir().unwrap();
     let first = directory.path().join("one.jsonl");let second = directory.path().join("two.jsonl");

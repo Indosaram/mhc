@@ -4,6 +4,7 @@ use std::{collections::BTreeMap, future::Future, pin::Pin, sync::{Arc, Mutex, at
 
 pub type Collector = Arc<dyn Fn(Vec<String>, Arc<AtomicBool>) -> Pin<Box<dyn Future<Output = Vec<FuzzyFileEntry>> + Send>> + Send + Sync>;
 pub type Broadcast = Arc<dyn Fn(Value) + Send + Sync>;
+pub type Ranker = Arc<dyn Fn(&str, &[FuzzyFileEntry]) -> Vec<super::fuzzy_files::FuzzyFileSearchResult> + Send + Sync>;
 struct SearchSession {
     cancelled: Arc<AtomicBool>,
     query: String,
@@ -19,11 +20,28 @@ struct State {
     pending: BTreeMap<String, u64>,
     sessions: BTreeMap<String, SearchSession>,
 }
+struct ActiveSearch {
+    state: Arc<Mutex<State>>,
+    id: u64,
+    token: Option<String>,
+    cancelled: Arc<AtomicBool>,
+}
+impl Drop for ActiveSearch {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.active.remove(&self.id);
+        if let Some(token) = &self.token && state.pending.get(token) == Some(&self.id) {
+            state.pending.remove(token);
+        }
+    }
+}
 #[derive(Clone)]
 pub struct FuzzyFileSearchService {
     state: Arc<Mutex<State>>,
     collect: Collector,
     broadcast: Broadcast,
+    rank: Ranker,
 }
 impl FuzzyFileSearchService {
     pub fn new(broadcast: Broadcast) -> Self {
@@ -32,7 +50,10 @@ impl FuzzyFileSearchService {
         })))
     }
     pub fn with_collector(broadcast: Broadcast, collect: Collector) -> Self {
-        Self { state: Default::default(), collect, broadcast }
+        Self::with_ranker(broadcast, collect, Arc::new(rank_fuzzy_file_entries))
+    }
+    pub fn with_ranker(broadcast: Broadcast, collect: Collector, rank: Ranker) -> Self {
+        Self { state: Default::default(), collect, broadcast, rank }
     }
     pub async fn search(&self, query: &str, roots: Vec<String>, token: Option<String>) -> Vec<super::fuzzy_files::FuzzyFileSearchResult> {
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -47,11 +68,10 @@ impl FuzzyFileSearchService {
             state.active.insert(id, cancelled.clone());
             id
         };
+        let _active = ActiveSearch { state:self.state.clone(), id, token, cancelled:cancelled.clone() };
         let entries = if query.is_empty() { Vec::new() } else { (self.collect)(roots, cancelled.clone()).await };
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.active.remove(&id);
-        if let Some(token) = token && state.pending.get(&token) == Some(&id) { state.pending.remove(&token); }
-        if cancelled.load(Ordering::Acquire) || state.disposed { Vec::new() } else { rank_fuzzy_file_entries(query, &entries) }
+        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cancelled.load(Ordering::Acquire) || state.disposed { Vec::new() } else { (self.rank)(query, &entries) }
     }
     pub fn start_session(&self, id: String, roots: Vec<String>) -> Result<(), JsonRpcError> {
         if id.is_empty() { return Err(JsonRpcError::new(-32600, "sessionId must not be empty")); }
@@ -104,7 +124,7 @@ impl FuzzyFileSearchService {
             let Some(session) = state.sessions.get(id).filter(|session| Arc::ptr_eq(&session.cancelled, cancelled) && !cancelled.load(Ordering::Acquire) && session.version == version) else { return false; };
             let Some(entries) = &session.entries else { return false; };
             if session.completed_version == Some(version) { return true; }
-            (session.query.clone(), rank_fuzzy_file_entries(&session.query, entries))
+            (session.query.clone(), (self.rank)(&session.query, entries))
         };
         (self.broadcast)(json!({"method":"fuzzyFileSearch/sessionUpdated","params":{"sessionId":id,"query":query,"files":files}}));
         {
