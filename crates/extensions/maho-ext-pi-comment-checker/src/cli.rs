@@ -30,22 +30,42 @@ pub fn resolve_binary(source_path: &Path) -> Option<PathBuf> {
 }
 
 async fn read_output(mut stream: impl AsyncRead + Unpin, name: &str) -> std::io::Result<String> {
-    let mut output = Vec::new();
+    let mut output = String::new();
+    let mut pending = Vec::new();
     let mut chunk = [0; 8192];
     let mut truncated = false;
     loop {
         let count = stream.read(&mut chunk).await?;
+        pending.extend_from_slice(&chunk[..count]);
+        let mut decoded = String::new();
+        let mut consumed = 0;
+        while consumed < pending.len() {
+            match std::str::from_utf8(&pending[consumed..]) {
+                Ok(text) => { decoded.push_str(text); consumed = pending.len(); }
+                Err(error) => {
+                    let valid_end = consumed + error.valid_up_to();
+                    decoded.push_str(std::str::from_utf8(&pending[consumed..valid_end]).expect("validated UTF-8 prefix"));
+                    consumed = valid_end;
+                    if let Some(length) = error.error_len() { decoded.push('\u{fffd}'); consumed += length; }
+                    else if count == 0 { decoded.push('\u{fffd}'); consumed = pending.len(); }
+                    else { break; }
+                }
+            }
+        }
+        pending.drain(..consumed);
+        if !truncated {
+            let remaining = MAX_PROCESS_OUTPUT_BYTES.saturating_sub(output.len());
+            let mut end = decoded.len().min(remaining);
+            while !decoded.is_char_boundary(end) { end -= 1; }
+            output.push_str(&decoded[..end]);
+            truncated = decoded.len() > remaining;
+        }
         if count == 0 { break; }
-        let remaining = MAX_PROCESS_OUTPUT_BYTES.saturating_sub(output.len());
-        output.extend_from_slice(&chunk[..count.min(remaining)]);
-        truncated |= count > remaining;
     }
-    let mut text = String::from_utf8_lossy(&output).into_owned();
     if truncated {
-        while text.ends_with('\u{fffd}') { text.pop(); }
-        text.push_str(&format!("\n[{name} truncated after {MAX_PROCESS_OUTPUT_BYTES} bytes]"));
+        output.push_str(&format!("\n[{name} truncated after {MAX_PROCESS_OUTPUT_BYTES} bytes]"));
     }
-    Ok(text)
+    Ok(output)
 }
 
 pub async fn run_checker(input: &HookInput, binary: Option<&Path>) -> RunResult {
@@ -112,6 +132,20 @@ mod tests {
         let result = process_result(Path::new("checker"), Some(1), "failure".into(), String::new());
         assert_eq!(result.status, RunStatus::Error);
         assert_eq!(result.message, "failure");
+    }
+    #[tokio::test]
+    async fn valid_replacement_character_is_not_removed_at_limit() {
+        let mut bytes = vec![b'x'; MAX_PROCESS_OUTPUT_BYTES - 3];
+        bytes.extend_from_slice("\u{fffd}extra".as_bytes());
+        let output = read_output(bytes.as_slice(), "stdout").await.expect("read replacement fixture");
+        assert!(output.contains("\u{fffd}\n[stdout truncated"));
+    }
+    #[tokio::test]
+    async fn malformed_utf8_counts_decoded_bytes() {
+        let bytes = vec![0xff; MAX_PROCESS_OUTPUT_BYTES];
+        let output = read_output(bytes.as_slice(), "stdout").await.expect("decode malformed output");
+        assert_eq!(output.split('\n').next().expect("output prefix").len(), MAX_PROCESS_OUTPUT_BYTES / 3 * 3);
+        assert!(output.contains("[stdout truncated"));
     }
 
     #[test]
