@@ -266,6 +266,25 @@ async fn tool_call_errors_propagate_like_upstream() {
     assert_eq!(runner.emit_tool_call(&mut event).await.unwrap_err().message, "boom"); assert!(runner.errors.is_empty());
 }
 #[tokio::test]
+async fn invalidating_tool_hook_does_not_publish_mutated_input() {
+    let mut runner = runner(vec![]);
+    let runtime = runner.runtime.clone();
+    let handler: ExtensionHandler = Arc::new(move |event, _| {
+        let runtime = runtime.clone();
+        Box::pin(async move {
+            let ExtensionEvent::ToolCall(event) = event else { panic!() };
+            event.input = JsonValue::Bool(true);
+            runtime.invalidate("replaced during tool hook");
+            Ok(EventResult::None)
+        })
+    });
+    runner.extensions.push(extension("invalidate", EventKind::ToolCall, handler));
+    let mut event = ToolCallEvent { tool_call_id: "call".into(), tool_name: "bash".into(), input: JsonValue::Null };
+    assert_eq!(runner.emit_tool_call(&mut event).await.unwrap_err().message, "replaced during tool hook");
+    assert_eq!(event.input, JsonValue::Null);
+    assert_eq!(runner.emit_tool_result(result_event()).await.unwrap_err().message, "replaced during tool hook");
+}
+#[tokio::test]
 async fn hook_updates_are_sanitized_bounded_and_stale_updates_ignored() {
     let updater = Arc::new(Mutex::new(None)); let capture = Arc::clone(&updater);
     let handler: ExtensionHandler = Arc::new(move |_, ctx| { let capture = Arc::clone(&capture); Box::pin(async move { let update = ctx.update_tool_hook_status.clone().unwrap(); update("line\u{1b}[31mone\ntwo\t\u{7} done"); update(&"x".repeat(200)); *capture.lock().unwrap() = Some(update); Ok(EventResult::None) }) });

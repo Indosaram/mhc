@@ -646,24 +646,28 @@ impl ExtensionRunner {
         if let Some(observer) = &self.hook_observer { observer(&event); }
     }
     pub async fn emit_tool_call(&mut self, event: &mut ToolCallEvent) -> Result<Option<ToolCallEventResult>, ExtensionFailure> {
+        self.runtime.assert_active()?;
         let mut current = ExtensionEvent::ToolCall(event.clone()); let mut combined = None;
         for (path, handler) in self.handlers(EventKind::ToolCall) {
             let mut context = self.create_context_for_extension(Some(&path))?; let hook = self.begin_hook(&path, &event.tool_name, &event.tool_call_id, ToolHookName::PreToolUse, &mut context);
             let result = handler(&mut current, &context).await;
             let (status, error) = match &result { Err(e) => (ToolHookStatus::Failed, Some(e.message.clone())), Ok(EventResult::ToolCall(r)) if r.block == Some(true) => (ToolHookStatus::Blocked, None), Ok(_) => (ToolHookStatus::Completed, None) };
             self.end_hook(hook, status, error);
+            self.runtime.assert_active()?;
             if let ExtensionEvent::ToolCall(updated) = &current { *event = updated.clone(); }
             if let EventResult::ToolCall(next) = result? { let blocked = next.block == Some(true); combined = Some(next); if blocked { return Ok(combined); } }
         }
         Ok(combined)
     }
     pub async fn emit_tool_result(&mut self, event: ToolResultEvent) -> Result<Option<ToolResultEventResult>, ExtensionFailure> {
+        self.runtime.assert_active()?;
         let tool_name = event.tool_name.clone(); let tool_call_id = event.tool_call_id.clone();
         let mut current = ExtensionEvent::ToolResult(event); let mut modified = false;
         for (path, handler) in self.handlers(EventKind::ToolResult) {
             let mut context = self.create_context_for_extension(Some(&path))?; let hook = self.begin_hook(&path, &tool_name, &tool_call_id, ToolHookName::PostToolUse, &mut context);
             let result = handler(&mut current, &context).await;
             self.end_hook(hook, if result.is_err() { ToolHookStatus::Failed } else { ToolHookStatus::Completed }, result.as_ref().err().map(|e| e.message.clone()));
+            self.runtime.assert_active()?;
             match result {
                 Ok(EventResult::ToolResult(next)) => if let ExtensionEvent::ToolResult(event) = &mut current {
                     if let Some(content) = next.content { event.content = content; modified = true; }
