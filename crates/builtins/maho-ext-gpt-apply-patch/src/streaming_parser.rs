@@ -1,4 +1,5 @@
 use crate::{text::{normalize_patch_text,strip_heredoc},types::{ParsedPatch,PatchChunk}};
+fn js_whitespace(character:char)->bool { matches!(character,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}') }
 #[derive(Clone,Copy,Default,PartialEq,Eq)]
 enum Mode { #[default] NotStarted,Started,Add,Delete,Update,Ended }
 #[derive(Default)]
@@ -13,7 +14,7 @@ impl StreamingPatchParser {
     pub fn finish(&mut self)->Result<Vec<ParsedPatch>,String> {
         if !self.line_buffer.is_empty() {
             let line=std::mem::take(&mut self.line_buffer);
-            if line.trim()=="*** End Patch" { self.ensure_update_not_empty(line.trim())?; self.mode=Mode::Ended; } else { self.process_line(&line)?; }
+            if line.trim_matches(js_whitespace)=="*** End Patch" { self.ensure_update_not_empty(line.trim_matches(js_whitespace))?; self.mode=Mode::Ended; } else { self.process_line(&line)?; }
         }
         if self.mode!=Mode::Ended { return Err("The last line of the patch must be '*** End Patch'".into()); }
         Ok(self.hunks.clone())
@@ -42,19 +43,19 @@ impl StreamingPatchParser {
     }
     fn process_line(&mut self,line:&str)->Result<(),String> {
         match self.mode {
-            Mode::NotStarted=> { if strip_heredoc(line).trim()=="*** Begin Patch" { self.mode=Mode::Started; Ok(()) } else { Err("The first line of the patch must be '*** Begin Patch'".into()) } },
-            Mode::Started|Mode::Delete=> { if self.handle_header(line.trim())? { Ok(()) } else { Err(format!("'{}' is not a valid hunk header",line.trim())) } },
+            Mode::NotStarted=> { if strip_heredoc(line).trim_matches(js_whitespace)=="*** Begin Patch" { self.mode=Mode::Started; Ok(()) } else { Err("The first line of the patch must be '*** Begin Patch'".into()) } },
+            Mode::Started|Mode::Delete=> { if self.handle_header(line.trim_matches(js_whitespace))? { Ok(()) } else { Err(format!("'{}' is not a valid hunk header",line.trim_matches(js_whitespace))) } },
             Mode::Add=> {
-                if self.handle_header(line.trim())? { return Ok(()); }
+                if self.handle_header(line.trim_matches(js_whitespace))? { return Ok(()); }
                 if let Some(value)=line.strip_prefix('+') && let Some(ParsedPatch::Add{content,..})=self.hunks.last_mut() { content.push_str(value); content.push('\n'); return Ok(()); }
-                Err(format!("'{}' is not a valid hunk header",line.trim()))
+                Err(format!("'{}' is not a valid hunk header",line.trim_matches(js_whitespace)))
             },
             Mode::Update=>self.process_update(line),
             Mode::Ended=>Ok(()),
         }
     }
     fn process_update(&mut self,line:&str)->Result<(),String> {
-        let update_line=line.trim_end();
+        let update_line=line.trim_end_matches(js_whitespace);
         if self.handle_header(update_line)? { return Ok(()); }
         if let Some(ParsedPatch::Update{chunks,move_path,..})=self.hunks.last_mut() && chunks.is_empty() && move_path.as_deref().is_none_or(str::is_empty) && let Some(path)=update_line.strip_prefix("*** Move to: ") { *move_path=Some(path.into()); return Ok(()); }
         if update_line=="@@" { return Ok(()); }
@@ -76,6 +77,7 @@ impl StreamingPatchParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn streaming_envelope_trims_ecmascript_whitespace() { let mut parser=StreamingPatchParser::default(); parser.push_delta("\u{feff}*** Begin Patch\n*** Delete File: a\n*** End Patch\u{feff}").unwrap(); assert_eq!(parser.finish().unwrap(),vec![ParsedPatch::Delete{file_path:"a".into()}]); assert!(StreamingPatchParser::default().push_delta("\u{0085}*** Begin Patch\n").is_err()); }
     #[test] fn split_deltas() { let mut p=StreamingPatchParser::default(); assert!(p.push_delta("*** Begin Pa").unwrap().is_empty()); p.push_delta("tch\n*** Add File: a\n+he").unwrap(); p.push_delta("llo\n*** End Patch").unwrap(); assert_eq!(p.finish().unwrap(),vec![ParsedPatch::Add{file_path:"a".into(),content:"hello\n".into()}]); }
     #[test] fn snapshot_is_detached() { let mut p=StreamingPatchParser::default(); let snapshot=p.push_delta("*** Begin Patch\n*** Add File: a\n").unwrap(); p.push_delta("+new\n").unwrap(); assert!(matches!(&snapshot[0],ParsedPatch::Add{content,..} if content.is_empty())); }
     #[test] fn missing_end() { assert!(StreamingPatchParser::default().finish().is_err()); }

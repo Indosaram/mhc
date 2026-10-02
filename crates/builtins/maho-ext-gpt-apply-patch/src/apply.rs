@@ -1,7 +1,8 @@
 use crate::{parser::parse_patch,text::normalize_patch_text,types::{ParsedPatch,ApplyPatchResult}};
+fn js_whitespace(character:char)->bool { matches!(character,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}') }
 pub fn parse_non_empty_patch(patch_text:&str)->Result<Vec<ParsedPatch>,String> {
     let hunks=parse_patch(patch_text)?;
-    if hunks.is_empty() { return Err(if normalize_patch_text(patch_text).trim()=="*** Begin Patch\n*** End Patch" { "patch rejected: empty patch" } else { "apply_patch verification failed: no hunks found" }.into()); }
+    if hunks.is_empty() { return Err(if normalize_patch_text(patch_text).trim_matches(js_whitespace)=="*** Begin Patch\n*** End Patch" { "patch rejected: empty patch" } else { "apply_patch verification failed: no hunks found" }.into()); }
     Ok(hunks)
 }
 pub fn compact_apply_patch_result(mut result:ApplyPatchResult)->ApplyPatchResult {

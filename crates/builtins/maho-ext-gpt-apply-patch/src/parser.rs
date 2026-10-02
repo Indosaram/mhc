@@ -1,4 +1,5 @@
 use crate::{text::{normalize_patch_text,strip_heredoc},types::{ParsedPatch,PatchChunk}};
+fn js_whitespace(character:char)->bool { matches!(character,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}') }
 
 fn parse_chunk(lines:&[&str],mut index:usize)->Result<(PatchChunk,usize),String> {
     let mut chunk=PatchChunk::default();
@@ -22,9 +23,9 @@ fn parse_chunk(lines:&[&str],mut index:usize)->Result<(PatchChunk,usize),String>
 }
 pub fn parse_patch(text:&str)->Result<Vec<ParsedPatch>,String> {
     let normalized=normalize_patch_text(text);
-    let normalized=strip_heredoc(normalized.trim()).trim();
+    let normalized=strip_heredoc(normalized.trim_matches(js_whitespace)).trim_matches(js_whitespace);
     let lines:Vec<_>=normalized.split('\n').collect();
-    if lines.first().map(|s|s.trim())!=Some("*** Begin Patch") || lines.last().map(|s|s.trim())!=Some("*** End Patch") { return Err("Invalid patch format: expected *** Begin Patch ... *** End Patch envelope".into()); }
+    if lines.first().map(|s|s.trim_matches(js_whitespace))!=Some("*** Begin Patch") || lines.last().map(|s|s.trim_matches(js_whitespace))!=Some("*** End Patch") { return Err("Invalid patch format: expected *** Begin Patch ... *** End Patch envelope".into()); }
     let body=&lines[..lines.len()-1];
     let mut patches=Vec::new(); let mut index=1;
     while index<body.len() {
@@ -45,7 +46,7 @@ pub fn parse_patch(text:&str)->Result<Vec<ParsedPatch>,String> {
             let mut chunks=Vec::new();
             while index<body.len() {
                 let line=body[index];
-                if line.trim().is_empty() { index+=1; continue; }
+                if line.trim_matches(js_whitespace).is_empty() { index+=1; continue; }
                 if line.starts_with("*** ") { break; }
                 if !line.starts_with("@@") && !chunks.is_empty() { return Err(format!("Expected update hunk to start with a @@ context marker, got: '{line}'")); }
                 let (chunk,next)=parse_chunk(body,index)?; chunks.push(chunk); index=next;
@@ -59,6 +60,7 @@ pub fn parse_patch(text:&str)->Result<Vec<ParsedPatch>,String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn envelope_trims_bom_but_rejects_next_line_character() { assert_eq!(parse_patch("\u{feff}*** Begin Patch\n*** Delete File: a\n*** End Patch\u{feff}").unwrap(),vec![ParsedPatch::Delete{file_path:"a".into()}]); assert!(parse_patch("\u{0085}*** Begin Patch\n*** End Patch").is_err()); }
     #[test] fn add_and_delete() { assert_eq!(parse_patch("*** Begin Patch\n*** Add File: a\n+hello\n*** Delete File: b\n*** End Patch").unwrap(),vec![ParsedPatch::Add{file_path:"a".into(),content:"hello\n".into()},ParsedPatch::Delete{file_path:"b".into()}]); }
     #[test] fn envelope_error() { assert_eq!(parse_patch("invalid").unwrap_err(),"Invalid patch format: expected *** Begin Patch ... *** End Patch envelope"); }
     #[test] fn add_requires_prefix() { assert_eq!(parse_patch("*** Begin Patch\n*** Add File: a\nbad\n*** End Patch").unwrap_err(),"Invalid patch format: Add File lines must start with '+'"); }
