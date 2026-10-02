@@ -1,4 +1,5 @@
 pub mod detached_cell_contract;
+pub mod detached_eval_result;
 pub mod call_capture;
 pub mod cell_deadlines;
 pub mod detached_cell_state;

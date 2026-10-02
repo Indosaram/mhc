@@ -1,0 +1,26 @@
+use maho_codemode::tool::{detached_cell_contract::EvalDetachedCellState, detached_eval_result::*};
+use maho_ext_api::AgentToolResult;
+use serde_json::json;
+
+#[test]
+fn live_duration_replaces_only_first_cell_and_preserves_source() {
+    let mut result = AgentToolResult::text("output");
+    result.details = json!({"durationMs":2,"toolCalls":[],"cells":[{"durationMs":2,"queuedBehind":["old"]},{"durationMs":5}]});
+    let next = result_for_detached_state(&result, EvalDetachedCellState::Detached, 20.0, Some(&["A".into()]));
+    assert_eq!(next.details["durationMs"], 20.0);
+    assert_eq!(next.details["cells"][0]["status"], "queued");
+    assert_eq!(next.details["cells"][0]["queuedBehind"], json!(["A"]));
+    assert_eq!(next.details["cells"][1]["durationMs"], 5);
+    assert_eq!(result.details["cells"][0]["queuedBehind"], json!(["old"]));
+}
+
+#[test]
+fn terminal_duration_survives_and_stale_queue_is_removed() {
+    let mut result = AgentToolResult::text("output");
+    result.details = json!({"durationMs":7,"cells":[{"durationMs":6,"queuedBehind":["A"]}]});
+    let next = result_for_detached_state(&result, EvalDetachedCellState::Completed, 100.0, None);
+    assert_eq!(next.details["durationMs"], 7);
+    assert_eq!(next.details["cells"][0]["durationMs"], 6);
+    assert_eq!(next.details["cells"][0]["status"], "complete");
+    assert!(next.details["cells"][0].get("queuedBehind").is_none());
+}
