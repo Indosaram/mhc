@@ -25,9 +25,9 @@ fn js_regex_expression(value:&str)->String{
     }result
 }
 #[derive(Debug)]
-pub enum MatcherError{Glob(globset::Error),Expression(Box<fancy_regex::Error>)}
+pub enum MatcherError{Glob(globset::Error),Expression(Box<fancy_regex::Error>),EmptyPattern}
 impl From<globset::Error> for MatcherError{fn from(error:globset::Error)->Self{Self::Glob(error)}}
-impl std::fmt::Display for MatcherError{fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{match self{Self::Glob(error)=>error.fmt(f),Self::Expression(error)=>error.fmt(f)}}}
+impl std::fmt::Display for MatcherError{fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{match self{Self::Glob(error)=>error.fmt(f),Self::Expression(error)=>error.fmt(f),Self::EmptyPattern=>f.write_str("Expected pattern to be a non-empty string")}}}
 impl std::error::Error for MatcherError{}
 #[derive(Default)]
 pub struct Matcher {sets:VecDeque<PatternSet>}
@@ -69,6 +69,7 @@ impl Matcher {
             for pattern in patterns{
                 let negated=pattern.starts_with('!');
                 let value=pattern.strip_prefix('!').unwrap_or(&pattern);
+                if value.is_empty(){return Err(MatcherError::EmptyPattern);}
                 let mut expression_value=value;let mut negate_count=0;
                 while expression_value.starts_with('!')&&(!expression_value.starts_with("!(")||expression_value.starts_with("!(?")){negate_count+=1;expression_value=&expression_value[1..];}
                 let normalized=normalize_literal_braces(expression_value.strip_prefix("./").unwrap_or(expression_value));
