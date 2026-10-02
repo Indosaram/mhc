@@ -9,3 +9,4 @@ pub mod todo_operations;
 pub mod normalize;
 pub mod markdown;
 pub mod todo_widget;
+pub mod state;

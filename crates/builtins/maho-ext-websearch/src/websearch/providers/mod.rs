@@ -4,3 +4,6 @@ pub mod tavily;
 pub mod brave;
 pub mod serper;
 pub mod google_cse;
+pub mod z_ai;
+pub mod perplexity;
+pub mod kimi;

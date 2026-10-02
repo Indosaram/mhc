@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use serde_json::{Value,json};
 #[derive(Clone,Debug,PartialEq)]
-pub struct SearchResultItem { pub title:String,pub url:String,pub snippet:Option<String>,pub source:Option<String>,pub score:Option<f64> }
+pub struct SearchResultItem { pub title:String,pub url:String,pub snippet:Option<String>,pub source:Option<String>,pub score:Option<f64>,pub published_at:Option<String> }
 #[derive(Clone,Debug,PartialEq)]
 pub struct BuiltSearchRequest { pub url:String,pub method:&'static str,pub headers:BTreeMap<String,String>,pub body:Value }
 pub struct BuildContext<'a> { pub query:&'a str,pub max_results:f64,pub api_key:Option<&'a str>,pub base_url:Option<&'a str>,pub allowed_domains:Option<&'a [String]>,pub blocked_domains:Option<&'a [String]> }
@@ -26,7 +26,7 @@ pub fn resolve_domain_filters(config_allowed:Option<&[String]>,config_blocked:Op
 }
 pub fn result(title:Option<&str>,url:Option<&str>,snippet:Option<&str>,source:Option<&str>,score:Option<f64>)->Option<SearchResultItem> {
     let title=title.filter(|s|!s.is_empty())?; let url=url.filter(|s|!s.is_empty())?;
-    Some(SearchResultItem{title:title.into(),url:url.into(),snippet:snippet.filter(|s|!s.is_empty()).map(str::to_owned),source:source.filter(|s|!s.is_empty()).map(str::to_owned),score})
+    Some(SearchResultItem{title:title.into(),url:url.into(),snippet:snippet.filter(|s|!s.is_empty()).map(str::to_owned),source:source.filter(|s|!s.is_empty()).map(str::to_owned),score,published_at:None})
 }
 pub fn normalize_results(data:&Value,text_field:&str,fallback:Option<&str>)->Vec<SearchResultItem> {
     data.get("results").and_then(Value::as_array).into_iter().flatten().filter_map(|item|result(item.get("title").and_then(Value::as_str),item.get("url").and_then(Value::as_str),item.get(text_field).and_then(Value::as_str).or_else(||fallback.and_then(|f|item.get(f).and_then(Value::as_str))),None,item.get("score").and_then(Value::as_f64))).take(50).collect()
