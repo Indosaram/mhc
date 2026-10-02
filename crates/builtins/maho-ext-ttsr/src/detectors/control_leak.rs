@@ -19,6 +19,9 @@ fn process_token(state:&mut ControlLeakState,token:ControlToken) {
         state.latched=Some(DetectorMatch { rule:DetectorRule::ControlTokenLeak,reason:format!("{}x {} run in {context} context",active.count,active.token_id),anomaly_start_offset:active.first_start_offset,garbage_start_offset:active.first_start_offset,detail:[("tokenId".into(),DetailValue::String(active.token_id.clone())),("family".into(),DetailValue::String(active.family.as_str().into())),("occurrences".into(),DetailValue::Number(f64::from(active.count))),("context".into(),DetailValue::String(context.into()))].into() });
     }
 }
+#[cfg(test)]
+#[path = "control_leak_matrix_tests.rs"]
+mod matrix_tests;
 pub fn corroborates_control_leak(evidence:&PendingControlEvidence,anomaly_start_offset:usize,current_offset:usize)->bool { current_offset<=evidence.expires_at_offset && evidence.gap_length<=32 && evidence.first_payload_offset==Some(anomaly_start_offset) }
 pub struct ControlLeakDetector;
 pub fn create_control_leak_detector()->ControlLeakDetector { ControlLeakDetector }
