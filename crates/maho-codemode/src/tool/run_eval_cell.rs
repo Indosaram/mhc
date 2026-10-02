@@ -106,9 +106,22 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
         let operation=kernel.run(run_input);
         let guarded=work_execution.wait(operation);
         tokio::pin!(guarded);
+        let mut bridge_calls=Vec::<super::cell_handler::PendingCellToolCall>::new();
         let mut result=loop {
             tokio::select! {
                 result=&mut guarded=>break result,
+                completed=std::future::poll_fn(|cx| {
+                    for index in 0..bridge_calls.len() {
+                        if let std::task::Poll::Ready(result)=bridge_calls[index].as_mut().poll(cx) {
+                            drop(bridge_calls.swap_remove(index));
+                            return std::task::Poll::Ready(result);
+                        }
+                    }
+                    std::task::Poll::Pending
+                }),if !bridge_calls.is_empty()=>{
+                    if let Err(error)=handler.finish_tool_call(completed) {work_execution.cancel(AbortReason::new("Error",error));}
+                    *live.lock().expect("live result lock")=handler.builder.live_result();
+                },
                 message=messages.recv()=>if let Some(message)=message {
                     if !active.load(std::sync::atomic::Ordering::SeqCst) {continue;}
                     if message["type"]=="host-started" {
@@ -118,6 +131,8 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
                         work_execution.pause();work_manager.lock().expect("cell manager lock").pause(&work_cell);
                     } else if message["type"]=="status" && message["event"]["op"]==crate::bridge::reserved::TIMEOUT_RESUME_OP {
                         work_execution.resume();work_manager.lock().expect("cell manager lock").resume(&work_cell);
+                    } else if message["type"]=="tool-call" {
+                        bridge_calls.push(handler.begin_tool_call(&message));
                     } else {
                         let pending=work_execution.wait(handler.handle(&message));
                         tokio::pin!(pending);
@@ -140,11 +155,43 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
             if message["type"]=="host-started" {
                 handler.builder.state.run_started_at=work_cell.lock().expect("managed cell lock").source.run_started_at_ms;
                 handler.builder.state.status="running".into();handler.builder.state.queued_behind=None;
+            } else if active.load(std::sync::atomic::Ordering::SeqCst) && message["type"]=="tool-call" {
+                bridge_calls.push(handler.begin_tool_call(&message));
             } else if active.load(std::sync::atomic::Ordering::SeqCst) && let Err(error)=work_execution.wait(handler.handle(&message)).await {
                 work_execution.cancel(AbortReason::new("Error",error.clone()));
                 result=Err(error);
             }
         }
+        if result.as_ref().is_ok_and(|frame|frame["ok"]==true) {
+            while !bridge_calls.is_empty() {
+                let settlement=work_execution.wait(async {
+                    let completed=std::future::poll_fn(|cx| {
+                        for index in 0..bridge_calls.len() {
+                            if let std::task::Poll::Ready(result)=bridge_calls[index].as_mut().poll(cx) {
+                                drop(bridge_calls.swap_remove(index));
+                                return std::task::Poll::Ready(result);
+                            }
+                        }
+                        std::task::Poll::Pending
+                    }).await;
+                    Ok(completed)
+                });
+                tokio::pin!(settlement);
+                let completed=tokio::select! {
+                    result=&mut settlement=>result,
+                    changed=deadline.changed()=>{
+                        if changed.is_ok() && let Some(expiry)=deadline.borrow_and_update().clone() {work_execution.cancel(AbortReason::new("TimeoutError",expiry.error));}
+                        settlement.await
+                    }
+                };
+                if let Err(error)=completed.and_then(|completed|handler.finish_tool_call(completed)) {
+                    work_execution.cancel(AbortReason::new("Error",error.clone()));
+                    result=Err(error);break;
+                }
+                *live.lock().expect("live result lock")=handler.builder.live_result();
+            }
+        }
+        bridge_calls.clear();
         if !active.load(std::sync::atomic::Ordering::SeqCst) {handler.builder.state.active=false;}
         let final_result=match result {Ok(result)=>handler.builder.finalize(&result).await,Err(error)=>handler.builder.finalize_cancellation(&error).await};
         handler.builder.state.active=false;
