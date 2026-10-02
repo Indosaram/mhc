@@ -51,14 +51,15 @@ fn tick_status(state:&mut (Option<LoopState>,Option<String>),render:&LoopStatusR
 }
 impl Drop for LoopStatusTicker { fn drop(&mut self) { if let Some(timer)=&self.timer { timer.abort(); } } }
 fn format_duration(ms: f64) -> String {
-    let seconds = (ms / 1000.0).floor().max(0.0);
-    if seconds < 60.0 { return format!("{seconds}s"); }
+    let number=maho_ai::utils::js::number_to_string;
+    let seconds = if ms.is_nan() { ms } else { (ms / 1000.0).floor().max(0.0) };
+    if seconds < 60.0 { return format!("{}s",number(seconds)); }
     let minutes = (seconds / 60.0).floor();
-    if minutes < 60.0 { return if seconds % 60.0 > 0.0 { format!("{minutes}m{}s",seconds % 60.0) } else { format!("{minutes}m") }; }
+    if minutes < 60.0 { return if seconds % 60.0 > 0.0 { format!("{}m{}s",number(minutes),number(seconds % 60.0)) } else { format!("{}m",number(minutes)) }; }
     let hours = (minutes / 60.0).floor();
-    if hours < 24.0 { return if minutes % 60.0 > 0.0 { format!("{hours}h{}m",minutes % 60.0) } else { format!("{hours}h") }; }
+    if hours < 24.0 { return if minutes % 60.0 > 0.0 { format!("{}h{}m",number(hours),number(minutes % 60.0)) } else { format!("{}h",number(hours)) }; }
     let days = (hours / 24.0).floor();
-    if hours % 24.0 > 0.0 { format!("{days}d{}h",hours % 24.0) } else { format!("{days}d") }
+    if hours % 24.0 > 0.0 { format!("{}d{}h",number(days),number(hours % 24.0)) } else { format!("{}d",number(days)) }
 }
 pub fn format_loop_status(state: &LoopState, now_ms: f64) -> Option<String> {
     let armed: Vec<_> = state.entries.values().filter(|entry| match entry { CronEntry::Fixed { lifecycle, .. } | CronEntry::Dynamic { lifecycle, .. } => lifecycle.phase != LoopPhase::Ended }).collect();
@@ -84,6 +85,7 @@ pub fn format_noop_fold(noop_streak: f64) -> String { if noop_streak < 2.0 { Str
     #[test] fn noop_streak_is_exposed() { let result=format_noop_fold(3.0); assert!(result.contains('3')); }
     #[test] fn noop_streak_preserves_javascript_exponent_number() { assert!(format_noop_fold(1e21).contains("1e+21")); assert!(format_noop_fold(f64::NAN).contains("NaN")); }
     #[test] fn duration_retains_day_and_hour_parts() { let result=format_duration(90000000.0); assert_eq!(result,"1d1h"); }
+    #[test] fn duration_preserves_javascript_nonfinite_and_exponent_spelling() { assert_eq!(format_duration(f64::NAN),"NaNd"); assert_eq!(format_duration(f64::INFINITY),"Infinityd"); assert_eq!(format_duration(f64::NEG_INFINITY),"0s"); assert!(format_duration(1e30).contains("e+")); }
     #[tokio::test(start_paused=true)] async fn ticker_updates_countdown_and_dispose_clears_status() {
         let start=tokio::time::Instant::now();
         let (send,mut receive)=tokio::sync::mpsc::unbounded_channel();
