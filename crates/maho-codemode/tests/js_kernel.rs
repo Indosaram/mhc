@@ -108,6 +108,26 @@ async fn bridge_wait_timeout_retains_worker_state() {
 }
 
 #[tokio::test]
+async fn reset_fences_old_kernel_tool_generation() {
+    use maho_codemode::kernels::js::kernel_tools_types::*;
+    let kernel=JavaScriptKernel::start(Path::new(env!("CARGO_MANIFEST_DIR")),"bun-generation",4,None).await.unwrap();
+    let input=||KernelRunInput {cell_id:"define-generation".into(),code:"tool(function generation_probe() { return 42; })".into(),timeout_ms:Some(5000)};
+    let first=kernel.run(input(),|_|{}).await.unwrap();
+    let old=kernel.describe_kernel_tools(&["generation_probe".into()]).await.unwrap();
+    let old=&old["results"][0]["descriptor"];
+    let request=KernelToolsInvokeRequest {name:"generation_probe".into(),kernel_generation:old["kernel_generation"].as_u64().unwrap(),definition_revision:old["definition_revision"].as_u64().unwrap(),args:serde_json::json!({}),call_id:"old-generation".into()};
+    kernel.reset().await.unwrap();
+    let second=kernel.run(input(),|_|{}).await.unwrap();
+    let stale=kernel.invoke_kernel_tool(request,KernelToolsInvokeOptions {signal:None,scope:None}).await;
+    let fresh=kernel.describe_kernel_tools(&["generation_probe".into()]).await.unwrap();
+    kernel.close().await.unwrap();
+    assert_eq!(first["ok"],true);
+    assert_eq!(second["ok"],true);
+    assert_eq!(stale.unwrap_err().code,KernelToolErrorCode::KernelToolStale);
+    assert!(fresh["results"][0]["descriptor"]["kernel_generation"].as_u64().unwrap()>old["kernel_generation"].as_u64().unwrap());
+}
+
+#[tokio::test]
 async fn live_name_sources_refresh_before_every_cell_and_recovery() {
     use std::sync::{Arc,Mutex};
     let names=Arc::new(Mutex::new((vec!["host_reserved".to_string()],vec!["foreign_reserved".to_string()])));
