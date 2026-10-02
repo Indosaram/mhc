@@ -7,6 +7,7 @@ pub mod health;
 pub mod health_alert;
 pub mod model_cost;
 pub mod model_miss;
+pub mod model_preflight;
 pub mod memory_model_attempts;
 pub mod run_artifacts;
 pub mod registry_fallback;

@@ -11,7 +11,7 @@ maho-senpi-task = { path = "../../senpi-task", version = "=0.0.0" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 chrono = { workspace = true, features = ["std"] }
-tokio = { version = "=1.52.3", features = ["macros", "rt", "time"] }
+tokio = { version = "=1.52.3", features = ["macros", "rt", "time", "process"] }
 
 [dev-dependencies]
 tempfile.workspace = true
