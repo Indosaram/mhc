@@ -79,6 +79,38 @@ impl maho_codemode::bridges::output_bridge::OutputExecuteTool for ParkedExecutor
 }
 
 struct ConcurrentExecutor(tokio::sync::Notify);
+struct ProgressExecutor(tokio::sync::Notify);
+impl maho_codemode::bridges::output_bridge::OutputExecuteTool for ProgressExecutor {
+    fn execute_tool<'a>(&'a self,_:&'a str,_:serde_json::Value,options:maho_ext_api::ExecuteToolOptions)->maho_ext_api::ExecuteToolFuture<'a> {
+        Box::pin(async move {
+            if let Some(update)=options.on_update {
+                let mut result=maho_ext_api::AgentToolResult::text("progress");
+                result.details=json!({"task_id":"st_ab","status":"running","agent":"worker"});
+                update(result);
+            }
+            self.0.notified().await;
+            Ok(maho_ext_api::AgentToolResult::text("done"))
+        })
+    }
+}
+
+#[tokio::test]
+async fn real_js_agent_progress_reaches_live_cell_before_task_settles() {
+    let kernel=Arc::new(maho_codemode::kernels::js::context_manager::JavaScriptKernel::start(std::path::Path::new(env!("CARGO_MANIFEST_DIR")),"eval-progress",4,None).await.unwrap());
+    let executor=Arc::new(ProgressExecutor(tokio::sync::Notify::new()));
+    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(JsManager(kernel.clone())),executor:executor.clone(),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+    let (updates,mut events)=tokio::sync::mpsc::unbounded_channel();
+    let mut input=invocation("agent-progress","await agent('work'); 42");input.input.language=EvalLanguage::Js;
+    input.on_update=Some(Arc::new(move |result|{if result.details["statusEvents"][0]["id"]=="st_ab" {let _=updates.send(result);}}));
+    let run=tokio::spawn(run_eval_cell(options,input));
+    let progress=tokio::time::timeout(std::time::Duration::from_secs(2),events.recv()).await;
+    executor.0.notify_one();
+    let result=run.await;
+    kernel.close().await.unwrap();
+    let progress=progress.expect("agent progress must precede task completion").unwrap();
+    assert_eq!(progress.details["statusEvents"][0]["agent"],"worker");
+    assert_eq!(result.unwrap().unwrap().details["statusEvents"][0]["id"],"st_ab");
+}
 impl maho_codemode::bridges::output_bridge::OutputExecuteTool for ConcurrentExecutor {
     fn execute_tool<'a>(&'a self,name:&'a str,_:serde_json::Value,_:maho_ext_api::ExecuteToolOptions)->maho_ext_api::ExecuteToolFuture<'a> {
         Box::pin(async move {

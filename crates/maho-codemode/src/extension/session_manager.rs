@@ -33,7 +33,7 @@ impl CodemodeSessionManager {
         let executor = options.executor.clone();
         let list_tools = options.list_tools.clone();
         let task_tools = options.settings.task_tools.clone();
-        let agent_bridge = Arc::new(AgentBridge::default());
+        let agent_bridge = AgentBridge::for_executor(&executor);
         let bridge = start_bridge_server(BridgeServerOptions {
             token: None, body_limit_bytes: None,
             on_emit: Arc::new(|_, _| Box::pin(async { Ok(()) })),

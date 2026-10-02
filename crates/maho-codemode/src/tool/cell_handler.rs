@@ -21,6 +21,7 @@ pub struct CellHandler {
     pub builder: CellResultBuilder,
     runtime: CellBridgeRuntime,
     agent_bridge: Arc<AgentBridge>,
+    emit_status: Option<crate::bridges::agent_bridge::AgentStatusEmitter>,
 }
 
 pub struct PendingCellToolResult {
@@ -33,7 +34,8 @@ pub struct PendingCellToolResult {
 pub type PendingCellToolCall = std::pin::Pin<Box<dyn std::future::Future<Output=PendingCellToolResult> + Send>>;
 
 impl CellHandler {
-    pub fn new(builder: CellResultBuilder, runtime: CellBridgeRuntime) -> Self { let agent_bridge=AgentBridge::for_executor(&runtime.executor);Self {builder,runtime,agent_bridge} }
+    pub fn new(builder: CellResultBuilder, runtime: CellBridgeRuntime) -> Self { let agent_bridge=AgentBridge::for_executor(&runtime.executor);Self {builder,runtime,agent_bridge,emit_status:None} }
+    pub fn set_status_emitter(&mut self, emitter:crate::bridges::agent_bridge::AgentStatusEmitter) {self.emit_status=Some(emitter);}
 
     pub async fn handle(&mut self, message: &Value) -> Result<(), String> {
         if !self.builder.state.active { return Ok(()); }
@@ -66,6 +68,7 @@ impl CellHandler {
         let capture=ToolCallCapture {call_id:cap_code_points(call_id,MAX_CAPTURED_IDENTIFIER_CODE_POINTS),args:args.args,started_at:started,metric,include_details:name!=crate::bridge::reserved::RESERVED_SCHEMA_TOOL,args_truncated:args.truncated};
         let runtime=self.runtime.clone();
         let agent_bridge=self.agent_bridge.clone();
+        let emit_status=self.emit_status.clone();
         let message=message.clone();
         Box::pin(async move {
         let name=message["toolName"].as_str().unwrap_or("");
@@ -82,7 +85,7 @@ impl CellHandler {
         } else if is_reserved_tool_name(name) {
             let tools=if name==crate::bridge::reserved::RESERVED_OUTPUT_TOOL {Ok(None)} else {runtime.tools.as_ref().map(|list|list()).transpose()};
             match tools {
-                Ok(tools)=>run_reserved_tool(name,ReservedDispatchContext {call_id,args:&message["args"],executor:runtime.executor.as_ref(),task_tool_name:&runtime.settings.task_tools.task,task_output_tool_name:&runtime.settings.task_tools.output,tools:tools.as_deref(),execute_options:options,emit_status:None,agent_bridge:&agent_bridge}).await.map(|value|(value,true,None,None)).map_err(|error| {error_code=error.code();error.to_string()}),
+                Ok(tools)=>run_reserved_tool(name,ReservedDispatchContext {call_id,args:&message["args"],executor:runtime.executor.as_ref(),task_tool_name:&runtime.settings.task_tools.task,task_output_tool_name:&runtime.settings.task_tools.output,tools:tools.as_deref(),execute_options:options,emit_status,agent_bridge:&agent_bridge}).await.map(|value|(value,true,None,None)).map_err(|error| {error_code=error.code();error.to_string()}),
                 Err(error)=>Err(error),
             }
         } else {

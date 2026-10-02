@@ -78,6 +78,8 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
     let reply_kernel=kernel.clone();
     let (messages_tx,mut messages)=tokio::sync::mpsc::unbounded_channel();
     let mut handler=CellHandler::new(builder,CellBridgeRuntime {executor:options.executor.clone(),tools:options.list_tools.clone(),settings:options.settings.clone(),signal:bridge_signal,complete:options.complete.clone(),deliver_reply:Arc::new(move |reply|{let _=reply_kernel.deliver_tool_reply(reply);})});
+    let status_tx=messages_tx.clone();
+    handler.set_status_emitter(Arc::new(move |event|{let _=status_tx.send(serde_json::json!({"type":"status","event":event}));}));
     let live=Arc::new(Mutex::new(handler.builder.live_result()));
     let live_provider=live.clone();let queue_kernel=kernel.clone();
     manager.lock().expect("cell manager lock").bind_kernel(&cell,Arc::new(move ||live_provider.lock().expect("live result lock").clone()),Arc::new(move ||queue_kernel.queue_snapshot()));
@@ -192,6 +194,9 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
             }
         }
         bridge_calls.clear();
+        while let Ok(message)=messages.try_recv() {
+            if active.load(std::sync::atomic::Ordering::SeqCst) && message["type"]=="status" && let Err(error)=handler.handle(&message).await {result=Err(error);}
+        }
         if !active.load(std::sync::atomic::Ordering::SeqCst) {handler.builder.state.active=false;}
         let final_result=match result {Ok(result)=>handler.builder.finalize(&result).await,Err(error)=>handler.builder.finalize_cancellation(&error).await};
         handler.builder.state.active=false;
