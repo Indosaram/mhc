@@ -16,3 +16,11 @@ use senpi_task::{state::{TaskRecordInput,create_task_record}, tools::output::typ
     let value=bounded_task_output(&TaskOutputDetails::Status { snapshot }).expect("output"); for field in ["parent_session_id","root_session_id"] { assert_eq!(value["snapshot"][field].as_str().expect("lineage").len(),256); } for field in ["explanation","session_dir"] { assert_eq!(value["snapshot"]["lost"][field].as_str().expect("breadcrumb").len(),32000); } assert_eq!(value["snapshot"]["lost"]["pid"],42); assert_eq!(value["snapshot"]["suspended"]["explanation"].as_str().expect("suspended").len(),32000);
 }
 #[test] fn absent_optional_snapshot_fields_are_not_invented() { let record=create_task_record(TaskRecordInput::default(),Some(1)).expect("record"); let value=task_snapshot(&record,None,None).expect("snapshot"); for field in ["child_session_id","final_response","error_message","run_stats","live_progress","description_truncated"] { assert!(value.get(field).is_none(),"{field}"); } }
+#[test] fn snapshots_preserve_full_durable_stats_and_prefer_live_stats_when_supplied() {
+    use senpi_task::state::{TaskRunStats,TaskStatus};
+    let mut record=create_task_record(TaskRecordInput::default(),Some(1)).expect("record"); record.status=TaskStatus::Completed; record.child_session_id=Some("child".into()); record.final_response=Some("result".into());
+    let stats=TaskRunStats { runtime_ms:2500,turns:3,tool_calls:4,output_tokens:Some(200),total_tokens:Some(1200),generation_ms:Some(1500),tokens_per_second:Some(133.3),cost_usd:Some(0.12),cache_hit_rate_last:Some(0.5),cache_hit_rate_run:Some(0.4) }; record.run_stats=Some(stats.clone());
+    let value=task_snapshot(&record,None,None).expect("durable"); assert_eq!(value["run_stats"],serde_json::to_value(&stats).expect("stats")); assert_eq!(value["child_session_id"],"child"); assert_eq!(value["final_response"],"result");
+    let live=TaskRunStats { runtime_ms:1000,..Default::default() }; let value=task_snapshot(&record,Some(&live),None).expect("live"); assert_eq!(value["run_stats"],serde_json::to_value(&live).expect("stats"));
+    record.status=TaskStatus::Error; record.error_message=Some("failed".into()); assert_eq!(task_snapshot(&record,None,None).expect("error")["error_message"],"failed");
+}

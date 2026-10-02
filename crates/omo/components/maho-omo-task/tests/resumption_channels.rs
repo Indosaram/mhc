@@ -1,9 +1,22 @@
 use std::sync::{Arc, Mutex};
 use maho_ext_api::EventBus;
+use serde_json::json;
 use maho_omo_task::resumption_channel_emitter::{ResumptionChannelEmitter, ResumptionChannelManager, RESUMPTION_CHANNEL_STATE_EVENT};
 use senpi_task::state::{create_task_record, TaskRecord, TaskRecordInput, TaskStatus};
 
 struct Manager(Mutex<Vec<TaskRecord>>);
+#[test] fn production_manager_resolves_owned_members_from_real_runtime() {
+    use maho_omo_task::resumption_channel_emitter::TaskResumptionChannelManager;
+    use senpi_task::{manager::{create_task_manager,types::{ManagedRunner,ManagedRunnerResult,ManagedStartSpec,ManagedRunners,TaskManagerOptions,ResolvedChildPlan}},store::{StateDirConfig,TaskRecordStore},team::{liveness_ownership::TeamMemberOwnershipDeps,runtime_config::{TeamTaskBounds,to_team_core_config},storage::team_storage_base_dir,normalize::normalize_senpi_team_spec}};
+    struct NoLaunch; impl ManagedRunner for NoLaunch { fn start(&self,_:&ManagedStartSpec)->ManagedRunnerResult { panic!("unexpected launch") } }
+    let root=tempfile::tempdir().expect("root"); let state_dir=StateDirConfig { project_dir:root.path().into(),task_state_dir:None }; let store=TaskRecordStore::new(&state_dir); let bounds=TeamTaskBounds { max_members:4,max_parallel_members:2,max_wall_clock_minutes:10 };
+    let config=to_team_core_config(&bounds,&team_storage_base_dir(&state_dir).to_string_lossy()).expect("config"); let spec=normalize_senpi_team_spec(&json!({"members":[{"name":"beta","kind":"category","category":"quick","prompt":"work"}]}),"squad",None).expect("spec");
+    let runtime=team_core::team_state_store::create_runtime_state(&spec,Some("parent"),team_core::types::SpecSource::Project,&config).expect("runtime");
+    let record=create_task_record(TaskRecordInput { parent_session_id:"parent".into(),name:Some(format!("team:{}:beta",runtime.team_run_id)),..Default::default() },Some(1)).expect("record"); store.save(&record).expect("save");
+    let manager=create_task_manager(TaskManagerOptions::new(store,ManagedRunners { in_process:Arc::new(NoLaunch),process:Arc::new(NoLaunch) },Arc::new(|_| Ok(ResolvedChildPlan { model:"faux/faux".into(),..Default::default() })),root.path().to_string_lossy()));
+    let view=TaskResumptionChannelManager { manager:Arc::new(manager),ownership:TeamMemberOwnershipDeps { state_dir,team_bounds:bounds,load_runtime_state:None } };
+    assert_eq!(view.list("parent"),vec![record.clone()]); assert!(view.list("foreign").is_empty()); assert!(!view.was_background(&record.task_id)); assert!(view.is_owned_team_member(&record,"parent")); assert!(!view.is_owned_team_member(&record,"foreign"));
+}
 impl ResumptionChannelManager for Manager {
     fn list(&self, _: &str) -> Vec<TaskRecord> { self.0.lock().expect("valid test state").clone() }
     fn was_background(&self, id: &str) -> bool { id == "background" }
