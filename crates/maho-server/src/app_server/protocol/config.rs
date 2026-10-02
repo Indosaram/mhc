@@ -18,7 +18,7 @@ pub struct ConfigLayer {pub name:ConfigLayerSource,pub version:String,pub config
 #[serde(rename_all="camelCase")]
 pub struct ConfigReadParams {
     #[serde(default,skip_serializing_if="Option::is_none")]pub include_layers:Option<bool>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub cwd:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub cwd:Option<Option<String>>,
 }
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 pub struct ConfigReadResponse {pub config:Config,pub origins:BTreeMap<String,ConfigLayerMetadata>,pub layers:Option<Vec<ConfigLayer>>}

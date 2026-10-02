@@ -8,22 +8,25 @@ pub trait WireChannel:Send+Sync {
     fn send_fragmented<'a>(&'a self,chunk:&'a [u8],split_at:usize)->ServerFuture<'a,()>;
     fn close(&self)->ServerFuture<'_,()>;
 }
-struct ClientState {messages:Vec<Value>,decoder:MessageDecoder,attachment:Option<Value>,closed:bool,error:Option<ServerError>,request_sequence:u64}
+struct MessageWaiter {predicate:Box<dyn Fn(&Value)->bool+Send+Sync>,resolve:tokio::sync::oneshot::Sender<Result<Value,ServerError>>}
+struct ClientState {messages:Vec<Value>,decoder:MessageDecoder,attachment:Option<Value>,closed:bool,waiters:Vec<MessageWaiter>,request_sequence:u64}
 pub struct ProtocolTestClient {channel:Arc<dyn WireChannel>,state:Mutex<ClientState>,changed:watch::Sender<u64>}
 impl ProtocolTestClient {
     pub fn new(channel:Arc<dyn WireChannel>)->Self {
-        Self {channel,state:Mutex::new(ClientState {messages:Vec::new(),decoder:MessageDecoder::server(),attachment:None,closed:false,error:None,request_sequence:0}),changed:watch::channel(0).0}
+        Self {channel,state:Mutex::new(ClientState {messages:Vec::new(),decoder:MessageDecoder::server(),attachment:None,closed:false,waiters:Vec::new(),request_sequence:0}),changed:watch::channel(0).0}
     }
     pub fn messages(&self)->Vec<Value> {self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).messages.clone()}
     pub fn closed(&self)->bool {self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).closed}
     pub async fn hello(&self,version:Option<u64>)->Result<Value,ServerError> {
+        let response=self.next(|message|matches!(message["type"].as_str(),Some("hello"|"hello_error")));
         self.send_message(&json!({"type":"hello","version":version.unwrap_or(PROTOCOL_VERSION)})).await?;
-        self.next(|message|matches!(message["type"].as_str(),Some("hello"|"hello_error"))).await
+        response.await
     }
     pub async fn request_service(&self,target:Value,call:Value,id:Option<String>)->Result<Value,ServerError> {
         let id=id.unwrap_or_else(|| {let mut state=self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);state.request_sequence+=1;format!("request-{}",state.request_sequence)});
+        let response_id=id.clone();let response=self.next(move |message|message["type"]=="response" && message["id"]==response_id);
         self.send_message(&json!({"type":"request","id":id,"target":target,"call":call})).await?;
-        self.next(|message|message["type"]=="response" && message["id"]==id).await
+        response.await
     }
     pub async fn attach(&self,server_id:&str,session_id:&str)->Result<Value,ServerError> {
         self.request_service(json!({"serverId":server_id}),json!({"serviceId":"pi.session-management","member":"attach","args":[session_id]}),None).await
@@ -41,28 +44,27 @@ impl ProtocolTestClient {
     pub async fn send_fragmented_message(&self,message:&Value,split_at:usize)->Result<(),ServerError> {
         let bytes=encode_client_message(message,DEFAULT_MAX_FRAME_LENGTH).map_err(|error|ServerError::new("invalid_request",&error.to_string()))?;self.channel.send_fragmented(&bytes,split_at).await
     }
-    pub async fn next(&self,predicate:impl Fn(&Value)->bool)->Result<Value,ServerError> {self.next_from(0,predicate).await}
-    pub async fn next_from(&self,index:usize,predicate:impl Fn(&Value)->bool)->Result<Value,ServerError> {
-        let mut changed=self.changed.subscribe();
-        loop {
-            {let state=self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(message)=state.messages.iter().skip(index).find(|message|predicate(message)) {return Ok(message.clone());}
-                if let Some(error)=&state.error {return Err(error.clone());}
-                if state.closed {return Err(ServerError::new("internal_error","Wire client is closed"));}}
-            changed.changed().await.map_err(|error|ServerError::new("internal_error",&error.to_string()))?;
-        }
+    pub fn next(&self,predicate:impl Fn(&Value)->bool+Send+Sync+'static)->ServerFuture<'static,Value> {self.next_from(0,predicate)}
+    pub fn next_from(&self,index:usize,predicate:impl Fn(&Value)->bool+Send+Sync+'static)->ServerFuture<'static,Value> {
+        let mut state=self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(message)=state.messages.iter().skip(index).find(|message|predicate(message)).cloned() {return Box::pin(async move {Ok(message)});}
+        if state.closed {return Box::pin(async {Err(ServerError::new("internal_error","Wire client is closed"))});}
+        let (resolve,receiver)=tokio::sync::oneshot::channel();state.waiters.retain(|waiter|!waiter.resolve.is_closed());
+        state.waiters.push(MessageWaiter {predicate:Box::new(predicate),resolve});
+        Box::pin(async move {receiver.await.map_err(|error|ServerError::new("internal_error",&error.to_string()))?})
     }
     pub async fn wait_for_close(&self) {let mut changed=self.changed.subscribe();while !self.closed() {if changed.changed().await.is_err() {return;}}}
     pub async fn close(&self)->Result<(),ServerError> {self.channel.close().await}
     pub fn receive(&self,chunk:&[u8]) {
         let mut state=self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         match state.decoder.push(chunk) {Ok(messages)=>for message in messages {
-            if message["type"]=="attachment" {state.attachment=(!message["attachment"].is_null()).then(||message["attachment"].clone());}state.messages.push(message);
-        },Err(error)=>state.error=Some(ServerError::new("invalid_request",&error.to_string()))}
+            if message["type"]=="attachment" {state.attachment=(!message["attachment"].is_null()).then(||message["attachment"].clone());}state.messages.push(message.clone());
+            let mut remaining=Vec::new();for waiter in std::mem::take(&mut state.waiters) {if (waiter.predicate)(&message) {let _delivery=waiter.resolve.send(Ok(message.clone()));} else if !waiter.resolve.is_closed() {remaining.push(waiter);}}state.waiters=remaining;
+        },Err(error)=>{let error=ServerError::new("invalid_request",&error.to_string());for waiter in state.waiters.drain(..) {let _delivery=waiter.resolve.send(Err(error.clone()));}}}
         drop(state);self.changed.send_modify(|sequence|*sequence+=1);
     }
-    pub fn mark_closed(&self) {let mut state=self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);state.closed=true;drop(state);self.changed.send_modify(|sequence|*sequence+=1);}
-    pub fn fail(&self,error:ServerError) {self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).error=Some(error);self.changed.send_modify(|sequence|*sequence+=1);}
+    pub fn mark_closed(&self) {let mut state=self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if state.closed {return;}state.closed=true;for waiter in state.waiters.drain(..) {let _delivery=waiter.resolve.send(Err(ServerError::new("internal_error","Wire connection closed")));}drop(state);self.changed.send_modify(|sequence|*sequence+=1);}
+    pub fn fail(&self,error:ServerError) {let mut state=self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);for waiter in state.waiters.drain(..) {let _delivery=waiter.resolve.send(Err(error.clone()));}}
 }
 struct UnixChannel {writer:AsyncMutex<OwnedWriteHalf>,close:watch::Sender<bool>,closed:super::host::Deferred<()>}
 impl WireChannel for UnixChannel {

@@ -14,18 +14,18 @@ pub struct Thread {
 #[derive(Clone,Debug,Default,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct ThreadRuntimeOverrides {
-    #[serde(default,skip_serializing_if="Option::is_none")]pub model:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub model_provider:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub service_tier:Option<ServiceTier>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub cwd:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub runtime_workspace_roots:Option<Vec<AbsolutePathBuf>>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub approval_policy:Option<AskForApproval>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub approvals_reviewer:Option<ApprovalsReviewer>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub sandbox:Option<SandboxMode>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub permissions:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub config:Option<BTreeMap<String,JsonValue>>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub base_instructions:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub developer_instructions:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub model:Option<Option<String>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub model_provider:Option<Option<String>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub service_tier:Option<Option<ServiceTier>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub cwd:Option<Option<String>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub runtime_workspace_roots:Option<Option<Vec<AbsolutePathBuf>>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub approval_policy:Option<Option<AskForApproval>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub approvals_reviewer:Option<Option<ApprovalsReviewer>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub sandbox:Option<Option<SandboxMode>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub permissions:Option<Option<String>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub config:Option<Option<BTreeMap<String,JsonValue>>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub base_instructions:Option<Option<String>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub developer_instructions:Option<Option<String>>,
 }
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
@@ -37,16 +37,16 @@ pub struct ThreadRuntimeResponse {
 #[serde(rename_all="camelCase")]
 pub struct ThreadStartParams {
     #[serde(flatten)]pub overrides:ThreadRuntimeOverrides,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub service_name:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub personality:Option<Personality>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub multi_agent_mode:Option<MultiAgentMode>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub ephemeral:Option<bool>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub session_start_source:Option<ThreadStartSource>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub thread_source:Option<ThreadSource>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub environments:Option<Vec<TurnEnvironmentParams>>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub dynamic_tools:Option<Vec<DynamicToolSpec>>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub selected_capability_roots:Option<Vec<SelectedCapabilityRoot>>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub mock_experimental_field:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub service_name:Option<Option<String>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub personality:Option<Option<Personality>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub multi_agent_mode:Option<Option<MultiAgentMode>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub ephemeral:Option<Option<bool>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub session_start_source:Option<Option<ThreadStartSource>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub thread_source:Option<Option<ThreadSource>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub environments:Option<Option<Vec<TurnEnvironmentParams>>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub dynamic_tools:Option<Option<Vec<DynamicToolSpec>>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub selected_capability_roots:Option<Option<Vec<SelectedCapabilityRoot>>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub mock_experimental_field:Option<Option<String>>,
     #[serde(default,skip_serializing_if="Option::is_none")]pub experimental_raw_events:Option<bool>,
 }
 pub type ThreadStartResponse=ThreadRuntimeResponse;
@@ -54,11 +54,11 @@ pub type ThreadStartResponse=ThreadRuntimeResponse;
 #[serde(rename_all="camelCase")]
 pub struct ThreadResumeParams {
     #[serde(flatten)]pub overrides:ThreadRuntimeOverrides,pub thread_id:ThreadId,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub history:Option<Vec<JsonValue>>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub path:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub personality:Option<Personality>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub history:Option<Option<Vec<JsonValue>>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub path:Option<Option<String>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub personality:Option<Option<Personality>>,
     #[serde(default,skip_serializing_if="Option::is_none")]pub exclude_turns:Option<bool>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub initial_turns_page:Option<JsonValue>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub initial_turns_page:Option<Option<JsonValue>>,
 }
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
@@ -67,9 +67,9 @@ pub struct ThreadResumeResponse {#[serde(flatten)]pub runtime:ThreadRuntimeRespo
 #[serde(rename_all="camelCase")]
 pub struct ThreadForkParams {
     #[serde(flatten)]pub overrides:ThreadRuntimeOverrides,pub thread_id:ThreadId,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub path:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub path:Option<Option<String>>,
     #[serde(default,skip_serializing_if="Option::is_none")]pub ephemeral:Option<bool>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub thread_source:Option<ThreadSource>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub thread_source:Option<Option<ThreadSource>>,
     #[serde(default,skip_serializing_if="Option::is_none")]pub exclude_turns:Option<bool>,
 }
 pub type ThreadForkResponse=ThreadRuntimeResponse;
@@ -84,17 +84,17 @@ pub enum CwdFilter {One(String),Many(Vec<String>)}
 #[derive(Clone,Debug,Default,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct ThreadListParams {
-    #[serde(default,skip_serializing_if="Option::is_none")]pub cursor:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub limit:Option<f64>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub sort_key:Option<ThreadSortKey>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub sort_direction:Option<SortDirection>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub model_providers:Option<Vec<String>>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub source_kinds:Option<Vec<ThreadSourceKind>>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub archived:Option<bool>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub cwd:Option<CwdFilter>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub cursor:Option<Option<String>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub limit:Option<Option<f64>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub sort_key:Option<Option<ThreadSortKey>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub sort_direction:Option<Option<SortDirection>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub model_providers:Option<Option<Vec<String>>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub source_kinds:Option<Option<Vec<ThreadSourceKind>>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub archived:Option<Option<bool>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub cwd:Option<Option<CwdFilter>>,
     #[serde(default,skip_serializing_if="Option::is_none")]pub use_state_db_only:Option<bool>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub search_term:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub parent_thread_id:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub search_term:Option<Option<String>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub parent_thread_id:Option<Option<String>>,
 }
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
@@ -102,8 +102,8 @@ pub struct ThreadListResponse {pub data:Vec<Thread>,pub next_cursor:Option<Strin
 #[derive(Clone,Debug,Default,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct ThreadLoadedListParams {
-    #[serde(default,skip_serializing_if="Option::is_none")]pub cursor:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub limit:Option<f64>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub cursor:Option<Option<String>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub limit:Option<Option<f64>>,
 }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]

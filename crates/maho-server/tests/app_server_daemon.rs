@@ -29,7 +29,8 @@ fn factory() -> SessionFactory {
         provider.set_responses(vec![faux_assistant_message("retained transcript",FauxAssistantMessageOptions {timestamp:Some(0),..Default::default()}).into()]);
         let streams = faux_streams(provider.core.clone());
         let stream_fn: maho_agent::types::StreamFn = Arc::new(move |model, context, options| streams.stream_simple(model,context,options.map(|options|options.simple)));
-        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {models_path:Some(std::path::Path::new(&cwd).join("models.json")),auth_path:Some(std::path::Path::new(&cwd).join("auth.json")),providers:Some(vec![provider.provider.clone()]),..Default::default()});
+        let credentials=Arc::new(maho_core::auth_storage::AuthStorage::in_memory([("faux".into(),json!({"type":"api_key","key":"faux-test"}))].into_iter().collect()));
+        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {credentials:Some(credentials),models_path:Some(std::path::Path::new(&cwd).join("models.json")),auth_path:Some(std::path::Path::new(&cwd).join("auth.json")),providers:Some(vec![provider.provider.clone()])});
         AgentSession::new(AgentSessionConfig {
             agent:maho_agent::Agent::new(maho_agent::AgentOptions {initial_state:Some(maho_agent::agent::PartialAgentState {model:Some(model),..Default::default()}),stream_fn:Some(stream_fn),..Default::default()}),
             session_manager:options.session_manager.ok_or("Missing session manager")?,settings_manager:maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),false),
@@ -243,5 +244,29 @@ async fn real_socket_routes_question_progress_and_final_response_then_declines_a
     assert_eq!(read(&mut client).await["result"]["status"],"unsubscribed");
     let unavailable = UserInputBridge::request_user_input(&runtime.user_input,&id,"turn","item",request,QuestionOptions::default()).await.unwrap();
     assert_eq!(unavailable.status,QuestionStatus::Unavailable);
+    client.close(None).await.unwrap();drop(client);listener.close().await.unwrap();runtime.dispose().await;
+}
+
+#[tokio::test]
+async fn native_compaction_success_emits_completed_item_and_keeps_synthetic_history() {
+    let directory=tempfile::tempdir().unwrap();let path=directory.path().join("compact.sock");
+    let runtime=AppServerRuntime::new(directory.path().display().to_string(),directory.path().display().to_string(),"1".into(),None,Some(factory())).await;
+    let listener=start_unix_socket_listener(path.clone(),true,ResolvedWebSocketListenerAuth::Off,runtime.core.clone(),None).await.unwrap();
+    let mut client=attach(&path).await;send(&mut client,json!({"id":2,"method":"thread/start","params":{}})).await;
+    let id=read(&mut client).await["result"]["thread"]["id"].as_str().unwrap().to_owned();assert_eq!(read(&mut client).await["method"],"thread/started");
+    let entry=runtime.threads.get_loaded_thread(&id).await.unwrap();
+    {let entry=entry.lock().await;
+        entry.session.with_settings_manager_mut(|settings|settings.set(maho_core::settings_manager::SettingsScope::Global,json!({"compaction":{"keepRecentTokens":1}}).as_object().unwrap())).unwrap();
+        entry.session.with_session_manager_mut(|manager| {
+            manager.append_message(json!({"role":"user","content":"older context","timestamp":0}));
+            manager.append_message(serde_json::to_value(maho_ai::providers::faux::faux_assistant_message("older answer",maho_ai::providers::faux::FauxAssistantMessageOptions {timestamp:Some(0),..Default::default()})).unwrap());
+            manager.append_message(json!({"role":"user","content":"retain this turn","timestamp":1}));
+        });
+    }
+    send(&mut client,json!({"id":3,"method":"thread/compact/start","params":{"threadId":id}})).await;
+    assert_eq!(read(&mut client).await["result"],json!({}));let started=read(&mut client).await;assert_eq!(started["method"],"item/started");
+    let completed=read(&mut client).await;assert_eq!(completed["method"],"item/completed");assert_eq!(completed["params"]["item"],started["params"]["item"]);
+    let turns=runtime.turn_log.lock().await.read_turns(&id);assert_eq!(turns.len(),1);assert_eq!(turns[0].items[0]["type"],"contextCompaction");
+    assert!(entry.lock().await.session.with_session_manager(|manager|manager.entries()).iter().any(|entry|entry["type"]=="compaction"));
     client.close(None).await.unwrap();drop(client);listener.close().await.unwrap();runtime.dispose().await;
 }

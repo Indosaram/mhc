@@ -23,9 +23,9 @@ pub struct Model {
 #[derive(Clone,Debug,Default,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct ModelListParams {
-    #[serde(default,skip_serializing_if="Option::is_none")]pub cursor:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub limit:Option<f64>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub include_hidden:Option<bool>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub cursor:Option<Option<String>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub limit:Option<Option<f64>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]pub include_hidden:Option<Option<bool>>,
 }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]

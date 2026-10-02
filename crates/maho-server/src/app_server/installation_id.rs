@@ -16,7 +16,7 @@ async fn read_id(path:&Path)->io::Result<Option<String>> {
 async fn write_private(path:&Path,text:&str,exclusive:bool)->io::Result<()> {
     let mut options=tokio::fs::OpenOptions::new();options.write(true).mode(0o600);
     if exclusive {options.create_new(true);} else {options.create(true).truncate(true);}
-    options.open(path).await?.write_all(text.as_bytes()).await
+    let mut file=options.open(path).await?;file.write_all(text.as_bytes()).await?;file.flush().await
 }
 async fn unlink(path:&Path)->io::Result<()> {
     match tokio::fs::remove_file(path).await {Ok(())=>Ok(()),Err(error) if matches!(error.kind(),io::ErrorKind::NotFound|io::ErrorKind::NotADirectory)=>Ok(()),Err(error)=>Err(error)}
@@ -60,6 +60,7 @@ async fn reclaim(path:&Path)->io::Result<()> {
 }
 pub async fn ensure_installation_id(agent_dir:&Path)->io::Result<String> {
     let path=agent_dir.join("app-server").join("installation-id");let lock=path.with_file_name("installation-id.lock");
+    let _pending=super::metadata_state::lock_thread_mutation(&format!("installation-id:{}",path.display())).await;
     for _ in 0..100 {
         if let Some(id)=read_id(&path).await? {return Ok(id);}
         tokio::fs::create_dir_all(agent_dir.join("app-server")).await?;

@@ -54,3 +54,20 @@ async fn deferred_keeps_first_resolution_for_all_waiters() {
     let deferred=Deferred::default();deferred.resolve(1);deferred.resolve(2);
     assert_eq!(deferred.wait().await,1);assert_eq!(deferred.wait().await,1);
 }
+
+#[tokio::test]
+async fn client_failure_rejects_only_registered_waiters_and_later_receive_resolves_new_waiter() {
+    struct Channel;
+    impl WireChannel for Channel {
+        fn send<'a>(&'a self,_:&'a [u8])->ServerFuture<'a,()> {Box::pin(async {Ok(())})}
+        fn send_fragmented<'a>(&'a self,_:&'a [u8],_:usize)->ServerFuture<'a,()> {Box::pin(async {Ok(())})}
+        fn close(&self)->ServerFuture<'_,()> {Box::pin(async {Ok(())})}
+    }
+    let client=ProtocolTestClient::new(Arc::new(Channel));
+    let first=client.next(|message|message["type"]=="hello");client.fail(ServerError::new("test","transient"));
+    assert_eq!(first.await.unwrap_err().code,"test");
+    let second=client.next(|message|message["type"]=="hello");
+    client.receive(&maho_server::protocol::codec::encode_server_message(&json!({"type":"hello","version":8,"serverId":"00000000-0000-4000-8000-000000000001"}),maho_server::protocol::framing::DEFAULT_MAX_FRAME_LENGTH).unwrap());
+    assert_eq!(second.await.unwrap()["type"],"hello");
+    let closed=client.next(|message|message["type"]=="response");client.mark_closed();assert!(closed.await.is_err());
+}

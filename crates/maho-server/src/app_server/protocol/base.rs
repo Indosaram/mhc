@@ -22,8 +22,8 @@ pub struct InitializeCapabilities {
     pub experimental_api:bool,pub request_attestation:bool,
     #[serde(default,skip_serializing_if="Option::is_none")]
     pub mcp_server_openai_form_elicitation:Option<bool>,
-    #[serde(default,skip_serializing_if="Option::is_none")]
-    pub opt_out_notification_methods:Option<Vec<String>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]
+    pub opt_out_notification_methods:Option<Option<Vec<String>>>,
 }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
