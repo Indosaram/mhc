@@ -14,10 +14,24 @@ pub fn load_look_at_chain(settings:&LookAtSettings,store:&LookAtStore)->Vec<Stri
     store.get_override().models.as_ref().or(settings.models.as_ref()).cloned().unwrap_or_else(||DEFAULT_LOOK_AT_CHAIN.into_iter().map(String::from).collect())
 }
 pub fn load_look_at_enabled(settings:&LookAtSettings,store:&LookAtStore)->bool { store.get_override().enabled.unwrap_or(settings.enabled) }
+pub fn load_chain_from_context(store:&LookAtStore,get_settings:impl FnOnce()->Result<LookAtSettings,maho_ext_api::ExtensionFailure>)->Result<Vec<String>,maho_ext_api::ExtensionFailure> {
+    match &store.get_override().models { Some(models)=>Ok(models.clone()),None=>Ok(load_look_at_chain(&get_settings()?,store)) }
+}
+pub fn load_enabled_from_context(store:&LookAtStore,get_settings:impl FnOnce()->Result<LookAtSettings,maho_ext_api::ExtensionFailure>)->Result<bool,maho_ext_api::ExtensionFailure> {
+    match store.get_override().enabled { Some(enabled)=>Ok(enabled),None=>Ok(get_settings()?.enabled) }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
     fn settings(models:Option<Vec<String>>,enabled:bool)->LookAtSettings { LookAtSettings{models,enabled} }
+    #[test] fn overrides_do_not_read_unbound_context_settings() {
+        let mut store=create_look_at_store(); store.set_models(Some(vec![])); store.set_enabled(Some(false));
+        assert!(load_chain_from_context(&store,||panic!("settings must not be read")).unwrap().is_empty());
+        assert!(!load_enabled_from_context(&store,||panic!("settings must not be read")).unwrap());
+        store.set_models(None); store.set_enabled(None);
+        assert!(load_chain_from_context(&store,||Err(maho_ext_api::ExtensionFailure::new("unbound"))).is_err());
+        assert!(load_enabled_from_context(&store,||Err(maho_ext_api::ExtensionFailure::new("unbound"))).is_err());
+    }
     #[test] fn configured_models_replace_default_chain() { assert_eq!(load_look_at_chain(&settings(Some(vec!["google/gemini-3.5-flash".into()]),true),&create_look_at_store()),vec!["google/gemini-3.5-flash"]); }
     #[test] fn override_wins_over_configured_models() { let mut store=create_look_at_store(); store.set_models(Some(vec!["openai/gpt-5.6-terra".into()])); assert_eq!(load_look_at_chain(&settings(Some(vec!["google/gemini-3.5-flash".into()]),true),&store),vec!["openai/gpt-5.6-terra"]); }
     #[test] fn absent_override_uses_defaults() { let s=settings(None,true); let store=create_look_at_store(); assert!(load_look_at_enabled(&s,&store)); assert_eq!(load_look_at_chain(&s,&store),DEFAULT_LOOK_AT_CHAIN); }

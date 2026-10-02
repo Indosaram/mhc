@@ -2,7 +2,7 @@ use std::sync::{Arc,Mutex};
 use maho_ext_api::{ExtensionApi,ExtensionContext,ExtensionFailure,NotificationType,ExtensionUiDialogOptions};
 use maho_ai::{model::Model,types::InputModality};
 use maho_core::model_resolver::parse_model_pattern;
-use crate::{settings::{LookAtStore,load_look_at_chain,load_look_at_enabled},model_selector::resolve_vision_model};
+use crate::{settings::{LookAtStore,load_chain_from_context,load_enabled_from_context},model_selector::resolve_vision_model};
 pub type LookAtResync=Arc<dyn Fn(&ExtensionContext)->Result<(),ExtensionFailure>+Send+Sync>;
 const MENU:[&str;4]=["Show current chain","Edit chain","Reset session override","Toggle look_at"];
 pub fn parse_entries(raw:&str)->Vec<String> { raw.split(|character:char|matches!(character,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}')).filter(|entry|!entry.is_empty()).map(String::from).collect() }
@@ -14,11 +14,12 @@ pub fn validate_entries(entries:&[String],available:&[Model])->Vec<String> {
     }).collect()
 }
 fn render_state(ctx:&ExtensionContext,store:&LookAtStore)->Result<String,ExtensionFailure> {
-    let settings=ctx.get_look_at_settings()?; let chain=load_look_at_chain(&settings,store);
+    let chain=load_chain_from_context(store,||ctx.get_look_at_settings())?;
     let available=ctx.model_registry.get_available();
     let vision:Vec<_>=available.iter().filter(|model|model.input.contains(&InputModality::Image)).cloned().collect();
-    let source=if store.get_override().models.is_some() { "current-session override" } else if settings.models.is_some() { "settings.json lookAt.models" } else { "default" };
-    let mut lines=vec![format!("look_at: {}",if load_look_at_enabled(&settings,store) { "enabled" } else { "disabled" }),format!("Model chain (source: {source}):")];
+    let enabled=load_enabled_from_context(store,||ctx.get_look_at_settings())?;
+    let source=if store.get_override().models.is_some() { "current-session override" } else if ctx.get_look_at_settings()?.models.is_some() { "settings.json lookAt.models" } else { "default" };
+    let mut lines=vec![format!("look_at: {}",if enabled { "enabled" } else { "disabled" }),format!("Model chain (source: {source}):")];
     if chain.is_empty() { lines.push("  (empty)".into()); }
     for entry in chain {
         let resolved=if parse_model_pattern(&entry,&vision,true).model.is_none() { "unavailable".into() } else { resolve_vision_model(std::slice::from_ref(&entry),&available).map(|r|format!("{}/{}",r.model.provider,r.model.id)).unwrap_or_else(||"unavailable".into()) };
@@ -47,7 +48,7 @@ pub fn register_look_at_command(api:&mut ExtensionApi,store:Arc<Mutex<LookAtStor
                 None|Some("")=>{},
                 Some("Show current chain")=>{ctx.ui.notify(&render_state(ctx,&store.lock().unwrap_or_else(std::sync::PoisonError::into_inner))?,NotificationType::Info);},
                 Some("Edit chain")=>{
-                    let prefill=load_look_at_chain(&ctx.get_look_at_settings()?,&store.lock().unwrap_or_else(std::sync::PoisonError::into_inner)).join(" ");
+                    let prefill=load_chain_from_context(&store.lock().unwrap_or_else(std::sync::PoisonError::into_inner),||ctx.get_look_at_settings())?.join(" ");
                     if let Some(input)=ctx.ui.input("look_at model chain",Some(&prefill),ExtensionUiDialogOptions::default()).await {
                         let entries=parse_entries(&input);
                         if entries.is_empty() { ctx.ui.notify("Usage: /lookat <model1> [model2 ...]",NotificationType::Error); }
@@ -59,7 +60,7 @@ pub fn register_look_at_command(api:&mut ExtensionApi,store:Arc<Mutex<LookAtStor
                     resync(ctx)?; ctx.ui.notify("Reset look_at session override.",NotificationType::Info);
                 },
                 Some(_)=>{
-                    let enabled=!load_look_at_enabled(&ctx.get_look_at_settings()?,&store.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+                    let enabled=!load_enabled_from_context(&store.lock().unwrap_or_else(std::sync::PoisonError::into_inner),||ctx.get_look_at_settings())?;
                     store.lock().unwrap_or_else(std::sync::PoisonError::into_inner).set_enabled(Some(enabled));
                     resync(ctx)?; ctx.ui.notify(&format!("look_at {} for this session.",if enabled { "enabled" } else { "disabled" }),NotificationType::Info);
                 },
