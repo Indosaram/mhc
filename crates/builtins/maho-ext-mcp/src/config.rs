@@ -99,7 +99,13 @@ fn check_literals(value:&Value,path:&str,literals:&[&str])->Result<(),McpConfigV
     check_type(value,path,"string")?;Err(schema_error(path,"must be equal to constant"))
 }
 pub fn validate_mcp_server_declaration(name: &str, raw: Value) -> Option<String> {
-    validate_raw(serde_json::json!({"mcpServers": {name: raw}})).err().map(|e| format!("Invalid MCP server declaration \"{name}\": {}", e.0.trim_start_matches("Invalid MCP config at ").trim_start_matches("Invalid MCP config: ")))
+    let wrapped=serde_json::json!({"mcpServers": {name: raw}});
+    if let Err(error)=validate_schema_value(&wrapped,"$") {
+        let error=error.0.trim_start_matches("Invalid MCP config at ");let prefix=format!("mcpServers.{name}");
+        let error=error.strip_prefix(&format!("{prefix}.")).map(str::to_owned).or_else(||error.strip_prefix(&prefix).map(|error|format!("${error}"))).unwrap_or_else(||error.into());
+        return Some(format!("Invalid MCP server declaration \"{name}\": {error}"));
+    }
+    validate_raw(wrapped).err().map(|error|format!("Invalid MCP server declaration \"{name}\": {}",error.0.trim_start_matches("Invalid MCP config at ")))
 }
 pub fn normalize_server(mut server: ServerConfigWire) -> McpServerConfig {
     server.transport.get_or_insert(if server.url.as_ref().is_some_and(|v| !v.is_empty()) { Transport::Http } else { Transport::Stdio });

@@ -41,6 +41,12 @@ fn typebox_boundary_errors_preserve_machine_consumed_paths_and_kinds() {
     assert!(validate_raw(json!({"mcpServers":{"x":{"command":"node","connectTimeoutMs":-1}},"settings":{"searchThreshold":1.5}})).is_ok());
 }
 #[test]
+fn declaration_schema_paths_are_relative_but_endpoint_paths_name_the_server() {
+    assert_eq!(validate_mcp_server_declaration("named",json!({"command":1})).unwrap(),"Invalid MCP server declaration \"named\": command: must be string");
+    assert_eq!(validate_mcp_server_declaration("named",json!(null)).unwrap(),"Invalid MCP server declaration \"named\": $: must be object");
+    assert_eq!(validate_mcp_server_declaration("named",json!({"command":""})).unwrap(),"Invalid MCP server declaration \"named\": mcpServers.named.command: Required for enabled stdio server");
+}
+#[test]
 fn hashes_ignore_key_order_and_startup_policy() {
     let a = normalize_server(serde_json::from_value(json!({"command":"node","env":{"A":"1","B":"2"}})).unwrap());
     let mut b = a.clone(); b.startup_timeout_ms = Some(9000.0);
