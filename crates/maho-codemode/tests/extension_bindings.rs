@@ -49,6 +49,35 @@ fn active_tool_snapshot_does_not_require_bound_runtime() {
 }
 
 #[test]
+fn runtime_languages_require_settings_and_detection_not_availability_enabled() {
+    use maho_codemode::{config::settings::{CodemodeSettings, Languages}, interpreters::detect::{InterpreterDetection, LanguageAvailability}, tool::types::EvalLanguage};
+    let settings=CodemodeSettings {languages:Languages {py:true,js:true,rb:false,jl:true},..Default::default()};
+    let availability=[EvalLanguage::Py,EvalLanguage::Js,EvalLanguage::Rb,EvalLanguage::Jl].map(|language|(language,LanguageAvailability {enabled:false,detected:if language==EvalLanguage::Jl {InterpreterDetection::Unavailable}else {InterpreterDetection::Detected {path:"interpreter".into(),version:"1.0".into(),resolved_path:None}}}));
+    assert_eq!(enabled_languages_from(&settings,&availability),Languages {py:true,js:true,rb:false,jl:false});
+}
+
+#[test]
+fn runtime_session_id_preserves_strings_and_generates_uuid_for_other_values() {
+    assert_eq!(session_id_from(&serde_json::json!({"sessionId":""})),"");
+    assert_eq!(session_id_from(&serde_json::json!({"sessionId":"session-1"})),"session-1");
+    for event in [serde_json::Value::Null,serde_json::json!({"sessionId":42})] {
+        let id=session_id_from(&event);
+        assert_eq!(uuid::Uuid::parse_str(&id).unwrap().get_version_num(),4);
+    }
+}
+
+#[tokio::test]
+async fn runtime_executor_keeps_active_snapshot_and_propagates_native_dispatch_errors() {
+    use maho_codemode::bridges::output_bridge::OutputExecuteTool;
+    let executor=RuntimeExecuteTool {api:Arc::new(api()),active_tools:vec!["task".into()]};
+    assert_eq!(executor.is_tool_available("task"),Some(true));
+    assert_eq!(executor.is_tool_available("read"),Some(false));
+    let error=executor.execute_tool("task",JsonValue::Null,ExecuteToolOptions::default()).await.unwrap_err();
+    assert_eq!(error.code,ExecuteToolErrorCode::Blocked);
+    assert_eq!(error.tool_name,"task");
+}
+
+#[test]
 fn wake_snapshot_reaches_bus_and_rpc() {
     use maho_codemode::extension::wake_source_state::*;
     let api = api();
