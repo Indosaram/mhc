@@ -4,6 +4,9 @@ use std::collections::BTreeMap;
 use senpi_task::dag::{store::{DagFileStore,DagEventReadOptions,DagStoreError},types::DagRunEvent};
 
 pub type DurableDagListener=Arc<dyn Fn(&DagRunEvent)+Send+Sync>;
+pub fn runtime_skill_materializer(store:Arc<DagFileStore>,cwd:Arc<dyn Fn()->String+Send+Sync>,load_skills:Arc<senpi_task::tools::task::types::SkillLoader>)->senpi_task::dag::manager::DagMaterializeSkills {
+    Arc::new(move |input| senpi_task::dag::skills::create_dag_skill_materializer(senpi_task::dag::skills::DagSkillMaterializerOptions { store:store.clone(),cwd:cwd(),load_skills:Some(load_skills.clone()),home_dir:None,extra_dirs:vec![] })(input))
+}
 pub fn dag_activity_payload(run:&str,node:&str,task:&str,at:&str,details:&senpi_task::progress::ToolProgressDetails)->serde_json::Value {
     let mut activity=serde_json::json!({"schemaVersion":1,"runId":run,"nodeId":node,"taskId":task,"at":at,"activity":details.progress.activity,"turns":details.turns});
     if let Some(tool)=&details.current_tool { activity["currentTool"]=serde_json::json!(tool); }
