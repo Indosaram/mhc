@@ -247,6 +247,12 @@ fn provider_extra_body_rejects_nonobjects_before_queuing_registration() {
     let api = api(runtime.clone());
     let config = ProviderConfig { extra_body: Some(JsonValue::Array(Vec::new())), ..Default::default() };
     assert!(api.register_provider("invalid", config).is_err());
+    assert!(api.register_provider("missing-api", ProviderConfig {
+        stream_simple: Some(Arc::new(|_, _, _| panic!("invalid registration must not invoke the stream"))), ..Default::default()
+    }).is_err());
+    assert!(api.register_provider_with_options("invalid-options", ProviderConfigOptions {
+        config: ProviderConfig { extra_body: Some(JsonValue::Bool(false)), ..Default::default() }, ..Default::default()
+    }).is_err());
     let providers = Arc::new(Providers::default());
     runtime.bind_providers(providers.clone()).unwrap();
     assert!(providers.0.lock().unwrap().is_empty());

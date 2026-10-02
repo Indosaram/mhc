@@ -119,8 +119,22 @@ pub struct ProviderConfig {
     pub auth_header: Option<bool>, pub models: Option<Vec<ProviderModelConfig>>, pub refresh_models: Option<ProviderRefresh>,
     pub oauth: Option<Arc<dyn maho_ai::auth::types::OAuthAuth>>, pub fallback_eligible: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
+#[derive(Clone, Debug, Default)]
+pub struct ProviderModelOptions {
+    pub service_tier: Option<maho_ai::types::ServiceTierPreference>,
+    pub prompt_preset: Option<String>,
+    pub sampling_params: Option<BTreeMap<String, JsonValue>>,
+    pub cache_retention: Option<maho_ai::types::CacheRetention>,
+}
+/// Complete provider options without changing existing config struct literals.
+#[derive(Clone, Default)]
+pub struct ProviderConfigOptions {
+    pub config: ProviderConfig,
+    pub model_options: BTreeMap<String, ProviderModelOptions>,
+    pub retry_policy: Option<maho_ai::utils::retry_profile::types::RetryPolicyProfile>,
+}
 #[derive(Clone)]
-pub enum ProviderRegistration { Config { name: String, config: Box<ProviderConfig> }, Native(Arc<dyn maho_ai::models::Provider>) }
+pub enum ProviderRegistration { Config { name: String, config: Box<ProviderConfig> }, ConfigOptions { name: String, options: Box<ProviderConfigOptions> }, Native(Arc<dyn maho_ai::models::Provider>) }
 /// Object-only request fields for callers that want schema constraints at construction.
 #[derive(Clone, Default)]
 pub struct ProviderObjectConfig {
@@ -129,7 +143,7 @@ pub struct ProviderObjectConfig {
     pub model_extra_bodies: BTreeMap<String, BTreeMap<String, JsonValue>>,
 }
 impl ProviderRegistration {
-    pub fn name(&self) -> &str { match self { Self::Config { name, .. } => name, Self::Native(provider) => provider.id() } }
+    pub fn name(&self) -> &str { match self { Self::Config { name, .. } | Self::ConfigOptions { name, .. } => name, Self::Native(provider) => provider.id() } }
 }
 pub trait ExtensionProviderActions: Send + Sync {
     fn register_provider(&self, registration: ProviderRegistration, extension_path: &str) -> Result<(), ExtensionFailure>;
@@ -1120,7 +1134,15 @@ impl ExtensionRuntime {
     pub fn take_provider_errors(&self) -> Vec<ExtensionError> { std::mem::take(&mut self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider_errors) }
     pub fn register_provider(&self, registration: ProviderRegistration, path: &str) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
-        if let ProviderRegistration::Config { name, config } = &registration {
+        let config = match &registration {
+            ProviderRegistration::Config { name, config } => Some((name, config.as_ref())),
+            ProviderRegistration::ConfigOptions { name, options } => Some((name, &options.config)),
+            ProviderRegistration::Native(_) => None,
+        };
+        if let Some((name, config)) = config {
+            if config.stream_simple.is_some() && config.api.is_none() {
+                return Err(ExtensionFailure::new(format!("Provider {name}: \"api\" is required when registering streamSimple.")));
+            }
             if config.extra_body.as_ref().is_some_and(|body| !body.is_object()) {
                 return Err(ExtensionFailure::new(format!("Provider {name}: extraBody must be an object")));
             }
@@ -1185,6 +1207,9 @@ impl ExtensionApi {
     pub fn on(&mut self, event: EventKind, handler: ExtensionHandler) { self.runtime.assert_active_or_panic(); self.registered.handlers.entry(event).or_default().push(handler); }
     pub fn register_provider(&self, name: &str, config: ProviderConfig) -> Result<(), ExtensionFailure> {
         self.runtime.register_provider(ProviderRegistration::Config { name: name.into(), config: Box::new(config) }, &self.registered.identity.path)
+    }
+    pub fn register_provider_with_options(&self, name: &str, options: ProviderConfigOptions) -> Result<(), ExtensionFailure> {
+        self.runtime.register_provider(ProviderRegistration::ConfigOptions { name: name.into(), options: Box::new(options) }, &self.registered.identity.path)
     }
     pub fn register_provider_object(&self, name: &str, mut config: ProviderObjectConfig) -> Result<(), ExtensionFailure> {
         if let Some(body) = config.extra_body { config.config.extra_body = Some(JsonValue::Object(body.into_iter().collect())); }
