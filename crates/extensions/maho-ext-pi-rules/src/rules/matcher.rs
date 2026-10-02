@@ -58,7 +58,7 @@ impl Matcher {
             for pattern in patterns{
                 let negated=pattern.starts_with('!');
                 let value=pattern.strip_prefix('!').unwrap_or(&pattern);
-                let normalized=normalize_literal_braces(value);
+                let normalized=normalize_literal_braces(value.strip_prefix("./").unwrap_or(value));
                 let compiled=if value.contains(['(',')','"','[','*','?']){match fancy_regex::Regex::new(&format!("^(?:{})$",compile_expression(&normalized))){Ok(expression)=>PathMatcher::Expression(expression),Err(_)=>PathMatcher::Never}}else{PathMatcher::Glob(GlobBuilder::new(&normalized).literal_separator(false).backslash_escape(false).allow_unclosed_class(true).empty_alternates(true).build()?.compile_matcher())};
                 if negated{set.negative.push((value.into(),compiled));}else{set.positive.push((pattern,compiled));}
             }
@@ -95,9 +95,10 @@ fn compile_expression(pattern:&str)->String{
             result.push_str("\\(");index+=2;continue;
         }
         match ch{
-            '*'=>{let start=index;while chars.get(index+1)==Some(&'*'){index+=1;}let globstar=index>start;let star=if globstar{"(?:(?!(?:^|/)\\.{1,2}(?:/|$)).)*?"}else{".*?"};if start==0{result.push_str("(?!(?:^|/)\\.{1,2}(?:/|$))");if !globstar{result.push_str("(?=.)");}}
-                if chars.get(index+1)==Some(&'/'){if globstar&&(start==0||chars[start-1]=='/'){if start>0{result.pop();result.push_str(&format!("(?:/{star}/|/|$)"));}else{result.push_str(&format!("(?:^|/|{star}/)"));}}else{result.push_str(".*?/");}index+=1;}else if globstar&&start>0&&chars[start-1]=='/'&&index+1==chars.len(){result.pop();result.push_str(&format!("(?:/{star}|$)"));}else{result.push_str(star);if index+1==chars.len(){result.push_str("/?");}}},
-            '?'=>result.push_str("[^/]"),
+            '*'=>{let start=index;while chars.get(index+1)==Some(&'*'){index+=1;}let globstar=index>start;let star=if globstar{"(?:(?!(?:^|/)\\.{1,2}(?:/|$)).)*?"}else{".*?"};if globstar&&(start==0||chars[start-1]=='/'){while chars.get(index+1)==Some(&'/')&&chars.get(index+2)==Some(&'*')&&chars.get(index+3)==Some(&'*')&&(index+4==chars.len()||chars.get(index+4)==Some(&'/')){index+=3;}}
+                if start==0&&chars.get(index+1)!=Some(&'/'){result.push_str("(?!(?:^|/)\\.{1,2}(?:/|$))");if !globstar{result.push_str("(?=.)");}}
+                if chars.get(index+1)==Some(&'/'){if globstar&&(start==0||chars[start-1]=='/'){if start>0{result.pop();result.push_str(&format!("(?:/{star}/|/{})",if index+2<chars.len(){"|$"}else{""}));}else{result.push_str(&format!("(?:^|/|{star}/)"));}}else{result.push_str(".*?/");}index+=1;}else if globstar&&start>0&&chars[start-1]=='/'&&index+1==chars.len(){result.pop();result.push_str(&format!("(?:/{star}|$)"));}else{result.push_str(star);if index+1==chars.len(){result.push_str("/?");}}},
+            '?'=>result.push_str(if index>0&&chars[index-1]==')'{"?"}else{"[^/]"}),
             '('=>{let mut depth=1;let mut end=index+1;while end<chars.len(){if chars[end]=='(' {depth+=1;}else if chars[end]==')'{depth-=1;if depth==0{break;}}end+=1;}if depth==0{parens+=1;result.push('(');}else{result.push_str("\\(");}},
             ')'=>if parens>0{parens-=1;result.push(')');}else{result.push_str("\\)");},
             '|'=>result.push('|'),
