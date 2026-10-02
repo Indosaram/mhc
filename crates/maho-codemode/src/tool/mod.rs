@@ -1,4 +1,5 @@
 pub mod detached_cell_contract;
+pub mod call_capture;
 pub mod detached_cell_state;
 pub mod eval_request;
 pub mod eval_kernel_reset_refused_error;
