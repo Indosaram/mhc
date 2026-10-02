@@ -736,7 +736,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn get_loaded_hook_sources(&self) -> maho_ext_api::LoadedHookSources {
         let session = self.session().ok(); let cwd = session.as_ref().map_or_else(std::path::PathBuf::new, |session| session.cwd().into());
         let dir = session.as_ref().map_or_else(std::path::PathBuf::new, |session| session.agent_dir().into());
-        maho_ext_api::LoadedHookSources { global_hooks_path: dir.join("hooks"), project_hooks_path: cwd.join(".omo/hooks"), cwd, agent_dir: dir,
+        maho_ext_api::LoadedHookSources { global_hooks_path: dir.join("hooks.json"), project_hooks_path: cwd.join(crate::config::config_dir_name()).join("hooks.json"), cwd, agent_dir: dir,
             global_settings_hooks: None, project_settings_hooks: None, global_hook_source_paths: Vec::new(), project_hook_source_paths: Vec::new(),
             pre_session_hook_source_paths: Vec::new(), runtime_hook_source_paths: Vec::new() }
     }
@@ -5060,6 +5060,15 @@ mod tests {
         assert!(session.enforce_final_provider_admission(&additions).await.is_err());
         assert_eq!(session.state().pending_next_turn_messages.len(), 1);
         assert!(session.enforce_final_provider_admission(&[make_user_message(&"x".repeat(600_000), None)]).await.is_ok());
+    }
+
+    #[test]
+    fn hook_source_context_uses_branded_json_paths() {
+        let session = test_session();
+        let sources = maho_ext_api::ExtensionContextActions::get_loaded_hook_sources(
+            &SessionExtensionActions(Arc::downgrade(&session.inner)));
+        assert_eq!(sources.global_hooks_path, std::path::Path::new(&session.agent_dir()).join("hooks.json"));
+        assert_eq!(sources.project_hooks_path, std::path::Path::new(&session.cwd()).join(crate::config::config_dir_name()).join("hooks.json"));
     }
 
     fn test_definition(name: &str) -> ToolDefinition {
