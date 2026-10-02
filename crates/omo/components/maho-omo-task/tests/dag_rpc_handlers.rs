@@ -30,6 +30,14 @@ fn query(manager: &DagManager, name: &str, value: Value) -> Value { query_dag_rp
 #[test] fn snapshot_returns_owned_run() { let (_root, manager, id) = fixture(); assert_eq!(query(&manager, "omo.dag.snapshot", json!({"runId":id}))["value"]["runId"], id); }
 #[test] fn snapshot_foreign_session_denied() { let (_root, manager, id) = fixture(); assert_eq!(query_dag_rpc(&manager, Some("other".into()), "omo.dag.snapshot", &json!({"runId":id}))["error"]["code"], "run_not_owned"); }
 #[test] fn snapshot_without_session_denied() { let (_root, manager, id) = fixture(); assert_eq!(query_dag_rpc(&manager, None, "omo.dag.snapshot", &json!({"runId":id}))["error"]["code"], "run_not_owned"); }
+#[test] fn all_run_scoped_queries_preserve_missing_and_foreign_errors() {
+    let (_root,manager,id)=fixture();
+    for method in ["omo.dag.snapshot","omo.dag.history","omo.dag.subscribe"] {
+        assert_eq!(query_dag_rpc(&manager,Some("foreign".into()),method,&json!({"runId":id}))["error"]["code"],"run_not_owned");
+        assert_eq!(query_dag_rpc(&manager,None,method,&json!({"runId":id}))["error"]["code"],"run_not_owned");
+        assert_eq!(query(&manager,method,json!({"runId":"missing"}))["error"]["code"],"run_not_found");
+    }
+}
 #[test] fn snapshot_missing_run_not_found() { let (_root, manager, _) = fixture(); assert_eq!(query(&manager, "omo.dag.snapshot", json!({"runId":"missing"}))["error"]["code"], "run_not_found"); }
 #[test] fn history_reads_real_creation_journal() { let (_root, manager, id) = fixture(); let result = query(&manager, "omo.dag.history", json!({"runId":id})); assert_eq!(result["ok"], true); assert_eq!(result["value"]["events"][0]["type"], "dag.run.created"); assert_eq!(result["value"]["events"][0]["seq"], 1); }
 #[test] fn history_excludes_prior_sequences() { let (_root, manager, id) = fixture(); assert_eq!(query(&manager, "omo.dag.history", json!({"runId":id,"sinceSeq":1}))["value"]["events"], json!([])); }
