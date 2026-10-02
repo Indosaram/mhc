@@ -4715,6 +4715,82 @@ fn extension_thinking_level(level: ThinkingLevel) -> ModelThinkingLevel {
 mod tests {
     use super::*;
 
+    struct TestExtensionUi;
+    impl maho_ext_api::ExtensionUi for TestExtensionUi {
+        fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: maho_ext_api::ExtensionUiDialogOptions) -> maho_ext_api::UiFuture<'a, Option<String>> { Box::pin(async { None }) }
+        fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: maho_ext_api::ExtensionUiDialogOptions) -> maho_ext_api::UiFuture<'a, bool> { Box::pin(async { false }) }
+        fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: maho_ext_api::ExtensionUiDialogOptions) -> maho_ext_api::UiFuture<'a, Option<String>> { Box::pin(async { None }) }
+        fn notify(&self, _: &str, _: maho_ext_api::NotificationType) {}
+        fn set_status(&self, _: &str, _: Option<&str>) {}
+        fn set_widget(&self, _: &str, _: Option<maho_ext_api::WidgetContent>, _: maho_ext_api::ExtensionWidgetOptions) {}
+        fn set_header(&self, _: Option<maho_ext_api::ComponentFactory>) {}
+        fn set_footer(&self, _: Option<maho_ext_api::ComponentFactory>) {}
+        fn set_title(&self, _: &str) {}
+        fn paste_to_editor(&self, _: &str) {}
+        fn set_editor_text(&self, _: &str) {}
+        fn get_editor_text(&self) -> String { String::new() }
+        fn custom(&self, _: maho_ext_api::ComponentFactory, _: maho_ext_api::CustomUiOptions) -> maho_ext_api::ExtensionFuture<'_, Value> { Box::pin(async { Err("UI unavailable".into()) }) }
+        fn theme(&self) -> maho_ext_api::Theme { Default::default() }
+    }
+    struct TestExtensionRegistry;
+    impl maho_ext_api::ModelRegistry for TestExtensionRegistry {
+        fn get_all(&self) -> Vec<Model> { Vec::new() }
+        fn get_available(&self) -> Vec<Model> { Vec::new() }
+        fn find(&self, _: &str, _: &str) -> Option<Model> { None }
+        fn has_configured_auth(&self, _: &Model) -> bool { false }
+        fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> maho_ext_api::ExtensionFuture<'a, Option<String>> { Box::pin(async { Ok(None) }) }
+    }
+    fn test_extension_context(session: &AgentSession) -> maho_ext_api::ExtensionContext {
+        maho_ext_api::ExtensionContext {
+            ui: Arc::new(TestExtensionUi), mode: ExtensionMode::Print, has_ui: false,
+            cwd: session.cwd().into(), agent_dir: session.agent_dir().into(),
+            session_manager: Arc::new(SessionContextManager::new(session)), model_registry: Arc::new(TestExtensionRegistry),
+            model: Some(session.model()), thinking_level: None, service_tier: None, effective_service_tier: None,
+            scoped_models: Vec::new(), goal_store_file: None, loaded_extension_paths: Vec::new(), signal: None, steering_signal: None,
+            is_idle_fn: Arc::new(|| true), wait_for_idle_fn: Arc::new(|| Box::pin(async {})),
+            is_project_trusted_fn: Arc::new(|| true), is_compacting_fn: Arc::new(|| false),
+            get_system_prompt_fn: Arc::new(String::new), get_system_prompt_options_fn: Arc::new(Default::default),
+            registered_mcp_servers: Vec::new(), update_tool_hook_status: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn native_provider_tool_calls_dispatch_call_and_result_hooks() {
+        let mut assistant = maho_ai::providers::faux::faux_assistant_message("", Default::default());
+        assistant.stop_reason = StopReason::ToolUse;
+        assistant.content = vec![maho_ai::types::ContentBlock::ToolCall(maho_ai::types::ToolCall {
+            id: "call".to_owned(), name: "echo".to_owned(), arguments: Map::new(), ..Default::default()
+        })];
+        let session = retry_session(vec![assistant, maho_ai::providers::faux::faux_assistant_message("done", Default::default())], 0);
+        session.register_tool_definition(test_definition("echo"), empty_source_info(), test_tool("echo"));
+        session.set_active_tools_by_name(vec!["echo".to_owned()]);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:hooks>", session.cwd().into(), Default::default());
+        for kind in [maho_ext_api::EventKind::ToolCall, maho_ext_api::EventKind::ToolResult] {
+            let seen = seen.clone();
+            extension.handlers.insert(kind, vec![Arc::new(move |event, _| {
+                let seen = seen.clone();
+                Box::pin(async move {
+                    lock(&seen).push(kind);
+                    if let maho_ext_api::ExtensionEvent::ToolResult(_) = event {
+                        Ok(maho_ext_api::EventResult::ToolResult(maho_ext_api::ToolResultEventResult {
+                            content: Some(vec![maho_tools::definition::ToolContent::text("rewritten")]), ..Default::default()
+                        }))
+                    } else { Ok(maho_ext_api::EventResult::None) }
+                })
+            })]);
+        }
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("input", Default::default()))
+            .await.expect("bounded prompt").expect("prompt");
+        assert_eq!(*lock(&seen), [maho_ext_api::EventKind::ToolCall, maho_ext_api::EventKind::ToolResult]);
+        let messages = session.messages();
+        let result = messages.iter().find_map(|message| match message {
+            AgentMessage::Llm(maho_ai::types::Message::ToolResult(result)) => Some(result), _ => None,
+        }).expect("tool result");
+        assert_eq!(maho_ai::utils::text::content_text(&result.content, ""), "rewritten");
+    }
+
     #[test]
     fn eval_helper_calls_use_the_argument_name_the_tool_takes() {
         assert_eq!(eval_helper_call("bash"), "tool.bash({ command: \"...\" })");
