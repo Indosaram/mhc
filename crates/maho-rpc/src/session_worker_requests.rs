@@ -39,6 +39,16 @@ impl SessionWorkerRequests{
         Some(result)
     }
     pub fn timed_out_requests(&self,now:u64)->Vec<u64>{self.pending.iter().filter(|(_,pending)|pending.deadline.is_some_and(|deadline|now>=deadline)).map(|(request,_)|*request).collect()}
+    pub fn receive_reply(&mut self,message:&crate::session_worker_protocol::SessionWorkerToHost)->Option<Result<Value,String>>{
+        use crate::session_worker_protocol::SessionWorkerToHost;
+        let value=match message{
+            SessionWorkerToHost::Prepared{request,session_path}=>serde_json::json!({"type":"prepared","request":request,"sessionPath":session_path}),
+            SessionWorkerToHost::Ready{request,snapshot}=>serde_json::json!({"type":"ready","request":request,"snapshot":snapshot}),
+            SessionWorkerToHost::Result{request,error}=>{let mut value=serde_json::json!({"type":"result","request":request});if let Some(error)=error{value["error"]=error.clone().into();}value},
+            _=>return None,
+        };
+        self.receive(&value)
+    }
     pub fn close(&mut self)->Vec<u64>{self.close_with_error("session_closing")}
     pub fn close_with_error(&mut self,error:&str)->Vec<u64>{self.closed=true;let pending=std::mem::take(&mut self.pending);let ids=pending.keys().copied().collect();for pending in pending.into_values(){if let Some(reply)=pending.reply{let _=reply.send(Err(error.into()));}}ids}
 }
