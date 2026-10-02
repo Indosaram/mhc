@@ -74,6 +74,7 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
     let mut engine = NativeWatchEngine::with_debounce(watched, Arc::clone(&on_error), debounce).map_err(ExtensionFailure::new)?;
     let mut contents = BTreeMap::new();
     crate::routine_settings::refresh_settings_content_snapshots(&mut contents, &ctx.agent_dir, &ctx.cwd);
+    logger.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.log(LogLevel::Info, LogEvent::WatcherStarted { target_count: targets.len() as f64 });
     let generation = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.generation;
     let (cancel, mut cancelled) = tokio::sync::watch::channel(false);
     let shared = Arc::clone(&state);
@@ -93,6 +94,7 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
                 let errors = validate_builtin_paths(&paths, &ctx.agent_dir, &ctx.cwd);
                 if !errors.is_empty() {
                     ctx.ui.notify(&format!("Config change rejected: {}", errors.join("; ")), NotificationType::Error);
+                    logger.lock().map_err(|error| error.to_string())?.log(LogLevel::Warn, LogEvent::ValidationRejected { registration_id: &id, error_count: errors.len() as f64 });
                     events.emit(CONFIG_WATCH_REJECTED, &serde_json::json!({"registrationId":id,"paths":paths,"errors":errors}));
                     continue;
                 }
@@ -103,6 +105,8 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
                     state.pending.add(&id, &paths);
                     if deferred && !state.deferred_notice { state.deferred_notice = true; ctx.ui.notify("Config changed; reloading when idle", NotificationType::Info); }
                 }
+                let logged_paths = paths.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>();
+                logger.lock().map_err(|error| error.to_string())?.log(LogLevel::Info, LogEvent::ChangeDetected { registration_id: &id, paths: &logged_paths, deferred });
                 events.emit(CONFIG_WATCH_CHANGED, &serde_json::json!({"registrationId":id,"paths":paths,"deferred":deferred}));
             }
             if change.created.iter().any(|path| targets.iter().any(|target| target.rearm_on_creation.as_ref() == Some(path))) {
@@ -111,6 +115,7 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
                 let watched = build_builtin_watch_targets(&ctx.cwd, &ctx.agent_dir, ctx.is_project_trusted(), &resolved, &skill_paths).into_iter().map(|active| active.target).collect();
                 engine = NativeWatchEngine::with_debounce(watched, Arc::clone(&on_error), debounce)?;
                 crate::routine_settings::refresh_settings_content_snapshots(&mut contents, &ctx.agent_dir, &ctx.cwd);
+                logger.lock().map_err(|error| error.to_string())?.log(LogLevel::Info, LogEvent::WatcherStarted { target_count: targets.len() as f64 });
                 events.emit(CONFIG_WATCH_READY, &serde_json::json!({"enabled":true}));
             }
             let state = Arc::clone(&shared); let context = ctx.clone();

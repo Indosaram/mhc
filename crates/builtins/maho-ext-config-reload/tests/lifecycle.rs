@@ -77,6 +77,9 @@ async fn active_session_delivers_validated_change_and_joins_shutdown() {
     assert_eq!(change, serde_json::json!({"registrationId":"builtin","paths":[path],"deferred":true}));
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason: SessionReason::Quit, target_session_file: None, signal: None });
     (api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown, &ctx).await.unwrap();
+    let entries: Vec<serde_json::Value> = std::fs::read_to_string(root.path().join("logs/config-reload.log")).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert!(entries.iter().any(|entry| entry["event"] == "watcher_started"));
+    assert!(entries.iter().any(|entry| entry["event"] == "change_detected" && entry["deferred"] == true));
 }
 #[test]
 fn registers_native_start_idle_and_shutdown_hooks() {
