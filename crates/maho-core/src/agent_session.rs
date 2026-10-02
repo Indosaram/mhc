@@ -406,6 +406,7 @@ struct AgentSessionState {
     compaction_lifecycle: crate::compaction::lifecycle::CompactionLifecycleCoordinator,
     prompt_templates: Vec<crate::prompt_templates::PromptTemplate>,
     skills: Vec<crate::skills::Skill>,
+    discovered_resources: maho_ext_api::DiscoveredResources,
     bash_abort_signals: BTreeMap<String, maho_ext_api::AbortSignal>,
     pending_bash_messages: Vec<maho_agent::harness::messages::BashExecutionMessage>,
     pending_next_turn_messages: Vec<AgentMessage>,
@@ -742,7 +743,8 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         let dir = session.as_ref().map_or_else(std::path::PathBuf::new, |session| session.agent_dir().into());
         maho_ext_api::LoadedHookSources { global_hooks_path: dir.join("hooks.json"), project_hooks_path: cwd.join(crate::config::config_dir_name()).join("hooks.json"), cwd, agent_dir: dir,
             global_settings_hooks: None, project_settings_hooks: None, global_hook_source_paths: Vec::new(), project_hook_source_paths: Vec::new(),
-            pre_session_hook_source_paths: Vec::new(), runtime_hook_source_paths: Vec::new() }
+            pre_session_hook_source_paths: Vec::new(), runtime_hook_source_paths: session.as_ref().map(|session|
+                session.state().discovered_resources.hook_paths.iter().map(|entry| std::path::PathBuf::from(&entry.path)).collect()).unwrap_or_default() }
     }
     fn kernel_tools(&self) -> Option<&dyn maho_ext_api::ExtensionKernelTools> { None }
 }
@@ -1164,6 +1166,7 @@ impl AgentSession {
             compaction_lifecycle: Default::default(),
             prompt_templates: Vec::new(),
             skills: Vec::new(),
+            discovered_resources: maho_ext_api::DiscoveredResources::default(),
             bash_abort_signals: BTreeMap::new(),
             pending_bash_messages: Vec::new(),
             pending_next_turn_messages: Vec::new(),
@@ -2918,6 +2921,7 @@ impl AgentSession {
         self.abort().await;
         self.emit_session_shutdown(maho_ext_api::SessionReason::Reload).await;
         self.with_settings_manager_mut(|manager| manager.reload());
+        self.state().discovered_resources = maho_ext_api::DiscoveredResources::default();
         let (prompt_paths, skill_paths) = self.with_settings_manager(|manager| {
             let paths = |key| manager.get_value(key).and_then(Value::as_array).map(|values|
                 values.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>()).unwrap_or_default();
@@ -2935,6 +2939,7 @@ impl AgentSession {
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
             reason: maho_ext_api::SessionReason::Reload, initial_model_provenance: None, previous_session_file: self.session_file(),
         })).await;
+        self.extend_resources_from_extensions(maho_ext_api::SessionReason::Reload).await;
         Ok(true)
     }
 
@@ -3742,7 +3747,75 @@ impl AgentSession {
             if let Some(listener) = bindings.on_error { state.extension_error_listener = Some(listener); }
         }
         let event = self.state().session_start_event.clone();
+        let reason = if event.reason == maho_ext_api::SessionReason::Reload { maho_ext_api::SessionReason::Reload }
+            else { maho_ext_api::SessionReason::Startup };
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionStart(event)).await;
+        self.extend_resources_from_extensions(reason).await;
+    }
+
+    async fn extend_resources_from_extensions(&self, reason: maho_ext_api::SessionReason) {
+        let discovered = {
+            let mut guard = self.extension_runner.lock().await;
+            let Some(runner) = guard.as_mut() else { return; };
+            if !runner.has_handlers(maho_ext_api::EventKind::ResourcesDiscover) { return; }
+            runner.emit_resources_discover(self.cwd().into(), reason).await
+        };
+        match discovered {
+            Ok(resources) => self.extend_discovered_resources(resources),
+            Err(error) => self.emit(AgentSessionEvent::ContinuationError { error_message: error.message }),
+        }
+    }
+
+    fn extend_discovered_resources(&self, mut resources: maho_ext_api::DiscoveredResources) {
+        let cwd = self.cwd();
+        for entry in resources.skill_paths.iter_mut().chain(&mut resources.prompt_paths).chain(&mut resources.theme_paths).chain(&mut resources.hook_paths) {
+            entry.path = crate::paths::resolve_path(&entry.path, &cwd, &crate::paths::PathInputOptions::default());
+        }
+        let mut state = self.state();
+        let stored = &mut state.discovered_resources;
+        for (existing, additions) in [(&mut stored.skill_paths, resources.skill_paths),
+            (&mut stored.prompt_paths, resources.prompt_paths),
+            (&mut stored.theme_paths, resources.theme_paths),
+            (&mut stored.hook_paths, resources.hook_paths)] {
+            for entry in additions { if !existing.iter().any(|known| known.path == entry.path) { existing.push(entry); } }
+        }
+        let resources = state.discovered_resources.clone();
+        drop(state);
+        let mut templates = self.prompt_templates();
+        let mut skills = self.state().skills.clone();
+        let source_info = |path: &str, entry: &maho_ext_api::DiscoveredResourceEntry| {
+            crate::source_info::create_synthetic_source_info(path,
+                crate::source_info::SyntheticSourceInfoOptions {
+                    source: crate::discovered_resource_scope::get_extension_source_label(&entry.extension_path),
+                    scope: Some(match entry.scope.unwrap_or(maho_ext_api::SourceScope::Temporary) {
+                        maho_ext_api::SourceScope::User => crate::source_info::SourceScope::User,
+                        maho_ext_api::SourceScope::Project => crate::source_info::SourceScope::Project,
+                        maho_ext_api::SourceScope::System => crate::source_info::SourceScope::System,
+                        maho_ext_api::SourceScope::Temporary => crate::source_info::SourceScope::Temporary,
+                    }),
+                    base_dir: if entry.extension_path.starts_with('<') { None } else {
+                        std::path::Path::new(&entry.extension_path).parent().map(|path| path.to_string_lossy().into_owned())
+                    }, ..Default::default()
+                })
+        };
+        for entry in resources.prompt_paths {
+            for mut template in crate::prompt_templates::load_prompt_templates(&crate::prompt_templates::LoadPromptTemplatesOptions {
+                cwd: cwd.clone(), agent_dir: self.agent_dir(), prompt_paths: vec![entry.path.clone()], include_defaults: false,
+            }) {
+                template.source_info = source_info(&template.file_path, &entry);
+                if !templates.iter().any(|known| known.name == template.name) { templates.push(template); }
+            }
+        }
+        for entry in resources.skill_paths {
+            for mut skill in crate::skills::load_skills(&crate::skills::LoadSkillsOptions {
+                cwd: cwd.clone(), agent_dir: self.agent_dir(), skill_paths: vec![entry.path.clone()], include_defaults: false,
+            }).skills {
+                skill.source_info = source_info(&skill.file_path, &entry);
+                if !skills.iter().any(|known| known.name == skill.name) { skills.push(skill); }
+            }
+        }
+        self.set_prompt_resources(templates, skills);
+        self.rebuild_system_prompt();
     }
 
     /// Subscribe to the internal event bus shared by this session's extensions.
@@ -5963,6 +6036,39 @@ mod tests {
         let unknown = session.expand_input("/skill:missing /skill:skill0 task", true).expect("unknown");
         assert!(!unknown.contains("<skill-instruction name="));
         assert!(unknown.contains("/skill:skill0"));
+    }
+
+    #[test]
+    fn discovered_resources_merge_once_and_keep_extension_metadata() {
+        let session = test_session();
+        let dir = tempfile::tempdir().expect("directory");
+        let prompt = dir.path().join("discovered.md");
+        let skill = dir.path().join("skill.md");
+        std::fs::write(&prompt, "---\ndescription: discovered prompt\n---\nreview $1").expect("prompt fixture");
+        std::fs::write(&skill, "---\nname: discovered-skill\ndescription: discovered skill\n---\nskill body").expect("skill fixture");
+        let entry = |path: &std::path::Path| maho_ext_api::DiscoveredResourceEntry {
+            path: path.to_string_lossy().into_owned(), extension_path: "<inline:resources>".to_owned(),
+            scope: Some(maho_ext_api::SourceScope::System),
+        };
+        let resources = maho_ext_api::DiscoveredResources {
+            prompt_paths: vec![entry(&prompt)], skill_paths: vec![entry(&skill)],
+            hook_paths: vec![entry(&dir.path().join("hooks.json"))], ..Default::default()
+        };
+        session.extend_discovered_resources(resources.clone());
+        session.extend_discovered_resources(resources);
+        let templates = session.prompt_templates();
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].source_info.scope, crate::source_info::SourceScope::System);
+        assert_eq!(templates[0].source_info.source, "extension:inline:resources");
+        assert_eq!(session.expand_input("/discovered file", true).expect("prompt expansion"), "review file");
+        let state = session.state();
+        assert_eq!(state.skills.len(), 1);
+        assert_eq!(state.skills[0].source_info.scope, crate::source_info::SourceScope::System);
+        assert_eq!(state.discovered_resources.hook_paths.len(), 1);
+        drop(state);
+        let sources = maho_ext_api::ExtensionContextActions::get_loaded_hook_sources(
+            &SessionExtensionActions(Arc::downgrade(&session.inner)));
+        assert_eq!(sources.runtime_hook_source_paths, vec![dir.path().join("hooks.json")]);
     }
 
     #[tokio::test]
