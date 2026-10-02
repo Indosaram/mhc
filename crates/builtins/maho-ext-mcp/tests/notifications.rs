@@ -46,6 +46,17 @@ async fn second_refresh_obeys_minimum_interval() {
     coalescer.notify(move||async move {sender.send(tokio::time::Instant::now()).unwrap();});let second=receiver.recv().await.unwrap();assert_eq!(second-fired,std::time::Duration::from_secs(1));
 }
 #[tokio::test(start_paused=true)]
+async fn refresh_errors_reach_sink_and_next_burst_still_runs() {
+    use std::sync::Arc;
+    let coalescer=McpListChangeCoalescer::new(None,None);
+    let (sender,mut errors)=tokio::sync::mpsc::unbounded_channel();
+    let sink=maho_ext_mcp::wrap::McpAsyncErrorSink {logger:Arc::new(move|_,data|{sender.send(data.clone()).unwrap();Ok(())}),notify:None};
+    coalescer.notify_guarded(||async {Err(maho_ext_mcp::errors::McpError::new(maho_ext_mcp::errors::McpErrorKind::Protocol,"refresh failed"))},sink.clone());
+    assert_eq!(errors.recv().await.unwrap()["message"],"refresh failed");
+    coalescer.notify_guarded(||async {panic!("refresh panic");},sink);
+    assert_eq!(errors.recv().await.unwrap()["message"],"refresh panic");
+}
+#[tokio::test(start_paused=true)]
 async fn dispose_cancels_pending_refresh() {
     let coalescer=McpListChangeCoalescer::new(None,None);let (sender,receiver)=tokio::sync::oneshot::channel();
     coalescer.notify(move||async move {sender.send(()).unwrap();});coalescer.dispose();assert!(receiver.await.is_err());

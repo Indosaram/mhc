@@ -20,6 +20,10 @@ impl McpListChangeCoalescer {
         Self {state:Arc::new(Mutex::new(CoalescerState {timer:None,last_refresh:None})),delay:delay.unwrap_or(Duration::from_millis(300)),min_interval:min_interval.unwrap_or(Duration::from_secs(1))}
     }
     pub fn notify<F,Fut>(&self,refresh:F) where F:FnOnce()->Fut+Send+'static,Fut:Future<Output=()>+Send+'static {
+        let sink=crate::wrap::McpAsyncErrorSink {logger:Arc::new(|scope,data|{eprintln!("MCP {scope}: {data}");Ok(())}),notify:None};
+        self.notify_guarded(move ||async move {refresh().await;Ok(())},sink);
+    }
+    pub fn notify_guarded<F,Fut>(&self,refresh:F,sink:crate::wrap::McpAsyncErrorSink) where F:FnOnce()->Fut+Send+'static,Fut:Future<Output=Result<(),crate::errors::McpError>>+Send+'static {
         let mut state=self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.timer.is_some(){return;}
         let wait=state.last_refresh.map_or(self.delay,|last|self.delay.max(self.min_interval.saturating_sub(last.elapsed())));
@@ -27,7 +31,7 @@ impl McpListChangeCoalescer {
         state.timer=Some(tokio::spawn(async move {
             tokio::time::sleep_until(deadline).await;
             {let mut state=shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);state.timer=None;state.last_refresh=Some(Instant::now());}
-            refresh().await;
+            crate::wrap::wrap_async("mcp.list_changed",async {refresh().await},&sink).await;
         }));
     }
     pub fn dispose(&self) {let mut state=self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if let Some(timer)=state.timer.take(){timer.abort();}}
