@@ -4864,6 +4864,45 @@ mod tests {
         assert!(!session.is_compacting());
     }
 
+    #[tokio::test]
+    async fn resource_discovery_follows_startup_and_reload_with_builtin_scope() {
+        let session = test_session();
+        let dir = tempfile::tempdir().expect("directory");
+        let prompt = dir.path().join("from-extension.md");
+        std::fs::write(&prompt, "---\ndescription: extension prompt\n---\noriginal $1").expect("prompt fixture");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut extension = maho_ext_api::LoadedExtension::new("<builtin:resources>", session.cwd().into(), maho_ext_api::SourceInfo {
+            scope: maho_ext_api::SourceScope::System, ..Default::default()
+        });
+        let started = seen.clone();
+        extension.handlers.insert(maho_ext_api::EventKind::SessionStart, vec![Arc::new(move |event, _| {
+            if let maho_ext_api::ExtensionEvent::SessionStart(event) = event { lock(&started).push((maho_ext_api::EventKind::SessionStart, event.reason)); }
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        let discovered = seen.clone();
+        let path = prompt.to_string_lossy().into_owned();
+        extension.handlers.insert(maho_ext_api::EventKind::ResourcesDiscover, vec![Arc::new(move |event, _| {
+            let path = path.clone();
+            if let maho_ext_api::ExtensionEvent::ResourcesDiscover(event) = event { lock(&discovered).push((maho_ext_api::EventKind::ResourcesDiscover, event.reason)); }
+            Box::pin(async move { Ok(maho_ext_api::EventResult::ResourcesDiscover(maho_ext_api::ResourcesDiscoverResult {
+                prompt_paths: vec![path.into()], ..Default::default()
+            })) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        session.bind_extensions(Default::default()).await;
+        assert_eq!(session.prompt_templates()[0].source_info.scope, crate::source_info::SourceScope::System);
+        assert_eq!(session.expand_input("/from-extension input", true).expect("expansion"), "original input");
+        std::fs::write(&prompt, "---\ndescription: extension prompt\n---\nreloaded $1").expect("updated fixture");
+        session.reload().await.expect("reload");
+        assert_eq!(session.expand_input("/from-extension input", true).expect("reloaded expansion"), "reloaded input");
+        assert_eq!(*lock(&seen), [
+            (maho_ext_api::EventKind::SessionStart, maho_ext_api::SessionReason::Startup),
+            (maho_ext_api::EventKind::ResourcesDiscover, maho_ext_api::SessionReason::Startup),
+            (maho_ext_api::EventKind::SessionStart, maho_ext_api::SessionReason::Reload),
+            (maho_ext_api::EventKind::ResourcesDiscover, maho_ext_api::SessionReason::Reload),
+        ]);
+    }
+
     #[test]
     fn eval_helper_calls_use_the_argument_name_the_tool_takes() {
         assert_eq!(eval_helper_call("bash"), "tool.bash({ command: \"...\" })");
