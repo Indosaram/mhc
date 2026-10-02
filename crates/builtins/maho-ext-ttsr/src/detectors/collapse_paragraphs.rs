@@ -33,7 +33,7 @@ fn complete_paragraph(state: &mut ParagraphRepeatState) -> Option<DetectorMatch>
     let second_offset = second?;
     if occurrences < PARAGRAPH_REPEAT_THRESHOLD { return None; }
     let sample = text.map(|text| String::from_utf16_lossy(&text[..text.len().min(80)])).unwrap_or_default();
-    Some(DetectorMatch { rule: DetectorRule::CollapseRepetition, reason: format!("paragraph repeated {occurrences} times within one message ({length} chars)"), anomaly_start_offset: first_offset, garbage_start_offset: second_offset, detail: [("mechanism".into(), DetailValue::String("paragraph-repeat".into())), ("occurrences".into(), DetailValue::Number(f64::from(occurrences))), ("paragraphChars".into(), DetailValue::Number(f64::from(u32::try_from(length).unwrap_or(u32::MAX)))), ("sample".into(), DetailValue::String(sample))].into() })
+    Some(DetectorMatch { rule: DetectorRule::CollapseRepetition, reason: format!("paragraph repeated {occurrences} times within one message ({length} chars)"), anomaly_start_offset: first_offset, garbage_start_offset: second_offset, detail: [("mechanism".into(), DetailValue::String("paragraph-repeat".into())), ("occurrences".into(), DetailValue::Number(f64::from(occurrences))), ("paragraphChars".into(), DetailValue::Number(length as f64)), ("sample".into(), DetailValue::String(sample))].into() })
 }
 pub fn update_paragraph_repeats(state: &mut ParagraphRepeatState, entry: &ScalarEntry) -> Option<DetectorMatch> {
     if entry.value.first() == Some(&CharCode::LINE_FEED) {
@@ -58,6 +58,14 @@ pub fn update_paragraph_repeats(state: &mut ParagraphRepeatState, entry: &Scalar
 #[cfg(test)] mod tests {
     use super::*;
     use crate::stream_utils::ScalarScanner;
+    #[test] fn paragraph_length_detail_is_not_saturated_to_u32() {
+        let mut state=create_paragraph_repeat_state(); let length=u32::MAX as usize+100;
+        for offset in [0,10,20] {
+            state.length=length; state.word_chars=PARAGRAPH_MIN_WORD_CHARS; state.start_offset=offset;
+            if let Some(detection)=complete_paragraph(&mut state) { assert_eq!(detection.detail["paragraphChars"],DetailValue::Number(length as f64)); return; }
+        }
+        panic!("third matching paragraph must be detected");
+    }
     fn feed(text: &str) -> Option<DetectorMatch> { let mut state = create_paragraph_repeat_state(); ScalarScanner::default().push(&text.encode_utf16().collect::<Vec<_>>()).iter().find_map(|entry| update_paragraph_repeats(&mut state, entry)) }
     #[test] fn third_paragraph_repeat_points_to_first_and_second() { let paragraph = "the same long paragraph describing our work and observations in enough detail to exceed the threshold"; let input = format!("{paragraph}\n\n").repeat(3); let result = feed(&input).unwrap(); assert_eq!(result.anomaly_start_offset, 0); assert_eq!(result.garbage_start_offset, paragraph.len() + 2); }
     #[test] fn nonconsecutive_repetitions_are_counted() { let paragraph = "the same long paragraph describing our work and observations in enough detail to exceed the threshold"; let input = format!("{paragraph}\n\nother\n\n{paragraph}\n\ndifferent\n\n{paragraph}\n\n"); let result = feed(&input); assert!(result.is_some()); }
