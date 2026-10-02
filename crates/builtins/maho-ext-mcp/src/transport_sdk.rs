@@ -233,9 +233,13 @@ impl McpClient {
         };
         let _=input.lock().await.shutdown().await;
         let mut child=child.lock().await;
-        match tokio::time::timeout(Duration::from_millis(100),child.wait()).await {
+        match tokio::time::timeout(Duration::from_secs(2),child.wait()).await {
             Ok(result)=>{result.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"close"))?;}
-            Err(_)=>{let _=child.start_kill();child.wait().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"close"))?;}
+            Err(_)=>{
+                if let Some(pid)=child.id(){let _=Command::new("/usr/bin/kill").args(["-TERM","--",&pid.to_string()]).output().await;}
+                if tokio::time::timeout(Duration::from_secs(2),child.wait()).await.is_err(){let _=child.start_kill();}
+                child.wait().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"close"))?;
+            }
         }
         Ok(())
     }

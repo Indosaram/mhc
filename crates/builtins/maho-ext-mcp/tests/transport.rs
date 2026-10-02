@@ -133,6 +133,17 @@ async fn concurrent_shutdowns_coalesce_and_wait_for_the_child() {
     let (first,second)=tokio::join!(shutdown_mcp_transport(&connection),shutdown_mcp_transport(&connection));first.unwrap();second.unwrap();
     assert!(!maho_ext_mcp::process_tree::is_process_alive(pid).await);
 }
+#[tokio::test(start_paused=true)]
+async fn shutdown_preserves_pinned_grace_before_completing() {
+    use std::{sync::{Arc,Mutex},time::Duration};
+    let root=tempfile::tempdir().unwrap();
+    let config=McpServerConfig {transport:Some(Transport::Http),url:Some("http://127.0.0.1:1/mcp".into()),..Default::default()};
+    let connection=create_mcp_transport("grace",&config,None,Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("grace",root.path(),None).unwrap()))).unwrap();
+    connection.materialize().await.unwrap();let started=tokio::time::Instant::now();
+    shutdown_mcp_transport(&connection).await.unwrap();
+    assert_eq!(started.elapsed(),Duration::from_millis(100));
+    let repeated=tokio::time::Instant::now();shutdown_mcp_transport(&connection).await.unwrap();assert_eq!(repeated.elapsed(),Duration::ZERO);
+}
 #[tokio::test]
 async fn http_post_sse_accepts_bom_and_carriage_return_delimiters() {
     use axum::{Router,routing::post,Json,response::IntoResponse};

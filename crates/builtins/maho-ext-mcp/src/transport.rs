@@ -73,11 +73,12 @@ pub async fn shutdown_mcp_transport(connection:&McpTransportConnection)->Result<
     if *shutdown{return Ok(());}
     if let Some(task)=connection.server_requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(){task.abort();}
     if let Some(client)=connection.client.get() {
-        if let Some(pid)=client.root_pid {
-            let reaper=crate::process_tree::reap_process_tree(pid,Duration::from_millis(400),Duration::from_millis(500));
-            let (result,())=tokio::join!(client.close(),reaper);result?;
-        }else{client.close().await?;}
-    }
+        let cleanup=async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if let Some(pid)=client.root_pid {crate::process_tree::reap_process_tree(pid,Duration::from_millis(400),Duration::from_millis(500)).await;}
+        };
+        let (result,())=tokio::join!(client.close(),cleanup);result?;
+    }else{tokio::time::sleep(Duration::from_millis(100)).await;}
     *shutdown=true;Ok(())
 }
 impl Drop for McpTransportConnection {fn drop(&mut self){if let Some(task)=self.server_requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(){task.abort();}}}
