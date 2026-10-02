@@ -2,7 +2,31 @@ use url::Url;
 use std::cell::RefCell;
 use html5ever::tokenizer::{Token,TokenSink,TokenSinkResult,Tokenizer,TokenizerOpts,TagKind,BufferQueue,states::RawKind};
 use html5ever::{QualName,ns};
-struct InertParser {document:dom_query::Document,stack:RefCell<Vec<dom_query::NodeId>>}
+struct InertParser {document:dom_query::Document,stack:RefCell<Vec<dom_query::NodeId>>,pending:RefCell<String>}
+fn source_attributes(tag:&str)->Vec<html5ever::Attribute> {
+    let bytes=tag.as_bytes();let mut position=1;let mut attributes=Vec::new();
+    let whitespace=|byte:u8|matches!(byte,b' '|b'\t'|b'\n'|b'\r'|12);
+    while position<bytes.len()&&!whitespace(bytes[position])&&!matches!(bytes[position],b'/'|b'>') {position+=1;}
+    while position<bytes.len() {
+        while position<bytes.len()&&(whitespace(bytes[position])||bytes[position]==b'/') {position+=1;}
+        if position==bytes.len()||bytes[position]==b'>' {break;}
+        let start=position;while position<bytes.len()&&!whitespace(bytes[position])&&!matches!(bytes[position],b'='|b'/'|b'>') {position+=1;}
+        let name=&tag[start..position];while position<bytes.len()&&whitespace(bytes[position]) {position+=1;}
+        let mut value="";
+        if position<bytes.len()&&bytes[position]==b'=' {
+            position+=1;while position<bytes.len()&&whitespace(bytes[position]) {position+=1;}
+            let quote=bytes.get(position).copied().filter(|byte|matches!(byte,b'\''|b'"'));
+            if quote.is_some() {position+=1;}let start=position;
+            while position<bytes.len()&&quote.map_or_else(||!whitespace(bytes[position])&&bytes[position]!=b'>',|quote|bytes[position]!=quote) {position+=1;}
+            value=&tag[start..position];if quote.is_some()&&position<bytes.len() {position+=1;}
+        }
+        if !attributes.iter().any(|attribute:&html5ever::Attribute|attribute.name.local.as_ref()==name) {
+            let decoded=dom_query::Document::fragment(format!("<i value=\"{}\"></i>",value.replace('"',"&quot;")).as_str()).select("i").attr("value").expect("attribute decoder");
+            attributes.push(html5ever::Attribute{name:QualName::new(None,ns!(),name.into()),value:decoded});
+        }
+    }
+    attributes
+}
 fn is_void(name:&str)->bool {matches!(name,"area"|"base"|"basefont"|"br"|"col"|"command"|"embed"|"frame"|"hr"|"img"|"input"|"isindex"|"keygen"|"link"|"meta"|"param"|"source"|"track"|"wbr")}
 fn implies_close(open:&str,current:&str)->bool {
     match open {
@@ -19,29 +43,48 @@ impl TokenSink for InertParser {
         let parent=|stack:&[dom_query::NodeId]|stack.last().map_or_else(||self.document.root(),|id|tree.get_unchecked(id));
         match token {
             Token::TagToken(tag) if tag.kind==TagKind::StartTag=> {
+                let attributes=source_attributes(&std::mem::take(&mut *self.pending.borrow_mut()));
                 let name=tag.name.as_ref();while stack.last().is_some_and(|id|tree.get_unchecked(id).node_name().is_some_and(|current|implies_close(name,&current))) {stack.pop();}
                 let foreign=stack.iter().any(|id|tree.get_unchecked(id).node_name().as_deref()==Some("svg"));let namespace=if foreign||name=="svg" {ns!(svg)} else {ns!(html)};
-                let node=tree.create_node(dom_query::NodeData::Element(dom_query::Element::new(QualName::new(None,namespace,tag.name.clone()),tag.attrs,None,false)));parent(&stack).append_child(&node);
+                let node=tree.create_node(dom_query::NodeData::Element(dom_query::Element::new(QualName::new(None,namespace,tag.name.clone()),attributes,None,false)));parent(&stack).append_child(&node);
                 if !(is_void(name)||foreign&&tag.self_closing) {stack.push(node);}
                 return match name {"script"|"style"|"xmp"|"textarea"=>TokenSinkResult::RawData(RawKind::Rawtext),"title"=>TokenSinkResult::RawData(RawKind::Rcdata),_=>TokenSinkResult::Continue};
             },
             Token::TagToken(tag)=> {
+                self.pending.borrow_mut().clear();
                 if let Some(index)=stack.iter().rposition(|id|tree.get_unchecked(id).node_name().as_deref()==Some(tag.name.as_ref())) {stack.truncate(index);}
                 else if matches!(tag.name.as_ref(),"p"|"br") {let node=tree.create_node(dom_query::NodeData::Element(dom_query::Element::new(QualName::new(None,ns!(html),tag.name),vec![],None,false)));parent(&stack).append_child(&node);}
             },
             Token::CharacterTokens(contents)=> {
+                let mut pending=self.pending.borrow_mut();let mut end=0;let mut matched=true;
+                let entity_end=if pending.starts_with('&') {pending.find(';').map(|index|index+1).filter(|end|dom_query::Document::fragment(format!("<i>{}</i>",&pending[..*end]).as_str()).select("i").text()==contents)} else {None};
+                for expected in contents.chars() {
+                    let Some(actual)=pending[end..].chars().next() else {matched=false;break;};end+=actual.len_utf8();
+                    if actual=='\r' {
+                        if pending[end..].starts_with('\n') {end+=1;}
+                        if expected!='\n' {matched=false;break;}
+                    }
+                    else if actual!=expected {matched=false;break;}
+                }
+                let contents=if let Some(entity_end)=entity_end {pending.drain(..entity_end);contents} else if matched {pending.drain(..end).collect::<String>().into()} else {pending.clear();contents};drop(pending);
                 let parent=parent(&stack);let previous=parent.children().last().copied().filter(|node|node.is_text());
                 if matches!(parent.node_name().as_deref(),Some("script"|"style"|"xmp"|"textarea"))&&let Some(previous)=previous {previous.set_text(format!("{}{contents}",previous.text()));}
                 else {let node=tree.create_node(dom_query::NodeData::Text{contents});parent.append_child(&node);}
             },
-            Token::CommentToken(contents)=> {let node=tree.create_node(dom_query::NodeData::Comment{contents});parent(&stack).append_child(&node);},
-            Token::NullCharacterToken=> {let node=tree.create_node(dom_query::NodeData::Text{contents:"\0".into()});parent(&stack).append_child(&node);},_=>{},
+            Token::CommentToken(contents)=> {self.pending.borrow_mut().clear();let node=tree.create_node(dom_query::NodeData::Comment{contents});parent(&stack).append_child(&node);},
+            Token::NullCharacterToken=> {self.pending.borrow_mut().clear();let node=tree.create_node(dom_query::NodeData::Text{contents:"\0".into()});parent(&stack).append_child(&node);},
+            Token::DoctypeToken(_)=>self.pending.borrow_mut().clear(),_=>{},
         }
         TokenSinkResult::Continue
     }
 }
 fn parse_inert(html:&str)->dom_query::Document {
-    let input=BufferQueue::default();input.push_back(html.into());let tokenizer=Tokenizer::new(InertParser{document:dom_query::Document::default(),stack:RefCell::new(vec![])},TokenizerOpts::default());let _=tokenizer.feed(&input);tokenizer.end();tokenizer.sink.document
+    let input=BufferQueue::default();let tokenizer=Tokenizer::new(InertParser{document:dom_query::Document::default(),stack:RefCell::new(vec![]),pending:RefCell::new(String::new())},TokenizerOpts::default());
+    let mut position=0;
+    while position<html.len() {
+        let remaining=&html[position..];let length=if tokenizer.sink.pending.borrow().is_empty()&&!remaining.starts_with('<') {remaining.find('<').unwrap_or(remaining.len())} else {remaining.chars().next().expect("remaining character").len_utf8()};
+        let chunk=&remaining[..length];tokenizer.sink.pending.borrow_mut().push_str(chunk);input.push_back(chunk.into());let _=tokenizer.feed(&input);position+=length;
+    }tokenizer.end();tokenizer.sink.document
 }
 #[derive(Clone)]
 pub struct WebDocument { pub document:dom_query::Document,pub url:String,pub document_uri:String,pub base_uri:String }
@@ -81,6 +124,14 @@ pub fn normalize_web_url(is_anchor:bool,value:&str,base_uri:&str,document_url:&s
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn source_attribute_case_and_duplicates_are_distinct() {
+        let web=parse_web_document("<img SRC='a.png' src='b&amp;.png' src='ignored'>","https://example.test/");
+        assert_eq!(web.document.select("img").attr("SRC").as_deref(),Some("a.png"));assert_eq!(web.document.select("img").attr("src").as_deref(),Some("b&.png"));
+    }
+    #[test] fn source_text_preserves_carriage_returns() {
+        let web=parse_web_document("<p>a\r\nb\rc</p>","https://example.test/");assert_eq!(web.document.select("p").text().as_ref(),"a\r\nb\rc");
+        let web=parse_web_document("<p>a&amp;\r\nb</p>","https://example.test/");assert_eq!(web.document.select("p").text().as_ref(),"a&\r\nb");
+    }
     #[test] fn inert_textarea_keeps_literal_entity_text() {
         let web=parse_web_document("<textarea>&amp;<b>raw</b></textarea>","https://example.test/");assert_eq!(web.document.select("textarea").text().as_ref(),"&amp;<b>raw</b>");
     }
