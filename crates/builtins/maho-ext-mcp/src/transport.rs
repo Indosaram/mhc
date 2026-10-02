@@ -34,7 +34,17 @@ pub fn create_mcp_transport(server:&str,config:&McpServerConfig,env:Option<&BTre
 }
 impl McpTransportConnection {
     pub async fn materialize(&self)->Result<Arc<McpClient>,McpError> {
-        self.client.get_or_try_init(||async {let client=McpClient::materialize(&self.server_name,&self.spec,self.logger.clone()).await?;if let Some(auth)=&self.auth {client.set_auth(auth.clone()).await;}*self.server_requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(client.install_elicitation(self.elicitation_ui.clone()));Ok::<_,McpError>(client)}).await.cloned()
+        self.client.get_or_try_init(||async {
+            let mut spec=self.spec.clone();
+            if let (McpTransportSpec::Stdio {env,..},Some(auth))=(&mut spec,&self.auth)
+                && let Some(tokens)=auth.ensure_fresh().await.map_err(|error|McpError::new(McpErrorKind::Auth,error.to_string()))? {
+                env.insert("OAUTH_ACCESS_TOKEN".into(),tokens.access_token);
+            }
+            let client=McpClient::materialize(&self.server_name,&spec,self.logger.clone()).await?;
+            if let Some(auth)=&self.auth {client.set_auth(auth.clone()).await;}
+            *self.server_requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(client.install_elicitation(self.elicitation_ui.clone()));
+            Ok::<_,McpError>(client)
+        }).await.cloned()
     }
     pub fn client(&self)->Result<Arc<McpClient>,McpError> {
         self.client.get().cloned().ok_or_else(||{

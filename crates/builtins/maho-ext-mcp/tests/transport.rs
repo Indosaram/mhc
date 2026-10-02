@@ -38,6 +38,20 @@ fn auth_false_does_not_resolve_bearer_variable() {
     let McpTransportSpec::Http {headers,..}=create_mcp_transport_spec("srv",&config,None).unwrap() else{panic!("wrong kind")};assert!(headers.is_empty());
 }
 #[tokio::test]
+async fn stdio_oauth_materialization_passes_current_token_to_child() {
+    use std::sync::{Arc,Mutex};
+    let root=tempfile::tempdir().unwrap();
+    let store=maho_ext_mcp::auth::token_store::McpTokenStore::new(root.path(),"oauth-env","https://fixture.test");
+    store.write(maho_ext_mcp::auth::token_store::McpStoredAuth {access_token:Some("fixture-current".into()),..Default::default()}).unwrap();
+    let provider=Arc::new(maho_ext_mcp::auth::oauth_provider::McpOAuthProvider::new(store));
+    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec![format!("{}/tests/fixtures/oauth-env.mjs",env!("CARGO_MANIFEST_DIR"))]),..Default::default()};
+    let mut transport=create_mcp_transport("oauth-env",&config,None,Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("oauth-env",root.path(),None).unwrap()))).unwrap();
+    transport.auth=Some(Arc::new(maho_ext_mcp::auth::oauth_refresh::McpRefreshManager::new(provider,reqwest::Client::new())));
+    let client=connect_mcp_transport(&transport).await.unwrap();
+    assert_eq!(client.server_info.read().await["version"],"current");
+    shutdown_mcp_transport(&transport).await.unwrap();
+}
+#[tokio::test]
 async fn native_stdio_connects_to_pinned_senpi_fixture() {
     use std::{sync::{Arc,Mutex},time::Duration};
     let root=tempfile::tempdir().unwrap();let logger=Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("fixture",root.path(),None).unwrap()));

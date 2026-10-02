@@ -7,6 +7,8 @@ pub struct McpServiceRegistrationEntry {
     pub logger: Arc<Mutex<McpLogger>>,
     pub agent_dir: Option<std::path::PathBuf>,
     pub cached_catalog: Option<McpCachedServerCatalog>,
+    pub artifacts: Option<Arc<crate::guard::output_guard::McpOutputArtifacts>>,
+    pub ensure_fresh: McpCatalogCallback,
     pub ensure_cached_tool_connected: McpCatalogCallback,
 }
 
@@ -19,13 +21,21 @@ pub async fn prepare_mcp_service_registration_entries(
         let snapshot = entry.lock().await;
         let server_config = config.servers.get(&snapshot.name).and_then(|server| server.config.clone());
         let refresh_entry = entry.clone();
+        let auth_entry = entry.clone();
         prepared.push(McpServiceRegistrationEntry {
             name: snapshot.name.clone(), connection: snapshot.connection.clone(), logger: snapshot.logger.clone(),
             agent_dir: snapshot.agent_dir.clone(), cached_catalog: snapshot.cached_catalog.clone(),
+            artifacts: snapshot.artifacts.clone(),
+            ensure_fresh: Arc::new(move || {
+                let entry = auth_entry.clone();
+                Box::pin(async move {
+                    entry.lock().await.auth_plan.ensure_fresh().await
+                })
+            }),
             ensure_cached_tool_connected: Arc::new(move || {
                 let entry = refresh_entry.clone(); let config = server_config.clone();
                 Box::pin(async move {
-                    if let Some(config) = config {crate::startup_race::connect_and_refresh_mcp_catalog(&mut *entry.lock().await, &config).await;}
+                    if let Some(config) = config {crate::startup_race::connect_and_refresh_mcp_catalog(&mut *entry.lock().await, &config).await?;}
                     Ok(())
                 })
             }),

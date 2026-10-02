@@ -47,6 +47,18 @@ fn declaration_schema_paths_are_relative_but_endpoint_paths_name_the_server() {
     assert_eq!(validate_mcp_server_declaration("named",json!({"command":""})).unwrap(),"Invalid MCP server declaration \"named\": mcpServers.named.command: Required for enabled stdio server");
 }
 #[test]
+fn multiple_invalid_fields_follow_typebox_schema_order_not_input_order() {
+    for (raw, path, message) in [
+        (json!({"mcpServers":{"x":{"command":1,"type":1}}}), "mcpServers.x.type", "must be string"),
+        (json!({"mcpServers":{"x":{"command":1}},"settings":{"searchThreshold":"bad","toolPrefix":1}}), "settings.toolPrefix", "must be string"),
+        (json!({"settings":{"outputGuard":{"maxTokens":"bad","maxBytes":"bad"}}}), "settings.outputGuard.maxBytes", "must be number"),
+        (json!({"mcpServers":{"x":{"command":"node","oauth":{"flow":1,"clientId":1}}}}), "mcpServers.x.oauth.clientId", "must be string"),
+        (json!({"mcpServers":{"x":{"args":1,"zzz":1,"command":1}}}), "mcpServers.x.zzz", "schema is false"),
+    ] {
+        assert_eq!(validate_raw(raw).unwrap_err().to_string(), format!("Invalid MCP config at {path}: {message}"));
+    }
+}
+#[test]
 fn hashes_ignore_key_order_and_startup_policy() {
     let a = normalize_server(serde_json::from_value(json!({"command":"node","env":{"A":"1","B":"2"}})).unwrap());
     let mut b = a.clone(); b.startup_timeout_ms = Some(9000.0);

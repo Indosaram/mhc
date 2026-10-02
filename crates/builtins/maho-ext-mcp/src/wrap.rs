@@ -54,3 +54,18 @@ where F:FnMut()->Fut+Send+'static,Fut:Future<Output=Result<(),McpError>>+Send+'s
     })
 }
 pub async fn safe_delay(delay:Duration) {tokio::time::sleep(delay).await;}
+
+pub fn safe_on<T,F,Fut>(mut events:tokio::sync::broadcast::Receiver<T>,scope:String,mut listener:F,sink:McpAsyncErrorSink)->JoinHandle<()>
+where T:Clone+Send+'static,F:FnMut(T)->Fut+Send+'static,Fut:Future<Output=Result<(),McpError>>+Send+'static {
+    tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(event)=>{
+                    wrap_async(&scope,async {listener(event).await},&sink).await;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed)=>return,
+            }
+        }
+    })
+}

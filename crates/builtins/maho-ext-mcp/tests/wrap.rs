@@ -53,3 +53,20 @@ async fn panicking_logger_does_not_prevent_error_notification() {
     let sink=McpAsyncErrorSink {logger:Arc::new(|_,_|panic!("logger failure")),notify:Some(Arc::new(move|_,_|{sender.lock().unwrap().take().unwrap().send(()).unwrap();Box::pin(async {Ok(())})}))};
     wrap_async("unit",async {Err(error())},&sink).await;receiver.await.unwrap();
 }
+
+#[tokio::test]
+async fn event_subscription_contains_errors_and_finishes_when_emitter_closes() {
+    let (events, receiver)=tokio::sync::broadcast::channel(4);
+    let (observed,mut received)=tokio::sync::mpsc::unbounded_channel();
+    let sink=McpAsyncErrorSink {logger:Arc::new(move|scope,data|{
+        observed.send((scope.to_owned(),data["message"].clone())).unwrap();Ok(())
+    }),notify:None};
+    let subscription=safe_on(receiver,"event".into(),|value:u32|async move {
+        Err(McpError::new(McpErrorKind::Protocol,format!("event {value}")))
+    },sink);
+    events.send(1).unwrap();events.send(2).unwrap();drop(events);
+    tokio::time::timeout(std::time::Duration::from_secs(2),subscription).await.unwrap().unwrap();
+    assert_eq!(received.recv().await.unwrap(),("event".into(),serde_json::json!("event 1")));
+    assert_eq!(received.recv().await.unwrap(),("event".into(),serde_json::json!("event 2")));
+    assert!(received.recv().await.is_none());
+}
