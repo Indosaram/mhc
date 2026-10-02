@@ -2,6 +2,14 @@ use std::path::{Component,Path,PathBuf};
 use crate::{rule_parser::{RuleFileMeta,parse_rule_file},types::{RuleSource,TtsrRule}};
 #[derive(Default)]
 pub struct TtsrDiscoveryResult { pub rules:Vec<TtsrRule>,pub warnings:Vec<String> }
+pub fn discover_ttsr_rules_sync_default(cwd:&Path)->TtsrDiscoveryResult {
+    let home=dirs::home_dir().expect("operating system home directory is unavailable");
+    discover_ttsr_rules_sync(cwd,&home)
+}
+pub async fn discover_ttsr_rules_default(cwd:&Path)->TtsrDiscoveryResult {
+    let home=dirs::home_dir().expect("operating system home directory is unavailable");
+    discover_ttsr_rules(cwd,&home).await
+}
 fn normalize(path:&Path)->PathBuf { let mut result=PathBuf::new(); for component in path.components() { match component { Component::CurDir=>{},Component::ParentDir=>{ if result.file_name().is_some_and(|name|name!="..") { result.pop(); } else if !result.has_root() { result.push(".."); } },other=>result.push(other.as_os_str()) } } result }
 fn project_root(cwd:&Path,home:&Path)->PathBuf {
     let home=normalize(home); let mut current=normalize(cwd);
@@ -65,6 +73,14 @@ pub async fn discover_ttsr_rules(cwd:&Path,home:&Path)->TtsrDiscoveryResult {
 #[cfg(test)] mod tests {
     use super::*;
     fn write(dir:&Path,name:&str,condition:&str) { std::fs::create_dir_all(dir).unwrap(); std::fs::write(dir.join(name),format!("---\ncondition: {condition}\n---\nbody")).unwrap(); }
+    #[tokio::test] async fn omitted_home_uses_native_operating_system_resolution() {
+        let temp=tempfile::tempdir().unwrap(); let home=dirs::home_dir().unwrap();
+        write(&temp.path().join(".senpi/ttsr"),"native-home-fixture.md","fixture");
+        let expected=discover_ttsr_rules_sync(temp.path(),&home);
+        let sync=discover_ttsr_rules_sync_default(temp.path()); let asynchronous=discover_ttsr_rules_default(temp.path()).await;
+        assert_eq!(sync.rules,expected.rules); assert_eq!(sync.warnings,expected.warnings);
+        assert_eq!(asynchronous.rules,expected.rules); assert_eq!(asynchronous.warnings,expected.warnings);
+    }
     #[tokio::test] async fn filenames_follow_javascript_utf16_sort_order() {
         let temp=tempfile::tempdir().unwrap(); let home=temp.path().join("home"); let cwd=temp.path().join("project"); std::fs::create_dir_all(&cwd).unwrap();
         let rules=home.join(".senpi/ttsr"); write(&rules,"\u{e000}.md","x"); write(&rules,"\u{10000}.md","x");

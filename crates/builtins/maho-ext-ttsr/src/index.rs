@@ -1,6 +1,6 @@
 use std::{sync::{Arc,Mutex},time::{SystemTime,UNIX_EPOCH}};
 use maho_ext_api::{AbortSource,AgentMessage,CustomMessage,EventKind,EventResult,Extension,ExtensionApi,ExtensionContext,ExtensionEvent,ExtensionFailure,FlagType,FlagValue,SendMessageOptions,ToolContent};
-use crate::{builtin_rules::builtin_ttsr_rules,commands::{register_ttsr_commands,TtsrPublicState},coordinator::{claim_abort,mark_user_cancelled},discovery::discover_ttsr_rules_sync,manager::TtsrManager,message_update::get_ttsr_stream_delta,prompts::REPETITIVE_TURNS_RULE_CONTENT,remediation::{build_nudge_message,TtsrNudgeMessage},repetitive_turns_lane::{RepetitiveTurnsLane,read_persisted_assistant_texts},stream_remediation::{build_stream_remediation,StreamRemediationInput,StreamReplacement},types::*,watch::StreamWatcher};
+use crate::{builtin_rules::builtin_ttsr_rules,commands::{register_ttsr_commands,TtsrPublicState},coordinator::{claim_abort,mark_user_cancelled},manager::TtsrManager,message_update::get_ttsr_stream_delta,prompts::REPETITIVE_TURNS_RULE_CONTENT,remediation::{build_nudge_message,TtsrNudgeMessage},repetitive_turns_lane::{RepetitiveTurnsLane,read_persisted_assistant_texts},stream_remediation::{build_stream_remediation,StreamRemediationInput,StreamReplacement},types::*,watch::StreamWatcher};
 use crate::detectors::repetitive_turns::REPETITIVE_TURNS_RULE_NAME;
 #[derive(Default)]
 struct State { watcher:Option<StreamWatcher>,generation_state:GenerationDetectionState,generation:u64,pending_remediation:Option<StreamRemediationInput>,pending_rule:Option<TtsrRule>,pending_nudge:Option<TtsrNudgeMessage>,settling_user_abort:bool,disabled:bool,repetitive_turns:RepetitiveTurnsLane }
@@ -31,7 +31,7 @@ impl State {
             if (legacy || activation) && let Some(rules)=data["rules"].as_array() { manager.restore_injected(&rules.iter().filter_map(serde_json::Value::as_str).map(str::to_owned).collect::<Vec<_>>()); }
         }
         for rule in builtin_ttsr_rules() { manager.add_rule(rule); }
-        if let Some(home)=std::env::var_os("HOME") { for rule in discover_ttsr_rules_sync(&ctx.cwd,&std::path::PathBuf::from(home)).rules { manager.add_rule(rule); } }
+        for rule in crate::discovery::discover_ttsr_rules_sync_default(&ctx.cwd).rules { manager.add_rule(rule); }
         self.repetitive_turns.restore_from_history(&read_persisted_assistant_texts(&entries.into_iter().map(|entry|entry.data).collect::<Vec<_>>()));
         self.watcher=Some(StreamWatcher::new(manager,&disabled));
     }
