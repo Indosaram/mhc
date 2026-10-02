@@ -52,6 +52,45 @@ async fn print_session_emits_disabled_readiness_and_shutdown_joins() {
     (api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown, &ctx).await.unwrap();
 }
 #[tokio::test]
+async fn external_bus_registration_rebuilds_watches_and_delivers_its_group() {
+    // Given
+    use maho_ext_config_reload::protocol::*;
+    let root = tempfile::tempdir().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    let events = EventBus::default();
+    let (ready_sender, mut ready) = tokio::sync::mpsc::unbounded_channel();
+    let (change_sender, mut changes) = tokio::sync::mpsc::unbounded_channel();
+    let _ready = events.on(CONFIG_WATCH_READY, Arc::new(move |value| { ready_sender.send(value.clone()).unwrap(); }));
+    let _changes = events.on(CONFIG_WATCH_CHANGED, Arc::new(move |value| { change_sender.send(value.clone()).unwrap(); }));
+    let mut api = ExtensionApi::new(LoadedExtension::new("config-reload", root.path().into(), SourceInfo::default()), ExtensionSessionProfile::default(), events.clone(), ExtensionRuntime::default());
+    maho_ext_config_reload::ConfigReload.register(&mut api);
+    let mut ctx = context(root.path());
+    ctx.mode = ExtensionMode::Tui;
+    ctx.is_idle_fn = Arc::new(|| false);
+    let mut start = ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::Startup, initial_model_provenance: None, previous_session_file: None });
+    (api.registered.handlers[&EventKind::SessionStart][0])(&mut start, &ctx).await.unwrap();
+    ready.try_recv().unwrap();
+    let path = external.path().join("fixture.json");
+    // When
+    events.emit(CONFIG_WATCH_REGISTER, &serde_json::json!({"id":"external","displayName":"fixture","targets":[{"path":path,"kind":"file"}]}));
+    tokio::time::timeout(std::time::Duration::from_secs(5), ready.recv()).await.unwrap().unwrap();
+    let staged = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(staged.path(), "{}").unwrap();
+    std::fs::rename(staged.path(), &path).unwrap();
+    let change = tokio::time::timeout(std::time::Duration::from_secs(5), changes.recv()).await.unwrap().unwrap();
+    // Then
+    assert_eq!(change, serde_json::json!({"registrationId":"external","paths":[path],"deferred":true}));
+    events.emit(CONFIG_WATCH_UNREGISTER, &serde_json::json!({"id":"external"}));
+    tokio::time::timeout(std::time::Duration::from_secs(5), ready.recv()).await.unwrap().unwrap();
+    let entries: Vec<serde_json::Value> = std::fs::read_to_string(root.path().join("logs/config-reload.log")).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    for event in ["registration_added", "registration_removed"] {
+        assert!(entries.iter().any(|entry| entry["event"] == event && entry["id"] == "external"));
+    }
+    let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason: SessionReason::Quit, target_session_file: None, signal: None });
+    (api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown, &ctx).await.unwrap();
+}
+
+#[tokio::test]
 async fn active_session_delivers_validated_change_and_joins_shutdown() {
     let root = tempfile::tempdir().unwrap();
     let events = EventBus::default();

@@ -2,6 +2,18 @@ use std::{collections::{BTreeMap, BTreeSet, VecDeque}, path::{Path, PathBuf}};
 use super::{cache, constants::PROJECT_SINGLE_FILES, finder::{FinderOptions, RuleDiscoveryCache, find_rule_candidates}, formatter::{FormatOptions, format_static_block, format_dynamic_block}, matcher::{MatcherCache, MatcherInput, hash_content}, ordering::sort_candidates, parser::parse_rule, project_root::find_project_root, types::*};
 
 pub struct LoadResult { pub rules: Vec<LoadedRule>, pub diagnostics: Vec<RuleDiagnostic> }
+pub trait EngineDeps: Send + Sync {
+    fn find_candidates(&self, options: FinderOptions<'_>, cache: &mut RuleDiscoveryCache) -> Vec<RuleCandidate> { find_rule_candidates(options, cache) }
+    fn read_file(&self, path: &Path) -> Option<String> { std::fs::read_to_string(path).ok() }
+    fn find_project_root(&self, path: &Path) -> Option<PathBuf> { find_project_root(path, None) }
+    fn match_rule(&self, cache: &mut MatcherCache, input: MatcherInput<'_>) -> Result<super::matcher::MatchResult, super::matcher::MatcherError> { cache.match_rule(input) }
+    fn file_fingerprint(&self, path: &Path) -> String {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(path).map_or_else(|_| "missing".into(), |stat| format!("{}:{}:{}", i128::from(stat.mtime()) * 1_000_000_000 + i128::from(stat.mtime_nsec()), i128::from(stat.ctime()) * 1_000_000_000 + i128::from(stat.ctime_nsec()), stat.len()))
+    }
+}
+struct NativeEngineDeps;
+impl EngineDeps for NativeEngineDeps {}
 #[derive(Default)]
 struct LoadCaches {
     contents: BTreeMap<String, Option<(ParsedRule, String)>>,
@@ -9,9 +21,10 @@ struct LoadCaches {
     real_paths: BTreeMap<PathBuf, PathBuf>,
 }
 pub struct DynamicTargetFingerprint { pub target_path: PathBuf, pub cache_key: String, pub fingerprint: String }
-pub struct Engine { pub state: SessionState, pub config: PiRulesConfig, home_dir: PathBuf, matcher: MatcherCache, dynamic_matches: VecDeque<(String, Option<MatchReason>)> }
+pub struct Engine { pub state: SessionState, pub config: PiRulesConfig, home_dir: PathBuf, matcher: MatcherCache, dynamic_matches: VecDeque<(String, Option<MatchReason>)>, deps: Box<dyn EngineDeps> }
 impl Engine {
-    pub fn new(config: PiRulesConfig, home_dir: PathBuf) -> Self { Self { state: SessionState::default(), config, home_dir, matcher: MatcherCache::default(), dynamic_matches: VecDeque::new() } }
+    pub fn new(config: PiRulesConfig, home_dir: PathBuf) -> Self { Self::with_deps(config, home_dir, Box::new(NativeEngineDeps)) }
+    pub fn with_deps(config: PiRulesConfig, home_dir: PathBuf, deps: Box<dyn EngineDeps>) -> Self { Self { state: SessionState::default(), config, home_dir, matcher: MatcherCache::default(), dynamic_matches: VecDeque::new(), deps } }
     pub fn reset_session(&mut self, cwd: Option<&str>) {
         cache::clear_session(&mut self.state);
         self.dynamic_matches.clear();
@@ -30,21 +43,21 @@ impl Engine {
         self.state.cwd = Some(cwd.to_string_lossy().into_owned());
         let mut result = LoadResult { rules: Vec::new(), diagnostics: Vec::new() };
         if self.config.disabled || matches!(self.config.mode, RulesMode::Off | RulesMode::Dynamic) { return self.store(result); }
-        let root = find_project_root(cwd, None);
+        let root = self.deps.find_project_root(cwd);
         let disabled = self.disabled_sources();
-        let candidates = find_rule_candidates(FinderOptions { project_root: root.as_deref(), target_file: None, home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut RuleDiscoveryCache::default());
+        let candidates = self.deps.find_candidates(FinderOptions { project_root: root.as_deref(), target_file: None, home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut RuleDiscoveryCache::default());
         let mut selected_root_single = false;
         for candidate in sort_candidates(&candidates) {
             let root_single = candidate.distance == 0 && candidate.is_single_file && PROJECT_SINGLE_FILES.contains(&candidate.source.as_str()) && !candidate.source.contains('/');
             if root_single && selected_root_single { continue; }
-            let Some(mut rule) = load_candidate(candidate, root.as_deref(), &mut result.diagnostics) else { continue; };
+            let Some(mut rule) = load_candidate_cached(candidate, root.as_deref(), &mut result.diagnostics, &mut LoadCaches::default(), self.deps.as_ref()) else { continue; };
             rule.match_reason = if rule.frontmatter.always_apply == Some(true) { MatchReason::AlwaysApply } else if rule.candidate.is_single_file { MatchReason::SingleFile } else { continue; };
             if root_single { selected_root_single = true; }
             result.rules.push(rule);
         }
         self.store(result)
     }
-    pub fn load_dynamic_rules(&mut self, cwd: &Path, targets: &[PathBuf]) -> Result<LoadResult, globset::Error> {
+    pub fn load_dynamic_rules(&mut self, cwd: &Path, targets: &[PathBuf]) -> Result<LoadResult, super::matcher::MatcherError> {
         self.state.cwd = Some(cwd.to_string_lossy().into_owned());
         let mut result = LoadResult { rules: Vec::new(), diagnostics: Vec::new() };
         if self.config.disabled || matches!(self.config.mode, RulesMode::Off | RulesMode::Static) { return Ok(self.store(result)); }
@@ -58,10 +71,10 @@ impl Engine {
         for target in targets {
             if !seen_targets.insert(target) { continue; }
             let directory = super::finder::absolute(target).parent().map(Path::to_path_buf).unwrap_or_default();
-            let root = roots.entry(directory.clone()).or_insert_with(|| find_project_root(target, None)).clone();
-            let candidates = candidate_sets.entry((root.clone(), directory)).or_insert_with(|| find_rule_candidates(FinderOptions { project_root: root.as_deref(), target_file: Some(target), home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut discovery));
+            let root = roots.entry(directory.clone()).or_insert_with(|| self.deps.find_project_root(target)).clone();
+            let candidates = candidate_sets.entry((root.clone(), directory)).or_insert_with(|| self.deps.find_candidates(FinderOptions { project_root: root.as_deref(), target_file: Some(target), home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut discovery));
             for candidate in sort_candidates(candidates) {
-                let Some(mut rule) = load_candidate_cached(candidate, root.as_deref(), &mut result.diagnostics, &mut caches) else { continue; };
+                let Some(mut rule) = load_candidate_cached(candidate, root.as_deref(), &mut result.diagnostics, &mut caches, self.deps.as_ref()) else { continue; };
                 let basename = target.file_name().unwrap_or_default().to_string_lossy();
                 let relative = root.as_deref().map(|root| relative_path(root, target)).unwrap_or_else(|| basename.to_string());
                 let scope = if rule.candidate.is_global { None } else if rule.candidate.is_single_file { Path::new(&rule.candidate.path).parent().map(Path::to_path_buf) } else {
@@ -75,7 +88,7 @@ impl Engine {
                     self.dynamic_matches.push_back(cached);
                     reason
                 } else {
-                    let matched = self.matcher.match_rule(MatcherInput { frontmatter: &rule.frontmatter, is_single_file: rule.candidate.is_single_file, project_relative: &relative, scope_relative: scope_relative.as_deref(), basename: &basename })?;
+                    let matched = self.deps.match_rule(&mut self.matcher, MatcherInput { frontmatter: &rule.frontmatter, is_single_file: rule.candidate.is_single_file, project_relative: &relative, scope_relative: scope_relative.as_deref(), basename: &basename })?;
                     let reason = matched.matched.then_some(matched.reason);
                     if self.dynamic_matches.len() >= 4096 { self.dynamic_matches.pop_front(); }
                     self.dynamic_matches.push_back((key, reason.clone()));
@@ -91,20 +104,19 @@ impl Engine {
         Ok(self.store(result))
     }
     pub fn fingerprint_dynamic_targets(&mut self, cwd: &Path, targets: &[PathBuf]) -> Vec<DynamicTargetFingerprint> {
-        use std::os::unix::fs::MetadataExt;
         self.state.cwd = Some(cwd.to_string_lossy().into_owned());
         if self.config.disabled || matches!(self.config.mode, RulesMode::Off | RulesMode::Static) { return Vec::new(); }
         let disabled = self.disabled_sources();
         let mut discovery = RuleDiscoveryCache::default();
-        let cwd_root = find_project_root(cwd, None);
+        let cwd_root = self.deps.find_project_root(cwd);
         let mut seen = BTreeSet::new();
         let mut result = Vec::new();
         for target in targets {
             if !seen.insert(target) { continue; }
-            let root = if cwd_root.as_deref().is_some_and(|root| target.starts_with(root)) { cwd_root.clone() } else { find_project_root(target, None) };
-            let candidates = find_rule_candidates(FinderOptions { project_root: root.as_deref(), target_file: Some(target), home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut discovery);
+            let root = if cwd_root.as_deref().is_some_and(|root| target.starts_with(root)) { cwd_root.clone() } else { self.deps.find_project_root(target) };
+            let candidates = self.deps.find_candidates(FinderOptions { project_root: root.as_deref(), target_file: Some(target), home_dir: &self.home_dir, disabled_sources: &disabled, skip_user_home: false }, &mut discovery);
             let candidate_fingerprints = sort_candidates(&candidates).into_iter().map(|candidate| {
-                let stat = std::fs::metadata(&candidate.path).map_or_else(|_| "missing".into(), |stat| format!("{}:{}:{}", i128::from(stat.mtime()) * 1_000_000_000 + i128::from(stat.mtime_nsec()), i128::from(stat.ctime()) * 1_000_000_000 + i128::from(stat.ctime_nsec()), stat.len()));
+                let stat = self.deps.file_fingerprint(Path::new(&candidate.path));
                 [candidate.real_path, candidate.relative_path, candidate.source, if candidate.is_global { "global" } else { "project" }.into(), if candidate.is_single_file { "single" } else { "multi" }.into(), candidate.distance.to_string(), stat].join("\0")
             }).collect::<Vec<_>>().join("\u{1}");
             let cache_key = super::finder::absolute(target).to_string_lossy().replace('\\', "/");
@@ -130,17 +142,14 @@ pub fn relative_path(base: &Path, target: &Path) -> String {
     let shared = base.iter().zip(&target).take_while(|(base, target)| base == target).count();
     std::iter::repeat_n("..".to_owned(), base.len() - shared).chain(target[shared..].iter().map(|component| component.as_os_str().to_string_lossy().into_owned())).collect::<Vec<_>>().join("/")
 }
-fn load_candidate(candidate: RuleCandidate, root: Option<&Path>, diagnostics: &mut Vec<RuleDiagnostic>) -> Option<LoadedRule> {
-    load_candidate_cached(candidate, root, diagnostics, &mut LoadCaches::default())
-}
-fn load_candidate_cached(candidate: RuleCandidate, root: Option<&Path>, diagnostics: &mut Vec<RuleDiagnostic>, caches: &mut LoadCaches) -> Option<LoadedRule> {
+fn load_candidate_cached(candidate: RuleCandidate, root: Option<&Path>, diagnostics: &mut Vec<RuleDiagnostic>, caches: &mut LoadCaches, deps: &dyn EngineDeps) -> Option<LoadedRule> {
     let key = (root.map(Path::to_path_buf), candidate.real_path.clone());
     let within = candidate.is_global || *caches.membership.entry(key).or_insert_with(|| root.is_some_and(|root| {
         let root = caches.real_paths.entry(root.into()).or_insert_with(|| std::fs::canonicalize(root).unwrap_or_else(|_| super::finder::absolute(root)));
         Path::new(&candidate.real_path).strip_prefix(root).is_ok_and(|relative| !relative.to_string_lossy().starts_with(".."))
     }));
     if !within { diagnostics.push(RuleDiagnostic { severity: "warning".into(), source: candidate.path.clone(), message: "Rule file resolves outside project root".into() }); return None; }
-    let loaded = caches.contents.entry(candidate.real_path.clone()).or_insert_with(|| std::fs::read_to_string(&candidate.path).ok().map(|content| (parse_rule(&content), hash_content(&content))));
+    let loaded = caches.contents.entry(candidate.real_path.clone()).or_insert_with(|| deps.read_file(Path::new(&candidate.path)).map(|content| (parse_rule(&content), hash_content(&content))));
     let Some((parsed, content_hash)) = loaded else { diagnostics.push(RuleDiagnostic { severity: "warning".into(), source: candidate.path.clone(), message: "Unable to read rule file".into() }); return None; };
     if let Some(message) = &parsed.diagnostic { diagnostics.push(RuleDiagnostic { severity: "warning".into(), source: candidate.path.clone(), message: message.clone() }); }
     Some(LoadedRule { candidate, frontmatter: parsed.frontmatter.clone(), body: parsed.body.clone(), content_hash: content_hash.clone(), match_reason: MatchReason::NoMatch })

@@ -2,6 +2,22 @@ use maho_ext_api::{ExtensionApi, ExtensionSessionProfile, LoadedExtension, Sourc
 use maho_ext_rules::{commands::{register_slash_commands, find_rule_by_id}, config::config_from_environment, rules::{engine::Engine, types::*}};
 use std::sync::{Arc, Mutex};
 
+#[tokio::test]
+async fn rules_completions_preserve_subcommand_order_and_empty_results() {
+    // Given
+    let mut api = ExtensionApi::new(LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+    register_slash_commands(&mut api, Arc::new(Mutex::new(Engine::new(config_from_environment(|_| None), "/tmp".into()))));
+    let complete = &api.registered.command_argument_completions["rules"];
+    // When
+    let all = complete("").await.unwrap().unwrap();
+    let matching = complete("s").await.unwrap().unwrap();
+    let missing = complete("unknown").await.unwrap();
+    // Then
+    assert_eq!(all.iter().map(|item| item.value.as_str()).collect::<Vec<_>>(), ["list", "show", "paths", "status"]);
+    assert_eq!(matching.iter().map(|item| item.value.as_str()).collect::<Vec<_>>(), ["show", "status"]);
+    assert!(missing.is_none());
+}
+
 #[test]
 fn registers_both_commands() {
     let mut api = ExtensionApi::new(LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());

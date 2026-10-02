@@ -1,5 +1,51 @@
 use maho_ext_config_reload::watch_event_source::subscribe;
 use std::{path::PathBuf, sync::{Arc, mpsc}, time::Duration};
+#[test]
+fn worker_dispatch_crash_rebuilds_surviving_watchers() {
+    use maho_ext_config_reload::watch_event_source::{FsWatchEventSource, NativeEventCallback};
+    use std::sync::{Mutex, atomic::{AtomicBool, Ordering}};
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let callbacks: Arc<Mutex<Vec<NativeEventCallback>>> = Arc::default();
+    let listeners = Arc::clone(&callbacks);
+    let (rebuilt, replacements) = mpsc::channel();
+    let source = FsWatchEventSource::with_factory(Arc::new(move |_, _, callback| {
+        listeners.lock().unwrap().push(callback);
+        rebuilt.send(()).unwrap();
+        Ok(Box::new(()))
+    }));
+    let fail = Arc::new(AtomicBool::new(true));
+    let (delivered, received) = mpsc::channel();
+    let mut subscription = source.subscribe(root.path().into(), false, Arc::new(move |_, _| {
+        assert!(!fail.swap(false, Ordering::SeqCst), "fixture dispatch crash");
+        delivered.send(()).unwrap();
+    }), Arc::new(|_, _| {})).unwrap();
+    subscription.ready().unwrap();
+    replacements.recv_timeout(Duration::from_secs(5)).unwrap();
+    // When
+    callbacks.lock().unwrap()[0](Ok(notify::Event::new(notify::EventKind::Any)));
+    replacements.recv_timeout(Duration::from_secs(5)).unwrap();
+    callbacks.lock().unwrap()[1](Ok(notify::Event::new(notify::EventKind::Any)));
+    // Then
+    received.recv_timeout(Duration::from_secs(5)).unwrap();
+    subscription.close().unwrap();
+}
+
+#[tokio::test]
+async fn repeated_subscription_close_waits_for_original_join() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let source = maho_ext_config_reload::watch_event_source::FsWatchEventSource::default();
+    let mut subscription = source.subscribe(root.path().into(), false, Arc::new(|_, _| {}), Arc::new(|error, _| panic!("{error}"))).unwrap();
+    subscription.ready().unwrap();
+    let first = subscription.close_async();
+    // When
+    tokio::time::timeout(Duration::from_secs(5), subscription.close_async()).await.unwrap().unwrap();
+    // Then
+    use futures::FutureExt;
+    assert_eq!(first.now_or_never(), Some(Ok(())));
+}
+
 #[tokio::test]
 async fn async_close_cancels_synchronously_then_joins_worker() {
     let root = tempfile::tempdir().unwrap();

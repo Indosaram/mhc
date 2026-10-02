@@ -8,10 +8,42 @@ struct ReloadHandoff { hashes: BTreeMap<PathBuf, String>, contents: BTreeMap<Pat
 static HANDOFFS: std::sync::OnceLock<Mutex<ConfigReloadHandoffRegistry<ReloadHandoff>>> = std::sync::OnceLock::new();
 struct WatchRun { cancel: tokio::sync::watch::Sender<bool>, task: tokio::task::JoinHandle<Result<(), String>> }
 #[derive(Default)]
-struct State { generation: u64, run: Option<WatchRun>, pending: PendingChanges, in_flight: bool, deferred_notice: bool, unavailable_logged: bool, veto: crate::reload_deferral::ReloadVetoDeferral, flush_generation: Option<u64>, hashes: BTreeMap<PathBuf, String>, contents: BTreeMap<PathBuf, String> }
+struct State { generation: u64, run: Option<WatchRun>, pending: PendingChanges, in_flight: bool, deferred_notice: bool, unavailable_logged: bool, veto: crate::reload_deferral::ReloadVetoDeferral, flush_generation: Option<u64>, hashes: BTreeMap<PathBuf, String>, contents: BTreeMap<PathBuf, String>, registrations: WatchRegistrations, context: Option<ExtensionContext>, rebuild: Arc<tokio::sync::Notify>, subscriptions: Vec<maho_ext_api::BusSubscription>, session_owned: bool }
 impl Extension for ConfigReload {
     fn register(&self, api: &mut ExtensionApi) {
-        let state = Arc::new(Mutex::new(State::default()));
+        let state = Arc::new(Mutex::new(State { session_owned: maho_ai::node::provider_scope::active_provider_scope().is_some(), ..Default::default() }));
+        for channel in [CONFIG_WATCH_REGISTER, CONFIG_WATCH_UNREGISTER] {
+            let owner = Arc::downgrade(&state);
+            let events = api.events.clone();
+            let cwd = api.cwd.clone();
+            let subscription = api.events.on(channel, Arc::new(move |payload| {
+                let Some(state) = owner.upgrade() else { return; };
+                let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (cwd, agent_dir) = state.context.as_ref().map_or_else(|| (cwd.clone(), PathBuf::from(maho_core::config::get_agent_dir())), |ctx| (ctx.cwd.clone(), ctx.agent_dir.clone()));
+                let State { registrations, pending, .. } = &mut *state;
+                let mut rejection = None;
+                let mut logger = ConfigReloadLogger::new(&agent_dir, None).ok();
+                let changed = if channel == CONFIG_WATCH_REGISTER {
+                    let Some(registration) = parse_config_watch_registration(payload) else { return; };
+                    let id = registration.id.clone();
+                    match registrations.register(Arc::new(registration), &cwd, &agent_dir, pending) {
+                        RegistrationAdmission::Added => { if let Some(logger) = &mut logger { logger.log(LogLevel::Info, LogEvent::RegistrationAdded { id: &id }); } true },
+                        RegistrationAdmission::Restricted => { if let Some(logger) = &mut logger { logger.log(LogLevel::Warn, LogEvent::RegistrationRejected { registration_id: &id, error_count: 1.0 }); } rejection = Some(id); false },
+                        RegistrationAdmission::Identical => false,
+                        RegistrationAdmission::RejectionSuppressed => { if let Some(logger) = &mut logger { logger.log(LogLevel::Debug, LogEvent::RegistrationRejectionSuppressed { registration_id: &id }); } false },
+                    }
+                } else {
+                    let Some(id) = payload.get("id").and_then(serde_json::Value::as_str) else { return; };
+                    let removed = registrations.unregister(id, pending);
+                    if removed && let Some(logger) = &mut logger { logger.log(LogLevel::Info, LogEvent::RegistrationRemoved { id }); }
+                    removed
+                };
+                if changed && state.run.is_some() { state.rebuild.notify_one(); }
+                drop(state);
+                if let Some(id) = rejection { events.emit(CONFIG_WATCH_REJECTED, &serde_json::json!({"registrationId":id,"paths":[],"errors":["Configuration watch target is restricted"]})); }
+            }));
+            state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).subscriptions.push(subscription);
+        }
         let shared = Arc::clone(&state);
         let events = api.events.clone();
         api.on(EventKind::SessionStart, Arc::new(move |event, ctx| {
@@ -20,7 +52,7 @@ impl Extension for ConfigReload {
                 let reloading = matches!(event, maho_ext_api::ExtensionEvent::SessionStart(event) if event.reason == maho_ext_api::SessionReason::Reload);
                 start(Arc::clone(&state), ctx.clone(), events.clone(), true).await?;
                 if reloading {
-                    let handoff = HANDOFFS.get_or_init(Mutex::default).lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.take(ctx.session_manager.session_id());
+                    let handoff = HANDOFFS.get_or_init(Mutex::default).lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.take(&handoff_key(&state, ctx)?);
                     if let Some(handoff) = handoff {
                         let mut paths = std::collections::BTreeSet::new();
                         for change in &handoff.changes {
@@ -74,9 +106,13 @@ impl Extension for ConfigReload {
             let state = Arc::clone(&state);
             Box::pin(async move {
                 if !matches!(event, maho_ext_api::ExtensionEvent::SessionShutdown(event) if event.reason == maho_ext_api::SessionReason::Reload) {
-                    HANDOFFS.get_or_init(Mutex::default).lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.delete(ctx.session_manager.session_id());
+                    HANDOFFS.get_or_init(Mutex::default).lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.delete(&handoff_key(&state, ctx)?);
                 }
-                stop(&state, true).await?; Ok(EventResult::None)
+                stop(&state, true).await?;
+                let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
+                state.context = None;
+                state.subscriptions.clear();
+                Ok(EventResult::None)
             })
         }));
     }
@@ -98,6 +134,7 @@ async fn stop(state: &Arc<Mutex<State>>, clear_pending: bool) -> Result<(), Exte
 }
 async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus, clear_pending: bool) -> Result<(), ExtensionFailure> {
     stop(&state, clear_pending).await?;
+    state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.context = Some(ctx.clone());
     let home = std::env::var("HOME").unwrap_or_default();
     let settings = maho_core::settings_manager::SettingsManager::create(&ctx.cwd.to_string_lossy(), &ctx.agent_dir.to_string_lossy(), &home, ctx.is_project_trusted());
     let resolved = resolve_config_reload_settings(&serde_json::json!(settings.get_global()), &serde_json::json!(settings.get_project()));
@@ -106,7 +143,11 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
     }
     let skill_paths: Vec<PathBuf> = settings.get_value("skills").and_then(serde_json::Value::as_array).into_iter().flatten().filter_map(serde_json::Value::as_str).map(PathBuf::from).collect();
     let mut targets = build_builtin_watch_targets(&ctx.cwd, &ctx.agent_dir, ctx.is_project_trusted(), &resolved, &skill_paths);
-    let watched = build_builtin_watch_targets(&ctx.cwd, &ctx.agent_dir, ctx.is_project_trusted(), &resolved, &skill_paths).into_iter().map(|active| active.target).collect();
+    let external = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.registrations.snapshot();
+    targets.extend(build_external_watch_targets(&ctx.cwd, &external));
+    let mut watched_targets = build_builtin_watch_targets(&ctx.cwd, &ctx.agent_dir, ctx.is_project_trusted(), &resolved, &skill_paths);
+    watched_targets.extend(build_external_watch_targets(&ctx.cwd, &external));
+    let watched = watched_targets.into_iter().map(|active| active.target).collect();
     let logger = Arc::new(Mutex::new(ConfigReloadLogger::new(&ctx.agent_dir, None).map_err(|error| ExtensionFailure::new(error.to_string()))?));
     let errors = Arc::clone(&logger);
     let scoped_errors = crate::session_scoped_callback::bind_session_scoped_callback(move |(message, path): (String, PathBuf)| {
@@ -127,12 +168,24 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
     let generation = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.generation;
     let (cancel, mut cancelled) = tokio::sync::watch::channel(false);
     let shared = Arc::clone(&state);
+    let rebuild = Arc::clone(&state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.rebuild);
     let ready_events = events.clone();
     let scope = maho_ai::node::provider_scope::active_provider_scope();
     let work = async move {
         loop {
             let change = tokio::select! {
                 result = engine.next_change_async() => result?,
+                () = rebuild.notified() => {
+                    engine.close_async().await?;
+                    let registrations = shared.lock().map_err(|error| error.to_string())?.registrations.snapshot();
+                    targets = build_builtin_watch_targets(&ctx.cwd, &ctx.agent_dir, ctx.is_project_trusted(), &resolved, &skill_paths);
+                    targets.extend(build_external_watch_targets(&ctx.cwd, &registrations));
+                    let mut watched = build_builtin_watch_targets(&ctx.cwd, &ctx.agent_dir, ctx.is_project_trusted(), &resolved, &skill_paths);
+                    watched.extend(build_external_watch_targets(&ctx.cwd, &registrations));
+                    engine = NativeWatchEngine::with_debounce(watched.into_iter().map(|active| active.target).collect(), Arc::clone(&on_error), debounce)?;
+                    events.emit(CONFIG_WATCH_READY, &serde_json::json!({"enabled":true}));
+                    continue;
+                },
                 result = cancelled.changed() => { if result.is_err() || *cancelled.borrow() { break; } else { continue; } },
             };
             let paths = {
@@ -144,7 +197,7 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
                 state.hashes = engine.engine.get_baseline_snapshot(); state.contents = contents.clone();
             }
             for (id, paths) in group_changed_paths(&paths, &targets) {
-                let errors = validate_builtin_paths(&paths, &ctx.agent_dir, &ctx.cwd);
+                let errors = if id == "builtin" { validate_builtin_paths(&paths, &ctx.agent_dir, &ctx.cwd) } else { Vec::new() };
                 if !errors.is_empty() {
                     ctx.ui.notify(&format!("Config change rejected: {}", errors.join("; ")), NotificationType::Error);
                     logger.lock().map_err(|error| error.to_string())?.log(LogLevel::Warn, LogEvent::ValidationRejected { registration_id: &id, error_count: errors.len() as f64 });
@@ -165,7 +218,11 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
             if change.created.iter().any(|path| targets.iter().any(|target| target.rearm_on_creation.as_ref() == Some(path))) {
                 engine.close_async().await?;
                 targets = build_builtin_watch_targets(&ctx.cwd, &ctx.agent_dir, ctx.is_project_trusted(), &resolved, &skill_paths);
-                let watched = build_builtin_watch_targets(&ctx.cwd, &ctx.agent_dir, ctx.is_project_trusted(), &resolved, &skill_paths).into_iter().map(|active| active.target).collect();
+                let registrations = shared.lock().map_err(|error| error.to_string())?.registrations.snapshot();
+                targets.extend(build_external_watch_targets(&ctx.cwd, &registrations));
+                let mut watched = build_builtin_watch_targets(&ctx.cwd, &ctx.agent_dir, ctx.is_project_trusted(), &resolved, &skill_paths);
+                watched.extend(build_external_watch_targets(&ctx.cwd, &registrations));
+                let watched = watched.into_iter().map(|active| active.target).collect();
                 engine = NativeWatchEngine::with_debounce(watched, Arc::clone(&on_error), debounce)?;
                 crate::routine_settings::refresh_settings_content_snapshots(&mut contents, &ctx.agent_dir, &ctx.cwd);
                 logger.lock().map_err(|error| error.to_string())?.log(LogLevel::Info, LogEvent::WatcherStarted { target_count: targets.len() as f64 });
@@ -255,7 +312,7 @@ async fn flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_generat
         let handoff = ReloadHandoff { hashes: state.hashes.clone(), contents: state.contents.clone(), requested: std::time::Instant::now(), changes };
         (paths, handoff)
     };
-    HANDOFFS.get_or_init(Mutex::default).lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.set(ctx.session_manager.session_id().into(), handoff);
+    HANDOFFS.get_or_init(Mutex::default).lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.set(handoff_key(&state, &ctx)?, handoff);
     let mut logger = ConfigReloadLogger::new(&ctx.agent_dir, None).map_err(|error| ExtensionFailure::new(error.to_string()))?;
     let logged_paths = paths.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>();
     logger.log(LogLevel::Info, LogEvent::ReloadRequested { reason: "config changed", paths: &logged_paths });
@@ -266,4 +323,9 @@ async fn flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_generat
     if state.generation == generation { state.in_flight = false; }
     if let Err(error) = result { logger.log(LogLevel::Error, LogEvent::WatcherError { path: "reload", message: &error.to_string() }); }
     Ok(None)
+}
+
+fn handoff_key(state: &Arc<Mutex<State>>, ctx: &ExtensionContext) -> Result<String, ExtensionFailure> {
+    let state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
+    Ok(if state.session_owned { ctx.session_manager.session_id().into() } else { "classic".into() })
 }

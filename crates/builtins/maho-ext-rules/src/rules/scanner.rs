@@ -17,7 +17,8 @@ fn scan_directory(directory: &Path, depth: usize, max_depth: usize, excluded: &[
     if !visited.insert(real_directory) { return; }
     let Ok(entries) = fs::read_dir(directory) else { return; };
     let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
-    entries.sort_by_key(|entry| entry.file_name());
+    let collator = icu_collator::CollatorBorrowed::new_root(Default::default());
+    entries.sort_by(|left, right| collator.compare(&left.file_name().to_string_lossy(), &right.file_name().to_string_lossy()));
     for entry in entries {
         let path = entry.path();
         let name = entry.file_name();

@@ -4,7 +4,7 @@ use crate::rules::{engine::Engine, types::{LoadedRule, MatchReason}};
 
 pub fn register_slash_commands(api: &mut ExtensionApi, engine: Arc<Mutex<Engine>>) {
     let shared = Arc::clone(&engine);
-    api.register_command("rules", Some("Inspect loaded pi-rules.".into()), None, Arc::new(move |args, ctx| {
+    api.register_command_with_completions("rules", Some("Inspect loaded pi-rules.".into()), None, Arc::new(move |args, ctx| {
         let shared = Arc::clone(&shared);
         Box::pin(async move {
             let mut engine = shared.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
@@ -27,7 +27,14 @@ pub fn register_slash_commands(api: &mut ExtensionApi, engine: Arc<Mutex<Engine>
             ctx.ui.notify(&message, severity);
             Ok(())
         })
-    }));
+    }), Arc::new(|prefix| Box::pin(async move {
+        let completions: Vec<_> = ["list", "show", "paths", "status"].into_iter()
+            .filter(|subcommand| subcommand.starts_with(prefix))
+            .map(|subcommand| maho_tui::autocomplete::AutocompleteItem {
+                value: subcommand.into(), label: subcommand.into(), description: None,
+            }).collect();
+        Ok((!completions.is_empty()).then_some(completions))
+    })));
     api.register_command("reload-rules", Some("Reload pi-rules for the current session.".into()), None, Arc::new(move |_, ctx| {
         let shared = Arc::clone(&engine);
         Box::pin(async move {

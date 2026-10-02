@@ -1,6 +1,19 @@
 use maho_ext_rules::rules::{matcher::{MatcherCache, MatcherInput, normalize_globs, hash_content}, types::{RuleFrontmatter, MatchReason}};
 
 #[test]
+fn native_patterns_match_pinned_picomatch_generated_matrix() {
+    let cases: serde_json::Value = serde_json::from_str(include_str!("matcher-source.json")).unwrap();
+    for case in cases.as_array().unwrap() {
+        let pattern = case["pattern"].as_str().unwrap();
+        let path = case["path"].as_str().unwrap();
+        let frontmatter = RuleFrontmatter { globs: if pattern.starts_with('!') { vec!["**".into(), pattern.into()] } else { vec![pattern.into()] }, ..Default::default() };
+        let result = MatcherCache::default().match_rule(MatcherInput { frontmatter: &frontmatter, is_single_file: false, project_relative: path, scope_relative: None, basename: path }).unwrap();
+        let expected = case["matched"].as_bool().unwrap();
+        assert_eq!(result.matched, expected, "{pattern}: {path}");
+    }
+}
+
+#[test]
 fn single_files_precede_always_apply_and_globs() {
     let frontmatter = RuleFrontmatter { always_apply: Some(true), ..Default::default() };
     let result = MatcherCache::default().match_rule(MatcherInput { frontmatter: &frontmatter, is_single_file: true, project_relative: "a", scope_relative: None, basename: "a" }).unwrap();

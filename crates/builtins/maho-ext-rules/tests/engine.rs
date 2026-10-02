@@ -2,6 +2,27 @@ use maho_ext_rules::{config::config_from_environment, rules::engine::Engine};
 use std::fs;
 
 #[test]
+fn injected_discovery_and_content_drive_static_loading() {
+    use maho_ext_rules::rules::{engine::EngineDeps, finder::{FinderOptions, RuleDiscoveryCache}, types::RuleCandidate};
+    struct Fixture;
+    impl EngineDeps for Fixture {
+        fn find_project_root(&self, _: &std::path::Path) -> Option<std::path::PathBuf> { Some("/fixture".into()) }
+        fn find_candidates(&self, _: FinderOptions<'_>, _: &mut RuleDiscoveryCache) -> Vec<RuleCandidate> {
+            vec![RuleCandidate { path: "/fixture/AGENTS.md".into(), real_path: "/fixture/AGENTS.md".into(), source: "AGENTS.md".into(), distance: 0, is_global: false, is_single_file: true, relative_path: "AGENTS.md".into() }]
+        }
+        fn read_file(&self, _: &std::path::Path) -> Option<String> { Some("---\nalwaysApply: true\n---\nfixture".into()) }
+    }
+    // Given
+    let mut engine = Engine::with_deps(config_from_environment(|_| None), "/home".into(), Box::new(Fixture));
+    // When
+    let loaded = engine.load_static_rules(std::path::Path::new("/fixture"));
+    // Then
+    assert_eq!(loaded.rules.len(), 1);
+    assert_eq!(loaded.rules[0].candidate.source, "AGENTS.md");
+    assert!(loaded.diagnostics.is_empty());
+}
+
+#[test]
 fn static_root_single_file_uses_first_source() {
     let root = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();

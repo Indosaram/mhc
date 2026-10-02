@@ -81,7 +81,7 @@ impl ConfigReloadLogger {
             LogEvent::RegistrationAdded { id } | LogEvent::RegistrationRemoved { id } => { entry.insert("id".into(), self.safe_text(id).into()); },
             LogEvent::RegistrationRejectionSuppressed { .. } => {},
         }
-        let text = format!("{}\n", Value::Object(entry));
+        let text = format!("{}\n", maho_ai::api::google_shared::js_json_stringify(&Value::Object(entry)));
         match self.write_line(&text) {
             Ok(()) => ConfigReloadLogStatus { written: true, disabled: false },
             Err(_) => { self.disabled = true; ConfigReloadLogStatus { written: false, disabled: true } },

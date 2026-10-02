@@ -2,6 +2,20 @@ use std::{collections::BTreeSet, fs};
 use maho_ext_rules::rules::{finder::{FinderOptions, RuleDiscoveryCache, find_rule_candidates}, scanner::scan_rule_files};
 
 #[test]
+fn scanner_orders_case_accents_and_punctuation_like_locale_compare() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    for name in ["A.md", "a.md", "_x.md", "\u{e9}.md", "e.md", "z.md"] {
+        fs::write(root.path().join(name), "").unwrap();
+    }
+    // When
+    let files = scan_rule_files(root.path(), None, None);
+    // Then
+    assert_eq!(files.iter().map(|file| file.path.file_name().unwrap().to_str().unwrap()).collect::<Vec<_>>(),
+        ["_x.md", "a.md", "A.md", "e.md", "\u{e9}.md", "z.md"]);
+}
+
+#[test]
 fn scanner_excludes_build_directories_and_limits_depth() {
     // Given
     let root = tempfile::tempdir().unwrap();

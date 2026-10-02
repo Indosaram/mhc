@@ -1,0 +1,1787 @@
+[
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "foo.rs",
+    "matched": true
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "bar.rs",
+    "matched": true
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "foobar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "ab.rs",
+    "matched": false
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "abcd.rs",
+    "matched": false
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": ".rs",
+    "matched": false
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "x.test.rs",
+    "matched": false
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "2",
+    "matched": false
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "b",
+    "matched": false
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "a{b}",
+    "matched": false
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "[abc]",
+    "matched": false
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "a",
+    "matched": false
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "c",
+    "matched": false
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "*.rs",
+    "matched": false
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "a[",
+    "matched": false
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "foo",
+    "matched": false
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "foo.txt",
+    "matched": false
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "src/x.rs",
+    "matched": false
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "../x",
+    "matched": false
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "a/b",
+    "matched": false
+  },
+  {
+    "pattern": "@(foo|bar).rs",
+    "path": "a/x/b",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "foo.rs",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "bar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "foobar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "ab.rs",
+    "matched": true
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "abcd.rs",
+    "matched": true
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": ".rs",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "x.test.rs",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "2",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "b",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "a{b}",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "[abc]",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "a",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "c",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "*.rs",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "a[",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "foo",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "foo.txt",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "src/x.rs",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "../x",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "a/b",
+    "matched": false
+  },
+  {
+    "pattern": "+(ab|cd).rs",
+    "path": "a/x/b",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "foo.rs",
+    "matched": true
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "bar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "foobar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "ab.rs",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "abcd.rs",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": ".rs",
+    "matched": true
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "x.test.rs",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "2",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "b",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "a{b}",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "[abc]",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "a",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "c",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "*.rs",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "a[",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "foo",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "foo.txt",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "src/x.rs",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "../x",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "a/b",
+    "matched": false
+  },
+  {
+    "pattern": "?(foo).rs",
+    "path": "a/x/b",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "foo.rs",
+    "matched": true
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "bar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "foobar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "ab.rs",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "abcd.rs",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": ".rs",
+    "matched": true
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "x.test.rs",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "2",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "b",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "a{b}",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "[abc]",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "a",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "c",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "*.rs",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "a[",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "foo",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "foo.txt",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "src/x.rs",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "../x",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "a/b",
+    "matched": false
+  },
+  {
+    "pattern": "*(foo).rs",
+    "path": "a/x/b",
+    "matched": false
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "foo.rs",
+    "matched": true
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "bar.rs",
+    "matched": true
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "foobar.rs",
+    "matched": true
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "ab.rs",
+    "matched": true
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "abcd.rs",
+    "matched": true
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": ".rs",
+    "matched": true
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "x.test.rs",
+    "matched": false
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "2",
+    "matched": true
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "b",
+    "matched": true
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "a{b}",
+    "matched": true
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "[abc]",
+    "matched": true
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "a",
+    "matched": true
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "c",
+    "matched": true
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "*.rs",
+    "matched": true
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "a[",
+    "matched": true
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "foo",
+    "matched": true
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "foo.txt",
+    "matched": true
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "src/x.rs",
+    "matched": true
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "../x",
+    "matched": false
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "a/b",
+    "matched": true
+  },
+  {
+    "pattern": "!(*.test).rs",
+    "path": "a/x/b",
+    "matched": true
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "foo.rs",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "bar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "foobar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "ab.rs",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "abcd.rs",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": ".rs",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "x.test.rs",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "2",
+    "matched": true
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "b",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "a{b}",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "[abc]",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "a",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "c",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "*.rs",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "a[",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "foo",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "foo.txt",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "src/x.rs",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "../x",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "a/b",
+    "matched": false
+  },
+  {
+    "pattern": "{1..3}",
+    "path": "a/x/b",
+    "matched": false
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "foo.rs",
+    "matched": false
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "bar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "foobar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "ab.rs",
+    "matched": false
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "abcd.rs",
+    "matched": false
+  },
+  {
+    "pattern": "{a..c}",
+    "path": ".rs",
+    "matched": false
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "x.test.rs",
+    "matched": false
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "2",
+    "matched": false
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "b",
+    "matched": true
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "a{b}",
+    "matched": false
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "[abc]",
+    "matched": false
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "a",
+    "matched": true
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "c",
+    "matched": true
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "*.rs",
+    "matched": false
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "a[",
+    "matched": false
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "foo",
+    "matched": false
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "foo.txt",
+    "matched": false
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "src/x.rs",
+    "matched": false
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "../x",
+    "matched": false
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "a/b",
+    "matched": false
+  },
+  {
+    "pattern": "{a..c}",
+    "path": "a/x/b",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "foo.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "bar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "foobar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "ab.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "abcd.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": ".rs",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "x.test.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "2",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "b",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "a{b}",
+    "matched": true
+  },
+  {
+    "pattern": "a{b}",
+    "path": "[abc]",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "a",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "c",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "*.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "a[",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "foo",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "foo.txt",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "src/x.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "../x",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "a/b",
+    "matched": false
+  },
+  {
+    "pattern": "a{b}",
+    "path": "a/x/b",
+    "matched": false
+  },
+  {
+    "pattern": "[abc]",
+    "path": "foo.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[abc]",
+    "path": "bar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[abc]",
+    "path": "foobar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[abc]",
+    "path": "ab.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[abc]",
+    "path": "abcd.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[abc]",
+    "path": ".rs",
+    "matched": false
+  },
+  {
+    "pattern": "[abc]",
+    "path": "x.test.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[abc]",
+    "path": "2",
+    "matched": false
+  },
+  {
+    "pattern": "[abc]",
+    "path": "b",
+    "matched": true
+  },
+  {
+    "pattern": "[abc]",
+    "path": "a{b}",
+    "matched": false
+  },
+  {
+    "pattern": "[abc]",
+    "path": "[abc]",
+    "matched": true
+  },
+  {
+    "pattern": "[abc]",
+    "path": "a",
+    "matched": true
+  },
+  {
+    "pattern": "[abc]",
+    "path": "c",
+    "matched": true
+  },
+  {
+    "pattern": "[abc]",
+    "path": "*.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[abc]",
+    "path": "a[",
+    "matched": false
+  },
+  {
+    "pattern": "[abc]",
+    "path": "foo",
+    "matched": false
+  },
+  {
+    "pattern": "[abc]",
+    "path": "foo.txt",
+    "matched": false
+  },
+  {
+    "pattern": "[abc]",
+    "path": "src/x.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[abc]",
+    "path": "../x",
+    "matched": false
+  },
+  {
+    "pattern": "[abc]",
+    "path": "a/b",
+    "matched": false
+  },
+  {
+    "pattern": "[abc]",
+    "path": "a/x/b",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "foo.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "bar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "foobar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "ab.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "abcd.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": ".rs",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "x.test.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "2",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "b",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "a{b}",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "[abc]",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "a",
+    "matched": true
+  },
+  {
+    "pattern": "[!a]",
+    "path": "c",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "*.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "a[",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "foo",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "foo.txt",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "src/x.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "../x",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "a/b",
+    "matched": false
+  },
+  {
+    "pattern": "[!a]",
+    "path": "a/x/b",
+    "matched": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "foo.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "bar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "foobar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "ab.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "abcd.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": ".rs",
+    "matched": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "x.test.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "2",
+    "matched": true
+  },
+  {
+    "pattern": "[^a]",
+    "path": "b",
+    "matched": true
+  },
+  {
+    "pattern": "[^a]",
+    "path": "a{b}",
+    "matched": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "[abc]",
+    "matched": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "a",
+    "matched": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "c",
+    "matched": true
+  },
+  {
+    "pattern": "[^a]",
+    "path": "*.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "a[",
+    "matched": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "foo",
+    "matched": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "foo.txt",
+    "matched": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "src/x.rs",
+    "matched": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "../x",
+    "matched": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "a/b",
+    "matched": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "a/x/b",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "foo.rs",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "bar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "foobar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "ab.rs",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "abcd.rs",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": ".rs",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "x.test.rs",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "2",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "b",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "a{b}",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "[abc]",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "a",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "c",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "*.rs",
+    "matched": true
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "a[",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "foo",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "foo.txt",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "src/x.rs",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "../x",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "a/b",
+    "matched": false
+  },
+  {
+    "pattern": "\"*.rs\"",
+    "path": "a/x/b",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "foo.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "bar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "foobar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "ab.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "abcd.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": ".rs",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "x.test.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "2",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "b",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "a{b}",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "[abc]",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "a",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "c",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "*.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "a[",
+    "matched": true
+  },
+  {
+    "pattern": "a[",
+    "path": "foo",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "foo.txt",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "src/x.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "../x",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "a/b",
+    "matched": false
+  },
+  {
+    "pattern": "a[",
+    "path": "a/x/b",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "foo.rs",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "bar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "foobar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "ab.rs",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "abcd.rs",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": ".rs",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "x.test.rs",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "2",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "b",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "a{b}",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "[abc]",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "a",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "c",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "*.rs",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "a[",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "foo",
+    "matched": true
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "foo.txt",
+    "matched": true
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "src/x.rs",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "../x",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "a/b",
+    "matched": false
+  },
+  {
+    "pattern": "foo{,.txt}",
+    "path": "a/x/b",
+    "matched": false
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "foo.rs",
+    "matched": true
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "bar.rs",
+    "matched": true
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "foobar.rs",
+    "matched": true
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "ab.rs",
+    "matched": true
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "abcd.rs",
+    "matched": true
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": ".rs",
+    "matched": true
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "x.test.rs",
+    "matched": true
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "2",
+    "matched": false
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "b",
+    "matched": false
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "a{b}",
+    "matched": false
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "[abc]",
+    "matched": false
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "a",
+    "matched": false
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "c",
+    "matched": false
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "*.rs",
+    "matched": true
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "a[",
+    "matched": false
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "foo",
+    "matched": false
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "foo.txt",
+    "matched": false
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "src/x.rs",
+    "matched": true
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "../x",
+    "matched": false
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "a/b",
+    "matched": false
+  },
+  {
+    "pattern": "**/*.rs",
+    "path": "a/x/b",
+    "matched": false
+  },
+  {
+    "pattern": "**",
+    "path": "foo.rs",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": "bar.rs",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": "foobar.rs",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": "ab.rs",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": "abcd.rs",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": ".rs",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": "x.test.rs",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": "2",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": "b",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": "a{b}",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": "[abc]",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": "a",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": "c",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": "*.rs",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": "a[",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": "foo",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": "foo.txt",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": "src/x.rs",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": "../x",
+    "matched": false
+  },
+  {
+    "pattern": "**",
+    "path": "a/b",
+    "matched": true
+  },
+  {
+    "pattern": "**",
+    "path": "a/x/b",
+    "matched": true
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "foo.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "bar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "foobar.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "ab.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "abcd.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": ".rs",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "x.test.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "2",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "b",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "a{b}",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "[abc]",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "a",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "c",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "*.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "a[",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "foo",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "foo.txt",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "src/x.rs",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "../x",
+    "matched": false
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "a/b",
+    "matched": true
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "a/x/b",
+    "matched": true
+  }
+]

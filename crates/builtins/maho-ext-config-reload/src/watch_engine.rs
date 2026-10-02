@@ -1,11 +1,21 @@
 use std::{collections::{BTreeMap, BTreeSet}, path::{Path, PathBuf}, sync::Arc};
 use sha2::{Digest, Sha256};
+use futures::{FutureExt, future::{BoxFuture, Shared}};
 use super::watch_event_source::{FsWatchEventSource, WatchErrorListener, WatchSubscription};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum WatchKind { Dir, DirRecursive }
 pub type WatchFilter = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
 pub type HashFile = Arc<dyn Fn(&Path) -> Result<String, std::io::Error> + Send + Sync>;
+pub trait WatchClock: Send + Sync {
+    fn now(&self) -> tokio::time::Instant;
+    fn sleep_until(&self, deadline: tokio::time::Instant) -> BoxFuture<'static, ()>;
+}
+struct TokioWatchClock;
+impl WatchClock for TokioWatchClock {
+    fn now(&self) -> tokio::time::Instant { tokio::time::Instant::now() }
+    fn sleep_until(&self, deadline: tokio::time::Instant) -> BoxFuture<'static, ()> { Box::pin(tokio::time::sleep_until(deadline)) }
+}
 pub fn normalize_relative_path(filename: &Path) -> Option<PathBuf> {
     if filename.is_absolute() { return None; }
     let mut normalized = PathBuf::new();
@@ -25,7 +35,7 @@ pub struct RealChange { pub changed_paths: Vec<PathBuf>, pub created: Vec<PathBu
 #[derive(Default)]
 struct ScanResult { hashes: BTreeMap<PathBuf, String>, allowed_directories: BTreeSet<PathBuf>, scanned_directories: BTreeSet<PathBuf> }
 pub struct ConfigReloadWatchEngine { targets: Vec<WatchTarget>, states: Vec<ScanResult>, closed: bool, on_error: Option<WatchErrorListener>, hash_file: HashFile }
-pub struct NativeWatchEngine { pub engine: ConfigReloadWatchEngine, subscriptions: BTreeMap<PathBuf, WatchSubscription>, receiver: std::sync::mpsc::Receiver<Option<PathBuf>>, sender: std::sync::mpsc::Sender<Option<PathBuf>>, on_error: WatchErrorListener, debounce: std::time::Duration, signal: Arc<tokio::sync::Notify>, source: FsWatchEventSource }
+pub struct NativeWatchEngine { pub engine: ConfigReloadWatchEngine, subscriptions: BTreeMap<PathBuf, WatchSubscription>, receiver: std::sync::mpsc::Receiver<Option<PathBuf>>, sender: std::sync::mpsc::Sender<Option<PathBuf>>, on_error: WatchErrorListener, debounce: std::time::Duration, signal: Arc<tokio::sync::Notify>, source: FsWatchEventSource, close_completion: Option<Shared<BoxFuture<'static, Result<(), String>>>>, clock: Arc<dyn WatchClock> }
 impl NativeWatchEngine {
     pub fn new(targets: Vec<WatchTarget>, on_error: WatchErrorListener) -> Result<Self, String> {
         Self::with_debounce(targets, on_error, std::time::Duration::from_millis(200))
@@ -36,10 +46,11 @@ impl NativeWatchEngine {
     pub fn with_source(targets: Vec<WatchTarget>, on_error: WatchErrorListener, debounce: std::time::Duration, source: FsWatchEventSource) -> Result<Self, String> {
         let engine = ConfigReloadWatchEngine::with_error_listener(targets, Arc::clone(&on_error)).map_err(|error| error.to_string())?;
         let (sender, receiver) = std::sync::mpsc::channel();
-        let mut state = Self { engine, subscriptions: BTreeMap::new(), receiver, sender, on_error, debounce, signal: Arc::new(tokio::sync::Notify::new()), source };
+        let mut state = Self { engine, subscriptions: BTreeMap::new(), receiver, sender, on_error, debounce, signal: Arc::new(tokio::sync::Notify::new()), source, close_completion: None, clock: Arc::new(TokioWatchClock) };
         state.reconcile()?;
         Ok(state)
     }
+    pub fn set_clock(&mut self, clock: Arc<dyn WatchClock>) { self.clock = clock; }
     fn reconcile(&mut self) -> Result<(), String> {
         let wanted = self.engine.watched_directories();
         let removed: Vec<_> = self.subscriptions.keys().filter(|path| !wanted.contains(*path)).cloned().collect();
@@ -98,16 +109,16 @@ impl NativeWatchEngine {
             };
             let mut full = first.is_none();
             let mut affected: BTreeSet<_> = first.into_iter().collect();
-            let mut deadline = tokio::time::Instant::now() + self.debounce;
+            let mut deadline = self.clock.now() + self.debounce;
             loop {
                 let notified = self.signal.notified();
                 tokio::pin!(notified);
                 notified.as_mut().enable();
                 let mut received = false;
                 while let Ok(path) = self.receiver.try_recv() { full |= path.is_none(); affected.extend(path); received = true; }
-                if received { deadline = tokio::time::Instant::now() + self.debounce; }
+                if received { deadline = self.clock.now() + self.debounce; }
                 tokio::select! {
-                    () = tokio::time::sleep_until(deadline) => break,
+                    () = self.clock.sleep_until(deadline) => break,
                     () = &mut notified => {},
                 }
             }
@@ -123,13 +134,16 @@ impl NativeWatchEngine {
         if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
     }
     pub fn close_async(&mut self) -> impl std::future::Future<Output = Result<(), String>> + Send + 'static + use<> {
+        if let Some(completion) = &self.close_completion { return completion.clone(); }
         self.engine.close();
         let closures: Vec<_> = std::mem::take(&mut self.subscriptions).into_values().map(|mut subscription| subscription.close_async()).collect();
-        async move {
+        let completion = async move {
             let mut errors = Vec::new();
             for closure in closures { if let Err(error) = closure.await { errors.push(error); } }
             if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
-        }
+        }.boxed().shared();
+        self.close_completion = Some(completion.clone());
+        completion
     }
 }
 impl Drop for NativeWatchEngine { fn drop(&mut self) { if let Err(error) = self.close() { (self.on_error)(error, PathBuf::new()); } } }

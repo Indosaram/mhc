@@ -11,9 +11,13 @@ maho-ext-rule-activation = { path = "../maho-ext-rule-activation" }
 maho-tui = { path = "../../maho-tui" }
 serde_json.workspace = true
 globset = "=0.4.20"
+fancy-regex = "=0.16.2"
+icu_collator = { version = "=2.3.1", features = ["unstable"] }
 sha2.workspace = true
 
 [dev-dependencies]
+maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
+maho-ext-host = { path = "../../maho-ext-host" }
 tempfile.workspace = true
 tokio.workspace = true
 

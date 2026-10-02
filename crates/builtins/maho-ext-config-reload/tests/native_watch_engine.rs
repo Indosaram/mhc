@@ -1,6 +1,65 @@
 use maho_ext_config_reload::watch_engine::*;
 use std::{sync::Arc, time::Duration};
 #[tokio::test]
+async fn injected_clock_and_event_source_gate_debounce_without_wall_time() {
+    use maho_ext_config_reload::watch_event_source::{FsWatchEventSource, NativeEventCallback};
+    use std::sync::Mutex;
+    struct Clock { armed: tokio::sync::mpsc::UnboundedSender<tokio::time::Instant>, release: Arc<tokio::sync::Notify> }
+    impl WatchClock for Clock {
+        fn now(&self) -> tokio::time::Instant { tokio::time::Instant::now() }
+        fn sleep_until(&self, deadline: tokio::time::Instant) -> futures::future::BoxFuture<'static, ()> {
+            assert!(self.armed.send(deadline).is_ok());
+            let release = Arc::clone(&self.release);
+            Box::pin(async move { release.notified().await })
+        }
+    }
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let callback: Arc<Mutex<Option<NativeEventCallback>>> = Arc::default();
+    let registered = Arc::clone(&callback);
+    let source = FsWatchEventSource::with_factory(Arc::new(move |_, _, listener| {
+        *registered.lock().unwrap() = Some(listener);
+        Ok(Box::new(()))
+    }));
+    let mut engine = NativeWatchEngine::with_source(vec![WatchTarget { id: "fixture".into(), kind: WatchKind::Dir, path: root.path().into(), allow_list: None, filter: None }], Arc::new(|error, _| panic!("{error}")), Duration::from_secs(100), source).unwrap();
+    let (armed, mut timer) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Notify::new());
+    engine.set_clock(Arc::new(Clock { armed, release: Arc::clone(&release) }));
+    let path = root.path().join("settings.json");
+    std::fs::write(&path, "{}").unwrap();
+    {
+        let mut callback = callback.lock().expect("watch callback mutex must remain unpoisoned");
+        let listener = callback.as_mut().expect("watch factory must register the callback");
+        listener(Ok(notify::Event::new(notify::EventKind::Any).add_path(path.clone())));
+    }
+    // When
+    let change = engine.next_change_async();
+    tokio::pin!(change);
+    tokio::select! {
+        result = &mut change => panic!("debounce returned before clock release: {}", result.is_ok()),
+        timer = timer.recv() => assert!(timer.is_some()),
+    }
+    release.notify_one();
+    let actual = tokio::time::timeout(Duration::from_secs(5), &mut change).await.unwrap().unwrap();
+    // Then
+    assert_eq!(actual.created, [path]);
+}
+
+#[tokio::test]
+async fn repeated_close_joins_the_original_pending_disposal() {
+    // Given
+    let root = tempfile::tempdir().unwrap();
+    let mut engine = NativeWatchEngine::with_source(vec![WatchTarget { id: "fixture".into(), kind: WatchKind::Dir, path: root.path().into(), allow_list: None, filter: None }], Arc::new(|error, _| panic!("{error}")), Duration::ZERO, maho_ext_config_reload::watch_event_source::FsWatchEventSource::default()).unwrap();
+    let first = engine.close_async();
+    // When
+    let repeated = engine.close_async();
+    tokio::time::timeout(Duration::from_secs(5), repeated).await.unwrap().unwrap();
+    // Then
+    use futures::FutureExt;
+    assert_eq!(first.now_or_never(), Some(Ok(())));
+}
+
+#[tokio::test]
 async fn async_native_events_use_signal_without_polling() {
     let root = tempfile::tempdir().unwrap();
     let mut engine = NativeWatchEngine::with_source(vec![WatchTarget { id: "fixture".into(), kind: WatchKind::DirRecursive, path: root.path().into(), allow_list: None, filter: None }], Arc::new(|error, _| panic!("{error}")), Duration::ZERO, maho_ext_config_reload::watch_event_source::FsWatchEventSource::default()).unwrap();

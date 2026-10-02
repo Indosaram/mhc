@@ -53,3 +53,12 @@ fn numeric_fields_use_javascript_integer_and_zero_spelling() {
     let values: Vec<serde_json::Value> = fs::read_to_string(root.path().join("logs/config-reload.log")).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
     assert_eq!(values.iter().map(|entry| entry["targetCount"].as_i64()).collect::<Vec<_>>(), [Some(2), Some(0), Some(0)]);
 }
+#[test]
+fn numeric_fields_use_javascript_exponent_thresholds() {
+    let root = tempfile::tempdir().unwrap();
+    let mut logger = ConfigReloadLogger::new(root.path(), None).unwrap();
+    for target_count in [1e20, 1e21, 1e-7] { logger.log(LogLevel::Info, LogEvent::WatcherStarted { target_count }); }
+    let text = fs::read_to_string(root.path().join("logs/config-reload.log")).unwrap();
+    let numbers: Vec<_> = text.lines().map(|line| line.split("\"targetCount\":").nth(1).unwrap().trim_end_matches('}')).collect();
+    assert_eq!(numbers, ["100000000000000000000", "1e+21", "1e-7"]);
+}

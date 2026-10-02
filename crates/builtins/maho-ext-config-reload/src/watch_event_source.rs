@@ -1,23 +1,34 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, Ordering}, mpsc}, thread};
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Event, RecursiveMode, Watcher};
+use futures::{FutureExt, future::{BoxFuture, Shared}};
 
 pub type WatchEventListener = Arc<dyn Fn(&str, Option<PathBuf>) + Send + Sync>;
 pub type WatchErrorListener = Arc<dyn Fn(String, PathBuf) + Send + Sync>;
+pub type NativeEventCallback = Box<dyn FnMut(notify::Result<Event>) + Send>;
+pub type WatcherFactory = Arc<dyn Fn(&std::path::Path, bool, NativeEventCallback) -> notify::Result<Box<dyn Send>> + Send + Sync>;
+#[derive(Clone)]
 struct Subscription { path: PathBuf, recursive: bool, active: Arc<AtomicBool>, listener: WatchEventListener, on_error: WatchErrorListener }
 enum Command { Watch(u64, Subscription), Unwatch(u64), Event(u64, notify::Result<Event>), Barrier(mpsc::Sender<()>), Shutdown }
 struct Worker { sender: mpsc::Sender<Command>, join: thread::JoinHandle<()> }
-#[derive(Default)]
-struct Registry { worker: Option<Worker>, count: usize, next_id: u64 }
+struct Registry { worker: Option<Worker>, count: usize, next_id: u64, factory: WatcherFactory }
+impl Default for Registry {
+    fn default() -> Self { Self { worker: None, count: 0, next_id: 0, factory: Arc::new(|path, recursive, callback| {
+        let mut watcher = notify::recommended_watcher(callback)?;
+        watcher.watch(path, if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive })?;
+        Ok(Box::new(watcher))
+    }) } }
+}
 static REGISTRY: OnceLock<Arc<Mutex<Registry>>> = OnceLock::new();
 #[derive(Clone, Default)]
 pub struct FsWatchEventSource { registry: Arc<Mutex<Registry>> }
 impl FsWatchEventSource {
+    pub fn with_factory(factory: WatcherFactory) -> Self { Self { registry: Arc::new(Mutex::new(Registry { factory, ..Default::default() })) } }
     pub fn shared() -> Self { Self { registry: Arc::clone(REGISTRY.get_or_init(|| Arc::new(Mutex::default()))) } }
     pub fn subscribe(&self, path: PathBuf, recursive: bool, listener: WatchEventListener, on_error: WatchErrorListener) -> Result<WatchSubscription, String> {
         subscribe_in(Arc::clone(&self.registry), path, recursive, listener, on_error)
     }
 }
-pub struct WatchSubscription { id: u64, active: Arc<AtomicBool>, closed: bool, registry: Arc<Mutex<Registry>> }
+pub struct WatchSubscription { id: u64, active: Arc<AtomicBool>, closed: bool, registry: Arc<Mutex<Registry>>, close_completion: Option<Shared<BoxFuture<'static, Result<(), String>>>> }
 impl WatchSubscription {
     pub fn ready(&self) -> Result<(), String> {
         let (sender, receiver) = mpsc::channel();
@@ -31,13 +42,16 @@ impl WatchSubscription {
         Ok(())
     }
     pub fn close_async(&mut self) -> impl std::future::Future<Output = Result<(), String>> + Send + 'static + use<> {
+        if let Some(completion) = &self.close_completion { return completion.clone(); }
         let worker = self.cancel();
-        async move {
+        let completion = async move {
             if let Some(worker) = worker? {
                 tokio::task::spawn_blocking(move || worker.join.join().map_err(|_| "Config watcher teardown failed".to_owned())).await.map_err(|error| error.to_string())??;
             }
             Ok(())
-        }
+        }.boxed().shared();
+        self.close_completion = Some(completion.clone());
+        completion
     }
     fn cancel(&mut self) -> Result<Option<Worker>, String> {
         if self.closed { return Ok(None); }
@@ -64,7 +78,8 @@ fn subscribe_in(owner: Arc<Mutex<Registry>>, path: PathBuf, recursive: bool, lis
     if registry.worker.is_none() {
         let (sender, receiver) = mpsc::channel();
         let event_sender = sender.clone();
-        let join = thread::Builder::new().name("config-watch".into()).spawn(move || run_worker(receiver, event_sender)).map_err(|error| error.to_string())?;
+        let factory = Arc::clone(&registry.factory);
+        let join = thread::Builder::new().name("config-watch".into()).spawn(move || run_worker_with_factory(receiver, event_sender, factory)).map_err(|error| error.to_string())?;
         registry.worker = Some(Worker { sender, join });
     }
     registry.next_id += 1;
@@ -74,27 +89,33 @@ fn subscribe_in(owner: Arc<Mutex<Registry>>, path: PathBuf, recursive: bool, lis
     if let Some(worker) = &registry.worker { worker.sender.send(Command::Watch(id, subscription)).map_err(|error| error.to_string())?; }
     registry.count += 1;
     drop(registry);
-    Ok(WatchSubscription { id, active, closed: false, registry: owner })
+    Ok(WatchSubscription { id, active, closed: false, registry: owner, close_completion: None })
 }
+#[cfg(test)]
 fn run_worker(receiver: mpsc::Receiver<Command>, sender: mpsc::Sender<Command>) {
-    let mut subscriptions: BTreeMap<u64, (Subscription, RecommendedWatcher)> = BTreeMap::new();
+    run_worker_with_factory(receiver, sender, Registry::default().factory);
+}
+fn run_worker_with_factory(receiver: mpsc::Receiver<Command>, sender: mpsc::Sender<Command>, factory: WatcherFactory) {
+    let mut subscriptions: BTreeMap<u64, (Subscription, Box<dyn Send>)> = BTreeMap::new();
     while let Ok(command) = receiver.recv() {
+        let shutdown = matches!(command, Command::Shutdown);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         match command {
-            Command::Shutdown => break,
+            Command::Shutdown => {},
             Command::Barrier(sender) => { let _ = sender.send(()); },
             Command::Unwatch(id) => { subscriptions.remove(&id); },
             Command::Watch(id, subscription) => {
-                if !subscription.active.load(Ordering::SeqCst) { continue; }
+                if !subscription.active.load(Ordering::SeqCst) { return; }
                 let sender = sender.clone();
-                let watcher = notify::recommended_watcher(move |event| { let _ = sender.send(Command::Event(id, event)); });
-                match watcher.and_then(|mut watcher| { watcher.watch(&subscription.path, if subscription.recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive })?; Ok(watcher) }) {
+                let watcher = factory(&subscription.path, subscription.recursive, Box::new(move |event| { let _ = sender.send(Command::Event(id, event)); }));
+                match watcher {
                     Ok(watcher) => { if subscription.active.load(Ordering::SeqCst) { subscriptions.insert(id, (subscription, watcher)); } },
                     Err(error) => (subscription.on_error)(error.to_string(), subscription.path),
                 }
             },
             Command::Event(id, event) => {
                 if let Some((subscription, _)) = subscriptions.get(&id) {
-                    if !subscription.active.load(Ordering::SeqCst) { continue; }
+                    if !subscription.active.load(Ordering::SeqCst) { return; }
                     match &event {
                         Err(error) => (subscription.on_error)(error.to_string(), subscription.path.clone()),
                         Ok(event) => {
@@ -108,6 +129,21 @@ fn run_worker(receiver: mpsc::Receiver<Command>, sender: mpsc::Sender<Command>) 
                     }
                 }
             },
+        }
+        }));
+        if shutdown { break; }
+        if result.is_err() {
+            let surviving: Vec<_> = subscriptions.iter().map(|(id, (subscription, _))| (*id, subscription.clone())).collect();
+            subscriptions.clear();
+            for (id, subscription) in surviving {
+                if !subscription.active.load(Ordering::SeqCst) { continue; }
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (subscription.on_error)("Config watcher worker crashed".into(), subscription.path.clone())));
+                let sender = sender.clone();
+                match factory(&subscription.path, subscription.recursive, Box::new(move |event| { let _ = sender.send(Command::Event(id, event)); })) {
+                    Ok(watcher) => { subscriptions.insert(id, (subscription, watcher)); },
+                    Err(error) => (subscription.on_error)(error.to_string(), subscription.path),
+                }
+            }
         }
     }
 }
