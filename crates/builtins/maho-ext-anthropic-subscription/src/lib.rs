@@ -30,3 +30,4 @@ pub mod auth_lane;
 pub mod auth_attempt;
 pub mod options;
 pub mod prompt_append;
+pub mod custom_tools;
