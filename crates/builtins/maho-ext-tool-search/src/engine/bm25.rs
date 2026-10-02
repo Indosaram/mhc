@@ -120,4 +120,13 @@ mod tests {
     #[test] fn plural_stems() { assert_eq!(stem_token("libraries"),"library"); assert_eq!(stem_token("messages"),"message"); assert_eq!(stem_token("status"),"status"); assert_eq!(stem_token("class"),"class"); }
     #[test] fn precision_drops_incidental_terms() { let mut a=doc("full"); a.description=Some("search weather forecast city".into()); let mut b=doc("partial"); b.description=Some("search".into()); let r=build_bm25_index(&[a,b]).search("search weather forecast city",25,&Bm25SearchOptions { precision:Some(DEFAULT_BM25_PRECISION), ..Default::default() }); assert_eq!(r.len(),1); }
     #[test] fn zero_limit() { assert!(build_bm25_index(&[doc("search")]).search("search",0,&Default::default()).is_empty()); }
+    #[test] fn upstream_group_and_owner_weights_exceed_description() {
+        let mut documents=Vec::new();
+        for (name,field) in [("description_candidate",0),("group_candidate",1),("owner_candidate",2)] {
+            let mut document=doc(name);document.label="plain".into();document.group="plain".into();document.owner_label="plain".into();document.description=Some("plain".into());
+            match field {0=>document.description=Some("routing".into()),1=>document.group="routing".into(),_=>document.owner_label="routing".into()};documents.push(document);
+        }
+        let results=build_bm25_index(&documents).search("routing",10,&Bm25SearchOptions{exact_match:Some(false),..Default::default()});
+        assert_eq!(results.iter().map(|result|result.name.as_str()).collect::<Vec<_>>(),["group_candidate","owner_candidate","description_candidate"]);assert_eq!(results[0].score,results[1].score);assert!(results[1].score>results[2].score);
+    }
 }
