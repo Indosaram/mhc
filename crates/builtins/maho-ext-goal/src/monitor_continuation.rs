@@ -23,7 +23,11 @@ pub struct MonitorAwareGoalContinuation {
     pub toolless_continuation_streak:u64,
     toolless_streak_goal_id:Option<String>,
     pub consecutive_length_recoveries:BTreeMap<String,u64>,
+    pending_system_recovery:Option<PendingGoalRecovery>,
+    pending_provider_recovery:Option<PendingGoalRecovery>,
 }
+#[derive(Clone)]
+pub struct PendingGoalRecovery { pub context:maho_ext_api::ExtensionContext,pub goal:crate::types::Goal,pub event:maho_core::agent_abort_provenance::AgentEndEvent }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum WakeSourceChange { Drained,QuestionDeadlineChanged,CountsChanged }
 pub struct DueGoalContinuation { pub goal:crate::types::Goal,pub path:crate::continuation::GoalContinuationPath,pub schedule:Option<crate::cache_warm::GoalCacheWarmScheduleData>,pub waited_ms:f64,pub drain_fire:bool }
@@ -42,6 +46,22 @@ pub fn publish_monitor_resume(api:&maho_ext_api::ExtensionApi,due:&DueGoalContin
     api.events.emit(GOAL_CONTINUATION_RESUMED_EVENT,&data); data["phase"]="resumed".into(); api.append_entry(crate::cache_warm::GOAL_CACHE_WARMUP_ENTRY_TYPE,Some(data))
 }
 impl MonitorAwareGoalContinuation {
+    pub fn after_provider_failure(&mut self,context:&maho_ext_api::ExtensionContext,goal:Option<&crate::types::Goal>,event:&maho_core::agent_abort_provenance::AgentEndEvent) {
+        self.note_continuation_started(); self.pending_provider_recovery=None; self.sync_goal(goal);
+        if let Some(goal)=goal.filter(|goal|goal.status==crate::types::GoalStatus::Active)&&!event.will_retry { self.pending_provider_recovery=Some(PendingGoalRecovery { context:context.clone(),goal:goal.clone(),event:event.clone() }); }
+    }
+    pub fn after_system_abort(&mut self,context:&maho_ext_api::ExtensionContext,goal:Option<&crate::types::Goal>,event:&maho_core::agent_abort_provenance::AgentEndEvent,now:f64,backstop_seconds:f64,question_idle_ms:f64)->Option<crate::cache_warm::GoalCacheWarmScheduleData> {
+        self.note_continuation_started(); self.pending_system_recovery=None; self.sync_goal(goal);
+        let goal=goal.filter(|goal|goal.status==crate::types::GoalStatus::Active)?;
+        if event.will_retry { return None; }
+        if self.has_active_wake_sources() { return self.rearm_monitor_backstop(goal,None,now,backstop_seconds,question_idle_ms,None); }
+        if crate::last_assistant_message::last_assistant_message(&event.messages).is_some_and(|message|message.stop_reason==maho_ai::types::StopReason::Error) { self.pending_system_recovery=Some(PendingGoalRecovery { context:context.clone(),goal:goal.clone(),event:event.clone() }); }
+        None
+    }
+    pub fn take_settled_recovery(&mut self)->Option<(crate::continuation::GoalContinuationPath,PendingGoalRecovery)> {
+        let system=self.pending_system_recovery.take(); let provider=self.pending_provider_recovery.take();
+        system.filter(|pending|pending.event.abort_source!=Some(maho_ext_api::AbortSource::User)).map(|pending|(crate::continuation::GoalContinuationPath::SystemRecovery,pending)).or_else(||provider.filter(|pending|pending.event.abort_source!=Some(maho_ext_api::AbortSource::User)).map(|pending|(crate::continuation::GoalContinuationPath::ProviderRecovery,pending)))
+    }
     pub fn take_due_continuation(&mut self,now:f64,idle:bool,pending_messages:bool)->Option<DueGoalContinuation> {
         let timer=self.armed_timer?;
         if now<timer.due_at_ms { return None; }
@@ -55,7 +75,7 @@ impl MonitorAwareGoalContinuation {
     pub fn sync_goal(&mut self,goal:Option<&crate::types::Goal>) {
         if goal.map(|goal|goal.id.as_str())!=self.goal.as_ref().map(|goal|goal.id.as_str()) { self.reset_continuation_state(); }
         self.goal=goal.cloned();
-        if !goal.is_some_and(|goal|goal.status==crate::types::GoalStatus::Active) { self.armed_timer=None; self.held_timer=None; self.scheduled_cache=None; self.reset_continuation_state(); }
+        if !goal.is_some_and(|goal|goal.status==crate::types::GoalStatus::Active) { self.armed_timer=None; self.held_timer=None; self.scheduled_cache=None; self.pending_system_recovery=None; self.pending_provider_recovery=None; self.reset_continuation_state(); }
     }
     pub fn rearm_monitor_backstop(&mut self,goal:&crate::types::Goal,parked:Option<&crate::parked_wait::ParkedGoalWait>,now:f64,backstop_seconds:f64,question_idle_ms:f64,cache:Option<crate::cache_warm::GoalCacheWarmMetrics>)->Option<crate::cache_warm::GoalCacheWarmScheduleData> {
         if goal.status!=crate::types::GoalStatus::Active||!self.has_active_wake_sources()||self.armed_timer.is_some()||self.held_timer.is_some() { return None; }
@@ -100,7 +120,7 @@ impl MonitorAwareGoalContinuation {
         if self.ended_turn_was_user_initiated { return; }
         if turn_used_tools { self.toolless_continuation_streak=0; } else { self.toolless_continuation_streak+=1; }
     }
-    pub fn reset_continuation_state(&mut self) { self.consecutive_length_recoveries.clear(); self.recent_normalized_output_hashes.clear(); self.toolless_continuation_streak=0; self.toolless_streak_goal_id=None; }
+    pub fn reset_continuation_state(&mut self) { self.pending_system_recovery=None; self.pending_provider_recovery=None; self.cache_warm_iteration=0.0; self.consecutive_length_recoveries.clear(); self.recent_normalized_output_hashes.clear(); self.toolless_continuation_streak=0; self.toolless_streak_goal_id=None; }
     pub fn ask_user_wait_ms(&self,now:f64,idle_timeout_ms:f64)->Option<f64> {
         if self.wake_sources.get("ask-user").copied().unwrap_or(0.0)<=0.0 { return None; }
         let remaining=self.ask_user_deadline_at_ms.unwrap_or(0.0)-now;
@@ -127,6 +147,21 @@ impl MonitorAwareGoalContinuation {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn provider_recovery_is_staged_until_settlement_and_consumed_once() {
+        let goal:crate::types::Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap(); let context=crate::test_context::context();
+        for (will_retry,source,expected) in [(true,None,false),(false,Some(maho_ext_api::AbortSource::User),false),(false,None,true)] {
+            let event=maho_core::agent_abort_provenance::AgentEndEvent { messages:Vec::new(),will_retry,aborted:true,abort_source:source }; let mut monitor=MonitorAwareGoalContinuation::default(); monitor.after_provider_failure(&context,Some(&goal),&event);
+            let recovery=monitor.take_settled_recovery(); assert_eq!(recovery.is_some(),expected); if let Some((path,pending))=recovery { assert_eq!(path,crate::continuation::GoalContinuationPath::ProviderRecovery); assert_eq!(pending.goal,goal); assert_eq!(pending.event,event); } assert!(monitor.take_settled_recovery().is_none());
+        }
+    }
+    #[test] fn system_recovery_requires_error_and_reset_discards_staged_recovery() {
+        let goal:crate::types::Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap(); let context=crate::test_context::context();
+        let mut assistant=maho_ai::providers::faux::faux_assistant_message("",Default::default()); assistant.stop_reason=maho_ai::types::StopReason::Error;
+        let event=maho_core::agent_abort_provenance::AgentEndEvent { messages:vec![maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(assistant)))],will_retry:false,aborted:true,abort_source:Some(maho_ext_api::AbortSource::System) };
+        let mut monitor=MonitorAwareGoalContinuation::default(); assert!(monitor.after_system_abort(&context,Some(&goal),&event,0.0,270.0,1000.0).is_none()); assert_eq!(monitor.take_settled_recovery().unwrap().0,crate::continuation::GoalContinuationPath::SystemRecovery);
+        monitor.after_provider_failure(&context,Some(&goal),&event); monitor.reset_continuation_state(); assert!(monitor.take_settled_recovery().is_none());
+        monitor.set_wake_source_count("task",1.0,&[],0.0,1000.0); assert!(monitor.after_system_abort(&context,Some(&goal),&event,0.0,270.0,1000.0).is_some()); assert!(monitor.take_settled_recovery().is_none());
+    }
     #[test] fn restored_schedule_publishes_event_without_duplicate_card() {
         use maho_ext_api::*;
         let api=ExtensionApi::new(LoadedExtension::new("goal","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
