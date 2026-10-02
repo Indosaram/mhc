@@ -21,16 +21,17 @@ pub fn normalize_globs(frontmatter:&RuleFrontmatter)->Vec<String>{
 }
 pub fn hash_content(body:&str)->String{format!("{:x}",Sha256::digest(body.as_bytes()))}
 fn normalize_literal_braces(pattern:&str)->String{
-    let mut stack:Vec<(usize,bool)>=Vec::new();let mut literal=Vec::new();let mut in_class=false;
+    let mut stack:Vec<(usize,bool)>=Vec::new();let mut literal=Vec::new();let mut ranges=Vec::new();let mut in_class=false;
     for (index,value) in pattern.char_indices(){match value{
         '['=>in_class=true,']'=>in_class=false,
         '{' if !in_class=>stack.push((index,false)),
         ',' if !in_class=>{if let Some((_,alternate))=stack.last_mut(){*alternate=true;}},
-        '}' if !in_class=>{if let Some((start,alternate))=stack.pop(){if !alternate&&!pattern[start+1..index].contains(".."){literal.extend([start,index]);}}else{literal.push(index);}},
+        '}' if !in_class=>{if let Some((start,alternate))=stack.pop(){let inner=&pattern[start+1..index];if !alternate&&!inner.contains(".."){literal.extend([start,index]);}else if !alternate{let mut bounds=inner.split("..").collect::<Vec<_>>();if bounds.len()==2&&bounds.iter().all(|bound|bound.len()==1&&bound.bytes().all(|byte|byte.is_ascii_alphanumeric())){bounds.sort_unstable();ranges.push((start,index,format!("[{}-{}]",bounds[0],bounds[1])));}}}else{literal.push(index);}},
         _=>{}
     }}
     literal.extend(stack.into_iter().map(|(index,_)|index));
-    let mut result=String::new();for (index,value) in pattern.char_indices(){if literal.contains(&index){result.push('[');result.push(value);result.push(']');}else{result.push(value);}}result
+    let mut result=String::new();let mut skip_until=0;for (index,value) in pattern.char_indices(){if index<skip_until{continue;}
+        if let Some((_,end,replacement))=ranges.iter().find(|(start,_,_)|*start==index){result.push_str(replacement);skip_until=end+1;}else if literal.contains(&index){result.push('[');result.push(value);result.push(']');}else{result.push(value);}}result
 }
 impl Matcher {
     pub fn reset_cache(&mut self){self.sets.clear();}
