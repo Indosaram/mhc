@@ -2389,6 +2389,12 @@ impl AgentSession {
 
     pub(crate) async fn runtime_shutdown(&self, reason: maho_ext_api::SessionReason) { self.emit_session_shutdown(reason).await; }
 
+    pub(crate) async fn runtime_before_fork(&self, entry_id: &str, include_entry: bool) -> Result<bool, String> {
+        Ok(self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeFork {
+            entry_id: entry_id.to_owned(), position: if include_entry { maho_ext_api::ForkPosition::At } else { maho_ext_api::ForkPosition::Before },
+        }).await?.cancel == Some(true))
+    }
+
     fn rebuild_session_context(&self) -> Result<(), String> {
         let context = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
         let messages = context.messages.into_iter().map(session_message_from_value).collect::<Result<_, _>>()

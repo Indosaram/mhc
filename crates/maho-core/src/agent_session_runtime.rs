@@ -173,6 +173,70 @@ impl AgentSessionRuntime {
         reason: maho_ext_api::SessionReason) -> Result<bool, String>
     {
         if self.session.runtime_before_switch(reason, manager.session_file().map(str::to_owned)).await? { return Ok(false); }
+        self.apply_replacement(manager, cwd, reason).await?;
+        Ok(true)
+    }
+
+    pub async fn fork(&mut self, entry_id: &str, include_entry: bool) -> Result<crate::agent_session::AssistantEditResult, String> {
+        let entry = self.session.with_session_manager(|manager| manager.entry(entry_id))
+            .ok_or_else(|| "Invalid entry ID for forking".to_owned())?;
+        if !include_entry && (entry["type"] != "message" || entry["message"]["role"] != "user") {
+            return Err("Invalid entry ID for forking".to_owned());
+        }
+        if self.session.runtime_before_fork(entry_id, include_entry).await? {
+            return Ok(crate::agent_session::AssistantEditResult { cancelled: true, ..Default::default() });
+        }
+        let leaf = if include_entry { Some(entry_id) } else { entry["parentId"].as_str() };
+        let previous = self.session.session_file();
+        let manager = self.session.with_session_manager(|current| {
+            let options = Some(crate::session_manager::NewSessionOptions { parent_session: previous.clone(), ..Default::default() });
+            let mut manager = if current.is_persisted() {
+                crate::session_manager::SessionManager::create(&self.services.cwd, Some(current.session_dir()), options)
+            } else { crate::session_manager::SessionManager::in_memory(&self.services.cwd, options, None) };
+            if let Some(leaf) = leaf {
+                for entry in current.branch(Some(leaf)) { manager.append_entry_raw(entry); }
+            }
+            manager
+        });
+        self.apply_replacement(manager, self.services.cwd.clone(), maho_ext_api::SessionReason::Fork).await?;
+        Ok(crate::agent_session::AssistantEditResult { editor_text: (!include_entry).then(|| extract_user_message_text(&entry["message"]["content"])),
+            ..Default::default() })
+    }
+
+    pub async fn import_from_jsonl(&mut self, input_path: &str, cwd_override: Option<&str>) -> Result<bool, String> {
+        let source = std::path::Path::new(input_path).canonicalize()
+            .map_err(|_| SessionImportFileNotFoundError { file_path: input_path.to_owned() }.to_string())?;
+        let directory = self.session.with_session_manager(|manager| manager.session_dir().to_owned());
+        std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let filename = source.file_name().ok_or("Invalid import filename")?;
+        let mut destination = std::path::Path::new(&directory).join(filename);
+        let stored = destination.canonicalize().is_ok_and(|path| path == source);
+        if !stored {
+            let stem = source.file_stem().unwrap_or_default().to_string_lossy();
+            let extension = source.extension().map(|extension| format!(".{}", extension.to_string_lossy())).unwrap_or_default();
+            let mut suffix = 1;
+            while destination.exists() {
+                destination = std::path::Path::new(&directory).join(format!("{stem}-{suffix}{extension}"));
+                suffix += 1;
+            }
+        }
+        let destination = destination.to_string_lossy().into_owned();
+        if self.session.runtime_before_switch(maho_ext_api::SessionReason::Resume, Some(destination.clone())).await? { return Ok(false); }
+        if !stored {
+            let mut input = std::fs::File::open(&source).map_err(|error| error.to_string())?;
+            let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&destination).map_err(|error| error.to_string())?;
+            std::io::copy(&mut input, &mut output).map_err(|error| error.to_string())?;
+        }
+        let manager = crate::session_manager::SessionManager::open(&destination, Some(&directory), cwd_override, None);
+        assert_session_cwd_exists(&manager, &self.services.cwd).map_err(|error| error.to_string())?;
+        let cwd = manager.cwd().to_owned();
+        self.apply_replacement(manager, cwd, maho_ext_api::SessionReason::Resume).await?;
+        Ok(true)
+    }
+
+    async fn apply_replacement(&mut self, manager: crate::session_manager::SessionManager, cwd: String,
+        reason: maho_ext_api::SessionReason) -> Result<(), String>
+    {
         let settings = crate::settings_manager::SettingsManager::create(&cwd, &self.services.agent_dir,
             &std::env::var("HOME").unwrap_or_default(), self.services.settings_manager.is_project_trusted());
         let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
@@ -195,7 +259,7 @@ impl AgentSessionRuntime {
             &std::env::var("HOME").unwrap_or_default(), self.services.settings_manager.is_project_trusted());
         self.model_fallback_message = created.model_fallback_message;
         if let Some(rebind) = &self.rebind_session { rebind(&self.session); }
-        Ok(true)
+        Ok(())
     }
 
     pub async fn dispose(&self) {
@@ -294,6 +358,22 @@ mod tests {
         assert!(!runtime.session().replacement_auto_title());
         let result = runtime.session().execute_tool("retained", serde_json::json!({}), Default::default()).await.expect("tool");
         assert_eq!(maho_ai::utils::text::content_text(&result.content, ""), "retained");
+        let entry = runtime.session().with_session_manager_mut(|manager| manager.append_message(serde_json::json!({
+            "role":"user","content":[{"type":"text","text":"selected text"}],"timestamp":0
+        })));
+        let before = runtime.fork(entry["id"].as_str().unwrap(), false).await.expect("fork before");
+        assert!(!before.cancelled);
+        assert_eq!(before.editor_text.as_deref(), Some("selected text"));
+        assert!(runtime.session().messages().is_empty());
+        let entry = runtime.session().with_session_manager_mut(|manager| manager.append_message(serde_json::json!({
+            "role":"user","content":[{"type":"text","text":"retained text"}],"timestamp":0
+        })));
+        let at = runtime.fork(entry["id"].as_str().unwrap(), true).await.expect("fork at");
+        assert!(!at.cancelled);
+        assert!(at.editor_text.is_none());
+        assert_eq!(runtime.session().messages().len(), 1);
+        assert!(runtime.session().get_tool_definition("retained").is_some());
+        assert!(runtime.import_from_jsonl("/missing-import-fixture.jsonl", None).await.unwrap_err().contains("File not found"));
     }
 
     #[test]
