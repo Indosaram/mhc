@@ -9,6 +9,23 @@ pub enum InterpreterDetection {
     Unavailable,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LanguageAvailability {
+    pub enabled: bool,
+    pub detected: InterpreterDetection,
+}
+
+pub type InterpreterAvailability = [(EvalLanguage, LanguageAvailability); 4];
+
+pub async fn get_interpreter_availability(settings: &crate::config::settings::CodemodeSettings, detector: &mut InterpreterDetector) -> InterpreterAvailability {
+    let mut availability = [(EvalLanguage::Py, settings.languages.py), (EvalLanguage::Js, settings.languages.js), (EvalLanguage::Rb, settings.languages.rb), (EvalLanguage::Jl, settings.languages.jl)]
+        .map(|(language, enabled)| (language, LanguageAvailability { enabled, detected: InterpreterDetection::Unavailable }));
+    for (language, status) in &mut availability {
+        if status.enabled { status.detected = detector.detect(*language).await; }
+    }
+    availability
+}
+
 pub fn parse_version(output: &str) -> Option<String> {
     let expression = regex::Regex::new(r"(?i)(?:Python|ruby|julia)\s+(?:version\s+)?v?(\d+(?:\.\d+){1,3})").expect("constant interpreter version regex");
     expression.captures(output.trim()).and_then(|captures| captures.get(1)).map(|capture| capture.as_str().into())

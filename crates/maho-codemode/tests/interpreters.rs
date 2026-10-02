@@ -38,3 +38,21 @@ fn ignores_non_executable_and_directories() {
     assert!(resolve_command_path("python", &env, root.path(), false).is_none());
     assert!(resolve_command_path(&root.path().to_string_lossy(), &env, root.path(), false).is_none());
 }
+
+#[tokio::test]
+async fn disabled_languages_are_unavailable_without_probing() {
+    let mut settings = maho_codemode::config::settings::CodemodeSettings::default();
+    settings.languages = maho_codemode::config::settings::Languages { py: false, js: true, rb: false, jl: false };
+    let mut detector = InterpreterDetector::new("24.1.0".into(), false);
+    let availability = get_interpreter_availability(&settings, &mut detector).await;
+    assert_eq!(availability.each_ref().map(|(language, _)| *language), [EvalLanguage::Py, EvalLanguage::Js, EvalLanguage::Rb, EvalLanguage::Jl]);
+    for (language, status) in availability {
+        if language == EvalLanguage::Js {
+            assert!(status.enabled);
+            assert_eq!(status.detected, InterpreterDetection::Detected { path: "node".into(), version: "24.1.0".into(), resolved_path: None });
+        } else {
+            assert!(!status.enabled);
+            assert_eq!(status.detected, InterpreterDetection::Unavailable);
+        }
+    }
+}
