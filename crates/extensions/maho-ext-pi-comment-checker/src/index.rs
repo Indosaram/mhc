@@ -6,7 +6,7 @@ pub struct CommentChecker { pub source_path: PathBuf }
 impl Extension for CommentChecker {
     fn register(&self, api: &mut ExtensionApi) {
         api.on(EventKind::SessionStart, Arc::new(|_, ctx| Box::pin(async move {
-            ctx.ui.set_widget("pi-comment-checker", None, Default::default());
+            crate::ui::sync_comment_checker_widget(ctx.ui.as_ref());
             Ok(EventResult::None)
         })));
         let source = self.source_path.clone();
@@ -23,7 +23,7 @@ impl Extension for CommentChecker {
                     let result = run_checker(&input, binary.as_deref()).await;
                     match result.status {
                         RunStatus::Missing | RunStatus::Error => {
-                            ctx.ui.set_widget("pi-comment-checker", None, Default::default());
+                            crate::ui::sync_comment_checker_widget(ctx.ui.as_ref());
                             return Ok(EventResult::None);
                         }
                         RunStatus::Warning => {
@@ -32,7 +32,7 @@ impl Extension for CommentChecker {
                         RunStatus::Pass => {}
                     }
                 }
-                ctx.ui.set_widget("pi-comment-checker", None, Default::default());
+                crate::ui::sync_comment_checker_widget(ctx.ui.as_ref());
                 if warnings.is_empty() { return Ok(EventResult::None); }
                 let mut content = event.content.clone();
                 content.extend(warnings.into_iter().map(|warning| ToolContent::text(format!("\n\n{warning}"))));
@@ -43,7 +43,7 @@ impl Extension for CommentChecker {
         api.register_command("comment-checker", Some("Show comment-checker extension status and setup guidance.".into()), None, Arc::new(move |_, ctx| {
             let available = resolve_binary(&source).is_some();
             Box::pin(async move {
-                ctx.ui.set_widget("pi-comment-checker", None, Default::default());
+                crate::ui::sync_comment_checker_widget(ctx.ui.as_ref());
                 if available { ctx.ui.notify("comment-checker binary is available.", NotificationType::Info); }
                 else { ctx.ui.notify("comment-checker binary missing; reinstall/reload the extension package.", NotificationType::Warning); }
                 Ok(())
