@@ -226,13 +226,19 @@ impl AgentSessionRuntime {
     }
 
     pub async fn import_from_jsonl(&mut self, input_path: &str, cwd_override: Option<&str>) -> Result<bool, String> {
-        let source = std::path::Path::new(input_path).canonicalize()
-            .map_err(|_| SessionImportFileNotFoundError { file_path: input_path.to_owned() }.to_string())?;
+        let base = std::env::current_dir().map_err(|error| error.to_string())?;
+        let resolved = crate::paths::resolve_path(input_path, &base.to_string_lossy(),
+            &crate::paths::PathInputOptions::expanding_tilde(crate::config::home_dir()));
+        let source = std::path::Path::new(&resolved);
+        if !source.exists() {
+            return Err(SessionImportFileNotFoundError { file_path: resolved }.to_string());
+        }
         let directory = self.session.with_session_manager(|manager| manager.session_dir().to_owned());
         std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
         let filename = source.file_name().ok_or("Invalid import filename")?;
         let mut destination = std::path::Path::new(&directory).join(filename);
-        let stored = destination.canonicalize().is_ok_and(|path| path == source);
+        let stored = crate::paths::resolve_path(&destination.to_string_lossy(), &base.to_string_lossy(),
+            &crate::paths::PathInputOptions::default()) == resolved;
         if !stored {
             let stem = source.file_stem().unwrap_or_default().to_string_lossy();
             let extension = source.extension().map(|extension| format!(".{}", extension.to_string_lossy())).unwrap_or_default();
@@ -245,7 +251,7 @@ impl AgentSessionRuntime {
         let destination = destination.to_string_lossy().into_owned();
         if self.session.runtime_before_switch(maho_ext_api::SessionReason::Resume, Some(destination.clone())).await? { return Ok(false); }
         if !stored {
-            let mut input = std::fs::File::open(&source).map_err(|error| error.to_string())?;
+            let mut input = std::fs::File::open(source).map_err(|error| error.to_string())?;
             let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&destination).map_err(|error| error.to_string())?;
             std::io::copy(&mut input, &mut output).map_err(|error| error.to_string())?;
         }
@@ -413,6 +419,14 @@ mod tests {
             assert_eq!(manager.branch(manager.leaf_id()).iter().filter(|entry| entry["type"] == "message").count(), 2);
         });
         assert!(runtime.import_from_jsonl("/missing-import-fixture.jsonl", None).await.unwrap_err().contains("File not found"));
+        let source = dir.path().join("import-fixture.jsonl");
+        runtime.session().export_to_jsonl(source.to_str()).expect("export fixture");
+        assert!(runtime.import_from_jsonl(source.to_str().unwrap(), None).await.expect("import"));
+        let first_import = runtime.session().session_file().expect("imported path");
+        assert!(first_import.ends_with("import-fixture.jsonl"));
+        assert_eq!(runtime.session().messages().len(), 2);
+        assert!(runtime.import_from_jsonl(source.to_str().unwrap(), None).await.expect("collision import"));
+        assert!(runtime.session().session_file().unwrap().ends_with("import-fixture-1.jsonl"));
     }
 
     #[test]
