@@ -512,7 +512,11 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn is_idle(&self) -> bool { self.session().is_ok_and(|session| !session.is_streaming() && !session.work_barrier.has_active_work()) }
     fn is_project_trusted(&self) -> bool { self.session().is_ok_and(|session| session.with_settings_manager(|manager| manager.is_project_trusted())) }
     fn get_signal(&self) -> Option<maho_ext_api::AbortSignal> { self.session().ok()?.state().extension_event_signal.clone() }
-    fn abort(&self, _source: Option<maho_ext_api::AbortSource>) { if let Ok(session) = self.session() { session.agent.abort(None); session.abort_retry(); session.abort_compaction(); } }
+    fn abort(&self, source: Option<maho_ext_api::AbortSource>) { if let Ok(session) = self.session() {
+        if source == Some(maho_ext_api::AbortSource::System) {
+            session.agent.abort(None); session.abort_retry(); session.abort_compaction();
+        } else { tokio::spawn(async move { session.abort().await; }); }
+    } }
     fn has_pending_messages(&self) -> bool { self.session().is_ok_and(|session| session.pending_message_count() > 0) }
     fn request_reload(&self) -> maho_ext_api::ExtensionFuture<'_, ()> { Box::pin(async move { self.session()?.reload().await.map(|_| ()).map_err(maho_ext_api::ExtensionFailure::new) }) }
     fn is_compacting(&self) -> bool { self.session().is_ok_and(|session| session.is_compacting()) }
