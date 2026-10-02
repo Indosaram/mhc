@@ -96,7 +96,7 @@ fn compile_expression(pattern:&str)->String{
         }
         match ch{
             '*'=>{let start=index;while chars.get(index+1)==Some(&'*'){index+=1;}let globstar=index>start;let star=if globstar{"(?:(?!(?:^|/)\\.{1,2}(?:/|$)).)*?"}else{".*?"};if start==0{result.push_str("(?!(?:^|/)\\.{1,2}(?:/|$))");if !globstar{result.push_str("(?=.)");}}
-                if chars.get(index+1)==Some(&'/'){result.push_str(&format!("(?:{star}/)?"));index+=1;}else if globstar&&start>0&&chars[start-1]=='/'&&index+1==chars.len(){result.pop();result.push_str(&format!("(?:/{star}|$)"));}else{result.push_str(star);if index+1==chars.len(){result.push_str("/?");}}},
+                if chars.get(index+1)==Some(&'/'){if globstar&&(start==0||chars[start-1]=='/'){if start>0{result.pop();result.push_str(&format!("(?:/{star}/|/|$)"));}else{result.push_str(&format!("(?:^|/|{star}/)"));}}else{result.push_str(".*?/");}index+=1;}else if globstar&&start>0&&chars[start-1]=='/'&&index+1==chars.len(){result.pop();result.push_str(&format!("(?:/{star}|$)"));}else{result.push_str(star);if index+1==chars.len(){result.push_str("/?");}}},
             '?'=>result.push_str("[^/]"),
             '('=>{let mut depth=1;let mut end=index+1;while end<chars.len(){if chars[end]=='(' {depth+=1;}else if chars[end]==')'{depth-=1;if depth==0{break;}}end+=1;}if depth==0{parens+=1;result.push('(');}else{result.push_str("\\(");}},
             ')'=>if parens>0{parens-=1;result.push(')');}else{result.push_str("\\)");},

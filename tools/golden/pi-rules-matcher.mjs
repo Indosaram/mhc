@@ -23,6 +23,8 @@ patterns.push('[]', '[^]', '[z-a]', '[!x]', '[abc]', '[[:digit:]]');
 paths.push('[]', '[^]', '[z-a]', '!', '[abc]', '[]/');
 patterns.push('*', '**', '**/a', 'a/*', 'a/**', 'a?', 'a{b,c}', 'a|b', 'a+b', 'a**b');
 paths.push('', '.', '..', 'x/.', 'x/..', 'x/a', 'a/.', 'a/..', 'a/x', 'a/x/y', 'a/b', 'ab/', 'a/b/', 'a/');
+patterns.push('a/**/b', 'a*/b', '{a,{b,c}}', 'a{b', 'a{b,c', 'a**/b', '*/a');
+paths.push('ab', 'b', 'c', 'a/b', 'a/x/b', 'ax/b', 'a/x/../b', '/a', 'a{bmore');
 for (const pattern of patterns) if (!paths.includes(pattern)) paths.push(pattern);
 const cases = patterns.flatMap(pattern => { const matches = picomatch(pattern, { bash: true, dot: true }); return paths.map(path => ({ pattern, path, matched: matches(path) })); });
 const output = `${JSON.stringify(cases, null, 2)}\n`;
