@@ -3584,7 +3584,12 @@ impl AgentSession {
             tool_name: tool_call.name.clone(),
             input,
         };
-        runner.emit_tool_call(&mut event).await.ok().flatten()
+        match runner.emit_tool_call(&mut event).await {
+            Ok(result) => result,
+            Err(error) => Some(maho_ext_api::ToolCallEventResult {
+                block: Some(true), reason: Some(error.message), terminate: None,
+            }),
+        }
     }
 
     /// The extension runner currently bound to the session, if any.
@@ -3669,6 +3674,35 @@ impl AgentSession {
                 stream
             }));
         }
+        let weak = Arc::downgrade(&self.inner);
+        self.agent.set_before_tool_call(Some(Arc::new(move |context, _| {
+            let weak = weak.clone();
+            Box::pin(async move {
+                let inner = weak.upgrade()?;
+                let session = AgentSession { inner };
+                session.preflight_tool_call(&context.tool_call, context.args).await.map(|result|
+                    maho_agent::types::BeforeToolCallResult { block: result.block, reason: result.reason, terminate: result.terminate })
+            })
+        })));
+        let weak = Arc::downgrade(&self.inner);
+        self.agent.set_after_tool_call(Some(Arc::new(move |context, _| {
+            let weak = weak.clone();
+            Box::pin(async move {
+                let inner = weak.upgrade()?;
+                let session = AgentSession { inner };
+                let mut guard = session.extension_runner.lock().await;
+                let runner = guard.as_mut()?;
+                let content = serde_json::from_value(serde_json::to_value(context.result.content).ok()?).ok()?;
+                let rewrite = runner.emit_tool_result(maho_ext_api::ToolResultEvent {
+                    tool_call_id: context.tool_call.id, tool_name: context.tool_call.name, input: context.args,
+                    content, details: Some(context.result.details), is_error: context.is_error, usage: context.result.usage,
+                }).await.ok().flatten()?;
+                Some(maho_agent::types::AfterToolCallResult {
+                    content: rewrite.content.and_then(|content| serde_json::from_value(serde_json::to_value(content).ok()?).ok()),
+                    details: rewrite.details, is_error: rewrite.is_error, usage: rewrite.usage, terminate: None,
+                })
+            })
+        })));
         let weak = Arc::downgrade(&self.inner);
         self.agent.set_transform_context(Some(Arc::new(move |messages, signal| {
             let weak = weak.clone(); Box::pin(async move {
