@@ -157,8 +157,14 @@ impl AgentSessionRuntime {
 
     pub async fn new_session(&mut self, cwd: Option<&str>, parent_session: Option<String>) -> Result<bool, String> {
         let cwd = cwd.unwrap_or(&self.services.cwd).to_owned();
-        let manager = crate::session_manager::SessionManager::create(&cwd, None,
-            Some(crate::session_manager::NewSessionOptions { id: None, parent_session }));
+        let options = Some(crate::session_manager::NewSessionOptions { id: None, parent_session });
+        let manager = self.session.with_session_manager(|current| {
+            if current.is_persisted() {
+                crate::session_manager::SessionManager::create(&cwd, Some(current.session_dir()), options)
+            } else {
+                crate::session_manager::SessionManager::in_memory(&cwd, options, None)
+            }
+        });
         assert_session_cwd_exists(&manager, &cwd).map_err(|error| error.to_string())?;
         self.replace_session(manager, cwd, maho_ext_api::SessionReason::New).await
     }
@@ -175,6 +181,8 @@ impl AgentSessionRuntime {
             model: Some(self.session.model()), thinking_selection: self.session.thinking_selection(),
             scoped_models: self.session.scoped_models(), favorite_models: self.session.favorite_models(),
             session_manager: Some(manager), settings_manager: Some(settings), tools: Some(self.session.get_active_tool_names()),
+            custom_tools: self.session.replacement_custom_tools(),
+            auto_title_sessions: Some(self.session.replacement_auto_title()),
             session_start_event: Some(maho_ext_api::SessionStartEvent { reason, initial_model_provenance: None,
                 previous_session_file: self.session.session_file() }), ..Default::default()
         }).await?;
@@ -254,6 +262,38 @@ mod tests {
     fn a_missing_import_file_names_the_path() {
         let error = SessionImportFileNotFoundError { file_path: "/tmp/missing.jsonl".to_owned() };
         assert_eq!(error.to_string(), "File not found: /tmp/missing.jsonl");
+    }
+
+    #[tokio::test]
+    async fn replacing_session_preserves_custom_tools_and_auto_title_selection() {
+        let dir = tempfile::tempdir().expect("directory");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let agent_dir = dir.path().join("agent").to_string_lossy().into_owned();
+        let services = crate::agent_session_services::create_agent_session_services(
+            crate::agent_session_services::CreateAgentSessionServicesOptions {
+                cwd: cwd.clone(), agent_dir: Some(agent_dir.clone()), ..Default::default()
+            });
+        let model = serde_json::from_value(serde_json::json!({
+            "id":"faux-1", "name":"faux-1", "provider":"faux", "api":"faux", "baseUrl":"",
+            "reasoning":false, "input":[], "contextWindow":128000, "maxTokens":4096,
+            "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}
+        })).expect("model");
+        let custom = maho_ext_api::ToolDefinition::new("retained", "custom tool", serde_json::json!({"type":"object"}),
+            std::sync::Arc::new(|_| Box::pin(async { Ok(maho_tools::definition::ToolResult::text("retained")) })));
+        let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()), agent_dir: Some(agent_dir), model: Some(model),
+            model_runtime: Some(services.model_runtime().clone()),
+            session_manager: Some(crate::session_manager::SessionManager::in_memory(&cwd, None, None)),
+            custom_tools: vec![custom], tools: Some(vec!["retained".to_owned()]), auto_title_sessions: Some(false),
+            ..Default::default()
+        }).await.expect("session");
+        let mut runtime = AgentSessionRuntime::new(created.session, services, Vec::new(), None, None);
+        assert!(runtime.new_session(None, None).await.expect("replacement"));
+        assert!(!runtime.session().with_session_manager(|manager| manager.is_persisted()));
+        assert!(runtime.session().get_tool_definition("retained").is_some());
+        assert!(!runtime.session().replacement_auto_title());
+        let result = runtime.session().execute_tool("retained", serde_json::json!({}), Default::default()).await.expect("tool");
+        assert_eq!(maho_ai::utils::text::content_text(&result.content, ""), "retained");
     }
 
     #[test]

@@ -72,6 +72,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     let thinking_level = clamp_thinking_level_to_model(options.thinking_level, Some(&model));
     let mut definitions = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&cwd), Default::default());
     for definition in &options.custom_tools { definitions.insert(definition.name.clone(), definition.clone()); }
+    let registered_definitions = definitions.clone();
     let mut base_tools = BTreeMap::new();
     for (name, definition) in definitions {
         let executor = definition.execute.clone();
@@ -121,8 +122,16 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         flag_values: BTreeMap::new(), custom_tools: options.custom_tools, model_runtime: Some(runtime), model_registry: Some(registry),
         uses_default_stream_function: Some(true), initial_active_tool_names: Some(selected),
         default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: options.exclude_tools,
-        base_tools_override: Some(base_tools), session_start_event: None, auto_title_sessions: Some(false),
+        base_tools_override: Some(base_tools.clone()), session_start_event: options.session_start_event,
+        auto_title_sessions: options.auto_title_sessions,
     }).map_err(|error| error.to_string())?;
+    for (name, definition) in registered_definitions {
+        if let Some(tool) = base_tools.get(&name) {
+            session.register_tool_definition(definition, maho_ext_api::SourceInfo {
+                source: "sdk".to_owned(), ..Default::default()
+            }, tool.clone());
+        }
+    }
     let (prompt_paths, skill_paths) = session.with_settings_manager(|manager| {
         let paths = |key| manager.get_value(key).and_then(serde_json::Value::as_array).map(|values|
             values.iter().filter_map(serde_json::Value::as_str).map(str::to_owned).collect::<Vec<_>>()).unwrap_or_default();

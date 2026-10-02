@@ -1467,6 +1467,13 @@ impl AgentSession {
     async fn queue_user_input(
         &self, text: &str, images: Option<Vec<ImageContent>>, mode: StreamingBehavior, options: QueuedInputOptions,
     ) -> Result<(), String> {
+        if let Some(command_text) = text.strip_prefix('/') {
+            let name = command_text.split_once(' ').map_or(command_text, |(name, _)| name);
+            let runner = self.extension_runner.lock().await;
+            if runner.as_ref().is_some_and(|runner| runner.get_command(name).is_some()) {
+                return Err(format!("Extension command \"/{name}\" cannot be queued. Use prompt() or execute the command when not streaming."));
+            }
+        }
         let Some((text, images)) = self.run_input_handlers(text, images, options.source, self.is_streaming().then_some(mode)).await? else {
             return Ok(());
         };
@@ -1558,6 +1565,10 @@ impl AgentSession {
             self.emit(AgentSessionEvent::CompactionEnd { reason: compact_reason, request_id: Some(request_id),
                 aborted: false, result: None, rejection_cause: None,
                 error_message: Some(format!("Compaction failed: {error}")), accepted: Some(false), will_retry: false });
+            self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionCompactFailed {
+                reason: compact_reason, error_message: Some(format!("Compaction failed: {error}")),
+                aborted: false, will_retry: false, from_extension: false,
+            }).await;
             return Err(error.to_owned());
         };
         let controller = maho_ai::utils::abort::AbortController::new();
@@ -1601,26 +1612,38 @@ impl AgentSession {
                 _ => {
                     let model = self.model();
                     let auth = self.get_summarization_request_auth(&model).await?;
-                    let mut transcript = preparation.previous_summary.clone().unwrap_or_default();
-                    for message in preparation.messages_to_summarize.iter().chain(&preparation.turn_prefix_messages) {
-                        transcript.push('\n'); transcript.push_str(&serde_json::to_string(message).map_err(|error| error.to_string())?);
+                    let messages = preparation.messages_to_summarize.iter().chain(&preparation.turn_prefix_messages).cloned().collect::<Vec<_>>();
+                    let mut prompt = format!("<conversation>\n{}\n</conversation>\n\n",
+                        crate::compaction::utils::serialize_conversation(&messages));
+                    if let Some(previous) = &preparation.previous_summary {
+                        prompt.push_str(&format!("<previous-summary>\n{previous}\n</previous-summary>\n\n"));
+                        prompt.push_str(&crate::compaction::compaction::update_summarization_prompt());
+                    } else { prompt.push_str(crate::compaction::compaction::SUMMARIZATION_PROMPT); }
+                    if let Some(instructions) = instructions.filter(|instructions| !instructions.is_empty()) {
+                        prompt.push_str(&format!("\n\nAdditional focus: {instructions}"));
                     }
-                    let prompt = format!("{}\n\n{}\n\n{}", crate::compaction::compaction::update_summarization_prompt(),
-                        instructions.unwrap_or_default(), transcript);
                     let AgentMessage::Llm(user) = make_user_message(&prompt, None) else { return Err("Invalid summary prompt".to_owned()); };
-                    let context = maho_ai::types::Context { system_prompt: Some("Summarize the conversation without continuing it.".to_owned()),
+                    let context = maho_ai::types::Context { system_prompt: Some(crate::compaction::utils::SUMMARIZATION_SYSTEM_PROMPT.to_owned()),
                         messages: vec![user], tools: None };
                     let response = self.model_runtime().complete(&auth.model, &context, Some(maho_ai::types::StreamOptions {
                         request: maho_ai::types::ProviderRequestOptions { signal: Some(signal.clone()), api_key: auth.api_key,
                             headers: auth.headers.map(|headers| headers.into_iter().map(|(key, value)| (key, Some(value))).collect()), env: auth.env,
                             ..Default::default() },
-                        ..Default::default()
+                        max_tokens: Some(((resolved.reserve_tokens as f64 * 0.8).floor() as u64).min(
+                            if auth.model.max_tokens > 0 { auth.model.max_tokens } else { u64::MAX })),
+                        session_id: Some(self.session_id()), ..Default::default()
                     })).await.map_err(|error| error.to_string())?;
                     if let Some(error) = crate::compaction::compaction::get_summarization_failure(&response, "Compaction") { return Err(error); }
-                    let summary = maho_ai::utils::text::content_text(&response.content, "");
+                    if response.content.iter().any(|block| matches!(block, maho_ai::types::ContentBlock::ToolCall(_))) {
+                        return Err("Summarization attempted to call a tool".to_owned());
+                    }
+                    let mut summary = maho_ai::utils::text::content_text(&response.content, "");
                     if summary.trim().is_empty() { return Err("Compaction produced an empty summary".to_owned()); }
+                    let (read_files, modified_files) = crate::compaction::utils::compute_file_lists(&preparation.file_ops);
+                    summary.push_str(&crate::compaction::utils::format_file_operations(&read_files, &modified_files));
                     (CompactionResult { summary, first_kept_entry_id: preparation.first_kept_entry_id.clone(),
-                        tokens_before: preparation.tokens_before, details: None, usage: Some(response.usage), estimated_tokens_after: None }, false)
+                        tokens_before: preparation.tokens_before, details: Some(serde_json::json!({"readFiles":read_files,"modifiedFiles":modified_files})),
+                        usage: Some(response.usage), estimated_tokens_after: None }, false)
                 }
             };
             signal.throw_if_aborted().map_err(|error| error.to_string())?;
@@ -1641,8 +1664,14 @@ impl AgentSession {
                 self.emit(AgentSessionEvent::CompactionEnd { reason: compact_reason, request_id: Some(request_id), aborted: false,
                     result: Some(value), rejection_cause: None, error_message: None, accepted: Some(true), will_retry: reason != "manual" });
             }
-            Err(error) => self.emit(AgentSessionEvent::CompactionEnd { reason: compact_reason, request_id: Some(request_id),
-                aborted: signal.aborted(), result: None, rejection_cause: None, error_message: Some(error.clone()), accepted: Some(false), will_retry: false }),
+            Err(error) => {
+                let error_message = (!signal.aborted()).then(|| format!("Compaction failed: {error}"));
+                self.emit(AgentSessionEvent::CompactionEnd { reason: compact_reason, request_id: Some(request_id),
+                    aborted: signal.aborted(), result: None, rejection_cause: None, error_message: error_message.clone(), accepted: Some(false), will_retry: false });
+                self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionCompactFailed {
+                    reason: compact_reason, error_message, aborted: signal.aborted(), will_retry: false, from_extension: false,
+                }).await;
+            }
         }
         execution
     }
@@ -1741,6 +1770,8 @@ impl AgentSession {
         use crate::retry_fallback::controller::FallbackReason;
         use maho_ai::utils::retry_hint::parse_retry_after_ms_marker;
         let mut overflow_compacted = false;
+        let rate_limit_pattern = regex::Regex::new(r"(?i)rate.?limit|(?:^429\s+\{|(?:\bHTTP/1\.[01]\s+|\bHTTP\s+|\bstatus(?:\s+code)?\s+|\berror\s+|\bcode\s+)429\b)|too many requests|resource.?exhausted")
+            .expect("pinned rate limit pattern");
         loop {
             self.agent.wait_for_idle().await;
             let Some(message) = self.messages().iter().rev().find_map(AgentMessage::as_assistant).cloned() else { return Ok(()); };
@@ -1775,13 +1806,17 @@ impl AgentSession {
             };
             let cap = settings.get("maxAgentDelayMs").and_then(Value::as_u64).or(profile_cap).unwrap_or(u64::MAX);
             let error = message.error_message.clone().unwrap_or_else(|| "Unknown error".to_owned());
-            let hint = parse_retry_after_ms_marker(&error);
+            let hint = parse_retry_after_ms_marker(&error).or_else(||
+                maho_ai::utils::retry_hint::extract_429_retry_after_ms(
+                    &maho_ai::utils::retry_hint::RetryHintInput { body_text: &error, ..Default::default() },
+                    Some(self.fallback_now() as i64),
+                ));
             let refusal = maho_ai::utils::stop_details::is_classifier_refusal(&message);
             let transient = maho_ai::utils::retry::is_retryable_assistant_error(&message)
                 || maho_ai::utils::retry::is_provider_timeout_error(&message);
             let attempt = self.state().retry_attempt.saturating_add(1);
-            let rate_limited = ["rate limit", "rate_limit", "429", "too many requests", "resource_exhausted"]
-                .iter().any(|marker| error.to_lowercase().contains(marker));
+            let rate_limited = !maho_ai::utils::retry::is_provider_timeout_error(&message)
+                && rate_limit_pattern.is_match(&error);
             let tier_routed = rate_limited && profile.fallback.rate_limited ==
                 maho_ai::utils::retry_profile::types::FallbackRateLimited::Tiered;
             let hint_settings = crate::retry_fallback::settings::resolve_hint_policy_settings(Some(&settings));
@@ -2365,15 +2400,14 @@ impl AgentSession {
         let generation = async {
             let model = self.model();
             let auth = self.get_summarization_request_auth(&model).await?;
-            let AgentMessage::Llm(user) = make_user_message(prompt, None) else { return Err("Invalid title prompt".to_owned()); };
-            let response = self.model_runtime().complete(&auth.model, &maho_ai::types::Context {
-                system_prompt: Some("Generate a short session title. Return only <title>title</title>; use <title>none</title> when no task is stated.".to_owned()),
-                messages: vec![user], tools: None,
-            }, Some(maho_ai::types::StreamOptions {
+            let response = self.model_runtime().complete(&auth.model, &crate::session_title_generator::build_title_context(prompt), Some(maho_ai::types::StreamOptions {
                 request: maho_ai::types::ProviderRequestOptions { api_key: auth.api_key,
                     headers: auth.headers.map(|headers| headers.into_iter().map(|(key,value)| (key,Some(value))).collect()),
                     stream_kind: Some(maho_ai::types::StreamKind::Auxiliary), env: auth.env, ..Default::default() },
-                max_tokens: Some(128), session_id: Some(session_id.clone()), ..Default::default()
+                max_tokens: Some(64), session_id: Some(session_id.clone()),
+                cache_retention: Some(if auth.model.cache_retention == Some(maho_ai::types::CacheRetention::None) {
+                    maho_ai::types::CacheRetention::None
+                } else { maho_ai::types::CacheRetention::Short }), ..Default::default()
             })).await.map_err(|error| error.to_string())?;
             if let Some(error) = crate::session_title_generator::title_error_message(&response) { return Err(error); }
             Ok::<_, String>(crate::session_title_generator::parse_session_title(&response))
@@ -2498,6 +2532,7 @@ impl AgentSession {
         let mut seen = BTreeSet::new();
         for token in tokens {
             if let Some(skill) = skills.iter().find(|skill| skill.name == token.name) {
+                if blocks.len() >= 5 { break; }
                 removed.push(token.clone());
                 if !seen.insert(skill.name.clone()) { continue; }
                 let source = match std::fs::read_to_string(&skill.file_path) { Ok(source) => source, Err(error) => {
@@ -2510,6 +2545,8 @@ impl AgentSession {
                 metadata.push(maho_ext_api::SkillInvocation { name: skill.name.clone(), path: skill.file_path.clone(), syntax: match token.syntax {
                     crate::skill_invocation::SkillInvocationSyntax::Slash => "slash", crate::skill_invocation::SkillInvocationSyntax::Dollar => "dollar",
                 }.to_owned() });
+            } else if token.position == crate::skill_invocation::SkillInvocationPosition::Leading {
+                break;
             }
         }
         let expanded = if blocks.is_empty() { text.to_owned() } else {
@@ -2805,6 +2842,14 @@ impl AgentSession {
     /// A runtime extension flag value (constructor input in TS).
     pub fn flag_value(&self, name: &str) -> Option<FlagValue> {
         self.state().flag_values.get(name).cloned()
+    }
+
+    pub(crate) fn replacement_custom_tools(&self) -> Vec<ToolDefinition> {
+        self.state().custom_tools.clone()
+    }
+
+    pub(crate) fn replacement_auto_title(&self) -> bool {
+        self.state().auto_title_sessions
     }
 
     pub fn get_tool_definition(&self, name: &str) -> Option<ToolDefinition> {
@@ -4815,6 +4860,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn manual_compaction_runs_faux_summary_and_records_file_details() {
+        use maho_ai::providers::faux::{faux_provider, RegisterFauxProviderOptions};
+        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
+        provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("digest", Default::default()).into()]);
+        let session = test_session_with_stream_function(false);
+        session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
+        runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
+            config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".to_owned()), ..Default::default() },
+            ..Default::default()
+        }).expect("auth");
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"keepRecentTokens":1})),
+        ])));
+        session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"old task","timestamp":0})));
+        session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"recent task","timestamp":1})));
+        session.rebuild_session_context().expect("context");
+        let result = session.compact(None).await.expect("compaction");
+        assert_eq!(result.summary, "digest");
+        assert!(result.details.expect("file details")["readFiles"].is_array());
+        assert!(result.usage.is_some());
+        assert!(!session.is_compacting());
+        assert_eq!(session.with_session_manager(|manager| manager.entries().last().expect("entry")["type"].clone()), "compaction");
+    }
+
+    #[tokio::test]
     async fn prompt_retries_transient_failure_and_preserves_durable_history() {
         let session = retry_session(vec![
             maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
@@ -4832,6 +4904,27 @@ mod tests {
         assert_eq!(session.messages().len(), 2);
         assert_eq!(session.with_session_manager(|manager| manager.entries().len()), 3);
         assert!(lock(&events).iter().any(|event| matches!(event, AgentSessionEvent::AutoRetryEnd { success: true, attempt: 1, .. })));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_body_hint_drives_tier_delay_without_marker() {
+        let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("",
+            maho_ai::providers::faux::FauxAssistantMessageOptions {
+                stop_reason: Some(StopReason::Error),
+                error_message: Some("rate_limit_error: retry in 1 s".to_owned()), ..Default::default()
+            })], 2);
+        let observed = Arc::new(Mutex::new(None));
+        let captured = observed.clone();
+        let cancelling = session.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::AutoRetryStart { delay_ms, .. } = event {
+                *lock(&captured) = Some(*delay_ms);
+                cancelling.abort_retry();
+            }
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("input", Default::default()))
+            .await.expect("bounded prompt").expect("prompt");
+        assert_eq!(*lock(&observed), Some(500));
     }
 
     #[tokio::test]
@@ -5038,6 +5131,27 @@ mod tests {
         }], Vec::new());
         assert_eq!(session.expand_input("/review file", true).expect("expand"), "review file");
         assert_eq!(session.expand_input("/review file", false).expect("raw"), "/review file");
+    }
+
+    #[tokio::test]
+    async fn skill_expansion_caps_unique_skills_and_preserves_unexpanded_tokens() {
+        let session = test_session();
+        let dir = tempfile::tempdir().expect("directory");
+        let skills = (0..6).map(|index| {
+            let name = format!("skill{index}");
+            let path = dir.path().join(format!("{name}.md"));
+            std::fs::write(&path, format!("---\nname: {name}\ndescription: test\n---\nbody {index}")).expect("skill");
+            crate::skills::Skill { name, description: "test".to_owned(), file_path: path.to_string_lossy().into_owned(),
+                base_dir: dir.path().to_string_lossy().into_owned(), disable_model_invocation: false,
+                source_info: crate::source_info::create_synthetic_source_info(&path.to_string_lossy(), Default::default()) }
+        }).collect();
+        session.set_prompt_resources(Vec::new(), skills);
+        let expanded = session.expand_input("$skill0 $skill1 $skill2 $skill3 $skill4 $skill5 task", true).expect("expand");
+        assert_eq!(expanded.matches("<skill-instruction name=").count(), 5);
+        assert!(expanded.contains("$skill5"));
+        let unknown = session.expand_input("/skill:missing /skill:skill0 task", true).expect("unknown");
+        assert!(!unknown.contains("<skill-instruction name="));
+        assert!(unknown.contains("/skill:skill0"));
     }
 
     #[tokio::test]
