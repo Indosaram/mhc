@@ -183,6 +183,12 @@ impl AgentSessionRuntime {
         }
         let leaf = if include_entry { Some(entry_id) } else { entry["parentId"].as_str() };
         let previous = self.session.session_file();
+        if self.session.with_session_manager(|manager| manager.is_persisted()) {
+            let file = previous.as_deref().ok_or("Persisted session is missing a session file")?;
+            if leaf.is_some() && !std::path::Path::new(file).exists() {
+                return Err("This session has not been saved yet. Wait for the first assistant response before cloning or forking it.".to_owned());
+            }
+        }
         let manager = self.session.with_session_manager(|current| {
             let options = Some(crate::session_manager::NewSessionOptions { parent_session: previous.clone(), ..Default::default() });
             let mut manager = if current.is_persisted() {
@@ -363,6 +369,30 @@ mod tests {
     fn a_missing_import_file_names_the_path() {
         let error = SessionImportFileNotFoundError { file_path: "/tmp/missing.jsonl".to_owned() };
         assert_eq!(error.to_string(), "File not found: /tmp/missing.jsonl");
+    }
+
+    #[tokio::test]
+    async fn unsaved_persisted_fork_rejects_without_replacing_session() {
+        let dir = tempfile::tempdir().expect("directory");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let services = crate::agent_session_services::create_agent_session_services(
+            crate::agent_session_services::CreateAgentSessionServicesOptions {
+                cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), ..Default::default()
+            });
+        let provider = maho_ai::providers::faux::faux_provider(Default::default());
+        let mut manager = crate::session_manager::SessionManager::create(&cwd, dir.path().join("sessions").to_str(), None);
+        let entry = manager.append_message(serde_json::json!({"role":"user","content":"unsaved","timestamp":0}));
+        let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()), agent_dir: Some(services.agent_dir.clone()), model: provider.get_model(Some("faux-1")),
+            session_manager: Some(manager), tools: Some(Vec::new()), ..Default::default()
+        }).await.expect("session");
+        let mut runtime = AgentSessionRuntime::new(created.session, services, Vec::new(), None, None);
+        let id = runtime.session().session_id();
+        assert!(!std::path::Path::new(&runtime.session().session_file().expect("path")).exists());
+        let error = runtime.fork(entry["id"].as_str().expect("entry"), true).await.expect_err("unsaved fork");
+        assert!(error.starts_with("This session has not been saved yet."));
+        assert_eq!(runtime.session().session_id(), id);
+        assert_eq!(runtime.session().messages().len(), 1);
     }
 
     #[tokio::test]
