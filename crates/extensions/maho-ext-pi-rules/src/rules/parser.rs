@@ -8,7 +8,7 @@ pub fn parse_rule(content: &str) -> ParsedRule {
     let mut start = opening;
     loop {
         let end = content[start..].find('\n').map_or(content.len(), |n| start + n);
-        if content[start..end].trim_end_matches('\r') == "---" {
+        if content[start..end].strip_suffix('\r').unwrap_or(&content[start..end]) == "---" {
             let body_start = if end == content.len() { end } else { end + 1 };
             return match parse_yaml(&content[opening..start]) {
                 Ok(frontmatter) => ParsedRule { frontmatter, body: content[body_start..].into(), diagnostic: None },

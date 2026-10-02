@@ -10,6 +10,7 @@ fn check(content: &str, expected: RuleFrontmatter, body: &str) {
     assert_eq!(result.frontmatter, expected); assert_eq!(result.body, body); assert_eq!(result.diagnostic, None);
 }
 #[test] fn no_frontmatter() { let c = "Use strict TypeScript.\n---\nKeep this horizontal rule."; check(c, frontmatter(None,None,None), c); }
+#[test] fn closing_delimiter_removes_only_one_carriage_return() { let content="---\nalwaysApply: true\n---\r\r\nbody";let result=parse_rule(content);assert!(result.diagnostic.is_some());assert_eq!(result.body,content);assert_eq!(result.frontmatter,RuleFrontmatter::default()); }
 #[test] fn valid_frontmatter() { check("---\ndescription: TypeScript rules\nglobs: [\"**/*.ts\", \"**/*.tsx\"]\nalwaysApply: true\n---\nUse type-only imports.", frontmatter(Some("TypeScript rules"),multiple(&["**/*.ts","**/*.tsx"]),Some(true)), "Use type-only imports."); }
 #[test] fn empty_frontmatter() { check("---\n---\n", frontmatter(None,None,None), ""); }
 #[test] fn malformed_is_salvaged() { let c="---\nglobs: [broken\n---\nbody"; let r=parse_rule(c); assert_eq!(r.body,c); assert_eq!(r.frontmatter,RuleFrontmatter::default()); assert!(r.diagnostic.is_some()); }
