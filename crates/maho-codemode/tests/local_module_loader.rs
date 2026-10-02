@@ -27,7 +27,7 @@ async fn prepared_imports_execute_in_external_worker() {
     use maho_codemode::kernels::{js::context_manager::JavaScriptKernel, shared::subprocess_contract::KernelRunInput};
     let cwd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let loader = LocalModuleLoader::new(&LocalModuleLoaderOptions {cwd:cwd.into(),local_roots:None,artifacts_dir:None}).unwrap();
-    let mut kernel = JavaScriptKernel::start(cwd, "prepared-import", 4, None).await.unwrap();
+    let kernel = JavaScriptKernel::start(cwd, "prepared-import", 4, None).await.unwrap();
     let result = kernel.run(KernelRunInput {cell_id:"import".into(),code:loader.prepare_cell("import { basename } from 'node:path'; basename('/tmp/value');"),timeout_ms:Some(5000)}, |_|{}).await.unwrap();
     assert_eq!(result["ok"], true, "{result}");
     assert_eq!(result["valueRepr"], "\"value\"");

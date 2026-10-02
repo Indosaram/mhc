@@ -29,11 +29,18 @@ impl JavaScriptKernel {
         Ok(Self { kernel, loader })
     }
 
-    pub async fn run(&mut self, mut input: KernelRunInput, on_message: impl FnMut(&Value)) -> Result<Value, ProcessError> {
+    pub async fn run(&self, mut input: KernelRunInput, on_message: impl FnMut(&Value)) -> Result<Value, ProcessError> {
         if !input.code.starts_with(PREPARED_CELL_PREFIX) { input.code = self.loader.prepare_cell(&input.code); }
         self.kernel.run(input, on_message).await
     }
-    pub async fn reset(&mut self) -> Result<(), ProcessError> { self.kernel.reset().await }
-    pub async fn close(&mut self) -> Result<(), ProcessError> { self.kernel.close().await }
+    pub async fn run_with_callbacks(&self, mut input: super::super::shared::subprocess_contract::KernelRunInput, on_message: Option<crate::kernels::shared::subprocess_run::KernelMessageCallback>, on_started: Option<crate::kernels::shared::subprocess_run::KernelStartedCallback>) -> Result<Value,ProcessError> {
+        if !input.code.starts_with(PREPARED_CELL_PREFIX) { input.code=self.loader.prepare_cell(&input.code); }
+        self.kernel.run_with_callbacks(input,on_message,on_started).await
+    }
+    pub fn queue_snapshot(&self)->(Option<String>,Vec<String>) {self.kernel.queue_snapshot()}
+    pub async fn cancel_queued(&self,id:&str,reason:&str)->bool {self.kernel.cancel_queued(id,reason).await}
+    pub fn deliver_tool_reply(&self,message:Value)->Result<(),String> {self.kernel.deliver_tool_reply(message)}
+    pub async fn reset(&self) -> Result<(), ProcessError> { self.kernel.reset().await }
+    pub async fn close(&self) -> Result<(), ProcessError> { self.kernel.close().await }
     pub fn pid(&self) -> Option<u32> { self.kernel.pid() }
 }
