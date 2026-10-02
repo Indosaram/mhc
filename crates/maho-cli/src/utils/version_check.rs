@@ -1,4 +1,12 @@
 use std::sync::LazyLock;
+pub struct VersionCheckCause<'a> { pub code: Option<&'a str>, pub message: Option<&'a str> }
+pub fn format_version_check_error(root_message: &str, causes: &[VersionCheckCause<'_>]) -> String {
+    let mut codes = Vec::new();
+    for cause in causes { if let Some(code) = cause.code && !codes.contains(&code) { codes.push(code); } }
+    if !codes.is_empty() { return format!("{root_message} ({})", codes.join(", ")); }
+    if let Some(message) = causes.iter().find_map(|cause| cause.message.filter(|message| !message.is_empty())) { return format!("{root_message} (cause: {message})"); }
+    root_message.to_owned()
+}
 pub fn read_available_version(payload: &serde_json::Value, dist_tag: Option<&str>) -> Option<String> {
     payload.as_object()?.get(dist_tag.unwrap_or("version"))?.as_str().map(str::trim).filter(|version| !version.is_empty()).map(str::to_owned)
 }

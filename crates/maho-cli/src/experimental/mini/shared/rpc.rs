@@ -51,6 +51,7 @@ impl RpcPeer {
     pub fn on_event(&self, handler: impl Fn(&str, &Value, Option<&str>) + Send + Sync + 'static) { self.state.lock().expect("RPC state lock").events.push(Arc::new(handler)); }
     pub fn on_close(&self, handler: impl Fn() + Send + Sync + 'static) { self.state.lock().expect("RPC state lock").close_handlers.push(Arc::new(handler)); }
     pub fn close(&self) { self.close.abort(None); }
+    pub fn is_closed(&self) -> bool { self.state.lock().expect("RPC state lock").closed }
     fn send(&self, frame: Frame) { if self.outgoing.send(frame).is_err() { self.close(); } }
     pub async fn call(&self, method: &str, args: Vec<Value>) -> Result<Value, String> { self.call_with(CallOptions::default(), method, args).await }
     pub async fn call_with(&self, options: CallOptions, method: &str, args: Vec<Value>) -> Result<Value, String> {

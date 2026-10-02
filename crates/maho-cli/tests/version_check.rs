@@ -18,3 +18,10 @@ async fn native_brand_without_registry_channel_does_not_advertise_engine_updates
     assert!(get_latest_release("1.2.3", Default::default()).await.unwrap().is_none());
     assert!(check_for_new_version("1.2.3").await.is_none());
 }
+#[test]
+fn upstream_nested_network_errors_preserve_unique_errno_details() {
+    let causes = [VersionCheckCause { code: Some("ETIMEDOUT"), message: Some("connect timeout") }, VersionCheckCause { code: Some("ENETUNREACH"), message: Some("network unreachable") }, VersionCheckCause { code: Some("ETIMEDOUT"), message: None }];
+    assert_eq!(format_version_check_error("fetch failed", &causes), "fetch failed (ETIMEDOUT, ENETUNREACH)");
+    assert_eq!(format_version_check_error("fetch failed", &[VersionCheckCause { code: None, message: Some("connect timeout") }]), "fetch failed (cause: connect timeout)");
+    assert_eq!(format_version_check_error("root", &[]), "root");
+}
