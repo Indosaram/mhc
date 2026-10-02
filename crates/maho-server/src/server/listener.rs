@@ -25,7 +25,7 @@ impl ServerListeners {
         for (index, listener) in self.listeners.iter().enumerate() {
             if let Err(error) = listener.start(accept.clone()).await {
                 let mut errors = vec![error.message];
-                for started in &self.listeners[..index] { if let Err(error) = started.close().await { errors.push(error.message); } }
+                for result in futures_util::future::join_all(self.listeners[..index].iter().map(|started|started.close())).await { if let Err(error) = result { errors.push(error.message); } }
                 if let Err(error) = startup_server.close().await { errors.push(error.message); }
                 return Err(ServerError::new("internal_error", &errors.join("; ")));
             }
@@ -34,7 +34,7 @@ impl ServerListeners {
     }
     pub async fn close(&self) -> Result<(), ServerError> {
         let mut errors = Vec::new();
-        for listener in &self.listeners { if let Err(error) = listener.close().await { errors.push(error.message); } }
+        for result in futures_util::future::join_all(self.listeners.iter().map(|listener|listener.close())).await { if let Err(error) = result { errors.push(error.message); } }
         if errors.is_empty() { Ok(()) } else { Err(ServerError::new("internal_error", &errors.join("; "))) }
     }
 }

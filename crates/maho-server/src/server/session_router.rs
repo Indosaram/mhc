@@ -46,6 +46,7 @@ pub struct SessionRouter {
     hosted: Mutex<BTreeMap<String, Arc<dyn RoutedSessionHandle>>>,
     attachments: Mutex<BTreeMap<String, Vec<Weak<Attachment>>>>,
     closing: AtomicBool,
+    close_result: tokio::sync::OnceCell<Result<(),ServerError>>,
 }
 impl SessionRouter {
     pub fn new(host: Arc<dyn ServerHost>, server_id: String) -> Self {
@@ -55,6 +56,7 @@ impl SessionRouter {
             hosted: Mutex::new(BTreeMap::new()),
             attachments: Mutex::new(BTreeMap::new()),
             closing: AtomicBool::new(false),
+            close_result: tokio::sync::OnceCell::new(),
         }
     }
     pub async fn attach(&self, session_id: &str) -> Result<Arc<Attachment>, ServerError> {
@@ -120,14 +122,18 @@ impl SessionRouter {
     }
     pub async fn close(&self) -> Result<(), ServerError> {
         self.closing.store(true, Ordering::SeqCst);
+        self.close_result.get_or_init(||self.close_internal()).await.clone()
+    }
+    async fn close_internal(&self) -> Result<(), ServerError> {
         let attachments = std::mem::take(&mut *self.attachments.lock().await);
         let handles = std::mem::take(&mut *self.hosted.lock().await);
         let mut errors = Vec::new();
-        for lease in attachments.into_values().flatten().filter_map(|lease| lease.upgrade()) {
-            if let Err(error) = lease.release().await { errors.push(error.message); }
+        let leases=attachments.into_values().flatten().filter_map(|lease|lease.upgrade()).collect::<Vec<_>>();
+        for result in futures_util::future::join_all(leases.iter().map(|lease|lease.release())).await {
+            if let Err(error) = result { errors.push(error.message); }
         }
-        for (_, handle) in handles {
-            if let Err(error) = handle.close().await {
+        for result in futures_util::future::join_all(handles.values().map(|handle|handle.close())).await {
+            if let Err(error) = result {
                 errors.push(error.message);
             }
         }

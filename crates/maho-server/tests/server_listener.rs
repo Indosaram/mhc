@@ -8,6 +8,18 @@ impl ServerListener for Listener {
     }
 }
 #[tokio::test]
+async fn listener_shutdown_admits_all_closes_before_waiting_for_completion() {
+    struct ConcurrentListener(Arc<tokio::sync::Barrier>);
+    impl ServerListener for ConcurrentListener {
+        fn start(&self,_:ByteConnectionAcceptor)->ServerFuture<'_,()> {Box::pin(async {Ok(())})}
+        fn close(&self)->ServerFuture<'_,()> {Box::pin(async move {self.0.wait().await;Ok(())})}
+    }
+    let admitted=Arc::new(tokio::sync::Barrier::new(2));
+    let listeners=ServerListeners::new(vec![Arc::new(ConcurrentListener(admitted.clone())),Arc::new(ConcurrentListener(admitted))]);
+    tokio::time::timeout(std::time::Duration::from_secs(2),listeners.close()).await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn listener_close_attempts_every_listener_even_after_failure() {
     let closes = Arc::new(AtomicUsize::new(0));
     let listeners = ServerListeners::new(vec![Arc::new(Listener { closes:closes.clone(), fail_close:true }),Arc::new(Listener { closes:closes.clone(), fail_close:false })]);
