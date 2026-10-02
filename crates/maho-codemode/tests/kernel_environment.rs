@@ -47,6 +47,29 @@ fn empty_optional_strings_omitted() {
 }
 
 #[test]
+fn extracts_live_native_tool_context_session() {
+    struct Context;
+    impl maho_ext_api::ToolSessionManager for Context {
+        fn session_id(&self) -> &str { "native-session" }
+        fn session_file(&self) -> Option<&Path> { Some(Path::new("/sessions/native.jsonl")) }
+    }
+    impl maho_ext_api::ToolContext for Context {
+        fn cwd(&self) -> &Path { Path::new("/workspace") }
+        fn model(&self) -> Option<&maho_ext_api::Model> { None }
+        fn thinking_level(&self) -> Option<maho_ext_api::ThinkingLevel> { Some(maho_ext_api::ThinkingLevel::Xhigh) }
+        fn session_manager(&self) -> &dyn maho_ext_api::ToolSessionManager { self }
+        fn goal_store_file(&self) -> Option<&Path> { Some(Path::new("/goals/native.json")) }
+    }
+    assert_eq!(session_environment_from_context(&Context), SessionEnvironment::from([
+        ("PI_SESSION_ID".into(),"native-session".into()),
+        ("PI_SESSION_CWD".into(),"/workspace".into()),
+        ("PI_SESSION_FILE".into(),"/sessions/native.jsonl".into()),
+        ("PI_GOAL_STORE_FILE".into(),"/goals/native.json".into()),
+        ("PI_REASONING_LEVEL".into(),"xhigh".into()),
+    ]));
+}
+
+#[test]
 fn sidecar_paths_for_all_interpreters() {
     let root = tempfile::tempdir().unwrap();
     let executable = root.path().join("pi/pi");
