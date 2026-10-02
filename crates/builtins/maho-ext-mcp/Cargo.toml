@@ -30,6 +30,9 @@ futures = "=0.3.34"
 [dev-dependencies]
 tempfile = "=3.27.0"
 reqwest = { workspace = true, features = ["rustls-tls"] }
+maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
+maho-ext-host = { path = "../../maho-ext-host" }
+maho-ai = { path = "../../maho-ai" }
 
 [lints]
 workspace = true
