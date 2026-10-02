@@ -4791,6 +4791,37 @@ mod tests {
         assert_eq!(maho_ai::utils::text::content_text(&result.content, ""), "rewritten");
     }
 
+    #[tokio::test]
+    async fn failed_provider_tool_preflight_blocks_executor() {
+        let mut assistant = maho_ai::providers::faux::faux_assistant_message("", Default::default());
+        assistant.stop_reason = StopReason::ToolUse;
+        assistant.content = vec![maho_ai::types::ContentBlock::ToolCall(maho_ai::types::ToolCall {
+            id: "call".to_owned(), name: "echo".to_owned(), arguments: Map::new(), ..Default::default()
+        })];
+        let session = retry_session(vec![assistant, maho_ai::providers::faux::faux_assistant_message("done", Default::default())], 0);
+        let calls = Arc::new(AtomicU64::new(0));
+        let captured = calls.clone();
+        let mut tool = test_tool("echo");
+        tool.execute = Arc::new(move |_, _, _, _| {
+            captured.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { AgentToolResult::text("unexpected") })
+        });
+        session.register_tool_definition(test_definition("echo"), empty_source_info(), tool);
+        session.set_active_tools_by_name(vec!["echo".to_owned()]);
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:failure>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::ToolCall, vec![Arc::new(|_, _| Box::pin(async { Err("hook refused".into()) }))]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("input", Default::default()))
+            .await.expect("bounded prompt").expect("prompt");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let messages = session.messages();
+        let result = messages.iter().find_map(|message| match message {
+            AgentMessage::Llm(maho_ai::types::Message::ToolResult(result)) => Some(result), _ => None,
+        }).expect("blocked tool result");
+        assert!(result.is_error);
+        assert!(maho_ai::utils::text::content_text(&result.content, "").contains("hook refused"));
+    }
+
     #[test]
     fn eval_helper_calls_use_the_argument_name_the_tool_takes() {
         assert_eq!(eval_helper_call("bash"), "tool.bash({ command: \"...\" })");
