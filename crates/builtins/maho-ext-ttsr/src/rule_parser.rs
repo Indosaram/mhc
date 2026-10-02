@@ -6,7 +6,7 @@ pub struct SkippedRule { pub name:String,pub warning:String }
 fn fields(metadata:&str)->Map<String,Value> {
     if let Ok(value)=serde_yaml::from_str::<Value>(metadata) { return value.as_object().cloned().unwrap_or_default(); }
     let mut fields=Map::new();
-    for line in metadata.split('\n') { let Some((key,raw))=line.split_once(':') else { continue; }; if key.is_empty() || !key.chars().all(|c|c.is_ascii_alphanumeric() || matches!(c,'_'|'-')) { continue; } let raw=raw.trim(); let parsed=serde_yaml::from_str::<Value>(raw).ok().filter(|value|!value.is_object()).unwrap_or_else(||Value::String(raw.into())); fields.insert(key.into(),if raw.is_empty() { Value::String(String::new()) } else { parsed }); }
+    for line in metadata.split('\n') { let Some((key,raw))=line.split_once(':') else { continue; }; if key.is_empty() || !key.chars().all(|c|c.is_ascii_alphanumeric() || matches!(c,'_'|'-')) { continue; } let raw=maho_ai::utils::js::trim(raw); let parsed=serde_yaml::from_str::<Value>(raw).ok().filter(|value|!value.is_object()).unwrap_or_else(||Value::String(raw.into())); fields.insert(key.into(),if raw.is_empty() { Value::String(String::new()) } else { parsed }); }
     fields
 }
 fn string_list(value:Option<&Value>)->Vec<String> {
@@ -22,7 +22,7 @@ fn split_scope(value:&str)->Vec<String> {
     }
     result.push(current); result.into_iter().filter_map(|token| { let token=maho_ai::utils::js::trim(&token); let token=if token.len()>=2 && (token.starts_with('"') && token.ends_with('"') || token.starts_with('\'') && token.ends_with('\'')) { maho_ai::utils::js::trim(&token[1..token.len()-1]) } else { token }; (!token.is_empty()).then(||token.into()) }).collect()
 }
-fn file_glob(token:&str)->bool { !token.chars().any(|c|matches!(c,'\\'|'^'|'$'|'+'|'|'|'('|')')) && token.chars().any(|c|matches!(c,'?'|'*'|'['|']'|'{'|'}')) && (token.contains('/') || token.strip_prefix("*.").is_some_and(|suffix|!suffix.is_empty() && !suffix.chars().any(char::is_whitespace))) }
+fn file_glob(token:&str)->bool { !token.chars().any(|c|matches!(c,'\\'|'^'|'$'|'+'|'|'|'('|')')) && token.chars().any(|c|matches!(c,'?'|'*'|'['|']'|'{'|'}')) && (token.contains('/') || token.strip_prefix("*.").is_some_and(|suffix|!suffix.is_empty() && !suffix.chars().any(|c|c=='/'||maho_ai::utils::js::is_js_whitespace(c)))) }
 pub fn parse_rule_file(markdown:&str,meta:RuleFileMeta)->Result<TtsrRule,SkippedRule> {
     let normalized=markdown.replace("\r\n","\n").replace('\r',"\n");
     let (fields,body)=if let Some(rest)=normalized.strip_prefix("---") { if let Some(end)=rest.find("\n---").map(|end|end+3) { (fields(normalized.get(4..end).unwrap_or("")),maho_ai::utils::js::trim(&normalized[end+4..]).to_owned()) } else { (Map::new(),normalized) } } else { (Map::new(),normalized) };
@@ -40,6 +40,13 @@ pub fn parse_rule_file(markdown:&str,meta:RuleFileMeta)->Result<TtsrRule,Skipped
 #[cfg(test)] mod tests {
     use super::*;
     fn meta()->RuleFileMeta { RuleFileMeta { name:"test".into(),path:None,source:RuleSource::Project } }
+    #[test] fn fallback_metadata_values_trim_ecmascript_bom() {
+        let rule=parse_rule_file("---\ncondition: bad\nscope: text\ninterruptMode: \u{feff}never\u{feff}\nbroken: [\n---\nbody",meta()).unwrap(); assert_eq!(rule.interrupt_mode,TtsrInterruptMode::Never);
+    }
+    #[test] fn extension_glob_inference_uses_ecmascript_whitespace() {
+        assert!(!file_glob("*.a\u{feff}b")); assert!(file_glob("*.a\u{0085}b"));
+        let rule=parse_rule_file("---\ncondition: '*.a\u{feff}b'\n---\nbody",meta()); assert!(rule.is_err());
+    }
     #[test] fn upstream_malformed_scope_reporter_preserves_matching_and_metadata() {
         let rule=parse_rule_file("---\nname: fix-failures-now\ndescription: prohibits pre-existing classification.\ncondition: \"(?i)(pre.existing|also fails on master|check.*master.*first)\"\nscope: \"text\",\"thinking\"\n---\nbody",RuleFileMeta { name:"fix-failures-now".into(),path:Some("rules/fix-failures-now.md".into()),source:RuleSource::Project }).unwrap();
         assert!(rule.scope.allow_text); assert!(rule.scope.allow_thinking); assert!(rule.scope.tool_scopes.is_empty());
