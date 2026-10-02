@@ -2,13 +2,15 @@ use std::collections::BTreeMap;
 use crate::{rule_condition::compile_rule_condition,scope::{has_reachable_scope,matches_path_globs,matches_scope},types::*};
 pub struct TtsrMatchContext { pub source:TtsrStreamSource,pub stream_key:String,pub tool_name:Option<String>,pub file_paths:Option<Vec<String>> }
 struct Entry { rule:TtsrRule,conditions:Vec<fancy_regex::Regex> }
-pub struct TtsrManager { settings:TtsrSettings,rules:Vec<Entry>,injection_records:Vec<(String,u64)>,buffers:BTreeMap<String,Vec<u16>>,max_condition_length:usize,message_count:u64,can_match_text:bool,can_match_thinking:bool }
+pub type TtsrCompileCondition=std::sync::Arc<dyn Fn(&str)->Option<fancy_regex::Regex>+Send+Sync>;
+pub struct TtsrManager { settings:TtsrSettings,compile_condition:TtsrCompileCondition,rules:Vec<Entry>,injection_records:Vec<(String,u64)>,buffers:BTreeMap<String,Vec<u16>>,max_condition_length:usize,message_count:u64,can_match_text:bool,can_match_thinking:bool }
 impl TtsrManager {
-    pub fn new(settings:TtsrSettings)->Self { Self { settings,rules:vec![],injection_records:vec![],buffers:BTreeMap::new(),max_condition_length:0,message_count:0,can_match_text:false,can_match_thinking:false } }
+    pub fn new(settings:TtsrSettings)->Self { Self::with_compiler(settings,std::sync::Arc::new(|pattern|compile_rule_condition(pattern).regex)) }
+    pub fn with_compiler(settings:TtsrSettings,compile_condition:TtsrCompileCondition)->Self { Self { settings,compile_condition,rules:vec![],injection_records:vec![],buffers:BTreeMap::new(),max_condition_length:0,message_count:0,can_match_text:false,can_match_thinking:false } }
     pub fn add_rule(&mut self,mut rule:TtsrRule)->bool {
         if !self.settings.enabled || self.settings.disabled_rules.contains(&rule.name) || self.rules.iter().any(|entry|entry.rule.name==rule.name) { return false; }
         let mut conditions=Vec::new();
-        for pattern in &rule.condition { if let Some(regex)=compile_rule_condition(pattern).regex { conditions.push(regex); self.max_condition_length=self.max_condition_length.max(pattern.encode_utf16().count()); } }
+        for pattern in &rule.condition { if let Some(regex)=(self.compile_condition)(pattern) { conditions.push(regex); self.max_condition_length=self.max_condition_length.max(pattern.encode_utf16().count()); } }
         if conditions.is_empty() || !has_reachable_scope(&rule.scope) { return false; }
         if let Some(globs)=&mut rule.globs { globs.retain(|glob|globset::GlobBuilder::new(glob).literal_separator(true).build().is_ok()); }
         for tool in &mut rule.scope.tool_scopes { if tool.path_glob.as_ref().is_some_and(|glob|globset::GlobBuilder::new(glob).literal_separator(true).build().is_err()) { tool.path_glob=None; } }
@@ -31,7 +33,7 @@ impl TtsrManager {
     pub fn stream_buffer_lengths(&self)->BTreeMap<String,usize> { self.buffers.iter().map(|(key,value)|(key.clone(),value.len())).collect() }
     fn record(&mut self,name:&str,at:u64) { if let Some((_,last))=self.injection_records.iter_mut().find(|(key,_)|key==name) { *last=at; } else { self.injection_records.push((name.into(),at)); } }
     pub fn mark_injected(&mut self,rules:&[TtsrRule]) { for rule in rules { self.mark_injected_by_names(std::slice::from_ref(&rule.name)); } }
-    pub fn mark_injected_by_names(&mut self,names:&[String]) { for name in names { let name=name.trim(); if !name.is_empty() { self.record(name,self.message_count); } } }
+    pub fn mark_injected_by_names(&mut self,names:&[String]) { for name in names { let name=maho_ai::utils::js::trim(name); if !name.is_empty() { self.record(name,self.message_count); } } }
     pub fn injected_rule_names(&self)->Vec<String> { self.injection_records.iter().map(|(name,_)|name.clone()).collect() }
     pub fn restore_injected(&mut self,names:&[String]) { for name in names { self.record(name,0); } }
     pub fn reset_buffers(&mut self) { self.buffers.clear(); }
@@ -52,4 +54,11 @@ impl TtsrManager {
     #[test] fn buffers_are_bounded_and_reset() { let mut manager=TtsrManager::new(TtsrSettings::default()); manager.add_rule(rule("test","x")); manager.check_delta(&"x".repeat(10000),&context("a")); assert_eq!(manager.stream_buffer_lengths()["text:a"],1024); manager.reset_buffers(); assert!(manager.stream_buffer_lengths().is_empty()); }
     #[test] fn invalid_and_disabled_rules_are_not_added() { let mut manager=TtsrManager::new(TtsrSettings { disabled_rules:vec!["disabled".into()],..Default::default() }); assert!(!manager.add_rule(rule("disabled","x"))); assert!(!manager.add_rule(rule("invalid","("))); assert!(!manager.has_rules()); }
     #[test] fn restore_preserves_injection_name_order_and_empty_names() { let mut manager=TtsrManager::new(TtsrSettings::default()); manager.restore_injected(&["b".into(),"".into(),"a".into()]); manager.mark_injected_by_names(&["b".into()]); assert_eq!(manager.injected_rule_names(),["b","","a"]); }
+    #[test] fn injected_compiler_controls_admission_and_matching() {
+        let seen=std::sync::Arc::new(std::sync::Mutex::new(Vec::new())); let capture=seen.clone();
+        let mut manager=TtsrManager::with_compiler(TtsrSettings::default(),std::sync::Arc::new(move |pattern| { capture.lock().unwrap().push(pattern.to_owned()); if pattern=="reject" { None } else { Some(fancy_regex::Regex::new("replacement").unwrap()) } }));
+        assert!(!manager.add_rule(rule("rejected","reject"))); assert!(manager.add_rule(rule("accepted","original")));
+        assert!(manager.check_delta("original",&context("a")).is_empty()); assert_eq!(manager.check_delta("replacement",&context("b"))[0].name,"accepted"); assert_eq!(*seen.lock().unwrap(),["reject","original"]);
+    }
+    #[test] fn injected_rule_names_trim_ecmascript_bom() { let mut manager=TtsrManager::new(Default::default()); manager.mark_injected_by_names(&["\u{feff}test\u{feff}".into()]); assert_eq!(manager.injected_rule_names(),["test"]); }
 }
