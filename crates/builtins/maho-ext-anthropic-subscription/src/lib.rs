@@ -4,6 +4,8 @@ pub mod account_events;
 pub mod account_management;
 pub mod affinity;
 pub mod auth_environment;
+pub mod availability;
+pub mod oauth_login;
 pub mod bounded_queue;
 pub mod custom_tools_schema;
 pub mod content_blocks;
