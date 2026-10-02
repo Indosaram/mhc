@@ -19,7 +19,7 @@ pub enum Frame {
 pub type HandlerFuture = Pin<Box<dyn Future<Output = Result<Value, String>> + Send>>;
 pub type Handler = Arc<dyn Fn(Vec<Value>, AbortSignal) -> HandlerFuture + Send + Sync>;
 pub type Forward = Arc<dyn Fn(String, Vec<Value>) -> HandlerFuture + Send + Sync>;
-type EventHandler = Arc<dyn Fn(&str, &Value, Option<&str>) + Send + Sync>;
+pub type EventHandler = Arc<dyn Fn(&str, &Value, Option<&str>) + Send + Sync>;
 #[derive(Default)]
 pub struct CallOptions { pub signal: Option<AbortSignal>, pub timeout_ms: Option<u64> }
 pub struct PeerOptions { pub forward: Option<Forward>, pub dead_ms: u64 }

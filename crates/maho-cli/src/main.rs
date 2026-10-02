@@ -56,7 +56,7 @@ fn run() -> Result<(), String> {
         Some("host") => { maho_cli::cli::host_command::parse_host_args(&argv[1..])?; return Err("Host execution blocked by unmerged todo 36 (maho-rpc)".to_owned()); }
         Some("app-server") => return Err("App-server execution blocked by unmerged todo 37 (maho-server)".to_owned()),
         Some("config") => {
-            if argv.iter().any(|argument| matches!(argument.as_str(), "--help" | "-h")) { return output(maho_cli::package_manager_cli::config_command_help()); }
+            if maho_cli::package_manager_cli::parse_config_command(&argv)?.is_some_and(|options| options.help) { return output(maho_cli::package_manager_cli::config_command_help()); }
             return Err("Config TUI execution blocked by unmerged todo 35 and DefaultPackageManager API request (todo 19)".to_owned());
         }
         _ => {},

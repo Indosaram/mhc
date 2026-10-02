@@ -1,4 +1,12 @@
 use maho_cli::package_manager_cli::*;
+#[test]
+fn config_route_preserves_help_priority_scope_and_last_trust_override() {
+    let options = parse_config_command(&args(&["config", "--local", "--approve", "--no-approve"])).unwrap().unwrap();
+    assert!(options.local); assert_eq!(options.project_trust_override, Some(false));
+    assert!(parse_config_command(&args(&["config", "--invalid", "--help"])).unwrap().unwrap().help);
+    assert!(parse_config_command(&args(&["config", "--invalid"])).is_err());
+    assert!(parse_config_command(&args(&["config", "unexpected"])).is_err());
+}
 fn args(values: &[&str]) -> Vec<String> { values.iter().map(|value| (*value).to_owned()).collect() }
 #[test] fn remove_alias_accepts_project_scope() {
     let command = parse_package_command(&args(&["uninstall", "--local", "npm:resource", "-a"])).unwrap();

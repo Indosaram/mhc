@@ -22,6 +22,22 @@ pub fn package_command_help(command: PackageCommand) -> String {
 pub fn config_command_help() -> &'static str {
     "Usage:\n  mhc config [-l] [--approve|--no-approve]\n\nOpen the resource configuration TUI to enable or disable package resources.\nWithout -l, starts in global settings (~/.maho/agent/settings.json).\nPress Tab in the TUI to switch between global and project-local modes.\n\nOptions:\n  -l, --local       Edit project overrides (.maho/settings.json)\n  -a, --approve     Trust project-local files for this command with -l\n  -na, --no-approve Ignore project-local files for this command with -l\n\n"
 }
+pub struct ConfigCommandOptions { pub local: bool, pub project_trust_override: Option<bool>, pub help: bool }
+pub fn parse_config_command(args: &[String]) -> Result<Option<ConfigCommandOptions>, String> {
+    if args.first().map(String::as_str) != Some("config") { return Ok(None); }
+    let mut options = ConfigCommandOptions { local: false, project_trust_override: None, help: args[1..].iter().any(|argument| matches!(argument.as_str(), "-h" | "--help")) };
+    if options.help { return Ok(Some(options)); }
+    for argument in &args[1..] {
+        match argument.as_str() {
+            "-l" | "--local" => options.local = true,
+            "-a" | "--approve" => options.project_trust_override = Some(true),
+            "-na" | "--no-approve" => options.project_trust_override = Some(false),
+            _ if argument.starts_with('-') => return Err(format!("Unknown option {argument} for \"config\".")),
+            _ => return Err(format!("Unexpected argument {argument}.")),
+        }
+    }
+    Ok(Some(options))
+}
 pub struct PackageCommandOptions {
     pub command: PackageCommand, pub source: Option<String>, pub local: bool,
     pub update_target: Option<UpdateTarget>, pub show_extensions_skipped_note: bool,
