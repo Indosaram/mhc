@@ -50,7 +50,7 @@ pub fn parse_rule_file(markdown:&str,meta:RuleFileMeta)->Result<TtsrRule,Skipped
     #[test] fn upstream_malformed_scope_reporter_preserves_matching_and_metadata() {
         let rule=parse_rule_file("---\nname: fix-failures-now\ndescription: prohibits pre-existing classification.\ncondition: \"(?i)(pre.existing|also fails on master|check.*master.*first)\"\nscope: \"text\",\"thinking\"\n---\nbody",RuleFileMeta { name:"fix-failures-now".into(),path:Some("rules/fix-failures-now.md".into()),source:RuleSource::Project }).unwrap();
         assert!(rule.scope.allow_text); assert!(rule.scope.allow_thinking); assert!(rule.scope.tool_scopes.is_empty());
-        let regex=compile_rule_condition(&rule.condition[0]).regex.unwrap(); assert!(regex.is_match("The CI failure was 4 pre-existing GPS map VR mismatches").unwrap()); assert!(regex.is_match("Everything also fails on master anyway").unwrap());
+        let regex=compile_rule_condition(&rule.condition[0]).regex.unwrap(); assert!(regex.find("The CI failure was 4 pre-existing GPS map VR mismatches").is_some()); assert!(regex.find("Everything also fails on master anyway").is_some());
         assert_eq!(rule.description.as_deref(),Some("prohibits pre-existing classification.")); assert_eq!(rule.content,"body"); assert_eq!(rule.path.as_deref(),Some("rules/fix-failures-now.md")); assert_eq!(rule.interrupt_mode,TtsrInterruptMode::Always);
     }
     #[test] fn upstream_absent_scope_defaults_to_text_and_any_tool() {
