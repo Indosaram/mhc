@@ -72,7 +72,7 @@ pub async fn perform_provider_search(config:&SearchProviderEntry,request:&Search
     }
     Ok(details)
 }
-pub type SearchAttemptListener<'a>=dyn Fn(&str,&[SearchAttempt],&[String])+Send+Sync+'a;
+pub type SearchAttemptListener<'a>=dyn Fn(&str,&[SearchAttempt],&[String])->Result<(),ToolError>+Send+Sync+'a;
 pub async fn perform_search(config:&WebsearchConfig,request:&SearchRequest,signal:Option<&AbortSignal>,routing_state:Option<&mut SearchRoutingState>,on_attempt:Option<&SearchAttemptListener<'_>>)->Result<SearchDetails,ToolError> {
     let started=Instant::now(); let mut local=create_search_routing_state(config.providers.len()); let state=routing_state.unwrap_or(&mut local);
     let order=select_order(config.strategy,&config.providers,state); let mut attempts=Vec::new();
@@ -80,7 +80,7 @@ pub async fn perform_search(config:&WebsearchConfig,request:&SearchRequest,signa
     let mut collected:Vec<super::types::SearchResultItem>=Vec::new(); let mut selected=None;
     for index in order {
         let Some(provider)=config.providers.get(index) else { continue; };
-        if let Some(listener)=on_attempt { listener(&provider_entry_label(provider.config.provider.as_str(),provider.config.id.as_deref(),None),&attempts,&labels); }
+        if let Some(listener)=on_attempt { listener(&provider_entry_label(provider.config.provider.as_str(),provider.config.id.as_deref(),None),&attempts,&labels)?; }
         let mut details=perform_provider_search(provider,request,signal).await?;
         attempts.push(SearchAttempt{provider:details.provider,entry_id:details.entry_id.clone().filter(|id|!id.is_empty()),duration_ms:details.duration_ms,results_count:details.results.len(),error:details.error.clone().filter(|error|!error.is_empty())});
         if details.error.is_some() { if !config.fallback { details.strategy=Some(config.strategy); details.attempts=Some(attempts); return Ok(details); } selected=Some(details); continue; }
