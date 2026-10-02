@@ -90,7 +90,8 @@ pub fn normalize_changelog_links(markdown: &str, version: &str) -> String {
                 let joined = if path.starts_with('/') { path.trim_start_matches('/').to_owned() } else { format!("packages/coding-agent/{path}") };
                 let mut parts = Vec::new();
                 for part in joined.split('/') { match part { "" | "." => {}, ".." if parts.last().is_some_and(|part| *part != "..") => { parts.pop(); }, part => parts.push(part) } }
-                let normalized = parts.join("/");
+                let mut normalized = parts.join("/");
+                if joined.ends_with('/') && !normalized.is_empty() { normalized.push('/'); }
                 if !normalized.is_empty() && !normalized.starts_with("../") && normalized != ".." {
                     let route = if path.ends_with('/') || !parts.last().is_some_and(|part| part.contains('.')) { "tree" } else { "blob" };
                     const URI: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS.add(b' ').add(b'"').add(b'<').add(b'>').add(b'[').add(b']').add(b'\\').add(b'^').add(b'`').add(b'{').add(b'|').add(b'}').add(b'%');

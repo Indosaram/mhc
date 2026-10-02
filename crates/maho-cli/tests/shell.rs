@@ -27,3 +27,15 @@ async fn explicit_shell_resolution_checks_file_and_invocation() {
     assert_eq!(config.args, ["/c"]);
     assert!(get_shell_config(Some(directory.path().join("missing").to_str().unwrap())).await.is_err());
 }
+#[test]
+fn upstream_sanitization_returns_clean_ascii_unchanged() {
+    assert_eq!(sanitize_binary_output("line one\nline two\tok"), "line one\nline two\tok");
+}
+#[test]
+fn upstream_sanitization_removes_disallowed_controls() {
+    assert_eq!(sanitize_binary_output("a\0b\tc\nd\re\u{7}f"), "ab\tc\nd\ref");
+}
+#[test]
+fn upstream_sanitization_removes_format_characters() {
+    assert_eq!(sanitize_binary_output("before\u{fff9}hidden\u{fffb}after"), "beforehiddenafter");
+}
