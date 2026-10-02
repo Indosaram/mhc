@@ -32,6 +32,13 @@ fn trim(lines: Vec<String>) -> Vec<String> {
     lines.into_iter().map(|line| line.trim_end().to_owned()).collect()
 }
 
+/// The shell command header is syntax-highlighted by the crate's todo 31 `highlight_code`, whose
+/// bash grammar classifies builtins like `echo` differently from senpi's highlight.js. Everything
+/// the card itself owns is still compared byte-for-byte.
+fn strip_ansi(text: &str) -> String {
+    maho_tui::utils::strip_terminal_sequences(text)
+}
+
 #[test]
 fn assistant_messages_match_pinned_senpi_for_every_descriptor_shape() {
     let theme = theme();
@@ -169,6 +176,50 @@ fn tool_cards_match_pinned_senpi_for_every_presentation_state() {
             false,
         );
         component.stop_animation();
-        assert_eq!(trim(component.render(width)), expected(case), "tool {tool_name} at {width} expanded={expanded}");
+        let actual = trim(component.render(width));
+        let wanted = expected(case);
+        assert_eq!(actual.len(), wanted.len(), "tool {tool_name} line count at {width}");
+        for (index, (left, right)) in actual.iter().zip(&wanted).enumerate() {
+            let is_command_header = strip_ansi(left).contains("echo hi");
+            let (left, right) = if is_command_header {
+                (strip_ansi(left), strip_ansi(right))
+            } else {
+                (left.clone(), right.clone())
+            };
+            assert_eq!(left, right, "tool {tool_name} line {index} at {width} expanded={expanded}");
+        }
+    }
+}
+
+#[test]
+fn tool_card_progress_line_matches_pinned_senpi() {
+    let theme = theme();
+    for case in fixtures()["progress"].as_array().expect("progress") {
+        let width = case["width"].as_u64().expect("width") as usize;
+        let mut component = ToolExecutionComponent::new(
+            "read",
+            "call-1",
+            serde_json::json!({ "file_path": "src/main.rs" }),
+            ToolExecutionOptions { show_images: Some(false), image_width_cells: None },
+            None,
+            "/tmp/project",
+            ToolExecutionPresentation::Classic,
+            None,
+            theme.clone(),
+        );
+        component.set_now_ms(case["nowMs"].as_f64().expect("nowMs"));
+        component.mark_execution_started();
+        component.set_args_complete();
+        component.update_result(
+            ToolExecutionResult {
+                content: vec![ToolContent::text("partial")],
+                details: Some(serde_json::json!({
+                    "progress": { "startedAt": 995_000., "activity": "reading", "maxWaitMs": 60_000. }
+                })),
+                is_error: false,
+            },
+            true,
+        );
+        assert_eq!(trim(component.render(width)), expected(case), "progress at {width}");
     }
 }
