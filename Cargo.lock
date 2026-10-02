@@ -1909,6 +1909,7 @@ dependencies = [
 name = "maho-ext-websearch"
 version = "0.0.0"
 dependencies = [
+ "regex",
  "serde_json",
  "url",
 ]

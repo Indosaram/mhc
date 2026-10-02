@@ -7,3 +7,8 @@ pub mod google_cse;
 pub mod z_ai;
 pub mod perplexity;
 pub mod kimi;
+pub mod anthropic;
+pub mod deepseek;
+pub mod duckduckgo_html;
+pub mod openai_responses;
+pub mod xai;
