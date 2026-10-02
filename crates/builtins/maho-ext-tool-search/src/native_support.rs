@@ -23,11 +23,21 @@ pub fn supports_anthropic_native_tool_search(target: Option<&AnthropicToolSearch
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test] fn upstream_model_compatibility_table() {
-        for (id,supported) in [("claude-fable-5-1",true),("claude-opus-5",true),("claude-opus-4-8",true),("claude-sonnet-4-5-20250929",true),("claude-opus-4-1",false),("claude-haiku-4-5-20251001",false),("claude-3-5-sonnet-20241022",false)] {
-            assert_eq!(supports_anthropic_native_tool_search(Some(&AnthropicToolSearchTarget::Model{api:"anthropic-messages",id,provider:"anthropic",supports_tool_references:None})),supported);
-        }
+    fn upstream_support(id:&str)->bool {supports_anthropic_native_tool_search(Some(&AnthropicToolSearchTarget::Model{api:"anthropic-messages",id,provider:"anthropic",supports_tool_references:None}))}
+    #[test] fn upstream_fable_5_1() {assert!(upstream_support("claude-fable-5-1"));}
+    #[test] fn upstream_opus_5() {assert!(upstream_support("claude-opus-5"));}
+    #[test] fn upstream_opus_4_8() {assert!(upstream_support("claude-opus-4-8"));}
+    #[test] fn upstream_sonnet_4_5_dated() {assert!(upstream_support("claude-sonnet-4-5-20250929"));}
+    #[test] fn upstream_opus_4_1() {assert!(!upstream_support("claude-opus-4-1"));}
+    #[test] fn upstream_haiku_4_5_dated() {assert!(!upstream_support("claude-haiku-4-5-20251001"));}
+    #[test] fn upstream_old_sonnet() {assert!(!upstream_support("claude-3-5-sonnet-20241022"));}
+    #[test] fn upstream_explicit_proxy_override() {
         assert!(supports_anthropic_native_tool_search(Some(&AnthropicToolSearchTarget::Model{api:"anthropic-messages",id:"claude-opus-4-1",provider:"openmodel",supports_tool_references:Some(true)})));
+    }
+    #[test] fn upstream_api_only_contract() {
+        assert!(supports_anthropic_native_tool_search(Some(&AnthropicToolSearchTarget::Api("anthropic-messages"))));
+        assert!(!supports_anthropic_native_tool_search(Some(&AnthropicToolSearchTarget::Api("openai-responses"))));
+        assert!(!supports_anthropic_native_tool_search(None));
     }
     #[test] fn api_gate() { assert!(supports_anthropic_native_tool_search(Some(&AnthropicToolSearchTarget::Api("anthropic-messages")))); assert!(!supports_anthropic_native_tool_search(None)); }
     #[test] fn model_gate() { for (id,expected) in [("claude-opus-4-5-20251101",true),("claude-opus-4-20251101",false),("claude-opus-4-1",false),("claude-sonnet-5",true),("claude-haiku-5",false),("claude-fable-5",true)] { assert_eq!(supports_anthropic_native_tool_search(Some(&AnthropicToolSearchTarget::Model { api:"anthropic-messages", id, provider:"anthropic", supports_tool_references:None })),expected); } }

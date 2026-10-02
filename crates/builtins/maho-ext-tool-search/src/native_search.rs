@@ -50,24 +50,30 @@ impl AnthropicNativeToolSearchAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test] fn upstream_canonical_server_and_local_search_contract() {
-        let payload=json!({"tools":[{"name":"tool_search","description":"search","input_schema":{}},{"name":"mcp_docs_get-library-docs","description":"docs","input_schema":{}}]});
-        let config=AnthropicNativeInjectionConfig{search_tool_name:Some("tool_search"),is_deferrable:&|name|name.starts_with("mcp_"),catalog:&[],get_tool_definition:&|_|None};
-        let out=add_anthropic_native_tool_search(Some(&AnthropicToolSearchTarget::Api("anthropic-messages")),&payload,&config);
+    fn upstream_payload()->Value {json!({"tools":[{"name":"tool_search","description":"search","input_schema":{}},{"name":"mcp_docs_get-library-docs","description":"docs","input_schema":{}}]})}
+    fn upstream_injection(target:AnthropicToolSearchTarget<'_>)->Value {
+        add_anthropic_native_tool_search(Some(&target),&upstream_payload(),&AnthropicNativeInjectionConfig{search_tool_name:Some("tool_search"),is_deferrable:&|name|name.starts_with("mcp_"),catalog:&[],get_tool_definition:&|_|None})
+    }
+    #[test] fn upstream_canonical_server_name() {
+        let out=upstream_injection(AnthropicToolSearchTarget::Api("anthropic-messages"));
         let tools=out["tools"].as_array().unwrap();
         assert_eq!(tools.iter().filter(|tool|tool["type"]=="tool_search_tool_bm25_20251119").collect::<Vec<_>>(),vec![&json!({"type":"tool_search_tool_bm25_20251119","name":"tool_search_tool_bm25"})]);
-        assert_eq!(tools[0],payload["tools"][0]);
-        assert_eq!(add_anthropic_native_tool_search(Some(&AnthropicToolSearchTarget::Api("openai-responses")),&payload,&config),payload);
     }
-    #[test] fn upstream_tool_references_and_proxy_contract() {
+    #[test] fn upstream_local_search_is_resident() {
+        assert_eq!(upstream_injection(AnthropicToolSearchTarget::Api("anthropic-messages"))["tools"][0],upstream_payload()["tools"][0]);
+    }
+    #[test] fn upstream_non_anthropic_payload_is_unchanged() {
+        assert_eq!(upstream_injection(AnthropicToolSearchTarget::Api("openai-responses")),upstream_payload());
+    }
+    #[test] fn upstream_tool_reference_target_field() {
         assert_eq!(build_tool_reference_blocks(&["mcp_docs_get-library-docs".into(),"mcp_docs_resolve-library-id".into()]),vec![json!({"type":"tool_reference","tool_name":"mcp_docs_get-library-docs"}),json!({"type":"tool_reference","tool_name":"mcp_docs_resolve-library-id"})]);
-        let payload=json!({"tools":[{"name":"tool_search"}]});
-        let config=AnthropicNativeInjectionConfig{search_tool_name:Some("tool_search"),is_deferrable:&|_|true,catalog:&[],get_tool_definition:&|_|None};
-        let target=AnthropicToolSearchTarget::Model{api:"anthropic-messages",id:"claude-opus-5",provider:"openmodel",supports_tool_references:None};
-        assert_eq!(add_anthropic_native_tool_search(Some(&target),&payload,&config),payload);
-        let target=AnthropicToolSearchTarget::Model{api:"anthropic-messages",id:"claude-opus-5",provider:"anthropic",supports_tool_references:None};
-        let out=add_anthropic_native_tool_search(Some(&target),&payload,&config);
-        assert_eq!(out["tools"][1],json!({"type":"tool_search_tool_bm25_20251119","name":"tool_search_tool_bm25"}));
+    }
+    #[test] fn upstream_proxy_payload_is_unchanged() {
+        assert_eq!(upstream_injection(AnthropicToolSearchTarget::Model{api:"anthropic-messages",id:"claude-opus-5",provider:"openmodel",supports_tool_references:None}),upstream_payload());
+    }
+    #[test] fn upstream_model_server_name() {
+        let out=upstream_injection(AnthropicToolSearchTarget::Model{api:"anthropic-messages",id:"claude-opus-5",provider:"anthropic",supports_tool_references:None});
+        assert_eq!(out["tools"][2],json!({"type":"tool_search_tool_bm25_20251119","name":"tool_search_tool_bm25"}));
     }
     #[test] fn defer_preserves_cache_control_and_search() {
         let config=AnthropicNativeInjectionConfig{search_tool_name:Some("tool_search"),is_deferrable:&|_|true,catalog:&[],get_tool_definition:&|_|None};
