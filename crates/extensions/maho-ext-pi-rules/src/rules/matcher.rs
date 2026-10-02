@@ -104,8 +104,23 @@ fn compile_expression(pattern:&str)->String{
     }result
 }
 fn risky_simple_repeat(body:&str)->bool{
-    let branches=body.split('|').map(str::trim).collect::<Vec<_>>();
-    if branches.len()<2{return false;}
-    if branches.iter().any(|branch|branch.is_empty()||branch.chars().all(|ch|matches!(ch,'*'|'?'))){return true;}
-    branches.iter().enumerate().any(|(index,a)|branches[index+1..].iter().any(|b|a.chars().next().is_some_and(|first|a.chars().all(|ch|ch==first)&&b.chars().all(|ch|ch==first))))
+    let mut branches=Vec::new();let mut depth=0;let mut start=0;
+    for (index,ch) in body.char_indices(){match ch{'('| '['=>depth+=1,')'|']'=>depth-=1,'|' if depth==0=>{branches.push(body[start..index].trim());start=index+1;},_=>{}}}
+    branches.push(body[start..].trim());
+    if branches.len()>1&&branches.iter().any(|branch|branch.is_empty()||branch.chars().all(|ch|matches!(ch,'*'|'?'))){return true;}
+    let normalized=branches.iter().map(|branch|branch.strip_prefix("@(").and_then(|value|value.strip_suffix(')')).unwrap_or(branch)).collect::<Vec<_>>();
+    if normalized.iter().enumerate().any(|(index,a)|normalized[index+1..].iter().any(|b|a.chars().next().is_some_and(|first|a.chars().all(|ch|ch==first)&&b.chars().all(|ch|ch==first)))){return true;}
+    let mut saw_star=false;let mut combinable=true;
+    for branch in branches{
+        let mut rest=branch;let mut stars=0;
+        while let Some(after)=rest.strip_prefix("*("){
+            let Some(end)=after.find(')')else{break;};
+            if after[..end].chars().count()!=1||after[..end].contains(['*','?','+','@','!','(','[',']','{','}','|']){break;}
+            stars+=1;rest=&after[end+1..];
+        }
+        if stars>0&&rest.is_empty(){saw_star=true;continue;}
+        if branch.starts_with("+(")||branch.starts_with("*("){return true;}
+        if branch.chars().count()!=1{combinable=false;}
+    }
+    saw_star&&!combinable
 }
