@@ -4822,6 +4822,39 @@ mod tests {
         assert!(maho_ai::utils::text::content_text(&result.content, "").contains("hook refused"));
     }
 
+    #[tokio::test]
+    async fn tree_preparation_hook_observes_navigation_abort() {
+        let session = test_session();
+        let root = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"root","timestamp":0})));
+        session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"branch","timestamp":1})));
+        session.rebuild_session_context().expect("context");
+        let leaf = session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned));
+        let messages = session.messages();
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let started = Arc::new(Mutex::new(Some(started)));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:tree-abort>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeTree, vec![Arc::new(move |event, _| {
+            let started = started.clone();
+            Box::pin(async move {
+                let maho_ext_api::ExtensionEvent::SessionBeforeTree { signal, .. } = event else { panic!("tree event"); };
+                lock(&started).take().expect("single hook invocation").send(()).expect("observer");
+                signal.cancelled().await;
+                Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult { cancel: Some(true), ..Default::default() }))
+            })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(session.navigate_tree(root["id"].as_str().expect("root"), Default::default()), async {
+                entered.await.expect("hook started");
+                session.abort_branch_summary();
+            })
+        }).await.expect("bounded navigation cancellation");
+        assert!(result.expect("navigation").cancelled);
+        assert_eq!(session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)), leaf);
+        assert_eq!(session.messages(), messages);
+        assert!(!session.is_compacting());
+    }
+
     #[test]
     fn eval_helper_calls_use_the_argument_name_the_tool_takes() {
         assert_eq!(eval_helper_call("bash"), "tool.bash({ command: \"...\" })");
