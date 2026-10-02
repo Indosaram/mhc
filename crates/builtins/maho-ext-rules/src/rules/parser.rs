@@ -5,7 +5,8 @@ pub fn parse_rule(content: &str) -> ParsedRule {
  if opening == 0 { return ParsedRule { frontmatter: RuleFrontmatter::default(), body: normalized.into(), diagnostic: None }; }
  let mut start = opening;
  for line in normalized[opening..].split_inclusive('\n') {
-  if line.trim_end_matches('\n').trim_end_matches('\r') == "---" {
+  let delimiter = line.strip_suffix('\n').unwrap_or(line);
+  if delimiter.strip_suffix('\r').unwrap_or(delimiter) == "---" {
    let body_start = start.saturating_add(line.len());
    return match parse_yaml_frontmatter(&normalized[opening..start]) {
     Ok(frontmatter) => ParsedRule { frontmatter, body: normalized[body_start..].into(), diagnostic: None },

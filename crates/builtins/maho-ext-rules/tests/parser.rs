@@ -27,3 +27,10 @@ fn lone_single_quote_scalar_is_an_empty_string() {
  assert_eq!(result.frontmatter.description.as_deref(), Some(""));
  assert!(result.diagnostic.is_none());
 }
+#[test]
+fn repeated_carriage_returns_are_not_a_closing_delimiter() {
+ let input = "---\ndescription: test\n---\r\r\nbody";
+ let result = parse_rule(input);
+ assert_eq!(result.body, input);
+ assert_eq!(result.diagnostic.as_deref(), Some("Missing closing frontmatter delimiter"));
+}
