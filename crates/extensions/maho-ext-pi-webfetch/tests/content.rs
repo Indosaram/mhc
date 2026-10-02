@@ -1,4 +1,6 @@
 use maho_ext_pi_webfetch::webfetch::content::decode_html_entities;
+#[test]fn html_fragment_dom_removes_noise_and_separates_blocks(){use maho_ext_pi_webfetch::webfetch::content::html_fragment_to_plain_text;assert_eq!(html_fragment_to_plain_text("<script>noise</script><p>a&nbsp;b<br>c</p><div>d</div><table><tr><td>e</td><td>f</td></tr></table>"),"a b\nc\n\nd\n\ne\nf");}
+#[test]fn html_fragment_dom_decodes_full_named_entities(){use maho_ext_pi_webfetch::webfetch::content::html_fragment_to_plain_text;assert_eq!(html_fragment_to_plain_text("<p>&copy; &eacute; &amp;lt;</p>"),"\u{a9} \u{e9} &lt;");}
 #[test]fn named_entities_decode_without_double_decoding(){assert_eq!(decode_html_entities("&amp;lt; &AMP; &unknown;"),"&lt; & &unknown;");}
 #[test]fn numeric_entities_decode_unicode(){assert_eq!(decode_html_entities("&#128512; &#x1f600;"),"😀 😀");}
 #[test]fn malformed_entities_remain_literal(){assert_eq!(decode_html_entities("&bad&copy; &#X41; &unterminated"),"&bad&copy; &#X41; &unterminated");}

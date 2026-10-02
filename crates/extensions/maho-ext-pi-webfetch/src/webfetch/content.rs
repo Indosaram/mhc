@@ -1,3 +1,12 @@
+pub fn html_fragment_to_plain_text(html:&str)->String{
+    let document=dom_query::Document::from(format!("<body>{html}</body>"));
+    document.select("script, style, noscript, iframe, object, embed, meta, link").remove();
+    document.select("br").replace_with_html("\n");
+    document.select("td, th").after_html("\n");
+    let blocks=document.select("address, article, aside, blockquote, dd, div, dl, dt, figcaption, figure, footer, h1, h2, h3, h4, h5, h6, header, hr, li, main, nav, ol, p, pre, section, table, tbody, tfoot, thead, tr, ul");
+    blocks.before_html("\n");blocks.after_html("\n");
+    normalize_plain_text(&document.select("body").text())
+}
 pub fn decode_html_entities(text:&str)->String{
     let mut output=String::new();let mut rest=text;
     while let Some(start)=rest.find('&'){
