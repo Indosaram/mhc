@@ -36,7 +36,7 @@ fn matches_path(pattern:&str,path:&str)->bool {
         let matched=matches_path(remaining,path);
         return if bangs%2==0 { matched } else { !matched };
     }
-    if extglob(pattern).is_some() || pattern.contains("..") || pattern.contains("[:") {
+    if extglob(pattern).is_some() || pattern.contains("..") || pattern.contains('[') || pattern.contains('{') {
         let Some(fragment)=glob_fragment(pattern) else { return false; };
         let pattern=format!("^{fragment}$");
         let Ok(matcher)=regress::Regex::new(&pattern) else { return false; };
@@ -47,8 +47,19 @@ fn matches_path(pattern:&str,path:&str)->bool {
     matcher.is_match(path) || pattern.contains('*')&&path.strip_suffix('/').is_some_and(|path|matcher.is_match(path))
 }
 fn glob_fragment(pattern:&str)->Option<String> {
+    if let Some(start)=pattern.find('[') && !pattern[start..].starts_with("[[:") && let Some(offset)=pattern[start+1..].find(']') {
+        let end=start+1+offset; let body=&pattern[start+1..end];
+        let class=format!("[{body}]");
+        if regress::Regex::new(&class).is_ok() {
+            let class=if !body.starts_with('^')&&!body.contains('-') { format!("(?:{}|{class})",regex::escape(&pattern[start..=end])) } else { class };
+            return Some(format!("{}{class}{}",glob_fragment(&pattern[..start])?,glob_fragment(&pattern[end+1..])?));
+        }
+    }
     if let Some(start)=pattern.find('{') && let Some(offset)=pattern[start+1..].find('}') {
         let end=start+1+offset; let body=&pattern[start+1..end];
+        if !body.contains("..")&&!body.contains(',') {
+            return Some(format!("{}{}{}",glob_fragment(&pattern[..start])?,regex::escape(&pattern[start..=end]),glob_fragment(&pattern[end+1..])?));
+        }
         if body.contains("..")&&!body.contains(',') {
             let mut parts=body.split("..").collect::<Vec<_>>(); parts.sort_unstable();
             let range=format!("[{}]",parts.join("-"));
@@ -108,6 +119,11 @@ pub fn matches_scope(scope:&TtsrScope,source:TtsrStreamSource,tool_name:Option<&
 pub fn matches_path_globs(globs:&[String],paths:Option<&[String]>)->bool { globs.is_empty() || globs.iter().any(|glob|matches_any_path(glob,paths)) }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn picomatch_bracket_literal_and_negation_matrix() {
+        for (pattern,path,expected) in [("[abc].rs","[abc].rs",true),("[abc].rs","a.rs",true),("[!a].rs","b.rs",false),("[!a].rs","!.rs",true),("[^a].rs","b.rs",true),("{abc}.rs","abc.rs",false),("{abc}.rs","{abc}.rs",true)] {
+            assert_eq!(matches_path_globs(&[pattern.into()],Some(&[path.into()])),expected,"{pattern}: {path}");
+        }
+    }
     #[test] fn picomatch_range_posix_and_separator_matrix() {
         for (pattern,path,expected) in [("{1..3}.rs","2.rs",true),("{a..c}.rs","b.rs",true),("[[:digit:]].rs","2.rs",true),("*.rs","a.rs/",true),("*",".",false),("*","..",false),("**/*.rs","a/../b.rs",true),("**/*.rs","src/.hidden.rs",true)] {
             assert_eq!(matches_path_globs(&[pattern.into()],Some(&[path.into()])),expected,"{pattern}: {path}");
