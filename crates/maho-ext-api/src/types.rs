@@ -862,8 +862,8 @@ impl ExtensionCommandContext {
 pub struct ReplacedSessionContext { pub context: ExtensionCommandContext, pub message_actions: Arc<dyn ExtensionActions> }
 impl std::ops::Deref for ReplacedSessionContext { type Target = ExtensionCommandContext; fn deref(&self) -> &Self::Target { &self.context } }
 impl ReplacedSessionContext {
-    pub async fn send_message(&self, message: CustomMessage, options: SendMessageOptions) -> Result<(), ExtensionFailure> { self.message_actions.send_message(message, options) }
-    pub async fn send_user_message(&self, content: UserMessageContent, options: SendUserMessageOptions) -> Result<(), ExtensionFailure> { self.message_actions.send_user_message(content, options) }
+    pub async fn send_message(&self, message: CustomMessage, options: SendMessageOptions) -> Result<(), ExtensionFailure> { self.context.runtime.assert_active()?; self.message_actions.send_message(message, options) }
+    pub async fn send_user_message(&self, content: UserMessageContent, options: SendUserMessageOptions) -> Result<(), ExtensionFailure> { self.context.runtime.assert_active()?; self.message_actions.send_user_message(content, options) }
 }
 #[derive(Clone)]
 pub struct RegisteredCommand { pub name: String, pub source_info: SourceInfo, pub description: Option<String>, pub argument_hint: Option<String>, pub handler: CommandHandler }

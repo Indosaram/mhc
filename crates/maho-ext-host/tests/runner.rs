@@ -1003,6 +1003,19 @@ fn compaction_signal_is_inherited_within_one_context_not_across_invocations() {
 }
 
 struct KernelCapabilities(bool);
+#[tokio::test]
+async fn retained_kernel_capabilities_reject_stale_describe_and_invoke() {
+    use maho_ext_host::kernel_tools_context::with_kernel_tools;
+    let mut runner = runner(vec![]);
+    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) })).unwrap();
+    with_kernel_tools(Arc::new(KernelCapabilities(true)), async {
+        let context = runner.create_context().unwrap();
+        let tools = context.kernel_tools().unwrap().unwrap();
+        runner.invalidate("replaced");
+        assert_eq!(tools.describe(&[]).await.unwrap_err().message, "replaced");
+        assert_eq!(tools.invoke(KernelToolInvokeRequest { name: "test".into(), kernel_generation: 1, definition_revision: 1, args: JsonValue::Null, call_id: "call".into() }, Default::default()).await.unwrap_err().message, "replaced");
+    }).await;
+}
 impl ExtensionKernelTools for KernelCapabilities {
     fn invoke_scope(&self) -> bool { self.0 }
     fn describe<'a>(&'a self, _: &'a [String]) -> ExtensionFuture<'a, JsonValue> { Box::pin(async { Ok(JsonValue::Null) }) }
@@ -1131,6 +1144,17 @@ async fn retained_command_actions_reject_stale_navigation_before_host_call() {
     assert_eq!(actions.navigate_tree("leaf", Default::default()).await.unwrap_err().message, "replaced");
     assert_eq!(actions.reload().await.unwrap_err().message, "replaced");
     assert!(host.0.lock().unwrap().is_empty());
+}
+#[tokio::test]
+async fn replaced_session_callback_messages_reject_stale_context() {
+    let runner = runner(vec![]);
+    let context = ReplacedSessionContext {
+        context: runner.create_command_context(Arc::new(CommandActions(Mutex::new(vec![])))).unwrap(),
+        message_actions: Arc::new(SessionActions { active: Mutex::new(vec![]), name: Mutex::new(None), fast: Mutex::new(false), entries: Mutex::new(vec![]) }),
+    };
+    runner.invalidate("replaced");
+    assert_eq!(context.send_user_message(UserMessageContent::Text("late".into()), Default::default()).await.unwrap_err().message, "replaced");
+    assert_eq!(context.send_message(CustomMessage { custom_type: "late".into(), content: vec![], display: false, details: None }, Default::default()).await.unwrap_err().message, "replaced");
 }
 #[tokio::test]
 async fn command_invocation_uses_command_capable_context_without_changing_legacy_handlers() {

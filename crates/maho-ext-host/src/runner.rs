@@ -69,6 +69,28 @@ struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dy
 impl ContextSessionManager {
     fn active(&self) { if let Err(error) = self.runtime.assert_active() { std::panic::panic_any(error); } }
 }
+impl ExtensionKernelTools for ContextSessionManager {
+    fn invoke_scope(&self) -> bool {
+        self.active();
+        self.kernel_tools.as_deref().or_else(|| self.actions.kernel_tools()).expect("bound kernel tools").invoke_scope()
+    }
+    fn describe<'a>(&'a self, names: &'a [String]) -> ExtensionFuture<'a, JsonValue> {
+        Box::pin(async move {
+            self.runtime.assert_active()?;
+            let result = self.kernel_tools.as_deref().or_else(|| self.actions.kernel_tools()).expect("bound kernel tools").describe(names).await?;
+            self.runtime.assert_active()?;
+            Ok(result)
+        })
+    }
+    fn invoke(&self, request: KernelToolInvokeRequest, options: KernelToolInvokeOptions) -> ExtensionFuture<'_, JsonValue> {
+        Box::pin(async move {
+            self.runtime.assert_active()?;
+            let result = self.kernel_tools.as_deref().or_else(|| self.actions.kernel_tools()).expect("bound kernel tools").invoke(request, options).await?;
+            self.runtime.assert_active()?;
+            Ok(result)
+        })
+    }
+}
 impl ToolSessionManager for ContextSessionManager {
     fn session_id(&self) -> &str { self.active(); self.session.session_id() }
     fn session_file(&self) -> Option<&std::path::Path> { self.active(); self.session.session_file() }
@@ -158,7 +180,10 @@ impl ExtensionContextActions for ContextSessionManager {
     fn get_system_prompt(&self) -> String { self.active(); self.actions.get_system_prompt() }
     fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { self.active(); self.actions.get_system_prompt_options() }
     fn get_loaded_hook_sources(&self) -> LoadedHookSources { self.active(); self.actions.get_loaded_hook_sources() }
-    fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools> { self.active(); self.kernel_tools.as_deref().or_else(|| self.actions.kernel_tools()) }
+    fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools> {
+        self.active();
+        self.kernel_tools.as_deref().or_else(|| self.actions.kernel_tools()).map(|_| self as &dyn ExtensionKernelTools)
+    }
 }
 
 impl ExtensionSessionSettings for ContextSessionManager {
