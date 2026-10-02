@@ -149,4 +149,10 @@ mod tests {
         let results=index.search("thread-handoff",10,&options);assert_eq!(results.len(),1);assert_eq!(results[0].name,"thread_handoff");assert!(results[0].exact);
         assert!(index.search("thread handoff",10,&Bm25SearchOptions{exact_match:Some(false),..options}).is_empty());
     }
+    #[test] fn upstream_mixed_catalog_precision_rejects_incidental_hits() {
+        let definitions=[("x_search","Searches X (Twitter) posts through xAI. Date-bound every time-sensitive query.",vec!["X posts","tweets","twitter search"]),("thread_handoff","Moves the current request to an old session so the previous conversation continues there instead of here",vec!["continue in old session","hand off to a previous session"]),("task_get","Reads one entry of the shared team task list",vec!["task details","read a task"]),("weather_forecast","Get hourly weather forecasts and rain predictions",vec![])];
+        let documents:Vec<_>=definitions.into_iter().map(|(name,description,keywords)|{let mut document=doc(name);document.group="catalog".into();document.owner_label="catalog".into();document.description=Some(description.into());document.keywords=keywords.into_iter().map(String::from).collect();document}).collect();
+        let index=build_bm25_index(&documents);let query="recall memory search previous conversation messages";assert!(index.search(query,10,&Default::default()).iter().any(|result|result.name=="x_search"));let precise=Bm25SearchOptions{precision:Some(DEFAULT_BM25_PRECISION),..Default::default()};assert!(index.search(query,10,&precise).is_empty());
+        let results=index.search("twitter search for tweets",10,&precise);assert_eq!(results.len(),1);assert_eq!(results[0].name,"x_search");
+    }
 }
