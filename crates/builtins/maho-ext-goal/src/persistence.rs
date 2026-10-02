@@ -88,7 +88,7 @@ pub fn write_goal_file(reference: &GoalStoreRef, goal: Option<&Goal>) -> Result<
     }
     Ok(())
 }
-fn retire_legacy(path: &Path) { if let Err(error) = fs::rename(path, format!("{}.migrated", path.display())) { eprintln!("goal legacy retirement failed: {error}"); } }
+fn retire_legacy(path: &Path) { let _=fs::rename(path, format!("{}.migrated", path.display())); }
 fn read_legacy_candidate(path: &Path) -> Result<Option<Goal>, GoalError> {
     let raw = match fs::read_to_string(path) { Ok(raw) => raw, Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None), Err(error) => return Err(GoalError::Io(error.to_string())) };
     match parse_goal_file(&raw, true) {
@@ -116,7 +116,7 @@ fn migrate_legacy_goal_file_with_publish(reference:&GoalStoreRef,standalone_agen
             for entry in entries { let entry = entry.map_err(|error| GoalError::Io(error.to_string()))?; if entry.file_type().map_err(|error| GoalError::Io(error.to_string()))?.is_file() && entry.file_name().to_string_lossy().ends_with(".json") { paths.push(entry.path()); } }
         }
     } else { paths.push(goal_file_path(&GoalStoreRef { base_dir: legacy_base, thread_id: reference.thread_id.clone() })); }
-    paths.sort();
+    paths.sort_by(|left,right|left.to_string_lossy().encode_utf16().cmp(right.to_string_lossy().encode_utf16()));
     let mut candidates = Vec::new();
     for path in paths { if let Some(goal) = read_legacy_candidate(&path)? { candidates.push((path, goal)); } }
     if candidates.len() > 1 { return Err(GoalError::InvalidMutation(format!("multiple legacy goals found for no-session store: {}", candidates.iter().map(|(p, _)| p.to_string_lossy()).collect::<Vec<_>>().join(", ")))); }
@@ -129,6 +129,28 @@ fn migrate_legacy_goal_file_with_publish(reference:&GoalStoreRef,standalone_agen
 #[cfg(test)] mod tests {
     use super::*;
     fn raw() -> String { serde_json::json!({"version":1,"goal":{"id":"g","threadId":"t","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":1,"updatedAt":1}}).to_string() }
+    #[test] fn legacy_retirement_failure_does_not_fail_live_publication() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().join("extensions/goal"),thread_id:"t".into() }; let legacy=dir.path().join("extensions/pi-goal"); fs::create_dir_all(&legacy).unwrap(); fs::write(legacy.join("t.json"),raw()).unwrap(); fs::create_dir(legacy.join("t.json.migrated")).unwrap();
+        let imported=migrate_legacy_goal_file(&reference,dir.path()).unwrap().unwrap(); assert_eq!(read_goal_file(&reference).unwrap(),Some(imported)); assert!(legacy.join("t.json").exists()); assert!(migrate_legacy_goal_file(&reference,dir.path()).unwrap().is_none());
+    }
+    #[test] fn migration_conflict_paths_follow_javascript_utf16_order() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().join("extensions/goal/no-session/key"),thread_id:"t".into() }; let legacy=dir.path().join("extensions/pi-goal/no-session/key"); fs::create_dir_all(&legacy).unwrap();
+        for name in ["\u{e000}.json","\u{10000}.json"] { fs::write(legacy.join(name),raw()).unwrap(); }
+        let error=migrate_legacy_goal_file(&reference,dir.path()).unwrap_err().to_string();
+        assert!(error.find("\u{10000}.json").unwrap()<error.find("\u{e000}.json").unwrap()); assert!(!goal_file_path(&reference).exists());
+    }
+    #[test] fn migration_propagates_current_read_and_publication_io_failures() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().join("extensions/goal"),thread_id:"t".into() }; let legacy=dir.path().join("extensions/pi-goal"); fs::create_dir_all(&legacy).unwrap(); fs::write(legacy.join("t.json"),raw()).unwrap();
+        let error=migrate_legacy_goal_file_with_publish(&reference,dir.path(),|_,_|Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied,"publication denied"))).unwrap_err(); assert!(matches!(error,GoalError::Io(_))); assert!(legacy.join("t.json").exists()); assert!(!legacy.join("t.json.migrated").exists());
+        fs::create_dir_all(goal_file_path(&reference)).unwrap(); assert!(matches!(migrate_legacy_goal_file(&reference,dir.path()),Err(GoalError::Io(_))));
+    }
+    #[test] fn upstream_atomic_replacement_preserves_private_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().join("goal"),thread_id:"thread-private-mode".into() };
+        let mut goal=parse_goal_file(&raw(),false).unwrap().goal.unwrap(); write_goal_file(&reference,Some(&goal)).unwrap();
+        fs::set_permissions(goal_file_path(&reference),fs::Permissions::from_mode(0o600)).unwrap(); goal.objective="Still private".into(); write_goal_file(&reference,Some(&goal)).unwrap();
+        assert_eq!(fs::metadata(goal_file_path(&reference)).unwrap().permissions().mode()&0o777,0o600); assert_eq!(read_goal_file(&reference).unwrap(),Some(goal));
+    }
     #[test] fn upstream_current_writer_wins_at_exclusive_migration_publication() {
         let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().join("extensions/goal"),thread_id:"t".into() }; let legacy=dir.path().join("extensions/pi-goal"); fs::create_dir_all(&legacy).unwrap(); fs::write(legacy.join("t.json"),raw()).unwrap();
         let mut current=parse_goal_file(&raw(),false).unwrap().goal.unwrap(); current.objective="current writer".into();

@@ -13,7 +13,8 @@ fn source_count(source:&str,count:f64)->String {
     let label=match source { "terminal-monitors"=>if count==1.0 { "wake source" } else { "wake sources" },"senpi-task"=>if count==1.0 { "task" } else { "tasks" },"senpi-codemode"=>if count==1.0 { "eval" } else { "evals" },"terminal-background-sessions"=>if count==1.0 { "bash" } else { "bash sessions" },_=>return format!("{number} {}{}",source.replace('-'," "),if count==1.0 { "" } else { " channels" }) }; format!("{number} {label}")
 }
 pub fn channels_on_duty(counts:&ResumptionChannelCounts)->String {
-    let mut sources=counts.iter().filter(|(_,count)|**count>0.0).collect::<Vec<_>>(); sources.sort_by(|(left,_),(right,_)|source_index(left).cmp(&source_index(right)).then_with(||left.cmp(right)));
+    let collator=icu_collator::Collator::try_new(Default::default(),Default::default()).expect("compiled collation data is available");
+    let mut sources=counts.iter().filter(|(_,count)|**count>0.0).collect::<Vec<_>>(); sources.sort_by(|(left,_),(right,_)|source_index(left).cmp(&source_index(right)).then_with(||collator.compare(left,right)));
     format!("{} on duty",sources.into_iter().map(|(source,count)|source_count(source,*count)).collect::<Vec<_>>().join(" \u{b7} "))
 }
 pub fn format_goal_wait_label(input:&GoalWaitLabelInput)->String {
@@ -23,6 +24,10 @@ pub fn format_goal_wait_label(input:&GoalWaitLabelInput)->String {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn unknown_sources_use_locale_collation_instead_of_codepoint_order() {
+        let counts=BTreeMap::from([("zeta".into(),1.0),("éclair".into(),1.0),("Alpha".into(),1.0),("alpha".into(),1.0)]);
+        assert_eq!(channels_on_duty(&counts),"1 alpha \u{b7} 1 Alpha \u{b7} 1 éclair \u{b7} 1 zeta on duty");
+    }
     #[test] fn bar_clamps_and_rounds_to_twelve_cells() { let result=[render_goal_wait_bar(-1.0),render_goal_wait_bar(0.5),render_goal_wait_bar(2.0),render_goal_wait_bar(f64::NAN)]; assert_eq!(result[0].chars().filter(|c|*c=='\u{25b0}').count(),0); assert_eq!(result[1].chars().filter(|c|*c=='\u{25b0}').count(),6); assert_eq!(result[2].chars().filter(|c|*c=='\u{25b0}').count(),12); assert_eq!(result[3].chars().count(),12); }
     #[test] fn upstream_empty_bar() { assert_eq!(render_goal_wait_bar(0.0),"\u{25b1}".repeat(12)); }
     #[test] fn upstream_full_bar() { assert_eq!(render_goal_wait_bar(1.0),"\u{25b0}".repeat(12)); }
