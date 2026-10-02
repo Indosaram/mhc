@@ -23,3 +23,113 @@ fn user_input(source:InputSource)->ExtensionEvent {ExtensionEvent::Input(InputEv
 #[tokio::test] async fn inactive_category_no_injection() {let(api,a)=register(false);dispatch(&api,refusal()).await;dispatch(&api,selection(ModelSelectSource::Fallback)).await;assert!(a.0.lock().expect("messages").is_empty());}
 #[tokio::test] async fn manual_switch_no_injection() {let(api,a)=register(true);dispatch(&api,refusal()).await;dispatch(&api,selection(ModelSelectSource::Set)).await;assert!(a.0.lock().expect("messages").is_empty());}
 #[tokio::test] async fn disabled_no_injection() {let(api,a)=register(true);api.set_flag("omo-senpi-fallback-architect-disabled",FlagValue::Boolean(true));dispatch(&api,refusal()).await;dispatch(&api,selection(ModelSelectSource::Fallback)).await;assert!(a.0.lock().expect("messages").is_empty());}
+#[tokio::test]
+async fn visible_notice_has_persisted_type_and_model_details() {
+    let (api, actions) = register(true);
+    dispatch(&api, refusal()).await;
+    dispatch(&api, selection(ModelSelectSource::Fallback)).await;
+    let messages = actions.0.lock().expect("messages");
+    let notice = &messages[1];
+    assert_eq!(notice.custom_type, "omo-fallback-architect:notice");
+    assert!(notice.display);
+    assert_eq!(notice.details, Some(serde_json::json!({
+        "from": "anthropic/claude-fable-5", "to": "anthropic/fallback"
+    })));
+}
+
+#[tokio::test]
+async fn active_fallback_preserves_queued_input_and_hides_each_reminder() {
+    let (api, actions) = register(true);
+    dispatch(&api, refusal()).await;
+    dispatch(&api, selection(ModelSelectSource::Fallback)).await;
+    for behavior in [StreamingBehavior::Steer, StreamingBehavior::FollowUp] {
+        let mut event = user_input(InputSource::Interactive);
+        let ExtensionEvent::Input(input) = &mut event else { panic!("input") };
+        input.text = "typed\nexactly".into();
+        input.streaming_behavior = Some(behavior);
+        let result = api.registered.handlers[&EventKind::Input][0](
+            &mut event, &support::context()
+        ).await.expect("dispatch");
+        assert!(matches!(result, EventResult::Input(InputEventResult::Continue)));
+        let ExtensionEvent::Input(input) = event else { panic!("input") };
+        assert_eq!(input.text, "typed\nexactly");
+        assert_eq!(input.streaming_behavior, Some(behavior));
+    }
+    let messages = actions.0.lock().expect("messages");
+    assert_eq!(messages.len(), 4);
+    for message in &messages[2..] {
+        assert_eq!(message.custom_type, "omo-fallback-architect:reminder");
+        assert!(!message.display);
+    }
+}
+
+#[tokio::test]
+async fn fallback_from_a_weaker_model_does_not_arm() {
+    let (api, actions) = register(true);
+    dispatch(&api, refusal()).await;
+    let mut event = selection(ModelSelectSource::Fallback);
+    let ExtensionEvent::ModelSelect(selected) = &mut event else { panic!("selection") };
+    selected.previous_model = Some(model("claude-opus-5"));
+    dispatch(&api, event).await;
+    assert!(actions.0.lock().expect("messages").is_empty());
+}
+
+#[tokio::test]
+async fn chained_fallback_keeps_reminder_without_second_notice() {
+    let (api, actions) = register(true);
+    dispatch(&api, refusal()).await;
+    dispatch(&api, selection(ModelSelectSource::Fallback)).await;
+    dispatch(&api, refusal()).await;
+    let mut event = selection(ModelSelectSource::Fallback);
+    let ExtensionEvent::ModelSelect(selected) = &mut event else { panic!("selection") };
+    selected.previous_model = Some(model("fallback"));
+    selected.model = model("another-fallback");
+    dispatch(&api, event).await;
+    dispatch(&api, user_input(InputSource::Interactive)).await;
+    let messages = actions.0.lock().expect("messages");
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[2].custom_type, "omo-fallback-architect:reminder");
+}
+
+#[tokio::test]
+async fn manual_return_to_fable_clears_reminder() {
+    let (api, actions) = register(true);
+    dispatch(&api, refusal()).await;
+    dispatch(&api, selection(ModelSelectSource::Fallback)).await;
+    let mut event = selection(ModelSelectSource::Set);
+    let ExtensionEvent::ModelSelect(selected) = &mut event else { panic!("selection") };
+    selected.model = model("claude-fable-5");
+    dispatch(&api, event).await;
+    dispatch(&api, user_input(InputSource::Interactive)).await;
+    assert_eq!(actions.0.lock().expect("messages").len(), 2);
+}
+
+#[tokio::test]
+async fn disabling_an_active_component_suppresses_reminders() {
+    let (api, actions) = register(true);
+    dispatch(&api, refusal()).await;
+    dispatch(&api, selection(ModelSelectSource::Fallback)).await;
+    api.set_flag("omo-senpi-fallback-architect-disabled", FlagValue::Boolean(true));
+    dispatch(&api, user_input(InputSource::Interactive)).await;
+    assert_eq!(actions.0.lock().expect("messages").len(), 2);
+}
+
+#[test]
+fn notice_renderer_truncates_each_line_without_wrapping_or_padding() {
+    use senpi_task::tools::render::{Lines, LinesComponent, lines_component};
+    let (api, _) = register(true);
+    let message = CustomMessage {
+        custom_type: "omo-fallback-architect:notice".into(),
+        content: Vec::new(), display: true,
+        details: Some(serde_json::json!({"from":"anthropic/claude-fable-5","to":"anthropic/fallback"})),
+    };
+    let renderer = &api.registered.message_renderers[&message.custom_type];
+    let mut component = renderer(&message, &MessageRenderOptions::default(), &Theme::default())
+        .expect("notice component");
+    let reference = lines_component(Lines::Static(
+        maho_omo_fallback_architect::notice::notice_lines(Some(("anthropic/claude-fable-5", "anthropic/fallback")))
+    ));
+    for width in [0, 10, 40, 80, 120, 2000] {
+        assert_eq!(component.render(width), reference.render(width), "width {width}");
+    }
+}

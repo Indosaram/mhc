@@ -1,4 +1,10 @@
 pub const FALLBACK_ARCHITECT_NOTICE_TYPE:&str="omo-fallback-architect:notice";
+pub struct NoticeComponent(pub senpi_task::tools::render::LinesView);
+impl maho_tui::tui::Component for NoticeComponent {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        senpi_task::tools::render::LinesComponent::render(&self.0, width)
+    }
+}
 pub fn friendly_model_name(selector:&str)->String {
     let lower=selector.to_ascii_lowercase();
     for (pattern,name) in [("kimi-k3","Kimi K3 (max)"),("claude-fable-5","Fable 5"),("claude-opus-5","Opus 5"),("glm-5","GLM 5.2")] { if lower.contains(pattern) { return name.into(); } }

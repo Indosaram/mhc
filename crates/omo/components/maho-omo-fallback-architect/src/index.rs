@@ -11,7 +11,9 @@ impl Extension for FallbackArchitectComponent {
         let state=Arc::new(Mutex::new(State::default())); let runtime=api.runtime.clone();
         api.register_message_renderer(FALLBACK_ARCHITECT_NOTICE_TYPE,Arc::new(|message,_,_| {
             let details=message.details.as_ref().and_then(|v|Some((v["from"].as_str()?,v["to"].as_str()?)));
-            Some(Box::new(maho_tui::components::text::Text::with_padding(notice_lines(details).join("\n"),0,0)))
+            Some(Box::new(NoticeComponent(senpi_task::tools::render::lines_component(
+                senpi_task::tools::render::Lines::Static(notice_lines(details))
+            ))))
         }));
         let message_state=Arc::clone(&state);
         api.on(EventKind::MessageEnd,Arc::new(move |event,_| { let state=Arc::clone(&message_state); Box::pin(async move {
