@@ -373,6 +373,8 @@ struct AgentSessionState {
     session_fast_mode: bool,
     current_service_tier: Option<ServiceTier>,
     base_system_prompt: String,
+    custom_system_prompt_source: Option<String>,
+    append_system_prompt_sources: Vec<String>,
     system_prompt_override: Option<String>,
     wake_sources: WakeSourceTracker,
     shown_high_reasoning_warning_keys: BTreeSet<String>,
@@ -721,10 +723,13 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             },
             disable_model_invocation: skill.disable_model_invocation,
         }).collect();
+        let (custom, append) = session.system_prompt_sources();
+        let append: Vec<_> = append.iter().filter_map(|source| crate::resource_loader::resolve_prompt_input(Some(source), "append system prompt")).collect();
         maho_ext_api::BuildSystemPromptOptions { cwd: session.cwd().into(), tools: session.get_active_tool_names(), skills,
+            custom_prompt: crate::resource_loader::resolve_prompt_input(custom.as_deref(), "system prompt"),
+            append_system_prompt: (!append.is_empty()).then(|| append.join("\n\n")),
             context_files: crate::resource_loader::load_project_context_files(&session.cwd(), &session.agent_dir()).into_iter()
                 .map(|file| maho_ext_api::ContextFile { path: file.path, content: file.content }).collect(),
-            ..Default::default()
         }
     }
     fn get_loaded_hook_sources(&self) -> maho_ext_api::LoadedHookSources {
@@ -1122,6 +1127,8 @@ impl AgentSession {
             session_fast_mode: false,
             current_service_tier: None,
             base_system_prompt: String::new(),
+            custom_system_prompt_source: None,
+            append_system_prompt_sources: Vec::new(),
             system_prompt_override: None,
             wake_sources: WakeSourceTracker::default(),
             shown_high_reasoning_warning_keys: BTreeSet::new(),
@@ -2787,10 +2794,14 @@ impl AgentSession {
             let guidelines = contributors.iter().filter_map(|name| state.tool_prompt_guidelines.get(name)).flatten().cloned().collect();
             (snippets, guidelines)
         };
+        let (custom, append) = self.system_prompt_sources();
+        let custom_prompt = crate::resource_loader::resolve_prompt_input(custom.as_deref(), "system prompt");
+        let append: Vec<_> = append.iter().filter_map(|source| crate::resource_loader::resolve_prompt_input(Some(source), "append system prompt")).collect();
         let base = crate::system_prompt::build_system_prompt(&crate::system_prompt::BuildSystemPromptOptions {
+            custom_prompt, append_system_prompt: (!append.is_empty()).then(|| append.join("\n\n")),
             cwd: self.cwd(), selected_tools: Some(active), skills: Some(skills),
             tool_snippets: Some(snippets), prompt_guidelines: Some(guidelines),
-            context_files: Some(crate::resource_loader::load_project_context_files(&self.cwd(), &self.agent_dir())), ..Default::default()
+            context_files: Some(crate::resource_loader::load_project_context_files(&self.cwd(), &self.agent_dir())),
         });
         self.state().base_system_prompt = base.clone();
         self.agent.set_system_prompt(base);
@@ -3078,8 +3089,20 @@ impl AgentSession {
     }
 
     pub fn system_prompt(&self) -> String {
+        self.agent.state().system_prompt
+    }
+
+    pub fn set_system_prompt_sources(&self, custom: Option<String>, append: Vec<String>) {
+        let mut state = self.state();
+        state.custom_system_prompt_source = custom;
+        state.append_system_prompt_sources = append;
+        drop(state);
+        self.rebuild_system_prompt();
+    }
+
+    pub(crate) fn system_prompt_sources(&self) -> (Option<String>, Vec<String>) {
         let state = self.state();
-        state.system_prompt_override.clone().unwrap_or_else(|| state.base_system_prompt.clone())
+        (state.custom_system_prompt_source.clone(), state.append_system_prompt_sources.clone())
     }
 
     pub fn scoped_models(&self) -> Vec<SessionModelEntry> {
@@ -5010,6 +5033,12 @@ mod tests {
         let options = SessionExtensionActions(Arc::downgrade(&session.inner)).get_system_prompt_options();
         assert_eq!(options.tools, vec!["read"]);
         assert_eq!(options.cwd, std::path::PathBuf::from(session.cwd()));
+        session.set_system_prompt_sources(Some("custom baseline".to_owned()), vec!["append context".to_owned()]);
+        let options = SessionExtensionActions(Arc::downgrade(&session.inner)).get_system_prompt_options();
+        assert_eq!(options.custom_prompt.as_deref(), Some("custom baseline"));
+        assert_eq!(options.append_system_prompt.as_deref(), Some("append context"));
+        session.agent.set_system_prompt("hook selected prompt".to_owned());
+        assert_eq!(session.system_prompt(), "hook selected prompt");
         session.with_settings_manager_mut(|manager| manager.set(
             crate::settings_manager::SettingsScope::Global,
             &Map::from_iter([

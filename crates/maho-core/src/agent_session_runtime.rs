@@ -239,7 +239,9 @@ impl AgentSessionRuntime {
     {
         let settings = crate::settings_manager::SettingsManager::create(&cwd, &self.services.agent_dir,
             &std::env::var("HOME").unwrap_or_default(), self.services.settings_manager.is_project_trusted());
+        let (system_prompt, append_system_prompt) = self.session.system_prompt_sources();
         let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
+            system_prompt, append_system_prompt,
             cwd: Some(cwd.clone()), agent_dir: Some(self.services.agent_dir.clone()),
             model_runtime: Some(self.services.model_runtime().clone()), model_registry: Some(self.services.model_registry.clone()),
             model: Some(self.session.model()), thinking_selection: self.session.thinking_selection(),

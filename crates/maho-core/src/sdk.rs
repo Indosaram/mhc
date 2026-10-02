@@ -38,6 +38,8 @@ pub struct CreateAgentSessionOptions {
     pub settings_manager: Option<SettingsManager>,
     pub session_start_event: Option<maho_ext_api::SessionStartEvent>,
     pub auto_title_sessions: Option<bool>,
+    pub system_prompt: Option<String>,
+    pub append_system_prompt: Vec<String>,
 }
 
 /// `noTools` suppression mode.
@@ -142,7 +144,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     });
     let skills = crate::skills::load_skills(&crate::skills::LoadSkillsOptions { cwd, agent_dir, skill_paths, include_defaults: true });
     session.set_prompt_resources(templates, skills.skills);
-    session.rebuild_system_prompt();
+    session.set_system_prompt_sources(options.system_prompt, options.append_system_prompt);
     Ok(CreateAgentSessionResult { session, model_fallback_message: None })
 }
 
