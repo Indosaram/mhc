@@ -43,7 +43,15 @@ fn json_values_equal(previous: Option<&serde_json::Value>, next: Option<&serde_j
     match (previous, next) {
         (Some(Value::Number(left)), Some(Value::Number(right))) => left.as_f64() == right.as_f64(),
         (Some(Value::Array(left)), Some(Value::Array(right))) => left.len() == right.len() && left.iter().zip(right).all(|(left, right)| json_values_equal(Some(left), Some(right))),
-        (Some(Value::Object(left)), Some(Value::Object(right))) => left.len() == right.len() && left.iter().zip(right).all(|((left_key, left), (right_key, right))| left_key == right_key && json_values_equal(Some(left), Some(right))),
+        (Some(Value::Object(left)), Some(Value::Object(right))) => {
+            let ordered = |object: &serde_json::Map<String, Value>| {
+                let mut keys: Vec<_> = object.keys().cloned().collect();
+                keys.sort_by_key(|key| key.parse::<u32>().ok().filter(|index| *index != u32::MAX && index.to_string() == *key).map_or((1, 0), |index| (0, index)));
+                keys
+            };
+            let left_keys = ordered(left);
+            left.len() == right.len() && left_keys == ordered(right) && left_keys.iter().all(|key| json_values_equal(left.get(key), right.get(key)))
+        },
         _ => previous == next,
     }
 }

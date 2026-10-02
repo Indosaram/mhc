@@ -34,3 +34,8 @@ fn equivalent_json_numbers_do_not_turn_a_routine_change_into_a_reload() {
     assert!(is_routine_only_settings_change(Some(r#"{"config":{"limit":[1,0]},"defaultModel":"old"}"#), Some(r#"{"config":{"limit":[1.0,-0.0]},"defaultModel":"new"}"#)));
     assert!(!is_routine_only_settings_change(Some(r#"{"defaultModel":1}"#), Some(r#"{"defaultModel":1.0}"#)));
 }
+#[test]
+fn integer_property_order_matches_javascript_stringify() {
+    assert!(is_routine_only_settings_change(Some(r#"{"config":{"2":"b","1":"a"},"defaultModel":"old"}"#), Some(r#"{"config":{"1":"a","2":"b"},"defaultModel":"new"}"#)));
+    assert!(!is_routine_only_settings_change(Some(r#"{"config":{"01":"a","4294967295":"b"},"defaultModel":"old"}"#), Some(r#"{"config":{"4294967295":"b","01":"a"},"defaultModel":"new"}"#)));
+}
