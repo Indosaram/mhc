@@ -75,3 +75,36 @@ pub async fn prepare_runtime(options: RuntimePreparationOptions<'_>, detector: &
     let runtimes = super::runtime_info::runtimes_from_availability(&detections, options.js_runtime);
     Ok(PreparedRuntime {session_id: session_id_from(options.event), cwd: options.cwd.into(), parallel_pool_width, enabled_languages, availability, runtimes, settings, artifacts})
 }
+
+pub struct RuntimeHostOptions {
+    pub executor: std::sync::Arc<dyn crate::bridges::output_bridge::OutputExecuteTool>,
+    pub active_tools: Vec<String>,
+    pub list_tools: Option<std::sync::Arc<dyn Fn() -> Vec<crate::bridges::schema_bridge::EvalSchemaToolInfo> + Send + Sync>>,
+    pub complete: crate::bridge::http_server::BridgeCompletionHandler,
+    pub session_env: crate::kernels::session_env::SessionEnvironment,
+}
+
+pub struct SessionRuntime {
+    pub session_id: String,
+    pub cwd: std::path::PathBuf,
+    pub parallel_pool_width: u64,
+    pub manager: std::sync::Arc<super::session_manager::CodemodeSessionManager>,
+    pub enabled_languages: crate::config::settings::Languages,
+    pub runtimes: Vec<(crate::tool::types::EvalLanguage, crate::tool::types::EvalRuntimeInfo)>,
+    pub settings: crate::config::settings::CodemodeSettings,
+    pub artifacts_dir: std::path::PathBuf,
+    pub executor: std::sync::Arc<dyn crate::bridges::output_bridge::OutputExecuteTool>,
+    pub spawns: bool,
+}
+
+pub async fn create_runtime(prepared: PreparedRuntime, host: RuntimeHostOptions) -> Result<SessionRuntime, std::io::Error> {
+    let spawns = host.active_tools.iter().any(|name| name == &prepared.settings.task_tools.task);
+    let manager = super::session_manager::CodemodeSessionManager::start(super::session_manager::CreateCodemodeSessionManagerOptions {
+        session_id: prepared.session_id.clone(), cwd: prepared.cwd.clone(), settings: prepared.settings.clone(),
+        availability: prepared.availability, local_roots: None, artifacts_dir: Some(prepared.artifacts.dir.clone()),
+        session_env: Some(host.session_env), executor: host.executor.clone(), list_tools: host.list_tools, complete: host.complete,
+    }).await?;
+    Ok(SessionRuntime {session_id: prepared.session_id, cwd: prepared.cwd, parallel_pool_width: prepared.parallel_pool_width,
+        manager: std::sync::Arc::new(manager), enabled_languages: prepared.enabled_languages, runtimes: prepared.runtimes,
+        settings: prepared.settings, artifacts_dir: prepared.artifacts.dir, executor: host.executor, spawns})
+}

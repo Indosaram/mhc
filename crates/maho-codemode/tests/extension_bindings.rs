@@ -94,6 +94,15 @@ async fn runtime_preparation_loads_project_settings_applies_language_overrides_a
     assert_eq!(runtime.runtimes.len(),1);
     assert_eq!(runtime.runtimes[0].0,EvalLanguage::Js);
     assert_eq!(runtime.runtimes[0].1.name,"bun");
+    let executor=Arc::new(RuntimeExecuteTool {api:Arc::new(api()),active_tools:vec!["task".into()]});
+    let session=create_runtime(runtime,RuntimeHostOptions {executor:executor.clone(),active_tools:vec!["task".into()],list_tools:None,complete:Arc::new(|request|Box::pin(async move {Ok(serde_json::json!({"text":request.prompt}))})),session_env:std::collections::HashMap::from([("PI_SESSION_ID".into(),"context-session".into())])}).await.unwrap();
+    assert!(session.spawns);
+    assert_eq!(session.session_id,"runtime-session");
+    assert_eq!(session.parallel_pool_width,3);
+    assert_eq!(session.artifacts_dir,root.path().join("session-artifacts"));
+    let port=session.manager.bridge_endpoint().unwrap().0;
+    session.manager.dispose().await.unwrap();
+    assert!(tokio::net::TcpStream::connect(("127.0.0.1",port)).await.is_err());
 }
 
 #[tokio::test]
