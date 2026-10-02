@@ -34,6 +34,7 @@ async fn fetch_validated_url(value:&str,format:WebfetchFormat)->Result<FetchResu
     for redirects in 0..=20{
         let mut response=client.get(&current).header("Accept",build_accept_header(format)).header("Accept-Language","en-US,en;q=0.9").header("Sec-CH-UA","\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"").header("Sec-CH-UA-Mobile","?0").header("Sec-CH-UA-Platform","\"Windows\"").header("Sec-Fetch-Dest","document").header("Sec-Fetch-Mode","navigate").header("Sec-Fetch-Site","none").header("Sec-Fetch-User","?1").header("Upgrade-Insecure-Requests","1").header("User-Agent","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36").send().await?;
         let status=response.status();
+        let status_text=response.extensions().get::<hyper::ext::ReasonPhrase>().map_or_else(||status.canonical_reason().unwrap_or("").into(),|reason|reason.as_bytes().iter().copied().map(char::from).collect::<String>());
         let location=response.headers().get_all("location").iter().map(|value|value.as_bytes().iter().copied().map(char::from).collect::<String>()).collect::<Vec<_>>().join(", ");
         if matches!(status.as_u16(),301|302|303|307|308)&&redirects<20&&!location.is_empty(){
             current=url::Url::parse(&current).and_then(|url|url.join(&location)).map_err(|_|WebfetchError::InvalidUrl(format!("Invalid URL: {location}")))?.into();continue;
@@ -42,7 +43,7 @@ async fn fetch_validated_url(value:&str,format:WebfetchFormat)->Result<FetchResu
         let content_type=response.headers().get_all("content-type").iter().map(|value|value.as_bytes().iter().copied().map(char::from).collect::<String>()).collect::<Vec<_>>().join(", ");
         let mut body=Vec::new();
         while let Some(chunk)=response.chunk().await?{if body.len()+chunk.len()>MAX_RESPONSE_SIZE_BYTES{return Err(WebfetchError::ResponseTooLarge);}body.extend_from_slice(&chunk);}
-        let bytes=body.len();return Ok(FetchResult{url:current,status:status.as_u16(),status_text:status.canonical_reason().unwrap_or("").into(),content_type,bytes,body,truncated:bytes==MAX_RESPONSE_SIZE_BYTES});
+        let bytes=body.len();return Ok(FetchResult{url:current,status:status.as_u16(),status_text,content_type,bytes,body,truncated:bytes==MAX_RESPONSE_SIZE_BYTES});
     }
     Err(WebfetchError::Aborted)
 }
