@@ -7,10 +7,10 @@ pub fn parse_scope(tokens:&[String])->TtsrScope {
     let pattern=TOKEN.get_or_init(||match regex::Regex::new(r"(?i)\A(?:(?P<prefix>tool)(?::(?P<tool>[a-z0-9_-]+))?|(?P<bare>[a-z0-9_-]+))(?:\((?P<path>[^)]+)\))?\z") { Ok(regex)=>regex,Err(error)=>panic!("invalid static scope expression: {error}") });
     let mut scope=TtsrScope { allow_text:false,allow_thinking:false,tool_scopes:vec![] }; let mut seen=BTreeSet::new();
     for raw in tokens {
-        let token=raw.trim(); if token.is_empty() { continue; }
+        let token=maho_ai::utils::js::trim(raw); if token.is_empty() { continue; }
         let normalized=token.to_lowercase();
         match normalized.as_str() { "text"=>{scope.allow_text=true;continue;},"thinking"=>{scope.allow_thinking=true;continue;},_=>{} }
-        let tool=if matches!(normalized.as_str(),"tool"|"toolcall") { Some(TtsrToolScope { tool_name:ANY_TOOL_NAME.into(),path_glob:None }) } else { pattern.captures(token).map(|groups|TtsrToolScope { tool_name:groups.name("tool").or_else(||groups.name("bare")).map_or_else(||ANY_TOOL_NAME.into(),|name|name.as_str().to_lowercase()),path_glob:groups.name("path").map(|path|path.as_str().trim()).filter(|path|!path.is_empty()).map(str::to_owned) }) };
+        let tool=if matches!(normalized.as_str(),"tool"|"toolcall") { Some(TtsrToolScope { tool_name:ANY_TOOL_NAME.into(),path_glob:None }) } else { pattern.captures(token).map(|groups|TtsrToolScope { tool_name:groups.name("tool").or_else(||groups.name("bare")).map_or_else(||ANY_TOOL_NAME.into(),|name|name.as_str().to_lowercase()),path_glob:groups.name("path").map(|path|maho_ai::utils::js::trim(path.as_str())).filter(|path|!path.is_empty()).map(str::to_owned) }) };
         if let Some(tool)=tool && seen.insert(format!("{}({})",tool.tool_name,tool.path_glob.as_deref().unwrap_or(""))) { scope.tool_scopes.push(tool); }
     }
     scope
@@ -21,7 +21,7 @@ fn matches_any_path(pattern:&str,paths:Option<&[String]>)->bool {
     paths.is_some_and(|paths|paths.iter().any(|path| { let normalized=path.replace('\\',"/"); matcher.is_match(&normalized) || normalized.rsplit_once('/').is_some_and(|(_,basename)|matcher.is_match(basename)) }))
 }
 pub fn matches_scope(scope:&TtsrScope,source:TtsrStreamSource,tool_name:Option<&str>,paths:Option<&[String]>)->bool {
-    match source { TtsrStreamSource::Text=>scope.allow_text,TtsrStreamSource::Thinking=>scope.allow_thinking,TtsrStreamSource::Tool=>{ let name=tool_name.map(|name|name.trim().to_lowercase()); scope.tool_scopes.iter().any(|tool| (tool.tool_name==ANY_TOOL_NAME || Some(tool.tool_name.to_lowercase())==name) && tool.path_glob.as_ref().is_none_or(|glob|matches_any_path(glob,paths))) } }
+    match source { TtsrStreamSource::Text=>scope.allow_text,TtsrStreamSource::Thinking=>scope.allow_thinking,TtsrStreamSource::Tool=>{ let name=tool_name.map(|name|maho_ai::utils::js::trim(name).to_lowercase()); scope.tool_scopes.iter().any(|tool| (tool.tool_name==ANY_TOOL_NAME || Some(tool.tool_name.to_lowercase())==name) && tool.path_glob.as_ref().is_none_or(|glob|matches_any_path(glob,paths))) } }
 }
 pub fn matches_path_globs(globs:&[String],paths:Option<&[String]>)->bool { globs.is_empty() || globs.iter().any(|glob|matches_any_path(glob,paths)) }
 #[cfg(test)] mod tests {
@@ -33,4 +33,10 @@ pub fn matches_path_globs(globs:&[String],paths:Option<&[String]>)->bool { globs
     #[test] fn invalid_tokens_leave_unreachable_scope() { let scope=parse_scope(&["???".into()]); let result=has_reachable_scope(&scope); assert!(!result); }
     #[test] fn empty_path_globs_match_without_paths() { let result=matches_path_globs(&[],None); assert!(result); }
     #[test] fn dotfiles_are_matched() { let result=matches_path_globs(&["*.rs".into()],Some(&[".hidden.rs".into()])); assert!(result); }
+    #[test] fn scope_and_tool_names_trim_ecmascript_bom_not_next_line() {
+        let scope=parse_scope(&["\u{feff}text\u{feff}".into(),"\u{feff}tool:edit(\u{feff}*.rs\u{feff})\u{feff}".into()]);
+        assert!(scope.allow_text); assert_eq!(scope.tool_scopes[0].path_glob.as_deref(),Some("*.rs"));
+        assert!(matches_scope(&scope,TtsrStreamSource::Tool,Some("\u{feff}EDIT\u{feff}"),Some(&["src/lib.rs".into()])));
+        assert!(!has_reachable_scope(&parse_scope(&["\u{0085}text\u{0085}".into()])));
+    }
 }

@@ -11,7 +11,7 @@ fn fields(metadata:&str)->Map<String,Value> {
 }
 fn string_list(value:Option<&Value>)->Vec<String> {
     let values=match value { Some(Value::String(text))=>vec![text.as_str()],Some(Value::Array(values))=>values.iter().filter_map(Value::as_str).collect(),_=>vec![] }; let mut result=Vec::new();
-    for text in values { let text=text.trim(); if !text.is_empty() && !result.iter().any(|item|item==text) { result.push(text.into()); } } result
+    for text in values { let text=maho_ai::utils::js::trim(text); if !text.is_empty() && !result.iter().any(|item|item==text) { result.push(text.into()); } } result
 }
 fn split_scope(value:&str)->Vec<String> {
     let mut result=Vec::new(); let mut current=String::new(); let mut depth=[0usize;3]; let mut quote=None; let mut previous=None;
@@ -20,12 +20,12 @@ fn split_scope(value:&str)->Vec<String> {
         match c { '\''|'"'=>quote=Some(c),'('=>depth[0]+=1,')'=>depth[0]=depth[0].saturating_sub(1),'['=>depth[1]+=1,']'=>depth[1]=depth[1].saturating_sub(1),'{'=>depth[2]+=1,'}'=>depth[2]=depth[2].saturating_sub(1),',' if depth==[0;3]=>{ result.push(std::mem::take(&mut current)); previous=Some(c); continue; },_=>{} }
         current.push(c); previous=Some(c);
     }
-    result.push(current); result.into_iter().filter_map(|token| { let token=token.trim(); let token=if token.len()>=2 && (token.starts_with('"') && token.ends_with('"') || token.starts_with('\'') && token.ends_with('\'')) { token[1..token.len()-1].trim() } else { token }; (!token.is_empty()).then(||token.into()) }).collect()
+    result.push(current); result.into_iter().filter_map(|token| { let token=maho_ai::utils::js::trim(&token); let token=if token.len()>=2 && (token.starts_with('"') && token.ends_with('"') || token.starts_with('\'') && token.ends_with('\'')) { maho_ai::utils::js::trim(&token[1..token.len()-1]) } else { token }; (!token.is_empty()).then(||token.into()) }).collect()
 }
 fn file_glob(token:&str)->bool { !token.chars().any(|c|matches!(c,'\\'|'^'|'$'|'+'|'|'|'('|')')) && token.chars().any(|c|matches!(c,'?'|'*'|'['|']'|'{'|'}')) && (token.contains('/') || token.strip_prefix("*.").is_some_and(|suffix|!suffix.is_empty() && !suffix.chars().any(char::is_whitespace))) }
 pub fn parse_rule_file(markdown:&str,meta:RuleFileMeta)->Result<TtsrRule,SkippedRule> {
     let normalized=markdown.replace("\r\n","\n").replace('\r',"\n");
-    let (fields,body)=if let Some(rest)=normalized.strip_prefix("---") { if let Some(end)=rest.find("\n---").map(|end|end+3) { (fields(normalized.get(4..end).unwrap_or("")),normalized[end+4..].trim().to_owned()) } else { (Map::new(),normalized) } } else { (Map::new(),normalized) };
+    let (fields,body)=if let Some(rest)=normalized.strip_prefix("---") { if let Some(end)=rest.find("\n---").map(|end|end+3) { (fields(normalized.get(4..end).unwrap_or("")),maho_ai::utils::js::trim(&normalized[end+4..]).to_owned()) } else { (Map::new(),normalized) } } else { (Map::new(),normalized) };
     let raw=fields.get("condition").filter(|value|!value.is_null()).or_else(||fields.get("ttsr_trigger").filter(|value|!value.is_null())).or_else(||fields.get("ttsrTrigger"));
     let mut conditions=Vec::new(); let mut scopes=string_list(fields.get("scope")).iter().flat_map(|value|split_scope(value)).collect::<Vec<_>>(); let mut inferred=false;
     for token in string_list(raw) { if file_glob(&token) { inferred=true; for tool in ["edit","write"] { scopes.push(format!("tool:{tool}({token})")); } } else { conditions.push(token); } }
@@ -47,4 +47,7 @@ pub fn parse_rule_file(markdown:&str,meta:RuleFileMeta)->Result<TtsrRule,Skipped
     #[test] fn scope_commas_inside_braces_do_not_split() { let rule=parse_rule_file("---\ncondition: bad\nscope: 'tool:edit(*.{rs,ts}), text'\n---\nbody",meta()).unwrap(); assert_eq!(rule.scope.tool_scopes[0].path_glob.as_deref(),Some("*.{rs,ts}")); assert!(rule.scope.allow_text); }
     #[test] fn invalid_regex_rejects_whole_rule() { let result=parse_rule_file("---\ncondition: ['ok', '(']\n---\nbody",meta()); assert!(result.is_err()); }
     #[test] fn missing_condition_rejects_rule() { let result=parse_rule_file("body",meta()); assert!(result.is_err()); }
+    #[test] fn condition_and_scope_lists_trim_javascript_bom() {
+        let rule=parse_rule_file("---\ncondition: '\u{feff}bad\u{feff}'\nscope: '\u{feff}text\u{feff}'\n---\nbody",meta()).unwrap(); assert_eq!(rule.condition,["bad"]); assert!(rule.scope.allow_text);
+    }
 }
