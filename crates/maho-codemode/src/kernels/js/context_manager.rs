@@ -40,6 +40,7 @@ impl JavaScriptKernel {
     pub fn queue_snapshot(&self)->(Option<String>,Vec<String>) {self.kernel.queue_snapshot()}
     pub async fn cancel_queued(&self,id:&str,reason:&str)->bool {self.kernel.cancel_queued(id,reason).await}
     pub fn deliver_tool_reply(&self,message:Value)->Result<(),String> {self.kernel.deliver_tool_reply(message)}
+    pub async fn next_tool_call(&self)->Result<Value,ProcessError> {self.kernel.next_tool_call().await}
     pub async fn reset(&self) -> Result<(), ProcessError> { self.kernel.reset().await }
     pub async fn close(&self) -> Result<(), ProcessError> { self.kernel.close().await }
     pub fn pid(&self) -> Option<u32> { self.kernel.pid() }

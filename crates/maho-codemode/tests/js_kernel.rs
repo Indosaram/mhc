@@ -40,3 +40,18 @@ async fn callback_run_admission_preserves_worker_output_and_queue_snapshot() {
     assert_eq!(kernel.queue_snapshot(),(None,vec![]));
     kernel.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn pulled_host_call_reply_resumes_real_worker() {
+    let kernel=JavaScriptKernel::start(Path::new(env!("CARGO_MANIFEST_DIR")),"bun-pull",4,None).await.unwrap();
+    let run=kernel.run_with_callbacks(KernelRunInput {cell_id:"pull".into(),code:"await tool.echo({value:42})".into(),timeout_ms:Some(5000)},None,None);
+    let reply=async {
+        let call=tokio::time::timeout(std::time::Duration::from_secs(3),kernel.next_tool_call()).await.unwrap().unwrap();
+        assert_eq!(call["toolName"],"echo");
+        assert_eq!(call["args"]["value"],42);
+        kernel.deliver_tool_reply(serde_json::json!({"type":"tool-reply","callId":call["callId"],"ok":true,"value":42})).unwrap();
+    };
+    let (result,())=tokio::join!(run,reply);
+    assert_eq!(result.unwrap()["valueRepr"],"42");
+    kernel.close().await.unwrap();
+}

@@ -10,6 +10,7 @@ enum Command {
     Cancel(String, String, oneshot::Sender<bool>),
     Interrupt(String, Option<String>, oneshot::Sender<Result<bool, String>>),
     Reply(Value),
+    NextToolCall(oneshot::Sender<oneshot::Receiver<Value>>),
     Reset(oneshot::Sender<Result<(), String>>),
     Close(oneshot::Sender<Result<(), String>>),
 }
@@ -67,6 +68,12 @@ impl SubprocessKernel {
 
     pub fn deliver_tool_reply(&self, message: Value) -> Result<(), String> {
         self.commands.send(Command::Reply(message)).map_err(|_| "Kernel is closed".into())
+    }
+
+    pub async fn next_tool_call(&self) -> Result<Value, ProcessError> {
+        let (response,receiver)=oneshot::channel();
+        self.commands.send(Command::NextToolCall(response)).map_err(|_|ProcessError::Closed)?;
+        receiver.await.map_err(|_|ProcessError::Closed)?.await.map_err(|_|ProcessError::Closed)
     }
 
     pub async fn reset(&self) -> Result<(), ProcessError> {
@@ -151,6 +158,7 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
                     } else { runs.settle_all(&format!("Cell interrupted: {reason}"), now()); let _ = response.send(Ok(true)); }
                 }
                 Some(Command::Reply(message)) => { if let Err(error) = process.send(&message).await { failure = Some(error.to_string()); } }
+                Some(Command::NextToolCall(response)) => {let _=response.send(runs.next_tool_call());}
                 Some(Command::Reset(response)) => {
                     runs.settle_all("Kernel reset", now()); runs.clear_tool_calls(); deadline = None;
                     let result = replace_process(&options, &mut process, "TERM", Duration::from_millis(1500)).await.map_err(|error| error.to_string());
