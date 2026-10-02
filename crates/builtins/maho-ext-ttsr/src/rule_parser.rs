@@ -4,7 +4,16 @@ pub struct RuleFileMeta { pub name:String,pub path:Option<String>,pub source:Rul
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct SkippedRule { pub name:String,pub warning:String }
 fn fields(metadata:&str)->Map<String,Value> {
-    if let Ok(value)=serde_yaml::from_str::<Value>(metadata) { return value.as_object().cloned().unwrap_or_default(); }
+    let normalized=metadata.split('\n').map(|line| {
+        let Some((key,raw))=line.split_once(':') else { return line.to_owned(); };
+        if key.is_empty()||!key.chars().all(|value|value.is_ascii_alphanumeric()||matches!(value,'_'|'-')) { return line.to_owned(); }
+        let scalar=raw.trim();
+        if scalar.len()>1&&scalar.starts_with('0')&&scalar.bytes().all(|value|value.is_ascii_digit()) {
+            let decimal=scalar.trim_start_matches('0');
+            format!("{key}: {}",if decimal.is_empty() { "0" } else { decimal })
+        } else { line.to_owned() }
+    }).collect::<Vec<_>>().join("\n");
+    if let Ok(value)=serde_yaml::from_str::<Value>(&normalized) { return value.as_object().cloned().unwrap_or_default(); }
     let mut fields=Map::new();
     for line in metadata.split('\n') { let Some((key,raw))=line.split_once(':') else { continue; }; if key.is_empty() || !key.chars().all(|c|c.is_ascii_alphanumeric() || matches!(c,'_'|'-')) { continue; } let raw=maho_ai::utils::js::trim(raw); let parsed=serde_yaml::from_str::<Value>(raw).ok().filter(|value|!value.is_object()).unwrap_or_else(||Value::String(raw.into())); fields.insert(key.into(),if raw.is_empty() { Value::String(String::new()) } else { parsed }); }
     fields
@@ -40,6 +49,12 @@ pub fn parse_rule_file(markdown:&str,meta:RuleFileMeta)->Result<TtsrRule,Skipped
 #[cfg(test)] mod tests {
     use super::*;
     fn meta()->RuleFileMeta { RuleFileMeta { name:"test".into(),path:None,source:RuleSource::Project } }
+    #[test] fn yaml12_scalar_condition_admission_matches_upstream() {
+        for value in ["yes","on","2020-01-01","1_000","1:20"] {
+            let parsed=parse_rule_file(&format!("---\ncondition: {value}\n---\nbody"),meta()).unwrap(); assert_eq!(parsed.condition,[value]);
+        }
+        for value in ["012","0o12","0x12","null","true"] { assert!(parse_rule_file(&format!("---\ncondition: {value}\n---\nbody"),meta()).is_err(),"{value}"); }
+    }
     #[test] fn fallback_metadata_values_trim_ecmascript_bom() {
         let rule=parse_rule_file("---\ncondition: bad\nscope: text\ninterruptMode: \u{feff}never\u{feff}\nbroken: [\n---\nbody",meta()).unwrap(); assert_eq!(rule.interrupt_mode,TtsrInterruptMode::Never);
     }
