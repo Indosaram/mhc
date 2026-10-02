@@ -92,7 +92,9 @@ impl GoalRuntime {
     pub async fn store_changed(&self,thread_id:&str)->Result<Option<Goal>,ExtensionFailure> {
         let mut state=self.state.lock().await;
         let Some(context)=state.context.clone().filter(|context|context.session_manager.session_id()==thread_id) else { return Ok(None); };
+        if !context.is_idle()||context.has_pending_messages()? { return Ok(None); }
         let goal=crate::store::read_goal(&(self.reference)(&context)).map_err(failure)?;
+        if !goal.as_ref().is_some_and(|goal|goal.status==GoalStatus::Active) { return Ok(None); }
         if let Some(goal)=goal.as_ref().filter(|goal|goal.status==GoalStatus::Active) { state.accounting.begin(goal,(self.now)()); }
         self.refresh(&mut state,&context,goal.as_ref()).await?; Ok(goal)
     }
@@ -102,6 +104,14 @@ fn failure(error:crate::errors::GoalError)->ExtensionFailure { ExtensionFailure:
     use super::*;
     fn assistant_usage(input:u64,output:u64)->maho_agent::types::AgentMessage {
         serde_json::from_value(serde_json::json!({"role":"assistant","content":[],"api":"faux","provider":"faux","model":"faux","usage":{"input":input,"output":output,"cacheRead":0,"cacheWrite":0,"totalTokens":input+output,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0})).unwrap()
+    }
+    #[tokio::test] async fn store_change_never_refreshes_a_busy_context() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+        crate::store::create_goal(&reference,"work",None,0).await.unwrap();
+        let runtime=GoalRuntime::new(Arc::new(move |_|stored.clone()),Arc::new(||0.0));
+        let mut context=crate::test_context::context(); context.is_idle_fn=Arc::new(||false);
+        runtime.event(&ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent { reason:maho_ext_api::SessionReason::Startup,initial_model_provenance:None,previous_session_file:None }),&context).await.unwrap();
+        assert!(runtime.store_changed("s").await.unwrap().is_none());
     }
     #[tokio::test] async fn upstream_streamed_usage_checkpoints_get_complete_and_blocked_tools() {
         for status in ["complete","blocked"] {

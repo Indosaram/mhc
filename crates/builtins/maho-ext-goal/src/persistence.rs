@@ -126,6 +126,53 @@ pub fn migrate_legacy_goal_file(reference: &GoalStoreRef, standalone_agent_dir: 
 #[cfg(test)] mod tests {
     use super::*;
     fn raw() -> String { serde_json::json!({"version":1,"goal":{"id":"g","threadId":"t","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":1,"updatedAt":1}}).to_string() }
+    #[test] fn upstream_atomic_write_accepts_maximum_valid_basename() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"x".repeat(250) };
+        assert_eq!(goal_file_path(&reference).file_name().unwrap().as_encoded_bytes().len(),255);
+        let goal=parse_goal_file(&raw(),false).unwrap().goal.unwrap(); write_goal_file(&reference,Some(&goal)).unwrap(); assert_eq!(read_goal_file(&reference).unwrap(),Some(goal));
+    }
+    #[test] fn upstream_rename_failure_removes_temporary_sibling() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"t".into() };
+        fs::create_dir(goal_file_path(&reference)).unwrap(); let goal=parse_goal_file(&raw(),false).unwrap().goal.unwrap();
+        assert!(write_goal_file(&reference,Some(&goal)).is_err()); assert_eq!(fs::read_dir(dir.path()).unwrap().count(),1);
+    }
+    #[test] fn upstream_no_session_migration_preserves_old_thread_identity() {
+        let dir=tempfile::tempdir().unwrap(); let key="a".repeat(24);
+        let reference=GoalStoreRef { base_dir:dir.path().join("extensions/goal/no-session").join(&key),thread_id:"new-thread".into() };
+        let legacy=dir.path().join("extensions/pi-goal/no-session").join(key); fs::create_dir_all(&legacy).unwrap(); fs::write(legacy.join("old-thread.json"),raw()).unwrap();
+        let migrated=migrate_legacy_goal_file(&reference,dir.path()).unwrap().unwrap(); assert_eq!(migrated.thread_id,"t"); assert_eq!(read_goal_file(&reference).unwrap(),Some(migrated));
+    }
+    #[test] fn upstream_no_session_legacy_conflict_is_not_guessed() {
+        let dir=tempfile::tempdir().unwrap(); let key="c".repeat(24);
+        let reference=GoalStoreRef { base_dir:dir.path().join("extensions/goal/no-session").join(&key),thread_id:"new-thread".into() };
+        let legacy=dir.path().join("extensions/pi-goal/no-session").join(key); fs::create_dir_all(&legacy).unwrap();
+        for name in ["one.json","two.json"] { fs::write(legacy.join(name),raw()).unwrap(); }
+        assert!(matches!(migrate_legacy_goal_file(&reference,dir.path()),Err(GoalError::InvalidMutation(_)))); assert!(read_goal_file(&reference).unwrap().is_none());
+    }
+    #[test] fn upstream_migration_never_overwrites_current_inert_budget() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().join("extensions/goal"),thread_id:"t".into() };
+        let mut current=parse_goal_file(&raw(),false).unwrap().goal.unwrap(); current.objective="current".into(); current.token_budget=Some(100);
+        write_goal_file(&reference,Some(&current)).unwrap();
+        let legacy=dir.path().join("extensions/pi-goal"); fs::create_dir_all(&legacy).unwrap(); fs::write(legacy.join("t.json"),raw()).unwrap();
+        assert!(migrate_legacy_goal_file(&reference,dir.path()).unwrap().is_none()); assert_eq!(read_goal_file(&reference).unwrap(),Some(current));
+    }
+    #[test] fn upstream_absent_null_and_invalid_legacy_records_leave_store_usable() {
+        for input in [None,Some("{\"version\":1,\"goal\":null}"),Some("{\"version\":99,\"goal\":null}"),Some("{\"version\":1,\"goal\":{}}"),Some("{\"version\":1,\"goal\":")] {
+            let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().join("extensions/goal"),thread_id:"t".into() };
+            if let Some(input)=input { let legacy=dir.path().join("extensions/pi-goal"); fs::create_dir_all(&legacy).unwrap(); fs::write(legacy.join("t.json"),input).unwrap(); }
+            assert!(migrate_legacy_goal_file(&reference,dir.path()).unwrap().is_none()); assert!(read_goal_file(&reference).unwrap().is_none());
+        }
+    }
+    #[test] fn upstream_legacy_snake_case_budget_status_becomes_active() {
+        let mut input:Value=serde_json::from_str(&raw()).unwrap(); input["goal"]["status"]="budget_limited".into(); input["goal"]["tokenBudget"]=42.into();
+        let goal=parse_goal_file(&input.to_string(),true).unwrap().goal.unwrap(); assert_eq!(goal.status,crate::types::GoalStatus::Active); assert!(goal.token_budget.is_none());
+    }
+    #[test] fn upstream_current_store_rejects_legacy_status_and_stale_brace_invalid_shape() {
+        let mut input:Value=serde_json::from_str(&raw()).unwrap(); input["goal"]["status"]="budgetLimited".into();
+        assert!(matches!(parse_goal_file(&input.to_string(),false),Err(GoalError::InvalidStore(_))));
+        assert!(matches!(parse_goal_file("{\"version\":2,\"goal\":null}}",false),Err(GoalError::UnsupportedStoreVersion(_))));
+        assert!(matches!(parse_goal_file("{\"version\":1,\"goal\":{}}}",false),Err(GoalError::InvalidStore(_))));
+    }
     #[test] fn valid_record_roundtrips() { let input = raw(); let result = parse_goal_file(&input, false).unwrap(); assert_eq!(result.goal.unwrap().id, "g"); }
     #[test] fn saved_integral_elapsed_uses_javascript_json_number_spelling() {
         let mut goal=parse_goal_file(&raw(),false).unwrap().goal.unwrap(); goal.time_used_seconds=3.0;
