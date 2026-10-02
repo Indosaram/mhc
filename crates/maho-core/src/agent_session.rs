@@ -631,13 +631,23 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn begin_compaction(&self, options: maho_ext_api::BeginCompactionOptions) -> Option<maho_ext_api::AbortSignal> {
         let session = self.session().ok()?;
         let signal = maho_ext_api::AbortSignal::default();
+        let model = session.model();
+        let request_id = uuid::Uuid::new_v4().to_string();
         {
             let mut state = session.state();
             if state.compaction_abort_controller.is_some() { return None; }
-            state.compaction_abort_controller = Some(crate::compaction::lifecycle::CompactionAbortController::new());
+            let controller = crate::compaction::lifecycle::CompactionAbortController::new();
+            let revision = state.message_revision as i64;
+            state.compaction_lifecycle.begin(crate::compaction::lifecycle::BeginCompactionOperation {
+                operation_id: request_id.clone(), stage: crate::compaction::lifecycle::CompactionStage::Feedback,
+                reason: format!("{:?}", options.reason), model: Some(crate::compaction::lifecycle::CompactionModelRef {
+                    provider: model.provider, id: model.id,
+                }), started_revision: revision,
+            }, controller.clone());
+            state.compaction_abort_controller = Some(controller);
             state.compaction_extension_signal = Some(signal.clone());
         }
-        session.emit(AgentSessionEvent::CompactionStart { reason: options.reason, request_id: None });
+        session.emit(AgentSessionEvent::CompactionStart { reason: options.reason, request_id: Some(request_id) });
         Some(signal)
     }
     fn update_compaction(&self, options: maho_ext_api::UpdateCompactionOptions) { if let Ok(session) = self.session() {
@@ -645,10 +655,20 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         session.emit(AgentSessionEvent::CompactionProgress { reason: options.reason, delta: options.delta, text: options.text });
     } }
     fn end_compaction(&self, options: maho_ext_api::EndCompactionOptions) { if let Ok(session) = self.session() {
+        let lifecycle = session.compaction_state();
+        let Some(operation) = lifecycle.operation() else { return; };
+        if lifecycle.status() != "running" || operation.stage != crate::compaction::lifecycle::CompactionStage::Feedback { return; }
+        let aborted = options.aborted.unwrap_or_else(|| options.signal.as_ref().is_some_and(maho_ext_api::AbortSignal::is_aborted));
+        let revision = session.message_revision() as i64;
+        session.state().compaction_lifecycle.finish(&crate::compaction::lifecycle::FinishCompactionOperation {
+            operation_id: operation.operation_id.clone(), status: if aborted { crate::compaction::lifecycle::CompactionFinishStatus::Aborted }
+                else { crate::compaction::lifecycle::CompactionFinishStatus::Failed }, ended_revision: revision,
+            rejection_cause: None, error_message: options.error_message.clone(),
+        });
         session.state().compaction_abort_controller = None;
         session.state().compaction_extension_signal = None;
-        session.emit(AgentSessionEvent::CompactionEnd { reason: options.reason, result: None, aborted: options.aborted.unwrap_or(false),
-            will_retry: false, request_id: None, accepted: None, rejection_cause: None, error_message: options.error_message });
+        session.emit(AgentSessionEvent::CompactionEnd { reason: options.reason, result: None, aborted,
+            will_retry: false, request_id: Some(operation.operation_id.clone()), accepted: None, rejection_cause: None, error_message: options.error_message });
     } }
     fn get_message_revision(&self) -> u64 { self.session().map_or(0, |session| session.message_revision()) }
     fn apply_compaction(&self, result: maho_ext_api::CompactionResult, options: maho_ext_api::ApplyCompactionOptions) -> maho_ext_api::ExtensionFuture<'_, maho_ext_api::ApplyCompactionResult> {
@@ -668,6 +688,14 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             if session.is_streaming() { return Ok(maho_ext_api::ApplyCompactionResult::Rejected); }
             session.apply_compaction(&crate::compaction::compaction::CompactionResult { summary: result.summary, first_kept_entry_id: result.first_kept_entry_id,
                 tokens_before: result.tokens_before as i64, estimated_tokens_after: None, usage: None, details: result.details }).map_err(maho_ext_api::ExtensionFailure::new)?;
+            let lifecycle = session.compaction_state();
+            if let Some(operation) = lifecycle.operation() {
+                let revision = session.message_revision() as i64;
+                session.state().compaction_lifecycle.finish(&crate::compaction::lifecycle::FinishCompactionOperation {
+                    operation_id: operation.operation_id.clone(), status: crate::compaction::lifecycle::CompactionFinishStatus::Completed,
+                    ended_revision: revision, rejection_cause: None, error_message: None,
+                });
+            }
             session.state().compaction_abort_controller = None;
             session.state().compaction_extension_signal = None;
             Ok(maho_ext_api::ApplyCompactionResult::Applied)
@@ -5037,6 +5065,8 @@ mod tests {
         });
         assert!(signal.is_aborted());
         assert!(!session.is_compacting());
+        assert_eq!(session.compaction_state().status(), "aborted");
+        assert_eq!(session.compaction_state().generation(), 1);
     }
 
     #[tokio::test]
