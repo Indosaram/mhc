@@ -85,3 +85,24 @@ async fn preaborted_compaction_does_not_read_unbound_checkpoint_actions() {
     }
 }
 
+#[tokio::test]
+async fn rejected_compactions_trip_registered_breaker_but_external_owner_does_not() {
+    for cause in [CompactionRejectionCause::CancelledByExtension, CompactionRejectionCause::ExternalOwner] {
+        let mut api = ExtensionApi::new(LoadedExtension::new("compaction", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+        maho_ext_compaction::CompactionExtension.register(&mut api);
+        let ctx = context();
+        for _ in 0..3 {
+            let mut event = ExtensionEvent::SessionCompact(SessionCompactEvent::Rejected { reason: CompactionReason::Threshold, request_id: "request".into(), rejection_cause: cause });
+            for handler in &api.registered.handlers[&EventKind::SessionCompact] { handler(&mut event,&ctx).await.unwrap(); }
+        }
+        let mut event = ExtensionEvent::SessionBeforeCompact(SessionBeforeCompactEvent {
+            reason: CompactionReason::Threshold, will_retry: false, request_id: "request".into(),
+            preparation: CompactionPreparation { settings: CompactionSettings { enabled: true, reserve_tokens: 100, keep_recent_tokens: 100 }, messages_to_summarize: Vec::new(), turn_prefix_messages: Vec::new(), tokens_before: 1000, first_kept_entry_id: "keep".into(), previous_summary: None },
+            branch_entries: Vec::new(), custom_instructions: None, signal: AbortSignal::default(),
+        });
+        let result = api.registered.handlers[&EventKind::SessionBeforeCompact][0](&mut event,&ctx).await;
+        if cause == CompactionRejectionCause::ExternalOwner { assert!(result.is_err()); }
+        else { assert!(matches!(result.unwrap(), EventResult::SessionBefore(SessionBeforeEventResult { rejection_cause: Some(CompactionRejectionCause::CircuitBreaker), .. }))); }
+    }
+}
+

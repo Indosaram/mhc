@@ -85,3 +85,73 @@ pub fn create_live_blocking_remote_compaction_event(
 ) -> maho_ext_api::SessionBeforeCompactEvent {
     create_blocking_remote_compaction_event(context, preparation, maho_core::session_manager::create_session_id(), custom_instructions, signal)
 }
+
+pub fn summarization_tools(api: &maho_ext_api::ExtensionApi) -> Vec<maho_ai::types::Tool> {
+    let Ok(definitions) = api.get_all_tools() else { return Vec::new(); };
+    let Ok(active) = api.get_active_tools() else { return Vec::new(); };
+    active.iter().filter_map(|name|definitions.iter().find(|tool|&tool.name == name)).map(|tool|maho_ai::types::Tool {
+        name: tool.name.clone(), description: tool.description.clone(), parameters: tool.parameters.clone(), freeform: None, constrained_sampling: None,
+    }).collect()
+}
+
+pub async fn generate_core_route_compaction(
+    api: &maho_ext_api::ExtensionApi,
+    context: &maho_ext_api::ExtensionContext,
+    event: &maho_ext_api::SessionBeforeCompactEvent,
+) -> Result<maho_ext_api::EventResult, maho_ext_api::ExtensionFailure> {
+    use maho_ext_api::{EventResult, SessionBeforeEventResult};
+    if event.signal.is_aborted() { return Ok(EventResult::None); }
+    let Some(model) = context.model.clone() else { return Ok(EventResult::None); };
+    let convert = |messages: &[maho_ext_api::AgentMessage]|messages.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()));
+    let messages = convert(&event.preparation.messages_to_summarize)?;
+    let prefix = convert(&event.preparation.turn_prefix_messages)?;
+    let mut settings = maho_core::compaction::settings::default_compaction_settings();
+    settings.enabled = event.preparation.settings.enabled;
+    settings.reserve_tokens = event.preparation.settings.reserve_tokens as i64;
+    settings.keep_recent_tokens = event.preparation.settings.keep_recent_tokens as i64;
+    let preparation = maho_core::compaction::compaction::CompactionPreparation {
+        first_kept_entry_id: event.preparation.first_kept_entry_id.clone(), source_messages: messages.clone(), messages_to_summarize: messages,
+        turn_prefix_source_messages: prefix.clone(), is_split_turn: !prefix.is_empty(), turn_prefix_messages: prefix,
+        tokens_before: event.preparation.tokens_before as i64, previous_summary: event.preparation.previous_summary.clone(),
+        file_ops: Default::default(), settings,
+    };
+    let reason = match event.reason { maho_ext_api::CompactionReason::Manual => "manual", maho_ext_api::CompactionReason::Threshold => "threshold", maho_ext_api::CompactionReason::Overflow => "overflow", maho_ext_api::CompactionReason::Branch => "branch", _ => "extension" };
+    let snapshot = crate::speculative::SpeculativeCompactionSnapshot {
+        generation: 0, expected_revision: context.get_message_revision()?, context_window: context.get_context_usage()?.map_or(model.context_window, |usage|usage.context_window), model,
+        prompt_variant: crate::speculative::get_prompt_variant(reason, &preparation), preparation,
+        branch_entries: crate::speculative::branch_values(context), custom_instructions: event.custom_instructions.clone(),
+        system_prompt: Some(context.get_system_prompt()), tools: summarization_tools(api), origin: Some("core-route".into()),
+    };
+    let key = context.model_registry.get_api_key_for_provider(&snapshot.model.provider).await?;
+    let controller = maho_ai::utils::abort::AbortController::new();
+    let signal = controller.signal();
+    let progress = |delta: &str| { let _ = context.update_compaction(maho_ext_api::UpdateCompactionOptions { reason: event.reason, signal: Some(event.signal.clone()), delta: Some(delta.into()), text: None }); };
+    let result = tokio::select! {
+        () = event.signal.cancelled() => { controller.abort(None); return Ok(EventResult::None); }
+        result = crate::speculative::run_extension_compaction(&snapshot, key, None, Some(&signal), None, &progress) => result,
+    };
+    if event.signal.is_aborted() { return Ok(EventResult::None); }
+    match result {
+        Ok(Some(compaction)) => Ok(EventResult::SessionBefore(SessionBeforeEventResult { compaction: Some(compaction), ..Default::default() })),
+        Ok(None) => Ok(EventResult::SessionBefore(SessionBeforeEventResult { cancel: Some(true), reason: Some("compaction generator returned no summary".into()), ..Default::default() })),
+        Err(error) => {
+            let failure = match &error {
+                crate::speculative::SummaryGenerationError::Request(response) => crate::speculative::summary_request_failure(response),
+                crate::speculative::SummaryGenerationError::Stream(crate::speculative_summary::SummaryStreamError::IdleTimeout) => crate::deterministic_fallback::SummaryFailure::Timeout,
+                crate::speculative::SummaryGenerationError::Stream(crate::speculative_summary::SummaryStreamError::DurationBudget) | crate::speculative::SummaryGenerationError::TotalBudget => crate::deterministic_fallback::SummaryFailure::Timeout,
+                crate::speculative::SummaryGenerationError::Overflow(_) => crate::deterministic_fallback::SummaryFailure::OverflowExhausted,
+                crate::speculative::SummaryGenerationError::EmptySummary(_) => crate::deterministic_fallback::SummaryFailure::EmptySummary,
+                _ => crate::deterministic_fallback::SummaryFailure::Other,
+            };
+            if is_required_compaction_fallback_reason(reason)
+                && let Some(failure) = crate::deterministic_fallback::classify_required_compaction_fallback_failure(failure, &error.to_string()) {
+                let mut diagnostics = crate::deterministic_fallback::DeterministicFallbackDiagnostic::default();
+                let intent = crate::task_intent::resolve_inherited_task_intent(&snapshot.branch_entries);
+                if let Some(compaction) = crate::deterministic_fallback::create_required_compaction_fallback(&snapshot.preparation, snapshot.context_window, failure, intent.as_deref(), &snapshot.branch_entries, &mut diagnostics) {
+                    return Ok(EventResult::SessionBefore(SessionBeforeEventResult { compaction: Some(compaction), ..Default::default() }));
+                }
+            }
+            Ok(EventResult::SessionBefore(SessionBeforeEventResult { cancel: Some(true), reason: Some(error.to_string()), ..Default::default() }))
+        }
+    }
+}

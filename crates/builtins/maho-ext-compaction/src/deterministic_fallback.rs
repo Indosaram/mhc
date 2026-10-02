@@ -175,15 +175,33 @@ pub fn create_required_compaction_fallback(
         let messages: Vec<_> = context_entries.iter().flat_map(session_entry_to_context_messages).collect();
         let retained: Vec<_> = messages.iter().skip(1).cloned().collect();
         let canonical = maho_core::messages::convert_to_llm(&retained);
+        let mut kept_ids = std::collections::HashSet::new();
+        let mut failed_ids = std::collections::HashSet::new();
+        for message in &retained {
+            if message["role"] == "assistant" {
+                let ids = if matches!(message["stopReason"].as_str(), Some("error" | "aborted")) { &mut failed_ids } else { &mut kept_ids };
+                for block in message["content"].as_array().into_iter().flatten() {
+                    if block["type"] == "toolCall" && let Some(id) = block["id"].as_str() { ids.insert(id); }
+                }
+            }
+        }
+        failed_ids.retain(|id|!kept_ids.contains(id));
+        let retained_indexes: Vec<_> = retained.iter().enumerate().filter_map(|(index,message)| {
+            let dropped = (message["role"] == "assistant" && matches!(message["stopReason"].as_str(), Some("error" | "aborted")))
+                || (message["role"] == "toolResult" && message["toolCallId"].as_str().is_some_and(|id|failed_ids.contains(id)))
+                || (message["role"] == "bashExecution" && message["excludeFromContext"] == true);
+            (!dropped).then_some(index+1)
+        }).collect();
         let summary_message = messages.first()?;
         let mut rejection_details = json!({});
         let reason = if context_entries.get(1).and_then(|entry| entry["id"].as_str()) != Some(id) {
             Some("context-reconstruction-failed")
         } else if crate::retained_message_safety::has_unsafe_retained_content(&canonical) || !canonical.iter().all(|message| bounded_value(message, 0)) {
             if let Some(unsafe_index) = canonical.iter().position(|message| crate::retained_message_safety::has_unsafe_retained_content(std::slice::from_ref(message)) || !bounded_value(message, 0)) {
-                rejection_details["unsafeMessageIndex"] = json!(unsafe_index + 1);
+                let projected_index = retained_indexes[unsafe_index];
+                rejection_details["unsafeMessageIndex"] = json!(projected_index);
                 if let Some(role) = canonical[unsafe_index].get("role") { rejection_details["unsafeMessageRole"] = role.clone(); }
-                if let Some(entry) = context_entries.get(unsafe_index + 1) { rejection_details["unsafeEntryId"] = entry["id"].clone(); }
+                if let Some(entry) = context_entries.get(projected_index) { rejection_details["unsafeEntryId"] = entry["id"].clone(); }
             }
             Some("unsafe-retained-content")
         } else if !complete_tool_chains(&canonical) { Some("atomic-tool-chain-cut") } else {

@@ -45,3 +45,21 @@ fn missing_boundary_rejects_without_touching_transcript() {
     assert!(result.is_none());
     assert_eq!(diagnostics.rejection_reason, Some("missing-preparation-boundary"));
 }
+
+#[test]
+fn unsafe_diagnostics_use_projected_position_after_failed_turn_drop() {
+    use maho_core::compaction::{compaction::prepare_compaction, settings::default_compaction_settings};
+    use serde_json::json;
+    let entries = [
+        json!({"type":"message","id":"keep","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"task","timestamp":0}}),
+        json!({"type":"message","id":"failed","parentId":"keep","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"assistant","content":[],"stopReason":"error","timestamp":0}}),
+        json!({"type":"message","id":"unsafe","parentId":"failed","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":[{"type":"image","data":"x","mimeType":"image/png"}],"timestamp":0}}),
+    ];
+    let mut preparation = prepare_compaction(&entries, &default_compaction_settings(), true, false).unwrap();
+    preparation.first_kept_entry_id = "keep".into();
+    let mut diagnostics = DeterministicFallbackDiagnostic::default();
+    assert!(create_required_compaction_fallback(&preparation, 100000, RequiredCompactionFallbackFailure::SummarizationTimeout, None, &entries, &mut diagnostics).is_none());
+    assert_eq!(diagnostics.candidate_rejections[0]["unsafeMessageIndex"],3);
+    assert_eq!(diagnostics.candidate_rejections[0]["unsafeEntryId"],"unsafe");
+    assert_eq!(entries[1]["message"]["stopReason"],"error");
+}

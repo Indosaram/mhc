@@ -100,7 +100,17 @@ impl maho_ext_api::Extension for CompactionExtension {
         {
             let pending = std::sync::Arc::clone(&pending);
             let live_api = std::sync::Arc::clone(&live_api);
+            let state = std::sync::Arc::clone(&state);
             api.on(maho_ext_api::EventKind::SessionBeforeCompact, std::sync::Arc::new(move |event, context| {
+                let gate = if let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event {
+                    let state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if !event.signal.is_aborted() && per_turn_cap::should_reject_by_cap(&state).cancel {
+                        Some(maho_ext_api::SessionBeforeEventResult { cancel: Some(true), rejection_cause: Some(maho_ext_api::CompactionRejectionCause::PerTurnCap), reason: Some("absolute compaction cap reached for this session".into()), ..Default::default() })
+                    } else if !event.signal.is_aborted() && circuit_breaker::is_tripped(&state, chrono::Utc::now().timestamp_millis() as f64) && !circuit_breaker::should_bypass(&state, false, Some(event.reason)) {
+                        Some(maho_ext_api::SessionBeforeEventResult { cancel: Some(true), rejection_cause: Some(maho_ext_api::CompactionRejectionCause::CircuitBreaker), ..Default::default() })
+                    } else { None }
+                } else { None };
+                if let Some(gate) = gate { return Box::pin(async move { Ok(maho_ext_api::EventResult::SessionBefore(gate)) }); }
                 let result = if let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event {
                     if event.signal.is_aborted() { Ok(()) } else {
                         checkpoint_state::capture_live_agent_checkpoint(&live_api, context).map(|checkpoint| {
@@ -115,7 +125,17 @@ impl maho_ext_api::Extension for CompactionExtension {
                         })
                     }
                 } else { Ok(()) };
-                Box::pin(async move { result?; Ok(maho_ext_api::EventResult::None) })
+                let live_api = std::sync::Arc::clone(&live_api);
+                let pending = std::sync::Arc::clone(&pending);
+                Box::pin(async move {
+                    result?;
+                    let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { return Ok(maho_ext_api::EventResult::None); };
+                    let result = extension_wiring::generate_core_route_compaction(&live_api, context, event).await;
+                    if !matches!(&result, Ok(maho_ext_api::EventResult::SessionBefore(result)) if result.compaction.is_some()) {
+                        pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|(id, _)|id != &event.request_id);
+                    }
+                    result
+                })
             }));
         }
         {
@@ -181,6 +201,10 @@ impl maho_ext_api::Extension for CompactionExtension {
                             }
                             next
                         }
+                        maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Rejected { reason, rejection_cause, .. })
+                            if *rejection_cause != maho_ext_api::CompactionRejectionCause::ExternalOwner => {
+                                circuit_breaker::record_failure(previous, chrono::Utc::now().timestamp_millis() as f64, Some(*reason), None)
+                            }
                         _ => previous,
                     };
                     Ok(maho_ext_api::EventResult::None)

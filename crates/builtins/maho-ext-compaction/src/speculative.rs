@@ -103,7 +103,7 @@ pub async fn run_extension_compaction(
     headers: Option<maho_ai::types::ProviderHeaders>,
     signal: Option<&maho_ai::utils::abort::AbortSignal>,
     stream_runner: Option<&crate::speculative_summary::SummaryStreamRunner>,
-    on_progress: &dyn Fn(&str),
+    on_progress: &(dyn Fn(&str) + Sync),
 ) -> Result<Option<CompactionResult>, SummaryGenerationError> {
     use maho_ai::types::StopReason;
     use crate::{overflow_retry as overflow, speculative_summary as summary};

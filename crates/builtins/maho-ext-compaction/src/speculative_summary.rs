@@ -47,7 +47,7 @@ pub async fn consume_summary_stream(
     caller_signal: Option<&maho_ai::utils::abort::AbortSignal>,
     idle_timeout: std::time::Duration,
     max_duration: std::time::Duration,
-    on_progress: &dyn Fn(&str),
+    on_progress: &(dyn Fn(&str) + Sync),
 ) -> Result<Option<maho_ai::types::AssistantMessage>, SummaryStreamError> {
     let idle = tokio::time::sleep(idle_timeout);
     let duration = tokio::time::sleep(max_duration);
@@ -98,7 +98,7 @@ pub struct SummaryRequestOptions<'a> {
     pub stream_runner: Option<&'a SummaryStreamRunner>,
 }
 
-pub async fn generate_summary_message(options: SummaryRequestOptions<'_>, on_progress: &dyn Fn(&str)) -> Result<Option<maho_ai::types::AssistantMessage>, SummaryStreamError> {
+pub async fn generate_summary_message(options: SummaryRequestOptions<'_>, on_progress: &(dyn Fn(&str) + Sync)) -> Result<Option<maho_ai::types::AssistantMessage>, SummaryStreamError> {
     let mut messages = options.messages.to_vec();
     messages.push(json!({"role":"user","content":[{"type":"text","text":options.prompt.user}],"timestamp":chrono::Utc::now().timestamp_millis()}));
     let typed = maho_core::messages::convert_to_llm(&messages).into_iter().map(serde_json::from_value).collect::<Result<Vec<maho_ai::types::Message>, _>>()
