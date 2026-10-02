@@ -256,5 +256,6 @@ async fn flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_generat
     HANDOFFS.get_or_init(Mutex::default).lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.delete(ctx.session_manager.session_id());
     let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
     if state.generation == generation { state.in_flight = false; }
-    result.map(|()| None)
+    if let Err(error) = result { logger.log(LogLevel::Error, LogEvent::WatcherError { path: "reload", message: &error.to_string() }); }
+    Ok(None)
 }
