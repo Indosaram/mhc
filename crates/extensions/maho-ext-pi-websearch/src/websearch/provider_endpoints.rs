@@ -1,5 +1,4 @@
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum SearchProvider{Exa,Tavily,Brave,DuckduckgoHtml,Serper,GoogleCse,Zai,Openai,Codex,Anthropic,Perplexity,Xai,Kimi}
+pub use super::types::SearchProvider;
 pub const fn default_provider_url(provider:SearchProvider)->&'static str{match provider{
     SearchProvider::Exa=>"https://api.exa.ai/search",
     SearchProvider::Tavily=>"https://api.tavily.com/search",
