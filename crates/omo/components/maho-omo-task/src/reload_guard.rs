@@ -10,3 +10,9 @@ pub fn evaluate_reload_veto(records: &[TaskRecord]) -> Option<ReloadVetoDecision
 pub fn manager_reload_veto(manager: &TaskManager) -> Option<ReloadVetoDecision> {
     evaluate_reload_veto(&manager.resident_task_ids().iter().filter_map(|id| manager.get(id)).collect::<Vec<_>>())
 }
+pub fn wire_reload_guard(api:&mut maho_ext_api::ExtensionApi,manager:std::sync::Arc<TaskManager>) {
+    api.on(maho_ext_api::EventKind::SessionBeforeReload,std::sync::Arc::new(move |_,_| {
+        let result=manager_reload_veto(&manager).map_or(maho_ext_api::EventResult::None,|veto| maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult { cancel:Some(veto.cancelled),reason:veto.reason,..Default::default() }));
+        Box::pin(async move { Ok(result) })
+    }));
+}
