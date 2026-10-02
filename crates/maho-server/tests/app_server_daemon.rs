@@ -220,3 +220,28 @@ async fn loaded_threads_preserve_registration_order_and_survivor_order_after_unl
     assert_eq!(ids(runtime.threads.list_loaded().await),["z-first","m-third"]);
     runtime.dispose().await;
 }
+
+#[tokio::test]
+async fn real_socket_routes_question_progress_and_final_response_then_declines_after_unsubscribe() {
+    use maho_server::app_server::user_input_bridge::UserInputBridge;
+    use maho_ext_api::{QuestionRequest,QuestionOptions,Question,QuestionOption,QuestionStatus};
+    let directory = tempfile::tempdir().unwrap();let path = directory.path().join("input.sock");
+    let runtime = AppServerRuntime::new(directory.path().display().to_string(),directory.path().display().to_string(),"1".into(),None,Some(factory())).await;
+    let listener = start_unix_socket_listener(path.clone(),true,ResolvedWebSocketListenerAuth::Off,runtime.core.clone(),None).await.unwrap();
+    let mut client = attach(&path).await;
+    send(&mut client,json!({"id":2,"method":"thread/start","params":{}})).await;
+    let id = read(&mut client).await["result"]["thread"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(read(&mut client).await["method"],"thread/started");
+    let request = QuestionRequest {request_id:"native".into(),questions:vec![Question {id:"choice".into(),header:"Choice".into(),question:"Choose".into(),options:vec![QuestionOption {label:"One".into(),description:None}],multi_select:false}],wait_for_answer:true,timeout_ms:10000};
+    let answer = UserInputBridge::request_user_input(&runtime.user_input,&id,"turn","item",request.clone(),QuestionOptions::default());
+    let outbound = read(&mut client).await;assert_eq!(outbound["method"],"item/tool/requestUserInput");
+    send(&mut client,json!({"method":"item/tool/userInputProgress","params":{"requestId":outbound["id"],"answers":{"choice":{"answers":["One"]}}}})).await;
+    send(&mut client,json!({"id":outbound["id"],"result":{"answers":{"choice":{"answers":["One"]}}}})).await;
+    assert_eq!(read(&mut client).await["method"],"serverRequest/resolved");
+    assert_eq!(answer.await.unwrap().status,QuestionStatus::Answered);
+    send(&mut client,json!({"id":3,"method":"thread/unsubscribe","params":{"threadId":id}})).await;
+    assert_eq!(read(&mut client).await["result"]["status"],"unsubscribed");
+    let unavailable = UserInputBridge::request_user_input(&runtime.user_input,&id,"turn","item",request,QuestionOptions::default()).await.unwrap();
+    assert_eq!(unavailable.status,QuestionStatus::Unavailable);
+    client.close(None).await.unwrap();drop(client);listener.close().await.unwrap();runtime.dispose().await;
+}

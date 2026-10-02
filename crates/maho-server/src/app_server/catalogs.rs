@@ -23,7 +23,7 @@ pub fn register_catalog_methods(registry: &mut MethodRegistry,threads: Arc<Threa
                     let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {models_path:Some(std::path::Path::new(&agent_dir).join("models.json")),auth_path:Some(std::path::Path::new(&agent_dir).join("auth.json")),..Default::default()});
                     let models = maho_core::model_registry::ModelRegistry::new(runtime).get_available();
                     let model = models.iter().find(|model|maho_core::model_resolver::DEFAULT_MODEL_PER_PROVIDER.iter().any(|(provider,id)|*provider == model.provider && *id == model.id)).or_else(||models.first()).map_or("unknown",|model|model.id.as_str());
-                    return Ok(json!({"data":[{"name":"default","mode":null,"model":model,"reasoning_effort":null}]}));
+                    return serde_json::to_value(super::protocol::collaboration_mode::CollaborationModeListResponse {data:vec![super::protocol::collaboration_mode::build_senpi_collaboration_mode_preset(model.into())]}).map_err(|error|JsonRpcError::new(-32603,error.to_string()));
                 }
                 let field = if method == "permissionProfile/list" {"cwd"} else {"threadId"};
                 let scope = match params.get(field) {None|Some(Value::Null)=>None,Some(Value::String(value))=>Some(value.as_str()),_=>return Err(JsonRpcError::new(-32600,format!("{method} {field} must be a string or null")))};

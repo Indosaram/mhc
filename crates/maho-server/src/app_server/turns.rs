@@ -81,6 +81,11 @@ pub async fn register_turn_methods(core: &Arc<RwLock<ServerCore>>, threads: Arc<
                 let status = if interrupted { CompleteTurnStatus::Interrupted } else if result.is_ok() { CompleteTurnStatus::Completed } else { CompleteTurnStatus::Failed };
                 let items = { let mut log = log.lock().await; if let Err(error) = log.complete_turn(&id,&turn_id,CompleteTurnOptions {status,completed_at:completion.to_rfc3339_opts(chrono::SecondsFormat::Millis,true),error:result.as_ref().err().cloned()}) {eprintln!("app-server turn log: {error}");} super::turn_runtime::read_logged_items(&mut log,&id,&turn_id) };
                 { let mut entry = entry.lock().await; entry.active_turn = None; entry.updated_at = completion.to_rfc3339_opts(chrono::SecondsFormat::Millis,true); }
+                {
+                    let core = core.read().await;
+                    if let Some(approvals) = &core.approvals {approvals.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel_pending_for_thread(&id);}
+                    if let Some(input) = &core.user_input {input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel_pending_for_thread(&id);}
+                }
                 let turn = build_turn(&turn_id,if interrupted {"interrupted"} else if result.is_ok() {"completed"} else {"failed"},started,Some(completion.timestamp_millis() as f64),&items,result.as_ref().err().map(String::as_str));
                 emit(&core,&entry,json!({"method":"thread/status/changed","params":{"threadId":id,"status":{"type":"idle"}}})).await;
                 for notification in super::turn_terminal::turn_terminal_notifications(&id,turn) {emit(&core,&entry,notification).await;}

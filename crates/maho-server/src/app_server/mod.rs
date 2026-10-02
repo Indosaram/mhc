@@ -61,6 +61,7 @@ pub mod registry;
 pub mod turn_log;
 pub mod turn_runtime;
 pub mod turn_adapter;
+pub mod protocol;
 pub mod thread_registry;
 pub mod wire_thread;
 pub mod runtime;

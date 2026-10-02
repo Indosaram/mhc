@@ -9,6 +9,8 @@ pub struct AppServerRuntime {
     pub turn_log: Arc<Mutex<TurnLog>>,
     fuzzy_search: super::fuzzy_search_service::FuzzyFileSearchService,
     pub mcp_inventory: Arc<Mutex<super::mcp_wire_status::McpWireStatusRegistry>>,
+    pub approvals: Arc<std::sync::Mutex<super::approval_bridge::ApprovalBridge>>,
+    pub user_input: Arc<std::sync::Mutex<super::user_input_bridge::UserInputBridge>>,
 }
 fn required_string<'a>(params: &'a Value, key: &str) -> Result<&'a str, JsonRpcError> {
     params[key].as_str().filter(|value| !value.is_empty()).ok_or_else(|| JsonRpcError::new(-32603, format!("Invalid params: {key} is required")))
@@ -30,6 +32,17 @@ impl AppServerRuntime {
         super::catalogs::register_catalog_methods(&mut core.registry,threads.clone(),mcp_inventory.clone(),agent_dir.clone(),cwd.clone());
         super::skills::register_skill_methods(&mut core.registry, agent_dir, cwd.clone());
         let notification_core = Arc::new(std::sync::OnceLock::<std::sync::Weak<RwLock<ServerCore>>>::new());
+        let recipients = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<String,std::collections::BTreeMap<String,super::notifications::SendMessage>>::new()));
+        let send_recipients = recipients.clone();
+        let send: super::approval_types::SendToThreadSubscribers = Arc::new(move |id,message| {
+            let sends = send_recipients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(id).map(|clients|clients.values().cloned().collect::<Vec<_>>()).unwrap_or_default();
+            let count = sends.len();
+            for send in sends {let message = super::envelope::populate_outbound_notification(message.clone(),chrono::Utc::now().timestamp_millis() as u64);tokio::spawn(async move {if let Err(error) = send(message).await {eprintln!("app-server request delivery: {}",error.message);}});}
+            count
+        });
+        let approvals = Arc::new(std::sync::Mutex::new(super::approval_bridge::ApprovalBridge::new(send.clone())));
+        let user_input = Arc::new(std::sync::Mutex::new(super::user_input_bridge::UserInputBridge::new(send)));
+        core.approvals = Some(approvals.clone());core.user_input = Some(user_input.clone());
         let fuzzy_core = notification_core.clone();
         let fuzzy_search = super::fuzzy_search_service::FuzzyFileSearchService::new(Arc::new(move |notification| {
             if let Some(core) = fuzzy_core.get().and_then(std::sync::Weak::upgrade) {tokio::spawn(async move {if let Err(error) = core.read().await.broadcast_notification(notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fuzzy search notification: {}",error.message);}});}
@@ -38,9 +51,11 @@ impl AppServerRuntime {
         for method in ["thread/start", "thread/resume", "thread/read", "thread/unsubscribe", "thread/loaded/list", "thread/name/set"] {
             let threads = threads.clone(); let turn_log = turn_log.clone(); let cwd = cwd.clone(); let version = version.clone();
             let notification_core = notification_core.clone();
+            let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
             core.registry.register(method.into(), MethodRegistration { requires_init: true, experimental: false, scope: MethodScope::Thread, handler: Arc::new(move |context| {
                 let threads = threads.clone(); let turn_log = turn_log.clone(); let cwd = cwd.clone(); let version = version.clone();
                 let notification_core = notification_core.clone();
+                let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
                 Box::pin(async move {
                     let params = &context.request["params"];
                     if method == "thread/loaded/list" { return Ok(json!({"data":threads.list_loaded().await.iter().map(|thread|thread["id"].clone()).collect::<Vec<_>>(),"nextCursor":null})); }
@@ -48,6 +63,7 @@ impl AppServerRuntime {
                         let id = required_string(params,"threadId")?;
                         let Ok(entry) = threads.get_loaded_thread(id).await else {return Ok(json!({"status":"notLoaded"}));};
                         let removed = entry.lock().await.subscribers.remove(&context.connection.id);
+                        if let Some(clients) = recipients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_mut(id) {clients.remove(&context.connection.id);}
                         return Ok(json!({"status":if removed {"unsubscribed"} else {"notSubscribed"}}));
                     }
                     let requested_name = if method == "thread/name/set" {Some(required_string(params,"name")?.to_owned())} else {None};
@@ -76,10 +92,16 @@ impl AppServerRuntime {
                     if method == "thread/resume" { response["initialTurnsPage"] = Value::Null; }
                     let queued = std::mem::take(&mut entry.queued_terminal_notifications);
                     let client_id = context.connection.id.clone();
+                    let thread_id = entry.id.clone();
                     let lifecycle = if method == "thread/start" {json!({"method":"thread/started","params":{"thread":response["thread"]}})} else {json!({"method":"thread/status/changed","params":{"threadId":entry.id,"status":{"type":"idle"}}})};
                     context.connection.defer_until_responded(move || {tokio::spawn(async move {
                         if let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade) {
                             let core = core.read().await;
+                            if let Some(connection) = core.get_connection(&client_id) {
+                                recipients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(thread_id.clone()).or_default().insert(client_id.clone(),connection.send.clone());
+                                approvals.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
+                                user_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
+                            }
                             if let Err(error) = core.broadcast_notification(lifecycle,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server lifecycle notification: {}",error.message);}
                             for notification in queued {if let Err(error) = core.send_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server terminal replay: {}",error.message);}}
                         }
@@ -89,7 +111,10 @@ impl AppServerRuntime {
             }) });
         }
         let disconnected_threads = threads.clone();
-        core.on_disconnect = Some(Arc::new(move |id| { let threads = disconnected_threads.clone(); tokio::spawn(async move { threads.remove_connection(&id).await; }); }));
+        core.on_disconnect = Some(Arc::new(move |id| {
+            recipients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|_,clients| {clients.remove(&id);!clients.is_empty()});
+            let threads = disconnected_threads.clone(); tokio::spawn(async move { threads.remove_connection(&id).await; });
+        }));
         let core = Arc::new(RwLock::new(core));
         if notification_core.set(Arc::downgrade(&core)).is_err() {unreachable!("notification core is initialized once");}
         super::turns::register_turn_methods(&core, threads.clone(), turn_log.clone()).await;
@@ -101,7 +126,13 @@ impl AppServerRuntime {
         super::list_handlers::register_list_handlers(&core,threads.clone(),archive.clone(),version.clone()).await;
         super::search::register_search_handler(&core,threads.clone(),archive.clone(),turn_log.clone(),version).await;
         super::history_handlers::register_history_handlers(&core,threads.clone(),archive,turn_log.clone()).await;
-        Self { core, threads, turn_log, fuzzy_search, mcp_inventory }
+        Self { core, threads, turn_log, fuzzy_search, mcp_inventory,approvals,user_input }
     }
-    pub async fn dispose(&self) { self.fuzzy_search.dispose();self.threads.dispose().await; }
+    pub async fn dispose(&self) {
+        for thread in self.threads.list_loaded().await {if let Some(id) = thread["id"].as_str() {
+            self.approvals.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel_pending_for_thread(id);
+            self.user_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel_pending_for_thread(id);
+        }}
+        self.fuzzy_search.dispose();self.threads.dispose().await;
+    }
 }
