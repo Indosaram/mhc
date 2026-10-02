@@ -4,6 +4,33 @@ static WHITESPACE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"[\t\x0c\x0b \u{00
 static BEFORE_NEWLINE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"[ \t]+\n").expect("literal pattern"));
 static AFTER_NEWLINE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\n[ \t]+").expect("literal pattern"));
 static NEWLINES:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\n{3,}").expect("literal pattern"));
+fn markdown_block(name:&str)->bool {matches!(name,"address"|"article"|"aside"|"audio"|"blockquote"|"body"|"canvas"|"center"|"dd"|"dir"|"div"|"dl"|"dt"|"fieldset"|"figcaption"|"figure"|"footer"|"form"|"frameset"|"h1"|"h2"|"h3"|"h4"|"h5"|"h6"|"header"|"hgroup"|"hr"|"html"|"isindex"|"li"|"main"|"menu"|"nav"|"noframes"|"noscript"|"ol"|"output"|"p"|"pre"|"section"|"table"|"tbody"|"td"|"tfoot"|"th"|"thead"|"tr"|"ul")}
+fn markdown_void(name:&str)->bool {matches!(name,"area"|"base"|"br"|"col"|"command"|"embed"|"hr"|"img"|"input"|"keygen"|"link"|"meta"|"param"|"source"|"track"|"wbr")}
+pub fn collapse_markdown_whitespace(root:&dom_query::NodeRef<'_>) {
+    fn next<'a>(previous:Option<dom_query::NodeRef<'a>>,current:dom_query::NodeRef<'a>)->Option<dom_query::NodeRef<'a>> {
+        if previous.and_then(|node|node.parent()).is_some_and(|parent|parent.id==current.id) || current.node_name().as_deref()==Some("pre") {current.next_sibling().or_else(||current.parent())}
+        else {current.children().first().copied().or_else(||current.next_sibling()).or_else(||current.parent())}
+    }
+    static ASCII_SPACE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"[ \r\n\t]+").expect("literal pattern"));
+    if root.children().is_empty() || root.node_name().as_deref()==Some("pre") {return;}
+    let mut previous=None;let mut previous_text:Option<dom_query::NodeRef<'_>>=None;let mut keep_leading=false;let mut current=next(previous,*root);
+    while let Some(node)=current {
+        if node.id==root.id {break;}
+        if node.is_text() {
+            let mut text=ASCII_SPACE.replace_all(&node.text()," ").into_owned();
+            if previous_text.is_none_or(|node|node.text().ends_with(' ')) && !keep_leading && text.starts_with(' ') {text.remove(0);}
+            if text.is_empty() {current=node.next_sibling().or_else(||node.parent());node.remove_from_parent();continue;}
+            node.set_text(text);previous_text=Some(node);
+        } else if node.is_element() {
+            let name=node.node_name();let name=name.as_deref().unwrap_or("");
+            if markdown_block(name) || name=="br" {if let Some(text)=previous_text {text.set_text(text.text().strip_suffix(' ').unwrap_or(&text.text()));}previous_text=None;keep_leading=false;}
+            else if markdown_void(name) || name=="pre" {previous_text=None;keep_leading=true;}
+            else if previous_text.is_some() {keep_leading=false;}
+        } else {current=node.next_sibling().or_else(||node.parent());node.remove_from_parent();continue;}
+        current=next(previous,node);previous=Some(node);
+    }
+    if let Some(node)=previous_text {let text=node.text();node.set_text(text.strip_suffix(' ').unwrap_or(&text));if node.text().is_empty() {node.remove_from_parent();}}
+}
 pub fn escape_markdown(text:&str)->String {
     let mut value=text.replace('\\',"\\\\").replace('*',"\\*");
     if value.starts_with('-') {value.insert(0,'\\');}
@@ -66,6 +93,12 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn markdown_whitespace_collapses_across_inline_nodes_and_block_edges() {
+        let document=dom_query::Document::from("<div id='root'>  one <em>  two </em> three  <p> four\n five </p> six </div>");let root=document.select("#root");collapse_markdown_whitespace(&root.nodes()[0]);assert_eq!(root.inner_html().as_ref(),"one <em>two </em>three<p>four five</p>six");
+    }
+    #[test] fn markdown_whitespace_keeps_pre_and_void_spacing_and_removes_comments() {
+        let document=dom_query::Document::from("<div id='root'>one <img src='x'> two<!--comment--><pre>  code\n  x </pre> end </div>");let root=document.select("#root");collapse_markdown_whitespace(&root.nodes()[0]);assert_eq!(root.text().as_ref(),"one  two  code\n  x end");assert!(!root.inner_html().contains("comment"));assert_eq!(root.select("pre").text().as_ref(),"  code\n  x ");
+    }
     #[test] fn markdown_escape_order_preserves_text_node_semantics() {
         assert_eq!(escape_markdown("\\ * [x] _ `"),"\\\\ \\* \\[x\\] \\_ \\`");
         for (input,expected) in [("-item","\\-item"),("+ item","\\+ item"),("+item","+item"),("===","\\==="),("### heading","\\### heading"),("####### heading","####### heading"),("~~~code","\\~~~code"),("123. item","123\\. item"),("a\n- item","a\n- item")] {assert_eq!(escape_markdown(input),expected);}
