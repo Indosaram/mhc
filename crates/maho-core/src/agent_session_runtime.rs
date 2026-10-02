@@ -268,7 +268,7 @@ impl AgentSessionRuntime {
         let settings = crate::settings_manager::SettingsManager::create(&cwd, &self.services.agent_dir,
             &std::env::var("HOME").unwrap_or_default(), self.services.settings_manager.is_project_trusted());
         let (system_prompt, append_system_prompt) = self.session.system_prompt_sources();
-        let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
+        let options = crate::sdk::CreateAgentSessionOptions {
             system_prompt, append_system_prompt,
             cwd: Some(cwd.clone()), agent_dir: Some(self.services.agent_dir.clone()),
             model_runtime: Some(self.services.model_runtime().clone()), model_registry: Some(self.services.model_registry.clone()),
@@ -279,10 +279,12 @@ impl AgentSessionRuntime {
             auto_title_sessions: Some(self.session.replacement_auto_title()),
             session_start_event: Some(maho_ext_api::SessionStartEvent { reason, initial_model_provenance: None,
                 previous_session_file: self.session.session_file() }), ..Default::default()
-        }).await?;
+        };
+        self.session.abort().await;
         self.session.runtime_shutdown(reason).await;
         if let Some(before) = &self.before_session_invalidate { before(); }
         self.session.dispose().await;
+        let created = crate::sdk::create_agent_session(options).await?;
         self.session = created.session;
         self.services.cwd = cwd;
         self.services.settings_manager = crate::settings_manager::SettingsManager::create(&self.services.cwd, &self.services.agent_dir,
@@ -382,7 +384,18 @@ mod tests {
             ..Default::default()
         }).await.expect("session");
         let mut runtime = AgentSessionRuntime::new(created.session, services, Vec::new(), None, None);
+        let prompt_path = dir.path().join("system.md");
+        std::fs::write(&prompt_path, "original prompt").expect("prompt fixture");
+        runtime.session().set_system_prompt_sources(Some(prompt_path.to_string_lossy().into_owned()), Vec::new());
+        runtime.set_before_session_invalidate(Some(Box::new(move || {
+            std::fs::write(&prompt_path, "prompt after teardown").expect("updated prompt fixture");
+        })));
         assert!(runtime.new_session(None, None).await.expect("replacement"));
+        let expected = crate::system_prompt::build_system_prompt(&crate::system_prompt::BuildSystemPromptOptions {
+            cwd: cwd.clone(), custom_prompt: Some("prompt after teardown".to_owned()), ..Default::default()
+        });
+        assert_eq!(runtime.session().system_prompt(), expected);
+        runtime.set_before_session_invalidate(None);
         assert!(!runtime.session().with_session_manager(|manager| manager.is_persisted()));
         assert!(runtime.session().get_tool_definition("retained").is_some());
         assert!(!runtime.session().replacement_auto_title());
