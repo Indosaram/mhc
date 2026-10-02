@@ -25,10 +25,9 @@ pub fn build_mcp_tool_definitions(entries:&[McpToolCatalogEntry],agent_dir:PathB
                 let token=format!("native:{}:{}:{}:{}",entry.server,entry.tool,call.id,NEXT_PROGRESS_TOKEN.fetch_add(1,Ordering::Relaxed));
                 let mut notifications=entry.client.notifications.subscribe();
                 let mut notifications_open=true;
-                let request=entry.client.request("tools/call",json!({"name":entry.tool,"arguments":params,"_meta":{"progressToken":token}}),entry.request_timeout);tokio::pin!(request);
+                let request=entry.client.request_with_signal("tools/call",json!({"name":entry.tool,"arguments":params,"_meta":{"progressToken":token}}),entry.request_timeout,&call.signal);tokio::pin!(request);
                 let result=loop {tokio::select! {
                     biased;
-                    ()=call.signal.cancelled()=>return Err(ToolError::Aborted),
                     notification=notifications.recv(),if notifications_open=>{
                         let value=match notification {Ok(value)=>value,Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>continue,Err(tokio::sync::broadcast::error::RecvError::Closed)=>{notifications_open=false;continue}};
                         let progress=value.get("params").unwrap_or(&Value::Null);
@@ -37,7 +36,7 @@ pub fn build_mcp_tool_definitions(entries:&[McpToolCatalogEntry],agent_dir:PathB
                             update(ToolResult {content:vec![ToolContent::text(format!("{}/{} progress {}{total}{message}",entry.server,entry.tool,progress.get("progress").unwrap_or(&Value::Null)))],details:Some(json!({"progress":progress,"server":entry.server,"tool":entry.tool}))})?;
                         }
                     }
-                    result=&mut request=>break result.map_err(|error|ToolError::Message(format!("ToolExecError: {error}")))?,
+                    result=&mut request=>{call.signal.check()?;break result.map_err(|error|ToolError::Message(format!("ToolExecError: {error}")))?;},
                 }};
                 mapped_guarded_result(&entry,&result,&agent_dir,&artifacts,output_guard.as_ref())
             })

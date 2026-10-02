@@ -6,6 +6,22 @@ fn invalid_endpoints_fail_with_create_phase() {
         let error=match create_mcp_transport_spec("bad",&config,None){Ok(_)=>panic!("accepted invalid endpoint"),Err(error)=>error};assert_eq!(error.kind,McpErrorKind::Connect);assert_eq!(error.phase.as_deref(),Some("create"));assert_eq!(error.server_name.as_deref(),Some("bad"));
     }
 }
+#[tokio::test]
+async fn cancellation_notifies_the_server_with_the_inflight_request_id() {
+    use std::{sync::{Arc,Mutex},time::Duration};
+    use serde_json::json;
+    let root=tempfile::tempdir().unwrap();let logger=Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("cancel",root.path(),None).unwrap()));
+    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec![format!("{}/tests/fixtures/cancellation.mjs",env!("CARGO_MANIFEST_DIR"))]),connect_timeout_ms:Some(5000.0),..Default::default()};
+    let connection=create_mcp_transport("cancel",&config,None,logger).unwrap();let client=connect_mcp_transport(&connection).await.unwrap();let mut events=client.notifications.subscribe();
+    let signal=maho_ext_api::AbortSignal::default();
+    let request=client.request_with_signal("tools/call",json!({"name":"pending","_meta":{"progressToken":"cancel"}}),Duration::from_secs(5),&signal);
+    let cancellation=async {
+        let progress=events.recv().await.unwrap();assert_eq!(progress["method"],"notifications/progress");signal.abort();
+        let cancelled=events.recv().await.unwrap();assert_eq!(cancelled["method"],"fixture/cancelled");assert_eq!(cancelled["params"]["matched"],true);assert!(cancelled["params"]["requestId"].is_number());
+    };
+    let (result,())=tokio::time::timeout(Duration::from_secs(5),async {tokio::join!(request,cancellation)}).await.unwrap();assert!(result.is_err());
+    shutdown_mcp_transport(&connection).await.unwrap();
+}
 #[test]
 fn stdio_config_env_overrides_caller_without_ambient_expansion() {
     let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some("node".into()),env:Some(BTreeMap::from([("X".into(),"config".into())])),..Default::default()};

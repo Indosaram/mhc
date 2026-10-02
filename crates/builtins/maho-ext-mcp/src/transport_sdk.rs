@@ -68,6 +68,12 @@ impl McpClient {
         }
     }
     pub async fn request(&self,method:&str,params:Value,timeout:Duration)->Result<Value,McpError> {
+        self.request_inner(method,params,timeout,None).await
+    }
+    pub async fn request_with_signal(&self,method:&str,params:Value,timeout:Duration,signal:&maho_ext_api::AbortSignal)->Result<Value,McpError> {
+        self.request_inner(method,params,timeout,Some(signal)).await
+    }
+    async fn request_inner(&self,method:&str,params:Value,timeout:Duration,signal:Option<&maho_ext_api::AbortSignal>)->Result<Value,McpError> {
         let id=self.next_id.fetch_add(1,Ordering::Relaxed);let (sender,receiver)=oneshot::channel();
         self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id,sender);
         struct PendingRequest {pending:Arc<Mutex<BTreeMap<u64,Reply>>>,id:u64}
@@ -79,7 +85,14 @@ impl McpClient {
             self.send(&message).await?;
             receiver.await.map_err(|_|failure(&self.server,McpErrorKind::Connect,"transport closed","request"))?
         };
-        let result=tokio::time::timeout(timeout,result).await.unwrap_or_else(|_|Err(failure(&self.server,McpErrorKind::Timeout,format!("MCP request {method} timed out"),"request")));
+        let result=tokio::select! {
+            biased;
+            ()=async {match signal {Some(signal)=>signal.cancelled().await,None=>std::future::pending().await}}=>{
+                self.send(&json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":id,"reason":"Request cancelled"}})).await?;
+                Err(failure(&self.server,McpErrorKind::ToolExec,"Request cancelled","request"))
+            }
+            result=tokio::time::timeout(timeout,result)=>result.unwrap_or_else(|_|Err(failure(&self.server,McpErrorKind::Timeout,format!("MCP request {method} timed out"),"request"))),
+        };
         self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);result
     }
     pub async fn set_auth(&self,refresh:Arc<crate::auth::oauth_refresh::McpRefreshManager>) {*self.auth.write().await=Some(refresh);}
