@@ -2278,6 +2278,12 @@ impl AgentSession {
             self.state().retry_abort_controller = None;
             let policy = crate::retry_fallback::settings::resolve_retry_fallback_settings(Some(&settings)).revert_policy;
             if let Some(controller) = self.retry_fallback.lock().await.as_mut() { controller.maybe_restore_primary(policy).await?; }
+            if let Err(error) = self.revalidate_continuation_admission(false).await {
+                self.state().retry_attempt = 0;
+                self.reset_hint_tier_state();
+                self.emit(AgentSessionEvent::AutoRetryEnd { success: false, attempt, final_error: Some(error) });
+                return Ok(());
+            }
             let plan = crate::provider_timeout_retry::create_provider_timeout_retry_plan(&message,
                 crate::provider_timeout_retry::ProviderTimeoutRetryPlanInput {
                     stream_retry_timeout_ms: settings.get("provider").and_then(|provider| provider.get("streamRetryTimeoutMs"))
@@ -3886,6 +3892,10 @@ impl AgentSession {
     }
 
     async fn revalidate_scheduled_continuation_admission(&self) -> Result<(), String> {
+        self.revalidate_continuation_admission(true).await
+    }
+
+    async fn revalidate_continuation_admission(&self, proactive: bool) -> Result<(), String> {
         let model = self.model();
         let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
         let settings = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
@@ -3909,8 +3919,8 @@ impl AgentSession {
             64_001..=128_000 => 0.6, 128_001..=512_000 => 0.7, _ => 0.8,
         };
         let over_proactive_threshold = model.context_window > 0 && tokens as f64 >= model.context_window as f64 * ratio;
-        if !at_hard_limit && !over_proactive_threshold { return Ok(()); }
-        let result = self.compact_for_model(None, &model, "pre-prompt").await;
+        if !(at_hard_limit || proactive && over_proactive_threshold) { return Ok(()); }
+        let result = self.compact_for_model(None, &model, if proactive { "pre-prompt" } else { "threshold" }).await;
         let on_cooldown = matches!(self.compaction_state(), crate::compaction::lifecycle::CompactionLifecycleState::Failed(_, _, Some(cause), _)
             if cause == "circuit-breaker");
         if result.is_err() && at_hard_limit && !self.is_compaction_delegated() && !on_cooldown {
@@ -6710,6 +6720,44 @@ mod tests {
         assert!(!session.is_retrying());
         assert_eq!(session.with_session_manager(|manager| manager.entries().len()), 4);
         assert_eq!(session.messages().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn retry_admission_rejection_stops_before_second_provider_request() {
+        let failed = maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+            stop_reason: Some(StopReason::Error), error_message: Some("overloaded_error".to_owned()), ..Default::default()
+        });
+        let session = retry_session(vec![failed], 2);
+        let captured = session.clone();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if matches!(event, AgentSessionEvent::AutoRetryStart { .. }) {
+                let mut model = captured.model();
+                model.context_window = 128;
+                captured.agent.set_model(model);
+            }
+            if matches!(event, AgentSessionEvent::AutoRetryEnd { .. }) { lock(&observed).push(event.clone()); }
+        }));
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"reserveTokens":0,"reserveScalingEnabled":false,"keepRecentTokens":1})),
+        ])));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:retry-admission>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(|event, _| {
+            let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { panic!("preparation"); };
+            assert_eq!(event.reason, maho_ext_api::CompactionReason::Threshold);
+            Box::pin(async { Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {
+                cancel: Some(true), ..Default::default()
+            })) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"old context ".repeat(100),"timestamp":0})));
+        session.rebuild_session_context().expect("context");
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("next", Default::default())).await.expect("bounded prompt").expect("blocked retry settles");
+        assert_eq!(session.with_session_manager(|manager| manager.entries()).iter().filter(|entry| entry["message"]["role"] == "assistant").count(), 1);
+        assert!(matches!(&lock(&events)[0], AgentSessionEvent::AutoRetryEnd { success: false, attempt: 1, final_error: Some(error) }
+            if error == "Compaction required before provider request"));
+        assert!(!session.is_retrying());
     }
 
     #[tokio::test]
