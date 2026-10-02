@@ -46,25 +46,25 @@ impl ExtensionUi for LifecycleUi {
     fn actions(&self) -> Option<&dyn ExtensionUiActions> { self.active(); self.inner.actions().map(|_| self as &dyn ExtensionUiActions) }
     fn factories(&self) -> Option<&dyn ExtensionUiFactories> { self.active(); self.inner.factories().map(|_| self as &dyn ExtensionUiFactories) }
     fn select<'a>(&'a self, title: &'a str, options: &'a [String], dialog: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
-        Box::pin(async move { let _guard = self.begin(UiPromptKind::Select, Some(title)).unwrap_or_else(|error| std::panic::panic_any(error)); self.inner.select(title, options, dialog).await })
+        Box::pin(async move { let _guard = self.begin(UiPromptKind::Select, Some(title)).unwrap_or_else(|error| std::panic::panic_any(error)); let result = self.inner.select(title, options, dialog).await; self.active(); result })
     }
     fn confirm<'a>(&'a self, title: &'a str, message: &'a str, dialog: ExtensionUiDialogOptions) -> UiFuture<'a, bool> {
-        Box::pin(async move { let _guard = self.begin(UiPromptKind::Confirm, Some(title)).unwrap_or_else(|error| std::panic::panic_any(error)); self.inner.confirm(title, message, dialog).await })
+        Box::pin(async move { let _guard = self.begin(UiPromptKind::Confirm, Some(title)).unwrap_or_else(|error| std::panic::panic_any(error)); let result = self.inner.confirm(title, message, dialog).await; self.active(); result })
     }
     fn input<'a>(&'a self, title: &'a str, placeholder: Option<&'a str>, dialog: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
-        Box::pin(async move { let _guard = self.begin(UiPromptKind::Input, Some(title)).unwrap_or_else(|error| std::panic::panic_any(error)); self.inner.input(title, placeholder, dialog).await })
+        Box::pin(async move { let _guard = self.begin(UiPromptKind::Input, Some(title)).unwrap_or_else(|error| std::panic::panic_any(error)); let result = self.inner.input(title, placeholder, dialog).await; self.active(); result })
     }
     fn editor<'a>(&'a self, title: &'a str, prefill: Option<&'a str>) -> ExtensionFuture<'a, Option<String>> {
-        Box::pin(async move { let _guard = self.begin(UiPromptKind::Editor, Some(title))?; self.inner.editor(title, prefill).await })
+        Box::pin(async move { let _guard = self.begin(UiPromptKind::Editor, Some(title))?; let result = self.inner.editor(title, prefill).await?; self.runtime.assert_active()?; Ok(result) })
     }
     fn question(&self, request: QuestionRequest, options: QuestionOptions) -> ExtensionFuture<'_, QuestionResponse> {
-        Box::pin(async move { let _guard = self.begin(UiPromptKind::Question, None)?; self.inner.question(request, options).await })
+        Box::pin(async move { let _guard = self.begin(UiPromptKind::Question, None)?; let result = self.inner.question(request, options).await?; self.runtime.assert_active()?; Ok(result) })
     }
     fn custom(&self, factory: ComponentFactory, options: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> {
-        Box::pin(async move { let _guard = self.begin(UiPromptKind::Custom, None)?; self.inner.custom(factory, options).await })
+        Box::pin(async move { let _guard = self.begin(UiPromptKind::Custom, None)?; let result = self.inner.custom(factory, options).await?; self.runtime.assert_active()?; Ok(result) })
     }
     fn custom_factory(&self, factory: CustomComponentFactory, options: CustomUiFactoryOptions) -> ExtensionFuture<'_, JsonValue> {
-        Box::pin(async move { let _guard = self.begin(UiPromptKind::Custom, None)?; self.inner.custom_factory(factory, options).await })
+        Box::pin(async move { let _guard = self.begin(UiPromptKind::Custom, None)?; let result = self.inner.custom_factory(factory, options).await?; self.runtime.assert_active()?; Ok(result) })
     }
     fn notify(&self, message: &str, kind: NotificationType) { self.active(); self.inner.notify(message, kind); }
     fn set_status(&self, key: &str, text: Option<&str>) { self.active(); self.inner.set_status(key, text); }

@@ -82,6 +82,18 @@ fn retained_ui_factory_interface_cannot_bypass_stale_guard() {
     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| factories.set_header_factory(None))).unwrap_err();
     assert_eq!(failure.downcast_ref::<ExtensionFailure>().unwrap().message, "replaced");
 }
+
+#[tokio::test]
+async fn completed_dialog_rejects_runtime_invalidated_after_prompt_start() {
+    let runtime = ExtensionRuntime::default();
+    let captured = runtime.clone();
+    let ui = maho_ext_host::ui::LifecycleUi::new(Arc::new(TestUi), runtime, Arc::new(move |event| {
+        if matches!(event, ExtensionEvent::UiPromptStart { .. }) { captured.invalidate("replaced during dialog"); }
+    }));
+    let result = tokio::spawn(async move { ui.confirm("confirm", "message", Default::default()).await }).await;
+    let panic = result.unwrap_err().into_panic();
+    assert_eq!(panic.downcast_ref::<ExtensionFailure>().unwrap().message, "replaced during dialog");
+}
 fn extension(path: &str, kind: EventKind, handler: ExtensionHandler) -> LoadedExtension {
     let mut ext = LoadedExtension::new(path, "/tmp".into(), SourceInfo { path: path.into(), source: "inline".into(), ..Default::default() });
     ext.handlers.insert(kind, vec![handler]); ext
