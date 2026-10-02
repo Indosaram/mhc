@@ -1,5 +1,33 @@
 use serde_json::Value;
 use crate::todo_types::TodoPhase;
+pub fn register_state_hooks(api:&mut maho_ext_api::ExtensionApi,actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,accessors:std::sync::Arc<dyn crate::tools_todo::TodoAccessors>) {
+    for event in [maho_ext_api::EventKind::SessionStart,maho_ext_api::EventKind::SessionTree] {
+        let accessors=accessors.clone();
+        api.on(event,std::sync::Arc::new(move |_event,ctx| {
+            let accessors=accessors.clone();
+            Box::pin(async move {
+                let entries=ctx.session_manager.get_branch().into_iter().map(|entry|entry.data).collect::<Vec<_>>();
+                accessors.set_current_phases(crate::todo_storage::get_latest_phases_from_branch_entries(&entries));
+                accessors.sync_widget(ctx,&[])?;
+                Ok(maho_ext_api::EventResult::None)
+            })
+        }));
+    }
+    api.on(maho_ext_api::EventKind::MessageEnd,std::sync::Arc::new(move |event,ctx| {
+        let actions=actions.clone(); let accessors=accessors.clone();
+        Box::pin(async move {
+            if let maho_ext_api::ExtensionEvent::MessageEnd{message}=event {
+                let message=serde_json::to_value(message).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                for phases in native_todo_updates(&message) {
+                    accessors.set_current_phases(phases.clone());
+                    actions.append_entry(crate::todo_types::TODO_STATE_ENTRY_TYPE,Some(serde_json::json!({"schema":"v2","phases":phases})))?;
+                    accessors.sync_widget(ctx,&[])?;
+                }
+            }
+            Ok(maho_ext_api::EventResult::None)
+        })
+    }));
+}
 pub fn register_prompt_hook(api:&mut maho_ext_api::ExtensionApi) {
     api.on(maho_ext_api::EventKind::BeforeAgentStart,std::sync::Arc::new(|event,_ctx|Box::pin(async move {
         Ok(prompt_hook_result(event))

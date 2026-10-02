@@ -6,6 +6,9 @@ pub trait TodoAccessors:Send+Sync {
     fn set_current_phases(&self,phases:Vec<crate::todo_types::TodoPhase>);
     fn sync_widget(&self,ctx:&dyn maho_tools::definition::ToolContext,completed:&[crate::todo_types::TodoCompletionTransition])->Result<(),maho_ext_api::ExtensionFailure>;
 }
+pub fn register_todo_tool(api:&mut maho_ext_api::ExtensionApi,actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,accessors:std::sync::Arc<dyn TodoAccessors>) {
+    api.register_tool(create_todo_tool(actions,accessors));
+}
 pub fn create_todo_tool(actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,accessors:std::sync::Arc<dyn TodoAccessors>)->maho_tools::definition::ToolDefinition {
     use maho_tools::definition::{ToolDefinition,ToolError,ToolResult,ToolContent,ToolExecutionMode};
     let mut tool=ToolDefinition::new("todo",crate::prompt::TODO_TOOL_DESCRIPTION,parameters(),std::sync::Arc::new(move |call| {
@@ -116,6 +119,17 @@ mod tests {
         assert_eq!(fixture.entries.lock().unwrap()[0]["schema"],"v2");
         assert_eq!(result.details.as_ref().unwrap()["storage"],"session");
         assert_eq!(fixture.get_current_phases()[0].tasks[0].status,crate::todo_types::TodoStatus::InProgress);
+    }
+    #[test] fn state_hooks_register_session_tree_and_native_mirror_events() {
+        let fixture=std::sync::Arc::new(ExecutionFixture::default());
+        let mut api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("todotools",Default::default(),Default::default()),Default::default(),Default::default(),Default::default());
+        crate::index::register_state_hooks(&mut api,fixture.clone(),fixture.clone());
+        for event in [maho_ext_api::EventKind::SessionStart,maho_ext_api::EventKind::SessionTree,maho_ext_api::EventKind::MessageEnd] { assert_eq!(api.registered.handlers[&event].len(),1); }
+        assert!(api.registered.tools.is_empty());
+        register_todo_tool(&mut api,fixture.clone(),fixture);
+        assert_eq!(api.registered.tools.len(),1);
+        assert_eq!(api.registered.tools[0].definition.name,"todo");
+        assert_eq!(api.registered.tools[0].definition.execution_mode,Some(maho_ext_api::ToolExecutionMode::Sequential));
     }
     #[tokio::test] async fn native_view_and_invalid_operations_do_not_mutate() {
         let fixture=std::sync::Arc::new(ExecutionFixture::default()); let tool=create_todo_tool(fixture.clone(),fixture.clone());
