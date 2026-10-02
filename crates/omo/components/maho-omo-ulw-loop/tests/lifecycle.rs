@@ -120,3 +120,31 @@ async fn rejected_status_keeps_previous_snapshot_guard() {
     for _ in 0..3 { end(&api).await; }
     assert_eq!(actions.0.lock().expect("messages").len(), 1);
 }
+
+#[tokio::test]
+async fn completed_status_never_delivers_continuation() {
+    let actions = Arc::new(Actions::default());
+    let runtime = ExtensionRuntime::default();
+    runtime.bind(actions.clone());
+    let mut api = ExtensionApi::new(LoadedExtension::new("loop", "/tmp".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(), EventBus::default(), runtime);
+    maho_omo_ulw_loop::index::UlwLoopComponent { bin: Some("/toolkit".into()), js_runtime: "bun".into(),
+        run_command: Some(Arc::new(|_, _, _| Box::pin(async {
+            Ok(maho_omo_ulw_loop::omo_command::CommandResult { code: 0,
+                stdout: r#"{"ok":true,"plan":{"aggregateCompletion":{"status":"complete"},"goals":[{"status":"pending"}]}}"#.into() })
+        }))) }.register(&mut api);
+    end(&api).await;
+    assert!(actions.0.lock().expect("messages").is_empty());
+}
+
+#[tokio::test]
+async fn relevant_tool_results_refresh_status_at_session_cwd() {
+    let (api, _, calls) = register_status();
+    for name in ["create_goal", "update_goal", "bash", "interactive_bash"] {
+        let mut event = ExtensionEvent::ToolResult(ToolResultEvent { tool_name: name.into(),
+            tool_call_id: "id".into(), input: serde_json::json!({}), content: Vec::new(), details: None,
+            is_error: false, usage: None });
+        api.registered.handlers[&EventKind::ToolResult][0](&mut event, &support::context()).await.expect("dispatch");
+    }
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+}
