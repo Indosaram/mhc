@@ -787,7 +787,7 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
             session.state().pending_next_turn_messages.push(agent_message);
             return Ok(());
         }
-        if session.is_streaming() && options.trigger_turn {
+        if (session.is_streaming() || session.is_compacting()) && options.trigger_turn {
             match options.deliver_as { Some(maho_ext_api::DeliverAs::FollowUp) => session.agent.follow_up(agent_message), _ => session.agent.steer(agent_message) }
         } else if session.is_streaming() {
             session.state().pending_custom_messages.push(custom);
@@ -1741,7 +1741,18 @@ impl AgentSession {
         self.abort_retry();
         self.agent.wait_for_idle().await;
         let _admission = self.prompt_admission.lock().await;
-        self.compact_for_model(instructions, &self.model(), "manual").await
+        let result = self.compact_for_model(instructions, &self.model(), "manual").await;
+        if result.is_ok() && self.agent.has_queued_messages() {
+            let session = self.clone();
+            let guard = self.work_barrier.begin();
+            tokio::spawn(async move {
+                if let Err(error) = session.continue_session().await {
+                    session.emit(AgentSessionEvent::ContinuationError { error_message: error });
+                }
+                drop(guard);
+            });
+        }
+        result
     }
 
     async fn compact_for_model(&self, instructions: Option<&str>, budget_model: &Model, reason: &str)
@@ -3824,7 +3835,7 @@ impl AgentSession {
         let _admission = self.prompt_admission.lock().await;
         let _work = self.work_barrier.begin();
         self.state().user_aborted = false;
-        self.agent.continue_run(Default::default()).await;
+        self.agent.continue_with_queued_messages(Default::default()).await;
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
         drop(_work);
@@ -6288,6 +6299,48 @@ mod tests {
         assert_eq!(session.messages().last().expect("notice").role(), "custom");
         assert_eq!(session.with_session_manager(|manager| manager.entries()).iter().filter(|entry| entry["customType"] == "quiet-notice").count(), 1);
         assert!(session.state().pending_custom_messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn custom_trigger_during_compaction_is_queued_then_delivered_once() {
+        let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("resumed", Default::default())], 0);
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"keepRecentTokens":1})),
+        ])));
+        for text in ["old task", "recent task"] {
+            session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":text,"timestamp":0})));
+        }
+        session.rebuild_session_context().expect("context");
+        let captured = session.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:compaction-trigger>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(move |event, _| {
+            let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { panic!("preparation"); };
+            let revision = captured.message_revision();
+            maho_ext_api::ExtensionActions::send_message(&SessionExtensionActions(Arc::downgrade(&captured.inner)), maho_ext_api::CustomMessage {
+                custom_type: "after-compaction".to_owned(), content: vec![maho_tools::definition::ToolContent::text("continue")],
+                display: true, details: None,
+            }, maho_ext_api::SendMessageOptions { trigger_turn: true, deliver_as: None }).expect("queue trigger");
+            assert_eq!(captured.message_revision(), revision);
+            assert!(captured.agent.has_queued_messages());
+            let result = maho_ext_api::CompactionResult { summary: "digest".to_owned(),
+                first_kept_entry_id: event.preparation.first_kept_entry_id.clone(), tokens_before: event.preparation.tokens_before, details: None };
+            Box::pin(async move { Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {
+                compaction: Some(result), ..Default::default()
+            })) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let (finished, received) = tokio::sync::oneshot::channel();
+        let finished = Arc::new(Mutex::new(Some(finished)));
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if matches!(event, AgentSessionEvent::AgentIdle)
+                && let Some(finished) = lock(&finished).take() { finished.send(()).expect("observer"); }
+        }));
+        session.compact(None).await.expect("compact");
+        tokio::time::timeout(std::time::Duration::from_secs(5), received).await.expect("bounded continuation").expect("settled");
+        let entries = session.with_session_manager(|manager| manager.entries());
+        assert_eq!(entries.iter().filter(|entry| entry["customType"] == "after-compaction").count(), 1);
+        assert_eq!(session.messages().iter().filter(|message| message.role() == "assistant").count(), 1);
+        assert!(!session.agent.has_queued_messages());
     }
 
     #[test]
