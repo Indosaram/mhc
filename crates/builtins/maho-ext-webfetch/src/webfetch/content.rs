@@ -40,6 +40,14 @@ pub fn reader_initial_score(node:&dom_query::NodeRef<'_>,weight_classes:bool)->i
     }
     score
 }
+pub fn reader_has_single_tag(node:&dom_query::NodeRef<'_>,tag:&str)->bool {
+    let children=node.element_children();children.len()==1 && children[0].node_name().as_deref()==Some(tag)
+        && !node.children().iter().any(|child|child.is_text()&&child.text().chars().last().is_some_and(|character|!js_whitespace(character)))
+}
+pub fn reader_element_without_content(node:&dom_query::NodeRef<'_>)->bool {
+    let children=node.element_children();node.is_element()&&node.text().trim_matches(js_whitespace).is_empty()
+        && (children.is_empty()||children.len()==dom_query::Selection::from(*node).select("br, hr").nodes().len())
+}
 pub fn score_reader_candidates(elements:&[dom_query::NodeRef<'_>],weight_classes:bool)->Vec<(dom_query::NodeId,f64)> {
     let mut candidates:Vec<(dom_query::NodeRef<'_>,f64)>=Vec::new();
     for element in elements {
@@ -262,6 +270,14 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_single_tag_preserves_source_trailing_whitespace_content_rule() {
+        let document=dom_query::Document::from("<div id='single'> <p>x</p> </div><div id='content'>text<p>x</p></div><div id='trailing'>text <p>x</p></div><div id='multiple'><p>x</p><p>y</p></div>");
+        assert!(reader_has_single_tag(&document.select("#single").nodes()[0],"p"));assert!(!reader_has_single_tag(&document.select("#content").nodes()[0],"p"));assert!(reader_has_single_tag(&document.select("#trailing").nodes()[0],"p"));assert!(!reader_has_single_tag(&document.select("#multiple").nodes()[0],"p"));
+    }
+    #[test] fn reader_empty_element_uses_descendant_break_count_not_void_count() {
+        let document=dom_query::Document::from("<div id='breaks'><br><hr></div><div id='image'><img src='x'></div><div id='nested'><span><br></span></div><div id='text'>x</div>");
+        assert!(reader_element_without_content(&document.select("#breaks").nodes()[0]));assert!(!reader_element_without_content(&document.select("#image").nodes()[0]));assert!(reader_element_without_content(&document.select("#nested").nodes()[0]));assert!(!reader_element_without_content(&document.select("#text").nodes()[0]));
+    }
     #[test] fn reader_text_density_counts_nested_selected_tags_separately() {
         let document=dom_query::Document::from("<div id='root'>a<span>😀<span>b</span></span><p>cc</p></div>");let root=document.select("#root");assert_eq!(reader_text_density(&root.nodes()[0],&["span"]),4./6.);assert_eq!(reader_text_density(&root.nodes()[0],&["div"]),0.);
         let empty=dom_query::Document::from("<div></div>");assert_eq!(reader_text_density(&empty.select("div").nodes()[0],&["span"]),0.);
