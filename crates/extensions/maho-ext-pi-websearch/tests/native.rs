@@ -1,6 +1,35 @@
 use maho_ext_pi_websearch::websearch::{native::*,types::SearchProvider};
 use std::sync::atomic::{AtomicUsize,Ordering};
 struct Registry{calls:AtomicUsize}
+macro_rules! native_case{
+    ($name:ident,$provider:literal,$id:literal,$expected:expr)=>{
+        #[tokio::test]async fn $name(){let registry=Registry{calls:AtomicUsize::new(0)};let model=NativeModelInfo{provider:$provider.into(),id:$id.into(),base_url:"https://gateway.example.com/v1".into()};let entry=build_native_entry(Some(&model),Some(&registry),"native").await.unwrap_or_else(|error|panic!("mapping: {error}"));let expected:Option<(SearchProvider,&str)>=$expected;
+            match (entry,expected){(None,None)=>{},(Some(entry),Some((provider,resource)))=>{assert_eq!(entry.config.provider,provider);assert_eq!(entry.config.base_url,Some(format!("https://gateway.example.com/v1/{resource}")));assert_eq!(entry.config.model.as_deref(),Some($id));assert_eq!(entry.config.api_key.as_deref(),Some("native-test"));assert_eq!(entry.priority,Some(-1.0));},_=>panic!("native mapping mismatch")}
+        }
+    }
+}
+native_case!(gpt_sol,"openai","gpt-5.6-sol",Some((SearchProvider::Openai,"responses")));
+native_case!(gpt_terra,"openai","gpt-5.6-terra",Some((SearchProvider::Openai,"responses")));
+native_case!(gpt_55,"openai","gpt-5.5",Some((SearchProvider::Openai,"responses")));
+native_case!(gpt_fast,"openai","gpt-5.5-fast",Some((SearchProvider::Openai,"responses")));
+native_case!(gpt_54,"openai","gpt-5.4",Some((SearchProvider::Openai,"responses")));
+native_case!(gpt_pro,"openai","gpt-5-pro",Some((SearchProvider::Openai,"responses")));
+native_case!(gpt_5,"openai","gpt-5",Some((SearchProvider::Openai,"responses")));
+native_case!(gpt_41,"openai","gpt-4.1-mini",Some((SearchProvider::Openai,"responses")));
+native_case!(gpt_4o,"openai","gpt-4o-mini-2026-01-01",Some((SearchProvider::Openai,"responses")));
+native_case!(codex_rejected,"openai","gpt-5.3-codex",None);
+native_case!(codex_spark_rejected,"openai","gpt-5.3-codex-spark",None);
+native_case!(gpt_turbo_rejected,"openai","gpt-4-turbo",None);
+native_case!(o3_rejected,"openai","o3",None);
+native_case!(claude_opus,"anthropic","claude-opus-5",Some((SearchProvider::Anthropic,"messages")));
+native_case!(claude_sonnet,"anthropic","claude-sonnet-5",Some((SearchProvider::Anthropic,"messages")));
+native_case!(claude_fable,"anthropic","claude-fable-5",Some((SearchProvider::Anthropic,"messages")));
+native_case!(claude_haiku,"anthropic","claude-haiku-4-5",Some((SearchProvider::Anthropic,"messages")));
+native_case!(claude_48,"anthropic","claude-opus-4-8",Some((SearchProvider::Anthropic,"messages")));
+native_case!(claude_dated,"anthropic","claude-sonnet-4-5-20250929",Some((SearchProvider::Anthropic,"messages")));
+native_case!(nonclaude_rejected,"anthropic","not-a-claude-model",None);
+native_case!(grok,"xai","grok-4.3",Some((SearchProvider::Xai,"responses")));
+native_case!(openrouter_claude,"openrouter","anthropic/claude-opus-5",Some((SearchProvider::Anthropic,"messages")));
 impl NativeModelRegistry for Registry{
     fn get_api_key_and_headers<'a>(&'a self,_:&'a NativeModelInfo)->NativeAuthFuture<'a>{self.calls.fetch_add(1,Ordering::SeqCst);Box::pin(async{Ok(NativeAuthResult::Success{api_key:Some("native-test".into()),headers:None})})}
 }
@@ -16,7 +45,7 @@ async fn maps_models_and_preserves_public_id(){
 #[tokio::test]
 async fn unsafe_and_unsupported_routes_do_not_resolve_auth(){
     let registry=Registry{calls:AtomicUsize::new(0)};
-    for base in ["http://127.0.0.1/v1","https://localhost./v1","https://[::1]/v1","https://user:pass@gateway.example.com/v1","not-a-url"]{
+    for base in ["http://127.0.0.1/v1","https://localhost/v1","https://localhost./v1","https://sub.localhost./v1","https://127.1../v1","https://0177.0.0.1../v1","https://2130706433../v1","https://0x7f000001../v1","https://10.1../v1","https://[::1]/v1","https://[fd00::1]/v1","https://[fe80::1]/v1","https://user:pass@gateway.example.com/v1","not-a-url"]{
         let model=NativeModelInfo{provider:"openai".into(),id:"gpt-5.5".into(),base_url:base.into()};assert!(build_native_entry(Some(&model),Some(&registry),"native").await.unwrap_or_else(|error|panic!("native entry: {error}")).is_none());
     }
     for id in ["gpt-5.3-codex","gpt-4-turbo","o3"]{
@@ -24,6 +53,17 @@ async fn unsafe_and_unsupported_routes_do_not_resolve_auth(){
     }
     assert_eq!(registry.calls.load(Ordering::SeqCst),0);
 }
+#[tokio::test]
+async fn missing_model_returns_none(){let registry=Registry{calls:AtomicUsize::new(0)};assert!(build_native_entry(None,Some(&registry),"native").await.unwrap_or_else(|error|panic!("entry: {error}")).is_none());}
+#[tokio::test]
+async fn missing_registry_returns_none(){let model=NativeModelInfo{provider:"openai".into(),id:"gpt-5".into(),base_url:"https://gateway.example.com/v1".into()};assert!(build_native_entry(Some(&model),None,"native").await.unwrap_or_else(|error|panic!("entry: {error}")).is_none());}
+#[tokio::test]
+async fn missing_key_returns_none(){struct NoKey;impl NativeModelRegistry for NoKey{fn get_api_key_and_headers<'a>(&'a self,_:&'a NativeModelInfo)->NativeAuthFuture<'a>{Box::pin(async{Ok(NativeAuthResult::Success{api_key:None,headers:None})})}}let model=NativeModelInfo{provider:"openai".into(),id:"gpt-5".into(),base_url:"https://gateway.example.com/v1".into()};assert!(build_native_entry(Some(&model),Some(&NoKey),"native").await.unwrap_or_else(|error|panic!("entry: {error}")).is_none());}
+#[tokio::test]
+async fn auth_failure_returns_none(){struct Failure;impl NativeModelRegistry for Failure{fn get_api_key_and_headers<'a>(&'a self,_:&'a NativeModelInfo)->NativeAuthFuture<'a>{Box::pin(async{Ok(NativeAuthResult::Failure{error:"missing".into()})})}}let model=NativeModelInfo{provider:"openai".into(),id:"gpt-5".into(),base_url:"https://gateway.example.com/v1".into()};assert!(build_native_entry(Some(&model),Some(&Failure),"native").await.unwrap_or_else(|error|panic!("entry: {error}")).is_none());}
+native_case!(openrouter_without_slash,"openrouter","no-slash",None);
+#[tokio::test]
+async fn endpoint_suffix_is_not_duplicated(){let registry=Registry{calls:AtomicUsize::new(0)};for (provider,id,resource) in [("openai","gpt-5","responses"),("anthropic","claude-opus-4","messages")]{let base=format!("https://gateway.example.com/v1/{resource}");let model=NativeModelInfo{provider:provider.into(),id:id.into(),base_url:base.clone()};let entry=build_native_entry(Some(&model),Some(&registry),"native").await.unwrap_or_else(|error|panic!("entry: {error}")).unwrap_or_else(||panic!("missing entry"));assert_eq!(entry.config.base_url,Some(base));}}
 #[tokio::test]
 async fn discovery_deduplicates_before_auth_and_keeps_active_first(){
     struct Discovery{calls:AtomicUsize}
