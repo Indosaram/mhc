@@ -2858,8 +2858,9 @@ impl AgentSession {
             let response = self.model_runtime().complete(&auth.model, &crate::session_title_generator::build_title_context(prompt), Some(maho_ai::types::StreamOptions {
                 request: maho_ai::types::ProviderRequestOptions { api_key: auth.api_key, signal: Some(signal.clone()),
                     headers: auth.headers.map(|headers| headers.into_iter().map(|(key,value)| (key,Some(value))).collect()),
-                    stream_kind: Some(maho_ai::types::StreamKind::Auxiliary), env: auth.env, ..Default::default() },
-                max_tokens: Some(64), session_id: Some(session_id.clone()),
+                    stream_kind: Some(maho_ai::types::StreamKind::Auxiliary), env: auth.env,
+                    timeout_ms: self.agent.timeout_ms(), max_retry_delay_ms: self.agent.max_retry_delay_ms(), ..Default::default() },
+                transport: self.agent.transport(), max_tokens: Some(64), session_id: Some(session_id.clone()),
                 cache_retention: Some(if auth.model.cache_retention == Some(maho_ai::types::CacheRetention::None) {
                     maho_ai::types::CacheRetention::None
                 } else { maho_ai::types::CacheRetention::Short }), ..Default::default()
@@ -6052,6 +6053,9 @@ mod tests {
         });
         provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("<title>Stale Title</title>", Default::default()).into()]);
         let session = test_session_with_stream_function(false);
+        session.agent.set_timeout_ms(Some(12_345));
+        session.agent.set_max_retry_delay_ms(Some(678));
+        session.agent.set_transport(Some(maho_ai::types::Transport::Sse));
         session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
         let mut runtime = session.model_runtime().clone();
         runtime.register_native_provider(provider.provider.clone());
@@ -6068,6 +6072,11 @@ mod tests {
             });
         }).await.expect("bounded title cancellation");
         assert!(session.session_name().is_none());
+        let calls = provider.get_call_log();
+        let options = calls[0].options.as_ref().expect("title options");
+        assert_eq!(options.request.timeout_ms, Some(12_345));
+        assert_eq!(options.request.max_retry_delay_ms, Some(678));
+        assert_eq!(options.transport, Some(maho_ai::types::Transport::Sse));
         assert!(provider.get_call_log()[0].options.as_ref().expect("options").request.signal.as_ref().expect("signal").aborted());
         session.generate_session_title_if_needed("Implement another feature").await;
         assert_eq!(provider.get_call_log().len(), 1);
