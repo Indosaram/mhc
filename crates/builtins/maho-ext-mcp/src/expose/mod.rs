@@ -1,3 +1,4 @@
+pub mod tier_b;
 pub mod session;
 pub mod proxy;
 pub mod naming;
