@@ -44,3 +44,8 @@ fn input()->CreateTeamTaskServiceInput { CreateTeamTaskServiceInput { subject:"w
     assert_eq!(f.service.list_tasks(&f.run,Some(&TeamTaskListFilter { status:Some(TaskStatus::Claimed),owner:Some("lead".into()) })).expect("filter"),vec![claimed]);
     assert!(f.service.list_tasks(&f.run,Some(&TeamTaskListFilter { status:Some(TaskStatus::Pending),owner:None })).expect("pending").is_empty());
 }
+#[test] fn unknown_canonical_delete_succeeds_but_uppercase_fails_shape_guard() {
+    let f=fixture(); let unknown="11111111-1111-4111-8111-111111111111";
+    let result=f.service.delete_team(&DeleteTeamToolInput { team_run_id:unknown.into(),force:None }).expect("unknown delete"); assert_eq!(result.team_run_id,unknown); assert!(result.cancelled_task_ids.is_empty());
+    assert!(f.service.delete_team(&DeleteTeamToolInput { team_run_id:"AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA".into(),force:None }).is_err());
+}
