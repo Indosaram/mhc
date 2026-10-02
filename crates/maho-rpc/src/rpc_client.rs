@@ -58,6 +58,13 @@ impl RpcSocketClient{
             },
         }
     }
+    pub async fn close_session(&mut self,session_id:Option<&str>,on_event:impl FnMut(Value))->std::io::Result<()>{
+        let Some(session_id)=session_id.map(str::to_owned).or_else(||self.frames.session_id.clone()).filter(|id|!id.is_empty())else{return Ok(());};
+        if let Err(error)=self.request(serde_json::json!({"type":"close_session","sessionId":session_id}),false,on_event,|_|{}).await
+            && !matches!(error.kind(),std::io::ErrorKind::BrokenPipe|std::io::ErrorKind::ConnectionReset|std::io::ErrorKind::NotConnected){return Err(error);}
+        if self.frames.session_id.as_deref()==Some(&session_id){self.frames.session_id=None;}
+        Ok(())
+    }
 }
 #[derive(Debug,PartialEq)]pub enum ClientFrame{Response(Value),Event(Value),Ignored}
 #[derive(Default)]pub struct RpcClientFrames{request_id:u64,pending:BTreeSet<String>,pub session_id:Option<String>,pub pending_open_session:bool,events:VecDeque<(String,Value,usize)>,event_bytes:usize}
