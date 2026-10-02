@@ -83,6 +83,13 @@ async fn apply_hunks(cwd:&Path,hunks:Vec<ParsedPatch>,fail_fast:bool,on_progress
 mod tests {
     use super::*;
     use crate::types::{AppliedPatchOperation,ApplyPatchPreviewFile,ApplyPatchOperation};
+    #[tokio::test] async fn add_file_uses_atomic_write_for_nested_and_absolute_paths() {
+        let workspace=tempfile::tempdir().unwrap();let outside=tempfile::tempdir().unwrap();
+        let summaries=apply_patch(workspace.path(),"*** Begin Patch\n*** Add File: nested/new.txt\n+hello\n*** End Patch").await.unwrap();
+        assert_eq!(summaries,["add: nested/new.txt"]);assert_eq!(tokio::fs::read(workspace.path().join("nested/new.txt")).await.unwrap(),b"hello\n");
+        let path=outside.path().join("outside.txt");let patch=format!("*** Begin Patch\n*** Add File: {}\n+outside\n*** End Patch",path.display());
+        apply_patch(workspace.path(),&patch).await.unwrap();assert_eq!(tokio::fs::read(&path).await.unwrap(),b"outside\n");assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(),1);
+    }
     #[tokio::test] async fn atomic_rename_retries_eexist_after_unlink() {
         struct Operations {renames:AtomicU64,unlinks:AtomicU64}
         impl crate::types::AtomicWriteOperations for Operations {
