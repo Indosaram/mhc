@@ -161,4 +161,10 @@ mod tests {
         let index=build_bm25_index(&[mcp,extension,files]);let results=index.search("search",10,&Bm25SearchOptions{source:Some(ToolSearchSource::Extension),group:Some("docs".into()),..Default::default()});
         assert_eq!(results.len(),1);assert_eq!(results[0].name,"extension_docs_search");assert_eq!(results[0].doc.source,ToolSearchSource::Extension);assert_eq!(results[0].doc.group,"docs");
     }
+    #[test] fn upstream_source_does_not_change_relevance_scores() {
+        let mut extension=doc("a_extension");extension.group="catalog".into();extension.owner_label="Catalog".into();extension.description=Some("catalog lookup".into());
+        let mut mcp=doc("b_mcp");mcp.group=extension.group.clone();mcp.owner_label=extension.owner_label.clone();mcp.description=extension.description.clone();mcp.source=ToolSearchSource::Mcp;
+        let results=build_bm25_index(&[extension,mcp]).search("catalog lookup",10,&Bm25SearchOptions{exact_match:Some(false),..Default::default()});
+        assert_eq!(results.len(),2);assert_eq!(results[0].score,results[1].score);assert_eq!(results[0].name,"a_extension");assert_eq!(results[1].name,"b_mcp");
+    }
 }
