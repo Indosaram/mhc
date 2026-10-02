@@ -155,4 +155,10 @@ mod tests {
         let index=build_bm25_index(&documents);let query="recall memory search previous conversation messages";assert!(index.search(query,10,&Default::default()).iter().any(|result|result.name=="x_search"));let precise=Bm25SearchOptions{precision:Some(DEFAULT_BM25_PRECISION),..Default::default()};assert!(index.search(query,10,&precise).is_empty());
         let results=index.search("twitter search for tweets",10,&precise);assert_eq!(results.len(),1);assert_eq!(results[0].name,"x_search");
     }
+    #[test] fn upstream_source_and_group_filters_intersect() {
+        let mut mcp=doc("mcp_docs_search");mcp.source=ToolSearchSource::Mcp;mcp.group="docs".into();
+        let mut extension=doc("extension_docs_search");extension.group="docs".into();let mut files=doc("extension_files_search");files.group="files".into();
+        let index=build_bm25_index(&[mcp,extension,files]);let results=index.search("search",10,&Bm25SearchOptions{source:Some(ToolSearchSource::Extension),group:Some("docs".into()),..Default::default()});
+        assert_eq!(results.len(),1);assert_eq!(results[0].name,"extension_docs_search");assert_eq!(results[0].doc.source,ToolSearchSource::Extension);assert_eq!(results[0].doc.group,"docs");
+    }
 }
