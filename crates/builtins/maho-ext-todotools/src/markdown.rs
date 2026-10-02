@@ -10,7 +10,8 @@ pub fn resolve_todo_markdown_path(input:&str,cwd:&Path)->PathBuf {
     let raw=raw.strip_suffix(['\'','"']).unwrap_or(raw);
     let raw=if raw.is_empty() { DEFAULT_TODO_MARKDOWN_FILE } else { raw };
     if Path::new(raw).is_absolute() { return PathBuf::from(raw); }
-    let path=cwd.join(raw);
+    let base=if cwd.is_absolute() { cwd.to_path_buf() } else { std::env::current_dir().expect("process cwd").join(cwd) };
+    let path=base.join(raw);
     let mut resolved=PathBuf::new();
     for part in path.components() { match part { Component::CurDir=>{},Component::ParentDir=>{resolved.pop();},other=>resolved.push(other.as_os_str()) } }
     resolved
@@ -26,8 +27,8 @@ pub fn phases_to_markdown(phases:&[TodoPhase])->String {
     format!("{}\n",lines.join("\n"))
 }
 pub fn markdown_to_phases(markdown:&str)->TodoApplyResult {
-    static HEADING:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^#{1,6}\s+(.+?)\s*$").unwrap_or_else(|e|panic!("invalid static heading regex: {e}")));
-    static TASK:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^[-*+]\s*\[(.?)\]\s+(.+?)\s*$").unwrap_or_else(|e|panic!("invalid static checklist regex: {e}")));
+    static HEADING:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^#{1,6}[\x09-\x0d\x20\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]+([^\r\n\x{2028}\x{2029}]+?)[\x09-\x0d\x20\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]*$").unwrap_or_else(|e|panic!("invalid static heading regex: {e}")));
+    static TASK:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^[-*+][\x09-\x0d\x20\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]*\[([^\r\n\x{2028}\x{2029}]?)\][\x09-\x0d\x20\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]+([^\r\n\x{2028}\x{2029}]+?)[\x09-\x0d\x20\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]*$").unwrap_or_else(|e|panic!("invalid static checklist regex: {e}")));
     let mut phases:Vec<TodoPhase>=vec![];
     let mut errors=vec![];
     for (i,line) in markdown.split('\n').enumerate() {
@@ -46,6 +47,8 @@ pub fn markdown_to_phases(markdown:&str)->TodoApplyResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn javascript_regex_whitespace_accepts_bom_but_not_next_line() { let accepted=markdown_to_phases("#\u{feff}Tasks\n-\u{feff}[ ]\u{feff}one"); assert!(accepted.errors.is_empty()); assert_eq!(accepted.phases[0].tasks[0].content,"one"); assert_eq!(markdown_to_phases("#\u{0085}Tasks").errors.len(),1); }
+    #[test] fn relative_cwd_resolves_against_process_cwd() { assert_eq!(resolve_todo_markdown_path("TODO.md",Path::new("relative")),std::env::current_dir().unwrap().join("relative/TODO.md")); }
     #[test] fn absolute_user_paths_preserve_dot_segments() { assert_eq!(resolve_todo_markdown_path("/tmp/../TODO.md",Path::new("/other")),PathBuf::from("/tmp/../TODO.md")); }
     #[test] fn bom_wrapped_markdown_is_trimmed_like_javascript() { let result=markdown_to_phases("\u{feff}# Tasks\u{feff}\n\u{feff}- [ ] one\u{feff}"); assert!(result.errors.is_empty()); assert_eq!(result.phases[0].tasks[0].content,"one"); }
     #[test] fn checklist_roundtrip_keeps_all_statuses() { let p=vec![TodoPhase{name:"Foundation".into(),tasks:[TodoStatus::Completed,TodoStatus::InProgress,TodoStatus::Abandoned,TodoStatus::Pending].into_iter().enumerate().map(|(i,status)|TodoItem{content:format!("task {i}"),status}).collect()}]; let result=markdown_to_phases(&phases_to_markdown(&p)); assert_eq!(result.phases,p); assert!(result.errors.is_empty()); }

@@ -18,6 +18,17 @@ pub fn count_init_items(params:&TodoOpEntry)->(usize,usize) {
     params.items.as_ref().map_or((0,0),|items|(usize::from(!items.is_empty()),items.len()))
 }
 fn count_label(count:usize,singular:&str)->String { format!("{count} {singular}{}",if count==1 { "" } else { "s" }) }
+pub fn compute_touched_phases(args:&serde_json::Value,operation:Option<TodoOperation>,phases:&[crate::todo_types::TodoPhase],completed:&[crate::todo_types::TodoCompletionTransition])->Option<std::collections::BTreeSet<String>> {
+    let mut touched=std::collections::BTreeSet::new();
+    if let Some(active)=crate::todo_query::next_actionable_task(phases) && let Some(phase)=phases.iter().find(|phase|phase.tasks.iter().any(|task|std::ptr::eq(task,active))) { touched.insert(phase.name.clone()); }
+    touched.extend(completed.iter().map(|transition|transition.phase.clone()));
+    if operation==Some(TodoOperation::Init) { touched.extend(phases.iter().map(|phase|phase.name.clone())); }
+    else {
+        if let Some(name)=args.get("phase").and_then(serde_json::Value::as_str) && let Some(phase)=phases.iter().find(|phase|phase.name==name) { touched.insert(phase.name.clone()); }
+        if let Some(content)=args.get("task").and_then(serde_json::Value::as_str) && let Some((phase,_))=crate::todo_query::find_task_by_content(phases,content) { touched.insert(phases[phase].name.clone()); }
+    }
+    (!touched.is_empty()).then_some(touched)
+}
 pub fn plan_execution(raw:&serde_json::Value,previous:&[crate::todo_types::TodoPhase],storage:crate::todo_types::TodoStorage)->Result<(String,crate::todo_types::TodoToolDetails),String> {
     let normalized=crate::normalize::normalize_todo_params(raw,previous);
     let entry=match (normalized.error,normalized.entry) { (Some(error),_)=>return Err(format!("{error}\n\n{}",crate::todo_format::format_summary(previous,&[],true))),(_,Some(entry))=>entry,_=>return Err(format!("Missing \"op\". Example: {{\"op\":\"init\",\"list\":[{{\"phase\":\"Setup\",\"items\":[\"...\"]}}]}}\n\n{}",crate::todo_format::format_summary(previous,&[],true))) };
@@ -41,6 +52,13 @@ pub fn render_call_label(params:&TodoOpEntry)->String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn touched_phases_include_active_completed_and_exact_target() {
+        use crate::todo_types::{TodoPhase,TodoItem,TodoStatus,TodoCompletionTransition};
+        let phases:Vec<_>=[("Active",TodoStatus::InProgress),("Closed",TodoStatus::Completed),("Target",TodoStatus::Pending)].into_iter().map(|(name,status)|TodoPhase{name:name.into(),tasks:vec![TodoItem{content:name.into(),status}]}).collect();
+        let touched=compute_touched_phases(&serde_json::json!({"task":"Target"}),Some(TodoOperation::Done),&phases,&[TodoCompletionTransition{phase:"Closed".into(),content:"Closed".into()}]).unwrap(); assert_eq!(touched.len(),3); assert!(touched.contains("Target"));
+        assert_eq!(compute_touched_phases(&serde_json::json!({"task":"target"}),Some(TodoOperation::View),&phases,&[]).unwrap().into_iter().collect::<Vec<_>>(),["Active"]);
+    }
+    #[test] fn empty_touched_set_means_all_phases() { assert_eq!(compute_touched_phases(&serde_json::json!({}),None,&[],&[]),None); }
     #[test] fn schema_preserves_optional_op_and_unconstrained_items() { let schema=parameters(); assert!(schema.get("required").is_none()); assert!(schema["properties"]["items"].get("minItems").is_none()); assert_eq!(schema["properties"]["list"]["items"]["properties"]["items"]["minItems"],1); }
     #[test] fn planned_done_includes_completion_transition() { let previous=vec![crate::todo_types::TodoPhase{name:"Setup".into(),tasks:vec![crate::todo_types::TodoItem{content:"Task".into(),status:crate::todo_types::TodoStatus::InProgress}]}]; let (_,details)=plan_execution(&serde_json::json!({"op":"done","task":"Task"}),&previous,crate::todo_types::TodoStorage::Memory).unwrap(); assert_eq!(details.completed_tasks.unwrap()[0].content,"Task"); assert_eq!(previous[0].tasks[0].status,crate::todo_types::TodoStatus::InProgress); }
     #[test] fn planned_view_keeps_current_state() { let (_,details)=plan_execution(&serde_json::json!({"op":"view"}),&[],crate::todo_types::TodoStorage::Session).unwrap(); assert_eq!(details.completed_tasks,None); assert_eq!(details.storage,crate::todo_types::TodoStorage::Session); }
