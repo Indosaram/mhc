@@ -70,6 +70,19 @@ async fn startup_failure_cannot_be_revived_by_reset() {
 }
 
 #[tokio::test]
+async fn failed_run_frame_write_retires_owned_process_before_settlement() {
+    let mut settings=options();
+    settings.args=vec!["-u".into(),"-c".into(),"import os,sys,signal; sys.stdin.readline(); os.close(0); print('{\"type\":\"ready\"}',flush=True); signal.pause()".into()];
+    let kernel=SubprocessKernel::start(settings).await.unwrap();
+    let pid=kernel.pid().unwrap();
+    let result=kernel.run_with_callbacks(KernelRunInput{cell_id:"failed-write".into(),code:"42".into(),timeout_ms:None},None,None).await.unwrap();
+    let still_running=std::path::Path::new(&format!("/proc/{pid}")).exists();
+    kernel.close().await.unwrap();
+    assert_eq!(result["ok"],false);
+    assert!(!still_running,"failed transport must retire its owned process before reporting settlement");
+}
+
+#[tokio::test]
 async fn real_kernel_timeout_reaps_and_restarts() {
     let kernel = SubprocessKernel::start(options()).await.unwrap();
     let pid = kernel.pid().unwrap();

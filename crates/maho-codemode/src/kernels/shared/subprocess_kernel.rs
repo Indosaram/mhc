@@ -135,7 +135,12 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
         }
         *snapshot.lock().expect("kernel queue lock") = runs.snapshot();
         *pid.lock().expect("kernel pid lock") = if failure.is_none() { process.pid() } else { None };
-        if let Some(error) = &failure { runs.settle_all(error, now()); }
+        if let Some(error) = &failure {
+            runs.clear_tool_calls();
+            deadline = None;
+            if !process.is_retiring() && let Err(error) = process.terminate("TERM", Duration::from_millis(1500)).await { eprintln!("kernel retirement failed: {error}"); }
+            runs.settle_all(error, now());
+        }
         tokio::select! {
             command = commands.recv() => match command {
                 Some(Command::Run(input, on_message, on_started, response)) => {
