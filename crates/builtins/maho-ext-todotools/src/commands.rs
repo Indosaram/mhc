@@ -1,6 +1,20 @@
 use crate::{todo_types::{TodoPhase,TodoStatus,TodoItem,DEFAULT_INIT_PHASE},markdown::phases_to_markdown};
 use crate::{todo_types::{TodoOperation,TodoOpEntry},todo_operations::apply_ops_to_phases};
 pub struct TodoCommandMutation { pub phases:Vec<TodoPhase>,pub action:String,pub notification:String,pub removed:bool }
+pub async fn export_to_file(phases:&[TodoPhase],rest:&str,cwd:&std::path::Path)->Result<Option<std::path::PathBuf>,String> {
+    if phases.is_empty() { return Ok(None); }
+    let target=crate::markdown::resolve_todo_markdown_path(rest,cwd);
+    tokio::fs::write(&target,phases_to_markdown(phases)).await.map_err(|error|format!("Failed to write todos: {error}"))?;
+    Ok(Some(target))
+}
+pub async fn import_from_file(rest:&str,cwd:&std::path::Path)->Result<TodoCommandMutation,String> {
+    let source=crate::markdown::resolve_todo_markdown_path(rest,cwd);
+    let bytes=tokio::fs::read(&source).await.map_err(|error|format!("Failed to read todos: {error}"))?;
+    let parsed=crate::markdown::markdown_to_phases(&String::from_utf8_lossy(&bytes));
+    if !parsed.errors.is_empty() { return Err(format!("Could not parse {}:\n  {}",source.display(),parsed.errors.join("\n  "))); }
+    let tasks=parsed.phases.iter().map(|phase|phase.tasks.len()).sum::<usize>();
+    Ok(TodoCommandMutation{action:format!("/todo import {}",source.display()),notification:format!("Imported {} phase(s), {tasks} task(s) from {}.",parsed.phases.len(),source.display()),phases:parsed.phases,removed:false})
+}
 fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}') }
 pub fn argument_completions(prefix:&str)->Option<Vec<&'static str>> {
     let prefix=prefix.trim_matches(js_whitespace).to_lowercase();
@@ -86,6 +100,16 @@ pub fn find_task_fuzzy(phases:&[TodoPhase],query:&str)->Option<(usize,usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test] async fn markdown_file_commands_roundtrip_real_file_and_skip_empty_export() {
+        let directory=tempfile::tempdir().unwrap(); assert!(export_to_file(&[],"",directory.path()).await.unwrap().is_none()); assert!(!directory.path().join("TODO.md").exists());
+        let phases=vec![TodoPhase{name:"Build".into(),tasks:vec![TodoItem{content:"Run tests".into(),status:TodoStatus::InProgress}]}];
+        assert_eq!(export_to_file(&phases,"",directory.path()).await.unwrap().unwrap(),directory.path().join("TODO.md"));
+        let imported=import_from_file("",directory.path()).await.unwrap(); assert_eq!(imported.phases,phases); assert!(!imported.removed);
+    }
+    #[tokio::test] async fn malformed_import_does_not_return_mutated_phases() {
+        let directory=tempfile::tempdir().unwrap(); std::fs::write(directory.path().join("TODO.md"),"not a checklist").unwrap(); assert!(import_from_file("",directory.path()).await.is_err());
+        assert!(import_from_file("missing.md",directory.path()).await.is_err()); assert!(export_to_file(&[TodoPhase{name:"Build".into(),tasks:vec![]}],"missing/TODO.md",directory.path()).await.is_err());
+    }
     #[test] fn command_dispatch_uses_javascript_whitespace_and_preserves_arguments() { assert_eq!(split_command(" \u{feff}APPEND\u{feff}\"two words\" "),Some(("append".into(),"\"two words\""))); assert_eq!(split_command("\u{feff}"),None); assert_eq!(split_command("help"),Some(("help".into(),""))); }
     #[test] fn completion_preserves_source_order_and_no_match_is_absent() { assert_eq!(argument_completions("\u{feff}D"),Some(vec!["done","drop"])); assert_eq!(argument_completions("missing"),None); assert_eq!(argument_completions("").unwrap().len(),10); }
     #[test] fn whitespace_start_is_an_unmatched_target_not_an_untargeted_operation() { let phases=vec![TodoPhase{name:"Build".into(),tasks:vec![TodoItem{content:"Run tests".into(),status:TodoStatus::Pending}]}]; assert!(status_command(&phases," \u{feff}",TodoOperation::Start).is_err()); assert_eq!(phases[0].tasks[0].status,TodoStatus::Pending); }
