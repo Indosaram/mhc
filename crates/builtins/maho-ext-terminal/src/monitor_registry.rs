@@ -99,6 +99,7 @@ fn now_ms()->f64 {std::time::SystemTime::now().duration_since(std::time::UNIX_EP
 impl MonitorRegistry {
     pub fn new(emit:impl Fn(MonitorEvent)+Send+Sync+'static)->Self {Self {records:Default::default(),tasks:vec![],emit:std::sync::Arc::new(emit),files:Default::default(),file_snapshots:Default::default(),next_file_id:0,transitions:tokio::sync::watch::channel(vec![]).0}}
     pub fn subscribe_state(&self)->tokio::sync::watch::Receiver<Vec<MonitorSnapshotEntry>> {self.transitions.subscribe()}
+    pub fn muted_dropped(&self,id:&str)->usize {self.records.lock().expect("monitor records").get(id).map_or(0,|record|record.muted_dropped)}
     fn publish_state(&self) {publish_snapshot(&self.records,&self.file_snapshots,&self.transitions);}
     #[cfg(unix)]
     pub fn register_file(&mut self,description:&str,path:&std::path::Path,event:crate::terminal_manifest_model::FileEvent,timeout_ms:u64)->std::io::Result<(String,String)> {
