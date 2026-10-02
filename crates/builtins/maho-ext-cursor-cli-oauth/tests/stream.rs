@@ -3,6 +3,56 @@ use maho_ext_cursor_cli_oauth::{stream::{stream_cursor_cli,StreamDeps},accounts:
 use std::{sync::Arc,collections::BTreeMap,os::unix::fs::PermissionsExt};
 struct Flow;
 #[tokio::test]
+async fn held_process_allows_status_and_other_session_but_orders_same_session() {
+    use maho_ext_cursor_cli_oauth::{session_router::{SessionRouter,TurnInput,SessionPolicy,SessionAttempt},stream::{spawn_attempt,SpawnAttemptInput}};
+    use tokio::io::AsyncWriteExt;
+    let directory=tempfile::tempdir().expect("directory");let executable=directory.path().join("cursor-agent");
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    std::fs::write(directory.path().join("address"),listener.local_addr().expect("address").to_string()).expect("address file");
+    std::fs::write(&executable,r#"#!/usr/bin/python3
+import json,socket,sys
+prompt=sys.argv[sys.argv.index('-p')+1]
+if prompt=='A2':
+ assert sys.argv[sys.argv.index('--resume')+1]=='chat-A'
+chat='chat-'+prompt
+print(json.dumps({'type':'system','subtype':'init','session_id':chat,'model':'test','apiKeySource':'file','permissionMode':'plan','cwd':'test'}),flush=True)
+if prompt=='A':
+ host,port=open('address').read().split(':')
+ with socket.create_connection((host,int(port))) as gate:
+  assert gate.recv(1)==b'R'
+print(json.dumps({'type':'assistant','message':{'content':[{'type':'text','text':prompt}]}}),flush=True)
+print(json.dumps({'type':'result','subtype':'success','result':prompt,'usage':{'inputTokens':0,'outputTokens':1,'cacheReadTokens':0,'cacheWriteTokens':0},'request_id':'r','duration_ms':1,'is_error':False}),flush=True)
+"#).expect("script");std::fs::set_permissions(&executable,std::fs::Permissions::from_mode(0o700)).expect("permissions");
+    let router=Arc::new(tokio::sync::Mutex::new(SessionRouter::default()));
+    let spawn=|attempt:SessionAttempt| {
+        let policy=maho_ext_cursor_cli_oauth::guardrails::resolve_execution_policy(&CursorCliOauthProviderSettings {execution_mode:maho_ext_cursor_cli_oauth::settings::ExecutionMode::Plan,..Default::default()},&mut Default::default(),&[]).expect("policy");
+        spawn_attempt(SpawnAttemptInput {executable:executable.clone(),cwd:directory.path().into(),agent_dir:directory.path().join("agent"),slot:CursorCliAccountSlot {name:"a".into(),display_name:None,access:"fixture".into(),refresh:"fixture".into(),expires:10000.0,source:AccountSource::Login,blocked_until:None,block_reason:None},attempt,model:"test".into(),policy,environment:BTreeMap::new(),signal:None})
+    };
+    let policy=SessionPolicy::default();
+    let (ready,observed)=tokio::sync::oneshot::channel();let mut ready=Some(ready);
+    let accept=listener.accept();
+    let mut a=Box::pin(SessionRouter::run_shared_turn(&router,TurnInput {session:"s-a",account:"a",prompt:"A",model:Some("test"),recent:&[],policy:&policy},|attempt|std::future::ready(Ok(spawn(attempt))),||1,|input|maho_ext_cursor_cli_oauth::errors::classify_cursor_cli_error(Some(input)).kind,|event| {if event["type"]=="system" {let _=ready.take().expect("one init").send(());}}));
+    let (mut gate,_)=tokio::time::timeout(std::time::Duration::from_secs(10),async {
+        tokio::select! {result=&mut a=>panic!("A settled before release: {result:?}"),connection=accept=>connection.expect("connection")}
+    }).await.expect("bounded child barrier");
+    tokio::time::timeout(std::time::Duration::from_secs(10),async {
+        tokio::select! {result=&mut a=>panic!("A settled before init: {result:?}"),result=observed=>result.expect("routed init")}
+    }).await.expect("bounded init");
+    let status=tokio::time::timeout(std::time::Duration::from_secs(5),router.lock()).await.expect("status read proceeds before releasing A");
+    assert_eq!(status.get_record("s-a").expect("A binding").chat_id,"chat-A");drop(status);
+    let started=std::cell::Cell::new(false);let mut resume=None;
+    let mut a2=Box::pin(SessionRouter::run_shared_turn(&router,TurnInput {session:"s-a",account:"a",prompt:"A2",model:Some("test"),recent:&[],policy:&policy},|attempt| {started.set(true);resume=attempt.resume_chat_id.clone();std::future::ready(Ok(spawn(attempt)))},||3,|input|maho_ext_cursor_cli_oauth::errors::classify_cursor_cli_error(Some(input)).kind,|_|{}));
+    std::future::poll_fn(|cx| {assert!(a2.as_mut().poll(cx).is_pending());std::task::Poll::Ready(())}).await;
+    assert!(!started.get(),"same-session subprocess must wait for A settlement");
+    tokio::time::timeout(std::time::Duration::from_secs(10),SessionRouter::run_shared_turn(&router,TurnInput {session:"s-b",account:"a",prompt:"B",model:Some("test"),recent:&[],policy:&policy},|attempt|std::future::ready(Ok(spawn(attempt))),||2,|input|maho_ext_cursor_cli_oauth::errors::classify_cursor_cli_error(Some(input)).kind,|_|{})).await.expect("B progresses while A held").expect("B turn");
+    assert!(!started.get());assert_eq!(router.lock().await.get_record("s-b").expect("B binding").chat_id,"chat-B");
+    gate.write_all(b"R").await.expect("release A");
+    tokio::time::timeout(std::time::Duration::from_secs(10),&mut a).await.expect("A settlement").expect("A turn");drop(a);
+    tokio::time::timeout(std::time::Duration::from_secs(10),&mut a2).await.expect("A2 settlement").expect("A2 turn");drop(a2);
+    assert_eq!(resume.as_deref(),Some("chat-A"));
+    let status=router.lock().await;let record=status.get_record("s-a").expect("A2 binding");assert_eq!(record.chat_id,"chat-A2");assert_eq!(record.account_name,"a");assert_eq!(record.last_model,"test");assert_eq!(record.last_used_at,3);assert_eq!(status.get_record("s-b").expect("B binding").chat_id,"chat-B");
+}
+#[tokio::test]
 async fn failure_result_is_delivered_after_child_exit() {
     use maho_ext_cursor_cli_oauth::{stream::{spawn_attempt,SpawnAttemptInput},session_router::SessionAttempt};
     let directory=tempfile::tempdir().expect("directory");let executable=directory.path().join("cursor-agent");

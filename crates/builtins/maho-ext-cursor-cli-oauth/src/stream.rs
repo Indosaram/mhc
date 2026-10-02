@@ -56,7 +56,7 @@ pub fn stream_cursor_cli(model:Model,context:maho_ai::types::Context,options:Opt
                         Ok::<(),anyhow::Error>(())
                     }.await;
                     if let Err(error)=refreshed {let _=sender.send(Err(json!({"message":error.to_string()})));return;}
-                    let result=router.lock().await.run_turn(crate::session_router::TurnInput {session:&session,account:&slot.name,prompt:&prompt,model:Some(&model),recent:&recent,policy:&session_policy},|attempt| {
+                    let result=crate::session_router::SessionRouter::run_shared_turn(&router,crate::session_router::TurnInput {session:&session,account:&slot.name,prompt:&prompt,model:Some(&model),recent:&recent,policy:&session_policy},|attempt| {
                         tokens.store(maho_core::compaction::compaction::estimate_tokens(&json!({"role":"user","content":attempt.prompt,"timestamp":now()})),std::sync::atomic::Ordering::Relaxed);
                         let receiver=spawn_attempt(SpawnAttemptInput {executable:executable.clone(),cwd:cwd.clone(),agent_dir:agent_dir.clone(),slot:slot.clone(),attempt,model:model.clone(),policy:policy.clone(),environment:environment.clone(),signal:signal.clone()});async move {Ok(receiver)}
                     },||now(),|input|crate::errors::classify_cursor_cli_error(Some(input)).kind,|event|{let _=sender.send(Ok(event));}).await;

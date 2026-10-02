@@ -24,6 +24,7 @@ pub fn build_context_recap(model:Option<&str>,exchanges:&[RecapExchange],max_byt
     if selected.is_empty() { return None; }selected.reverse();
     Some(format!("{header}\n{}\n{CONTEXT_RECAP_END}",selected.join("\n")))
 }
+#[derive(Clone)]
 pub struct SessionRecord { pub account_name:String,pub chat_id:String,pub last_model:String,pub last_used_at:i64 }
 pub struct SessionPolicy { pub resume:bool,pub recap_on_model_switch:bool,pub max_recap_bytes:usize,pub prompt_ceiling_bytes:usize }
 impl Default for SessionPolicy {
@@ -34,11 +35,19 @@ pub struct TurnInput<'a> { pub session:&'a str,pub account:&'a str,pub prompt:&'
 pub struct SessionAttempt { pub prompt:String,pub resume_chat_id:Option<String> }
 pub type AttemptReceiver=tokio::sync::mpsc::UnboundedReceiver<Result<serde_json::Value,serde_json::Value>>;
 impl SessionRouter {
+    pub async fn run_shared_turn<F,Fut,N,C,O>(router:&tokio::sync::Mutex<Self>,input:TurnInput<'_>,run:F,now:N,classify:C,emit:O)->Result<(),serde_json::Value>
+    where F:FnMut(SessionAttempt)->Fut,Fut:std::future::Future<Output=Result<AttemptReceiver,serde_json::Value>>,
+        N:Fn()->i64,C:Fn(&crate::errors::CursorCliErrorInput)->crate::errors::CursorCliErrorKind,O:FnMut(serde_json::Value) {
+        let mut turn_router=router.lock().await.clone();
+        turn_router.run_turn(input,run,now,classify,emit).await
+    }
     pub async fn run_turn<F,Fut,N,C,O>(&mut self,input:TurnInput<'_>,mut run:F,now:N,classify:C,mut emit:O)->Result<(),serde_json::Value>
     where F:FnMut(SessionAttempt)->Fut,Fut:std::future::Future<Output=Result<AttemptReceiver,serde_json::Value>>,
         N:Fn()->i64,C:Fn(&crate::errors::CursorCliErrorInput)->crate::errors::CursorCliErrorKind,O:FnMut(serde_json::Value) {
         use serde_json::json;
         use crate::errors::{CursorCliErrorInput,CursorCliErrorKind};
+        let session_lock={let mut locks=self.turn_locks.lock().expect("router turn locks");locks.entry(input.session.into()).or_default().clone()};
+        let _turn=session_lock.lock().await;
         let plan=self.plan_turn(input.session,input.account,input.prompt,input.model,input.recent,input.policy).map_err(|e|json!({"kind":"prompt_too_large","message":e.to_string()}))?;
         let previous=plan.resume_chat_id;
         let mut attempt=SessionAttempt {prompt:plan.prompt,resume_chat_id:previous.clone()};let mut fell_back=false;
@@ -79,17 +88,20 @@ impl SessionRouter {
         }
     }
 }
-#[derive(Default)]
-pub struct SessionRouter { records:BTreeMap<String,SessionRecord> }
+#[derive(Clone,Default)]
+pub struct SessionRouter {
+    records:std::sync::Arc<std::sync::Mutex<BTreeMap<String,SessionRecord>>>,
+    turn_locks:std::sync::Arc<std::sync::Mutex<BTreeMap<String,std::sync::Arc<tokio::sync::Mutex<()>>>>>,
+}
 impl SessionRouter {
-    pub fn get_record(&self,session:&str)->Option<&SessionRecord> { self.records.get(session) }
-    pub fn clear(&mut self,session:&str) { self.records.remove(session); }
+    pub fn get_record(&self,session:&str)->Option<SessionRecord> { self.records.lock().expect("router records").get(session).cloned() }
+    pub fn clear(&mut self,session:&str) { self.records.lock().expect("router records").remove(session); }
     pub fn observe_init(&mut self,session:&str,account:&str,chat:&str,model:&str,at:i64) {
-        self.records.insert(session.into(),SessionRecord {account_name:account.into(),chat_id:chat.into(),last_model:model.into(),last_used_at:at});
+        self.records.lock().expect("router records").insert(session.into(),SessionRecord {account_name:account.into(),chat_id:chat.into(),last_model:model.into(),last_used_at:at});
     }
     pub fn plan_turn(&self,session:&str,account:&str,prompt:&str,model:Option<&str>,recent:&[RecapExchange],policy:&SessionPolicy)->Result<TurnPlan,TransportError> {
-        let bound=self.records.get(session).filter(|b|policy.resume&&b.account_name==account);
-        let model_switch=bound.is_some_and(|b|Some(b.last_model.as_str())!=model);
+        let bound=self.get_record(session).filter(|b|policy.resume&&b.account_name==account);
+        let model_switch=bound.as_ref().is_some_and(|b|Some(b.last_model.as_str())!=model);
         let mut recap=if model_switch&&policy.recap_on_model_switch { build_context_recap(model,recent,policy.max_recap_bytes) } else { None };
         if prompt.len()>policy.prompt_ceiling_bytes { return Err(TransportError::PromptTooLarge {actual_bytes:prompt.len(),limit_bytes:policy.prompt_ceiling_bytes}); }
         let composed=recap.as_ref().map(|r|format!("{r}\n\n{prompt}"));
