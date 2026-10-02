@@ -5068,6 +5068,23 @@ mod tests {
         assert!(session.enforce_final_provider_admission(&[make_user_message(&"x".repeat(600_000), None)]).await.is_ok());
     }
 
+    #[tokio::test]
+    async fn prompt_delivers_next_turn_aside_once_after_user_message() {
+        let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("reply", Default::default())], 0);
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        maho_ext_api::ExtensionActions::send_message(&actions, maho_ext_api::CustomMessage {
+            custom_type: "aside".to_owned(), content: vec![maho_tools::definition::ToolContent::text("remember")],
+            display: false, details: None,
+        }, maho_ext_api::SendMessageOptions { deliver_as: Some(maho_ext_api::DeliverAs::NextTurn), trigger_turn: false }).expect("queue");
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("input", Default::default()))
+            .await.expect("bounded prompt").expect("prompt");
+        let messages = session.messages();
+        assert_eq!(messages.iter().map(AgentMessage::role).collect::<Vec<_>>(), ["user", "custom", "assistant"]);
+        assert!(session.state().pending_next_turn_messages.is_empty());
+        let entries = session.with_session_manager(|manager| manager.entries());
+        assert_eq!(entries.iter().filter(|entry| entry["type"] == "custom_message" && entry["customType"] == "aside").count(), 1);
+    }
+
     #[test]
     fn hook_source_context_uses_branded_json_paths() {
         let session = test_session();
