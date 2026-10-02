@@ -28,6 +28,19 @@ pub type ExtensionFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, Extensio
 pub type UiFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub type ToolHookStatusUpdater = Arc<dyn Fn(&str) + Send + Sync>;
 pub type ExtensionToolExecutor = Arc<dyn for<'a> Fn(&'a str, JsonValue, Option<maho_ai::utils::abort::AbortSignal>, Option<maho_agent::types::AgentToolUpdateCallback>, &'a ExtensionContext) -> ExtensionFuture<'a, AgentToolResult> + Send + Sync>;
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypedAgentToolResult<TDetails> {
+    pub content: Vec<ContentBlock>, pub details: TDetails, pub usage: Option<Usage>,
+    pub added_tool_names: Option<Vec<String>>, pub terminate: Option<bool>, pub is_error: Option<bool>,
+}
+impl<TDetails: serde::Serialize> TypedAgentToolResult<TDetails> {
+    pub fn into_agent_result(self) -> Result<AgentToolResult, ExtensionFailure> {
+        Ok(AgentToolResult { content: self.content, details: serde_json::to_value(self.details).map_err(|error| ExtensionFailure::new(error.to_string()))?,
+            usage: self.usage, added_tool_names: self.added_tool_names, terminate: self.terminate, is_error: self.is_error })
+    }
+}
+pub type TypedToolUpdateCallback<TDetails> = Arc<dyn Fn(TypedAgentToolResult<TDetails>) -> Result<(), ExtensionFailure> + Send + Sync>;
+pub type TypedExtensionToolExecutor<TArgs, TDetails> = Arc<dyn for<'a> Fn(&'a str, TArgs, Option<maho_ai::utils::abort::AbortSignal>, Option<TypedToolUpdateCallback<TDetails>>, &'a ExtensionContext) -> ExtensionFuture<'a, TypedAgentToolResult<TDetails>> + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ToolRenderResultOptions { pub expanded: bool, pub is_partial: bool }
@@ -1406,6 +1419,16 @@ impl ExtensionApi {
         if let Some(pending) = pending.as_mut() { pending.tool_executors.insert(key, execute); }
         else { self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extension_tool_executors.insert(key, execute); }
         Ok(())
+    }
+    pub fn register_typed_tool<TArgs: serde::de::DeserializeOwned + Send + 'static, TDetails: serde::Serialize + Send + 'static>(&mut self, definition: ToolDefinition, execute: TypedExtensionToolExecutor<TArgs, TDetails>) -> Result<(), ExtensionFailure> {
+        self.register_tool_with_extension_context(definition, Arc::new(move |id, params, signal, update, context| {
+            let execute = execute.clone();
+            Box::pin(async move {
+                let params = serde_json::from_value(params).map_err(|error| ExtensionFailure::new(error.to_string()))?;
+                let update = update.map(|update| Arc::new(move |result: TypedAgentToolResult<TDetails>| { update(result.into_agent_result()?); Ok(()) }) as TypedToolUpdateCallback<TDetails>);
+                execute(id, params, signal, update, context).await?.into_agent_result()
+            })
+        }))
     }
     pub fn register_tool_with_renderers<TState: 'static, TArgs: Clone + 'static>(&mut self, definition: ToolDefinition, renderers: ToolRenderers<TState, TArgs>) -> Result<(), ExtensionFailure> {
         let name = definition.name.clone();

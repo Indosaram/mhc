@@ -801,6 +801,27 @@ async fn extension_executor_receives_full_context_and_preserves_agent_result_fie
     assert_eq!(updates.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
+#[tokio::test]
+async fn typed_tool_decodes_parameters_and_serializes_detail_updates() {
+    let runtime = ExtensionRuntime::default(); runtime.bind_session_actions(Arc::new(SessionActions::default()));
+    let mut api = ExtensionApi::new(LoadedExtension::new("typed", "/tmp".into(), SourceInfo::default()), Default::default(), EventBus::default(), runtime.clone());
+    let definition = ToolDefinition::new("typed", "typed", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { panic!("legacy executor must not run") })));
+    api.register_typed_tool(definition, Arc::new(|_, params: BTreeMap<String, u64>, _, update: Option<TypedToolUpdateCallback<u64>>, _| Box::pin(async move {
+        let value = params["value"];
+        let result = TypedAgentToolResult { content: vec![ContentBlock::text("done")], details: value, usage: None, added_tool_names: None, terminate: Some(true), is_error: None };
+        if let Some(update) = update { update(result.clone())?; }
+        Ok(result)
+    }))).unwrap();
+    let tool = maho_ext_host::wrapper::wrap_registered_tool(api.registered.tools[0].clone(), runtime, Arc::new(|| Ok(context())));
+    let updates = Arc::new(Mutex::new(Vec::new())); let observed = updates.clone();
+    let params = JsonValue::Object([("value".into(), JsonValue::from(7u64))].into_iter().collect());
+    let result = (tool.execute)("call".into(), params, None, Some(Arc::new(move |result| observed.lock().unwrap().push(result.details)))).await;
+    assert_eq!(result.details, JsonValue::from(7u64)); assert_eq!(result.terminate, Some(true));
+    assert_eq!(*updates.lock().unwrap(), vec![JsonValue::from(7u64)]);
+    let result = (tool.execute)("invalid".into(), JsonValue::Null, None, None).await;
+    assert_eq!(result.is_error, Some(true));
+}
+
 #[test]
 fn static_runner_uses_one_based_identity_and_isolates_failed_factories() {
     struct Failed;
