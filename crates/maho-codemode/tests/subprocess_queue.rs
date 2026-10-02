@@ -51,3 +51,15 @@ async fn pending_run_settles_once() {
     assert!(!settle_pending_run(&mut run, json!({})));
     assert_eq!(receiver.await.unwrap()["durationMs"], 12);
 }
+
+#[tokio::test]
+async fn cancelled_pull_does_not_consume_the_next_tool_frame() {
+    let mut queue=SubprocessRunQueue::default();
+    drop(queue.next_tool_call());
+    let receiver=queue.next_tool_call();
+    queue.push_tool_call(json!({"callId":"retained"}));
+    assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(1),receiver).await.expect("cancelled consumer must not discard a frame").unwrap()["callId"],"retained");
+    drop(queue.next_tool_call());
+    queue.push_tool_call(json!({"callId":"buffered"}));
+    assert_eq!(queue.next_tool_call().await.unwrap()["callId"],"buffered");
+}

@@ -62,12 +62,15 @@ impl SubprocessRunQueue {
         receiver
     }
 
-    pub fn push_tool_call(&mut self, message: Value) {
-        if let Some(waiter) = self.call_waiters.pop_front() { let _ = waiter.send(message); }
-        else {
-            self.pending_calls.push_back(message);
-            if self.pending_calls.len() > 256 { self.pending_calls.pop_front(); }
+    pub fn push_tool_call(&mut self, mut message: Value) {
+        while let Some(waiter) = self.call_waiters.pop_front() {
+            match waiter.send(message) {
+                Ok(()) => return,
+                Err(returned) => message = returned,
+            }
         }
+        self.pending_calls.push_back(message);
+        if self.pending_calls.len() > 256 { self.pending_calls.pop_front(); }
     }
 
     pub fn handle_message(&mut self, message: Value, fallback: Option<&KernelMessageCallback>) -> bool {
