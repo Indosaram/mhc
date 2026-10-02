@@ -30,3 +30,9 @@ fn capacity_error_has_machine_consumed_code() {
     let error = EvalBackgroundCapacityError::new(15, "cell", 30_000.0, &["other".into()]);
     assert_eq!(error.code, "eval_background_capacity_reached");
 }
+
+#[test]
+fn empty_list_has_control_metadata() {
+    let result = create_eval_list_result(&[], &[]);
+    assert_eq!(result.details, json!({"action":"list","cells":[]}));
+}

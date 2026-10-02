@@ -45,6 +45,30 @@ pub fn result_for_detached_state(result: &AgentToolResult, state: EvalDetachedCe
     result
 }
 
+pub fn create_eval_list_result(live: &[EvalDetachedCellSnapshot], recent: &[EvalDetachedCellSnapshot]) -> AgentToolResult {
+    let mut cells = Vec::new();
+    let mut lines = Vec::new();
+    for snapshot in live.iter().chain(recent) {
+        let language = match snapshot.language { super::types::EvalLanguage::Js => "js", super::types::EvalLanguage::Py => "py", super::types::EvalLanguage::Rb => "rb", super::types::EvalLanguage::Jl => "jl" };
+        let state = snapshot.state.as_str();
+        let mut cell = json!({"cellId":snapshot.cell_id,"language":language,"state":state,"startedAtMs":snapshot.started_at_ms});
+        let queued = snapshot.queued_behind.as_ref().filter(|queued| !queued.is_empty());
+        if let Some(queued) = queued { cell["queuedBehind"] = json!(queued); }
+        let summary = snapshot.result.details["summary"].as_str().filter(|summary| !summary.is_empty());
+        if let Some(summary) = summary { cell["summary"] = json!(summary); }
+        let code = snapshot.result.details["cells"][0]["code"].as_str().unwrap_or("");
+        let code = String::from_utf16_lossy(&code.encode_utf16().take(60).collect::<Vec<_>>());
+        let preview = summary.unwrap_or(&code).split_whitespace().collect::<Vec<_>>().join(" ");
+        let elapsed = (snapshot.result.details["durationMs"].as_f64().unwrap_or(f64::NAN) / 1000.0).floor();
+        let queue_label = queued.map_or_else(String::new, |queued| format!(" queued behind {}", queued.join(", ")));
+        lines.push(format!("{} {language} {state} {elapsed}s{queue_label} - {preview}", snapshot.cell_id));
+        cells.push(cell);
+    }
+    let mut result = AgentToolResult::text(if lines.is_empty() { "No eval cells are live; recent: none".into() } else { lines.join("\n") });
+    result.details = json!({"action":"list","cells":cells});
+    result
+}
+
 pub fn create_detached_control_result(snapshot: &EvalDetachedCellSnapshot) -> AgentToolResult {
     let language = match snapshot.language { super::types::EvalLanguage::Js => "js", super::types::EvalLanguage::Py => "py", super::types::EvalLanguage::Rb => "rb", super::types::EvalLanguage::Jl => "jl" };
     let output = snapshot.result.content.iter().filter_map(|part| match part { ContentBlock::Text(text) => Some(text.text.as_str()), _ => None }).collect::<Vec<_>>().join("\n");
