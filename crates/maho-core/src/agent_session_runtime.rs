@@ -268,11 +268,16 @@ impl AgentSessionRuntime {
         let settings = crate::settings_manager::SettingsManager::create(&cwd, &self.services.agent_dir,
             &std::env::var("HOME").unwrap_or_default(), self.services.settings_manager.is_project_trusted());
         let (system_prompt, append_system_prompt) = self.session.system_prompt_sources();
+        let context = manager.build_context(manager.leaf_id());
+        let restored_model = context.model.as_ref().and_then(|(provider, id)| self.services.model_registry.find(provider, id));
+        let thinking_selection = if manager.branch(manager.leaf_id()).iter().any(|entry| entry["type"] == "thinking_level_change") {
+            None
+        } else { self.session.thinking_selection() };
         let options = crate::sdk::CreateAgentSessionOptions {
             system_prompt, append_system_prompt,
             cwd: Some(cwd.clone()), agent_dir: Some(self.services.agent_dir.clone()),
             model_runtime: Some(self.services.model_runtime().clone()), model_registry: Some(self.services.model_registry.clone()),
-            model: Some(self.session.model()), thinking_selection: self.session.thinking_selection(),
+            model: restored_model.or_else(|| Some(self.session.model())), thinking_selection,
             scoped_models: self.session.scoped_models(), favorite_models: self.session.favorite_models(),
             session_manager: Some(manager), settings_manager: Some(settings), tools: Some(self.session.get_active_tool_names()),
             custom_tools: self.session.replacement_custom_tools(),
@@ -358,6 +363,37 @@ mod tests {
     fn a_missing_import_file_names_the_path() {
         let error = SessionImportFileNotFoundError { file_path: "/tmp/missing.jsonl".to_owned() };
         assert_eq!(error.to_string(), "File not found: /tmp/missing.jsonl");
+    }
+
+    #[tokio::test]
+    async fn replacement_restores_target_model_and_thinking() {
+        let dir = tempfile::tempdir().expect("directory");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let services = crate::agent_session_services::create_agent_session_services(
+            crate::agent_session_services::CreateAgentSessionServicesOptions {
+                cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), ..Default::default()
+            });
+        let provider = maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
+            models: Some(vec![
+                maho_ai::providers::faux::FauxModelDefinition { id: "original".to_owned(), ..Default::default() },
+                maho_ai::providers::faux::FauxModelDefinition { id: "saved".to_owned(), reasoning: Some(true), ..Default::default() },
+            ]), ..Default::default()
+        });
+        let mut model_runtime = services.model_runtime().clone();
+        model_runtime.register_native_provider(provider.provider.clone());
+        let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()), agent_dir: Some(services.agent_dir.clone()), model: provider.get_model(Some("original")),
+            model_runtime: Some(model_runtime), session_manager: Some(crate::session_manager::SessionManager::in_memory(&cwd, None, None)),
+            tools: Some(Vec::new()), ..Default::default()
+        }).await.expect("session");
+        let mut runtime = AgentSessionRuntime::new(created.session, services, Vec::new(), None, None);
+        let mut target = crate::session_manager::SessionManager::in_memory(&cwd, None, None);
+        target.append_model_change("faux", "saved", None, None);
+        target.append_thinking_level_change("high", Some(serde_json::json!({"level":"high","source":"explicit"})));
+        runtime.apply_replacement(target, cwd, maho_ext_api::SessionReason::Resume).await.expect("replacement");
+        assert_eq!(runtime.session().model().id, "saved");
+        assert_eq!(runtime.session().thinking_level(), maho_ai::types::ModelThinkingLevel::High);
+        assert_eq!(runtime.session().thinking_selection().expect("selection").level, maho_ai::types::ModelThinkingLevel::High);
     }
 
     #[tokio::test]
