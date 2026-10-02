@@ -47,14 +47,18 @@ impl ToolSearchService {
         Ok(build_bm25_index(&self.get_catalog()?).search(query,limit,&options))
     }
     fn activate_names(&self,names:&[String],catalog:&[ToolSearchDocument])->Result<(),ExtensionFailure> {
-        let mut sources:BTreeMap<ToolSearchSource,Vec<String>>=BTreeMap::new();
-        for name in names { if let Some(doc)=catalog.iter().find(|doc|doc.name==*name) { sources.entry(doc.source).or_default().push(name.clone()); } }
+        let mut sources:Vec<(ToolSearchSource,Vec<String>)>=vec![];
+        for name in names { if let Some(doc)=catalog.iter().rev().find(|doc|doc.name==*name) {
+            if let Some((_,group))=sources.iter_mut().find(|(source,_)|*source==doc.source) { group.push(name.clone()); }
+            else { sources.push((doc.source,vec![name.clone()])); }
+        } }
         for (source,names) in sources {
             match source {
                 ToolSearchSource::Mcp=>{if let Some(feed)=self.feeds.get(&source) { (feed.activate)(&names)?; }},
                 ToolSearchSource::Extension=>{
                     let actions=self.runtime.session_actions()?; let mut current=actions.get_active_tools()?;
-                    let added:BTreeSet<_>=names.into_iter().filter(|name|!current.contains(name)).collect();
+                    let mut added:Vec<_>=names.into_iter().filter(|name|!current.contains(name)).collect();
+                    added.sort_by(|left,right|left.encode_utf16().cmp(right.encode_utf16())); added.dedup();
                     current.extend(added); actions.set_active_tools(current)?;
                 },
             }
@@ -108,6 +112,15 @@ mod tests {
         fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure> { Ok(self.0.clone()) }
     }
     fn service()->ToolSearchService { ToolSearchService::new(ExtensionRuntime::default(),Arc::new(Catalog(vec![]))) }
+    #[test] fn activation_preserves_source_encounter_order() {
+        let mut service=service();
+        let called=Arc::new(std::sync::atomic::AtomicBool::new(false)); let observed=called.clone();
+        service.feeds.insert(ToolSearchSource::Mcp,FeedState{docs:vec![],activate:Arc::new(move |_| {observed.store(true,std::sync::atomic::Ordering::SeqCst);Ok(())})});
+        let doc=|name:&str,source|ToolSearchDocument{name:name.into(),label:name.into(),aliases:vec![],description:None,search_text:None,keywords:vec![],source,group:String::new(),owner_label:String::new(),registration_id:name.into()};
+        let catalog=vec![doc("extension",ToolSearchSource::Extension),doc("mcp",ToolSearchSource::Mcp)];
+        assert!(service.activate_names(&["extension".into(),"mcp".into()],&catalog).is_err());
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst),"later MCP source must not activate after the earlier extension failure");
+    }
     #[test] fn lifecycle_hooks_register_without_eager_tool_registration() {
         let mut api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("tool-search",Default::default(),Default::default()),Default::default(),Default::default(),Default::default());
         crate::index::register_session_hooks(&mut api,Arc::new(std::sync::Mutex::new(service())));
