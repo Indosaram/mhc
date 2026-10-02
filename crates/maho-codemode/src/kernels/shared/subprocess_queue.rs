@@ -12,6 +12,7 @@ pub struct SubprocessRunQueue {
 
 impl SubprocessRunQueue {
     pub fn active(&self) -> Option<&PendingRun> { self.active.as_ref() }
+    pub fn release_active(&mut self) -> Option<PendingRun> { self.active.take() }
 
     pub fn enqueue(&mut self, input: KernelRunInput, on_message: Option<KernelMessageCallback>, on_started: Option<KernelStartedCallback>) -> tokio::sync::oneshot::Receiver<Value> {
         let (resolve, receiver) = tokio::sync::oneshot::channel();

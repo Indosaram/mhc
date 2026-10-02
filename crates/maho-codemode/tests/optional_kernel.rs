@@ -37,7 +37,7 @@ async fn real_ruby_persistent_cells() {
     let mut env = std::env::vars().collect::<std::collections::HashMap<String, String>>();
     env.insert("RUBYLIB".into(), concat!(env!("CARGO_MANIFEST_DIR"), "/tests/runtime/base64-0.3.0/lib").into());
     options.env = Some(env);
-    let mut kernel = RubyKernel::start(options).await.unwrap();
+    let kernel = RubyKernel::start(options).await.unwrap();
     for (code, expected) in [("x = 7; x", "7"), ("x + 1", "8")] {
         let result = kernel.run(maho_codemode::kernels::shared::subprocess_contract::KernelRunInput { cell_id: "ruby".into(), code: code.into(), timeout_ms: Some(5_000) }, |_| {}).await.unwrap();
         assert_eq!(result["ok"], true, "{result}");

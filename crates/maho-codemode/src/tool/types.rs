@@ -80,6 +80,20 @@ impl EvalKernel for crate::kernels::py::kernel::PythonKernel {
     fn close(&self) -> EvalKernelFuture<'_,()> {Box::pin(self.close())}
 }
 
+impl EvalKernel for crate::kernels::shared::subprocess_kernel::SubprocessKernel {
+    fn run(&self, input: EvalKernelRunInput) -> EvalKernelFuture<'_, serde_json::Value> {
+        Box::pin(async move { self.run_with_callbacks(crate::kernels::shared::subprocess_contract::KernelRunInput {cell_id:input.cell_id,code:input.code,timeout_ms:input.timeout_ms},input.on_message,input.on_started).await.map_err(|error|error.to_string()) })
+    }
+    fn cancel_queued<'a>(&'a self, cell_id:&'a str, reason:&'a str)->EvalKernelFuture<'a,bool> {Box::pin(async move {Ok(self.cancel_queued(cell_id,reason).await)})}
+    fn interrupt<'a>(&'a self, reason:&'a str, cell_id:Option<&'a str>)->EvalKernelFuture<'a,KernelInterruptHandle> {
+        Box::pin(async move {let retained=self.interrupt(reason,cell_id).await?;Ok(KernelInterruptHandle {state_retained:Box::pin(async move {Ok(retained)}),note:None})})
+    }
+    fn queue_snapshot(&self)->(Option<String>,Vec<String>) {self.queue_snapshot()}
+    fn deliver_tool_reply(&self,message:serde_json::Value)->Result<(),String> {self.deliver_tool_reply(message)}
+    fn reset(&self)->EvalKernelFuture<'_,()> {Box::pin(async move {self.reset().await.map_err(|error|error.to_string())})}
+    fn close(&self)->EvalKernelFuture<'_,()> {Box::pin(async move {self.close().await.map_err(|error|error.to_string())})}
+}
+
 pub struct EvalDeadlineSeconds {
     pub run_budget_seconds: f64,
     pub detach_after_seconds: f64,
