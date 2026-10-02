@@ -17,3 +17,5 @@ pub mod remediation;
 pub mod reservation_run_ledger;
 pub mod run_terminal_claim;
 pub mod run_terminal_precedence;
+pub mod spawn_types;
+pub mod spawn_metadata;
