@@ -1,6 +1,33 @@
 // Copyright (c) 2025 Mario Zechner; Copyright (c) 2025-2026 Can Bölük.
 // Adapted from oh-my-pi's MIT-licensed todo tool via senpi.
 use crate::todo_types::{TodoOpEntry,TodoOperation};
+pub trait TodoAccessors:Send+Sync {
+    fn get_current_phases(&self)->Vec<crate::todo_types::TodoPhase>;
+    fn set_current_phases(&self,phases:Vec<crate::todo_types::TodoPhase>);
+    fn sync_widget(&self,ctx:&dyn maho_tools::definition::ToolContext,completed:&[crate::todo_types::TodoCompletionTransition])->Result<(),maho_ext_api::ExtensionFailure>;
+}
+pub fn create_todo_tool(actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,accessors:std::sync::Arc<dyn TodoAccessors>)->maho_tools::definition::ToolDefinition {
+    use maho_tools::definition::{ToolDefinition,ToolError,ToolResult,ToolContent,ToolExecutionMode};
+    let mut tool=ToolDefinition::new("todo",crate::prompt::TODO_TOOL_DESCRIPTION,parameters(),std::sync::Arc::new(move |call| {
+        let actions=actions.clone(); let accessors=accessors.clone();
+        Box::pin(async move {
+            let ctx=call.context.ok_or_else(||ToolError::Message("todo requires extension execution context".into()))?;
+            let storage=if ctx.session_manager().session_file().is_some() { crate::todo_types::TodoStorage::Session } else { crate::todo_types::TodoStorage::Memory };
+            let previous=accessors.get_current_phases();
+            let (text,details)=plan_execution(&call.params,&previous,storage).map_err(ToolError::Message)?;
+            if details.op!=Some(TodoOperation::View) {
+                let entry=crate::todo_types::TodoStateEntry{schema:crate::todo_types::TodoStateSchema::V2,phases:details.phases.clone()};
+                actions.append_entry(crate::todo_types::TODO_STATE_ENTRY_TYPE,Some(serde_json::to_value(entry)?)).map_err(|error|ToolError::Message(error.to_string()))?;
+                accessors.set_current_phases(details.phases.clone());
+                accessors.sync_widget(ctx,details.completed_tasks.as_deref().unwrap_or_default()).map_err(|error|ToolError::Message(error.to_string()))?;
+            }
+            Ok(ToolResult{content:vec![ToolContent::text(text)],details:Some(serde_json::to_value(details)?)})
+        })
+    }));
+    tool.label="Todo".into(); tool.execution_mode=Some(ToolExecutionMode::Sequential);
+    tool.prompt_snippet=Some("Track phased tasks with one op-based todo tool; reference tasks by their exact content.".into());
+    tool.prompt_guidelines=Some(vec!["Use one todo operation at a time; batch it with the real work rather than making a solo todo turn.".into(),"Reference tasks and phases by their exact content/name; use view when the text is uncertain.".into(),"Mark work done immediately and use drop for tasks that are no longer needed.".into()]); tool
+}
 pub fn parameters()->serde_json::Value {
     serde_json::json!({"type":"object","properties":{
         "op":{"anyOf":[{"const":"init","type":"string"},{"const":"start","type":"string"},{"const":"done","type":"string"},{"const":"rm","type":"string"},{"const":"drop","type":"string"},{"const":"append","type":"string"},{"const":"view","type":"string"}],"description":"Operation to perform. Required — always pass it explicitly."},
@@ -57,6 +84,51 @@ pub fn render_call_label(params:&TodoOpEntry)->String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[derive(Default)]
+    struct ExecutionFixture { phases:std::sync::Mutex<Vec<crate::todo_types::TodoPhase>>,events:std::sync::Mutex<Vec<&'static str>>,entries:std::sync::Mutex<Vec<serde_json::Value>>,fail_append:bool }
+    impl TodoAccessors for ExecutionFixture {
+        fn get_current_phases(&self)->Vec<crate::todo_types::TodoPhase> { self.phases.lock().unwrap().clone() }
+        fn set_current_phases(&self,phases:Vec<crate::todo_types::TodoPhase>) { self.events.lock().unwrap().push("set"); *self.phases.lock().unwrap()=phases; }
+        fn sync_widget(&self,_ctx:&dyn maho_tools::definition::ToolContext,_completed:&[crate::todo_types::TodoCompletionTransition])->Result<(),maho_ext_api::ExtensionFailure> { self.events.lock().unwrap().push("widget"); Ok(()) }
+    }
+    impl maho_ext_api::ExtensionActions for ExecutionFixture {
+        fn send_message(&self,_message:maho_ext_api::CustomMessage,_options:maho_ext_api::SendMessageOptions)->Result<(),maho_ext_api::ExtensionFailure> { panic!("not used") }
+        fn send_user_message(&self,_content:maho_ext_api::UserMessageContent,_options:maho_ext_api::SendUserMessageOptions)->Result<(),maho_ext_api::ExtensionFailure> { panic!("not used") }
+        fn append_entry(&self,kind:&str,data:Option<serde_json::Value>)->Result<(),maho_ext_api::ExtensionFailure> { assert_eq!(kind,crate::todo_types::TODO_STATE_ENTRY_TYPE); if self.fail_append { return Err(maho_ext_api::ExtensionFailure::new("append failed")); } self.events.lock().unwrap().push("append"); self.entries.lock().unwrap().push(data.unwrap()); Ok(()) }
+        fn get_all_tools(&self)->Result<Vec<maho_ext_api::ToolInfo>,maho_ext_api::ExtensionFailure> { panic!("not used") }
+    }
+    struct Context { persisted:bool }
+    impl maho_ext_api::ToolSessionManager for Context {
+        fn session_id(&self)->&str { "test" }
+        fn session_file(&self)->Option<&std::path::Path> { self.persisted.then(||std::path::Path::new("/session.jsonl")) }
+    }
+    impl maho_ext_api::ToolContext for Context {
+        fn cwd(&self)->&std::path::Path { std::path::Path::new("/tmp") }
+        fn model(&self)->Option<&maho_ext_api::Model> { None }
+        fn thinking_level(&self)->Option<maho_ext_api::ThinkingLevel> { None }
+        fn session_manager(&self)->&dyn maho_ext_api::ToolSessionManager { self }
+        fn goal_store_file(&self)->Option<&std::path::Path> { None }
+    }
+    #[tokio::test] async fn native_execution_persists_before_state_and_widget() {
+        let fixture=std::sync::Arc::new(ExecutionFixture::default()); let tool=create_todo_tool(fixture.clone(),fixture.clone());
+        let result=(tool.execute)(maho_ext_api::ToolCall{id:"todo",params:serde_json::json!({"op":"init","items":["Work"]}),signal:Default::default(),on_update:None,context:Some(&Context{persisted:true})}).await.unwrap();
+        assert_eq!(*fixture.events.lock().unwrap(),["append","set","widget"]);
+        assert_eq!(fixture.entries.lock().unwrap()[0]["schema"],"v2");
+        assert_eq!(result.details.as_ref().unwrap()["storage"],"session");
+        assert_eq!(fixture.get_current_phases()[0].tasks[0].status,crate::todo_types::TodoStatus::InProgress);
+    }
+    #[tokio::test] async fn native_view_and_invalid_operations_do_not_mutate() {
+        let fixture=std::sync::Arc::new(ExecutionFixture::default()); let tool=create_todo_tool(fixture.clone(),fixture.clone());
+        let viewed=(tool.execute)(maho_ext_api::ToolCall{id:"view",params:serde_json::json!({"op":"view"}),signal:Default::default(),on_update:None,context:Some(&Context{persisted:false})}).await.unwrap();
+        assert_eq!(viewed.details.unwrap()["storage"],"memory");
+        assert!((tool.execute)(maho_ext_api::ToolCall{id:"invalid",params:serde_json::json!({"op":"done","task":"unknown"}),signal:Default::default(),on_update:None,context:Some(&Context{persisted:false})}).await.is_err());
+        assert!(fixture.events.lock().unwrap().is_empty());
+    }
+    #[tokio::test] async fn failed_persistence_does_not_change_current_state() {
+        let fixture=std::sync::Arc::new(ExecutionFixture{fail_append:true,..Default::default()}); let tool=create_todo_tool(fixture.clone(),fixture.clone());
+        assert!((tool.execute)(maho_ext_api::ToolCall{id:"todo",params:serde_json::json!({"op":"init","items":["Work"]}),signal:Default::default(),on_update:None,context:Some(&Context{persisted:true})}).await.is_err());
+        assert!(fixture.get_current_phases().is_empty()); assert!(fixture.events.lock().unwrap().is_empty());
+    }
     #[test] fn touched_phases_include_active_completed_and_exact_target() {
         use crate::todo_types::{TodoPhase,TodoItem,TodoStatus,TodoCompletionTransition};
         let phases:Vec<_>=[("Active",TodoStatus::InProgress),("Closed",TodoStatus::Completed),("Target",TodoStatus::Pending)].into_iter().map(|(name,status)|TodoPhase{name:name.into(),tasks:vec![TodoItem{content:name.into(),status}]}).collect();
