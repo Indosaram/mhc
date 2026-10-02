@@ -91,6 +91,12 @@ pub fn create_todo_snapshot(context: &ExtensionContext) -> Value {
 pub fn capture_todo_snapshot(api: &ExtensionApi, context: &ExtensionContext) -> Result<(), ExtensionFailure> {
     api.append_entry(TODO_SNAPSHOT_CUSTOM_TYPE, Some(create_todo_snapshot(context)))
 }
+pub fn capture_legacy_todo_snapshot(api: &ExtensionApi, todos: &Value) -> Result<(), ExtensionFailure> {
+    api.append_entry(TODO_SNAPSHOT_CUSTOM_TYPE, Some(json!({"schema":TODO_SNAPSHOT_SCHEMA,"todos":todos,"capturedAt":chrono::Utc::now().timestamp_millis()})))
+}
+pub fn restore_legacy_todos_if_missing(snapshot: &[Value], current: &[Value]) -> (bool, Vec<Value>) {
+    if !current.is_empty() { (false, current.to_vec()) } else { (!snapshot.is_empty(), snapshot.to_vec()) }
+}
 pub fn restore_todos_if_missing(api: &ExtensionApi, context: &ExtensionContext) -> Result<(), ExtensionFailure> {
     let entries = crate::speculative::branch_values(context);
     if !latest_phases(&entries).is_empty() { return Ok(()); }

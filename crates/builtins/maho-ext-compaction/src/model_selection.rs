@@ -19,3 +19,22 @@ pub fn handle_compaction_model_select(input:ModelSelectionInput<'_>,mut invalida
     let geometry=resolve_compaction_geometry(window as f64,input.settings,input.state.last_yield);
     if should_start_speculative_compaction(input.usage_tokens,window as f64,input.settings,input.state.last_yield,Some(geometry.lead_tokens)) {start();}
 }
+
+pub fn handle_live_compaction_model_select(
+    event: &maho_ext_api::ModelSelectEvent,
+    context: &maho_ext_api::ExtensionContext,
+    state: &CompactionExtensionState,
+    speculative: Option<&crate::speculative::SpeculativeCompactionSnapshot>,
+    settings: &CompactionSettings,
+    lane_owns_compaction: bool,
+    callbacks: (impl FnMut(), impl FnMut()),
+) -> Result<(), maho_ext_api::ExtensionFailure> {
+    let breaker_tripped = crate::circuit_breaker::is_tripped(state,chrono::Utc::now().timestamp_millis() as f64);
+    let shrank = event.previous_model.as_ref().map_or(0,|model|model.context_window) > context.model.as_ref().map_or(0,|model|model.context_window);
+    let usage_tokens = if lane_owns_compaction || breaker_tripped || !shrank { None } else { context.get_context_usage()?.and_then(|usage|usage.tokens).map(|tokens|tokens as f64) };
+    handle_compaction_model_select(ModelSelectionInput {
+        previous_model: event.previous_model.as_ref(), selected_model: context.model.as_ref(), speculative_model: speculative.map(|snapshot|&snapshot.model),
+        state, lane_owns_compaction, breaker_tripped, usage_tokens, settings,
+    },callbacks.0,callbacks.1);
+    Ok(())
+}

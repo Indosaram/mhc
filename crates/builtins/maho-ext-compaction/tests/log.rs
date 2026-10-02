@@ -3,6 +3,19 @@ use maho_ext_compaction::log::{CompactionLogger, format_line};
 use serde_json::{Value, json};
 
 #[test]
+fn javascript_log_graph_preserves_coercions_and_shared_identity() {
+    use maho_ext_compaction::log::{LogValue, safe_graph_value};
+    let values = vec![LogValue::Object(vec![("tokens".into(),1),("origin".into(),2),("reason".into(),3),("count".into(),4)]),
+        LogValue::BigInt("9007199254740993".into()), LogValue::Array(vec![5,6,7,2,0]), LogValue::Undefined,
+        LogValue::Json(json!(42)), LogValue::Symbol("Symbol(route)".into()), LogValue::Function("function route() {}".into()), LogValue::Undefined];
+    assert_eq!(safe_graph_value(&values,0),Some(json!({"tokens":"9007199254740993","count":42,"origin":["Symbol(route)","function route() {}",null,"[Circular]","[Circular]"]})));
+    let line = maho_ext_compaction::log::format_graph_line("fixed", "debug", "idle_trigger", &values, &[("origin".into(),0),("reason".into(),0)]);
+    let parsed: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(parsed["origin"], parsed["reason"]);
+    assert!(parsed["origin"].is_object());
+}
+
+#[test]
 fn allowlist_removes_nested_sensitive_fields() {
     let data = json!({"tokens":42,"secret":"credential","origin":{"route":"local","secret":"credential"}});
     let line = format_line("2026-10-01T00:00:00.000Z", "debug", "idle_trigger", data.as_object());

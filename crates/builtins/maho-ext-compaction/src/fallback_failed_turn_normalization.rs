@@ -1,9 +1,14 @@
-use maho_ai::{types::Message, utils::drop_failed_assistant_turns::drop_failed_assistant_turns};
+use maho_ai::types::Message;
 
 pub fn mark_failed_turn_fragments(messages: &[Message]) -> Vec<bool> {
-    let retained = drop_failed_assistant_turns(messages);
-    let mut next = retained.iter().peekable();
+    let retained = maho_ai::utils::drop_failed_assistant_turns::drop_failed_assistant_turns(messages);
+    let mut next = 0;
     messages.iter().map(|message| {
-        if next.peek().is_some_and(|kept| *kept == message) { next.next(); false } else { true }
+        if retained.get(next) == Some(message) {
+            next += 1;
+            false
+        } else {
+            true
+        }
     }).collect()
 }
