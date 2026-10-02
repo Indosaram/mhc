@@ -3,6 +3,10 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 
 pub fn digest_file_handle(handle: &mut File) -> io::Result<String> {
+    digest_file_handle_with_signal(handle,None)
+}
+pub fn digest_file_handle_with_signal(handle: &mut File, signal:Option<&maho_tools::definition::AbortSignal>) -> io::Result<String> {
+    if signal.is_some_and(maho_tools::definition::AbortSignal::is_aborted) {return Err(io::Error::other("file monitor registration cancelled"));}
     const SAMPLE_SIZE: usize = 64 * 1024;
     let size = handle.metadata()?.len();
     let mut hash = Sha256::new();
@@ -30,6 +34,11 @@ pub fn digest_file_handle(handle: &mut File) -> io::Result<String> {
 mod tests {
     use super::*;
     use std::io::Write;
+    #[test]
+    fn cancelled_registration_does_not_read_file()->io::Result<()> {
+        let signal=maho_tools::definition::AbortSignal::default();signal.abort();let mut file=tempfile::tempfile()?;file.write_all(b"unchanged")?;let position=file.stream_position()?;
+        assert_eq!(digest_file_handle_with_signal(&mut file,Some(&signal)).unwrap_err().to_string(),"file monitor registration cancelled");assert_eq!(file.stream_position()?,position);Ok(())
+    }
 
     #[test]
     fn empty_digest_and_small_file() -> io::Result<()> {
