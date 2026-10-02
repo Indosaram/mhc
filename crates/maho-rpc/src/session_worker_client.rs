@@ -24,6 +24,12 @@ pub fn receive_reservation(message:crate::session_worker_protocol::SessionWorker
 pub fn commit_output_activity(snapshot:&mut Option<WorkerSnapshot>,replacement:Option<WorkerSnapshot>,busy:bool,handoff_busy:Option<bool>,streaming:bool){
     if let Some(replacement)=replacement{*snapshot=Some(replacement);}else if let Some(snapshot)=snapshot{snapshot.busy=busy;snapshot.handoff_busy=handoff_busy;snapshot.streaming=streaming;snapshot.state["isStreaming"]=streaming.into();}
 }
+pub fn receive_snapshot(snapshot:&mut Option<WorkerSnapshot>,replacement:WorkerSnapshot,signal:&crate::session_worker_signals::WorkerSignal,settled:bool,reconcile:impl FnOnce(&[String]),notify_settled:impl FnOnce()){
+    *snapshot=Some(replacement);
+    reconcile(&snapshot.as_ref().expect("committed snapshot").live_session_paths);
+    signal.acknowledge(true);
+    if settled{notify_settled();}
+}
 #[cfg(test)]mod tests{
     use super::*;fn display(revision:f64)->WorkerControl{WorkerControl::Display(WorkerDisplay{revision,width:80.,rendered:false,capabilities:vec![]})}
     #[test]fn output_activity_updates_identity_before_publication_without_creating_runtime(){let mut snapshot=None;commit_output_activity(&mut snapshot,None,true,Some(true),true);assert!(snapshot.is_none());let replacement=WorkerSnapshot{state:serde_json::json!({"sessionId":"durable","isStreaming":false}),session_path:Some("/session".into()),live_session_paths:vec!["/session".into()],busy:false,handoff_busy:Some(false),streaming:false};commit_output_activity(&mut snapshot,Some(replacement),true,Some(true),true);assert!(!snapshot.as_ref().unwrap().busy);commit_output_activity(&mut snapshot,None,true,Some(true),true);let snapshot=snapshot.unwrap();assert_eq!(snapshot.state["sessionId"],"durable");assert_eq!(snapshot.state["isStreaming"],true);assert!(snapshot.busy);assert_eq!(snapshot.session_path.as_deref(),Some("/session"));}
