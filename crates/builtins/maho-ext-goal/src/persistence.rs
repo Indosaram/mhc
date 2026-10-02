@@ -66,7 +66,10 @@ pub fn parse_goal_file(raw: &str, legacy: bool) -> Result<GoalFile, GoalError> {
     let goal = serde_json::from_value(value).map_err(|error| GoalError::InvalidStore(error.to_string()))?;
     Ok(GoalFile { version: 1, goal: Some(goal) })
 }
-fn contents(goal: Option<&Goal>) -> Result<String, GoalError> { serde_json::to_string_pretty(&GoalFile { version: 1, goal: goal.cloned() }).map(|text| format!("{text}\n")).map_err(|error| GoalError::Json(error.to_string())) }
+fn contents(goal: Option<&Goal>) -> Result<String, GoalError> {
+    let value=serde_json::to_value(GoalFile { version:1,goal:goal.cloned() }).map_err(|error|GoalError::Json(error.to_string()))?;
+    Ok(format!("{}\n",maho_ai::utils::js::json_stringify_pretty(&value)))
+}
 fn write_private(path: &Path, contents: &str, exclusive: bool) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut options = fs::OpenOptions::new(); options.write(true).mode(0o600);
@@ -124,6 +127,11 @@ pub fn migrate_legacy_goal_file(reference: &GoalStoreRef, standalone_agent_dir: 
     use super::*;
     fn raw() -> String { serde_json::json!({"version":1,"goal":{"id":"g","threadId":"t","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":1,"updatedAt":1}}).to_string() }
     #[test] fn valid_record_roundtrips() { let input = raw(); let result = parse_goal_file(&input, false).unwrap(); assert_eq!(result.goal.unwrap().id, "g"); }
+    #[test] fn saved_integral_elapsed_uses_javascript_json_number_spelling() {
+        let mut goal=parse_goal_file(&raw(),false).unwrap().goal.unwrap(); goal.time_used_seconds=3.0;
+        let text=contents(Some(&goal)).unwrap(); assert!(text.contains("\"timeUsedSeconds\": 3,")); assert!(!text.contains("3.0")); assert!(text.ends_with('\n'));
+        assert_eq!(parse_goal_file(&text,false).unwrap().goal,Some(goal));
+    }
     #[test] fn integral_floating_json_numbers_match_javascript_validation() {
         let input=r#"{"version":1.0,"goal":{"id":"g","threadId":"t","objective":"work","status":"blocked","tokensUsed":2.0,"timeUsedSeconds":3.0,"createdAt":1.0,"updatedAt":2e0,"blockedReason":"waiting","blockedAt":2.0,"consecutiveContinuations":4.0,"unattendedContinuations":5.0,"tokenBudget":6.0}}"#;
         let goal=parse_goal_file(input,false).unwrap().goal.unwrap();

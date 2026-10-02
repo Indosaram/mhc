@@ -100,6 +100,24 @@ impl GoalRuntime {
 fn failure(error:crate::errors::GoalError)->ExtensionFailure { ExtensionFailure::new(error.to_string()) }
 #[cfg(test)] mod tests {
     use super::*;
+    fn assistant_usage(input:u64,output:u64)->maho_agent::types::AgentMessage {
+        serde_json::from_value(serde_json::json!({"role":"assistant","content":[],"api":"faux","provider":"faux","model":"faux","usage":{"input":input,"output":output,"cacheRead":0,"cacheWrite":0,"totalTokens":input+output,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0})).unwrap()
+    }
+    #[tokio::test] async fn upstream_streamed_usage_checkpoints_get_complete_and_blocked_tools() {
+        for status in ["complete","blocked"] {
+            let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+            let runtime=GoalRuntime::new(Arc::new(move |_|stored.clone()),Arc::new(||0.0)); let context=crate::test_context::context();
+            runtime.create(&context,"work").await.unwrap(); runtime.event(&ExtensionEvent::AgentStart,&context).await.unwrap();
+            let first=assistant_usage(100,50); runtime.event(&ExtensionEvent::MessageEnd { message:first.clone() },&context).await.unwrap();
+            assert_eq!(runtime.get(&context).await.unwrap().details.unwrap()["goal"]["tokensUsed"],150.0);
+            let params=if status=="blocked" { serde_json::json!({"status":status,"reason":"waiting"}) } else { serde_json::json!({"status":status}) };
+            assert_eq!(runtime.update(&context,&params,&[]).await.unwrap().details.unwrap()["goal"]["tokensUsed"],150.0);
+            let second=assistant_usage(10,5); runtime.event(&ExtensionEvent::MessageEnd { message:second.clone() },&context).await.unwrap();
+            runtime.event(&ExtensionEvent::AgentEnd { messages:vec![first,second],aborted:Some(false),abort_source:None,will_retry:Some(false) },&context).await.unwrap();
+            assert_eq!(crate::store::read_goal(&reference).unwrap().unwrap().tokens_used,165);
+            assert!(!runtime.state.lock().await.ticker.running());
+        }
+    }
     #[tokio::test] async fn registered_command_uses_owned_accounting_and_refresh_before_queue() {
         use maho_ext_api::*;
         let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();

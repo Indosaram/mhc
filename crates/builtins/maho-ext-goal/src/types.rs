@@ -56,11 +56,11 @@ pub struct GoalUpdate { pub objective: Option<String>, pub status: Option<GoalSt
 #[serde(rename_all = "camelCase")]
 pub struct GoalToolSnapshot {
     pub thread_id: String, pub objective: String, pub status: GoalStatus,
-    pub tokens_used: u64, pub time_used_seconds: f64, pub created_at: u64, pub updated_at: u64,
+    pub tokens_used: f64, pub time_used_seconds: f64, pub created_at: f64, pub updated_at: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub blocked_at: Option<u64>,
+    pub blocked_at: Option<f64>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GoalToolResponse { pub goal: Option<GoalToolSnapshot> }

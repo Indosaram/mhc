@@ -23,10 +23,10 @@ pub fn parse_render_details(value:&Value)->Option<GoalToolRenderDetails> {
     Some(GoalToolRenderDetails { goal:Some(GoalToolSnapshot {
         thread_id:goal.get("threadId").and_then(Value::as_str).unwrap_or("").into(),
         objective:goal.get("objective")?.as_str()?.into(),status,
-        tokens_used:goal.get("tokensUsed")?.as_u64()?,time_used_seconds:goal.get("timeUsedSeconds")?.as_f64()?,
-        created_at:goal.get("createdAt")?.as_u64()?,updated_at:goal.get("updatedAt")?.as_u64()?,
+        tokens_used:goal.get("tokensUsed")?.as_f64()?,time_used_seconds:goal.get("timeUsedSeconds")?.as_f64()?,
+        created_at:goal.get("createdAt")?.as_f64()?,updated_at:goal.get("updatedAt")?.as_f64()?,
         blocked_reason:goal.get("blockedReason").and_then(Value::as_str).map(str::to_owned),
-        blocked_at:goal.get("blockedAt").and_then(Value::as_u64),
+        blocked_at:goal.get("blockedAt").and_then(Value::as_f64),
     }),notice })
 }
 pub fn resolve_render_details(details:Option<&Value>,text:&str)->Option<GoalToolRenderDetails> {
@@ -47,4 +47,8 @@ pub fn resolve_render_details(details:Option<&Value>,text:&str)->Option<GoalTool
         assert!(result.goal.is_none());
     }
     #[test] fn non_json_response_does_not_make_widget_details() { assert!(resolve_render_details(None,"plain output").is_none()); }
+    #[test] fn snapshot_accepts_numeric_fractional_and_negative_fields_like_upstream() {
+        let result=parse_render_details(&serde_json::json!({"goal":{"objective":"work","status":"active","tokensUsed":1.5,"timeUsedSeconds":-2.5,"createdAt":-1.0,"updatedAt":2.5}})).unwrap().goal.unwrap();
+        assert_eq!(result.tokens_used,1.5); assert_eq!(result.created_at,-1.0); assert_eq!(result.updated_at,2.5);
+    }
 }
