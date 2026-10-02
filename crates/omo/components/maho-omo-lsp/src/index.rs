@@ -56,6 +56,25 @@ mod tests {
     use super::*;
     use maho_ext_api::{EventBus,ExtensionRuntime,ExtensionSessionProfile,LoadedExtension,SourceInfo};
     fn api()->ExtensionApi {ExtensionApi::new(LoadedExtension::new("lsp",PathBuf::from("/workspace"),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default())}
+    #[test]
+    fn adapter_has_no_vendored_engine_or_project_trust_override() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for module in ["client_wrapper", "client", "connection", "directory_diagnostics", "errors", "infer_extension", "inspector", "manager_default", "manager_lifecycle", "manager_types", "manager_wait", "manager", "process", "server_installation", "server_resolution", "transport", "workspace_edit"] {
+            assert!(!root.join("src").join(format!("{module}.rs")).exists());
+        }
+        let forbidden = [["vscode", "jsonrpc"].join("-"), ["OMO", "SENPI", "TRUST", "PROJECT", "LSP", "COMMANDS"].join("_"), ["SENPI", "TRUST", "PROJECT", "LSP", "COMMANDS"].join("_")];
+        let mut directories = vec![root.join("src")];
+        while let Some(directory) = directories.pop() {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() { directories.push(path); }
+                else if path.extension().is_some_and(|extension| extension == "rs") {
+                    let source = std::fs::read_to_string(path).unwrap();
+                    assert!(forbidden.iter().all(|pattern| !source.contains(pattern)));
+                }
+            }
+        }
+    }
     #[test] fn descriptor_fields_preserved() {let mut a=api();LspComponent.register(&mut a);let expected=descriptors();for (tool,legacy) in a.registered.tools.iter().zip(expected) {assert_eq!(tool.definition.parameters,legacy.parameters);assert_eq!(tool.definition.label,legacy.label);assert_eq!(tool.definition.execution_mode,legacy.execution_mode);assert!(!Arc::ptr_eq(&tool.definition.execute,&legacy.execute));}}
     #[test] fn exact_six_tools() {let mut a=api();LspComponent.register(&mut a);assert_eq!(a.registered.tools.len(),6);}
     #[test] fn disabled_tools_register_flags_only() {let mut a=api();a.runtime.set_flag(TOOLS_FLAG,FlagValue::Boolean(false));LspComponent.register(&mut a);assert!(a.registered.tools.is_empty());assert_eq!(a.registered.flags.len(),2);}

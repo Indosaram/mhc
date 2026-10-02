@@ -27,7 +27,9 @@ impl maho_ext_api::Extension for InitDeepAdvisorComponent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test] fn ui_and_disabled_gates() {let (t,_)=crate::git_helpers::tests::repo();assert!(advisor_preflight(false,false,t.path(),t.path(),Some(1.0),2.0).unwrap().is_none());assert!(advisor_preflight(true,true,t.path(),t.path(),Some(1.0),2.0).unwrap().is_none());}
-    #[test] fn onboarding_must_predate_process() {let (t,_)=crate::git_helpers::tests::repo();for marker in [None,Some(2.0),Some(3.0)] {assert!(advisor_preflight(true,false,t.path(),t.path(),marker,2.0).unwrap().is_none());}let p=advisor_preflight(true,false,t.path(),t.path(),Some(1.0),2.0).unwrap().unwrap();assert_eq!(p.root,t.path());assert_eq!(p.state_dir,t.path().join("init-deep-advisor-state"));}
+    #[test] fn non_ui_gate_preserves_state() {let (t,_)=crate::git_helpers::tests::repo();assert!(advisor_preflight(false,false,t.path(),t.path(),Some(1.0),2.0).unwrap().is_none());assert!(!t.path().join("init-deep-advisor-state").exists());}
+    #[test] fn disabled_gate_preserves_state() {let (t,_)=crate::git_helpers::tests::repo();assert!(advisor_preflight(true,true,t.path(),t.path(),Some(1.0),2.0).unwrap().is_none());assert!(!t.path().join("init-deep-advisor-state").exists());}
+    #[test] fn missing_onboarding_marker_suppresses() {let (t,_)=crate::git_helpers::tests::repo();assert!(advisor_preflight(true,false,t.path(),t.path(),None,2.0).unwrap().is_none());}
+    #[test] fn onboarding_must_predate_process() {let (t,_)=crate::git_helpers::tests::repo();for marker in [Some(2.0),Some(3.0)] {assert!(advisor_preflight(true,false,t.path(),t.path(),marker,2.0).unwrap().is_none());}let p=advisor_preflight(true,false,t.path(),t.path(),Some(1.0),2.0).unwrap().unwrap();assert_eq!(p.root,t.path());assert_eq!(p.state_dir,t.path().join("init-deep-advisor-state"));}
     #[test] fn nonrepo_skips() {let t=tempfile::tempdir().unwrap();assert!(advisor_preflight(true,false,t.path(),t.path(),Some(1.0),2.0).unwrap().is_none());}
 }
