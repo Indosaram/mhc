@@ -48,6 +48,12 @@ impl FileMonitor {
 mod tests {
     use super::*;
     #[test]
+    fn parent_symlink_retargeting_is_rejected_before_reading_target()->std::io::Result<()> {
+        let dir=tempfile::tempdir()?;let first=dir.path().join("first");let second=dir.path().join("second");std::fs::create_dir(&first)?;std::fs::create_dir(&second)?;std::fs::write(first.join("file"),b"first")?;std::fs::write(second.join("file"),b"second")?;
+        let parent=dir.path().join("parent");std::os::unix::fs::symlink(&first,&parent)?;let mut monitor=FileMonitor::register("watch_1".to_owned(),"watch".to_owned(),&parent.join("file"),FileEvent::Modify,Some(&first))?;let saved=monitor.checkpoint.clone();
+        std::fs::remove_file(&parent)?;std::os::unix::fs::symlink(&second,&parent)?;assert!(monitor.check().unwrap_err().to_string().contains("monitored parent changed"));assert_eq!(monitor.checkpoint,saved);assert!(!monitor.settled);Ok(())
+    }
+    #[test]
     fn create_watch_keeps_original_identity_until_absent_to_present()->std::io::Result<()> {
         let dir=tempfile::tempdir()?;let path=dir.path().join("watch");let replacement=dir.path().join("replacement");std::fs::write(&path,b"old")?;
         let mut monitor=FileMonitor::register("watch_1".to_owned(),"watch".to_owned(),&path,FileEvent::Create,None)?;let identity=monitor.identity;
