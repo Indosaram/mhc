@@ -14,3 +14,28 @@ fn empty_isolated_home_has_no_migrations() -> Result<(),std::io::Error> {
     let result=run_senpi_startup_migration(&project.to_string_lossy(),&env,&home);
     assert!(result.error.is_none()); assert!(result.migrated_from.is_empty()); Ok(())
 }
+
+#[test]
+fn conflicting_legacy_model_keeps_target_and_records_diagnostic() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    let project = home.join("project");
+    std::fs::create_dir_all(&project)?;
+    std::fs::create_dir_all(home.join(".config/opencode"))?;
+    std::fs::create_dir_all(home.join(".maho"))?;
+    std::fs::write(home.join(".config/opencode/oh-my-openagent.jsonc"),
+        r#"{"agents":{"finder":{"model":"provider/legacy"}}}"#)?;
+    std::fs::write(home.join(".maho/omo.jsonc"),
+        r#"{"[opencode]":{"agents":{"finder":{"model":"provider/kept"}}}}"#)?;
+    let env = std::collections::BTreeMap::from([("HOME".into(), home.to_string_lossy().into_owned())]);
+    let result = run_senpi_startup_migration(&project.to_string_lossy(), &env, &home.to_string_lossy());
+    assert!(result.error.is_none(), "{:?}", result.error);
+    assert!(!result.migrated_from.is_empty());
+    assert!(result.results.iter().any(|result| !result.diagnostics.is_empty()));
+    let loaded = omo_config_core::load_omo_config(&omo_config_core::LoadOmoConfigOptions {
+        cwd: Some(project.to_string_lossy().into_owned()), env: Some(env), harness: Some("opencode".into()),
+        ..Default::default()
+    });
+    assert_eq!(loaded.config["agents"]["finder"]["model"], "provider/kept");
+    Ok(())
+}

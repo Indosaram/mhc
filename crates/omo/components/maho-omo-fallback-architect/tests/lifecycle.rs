@@ -133,3 +133,51 @@ fn notice_renderer_truncates_each_line_without_wrapping_or_padding() {
         assert_eq!(component.render(width), reference.render(width), "width {width}");
     }
 }
+
+#[tokio::test]
+async fn provider_policy_rejection_arms_fallback() -> Result<(), serde_json::Error> {
+    let (api, actions) = register(true);
+    let message = serde_json::from_value(serde_json::json!({
+        "role":"assistant", "api":"faux", "provider":"anthropic", "model":"claude-fable-5",
+        "content":[],"timestamp":0,"stopReason":"error",
+        "usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,
+            "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},
+        "errorMessage":"This request triggered restrictions on request content and was blocked under Anthropic's Usage Policy."
+    }))?;
+    dispatch(&api, ExtensionEvent::MessageEnd { message }).await;
+    dispatch(&api, selection(ModelSelectSource::Fallback)).await;
+    assert_eq!(actions.0.lock().expect("messages").len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn aborted_refusal_details_do_not_arm() {
+    let (api, actions) = register(true);
+    let mut event = refusal();
+    let ExtensionEvent::MessageEnd { message } = &mut event else { panic!("message") };
+    let mut value = serde_json::to_value(&message).expect("serialized message");
+    value["stopReason"] = serde_json::json!("aborted");
+    *message = serde_json::from_value(value).expect("aborted message");
+    dispatch(&api, event).await;
+    dispatch(&api, selection(ModelSelectSource::Fallback)).await;
+    assert!(actions.0.lock().expect("messages").is_empty());
+}
+
+#[tokio::test]
+async fn manual_fallback_model_selection_does_not_arm() {
+    let (api, actions) = register(true);
+    dispatch(&api, refusal()).await;
+    dispatch(&api, selection(ModelSelectSource::Set)).await;
+    assert!(actions.0.lock().expect("messages").is_empty());
+}
+
+#[tokio::test]
+async fn missing_previous_model_does_not_arm() {
+    let (api, actions) = register(true);
+    dispatch(&api, refusal()).await;
+    let mut event = selection(ModelSelectSource::Fallback);
+    let ExtensionEvent::ModelSelect(selected) = &mut event else { panic!("selection") };
+    selected.previous_model = None;
+    dispatch(&api, event).await;
+    assert!(actions.0.lock().expect("messages").is_empty());
+}

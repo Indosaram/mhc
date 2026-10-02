@@ -38,3 +38,22 @@ fn expands_catalog_and_inherits_attributes() -> Result<(), std::io::Error> {
     assert_eq!(result.config["agents"]["finder"], json!({"model":"provider/fast","models":[{"model":"provider/fast","reasoning":"low"}],"reasoning":"low"}));
     Ok(())
 }
+
+#[test]
+fn malformed_config_reports_diagnostic_without_panicking() -> Result<(), std::io::Error> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    let project = home.join("project");
+    std::fs::create_dir_all(project.join(".omo"))?;
+    let config = project.join(".omo/omo.jsonc");
+    std::fs::write(&config, "{\"task\":")?;
+    let result = load_senpi_omo_config(LoadOmoConfigOptions {
+        cwd: Some(project.to_string_lossy().into_owned()),
+        env: Some(std::collections::BTreeMap::from([("HOME".into(), home.to_string_lossy().into_owned())])),
+        platform: Some("linux".into()), ..Default::default()
+    });
+    assert!(result.diagnostics.iter().any(|diagnostic| matches!(diagnostic,
+        maho_omo_config_resolution::SenpiConfigDiagnostic::Config(diagnostic)
+            if diagnostic.kind == "parse" && diagnostic.path == config.to_string_lossy())));
+    Ok(())
+}

@@ -18,3 +18,36 @@ use maho_omo_ultrawork::*;
 #[test] fn classification_stages() { for (snapshot,stage) in [(ArmingSnapshot::default(),"first_arm"),(ArmingSnapshot{was_armed:true,compact_rearm_pending:false},"remention"),(ArmingSnapshot{was_armed:false,compact_rearm_pending:true},"post_compact_rearm")] { assert_eq!(classify_ultrawork_input("ulw",maho_ext_api::InputSource::Interactive,snapshot).stage,stage); } }
 #[test] fn classification_routes() { for (text,route,effective) in [("ulw","direct",true),("/skill:frontend ulw polish","skill_args",true),("/skill:myulw run it","none",false),("/skill:ultrawork fix it","skill_expansion",false),("<ultrawork-mode>rules</ultrawork-mode> ulw","embedded_directive",false)] { let c=classify_ultrawork_input(text,maho_ext_api::InputSource::Interactive,ArmingSnapshot::default());assert_eq!(c.route,route);assert_eq!(c.effective,effective); } }
 #[test] fn classification_extension_suppressed() { assert_eq!(classify_ultrawork_input("ulw",maho_ext_api::InputSource::Extension,ArmingSnapshot::default()).suppression_reason,"extension_source"); }
+
+#[test]
+fn classification_fixed_corpus_matches_shipped_detector() {
+    for text in ["", "ulw", "ULW", "ultrawork", "ulw-plan", "ulw-loop", "ulw-research",
+        "ulwultrawork", "ULW ulw Ultrawork", "plan only", "하이ulw", "ulw_helper.ts",
+        "before ultrawork after", "/skill:ultrawork", "/skill:frontend ulw polish", "/skill:myulw run it",
+        "(ulw) [ultrawork] {ulw}", ".*+?^${}()|[]\\ ulw", "울트라워크", "nulw-plan", "ulw--plan", "ulw\nultrawork"] {
+        let classification = classify_ultrawork_input(text, maho_ext_api::InputSource::Interactive, ArmingSnapshot::default());
+        assert_eq!(classification.matched_ulw || classification.matched_ultrawork, is_ultrawork_input(text));
+    }
+    assert!(!is_ultrawork_input(&"x".repeat(100_000)));
+}
+
+#[test]
+fn stale_snapshot_classification_is_pure() {
+    let snapshot = ArmingSnapshot { was_armed: true, compact_rearm_pending: false };
+    let first = classify_ultrawork_input("ULW ulw Ultrawork", maho_ext_api::InputSource::Interactive, snapshot);
+    let second = classify_ultrawork_input("ULW ulw Ultrawork", maho_ext_api::InputSource::Interactive, snapshot);
+    assert_eq!(first, second);
+    assert_eq!(first.stage, "remention");
+    assert_eq!(first.occurrence_count, 3);
+}
+
+#[test]
+fn shared_snapshot_reads_leave_compact_pending_unchanged() {
+    let id = "task-42-snapshot-read-only";
+    let ledger = shared_session_arming();
+    ledger.lock().expect("ledger").rearm_on_compact(Some(id));
+    for _ in 0..3 {
+        assert_eq!(arming_snapshot(Some(id)), ArmingSnapshot { was_armed: false, compact_rearm_pending: true });
+    }
+    assert!(ledger.lock().expect("ledger").is_compact_rearm_pending(Some(id)));
+}

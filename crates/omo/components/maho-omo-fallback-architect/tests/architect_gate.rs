@@ -14,6 +14,10 @@ impl ModelRegistry for Registry {
  let model:Model=serde_json::from_value(serde_json::json!({"id":"claude-fable-5","name":"Fable","api":"anthropic-messages","provider":"anthropic","baseUrl":"http://localhost","reasoning":true,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":1000,"maxTokens":100}))?;
  let registry=Registry(vec![model]);assert!(has_active_architect_category_with_env(&project,Some(env.clone()),Some(&registry)));
  assert!(!has_active_architect_category_with_env(&project,Some(env.clone()),Some(&Registry(vec![]))));
+ std::fs::write(project.join(".omo/omo.json"),r#"{"categories":{"quick":{"model":"some/model"}}}"#)?;
+ assert!(has_active_architect_category_with_env(&project,Some(env.clone()),Some(&registry)));
+ let mut unrelated = registry.0[0].clone(); unrelated.provider="omo-mock".into(); unrelated.id="mock-weak".into();
+ assert!(!has_active_architect_category_with_env(&project,Some(env.clone()),Some(&Registry(vec![unrelated]))));
  std::fs::write(project.join(".omo/omo.json"),r#"{"categories":{"architect":{"disable":true}}}"#)?;
  assert!(!has_active_architect_category_with_env(&project,Some(env),Some(&registry)));Ok(())
 }

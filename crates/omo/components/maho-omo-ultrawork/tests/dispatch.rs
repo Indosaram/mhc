@@ -78,3 +78,39 @@ async fn lone_open_tag_still_arms() {
     let EventResult::Input(InputEventResult::Transform { text, .. }) = input(&api, prompt, true).await else { panic!("transform") };
     assert_eq!(text, format!("{prompt}\n{}", maho_omo_ultrawork::generated_directive::SENPI_ULTRAWORK_DIRECTIVE));
 }
+
+#[tokio::test]
+async fn re_registration_retains_shared_arming() {
+    let arming = Arc::new(Mutex::new(SessionArming::default()));
+    let mut before = register();
+    before.registered.handlers.clear();
+    UltraworkComponent { arming: arming.clone() }.register(&mut before);
+    input(&before, "ulw first", true).await;
+    let mut after = register();
+    after.registered.handlers.clear();
+    UltraworkComponent { arming }.register(&mut after);
+    let EventResult::Input(InputEventResult::Transform { text, .. }) = input(&after, "ulw resumed", true).await else { panic!("transform") };
+    assert_eq!(text, format!("ulw resumed\n{ULTRAWORK_REMINDER}"));
+}
+
+#[tokio::test]
+async fn accepted_and_rejected_compaction_sequence_keeps_shipped_output() {
+    let api = register();
+    let mut appended = Vec::new();
+    for rejected in [None, None, Some(true), Some(false)] {
+        if let Some(rejected) = rejected {
+            let compact = if rejected { SessionCompactEvent::Rejected { reason: CompactionReason::Manual,
+                request_id: "id".into(), rejection_cause: CompactionRejectionCause::CancelledByExtension }
+            } else { SessionCompactEvent::Accepted { reason: CompactionReason::Manual, request_id: "id".into(),
+                compaction_entry: SessionEntry { id: "entry".into(), parent_id: None, timestamp: String::new(),
+                    kind: "compaction".into(), data: JsonValue::Null }, from_extension: false, will_retry: false } };
+            let mut event = ExtensionEvent::SessionCompact(compact);
+            api.registered.handlers[&EventKind::SessionCompact][0](&mut event, &support::context()).await.expect("dispatch");
+        }
+        let EventResult::Input(InputEventResult::Transform { text, .. }) = input(&api, "ulw", true).await else { panic!("transform") };
+        appended.push(text);
+    }
+    let full = format!("ulw\n{}", maho_omo_ultrawork::generated_directive::SENPI_ULTRAWORK_DIRECTIVE);
+    let reminder = format!("ulw\n{ULTRAWORK_REMINDER}");
+    assert_eq!(appended, [full.clone(), reminder.clone(), reminder, full]);
+}
