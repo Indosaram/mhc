@@ -63,6 +63,15 @@ mod tests {
         let updates=updates.lock().unwrap(); assert_eq!(updates.len(),2); assert_eq!(updates[0].details.as_ref().unwrap()["progress"]["applied"],0); assert_eq!(updates[1].details.as_ref().unwrap()["progress"]["applied"],1);
     }
     #[test] fn wire_variants_select_grammar_only_for_freeform() { assert!(create_apply_patch_tool().freeform.is_some()); assert!(create_apply_patch_tool_variant(crate::types::ApplyPatchWireMode::Json).freeform.is_none()); }
+    #[tokio::test] async fn upstream_raw_and_json_inputs_update_existing_files() {
+        let directory=tempfile::tempdir().unwrap();let context=Context(directory.path().into());let tool=create_apply_patch_tool();
+        for (name,raw) in [("raw.txt",true),("json.txt",false)] {
+            let path=directory.path().join(name);tokio::fs::write(&path,b"before\n").await.unwrap();
+            let input=format!("*** Begin Patch\n*** Update File: {name}\n@@\n-before\n+after\n*** End Patch");let params=if raw {serde_json::Value::String(input)} else {serde_json::json!({"input":input})};
+            let result=(tool.execute)(maho_tools::definition::ToolCall{id:name,params,signal:Default::default(),context:Some(&context),on_update:None}).await.unwrap();
+            assert_eq!(tokio::fs::read(&path).await.unwrap(),b"after\n");let details=result.details.unwrap();assert_eq!(details["result"]["failures"],serde_json::json!([]));assert_eq!(details["result"]["appliedFiles"],serde_json::json!([name]));
+        }
+    }
     #[test] fn retention_is_bounded_by_utf8_bytes() { assert!(retained_patch(Some(&"a".repeat(16*1024))).is_some()); assert!(retained_patch(Some(&"é".repeat(8193))).is_none()); assert!(retained_patch(None).is_none()); }
     #[test] fn empty_application_has_no_preview() { let result=ApplyPatchResult::default(); assert_eq!(applied_preview(&result),None); let (_,details)=execution_result(result); assert!(details.result.is_some()); assert_eq!(details.preview,None); }
 }
