@@ -38,7 +38,25 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     let env = maho_core::config::current_env();
-    let grok = maho_core::brand::env_value("ENABLE_GROK_NEO", &env).is_some_and(|value| matches!(value.trim().to_lowercase().as_str(), "1" | "true" | "yes"));
+    let grok = maho_cli::cli::grok_neo_gate::is_grok_neo_enabled(&env);
+    if let Some(command) = maho_cli::cli::auth_command::parse_auth_command(&argv)? {
+        let parsed = maho_cli::cli::args::parse_args(&command.args, grok)?;
+        maho_cli::cli::auth_command::validate_auth_command_args(&parsed, command.kind)?;
+        return Err("Auth execution blocked: maho-core ModelRuntime check_auth/list_credentials/model-aware get_auth API request (todo 16)".to_owned());
+    }
+    if let Some(command) = maho_cli::package_manager_cli::parse_package_command(&argv) {
+        if let Some(option) = command.invalid_option { return Err(format!("Unknown package option: {option}")); }
+        if let Some(argument) = command.invalid_argument { return Err(format!("Unexpected package argument: {argument}")); }
+        if let Some(option) = command.missing_option_value { return Err(format!("{option} requires a value")); }
+        if let Some(conflict) = command.conflicting_options { return Err(conflict); }
+        return Err("Resource-package execution blocked: maho-core DefaultPackageManager API request (todo 19); native self-update replaced by mhc import-omo".to_owned());
+    }
+    match argv.first().map(String::as_str) {
+        Some("host") => { maho_cli::cli::host_command::parse_host_args(&argv[1..])?; return Err("Host execution blocked by unmerged todo 36 (maho-rpc)".to_owned()); }
+        Some("app-server") => return Err("App-server execution blocked by unmerged todo 37 (maho-server)".to_owned()),
+        Some("config") => return Err("Config TUI execution blocked by unmerged todo 35 and DefaultPackageManager API request (todo 19)".to_owned()),
+        _ => {},
+    }
     let parsed = maho_cli::cli::args::parse_args(&argv, grok)?;
     if parsed.version { println!("{}", maho_core::config::display_version(env!("CARGO_PKG_VERSION"))); return Ok(()); }
     for diagnostic in &parsed.diagnostics { eprintln!("{}: {}", if diagnostic.error { "Error" } else { "Warning" }, diagnostic.message); }

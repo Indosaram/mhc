@@ -8,3 +8,5 @@ pub mod help_flags_cache;
 pub mod file_processor;
 pub mod help_fast_path;
 pub mod host_command;
+pub mod deferred_commands;
+pub mod grok_neo_gate;
