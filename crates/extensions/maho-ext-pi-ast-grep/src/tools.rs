@@ -4,31 +4,14 @@ use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
 
 pub fn tool_with_resolver(replace: bool, resolver: Arc<crate::binary_path::BinaryResolver>) -> ToolDefinition {
-    let mut definition = tool(replace, PathBuf::new());
-    definition.execute = Arc::new(move |call| {
-        let resolver = Arc::clone(&resolver);
-        Box::pin(async move {
-            let language = call.params.get("lang").and_then(Value::as_str).unwrap_or("undefined");
-            if !CLI_LANGUAGES.contains(&language) { return Ok(ToolResult::text(format!("Unsupported language: {language}"))); }
-            let Some(binary) = resolver.resolve().await else {
-                let result = crate::types::SgResult { error: Some("ast-grep (sg) binary not found.\n\nInstall options:\n  npm install -g @ast-grep/cli\n  cargo install ast-grep --locked\n  brew install ast-grep".into()), ..Default::default() };
-                let dry_run = call.params.get("dryRun") != Some(&Value::Bool(false));
-                let text = if replace { format_replace_result(&result, dry_run) } else { format_search_result(&result) };
-                let mut details = serde_json::to_value(result)?;
-                details["pattern"] = call.params["pattern"].clone();
-                details["lang"] = json!(language);
-                details["paths"] = call.params.get("paths").filter(|value| value.as_array().is_some_and(|paths| !paths.is_empty())).cloned().unwrap_or_else(|| json!([call.context.map_or_else(|| ".".to_owned(), |ctx| ctx.cwd().to_string_lossy().into_owned())]));
-                if let Some(globs) = call.params.get("globs") { details["globs"] = globs.clone(); }
-                if replace { details["rewrite"] = call.params["rewrite"].clone(); details["dryRun"] = json!(dry_run); }
-                return Ok(ToolResult { content: vec![ToolContent::text(text)], details: Some(details) });
-            };
-            (tool(replace, binary).execute)(call).await
-        })
-    });
-    definition
+    tool_definition(replace, PathBuf::new(), Some(resolver))
 }
 
 pub fn tool(replace: bool, binary: PathBuf) -> ToolDefinition {
+    tool_definition(replace, binary, None)
+}
+
+fn tool_definition(replace: bool, binary: PathBuf, resolver: Option<Arc<crate::binary_path::BinaryResolver>>) -> ToolDefinition {
     let mut properties = json!({
         "pattern":{"type":"string","description":if replace { "AST pattern to match" } else { "AST pattern with meta-variables ($VAR, $$$). Must be a complete AST node." }},
         "lang":{"type":"string","enum":CLI_LANGUAGES,"description":"Target language"},
@@ -48,6 +31,7 @@ pub fn tool(replace: bool, binary: PathBuf) -> ToolDefinition {
     };
     let mut definition = ToolDefinition::new(name, description, schema, Arc::new(move |call: ToolCall<'_>| {
         let binary = binary.clone();
+        let resolver = resolver.clone();
         Box::pin(async move {
             let language = call.params.get("lang").and_then(Value::as_str).unwrap_or("undefined");
             if !CLI_LANGUAGES.contains(&language) { return Ok(ToolResult::text(format!("Unsupported language: {language}"))); }
@@ -57,7 +41,7 @@ pub fn tool(replace: bool, binary: PathBuf) -> ToolDefinition {
             if paths.is_empty() { paths.push(call.context.map_or_else(|| ".".to_owned(), |ctx| ctx.cwd().to_string_lossy().into_owned())); }
             let dry_run = call.params.get("dryRun") != Some(&Value::Bool(false));
             let options = RunSgOptions { pattern: pattern.clone(), lang: language.to_owned(), paths: paths.clone(), globs: strings("globs"), rewrite: if replace { Some(call.params.get("rewrite").and_then(Value::as_str).unwrap_or_default().to_owned()) } else { None }, context: if replace { None } else { call.params.get("context").and_then(Value::as_f64) }, update_all: replace && !dry_run };
-            let result = run_sg(&options, &binary).await;
+            let result = match resolver { Some(resolver) => crate::cli::run_sg_resolved(&options, &resolver).await, None => run_sg(&options, &binary).await };
             let hint = if !replace && result.matches.is_empty() && result.error.is_none() { get_pattern_hint(&pattern, language) } else { None };
             let mut text = if replace { format_replace_result(&result, dry_run) } else { format_search_result(&result) };
             if let Some(hint) = &hint { text.push_str(&format!("\n\n{hint}")); }

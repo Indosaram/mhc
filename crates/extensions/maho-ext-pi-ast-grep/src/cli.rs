@@ -19,12 +19,41 @@ pub fn build_sg_args(options: &RunSgOptions, include_update_all: bool) -> Vec<St
 }
 
 pub async fn run_sg(options: &RunSgOptions, binary: &std::path::Path) -> crate::types::SgResult {
+    match run_sg_once(options, binary).await {
+        Ok(result) => result,
+        Err(error) => crate::types::SgResult { error: Some(format!("Failed to spawn ast-grep: {error}")), ..Default::default() },
+    }
+}
+
+pub async fn run_sg_resolved(options: &RunSgOptions, resolver: &crate::binary_path::BinaryResolver) -> crate::types::SgResult {
+    let Some(binary) = resolver.resolve().await else { return crate::types::SgResult { error: Some(INSTALL_HINT.into()), ..Default::default() }; };
+    match run_sg_once(options, &binary).await {
+        Ok(result) => result,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound || error.to_string().contains("not found") => {
+            let downloaded = crate::downloader::ensure_ast_grep_binary(&resolver.cache, &resolver.platform_key, &resolver.version, resolver.offline).await;
+            if downloaded.is_some() && let Some(binary) = resolver.resolve().await {
+                    match run_sg_once(options, &binary).await {
+                        Ok(result) => return result,
+                        Err(error) if error.kind() != std::io::ErrorKind::NotFound && !error.to_string().contains("not found") => return crate::types::SgResult { error: Some(format!("Failed to spawn ast-grep: {error}")), ..Default::default() },
+                        Err(_) => {}
+                    }
+            }
+            crate::types::SgResult { error: Some(AUTO_DOWNLOAD_FAILED_HINT.into()), ..Default::default() }
+        }
+        Err(error) => crate::types::SgResult { error: Some(format!("Failed to spawn ast-grep: {error}")), ..Default::default() },
+    }
+}
+
+pub const INSTALL_HINT: &str = "ast-grep (sg) binary not found.\n\nInstall options:\n  npm install -g @ast-grep/cli\n  cargo install ast-grep --locked\n  brew install ast-grep";
+pub const AUTO_DOWNLOAD_FAILED_HINT: &str = "ast-grep CLI binary not found.\n\nAuto-download failed. Manual install options:\n  npm install -g @ast-grep/cli\n  cargo install ast-grep --locked\n  brew install ast-grep";
+
+async fn run_sg_once(options: &RunSgOptions, binary: &std::path::Path) -> Result<crate::types::SgResult, std::io::Error> {
     use crate::{json_output::create_sg_result_from_stdout, types::{SgResult, TruncationReason}};
-    async fn spawn(binary: &std::path::Path, args: &[String]) -> Result<crate::process_timeout::ProcessOutput, String> {
+    async fn spawn(binary: &std::path::Path, args: &[String]) -> Result<crate::process_timeout::ProcessOutput, crate::errors::ProcessError> {
         let mut command = tokio::process::Command::new(binary);
         command.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
-        let child = command.spawn().map_err(|error| error.to_string())?;
-        crate::process_timeout::collect_process_output_with_timeout(child, 300_000).await.map_err(|error| error.to_string())
+        let child = command.spawn().map_err(crate::errors::ProcessError::Spawn)?;
+        crate::process_timeout::collect_process_output_with_timeout(child, 300_000).await
     }
     let separate = options.update_all && options.rewrite.as_ref().is_some_and(|value| !value.is_empty());
     let mut read_options = options.clone();
@@ -32,14 +61,14 @@ pub async fn run_sg(options: &RunSgOptions, binary: &std::path::Path) -> crate::
     let args = build_sg_args(&read_options, !separate);
     let output = match spawn(binary, &args).await {
         Ok(output) => output,
-        Err(error) if error.starts_with("Search timeout") => return SgResult { truncated: true, truncated_reason: Some(TruncationReason::Timeout), error: Some(error), ..Default::default() },
-        Err(error) => return SgResult { error: Some(format!("Failed to spawn ast-grep: {error}")), ..Default::default() },
+        Err(error @ crate::errors::ProcessError::Timeout(_)) => return Ok(SgResult { truncated: true, truncated_reason: Some(TruncationReason::Timeout), error: Some(error.to_string()), ..Default::default() }),
+        Err(crate::errors::ProcessError::Spawn(error)) => return Err(error),
     };
     let stdout = output.stdout;
     let stderr = output.stderr;
     if output.exit_code != 0 && stdout.trim().is_empty() {
-        if stderr.contains("No files found") || stderr.trim().is_empty() { return SgResult::default(); }
-        return SgResult { error: Some(stderr.trim().to_owned()), ..Default::default() };
+        if stderr.contains("No files found") || stderr.trim().is_empty() { return Ok(SgResult::default()); }
+        return Ok(SgResult { error: Some(stderr.trim().to_owned()), ..Default::default() });
     }
     let mut result = create_sg_result_from_stdout(&stdout);
     if separate && !result.matches.is_empty() {
@@ -55,12 +84,26 @@ pub async fn run_sg(options: &RunSgOptions, binary: &std::path::Path) -> crate::
             Err(error) => result.error = Some(format!("Replace failed: {error}")),
         }
     }
-    result
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn missing_interpreter_reports_failed_download_not_generic_spawn() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().expect("resolver fixture");
+        let binary = fixture.path().join("sg");
+        let script = format!("#!{}/absent-interpreter\n{}", fixture.path().display(), "#".repeat(10_001));
+        std::fs::write(&binary, script).expect("write absent interpreter binary");
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).expect("executable fixture");
+        let resolver = crate::binary_path::BinaryResolver::new(fixture.path().join("extension.rs"), fixture.path().join("cache"), Some(fixture.path().as_os_str().to_owned()), "linux-x64".into(), true);
+        let result = run_sg_resolved(&RunSgOptions::default(), &resolver).await;
+        assert_eq!(result.error.as_deref(), Some(AUTO_DOWNLOAD_FAILED_HINT));
+        assert!(!result.truncated);
+    }
     fn options() -> RunSgOptions { RunSgOptions { pattern: "console.log($MSG)".into(), lang: "typescript".into(), paths: vec!["src".into()], ..Default::default() } }
     #[test] fn compact_when_search() { assert_eq!(build_sg_args(&options(), false), ["run", "-p", "console.log($MSG)", "--lang", "typescript", "--json=compact", "src"]); }
     #[test] fn context_when_positive() { let value = RunSgOptions { context: Some(3.0), ..options() }; assert_eq!(&build_sg_args(&value, false)[6..], ["-C", "3", "src"]); }

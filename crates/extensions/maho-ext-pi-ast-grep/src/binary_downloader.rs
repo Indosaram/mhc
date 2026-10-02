@@ -3,7 +3,7 @@ use std::path::Path;
 pub async fn download_archive(url: &str, archive: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut response = reqwest::Client::new().get(url).send().await?;
     if !response.status().is_success() {
-        return Err(format!("HTTP {}: {}", response.status().as_u16(), response.status().canonical_reason().unwrap_or_default()).into());
+        return Err(crate::errors::AstGrepDownloadError { message: format!("HTTP {}: {}", response.status().as_u16(), response.status().canonical_reason().unwrap_or_default()) }.into());
     }
     let mut file = std::fs::File::create(archive)?;
     while let Some(chunk) = response.chunk().await? { std::io::Write::write_all(&mut file, &chunk)?; }
@@ -30,6 +30,29 @@ pub fn ensure_executable(binary: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn http_failure_preserves_download_error_type() {
+        use std::io::{BufRead, Write};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind download fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let peer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("download request");
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).expect("bound request");
+            let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone HTTP stream"));
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).expect("read HTTP header") > 0);
+                if line == "\r\n" { break; }
+            }
+            stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").expect("respond HTTP failure");
+        });
+        let fixture = tempfile::tempdir().expect("download output fixture");
+        let result = download_archive(&format!("http://{address}/missing.zip"), &fixture.path().join("missing.zip")).await;
+        peer.join().expect("join HTTP peer");
+        let error = result.expect_err("expected HTTP error");
+        let error = error.downcast_ref::<crate::errors::AstGrepDownloadError>().expect("typed HTTP error");
+        assert_eq!(error.message, "HTTP 404: Not Found");
+    }
     #[test]
     fn extracts_binary_and_removes_archive() {
         use std::io::Write;

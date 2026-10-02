@@ -92,6 +92,25 @@ mod tests {
         std::fs::write(&cache, vec![0; 10_001]).expect("write cached binary");
         assert_eq!(find_sg_cli_path(&root.path().join("source.rs"), Some(&cache), None), Some(cache));
     }
+    #[tokio::test]
+    async fn removed_cached_path_resolves_package_again() {
+        let root = tempfile::tempdir().expect("create resolver fixture");
+        let cache = root.path().join("cache");
+        let package = root.path().join("node_modules/@ast-grep/cli");
+        std::fs::create_dir_all(&cache).expect("create cache");
+        std::fs::create_dir_all(&package).expect("create package");
+        std::fs::write(package.join("package.json"), "{}").expect("package metadata");
+        let name = if cfg!(windows) { "sg.exe" } else { "sg" };
+        let cached = cache.join(name);
+        let installed = package.join(name);
+        std::fs::write(&cached, vec![0; 10_001]).expect("cached binary");
+        std::fs::write(&installed, vec![0; 10_001]).expect("installed binary");
+        let platform = if cfg!(windows) { "win32-x64" } else { "linux-x64" };
+        let resolver = BinaryResolver::new(root.path().join("source.rs"), cache, None, platform.into(), true);
+        assert_eq!(resolver.resolve().await, Some(cached.clone()));
+        std::fs::remove_file(cached).expect("remove stale binary");
+        assert_eq!(resolver.resolve().await, Some(installed));
+    }
     #[test]
     fn small_binary_is_rejected() {
         let root = tempfile::tempdir().expect("create binary fixture");

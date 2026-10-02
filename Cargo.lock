@@ -1664,8 +1664,11 @@ version = "0.0.0"
 name = "maho-ext-ferryx-agent-state"
 version = "0.0.0"
 dependencies = [
+ "maho-ai",
  "maho-ext-api",
  "serde_json",
+ "socket2",
+ "tempfile",
 ]
 
 [[package]]
@@ -1688,8 +1691,11 @@ version = "0.0.0"
 name = "maho-ext-herdr-agent-state"
 version = "0.0.0"
 dependencies = [
+ "maho-ai",
  "maho-ext-api",
+ "rand",
  "serde_json",
+ "socket2",
  "tempfile",
  "tokio",
 ]
@@ -1817,8 +1823,10 @@ name = "maho-ext-pi-nested-agents-md"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-ext-host",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
