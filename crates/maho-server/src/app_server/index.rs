@@ -13,10 +13,7 @@ async fn shutdown_deadline(task:impl Future<Output=Result<(),String>>) -> Result
 async fn run_mode(runtime: &AppServerRuntime, listen: Listen, auth: Option<WsAuth>, shutdown: impl Future<Output = ()>) -> Result<(), String> {
     let agent_dir = runtime.threads.agent_dir.clone();
     if matches!(listen,Listen::Stdio {..}) {
-        tokio::select! {
-            result = super::stdio::run_shared_stdio(runtime.core.clone(),tokio::io::stdin(),tokio::io::stdout()) => result.map_err(|error|error.message)?,
-            _ = shutdown => {},
-        }
+        super::stdio::run_shared_stdio_until(runtime.core.clone(),tokio::io::stdin(),tokio::io::stdout(),shutdown).await.map_err(|error|error.message)?;
         shutdown_deadline(async {runtime.threads.abort_active_turns().await;Ok(())}).await?;
         return Ok(());
     }

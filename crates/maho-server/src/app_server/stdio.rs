@@ -2,7 +2,12 @@ use super::{errors::JsonRpcError, ndjson::{NdjsonEmission, NdjsonReader, seriali
 use std::sync::Arc;
 use tokio::{io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt}, sync::{Mutex, RwLock}};
 
-pub async fn run_shared_stdio<R, W>(core: Arc<RwLock<ServerCore>>, mut input: R, output: W) -> Result<(), JsonRpcError>
+pub async fn run_shared_stdio<R, W>(core: Arc<RwLock<ServerCore>>, input: R, output: W) -> Result<(), JsonRpcError>
+where R: AsyncRead + Unpin, W: AsyncWrite + Unpin + Send + 'static {
+    run_shared_stdio_until(core,input,output,std::future::pending()).await
+}
+
+pub async fn run_shared_stdio_until<R, W>(core: Arc<RwLock<ServerCore>>, mut input: R, output: W, shutdown: impl std::future::Future<Output=()>) -> Result<(), JsonRpcError>
 where R: AsyncRead + Unpin, W: AsyncWrite + Unpin + Send + 'static {
     let writer = Arc::new(Mutex::new(output));
     core.write().await.add_connection("stdio".into(),Arc::new(move |message| {
@@ -15,9 +20,14 @@ where R: AsyncRead + Unpin, W: AsyncWrite + Unpin + Send + 'static {
         })
     }));
     let result = async {
+        tokio::pin!(shutdown);
         let mut reader = NdjsonReader::default(); let mut buffer = [0;8192];
         loop {
-            let length = input.read(&mut buffer).await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
+            let length = tokio::select! {
+                biased;
+                _ = &mut shutdown => break,
+                result = input.read(&mut buffer) => result.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?,
+            };
             let emissions = if length == 0 {reader.end().into_iter().collect()} else {reader.push(&buffer[..length])};
             for emission in emissions {
                 match emission {
