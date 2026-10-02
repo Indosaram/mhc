@@ -11,10 +11,10 @@ struct Snapshot { state:LoopState,failure:Option<LoopStoreFailure>,errors:std::c
 pub struct NativeLoopController {
     session:tokio::sync::Mutex<Option<Session>>,snapshot:Mutex<Snapshot>,
     api:Arc<ExtensionApi>,reference:LoopStoreReference,now:Arc<dyn Fn()->f64+Send+Sync>,
-    ids:Arc<dyn Fn()->String+Send+Sync>,home:String,on_fire:Arc<dyn Fn(LoopId)+Send+Sync>,
+    ids:crate::ids::LoopIdFactory,home:String,on_fire:Arc<dyn Fn(LoopId)+Send+Sync>,
 }
 impl NativeLoopController {
-    pub fn new(api:Arc<ExtensionApi>,reference:LoopStoreReference,now:Arc<dyn Fn()->f64+Send+Sync>,ids:Arc<dyn Fn()->String+Send+Sync>,home:String,on_fire:Arc<dyn Fn(LoopId)+Send+Sync>)->Self {
+    pub fn new(api:Arc<ExtensionApi>,reference:LoopStoreReference,now:Arc<dyn Fn()->f64+Send+Sync>,ids:crate::ids::LoopIdFactory,home:String,on_fire:Arc<dyn Fn(LoopId)+Send+Sync>)->Self {
         Self { session:tokio::sync::Mutex::new(None),snapshot:Mutex::new(Snapshot { state:crate::store::empty_loop_state(""),failure:None,errors:Default::default(),target:None }),api,reference,now,ids,home,on_fire }
     }
     fn publish(&self,session:&Session) {
@@ -52,7 +52,7 @@ impl NativeLoopController {
         let ticker=crate::status::LoopStatusTicker::new(Arc::new(move |key,text| { ui.set_status(key,text); Ok(()) }),self.now.clone());
         let mut session=Session { runtime,context:context.clone(),reference,timers:NodeTimerPort::new(),ticker,named:false };
         if session.runtime.store_failure.is_some() { self.refresh(&mut session).await?; *owner=Some(session); return Ok(()); }
-        let restored=session.runtime.scheduler.restore((self.now)(),&[],|| (self.ids)());
+        let restored=session.runtime.scheduler.restore((self.now)(),&[],|| (self.ids)("delivery"));
         self.persist(&mut session).await?;
         for tick in restored.recovery_ticks { self.dispatch(&mut session,&tick).await?; }
         if !restored.expired_loop_ids.is_empty() { context.ui.notify(&format!("Loop expired after 7 days: {}",restored.expired_loop_ids.join(", ")),maho_ext_api::NotificationType::Info); }
@@ -65,7 +65,7 @@ impl NativeLoopController {
     }
     async fn due(&self,session:&mut Session,id:&str)->Result<(),ExtensionFailure> {
         let busy=!session.context.is_idle()||session.context.has_pending_messages()?;
-        let result=session.runtime.due(id,(self.now)(),busy,(self.ids)());
+        let result=session.runtime.due(id,(self.now)(),busy,(self.ids)("delivery"));
         self.persist(session).await?;
         match result {
             DueResult::Dispatch(tick)=>self.dispatch(session,&tick).await?,
@@ -118,7 +118,7 @@ impl NativeLoopController {
         self.persist(session).await
     }
     async fn settle(&self,session:&mut Session,outcome:crate::scheduler::TickOutcome)->Result<(),ExtensionFailure> {
-        let Some(result)=session.runtime.settled(outcome,(self.now)(),(self.ids)(),(self.ids)()) else { return Ok(()); };
+        let Some(result)=session.runtime.settled(outcome,(self.now)(),(self.ids)("delivery"),(self.ids)("wakeup")) else { return Ok(()); };
         self.persist(session).await?;
         if let Some(keepalive)=result.keepalive {
             if let crate::scheduler::KeepaliveResult::Ended(reason)=keepalive { session.context.ui.notify(if reason==LoopEndReason::KeepaliveExhausted { "Loop ended: the model stopped scheduling wakeups." } else { "Loop expired after 7 days and is no longer armed." },maho_ext_api::NotificationType::Info); }
@@ -137,7 +137,7 @@ impl crate::tools::ScheduleWakeupSchedulerPort for NativeLoopController {
     fn schedule_wakeup(&self,request:crate::tools::ScheduleWakeupRequest)->ExtensionFuture<'_,crate::tools::ScheduleWakeupOutcome> { Box::pin(async move {
         let mut owner=self.session.lock().await; let session=owner.as_mut().ok_or_else(no_session)?;
         let request=ScheduleWakeupInput { loop_id:request.loop_id,requested_delay_seconds:request.requested_delay_seconds,delay_seconds:request.delay_seconds,reason:request.reason,prompt:request.prompt,noop:request.noop };
-        let result=session.runtime.scheduler.on_schedule_wakeup(request,(self.ids)(),(self.now)());
+        let result=session.runtime.scheduler.on_schedule_wakeup(request,(self.ids)("wakeup"),(self.now)());
         let outcome=match result {
             ScheduleWakeupResult::Scheduled { wakeup_id,replaced_wakeup_id,due_at,noop_streak }=>crate::tools::ScheduleWakeupOutcome { wakeup_id,replaced_wakeup_id,due_at,noop_streak },
             result=>return Err(ExtensionFailure::new(format!("schedule_wakeup rejected: {}",match result { ScheduleWakeupResult::UnknownLoop=>"unknown_loop",ScheduleWakeupResult::NotDynamic=>"not_dynamic",ScheduleWakeupResult::Ended=>"ended",ScheduleWakeupResult::Expired=>"expired",ScheduleWakeupResult::Scheduled { .. }=>unreachable!() }))),
@@ -153,20 +153,20 @@ impl crate::tools::ScheduleWakeupSchedulerPort for NativeLoopController {
 impl LoopController for NativeLoopController {
     fn start_fixed(&self,request:StartFixedRequest)->ExtensionFuture<'_,LoopCreateOutcome> { Box::pin(async move {
         let mut owner=self.session.lock().await; let session=owner.as_mut().ok_or_else(no_session)?; let name=request.prompt.clone();
-        let result=crate::creation::create_fixed(&mut session.runtime.scheduler,request,(self.ids)(),(self.now)()); self.created(session,&result,&name).await?; Ok(result)
+        let result=crate::creation::create_fixed(&mut session.runtime.scheduler,request,(self.ids)("loop"),(self.now)()); self.created(session,&result,&name).await?; Ok(result)
     }) }
     fn start_dynamic(&self,request:StartDynamicRequest)->ExtensionFuture<'_,LoopCreateOutcome> { Box::pin(async move {
         let mut owner=self.session.lock().await; let session=owner.as_mut().ok_or_else(no_session)?; let name=request.prompt.clone();
-        let result=crate::creation::create_dynamic(&mut session.runtime.scheduler,request,(self.ids)(),(self.now)()); self.created(session,&result,&name).await?; Ok(result)
+        let result=crate::creation::create_dynamic(&mut session.runtime.scheduler,request,(self.ids)("loop"),(self.now)()); self.created(session,&result,&name).await?; Ok(result)
     }) }
     fn start_bare(&self,request:StartBareRequest)->ExtensionFuture<'_,LoopCreateOutcome> { Box::pin(async move {
         let mut owner=self.session.lock().await; let session=owner.as_mut().ok_or_else(no_session)?;
         let file=crate::loopfile::resolve_loop_file(&session.context.cwd.to_string_lossy(),&self.home,&crate::loopfile::NodeFs).ok().flatten().is_some();
         let trimmed=request.original_args.trim(); let name=if trimmed.is_empty() { "/loop".into() } else { format!("/loop {trimmed}") };
-        let result=crate::creation::create_bare(&mut session.runtime.scheduler,request,(self.ids)(),(self.now)(),file); self.created(session,&result,&name).await?; Ok(result)
+        let result=crate::creation::create_bare(&mut session.runtime.scheduler,request,(self.ids)("loop"),(self.now)(),file); self.created(session,&result,&name).await?; Ok(result)
     }) }
     fn fire_due(&self,loop_id:&str)->ExtensionFuture<'_,()> { let id=loop_id.to_owned(); Box::pin(async move { let mut owner=self.session.lock().await; self.due(owner.as_mut().ok_or_else(no_session)?,&id).await }) }
-    fn schedule_wakeup(&self,request:ScheduleWakeupInput)->ExtensionFuture<'_,()> { Box::pin(async move { let mut owner=self.session.lock().await; let session=owner.as_mut().ok_or_else(no_session)?; if matches!(session.runtime.scheduler.on_schedule_wakeup(request,(self.ids)(),(self.now)()),ScheduleWakeupResult::Scheduled { .. }) { session.runtime.attribution.resolve(); } self.persist(session).await }) }
+    fn schedule_wakeup(&self,request:ScheduleWakeupInput)->ExtensionFuture<'_,()> { Box::pin(async move { let mut owner=self.session.lock().await; let session=owner.as_mut().ok_or_else(no_session)?; if matches!(session.runtime.scheduler.on_schedule_wakeup(request,(self.ids)("wakeup"),(self.now)()),ScheduleWakeupResult::Scheduled { .. }) { session.runtime.attribution.resolve(); } self.persist(session).await }) }
     fn stop(&self,target:&str,detail:&str)->ExtensionFuture<'_,Vec<LoopId>> { let target=target.to_owned(); let detail=detail.to_owned(); Box::pin(async move { let mut owner=self.session.lock().await; let session=owner.as_mut().ok_or_else(no_session)?; let affected=session.runtime.scheduler.stop(&target,&detail,(self.now)()); self.persist(session).await?; Ok(affected) }) }
     fn pause(&self,target:&str)->ExtensionFuture<'_,Vec<LoopId>> { let target=target.to_owned(); Box::pin(async move { let mut owner=self.session.lock().await; let session=owner.as_mut().ok_or_else(no_session)?; let affected=session.runtime.scheduler.pause(&target,(self.now)()); self.persist(session).await?; Ok(affected) }) }
     fn resume(&self,target:&str)->ExtensionFuture<'_,Vec<LoopId>> { let target=target.to_owned(); Box::pin(async move { let mut owner=self.session.lock().await; let session=owner.as_mut().ok_or_else(no_session)?; let affected=session.runtime.scheduler.resume(&target,(self.now)()); self.persist(session).await?; Ok(affected) }) }

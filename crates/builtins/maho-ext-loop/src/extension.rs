@@ -1,17 +1,17 @@
-use std::sync::{Arc,atomic::{AtomicU64,Ordering}};
+use std::sync::Arc;
 use maho_ext_api::{Extension,ExtensionApi,EventKind,ExtensionEvent,EventResult};
 use crate::controller::{NativeLoopController,LoopStoreReference};
 pub struct LoopExtension {
     pub reference:LoopStoreReference,
     pub now:Arc<dyn Fn()->f64+Send+Sync>,
-    pub ids:Arc<dyn Fn()->String+Send+Sync>,
+    pub ids:crate::ids::LoopIdFactory,
     pub home:String,
     pub on_controller_ready:Option<Arc<dyn Fn(Arc<NativeLoopController>)+Send+Sync>>,
 }
 impl LoopExtension {
     pub fn new(reference:LoopStoreReference)->Self {
-        let sequence=AtomicU64::new(0);
-        Self { reference,now:Arc::new(||std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0,|duration|duration.as_millis() as f64)),ids:Arc::new(move ||format!("loop-{}",sequence.fetch_add(1,Ordering::Relaxed)+1)),home:std::env::var("HOME").unwrap_or_default(),on_controller_ready:None }
+        let now:Arc<dyn Fn()->f64+Send+Sync>=Arc::new(||std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0,|duration|duration.as_millis() as f64));
+        Self { reference,ids:crate::ids::default_ids(now.clone()),now,home:std::env::var("HOME").unwrap_or_default(),on_controller_ready:None }
     }
 }
 impl Extension for LoopExtension {
