@@ -50,14 +50,20 @@ impl AppServerRuntime {
                         let removed = entry.lock().await.subscribers.remove(&context.connection.id);
                         return Ok(json!({"status":if removed {"unsubscribed"} else {"notSubscribed"}}));
                     }
+                    let requested_name = if method == "thread/name/set" {Some(required_string(params,"name")?.to_owned())} else {None};
                     let entry = if method == "thread/start" {
                         let model = params["model"].as_str().and_then(|model| super::start_options::parse_model_reference(model,params["modelProvider"].as_str())).and_then(|(provider,id)| maho_ai::providers::all::get_builtin_models(provider).into_iter().find(|model|model.id == id));
                         let cwd = maho_core::paths::resolve_path(params["cwd"].as_str().unwrap_or(&cwd),&cwd,&Default::default());
                         threads.create_thread(cwd, model).await
                     } else { threads.resume_thread(required_string(params, "threadId")?).await }.map_err(|error| JsonRpcError::new(-32603, error))?;
                     let mut entry = entry.lock().await;
-                    if method == "thread/name/set" {
-                        entry.session.set_session_name(required_string(params, "name")?);
+                    if let Some(name) = requested_name {
+                        entry.session.set_session_name(&name);
+                        let id = entry.id.clone();
+                        context.connection.defer_until_responded(move || {tokio::spawn(async move {
+                            if let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade)
+                                && let Err(error) = core.read().await.broadcast_notification(json!({"method":"thread/name/updated","params":{"threadId":id,"threadName":name}}),chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server name notification: {}",error.message);}
+                        });});
                         return Ok(json!({}));
                     }
                     if method != "thread/read" { entry.subscribers.insert(context.connection.id.clone()); }
@@ -90,6 +96,7 @@ impl AppServerRuntime {
         super::settings_handlers::register_thread_settings(&core,threads.clone()).await;
         let archive = Arc::new(super::archive_state::ThreadArchiveState::new(threads.session_dir.as_ref().map(Into::into)));
         super::handlers::register_storage_lifecycle_handlers(&core,threads.clone(),archive.clone(),version.clone()).await;
+        super::handlers::register_compaction_handler(&core,threads.clone(),turn_log.clone()).await;
         super::metadata_handlers::register_metadata_handlers(&core,threads.clone(),turn_log.clone(),archive.clone(),version.clone()).await;
         super::list_handlers::register_list_handlers(&core,threads.clone(),archive.clone(),version.clone()).await;
         super::search::register_search_handler(&core,threads.clone(),archive.clone(),turn_log.clone(),version).await;

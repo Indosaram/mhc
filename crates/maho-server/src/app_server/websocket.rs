@@ -1,6 +1,6 @@
 use super::{errors::JsonRpcError, server_core::ServerCore, websocket_auth::ResolvedWebSocketListenerAuth, websocket_connection_handler::{serve_websocket, DEFAULT_OUTBOUND_QUEUE_BYTES}};
 use std::{net::IpAddr, sync::Arc};
-use tokio::{net::TcpListener, sync::{RwLock, watch}, task::JoinHandle};
+use tokio::{io::{AsyncReadExt,AsyncWriteExt}, net::{TcpListener,TcpStream}, sync::{RwLock, watch}, task::JoinHandle};
 
 pub struct WebSocketListenerHandle {
     pub address: std::net::SocketAddr,
@@ -32,7 +32,7 @@ pub async fn start_websocket_listener(host: &str, port: u16, auth: ResolvedWebSo
                 accepted = listener.accept() => {
                     let (stream, _) = accepted.map_err(|error| JsonRpcError::new(-32603, error.to_string()))?;
                     let id = format!("ws-{next_id}"); next_id += 1;
-                    connections.spawn(serve_websocket(stream, running_core.clone(), auth.clone(), id, outbound_queue_bytes.unwrap_or(DEFAULT_OUTBOUND_QUEUE_BYTES)));
+                    connections.spawn(serve_tcp_connection(stream, running_core.clone(), auth.clone(), id, outbound_queue_bytes.unwrap_or(DEFAULT_OUTBOUND_QUEUE_BYTES)));
                 },
             }
         }
@@ -45,4 +45,33 @@ pub async fn start_websocket_listener(host: &str, port: u16, auth: ResolvedWebSo
         Ok(())
     });
     Ok(WebSocketListenerHandle { address, core, shutdown, task })
+}
+
+async fn serve_tcp_connection(mut stream: TcpStream, core: Arc<RwLock<ServerCore>>, auth: Arc<ResolvedWebSocketListenerAuth>, id: String, queue_limit: usize) -> Result<(),JsonRpcError> {
+    let mut buffered = Vec::new();
+    loop {
+        let mut headers = [httparse::EMPTY_HEADER;124];
+        let mut request = httparse::Request::new(&mut headers);
+        match request.parse(&buffered).map_err(|error|JsonRpcError::new(-32603,error.to_string()))? {
+            httparse::Status::Partial => {},
+            httparse::Status::Complete(_) => {
+                let upgrade = request.headers.iter().any(|header|header.name.eq_ignore_ascii_case("upgrade"));
+                if upgrade {
+                    let (reader,writer) = tokio::io::split(stream);
+                    return serve_websocket(tokio::io::join(std::io::Cursor::new(buffered).chain(reader),writer),core,auth,id,queue_limit).await;
+                }
+                let (status,body) = if request.headers.iter().any(|header|header.name.eq_ignore_ascii_case("origin")) {("403 Forbidden","forbidden\n")}
+                    else if matches!(request.path,Some("/readyz"|"/healthz")) {("200 OK","ok\n")}
+                    else {("400 Bad Request","websocket upgrade required\n")};
+                let response = format!("HTTP/1.1 {status}\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",body.len());
+                stream.write_all(response.as_bytes()).await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
+                stream.shutdown().await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
+                return Ok(());
+            },
+        }
+        let mut bytes = [0;4096];
+        let read = stream.read(&mut bytes).await.map_err(|error|JsonRpcError::new(-32603,error.to_string()))?;
+        if read == 0 {return Ok(());}
+        buffered.extend_from_slice(&bytes[..read]);
+    }
 }

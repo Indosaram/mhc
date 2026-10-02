@@ -159,6 +159,12 @@ async fn thread_settings_validate_before_mutation_and_respond_before_notificatio
     assert_eq!(restored["result"]["thread"]["status"]["type"],"notLoaded","{restored}");
     assert_eq!(read(&mut client).await["method"],"thread/unarchived");
     assert!(runtime.threads.get_loaded_thread(&id).await.is_err());
+    send(&mut client,json!({"id":18,"method":"thread/name/set","params":{"threadId":id,"name":"restored name"}})).await;
+    assert_eq!(read(&mut client).await["id"],18);
+    let named = read(&mut client).await;
+    assert_eq!(named["method"],"thread/name/updated");
+    assert_eq!(named["params"]["threadName"],"restored name");
+    assert_eq!(runtime.threads.get_loaded_thread(&id).await.unwrap().lock().await.session.session_name().as_deref(),Some("restored name"));
     send(&mut client,json!({"id":16,"method":"thread/delete","params":{"threadId":id}})).await;
     assert_eq!(read(&mut client).await["method"],"thread/status/changed");
     assert_eq!(read(&mut client).await["id"],16);
@@ -167,4 +173,34 @@ async fn thread_settings_validate_before_mutation_and_respond_before_notificatio
     client.close(None).await.unwrap();drop(client);
     listener.close().await.unwrap();runtime.dispose().await;
     assert!(!path.exists());
+}
+
+#[tokio::test]
+async fn compaction_rejects_unloaded_threads_and_defers_native_work_until_acknowledged() {
+    use maho_server::app_server::registry::RegistryConnection;
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = AppServerRuntime::new(directory.path().display().to_string(),directory.path().display().to_string(),"1".into(),Some(directory.path().join("sessions").display().to_string()),Some(factory())).await;
+    let connection = RegistryConnection {initialized:true,..Default::default()};
+    let missing = runtime.core.read().await.registry.dispatch(connection.clone(),json!({"id":1,"method":"thread/compact/start","params":{"threadId":"missing"}})).await;
+    assert_eq!(missing["error"]["code"],-32600);
+    let entry = runtime.threads.create_thread(directory.path().display().to_string(),None).await.unwrap();
+    let id = entry.lock().await.id.clone();
+    let (send,mut receive) = tokio::sync::mpsc::unbounded_channel();
+    runtime.core.write().await.add_connection("qa".into(),Arc::new(move |message| {send.send(message).unwrap();Box::pin(async {Ok(())})}));
+    runtime.core.read().await.receive("qa",maho_server::app_server::envelope::classify_incoming(json!({"id":2,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}}))).await.unwrap();
+    assert_eq!(receive.try_recv().unwrap()["id"],2);
+    entry.lock().await.subscribers.insert("qa".into());
+    let accepted = runtime.core.read().await.registry.dispatch(connection.clone(),json!({"id":3,"method":"thread/compact/start","params":{"threadId":id}})).await;
+    assert_eq!(accepted,json!({"id":3,"result":{}}));
+    assert!(runtime.turn_log.lock().await.read_turns(&id).is_empty());
+    assert!(receive.try_recv().is_err());
+    connection.finish_response();
+    let started = tokio::time::timeout(std::time::Duration::from_secs(3),receive.recv()).await.unwrap().unwrap();
+    assert_eq!(started["method"],"item/started");
+    assert_eq!(started["params"]["item"]["type"],"contextCompaction");
+    runtime.threads.unload_thread(&id).await;
+    let unloaded = runtime.core.read().await.registry.dispatch(connection,json!({"id":4,"method":"thread/compact/start","params":{"threadId":id}})).await;
+    assert_eq!(unloaded["error"]["code"],-32600);
+    runtime.core.write().await.remove_connection("qa");
+    runtime.dispose().await;
 }

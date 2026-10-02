@@ -90,7 +90,7 @@ pub async fn register_turn_methods(core: &Arc<RwLock<ServerCore>>, threads: Arc<
         })
     }) });
 }
-async fn emit(core: &Arc<RwLock<ServerCore>>, entry: &Arc<Mutex<super::thread_registry::ThreadEntry>>, notification: Value) {
+pub(super) async fn emit(core: &Arc<RwLock<ServerCore>>, entry: &Arc<Mutex<super::thread_registry::ThreadEntry>>, notification: Value) {
     if notification["method"] == "thread/status/changed" {
         if let Err(error) = core.read().await.broadcast_notification(notification,chrono::Utc::now().timestamp_millis() as u64).await { eprintln!("app-server notification: {}",error.message); }
         return;

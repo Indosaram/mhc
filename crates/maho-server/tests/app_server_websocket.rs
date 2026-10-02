@@ -65,3 +65,28 @@ async fn daemon_probe_observes_user_agent_through_tcp_listener() {
     assert_eq!(probe_websocket(&url, None, 2000, "1").await, Some("senpi_app_server_daemon/1 (Linux test; x64) senpi_app_server".into()));
     listener.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn tcp_listener_http_readiness_rejects_origin_before_path_and_does_not_require_auth() {
+    use maho_server::app_server::websocket::start_websocket_listener;
+    use tokio::io::{AsyncReadExt,AsyncWriteExt};
+    let listener = start_websocket_listener("127.0.0.1",0,ResolvedWebSocketListenerAuth::Bearer {token:"fixture".into(),path:None},core(),None).await.unwrap();
+    for (method,path,origin,status,body) in [
+        ("GET","/readyz","",200,"ok\n"),
+        ("POST","/healthz","",200,"ok\n"),
+        ("GET","/readyz","Origin: https://example.test\r\n",403,"forbidden\n"),
+        ("GET","/readyz?x=1","",400,"websocket upgrade required\n"),
+        ("GET","/","",400,"websocket upgrade required\n"),
+    ] {
+        let scenario = async {
+            let mut stream = tokio::net::TcpStream::connect(listener.address).await.unwrap();
+            stream.write_all(format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\n{origin}\r\n").as_bytes()).await.unwrap();
+            let mut response = String::new();stream.read_to_string(&mut response).await.unwrap();
+            assert!(response.starts_with(&format!("HTTP/1.1 {status} ")),"{response}");
+            assert!(response.contains("content-type: text/plain; charset=utf-8\r\n"));
+            assert_eq!(response.split_once("\r\n\r\n").unwrap().1,body);
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(3),scenario).await.unwrap();
+    }
+    listener.close().await.unwrap();
+}
