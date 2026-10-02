@@ -4,7 +4,7 @@ pub fn anchor_present(entries:&[maho_ext_api::SessionEntry],loop_id:&str,deliver
         if entry.data.get("customType").and_then(serde_json::Value::as_str)!=Some(LOOP_TICK_ENTRY_TYPE) { return false; }
         let payload=match entry.kind.as_str() { "custom"=>entry.data.get("data"),"custom_message"=>entry.data.get("details"),_=>None };
         let Some(payload)=payload else { return false; };
-        if payload.get("loopId").and_then(serde_json::Value::as_str).is_some_and(|id|id!=loop_id) { return false; }
+        if payload.get("loopId").is_some_and(|id|id!=loop_id) { return false; }
         delivery_id.is_none_or(|id|payload.get("deliveryId").and_then(serde_json::Value::as_str)==Some(id))
     })
 }
@@ -29,5 +29,13 @@ pub fn restored_delivery_state(state:&SentinelDeliveryState,entries:&[maho_ext_a
         assert!(restored_delivery_state(&state,&[],"a").force_full_delivery);
         assert!(!restored_delivery_state(&state,&[entry("custom","data","a","d")],"a").force_full_delivery);
         assert!(!restored_delivery_state(&Default::default(),&[],"a").force_full_delivery);
+    }
+    #[test] fn malformed_loop_id_cannot_anchor_another_loops_preamble() {
+        for id in [serde_json::Value::Null,serde_json::json!(12),serde_json::json!(false)] {
+            let mut candidate=entry("custom","data","a","d"); candidate.data["data"]["loopId"]=id;
+            assert!(!anchor_present(&[candidate],"a",None));
+        }
+        let mut legacy=entry("custom","data","a","d"); legacy.data["data"].as_object_mut().unwrap().remove("loopId");
+        assert!(anchor_present(&[legacy],"a",None));
     }
 }
