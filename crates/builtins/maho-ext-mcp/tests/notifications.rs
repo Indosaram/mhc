@@ -50,3 +50,28 @@ async fn dispose_cancels_pending_refresh() {
     let coalescer=McpListChangeCoalescer::new(None,None);let (sender,receiver)=tokio::sync::oneshot::channel();
     coalescer.notify(move||async move {sender.send(()).unwrap();});coalescer.dispose();assert!(receiver.await.is_err());
 }
+#[tokio::test]
+async fn removed_tool_definition_rejects_stale_execution() {
+    let tool=build_mcp_tombstone_definition("mcp_fx_removed","fx");
+    let result=(tool.execute)(maho_ext_api::ToolCall {id:"stale",params:json!({}),signal:Default::default(),on_update:None,context:None}).await;
+    assert_eq!(result.unwrap_err().to_string(),"tool no longer available on fx");
+}
+#[tokio::test]
+async fn subscriptions_drop_malformed_notifications_before_callbacks() {
+    use std::sync::{Arc,Mutex};
+    use maho_ext_mcp::{transport_sdk::{McpClient,McpTransportSpec},log::McpLogger};
+    let root=tempfile::tempdir().unwrap();
+    let client=McpClient::materialize("notifications",&McpTransportSpec::Http {url:"http://127.0.0.1:1/mcp".parse().unwrap(),headers:Default::default()},Arc::new(Mutex::new(McpLogger::new("notifications",root.path(),None).unwrap()))).await.unwrap();
+    let (list_sender,mut lists)=tokio::sync::mpsc::unbounded_channel();
+    let (resource_sender,mut resources)=tokio::sync::mpsc::unbounded_channel();
+    let list_task=subscribe_mcp_list_changed(&client,Arc::new(move ||{list_sender.send(()).unwrap();}));
+    let resource_task=maho_ext_mcp::resources::subscribe_mcp_resource_updated(&client,Arc::new(move ||{resource_sender.send(()).unwrap();}));
+    client.notifications.send(json!({"method":"notifications/tools/list_changed","params":{"_meta":[]}})).unwrap();
+    client.notifications.send(json!({"method":"notifications/resources/updated","params":{"uri":4}})).unwrap();
+    client.notifications.send(json!({"method":"notifications/tools/list_changed"})).unwrap();
+    client.notifications.send(json!({"method":"notifications/resources/updated","params":{"uri":"fixture://one"}})).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2),async {lists.recv().await.unwrap();resources.recv().await.unwrap();}).await.unwrap();
+    assert!(lists.try_recv().is_err());assert!(resources.try_recv().is_err());
+    list_task.abort();resource_task.abort();let _=list_task.await;let _=resource_task.await;
+    client.close().await.unwrap();
+}

@@ -78,3 +78,32 @@ async fn shutdown_reaps_fixture_process_tree() {
     shutdown_mcp_transport(&connection).await.unwrap();
     for pid in pids {assert!(!maho_ext_mcp::process_tree::is_process_alive(pid).await,"fixture pid {pid} still alive");}
 }
+#[tokio::test]
+async fn http_get_stream_delivers_unsolicited_notifications() {
+    use std::{sync::{Arc,Mutex},time::Duration};
+    use axum::{Router,routing::get,response::{sse::{Sse,Event},IntoResponse},Json};
+    use serde_json::{Value,json};
+    let (opened,ready)=tokio::sync::oneshot::channel();let opened=Arc::new(Mutex::new(Some(opened)));
+    let (sender,receiver)=tokio::sync::mpsc::unbounded_channel::<Value>();let receiver=Arc::new(tokio::sync::Mutex::new(Some(receiver)));
+    let get_route=get(move ||{let opened=opened.clone();let receiver=receiver.clone();async move {
+        let receiver=receiver.lock().await.take().unwrap();opened.lock().unwrap().take().unwrap().send(()).unwrap();
+        Sse::new(futures::stream::unfold(receiver,|mut receiver|async move {receiver.recv().await.map(|value|(Ok::<_,std::convert::Infallible>(Event::default().id("one").data(value.to_string())),receiver))}))
+    }}).post(|Json(value):Json<Value>|async move {
+        if value.get("id").is_none(){return axum::http::StatusCode::ACCEPTED.into_response();}
+        let result=if value["method"]=="initialize" {json!({"protocolVersion":"2025-11-25","capabilities":{},"serverInfo":{"name":"fixture","version":"1"}})}else{json!({})};
+        Json(json!({"jsonrpc":"2.0","id":value.get("id").cloned().unwrap_or(Value::Null),"result":result})).into_response()
+    });
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let address=listener.local_addr().unwrap();
+    let (stop,stopped)=tokio::sync::oneshot::channel();
+    let server=tokio::spawn(async move {axum::serve(listener,Router::new().route("/mcp",get_route)).with_graceful_shutdown(async {let _=stopped.await;}).await.unwrap();});
+    let root=tempfile::tempdir().unwrap();
+    let client=McpClient::materialize("stream",&McpTransportSpec::Http {url:format!("http://{address}/mcp").parse().unwrap(),headers:Default::default()},Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("stream",root.path(),None).unwrap()))).await.unwrap();
+    let mut notifications=client.notifications.subscribe();
+    client.initialize(Duration::from_secs(3)).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3),ready).await.unwrap().unwrap();
+    sender.send(json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed"})).unwrap();
+    let event=tokio::time::timeout(Duration::from_secs(3),notifications.recv()).await.unwrap().unwrap();
+    assert_eq!(event["method"],"notifications/tools/list_changed");
+    client.close().await.unwrap();drop(client);drop(sender);stop.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(3),server).await.unwrap().unwrap();
+}

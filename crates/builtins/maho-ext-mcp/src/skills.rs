@@ -21,11 +21,16 @@ pub fn parse_skill_mcp_declarations(skills:&[SkillLike])->SkillMcpDeclarations {
             Err(error)=>{declarations.warnings.push(format!("Skill '{}': {} skipped ({error}); the skill itself still loads.",skill.name,if sidecar_exists{"invalid mcp.json sidecar"}else{"unreadable frontmatter mcp block"}));continue;}
         };
         let Some(root)=raw.as_object() else{continue;};
-        let map=root.get("mcpServers").and_then(Value::as_object).unwrap_or(root);
-        for (name,server) in map {
+        let map=root.get("mcpServers").filter(|value|value.is_object() || value.is_array()).unwrap_or(&raw);
+        let entries:Box<dyn Iterator<Item=(String,&Value)>>=match map {
+            Value::Object(map)=>Box::new(map.iter().map(|(name,server)|(name.clone(),server))),
+            Value::Array(map)=>Box::new(map.iter().enumerate().map(|(index,server)|(index.to_string(),server))),
+            _=>continue,
+        };
+        for (name,server) in entries {
             if !server.is_object(){continue;}
             let globs=normalize_globs(server.get("includeTools"));
-            declarations.servers.entry(name.clone()).or_insert_with(||SkillServerDecl {raw:server.clone(),source_path:source.clone(),include_tools_by_skill:BTreeMap::new()}).include_tools_by_skill.insert(skill.name.clone(),globs);
+            declarations.servers.entry(name).or_insert_with(||SkillServerDecl {raw:server.clone(),source_path:source.clone(),include_tools_by_skill:BTreeMap::new()}).include_tools_by_skill.insert(skill.name.clone(),globs);
         }
     }
     declarations

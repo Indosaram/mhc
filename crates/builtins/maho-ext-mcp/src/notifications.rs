@@ -33,3 +33,21 @@ impl McpListChangeCoalescer {
     pub fn dispose(&self) {let mut state=self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if let Some(timer)=state.timer.take(){timer.abort();}}
 }
 impl Drop for McpListChangeCoalescer {fn drop(&mut self){self.dispose();}}
+pub fn build_mcp_tombstone_definition(name:&str,server:&str)->maho_ext_api::ToolDefinition {
+    let server=server.to_owned();
+    let mut tool=maho_ext_api::ToolDefinition::new(name,&format!("This MCP tool was removed from {server} and is no longer available."),serde_json::json!({"type":"object","properties":{},"required":[]}),Arc::new(move |_| {
+        let server=server.clone();
+        Box::pin(async move {Err(maho_ext_api::ToolError::Message(format!("tool no longer available on {server}")))})
+    }));
+    tool.label=name.into();tool.execution_mode=Some(maho_ext_api::ToolExecutionMode::Parallel);tool
+}
+pub fn subscribe_mcp_list_changed(client:&crate::transport_sdk::McpClient,on_change:Arc<dyn Fn()+Send+Sync>)->JoinHandle<()> {
+    let mut notifications=client.notifications.subscribe();
+    tokio::spawn(async move {loop {
+        match notifications.recv().await {
+            Ok(value)=>{if matches!(crate::notification_schemas::parse_notification(&value),Some(crate::notification_schemas::McpNotification::ListChanged {..})){on_change();}}
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>continue,
+            Err(tokio::sync::broadcast::error::RecvError::Closed)=>return,
+        }
+    }})
+}

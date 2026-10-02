@@ -36,3 +36,11 @@ fn secret_warning_contains_fingerprint_not_header_value() {
     let config=McpServerConfig {headers:Some(std::collections::BTreeMap::from([("Authorization".into(),"Bearer fixture-secret".into())])),..Default::default()};
     let warnings=detect_literal_bearer_warnings("srv",&config).unwrap();assert_eq!(warnings.len(),1);assert!(!warnings[0].contains("fixture-secret"));
 }
+#[test]
+fn array_wrapped_server_map_uses_numeric_entry_names() {
+    let root=tempfile::tempdir().unwrap();let path=root.path().join("SKILL.md");
+    std::fs::write(root.path().join("mcp.json"),json!({"mcpServers":[{"command":"node"},null,[],{"url":"https://example.test"}]}).to_string()).unwrap();
+    let declarations=parse_skill_mcp_declarations(&[SkillLike {name:"skill".into(),file_path:path,base_dir:root.path().into()}]);
+    assert_eq!(declarations.servers.keys().cloned().collect::<Vec<_>>(),vec!["0","3"]);
+    assert_eq!(declarations.servers["0"].raw["command"],"node");
+}
