@@ -11,3 +11,6 @@ pub mod recovery;
 pub mod preview_format;
 pub mod extension;
 pub mod constants;
+pub mod apply;
+pub mod patch_diff;
+pub mod preview;

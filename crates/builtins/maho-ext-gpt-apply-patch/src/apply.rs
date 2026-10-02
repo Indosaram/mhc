@@ -1,0 +1,102 @@
+use crate::{parser::parse_patch,text::normalize_patch_text,types::{ParsedPatch,ApplyPatchResult}};
+pub fn parse_non_empty_patch(patch_text:&str)->Result<Vec<ParsedPatch>,String> {
+    let hunks=parse_patch(patch_text)?;
+    if hunks.is_empty() { return Err(if normalize_patch_text(patch_text).trim()=="*** Begin Patch\n*** End Patch" { "patch rejected: empty patch" } else { "apply_patch verification failed: no hunks found" }.into()); }
+    Ok(hunks)
+}
+pub fn compact_apply_patch_result(mut result:ApplyPatchResult)->ApplyPatchResult {
+    for operation in &mut result.details.applied_operations { operation.preview.diff.clear(); operation.preview.patch=None; } result
+}
+use std::{path::Path,sync::atomic::{AtomicU64,Ordering}};
+use crate::{preview::{read_patch_file_snapshot,build_patch_preview_file},workspace::resolve_patch_path,patch_replace::replace_chunks,types::{ApplyPatchFailure,AppliedPatchOperation},recovery::create_recovery_instructions,errors::ApplyPatchError};
+#[derive(Debug)]
+struct MutationError { message:String,code:Option<String> }
+impl From<String> for MutationError { fn from(message:String)->Self { Self{message,code:None} } }
+impl From<std::io::Error> for MutationError { fn from(error:std::io::Error)->Self { Self{message:error.to_string(),code:match error.kind() { std::io::ErrorKind::NotFound=>Some("ENOENT".into()),std::io::ErrorKind::PermissionDenied=>Some("EACCES".into()),std::io::ErrorKind::AlreadyExists=>Some("EEXIST".into()),_=>None }} } }
+static TEMP_ID:AtomicU64=AtomicU64::new(0);
+async fn write_file_atomic(path:&Path,content:&[u8])->Result<(),MutationError> {
+    let temp=std::path::PathBuf::from(format!("{}.tmp.{}.{}",path.display(),std::process::id(),TEMP_ID.fetch_add(1,Ordering::Relaxed)));
+    tokio::fs::write(&temp,content).await?;
+    match tokio::fs::rename(&temp,path).await { Ok(())=>Ok(()),Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists=>{ tokio::fs::remove_file(path).await?; tokio::fs::rename(&temp,path).await?; Ok(()) },Err(error)=>Err(error.into()) }
+}
+async fn apply_single_hunk(cwd:&Path,hunk:&ParsedPatch)->Result<(String,String,usize,crate::types::ApplyPatchPreviewFile),MutationError> {
+    let file=match hunk { ParsedPatch::Add{file_path,..}|ParsedPatch::Delete{file_path}|ParsedPatch::Update{file_path,..}=>file_path };
+    let path=resolve_patch_path(cwd,Path::new(file));
+    let move_path=if let ParsedPatch::Update{move_path:Some(destination),..}=hunk { if destination.is_empty() { None } else { Some(resolve_patch_path(cwd,Path::new(destination))) } } else { None };
+    let mut paths=vec![path.clone()]; if let Some(destination)=&move_path { paths.push(destination.clone()); } paths.sort(); paths.dedup();
+    let mut guards=Vec::new(); for path in paths { guards.push(maho_tools::file_mutation_queue::lock_file_mutation(&path).await.map_err(|error|MutationError::from(error.to_string()))?); }
+    let source=read_patch_file_snapshot(&path).await?;
+    match hunk {
+        ParsedPatch::Add{content,..}=>{ let preview=build_patch_preview_file(hunk,&source,content,None); tokio::fs::create_dir_all(path.parent().expect("resolved parent")).await?; write_file_atomic(&path,content.as_bytes()).await?; Ok((format!("add: {file}"),file.clone(),0,preview)) },
+        ParsedPatch::Delete{..}=>{ let preview=build_patch_preview_file(hunk,&source,"",None); tokio::fs::remove_file(&path).await?; Ok((format!("delete: {file}"),file.clone(),0,preview)) },
+        ParsedPatch::Update{chunks,move_path:destination,..}=>{
+            if !source.exists { return Err(MutationError{message:format!("ENOENT: no such file or directory, open '{}'",path.display()),code:Some("ENOENT".into())}); }
+            let move_destination=match &move_path { Some(destination) if destination!=&path=>Some(read_patch_file_snapshot(destination).await?),_=>None };
+            if source.binary {
+                if !chunks.is_empty() { return Err(format!("apply_patch cannot apply text hunks to binary file: {file}").into()); }
+                let Some(destination_path)=&move_path else { return Err(format!("apply_patch cannot update binary file without a move destination: {file}").into()); };
+                let preview=build_patch_preview_file(hunk,&source,"",move_destination.as_ref());
+                tokio::fs::create_dir_all(destination_path.parent().expect("resolved parent")).await?;
+                write_file_atomic(destination_path,source.bytes.as_deref().expect("binary snapshot bytes")).await?;
+                if destination_path!=&path { tokio::fs::remove_file(&path).await?; }
+                let destination=destination.as_ref().expect("move destination"); return Ok((format!("move: {file} -> {destination}"),destination.clone(),0,preview));
+            }
+            let (content,fuzz)=if chunks.is_empty() { (source.content.clone(),0) } else { replace_chunks(&source.content,file,chunks)? };
+            let fuzz=fuzz as usize;
+            let preview=build_patch_preview_file(hunk,&source,&content,move_destination.as_ref());
+            if let Some(destination_path)=move_path { tokio::fs::create_dir_all(destination_path.parent().expect("resolved parent")).await?; write_file_atomic(&destination_path,content.as_bytes()).await?; if destination_path!=path { tokio::fs::remove_file(&path).await?; } let destination=destination.as_ref().expect("move destination"); Ok((format!("move: {file} -> {destination}"),destination.clone(),fuzz,preview)) }
+            else { write_file_atomic(&path,content.as_bytes()).await?; Ok((format!("update: {file}"),file.clone(),fuzz,preview)) }
+        },
+    }
+}
+pub type ApplyPatchProgressCallback<'a>=dyn Fn(crate::types::ApplyPatchProgress)->std::pin::Pin<Box<dyn std::future::Future<Output=Result<(),String>>+Send+'a>>+Send+Sync+'a;
+pub async fn apply_patch_detailed(cwd:&Path,patch_text:&str)->Result<ApplyPatchResult,String> { apply_patch_detailed_with_progress(cwd,patch_text,None).await }
+pub async fn apply_patch_detailed_with_progress(cwd:&Path,patch_text:&str,on_progress:Option<&ApplyPatchProgressCallback<'_>>)->Result<ApplyPatchResult,String> { apply_hunks(cwd,parse_non_empty_patch(patch_text)?,false,on_progress).await.map_err(|error|error.to_string()) }
+pub async fn apply_patch(cwd:&Path,patch_text:&str)->Result<Vec<String>,ApplyPatchError> { let hunks=parse_non_empty_patch(patch_text).map_err(|message|ApplyPatchError::new(message,ApplyPatchResult::default()))?; Ok(apply_hunks(cwd,hunks,true,None).await?.summaries) }
+async fn apply_hunks(cwd:&Path,hunks:Vec<ParsedPatch>,fail_fast:bool,on_progress:Option<&ApplyPatchProgressCallback<'_>>)->Result<ApplyPatchResult,ApplyPatchError> {
+    let total=hunks.len();
+    let mut result=ApplyPatchResult::default();
+    for (operation_index,hunk) in hunks.into_iter().enumerate() {
+        match apply_single_hunk(cwd,&hunk).await {
+            Ok((summary,file,fuzz,preview))=>{ result.summaries.push(summary); result.applied_files.push(file); result.details.fuzz+=fuzz; result.details.applied_operations.push(AppliedPatchOperation{operation_index,preview}); },
+            Err(error)=>{
+                let (file_path,operation)=match hunk { ParsedPatch::Add{file_path,..}=>(file_path,crate::types::ApplyPatchOperation::Add),ParsedPatch::Delete{file_path}=>(file_path,crate::types::ApplyPatchOperation::Delete),ParsedPatch::Update{file_path,..}=>(file_path,crate::types::ApplyPatchOperation::Update) };
+                result.failures.push(ApplyPatchFailure{operation_index,file_path,operation,message:error.message.clone(),code:error.code});
+                if fail_fast { result.has_partial_success = !result.applied_files.is_empty(); result.recovery_instructions=create_recovery_instructions(&result.applied_files,&result.failures); result.details.fuzz=0; return Err(ApplyPatchError::new(error.message,compact_apply_patch_result(result))); }
+            },
+        }
+        if let Some(on_progress)=on_progress { let _=on_progress(crate::types::ApplyPatchProgress{applied:result.applied_files.len(),failed:result.failures.len(),total}).await; }
+    }
+    result.has_partial_success = !result.applied_files.is_empty() && !result.failures.is_empty(); result.recovery_instructions=create_recovery_instructions(&result.applied_files,&result.failures); Ok(result)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{AppliedPatchOperation,ApplyPatchPreviewFile,ApplyPatchOperation};
+    #[tokio::test] async fn detailed_application_continues_after_failure() {
+        let directory=tempfile::tempdir().unwrap();
+        let patch="*** Begin Patch\n*** Add File: first\n+one\n*** Update File: missing\n@@\n-old\n+new\n*** Add File: last\n+three\n*** End Patch";
+        let result=apply_patch_detailed(directory.path(),patch).await.unwrap();
+        assert_eq!(result.applied_files,["first","last"]); assert_eq!(result.failures.len(),1); assert_eq!(result.failures[0].code.as_deref(),Some("ENOENT")); assert!(result.has_partial_success);
+        assert_eq!(tokio::fs::read_to_string(directory.path().join("last")).await.unwrap(),"three\n");
+    }
+    #[tokio::test] async fn fail_fast_keeps_earlier_success_and_does_not_apply_later_files() {
+        let directory=tempfile::tempdir().unwrap();
+        let patch="*** Begin Patch\n*** Add File: first\n+one\n*** Delete File: missing\n*** Add File: last\n+three\n*** End Patch";
+        let error=apply_patch(directory.path(),patch).await.unwrap_err();
+        assert_eq!(error.result.applied_files,["first"]); assert!(error.has_partial_success()); assert!(!directory.path().join("last").exists()); assert_eq!(error.result.details.applied_operations[0].preview.diff,"");
+    }
+    #[tokio::test] async fn text_move_and_delete_use_real_filesystem() {
+        let directory=tempfile::tempdir().unwrap();
+        apply_patch(directory.path(),"*** Begin Patch\n*** Add File: a\n+old\n*** End Patch").await.unwrap();
+        apply_patch(directory.path(),"*** Begin Patch\n*** Update File: a\n*** Move to: nested/b\n@@\n-old\n+new\n*** End Patch").await.unwrap();
+        assert!(!directory.path().join("a").exists()); assert_eq!(tokio::fs::read_to_string(directory.path().join("nested/b")).await.unwrap(),"new\n");
+        apply_patch(directory.path(),"*** Begin Patch\n*** Delete File: nested/b\n*** End Patch").await.unwrap(); assert!(!directory.path().join("nested/b").exists());
+    }
+    #[tokio::test] async fn binary_move_preserves_exact_bytes() {
+        let directory=tempfile::tempdir().unwrap(); let bytes=[0,255,1,2]; tokio::fs::write(directory.path().join("a"),bytes).await.unwrap();
+        let result=apply_patch_detailed(directory.path(),"*** Begin Patch\n*** Update File: a\n*** Move to: b\n*** End Patch").await.unwrap(); assert!(result.failures.is_empty()); assert_eq!(tokio::fs::read(directory.path().join("b")).await.unwrap(),bytes); assert!(!directory.path().join("a").exists());
+    }
+    #[test] fn empty_envelope_is_rejected_before_any_mutation() { assert_eq!(parse_non_empty_patch("*** Begin Patch\n*** End Patch").unwrap_err(),"patch rejected: empty patch"); assert_eq!(parse_non_empty_patch("*** Begin Patch\nnoise\n*** End Patch").unwrap_err(),"apply_patch verification failed: no hunks found"); }
+    #[test] fn compact_result_preserves_recovery_metadata() { let mut result=ApplyPatchResult::default(); result.applied_files.push("a".into()); result.details.applied_operations.push(AppliedPatchOperation{operation_index:1,preview:ApplyPatchPreviewFile{file_path:"a".into(),move_path:None,operation:ApplyPatchOperation::Add,binary:None,diff:"large".into(),patch:Some("large".into()),added:1,removed:0}}); let compact=compact_apply_patch_result(result); assert_eq!(compact.applied_files,["a"]); assert_eq!(compact.details.applied_operations[0].operation_index,1); assert!(compact.details.applied_operations[0].preview.diff.is_empty()); assert_eq!(compact.details.applied_operations[0].preview.patch,None); }
+}
