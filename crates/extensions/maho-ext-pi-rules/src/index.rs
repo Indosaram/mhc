@@ -7,15 +7,18 @@ impl EngineDeps for FilesystemDeps{
     fn read_file(&mut self,path:&str)->Option<String>{std::fs::read_to_string(path).ok()}
     fn find_project_root(&mut self,path:&str)->Option<String>{find_project_root(Path::new(path),None).map(|path|path.to_string_lossy().into_owned())}
 }
-fn sync_flags(engine:&mut Engine<FilesystemDeps>,runtime:&ExtensionRuntime,env_disabled:bool){
+fn sync_flags<D:EngineDeps>(engine:&mut Engine<D>,runtime:&ExtensionRuntime,env_disabled:bool){
     if let Some(FlagValue::Boolean(disabled))=runtime.get_flag("pi-rules-disabled"){engine.config.disabled=disabled||env_disabled;}
     if let Some(FlagValue::String(mode))=runtime.get_flag("pi-rules-mode")
         && let Some(mode)=match mode.as_str(){"static"=>Some(Mode::Static),"dynamic"=>Some(Mode::Dynamic),"both"=>Some(Mode::Both),"off"=>Some(Mode::Off),_=>None}{engine.config.mode=mode;}
 }
 pub fn register_rule_injection_hooks(api:&mut ExtensionApi){
+    register_rule_injection_hooks_with_engine(api,Engine::new(config_from_environment(),FilesystemDeps));
+}
+pub fn register_rule_injection_hooks_with_engine<D:EngineDeps+Send+'static>(api:&mut ExtensionApi,engine:Engine<D>){
     api.register_flag("pi-rules-disabled",FlagType::Boolean{default:Some(false)},Some("Disable pi-rules hooks.".into()));
     api.register_flag("pi-rules-mode",FlagType::String{default:Some("both".into())},Some("Rule injection mode: static, dynamic, both, or off.".into()));
-    let config=config_from_environment();let env_disabled=config.disabled;let engine=Arc::new(Mutex::new(Engine::new(config,FilesystemDeps)));
+    let env_disabled=engine.config.disabled;let engine=Arc::new(Mutex::new(engine));
     for kind in [EventKind::SessionStart,EventKind::SessionCompact]{
         let engine=Arc::clone(&engine);let runtime=api.runtime.clone();
         api.on(kind,Arc::new(move|_,ctx|{let mut engine=engine.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if kind==EventKind::SessionStart{sync_flags(&mut engine,&runtime,env_disabled);}engine.reset_session(Some(&ctx.cwd.to_string_lossy()));Box::pin(async{Ok(EventResult::None)})}));
