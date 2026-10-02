@@ -1791,6 +1791,7 @@ version = "0.0.0"
 name = "maho-ext-todotools"
 version = "0.0.0"
 dependencies = [
+ "regex",
  "serde",
  "serde_json",
 ]

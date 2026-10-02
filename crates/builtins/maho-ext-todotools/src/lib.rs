@@ -1,3 +1,11 @@
 pub mod todo_types;
 pub mod todo_query;
 pub mod todo_storage;
+pub mod native_todo_mirror;
+pub mod todo_format;
+pub mod fuzzy_match;
+pub mod todo_resolution;
+pub mod todo_operations;
+pub mod normalize;
+pub mod markdown;
+pub mod todo_widget;
