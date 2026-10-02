@@ -120,6 +120,29 @@ pub fn reader_text_similarity(title:&str,heading:&str)->f64 {
 pub fn reader_header_duplicates_title(node:&dom_query::NodeRef<'_>,title:&str)->bool {
     matches!(node.node_name().as_deref(),Some("h1"|"h2"))&&reader_text_similarity(title,&reader_inner_text(node,false))>0.75
 }
+pub fn reader_valid_byline(node:&dom_query::NodeRef<'_>,match_string:&str)->bool {
+    static BYLINE:LazyLock<Regex>=LazyLock::new(||Regex::new("(?i)byline|author|dateline|writtenby|p-author").expect("literal pattern"));
+    let length=node.text().trim_matches(js_whitespace).encode_utf16().count();
+    (node.attr("rel").as_deref()==Some("author")||node.attr("itemprop").is_some_and(|value|value.contains("author"))||BYLINE.is_match(match_string))&&length>0&&length<100
+}
+pub fn reader_unlikely_candidate(node:&dom_query::NodeRef<'_>,match_string:&str)->bool {
+    static UNLIKELY:LazyLock<Regex>=LazyLock::new(||Regex::new("(?i)-ad-|ai2html|banner|breadcrumbs|combx|comment|community|cover-wrap|disqus|extra|footer|gdpr|header|legends|menu|related|remark|replies|rss|shoutbox|sidebar|skyscraper|social|sponsor|supplemental|ad-break|agegate|pagination|pager|popup|yom-remote").expect("literal pattern"));
+    static MAYBE:LazyLock<Regex>=LazyLock::new(||Regex::new("(?i)and|article|body|column|content|main|shadow").expect("literal pattern"));
+    let mut ancestor=node.parent();let mut protected=false;
+    for _ in 0..4 {let Some(parent)=ancestor else {break;};if matches!(parent.node_name().as_deref(),Some("table"|"code")) {protected=true;break;}ancestor=parent.parent();}
+    let class_unlikely=UNLIKELY.is_match(match_string)&&!MAYBE.is_match(match_string)&&!protected&&!matches!(node.node_name().as_deref(),Some("body"|"a"));
+    class_unlikely||node.attr("role").is_some_and(|role|matches!(role.as_ref(),"menu"|"menubar"|"complementary"|"navigation"|"alert"|"alertdialog"|"dialog"))
+}
+pub fn reader_probably_visible(node:&dom_query::NodeRef<'_>)->bool {
+    let style=node.attr("style").unwrap_or_default();let mut display="";let mut visibility="";
+    for rule in style.split(';') {
+        if let Some((key,value))=rule.split_once(':') {let key=key.trim_matches(js_whitespace);let value=value.trim_matches(js_whitespace);if value.is_empty() {continue;}
+            match key {"display"=>display=value,"visibility"=>visibility=value,_=>{}}
+        }
+    }
+    display!="none"&&visibility!="hidden"&&!node.has_attr("hidden")
+        && (node.attr("aria-hidden").as_deref()!=Some("true")||node.attr("class").is_some_and(|class|class.contains("fallback-image")))
+}
 pub fn score_reader_candidates(elements:&[dom_query::NodeRef<'_>],weight_classes:bool)->Vec<(dom_query::NodeId,f64)> {
     let mut candidates:Vec<(dom_query::NodeRef<'_>,f64)>=Vec::new();
     for element in elements {
@@ -342,6 +365,19 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_visibility_preserves_linkedom_style_case_and_last_nonempty_value() {
+        for (style,visible) in [("display:none",false),("display:none;display:block",true),("display:none;display:",false),("DISPLAY:none",true),("display:none !important",true),("visibility:hidden",false)] {
+            let document=dom_query::Document::from(format!("<div style='{style}'></div>"));assert_eq!(reader_probably_visible(&document.select("div").nodes()[0]),visible);
+        }
+        let document=dom_query::Document::from("<div id='hidden' hidden='false'></div><div id='aria' aria-hidden='true'></div><div id='math' aria-hidden='true' class='fallback-image'></div>");assert!(!reader_probably_visible(&document.select("#hidden").nodes()[0]));assert!(!reader_probably_visible(&document.select("#aria").nodes()[0]));assert!(reader_probably_visible(&document.select("#math").nodes()[0]));
+    }
+    #[test] fn reader_unlikely_candidates_preserve_source_exceptions_and_role_case() {
+        let document=dom_query::Document::from("<div id='plain'></div><a id='anchor'></a><div id='role' role='navigation'></div><div id='case' role='Navigation'></div><code><span id='protected'></span></code>");let plain=document.select("#plain");assert!(reader_unlikely_candidate(&plain.nodes()[0],"sidebar"));assert!(!reader_unlikely_candidate(&plain.nodes()[0],"sidebar article"));assert!(!reader_unlikely_candidate(&document.select("#anchor").nodes()[0],"sidebar"));assert!(reader_unlikely_candidate(&document.select("#role").nodes()[0],"article"));assert!(!reader_unlikely_candidate(&document.select("#case").nodes()[0],"article"));assert!(!reader_unlikely_candidate(&document.select("#protected").nodes()[0],"sidebar"));
+    }
+    #[test] fn reader_byline_preserves_attribute_case_and_utf16_limit() {
+        let document=dom_query::Document::from(format!("<p id='rel' rel='author'>Name</p><p id='case' rel='AUTHOR'>Name</p><p id='prop' itemprop='coauthor'>Name</p><p id='limit'>{}</p><p id='short'>{}</p>","😀".repeat(50),"😀".repeat(49)));
+        assert!(reader_valid_byline(&document.select("#rel").nodes()[0],""));assert!(!reader_valid_byline(&document.select("#case").nodes()[0],""));assert!(reader_valid_byline(&document.select("#prop").nodes()[0],""));assert!(!reader_valid_byline(&document.select("#limit").nodes()[0],"AUTHOR"));assert!(reader_valid_byline(&document.select("#short").nodes()[0],"AUTHOR"));
+    }
     #[test] fn reader_similarity_keeps_ascii_word_and_directional_distance_semantics() {
         assert_eq!(reader_text_similarity("same title","same title"),1.);assert_eq!(reader_text_similarity("한글","한글"),0.);assert_eq!(reader_text_similarity("a","a b"),1.-1./3.);assert_eq!(reader_text_similarity("a b","a"),1.);assert_eq!(reader_text_similarity("Title_name","title_name"),1.);
         let document=dom_query::Document::from("<h1>same title</h1><h3>same title</h3>");assert!(reader_header_duplicates_title(&document.select("h1").nodes()[0],"same title"));assert!(!reader_header_duplicates_title(&document.select("h3").nodes()[0],"same title"));
