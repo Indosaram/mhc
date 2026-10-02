@@ -3,6 +3,9 @@ use crate::arguments::NormalizedLookAtArgs;
 pub const LOOK_AT_TIMEOUT_MS:u64=120_000;
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct LookAtRunResult { pub model:String,pub sources:Vec<String>,pub mime_types:Vec<String>,pub text:String }
+pub fn run_result(provider:&str,model_id:&str,inputs:&[crate::image_input::LoadedLookAtInput],response:&AssistantMessage,aborted:bool)->Result<LookAtRunResult,String> {
+    Ok(LookAtRunResult{model:format!("{provider}/{model_id}"),sources:inputs.iter().map(|input|input.label.clone()).collect(),mime_types:inputs.iter().map(|input|input.mime_type.clone()).collect(),text:response_text(response,aborted)?})
+}
 pub fn input_paths(args:&NormalizedLookAtArgs)->Vec<String> { args.args.file_paths.clone().unwrap_or_else(||args.args.file_path.as_ref().filter(|path|!path.is_empty()).cloned().into_iter().collect()) }
 pub fn input_data(args:&NormalizedLookAtArgs)->Vec<String> { args.args.image_data_list.clone().unwrap_or_else(||args.args.image_data.as_ref().filter(|data|!data.is_empty()).cloned().into_iter().collect()) }
 pub fn to_stream_reasoning(level:Option<ModelThinkingLevel>)->Option<ThinkingLevel> { match level { None|Some(ModelThinkingLevel::Off)=>None,Some(ModelThinkingLevel::Minimal)=>Some(ThinkingLevel::Minimal),Some(ModelThinkingLevel::Low)=>Some(ThinkingLevel::Low),Some(ModelThinkingLevel::Medium)=>Some(ThinkingLevel::Medium),Some(ModelThinkingLevel::High)=>Some(ThinkingLevel::High),Some(ModelThinkingLevel::Xhigh)=>Some(ThinkingLevel::Xhigh),Some(ModelThinkingLevel::Max)=>Some(ThinkingLevel::Max) } }
@@ -21,6 +24,10 @@ pub fn response_text(response:&AssistantMessage,aborted:bool)->Result<String,Str
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test] fn result_metadata_keeps_source_and_mime_order() {
+        let inputs=vec![crate::image_input::LoadedLookAtInput{data:String::new(),label:"first".into(),mime_type:"image/png".into()},crate::image_input::LoadedLookAtInput{data:String::new(),label:"second".into(),mime_type:"image/jpeg".into()}];
+        let result=run_result("provider","vision",&inputs,&message("stop","analysis"),false).unwrap(); assert_eq!(result.model,"provider/vision"); assert_eq!(result.sources,["first","second"]); assert_eq!(result.mime_types,["image/png","image/jpeg"]); assert!(run_result("provider","vision",&inputs,&message("aborted","analysis"),false).is_err());
+    }
     #[test] fn user_message_keeps_media_order_before_goal() { let inputs=vec![crate::image_input::LoadedLookAtInput{data:"data".into(),label:"one".into(),mime_type:"image/png".into()}]; let message=build_user_message("goal",&inputs,0); let maho_ai::types::UserContent::Blocks(blocks)=message.content else { panic!() }; assert!(matches!(&blocks[0],ContentBlock::Image(image) if image.data=="data" && image.mime_type=="image/png")); assert!(matches!(&blocks[1],ContentBlock::Text(_))); assert_eq!(message.timestamp,0); }
     #[test] fn response_trim_uses_javascript_whitespace() { assert_eq!(response_text(&message("stop","\u{feff}text\u{feff}"),false).unwrap(),"text"); assert_eq!(response_text(&message("stop","\u{0085}text\u{0085}"),false).unwrap(),"\u{0085}text\u{0085}"); }
     fn message(stop:&str,text:&str)->AssistantMessage { serde_json::from_value(json!({"content":[{"type":"text","text":text}],"api":"test","provider":"test","model":"vision","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":stop,"timestamp":0})).unwrap() }

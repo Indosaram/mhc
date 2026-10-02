@@ -6,6 +6,40 @@ static ATTACHMENT:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)^[\x09-\x0d\x
 static DATA_URI:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?is)^data:([^;,]+)(?:;[^,]*)?,(.*)$").expect("literal pattern"));
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct LoadedLookAtInput { pub data:String,pub label:String,pub mime_type:String }
+pub struct LookAtImageInputContext<'a> { pub cwd:&'a std::path::Path,pub branch:&'a [serde_json::Value],pub auto_resize:bool,pub block_images:bool }
+fn finalize_input(bytes:Vec<u8>,label:String,mime_type:Option<String>,auto_resize:bool)->Result<(LoadedLookAtInput,usize),String> {
+    use base64::Engine;
+    let mime_type=input_mime_type(&bytes,&label,mime_type.as_deref())?.to_owned();
+    if mime_type.starts_with("image/") && auto_resize { return Err("Image processing requires the source-equivalent processImage binding".into()); }
+    let size=bytes.len(); Ok((LoadedLookAtInput{data:base64::engine::general_purpose::STANDARD.encode(bytes),label,mime_type},size))
+}
+async fn load_path_input(ctx:&LookAtImageInputContext<'_>,input:&str)->Result<(LoadedLookAtInput,usize),String> {
+    if input.get(..7).is_some_and(|prefix|prefix.eq_ignore_ascii_case("http://")) || input.get(..8).is_some_and(|prefix|prefix.eq_ignore_ascii_case("https://")) { return Err("Error: Remote URLs are not supported; download first, use local path.".into()); }
+    if let Some(reference)=parse_image_attachment_reference(input) {
+        let images=last_user_images(ctx.branch);
+        let image=if reference.index.is_finite() && reference.index<=images.len() as f64 { images.get(reference.index as usize-1) } else { None }.ok_or_else(||available_attachment_error(input,images.len()))?;
+        let data=image["data"].as_str().ok_or_else(||"Attachment data is not a string".to_owned())?;
+        let mime=image["mimeType"].as_str().ok_or_else(||"Attachment MIME type is not a string".to_owned())?;
+        return finalize_input(decode_base64(data)?,format!("Image #{}",reference.index),Some(mime.to_lowercase()),ctx.auto_resize);
+    }
+    let input_path=std::path::Path::new(input);
+    let path=if input_path.is_absolute() { input_path.to_path_buf() } else {
+        let base=if ctx.cwd.is_absolute() { ctx.cwd.to_path_buf() } else { std::env::current_dir().map_err(|error|error.to_string())?.join(ctx.cwd) };
+        let mut resolved=std::path::PathBuf::new();
+        for part in base.join(input_path).components() { match part { std::path::Component::CurDir=>{},std::path::Component::ParentDir=>{resolved.pop();},other=>resolved.push(other.as_os_str()) } } resolved
+    };
+    let bytes=tokio::fs::read(&path).await.map_err(|error|if error.kind()==std::io::ErrorKind::NotFound { format!("Error: File not found: {input}") } else { error.to_string() })?;
+    let label=path.file_name().unwrap_or_else(||std::ffi::OsStr::new("")).to_string_lossy().into_owned();
+    finalize_input(bytes,label,mime_type_from_name(&path.to_string_lossy()).map(String::from),ctx.auto_resize)
+}
+pub async fn load_look_at_inputs(ctx:&LookAtImageInputContext<'_>,paths:&[String],base64_inputs:&[String])->Result<Vec<LoadedLookAtInput>,String> {
+    if ctx.block_images { return Err("Error: Image inputs are blocked by settings.".into()); }
+    let paths=paths.iter().map(|path|load_path_input(ctx,path));
+    let data=base64_inputs.iter().map(|input|async move { let (data,mime)=parse_base64(input); finalize_input(decode_base64(&data)?,"base64 input".into(),mime,ctx.auto_resize) });
+    let (paths,data)=futures::try_join!(futures::future::try_join_all(paths),futures::future::try_join_all(data))?;
+    let loaded:Vec<_>=paths.into_iter().chain(data).collect(); validate_aggregate_bytes(&loaded.iter().map(|(_,size)|*size).collect::<Vec<_>>())?;
+    Ok(loaded.into_iter().map(|(input,_)|input).collect())
+}
 #[derive(Clone,Copy,Debug,PartialEq)]
 pub struct AttachmentReference { pub index:f64 }
 pub fn last_user_images(branch:&[serde_json::Value])->Vec<serde_json::Value> {
@@ -51,6 +85,21 @@ pub fn available_attachment_error(input:&str,count:usize)->String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test] async fn loader_preserves_file_attachment_and_base64_order() {
+        let directory=tempfile::tempdir().unwrap(); std::fs::write(directory.path().join("note.txt"),b"notes").unwrap();
+        let branch=[serde_json::json!({"type":"message","message":{"role":"user","content":[{"type":"image","data":"R0lGOA==","mimeType":"IMAGE/GIF"}]}})];
+        let ctx=LookAtImageInputContext{cwd:directory.path(),branch:&branch,auto_resize:false,block_images:false};
+        let inputs=load_look_at_inputs(&ctx,&["note.txt".into(),"attachment://1".into()],&["data:application/pdf;base64,JVBERi0=".into()]).await.unwrap();
+        assert_eq!(inputs.iter().map(|input|input.label.as_str()).collect::<Vec<_>>(),["note.txt","Image #1","base64 input"]);
+        assert_eq!(inputs.iter().map(|input|input.mime_type.as_str()).collect::<Vec<_>>(),["text/plain","image/gif","application/pdf"]); assert_eq!(inputs[0].data,"bm90ZXM=");
+    }
+    #[tokio::test] async fn loader_rejects_blocked_remote_missing_and_unbound_resize() {
+        let directory=tempfile::tempdir().unwrap(); let mut ctx=LookAtImageInputContext{cwd:directory.path(),branch:&[],auto_resize:false,block_images:true};
+        assert!(load_look_at_inputs(&ctx,&[],&[]).await.is_err()); ctx.block_images=false;
+        assert!(load_look_at_inputs(&ctx,&["https://example.com/a.png".into()],&[]).await.is_err());
+        assert_eq!(load_look_at_inputs(&ctx,&["missing.txt".into()],&[]).await.unwrap_err(),"Error: File not found: missing.txt");
+        ctx.auto_resize=true; assert!(load_look_at_inputs(&ctx,&[],&["data:image/gif;base64,R0lGOA==".into()]).await.is_err());
+    }
     #[test] fn attachment_whitespace_matches_ecmascript() { assert!(parse_image_attachment_reference("\u{feff}Image #1\u{feff}").is_some()); assert!(parse_image_attachment_reference("\u{0085}Image #1").is_none()); }
     #[test] fn latest_user_turn_without_images_does_not_reuse_old_attachments() {
         let old=serde_json::json!({"type":"message","message":{"role":"user","content":[{"type":"image","data":"AA==","mimeType":"image/png"}]}});
