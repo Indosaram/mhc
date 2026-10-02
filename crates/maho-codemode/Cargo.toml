@@ -7,6 +7,7 @@ license = "MIT"
 
 [dependencies]
 maho-ext-api = { path = "../maho-ext-api" }
+maho-ai = { path = "../maho-ai" }
 maho-tools = { path = "../maho-tools" }
 maho-tui = { path = "../maho-tui" }
 tokio = { version = "=1.52.3", features = ["full", "test-util"] }
@@ -21,7 +22,6 @@ regex = "=1.12.3"
 
 [dev-dependencies]
 tempfile = "=3.27.0"
-maho-ai = { path = "../maho-ai" }
 
 [lints]
 workspace = true
