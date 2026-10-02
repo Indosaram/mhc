@@ -52,14 +52,19 @@ async fn active_session_delivers_validated_change_and_joins_shutdown() {
     let root = tempfile::tempdir().unwrap();
     let events = EventBus::default();
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-    let _subscription = events.on(maho_ext_config_reload::protocol::CONFIG_WATCH_CHANGED, Arc::new(move |value| { sender.send(value.clone()).unwrap(); }));
+    let scope = maho_ai::node::provider_scope::ProviderScope::new();
+    let expected_scope = scope.clone();
+    let _subscription = events.on(maho_ext_config_reload::protocol::CONFIG_WATCH_CHANGED, Arc::new(move |value| {
+        assert!(maho_ai::node::provider_scope::active_provider_scope().is_some_and(|scope| scope.ptr_eq(&expected_scope)));
+        sender.send(value.clone()).unwrap();
+    }));
     let mut api = ExtensionApi::new(LoadedExtension::new("config-reload", root.path().into(), SourceInfo::default()), ExtensionSessionProfile::default(), events, ExtensionRuntime::default());
     maho_ext_config_reload::ConfigReload.register(&mut api);
     let mut ctx = context(root.path());
     ctx.mode = ExtensionMode::Tui;
     ctx.is_idle_fn = Arc::new(|| false);
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::Startup, initial_model_provenance: None, previous_session_file: None });
-    (api.registered.handlers[&EventKind::SessionStart][0])(&mut start, &ctx).await.unwrap();
+    maho_ai::node::provider_scope::run_with_provider_scope_async(&scope, (api.registered.handlers[&EventKind::SessionStart][0])(&mut start, &ctx)).await.unwrap().unwrap();
     let staged = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(staged.path(), "{\"fixture\":\"ctrl+x\"}").unwrap();
     let path = root.path().join("keybindings.json");

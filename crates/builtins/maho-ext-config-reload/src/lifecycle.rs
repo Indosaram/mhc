@@ -55,8 +55,11 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
     let watched = build_builtin_watch_targets(&ctx.cwd, &ctx.agent_dir, ctx.is_project_trusted(), &resolved, &skill_paths).into_iter().map(|active| active.target).collect();
     let logger = Arc::new(Mutex::new(ConfigReloadLogger::new(&ctx.agent_dir, None).map_err(|error| ExtensionFailure::new(error.to_string()))?));
     let errors = Arc::clone(&logger);
-    let on_error: crate::watch_event_source::WatchErrorListener = Arc::new(move |message, path| {
+    let scoped_errors = crate::session_scoped_callback::bind_session_scoped_callback(move |(message, path): (String, PathBuf)| {
         if let Ok(mut logger) = errors.lock() { logger.log(LogLevel::Error, LogEvent::WatcherError { path: &path.to_string_lossy(), message: &message }); }
+    });
+    let on_error: crate::watch_event_source::WatchErrorListener = Arc::new(move |message, path| {
+        let _ = scoped_errors((message, path));
     });
     let debounce = Duration::from_secs_f64(resolved.debounce_ms / 1000.0);
     let mut engine = NativeWatchEngine::with_debounce(watched, Arc::clone(&on_error), debounce).map_err(ExtensionFailure::new)?;
@@ -66,7 +69,8 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
     let (cancel, mut cancelled) = tokio::sync::watch::channel(false);
     let shared = Arc::clone(&state);
     let ready_events = events.clone();
-    let task = tokio::spawn(async move {
+    let scope = maho_ai::node::provider_scope::active_provider_scope();
+    let work = async move {
         loop {
             let change = tokio::select! {
                 result = engine.next_change_async() => result?,
@@ -101,9 +105,16 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
                 events.emit(CONFIG_WATCH_READY, &serde_json::json!({"enabled":true}));
             }
             let state = Arc::clone(&shared); let context = ctx.clone();
-            tokio::spawn(async move { if let Err(error) = flush(state, context.clone(), Some(generation)).await { context.ui.notify(&error.to_string(), NotificationType::Error); } });
+            let scope = maho_ai::node::provider_scope::active_provider_scope();
+            tokio::spawn(async move {
+                let work = async { if let Err(error) = flush(state, context.clone(), Some(generation)).await { context.ui.notify(&error.to_string(), NotificationType::Error); } };
+                if let Some(scope) = scope { let _ = maho_ai::node::provider_scope::run_with_provider_scope_async(&scope, work).await; } else { work.await; }
+            });
         }
         engine.close_async().await
+    };
+    let task = tokio::spawn(async move {
+        if let Some(scope) = scope { maho_ai::node::provider_scope::run_with_provider_scope_async(&scope, work).await.map_err(|error| error.to_string())? } else { work.await }
     });
     state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.run = Some(WatchRun { cancel, task });
     ready_events.emit(CONFIG_WATCH_READY, &serde_json::json!({"enabled":true}));
