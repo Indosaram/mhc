@@ -49,6 +49,40 @@ mod tests {
     #[test] fn global_decline_suppresses() { let (_r,_s,p)=preflight(); write_global_decline(&p.state_dir,0.0).unwrap(); assert!(prepare_proposal(&p,100.0).unwrap().is_none()); }
     #[test] fn project_decline_suppresses() { let (_r,_s,p)=preflight(); write_project_decline(&p.state_dir,&repo_hash(&p.root).unwrap(),0.0).unwrap(); assert!(prepare_proposal(&p,100.0).unwrap().is_none()); }
     #[test] fn cooldown_suppresses() { let (_r,_s,p)=preflight(); write_cooldown(&p.state_dir,&repo_hash(&p.root).unwrap(),100.0).unwrap(); assert!(prepare_proposal(&p,101.0).unwrap().is_none()); }
+    #[test]
+    fn fully_covered_repository_does_not_record_proposal() {
+        let (_root, _state, preflight) = preflight();
+        fs::write(preflight.root.join("AGENTS.md"), "").unwrap();
+        let repo = repo_hash(&preflight.root).unwrap();
+
+        let proposal = prepare_proposal(&preflight, 100.0).unwrap();
+
+        assert!(proposal.is_none());
+        assert!(read_last_proposed_head(&preflight.state_dir, &repo).is_none());
+    }
+    #[test]
+    fn proposed_payloads_preserve_all_eligibility_variants() {
+        use crate::proposed_data::{CoverageData, DriftData, StaleData};
+        let drift = DriftData { commits_since: 40, touched_ratio: 0.2, churn_loc_ratio: 0.3, days_since: 100.0 };
+        let cases = [
+            (EligibilityResult::CoverageGap { coverage: CoverageData { missing_ratio: 0.75, candidate_dirs: 4, covered_dirs: 1 } }, "coverage-gap"),
+            (EligibilityResult::CommitAndTouch { drift: drift.clone() }, "commit-and-touch"),
+            (EligibilityResult::LocChurn { drift: drift.clone() }, "loc-churn"),
+            (EligibilityResult::SnapshotAge { drift }, "snapshot-age"),
+            (EligibilityResult::SnapshotInvalid { drift: StaleData { stale: true } }, "snapshot-invalid"),
+        ];
+
+        let payloads = cases.iter().map(|(eligibility, _)| build_proposed_data("repo", eligibility, SuggestedMode::Local).unwrap()).collect::<Vec<_>>();
+
+        for ((_, trigger), payload) in cases.iter().zip(payloads) {
+            let (coverage, drift) = match *trigger {
+                "coverage-gap" => (serde_json::json!({"missingRatio":0.75,"candidateDirs":4,"coveredDirs":1}), serde_json::Value::Null),
+                "snapshot-invalid" => (serde_json::Value::Null, serde_json::json!({"stale":true})),
+                _ => (serde_json::Value::Null, serde_json::json!({"commitsSince":40,"touchedRatio":0.2,"churnLocRatio":0.3,"daysSince":100.0})),
+            };
+            assert_eq!(payload, serde_json::json!({"repo":"repo","trigger":trigger,"coverage":coverage,"drift":drift,"suggestedMode":"local"}));
+        }
+    }
     fn api()->ExtensionApi {use maho_ext_api::{LoadedExtension,SourceInfo,ExtensionSessionProfile,EventBus,ExtensionRuntime};ExtensionApi::new(LoadedExtension::new("advisor",PathBuf::from("/workspace"),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default())}
     fn eligibility()->EligibilityResult {EligibilityResult::SnapshotInvalid {drift:crate::proposed_data::StaleData {stale:true}}}
     #[test] fn skip_writes_cooldown() {let (_r,_s,p)=preflight();let repo=repo_hash(&p.root).unwrap();handle_choice(Some("Skip this time"),&api(),&p,&repo,&eligibility(),Path::new("/skills"),100.0).unwrap();assert!(read_cooldown_until(&p.state_dir,&repo)>100.0);}
