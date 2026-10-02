@@ -2563,7 +2563,7 @@ impl AgentSession {
     }
 
     fn reduce_for_switch_target(&self, model: &Model, live: u64) -> Result<u64, String> {
-        let entries = self.with_session_manager(|manager| manager.branch(None));
+        let entries = self.with_session_manager(|manager| manager.branch(manager.leaf_id().or(Some(""))));
         let measured = self.with_session_manager(|manager| manager.build_context(manager.leaf_id())).messages.iter()
             .map(crate::compaction::compaction::estimate_tokens).sum();
         let (budget, repairable) = self.model_budget(model, measured, false)?;
@@ -7289,6 +7289,46 @@ mod tests {
         assert_eq!(session.model().id, "second");
         assert_eq!(session.with_session_manager(|manager| manager.entries()[0]["type"].clone()), "model_change");
         assert!(session.with_settings_manager(|manager| manager.get_string("defaultModel")).is_none());
+    }
+
+    #[tokio::test]
+    async fn fallback_reduction_retains_selected_branch_not_abandoned_tail() {
+        let session = test_session_with_stream_function(false);
+        let mut primary = test_model();
+        primary.context_window = 1_000_000;
+        session.agent.set_model(primary);
+        let selected = session.with_session_manager_mut(|manager| {
+            let root = manager.append_message(serde_json::json!({"role":"user","content":"root","timestamp":0}));
+            for _ in 0..20 {
+                manager.append_message(serde_json::json!({"role":"user","content":[{"type":"text","text":"selected".repeat(5000)}],"timestamp":0}));
+            }
+            let selected = manager.leaf_id().expect("selected leaf").to_owned();
+            manager.set_leaf(root["id"].as_str());
+            manager.append_message(serde_json::json!({"role":"user","content":"abandoned","timestamp":1}));
+            selected
+        });
+        session.with_session_manager_mut(|manager| manager.set_leaf(Some(&selected)));
+        session.rebuild_session_context().expect("selected context");
+        session.with_session_manager_mut(|manager| {
+            let root = manager.entries().into_iter().find(|entry| entry["type"] == "message").expect("root");
+            let selected = manager.leaf_id().expect("selected context leaf").to_owned();
+            manager.set_leaf(root["id"].as_str());
+            manager.append_custom("abandoned-metadata", None);
+            manager.set_leaf(Some(&selected));
+        });
+        let mut target = test_model();
+        target.id = "fallback-small".to_owned();
+        let measured = session.with_session_manager(|manager| manager.build_context(manager.leaf_id())).messages.iter()
+            .map(crate::compaction::compaction::estimate_tokens).sum();
+        let reduced = session.reduce_for_switch_target(&target, measured).expect("fallback reduction");
+        session.assert_model_usable(&target, reduced).expect("reduced budget");
+        let actual: u64 = session.with_session_manager(|manager| manager.build_context(manager.leaf_id())).messages.iter()
+            .map(crate::compaction::compaction::estimate_tokens).sum();
+        assert_eq!(actual, reduced);
+        assert!(session.with_session_manager(|manager| manager.entries()).iter().any(|entry| entry["details"]["schema"] == "senpi.compaction.resume-slice.v1"));
+        assert!(!session.messages().iter().any(|message| user_message_text(message) == "abandoned"));
+        assert!(session.messages().iter().any(|message| user_message_text(message).starts_with("selected")));
+        assert_eq!(session.with_session_manager(|manager| manager.entries()).iter().filter(|entry| entry["type"] == "message").count(), 22);
     }
 
     #[tokio::test]
