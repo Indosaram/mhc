@@ -12,6 +12,13 @@ pub struct GoalLifecycle{
 pub type GoalStoreResolver=Arc<dyn Fn(&ExtensionContext)->GoalStoreRef+Send+Sync>;
 pub type GoalContinuationSender=Arc<dyn Fn(String)->Result<(),ExtensionFailure>+Send+Sync>;
 pub struct RegisteredGoalLifecycle{pub state:Arc<Mutex<GoalLifecycle>>,pub resolve:GoalStoreResolver,pub send:GoalContinuationSender}
+impl super::tool_registration::GoalToolRegistrationDeps for RegisteredGoalLifecycle{
+    fn goal_store_ref(&self,ctx:&ExtensionContext)->GoalStoreRef{(self.resolve)(ctx)}
+    fn begin_agent_goal_accounting(&self,goal:&Goal){self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).begin_agent_goal_accounting(goal,now_milliseconds());}
+    fn mark_goal_blocked_this_turn(&self,goal:&Goal){self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).mark_goal_blocked_this_turn(goal);}
+    fn mark_goal_completed_this_turn(&self,goal:&Goal){self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).mark_goal_completed_this_turn(goal,now_milliseconds());}
+    fn account_current_agent_turn<'a>(&'a self,ctx:&'a ExtensionContext,mode:GoalAccountingMode)->maho_ext_api::ExtensionFuture<'a,Option<Goal>>{Box::pin(async move{self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).account_current_agent_turn(&(self.resolve)(ctx),mode,None,now_milliseconds()).map_err(ExtensionFailure::new)})}
+}
 impl super::command_registration::GoalCommandRegistrationDeps for RegisteredGoalLifecycle{
     fn goal_store_ref(&self,ctx:&ExtensionContext)->GoalStoreRef{(self.resolve)(ctx)}
     fn begin_agent_goal_accounting(&self,goal:&Goal){self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).begin_agent_goal_accounting(goal,now_milliseconds());}

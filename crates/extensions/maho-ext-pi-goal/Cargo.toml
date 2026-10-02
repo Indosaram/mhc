@@ -13,6 +13,7 @@ chrono = "=0.4.43"
 maho-ext-api = { path = "../../maho-ext-api" }
 
 [dev-dependencies]
+tokio = { version = "=1.52.3", features = ["macros", "rt"] }
 tempfile = "=3.27.0"
 
 [lints]
