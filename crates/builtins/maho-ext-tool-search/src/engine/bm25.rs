@@ -144,4 +144,9 @@ mod tests {
             let results=index.search(query,10,&options);assert_eq!(results.len(),1);assert_eq!(results[0].name,name);assert_eq!(results[0].coverage,1.0);
         }
     }
+    #[test] fn exact_names_bypass_precision_thresholds() {
+        let index=build_bm25_index(&[doc("thread_handoff")]);let options=Bm25SearchOptions{precision:Some(Bm25Precision{min_coverage:2.0,min_score_ratio:2.0}),..Default::default()};
+        let results=index.search("thread-handoff",10,&options);assert_eq!(results.len(),1);assert_eq!(results[0].name,"thread_handoff");assert!(results[0].exact);
+        assert!(index.search("thread handoff",10,&Bm25SearchOptions{exact_match:Some(false),..options}).is_empty());
+    }
 }
