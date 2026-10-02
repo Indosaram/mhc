@@ -1,0 +1,15 @@
+import { createRequire } from "node:module";
+import { writeFileSync } from "node:fs";
+const root = process.env.PI_WEBFETCH_SRC;
+if (!root) throw new Error("PI_WEBFETCH_SRC is required");
+const require = createRequire(`${root}/package.json`);
+const TurndownService = require("turndown");
+const service = new TurndownService({ headingStyle: "atx", hr: "---", bulletListMarker: "-", codeBlockStyle: "fenced", emDelimiter: "*" });
+service.remove(["script", "style", "noscript", "iframe", "object", "embed", "meta", "link"]);
+const inputs = ["<h1>Title</h1><p>A <strong>bold</strong> and <em> spaced </em> text.<br>next</p>", "<ul><li>one</li><li><p>two</p><ul><li>nested</li></ul></li></ul>", "<ol start='3'><li>A</li><li>B</li></ol>", "<pre><code class='language-js'>a\n```\nb\n</code></pre>", "<p><code>a`b```c</code> <a href='a(b) c' title='a&amp;quot;b'>link</a><img src='i' alt='[x]'></p>", "  a <em> b </em> c <img> d <p> e \n f </p><pre>  x\n y </pre><!--noise--> ", "<div>&nbsp;<span> </span></div><p>x</p>", "<script>noise</script><p>a</p><table><tr><td>x</td><td>y</td></tr></table>"];
+inputs.push("<blockquote><p>quoted</p><p>second</p></blockquote>", "<p>a<span>&nbsp; x &nbsp;</span> b</p>", "<p><em> </em><script> </script><a></a></p>", "<ol start='0x10'><li>x</li></ol>", "<pre><code class='language-'>x</code></pre>", "<p><code> a </code> <code>   </code></p>");
+inputs.push("<pre><code class='language- language-js'>x</code></pre>", "<pre><code>&#13;```\nx</code></pre>", "<code>&#13;a&#13;b</code>", "<ol start='Infinity'><li>x</li><li>y</li></ol>", "<div><span>&nbsp; </span><em> &nbsp;</em></div>");
+inputs.push("<p><a href='x'> </a><em><img src='x'></em><strong><br></strong></p>", "<ol start='-2'><li>x<ul><li>y</li></ul>z</li><li>q</li></ol>", "<p><code>``a`b``</code><code>a\nb</code></p>", "<pre><code class='xlanguage-js'>x</code>tail</pre>", "<p>a<br><br>b</p><hr><hr>", "<dl><dt>A</dt><dd>B</dd></dl><div><input value='x'>y</div>");
+const output = JSON.stringify(inputs.map(html => ({ html, markdown: service.turndown(html) })), null, 2);
+if (process.argv[2]) writeFileSync(process.argv[2], `${output}\n`);
+else console.log(output);
