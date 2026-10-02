@@ -2855,7 +2855,8 @@ impl AgentSession {
         let generation = async {
             let model = self.model();
             let auth = self.get_summarization_request_auth(&model).await?;
-            let response = self.model_runtime().complete(&auth.model, &crate::session_title_generator::build_title_context(prompt), Some(maho_ai::types::StreamOptions {
+            let context = crate::session_title_generator::build_title_context(prompt);
+            let options = maho_ai::types::StreamOptions {
                 request: maho_ai::types::ProviderRequestOptions { api_key: auth.api_key, signal: Some(signal.clone()),
                     headers: auth.headers.map(|headers| headers.into_iter().map(|(key,value)| (key,Some(value))).collect()),
                     stream_kind: Some(maho_ai::types::StreamKind::Auxiliary), env: auth.env,
@@ -2864,8 +2865,20 @@ impl AgentSession {
                 cache_retention: Some(if auth.model.cache_retention == Some(maho_ai::types::CacheRetention::None) {
                     maho_ai::types::CacheRetention::None
                 } else { maho_ai::types::CacheRetention::Short }), ..Default::default()
-            })).await.map_err(|error| error.to_string())?;
-            if let Some(error) = crate::session_title_generator::title_error_message(&response) { return Err(error); }
+            };
+            let retry = self.with_settings_manager(|manager| manager.get_value("retry").cloned());
+            let policy = maho_ai::utils::retry::RetryPolicy {
+                enabled: retry.as_ref().and_then(|settings| settings.get("enabled")).and_then(Value::as_bool).unwrap_or(true),
+                max_retries: retry.as_ref().and_then(|settings| settings.get("maxRetries")).and_then(Value::as_u64).unwrap_or(3).min(1) as u32,
+                base_delay_ms: retry.as_ref().and_then(|settings| settings.get("baseDelayMs")).and_then(Value::as_u64).unwrap_or(2_000).min(2_000),
+                max_agent_delay_ms: retry.as_ref().and_then(|settings| settings.get("maxAgentDelayMs")).and_then(Value::as_u64),
+                random: Some(self.retry_random.clone()),
+            };
+            let response = maho_ai::utils::retry::retry_transient_call(|| async {
+                let response = self.model_runtime().complete(&auth.model, &context, Some(options.clone())).await.map_err(|error| error.to_string())?;
+                if let Some(error) = crate::session_title_generator::title_error_message(&response) { return Err(error); }
+                Ok(response)
+            }, |error: &String| maho_ai::utils::retry::is_retryable_error_message(error), Some(&policy), Some(&signal), None).await?;
             Ok::<_, String>(crate::session_title_generator::parse_session_title(&response))
         }.await;
         if signal.aborted() { return; }
@@ -6080,6 +6093,33 @@ mod tests {
         assert!(provider.get_call_log()[0].options.as_ref().expect("options").request.signal.as_ref().expect("signal").aborted());
         session.generate_session_title_if_needed("Implement another feature").await;
         assert_eq!(provider.get_call_log().len(), 1);
+        assert!(session.state().session_title_abort_controller.is_none());
+    }
+
+    #[tokio::test]
+    async fn title_generation_retries_one_transient_error() {
+        use maho_ai::providers::faux::{faux_provider, RegisterFauxProviderOptions};
+        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
+        provider.set_responses(vec![
+            maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+                stop_reason: Some(StopReason::Error), error_message: Some("503 Service Unavailable".to_owned()), ..Default::default()
+            }).into(),
+            maho_ai::providers::faux::faux_assistant_message("<title>Native Session Recovery</title>", Default::default()).into(),
+        ]);
+        let session = test_session_with_stream_function(false);
+        session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
+        runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
+            config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".to_owned()), ..Default::default() },
+            ..Default::default()
+        }).expect("auth");
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("retry".to_owned(), serde_json::json!({"enabled":true,"maxRetries":5,"baseDelayMs":0})),
+        ])));
+        session.generate_session_title_if_needed("Recover native session calls").await;
+        assert_eq!(session.session_name().as_deref(), Some("Native Session Recovery"));
+        assert_eq!(provider.get_call_log().len(), 2);
         assert!(session.state().session_title_abort_controller.is_none());
     }
 
