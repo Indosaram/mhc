@@ -26,6 +26,7 @@ pub mod facts_batch_apply;
 pub mod facts_terminal_writes;
 pub mod prompt;
 pub mod reflection_settings;
+pub mod trigger_wiring;
 pub mod session_model_resolver;
 pub mod model_registry_resolver;
 pub mod session_context_resolver;
