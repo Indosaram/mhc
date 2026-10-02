@@ -134,13 +134,27 @@ fn failure(error:crate::errors::GoalError)->ExtensionFailure { ExtensionFailure:
         let runtime=Arc::new(GoalRuntime::new(Arc::new(move |_|stored.clone()),Arc::new(||0.0)));
         let mut api=ExtensionApi::new(LoadedExtension::new("goal","/tmp".into(),Default::default()),Default::default(),Default::default(),Default::default());
         let observed=Arc::new(Mutex::new(Vec::new())); let captured=observed.clone(); let stored=reference.clone();
-        runtime.register_command(&mut api,Arc::new(move |_,goal| { assert_eq!(crate::store::read_goal(&stored).unwrap().unwrap().status,goal.status); captured.lock().unwrap().push(goal.status); Ok(()) }));
+        runtime.register_command(&mut api,Arc::new(move |_,goal| { let stored=stored.clone(); let captured=captured.clone(); Box::pin(async move { assert_eq!(crate::store::read_goal(&stored).unwrap().unwrap().status,goal.status); captured.lock().unwrap().push(goal.status); Ok(()) }) }));
         let handler=api.registered.commands[0].handler.clone(); let context=crate::test_context::context();
         handler("work",&context).await.unwrap(); assert!(runtime.state.lock().await.ticker.running());
         handler("pause",&context).await.unwrap(); assert!(!runtime.state.lock().await.ticker.running());
         handler("resume",&context).await.unwrap(); assert!(runtime.state.lock().await.ticker.running());
         handler("clear",&context).await.unwrap(); assert!(!runtime.state.lock().await.ticker.running()); assert!(crate::store::read_goal(&reference).unwrap().is_none());
         assert_eq!(*observed.lock().unwrap(),vec![GoalStatus::Active,GoalStatus::Paused,GoalStatus::Active]);
+    }
+    #[tokio::test] async fn command_completion_waits_for_continuation_delivery() {
+        use maho_ext_api::*;
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() };
+        let runtime=Arc::new(GoalRuntime::new(Arc::new(move |_|reference.clone()),Arc::new(||0.0)));
+        let mut api=ExtensionApi::new(LoadedExtension::new("goal","/tmp".into(),Default::default()),Default::default(),Default::default(),Default::default());
+        let (entered_tx,entered_rx)=tokio::sync::oneshot::channel(); let entered=Arc::new(Mutex::new(Some(entered_tx)));
+        let (release_tx,release_rx)=tokio::sync::oneshot::channel(); let release=Arc::new(Mutex::new(Some(release_rx)));
+        runtime.register_command(&mut api,Arc::new(move |_,_| { let entered=entered.lock().unwrap().take().unwrap(); let release=release.lock().unwrap().take().unwrap(); Box::pin(async move { entered.send(()).unwrap(); release.await.unwrap(); Ok(()) }) }));
+        let handler=api.registered.commands[0].handler.clone(); let context=crate::test_context::context();
+        let command=tokio::spawn(async move { handler("work",&context).await });
+        tokio::time::timeout(std::time::Duration::from_secs(2),entered_rx).await.unwrap().unwrap();
+        assert!(!command.is_finished()); release_tx.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2),command).await.unwrap().unwrap().unwrap();
     }
     #[tokio::test] async fn owned_tools_share_accounting_and_completion_retires_footer() {
         let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();

@@ -2,7 +2,7 @@ use std::sync::Arc;
 use crate::{types::*,command::{ParsedGoalCommand,parse_goal_command},format::{format_goal_for_tool,goal_status_label}};
 use maho_ext_api::{ExtensionApi,ExtensionContext,ExtensionFailure,ExtensionFuture,NotificationType};
 pub type AccountGoal=Arc<dyn for<'a> Fn(&'a ExtensionContext,GoalAccountingMode)->ExtensionFuture<'a,Option<Goal>>+Send+Sync>;
-pub type QueueGoalContinuation=Arc<dyn Fn(&ExtensionContext,&Goal)->Result<(),ExtensionFailure>+Send+Sync>;
+pub type QueueGoalContinuation=Arc<dyn for<'a> Fn(&'a ExtensionContext,&'a Goal)->ExtensionFuture<'a,()>+Send+Sync>;
 pub type RefreshGoalUi=Arc<dyn for<'a> Fn(&'a ExtensionContext,Option<&'a Goal>)->ExtensionFuture<'a,()>+Send+Sync>;
 pub type BeginGoalAccounting=Arc<dyn for<'a> Fn(&'a Goal)->ExtensionFuture<'a,()>+Send+Sync>;
 pub type StopGoalAccounting=Arc<dyn for<'a> Fn(&'a str)->ExtensionFuture<'a,()>+Send+Sync>;
@@ -65,5 +65,5 @@ fn failure(error:crate::errors::GoalError)->ExtensionFailure { ExtensionFailure:
 async fn show_and_queue(ctx:&ExtensionContext,goal:&Goal,deps:&GoalCommandRegistrationDeps)->Result<(),ExtensionFailure> {
     (deps.refresh_goal_ui)(ctx,Some(goal)).await?;
     ctx.ui.notify(&format!("Goal {}\n{}",goal_status_label(goal.status),format_goal_for_tool(Some(goal)).map_err(failure)?),NotificationType::Info);
-    (deps.queue_goal_continuation)(ctx,goal)
+    (deps.queue_goal_continuation)(ctx,goal).await
 }
