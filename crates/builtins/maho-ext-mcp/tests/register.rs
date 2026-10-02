@@ -45,6 +45,19 @@ async fn native_tool_runtime_reconnects_after_idle_generation_change() {
     lifecycle.dispose();connection.dispose().await.unwrap();artifacts.cleanup().unwrap();
 }
 #[tokio::test]
+async fn real_error_tool_execution_never_spills_output() {
+    let root=tempfile::tempdir().unwrap();
+    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into(),"--iserror-tool".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
+    let transport=create_mcp_transport("errors",&config,None,Arc::new(Mutex::new(McpLogger::new("errors",root.path(),None).unwrap()))).unwrap();
+    let client=connect_mcp_transport(&transport).await.unwrap();let catalog=collect_tool_catalog("errors",client,Duration::from_secs(3)).await.unwrap();
+    let artifacts=Arc::new(McpOutputArtifacts::default());
+    let tools=build_mcp_tool_definitions(&catalog,root.path().into(),artifacts.clone(),Some(OutputGuardSettings {max_bytes:Some(1.0),max_lines:Some(1.0),max_tokens:None}));
+    let tool=tools.iter().find(|tool|tool.name=="mcp_errors_iserror_tool").unwrap();
+    let result=(tool.execute)(ToolCall {id:"error",params:json!({}),signal:Default::default(),on_update:None,context:None}).await;
+    shutdown_mcp_transport(&transport).await.unwrap();artifacts.cleanup().unwrap();
+    assert!(result.is_err());assert!(!root.path().join("tmp/mcp-out").exists());
+}
+#[tokio::test]
 async fn native_tool_runtime_suspends_when_reinitialized_session_expires_again() {
     use tokio::io::{AsyncBufReadExt,BufReader};
     let mut fixture=tokio::process::Command::new("/usr/bin/node").args(["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/http-server.ts","--tools","1","--always-expire-tool-calls"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).kill_on_drop(true).spawn().unwrap();
