@@ -8,6 +8,24 @@ struct State { consecutive:usize,previous:Option<String> }
 pub type CommandFuture=std::pin::Pin<Box<dyn std::future::Future<Output=std::io::Result<crate::omo_command::CommandResult>>+Send>>;
 pub type CommandRunner=Arc<dyn Fn(String,Vec<String>,std::path::PathBuf)->CommandFuture+Send+Sync>;
 pub struct UlwLoopComponent { pub bin:Option<String>,pub js_runtime:String,pub run_command:Option<CommandRunner> }
+impl Default for UlwLoopComponent {
+    fn default() -> Self {
+        let env = std::env::vars().collect();
+        Self::from_env(&env)
+    }
+}
+impl UlwLoopComponent {
+    pub fn from_env(env: &std::collections::BTreeMap<String, String>) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = crate::omo_command::resolve_omo_bin(env, |name| {
+            env.get("PATH").into_iter().flat_map(|path| std::env::split_paths(path))
+                .filter(|dir| !dir.as_os_str().is_empty()).map(|dir| dir.join(name))
+                .find(|path| std::fs::metadata(path).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0))
+                .map(|path| path.to_string_lossy().into_owned())
+        });
+        Self { bin, js_runtime: "bun".into(), run_command: None }
+    }
+}
 async fn status(bin:&str,runtime:&str,cwd:&std::path::Path,runner:Option<&CommandRunner>)->Option<(String,bool)> {
     let target=to_spawn_target(bin,&["ulw-loop".into(),"status".into(),"--json".into()],"linux",runtime);
     let result=if let Some(run)=runner {match run(bin.into(),vec!["ulw-loop".into(),"status".into(),"--json".into()],cwd.into()).await {Ok(result)=>result,Err(_)=>return None}}else{run_omo_command(&target,cwd).await};

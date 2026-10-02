@@ -28,6 +28,7 @@ pub fn sync_shared(footer:&Arc<std::sync::Mutex<FooterStatus>>,ctx:&maho_ext_api
 impl Drop for FooterStatus {fn drop(&mut self){if let Some(timer)=self.timer.take(){timer.abort();}}}
 impl FooterStatus {
     pub fn sync_context(&mut self,ctx:&maho_ext_api::ExtensionContext,active:bool) {
+        if !ctx.has_ui {self.dispose();return;}
         let id=ctx.session_manager.session_id();let mut encoded=String::new();
         for byte in id.bytes() {if byte.is_ascii_alphanumeric()||b"-_.!~*'()".contains(&byte) {encoded.push(char::from(byte));}else{encoded.push_str(&format!("%{byte:02X}"));}}
         let mut paths=Vec::new();

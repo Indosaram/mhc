@@ -148,3 +148,69 @@ async fn relevant_tool_results_refresh_status_at_session_cwd() {
     }
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
 }
+
+#[tokio::test]
+async fn active_boulder_owner_defers_loop_without_querying_status() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir_all(root.path().join(".omo/plans"))?;
+    std::fs::write(root.path().join(".omo/plans/plan.md"), "## TODOs\n- [ ] 1. task\n")?;
+    std::fs::write(root.path().join(".omo/boulder.json"), serde_json::json!({
+        "schema_version":2,"active_work_id":"work","works":{"work":{
+            "work_id":"work","active_plan":".omo/plans/plan.md","plan_name":"plan",
+            "session_ids":["senpi:session"],"status":"active","started_at":"2026-07-17T00:00:00Z"
+        }}
+    }).to_string())?;
+    let mut api = ExtensionApi::new(LoadedExtension::new("loop", root.path().into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+    maho_omo_ulw_loop::index::UlwLoopComponent { bin: Some("/toolkit".into()), js_runtime: "bun".into(),
+        run_command: Some(Arc::new(|_, _, _| panic!("boulder precedence must bypass status"))) }.register(&mut api);
+    let mut ctx = support::context();
+    ctx.cwd = root.path().into();
+    let mut event = ExtensionEvent::AgentEnd { messages: Vec::new(), aborted: Some(false), abort_source: None, will_retry: Some(false) };
+    assert!(matches!(api.registered.handlers[&EventKind::AgentEnd][0](&mut event, &ctx).await?, EventResult::None));
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_discovery_executes_path_toolkit_for_queued_input() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir()?;
+    let binary = root.path().join("omo-agent-toolkit");
+    std::fs::write(&binary, "#!/bin/sh\nprintf '%s\\n' \"$@\" > argv.txt\nprintf '%s' '{\"ok\":true,\"plan\":{\"goals\":[{\"status\":\"pending\"}]}}'\n")?;
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))?;
+    let env = std::collections::BTreeMap::from([("PATH".into(), root.path().to_string_lossy().into_owned())]);
+    let component = maho_omo_ulw_loop::index::UlwLoopComponent::from_env(&env);
+    assert_eq!(component.bin.as_deref(), binary.to_str());
+    let mut api = ExtensionApi::new(LoadedExtension::new("loop", root.path().into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+    component.register(&mut api);
+    let mut ctx = support::context(); ctx.cwd = root.path().into();
+    let mut event = ExtensionEvent::Input(InputEvent { input_id: "id".into(), text: "continue".into(),
+        images: None, source: InputSource::Interactive, streaming_behavior: Some(StreamingBehavior::Steer) });
+    assert!(matches!(api.registered.handlers[&EventKind::Input][0](&mut event, &ctx).await?,
+        EventResult::Input(InputEventResult::Transform { .. })));
+    assert_eq!(std::fs::read_to_string(root.path().join("argv.txt"))?, "ulw-loop\nstatus\n--json\n");
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_discovery_does_not_execute_stale_bare_omo() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir()?;
+    let binary = root.path().join("omo");
+    std::fs::write(&binary, "#!/bin/sh\ntouch invoked\n")?;
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))?;
+    let env = std::collections::BTreeMap::from([("PATH".into(), root.path().to_string_lossy().into_owned())]);
+    let component = maho_omo_ulw_loop::index::UlwLoopComponent::from_env(&env);
+    assert!(component.bin.is_none());
+    let mut api = ExtensionApi::new(LoadedExtension::new("loop", root.path().into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+    component.register(&mut api);
+    let mut ctx = support::context(); ctx.cwd = root.path().into();
+    let mut event = ExtensionEvent::Input(InputEvent { input_id: "id".into(), text: "continue".into(),
+        images: None, source: InputSource::Interactive, streaming_behavior: Some(StreamingBehavior::Steer) });
+    assert!(matches!(api.registered.handlers[&EventKind::Input][0](&mut event, &ctx).await?,
+        EventResult::Input(InputEventResult::Continue)));
+    assert!(!root.path().join("invoked").exists());
+    Ok(())
+}
