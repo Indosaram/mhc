@@ -143,6 +143,34 @@ pub fn reader_probably_visible(node:&dom_query::NodeRef<'_>)->bool {
     display!="none"&&visibility!="hidden"&&!node.has_attr("hidden")
         && (node.attr("aria-hidden").as_deref()!=Some("true")||node.attr("class").is_some_and(|class|class.contains("fallback-image")))
 }
+pub fn reader_prepare_nodes<'a>(root:dom_query::NodeRef<'a>,title:&str,strip_unlikely:bool,metadata_byline:Option<&str>)->(Vec<dom_query::NodeRef<'a>>,Option<String>) {
+    let mut elements=Vec::new();let mut byline=None;let mut remove_title=true;let mut current=Some(root);
+    while let Some(mut node)=current {
+        let match_string=format!("{} {}",node.attr("class").unwrap_or_default(),node.attr("id").unwrap_or_default());
+        let mut remove=!reader_probably_visible(&node)||(node.attr("aria-modal").as_deref()==Some("true")&&node.attr("role").as_deref()==Some("dialog"));
+        if !remove&&byline.is_none()&&metadata_byline.is_none_or(str::is_empty)&&reader_valid_byline(&node,&match_string) {
+            let end=reader_next_node(node,true);let mut descendant=reader_next_node(node,false);let mut author=node;
+            while let Some(child)=descendant {
+                if end.is_some_and(|marker|marker.id==child.id) {break;}
+                if child.attr("itemprop").is_some_and(|value|value.contains("name")) {author=child;break;}
+                descendant=reader_next_node(child,false);
+            }
+            byline=Some(author.text().trim_matches(js_whitespace).to_owned());remove=true;
+        }
+        if !remove&&remove_title&&reader_header_duplicates_title(&node,title) {remove_title=false;remove=true;}
+        if !remove&&strip_unlikely&&reader_unlikely_candidate(&node,&match_string) {remove=true;}
+        let tag=node.node_name();
+        if !remove&&matches!(tag.as_deref(),Some("div"|"section"|"header"|"h1"|"h2"|"h3"|"h4"|"h5"|"h6"))&&reader_element_without_content(&node) {remove=true;}
+        if remove {current=reader_next_node(node,true);node.remove_from_parent();continue;}
+        if matches!(tag.as_deref(),Some("section"|"h2"|"h3"|"h4"|"h5"|"h6"|"p"|"td"|"pre")) {elements.push(node);}
+        if tag.as_deref()==Some("div") {
+            node=reader_prepare_div(node);
+            if node.node_name().as_deref()==Some("p") {elements.push(node);}
+        }
+        current=reader_next_node(node,false);
+    }
+    (elements,byline)
+}
 pub fn score_reader_candidates(elements:&[dom_query::NodeRef<'_>],weight_classes:bool)->Vec<(dom_query::NodeId,f64)> {
     let mut candidates:Vec<(dom_query::NodeRef<'_>,f64)>=Vec::new();
     for element in elements {
@@ -168,6 +196,30 @@ pub fn reader_top_candidates(candidates:&[(dom_query::NodeId,f64)])->Vec<(dom_qu
             top.insert(index,*candidate);top.truncate(5);
         }
     }
+    top
+}
+pub fn reader_refine_candidate<'a>(mut top:dom_query::NodeRef<'a>,ranked:&[(dom_query::NodeId,f64)],scores:&[(dom_query::NodeId,f64)],weight_classes:bool)->dom_query::NodeRef<'a> {
+    let score=|node:dom_query::NodeRef<'_>|scores.iter().find(|(id,_)|*id==node.id).map(|(_,score)|*score);
+    let top_score=score(top).unwrap_or_else(||f64::from(reader_initial_score(&top,weight_classes)));
+    let alternatives:Vec<_>=ranked.iter().skip(1).filter(|(_,value)|*value/top_score>=0.75).map(|(id,_)|top.tree.get_unchecked(id)).collect();
+    if alternatives.len()>=3 {
+        let mut ancestor=top.parent();
+        while let Some(parent)=ancestor.filter(|node|node.node_name().as_deref()!=Some("body")) {
+            let containing=alternatives.iter().filter(|alternative| {let mut current=alternative.parent();while let Some(node)=current {if node.id==parent.id {return true;}current=node.parent();}false}).count();
+            if containing>=3 {top=parent;break;}
+            ancestor=parent.parent();
+        }
+    }
+    let mut last=score(top).unwrap_or_else(||f64::from(reader_initial_score(&top,weight_classes)));let threshold=last/3.;let mut ancestor=top.parent();
+    while let Some(parent)=ancestor.filter(|node|node.node_name().as_deref()!=Some("body")) {
+        if let Some(value)=score(parent) {
+            if value<threshold {break;}
+            if value>last {top=parent;break;}
+            last=value;
+        }
+        ancestor=parent.parent();
+    }
+    while let Some(parent)=top.parent().filter(|parent|parent.node_name().as_deref()!=Some("body")&&parent.element_children().len()==1) {top=parent;}
     top
 }
 pub fn reader_include_sibling(sibling:&dom_query::NodeRef<'_>,top:&dom_query::NodeRef<'_>,top_score:f64,sibling_score:Option<f64>)->bool {
@@ -365,6 +417,13 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_refinement_joins_close_candidates_at_shared_parent() {
+        let document=dom_query::Document::from("<main><section><p id='a'>a</p><p id='b'>b</p><p id='c'>c</p><p id='d'>d</p></section><aside>x</aside></main>");let nodes:Vec<_>=["#a","#b","#c","#d"].iter().map(|selector|document.select(selector).nodes()[0]).collect();let scores:Vec<_>=nodes.iter().enumerate().map(|(index,node)|(node.id,100.-index as f64)).collect();let top=reader_refine_candidate(nodes[0],&scores,&scores,true);assert_eq!(top.node_name().as_deref(),Some("section"));
+    }
+    #[test] fn reader_preparation_filters_mutable_tree_and_extracts_nested_author() {
+        let document=dom_query::Document::from("<h1>Article title</h1><h1>Article title</h1><div class='author'>By <span itemprop='name'>Writer</span></div><div hidden>hidden</div><div class='sidebar'>noise</div><div id='text'>Content</div><section></section>");let (elements,byline)=reader_prepare_nodes(document.select("html").nodes()[0],"Article title",true,None);
+        assert_eq!(byline.as_deref(),Some("Writer"));assert_eq!(document.select("h1").length(),1);assert!(document.select(".author, [hidden], .sidebar, section").is_empty());assert_eq!(elements.len(),1);assert_eq!(elements[0].text().as_ref(),"Content");assert_eq!(elements[0].node_name().as_deref(),Some("p"));
+    }
     #[test] fn reader_visibility_preserves_linkedom_style_case_and_last_nonempty_value() {
         for (style,visible) in [("display:none",false),("display:none;display:block",true),("display:none;display:",false),("DISPLAY:none",true),("display:none !important",true),("visibility:hidden",false)] {
             let document=dom_query::Document::from(format!("<div style='{style}'></div>"));assert_eq!(reader_probably_visible(&document.select("div").nodes()[0]),visible);
