@@ -1,4 +1,5 @@
 pub mod bridge;
+pub mod bridges;
 pub mod config;
 pub mod extension;
 pub mod host_sdk;
