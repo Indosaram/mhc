@@ -1758,6 +1758,12 @@ dependencies = [
 [[package]]
 name = "maho-ext-pi-webfetch"
 version = "0.0.0"
+dependencies = [
+ "reqwest",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+]
 
 [[package]]
 name = "maho-ext-pi-websearch"

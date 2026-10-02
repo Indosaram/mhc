@@ -1,0 +1,38 @@
+use super::errors::WebfetchError;
+pub const MAX_RESPONSE_SIZE_BYTES:usize=5*1024*1024;
+pub const DEFAULT_TIMEOUT_SECONDS:u64=30;
+pub const MAX_TIMEOUT_SECONDS:u64=120;
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum WebfetchFormat{Markdown,Text,Html}
+pub struct FetchResult{pub url:String,pub status:u16,pub status_text:String,pub content_type:String,pub bytes:usize,pub body:Vec<u8>,pub truncated:bool}
+pub fn validate_url(value:&str)->Result<(),WebfetchError>{
+    if !value.starts_with("http://")&&!value.starts_with("https://"){return Err(WebfetchError::InvalidUrl("URL must start with http:// or https://".into()));}
+    url::Url::parse(value).map_err(|_|WebfetchError::InvalidUrl(format!("Invalid URL: {value}")))?;Ok(())
+}
+pub fn clamp_timeout(value:Option<f64>)->u64{
+    let Some(value)=value.filter(|v|v.is_finite()&&*v>0.0)else{return DEFAULT_TIMEOUT_SECONDS;};
+    format!("{:.0}",value.ceil().min(120.0)).parse().unwrap_or(DEFAULT_TIMEOUT_SECONDS)
+}
+pub const fn build_accept_header(format:WebfetchFormat)->&'static str{match format{
+    WebfetchFormat::Markdown=>"text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1",
+    WebfetchFormat::Text=>"text/plain;q=1.0, text/markdown;q=0.9, text/html;q=0.8, */*;q=0.1",
+    WebfetchFormat::Html=>"text/html;q=1.0, application/xhtml+xml;q=0.9, text/plain;q=0.8, text/markdown;q=0.7, */*;q=0.1",
+}}
+pub async fn fetch_url(value:&str,format:WebfetchFormat,timeout:Option<f64>)->Result<FetchResult,WebfetchError>{
+    validate_url(value)?;
+    let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(std::time::Duration::from_secs(clamp_timeout(timeout))).build()?;
+    let mut current=value.to_owned();
+    for redirects in 0..=20{
+        let mut response=client.get(&current).header("Accept",build_accept_header(format)).header("Accept-Language","en-US,en;q=0.9").header("Sec-CH-UA","\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"").header("Sec-CH-UA-Mobile","?0").header("Sec-CH-UA-Platform","\"Windows\"").header("Sec-Fetch-Dest","document").header("Sec-Fetch-Mode","navigate").header("Sec-Fetch-Site","none").header("Sec-Fetch-User","?1").header("Upgrade-Insecure-Requests","1").header("User-Agent","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36").send().await?;
+        let status=response.status();
+        if matches!(status.as_u16(),301|302|303|307|308)&&redirects<20&&let Some(location)=response.headers().get("location").and_then(|v|v.to_str().ok()).filter(|v|!v.is_empty()){
+            current=url::Url::parse(&current).and_then(|url|url.join(location)).map_err(|_|WebfetchError::InvalidUrl(format!("Invalid URL: {location}")))?.into();continue;
+        }
+        if response.content_length().is_some_and(|length|length>5*1024*1024){return Err(WebfetchError::ResponseTooLarge);}
+        let content_type=response.headers().get("content-type").and_then(|v|v.to_str().ok()).unwrap_or("").to_owned();
+        let mut body=Vec::new();
+        while let Some(chunk)=response.chunk().await?{if body.len()+chunk.len()>MAX_RESPONSE_SIZE_BYTES{return Err(WebfetchError::ResponseTooLarge);}body.extend_from_slice(&chunk);}
+        let bytes=body.len();return Ok(FetchResult{url:current,status:status.as_u16(),status_text:status.canonical_reason().unwrap_or("").into(),content_type,bytes,body,truncated:bytes==MAX_RESPONSE_SIZE_BYTES});
+    }
+    Err(WebfetchError::Aborted)
+}
