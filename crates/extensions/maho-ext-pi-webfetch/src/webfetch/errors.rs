@@ -11,3 +11,12 @@ pub enum WebfetchError {
     #[error(transparent)]
     Network(#[from] reqwest::Error),
 }
+impl WebfetchError{
+    pub const fn name(&self)->&'static str{match self{
+        Self::InvalidUrl(_)=>"InvalidWebfetchUrlError",
+        Self::Aborted=>"WebfetchAbortError",
+        Self::Timeout(_)=>"WebfetchTimeoutError",
+        Self::ResponseTooLarge=>"WebfetchResponseTooLargeError",
+        Self::Network(_)=>"TypeError",
+    }}
+}
