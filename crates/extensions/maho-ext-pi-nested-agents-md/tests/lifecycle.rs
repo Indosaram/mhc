@@ -28,14 +28,15 @@ impl ModelRegistry for Registry {
     fn has_configured_auth(&self, _: &Model) -> bool { false }
     fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<String>> { Box::pin(async { Ok(None) }) }
 }
-struct Ui;
+#[derive(Default)]
+struct Ui { status: std::sync::Mutex<Option<String>>, widget: std::sync::Mutex<Option<Vec<String>>> }
 impl ExtensionUi for Ui {
     fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
     fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> { Box::pin(async { false }) }
     fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
     fn notify(&self, _: &str, _: NotificationType) {}
-    fn set_status(&self, _: &str, _: Option<&str>) {}
-    fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
+    fn set_status(&self, _: &str, value: Option<&str>) { *self.status.lock().expect("capture status") = value.map(str::to_owned); }
+    fn set_widget(&self, _: &str, value: Option<WidgetContent>, _: ExtensionWidgetOptions) { *self.widget.lock().expect("capture widget") = value.and_then(|value|match value { WidgetContent::Lines(lines) => Some(lines), WidgetContent::Component(_) => None }); }
     fn set_header(&self, _: Option<ComponentFactory>) {}
     fn set_footer(&self, _: Option<ComponentFactory>) {}
     fn set_title(&self, _: &str) {}
@@ -50,7 +51,7 @@ fn fixture() -> (tempfile::TempDir, ExtensionRunner) {
     std::fs::create_dir(tree.path().join("src")).expect("create source directory");
     std::fs::write(tree.path().join("src/AGENTS.md"), "fixture rules").expect("write rules");
     std::fs::write(tree.path().join("src/file.ts"), "x").expect("write source");
-    let context = ExtensionContext { ui: Arc::new(Ui), mode: ExtensionMode::Print, has_ui: false, cwd: tree.path().into(), agent_dir: tree.path().join("agent"),
+    let context = ExtensionContext { ui: Arc::new(Ui::default()), mode: ExtensionMode::Print, has_ui: false, cwd: tree.path().into(), agent_dir: tree.path().join("agent"),
         session_manager: Arc::new(Session(tree.path().join("a.jsonl"))), model_registry: Arc::new(Registry), model: None, thinking_level: None,
         service_tier: None, effective_service_tier: None, scoped_models: Vec::new(), goal_store_file: None,
         loaded_extension_paths: Vec::new(), signal: None, steering_signal: None,
@@ -117,4 +118,42 @@ async fn image_only_read_is_unmodified() {
     let (tree, mut runner) = fixture();
     let mut event = read_event(tree.path()); event.content = vec![ToolContent::Image { data: "base64".into(), mime_type: "image/png".into() }];
     assert!(content(&mut runner, event).await.is_none());
+}
+
+#[tokio::test]
+async fn native_toggle_reports_files_and_hides_widget() {
+    let (tree,mut runner) = fixture();
+    let ui = Arc::new(Ui::default());
+    let mut context = runner.create_context().unwrap(); context.ui = ui.clone(); context.has_ui = true;
+    runner.bind_core(Arc::new(Actions),context.clone());
+    content(&mut runner,read_event(tree.path())).await.unwrap();
+    assert!(ui.status.lock().unwrap().as_ref().unwrap().contains('1'));
+    assert!(ui.widget.lock().unwrap().is_none());
+    let command = runner.get_command("nested-agents").unwrap();
+    (command.command.handler)("",&context).await.unwrap();
+    assert!(ui.widget.lock().unwrap().as_ref().unwrap().iter().any(|line|line.contains("src/AGENTS.md")));
+    (command.command.handler)("",&context).await.unwrap();
+    assert!(ui.widget.lock().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn headless_injection_never_updates_ui() {
+    let (tree,mut runner) = fixture(); let ui = Arc::new(Ui::default());
+    let mut context = runner.create_context().unwrap(); context.ui = ui.clone(); runner.bind_core(Arc::new(Actions),context);
+    assert!(content(&mut runner,read_event(tree.path())).await.is_some());
+    assert!(ui.status.lock().unwrap().is_none()); assert!(ui.widget.lock().unwrap().is_none());
+}
+#[tokio::test]
+async fn disabled_flag_prevents_injection_and_widget() {
+    let (tree,mut runner) = fixture(); runner.runtime.set_flag("no-nested-agents",FlagValue::Boolean(true));
+    runner.emit(ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::Startup, initial_model_provenance: None, previous_session_file: None })).await.unwrap();
+    assert!(content(&mut runner,read_event(tree.path())).await.is_none());
+}
+#[tokio::test]
+async fn truncation_metadata_reaches_native_widget() {
+    let (tree,mut runner) = fixture(); std::fs::write(tree.path().join("src/AGENTS.md"),"a".repeat(200_000)).unwrap();
+    let ui = Arc::new(Ui::default()); let mut context = runner.create_context().unwrap(); context.ui = ui.clone(); context.has_ui = true; runner.bind_core(Arc::new(Actions),context.clone());
+    content(&mut runner,read_event(tree.path())).await.unwrap();
+    (runner.get_command("nested-agents").unwrap().command.handler)("",&context).await.unwrap();
+    assert!(ui.widget.lock().unwrap().as_ref().unwrap().iter().any(|line|line.contains("(truncated)")));
 }

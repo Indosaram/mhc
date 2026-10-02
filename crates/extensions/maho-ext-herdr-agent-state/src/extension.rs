@@ -22,8 +22,20 @@ impl Config {
             let mut buffer = [0; 1024];
             Ok(stream.read(&mut buffer)? > 0)
         }
-        #[cfg(not(unix))]
-        { let _ = (payload, timeout_ms); Err(std::io::Error::other("Herdr named pipe transport not yet ported")) }
+        #[cfg(windows)]
+        {
+            let endpoint = format!(r"\\.\pipe\{}", self.socket);
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+            runtime.block_on(async {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                tokio::time::timeout(Duration::from_millis(timeout_ms), async {
+                    let mut stream = tokio::net::windows::named_pipe::ClientOptions::new().open(endpoint)?;
+                    stream.write_all(payload.as_bytes()).await?;
+                    let mut buffer = [0; 1024];
+                    Ok(stream.read(&mut buffer).await? > 0)
+                }).await.map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "Herdr request timed out"))?
+            })
+        }
     }
     fn send(&self, request: &Value) {
         let payload = format!("{request}\n");
@@ -70,7 +82,7 @@ impl Drop for Delivery {
 
 struct Runtime { state: State, seq: u128, reference: Option<(&'static str, String)>, clock: Arc<dyn Fn() -> u128 + Send + Sync>, suffix: Arc<dyn Fn() -> String + Send + Sync> }
 impl Runtime {
-    fn new() -> Self { Self::with_sources(Arc::new(now_ms), Arc::new(|| maho_ai::utils::text::to_radix_36(rand::random::<u64>() >> 11))) }
+    fn new() -> Self { Self::with_sources(Arc::new(now_ms), Arc::new(|| fractional_suffix(rand::random::<f64>()))) }
     fn with_sources(clock: Arc<dyn Fn() -> u128 + Send + Sync>, suffix: Arc<dyn Fn() -> String + Send + Sync>) -> Self {
         Self { state: State::default(), seq: clock().saturating_mul(1000), reference: None, clock, suffix }
     }
@@ -95,6 +107,26 @@ impl Runtime {
     }
 }
 fn now_ms() -> u128 { SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |value| value.as_millis()) }
+fn fractional_suffix(mut fraction: f64) -> String {
+    if fraction == 0.0 { return String::new(); }
+    let mut delta = 0.5 * (fraction.next_up() - fraction);
+    if delta <= 0.0 { delta = f64::from_bits(1); }
+    let mut digits = Vec::<u8>::new();
+    while fraction >= delta {
+        fraction *= 36.0;
+        delta *= 36.0;
+        let digit = (0_u8..36).rev().find(|digit| f64::from(*digit) <= fraction).unwrap_or(0);
+        digits.push(digit);
+        fraction -= f64::from(digit);
+        if (fraction > 0.5 || (fraction == 0.5 && digit & 1 == 1)) && fraction + delta > 1.0 {
+            while let Some(digit) = digits.pop() {
+                if digit < 35 { digits.push(digit + 1); break; }
+            }
+            break;
+        }
+    }
+    digits.into_iter().map(|digit| char::from(if digit < 10 { b'0' + digit } else { b'a' + digit - 10 })).collect()
+}
 fn truthy(value: Option<&Value>) -> bool {
     match value {
         None | Some(Value::Null) => false,
@@ -172,6 +204,14 @@ impl Extension for HerdrAgentState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fractional_suffix_preserves_js_radix_digits() {
+        assert_eq!(fractional_suffix(0.0), "");
+        assert_eq!(fractional_suffix(0.5), "i");
+        assert_eq!(fractional_suffix(0.25), "9");
+        assert_eq!(fractional_suffix(0.125), "4i");
+        for (fraction,expected) in [(0.1,"3lllllllllm"),(0.2,"77777777778"),(std::f64::consts::PI/10.0,"bb5exfivbcc"),(1.0/3.0,"c"),(f64::EPSILON,"0000000000t84r35w1ryi"),(1.0-f64::EPSILON,"zzzzzzzzzza"),(123_456_789.0/4_294_967_296.0,"1193rfbvphzr")] { assert_eq!(fractional_suffix(fraction),expected); }
+    }
     #[test]
     fn request_identity_uses_random_suffix_not_sequence() {
         let mut runtime = Runtime::with_sources(Arc::new(|| 123), Arc::new(|| "fixture-random".into()));

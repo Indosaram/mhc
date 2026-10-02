@@ -10,10 +10,12 @@ maho-ext-api = { path = "../../maho-ext-api" }
 serde_json = "=1.0.149"
 rand = "=0.9.3"
 maho-ai = { path = "../../maho-ai" }
-tokio = { version = "=1.52.3", features = ["rt"] }
+tokio = { version = "=1.52.3", features = ["rt", "net", "time", "io-util"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"
+maho-ext-host = { path = "../../maho-ext-host" }
+tokio = { version = "=1.52.3", features = ["macros", "rt"] }
 
 [target.'cfg(unix)'.dependencies]
 socket2 = "=0.6.3"

@@ -23,5 +23,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if result.details.as_ref().and_then(|details| details.get("totalMatches")).and_then(serde_json::Value::as_u64) != Some(1) { return Err("native tool executor did not expose match details".into()); }
     println!("preview_matches=1 preview_unchanged=true applied_matches=1 rewrite_verified=true");
     println!("native_tool_executor_matches=1");
+    let agent_result = serde_json::from_value(serde_json::json!({"content":[{"type":"text","text":"native result"}],"details":result.details}))?;
+    let output = maho_ext_pi_ast_grep::render::result_text(&agent_result,true,false,false);
+    if !output.contains("1 match") || !output.contains("logger.info(value)") { return Err("native renderer omitted real match".into()); }
+    println!("expanded_renderer:\n{output}");
     Ok(())
 }

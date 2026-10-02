@@ -3,7 +3,7 @@ use maho_ext_api::{EventKind, EventResult, Extension, ExtensionApi, ExtensionEve
 use std::{collections::{BTreeMap, BTreeSet}, path::Path, sync::{Arc, Mutex}};
 
 #[derive(Default)]
-struct State { cache: InjectionCache, disabled: bool, files: BTreeMap<String, Vec<crate::reporter::InjectedFileMeta>>, errors: BTreeSet<String> }
+struct State { cache: InjectionCache, disabled: bool, widget_visible: bool, files: BTreeMap<String, Vec<crate::reporter::InjectedFileMeta>>, errors: BTreeSet<String> }
 
 pub struct NestedAgentsMd;
 impl Extension for NestedAgentsMd {
@@ -35,13 +35,16 @@ impl Extension for NestedAgentsMd {
                 let session = get_session_key(ctx);
                 let result = inject_directory_context(Path::new(path), &ctx.cwd, &mut state.cache, &session, &InjectionConfig::default());
                 if !result.errors.is_empty() { state.errors.insert(session.clone()); }
-                let files = state.files.entry(session).or_default();
+                let has_errors = state.errors.contains(&session);
+                crate::reporter::update_status(ctx,&state.cache,&session,has_errors);
+                if result.injected_text.is_empty() { return Ok(EventResult::None); }
+                let files = state.files.entry(session.clone()).or_default();
                 for file in &result.injected_files {
                     let metadata = crate::reporter::InjectedFileMeta { absolute_path: file.absolute_path.clone(), truncated: file.truncated };
                     if let Some(existing) = files.iter_mut().find(|existing| existing.absolute_path == file.absolute_path) { *existing = metadata; }
                     else { files.push(metadata); }
                 }
-                if result.injected_text.is_empty() { return Ok(EventResult::None); }
+                if state.widget_visible { crate::reporter::update_widget(ctx,true,state.files.get(&session).map(Vec::as_slice).unwrap_or_default()); }
                 let mut content = event.content.clone();
                 content.push(ToolContent::text(result.injected_text));
                 Ok(EventResult::ToolResult(ToolResultEventResult { content: Some(content), details: None, is_error: None, usage: None }))
@@ -55,8 +58,27 @@ impl Extension for NestedAgentsMd {
                 state.cache.clear_session(&session);
                 state.files.remove(&session);
                 state.errors.remove(&session);
+                if kind == EventKind::SessionCompact {
+                    crate::reporter::update_status(ctx,&state.cache,&session,false);
+                    if state.widget_visible { crate::reporter::update_widget(ctx,true,&[]); }
+                }
                 Box::pin(async { Ok(EventResult::None) })
             }));
         }
+        let command_api = Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));
+        api.register_command("nested-agents",Some("Toggle the nested AGENTS.md context widget and dump cache state.".into()),None,Arc::new(move |_,ctx| {
+            let state = Arc::clone(&state); let command_api = Arc::clone(&command_api);
+            Box::pin(async move {
+                let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if state.disabled { ctx.ui.notify("nested-agents-md is disabled via --no-nested-agents",maho_ext_api::NotificationType::Info); return Ok(()); }
+                state.widget_visible = !state.widget_visible;
+                let session = get_session_key(ctx);
+                let files = state.files.get(&session).map(Vec::as_slice).unwrap_or_default();
+                crate::reporter::update_widget(ctx,state.widget_visible,files);
+                command_api.append_entry("nested-agents-md:debug",Some(crate::reporter::build_debug_record(&state.cache,&session,files)))?;
+                ctx.ui.notify(if state.widget_visible { "Nested AGENTS.md context widget shown" } else { "Nested AGENTS.md context widget hidden" },maho_ext_api::NotificationType::Info);
+                Ok(())
+            })
+        }));
     }
 }

@@ -13,8 +13,13 @@ maho-ai = { path = "../../maho-ai" }
 [target.'cfg(unix)'.dependencies]
 socket2 = "=0.6.3"
 
+[target.'cfg(windows)'.dependencies]
+tokio = { version = "=1.52.3", features = ["rt", "net", "time", "io-util"] }
+
 [dev-dependencies]
 tempfile = "=3.27.0"
+maho-ext-host = { path = "../../maho-ext-host" }
+tokio = { version = "=1.52.3", features = ["macros", "rt"] }
 
 [lints]
 workspace = true

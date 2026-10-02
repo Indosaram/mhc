@@ -104,11 +104,15 @@ async fn run_checker_with_timeout(input: &HookInput, binary: Option<&Path>, cust
         Err(_) => {
             #[cfg(unix)]
             if let Some(id) = pid { let _signal = nix::sys::signal::kill(nix::unistd::Pid::from_raw(id as i32), nix::sys::signal::Signal::SIGTERM); }
+            #[cfg(windows)]
+            if let Some(id) = pid { let _signal = tokio::process::Command::new("taskkill.exe").args(["/F","/PID",&id.to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).status().await; }
             let output = match tokio::time::timeout(Duration::from_millis(1000), &mut operation).await {
                 Ok(result) => result,
                 Err(_) => {
                     #[cfg(unix)]
                     if let Some(id) = pid { let _signal = nix::sys::signal::kill(nix::unistd::Pid::from_raw(id as i32), nix::sys::signal::Signal::SIGKILL); }
+                    #[cfg(windows)]
+                    if let Some(id) = pid { let _signal = tokio::process::Command::new("taskkill.exe").args(["/F","/PID",&id.to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).status().await; }
                     operation.await
                 }
             };
