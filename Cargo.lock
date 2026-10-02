@@ -1498,6 +1498,13 @@ dependencies = [
 [[package]]
 name = "maho-cli"
 version = "0.0.0"
+dependencies = [
+ "maho-ai",
+ "maho-core",
+ "maho-tui",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "maho-codemode"

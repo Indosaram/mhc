@@ -5,6 +5,15 @@ edition.workspace = true
 publish.workspace = true
 license = "MIT"
 
+[dependencies]
+maho-ai = { path = "../maho-ai" }
+maho-core = { path = "../maho-core" }
+maho-tui = { path = "../maho-tui" }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
 [[bin]]
 name = "mhc"
 path = "src/main.rs"
