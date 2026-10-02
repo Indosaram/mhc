@@ -1,0 +1,167 @@
+[
+  {
+    "input": "git:user/repo",
+    "result": {
+      "type": "git",
+      "repo": "https://user/repo",
+      "host": "github.com",
+      "path": "user/repo",
+      "pinned": false
+    }
+  },
+  {
+    "input": "git:github:user/repo@release",
+    "result": {
+      "type": "git",
+      "repo": "https://github:user/repo",
+      "host": "github.com",
+      "path": "user/repo",
+      "ref": "release",
+      "pinned": true
+    }
+  },
+  {
+    "input": "git:gitlab:group/sub/repo",
+    "result": {
+      "type": "git",
+      "repo": "https://gitlab:group/sub/repo",
+      "host": "gitlab.com",
+      "path": "group/sub/repo",
+      "pinned": false
+    }
+  },
+  {
+    "input": "git:bitbucket:user/repo",
+    "result": {
+      "type": "git",
+      "repo": "https://bitbucket:user/repo",
+      "host": "bitbucket.org",
+      "path": "user/repo",
+      "pinned": false
+    }
+  },
+  {
+    "input": "git:gist:abcdef",
+    "result": {
+      "type": "git",
+      "repo": "https://gist:abcdef",
+      "host": "gist.github.com",
+      "path": "null/abcdef",
+      "pinned": false
+    }
+  },
+  {
+    "input": "https://gist.github.com/abcdef",
+    "result": {
+      "type": "git",
+      "repo": "https://gist.github.com/abcdef",
+      "host": "gist.github.com",
+      "path": "null/abcdef",
+      "pinned": false
+    }
+  },
+  {
+    "input": "https://github.com/user/repo/tree/main",
+    "result": {
+      "type": "git",
+      "repo": "https://github.com/user/repo/tree/main",
+      "host": "github.com",
+      "path": "user/repo",
+      "ref": "main",
+      "pinned": true
+    }
+  },
+  {
+    "input": "https://github.com/user/repo.git#branch%2Fsub",
+    "result": {
+      "type": "git",
+      "repo": "https://github.com/user/repo.git#branch%2Fsub",
+      "host": "github.com",
+      "path": "user/repo",
+      "ref": "branch/sub",
+      "pinned": true
+    }
+  },
+  {
+    "input": "https://www.github.com/user/repo",
+    "result": {
+      "type": "git",
+      "repo": "https://www.github.com/user/repo",
+      "host": "github.com",
+      "path": "user/repo",
+      "pinned": false
+    }
+  },
+  {
+    "input": "https://bitbucket.org/user/repo/src/main",
+    "result": {
+      "type": "git",
+      "repo": "https://bitbucket.org/user/repo/src/main",
+      "host": "bitbucket.org",
+      "path": "user/repo",
+      "pinned": false
+    }
+  },
+  {
+    "input": "https://gitlab.com/group/sub/repo/-/tree/main",
+    "result": {
+      "type": "git",
+      "repo": "https://gitlab.com/group/sub/repo/-/tree/main",
+      "host": "gitlab.com",
+      "path": "group/sub/repo/-/tree/main",
+      "pinned": false
+    }
+  },
+  {
+    "input": "https://git.sr.ht/~user/repo",
+    "result": {
+      "type": "git",
+      "repo": "https://git.sr.ht/~user/repo",
+      "host": "git.sr.ht",
+      "path": "~user/repo",
+      "pinned": false
+    }
+  },
+  {
+    "input": "git:git.sr.ht/~user/repo@branch",
+    "result": {
+      "type": "git",
+      "repo": "https://git.sr.ht/~user/repo",
+      "host": "git.sr.ht",
+      "path": "~user/repo",
+      "ref": "branch",
+      "pinned": true
+    }
+  },
+  {
+    "input": "https://github.com/user/repo?query=1",
+    "result": {
+      "type": "git",
+      "repo": "https://github.com/user/repo?query=1",
+      "host": "github.com",
+      "path": "user/repo",
+      "pinned": false
+    }
+  },
+  {
+    "input": "https://github.com/user/repo%20name",
+    "result": {
+      "type": "git",
+      "repo": "https://github.com/user/repo%20name",
+      "host": "github.com",
+      "path": "user/repo name",
+      "pinned": false
+    }
+  },
+  {
+    "input": "git:example.org/team/repo@feature/name",
+    "result": {
+      "type": "git",
+      "repo": "https://example.org/team/repo",
+      "host": "example.org",
+      "path": "team/repo",
+      "ref": "feature/name",
+      "pinned": true
+    }
+  }
+]

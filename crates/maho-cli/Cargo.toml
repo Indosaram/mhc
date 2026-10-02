@@ -5,6 +5,34 @@ edition.workspace = true
 publish.workspace = true
 license = "MIT"
 
+[dependencies]
+maho-ai = { path = "../maho-ai" }
+maho-agent = { path = "../maho-agent" }
+maho-core = { path = "../maho-core" }
+maho-tui = { path = "../maho-tui" }
+maho-tools = { path = "../maho-tools" }
+maho-interactive = { path = "../maho-interactive" }
+maho-rpc = { path = "../maho-rpc" }
+maho-ext-api = { path = "../maho-ext-api" }
+serde_json.workspace = true
+serde = { workspace = true, features = ["derive"] }
+regex.workspace = true
+sha2.workspace = true
+url.workspace = true
+percent-encoding.workspace = true
+base64 = "=0.22.1"
+reqwest = { workspace = true, features = ["rustls-tls"] }
+semver = "=1.0.27"
+photon-rs = { version = "=0.3.3", default-features = false }
+tempfile.workspace = true
+notify = "=8.2.0"
+nix = { version = "=0.28.0", features = ["signal", "process"] }
+tokio = { workspace = true, features = ["time", "macros", "rt", "process", "io-util", "io-std", "fs", "signal"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
 [[bin]]
 name = "mhc"
 path = "src/main.rs"
