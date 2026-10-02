@@ -116,3 +116,15 @@ fn auth_dependencies_bind_provider_logger_before_refresh_clones_it() {
     let plan=resolve_server_auth_with(ServerAuthDeps {server_name:"deps",config:&config,agent_dir:Some(root.path()),logger:Some(logger.clone()),redirect_url:None,on_redirect:None,client:reqwest::Client::new()});
     assert!(std::sync::Arc::ptr_eq(plan.provider.unwrap().logger.as_ref().unwrap(),&logger));assert!(plan.refresh.is_some());
 }
+#[test]
+fn held_auth_lock_reports_its_path_without_mutating_tokens() {
+    let root=tempfile::tempdir().unwrap();let mut store=McpTokenStore::new(root.path(),"held","https://fixture.test");store.lock_retries=0;
+    store.write(McpStoredAuth {code_verifier:Some("seed".into()),..Default::default()}).unwrap();
+    let lock=std::fs::OpenOptions::new().read(true).write(true).open(store.lock_path()).unwrap();lock.lock().unwrap();
+    let error=store.update(|_|Some(McpStoredAuth::default())).err().expect("held lock rejects updates");assert!(error.to_string().contains(&store.lock_path().display().to_string()));assert_eq!(store.read().unwrap().unwrap().code_verifier.as_deref(),Some("seed"));lock.unlock().unwrap();
+}
+#[test]
+fn disabling_lock_allows_explicit_single_process_access() {
+    let root=tempfile::tempdir().unwrap();let mut store=McpTokenStore::new(root.path(),"unlocked","https://fixture.test");store.disable_lock=true;
+    store.write(McpStoredAuth {code_verifier:Some("value".into()),..Default::default()}).unwrap();assert!(!store.lock_path().exists());assert_eq!(store.read().unwrap().unwrap().code_verifier.as_deref(),Some("value"));
+}

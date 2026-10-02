@@ -22,9 +22,9 @@ pub enum TokenStoreError {
 }
 pub fn hash_server_url(url: &str) -> String { format!("{:x}",Sha256::digest(url)) }
 #[derive(Clone)]
-pub struct McpTokenStore { pub server_name: String, pub server_url: String, agent_dir: PathBuf, hash: String }
+pub struct McpTokenStore { pub server_name: String, pub server_url: String, agent_dir: PathBuf, hash: String,pub lock_retries:usize,pub disable_lock:bool }
 impl McpTokenStore {
-    pub fn new(agent_dir: &Path, server_name: &str, server_url: &str) -> Self { Self { server_name: server_name.into(),server_url: server_url.into(),agent_dir: agent_dir.into(),hash: hash_server_url(server_url) } }
+    pub fn new(agent_dir: &Path, server_name: &str, server_url: &str) -> Self { Self { server_name: server_name.into(),server_url: server_url.into(),agent_dir: agent_dir.into(),hash: hash_server_url(server_url),lock_retries:10,disable_lock:false } }
     pub fn root_dir(&self) -> PathBuf { self.agent_dir.join("mcp-auth") }
     pub fn dir(&self) -> PathBuf { self.root_dir().join(&self.hash) }
     pub fn tokens_path(&self) -> PathBuf { self.dir().join("tokens.json") }
@@ -37,10 +37,18 @@ impl McpTokenStore {
     }
     pub fn with_lock<T>(&self, operation: impl FnOnce(&Self) -> Result<T,TokenStoreError>) -> Result<T, TokenStoreError> {
         self.ensure_dir()?;
+        if self.disable_lock{return operation(self);}
         let mut opts = fs::OpenOptions::new(); opts.create(true).truncate(false).read(true).write(true);
         #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; opts.mode(0o600); }
         let lock = opts.open(self.lock_path())?;
-        lock.lock().map_err(|cause| TokenStoreError::Lock { path:self.lock_path(),cause })?;
+        let mut delay=20u64;
+        for attempt in 0..=self.lock_retries {
+            match lock.try_lock() {
+                Ok(())=>break,
+                Err(std::fs::TryLockError::WouldBlock) if attempt<self.lock_retries=>{std::thread::sleep(std::time::Duration::from_millis(delay));delay=(delay*6/5).min(200);}
+                Err(error)=>return Err(TokenStoreError::Lock {path:self.lock_path(),cause:match error {std::fs::TryLockError::WouldBlock=>std::io::Error::new(std::io::ErrorKind::WouldBlock,"Lock file is already being held"),std::fs::TryLockError::Error(error)=>error}}),
+            }
+        }
         let result = operation(self);
         lock.unlock()?;
         result
