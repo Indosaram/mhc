@@ -28,7 +28,17 @@ pub fn format_goal_for_tool(goal:Option<&Goal>)->Result<String,String>{
     let Some(goal)=goal else{return Ok("No active goal is set.".into());};
     let mut lines=vec![format!("Objective: {}",goal.objective),format!("Status: {}",goal_status_label(goal.status)),format!("Time used: {}",format_goal_elapsed_seconds(number(goal.time_used_seconds))),format!("Tokens used: {}",format_tokens_compact(number(goal.tokens_used)))];
     if let Some(reason)=&goal.blocked_reason&&!reason.is_empty(){lines.push(format!("Blocked reason: {reason}"));}
-    if let Some(completed)=goal.completed_at.filter(|value|*value!=0){let time=chrono::DateTime::from_timestamp(i64::try_from(completed).map_err(|e|e.to_string())?,0).ok_or("Invalid time value")?;lines.push(format!("Completed at: {}",time.to_rfc3339_opts(chrono::SecondsFormat::Millis,true)));}
+    if let Some(completed)=goal.completed_at.filter(|value|*value!=0){
+        if completed>8_640_000_000_000{return Err("Invalid time value".into());}
+        let days=completed/86400+719468;let era=days/146097;let day=days%146097;
+        let year_of_era=(day-day/1460+day/36524-day/146096)/365;
+        let day_of_year=day-(365*year_of_era+year_of_era/4-year_of_era/100);
+        let month_index=(5*day_of_year+2)/153;let date=day_of_year-(153*month_index+2)/5+1;
+        let month=if month_index<10{month_index+3}else{month_index-9};
+        let year=year_of_era+era*400+u64::from(month<=2);
+        let year=if year>=10000{format!("+{year:06}")}else{format!("{year:04}")};
+        lines.push(format!("Completed at: {year}-{month:02}-{date:02}T{:02}:{:02}:{:02}.000Z",completed/3600%24,completed/60%60,completed%60));
+    }
     Ok(lines.join("\n"))
 }
 pub fn goal_tool_response(goal:Option<&Goal>)->GoalToolResponse{GoalToolResponse{goal:goal.map(|goal|GoalToolSnapshot{thread_id:goal.thread_id.clone(),objective:goal.objective.clone(),status:goal.status,tokens_used:goal.tokens_used,time_used_seconds:goal.time_used_seconds,created_at:goal.created_at,updated_at:goal.updated_at,blocked_reason:goal.blocked_reason.clone(),blocked_at:goal.blocked_at})}}

@@ -36,7 +36,7 @@ impl Matcher {
             for pattern in patterns{
                 let negated=pattern.starts_with('!');
                 let value=pattern.strip_prefix('!').unwrap_or(&pattern);
-                let compiled=GlobBuilder::new(value).literal_separator(false).backslash_escape(false).build()?.compile_matcher();
+                let compiled=GlobBuilder::new(value).literal_separator(false).backslash_escape(false).allow_unclosed_class(true).empty_alternates(true).build()?.compile_matcher();
                 if negated{set.negative.push(compiled);}else{set.positive.push((pattern,compiled));}
             }
             if self.sets.len()>=256{self.sets.pop_front();}
