@@ -14,7 +14,7 @@ impl Extension for ConfigReload {
         let events = api.events.clone();
         api.on(EventKind::SessionStart, Arc::new(move |_, ctx| {
             let state = Arc::clone(&shared); let events = events.clone();
-            Box::pin(async move { start(state, ctx.clone(), events).await?; Ok(EventResult::None) })
+            Box::pin(async move { start(state, ctx.clone(), events, true).await?; Ok(EventResult::None) })
         }));
         for kind in [EventKind::AgentEnd, EventKind::AgentSettled] {
             let state = Arc::clone(&state);
@@ -23,17 +23,26 @@ impl Extension for ConfigReload {
                 Box::pin(async move { flush(state, ctx.clone(), None).await?; Ok(EventResult::None) })
             }));
         }
+        let shared = Arc::clone(&state);
+        let events = api.events.clone();
+        api.on(EventKind::ProjectTrust, Arc::new(move |_, ctx| {
+            let state = Arc::clone(&shared); let events = events.clone();
+            Box::pin(async move {
+                start(state, ctx.clone(), events, false).await?;
+                Ok(EventResult::ProjectTrust(maho_ext_api::ProjectTrustEventResult { trusted: maho_ext_api::TrustDecision::Undecided, remember: None }))
+            })
+        }));
         api.on(EventKind::SessionShutdown, Arc::new(move |_, _| {
             let state = Arc::clone(&state);
-            Box::pin(async move { stop(&state).await?; Ok(EventResult::None) })
+            Box::pin(async move { stop(&state, true).await?; Ok(EventResult::None) })
         }));
     }
 }
-async fn stop(state: &Arc<Mutex<State>>) -> Result<(), ExtensionFailure> {
+async fn stop(state: &Arc<Mutex<State>>, clear_pending: bool) -> Result<(), ExtensionFailure> {
     let run = {
         let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
         state.generation = state.generation.wrapping_add(1);
-        state.pending.clear(); state.in_flight = false; state.deferred_notice = false;
+        if clear_pending { state.pending.clear(); state.in_flight = false; state.deferred_notice = false; }
         state.run.take()
     };
     if let Some(run) = run {
@@ -42,8 +51,8 @@ async fn stop(state: &Arc<Mutex<State>>) -> Result<(), ExtensionFailure> {
     }
     Ok(())
 }
-async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus) -> Result<(), ExtensionFailure> {
-    stop(&state).await?;
+async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus, clear_pending: bool) -> Result<(), ExtensionFailure> {
+    stop(&state, clear_pending).await?;
     let home = std::env::var("HOME").unwrap_or_default();
     let settings = maho_core::settings_manager::SettingsManager::create(&ctx.cwd.to_string_lossy(), &ctx.agent_dir.to_string_lossy(), &home, ctx.is_project_trusted());
     let resolved = resolve_config_reload_settings(&serde_json::json!(settings.get_global()), &serde_json::json!(settings.get_project()));

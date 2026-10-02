@@ -44,6 +44,10 @@ async fn print_session_emits_disabled_readiness_and_shutdown_joins() {
     let mut start = ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::Startup, initial_model_provenance: None, previous_session_file: None });
     (api.registered.handlers[&EventKind::SessionStart][0])(&mut start, &ctx).await.unwrap();
     assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await.unwrap().unwrap(), serde_json::json!({"enabled":false}));
+    let mut trust = ExtensionEvent::ProjectTrust { cwd: root.path().into() };
+    let result = (api.registered.handlers[&EventKind::ProjectTrust][0])(&mut trust, &ctx).await.unwrap();
+    assert!(matches!(result, EventResult::ProjectTrust(ProjectTrustEventResult { trusted: TrustDecision::Undecided, .. })));
+    assert_eq!(receiver.try_recv().unwrap(), serde_json::json!({"enabled":false}));
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason: SessionReason::Quit, target_session_file: None, signal: None });
     (api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown, &ctx).await.unwrap();
 }
@@ -78,7 +82,7 @@ async fn active_session_delivers_validated_change_and_joins_shutdown() {
 fn registers_native_start_idle_and_shutdown_hooks() {
     let mut api = ExtensionApi::new(LoadedExtension::new("config-reload", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
     maho_ext_config_reload::ConfigReload.register(&mut api);
-    for kind in [EventKind::SessionStart, EventKind::AgentEnd, EventKind::AgentSettled, EventKind::SessionShutdown] { assert_eq!(api.registered.handlers[&kind].len(), 1); }
+    for kind in [EventKind::SessionStart, EventKind::AgentEnd, EventKind::AgentSettled, EventKind::ProjectTrust, EventKind::SessionShutdown] { assert_eq!(api.registered.handlers[&kind].len(), 1); }
 }
 #[tokio::test]
 async fn missing_prompt_directory_rearms_before_observing_its_files() {
