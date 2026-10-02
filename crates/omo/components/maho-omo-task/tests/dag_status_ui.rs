@@ -22,6 +22,20 @@ fn fixture(mode:ExtensionMode)->(Arc<DagStatusUi>,Arc<Timers>,Arc<support::Ui>,A
 #[test] fn live_run_renders_below_editor_and_reuses_refresh_timer() { let (status,timers,ui,_,_root)=fixture(ExtensionMode::Tui); status.sync_now(); assert_eq!(timers.count(),1); status.on_activity("run-1","a","reading"); assert_eq!(timers.count(),1); timers.fire(1000); let widgets=ui.widgets.lock().expect("widgets"); assert_eq!(widgets.len(),2); assert_eq!(widgets[0].1,WidgetPlacement::BelowEditor); assert!(matches!(&widgets[0].0,Some(WidgetContent::Lines(rows)) if rows.len()==2)); status.dispose(); assert_eq!(timers.count(),0); }
 #[test] fn terminal_run_clears_widget_and_live_refresh() { let (status,timers,ui,runs,_root)=fixture(ExtensionMode::Tui); status.sync_now(); runs.0.lock().expect("run").as_mut().expect("run").status=DagRunStatus::Completed; timers.fire(1000); assert_eq!(timers.count(),0); assert!(ui.widgets.lock().expect("widgets").last().expect("widget").0.is_none()); }
 #[test] fn headless_mode_produces_no_widget_or_refresh() { let (status,timers,ui,_,_root)=fixture(ExtensionMode::Rpc); status.sync_now(); assert_eq!(timers.count(),0); assert!(ui.widgets.lock().expect("widgets").is_empty()); }
+#[test] fn node_transitions_advance_wave_and_preserve_routes() {
+    use senpi_task::dag::types::{DagNodeState,DagRoute,DagWave};
+    let (status,timers,ui,runs,_root)=fixture(ExtensionMode::Tui);
+    { let mut run=runs.0.lock().expect("run"); let run=run.as_mut().expect("snapshot"); run.nodes[0].id="plan".into(); let mut build=run.nodes[0].clone(); build.id="build".into(); build.route=DagRoute::Agent { agent:"coder".into(),model:None }; run.nodes.push(build); run.waves=vec![DagWave { index:0,node_ids:vec!["plan".into()] },DagWave { index:1,node_ids:vec!["build".into()] }]; }
+    for (first,second,wave,rows) in [
+        (DagNodeState::Pending,DagNodeState::Pending,"wave 1/2",["  ○ plan category:quick","  ○ build agent:coder"]),
+        (DagNodeState::Running,DagNodeState::Blocked,"wave 1/2",["  ▶ plan category:quick","  ○ build agent:coder"]),
+        (DagNodeState::Completed,DagNodeState::Failed,"wave 2/2",["  ✓ plan category:quick","  ✗ build agent:coder"]),
+    ] {
+        { let mut run=runs.0.lock().expect("run"); let run=run.as_mut().expect("snapshot"); run.nodes[0].state=first; run.nodes[1].state=second; }
+        status.sync_now(); let widgets=ui.widgets.lock().expect("widgets"); let Some(WidgetContent::Lines(actual))=&widgets.last().expect("widget").0 else { panic!("rows"); }; assert!(actual[0].contains(wave)); assert_eq!(&actual[1..],rows);
+    }
+    status.dispose(); assert_eq!(timers.count(),0);
+}
 #[test] fn paused_run_preserves_skipped_and_cancelled_icons() {
     use senpi_task::dag::types::DagNodeState;
     let (status,timers,ui,runs,_root)=fixture(ExtensionMode::Tui);
