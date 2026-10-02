@@ -146,6 +146,15 @@ pub fn clear_loop_state_snapshot(reference:&LoopStoreRef) { store(reference).cle
     #[tokio::test] async fn malformed_json_fails_closed() { let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path()); std::fs::write(loop_state_file_path(&reference),"{").unwrap(); let result=read_loop_state(&reference).await; assert!(matches!(result,Err(LoopStoreError::Invalid(_)))); }
     #[tokio::test] async fn wrong_version_remaps_shared_error() { let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path()); std::fs::write(loop_state_file_path(&reference),r#"{"version":2,"sessionId":"session/one"}"#).unwrap(); let result=read_loop_state(&reference).await; assert!(matches!(result,Err(LoopStoreError::UnsupportedVersion(message)) if message.contains("loop store"))); }
     #[tokio::test] async fn concurrent_mutations_serialize_per_file() { let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path()); let (first,second)=tokio::join!(mutate_loop_state(&reference,|mut state|{ state.updated_at+=1.0; Ok(state) }),mutate_loop_state(&reference,|mut state|{ state.updated_at+=1.0; Ok(state) })); first.unwrap(); second.unwrap(); let result=load_loop_state(&reference).await.unwrap(); assert_eq!(result.updated_at,2.0); }
+    #[tokio::test] async fn upstream_mutation_failure_does_not_poison_later_mutation() {
+        let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path());
+        let (failed,successful)=tokio::join!(mutate_loop_state(&reference,|_|Err(LoopStoreError::Invalid("mutation exploded".into()))),mutate_loop_state(&reference,|mut state| { state.updated_at=5.0; Ok(state) }));
+        assert!(failed.unwrap_err().to_string().contains("mutation exploded")); successful.unwrap(); assert_eq!(load_loop_state(&reference).await.unwrap().updated_at,5.0);
+    }
+    #[tokio::test] async fn upstream_corrupt_mutation_fails_before_callback_and_preserves_file() {
+        let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path()); let path=loop_state_file_path(&reference); std::fs::write(&path,"{not json at all").unwrap();
+        assert!(mutate_loop_state(&reference,|_|panic!("corrupt store mutation callback must not run")).await.is_err()); assert_eq!(std::fs::read_to_string(path).unwrap(),"{not json at all");
+    }
     #[tokio::test] async fn persisted_entries_preserve_creation_order_across_restore() {
         use crate::scheduler::{CreateDynamicRequest,CreateFixedRequest,LoopScheduler};
         let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path());
