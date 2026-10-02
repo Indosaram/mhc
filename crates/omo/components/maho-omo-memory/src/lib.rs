@@ -33,6 +33,7 @@ pub mod policy_guard;
 pub mod skills_usage_ledger;
 pub mod status;
 pub mod status_live;
+pub mod status_live_wiring;
 pub mod status_active_runs;
 pub mod supervisor;
 pub mod soul_notice;
