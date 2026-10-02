@@ -33,12 +33,26 @@ impl Extension for GoalExtension {
         }
         for kind in [EventKind::SessionStart,EventKind::AgentStart,EventKind::MessageStart,EventKind::MessageEnd,EventKind::AgentEnd,EventKind::Input,EventKind::InputDisposition,EventKind::SessionAbort,EventKind::SessionShutdown] {
             let runtime=runtime.clone();
-            api.on(kind,Arc::new(move |event,context| { let runtime=runtime.clone(); Box::pin(async move { runtime.event(event,context).await?; Ok(EventResult::None) }) }));
+            let events=api.events.clone();
+            api.on(kind,Arc::new(move |event,context| { let runtime=runtime.clone(); let events=events.clone(); Box::pin(async move { runtime.event(event,context).await?; if matches!(event,maho_ext_api::ExtensionEvent::SessionStart(_)) { runtime.start_channels(&events,context).await?; } Ok(EventResult::None) }) }));
         }
     }
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn factory_start_binds_channel_settings_and_shutdown_releases_subscription() {
+        use maho_ext_api::*;
+        let dir=tempfile::tempdir().unwrap(); let reference=crate::types::GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+        let extension=GoalExtension { reference:Arc::new(move |_|stored.clone()),now:Arc::new(||0.0) };
+        let events=EventBus::default(); let mut api=ExtensionApi::new(LoadedExtension::new("goal","/tmp".into(),Default::default()),Default::default(),events.clone(),Default::default()); extension.register(&mut api);
+        let mut context=crate::test_context::context(); let session=crate::test_context::bind_session(&mut context);
+        let mut start=ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None });
+        api.registered.handlers[&EventKind::SessionStart][0](&mut start,&context).await.unwrap();
+        events.emit("wake_source_state",&serde_json::json!({"source":"task","activeCount":1}));
+        let mut shutdown=ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason:SessionReason::Quit,target_session_file:None,signal:None });
+        api.registered.handlers[&EventKind::SessionShutdown][0](&mut shutdown,&context).await.unwrap();
+        events.emit("wake_source_state",&serde_json::json!({"source":"task","activeCount":0})); session.dispose().await;
+    }
     #[tokio::test] async fn factory_context_tools_create_and_read_the_same_store() {
         use maho_ext_api::*;
         let dir=tempfile::tempdir().unwrap(); let reference=crate::types::GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();

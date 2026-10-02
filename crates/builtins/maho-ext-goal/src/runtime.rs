@@ -4,6 +4,7 @@ use crate::{accounting_hooks::GoalStoreReference,index::GoalTurnAccounting,types
 struct State {
     context:Option<ExtensionContext>,accounting:GoalTurnAccounting,input:GoalDirectInputLifecycle,
     ticker:crate::elapsed_ticker::GoalElapsedTicker,
+    subscriptions:Vec<maho_ext_api::BusSubscription>,
 }
 pub struct GoalRuntime {
     state:tokio::sync::Mutex<State>,pub monitor:Arc<Mutex<MonitorAwareGoalContinuation>>,
@@ -12,7 +13,21 @@ pub struct GoalRuntime {
 impl GoalRuntime {
     pub fn new(reference:GoalStoreReference,now:Arc<dyn Fn()->f64+Send+Sync>)->Self {
         let render=Arc::new(|context:&ExtensionContext,goal:&Goal,elapsed:f64| { crate::ui::update_goal_ui(context,Some(goal),Some(elapsed)); Ok(()) });
-        Self { state:tokio::sync::Mutex::new(State { context:None,accounting:Default::default(),input:Default::default(),ticker:crate::elapsed_ticker::GoalElapsedTicker::new(render,now.clone()) }),monitor:Arc::new(Mutex::new(Default::default())),reference,now }
+        Self { state:tokio::sync::Mutex::new(State { context:None,accounting:Default::default(),input:Default::default(),ticker:crate::elapsed_ticker::GoalElapsedTicker::new(render,now.clone()),subscriptions:Vec::new() }),monitor:Arc::new(Mutex::new(Default::default())),reference,now }
+    }
+    pub async fn start_channels(&self,events:&maho_ext_api::EventBus,context:&ExtensionContext)->Result<(),ExtensionFailure> {
+        let mut state=self.state.lock().await; state.subscriptions.clear();
+        let minutes=context.get_ask_user_settings()?.timeout_minutes;
+        let question_idle_ms=if minutes.is_finite()&&minutes>0.0 { minutes*60000.0 } else { 1800000.0 };
+        let wake_monitor=self.monitor.clone(); let hold_monitor=self.monitor.clone(); let wake_now=self.now.clone(); let hold_now=self.now.clone();
+        state.subscriptions=crate::channel_state_subscriptions::subscribe_goal_channel_state(events,Arc::new(move |source,count,event| {
+            let deadlines=event.and_then(|data|data.get("items")).and_then(serde_json::Value::as_array).map_or_else(Vec::new,|items|items.iter().filter_map(|item|item.get("deadlineAtMs").and_then(serde_json::Value::as_f64)).collect::<Vec<_>>());
+            wake_monitor.lock().unwrap_or_else(std::sync::PoisonError::into_inner).set_wake_source_count(source,count,&deadlines,wake_now(),question_idle_ms);
+        }),Arc::new(move |source,active| {
+            let mut monitor=hold_monitor.lock().unwrap_or_else(std::sync::PoisonError::into_inner); let id=format!("external:{source}");
+            if active { monitor.hold_direct_input(&id,hold_now()); } else { monitor.resolve_direct_input(&id,false,hold_now()); }
+        }));
+        Ok(())
     }
     async fn refresh(&self,state:&mut State,context:&ExtensionContext,goal:Option<&Goal>)->Result<(),ExtensionFailure> {
         self.monitor.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?.sync_goal(goal);
@@ -51,7 +66,7 @@ impl GoalRuntime {
         let mut goal=if matches!(event,ExtensionEvent::SessionStart(_)) { None } else { crate::store::read_goal(&reference).map_err(failure)? };
         match event {
             ExtensionEvent::SessionStart(_)=>{
-                state.accounting.clear(); state.input.reset();
+                state.accounting.clear(); state.input.reset(); state.subscriptions.clear();
                 self.monitor.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?.dispose();
                 crate::persistence::migrate_legacy_goal_file_default(&reference).map_err(failure)?;
                 goal=crate::store::read_goal(&reference).map_err(failure)?;
@@ -116,7 +131,7 @@ impl GoalRuntime {
             },
             ExtensionEvent::SessionShutdown(_)=>{
                 if state.accounting.window.is_some() { goal=state.accounting.account(&reference,GoalAccountingMode::Active,None,now,seconds).await.map_err(failure)?; }
-                state.accounting.clear(); state.context=None;
+                state.accounting.clear(); state.context=None; state.subscriptions.clear();
                 self.monitor.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?.dispose();
                 if let Some(worker)=state.ticker.stop()? { match worker.await { Ok(result)=>result?,Err(error) if error.is_cancelled()=>(),Err(error)=>return Err(ExtensionFailure::new(error.to_string())) } }
                 return Ok(goal);
@@ -150,6 +165,22 @@ impl GoalRuntime {
 fn failure(error:crate::errors::GoalError)->ExtensionFailure { ExtensionFailure::new(error.to_string()) }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn owning_channels_replace_subscriptions_and_shutdown_unsubscribes() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+        let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap();
+        let runtime=GoalRuntime::new(Arc::new(move |_|stored.clone()),Arc::new(||2000.0)); let mut context=crate::test_context::context(); let session=crate::test_context::bind_session(&mut context);
+        let first=maho_ext_api::EventBus::default(); let second=maho_ext_api::EventBus::default();
+        runtime.monitor.lock().unwrap().sync_goal(Some(&goal)); runtime.start_channels(&first,&context).await.unwrap();
+        first.emit("wake_source_state",&serde_json::json!({"source":"ask-user","activeCount":1,"items":[{"deadlineAtMs":5000}]}));
+        assert_eq!(runtime.monitor.lock().unwrap().ask_user_deadline_at_ms,Some(5000.0));
+        runtime.monitor.lock().unwrap().arm_timer(crate::wait_progress::GoalWaitKind::Monitor,10000.0,10000.0,false,2000.0);
+        first.emit("continuation_hold_state",&serde_json::json!({"source":"guard","active":true})); assert!(runtime.monitor.lock().unwrap().held_timer.is_some());
+        first.emit("continuation_hold_state",&serde_json::json!({"source":"guard","active":false})); assert!(runtime.monitor.lock().unwrap().armed_timer.is_some());
+        runtime.start_channels(&second,&context).await.unwrap(); first.emit("wake_source_state",&serde_json::json!({"source":"old","activeCount":1})); assert!(!runtime.monitor.lock().unwrap().wake_sources.contains_key("old"));
+        second.emit("wake_source_state",&serde_json::json!({"source":"ask-user","activeCount":0})); assert!(runtime.monitor.lock().unwrap().armed_timer.unwrap().drain_fire);
+        runtime.event(&ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent { reason:maho_ext_api::SessionReason::Quit,target_session_file:None,signal:None }),&context).await.unwrap();
+        second.emit("wake_source_state",&serde_json::json!({"source":"task","activeCount":1})); assert!(runtime.monitor.lock().unwrap().wake_sources.is_empty()); session.dispose().await;
+    }
     #[tokio::test] async fn owning_system_abort_stages_only_error_without_live_sources_or_retry() {
         for (stop,will_retry,staged) in [(maho_ai::types::StopReason::Error,false,true),(maho_ai::types::StopReason::Aborted,false,false),(maho_ai::types::StopReason::Error,true,false)] {
             let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
