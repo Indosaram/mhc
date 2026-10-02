@@ -566,6 +566,18 @@ async fn extension_question_cancel_releases_composer_and_preserves_unanswered_id
 }
 
 #[tokio::test]
+async fn non_wait_question_keeps_composer_until_answer_chord() {
+    use maho_ext_api::ExtensionUi; use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode(); let ui = mode.extension_ui.clone();
+    let request = maho_ext_api::QuestionRequest { request_id:"async-q".into(), questions:vec![maho_ext_api::Question { id:"item".into(), header:"Header".into(), question:"Choose".into(), options:vec![maho_ext_api::QuestionOption { label:"A".into(), description:None }], multi_select:false }], wait_for_answer:false, timeout_ms:0 };
+    let answer = ui.question(request, Default::default()); mode.render(80);
+    mode.handle_input_at("draft", 0); assert_eq!(mode.editor.editor.get_text(), "draft");
+    mode.handle_input_at("\x1ba", 1); mode.handle_input_at("\x1b", 2);
+    assert_eq!(answer.await.expect("question").status, maho_ext_api::QuestionStatus::Cancelled);
+    assert_eq!(mode.editor.editor.get_text(), "draft");
+}
+
+#[tokio::test]
 async fn fork_selector_uses_current_user_history_and_cancel_keeps_transcript() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();

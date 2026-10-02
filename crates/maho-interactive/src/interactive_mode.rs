@@ -51,6 +51,7 @@ pub struct InteractiveMode {
     hidden_thinking_label: String,
     history_expansion: Vec<Box<dyn FnMut(bool)>>,
     question: Option<crate::components::ask_user_question::AskUserQuestionComponent>,
+    async_question_widget: Option<crate::components::ask_user_async_widget::AskUserAsyncWidget>,
     question_reply: Rc<RefCell<Option<tokio::sync::oneshot::Sender<maho_ext_api::QuestionResponse>>>>,
 }
 
@@ -69,7 +70,7 @@ impl InteractiveMode {
         editor.editor.on_submit = Some(Box::new(move |text| { if !text.trim().is_empty() { captured.borrow_mut().push_back(text.trim().into()); } }));
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(maho_ext_api::Theme { name: Some(theme.name.clone()), colors: theme.resolved_colors(), ..Default::default() });
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, question_reply:Rc::new(RefCell::new(None)) }
+        Self { session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)) }
     }
 
     pub fn use_registered_markdown_transformers(&mut self, extensions: &[maho_ext_api::LoadedExtension]) {
@@ -166,6 +167,11 @@ impl InteractiveMode {
     }
 
     fn handle_filtered_input_at(&mut self, data: &str, now_ms: u64) {
+        if self.async_question_widget.is_some() {
+            let keys = maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default());
+            if crate::components::ask_user_answer_key::matches_ask_user_answer_key(data, &maho_core::keybindings::host_platform(), &keys) { self.async_question_widget = None; }
+            else { self.handle_editor_input(data); return; }
+        }
         if let Some(question) = &mut self.question { question.handle_input(data); if self.question_reply.borrow().is_none() { self.question = None; } return; }
         if self.ui_dialog.is_some() || self.rename_input.is_some() { self.handle_editor_input(data); return; }
         if self.shortcut_overlay { self.shortcut_overlay = false; return; }
@@ -557,6 +563,16 @@ impl InteractiveMode {
                 let request = state::QuestionRequest { request_id:request.request_id, wait_for_answer:request.wait_for_answer, timeout_ms:request.timeout_ms,
                     questions:request.questions.into_iter().map(|q| state::Question { id:q.id, header:q.header, question:q.question, multi_select:q.multi_select, options:q.options.into_iter().map(|o| state::QuestionOption { label:o.label, description:o.description }).collect() }).collect() };
                 *self.question_reply.borrow_mut() = Some(reply); let answer = self.question_reply.clone();
+                self.async_question_widget = None;
+                if !request.wait_for_answer {
+                    let reply = self.question_reply.clone(); let unanswered = request.questions.iter().map(|question| question.id.clone()).collect::<Vec<_>>();
+                    self.async_question_widget = Some(crate::components::ask_user_async_widget::AskUserAsyncWidget::new(crate::components::ask_user_async_widget::AskUserAsyncWidgetOptions {
+                        request:request.clone(), draft:Default::default(), timeout_ms:options.dialog.timeout_ms.unwrap_or(request.timeout_ms), now_ms:self.clock.elapsed().as_millis() as u64,
+                        get_deadline_at_ms:None, pending_count:1, theme:self.theme.clone(), env:std::env::vars().collect(), mouse_capture_active:false,
+                        on_option_click:None, on_own_answer_click:None, on_expand_click:None, on_next_question:None,
+                        on_expire:Box::new(move || { if let Some(reply) = reply.borrow_mut().take() { drop(reply.send(maho_ext_api::QuestionResponse { status:maho_ext_api::QuestionStatus::TimedOut, answers:Default::default(), comment:None, unanswered:unanswered.clone(), auto_resolved_after_ms:None })); } }),
+                    }));
+                }
                 let mut component_options = crate::components::ask_user_question::AskUserQuestionOptions::new(self.theme.clone());
                 component_options.now_ms = self.clock.elapsed().as_millis() as u64;
                 component_options.timeout_ms = options.dialog.timeout_ms;
@@ -747,8 +763,9 @@ impl InteractiveMode {
 
     pub fn tick(&mut self, now_ms: f64) {
         for (id, value) in self.tool_args_reveal.tick(now_ms) { if let Some(component) = self.pending_tools.get(&id) { component.borrow_mut().update_args(value); } }
-        if let Some(question) = &mut self.question { question.tick(now_ms.max(0.0) as u64); }
-        if self.question_reply.borrow().is_none() { self.question = None; }
+        if let Some(widget) = &mut self.async_question_widget { widget.tick(now_ms.max(0.0) as u64); }
+        else if let Some(question) = &mut self.question { question.tick(now_ms.max(0.0) as u64); }
+        if self.question_reply.borrow().is_none() { self.question = None; self.async_question_widget = None; }
         for component in &self.tool_cards { component.borrow_mut().tick(now_ms.max(0.0) as u64); }
         if let Some(value) = self.reveal.tick(now_ms) && let Some(component) = &self.streaming { component.borrow_mut().update_content(&value, Some(true)); }
         for (id, value) in self.tool_reveal.tick(now_ms) { if let Some(component) = self.pending_tools.get(&id) { component.borrow_mut().update_result(Self::tool_result(&value, false), true); } }
@@ -816,7 +833,8 @@ impl Component for InteractiveMode {
         if let Some(header) = &mut self.header { let mut top = header.render(width); top.extend(lines); lines = top; }
         for (_, widget, placement) in &mut self.widgets { if *placement == maho_ext_api::WidgetPlacement::AboveEditor { lines.extend(widget.render(width)); } }
         if self.shortcut_overlay { lines.extend(crate::components::shortcut_overlay::ShortcutOverlay::new(&self.theme).render(width)); }
-        lines.extend(if let Some(question) = &mut self.question { question.render(width) } else if let Some(dialog) = &mut self.ui_dialog { dialog.render(width) } else if let Some(input) = &mut self.rename_input { input.render(width) } else { self.editor.render(width) });
+        if let Some(widget) = &mut self.async_question_widget { lines.extend(widget.render(width)); }
+        lines.extend(if self.async_question_widget.is_none() && let Some(question) = &mut self.question { question.render(width) } else if let Some(dialog) = &mut self.ui_dialog { dialog.render(width) } else if let Some(input) = &mut self.rename_input { input.render(width) } else { self.editor.render(width) });
         for (_, widget, placement) in &mut self.widgets { if *placement == maho_ext_api::WidgetPlacement::BelowEditor { lines.extend(widget.render(width)); } }
         let mut footer = crate::components::footer::FooterComponent::new(self.footer_snapshot());
         footer.set_auto_compact_enabled(self.session.auto_compaction_enabled());
