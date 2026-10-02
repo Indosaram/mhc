@@ -72,6 +72,14 @@ pub fn join_markdown(output:&str,replacement:&str)->String {
     format!("{left}{}{right}","\n".repeat(newlines))
 }
 pub fn html_fragment_to_markdown(root:&dom_query::NodeRef<'_>)->String {
+    fn ordered_start(value:&str)->f64 {
+        let value=value.trim_matches(js_whitespace);if value.is_empty() {return 0.;}
+        for (prefix,radix) in [("0x",16),("0X",16),("0b",2),("0B",2),("0o",8),("0O",8)] {
+            if let Some(digits)=value.strip_prefix(prefix) {return if digits.is_empty() {f64::NAN} else {digits.chars().try_fold(0.,|number,character|character.to_digit(radix).map(|digit|number*f64::from(radix)+f64::from(digit))).unwrap_or(f64::NAN)};}
+        }
+        if value.contains("inf") {return f64::NAN;}
+        value.parse().unwrap_or(f64::NAN)
+    }
     fn process(parent:&dom_query::NodeRef<'_>,is_code:bool)->String {
         let mut output=String::new();
         for node in parent.children() {
@@ -103,15 +111,15 @@ pub fn html_fragment_to_markdown(root:&dom_query::NodeRef<'_>)->String {
                 let mut prefix="-   ".to_owned();
                 if let Some(parent)=node.parent().filter(|parent|parent.node_name().as_deref()==Some("ol")) {
                     let index=parent.element_children().iter().position(|child|child.id==node.id).unwrap_or(0);
-                    let start=parent.attr("start").filter(|value|!value.is_empty()).map_or(1.,|value|value.trim_matches(js_whitespace).parse::<f64>().unwrap_or(f64::NAN));
-                    prefix=format!("{}.  ",start+index as f64);
+                    let start=parent.attr("start").filter(|value|!value.is_empty()).map_or(1.,|value|ordered_start(&value));
+                    let number=start+index as f64;let label=if number==f64::INFINITY {"Infinity".into()} else if number==f64::NEG_INFINITY {"-Infinity".into()} else if number==0. {"0".into()} else {number.to_string()};prefix=format!("{label}.  ");
                 }
                 let paragraph=content.ends_with('\n');let content=format!("{}{}",content.trim_matches('\n'),if paragraph {"\n"} else {""});
                 format!("{prefix}{}{}",content.replace('\n',&format!("\n{}"," ".repeat(prefix.encode_utf16().count()))),if node.next_sibling().is_some() {"\n"} else {""})
             },
             "pre" if node.children().first().is_some_and(|child|child.node_name().as_deref()==Some("code"))=>{
                 let child=node.children()[0];let code=child.text();let class=child.attr("class").unwrap_or_default();
-                let language=class.find("language-").map(|index|class[index+9..].split(js_whitespace).next().unwrap_or("")).unwrap_or("");
+                let language=class.match_indices("language-").find_map(|(index,_)| {let value=class[index+9..].split(js_whitespace).next().unwrap_or("");(!value.is_empty()).then_some(value)}).unwrap_or("");
                 let size=code.split('\n').map(|line|line.bytes().take_while(|byte|*byte==b'`').count()).filter(|size|*size>=3).max().map_or(3,|size|size+1);let fence="`".repeat(size);
                 format!("\n\n{fence}{language}\n{}\n{fence}\n\n",code.strip_suffix('\n').unwrap_or(&code))
             },
@@ -183,6 +191,14 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn ordered_start_uses_javascript_number_coercion() {
+        for (start,prefix) in [(" ","0.  "),("0x10","16.  "),("0b11","3.  "),("Infinity","Infinity.  "),("inf","NaN.  ")] {
+            let document=dom_query::Document::from(format!("<ol start='{start}'><li>x</li></ol>"));assert!(html_fragment_to_markdown(&document.select("body").nodes()[0]).starts_with(prefix));
+        }
+    }
+    #[test] fn fenced_language_skips_empty_first_class_match() {
+        let document=dom_query::Document::from("<pre><code class='language- language-rust'>x</code></pre>");assert!(html_fragment_to_markdown(&document.select("body").nodes()[0]).starts_with("```rust\n"));
+    }
     #[test] fn recursive_markdown_rules_preserve_source_tree() {
         let document=dom_query::Document::from("<h2>Heading</h2><p>one <em>two</em> <strong>three</strong><br>four</p><hr>");let before=document.html();let output=html_fragment_to_markdown(&document.select("body").nodes()[0]);
         assert!(output.starts_with("## Heading\n\n"));assert!(output.contains("*two* **three**  \nfour"));assert!(output.ends_with("\n\n---"));assert_eq!(document.html(),before);
