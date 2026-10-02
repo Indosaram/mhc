@@ -40,6 +40,11 @@ pub fn plan_execution(raw:&serde_json::Value,previous:&[crate::todo_types::TodoP
     let text=if corrections.is_empty() { summary } else { format!("{}\n\n{summary}",corrections.join("\n")) };
     Ok((text,crate::todo_types::TodoToolDetails{op:Some(entry.op),phases:applied.phases,storage,corrections:if corrections.is_empty() { None } else { Some(corrections) },completed_tasks:if completed.is_empty() { None } else { Some(completed) }}))
 }
+pub fn render_raw_call_label(params:&serde_json::Value)->Result<String,serde_json::Error> {
+    if params.get("op").is_none() { return Ok("todo".into()); }
+    let entry=serde_json::from_value::<TodoOpEntry>(params.clone())?;
+    Ok(render_call_label(&entry))
+}
 pub fn render_call_label(params:&TodoOpEntry)->String {
     let clean=|value:&str|crate::todo_format::sanitize_todo_text(value);
     match params.op {
@@ -62,6 +67,17 @@ mod tests {
     #[test] fn schema_preserves_optional_op_and_unconstrained_items() { let schema=parameters(); assert!(schema.get("required").is_none()); assert!(schema["properties"]["items"].get("minItems").is_none()); assert_eq!(schema["properties"]["list"]["items"]["properties"]["items"]["minItems"],1); }
     #[test] fn planned_done_includes_completion_transition() { let previous=vec![crate::todo_types::TodoPhase{name:"Setup".into(),tasks:vec![crate::todo_types::TodoItem{content:"Task".into(),status:crate::todo_types::TodoStatus::InProgress}]}]; let (_,details)=plan_execution(&serde_json::json!({"op":"done","task":"Task"}),&previous,crate::todo_types::TodoStorage::Memory).unwrap(); assert_eq!(details.completed_tasks.unwrap()[0].content,"Task"); assert_eq!(previous[0].tasks[0].status,crate::todo_types::TodoStatus::InProgress); }
     #[test] fn planned_view_keeps_current_state() { let (_,details)=plan_execution(&serde_json::json!({"op":"view"}),&[],crate::todo_types::TodoStorage::Session).unwrap(); assert_eq!(details.completed_tasks,None); assert_eq!(details.storage,crate::todo_types::TodoStorage::Session); }
+    #[test] fn omitted_operation_renders_before_execute_inference() {
+        let raw=serde_json::json!({"items":["Work"]});
+        assert_eq!(render_raw_call_label(&raw).unwrap(),"todo");
+        let (_,details)=plan_execution(&raw,&[],crate::todo_types::TodoStorage::Memory).unwrap();
+        assert_eq!(details.op,Some(TodoOperation::Init));
+    }
+    #[test] fn raw_call_keeps_empty_target_and_list_precedence() {
+        assert_eq!(render_raw_call_label(&serde_json::json!({"op":"done","task":"","phase":"Setup"})).unwrap(),"todo done: (missing target)");
+        assert_eq!(render_raw_call_label(&serde_json::json!({"op":"init","list":[],"items":["Work"]})).unwrap(),"todo init (0 phases, 0 tasks)");
+        assert!(render_raw_call_label(&serde_json::json!({"op":"unknown"})).is_err());
+    }
     #[test] fn roman_numerals_cover_subtractive_pairs() { assert_eq!(phase_roman_numeral(0),""); assert_eq!(phase_roman_numeral(1994),"MCMXCIV"); assert_eq!(phase_roman_numeral(49),"XLIX"); }
     #[test] fn phased_init_counts_each_task() { let params=TodoOpEntry{op:TodoOperation::Init,list:Some(vec![crate::todo_types::TodoPhaseInput{phase:"One".into(),items:vec!["a".into(),"b".into()]}]),task:None,phase:None,items:Some(vec!["ignored".into()])}; assert_eq!(count_init_items(&params),(1,2)); assert_eq!(render_call_label(&params),"todo init (1 phase, 2 tasks)"); }
 }
