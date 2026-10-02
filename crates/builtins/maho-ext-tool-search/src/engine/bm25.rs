@@ -167,4 +167,9 @@ mod tests {
         let results=build_bm25_index(&[extension,mcp]).search("catalog lookup",10,&Bm25SearchOptions{exact_match:Some(false),..Default::default()});
         assert_eq!(results.len(),2);assert_eq!(results[0].score,results[1].score);assert_eq!(results[0].name,"a_extension");assert_eq!(results[1].name,"b_mcp");
     }
+    #[test] fn upstream_repeated_search_preserves_catalog_and_results() {
+        let mut documents:Vec<_>=["b_tool","a_tool","c_tool"].into_iter().map(doc).collect();for document in &mut documents {document.description=Some("same words here".into());}
+        let original=documents.clone();let index=build_bm25_index(&documents);let first=index.search("same words",10,&Default::default());let second=index.search("same words",10,&Default::default());
+        assert_eq!(first,second);assert_eq!(documents,original);assert_eq!(first.iter().map(|result|result.name.as_str()).collect::<Vec<_>>(),["a_tool","b_tool","c_tool"]);
+    }
 }
