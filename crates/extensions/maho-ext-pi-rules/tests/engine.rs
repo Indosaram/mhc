@@ -1,5 +1,14 @@
 use std::collections::BTreeMap;
 use maho_ext_pi_rules::rules::{engine::*,finder::FinderOptions,types::*};
+#[test]fn static_load_caches_canonical_root_across_rule_reads(){
+    struct Retarget{root:String,other:std::path::PathBuf,candidates:Vec<RuleCandidate>,retargeted:bool}
+    impl EngineDeps for Retarget{
+        fn find_candidates(&mut self,_:FinderOptions<'_>)->Vec<RuleCandidate>{self.candidates.clone()}
+        fn find_project_root(&mut self,_:&str)->Option<String>{Some(self.root.clone())}
+        fn read_file(&mut self,_:&str)->Option<String>{if !self.retargeted{std::fs::remove_file(&self.root).expect("remove link");std::os::unix::fs::symlink(&self.other,&self.root).expect("retarget");self.retargeted=true;}Some("---\nalwaysApply: true\n---\nbody".into())}
+    }
+    let temp=tempfile::tempdir().expect("temp");let real=temp.path().join("real");let other=temp.path().join("other");std::fs::create_dir(&real).expect("real");std::fs::create_dir(&other).expect("other");let root=temp.path().join("linked");std::os::unix::fs::symlink(&real,&root).expect("link");let candidates=["a.md","b.md"].into_iter().map(|name|{let mut c=candidate(name,false);c.path=root.join(name).to_string_lossy().into_owned();c.real_path=real.join(name).to_string_lossy().into_owned();c}).collect();let mut engine=Engine::new(default_config(),Retarget{root:root.to_string_lossy().into_owned(),other,candidates,retargeted:false});let loaded=engine.load_static_rules(&root.to_string_lossy());assert_eq!(loaded.rules.len(),2);assert!(loaded.diagnostics.is_empty());
+}
 struct Deps{candidates:Vec<RuleCandidate>,files:BTreeMap<String,String>,root_calls:usize,candidate_calls:usize,read_calls:usize,match_calls:usize,fingerprint:String}
 impl EngineDeps for Deps{
     fn find_candidates(&mut self,_:FinderOptions<'_>)->Vec<RuleCandidate>{self.candidate_calls+=1;self.candidates.clone()}
