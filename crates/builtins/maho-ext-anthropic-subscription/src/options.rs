@@ -1,4 +1,22 @@
 use serde_json::{Map,Value,json};
+pub struct QueryOptionsInput<'a> {
+    pub model:&'a Value,pub context:&'a Value,pub stream_options:&'a Value,
+    pub settings:&'a crate::settings::ProviderSettings,pub lane:crate::auth_lane::TokenInjection,
+    pub cwd:&'a std::path::Path,pub agent_dir:&'a std::path::Path,pub config_directory:&'a str,
+    pub tools:Option<&'a [String]>,pub executable:Option<&'a str>,
+}
+pub fn build_query_configuration(input:QueryOptionsInput<'_>)->anyhow::Result<Value> {
+    let mode=crate::settings::resolve_prompt_mode(input.settings).mode;let prompt=input.context["systemPrompt"].as_str();
+    let system_prompt=match mode.as_str() {
+        "preset-append"=>{let append=[crate::prompt_append::agents(input.cwd,input.agent_dir,input.config_directory),crate::prompt_append::skills(prompt,&input.agent_dir.join("skills"),&input.cwd.join(input.config_directory).join("skills")),crate::prompt_append::project_rules(prompt).map(str::to_owned)].into_iter().flatten().collect::<Vec<_>>().join("\n\n");let mut preset=json!({"type":"preset","preset":"claude_code"});if !append.is_empty() {preset["append"]=json!(append);}preset},
+        "override"=>json!(crate::system_prompt::load_override_prompt(input.settings.values.get("systemPromptFile").and_then(Value::as_str))?),
+        _=>json!(crate::system_prompt::resolve_custom_prompt(prompt)),
+    };
+    let tool_less=input.stream_options["toolChoice"]=="none";let empty_tools=input.context["tools"].as_array().is_none_or(Vec::is_empty);
+    let mut options=tool_options(input.settings,tool_less,empty_tools,input.tools);options.extend(thinking_options(input.model,input.stream_options["reasoning"].as_str(),input.stream_options.get("thinkingBudgets")));
+    options.extend(json!({"cwd":input.cwd,"model":input.model["id"],"permissionMode":"dontAsk","includePartialMessages":true,"systemPrompt":system_prompt,"settings":{"autoCompactEnabled":true},"settingSources":setting_sources(input.settings,&mode,input.lane)}).as_object().expect("configuration object").clone());
+    if let Some(executable)=input.executable.filter(|value|!value.is_empty()) {options.insert("pathToClaudeCodeExecutable".into(),json!(executable));}Ok(Value::Object(options))
+}
 pub fn setting_sources(settings:&crate::settings::ProviderSettings,mode:&str,lane:crate::auth_lane::TokenInjection)->Value {
     settings.values.get("settingSources").cloned().unwrap_or_else(||if mode=="preset-append"&&lane==crate::auth_lane::TokenInjection::Ambient {json!(["user","project"])}else {json!([])})
 }
@@ -21,6 +39,10 @@ pub fn thinking_options(model:&Value,reasoning:Option<&str>,budgets:Option<&Valu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn composed_configuration_preserves_full_prompt_and_tool_less_contract() {
+        let directory=tempfile::tempdir().expect("dir");let settings=crate::settings::load(&json!({}),&Value::Null,&Default::default());let model=json!({"id":"claude-opus-5-5"});let context=json!({"systemPrompt":" exact prompt\n","tools":[{"name":"read"}]});let stream=json!({"toolChoice":"none","reasoning":"high"});let options=build_query_configuration(QueryOptionsInput {model:&model,context:&context,stream_options:&stream,settings:&settings,lane:crate::auth_lane::TokenInjection::OAuthSlots,cwd:directory.path(),agent_dir:directory.path(),config_directory:".maho",tools:None,executable:Some("/synthetic/claude")}).expect("configuration");assert_eq!(options["systemPrompt"]," exact prompt\n");assert_eq!(options["tools"],json!([]));assert_eq!(options["maxTurns"],1);assert_eq!(options["thinking"]["type"],"adaptive");assert_eq!(options["settingSources"],json!([]));assert_eq!(options["pathToClaudeCodeExecutable"],"/synthetic/claude");
+    }
     #[test]
     fn adaptive_markers_force_override_and_native_effort_mapping() {
         assert_eq!(thinking_options(&json!({"id":"claude-opus-4-6"}),Some("xhigh"),None)["effort"],"max");assert_eq!(thinking_options(&json!({"id":"claude-opus-5-5"}),Some("xhigh"),None)["effort"],"xhigh");assert_eq!(thinking_options(&json!({"id":"claude-opus-5-5","thinkingLevelMap":{"high":"low"}}),Some("high"),None)["effort"],"low");assert_eq!(thinking_options(&json!({"id":"claude-opus-5-5","compat":{"forceAdaptiveThinking":false}}),Some("xhigh"),Some(&json!({"high":99})))["maxThinkingTokens"],99.0);
