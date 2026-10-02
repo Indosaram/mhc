@@ -40,7 +40,8 @@ pub fn build_bm25_index(docs: &[ToolSearchDocument]) -> Bm25Index {
 
 impl Bm25Index {
     pub fn search(&self, query: &str, limit: usize, options: &Bm25SearchOptions) -> Vec<Bm25Result> {
-        let query_terms: BTreeSet<_> = tokenize_tool_text(query).iter().map(|t| stem_token(t)).collect();
+        let mut query_terms=Vec::new();
+        for token in tokenize_tool_text(query) { let term=stem_token(&token); if !query_terms.contains(&term) { query_terms.push(term); } }
         if query_terms.is_empty() { return Vec::new(); }
         let stopwords = "a an and are be by can do for from how i in is it me my need of on or please that the this to tool use using via want we with you your";
         let stopwords: BTreeSet<_> = stopwords.split_whitespace().collect();
@@ -57,7 +58,7 @@ impl Bm25Index {
                     let df = self.doc_freq.get(term).copied().unwrap_or(0.0);
                     let idf = (1.0 + (self.doc_count - df + 0.5) / (df + 0.5)).ln().max(0.0);
                     let avg = if self.avg_length > 0.0 { self.avg_length } else { 1.0 };
-                    let denom = tf + 0.9 * (1.0 - 0.4 + 0.4 * entry.length / avg);
+                    let denom = tf + 0.9 * (1.0 - 0.4 + (0.4 * entry.length) / avg);
                     score += idf * (tf * 1.9 / denom);
                 }
             }
@@ -95,6 +96,7 @@ pub fn normalize_tool_name(name: &str) -> String { name.to_lowercase().chars().f
 mod tests {
     use super::*;
     fn doc(name: &str) -> ToolSearchDocument { ToolSearchDocument { name: name.into(), label: name.into(), aliases: vec![], description: None, search_text: None, keywords: vec![], source: ToolSearchSource::Extension, group: "utilities".into(), owner_label: "Utilities".into(), registration_id: format!("registration:{name}") } }
+    #[test] fn scoring_preserves_source_query_term_accumulation_order() { let mut document=doc("rank"); document.label="Rank".into(); document.description=Some("zeta alpha beta gamma delta delta delta".into()); let result=build_bm25_index(&[document]).search("zeta alpha delta beta gamma",25,&Bm25SearchOptions{exact_match:Some(false),..Default::default()}); assert_eq!(result[0].score,1.5711867033904954); }
     #[test] fn tokenizer() { assert_eq!(tokenize_tool_text("HTTPServerV2 resolveLibraryId get-library-docs"), ["http","server","v2","resolve","library","id","get","library","docs"]); }
     #[test] fn normalized() { assert_eq!(normalize_tool_name("Get-Library_Docs"), "getlibrarydocs"); }
     #[test] fn normalization_uses_ecmascript_whitespace() { assert_eq!(normalize_tool_name("Get\u{feff}Library\u{0085}Docs"),"getlibrary\u{0085}docs"); }
