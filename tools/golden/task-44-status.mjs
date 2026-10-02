@@ -21,6 +21,12 @@ const cases=[
     {name:"summary",record:{...base,task_summary:"Inspect task continuation flow",category:"quick"},activity:"read src/lib.rs",stats},
     {name:"suspended",record:{...base,name:"waiting child",residency_state:"persisted_only"},activity:"reading"},
     {name:"wide-control",record:{...base,task_summary:"한글 넓은 이름\u001b[31m end",description:"ignored description",agent_type:"explore"},activity:"read\nnext"},
+    {name:"resolved-effort",record:{...base,name:"planner",category:"ultrabrain",execution_mode:"rpc",resolved_model:{provider:"openai",model_id:"gpt-5.6-sol",display:"openai/gpt-5.6-sol",reasoning_effort:"xhigh",variant:"sol",source:"category"}},activity:"reviewing",stats},
+    {name:"empty-effort",record:{...base,category:"ultrabrain",resolved_model:{provider:"google",model_id:"gemini-3.1-pro",display:"google/gemini-3.1-pro",reasoning_effort:"",variant:"",source:"category"}},activity:"running"},
+    {name:"rpc-detached",record:{...base,name:"detached child",residency_state:"rpc_detached"},activity:"stale"},
+    {name:"description",record:{...base,name:"task-2",description:"Audit the waiting line",category:"quick"},activity:"inspect"},
+    {name:"wide-progress",record:{...base,agent_type:"explore",final_response:"界".repeat(40)+"tail"},activity:"read"},
+    {name:"legacy-model",record:{...base,agent_type:"explore",model:"anthropic/claude-sonnet-4-6"},activity:"running"},
 ];
 const outputs=cases.map(test=>({...test,renders:[40,80,120].map(width=>({width,rows:status.backgroundWidgetRows([test.record],new Map([[base.task_id,test.activity]]),2250,()=>test.stats,width)})),staticRows:status.buildWidgetRows([test.record]),taskRow:status.formatTaskRow(test.record)}));
 const out=resolve(import.meta.dir,"../../crates/omo/components/maho-omo-task/tests/golden"); mkdirSync(out,{recursive:true}); writeFileSync(join(out,"status-rows.json"),JSON.stringify({source:expected,cases:outputs},null,2)+"\n"); console.log(`Generated ${outputs.length*3} background status goldens from ${expected}`);

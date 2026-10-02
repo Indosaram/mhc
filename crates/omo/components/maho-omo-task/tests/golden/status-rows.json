@@ -196,6 +196,312 @@
         "한글 넓은 이름 end|agent:explore(faux/faux-1) in-process running"
       ],
       "taskRow": "한글 넓은 이름 end (st_00000001) agent:explore(faux/faux-1) mode:in-process status:running"
+    },
+    {
+      "name": "resolved-effort",
+      "record": {
+        "task_id": "st_00000001",
+        "parent_session_id": "parent",
+        "root_session_id": "parent",
+        "depth": 0,
+        "execution_mode": "rpc",
+        "model": "faux/faux-1",
+        "residency_state": "resident",
+        "status": "running",
+        "created_at": "1970-01-01T00:00:01.000Z",
+        "updated_at": "1970-01-01T00:00:01.000Z",
+        "notification": {
+          "run_epoch": 0,
+          "notified_epoch": -1
+        },
+        "notify_on_terminal": true,
+        "name": "planner",
+        "category": "ultrabrain",
+        "resolved_model": {
+          "provider": "openai",
+          "model_id": "gpt-5.6-sol",
+          "display": "openai/gpt-5.6-sol",
+          "reasoning_effort": "xhigh",
+          "variant": "sol",
+          "source": "category"
+        }
+      },
+      "activity": "reviewing",
+      "stats": {
+        "runtime_ms": 1000,
+        "turns": 2,
+        "tool_calls": 3,
+        "total_tokens": 200,
+        "output_tokens": 50,
+        "generation_ms": 400,
+        "tokens_per_second": 125,
+        "cost_usd": 0.12
+      },
+      "renders": [
+        {
+          "width": 40,
+          "rows": [
+            "⠏ planner · category:ultrabra... · re..."
+          ]
+        },
+        {
+          "width": 80,
+          "rows": [
+            "⠏ planner · category:ultrabrain... · turn 2 (3 tools) · $0.1200 · reviewing · 1s"
+          ]
+        },
+        {
+          "width": 120,
+          "rows": [
+            "⠏ planner · category:ultrabrain(openai/gpt-5.6-sol:xhigh) · turn 2 (3 tools) · $0.1200 · 125 tok/s · reviewing · 1s"
+          ]
+        }
+      ],
+      "staticRows": [
+        "planner|category:ultrabrain(openai/gpt-5.6-sol:xhigh) rpc running"
+      ],
+      "taskRow": "planner (st_00000001) category:ultrabrain(openai/gpt-5.6-sol:xhigh) mode:rpc status:running"
+    },
+    {
+      "name": "empty-effort",
+      "record": {
+        "task_id": "st_00000001",
+        "parent_session_id": "parent",
+        "root_session_id": "parent",
+        "depth": 0,
+        "execution_mode": "in-process",
+        "model": "faux/faux-1",
+        "residency_state": "resident",
+        "status": "running",
+        "created_at": "1970-01-01T00:00:01.000Z",
+        "updated_at": "1970-01-01T00:00:01.000Z",
+        "notification": {
+          "run_epoch": 0,
+          "notified_epoch": -1
+        },
+        "notify_on_terminal": true,
+        "category": "ultrabrain",
+        "resolved_model": {
+          "provider": "google",
+          "model_id": "gemini-3.1-pro",
+          "display": "google/gemini-3.1-pro",
+          "reasoning_effort": "",
+          "variant": "",
+          "source": "category"
+        }
+      },
+      "activity": "running",
+      "renders": [
+        {
+          "width": 40,
+          "rows": [
+            "⠏ st_00000001 · category:ultrabra... ..."
+          ]
+        },
+        {
+          "width": 80,
+          "rows": [
+            "⠏ st_00000001 · category:ultrabrain(google/gemini-3.1-pro) · running · 1s"
+          ]
+        },
+        {
+          "width": 120,
+          "rows": [
+            "⠏ st_00000001 · category:ultrabrain(google/gemini-3.1-pro) · running · 1s"
+          ]
+        }
+      ],
+      "staticRows": [
+        "st_00...|category:ultrabrain(google/gemini-3.1-pro) in-process running"
+      ],
+      "taskRow": "st_00000001 category:ultrabrain(google/gemini-3.1-pro) mode:in-process status:running"
+    },
+    {
+      "name": "rpc-detached",
+      "record": {
+        "task_id": "st_00000001",
+        "parent_session_id": "parent",
+        "root_session_id": "parent",
+        "depth": 0,
+        "execution_mode": "in-process",
+        "model": "faux/faux-1",
+        "residency_state": "rpc_detached",
+        "status": "running",
+        "created_at": "1970-01-01T00:00:01.000Z",
+        "updated_at": "1970-01-01T00:00:01.000Z",
+        "notification": {
+          "run_epoch": 0,
+          "notified_epoch": -1
+        },
+        "notify_on_terminal": true,
+        "name": "detached child"
+      },
+      "activity": "stale",
+      "renders": [
+        {
+          "width": 40,
+          "rows": [
+            "⠏ detached ... · model:faux/faux-1 · ..."
+          ]
+        },
+        {
+          "width": 80,
+          "rows": [
+            "⠏ detached child · model:faux/faux-1 · suspended · 1s"
+          ]
+        },
+        {
+          "width": 120,
+          "rows": [
+            "⠏ detached child · model:faux/faux-1 · suspended · 1s"
+          ]
+        }
+      ],
+      "staticRows": [
+        "detached child|model:faux/faux-1 in-process suspended"
+      ],
+      "taskRow": "detached child (st_00000001) model:faux/faux-1 mode:in-process status:suspended"
+    },
+    {
+      "name": "description",
+      "record": {
+        "task_id": "st_00000001",
+        "parent_session_id": "parent",
+        "root_session_id": "parent",
+        "depth": 0,
+        "execution_mode": "in-process",
+        "model": "faux/faux-1",
+        "residency_state": "resident",
+        "status": "running",
+        "created_at": "1970-01-01T00:00:01.000Z",
+        "updated_at": "1970-01-01T00:00:01.000Z",
+        "notification": {
+          "run_epoch": 0,
+          "notified_epoch": -1
+        },
+        "notify_on_terminal": true,
+        "name": "task-2",
+        "description": "Audit the waiting line",
+        "category": "quick"
+      },
+      "activity": "inspect",
+      "renders": [
+        {
+          "width": 40,
+          "rows": [
+            "⠏ Audit the... · category:quick(fa......"
+          ]
+        },
+        {
+          "width": 80,
+          "rows": [
+            "⠏ Audit the waiting line · category:quick(faux/faux-1) · inspect · 1s"
+          ]
+        },
+        {
+          "width": 120,
+          "rows": [
+            "⠏ Audit the waiting line · category:quick(faux/faux-1) · inspect · 1s"
+          ]
+        }
+      ],
+      "staticRows": [
+        "Audit the waiting line|category:quick(faux/faux-1) in-process running"
+      ],
+      "taskRow": "Audit the waiting line (st_00000001) category:quick(faux/faux-1) mode:in-process status:running"
+    },
+    {
+      "name": "wide-progress",
+      "record": {
+        "task_id": "st_00000001",
+        "parent_session_id": "parent",
+        "root_session_id": "parent",
+        "depth": 0,
+        "execution_mode": "in-process",
+        "model": "faux/faux-1",
+        "residency_state": "resident",
+        "status": "running",
+        "created_at": "1970-01-01T00:00:01.000Z",
+        "updated_at": "1970-01-01T00:00:01.000Z",
+        "notification": {
+          "run_epoch": 0,
+          "notified_epoch": -1
+        },
+        "notify_on_terminal": true,
+        "agent_type": "explore",
+        "final_response": "界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界界tail"
+      },
+      "activity": "read",
+      "renders": [
+        {
+          "width": 40,
+          "rows": [
+            "⠏ st_00000001 · agent:explore(fau... ..."
+          ]
+        },
+        {
+          "width": 80,
+          "rows": [
+            "⠏ st_00000001 · agent:explore(faux/faux-1) · read · 1s"
+          ]
+        },
+        {
+          "width": 120,
+          "rows": [
+            "⠏ st_00000001 · agent:explore(faux/faux-1) · read · 1s"
+          ]
+        }
+      ],
+      "staticRows": [
+        "st_00000001|agent:explore(faux/faux-1) in-process running"
+      ],
+      "taskRow": "st_00000001 agent:explore(faux/faux-1) mode:in-process status:running progress:界界界界界界界界界界界界界界界界界界界界界界界界界界界界..."
+    },
+    {
+      "name": "legacy-model",
+      "record": {
+        "task_id": "st_00000001",
+        "parent_session_id": "parent",
+        "root_session_id": "parent",
+        "depth": 0,
+        "execution_mode": "in-process",
+        "model": "anthropic/claude-sonnet-4-6",
+        "residency_state": "resident",
+        "status": "running",
+        "created_at": "1970-01-01T00:00:01.000Z",
+        "updated_at": "1970-01-01T00:00:01.000Z",
+        "notification": {
+          "run_epoch": 0,
+          "notified_epoch": -1
+        },
+        "notify_on_terminal": true,
+        "agent_type": "explore"
+      },
+      "activity": "running",
+      "renders": [
+        {
+          "width": 40,
+          "rows": [
+            "⠏ st_00000001 · agent:explore(ant... ..."
+          ]
+        },
+        {
+          "width": 80,
+          "rows": [
+            "⠏ st_00000001 · agent:explore(anthropic/claude-sonnet-4-6) · running · 1s"
+          ]
+        },
+        {
+          "width": 120,
+          "rows": [
+            "⠏ st_00000001 · agent:explore(anthropic/claude-sonnet-4-6) · running · 1s"
+          ]
+        }
+      ],
+      "staticRows": [
+        "st_00...|agent:explore(anthropic/claude-sonnet-4-6) in-process running"
+      ],
+      "taskRow": "st_00000001 agent:explore(anthropic/claude-sonnet-4-6) mode:in-process status:running"
     }
   ]
 }
