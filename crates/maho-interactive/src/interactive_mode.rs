@@ -170,9 +170,8 @@ impl InteractiveMode {
         if self.async_question_widget.is_some() {
             let keys = maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default());
             if crate::components::ask_user_answer_key::matches_ask_user_answer_key(data, &maho_core::keybindings::host_platform(), &keys) { self.async_question_widget = None; }
-            else { self.handle_editor_input(data); return; }
         }
-        if let Some(question) = &mut self.question { question.handle_input(data); if self.question_reply.borrow().is_none() { self.question = None; } return; }
+        if self.async_question_widget.is_none() && let Some(question) = &mut self.question { question.handle_input(data); if self.question_reply.borrow().is_none() { self.question = None; } return; }
         if self.ui_dialog.is_some() || self.rename_input.is_some() { self.handle_editor_input(data); return; }
         if self.shortcut_overlay { self.shortcut_overlay = false; return; }
         let keys = maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default());
@@ -217,7 +216,7 @@ impl InteractiveMode {
     pub async fn handle_runtime_input(&mut self, data: &str, now_ms: u64) -> Result<(), String> {
         let Some(data) = self.filter_terminal_input(data) else { return Ok(()); };
         let data = data.as_str();
-        if self.ui_dialog.is_some() || self.rename_input.is_some() || self.question.is_some() { self.handle_filtered_input_at(data, now_ms); return Ok(()); }
+        if self.ui_dialog.is_some() || self.rename_input.is_some() || (self.question.is_some() && self.async_question_widget.is_none()) { self.handle_filtered_input_at(data, now_ms); return Ok(()); }
         let keys = maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default());
         if keys.matches(data, "app.model.cycleForward") || keys.matches(data, "app.model.cycleBackward") {
             if let Some(result) = self.session.cycle_model(keys.matches(data, "app.model.cycleForward")).await? { self.show_status(format!("Switched to {}", result.model.name)); }
