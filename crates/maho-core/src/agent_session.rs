@@ -5085,6 +5085,40 @@ mod tests {
         assert_eq!(entries.iter().filter(|entry| entry["type"] == "custom_message" && entry["customType"] == "aside").count(), 1);
     }
 
+    #[tokio::test]
+    async fn rejected_prompt_restores_next_turn_asides_without_provider_call() {
+        let session = test_session_with_stream_function(false);
+        session.agent().set_model(test_model());
+        let calls = Arc::new(AtomicU64::new(0));
+        let captured = calls.clone();
+        session.agent().set_stream_function(Arc::new(move |_, _, _| {
+            captured.fetch_add(1, Ordering::SeqCst);
+            let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
+            stream.end(Some(maho_ai::providers::faux::faux_assistant_message("unexpected", Default::default())));
+            stream
+        }));
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        for (kind, content) in [("oversized", "x".repeat(600_000)), ("second", "retained".to_owned())] {
+            maho_ext_api::ExtensionActions::send_message(&actions, maho_ext_api::CustomMessage {
+                custom_type: kind.to_owned(), content: vec![maho_tools::definition::ToolContent::text(content)],
+                display: false, details: None,
+            }, maho_ext_api::SendMessageOptions { deliver_as: Some(maho_ext_api::DeliverAs::NextTurn), trigger_turn: false }).expect("queue");
+        }
+        for _ in 0..2 {
+            tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("input", Default::default()))
+                .await.expect("bounded rejection").expect_err("required compaction");
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert!(session.messages().is_empty());
+            assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
+            let state = session.state();
+            let kinds = state.pending_next_turn_messages.iter().map(|message| match message {
+                AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(message)) => message.custom_type.as_str(),
+                _ => panic!("custom aside"),
+            }).collect::<Vec<_>>();
+            assert_eq!(kinds, ["oversized", "second"]);
+        }
+    }
+
     #[test]
     fn hook_source_context_uses_branded_json_paths() {
         let session = test_session();
