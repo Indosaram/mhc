@@ -24,4 +24,12 @@ fn fixture()->Fixture {
 #[test] fn no_owned_team_has_no_default() { let f=fixture(); f.teams.lock().expect("teams").clear(); assert!(f.lifecycle.resolve_team_run_id(None).is_err()); assert!(matches!(f.lifecycle.resolve_default_team_run_id().expect("resolution"),DefaultTeamRunIdResolution::None)); }
 #[test] fn multiple_owned_teams_require_explicit_selection() { let f=fixture(); f.teams.lock().expect("teams").push(team("b","lead")); assert!(f.lifecycle.resolve_team_run_id(None).is_err()); assert_eq!(f.lifecycle.resolve_team_run_id(Some("b")).expect("team"),"b"); assert!(matches!(f.lifecycle.resolve_default_team_run_id().expect("resolution"),DefaultTeamRunIdResolution::Ambiguous(_))); }
 #[test] fn explicit_foreign_team_is_rejected() { let f=fixture(); assert!(f.lifecycle.resolve_team_run_id(Some("foreign")).is_err()); }
+#[test] fn suspended_lead_retains_poller_and_resumes_without_shutdown() {
+    let f=fixture(); f.lifecycle.tick().expect("initial"); let initial=f.lifecycle.resolve_lead_poller("a").expect("poller");
+    *f.state.lock().expect("state")=ParentState::SessionShutdown; let file=f.file.lock().expect("file").take(); f.lifecycle.tick().expect("suspended"); assert!(f.lifecycle.resolve_lead_poller("a").is_none());
+    *f.state.lock().expect("state")=ParentState::Idle; *f.file.lock().expect("file")=file; f.lifecycle.tick().expect("resume"); let resumed=f.lifecycle.resolve_lead_poller("a").expect("poller"); assert!(Arc::ptr_eq(&initial,&resumed)); assert_eq!(f.poller.stops.load(Ordering::SeqCst),0); assert_eq!(f.poller.polls.load(Ordering::SeqCst),2); f.lifecycle.shutdown();
+}
+#[test] fn disappeared_ownership_shuts_down_even_when_team_id_stays() {
+    let f=fixture(); f.lifecycle.tick().expect("initial"); *f.teams.lock().expect("teams")=vec![team("a","foreign")]; f.lifecycle.tick().expect("reconcile"); assert!(f.lifecycle.resolve_lead_poller("a").is_none()); assert_eq!(f.poller.stops.load(Ordering::SeqCst),1); assert_eq!(f.poller.polls.load(Ordering::SeqCst),1); f.lifecycle.shutdown();
+}
 #[test] fn shutdown_is_idempotent_and_prevents_future_ticks() { let f=fixture(); f.lifecycle.tick().expect("tick"); f.lifecycle.shutdown(); f.lifecycle.shutdown(); f.lifecycle.tick().expect("tick"); assert_eq!(f.poller.stops.load(Ordering::SeqCst),1); assert_eq!(f.poller.polls.load(Ordering::SeqCst),1); }
