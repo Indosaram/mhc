@@ -7,16 +7,24 @@ impl maho_tui::components::editor::EditorTuiHost for EditorHost {
 }
 
 fn native_mode() -> (maho_interactive::interactive_mode::InteractiveMode, tempfile::TempDir) {
+    native_mode_at(None)
+}
+
+fn native_mode_at(cwd_override:Option<&str>) -> (maho_interactive::interactive_mode::InteractiveMode, tempfile::TempDir) {
     use std::sync::Arc;
     use maho_ai::providers::faux::{FauxAssistantMessageOptions, RegisterFauxProviderOptions, faux_assistant_message, faux_provider, faux_streams};
     use maho_core::agent_session::{AgentSession, AgentSessionConfig};
     let directory = tempfile::tempdir().expect("directory");
-    let cwd = directory.path().to_string_lossy().into_owned();
+    let cwd = cwd_override.map_or_else(||directory.path().to_string_lossy().into_owned(),str::to_owned);
     let provider = faux_provider(RegisterFauxProviderOptions { api: Some("faux".into()), tokens_per_second: Some(0.0), ..Default::default() });
     let model = provider.get_model(Some("faux-1")).expect("model");
     provider.set_responses(vec![faux_assistant_message("hello", FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into()]);
     let streams = faux_streams(provider.core.clone());
-    let stream_fn: maho_agent::types::StreamFn = Arc::new(move |model, context, options| streams.stream_simple(model, context, options.map(|options| options.simple)));
+    let stream_fn: maho_agent::types::StreamFn = Arc::new(move |model, context, options| {
+        let mut context=context.clone();
+        context.system_prompt=context.system_prompt.filter(|prompt|!prompt.is_empty());
+        streams.stream_simple(model, &context, options.map(|options| options.simple))
+    });
     let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(directory.path().join("models.json")), auth_path: Some(directory.path().join("auth.json")),
         providers: Some(vec![provider.provider.clone()]), ..Default::default()
@@ -573,8 +581,12 @@ async fn non_wait_question_keeps_composer_until_answer_chord() {
     let answer = ui.question(request, Default::default()); mode.render(80);
     mode.handle_input_at("draft", 0); assert_eq!(mode.editor.editor.get_text(), "draft");
     mode.handle_input_at("\x1ba", 1); mode.handle_input_at("\x1b", 2);
-    assert_eq!(answer.await.expect("question").status, maho_ext_api::QuestionStatus::Cancelled);
-    assert_eq!(mode.editor.editor.get_text(), "draft");
+    mode.handle_input_at("continued",3);
+    assert_eq!(mode.editor.editor.get_text(),"draftcontinued");
+    mode.handle_input_at("\x1ba",4);
+    mode.handle_input_at("\r",5);
+    assert_eq!(answer.await.expect("question").status, maho_ext_api::QuestionStatus::Answered);
+    assert_eq!(mode.editor.editor.get_text(), "draftcontinued");
 }
 
 #[tokio::test]
@@ -587,6 +599,19 @@ async fn dropped_async_question_removes_widget_and_keeps_composer() {
     drop(answer);
     assert!(!mode.render(80).join("\n").contains("discard-this-question"));
     mode.handle_input_at("draft", 0); assert_eq!(mode.editor.editor.get_text(), "draft");
+}
+
+#[tokio::test]
+async fn successive_questions_do_not_replace_an_unanswered_request() {
+    use maho_ext_api::ExtensionUi; use maho_tui::tui::Component;
+    let (mut mode,_directory)=native_mode(); let ui=mode.extension_ui.clone();
+    let make=|id:&str|maho_ext_api::QuestionRequest { request_id:id.into(),questions:vec![maho_ext_api::Question {id:"item".into(),header:id.into(),question:"Choose".into(),options:vec![maho_ext_api::QuestionOption {label:"A".into(),description:None}],multi_select:false}],wait_for_answer:true,timeout_ms:0 };
+    let first=ui.question(make("first"),Default::default());
+    let second=ui.question(make("second"),Default::default());
+    mode.render(80); mode.handle_input_at("1",0);
+    assert_eq!(first.await.expect("first response").status,maho_ext_api::QuestionStatus::Answered);
+    mode.render(80); mode.handle_input_at("1",1);
+    assert_eq!(second.await.expect("second response").status,maho_ext_api::QuestionStatus::Answered);
 }
 
 #[tokio::test]
@@ -754,15 +779,33 @@ async fn image_payloads_follow_submitted_marker_order() {
 }
 
 struct ScreenTerminal {
+    writes:String,
     screen: maho_test_support::vterm::VirtualTerminal,
     input: Option<maho_tui::terminal::InputHandler>,
     stopped: bool,
+}
+
+#[tokio::test]
+async fn faux_screen_hi_matches_pinned_interactive_cells() {
+    let (mut mode,_directory)=native_mode_at(Some("/tmp"));
+    mode.handle_input_at("hi",0);mode.handle_input_at("\r",1);
+    mode.submit_editor().await.expect("native hi");
+    let theme=maho_interactive::theme::Theme::builtin("dark",maho_interactive::theme::ColorMode::Truecolor).expect("theme");
+    let renderer=maho_interactive::tui_renderer::create_interactive_tui(maho_interactive::tui_renderer::InteractiveTuiOptions {tui_mode:maho_interactive::tui_renderer::TuiMode::Fullscreen,show_hardware_cursor:false,bottom_shortcut:String::new()},theme);
+    let mut mounted=maho_interactive::interactive_terminal::InteractiveTerminal::new(mode,renderer);
+    let mut terminal=ScreenTerminal {writes:String::new(),screen:maho_test_support::vterm::VirtualTerminal::new(120,36),input:None,stopped:false};
+    mounted.start(&mut terminal,false,false);
+    let expected:maho_test_support::vterm::Screen=serde_json::from_str(include_str!("../../../.omo/evidence/task-35-faux/senpi-hi.cells.json")).expect("pinned cells");
+    let actual=terminal.screen.snapshot();
+    println!("NATIVE_HI_ANSI={}",serde_json::to_string(&terminal.writes).expect("ANSI evidence"));
+    mounted.stop(&mut terminal,true).expect("restore terminal");
+    assert_eq!(actual.cells,expected.cells,"native viewport: {:?}",actual.viewport);
 }
 impl maho_tui::terminal::Terminal for ScreenTerminal {
     fn start(&mut self, input:maho_tui::terminal::InputHandler, _:maho_tui::terminal::ResizeHandler) { self.input=Some(input); self.screen.start(); }
     fn stop(&mut self) -> Result<(), maho_tui::terminal::TerminalError> { self.input=None; self.stopped=true; self.screen.stop(); Ok(()) }
     fn drain_input(&mut self, _:u64, _:u64) {}
-    fn write(&mut self, data:&str) { self.screen.write(data); }
+    fn write(&mut self, data:&str) { self.writes.push_str(data);self.screen.write(data); }
     fn columns(&self)->u16 { self.screen.columns() }
     fn rows(&self)->u16 { self.screen.rows() }
     fn kitty_protocol_active(&self)->bool { true }
@@ -786,8 +829,19 @@ async fn mounted_terminal_renders_native_turn_and_restores_terminal_on_stop() {
             tui_mode:maho_interactive::tui_renderer::TuiMode::Fullscreen, show_hardware_cursor:false, bottom_shortcut:String::new(),
         }, theme);
         let mut mounted = maho_interactive::interactive_terminal::InteractiveTerminal::new(mode, renderer);
-        let mut terminal = ScreenTerminal { screen:maho_test_support::vterm::VirtualTerminal::new(width,36), input:None, stopped:false };
+        let mut terminal = ScreenTerminal { writes:String::new(),screen:maho_test_support::vterm::VirtualTerminal::new(width,36), input:None, stopped:false };
         mounted.start(&mut terminal,false,false);
+        let dimensions=std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured=dimensions.clone();
+        {
+            use maho_ext_api::ExtensionUi;
+            mounted.mode.borrow().extension_ui.set_header_factory(Some(std::sync::Arc::new(move |host,_| {
+                *captured.lock().expect("dimensions")=Some(host.dimensions());
+                Box::new(maho_tui::components::text::Text::new("header"))
+            }))).expect("header factory");
+        }
+        mounted.render(&mut terminal);
+        assert_eq!(*dimensions.lock().expect("dimensions"),Some((width,36)));
         terminal.input.as_mut().expect("input")("draft");
         while let Some(input) = mounted.take_input(&mut terminal,0) { mounted.mode.borrow_mut().handle_input_at(&input,0); }
         assert_eq!(mounted.mode.borrow().editor.editor.get_text(),"draft");

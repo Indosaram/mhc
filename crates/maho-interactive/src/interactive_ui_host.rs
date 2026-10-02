@@ -1,10 +1,10 @@
 use std::{collections::BTreeMap, rc::Rc};
 use maho_ext_api::{ExtensionTuiHost, ReadonlyFooterDataProvider, UiUnsubscribe};
 
-pub struct InteractiveUiHost(pub Rc<dyn maho_tui::components::editor::EditorTuiHost>);
+pub struct InteractiveUiHost(pub Rc<dyn maho_tui::components::editor::EditorTuiHost>, pub Rc<std::cell::Cell<(u16,u16)>>);
 impl ExtensionTuiHost for InteractiveUiHost {
     fn request_render(&self) { self.0.request_render(); }
-    fn dimensions(&self) -> (u16,u16) { (80,u16::try_from(self.0.terminal_rows()).unwrap_or(u16::MAX)) }
+    fn dimensions(&self) -> (u16,u16) { self.1.get() }
 }
 
 pub struct InteractiveFooterData {

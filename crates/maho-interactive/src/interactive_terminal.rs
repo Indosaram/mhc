@@ -17,7 +17,16 @@ impl InteractiveTerminal {
         let root: Rc<RefCell<dyn Component>> = mode.clone();
         match &mut renderer {
             InteractiveTui::Regular(tui) => tui.base.add_child(root.clone()),
-            InteractiveTui::Fullscreen(tui) => tui.set_layout_root(Some(root.clone())),
+            InteractiveTui::Fullscreen(tui) => {
+                let empty=||Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding("",0,0))) as Rc<RefCell<dyn Component>>;
+                let viewport=crate::chat_viewport::create_chat_viewport(crate::chat_viewport::ChatViewportOptions {
+                    document:Rc::new(RefCell::new(ModeSection {mode:mode.clone(),document:true})),
+                    editor:Rc::new(RefCell::new(ModeSection {mode:mode.clone(),document:false})),
+                    pending_messages:empty(),status:empty(),footer:empty(),hook_status:None,widgets_above:None,widgets_below:None,
+                    scrollbar:None,scrollbar_track_style:None,scrollbar_thumb_style:None,
+                });
+                tui.set_layout_root(Some(viewport.root));
+            }
         }
         renderer.base_mut().set_focus(Some(root));
         let renderer = Rc::new(RefCell::new(renderer));
@@ -50,7 +59,9 @@ impl InteractiveTerminal {
 
     pub fn render(&mut self, terminal: &mut dyn Terminal) {
         if !self.started { return; }
+        self.mode.borrow().set_terminal_dimensions(usize::from(terminal.columns()),usize::from(terminal.rows()));
         self.mode.borrow_mut().drain_events();
+        self.mode.borrow_mut().tick_now();
         if self.resized.replace(false) { self.renderer.borrow_mut().base_mut().invalidate(); }
         let (cursor, shrink, progress, title) = {
             let mode = self.mode.borrow();
@@ -76,4 +87,12 @@ impl InteractiveTerminal {
         self.started = false;
         result
     }
+}
+
+struct ModeSection { mode:Rc<RefCell<InteractiveMode>>,document:bool }
+impl Component for ModeSection {
+    fn render(&mut self,width:usize)->Vec<String> {
+        if self.document {self.mode.borrow_mut().render_document(width)} else {self.mode.borrow_mut().render_dock(width)}
+    }
+    fn invalidate(&mut self) {self.mode.borrow_mut().invalidate();}
 }
