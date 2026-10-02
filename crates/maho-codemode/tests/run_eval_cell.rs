@@ -9,6 +9,12 @@ impl EvalKernelManager for Manager {
     }
 }
 struct JsManager(Arc<maho_codemode::kernels::js::context_manager::JavaScriptKernel>);
+struct AcquiringManager(tokio::sync::mpsc::UnboundedSender<()>);
+impl EvalKernelManager for AcquiringManager {
+    fn get_kernel(&self,_:EvalLanguage)->EvalKernelFuture<'_,Arc<dyn EvalKernel>> {
+        Box::pin(async {self.0.send(()).expect("acquisition event receiver");std::future::pending().await})
+    }
+}
 impl EvalKernelManager for JsManager {
     fn get_kernel(&self,language:EvalLanguage)->EvalKernelFuture<'_,Arc<dyn EvalKernel>> {Box::pin(async move {assert_eq!(language,EvalLanguage::Js);Ok(self.0.clone() as Arc<dyn EvalKernel>)})}
 }
@@ -149,6 +155,20 @@ async fn deadline_expiry_records_limit_metadata_before_terminal_snapshot() {
         assert_eq!(snapshot.hard_limit_seconds,(hard==1.0).then_some(hard));
         assert_eq!(snapshot.run_budget_seconds,(budget==1.0).then_some(budget));
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn acquisition_hard_deadline_settles_without_kernel_and_records_limit() {
+    let (started,mut events)=tokio::sync::mpsc::unbounded_channel();
+    let cells=Arc::new(Mutex::new(EvalDetachedCellManager::new(DetachedCellManagerOptions {hard_limit_seconds:1.0,..Default::default()})));
+    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(AcquiringManager(started)),executor:Arc::new(Executor),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:cells.clone(),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+    let run=tokio::spawn(run_eval_cell(options,invocation("boot-deadline","42")));
+    events.recv().await.unwrap();
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    assert!(run.await.unwrap().is_err());
+    let snapshot=cells.lock().unwrap().peek("boot-deadline").unwrap();
+    assert_eq!(snapshot.hard_limit_seconds,Some(1.0));
+    assert_eq!(snapshot.run_budget_seconds,None);
 }
 
 #[tokio::test]
