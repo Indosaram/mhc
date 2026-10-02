@@ -2974,7 +2974,12 @@ impl AgentSession {
         self.state().session_title_abort_controller = None;
         match generation {
             Ok(Some(title)) if self.session_id() == session_id && self.session_name().is_none() => self.set_session_name(&title),
-            Ok(_) => {}, Err(error) => self.emit(AgentSessionEvent::ContinuationError { error_message: error }),
+            Ok(_) => {}, Err(error) => {
+                let error = ExtensionError { extension_path: "<runtime>".to_owned(), event: "session_title_generation".to_owned(), error, stack: None };
+                if let Some(runner) = self.extension_runner.lock().await.as_mut() { runner.emit_error(error.clone()); }
+                let listener = self.state().extension_error_listener.clone();
+                if let Some(listener) = listener { listener(&error); }
+            },
         }
     }
 
@@ -6270,6 +6275,26 @@ mod tests {
         session.generate_session_title_if_needed("Recover native session calls").await;
         assert_eq!(session.session_name().as_deref(), Some("Native Session Recovery"));
         assert_eq!(provider.get_call_log().len(), 2);
+        assert!(session.state().session_title_abort_controller.is_none());
+    }
+
+    #[tokio::test]
+    async fn title_failure_is_reported_as_runtime_extension_error() {
+        let session = test_session_with_stream_function(false);
+        session.agent.set_model(test_model());
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let observed = errors.clone();
+        session.state().extension_error_listener = Some(Arc::new(move |error| lock(&observed).push(error.clone())));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| lock(&observed).push(event.clone())));
+        session.generate_session_title_if_needed("Inspect the workspace").await;
+        let errors = lock(&errors);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].extension_path, "<runtime>");
+        assert_eq!(errors[0].event, "session_title_generation");
+        assert!(!errors[0].error.is_empty());
+        assert!(!lock(&events).iter().any(|event| matches!(event, AgentSessionEvent::ContinuationError { .. })));
         assert!(session.state().session_title_abort_controller.is_none());
     }
 
