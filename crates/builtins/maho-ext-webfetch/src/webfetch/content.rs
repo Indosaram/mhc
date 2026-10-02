@@ -248,6 +248,21 @@ pub fn reader_clean_styles(node:&dom_query::NodeRef<'_>) {
     if matches!(node.node_name().as_deref(),Some("table"|"th"|"td"|"hr"|"pre")) {node.remove_attr("width");node.remove_attr("height");}
     for child in node.element_children() {reader_clean_styles(&child);}
 }
+pub fn reader_data_table(table:&dom_query::NodeRef<'_>)->bool {
+    if table.attr("role").as_deref()==Some("presentation")||table.attr("datatable").as_deref()==Some("0") {return false;}
+    if table.attr("summary").is_some_and(|value|!value.is_empty()) {return true;}
+    let selection=dom_query::Selection::from(*table);
+    if selection.select("caption").nodes().first().is_some_and(|caption|!caption.children().is_empty())||!selection.select("col,colgroup,tfoot,thead,th").is_empty() {return true;}
+    if !selection.select("table").is_empty() {return false;}
+    let span=|value:Option<&str>| {
+        let value=value.unwrap_or_default();let value=value.trim_start_matches(js_whitespace);let (sign,value)=if let Some(rest)=value.strip_prefix('-') {(-1.,rest)} else {(1.,value.strip_prefix('+').unwrap_or(value))};
+        let digits:String=value.chars().take_while(char::is_ascii_digit).collect();let parsed=digits.parse::<f64>().unwrap_or(0.)*sign;if parsed==0. {1.} else {parsed}
+    };
+    let mut rows=0.;let mut columns=0_f64;
+    for row in selection.select("tr").nodes() {rows+=span(row.attr("rowspan").as_deref());let width=dom_query::Selection::from(*row).select("td").nodes().iter().map(|cell|span(cell.attr("colspan").as_deref())).sum::<f64>();columns=columns.max(width);}
+    if columns==1.||rows==1. {return false;}
+    rows>=10.||columns>4.||rows*columns>10.
+}
 pub fn reader_finish_article(root:&dom_query::NodeRef<'_>) {
     let selection=dom_query::Selection::from(*root);
     for heading in selection.select("h1").nodes() {heading.rename("h2");}
@@ -486,6 +501,9 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_data_table_preserves_priority_and_decimal_span_prefixes() {
+        for (html,expected) in [("<table role='presentation'><th>x</th></table>",false),("<table summary='data'><table></table></table>",true),("<table><tr rowspan='  +3junk'><td colspan='4.5'>x</td></tr></table>",true),("<table><tr rowspan='10'><td>x</td></tr></table>",false),("<table><caption> </caption></table>",true)] {let document=dom_query::Document::from(html);assert_eq!(reader_data_table(&document.select("table").nodes()[0]),expected);}
+    }
     #[test] fn reader_finish_article_retains_media_and_unwraps_single_cell_tables() {
         let document=dom_query::Document::from("<main><h1>Title</h1><p> </p><p><img src='x'></p><br> <p>text</p><table><tbody><tr><td id='cell'><em>inline</em></td></tr></tbody></table><table><tr><td><section>block</section></td></tr></table></main>");reader_finish_article(&document.select("main").nodes()[0]);assert!(document.select("h1, br, table").is_empty());assert_eq!(document.select("h2").text().as_ref(),"Title");assert_eq!(document.select("p").length(),3);assert_eq!(document.select("#cell").nodes()[0].node_name().as_deref(),Some("p"));assert_eq!(document.select("main > div").text().as_ref(),"block");
     }
