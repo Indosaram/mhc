@@ -1,5 +1,18 @@
 use serde_json::Value;
 use crate::todo_types::TodoPhase;
+pub struct TodotoolsExtension {
+    pub actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,
+    pub accessors:std::sync::Arc<dyn crate::tools_todo::TodoAccessors>,
+    pub copy_markdown:crate::commands::CopyTodoMarkdown,
+}
+impl maho_ext_api::Extension for TodotoolsExtension {
+    fn register(&self,api:&mut maho_ext_api::ExtensionApi) {
+        register_state_hooks(api,self.actions.clone(),self.accessors.clone());
+        register_prompt_hook(api);
+        crate::tools_todo::register_todo_tool(api,self.actions.clone(),self.accessors.clone());
+        crate::commands::register_todo_command(api,self.actions.clone(),self.accessors.clone(),self.copy_markdown.clone());
+    }
+}
 pub fn register_state_hooks(api:&mut maho_ext_api::ExtensionApi,actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,accessors:std::sync::Arc<dyn crate::tools_todo::TodoAccessors>) {
     for event in [maho_ext_api::EventKind::SessionStart,maho_ext_api::EventKind::SessionTree] {
         let accessors=accessors.clone();

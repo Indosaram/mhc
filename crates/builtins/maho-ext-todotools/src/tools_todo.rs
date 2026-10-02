@@ -193,6 +193,15 @@ mod tests {
         assert_eq!(api.registered.commands.len(),1);
         assert_eq!(api.registered.commands[0].name,"todo");
     }
+    #[test] fn extension_composes_native_tool_command_and_source_event_hooks() {
+        let fixture=std::sync::Arc::new(ExecutionFixture::default());
+        let extension=crate::index::TodotoolsExtension{actions:fixture.clone(),accessors:fixture,copy_markdown:std::sync::Arc::new(|_|Box::pin(async {panic!("registration cannot access clipboard")}))};
+        let mut api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("todotools",Default::default(),Default::default()),Default::default(),Default::default(),Default::default());
+        maho_ext_api::Extension::register(&extension,&mut api);
+        assert_eq!(api.registered.tools.len(),1);assert_eq!(api.registered.commands.len(),1);
+        assert_eq!(api.registered.handlers.len(),4);
+        for event in [maho_ext_api::EventKind::SessionStart,maho_ext_api::EventKind::SessionTree,maho_ext_api::EventKind::MessageEnd,maho_ext_api::EventKind::BeforeAgentStart] {assert_eq!(api.registered.handlers[&event].len(),1);}
+    }
     #[tokio::test] async fn registered_state_hooks_reload_and_mirror_in_source_order() {
         let fixture=std::sync::Arc::new(ExecutionFixture::default());
         let mut api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("todotools",Default::default(),Default::default()),Default::default(),Default::default(),Default::default());
