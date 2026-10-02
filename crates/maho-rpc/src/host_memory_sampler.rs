@@ -9,6 +9,12 @@ pub struct MemorySample {pub pressure_change:Option<bool>,pub critical_change:Op
 pub struct HostMemorySampler {warn_mb:u64,refuse_mb:u64,pressure:bool,critical:bool,idle_reported:bool,last_logged_at:Option<u64>}
 fn positive_integer(value:Option<&String>)->Option<u64>{let text=value?.trim();if text.is_empty()||!text.bytes().all(|c|c.is_ascii_digit()){return None;}text.parse().ok().filter(|value|*value>0)}
 impl HostMemorySampler{
+    pub async fn run(&mut self,mut read:impl FnMut()->(u64,u64,u64),mut publish:impl FnMut(MemorySample)){
+        let period=std::time::Duration::from_millis(HOST_MEMORY_SAMPLE_MS);
+        let mut timer=tokio::time::interval_at(tokio::time::Instant::now()+period,period);
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop{timer.tick().await;let(rss,sessions,now)=read();publish(self.sample(rss,sessions,now));}
+    }
     pub fn new(env:&HashMap<String,String>)->Self{let warn_mb=positive_integer(env.get(HOST_RSS_WARN_MB_ENV)).unwrap_or(DEFAULT_HOST_RSS_WARN_MB);let refuse_mb=positive_integer(env.get(HOST_RSS_REFUSE_MB_ENV)).unwrap_or(warn_mb*2);Self{warn_mb,refuse_mb,pressure:false,critical:false,idle_reported:false,last_logged_at:None}}
     pub fn sample(&mut self,rss_bytes:u64,sessions:u64,now:u64)->MemorySample{
         let rss_mb=(rss_bytes+524288)/1048576;let critical=rss_mb>self.refuse_mb;let mut result=MemorySample::default();

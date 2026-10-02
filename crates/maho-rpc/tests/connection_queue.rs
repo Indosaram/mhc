@@ -9,6 +9,28 @@ use maho_rpc::{connection_handler::handle_session_command,rpc_types::RpcCommand}
         session_manager:SessionManager::in_memory(&cwd,None,None),settings_manager:SettingsManager::from_storage(Box::new(InMemorySettingsStorage::default()),false),
         cwd:cwd.clone(),agent_dir:Some(cwd),fallback_now:None,retry_random:None,scoped_models:vec![],favorite_models:vec![],flag_values:Default::default(),custom_tools:vec![],model_runtime:Some(runtime),model_registry:None,uses_default_stream_function:Some(false),initial_active_tool_names:None,default_tool_names:None,eval_only_tool_names:None,allowed_tool_names:None,excluded_tool_names:None,base_tools_override:None,session_start_event:None,auto_title_sessions:Some(false),
     }).unwrap();
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut client, host) = tokio::net::UnixStream::pair().unwrap();
+        let (input, output) = host.into_split();
+        let run = maho_rpc::rpc_mode::run_command_stream(&session, input, output);
+        let drive = async {
+            let oversized = vec![b'x'; maho_rpc::jsonl::MAX_RPC_LINE_CHARACTERS + 1];
+            client.write_all(&oversized).await.unwrap();
+            client.write_all(b"\n{\"id\":\"recovered\",\"type\":\"get_messages\"}\n").await.unwrap();
+            client.shutdown().await.unwrap();
+            let mut received = String::new();
+            client.read_to_string(&mut received).await.unwrap();
+            let responses = received.lines().map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()).collect::<Vec<_>>();
+            assert_eq!(responses.len(), 2);
+            assert_eq!(responses[0]["command"], "parse");
+            assert_eq!(responses[0]["success"], false);
+            assert_eq!(responses[1]["id"], "recovered");
+            assert_eq!(responses[1]["success"], true);
+        };
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async { tokio::join!(run, drive) }).await.unwrap();
+        result.unwrap();
+    }
     {use tokio::io::{AsyncReadExt,AsyncWriteExt};let(mut client,host)=tokio::net::UnixStream::pair().unwrap();let(input,output)=host.into_split();let run=maho_rpc::rpc_mode::run_command_stream(&session,input,output);let drive=async{client.write_all(b"{\"id\":\"socket\",\"type\":\"get_messages\"}").await.unwrap();client.shutdown().await.unwrap();let mut received=String::new();client.read_to_string(&mut received).await.unwrap();let response:serde_json::Value=serde_json::from_str(&received).unwrap();assert_eq!(response["id"],"socket");assert_eq!(response["data"]["messages"],serde_json::json!([]));};let(result,())=tokio::time::timeout(std::time::Duration::from_secs(2),async{tokio::join!(run,drive)}).await.unwrap();result.unwrap();}
     for line in ["[]","{invalid"]{let response=maho_rpc::connection_handler::handle_input_line(&session,line).await.unwrap().unwrap();let response:serde_json::Value=serde_json::from_str(&response).unwrap();assert_eq!(response["command"],"parse");assert_eq!(response["success"],false);assert!(response.get("id").is_none());}
     let response=maho_rpc::connection_handler::handle_input_line(&session,r#"{"id":"unknown","type":"unknown_protocol_command"}"#).await.unwrap().unwrap();let response:serde_json::Value=serde_json::from_str(&response).unwrap();assert_eq!(response["id"],"unknown");assert_eq!(response["command"],"unknown_protocol_command");assert_eq!(response["error"],"Unknown command: unknown_protocol_command");

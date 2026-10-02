@@ -5,6 +5,25 @@ pub const ABSENT_CONFIRMATIONS:u32=3;
 pub enum EndpointLoss{Replaced,Absent}
 #[derive(Default)]
 pub struct SupersessionWatcher{absent_polls:u32,lost:bool}
+pub async fn wait_for_supersession(path:&str,identity:Option<crate::socket_ownership::SocketFileIdentity>,settled:impl Fn()->bool)->Option<EndpointLoss>{
+    use std::os::unix::fs::MetadataExt;
+    let identity=identity?;
+    let period=std::time::Duration::from_millis(SUPERSESSION_POLL_MS);
+    let mut timer=tokio::time::interval_at(tokio::time::Instant::now()+period,period);
+    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut watcher=SupersessionWatcher::default();
+    loop{
+        timer.tick().await;
+        if settled(){continue;}
+        let ownership=match tokio::fs::metadata(path).await{
+            Ok(stat) if stat.dev()==identity.dev&&stat.ino()==identity.ino=>EndpointOwnership::Held,
+            Ok(_)=>EndpointOwnership::Replaced,
+            Err(error) if error.kind()==std::io::ErrorKind::NotFound=>EndpointOwnership::Absent,
+            Err(_)=>EndpointOwnership::Unknown,
+        };
+        if let Some(loss)=watcher.observe(ownership,settled()){return Some(loss);}
+    }
+}
 impl SupersessionWatcher{
     pub fn observe(&mut self,ownership:EndpointOwnership,settled:bool)->Option<EndpointLoss>{
         if settled||self.lost{return None;}

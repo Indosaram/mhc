@@ -10,6 +10,13 @@ pub struct LoopLagWatchdog{warn_ms:f64,error_ms:f64,expected_tick_at:Option<f64>
 #[derive(Debug,Default)]pub struct LagSample{pub record:Option<serde_json::Value>,pub log:Option<String>}
 fn describe(attribution:Option<&SessionAttribution>)->String{let Some(attribution)=attribution.filter(|a|a.session_id.is_some()||a.tool.is_some())else{return "no attributed session".into();};let tool=attribution.tool.as_deref().filter(|tool|!tool.is_empty()).map(|tool|format!(" tool={tool}")).unwrap_or_default();format!("sessionId={}{tool}",attribution.session_id.as_deref().unwrap_or("unknown"))}
 impl LoopLagWatchdog{
+    pub async fn run(&mut self,registry:&SessionActivityRegistry,blocked:&mut LoopBlockedTime,mut now:impl FnMut()->f64,mut publish:impl FnMut(LagSample)){
+        self.start(now(),registry);
+        loop{
+            tokio::time::sleep(std::time::Duration::from_millis(LOOP_LAG_TICK_MS as u64)).await;
+            publish(self.tick(now(),registry,blocked));
+        }
+    }
     pub fn new(env:&HashMap<String,String>)->Self{Self{warn_ms:parse_idle_exit_ms(env.get(LOOP_LAG_WARN_MS_ENV).map(String::as_str)).unwrap_or(DEFAULT_LOOP_LAG_WARN_MS),error_ms:parse_idle_exit_ms(env.get(LOOP_LAG_ERROR_MS_ENV).map(String::as_str)).unwrap_or(DEFAULT_LOOP_LAG_ERROR_MS),expected_tick_at:None,activity_mark:0,last_warn_at:None}}
     pub fn start(&mut self,now:f64,registry:&SessionActivityRegistry){if self.expected_tick_at.is_none(){self.expected_tick_at=Some(now+LOOP_LAG_TICK_MS);self.activity_mark=registry.mark();}}
     pub fn stop(&mut self){self.expected_tick_at=None;}

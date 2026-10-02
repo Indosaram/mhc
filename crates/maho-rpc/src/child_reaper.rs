@@ -12,6 +12,12 @@ pub fn resolve_child_reaper_config(env:&HashMap<String,String>) -> ChildReaperCo
 struct TrackedChild { pid:i32,name:String,waitable_since:Option<u64> }
 pub struct ChildReaper<S> { pub syscalls:S,tracked:Vec<TrackedChild>,min_waitable_ms:u64,last_warn_at:Option<u64> }
 impl<S:ChildReaperSyscalls> ChildReaper<S> {
+    pub async fn run(&mut self,tick_ms:u64,mut now:impl FnMut()->u64,mut log:impl FnMut(String)){
+        let period=std::time::Duration::from_millis(tick_ms);
+        let mut timer=tokio::time::interval_at(tokio::time::Instant::now()+period,period);
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop{timer.tick().await;if let Some(message)=self.tick(now()){log(message);}}
+    }
     pub fn new(syscalls:S,min_waitable_ms:u64) -> Self { Self { syscalls,tracked:Vec::new(),min_waitable_ms:min_waitable_ms.max(MIN_WAITABLE_FLOOR_MS),last_warn_at:None } }
     pub fn waiting_pids(&self) -> Vec<i32> { self.tracked.iter().filter(|c| c.waitable_since.is_some()).map(|c| c.pid).collect() }
     pub fn tick(&mut self,now:u64) -> Option<String> {

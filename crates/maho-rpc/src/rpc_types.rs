@@ -188,6 +188,37 @@ pub enum ExtensionUiProgressType { #[serde(rename="extension_ui_progress")] Exte
 #[serde(untagged)]
 pub enum RpcInboundRecord { Command(RpcCommand),UiResponse(RpcExtensionUiResponse),UiProgress(RpcExtensionUiProgress) }
 
+#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
+#[serde(tag="type",rename_all="snake_case",rename_all_fields="camelCase")]
+pub enum RpcHostLifecycleEvent {
+    HostSuperseded { instance_id:String,generation:f64,successor:Option<RpcHostSuccessor> },
+    HostStalled { drift_ms:f64,#[serde(skip_serializing_if="Option::is_none")]session_id:Option<String>,#[serde(skip_serializing_if="Option::is_none")]tool:Option<String> },
+    HostMemoryPressure { rss_mb:f64,sessions:f64 },
+}
+#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
+pub struct RpcHostSuccessor { pub socket:String }
+
+#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
+#[serde(tag="type",rename_all="snake_case",rename_all_fields="camelCase")]
+pub enum RpcSessionLifecycleEvent {
+    SessionReplaced { durable_session_id:String,#[serde(skip_serializing_if="Option::is_none")]session_file:Option<String>,cwd:String,#[serde(skip_serializing_if="Option::is_none")]session_name:Option<String> },
+    SessionParked { session_id:String,session_path:String },
+    SessionClosed { session_id:String,#[serde(skip_serializing_if="Option::is_none")]reason:Option<String>,#[serde(skip_serializing_if="Option::is_none")]session_path:Option<String> },
+}
+#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
+#[serde(tag="type",rename_all="snake_case",rename_all_fields="camelCase")]
+pub enum RpcQuestionEvent {
+    QuestionUpdated { id:String,deadline_at_ms:f64,remaining_ms:f64 },
+    QuestionResolved { id:String,request_id:String,tool_call_id:String,outcome:RpcQuestionOutcome,answers:RpcQuestionAnswers,#[serde(skip_serializing_if="Option::is_none")]comment:Option<String>,unanswered:Vec<String>,#[serde(skip_serializing_if="Option::is_none")]deadline_at_ms:Option<f64> },
+}
+#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
+pub struct RpcOpenQueuedEvent {
+    #[serde(rename="type")]pub record_type:OpenQueuedType,
+    pub for_request:String,pub position:f64,pub in_flight:f64,
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
+pub enum OpenQueuedType { #[serde(rename="queued")] Queued }
+
 #[derive(Clone,Debug,PartialEq,Serialize)]
 #[serde(rename_all="camelCase")]
 pub struct RpcResponse {

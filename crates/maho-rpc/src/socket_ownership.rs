@@ -29,6 +29,19 @@ pub fn read_socket_identity_file(path:&Path)->io::Result<Option<SocketFileIdenti
     let raw=match fs::read_to_string(path){Ok(raw)=>raw,Err(error) if error.kind()==io::ErrorKind::NotFound=>return Ok(None),Err(error)=>return Err(error)};
     Ok(serde_json::from_str(&raw).ok())
 }
+pub async fn wait_for_socket_identity_file(path:&Path,timeout:std::time::Duration,interval:std::time::Duration)->io::Result<Option<SocketFileIdentity>>{
+    let deadline=tokio::time::Instant::now()+timeout;
+    loop{
+        let raw=match tokio::fs::read_to_string(path).await{
+            Ok(raw)=>Some(raw),
+            Err(error) if error.kind()==io::ErrorKind::NotFound=>None,
+            Err(error)=>return Err(error),
+        };
+        if let Some(identity)=raw.and_then(|raw|serde_json::from_str(&raw).ok()){return Ok(Some(identity));}
+        if tokio::time::Instant::now()>=deadline{return Ok(None);}
+        tokio::time::sleep(interval).await;
+    }
+}
 pub fn unlink_owned_socket(path:&str,identity:Option<SocketFileIdentity>,platform:&str,mut log:impl FnMut(String)){
     if platform=="win32"||path.starts_with('\0'){return;}
     let current=match stat_socket_identity(Path::new(path)){Ok(Some(current))=>current,Ok(None)=>return,Err(error)=>{log(format!("socket {path} ownership could not be verified ({error}); leaving it"));return;}};

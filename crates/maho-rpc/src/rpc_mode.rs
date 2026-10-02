@@ -19,7 +19,11 @@ pub async fn run_command_stream(session:&maho_core::agent_session::AgentSession,
         let count=input.read(&mut bytes).await?;
         let records=if count==0{reader.finish()}else{reader.push(&bytes[..count])};
         for record in records{
-            let crate::jsonl::LineRecord::Line(line)=record else{return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,"RPC line exceeded maximum length"));};
+            let crate::jsonl::LineRecord::Line(line)=record else{
+                let response=crate::jsonl::serialize_json_line(&serde_json::json!({"type":"response","command":"parse","success":false,"error":format!("RPC input line exceeds {} characters.",crate::jsonl::MAX_RPC_LINE_CHARACTERS)}))?;
+                output.write_all(response.as_bytes()).await?;
+                continue;
+            };
             let response=crate::connection_handler::handle_input_line(session,&line).await?;
             let Some(response)=response else{return Err(std::io::Error::new(std::io::ErrorKind::Unsupported,"RPC command requires unfinished runtime binding"));};
             output.write_all(response.as_bytes()).await?;

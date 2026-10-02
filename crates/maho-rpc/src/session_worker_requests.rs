@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 use serde_json::Value;
 use crate::session_worker_protocol::SESSION_WORKER_LIMITS;
-struct Pending{bytes:usize,control:bool,deadline:Option<u64>,reply:Option<tokio::sync::oneshot::Sender<Result<Value,String>>>}
+struct Pending{bytes:usize,control:bool,deadline:Option<u64>,reply:Option<tokio::sync::oneshot::Sender<Result<Value,String>>>,timer:Option<tokio::task::AbortHandle>}
+impl Drop for Pending{fn drop(&mut self){if let Some(timer)=&self.timer{timer.abort();}}}
 #[derive(Default)]
 pub struct SessionWorkerRequests{pending:BTreeMap<u64,Pending>,serial:u64,closed:bool,opening_deadline:Option<u64>}
 #[derive(Debug,thiserror::Error,PartialEq,Eq)]
@@ -22,20 +23,29 @@ impl SessionWorkerRequests{
         if debt.len()>=max_count||debt.iter().map(|pending|pending.bytes).sum::<usize>()+bytes>max_bytes{return Err(WorkerRequestError::RequestLimit);}
         self.serial+=1;
         let deadline=if command&&!control{None}else if control{Some(now+SESSION_WORKER_LIMITS.control_ms)}else{Some(*self.opening_deadline.get_or_insert(now+SESSION_WORKER_LIMITS.open_ms))};
-        self.pending.insert(self.serial,Pending{bytes,control,deadline,reply:None});
+        self.pending.insert(self.serial,Pending{bytes,control,deadline,reply:None,timer:None});
         let mut request=message.clone();request["request"]=self.serial.into();Ok(request)
     }
     pub fn send_failed(&mut self,request:u64){self.pending.remove(&request);}
     pub fn submit(&mut self,message:&Value,now:u64,send:impl FnOnce(Value)->Result<(),String>)->Result<tokio::sync::oneshot::Receiver<Result<Value,String>>,WorkerRequestError>{
         let request=self.request(message,now)?;let id=request["request"].as_u64().expect("assigned worker request");
         let(sender,receiver)=tokio::sync::oneshot::channel();self.pending.get_mut(&id).expect("admitted request").reply=Some(sender);
-        if let Err(error)=send(request)&&let Some(pending)=self.pending.remove(&id)&&let Some(reply)=pending.reply{let _=reply.send(Err(error));}
+        if let Err(error)=send(request)&&let Some(mut pending)=self.pending.remove(&id)&&let Some(reply)=pending.reply.take(){let _=reply.send(Err(error));}
+        Ok(receiver)
+    }
+    pub fn submit_with_timeout(&mut self,message:&Value,now:u64,send:impl FnOnce(Value)->Result<(),String>,timeout:impl FnOnce()+Send+'static)->Result<tokio::sync::oneshot::Receiver<Result<Value,String>>,WorkerRequestError>{
+        let receiver=self.submit(message,now,send)?;
+        if let Some(pending)=self.pending.get_mut(&self.serial)&&let Some(deadline)=pending.deadline{
+            let deadline=tokio::time::Instant::now()+std::time::Duration::from_millis(deadline.saturating_sub(now));
+            let timer=tokio::spawn(async move{tokio::time::sleep_until(deadline).await;timeout();});
+            pending.timer=Some(timer.abort_handle());
+        }
         Ok(receiver)
     }
     pub fn receive(&mut self,message:&Value)->Option<Result<Value,String>>{
-        let request=message.get("request")?.as_u64()?;let pending=self.pending.remove(&request)?;
+        let request=message.get("request")?.as_u64()?;let mut pending=self.pending.remove(&request)?;
         let result=if message.get("type").and_then(Value::as_str)==Some("result")&&let Some(error)=message.get("error").and_then(Value::as_str).filter(|error|!error.is_empty()){Err(error.into())}else{Ok(message.clone())};
-        if let Some(reply)=pending.reply{let _=reply.send(result.clone());}
+        if let Some(reply)=pending.reply.take(){let _=reply.send(result.clone());}
         Some(result)
     }
     pub fn timed_out_requests(&self,now:u64)->Vec<u64>{self.pending.iter().filter(|(_,pending)|pending.deadline.is_some_and(|deadline|now>=deadline)).map(|(request,_)|*request).collect()}
@@ -50,7 +60,7 @@ impl SessionWorkerRequests{
         self.receive(&value)
     }
     pub fn close(&mut self)->Vec<u64>{self.close_with_error("session_closing")}
-    pub fn close_with_error(&mut self,error:&str)->Vec<u64>{self.closed=true;let pending=std::mem::take(&mut self.pending);let ids=pending.keys().copied().collect();for pending in pending.into_values(){if let Some(reply)=pending.reply{let _=reply.send(Err(error.into()));}}ids}
+    pub fn close_with_error(&mut self,error:&str)->Vec<u64>{self.closed=true;let pending=std::mem::take(&mut self.pending);let ids=pending.keys().copied().collect();for mut pending in pending.into_values(){if let Some(reply)=pending.reply.take(){let _=reply.send(Err(error.into()));}}ids}
 }
 #[cfg(test)]mod tests{
     use super::*;
