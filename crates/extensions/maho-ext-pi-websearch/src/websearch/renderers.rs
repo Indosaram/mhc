@@ -1,5 +1,6 @@
 use maho_interactive::theme::{Theme,ThemeColor};
 use maho_tui::components::text::Text;
+use maho_ai::utils::js::number_to_string;
 use super::{types::*,tool::SearchParams,native::provider_name,search::provider_entry_label};
 
 fn shorten(value:&str,max:usize)->String{
@@ -8,7 +9,7 @@ fn shorten(value:&str,max:usize)->String{
     format!("{}\u{2026}",String::from_utf16_lossy(&units[..max-1]))
 }
 fn attempt_label(attempt:&SearchAttempt)->String{
-    format!("{}:{}",provider_entry_label(provider_name(attempt.provider),None,attempt.entry_id.as_deref()),if attempt.error.as_ref().is_some_and(|error|!error.is_empty()){"failed".into()}else{attempt.results_count.to_string()})
+    format!("{}:{}",provider_entry_label(provider_name(attempt.provider),None,attempt.entry_id.as_deref()),if attempt.error.as_ref().is_some_and(|error|!error.is_empty()){"failed".into()}else{number_to_string(attempt.results_count)})
 }
 #[derive(Default)]
 pub struct RenderResultOptions{pub expanded:bool,pub is_partial:bool}
@@ -24,12 +25,12 @@ pub fn render_search_result(content:Option<&str>,details:Option<&SearchRenderDet
         if let Some(SearchRenderDetails::Progress(progress))=details{
             let current=progress.current_provider.as_deref().filter(|value|!value.is_empty());
             let provider=current.map(str::to_owned).unwrap_or_else(||if progress.provider_labels.is_empty(){"configured providers".into()}else{progress.provider_labels.join(" -> ")});
-            let line=theme.fg(ThemeColor::Warning,&format!("Searching \"{}\" via {provider} (max {})",shorten(&progress.query,80),progress.max_results));
+            let line=theme.fg(ThemeColor::Warning,&format!("Searching \"{}\" via {provider} (max {})",shorten(&progress.query,80),number_to_string(progress.max_results)));
             let labels=progress.route_labels.as_ref().unwrap_or(&progress.provider_labels);
             if current.is_some()&&options.expanded&&!labels.is_empty(){
                 let attempts=progress.attempts.as_deref().unwrap_or(&[]);
                 let route=labels.iter().enumerate().map(|(index,label)|{
-                    let state=attempts.get(index).map_or_else(||if index==attempts.len(){"searching".into()}else{"pending".into()},|attempt|if attempt.error.as_ref().is_some_and(|error|!error.is_empty()){"failed".into()}else{attempt.results_count.to_string()});
+                    let state=attempts.get(index).map_or_else(||if index==attempts.len(){"searching".into()}else{"pending".into()},|attempt|if attempt.error.as_ref().is_some_and(|error|!error.is_empty()){"failed".into()}else{number_to_string(attempt.results_count)});
                     format!("{label}:{state}")
                 }).collect::<Vec<_>>().join(" -> ");
                 format!("{line}\n{}",theme.fg(ThemeColor::Muted,&format!("route {route}")))
@@ -43,7 +44,7 @@ pub fn render_search_result(content:Option<&str>,details:Option<&SearchRenderDet
                 let count=result.results.len();
                 let provider=provider_entry_label(provider_name(result.provider),None,result.entry_id.as_deref());
                 let strategy=result.strategy.map_or_else(String::new,|strategy|format!(" ({})",match strategy{RoutingStrategy::Priority=>"priority",RoutingStrategy::RoundRobin=>"round-robin",RoutingStrategy::FillFirst=>"fill-first"}));
-                let duration=if result.duration_ms>=1000.0{format!("{}s",(result.duration_ms/1000.0+0.5).floor())}else{format!("{}ms",result.duration_ms)};
+                let duration=if result.duration_ms>=1000.0{format!("{}s",number_to_string((result.duration_ms/1000.0).round()))}else{format!("{}ms",number_to_string(result.duration_ms))};
                 let summary=format!("{}{}{}",theme.fg(ThemeColor::Success,&format!("{count} result{}",if count==1{""}else{"s"})),theme.fg(ThemeColor::Muted,&format!(" via {provider}{strategy} in {duration}")),if result.truncated{theme.fg(ThemeColor::Warning," (truncated)")}else{String::new()});
                 let mut rows=vec![summary];
                 if count>0{
