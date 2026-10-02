@@ -19,7 +19,7 @@ fn resolve_entry(entry:&str,candidates:&[Model])->Option<ResolvedVisionModel> {
             return Some(ResolvedVisionModel{model:same[0].clone(),thinking_level:normalize(thinking)});
         }
     }
-    let parsed=parse_model_pattern(reference,candidates,false);
+    let parsed=parse_model_pattern(reference,candidates,true);
     parsed.model.map(|model|ResolvedVisionModel{model,thinking_level:normalize(thinking.filter(|level|*level!=ModelThinkingLevel::Off).or(parsed.thinking_level))})
 }
 pub fn resolve_vision_model(chain:&[String],available:&[Model])->Option<ResolvedVisionModel> {
@@ -38,6 +38,11 @@ mod tests {
     #[test] fn off_suffix_becomes_absent() { assert_eq!(resolve_vision_model(&chain("target:off"),&[model("openai","target",true)]).unwrap().thinking_level,None); }
     #[test] fn valid_suffix_is_preserved() { assert_eq!(resolve_vision_model(&chain("target:high"),&[model("openai","target",true)]).unwrap().thinking_level,Some(ThinkingLevel::High)); }
     #[test] fn non_thinking_colon_id_is_exact() { assert_eq!(resolve_vision_model(&chain("target:exacto"),&[model("openai","target:exacto",true)]).unwrap().model.id,"target:exacto"); }
+    #[test] fn invalid_thinking_suffix_uses_source_parser_default_not_first_model() {
+        let selected=resolve_vision_model(&chain("target:unsupported"),&[model("google","first",true),model("openai","target",true)]).unwrap();
+        assert_eq!(selected.model.id,"target");
+        assert_eq!(selected.thinking_level,None);
+    }
     #[test] fn canonical_reference_beats_ambiguity() { assert_eq!(resolve_vision_model(&chain("moonshotai/shared"),&[model("google","shared",true),model("moonshotai","shared",true)]).unwrap().model.provider,"moonshotai"); }
     #[test] fn preferred_provider_wins_ambiguous_id() { assert_eq!(resolve_vision_model(&chain("shared"),&[model("moonshotai","shared",true),model("google","shared",true),model("openai","shared",true)]).unwrap().model.provider,"openai"); }
     #[test] fn otherwise_alphabetical_provider_wins() { assert_eq!(resolve_vision_model(&chain("shared"),&[model("zebra","shared",true),model("alpha","shared",true)]).unwrap().model.provider,"alpha"); }
