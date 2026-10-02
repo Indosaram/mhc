@@ -1,6 +1,9 @@
 use std::path::Path;
 use serde_json::{Value,json};
 use crate::product_identity::{KNOWN_MODELS,mask_provider_and_model};
+#[derive(Debug)]
+pub struct InventoryDiagnostic {pub event:&'static str,pub source:&'static str,pub error:String}
+pub type InventoryDiagnostics=std::sync::Arc<dyn Fn(&InventoryDiagnostic)+Send+Sync>;
 pub fn read_inventory(agent_dir:&Path) -> Result<Value,String> {
     let read=|name:&str|->Result<Value,String> {let raw=std::fs::read_to_string(agent_dir.join(name)).map_err(|e|e.to_string())?;let v:Value=serde_json::from_str(&raw).map_err(|e|e.to_string())?;if !v.is_object() {return Err(format!("{name} must contain an object"));}Ok(v)};
     let models=read("models.json")?;let settings=read("settings.json")?;
@@ -26,13 +29,13 @@ pub fn start_native_session(options:&crate::index::SenpiTelemetryOptions,session
     let distinct_id=get_telemetry_distinct_id(&product.machine_id_prefix,os);
     let mut allowlists:EventPropertyAllowlist=EVENT_PROPERTY_ALLOWLISTS.iter().map(|(name,keys)|((*name).into(),keys.iter().map(|k|(*k).into()).collect())).collect();
     allowlists.insert("parallelism_summary".into(),crate::parallelism_schema::PARALLELISM_SUMMARY_SCHEMA.iter().map(|(k,_)|(*k).into()).collect());
-    let client=create_event_telemetry_client(&CreateEventTelemetryClientInput {diagnostics:None,distinct_id:&distinct_id,env:Some(&env),on_capture:None,product:&product,property_allowlist:&allowlists,schema_version:1,set_timeout_fn:options.set_timeout_fn.clone(),source:"omo-native-session",transport_factory:options.transport_factory.clone()});
+    let client=create_event_telemetry_client(&CreateEventTelemetryClientInput {diagnostics:options.diagnostics.clone(),distinct_id:&distinct_id,env:Some(&env),on_capture:None,product:&product,property_allowlist:&allowlists,schema_version:1,set_timeout_fn:options.set_timeout_fn.clone(),source:"omo-native-session",transport_factory:options.transport_factory.clone()});
     if !client.enabled() {return Ok(None);}
     let state=options.state_dir.clone().unwrap_or_else(||get_omo_native_state_dir(&env));
     let hash=hash_session_id(session_id,&state).map_err(|e|TelemetryError::new(e.to_string()))?;
-    let activity=get_daily_active_capture_state(&DailyActiveCaptureStateInput {state_dir:&state,now:options.now,diagnostics:None});
+    let activity=get_daily_active_capture_state(&DailyActiveCaptureStateInput {state_dir:&state,now:options.now,diagnostics:options.diagnostics.as_deref().map(|d|d as &dyn Fn(&TelemetryDiagnosticInput))});
     if activity.capture_daily {let properties=serde_json::Map::from_iter([("$session_id".into(),json!(hash)),("day_utc".into(),json!(activity.day_utc)),("reason".into(),json!("session_start"))]);client.capture_event("daily_active",&properties);}
-    let mut inventory=read_inventory(agent_dir).unwrap_or_else(|error| {eprintln!("omo_native_inventory_read_failed: {error}");json!({"provider_count":0,"model_count":0,"providers":""})});
+    let mut inventory=read_inventory(agent_dir).unwrap_or_else(|error| {if let Some(diagnostics)=&options.inventory_diagnostics {diagnostics(&InventoryDiagnostic {event:"omo_native_inventory_read_failed",source:"omo-native-session",error});}json!({"provider_count":0,"model_count":0,"providers":""})});
     let properties=inventory.as_object_mut().ok_or_else(||TelemetryError::new("Inventory must be an object"))?;
     for (key,value) in [("$session_id",json!(hash)),("$os",json!(os.platform())),("$os_version",json!(os.release())),("arch",json!(os.arch())),("cpu_count",json!(os.cpus()?.len())),("memory_bucket",json!(memory_bucket(os.totalmem()))),("reason",json!(session_reason(payload)))] {properties.insert(key.into(),value);}
     client.capture_event("session_started",properties);
