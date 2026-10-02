@@ -78,6 +78,45 @@ pub fn native_route_key(model:&NativeModelInfo)->Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn aliases(provider:&str,prefix:&str,count:usize)->Vec<NativeModelInfo> {(0..count).map(|index|model(provider,&if index==0 && provider=="anthropic" {prefix.into()} else {format!("{prefix}-{index}")})).collect()}
+    #[tokio::test] async fn upstream_fourteen_aliases_yield_two_stable_opaque_routes() {
+        let models=aliases("anthropic","claude-opus-4",8).into_iter().chain(aliases("z-ai","glm-4.6",6)).collect::<Vec<_>>();
+        let calls=std::sync::Mutex::new(Vec::new());let auth=|model:NativeModelInfo| {calls.lock().unwrap().push(model.id);async {Some("fixture-key".into())}};
+        let first=build_native_entries(None,Some(&models),Some(&auth),None).await.unwrap();
+        let second=build_native_entries(None,Some(&models),Some(&auth),None).await.unwrap();
+        assert_eq!(first.len(),2);assert_eq!(first,second);assert_ne!(first[0].config.id,first[1].config.id);
+        for entry in &first {let id=entry.config.id.as_ref().unwrap();assert!(id.starts_with("native-"));for value in ["api.example","claude","glm","fixture-key"] {assert!(!id.contains(value));}}
+        assert_eq!(*calls.lock().unwrap(),["claude-opus-4","glm-4.6-0","claude-opus-4","glm-4.6-0"]);
+    }
+    #[tokio::test] async fn upstream_active_auth_failure_does_not_retry_alias() {
+        let active=model("openai","gpt-5.5");let calls=std::sync::Mutex::new(Vec::new());let auth=|model:NativeModelInfo| {calls.lock().unwrap().push(model.id);async {None}};
+        assert!(build_native_entries(Some(&active),Some(&[model("openai","gpt-4.1")]),Some(&auth),None).await.unwrap().is_empty());assert_eq!(*calls.lock().unwrap(),["gpt-5.5"]);
+    }
+    #[tokio::test] async fn upstream_failed_alias_route_resolves_auth_once() {
+        let calls=std::sync::Mutex::new(Vec::new());let auth=|model:NativeModelInfo| {calls.lock().unwrap().push(model.id);async {None}};
+        assert!(build_native_entries(None,Some(&aliases("anthropic","claude-opus-4",8)),Some(&auth),None).await.unwrap().is_empty());assert_eq!(*calls.lock().unwrap(),["claude-opus-4"]);
+    }
+    #[tokio::test] async fn upstream_dotted_private_routes_rejected_before_auth() {
+        let mut first=model("openai","gpt-5.5");first.base_url="https://localhost./v1".into();let mut second=model("openai","gpt-4.1");second.base_url="https://127.1../v1".into();
+        let auth=|_:NativeModelInfo|async {panic!("private routes cannot resolve auth")};
+        assert!(build_native_entries(None,Some(&[first,second]),Some(&auth),None).await.unwrap().is_empty());
+    }
+    #[tokio::test] async fn upstream_dotted_public_aliases_preserve_first_endpoint() {
+        let mut first=model("openai","gpt-5.5");first.base_url="https://api.example.test./v1".into();let second=model("openai","gpt-4.1");
+        let calls=std::sync::Mutex::new(Vec::new());let auth=|model:NativeModelInfo| {calls.lock().unwrap().push(model.id);async {Some("fixture-key".into())}};
+        let entries=build_native_entries(None,Some(&[first,second]),Some(&auth),None).await.unwrap();assert_eq!(entries.len(),1);assert_eq!(entries[0].config.base_url.as_deref(),Some("https://api.example.test./v1/responses"));assert_eq!(*calls.lock().unwrap(),["gpt-5.5"]);
+    }
+    #[tokio::test] async fn upstream_distinct_endpoints_preserve_both_candidates() {
+        let mut first=model("openai","gpt-4.1");first.base_url="https://a.example.test/v1".into();let mut second=model("openai","gpt-5.5");second.base_url="https://b.example.test/v1".into();
+        let calls=std::sync::Mutex::new(Vec::new());let auth=|model:NativeModelInfo| {calls.lock().unwrap().push(model.id);async {Some("fixture-key".into())}};
+        let entries=build_native_entries(None,Some(&[first,second]),Some(&auth),None).await.unwrap();assert_eq!(entries.len(),2);assert_ne!(entries[0].config.id,entries[1].config.id);
+        assert_eq!(entries.iter().map(|entry|entry.config.base_url.as_deref().unwrap()).collect::<Vec<_>>(),["https://a.example.test/v1/responses","https://b.example.test/v1/responses"]);assert_eq!(*calls.lock().unwrap(),["gpt-4.1","gpt-5.5"]);
+    }
+    #[tokio::test] async fn upstream_query_preserved_fragments_deduplicated() {
+        let mut first=model("openai","gpt-5.5");first.base_url="https://api.example.test/v1?token=fixture#first".into();let mut second=model("openai","gpt-4.1");second.base_url="https://api.example.test/v1?token=fixture#second".into();
+        let calls=std::sync::Mutex::new(Vec::new());let auth=|model:NativeModelInfo| {calls.lock().unwrap().push(model.id);async {Some("fixture-key".into())}};
+        let entries=build_native_entries(None,Some(&[first,second]),Some(&auth),None).await.unwrap();assert_eq!(entries.len(),1);assert_eq!(entries[0].config.base_url.as_deref(),Some("https://api.example.test/v1/responses?token=fixture"));assert!(!entries[0].config.id.as_ref().unwrap().contains("fixture"));assert_eq!(*calls.lock().unwrap(),["gpt-5.5"]);
+    }
     #[tokio::test] async fn native_discovery_deduplicates_before_auth_including_failed_active_route() {
         let calls=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));let recorded=calls.clone();
         let auth=move |model:NativeModelInfo| {recorded.lock().unwrap().push(model.id.clone());async move {if model.id=="gpt-5.5" {None} else {Some("fixture-key".into())}}};
