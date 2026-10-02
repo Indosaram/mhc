@@ -4,6 +4,7 @@ pub mod completion_delivery;
 pub mod completion;
 pub mod completion_records;
 pub mod health;
+pub mod health_alert;
 pub mod model_cost;
 pub mod model_miss;
 pub mod memory_model_attempts;

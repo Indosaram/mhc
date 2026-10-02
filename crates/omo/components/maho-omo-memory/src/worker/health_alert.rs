@@ -1,0 +1,26 @@
+use std::path::Path;
+use serde::Serialize;
+pub const REFLECTION_HEALTH_ENTRY_TYPE:&str="senpi-memory.health";
+#[derive(Debug,Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct ReflectionHealthEntry{pub schema_version:u32,pub identity:String,pub streak:usize,pub fingerprint:String,pub last_reason:String,#[serde(skip_serializing_if="Option::is_none")]pub last_detail:Option<String>,#[serde(rename="sinceISO")]pub since_iso:String,pub recommendation:String}
+pub trait ReflectionHealthLiveSession{fn session_id(&self)->&str;fn has_ui(&self)->bool;fn append_entry(&mut self,name:&str,entry:&ReflectionHealthEntry);fn notify(&mut self,message:&str,level:&str);}
+pub fn emit_reflection_health_alert(completions:&Path,identity:&str,live:Option<&mut dyn ReflectionHealthLiveSession>,once:&mut dyn FnMut(&str)->bool,now:i64)->bool{
+    let Some(live)=live.filter(|live|live.has_ui())else{return false;};let health=super::health::read_reflection_health(completions,crate::status::MEMORY_HEALTH_SCAN_LIMIT,now);
+    if health.streak<3||health.fingerprint.is_empty()||health.recent_failure_fingerprints.iter().filter(|item|*item==&health.fingerprint).count()<2{return false;}
+    if !once(&format!("{}:{}",live.session_id(),health.fingerprint)){return false;}
+    let failure=health.last_failure;let recommendation=super::remediation::reflection_remediation(failure.as_ref().map(|failure|failure.reason.as_str()),failure.as_ref().and_then(|failure|failure.detail.as_deref())).to_owned();
+    let entry=ReflectionHealthEntry{schema_version:1,identity:identity.into(),streak:health.streak,fingerprint:health.fingerprint,last_reason:failure.as_ref().map(|failure|failure.reason.clone()).unwrap_or_else(||"failed".into()),last_detail:failure.as_ref().and_then(|failure|failure.detail.clone()),since_iso:health.streak_since_iso.or_else(||failure.map(|failure|failure.finished_at)).unwrap_or_else(||"1970-01-01T00:00:00.000Z".into()),recommendation};
+    live.append_entry(REFLECTION_HEALTH_ENTRY_TYPE,&entry);live.notify(&format!("Memory reflection has failed {} times ({}). {}",entry.streak,entry.fingerprint,entry.recommendation),"warning");true
+}
+#[cfg(test)]mod tests{
+    use super::*;
+    struct Live{session:String,ui:bool,entries:Vec<ReflectionHealthEntry>,warnings:usize}
+    impl ReflectionHealthLiveSession for Live{fn session_id(&self)->&str{&self.session}fn has_ui(&self)->bool{self.ui}fn append_entry(&mut self,name:&str,entry:&ReflectionHealthEntry){assert_eq!(name,REFLECTION_HEALTH_ENTRY_TYPE);self.entries.push(ReflectionHealthEntry{schema_version:entry.schema_version,identity:entry.identity.clone(),streak:entry.streak,fingerprint:entry.fingerprint.clone(),last_reason:entry.last_reason.clone(),last_detail:entry.last_detail.clone(),since_iso:entry.since_iso.clone(),recommendation:entry.recommendation.clone()});}fn notify(&mut self,_:&str,level:&str){assert_eq!(level,"warning");self.warnings+=1;}}
+    fn live(session:&str)->Live{Live{session:session.into(),ui:true,entries:vec![],warnings:0}}
+    fn seed(root:&Path,count:usize,different:bool){for index in 0..count{std::fs::write(root.join(format!("run-{index}.json")),serde_json::to_vec(&serde_json::json!({"runId":format!("run-{index}"),"outcome":"failed","reason":"child_exit","detail":if different{format!("detail-{index}")}else{"stable".into()},"finishedAt":format!("2026-08-12T0{index}:00:00.000Z")})).unwrap()).unwrap();}}
+    fn now()->i64{chrono::DateTime::parse_from_rfc3339("2026-08-12T03:00:00.000Z").unwrap().timestamp_millis()}
+    #[test]fn stable_streak_once_per_session_and_entry_metadata(){let root=tempfile::tempdir().unwrap();seed(root.path(),3,false);let mut seen=std::collections::BTreeSet::new();let mut once=|key:&str|seen.insert(key.to_owned());let mut first=live("one");assert!(emit_reflection_health_alert(root.path(),"agent",Some(&mut first),&mut once,now()));assert!(!emit_reflection_health_alert(root.path(),"agent",Some(&mut first),&mut once,now()));assert_eq!(first.warnings,1);assert_eq!(first.entries.len(),1);let entry=&first.entries[0];assert_eq!(entry.identity,"agent");assert_eq!(entry.streak,3);assert_eq!(entry.fingerprint,"child_exit:stable");assert_eq!(entry.last_detail.as_deref(),Some("stable"));let mut second=live("two");assert!(emit_reflection_health_alert(root.path(),"agent",Some(&mut second),&mut once,now()));}
+    #[test]fn threshold_unstable_and_stale_suppressed(){for (count,different,offset) in [(2,false,0),(3,true,0),(3,false,10*86400000)]{let root=tempfile::tempdir().unwrap();seed(root.path(),count,different);let mut live=live("session");assert!(!emit_reflection_health_alert(root.path(),"agent",Some(&mut live),&mut |_|panic!("guard must not run"),now()+offset));assert!(live.entries.is_empty());assert_eq!(live.warnings,0);}}
+    #[test]fn missing_ui_does_not_read_or_emit(){let mut live=live("session");live.ui=false;assert!(!emit_reflection_health_alert(Path::new("missing"),"agent",Some(&mut live),&mut |_|panic!("guard must not run"),now()));assert!(!emit_reflection_health_alert(Path::new("missing"),"agent",None,&mut |_|panic!("guard must not run"),now()));assert!(live.entries.is_empty());}
+}
