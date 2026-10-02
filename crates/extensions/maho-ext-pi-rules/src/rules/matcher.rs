@@ -59,7 +59,7 @@ impl Matcher {
                 let negated=pattern.starts_with('!');
                 let value=pattern.strip_prefix('!').unwrap_or(&pattern);
                 let normalized=normalize_literal_braces(value.strip_prefix("./").unwrap_or(value));
-                let compiled=if value.contains(['(',')','"','[','*','?']){match fancy_regex::Regex::new(&format!("^(?:{})$",compile_expression(&normalized))){Ok(expression)=>PathMatcher::Expression(expression),Err(_)=>PathMatcher::Never}}else{PathMatcher::Glob(GlobBuilder::new(&normalized).literal_separator(false).backslash_escape(false).allow_unclosed_class(true).empty_alternates(true).build()?.compile_matcher())};
+                let compiled=if value.contains(['(',')','"','[','*','?','+']){match fancy_regex::Regex::new(&format!("^(?:{})$",compile_expression(&normalized))){Ok(expression)=>PathMatcher::Expression(expression),Err(_)=>PathMatcher::Never}}else{PathMatcher::Glob(GlobBuilder::new(&normalized).literal_separator(false).backslash_escape(false).allow_unclosed_class(true).empty_alternates(true).build()?.compile_matcher())};
                 if negated{set.negative.push((value.into(),compiled));}else{set.positive.push((pattern,compiled));}
             }
             if self.sets.len()>=256{self.sets.pop_front();}
@@ -98,14 +98,15 @@ fn compile_expression(pattern:&str)->String{
             '*'=>{let start=index;while chars.get(index+1)==Some(&'*'){index+=1;}let globstar=index>start;let star=if globstar{"(?:(?!(?:^|/)\\.{1,2}(?:/|$)).)*?"}else{".*?"};if globstar&&(start==0||chars[start-1]=='/'){while chars.get(index+1)==Some(&'/')&&chars.get(index+2)==Some(&'*')&&chars.get(index+3)==Some(&'*')&&(index+4==chars.len()||chars.get(index+4)==Some(&'/')){index+=3;}}
                 if start==0&&chars.get(index+1)!=Some(&'/'){result.push_str("(?!(?:^|/)\\.{1,2}(?:/|$))");if !globstar{result.push_str("(?=.)");}}
                 if chars.get(index+1)==Some(&'/'){if globstar&&(start==0||chars[start-1]=='/'){if start>0{result.pop();result.push_str(&format!("(?:/{star}/|/{})",if index+2<chars.len(){"|$"}else{""}));}else{result.push_str(&format!("(?:^|/|{star}/)"));}}else{result.push_str(".*?/");}index+=1;}else if globstar&&start>0&&chars[start-1]=='/'&&index+1==chars.len(){result.pop();result.push_str(&format!("(?:/{star}|$)"));}else{result.push_str(star);if index+1==chars.len(){result.push_str("/?");}}},
-            '?'=>result.push_str(if index>0&&chars[index-1]==')'{"?"}else{"[^/]"}),
+            '?'=>result.push_str(if index>0&&chars[index-1]==')'||index>0&&chars[index-1]=='('&&chars.get(index+1).is_some_and(|ch|"!=<:".contains(*ch)){"?"}else{"[^/]"}),
+            '+'=>result.push_str(if index>0&&chars[index-1]!='('&&(parens>0||matches!(chars[index-1],')'|']'|'}')){"+"}else{"\\+"}),
             '('=>{let mut depth=1;let mut end=index+1;while end<chars.len(){if chars[end]=='(' {depth+=1;}else if chars[end]==')'{depth-=1;if depth==0{break;}}end+=1;}if depth==0{parens+=1;result.push('(');}else{result.push_str("\\(");}},
             ')'=>if parens>0{parens-=1;result.push(')');}else{result.push_str("\\)");},
             '|'=>result.push('|'),
             '{'=>{let mut depth=1;let mut end=index+1;while end<chars.len(){if chars[end]=='{'{depth+=1;}else if chars[end]=='}'{depth-=1;if depth==0{break;}}end+=1;}if depth==0{let body=chars[index+1..end].iter().collect::<String>();let mut nesting=0;let mut start=0;let mut branches=Vec::new();for (position,ch) in body.char_indices(){match ch{'{'|'('|'['=>nesting+=1,'}'|')'|']'=>nesting-=1,',' if nesting==0=>{branches.push(compile_expression(&body[start..position]));start=position+1;},_=>{}}}branches.push(compile_expression(&body[start..]));result.push_str(&format!("(?:{})",branches.join("|")));index=end;}else{result.push_str("\\{");}},
             '['=>{let mut end=index+1;while end<chars.len(){if chars[end]=='['&&chars.get(end+1)==Some(&':'){end+=2;while end+1<chars.len()&&!(chars[end]==':'&&chars[end+1]==']'){end+=1;}end+=2;continue;}
                 if chars[end]==']'{break;}end+=1;}if end<chars.len(){let body=chars[index+1..end].iter().collect::<String>();let mut compiled=body.clone();for (name,replacement) in [("alnum","a-zA-Z0-9"),("alpha","a-zA-Z"),("ascii","\\x00-\\x7F"),("blank"," \\t"),("cntrl","\\x00-\\x1F\\x7F"),("digit","0-9"),("graph","\\x21-\\x7E"),("lower","a-z"),("print","\\x20-\\x7E "),("punct","\\-!\"#$%&'()\\*+,./:;<=>?@[\\]^_`{|}~"),("space"," \\t\\r\\n\\x0B\\f"),("upper","A-Z"),("word","A-Za-z0-9_"),("xdigit","A-Fa-f0-9")]{compiled=compiled.replace(&format!("[:{name}:]"),replacement);}let class=if compiled.starts_with('^')&&!compiled.contains('/'){format!("[{compiled}/]")}else{format!("[{compiled}]")};if body.contains("[:")||body.chars().any(|ch|"-*+?.^${}(|)[]".contains(ch)){result.push_str(&class);}else{result.push_str(&format!("(?:\\[{body}\\]|{class})"));}index=end;if end+1==chars.len(){result.push_str("/?");}}else{result.push_str("\\[");}},
-            '.'|'+'|'$'|'^'|'}'|'\\'=>{result.push('\\');result.push(ch);},
+            '.'|'$'|'^'|'}'|'\\'=>{result.push('\\');result.push(ch);},
             _=>result.push(ch)
         }index+=1;
     }result
