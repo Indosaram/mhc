@@ -285,6 +285,34 @@ fn typed_tool_renderer_retains_state_across_render_calls() {
 }
 
 #[test]
+fn typed_renderer_slots_keep_call_and_result_components_separate() {
+    let renderers = Arc::new(ToolRenderers {
+        render_call: Some(Arc::new(|_: &String, _: &Theme, context: &mut ToolRenderContext<usize, String>| {
+            if let Some(component) = &mut context.last_component { assert_eq!(component.render(80), ["call"]); }
+            context.state += 1;
+            Box::new(FactoryComponent("call".into())) as Box<dyn Component>
+        }) as ToolCallRenderer<usize, String>),
+        render_result: Some(Arc::new(|_: &AgentToolResult, _: ToolRenderResultOptions, _: &Theme, context: &mut ToolRenderContext<usize, String>| {
+            if let Some(component) = &mut context.last_component { assert_eq!(component.render(80), ["result"]); }
+            context.state += 1;
+            Box::new(FactoryComponent("result".into())) as Box<dyn Component>
+        }) as ToolResultRenderer<usize, String>),
+    });
+    let context = ToolRenderContext {
+        args: "input".into(), tool_call_id: "call".into(), invalidate: std::rc::Rc::new(|| {}),
+        last_component: None, state: 0, cwd: "/tmp".into(), execution_started: true,
+        args_complete: true, is_partial: false, expanded: false, show_images: false,
+        image_protocol: None, is_error: false, has_result: None, spinner_frame: None,
+    };
+    let mut slots = ToolRendererSession { renderers, context }.into_slots();
+    for _ in 0..2 {
+        assert_eq!(slots.render_call(&Theme::default(), 80).unwrap(), ["call"]);
+        assert_eq!(slots.render_result(&AgentToolResult::text("done"), &Theme::default(), 80).unwrap(), ["result"]);
+    }
+    assert_eq!(slots.session.context.state, 4);
+}
+
+#[test]
 fn invalid_registration_bus_cannot_emit_subscribe_or_clear_shared_handlers() {
     let events = EventBus::default();
     let failed = events.registration_scope();

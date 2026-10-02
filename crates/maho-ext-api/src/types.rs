@@ -44,6 +44,31 @@ pub struct ToolRendererSession<TState, TArgs> {
     pub renderers: Arc<ToolRenderers<TState, TArgs>>,
     pub context: ToolRenderContext<TState, TArgs>,
 }
+pub struct ToolRendererSlots<TState, TArgs> {
+    pub session: ToolRendererSession<TState, TArgs>,
+    call_component: Option<Box<dyn Component>>,
+    result_component: Option<Box<dyn Component>>,
+}
+impl<TState, TArgs> ToolRendererSession<TState, TArgs> {
+    pub fn into_slots(mut self) -> ToolRendererSlots<TState, TArgs> {
+        let call_component = self.context.last_component.take();
+        ToolRendererSlots { session: self, call_component, result_component: None }
+    }
+}
+impl<TState, TArgs: Clone> ToolRendererSlots<TState, TArgs> {
+    pub fn render_call(&mut self, theme: &Theme, width: usize) -> Option<Vec<String>> {
+        self.session.context.last_component = self.call_component.take();
+        let lines = self.session.render_call(theme, width);
+        self.call_component = self.session.context.last_component.take();
+        lines
+    }
+    pub fn render_result(&mut self, result: &AgentToolResult, theme: &Theme, width: usize) -> Option<Vec<String>> {
+        self.session.context.last_component = self.result_component.take();
+        let lines = self.session.render_result(result, theme, width);
+        self.result_component = self.session.context.last_component.take();
+        lines
+    }
+}
 impl<TState, TArgs: Clone> ToolRendererSession<TState, TArgs> {
     pub fn render_call(&mut self, theme: &Theme, width: usize) -> Option<Vec<String>> {
         let renderer = self.renderers.render_call.as_ref()?;
