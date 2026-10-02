@@ -60,7 +60,14 @@ impl GoalRuntime {
             },
             ExtensionEvent::AgentStart=>state.accounting.agent_start(goal.as_ref(),now),
             ExtensionEvent::MessageEnd { message }=>{ state.accounting.usage.note_message_end(message); return Ok(goal); },
-            ExtensionEvent::AgentEnd { messages,aborted,abort_source,.. }=>goal=state.accounting.agent_end(&reference,messages,*aborted==Some(true)&&*abort_source==Some(maho_ext_api::AbortSource::User),now,seconds).await.map_err(failure)?,
+            ExtensionEvent::AgentEnd { messages,aborted,abort_source,will_retry }=>{
+                goal=state.accounting.agent_end(&reference,messages,*aborted==Some(true)&&*abort_source==Some(maho_ext_api::AbortSource::User),now,seconds).await.map_err(failure)?;
+                let ended=maho_core::agent_abort_provenance::AgentEndEvent { messages:messages.clone(),aborted:aborted.unwrap_or(false),abort_source:*abort_source,will_retry:will_retry.unwrap_or(false) };
+                if crate::agent_end_continuation::goal_agent_end_route(goal.as_ref(),&ended)==crate::agent_end_continuation::GoalAgentEndRoute::PolicyBlock {
+                    goal=Some(crate::store::update_goal(&reference,&GoalUpdate { status:Some(GoalStatus::Blocked),reason:Some("provider policy rejection ended the turn".into()),..Default::default() },GoalUpdateSource::Model,seconds).await.map_err(failure)?);
+                    state.accounting.clear();
+                }
+            },
             ExtensionEvent::Input(input)=>{
                 let mut monitor=self.monitor.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?;
                 state.input.on_input(input,&reference,|id|monitor.hold_direct_input(id,now)).map_err(failure)?;
@@ -104,6 +111,13 @@ fn failure(error:crate::errors::GoalError)->ExtensionFailure { ExtensionFailure:
     use super::*;
     fn assistant_usage(input:u64,output:u64)->maho_agent::types::AgentMessage {
         serde_json::from_value(serde_json::json!({"role":"assistant","content":[],"api":"faux","provider":"faux","model":"faux","usage":{"input":input,"output":output,"cacheRead":0,"cacheWrite":0,"totalTokens":input+output,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0})).unwrap()
+    }
+    #[tokio::test] async fn owning_agent_end_accounts_then_blocks_terminal_policy_rejection() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+        let runtime=GoalRuntime::new(Arc::new(move |_|stored.clone()),Arc::new(||0.0)); let context=crate::test_context::context(); runtime.create(&context,"work").await.unwrap(); runtime.event(&ExtensionEvent::AgentStart,&context).await.unwrap();
+        let mut message=assistant_usage(10,5); if let maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(assistant))=&mut message { assistant.api="openai-codex-responses".into(); assistant.stop_reason=maho_ai::types::StopReason::Error; assistant.error_message=Some("Codex error: This request was blocked by our safety systems. Reason: rejected".into()); }
+        let goal=runtime.event(&ExtensionEvent::AgentEnd { messages:vec![message],aborted:Some(false),abort_source:None,will_retry:Some(false) },&context).await.unwrap().unwrap();
+        assert_eq!(goal.status,GoalStatus::Blocked); assert_eq!(goal.tokens_used,15); assert_eq!(goal.blocked_reason.as_deref(),Some("provider policy rejection ended the turn")); assert_eq!(crate::store::read_goal(&reference).unwrap(),Some(goal)); assert!(!runtime.state.lock().await.ticker.running());
     }
     #[tokio::test] async fn store_change_never_refreshes_a_busy_context() {
         let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
