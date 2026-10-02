@@ -71,7 +71,7 @@ pub fn format_loop_status(state: &LoopState, now_ms: f64) -> Option<String> {
     }
     Some(nearest.map_or_else(|| "Loop active - /loop stop".into(), |(mode,due)| format!("Loop ({mode}): next in {} - /loop stop",format_duration((due-now_ms).max(0.0)))))
 }
-pub fn format_noop_fold(noop_streak: f64) -> String { if noop_streak < 2.0 { String::new() } else { format!("\u{21bb} {noop_streak} loop ticks with no actionable change") } }
+pub fn format_noop_fold(noop_streak: f64) -> String { if noop_streak < 2.0 { String::new() } else { format!("\u{21bb} {} loop ticks with no actionable change",maho_ai::utils::js::number_to_string(noop_streak)) } }
 #[cfg(test)] mod tests {
     use super::*;
     fn state(phase: &str, due: f64) -> LoopState { serde_json::from_value(serde_json::json!({"version":1,"sessionId":"s","updatedAt":0,"activeDynamicId":null,"entries":{"a":{"id":"a","kind":"fixed","phase":phase,"originalArgs":"5m check","reentryPrompt":"/loop 5m check","payload":{"type":"prompt","prompt":"check"},"createdAt":0,"lastFiredAt":null,"expiresAt":1000000000000.0,"lastScheduledForAt":null,"coalescedFirePending":false,"queuedForAt":null,"noopStreak":0,"tickCount":0,"sentinelDelivery":{"autonomousPreambleDelivered":false,"lastLoopFileDelivered":null,"forceFullDelivery":false},"wakeSources":[],"requestedInterval":{"value":5,"unit":"m","raw":"5m"},"effectiveInterval":{"value":5,"unit":"m","human":"5 minutes","rounded":false},"cronExpression":"*/5 * * * *","nextFireAt":due,"intervalMs":300000}}})).unwrap() }
@@ -82,6 +82,7 @@ pub fn format_noop_fold(noop_streak: f64) -> String { if noop_streak < 2.0 { Str
     #[test] fn suspended_loop_has_pause_status() { let state=state("suspended",60000.0); let result=format_loop_status(&state,0.0).unwrap(); assert!(result.contains("paused")); }
     #[test] fn noops_below_two_are_not_folded() { let result=format_noop_fold(0.0); assert!(result.is_empty()); }
     #[test] fn noop_streak_is_exposed() { let result=format_noop_fold(3.0); assert!(result.contains('3')); }
+    #[test] fn noop_streak_preserves_javascript_exponent_number() { assert!(format_noop_fold(1e21).contains("1e+21")); assert!(format_noop_fold(f64::NAN).contains("NaN")); }
     #[test] fn duration_retains_day_and_hour_parts() { let result=format_duration(90000000.0); assert_eq!(result,"1d1h"); }
     #[tokio::test(start_paused=true)] async fn ticker_updates_countdown_and_dispose_clears_status() {
         let start=tokio::time::Instant::now();

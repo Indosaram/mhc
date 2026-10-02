@@ -120,6 +120,19 @@ pub fn clear_loop_state_snapshot(reference:&LoopStoreRef) { store(reference).cle
         let mut invalid_kind=value.clone(); invalid_kind["kind"]="unknown".into(); assert_eq!(validate_entry("d",&invalid_kind).unwrap_err().to_string(),"loop entry d has an unknown kind");
         let mut invalid_payload=value; invalid_payload["payload"]=serde_json::json!({"type":"sentinel","sentinel":"unknown"}); assert_eq!(validate_entry("d",&invalid_payload).unwrap_err().to_string(),"loop entry d has an unknown payload sentinel");
     }
+    #[test] fn upstream_dangling_active_dynamic_id_fails_closed() {
+        let mut raw=serde_json::to_value(empty_loop_state("s")).unwrap(); raw["activeDynamicId"]="missing".into();
+        assert!(parse_payload(&raw,&SidecarStoreRef { base_dir:"/tmp".into(),session_id:"s".into() }).is_err());
+    }
+    #[tokio::test] async fn upstream_pending_dynamic_wakeup_roundtrips_every_field() {
+        let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path());
+        let mut scheduler=crate::scheduler::LoopScheduler::new(&reference.session_id,None,&BTreeMap::new());
+        scheduler.create_dynamic(crate::scheduler::CreateDynamicRequest { original_args:"watch".into(),reentry_prompt:"/loop watch".into(),payload:LoopPayload::Prompt { prompt:"watch".into() } },"d".into(),1000.0);
+        scheduler.on_schedule_wakeup(crate::scheduler::ScheduleWakeupInput { loop_id:"d".into(),delay_seconds:60.0,requested_delay_seconds:0.25,reason:"watch next state".into(),prompt:"inspect again".into(),noop:true },"w".into(),1001.0);
+        write_loop_state(&reference,&scheduler.state).await.unwrap();
+        assert_eq!(load_loop_state(&reference).await.unwrap(),scheduler.state);
+        assert_eq!(snapshot_loop_state(&reference).unwrap(),Some(scheduler.state));
+    }
     #[test] fn parser_normalizes_unknown_envelope_and_nested_entry_fields() {
         let mut scheduler=crate::scheduler::LoopScheduler::new("s",None,&BTreeMap::new());
         scheduler.create_dynamic(crate::scheduler::CreateDynamicRequest { original_args:"check".into(),reentry_prompt:"check".into(),payload:LoopPayload::Prompt { prompt:"check".into() } },"d".into(),1000.0);

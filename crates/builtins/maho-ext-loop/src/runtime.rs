@@ -80,6 +80,23 @@ impl LoopRuntime {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test(start_paused=true)] async fn upstream_timer_callback_dispatches_due_and_rearms_replacement() {
+        let runtime=std::sync::Arc::new(std::sync::Mutex::new(LoopRuntime::new("s",None,&Default::default())));
+        crate::creation::create_fixed(&mut runtime.lock().unwrap().scheduler,crate::index::StartFixedRequest { original_args:"5m work".into(),prompt:"work".into(),requested_interval:RequestedInterval { value:5.0,unit:RequestedIntervalUnit::Minutes,raw:"5m".into() } },"f".into(),0.0);
+        let mut timers=crate::index::NodeTimerPort::new(); let start=tokio::time::Instant::now();
+        let captured=runtime.clone(); let (send,mut receive)=tokio::sync::mpsc::unbounded_channel();
+        let callback=std::sync::Arc::new(move |id:String| { let now=start.elapsed().as_millis() as f64; let result=captured.lock().unwrap().scheduler.on_due(&id,now,false,"delivery".into()); send.send((now,result)).unwrap(); });
+        assert!(runtime.lock().unwrap().sync_timers(&mut timers,0.0,callback.clone()).is_empty());
+        let (now,result)=tokio::time::timeout(std::time::Duration::from_secs(301),receive.recv()).await.unwrap().unwrap();
+        assert!(matches!(result,DueResult::Dispatch(_))); assert!(timers.keys().is_empty());
+        let retired={
+            let state=runtime.lock().unwrap(); let CronEntry::Fixed { fields,next_fire_at,.. }=&state.scheduler.state.entries["f"] else { panic!("fixed expected") };
+            assert_eq!(fields.tick_count,1.0); assert_eq!(*next_fire_at,now+300000.0);
+            state.sync_timers(&mut timers,now,callback)
+        };
+        for worker in retired { worker.await.unwrap(); }
+        assert_eq!(timers.keys(),["f"]); for worker in timers.cancel_all() { assert!(worker.await.unwrap_err().is_cancelled()); }
+    }
     #[tokio::test(start_paused=true)] async fn scheduler_timer_reconciliation_fires_and_shutdown_cancels() {
         let mut runtime=LoopRuntime::new("s",None,&Default::default()); let mut timers=crate::index::NodeTimerPort::new();
         runtime.scheduler.armed_timers.insert("a".into(),1000.0);
