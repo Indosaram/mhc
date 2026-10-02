@@ -66,3 +66,37 @@ pub fn settle_tool_call_metric(metric: &mut EvalToolCallMetric, ok: bool, comple
     metric.ok = Some(ok);
     metric.duration_ms = Some((completed_at - metric.started_at).max(0.0));
 }
+
+pub fn tool_call_result_preview(result: &maho_ext_api::AgentToolResult) -> Option<String> {
+    for part in &result.content {
+        if let maho_ext_api::ContentBlock::Text(content) = part {
+            let preview = crate::host_sdk::sanitize_terminal_label(&content.text);
+            return if preview.is_empty() { None } else { Some(cap_code_points(&preview, 160)) };
+        }
+    }
+    None
+}
+
+pub struct ToolCallCapture {
+    pub call_id: String,
+    pub args: Option<Value>,
+    pub started_at: f64,
+    pub metric: EvalToolCallMetric,
+    pub include_details: bool,
+    pub args_truncated: bool,
+}
+
+pub fn record_tool_call(tool_calls: &mut Vec<Value>, ok: bool, capture: &mut ToolCallCapture, result_preview: Option<&str>, error: Option<&str>, completed_at: f64) {
+    settle_tool_call_metric(&mut capture.metric, ok, completed_at);
+    let mut summary = serde_json::json!({"name":capture.metric.name,"ok":ok});
+    if let Some(error) = error { summary["error"] = Value::String(cap_code_points(error, 512)); }
+    if capture.include_details { summary["durationMs"] = serde_json::json!(completed_at - capture.started_at); }
+    let enriched_count = tool_calls.iter().filter(|call| call.get("callId").is_some()).count();
+    if capture.include_details && enriched_count < MAX_ENRICHED_TOOL_CALLS {
+        summary["callId"] = Value::String(capture.call_id.clone());
+        if let Some(args) = &capture.args { summary["args"] = args.clone(); }
+        if capture.args_truncated { summary["argsTruncated"] = Value::Bool(true); }
+        if let Some(preview) = result_preview { summary["resultPreview"] = Value::String(preview.into()); }
+    }
+    tool_calls.push(summary);
+}
