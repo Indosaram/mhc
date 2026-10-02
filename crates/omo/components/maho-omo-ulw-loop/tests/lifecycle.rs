@@ -1,6 +1,7 @@
 mod support;
 use std::sync::{Arc,Mutex};
 use maho_ext_api::*;
+#[tokio::test] async fn rejected_command_and_malformed_status_pass_through() {for output in [None,Some("not json"),Some(r#"{"ok":false}"#)] {let mut api=ExtensionApi::new(LoadedExtension::new("loop","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());maho_omo_ulw_loop::index::UlwLoopComponent{bin:Some("/toolkit".into()),js_runtime:"bun".into(),run_command:Some(Arc::new(move |_,_,_|Box::pin(async move {output.map_or_else(||Err(std::io::Error::other("spawn EINVAL")),|stdout|Ok(maho_omo_ulw_loop::omo_command::CommandResult{code:0,stdout:stdout.into()}))})))}.register(&mut api);let mut event=ExtensionEvent::Input(InputEvent{input_id:"id".into(),text:"continue".into(),images:None,source:InputSource::Interactive,streaming_behavior:Some(StreamingBehavior::Steer)});assert!(matches!(api.registered.handlers[&EventKind::Input][0](&mut event,&support::context()).await.expect("dispatch"),EventResult::Input(InputEventResult::Continue)));}}
 #[tokio::test] async fn changing_status_is_capped_and_user_input_resets()->Result<(),Box<dyn std::error::Error>> {
  use std::sync::atomic::{AtomicUsize,Ordering};
  let count=Arc::new(AtomicUsize::new(0));let observed=count.clone();let actions=Arc::new(Actions::default());let runtime=ExtensionRuntime::default();runtime.bind(actions.clone());let mut api=ExtensionApi::new(LoadedExtension::new("loop","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
