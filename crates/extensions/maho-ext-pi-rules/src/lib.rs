@@ -8,6 +8,7 @@ pub mod rules {
     pub mod parser;
     pub mod project_root;
     pub mod scanner;
+    pub mod tool_paths;
     pub mod truncator;
     pub mod types;
 }
