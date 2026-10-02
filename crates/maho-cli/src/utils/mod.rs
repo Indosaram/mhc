@@ -19,3 +19,5 @@ pub mod management_http;
 pub mod changelog;
 pub mod shell;
 pub mod fs_watch;
+pub mod image_resize_core;
+pub mod image_resize;

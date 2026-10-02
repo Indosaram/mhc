@@ -19,6 +19,7 @@ percent-encoding.workspace = true
 base64 = "=0.22.1"
 reqwest = { workspace = true, features = ["rustls-tls"] }
 semver = "=1.0.27"
+photon-rs = { version = "=0.3.3", default-features = false }
 nix = { version = "=0.28.0", features = ["signal", "process"] }
 tokio = { workspace = true, features = ["time", "macros", "rt", "process", "io-util", "fs"] }
 
