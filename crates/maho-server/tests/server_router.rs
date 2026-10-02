@@ -4,6 +4,34 @@ use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
 struct Host(Arc<AtomicUsize>);
 #[tokio::test]
+async fn attachment_release_repeats_failure_without_releasing_twice() {
+    struct FailingHost(Arc<AtomicUsize>);
+    struct FailingLease(Arc<AtomicUsize>);
+    impl ServerHost for FailingHost {
+        fn server_services(&self)->&dyn RoutedServerServiceHost {self}
+        fn resolve_session<'a>(&'a self,id:&'a str)->ServerFuture<'a,Value> {Box::pin(async move {Ok(json!({"id":id}))})}
+        fn open_session(&self,_:Value)->ServerFuture<'_,Arc<dyn RoutedSessionHandle>> {Box::pin(async move {Ok(Arc::new(FailingHost(self.0.clone())) as Arc<dyn RoutedSessionHandle>)})}
+    }
+    impl RoutedServerServiceHost for FailingHost {
+        fn attach_client(&self,_:Arc<dyn RoutedServerPresentation>)->ServerFuture<'_,Arc<dyn RoutedServerServiceAttachment>> {Box::pin(async {Err(ServerError::new("internal_error","Unused"))})}
+    }
+    impl RoutedSessionHandle for FailingHost {
+        fn attach_client(&self)->ServerFuture<'_,Arc<dyn RoutedSessionAttachment>> {Box::pin(async move {Ok(Arc::new(FailingLease(self.0.clone())) as Arc<dyn RoutedSessionAttachment>)})}
+        fn close(&self)->ServerFuture<'_,()> {Box::pin(async {Ok(())})}
+    }
+    impl RoutedSessionAttachment for FailingLease {
+        fn invoke_service<'a>(&'a self,_:Value,_:Publisher,_:Context)->ServerFuture<'a,Option<Value>> {Box::pin(async {Ok(None)})}
+        fn release(&self)->ServerFuture<'_,()> {Box::pin(async move {self.0.fetch_add(1,Ordering::SeqCst);Err(ServerError::new("internal_error","lease release failed"))})}
+    }
+    let releases=Arc::new(AtomicUsize::new(0));
+    let router=SessionRouter::new(Arc::new(FailingHost(releases.clone())),"00000000-0000-4000-8000-000000000001".into());
+    let attachment=router.attach("session").await.unwrap();
+    let (first,second)=tokio::join!(attachment.release(),attachment.release());
+    assert!(first.is_err());assert_eq!(first,second);assert_eq!(first,attachment.release().await);
+    assert_eq!(releases.load(Ordering::SeqCst),1);
+    assert!(router.close().await.is_err());
+}
+#[tokio::test]
 async fn concurrent_clients_share_one_session_open() {
     use maho_server::server::testing::TestServerHost;
     let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();

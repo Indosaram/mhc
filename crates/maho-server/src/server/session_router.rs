@@ -17,6 +17,7 @@ pub struct Attachment {
     pub lease: Arc<dyn RoutedSessionAttachment>,
     operations: RwLock<()>,
     released: AtomicBool,
+    release_result: tokio::sync::OnceCell<Result<(),ServerError>>,
 }
 impl Attachment {
     pub async fn invoke(
@@ -32,11 +33,11 @@ impl Attachment {
         self.lease.invoke_service(call, publish, context).await
     }
     pub async fn release(&self) -> Result<(), ServerError> {
-        let _operations = self.operations.write().await;
-        if self.released.swap(true, Ordering::SeqCst) {
-            return Ok(());
-        }
-        self.lease.release().await
+        self.release_result.get_or_init(||async {
+            let _operations = self.operations.write().await;
+            self.released.store(true, Ordering::SeqCst);
+            self.lease.release().await
+        }).await.clone()
     }
 }
 
@@ -101,6 +102,7 @@ impl SessionRouter {
             lease,
             operations: RwLock::new(()),
             released: AtomicBool::new(false),
+            release_result: tokio::sync::OnceCell::new(),
         });
         let mut attachments = self.attachments.lock().await;
         if self.closing.load(Ordering::SeqCst) || !self.hosted.lock().await.contains_key(session_id) {
