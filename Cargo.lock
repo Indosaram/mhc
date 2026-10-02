@@ -1577,6 +1577,10 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-anthropic-bash"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-anthropic-subscription"
@@ -1585,6 +1589,11 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-anthropic-web-search"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "serde_json",
+ "url",
+]
 
 [[package]]
 name = "maho-ext-api"
@@ -1599,22 +1608,47 @@ dependencies = [
 [[package]]
 name = "maho-ext-ask-user"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-bash-timeout"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-anthropic-bash",
+ "maho-ext-api",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-btw"
 version = "0.0.0"
+dependencies = [
+ "maho-ai",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-builtin-loose"
 version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "maho-agent",
+ "maho-ai",
+ "maho-ext-api",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-cache-keepalive"
 version = "0.0.0"
+dependencies = [
+ "maho-ai",
+]
 
 [[package]]
 name = "maho-ext-compaction"
@@ -1655,10 +1689,24 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-help"
 version = "0.0.0"
+dependencies = [
+ "maho-core",
+ "maho-ext-api",
+ "maho-interactive",
+ "maho-tui",
+]
 
 [[package]]
 name = "maho-ext-herdr"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-ext-builtin-loose",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-herdr-agent-state"
@@ -1667,6 +1715,14 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-history-search"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "maho-interactive",
+ "maho-tui",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "maho-ext-hooks"
@@ -1698,6 +1754,13 @@ dependencies = [
 [[package]]
 name = "maho-ext-imagegen"
 version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "libc",
+ "maho-ai",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "maho-ext-look-at"
@@ -1718,6 +1781,11 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-model-fallback"
 version = "0.0.0"
+dependencies = [
+ "maho-core",
+ "maho-ext-api",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-nested-agents-md"
@@ -1730,10 +1798,22 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-openai-image-gen"
 version = "0.0.0"
+dependencies = [
+ "maho-ai",
+ "maho-ext-imagegen",
+ "serde_json",
+ "tempfile",
+ "url",
+]
 
 [[package]]
 name = "maho-ext-openai-web-search"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "serde_json",
+ "url",
+]
 
 [[package]]
 name = "maho-ext-orca-agent-status"
@@ -1750,6 +1830,15 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-permission-system"
 version = "0.0.0"
+dependencies = [
+ "maho-core",
+ "maho-ext-api",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-pi-ast-grep"
@@ -1790,10 +1879,19 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-reasoning"
 version = "0.0.0"
+dependencies = [
+ "maho-ai",
+ "maho-core",
+]
 
 [[package]]
 name = "maho-ext-recommended-models"
 version = "0.0.0"
+dependencies = [
+ "maho-ai",
+ "maho-core",
+ "maho-ext-api",
+]
 
 [[package]]
 name = "maho-ext-rule-activation"
@@ -1831,6 +1929,11 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-tool-pair-guard"
 version = "0.0.0"
+dependencies = [
+ "maho-ai",
+ "maho-ext-api",
+ "serde_json",
+]
 
 [[package]]
 name = "maho-ext-tool-search"
@@ -1843,6 +1946,16 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-video-in"
 version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "maho-ai",
+ "maho-ext-api",
+ "maho-tools",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-webfetch"
