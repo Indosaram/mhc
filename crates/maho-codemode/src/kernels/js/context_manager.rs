@@ -34,8 +34,11 @@ pub struct JavaScriptKernel {
 
 impl JavaScriptKernel {
     pub async fn start(cwd: &Path, session_id: &str, parallel_pool_width: u64, session_env: Option<SessionEnvironment>) -> Result<Self, ProcessError> {
-        let loader=LocalModuleLoader::new(&LocalModuleLoaderOptions {cwd:cwd.into(),local_roots:None,artifacts_dir:None})?;
-        let options=WorkerOptions {cwd:cwd.into(),session_id:session_id.into(),width:parallel_pool_width,environment:session_env,executable:std::env::current_exe()?,connection:BridgeConnectionConfig {port:1,token:"worker-transport".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:Some(parallel_pool_width)}};
+        Self::start_with_connection(cwd,session_id,parallel_pool_width,session_env,BridgeConnectionConfig {port:1,token:"worker-transport".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:Some(parallel_pool_width)}).await
+    }
+    pub async fn start_with_connection(cwd:&Path,session_id:&str,parallel_pool_width:u64,session_env:Option<SessionEnvironment>,connection:BridgeConnectionConfig)->Result<Self,ProcessError> {
+        let loader=LocalModuleLoader::new(&LocalModuleLoaderOptions {cwd:cwd.into(),local_roots:connection.local_roots.clone(),artifacts_dir:connection.artifacts_dir.as_ref().map(PathBuf::from)})?;
+        let options=WorkerOptions {cwd:cwd.into(),session_id:session_id.into(),width:parallel_pool_width,environment:session_env,executable:std::env::current_exe()?,connection};
         let mut slot=WorkerSlot::default();
         slot.ensure_ready(options.startup(),&maho_ai::utils::abort::AbortController::new().signal()).await?;
         let pid=Arc::new(Mutex::new(slot.pid()));

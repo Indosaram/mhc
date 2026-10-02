@@ -22,6 +22,7 @@ pub struct CodemodeSessionManager {
     options: CreateCodemodeSessionManagerOptions,
     bridge: BridgeServerHandle,
     python: tokio::sync::Mutex<Option<Arc<PythonKernel>>>,
+    javascript: tokio::sync::Mutex<Option<Arc<crate::kernels::js::context_manager::JavaScriptKernel>>>,
     subprocesses: tokio::sync::Mutex<HashMap<EvalLanguage,Arc<SubprocessKernel>>>,
     disposed: AtomicBool,
     dispose_result: tokio::sync::OnceCell<Result<(), String>>,
@@ -59,7 +60,7 @@ impl CodemodeSessionManager {
                 })
             }),
         }).await?;
-        Ok(Self { options, bridge, python:tokio::sync::Mutex::new(None), subprocesses:tokio::sync::Mutex::new(HashMap::new()), disposed:AtomicBool::new(false), dispose_result:tokio::sync::OnceCell::new() })
+        Ok(Self { options, bridge, python:tokio::sync::Mutex::new(None), javascript:tokio::sync::Mutex::new(None), subprocesses:tokio::sync::Mutex::new(HashMap::new()), disposed:AtomicBool::new(false), dispose_result:tokio::sync::OnceCell::new() })
     }
 
     pub fn bridge_endpoint(&self) -> Result<(u16, &str), String> {
@@ -82,6 +83,18 @@ impl CodemodeSessionManager {
         if self.disposed.load(Ordering::SeqCst) { kernel.close().await?; return Err("codemode session manager is disposed".into()); }
         *python = Some(kernel.clone());
         Ok(kernel)
+    }
+
+    pub async fn get_javascript_kernel(&self)->Result<Arc<crate::kernels::js::context_manager::JavaScriptKernel>,String> {
+        if self.disposed.load(Ordering::SeqCst) {return Err("codemode session manager is disposed".into());}
+        let mut javascript=self.javascript.lock().await;
+        if self.disposed.load(Ordering::SeqCst) {return Err("codemode session manager is disposed".into());}
+        if let Some(kernel)=&*javascript {return Ok(kernel.clone());}
+        let roots=self.options.local_roots.clone().or_else(||self.options.artifacts_dir.as_ref().map(|root|HashMap::from([("local".into(),root.join("local").to_string_lossy().into_owned())])));
+        let width=self.options.settings.parallel_pool_width;
+        let kernel=Arc::new(crate::kernels::js::context_manager::JavaScriptKernel::start_with_connection(&self.options.cwd,&self.options.session_id,if width.is_finite() {width.trunc().max(1.0) as u64} else {1},self.options.session_env.clone(),BridgeConnectionConfig {port:self.bridge.port,token:self.bridge.token.clone(),local_roots:roots,artifacts_dir:self.options.artifacts_dir.as_ref().map(|path|path.to_string_lossy().into_owned()),parallel_pool_width:None}).await.map_err(|error|error.to_string())?);
+        if self.disposed.load(Ordering::SeqCst) {kernel.close().await.map_err(|error|error.to_string())?;return Err("codemode session manager is disposed".into());}
+        *javascript=Some(kernel.clone());Ok(kernel)
     }
 
     pub async fn get_subprocess_kernel(&self, language: EvalLanguage) -> Result<Arc<SubprocessKernel>,String> {
@@ -117,6 +130,7 @@ impl CodemodeSessionManager {
             let result = if let Some(kernel) = kernel { kernel.close().await } else { Ok(()) };
             let kernels=std::mem::take(&mut *self.subprocesses.lock().await);
             let mut failures=Vec::new();
+            if let Some(kernel)=self.javascript.lock().await.take() && let Err(error)=kernel.close().await {failures.push(error.to_string());}
             if let Err(error)=result {failures.push(error);}
             for kernel in kernels.into_values() {if let Err(error)=kernel.close().await {failures.push(error.to_string());}}
             self.bridge.close().await;
@@ -134,7 +148,7 @@ impl EvalKernelManager for CodemodeSessionManager {
         Box::pin(async move {match language {
             EvalLanguage::Py=>Ok(self.get_python_kernel(&self.interpreter_path(language)?).await? as Arc<dyn EvalKernel>),
             EvalLanguage::Rb|EvalLanguage::Jl=>Ok(self.get_subprocess_kernel(language).await? as Arc<dyn EvalKernel>),
-            EvalLanguage::Js=>Err("JavaScript EvalKernel worker binding is not implemented".into()),
+            EvalLanguage::Js=>Ok(self.get_javascript_kernel().await? as Arc<dyn EvalKernel>),
         }})
     }
 }
