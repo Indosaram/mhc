@@ -10,9 +10,13 @@ url = "=2.5.8"
 serde_json = "=1.0.149"
 regex = "=1.12.3"
 sha2.workspace = true
+maho-ext-api = { path = "../../maho-ext-api" }
 maho-tools = { path = "../../maho-tools" }
 reqwest = { version = "=0.13.2", default-features = false, features = ["rustls"] }
 tokio = { version = "=1.52.3", features = ["time", "net", "io-util", "macros", "rt", "fs", "sync"] }
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

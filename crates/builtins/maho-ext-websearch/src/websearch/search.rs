@@ -116,6 +116,27 @@ mod tests {
     #[test] fn fill_first_uses_lowest_success_count() { let mut state=create_search_routing_state(3); state.success_counts=vec![2,1,0]; assert_eq!(select_order(RoutingStrategy::FillFirst,&providers(),&mut state),[2,0,1]); }
     #[test] fn native_labels_preserve_explicit_suffix() { assert_eq!(provider_entry_label("openai",Some("native-openai-1"),None),"openai/native"); assert_eq!(provider_entry_label("openai",Some("x"),Some("custom/native")),"custom/native"); }
     #[tokio::test] async fn aborted_provider_never_connects() { let signal=AbortSignal::default(); signal.abort(); let mut config=providers().remove(0); config.config.base_url=Some("http://127.0.0.1:1".into()); let request=SearchRequest{query:"q".into(),max_results:1.,allowed_domains:None,blocked_domains:None}; assert!(matches!(perform_provider_search(&config,&request,Some(&signal)).await,Err(ToolError::Aborted))); }
+    #[tokio::test] async fn cancellation_after_http_request_does_not_fallback() {
+        use tokio::io::AsyncReadExt;
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let signal=AbortSignal::default();
+        let mut entries=providers(); entries.truncate(2);
+        for entry in &mut entries { entry.config.base_url=Some(format!("http://{}/search",listener.local_addr().unwrap())); }
+        let config=WebsearchConfig{strategy:RoutingStrategy::Priority,fallback:true,auto:false,providers:entries};
+        let request=SearchRequest{query:"q".into(),max_results:1.,allowed_domains:None,blocked_domains:None};
+        let mut state=create_search_routing_state(2);
+        let server=async {
+            let (mut socket,_)=listener.accept().await.unwrap();
+            let mut bytes=[0;1024]; assert!(socket.read(&mut bytes).await.unwrap()>0);
+            signal.abort();
+            while socket.read(&mut bytes).await.unwrap()>0 {}
+        };
+        let client=async {
+            assert!(matches!(perform_search(&config,&request,Some(&signal),Some(&mut state),None).await,Err(ToolError::Aborted)));
+            assert_eq!(state.success_counts,[0,0]);
+        };
+        tokio::time::timeout(Duration::from_secs(5),async { tokio::join!(server,client); }).await.unwrap();
+    }
     #[tokio::test] async fn real_http_fallback_preserves_attempts_and_success_count() {
         use tokio::io::{AsyncReadExt,AsyncWriteExt};
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(); let address=listener.local_addr().unwrap();

@@ -44,7 +44,7 @@ pub async fn load_websearch_config(cwd:&Path,home:&Path)->Result<ConfigLoadResul
     let paths=[cwd.join(".senpi/websearch.json"),cwd.join(".pi/websearch.json"),home.join("websearch.json"),home.join(".senpi/websearch.json"),home.join(".pi/websearch.json")];
     let mut seen=Vec::new();
     for path in paths { if seen.contains(&path) { continue; } seen.push(path.clone()); if tokio::fs::metadata(&path).await.is_err() { continue; }
-        let text=tokio::fs::read_to_string(&path).await?; let source=path.to_string_lossy().into_owned();
+        let bytes=tokio::fs::read(&path).await?; let text=String::from_utf8_lossy(&bytes); let source=path.to_string_lossy().into_owned();
         let raw:Value=match serde_json::from_str::<Value>(&text) { Ok(value) if value.is_object()=>value,_=>return Ok(ConfigLoadResult::Err{reason:ConfigLoadFailureReason::InvalidConfig,message:format!("Invalid JSON object in {source}"),source:Some(source)}) };
         let Some(config)=config_from_object(&raw) else { return Ok(ConfigLoadResult::Err{reason:ConfigLoadFailureReason::InvalidConfig,message:format!("Invalid provider config in {source}"),source:Some(source)}); };
         return Ok(match validate_websearch_config(&config) { Ok(())=>ConfigLoadResult::Ok{config,source},Err((reason,message))=>ConfigLoadResult::Err{reason,message,source:Some(source)} });
@@ -61,4 +61,33 @@ mod tests {
     #[test] fn empty_domain_lists_still_conflict() { let config=config_from_object(&json!({"provider":"duckduckgo-html","allowedDomains":[],"blockedDomains":[]})).unwrap(); assert_eq!(validate_websearch_config(&config).unwrap_err().0,ConfigLoadFailureReason::InvalidConfig); }
     #[test] fn hosted_search_requires_key() { let config=config_from_object(&json!({"provider":"openai"})).unwrap(); assert_eq!(validate_websearch_config(&config).unwrap_err().0,ConfigLoadFailureReason::MissingApiKey); }
     #[test] fn private_override_rejected_before_missing_key() { let config=config_from_object(&json!({"provider":"exa","baseUrl":"https://localhost"})).unwrap(); assert_eq!(validate_websearch_config(&config).unwrap_err().0,ConfigLoadFailureReason::InvalidConfig); }
+    #[tokio::test] async fn config_read_replaces_invalid_utf8_like_node() {
+        let dir=tempfile::tempdir().unwrap();
+        let cwd=dir.path().join("project"); let home=dir.path().join("home");
+        tokio::fs::create_dir_all(cwd.join(".senpi")).await.unwrap();
+        let mut bytes=b"{\"provider\":\"duckduckgo-html\",\"auto\":false,\"id\":\"".to_vec();
+        bytes.push(0xff); bytes.extend_from_slice(b"\"}");
+        tokio::fs::write(cwd.join(".senpi/websearch.json"),bytes).await.unwrap();
+        let result=load_websearch_config(&cwd,&home).await.unwrap();
+        match result {
+            ConfigLoadResult::Ok{config,..}=>assert_eq!(config.providers[0].config.id.as_deref(),Some("\u{fffd}")),
+            _=>panic!("expected decoded configuration"),
+        }
+    }
+    #[tokio::test] async fn invalid_project_config_does_not_fall_through_to_home() {
+        let dir=tempfile::tempdir().unwrap();
+        let cwd=dir.path().join("project"); let home=dir.path().join("home");
+        tokio::fs::create_dir_all(cwd.join(".senpi")).await.unwrap();
+        tokio::fs::create_dir_all(&home).await.unwrap();
+        tokio::fs::write(cwd.join(".senpi/websearch.json"),b"\xff").await.unwrap();
+        tokio::fs::write(home.join("websearch.json"),b"{\"provider\":\"duckduckgo-html\",\"auto\":false}").await.unwrap();
+        let result=load_websearch_config(&cwd,&home).await.unwrap();
+        match result {
+            ConfigLoadResult::Err{reason,source,..}=>{
+                assert_eq!(reason,ConfigLoadFailureReason::InvalidConfig);
+                assert_eq!(source,Some(cwd.join(".senpi/websearch.json").to_string_lossy().into_owned()));
+            },
+            _=>panic!("expected invalid first configuration"),
+        }
+    }
 }
