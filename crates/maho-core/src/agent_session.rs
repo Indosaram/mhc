@@ -1819,6 +1819,8 @@ impl AgentSession {
         }, controller.clone());
         let _work = self.work_barrier.begin();
         let mut rejection = None;
+        let mut rejection_aborted = false;
+        let mut rejection_reason = None;
         let mut accepted_entry = None;
         let execution = async {
             let before = {
@@ -1844,8 +1846,10 @@ impl AgentSession {
             let (result, from_extension) = match before {
                 maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult { cancel: Some(true), rejection_cause, reason, .. }) => {
                     rejection = Some(rejection_cause.unwrap_or(maho_ext_api::CompactionRejectionCause::CancelledByExtension));
-                    return Err(reason.filter(|reason| !reason.trim().is_empty()).map_or_else(|| "Compaction cancelled".to_owned(),
-                        |reason| format!("Compaction rejected: {}", reason.trim())));
+                    rejection_aborted = true;
+                    rejection_reason = reason.map(|reason| reason.trim().to_owned()).filter(|reason| !reason.is_empty());
+                    return Err(rejection_reason.as_ref().map_or_else(|| describe_compaction_rejection(rejection.expect("cause")).to_owned(),
+                        |reason| format!("Compaction rejected: {reason}")));
                 }
                 maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult { compaction: Some(result), .. }) => (CompactionResult {
                     summary: result.summary, first_kept_entry_id: result.first_kept_entry_id, tokens_before: result.tokens_before as i64,
@@ -1981,9 +1985,13 @@ impl AgentSession {
                 }
             }
             Err(error) => {
-                let error_message = (!signal.aborted()).then(|| format!("Compaction failed: {error}"));
+                let error_message = if let Some(cause) = rejection {
+                    if rejection_aborted && rejection_reason.is_none() { None }
+                    else { Some(rejection_reason.as_ref().map_or_else(|| describe_compaction_rejection(cause).to_owned(),
+                        |reason| format!("Compaction rejected: {reason}"))) }
+                } else { (!signal.aborted()).then(|| format!("Compaction failed: {error}")) };
                 self.emit(AgentSessionEvent::CompactionEnd { reason: compact_reason, request_id: Some(request_id.clone()),
-                    aborted: signal.aborted() || rejection == Some(maho_ext_api::CompactionRejectionCause::CancelledByExtension),
+                    aborted: signal.aborted() || rejection_aborted,
                     result: None, rejection_cause: rejection, error_message: error_message.clone(), accepted: Some(false), will_retry: false });
                 if let Some(rejection_cause) = rejection {
                     if rejection_cause == maho_ext_api::CompactionRejectionCause::ExternalOwner {
@@ -6190,6 +6198,11 @@ mod tests {
     #[tokio::test]
     async fn extension_compaction_rejection_has_no_execution_failure_event() {
         let session = test_session();
+        let terminal = Arc::new(Mutex::new(Vec::new()));
+        let observed = terminal.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if matches!(event, AgentSessionEvent::CompactionEnd { .. }) { lock(&observed).push(event.clone()); }
+        }));
         session.agent.set_model(test_model());
         session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
             ("compaction".to_owned(), serde_json::json!({"keepRecentTokens":1})),
@@ -6216,6 +6229,9 @@ mod tests {
         session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
         assert!(session.compact(None).await.is_err());
         assert_eq!(session.compaction_state().status(), "failed");
+        assert!(matches!(&lock(&terminal)[0], AgentSessionEvent::CompactionEnd {
+            aborted: true, error_message: Some(message), accepted: Some(false), ..
+        } if message == "Compaction rejected: cooldown active"));
         assert!(matches!(session.compaction_state(), crate::compaction::lifecycle::CompactionLifecycleState::Failed(_, _, Some(cause), _)
             if cause == "circuit-breaker"));
         let events = lock(&events);
