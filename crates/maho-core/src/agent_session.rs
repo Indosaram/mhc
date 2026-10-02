@@ -394,6 +394,7 @@ struct AgentSessionState {
     retry_attempt: u32,
     retry_abort_controller: Option<maho_ai::utils::abort::AbortController>,
     user_aborted: bool,
+    abort_source: Option<maho_ext_api::AbortSource>,
     probe_phase: crate::retry_fallback::hint_policy::ProbePhase,
     hint_deadline_ms: Option<f64>,
     cumulative_hinted_wait_ms: f64,
@@ -515,6 +516,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn get_signal(&self) -> Option<maho_ext_api::AbortSignal> { self.session().ok()?.state().extension_event_signal.clone() }
     fn abort(&self, source: Option<maho_ext_api::AbortSource>) { if let Ok(session) = self.session() {
         if source == Some(maho_ext_api::AbortSource::System) {
+            session.state().abort_source = source;
             session.agent.abort(None); session.abort_retry(); session.abort_compaction();
         } else { tokio::spawn(async move { session.abort().await; }); }
     } }
@@ -666,9 +668,31 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         })
     }
     fn get_system_prompt(&self) -> String { self.session().map_or_else(|_| String::new(), |session| session.system_prompt()) }
-    fn get_system_prompt_options(&self) -> maho_ext_api::BuildSystemPromptOptions { maho_ext_api::BuildSystemPromptOptions {
-        cwd: self.session().map_or_else(|_| Default::default(), |session| session.cwd().into()), ..Default::default()
-    } }
+    fn get_system_prompt_options(&self) -> maho_ext_api::BuildSystemPromptOptions {
+        let Ok(session) = self.session() else { return Default::default(); };
+        let skills = session.state().skills.iter().map(|skill| maho_ext_api::Skill {
+            name: skill.name.clone(), description: skill.description.clone(), file_path: skill.file_path.clone(),
+            base_dir: skill.base_dir.clone(), source_info: maho_ext_api::SourceInfo {
+                path: skill.source_info.path.clone(), source: skill.source_info.source.clone(),
+                scope: match skill.source_info.scope {
+                    crate::source_info::SourceScope::User => maho_ext_api::SourceScope::User,
+                    crate::source_info::SourceScope::Project => maho_ext_api::SourceScope::Project,
+                    crate::source_info::SourceScope::Temporary => maho_ext_api::SourceScope::Temporary,
+                    crate::source_info::SourceScope::System => maho_ext_api::SourceScope::System,
+                },
+                origin: match skill.source_info.origin {
+                    crate::source_info::SourceOrigin::Package => maho_ext_api::SourceOrigin::Package,
+                    crate::source_info::SourceOrigin::TopLevel => maho_ext_api::SourceOrigin::TopLevel,
+                }, base_dir: skill.source_info.base_dir.clone(),
+            },
+            disable_model_invocation: skill.disable_model_invocation,
+        }).collect();
+        maho_ext_api::BuildSystemPromptOptions { cwd: session.cwd().into(), tools: session.get_active_tool_names(), skills,
+            context_files: crate::resource_loader::load_project_context_files(&session.cwd(), &session.agent_dir()).into_iter()
+                .map(|file| maho_ext_api::ContextFile { path: file.path, content: file.content }).collect(),
+            ..Default::default()
+        }
+    }
     fn get_loaded_hook_sources(&self) -> maho_ext_api::LoadedHookSources {
         let session = self.session().ok(); let cwd = session.as_ref().map_or_else(std::path::PathBuf::new, |session| session.cwd().into());
         let dir = session.as_ref().map_or_else(std::path::PathBuf::new, |session| session.agent_dir().into());
@@ -1089,6 +1113,7 @@ impl AgentSession {
             retry_attempt: 0,
             retry_abort_controller: None,
             user_aborted: false,
+            abort_source: None,
             probe_phase: crate::retry_fallback::hint_policy::ProbePhase::Idle,
             hint_deadline_ms: None,
             cumulative_hinted_wait_ms: 0.0,
@@ -1196,6 +1221,7 @@ impl AgentSession {
                 AgentEvent::AgentStart => {
                     state.turn_index = 0;
                     state.message_replacements.clear();
+                    state.abort_source = None;
                 }
                 AgentEvent::TurnEnd { message, .. } => {
                     for (original, replacement) in &state.message_replacements {
@@ -1248,10 +1274,15 @@ impl AgentSession {
             self.will_retry(messages.iter().rev().find_map(AgentMessage::as_assistant)).await
         } else { false };
         if will_retry { self.agent.suppress_queued_message_drain(); }
+        let (user_aborted, abort_source) = { let state = self.state(); (state.user_aborted, state.abort_source) };
         let extension_event = match &event {
             AgentEvent::AgentStart => maho_ext_api::ExtensionEvent::AgentStart,
             AgentEvent::AgentEnd { messages } => maho_ext_api::ExtensionEvent::AgentEnd {
-                messages: messages.clone(), aborted: Some(self.state().user_aborted), will_retry: Some(will_retry), abort_source: None,
+                messages: messages.clone(), aborted: Some(user_aborted || abort_source.is_some()),
+                will_retry: Some(will_retry), abort_source: abort_source.or_else(|| {
+                    messages.last().and_then(AgentMessage::as_assistant).filter(|message|
+                        message.abort_source == Some(maho_ai::types::AbortSource::Provider)).map(|_| maho_ext_api::AbortSource::Provider)
+                }),
             },
             AgentEvent::TurnStart => maho_ext_api::ExtensionEvent::TurnStart {
                 turn_index: self.state().turn_index, timestamp: maho_ai::utils::diagnostics::now_ms() as u64,
@@ -1389,7 +1420,7 @@ impl AgentSession {
         })));
         let _work = self.work_barrier.begin();
         self.state().user_aborted = false;
-        let Some((text, images)) = self.run_input_handlers(text, options.images, options.source, None).await? else {
+        let Some((text, images, input_id)) = self.run_input_handlers(text, options.images, options.source, None).await? else {
             return Ok(PromptDisposition::Handled);
         };
         let text = self.expand_input(&text, options.expand_prompt_templates.unwrap_or(true))?;
@@ -1428,7 +1459,8 @@ impl AgentSession {
             let mut runner = self.extension_runner.lock().await;
             match runner.as_mut() { Some(runner) => runner.emit_before_agent_start(maho_ext_api::BeforeAgentStartEvent {
                 prompt: text.clone(), images: images.clone(), system_prompt: base_system_prompt,
-                system_prompt_options: maho_ext_api::BuildSystemPromptOptions { cwd: self.cwd().into(), ..Default::default() },
+                system_prompt_options: maho_ext_api::ExtensionContextActions::get_system_prompt_options(
+                    &SessionExtensionActions(Arc::downgrade(&self.inner))),
             }).await.map_err(|error| error.to_string())?, None => None }
         };
         if let Some(before) = before {
@@ -1437,6 +1469,9 @@ impl AgentSession {
                 &SessionExtensionActions(Arc::downgrade(&self.inner)), message, Default::default(),
             ).map_err(|error| error.to_string())?; }
         } else { self.agent.set_system_prompt(self.state().base_system_prompt.clone()); }
+        self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
+            input_id, disposition: maho_ext_api::InputDisposition::Started,
+        }).await;
         self.agent.prompt(maho_agent::agent::AgentPromptInput::Message(make_user_message(&text, images))).await;
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
@@ -1450,17 +1485,23 @@ impl AgentSession {
     async fn run_input_handlers(
         &self, text: &str, images: Option<Vec<ImageContent>>, source: Option<InputSource>,
         streaming_behavior: Option<StreamingBehavior>,
-    ) -> Result<Option<(String, Option<Vec<ImageContent>>)>, String> {
+    ) -> Result<Option<(String, Option<Vec<ImageContent>>, String)>, String> {
+        let input_id = format!("{}:{}", self.session_id(), self.reserve_queued_input_order());
         let mut runner = self.extension_runner.lock().await;
-        let Some(runner) = runner.as_mut() else { return Ok(Some((text.to_owned(), images))); };
+        let Some(runner) = runner.as_mut() else { return Ok(Some((text.to_owned(), images, input_id))); };
         let result = runner.emit_input(maho_ext_api::InputEvent {
-            input_id: format!("{}:{}", self.session_id(), self.reserve_queued_input_order()),
+            input_id: input_id.clone(),
             text: text.to_owned(), images: images.clone(), source: source.unwrap_or(InputSource::Interactive), streaming_behavior,
         }).await.map_err(|error| error.to_string())?;
         match result {
-            maho_ext_api::InputEventResult::Continue => Ok(Some((text.to_owned(), images))),
-            maho_ext_api::InputEventResult::Transform { text, images } => Ok(Some((text, images))),
-            maho_ext_api::InputEventResult::Handled => Ok(None),
+            maho_ext_api::InputEventResult::Continue => Ok(Some((text.to_owned(), images, input_id))),
+            maho_ext_api::InputEventResult::Transform { text, images } => Ok(Some((text, images, input_id))),
+            maho_ext_api::InputEventResult::Handled => {
+                runner.emit(maho_ext_api::ExtensionEvent::InputDisposition {
+                    input_id, disposition: maho_ext_api::InputDisposition::Handled,
+                }).await.map_err(|error| error.to_string())?;
+                Ok(None)
+            }
         }
     }
 
@@ -1474,7 +1515,7 @@ impl AgentSession {
                 return Err(format!("Extension command \"/{name}\" cannot be queued. Use prompt() or execute the command when not streaming."));
             }
         }
-        let Some((text, images)) = self.run_input_handlers(text, images, options.source, self.is_streaming().then_some(mode)).await? else {
+        let Some((text, images, input_id)) = self.run_input_handlers(text, images, options.source, self.is_streaming().then_some(mode)).await? else {
             return Ok(());
         };
         let text = self.expand_input(&text, true)?;
@@ -1491,6 +1532,9 @@ impl AgentSession {
             }
         }
         self.emit_queue_update();
+        self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
+            input_id, disposition: maho_ext_api::InputDisposition::Queued,
+        }).await;
         Ok(())
     }
 
@@ -1506,6 +1550,7 @@ impl AgentSession {
         self.user_abort_generation.fetch_add(1, Ordering::SeqCst);
         lock(&self.settled_delivery).cancel();
         self.state().user_aborted = true;
+        self.state().abort_source = Some(maho_ext_api::AbortSource::User);
         if let Some(signal) = self.state().extension_event_signal.as_ref() { signal.abort(); }
         self.abort_retry();
         self.abort_compaction();
@@ -1612,9 +1657,10 @@ impl AgentSession {
                 _ => {
                     let model = self.model();
                     let auth = self.get_summarization_request_auth(&model).await?;
-                    let messages = preparation.messages_to_summarize.iter().chain(&preparation.turn_prefix_messages).cloned().collect::<Vec<_>>();
+                    let split = preparation.is_split_turn && !preparation.turn_prefix_messages.is_empty();
+                    let messages = &preparation.messages_to_summarize;
                     let mut prompt = format!("<conversation>\n{}\n</conversation>\n\n",
-                        crate::compaction::utils::serialize_conversation(&messages));
+                        crate::compaction::utils::serialize_conversation(messages));
                     if let Some(previous) = &preparation.previous_summary {
                         prompt.push_str(&format!("<previous-summary>\n{previous}\n</previous-summary>\n\n"));
                         prompt.push_str(&crate::compaction::compaction::update_summarization_prompt());
@@ -1625,9 +1671,12 @@ impl AgentSession {
                     let AgentMessage::Llm(user) = make_user_message(&prompt, None) else { return Err("Invalid summary prompt".to_owned()); };
                     let context = maho_ai::types::Context { system_prompt: Some(crate::compaction::utils::SUMMARIZATION_SYSTEM_PROMPT.to_owned()),
                         messages: vec![user], tools: None };
+                    let mut summary = "No prior history.".to_owned();
+                    let mut summary_usage = None;
+                    if !split || !messages.is_empty() {
                     let response = self.model_runtime().complete(&auth.model, &context, Some(maho_ai::types::StreamOptions {
-                        request: maho_ai::types::ProviderRequestOptions { signal: Some(signal.clone()), api_key: auth.api_key,
-                            headers: auth.headers.map(|headers| headers.into_iter().map(|(key, value)| (key, Some(value))).collect()), env: auth.env,
+                        request: maho_ai::types::ProviderRequestOptions { signal: Some(signal.clone()), api_key: auth.api_key.clone(),
+                            headers: auth.headers.clone().map(|headers| headers.into_iter().map(|(key, value)| (key, Some(value))).collect()), env: auth.env.clone(),
                             ..Default::default() },
                         max_tokens: Some(((resolved.reserve_tokens as f64 * 0.8).floor() as u64).min(
                             if auth.model.max_tokens > 0 { auth.model.max_tokens } else { u64::MAX })),
@@ -1637,13 +1686,38 @@ impl AgentSession {
                     if response.content.iter().any(|block| matches!(block, maho_ai::types::ContentBlock::ToolCall(_))) {
                         return Err("Summarization attempted to call a tool".to_owned());
                     }
-                    let mut summary = maho_ai::utils::text::content_text(&response.content, "");
+                    summary = maho_ai::utils::text::content_text(&response.content, "");
                     if summary.trim().is_empty() { return Err("Compaction produced an empty summary".to_owned()); }
+                    summary_usage = Some(response.usage);
+                    }
+                    if split {
+                        let prompt = format!("<conversation>\n{}\n</conversation>\n\nThis is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.\n\nSummarize the prefix to provide context for the retained suffix:\n\n## Original Request\n[What did the user ask for in this turn?]\n\n## Early Progress\n- [Key decisions and work done in the prefix]\n\n## Context for Suffix\n- [Information needed to understand the retained recent work]\n\nBe concise. Focus on what's needed to understand the kept suffix.",
+                            crate::compaction::utils::serialize_conversation(&preparation.turn_prefix_messages));
+                        let AgentMessage::Llm(user) = make_user_message(&prompt, None) else { return Err("Invalid summary prompt".to_owned()); };
+                        let response = self.model_runtime().complete(&auth.model, &maho_ai::types::Context {
+                            system_prompt: Some(crate::compaction::utils::SUMMARIZATION_SYSTEM_PROMPT.to_owned()), messages: vec![user], tools: None,
+                        }, Some(maho_ai::types::StreamOptions {
+                            request: maho_ai::types::ProviderRequestOptions { signal: Some(signal.clone()), api_key: auth.api_key,
+                                headers: auth.headers.map(|headers| headers.into_iter().map(|(key,value)| (key,Some(value))).collect()), env: auth.env,
+                                ..Default::default() },
+                            max_tokens: Some(((resolved.reserve_tokens as f64 * 0.5).floor() as u64).min(
+                                if auth.model.max_tokens > 0 { auth.model.max_tokens } else { u64::MAX })),
+                            session_id: Some(self.session_id()), ..Default::default()
+                        })).await.map_err(|error| error.to_string())?;
+                        if let Some(error) = crate::compaction::compaction::get_summarization_failure(&response, "Turn prefix summarization") { return Err(error); }
+                        if response.content.iter().any(|block| matches!(block, maho_ai::types::ContentBlock::ToolCall(_))) {
+                            return Err("Turn prefix summarization attempted to call a tool".to_owned());
+                        }
+                        summary.push_str("\n\n---\n\n**Turn Context (split turn):**\n\n");
+                        summary.push_str(&maho_ai::utils::text::content_text(&response.content, ""));
+                        summary_usage = Some(summary_usage.map_or_else(|| response.usage, |usage|
+                            crate::compaction::compaction::combine_usage(&usage, &response.usage)));
+                    }
                     let (read_files, modified_files) = crate::compaction::utils::compute_file_lists(&preparation.file_ops);
                     summary.push_str(&crate::compaction::utils::format_file_operations(&read_files, &modified_files));
                     (CompactionResult { summary, first_kept_entry_id: preparation.first_kept_entry_id.clone(),
                         tokens_before: preparation.tokens_before, details: Some(serde_json::json!({"readFiles":read_files,"modifiedFiles":modified_files})),
-                        usage: Some(response.usage), estimated_tokens_after: None }, false)
+                        usage: summary_usage, estimated_tokens_after: None }, false)
                 }
             };
             signal.throw_if_aborted().map_err(|error| error.to_string())?;
@@ -1979,7 +2053,10 @@ impl AgentSession {
                 }));
                 let remaining = (schedule.deadline_ms - session.fallback_now()).max(0.0);
                 let result = if ticket.index == 1 {
-                    tokio::time::timeout(std::time::Duration::from_secs_f64(remaining / 1000.0), request.result()).await.ok().and_then(Result::ok)
+                    match tokio::time::timeout(std::time::Duration::from_secs_f64(remaining / 1000.0), request.result()).await {
+                        Ok(result) => result.ok(),
+                        Err(_) => continue,
+                    }
                 } else { request.result().await.ok() };
                 let ok = result.is_some_and(|message| !matches!(message.stop_reason, StopReason::Error | StopReason::Aborted));
                 let events = lock(&session.probe_scheduler).finish_probe(&ticket, ok);
@@ -4863,7 +4940,10 @@ mod tests {
     async fn manual_compaction_runs_faux_summary_and_records_file_details() {
         use maho_ai::providers::faux::{faux_provider, RegisterFauxProviderOptions};
         let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
-        provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("digest", Default::default()).into()]);
+        provider.set_responses(vec![
+            maho_ai::providers::faux::faux_assistant_message("digest", Default::default()).into(),
+            maho_ai::providers::faux::faux_assistant_message("prefix digest", Default::default()).into(),
+        ]);
         let session = test_session_with_stream_function(false);
         session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
         let mut runtime = session.model_runtime().clone();
@@ -4877,13 +4957,66 @@ mod tests {
         ])));
         session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"old task","timestamp":0})));
         session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"recent task","timestamp":1})));
+        session.with_session_manager_mut(|manager| manager.append_message(serde_json::to_value(
+            maho_ai::providers::faux::faux_assistant_message("recent answer", Default::default())).expect("assistant")));
         session.rebuild_session_context().expect("context");
         let result = session.compact(None).await.expect("compaction");
-        assert_eq!(result.summary, "digest");
+        assert_eq!(result.summary, "digest\n\n---\n\n**Turn Context (split turn):**\n\nprefix digest");
         assert!(result.details.expect("file details")["readFiles"].is_array());
         assert!(result.usage.is_some());
         assert!(!session.is_compacting());
         assert_eq!(session.with_session_manager(|manager| manager.entries().last().expect("entry")["type"].clone()), "compaction");
+    }
+
+    #[tokio::test]
+    async fn auto_retry_creates_fresh_invoke_recovery_wrapper() {
+        use maho_ai::types::{AssistantMessageEvent as Event, DoneReason, ErrorReason};
+        let session = retry_session(Vec::new(), 2);
+        let executed = Arc::new(Mutex::new(Vec::new()));
+        let captured = executed.clone();
+        let mut tool = test_tool("Echo");
+        tool.tool.parameters = serde_json::json!({"type":"object","properties":{"value":{"type":"string"}},"required":["value"]});
+        tool.execute = Arc::new(move |_, arguments, _, _| {
+            lock(&captured).push(arguments["value"].as_str().expect("argument").to_owned());
+            Box::pin(async { AgentToolResult::text("echoed") })
+        });
+        session.agent.set_tools(vec![tool.clone()]);
+        let calls = Arc::new(AtomicU64::new(0));
+        let stream_calls = calls.clone();
+        session.agent.set_stream_function(Arc::new(move |_, _, _| {
+            let call = stream_calls.fetch_add(1, Ordering::SeqCst);
+            let text = match call {
+                0 => "<invoke na", 1 => "<invoke name=\"Ec",
+                2 => "<invoke name=\"Echo\"><parameter name=\"value\">second-attempt</parameter></invoke>",
+                _ => "Final",
+            };
+            let failed = call < 2;
+            let mut message = maho_ai::providers::faux::faux_assistant_message(text,
+                maho_ai::providers::faux::FauxAssistantMessageOptions {
+                    stop_reason: Some(if failed { StopReason::Error } else { StopReason::Stop }),
+                    error_message: failed.then(|| "overloaded_error".to_owned()), ..Default::default()
+                });
+            let inner = maho_ai::utils::event_stream::create_assistant_message_event_stream();
+            let stream = maho_ai::tool_call_middleware::recovery_stream_wrapper::wrap_stream_with_invoke_recovery(
+                inner.clone(), vec![tool.tool.clone()], Default::default());
+            let mut partial = message.clone();
+            partial.content.clear();
+            inner.push(Event::Start { partial });
+            inner.push(Event::TextStart { content_index: 0, partial: message.clone() });
+            inner.push(Event::TextDelta { content_index: 0, delta: text.to_owned(), partial: message.clone() });
+            if failed {
+                inner.push(Event::Error { reason: ErrorReason::Error, error: message });
+            } else {
+                inner.push(Event::TextEnd { content_index: 0, content: text.to_owned(), partial: message.clone() });
+                message.stop_reason = StopReason::Stop;
+                inner.push(Event::Done { reason: DoneReason::Stop, message });
+            }
+            stream
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("Test", Default::default()))
+            .await.expect("bounded prompt").expect("prompt");
+        assert_eq!(*lock(&executed), vec!["second-attempt"]);
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
     }
 
     #[tokio::test]
