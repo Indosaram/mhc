@@ -395,6 +395,7 @@ struct AgentSessionState {
     retry_abort_controller: Option<maho_ai::utils::abort::AbortController>,
     user_aborted: bool,
     abort_source: Option<maho_ext_api::AbortSource>,
+    abort_provenance: crate::agent_abort_provenance::AgentAbortProvenance,
     probe_phase: crate::retry_fallback::hint_policy::ProbePhase,
     hint_deadline_ms: Option<f64>,
     cumulative_hinted_wait_ms: f64,
@@ -517,7 +518,10 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn abort(&self, source: Option<maho_ext_api::AbortSource>) { if let Ok(session) = self.session() {
         if source == Some(maho_ext_api::AbortSource::System) {
             session.state().abort_source = source;
-            session.agent.abort(None); session.abort_retry(); session.abort_compaction();
+            let streaming = session.is_streaming();
+            let joined = session.state().abort_provenance.join(maho_ext_api::AbortSource::System, streaming);
+            if joined.abort_current_agent { session.agent.abort(None); }
+            session.abort_retry(); session.abort_compaction();
         } else { tokio::spawn(async move { session.abort().await; }); }
     } }
     fn has_pending_messages(&self) -> bool { self.session().is_ok_and(|session| session.pending_message_count() > 0) }
@@ -1110,6 +1114,7 @@ impl AgentSession {
             retry_abort_controller: None,
             user_aborted: false,
             abort_source: None,
+            abort_provenance: Default::default(),
             probe_phase: crate::retry_fallback::hint_policy::ProbePhase::Idle,
             hint_deadline_ms: None,
             cumulative_hinted_wait_ms: 0.0,
@@ -1218,6 +1223,7 @@ impl AgentSession {
                     state.turn_index = 0;
                     state.message_replacements.clear();
                     state.abort_source = None;
+                    state.abort_provenance = Default::default();
                 }
                 AgentEvent::TurnEnd { message, .. } => {
                     for (original, replacement) in &state.message_replacements {
@@ -1270,15 +1276,16 @@ impl AgentSession {
             self.will_retry(messages.iter().rev().find_map(AgentMessage::as_assistant)).await
         } else { false };
         if will_retry { self.agent.suppress_queued_message_drain(); }
-        let (user_aborted, abort_source) = { let state = self.state(); (state.user_aborted, state.abort_source) };
+        let end_boundary = if let AgentEvent::AgentEnd { messages } = &event {
+            let aborted = messages.iter().rev().find_map(AgentMessage::as_assistant)
+                .is_some_and(|message| message.stop_reason == StopReason::Aborted);
+            Some(self.state().abort_provenance.begin_agent_end(messages.clone(), will_retry, aborted))
+        } else { None };
         let extension_event = match &event {
             AgentEvent::AgentStart => maho_ext_api::ExtensionEvent::AgentStart,
             AgentEvent::AgentEnd { messages } => maho_ext_api::ExtensionEvent::AgentEnd {
-                messages: messages.clone(), aborted: Some(user_aborted || abort_source.is_some()),
-                will_retry: Some(will_retry), abort_source: abort_source.or_else(|| {
-                    messages.last().and_then(AgentMessage::as_assistant).filter(|message|
-                        message.abort_source == Some(maho_ai::types::AbortSource::Provider)).map(|_| maho_ext_api::AbortSource::Provider)
-                }),
+                messages: messages.clone(), aborted: end_boundary.as_ref().map(|boundary| boundary.aborted),
+                will_retry: Some(will_retry), abort_source: end_boundary.as_ref().and_then(|boundary| boundary.abort_source),
             },
             AgentEvent::TurnStart => maho_ext_api::ExtensionEvent::TurnStart {
                 turn_index: self.state().turn_index, timestamp: maho_ai::utils::diagnostics::now_ms() as u64,
@@ -1326,10 +1333,15 @@ impl AgentSession {
         } else {
             self.dispatch_extension_event(extension_event).await;
         }
+        if let Some(boundary) = &end_boundary {
+            self.state().abort_provenance.end_agent_end(boundary);
+            self.emit_late_user_abort().await;
+        }
         if matches!(event, AgentEvent::TurnEnd { .. }) {
             self.state().turn_index += 1;
         }
         self.emit(AgentSessionEvent::Agent(event.clone()));
+        if end_boundary.is_some() { self.emit_late_user_abort().await; }
         if let AgentEvent::MessageEnd { message } = &event {
             if let AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(custom)) = message {
                 match serde_json::to_value(&custom.content) {
@@ -1550,6 +1562,9 @@ impl AgentSession {
         if let Some(signal) = self.state().extension_event_signal.as_ref() { signal.abort(); }
         self.abort_retry();
         self.abort_compaction();
+        let streaming = self.is_streaming();
+        let joined = self.state().abort_provenance.join(maho_ext_api::AbortSource::User, streaming);
+        if !joined.abort_current_agent && joined.user_owned { return; }
         let pending = !self.is_streaming() && (self.pending_message_count() > 0 || self.state().had_cleared_queued_messages);
         self.state().had_cleared_queued_messages = false;
         self.agent.suppress_queued_message_drain();
@@ -3410,6 +3425,8 @@ impl AgentSession {
         lock(&self.settled_delivery).begin(generation);
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::AgentSettled).await;
         self.emit(AgentSessionEvent::AgentSettled);
+        self.emit_late_user_abort().await;
+        self.state().abort_provenance.close_agent_end_boundary();
         let batch = lock(&self.settled_delivery).finish(self.user_abort_generation.load(Ordering::SeqCst));
         for action in batch.actions { action(); }
         let session = self.clone();
@@ -3422,6 +3439,14 @@ impl AgentSession {
                 && !session.work_barrier.has_active_work()
             { session.emit(AgentSessionEvent::AgentIdle); }
         });
+    }
+
+    async fn emit_late_user_abort(&self) {
+        let joined = self.state().abort_provenance.take_late_user_join();
+        if joined {
+            self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionAbort).await;
+            self.emit(AgentSessionEvent::SessionAbort);
+        }
     }
 
     pub async fn bind_extensions(&self, bindings: ExtensionBindings) {
@@ -5282,6 +5307,23 @@ mod tests {
                 aborted: false, result: None, will_retry: false, accepted: Some(false), .. } if id == &start)));
         assert!(!session.is_compacting());
         assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn user_abort_joins_settling_boundary_and_is_delivered_once() {
+        let session = test_session_with_stream_function(false);
+        let boundary = session.state().abort_provenance.begin_agent_end(Vec::new(), false, false);
+        session.state().abort_provenance.end_agent_end(&boundary);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| lock(&captured).push(event.clone())));
+        tokio::time::timeout(std::time::Duration::from_secs(2), session.abort()).await.unwrap();
+        assert!(lock(&events).is_empty());
+        session.emit_late_user_abort().await;
+        session.emit_late_user_abort().await;
+        assert_eq!(lock(&events).iter().filter(|event| matches!(event, AgentSessionEvent::SessionAbort)).count(), 1);
+        session.state().abort_provenance.close_agent_end_boundary();
+        assert!(!session.state().abort_provenance.has_open_agent_end_boundary());
     }
 
     #[tokio::test]
