@@ -1928,18 +1928,22 @@ impl AgentSession {
             0..=16_000 => 0.45, 16_001..=32_000 => 0.5, 32_001..=64_000 => 0.55,
             64_001..=128_000 => 0.6, 128_001..=512_000 => 0.7, _ => 0.8,
         };
-        let prompt_tokens = u64::try_from(self.system_prompt().len().div_ceil(4)).map_err(|error| error.to_string())?;
-        let tools = self.agent.state().tools().iter().map(|tool| serde_json::to_string(&tool.tool)
-            .map(|text| u64::try_from(text.len().div_ceil(4)).unwrap_or(u64::MAX))).collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())?.into_iter().sum::<u64>();
-        let (margin, profile) = if model.provider == "anthropic" || model.id.contains("claude") { (16_384, "anthropic") }
-            else if model.provider == "openai" || ["gpt-5", "o1", "o3", "o4"].iter().any(|family| model.id.contains(family)) { (16_384, "openai-reasoning") }
-            else if model.provider == "google" || model.id.contains("gemini") { (12_288, "google") }
-            else if model.provider == "deepseek" || model.id.contains("deepseek") { (12_288, "deepseek") }
+        let mut context = maho_ai::types::Context { system_prompt: Some(self.system_prompt()), messages: Vec::new(), tools: None };
+        let prompt_tokens = maho_ai::utils::estimate::estimate_context_tokens(&context).tokens;
+        context.tools = Some(self.agent.state().tools().iter().map(|tool| tool.tool.clone()).collect());
+        let tools = maho_ai::utils::estimate::estimate_context_tokens(&context).tokens.saturating_sub(prompt_tokens);
+        let family = |marker: &str| regex::Regex::new(&format!("(?:^|[/.:_-]){}(?:$|[^a-z0-9])", regex::escape(marker)))
+            .expect("escaped family marker").is_match(&model.id.to_lowercase());
+        let (margin, profile) = if model.provider == "anthropic" || family("claude") { (16_384, "anthropic") }
+            else if model.provider == "openai" || ["gpt-5", "o1", "o3", "o4"].iter().any(|marker| family(marker)) { (16_384, "openai-reasoning") }
+            else if model.provider == "google" || family("gemini") { (12_288, "google") }
+            else if model.provider == "deepseek" || family("deepseek") { (12_288, "deepseek") }
             else { (8_192, "default") };
         let reserve = if settings.enabled {
             let configured = u64::try_from(settings.reserve_tokens).map_err(|error| error.to_string())?;
-            if settings.reserve_scaling_enabled { configured.max((window / 25).min(49_152)) } else { configured }
+            if settings.reserve_scaling_enabled {
+                crate::compaction::compaction::resolve_reserve_tokens(window as f64, configured as f64) as u64
+            } else { configured }
         } else { 0 };
         let lead = if speculation && settings.enabled && settings.speculative_enabled {
             settings.speculative_lead_tokens.unwrap_or((window as f64 * ratio * 0.125).floor()).clamp(8_192.0, 32_768.0) as u64
@@ -2984,7 +2988,11 @@ impl AgentSession {
         *lock(&self.wake_source_subscription) = Some(runner.events.on("wake_source_state", Arc::new(move |data| {
             if let Some(inner) = weak.upgrade() { lock(&inner.state).wake_sources.observe(data); }
         })));
-        if let Ok(context) = runner.create_context() {
+        if let Ok(mut context) = runner.create_context() {
+            context.cwd = self.cwd().into();
+            context.agent_dir = self.agent_dir().into();
+            context.model = Some(self.model());
+            context.session_manager = Arc::new(SessionContextManager::new(self));
             runner.bind_core(Arc::new(SessionExtensionActions(Arc::downgrade(&self.inner))), context);
         }
         if let Err(error) = runner.bind_session_actions(Arc::new(SessionExtensionActions(Arc::downgrade(&self.inner)))) {
@@ -2998,10 +3006,14 @@ impl AgentSession {
         }
         *self.extension_runner.lock().await = Some(runner);
         let weak = Arc::downgrade(&self.inner);
-        self.agent.set_transform_context(Some(Arc::new(move |messages, _signal| {
+        self.agent.set_transform_context(Some(Arc::new(move |messages, signal| {
             let weak = weak.clone(); Box::pin(async move {
                 let Some(inner) = weak.upgrade() else { return messages; };
                 let session = AgentSession { inner };
+                let extension_signal = maho_ext_api::AbortSignal::default();
+                if signal.as_ref().is_some_and(maho_ai::utils::abort::AbortSignal::aborted) { extension_signal.abort(); }
+                session.state().extension_event_signal = Some(extension_signal.clone());
+                let _bridge = signal.map(|signal| AbortSignalBridge(tokio::spawn(async move { signal.cancelled().await; extension_signal.abort(); })));
                 let mut runner = session.extension_runner.lock().await;
                 match runner.as_mut() {
                     Some(runner) => match runner.emit_context(&messages, None).await {
