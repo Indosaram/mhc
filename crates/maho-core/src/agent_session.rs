@@ -976,13 +976,9 @@ impl crate::retry_fallback::controller::RetryFallbackDeps for SessionFallbackDep
         Box::pin(async move {
             let inner = self.0.upgrade().ok_or("Session disposed")?;
             let session = AgentSession { inner };
-            let previous = session.model();
-            session.agent.set_model(model.clone());
-            session.set_session_thinking_level(thinking);
-            session.with_session_manager_mut(|manager| manager.append_model_change(
-                &model.provider, &model.id, Some(if revert { "fallback-revert" } else { "fallback" }),
-                Some((&previous.provider, &previous.id)),
-            ));
+            session.switch_model_with_thinking(model, false, if revert {
+                maho_ext_api::ModelSelectSource::FallbackRevert
+            } else { maho_ext_api::ModelSelectSource::Fallback }, false, Some(thinking)).await?;
             Ok(())
         })
     }
@@ -2154,8 +2150,64 @@ impl AgentSession {
         self.set_model_internal(model, false, maho_ext_api::ModelSelectSource::Set, true).await
     }
 
+    fn reduce_for_switch_target(&self, model: &Model, live: u64) -> Result<u64, String> {
+        let entries = self.with_session_manager(|manager| manager.branch(None));
+        let measured = self.with_session_manager(|manager| manager.build_context(manager.leaf_id())).messages.iter()
+            .map(crate::compaction::compaction::estimate_tokens).sum();
+        let (budget, repairable) = self.model_budget(model, measured, false)?;
+        if budget.shortfall_tokens == 0 || !repairable { return Ok(live); }
+        let overhead = budget.required_tokens.saturating_sub(measured);
+        let previous = entries.iter().rposition(|entry| entry["type"] == "compaction");
+        let start = previous.map_or(0, |index| entries.iter().position(|entry| entry["id"] == entries[index]["firstKeptEntryId"])
+            .unwrap_or(index + 1));
+        let mut summary = "[Resume recovery checkpoint]\nThe restored conversation was larger than this model's context window, so older context was reduced without any provider request.\nThe complete transcript is still recorded in the session file. Continue from the retained messages and treat omitted details as unknown.".to_owned();
+        if let Some(carried) = previous.and_then(|index| entries[index]["summary"].as_str()).map(str::trim).filter(|text| !text.is_empty()) {
+            let note = "\n[Earlier checkpoint truncated]";
+            let carried = if carried.encode_utf16().count() <= 8_000 { carried.to_owned() } else {
+                let prefix: Vec<_> = carried.encode_utf16().take(8_000 - note.len()).collect();
+                format!("{}{note}", String::from_utf16_lossy(&prefix))
+            };
+            summary.push_str(&format!("\n\nEarlier checkpoint:\n{carried}"));
+        }
+        let mut target = model.context_window.saturating_sub(overhead);
+        let mut last_cut = None;
+        while target >= 1_024 {
+            let cut = crate::compaction::compaction::find_cut_point(&entries, start, entries.len(), target as i64).first_kept_entry_index;
+            if last_cut != Some(cut) {
+                last_cut = Some(cut);
+                if let Some(id) = entries.get(cut).and_then(|entry| entry["id"].as_str()) {
+                    let mut preview = entries.clone();
+                    preview.push(serde_json::json!({"type":"compaction","id":"__senpi_resume_slice_preview__",
+                        "parentId":entries.last().map(|entry| &entry["id"]),"timestamp":"1970-01-01T00:00:00.000Z",
+                        "summary":summary,"firstKeptEntryId":id,"tokensBefore":measured,"fromHook":false}));
+                    let after: u64 = crate::session_manager::build_session_context(&preview, Some("__senpi_resume_slice_preview__"))
+                        .messages.iter().map(crate::compaction::compaction::estimate_tokens).sum();
+                    if after.saturating_add(overhead) <= model.context_window {
+                        self.with_session_manager_mut(|manager| manager.append_compaction(&summary, id, measured as i64,
+                            Some(serde_json::json!({"schema":"senpi.compaction.resume-slice.v1","origin":"resume-admission"})), None, None));
+                        let context = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+                        self.agent.set_messages(context.messages.into_iter().map(session_message_from_value)
+                            .collect::<Result<_, _>>().map_err(|error| error.to_string())?);
+                        self.state().message_revision += 1;
+                        self.emit(AgentSessionEvent::ResumeContextReduced { tokens_before: measured, tokens_after: after,
+                            dropped_entries: cut.saturating_sub(start), notice: format!("Restored context of {measured} tokens exceeded this model's window, so older context was reduced to {after} tokens before the first prompt. The full transcript is preserved in the session file.") });
+                        return Ok(after);
+                    }
+                }
+            }
+            target /= 2;
+        }
+        Ok(live)
+    }
+
     async fn set_model_internal(&self, model: Model, persist_default: bool, source: maho_ext_api::ModelSelectSource,
         allow_deferral: bool) -> Result<Option<SystemPromptChangeEvent>, String>
+    {
+        self.switch_model_with_thinking(model, persist_default, source, allow_deferral, None).await
+    }
+
+    async fn switch_model_with_thinking(&self, model: Model, persist_default: bool, source: maho_ext_api::ModelSelectSource,
+        allow_deferral: bool, thinking: Option<ModelThinkingLevel>) -> Result<Option<SystemPromptChangeEvent>, String>
     {
         let previous = self.model();
         let (current_budget, _) = self.model_budget(&previous, 0, false)?;
@@ -2192,7 +2244,7 @@ impl AgentSession {
         let old_thinking = self.thinking_level();
         let old_tier = self.service_tier();
         self.agent.set_model(model.clone());
-        self.agent.set_thinking_level(self.get_thinking_for_model_switch(&model, None));
+        self.agent.set_thinking_level(self.get_thinking_for_model_switch(&model, thinking));
         let result = {
             let mut runner = self.extension_runner.lock().await;
             match runner.as_mut() {
@@ -2221,7 +2273,10 @@ impl AgentSession {
                     self.emit(AgentSessionEvent::ModelChangePending { model, budget: post_hook_budget, notice });
                     return Ok(None);
                 }
-                let admission = self.assert_model_usable(&model, live);
+                let admitted_live = if matches!(source, maho_ext_api::ModelSelectSource::Fallback | maho_ext_api::ModelSelectSource::FallbackRevert) {
+                    self.reduce_for_switch_target(&model, live)?
+                } else { live };
+                let admission = self.assert_model_usable(&model, admitted_live);
                 if let Err(error) = admission {
                     self.agent.set_model(previous); self.agent.set_system_prompt(old_prompt); self.agent.set_thinking_level(old_thinking);
                     return Err(error);
@@ -2236,7 +2291,13 @@ impl AgentSession {
                 return Err(error);
             }
         };
-        self.with_session_manager_mut(|manager| manager.append_model_change(&model.provider, &model.id, None, None));
+        let reason = match source {
+            maho_ext_api::ModelSelectSource::Fallback => Some("fallback"),
+            maho_ext_api::ModelSelectSource::FallbackRevert => Some("fallback-revert"),
+            _ => None,
+        };
+        self.with_session_manager_mut(|manager| manager.append_model_change(&model.provider, &model.id, reason,
+            reason.map(|_| (previous.provider.as_str(), previous.id.as_str()))));
         if persist_default {
             self.with_settings_manager_mut(|manager| manager.set(crate::settings_manager::SettingsScope::Global,
                 &Map::from_iter([("defaultProvider".to_owned(), Value::String(model.provider.clone())), ("defaultModel".to_owned(), Value::String(model.id.clone()))])))?;
@@ -5174,6 +5235,33 @@ mod tests {
         assert_eq!(session.model().id, "second");
         assert_eq!(session.with_session_manager(|manager| manager.entries()[0]["type"].clone()), "model_change");
         assert!(session.with_settings_manager(|manager| manager.get_string("defaultModel")).is_none());
+    }
+
+    #[tokio::test]
+    async fn fallback_switch_reduces_context_without_losing_recorded_transcript() {
+        let session = test_session_with_stream_function(false);
+        let mut primary = test_model();
+        primary.context_window = 1_000_000;
+        session.agent.set_model(primary);
+        for _ in 0..20 {
+            session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({
+                "role":"user","content":[{"type":"text","text":"x".repeat(40_000)}],"timestamp":0
+            })));
+        }
+        session.rebuild_session_context().unwrap();
+        let mut target = test_model();
+        target.id = "fallback-small".to_owned();
+        target.context_window = 128_000;
+        let mut deps = SessionFallbackDeps(Arc::downgrade(&session.inner));
+        crate::retry_fallback::controller::RetryFallbackDeps::switch_model(&mut deps, target.clone(), ModelThinkingLevel::Off, false).await.unwrap();
+        assert_eq!(session.model().id, target.id);
+        let entries = session.with_session_manager(|manager| manager.entries());
+        assert_eq!(entries.iter().filter(|entry| entry["type"] == "message").count(), 20);
+        assert!(entries.iter().any(|entry| entry["details"]["schema"] == "senpi.compaction.resume-slice.v1"));
+        assert!(entries.iter().any(|entry| entry["type"] == "model_change" && entry["reason"] == "fallback"));
+        let live = session.with_session_manager(|manager| manager.build_context(manager.leaf_id())).messages.iter()
+            .map(crate::compaction::compaction::estimate_tokens).sum();
+        session.assert_model_usable(&target, live).unwrap();
     }
 
     #[tokio::test]
