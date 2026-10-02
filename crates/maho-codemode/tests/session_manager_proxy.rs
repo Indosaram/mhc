@@ -3,6 +3,11 @@ use maho_codemode::extension::session_manager_proxy::*;
 use maho_ai::utils::abort::AbortController;
 
 struct FakeManager { disposals: AtomicUsize, failure: Option<String> }
+impl maho_codemode::tool::eval_tool_options::EvalKernelManager for FakeManager {
+    fn get_kernel(&self, language: maho_codemode::tool::types::EvalLanguage) -> maho_codemode::tool::types::EvalKernelFuture<'_, Arc<dyn maho_codemode::tool::types::EvalKernel>> {
+        Box::pin(async move { Err(format!("fixture kernel {language:?}")) })
+    }
+}
 impl SessionManagerLifecycle for FakeManager {
     fn dispose(&self) -> SessionDisposeFuture<'_> {
         Box::pin(async { self.disposals.fetch_add(1, Ordering::SeqCst); self.failure.clone().map_or(Ok(()), Err) })
@@ -15,6 +20,18 @@ fn proxy() -> (Arc<SessionManagerProxy>, Arc<Mutex<Vec<String>>>) {
     let failures = Arc::new(Mutex::new(Vec::new()));
     let reported = failures.clone();
     (Arc::new(SessionManagerProxy::new(Arc::new(move |failure| reported.lock().expect("failure list").push(failure.into())))), failures)
+}
+
+#[tokio::test]
+async fn kernel_delegation_is_gated_by_live_session_generation() {
+    use maho_codemode::tool::{eval_tool_options::EvalKernelManager, types::EvalLanguage};
+    let (proxy, _) = proxy();
+    assert_eq!(proxy.get_kernel(EvalLanguage::Py).await.err().unwrap(), "codemode session has not started");
+    assert!(proxy.replace(proxy.begin_replacement(), manager(None)).await);
+    assert_eq!(proxy.get_kernel(EvalLanguage::Rb).await.err().unwrap(), "fixture kernel Rb");
+    proxy.begin_replacement();
+    assert_eq!(proxy.get_kernel(EvalLanguage::Py).await.err().unwrap(), "codemode session manager is disposed");
+    proxy.dispose().await;
 }
 
 #[tokio::test]

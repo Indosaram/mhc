@@ -1,6 +1,6 @@
 use std::{path::Path, time::Duration};
 use serde_json::{Value, json};
-use crate::{kernels::shared::subprocess_process::{SubprocessProcess, ProcessError}, bridge::protocol::BridgeConnectionConfig};
+use crate::kernels::shared::subprocess_process::{SubprocessProcess, ProcessError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JavaScriptKernelMode { Worker, Inline }
@@ -26,8 +26,10 @@ impl WorkerHost {
     pub async fn next_message(&mut self) -> Result<Value, ProcessError> { self.process.next_message().await }
     pub async fn terminate(&mut self) -> Result<(), ProcessError> { self.process.terminate("TERM", Duration::from_millis(1500)).await }
 
-    pub async fn initialize(&mut self, session_id: &str, connection: &BridgeConnectionConfig, generation: u64, host_tool_names: &[String], foreign_language_names: &[String], signal: &maho_ai::utils::abort::AbortSignal) -> Result<(), ProcessError> {
-        self.post_message(&json!({"type":"init","sessionId":session_id,"connection":connection,"kernelGeneration":generation,"hostToolNames":host_tool_names,"foreignLanguageNames":foreign_language_names})).await?;
+    pub async fn initialize(&mut self, options: &super::worker_startup::WorkerStartupOptions<'_>, signal: &maho_ai::utils::abort::AbortSignal) -> Result<(), ProcessError> {
+        let mut frame=json!({"type":"init","sessionId":options.session_id,"connection":options.connection,"kernelGeneration":options.generation,"hostToolNames":options.host_tool_names,"foreignLanguageNames":options.foreign_language_names});
+        if let Some(environment)=options.session_env {frame["sessionEnv"]=serde_json::to_value(environment)?;}
+        self.post_message(&frame).await?;
         loop {
             let message = tokio::select! {
                 biased;

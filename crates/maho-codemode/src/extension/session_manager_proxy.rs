@@ -2,7 +2,7 @@ use std::{collections::HashMap, future::Future, pin::Pin, sync::{Arc, Mutex}};
 use maho_ai::utils::abort::{AbortController, AbortReason};
 
 pub type SessionDisposeFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
-pub trait SessionManagerLifecycle: Send + Sync {
+pub trait SessionManagerLifecycle: crate::tool::eval_tool_options::EvalKernelManager {
     fn dispose(&self) -> SessionDisposeFuture<'_>;
 }
 
@@ -136,5 +136,14 @@ impl SessionManagerProxy {
         self.settle_executions().await;
         let current = self.state.lock().expect("session proxy poisoned").current.take();
         self.dispose_quietly(current).await;
+    }
+}
+
+impl crate::tool::eval_tool_options::EvalKernelManager for SessionManagerProxy {
+    fn get_kernel(&self, language: crate::tool::types::EvalLanguage) -> crate::tool::types::EvalKernelFuture<'_, Arc<dyn crate::tool::types::EvalKernel>> {
+        Box::pin(async move {
+            let current = self.current().map_err(|error| error.to_string())?;
+            current.get_kernel(language).await
+        })
     }
 }

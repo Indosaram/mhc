@@ -17,19 +17,21 @@ impl OutputExecuteTool for Fixture {
 #[tokio::test]
 async fn persistent_python_calls_native_host_over_owned_bridge() {
     let artifacts = tempfile::tempdir().unwrap();
-    let session = CodemodeSessionManager::start(CreateCodemodeSessionManagerOptions {
+    let session = Arc::new(CodemodeSessionManager::start(CreateCodemodeSessionManagerOptions {
         session_id:"session-test".into(), cwd:artifacts.path().into(), settings:CodemodeSettings::default(),
         availability: [(maho_codemode::tool::types::EvalLanguage::Py,true),(maho_codemode::tool::types::EvalLanguage::Js,true),(maho_codemode::tool::types::EvalLanguage::Rb,true),(maho_codemode::tool::types::EvalLanguage::Jl,false)].map(|(language,enabled)|(language,maho_codemode::interpreters::detect::LanguageAvailability {enabled,detected:if language==maho_codemode::tool::types::EvalLanguage::Py {maho_codemode::interpreters::detect::InterpreterDetection::Detected {path:"python3".into(),version:"3".into(),resolved_path:None}}else {maho_codemode::interpreters::detect::InterpreterDetection::Unavailable}})),
         local_roots:None, artifacts_dir:Some(artifacts.path().into()), session_env:None,
         executor:Arc::new(Fixture),
         list_tools:Some(Arc::new(|| vec![EvalSchemaToolInfo { name:"echo".into(), description:None, parameters:Some(json!({"type":"object"})) }])),
         complete:Arc::new(|request|Box::pin(async move { Ok(json!({"text":request.prompt,"details":{"model":"fixture/model","structured":false}})) })),
-    }).await.unwrap();
+    }).await.unwrap());
     let port = session.bridge_endpoint().unwrap().0;
     let kernel = session.get_python_kernel("python3").await.unwrap();
     assert!(Arc::ptr_eq(&kernel, &session.get_python_kernel("python3").await.unwrap()));
-    let native=maho_codemode::tool::eval_tool_options::EvalKernelManager::get_kernel(&session,maho_codemode::tool::types::EvalLanguage::Py).await.unwrap();
-    let native_again=maho_codemode::tool::eval_tool_options::EvalKernelManager::get_kernel(&session,maho_codemode::tool::types::EvalLanguage::Py).await.unwrap();
+    let native=maho_codemode::tool::eval_tool_options::EvalKernelManager::get_kernel(session.as_ref(),maho_codemode::tool::types::EvalLanguage::Py).await.unwrap();
+    let proxy=maho_codemode::extension::session_manager_proxy::SessionManagerProxy::default();
+    assert!(proxy.replace(proxy.begin_replacement(),session.clone()).await);
+    let native_again=maho_codemode::tool::eval_tool_options::EvalKernelManager::get_kernel(&proxy,maho_codemode::tool::types::EvalLanguage::Py).await.unwrap();
     assert!(Arc::ptr_eq(&native,&native_again));
     assert!(session.get_subprocess_kernel(maho_codemode::tool::types::EvalLanguage::Jl).await.is_err());
     let messages = Arc::new(Mutex::new(Vec::new()));
@@ -49,7 +51,7 @@ async fn persistent_python_calls_native_host_over_owned_bridge() {
     let next = kernel.run(PythonKernelRunOptions { cell_id:"persistent".into(), code:"print(x + 1)".into(), timeout_ms:Some(5000), on_started:None, on_message:Some(Arc::new(move |message| if let Some(text)=message["data"].as_str() { next_output.lock().expect("next output").push_str(text); })) }).await.unwrap();
     assert_eq!(next["ok"], true);
     assert!(output.lock().unwrap().contains("42"));
-    session.dispose().await.unwrap();
+    proxy.dispose().await;
     session.dispose().await.unwrap();
     assert!(session.get_python_kernel("python3").await.is_err());
     assert!(tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err());
