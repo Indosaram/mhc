@@ -282,6 +282,9 @@ fn typed_tool_renderer_retains_state_across_render_calls() {
     let mut session = ToolRendererSession { renderers, context };
     assert_eq!(session.render_call(&Theme::default(), 80).unwrap(), ["input:3"]);
     assert!(session.context.last_component.is_some());
+    api.register_tool(ToolDefinition::new("rendered", "replacement", JsonValue::Object(Default::default()),
+        Arc::new(|_| Box::pin(async { Ok(ToolResult::text("replacement")) }))));
+    assert!(!api.registered.tool_renderers.contains_key("rendered"));
 }
 
 #[test]

@@ -437,6 +437,7 @@ impl ExtensionRunner {
         for (path, handler) in self.handlers(kind) {
             let context = self.create_context_for_extension(Some(&path))?;
             let handled = if kind == EventKind::SessionShutdown { self.run_shutdown(&path, &mut event, &context, &handler).await } else { handler(&mut event, &context).await };
+            self.runtime.assert_active()?;
             match handled {
                 Ok(next) => { if kind.is_session_before() && let EventResult::SessionBefore(before) = &next { let cancel = before.cancel == Some(true); result = next; if cancel { return Ok(result); } } }
                 Err(error) => self.report(&path, kind, error),
@@ -467,6 +468,7 @@ impl ExtensionRunner {
         }
     }
     pub async fn emit_before_agent_start(&mut self, event: BeforeAgentStartEvent) -> Result<Option<BeforeAgentStartCombinedResult>, ExtensionFailure> {
+        self.runtime.assert_active()?;
         let mut event = ExtensionEvent::BeforeAgentStart(event); let mut combined = BeforeAgentStartCombinedResult::default();
         for (path, handler) in self.handlers(EventKind::BeforeAgentStart) {
             let mut context = self.create_context_for_extension(Some(&path))?;
@@ -478,15 +480,19 @@ impl ExtensionRunner {
                 }
                 Ok(_) => {}, Err(error) => self.report(&path, EventKind::BeforeAgentStart, error),
             }
+            self.runtime.assert_active()?;
         }
         Ok(if combined.messages.is_empty() && combined.system_prompt.is_none() { None } else { Some(combined) })
     }
     pub async fn emit_input(&mut self, input: InputEvent) -> Result<InputEventResult, ExtensionFailure> {
+        self.runtime.assert_active()?;
         let original_text = input.text.clone(); let original_images = input.images.clone();
         let mut event = ExtensionEvent::Input(input);
         for (path, handler) in self.handlers(EventKind::Input) {
             let context = self.create_context_for_extension(Some(&path))?;
-            match handler(&mut event, &context).await {
+            let result = handler(&mut event, &context).await;
+            self.runtime.assert_active()?;
+            match result {
                 Ok(EventResult::Input(InputEventResult::Handled)) => return Ok(InputEventResult::Handled),
                 Ok(EventResult::Input(InputEventResult::Transform { text, images })) => if let ExtensionEvent::Input(current) = &mut event { current.text = text; if images.is_some() { current.images = images; } },
                 Ok(_) => {}, Err(error) => self.report(&path, EventKind::Input, error),
@@ -496,6 +502,7 @@ impl ExtensionRunner {
         Err(ExtensionFailure::new("input handler replaced event kind"))
     }
     pub async fn emit_model_select(&mut self, event: ModelSelectEvent) -> Result<Option<ModelSelectEventResult>, ExtensionFailure> {
+        self.runtime.assert_active()?;
         let mut event = ExtensionEvent::ModelSelect(event); let mut combined: Option<ModelSelectEventResult> = None;
         for (path, handler) in self.handlers(EventKind::ModelSelect) {
             let context = self.create_context_for_extension(Some(&path))?;
@@ -508,10 +515,12 @@ impl ExtensionRunner {
                 }
                 Ok(_) => {}, Err(error) => self.report(&path, EventKind::ModelSelect, error),
             }
+            self.runtime.assert_active()?;
         }
         Ok(combined)
     }
     pub async fn emit_message_end(&mut self, message: AgentMessage) -> Result<Option<AgentMessage>, ExtensionFailure> {
+        self.runtime.assert_active()?;
         let mut event = ExtensionEvent::MessageEnd { message }; let mut modified = false;
         for (path, handler) in self.handlers(EventKind::MessageEnd) {
             let context = self.create_context_for_extension(Some(&path))?;
@@ -522,11 +531,13 @@ impl ExtensionRunner {
                 },
                 Ok(_) => {}, Err(error) => self.report(&path, EventKind::MessageEnd, error),
             }
+            self.runtime.assert_active()?;
         }
         if let ExtensionEvent::MessageEnd { message } = event { return Ok(modified.then_some(message)); }
         Err(ExtensionFailure::new("message_end handler replaced event kind"))
     }
     pub async fn emit_context(&mut self, messages: &[AgentMessage], exclude_path: Option<&str>) -> Result<Vec<AgentMessage>, ExtensionFailure> {
+        self.runtime.assert_active()?;
         let mut event = ExtensionEvent::Context { messages: messages.to_vec() };
         for (path, handler) in self.handlers(EventKind::Context) {
             if exclude_path == Some(path.as_str()) { continue; }
@@ -544,6 +555,7 @@ impl ExtensionRunner {
         self.emit_before_provider_request_with_metadata(payload, None, None, exclude_path).await
     }
     pub async fn emit_before_provider_request_with_metadata(&mut self, payload: JsonValue, model: Option<Model>, headers: Option<BTreeMap<String, Option<String>>>, exclude_path: Option<&str>) -> Result<JsonValue, ExtensionFailure> {
+        self.runtime.assert_active()?;
         let mut event = ExtensionEvent::BeforeProviderRequest { payload, model, headers };
         for (path, handler) in self.handlers(EventKind::BeforeProviderRequest) {
             if exclude_path == Some(path.as_str()) { continue; }
@@ -558,6 +570,7 @@ impl ExtensionRunner {
         Err(ExtensionFailure::new("provider handler replaced event kind"))
     }
     pub async fn emit_before_provider_headers(&mut self, headers: BTreeMap<String, Option<String>>) -> Result<BTreeMap<String, Option<String>>, ExtensionFailure> {
+        self.runtime.assert_active()?;
         let mut event = ExtensionEvent::BeforeProviderHeaders { headers };
         for (path, handler) in self.handlers(EventKind::BeforeProviderHeaders) {
             let context = self.create_context_for_extension(Some(&path))?;
@@ -568,10 +581,13 @@ impl ExtensionRunner {
         Err(ExtensionFailure::new("header handler replaced event kind"))
     }
     pub async fn emit_project_trust(&mut self, cwd: std::path::PathBuf) -> Result<Option<ProjectTrustEventResult>, ExtensionFailure> {
+        self.runtime.assert_active()?;
         let mut event = ExtensionEvent::ProjectTrust { cwd };
         for (path, handler) in self.handlers(EventKind::ProjectTrust) {
             let context = self.create_context_for_extension(Some(&path))?;
-            match handler(&mut event, &context).await {
+            let result = handler(&mut event, &context).await;
+            self.runtime.assert_active()?;
+            match result {
                 Ok(EventResult::ProjectTrust(result)) if result.trusted != TrustDecision::Undecided => return Ok(Some(result)),
                 Ok(_) => {}, Err(error) => self.report(&path, EventKind::ProjectTrust, error),
             }
@@ -579,6 +595,7 @@ impl ExtensionRunner {
         Ok(None)
     }
     pub async fn emit_resources_discover(&mut self, cwd: std::path::PathBuf, reason: SessionReason) -> Result<DiscoveredResources, ExtensionFailure> {
+        self.runtime.assert_active()?;
         let mut event = ExtensionEvent::ResourcesDiscover(ResourcesDiscoverEvent { cwd, reason, scoped_entries: true });
         let mut combined = DiscoveredResources::default();
         for (path, handler) in self.handlers(EventKind::ResourcesDiscover) {
@@ -591,14 +608,18 @@ impl ExtensionRunner {
                 }
                 Ok(_) => {}, Err(error) => self.report(&path, EventKind::ResourcesDiscover, error),
             }
+            self.runtime.assert_active()?;
         }
         Ok(combined)
     }
     pub async fn emit_user_bash(&mut self, command: String, exclude_from_context: bool, cwd: std::path::PathBuf) -> Result<EventResult, ExtensionFailure> {
+        self.runtime.assert_active()?;
         let mut event = ExtensionEvent::UserBash { command, exclude_from_context, cwd };
         for (path, handler) in self.handlers(EventKind::UserBash) {
             let context = self.create_context_for_extension(Some(&path))?;
-            match handler(&mut event, &context).await { Ok(EventResult::None) => {}, Ok(result) => return Ok(result), Err(error) => self.report(&path, EventKind::UserBash, error) }
+            let result = handler(&mut event, &context).await;
+            self.runtime.assert_active()?;
+            match result { Ok(EventResult::None) => {}, Ok(result) => return Ok(result), Err(error) => self.report(&path, EventKind::UserBash, error) }
         }
         Ok(EventResult::None)
     }

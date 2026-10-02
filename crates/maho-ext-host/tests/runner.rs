@@ -336,6 +336,23 @@ fn context_print_mode_and_tool_context_contract() { let ctx = context(); assert_
 fn invalidated_runner_rejects_new_context() { let runner = runner(vec![]); runner.invalidate("stale"); assert_eq!(runner.create_context().err().unwrap().message, "stale"); }
 
 #[tokio::test]
+async fn invalidated_empty_dispatch_and_handled_input_reject_stale_results() {
+    let mut empty = runner(vec![]);
+    empty.invalidate("stale");
+    assert_eq!(empty.emit_context(&[], None).await.unwrap_err().message, "stale");
+    assert_eq!(empty.emit_input(input()).await.unwrap_err().message, "stale");
+    assert_eq!(empty.emit_resources_discover("/tmp".into(), SessionReason::Startup).await.unwrap_err().message, "stale");
+    assert_eq!(empty.emit_user_bash("true".into(), false, "/tmp".into()).await.err().unwrap().message, "stale");
+    let mut active = runner(vec![]);
+    let runtime = active.runtime.clone();
+    active.extensions.push(extension("invalidate", EventKind::Input, Arc::new(move |_, _| {
+        let runtime = runtime.clone();
+        Box::pin(async move { runtime.invalidate("replaced during input"); Ok(EventResult::Input(InputEventResult::Handled)) })
+    })));
+    assert_eq!(active.emit_input(input()).await.unwrap_err().message, "replaced during input");
+}
+
+#[tokio::test]
 async fn idle_wait_rejects_context_invalidated_during_host_wait() {
     let mut runner = runner(vec![]);
     runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) })).unwrap();
@@ -1156,6 +1173,22 @@ async fn replaced_session_callback_messages_reject_stale_context() {
     assert_eq!(context.send_user_message(UserMessageContent::Text("late".into()), Default::default()).await.unwrap_err().message, "replaced");
     assert_eq!(context.send_message(CustomMessage { custom_type: "late".into(), content: vec![], display: false, details: None }, Default::default()).await.unwrap_err().message, "replaced");
 }
+#[tokio::test]
+async fn legacy_command_replacement_removes_prior_context_handler() {
+    let mut api = ExtensionApi::new(LoadedExtension::new("commands", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+    api.register_command_with_context("jump", None, None, Arc::new(|_, _| Box::pin(async { Err("old handler".into()) })));
+    let invoked = Arc::new(Mutex::new(false));
+    let captured = invoked.clone();
+    api.register_command("jump", None, None, Arc::new(move |_, _| {
+        let captured = captured.clone();
+        Box::pin(async move { *captured.lock().unwrap() = true; Ok(()) })
+    }));
+    let runner = runner(vec![api.registered]);
+    let context = runner.create_command_context(Arc::new(CommandActions(Mutex::new(vec![])))).unwrap();
+    runner.invoke_command("jump", "", &context).await.unwrap();
+    assert!(*invoked.lock().unwrap());
+}
+
 #[tokio::test]
 async fn command_invocation_uses_command_capable_context_without_changing_legacy_handlers() {
     let mut api = ExtensionApi::new(LoadedExtension::new("commands", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());

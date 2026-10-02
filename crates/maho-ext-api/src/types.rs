@@ -1249,6 +1249,7 @@ impl ExtensionApi {
         if !definition.parameters.is_object() {
             return Err(ExtensionFailure::new(format!("Tool \"{}\" registered by extension \"{}\" must define an object parameter schema.", definition.name, self.registered.identity.path)));
         }
+        self.registered.tool_renderers.remove(&definition.name);
         let tool = RegisteredTool { definition, source_info: self.registered.source_info.clone() };
         if let Some(existing) = self.registered.tools.iter_mut().find(|t| t.definition.name == tool.definition.name) { *existing = tool.clone(); } else { self.registered.tools.push(tool.clone()); }
         let actions = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone();
@@ -1257,6 +1258,7 @@ impl ExtensionApi {
     }
     pub fn register_command(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandHandler) {
         self.runtime.assert_active_or_panic();
+        self.registered.command_context_handlers.remove(name);
         let command = RegisteredCommand { name: name.into(), source_info: self.registered.source_info.clone(), description, argument_hint, handler };
         if let Some(existing) = self.registered.commands.iter_mut().find(|c| c.name == name) { *existing = command; } else { self.registered.commands.push(command); }
     }
