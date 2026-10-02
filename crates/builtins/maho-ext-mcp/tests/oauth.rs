@@ -17,3 +17,23 @@ fn redirect_parsing_preserves_first_query_value() {
 fn malformed_failed_and_empty_redirects_are_rejected() {
     for input in ["not a url","http://127.0.0.1/callback?code=","http://127.0.0.1/callback?error=access_denied&code=abc"] {assert_eq!(parse_redirect(input,"srv").unwrap_err().oauth_kind,OAuthFailureKind::NeedsAuth);}
 }
+
+#[tokio::test]
+async fn refresh_returns_fresh_tokens_without_discovery_or_registration() {
+    use maho_ext_mcp::auth::{oauth_provider::McpOAuthProvider,token_store::McpTokenStore};
+    let root=tempfile::tempdir().unwrap();
+    let store=McpTokenStore::new(root.path(),"fresh","invalid discovery URL");
+    store.write(McpStoredAuth {access_token:Some("fixture-fresh".into()),..Default::default()}).unwrap();
+    let manager=McpRefreshManager::new(std::sync::Arc::new(McpOAuthProvider::new(store)),reqwest::Client::new());
+    assert_eq!(manager.refresh().await.unwrap().access_token,"fixture-fresh");
+}
+
+#[tokio::test]
+async fn missing_refresh_token_is_reported_before_discovery() {
+    use maho_ext_mcp::auth::{oauth_provider::McpOAuthProvider,token_store::McpTokenStore};
+    let root=tempfile::tempdir().unwrap();
+    let store=McpTokenStore::new(root.path(),"missing","invalid discovery URL");
+    store.write(McpStoredAuth {access_token:Some("fixture-stale".into()),expires_at:Some(0.0),..Default::default()}).unwrap();
+    let manager=McpRefreshManager::new(std::sync::Arc::new(McpOAuthProvider::new(store)),reqwest::Client::new());
+    assert!(matches!(manager.refresh().await,Err(OAuthRequestError::Flow(error)) if error.oauth_kind==OAuthFailureKind::NeedsAuth));
+}
