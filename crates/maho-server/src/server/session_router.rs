@@ -44,6 +44,8 @@ pub struct SessionRouter {
     host: Arc<dyn ServerHost>,
     server_id: String,
     hosted: Mutex<BTreeMap<String, Arc<dyn RoutedSessionHandle>>>,
+    opening: Mutex<BTreeMap<String, Weak<Mutex<()>>>>,
+    admissions: RwLock<()>,
     attachments: Mutex<BTreeMap<String, Vec<Weak<Attachment>>>>,
     closing: AtomicBool,
     close_result: tokio::sync::OnceCell<Result<(),ServerError>>,
@@ -54,18 +56,29 @@ impl SessionRouter {
             host,
             server_id,
             hosted: Mutex::new(BTreeMap::new()),
+            opening: Mutex::new(BTreeMap::new()),
+            admissions: RwLock::new(()),
             attachments: Mutex::new(BTreeMap::new()),
             closing: AtomicBool::new(false),
             close_result: tokio::sync::OnceCell::new(),
         }
     }
     pub async fn attach(&self, session_id: &str) -> Result<Arc<Attachment>, ServerError> {
+        let _admission=self.admissions.read().await;
         if self.closing.load(Ordering::SeqCst) {
             return Err(ServerError::draining());
         }
         let handle = {
-            let mut hosted = self.hosted.lock().await;
-            if let Some(handle) = hosted.get(session_id) {
+            let opening={
+                let mut opening=self.opening.lock().await;
+                opening.retain(|_,lock|lock.strong_count()>0);
+                let lock=opening.get(session_id).and_then(Weak::upgrade).unwrap_or_else(||Arc::new(Mutex::new(())));
+                opening.insert(session_id.into(),Arc::downgrade(&lock));
+                lock
+            };
+            let _opening=opening.lock().await;
+            let existing=self.hosted.lock().await.get(session_id).cloned();
+            if let Some(handle) = existing {
                 handle.clone()
             } else {
                 let metadata = self.host.resolve_session(session_id).await?;
@@ -74,7 +87,7 @@ impl SessionRouter {
                     handle.close().await?;
                     return Err(ServerError::draining());
                 }
-                hosted.insert(session_id.into(), handle.clone());
+                self.hosted.lock().await.insert(session_id.into(), handle.clone());
                 handle
             }
         };
@@ -125,6 +138,7 @@ impl SessionRouter {
         self.close_result.get_or_init(||self.close_internal()).await.clone()
     }
     async fn close_internal(&self) -> Result<(), ServerError> {
+        let _admissions=self.admissions.write().await;
         let attachments = std::mem::take(&mut *self.attachments.lock().await);
         let handles = std::mem::take(&mut *self.hosted.lock().await);
         let mut errors = Vec::new();

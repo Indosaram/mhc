@@ -3,6 +3,36 @@ use serde_json::{Value, json};
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
 struct Host(Arc<AtomicUsize>);
+#[tokio::test]
+async fn concurrent_clients_share_one_session_open() {
+    use maho_server::server::testing::TestServerHost;
+    let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
+    let router=SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into());
+    let (first,second)=tokio::join!(router.attach("session-1"),router.attach("session-1"));
+    let first=first.unwrap();let second=second.unwrap();
+    assert_eq!(host.state.lock().await.open_session_count,1);
+    assert_eq!(host.latest_harness("session-1").await.unwrap().state.lock().await.attached_clients,2);
+    first.release().await.unwrap();second.release().await.unwrap();router.close().await.unwrap();
+}
+#[tokio::test]
+async fn independent_session_open_is_not_blocked_by_another_open() {
+    use maho_server::server::testing::TestServerHost;
+    tokio::time::timeout(std::time::Duration::from_secs(2),async {
+        let host=Arc::new(TestServerHost::default());
+        host.seed(Some("first".into()),None).await.unwrap();
+        host.seed(Some("second".into()),None).await.unwrap();
+        let gate=host.gate_next_open_session().await;
+        let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
+        let opening={let router=router.clone();tokio::spawn(async move {router.attach("first").await})};
+        gate.entered.wait().await;
+        let second=router.attach("second").await.unwrap();
+        assert_eq!(host.state.lock().await.open_session_count,2);
+        gate.release.resolve(());
+        let first=opening.await.unwrap().unwrap();
+        first.release().await.unwrap();second.release().await.unwrap();
+        router.close().await.unwrap();
+    }).await.unwrap();
+}
 impl ServerHost for Host {
     fn server_services(&self) -> &dyn RoutedServerServiceHost { self }
     fn resolve_session<'a>(&'a self, id: &'a str) -> ServerFuture<'a, Value> {
