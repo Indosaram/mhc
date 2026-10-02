@@ -33,7 +33,7 @@ impl MemoryWiring{
                         maho_ext_api::SessionReason::New=>crate::shutdown_drain::ShutdownReason::New,
                         maho_ext_api::SessionReason::Resume=>crate::shutdown_drain::ShutdownReason::Resume,
                         maho_ext_api::SessionReason::Fork=>crate::shutdown_drain::ShutdownReason::Fork,
-                        maho_ext_api::SessionReason::Startup=>return Err("startup is not a shutdown reason".into()),
+                        maho_ext_api::SessionReason::Startup=>crate::shutdown_drain::ShutdownReason::Reload,
                     };
                     wiring.lock().await.on_session_shutdown(reason,context.session_manager.session_id(),deadline,now.as_ref(),&mut |step,error|warn(&format!("memory shutdown {step}: {}",error.unwrap_or("deadline reached")))).await;
                     Ok(())

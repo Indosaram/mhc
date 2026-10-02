@@ -8,7 +8,6 @@ where F:FnMut()->Fut,Fut:Future<Output=Result<Option<T>,String>> {
     let mut watcher=notify::recommended_watcher(move |event:notify::Result<notify::Event>| {let _=sender.send(event);}).map_err(|error|error.to_string())?;
     watcher.watch(directory,notify::RecursiveMode::NonRecursive).map_err(|error|error.to_string())?;
     let deadline=tokio::time::sleep(Duration::from_millis(timeout_ms)); tokio::pin!(deadline);
-    let mut recheck=tokio::time::interval(Duration::from_millis(25));
     loop {
         let result=tokio::select! {
             _=&mut deadline=>return Err(format!("waited {timeout_ms}ms for {description}")),
@@ -17,7 +16,6 @@ where F:FnMut()->Fut,Fut:Future<Output=Result<Option<T>,String>> {
         if let Some(value)=result {return Ok(value);}
         tokio::select! {
             _=&mut deadline=>return Err(format!("waited {timeout_ms}ms for {description}")),
-            _=recheck.tick()=>{},
             event=events.recv()=>{event.ok_or_else(||"filesystem watcher closed".to_owned())?.map_err(|error|error.to_string())?;},
         }
     }
@@ -50,6 +48,18 @@ mod tests {
         let root=tempfile::tempdir().unwrap();let mut calls=0;
         let value=wait_for_filesystem_state(root.path(),||{calls+=1;let result=(calls==2).then_some(9);async move{Ok(result)}},100,"ready").await.unwrap();
         assert_eq!(value,9);assert_eq!(calls,2);
+    }
+    #[tokio::test]
+    async fn queued_filesystem_event_rechecks_after_inflight_probe(){
+        let root=tempfile::tempdir().unwrap();let path=root.path().join("ready");
+        let (registered,registration)=tokio::sync::oneshot::channel();let mut registered=Some(registered);let mut calls=0;
+        let wait=wait_for_filesystem_state(root.path(),||{
+            calls+=1;let result=path.exists().then_some(7);
+            let registered=if calls==2{registered.take()}else{None};
+            async move{if let Some(registered)=registered{registered.send(()).unwrap();tokio::task::yield_now().await;}Ok(result)}
+        },5000,"ready");
+        let trigger=async{registration.await.unwrap();std::fs::write(&path,"").unwrap();};
+        let (result,())=tokio::join!(wait,trigger);assert_eq!(result.unwrap(),7);
     }
     #[tokio::test(start_paused=true)]
     async fn deadline_reports_exact_description_and_budget() {

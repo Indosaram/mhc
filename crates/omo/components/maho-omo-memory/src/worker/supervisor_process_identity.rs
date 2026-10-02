@@ -129,11 +129,12 @@ pub fn schedule_supervisor_deadline(instant: f64, env: &BTreeMap<String, String>
     watcher.watch(&directory, notify::RecursiveMode::NonRecursive).map_err(std::io::Error::other)?;
     Ok(CancelSupervisorDeadline(Some(tokio::spawn(async move {
         let watcher = watcher;
-        let mut safety = tokio::time::interval_at(tokio::time::Instant::now()+std::time::Duration::from_millis(25),std::time::Duration::from_millis(25));
         loop {
             let time=read_injected_clock(&directory);
             if time.is_finite() && time >= instant { drop(watcher); callback(); return; }
-            tokio::select! { _ = safety.tick() => {}, _ = received.recv() => {} }
+            match received.recv().await {
+                Some(Ok(_))=>{},Some(Err(error))=>{eprintln!("supervisor clock watcher failed: {error}");return;},None=>return,
+            }
         }
     }))))
 }

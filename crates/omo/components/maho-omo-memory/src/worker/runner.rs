@@ -7,7 +7,33 @@ pub struct ReflectionRunnerInput<'a>{
     pub resolution:&'a ReflectionModelResolution,pub reservation:&'a dyn ReflectionReservationPort,
     pub started_at:&'a str,pub now_ms:&'a dyn Fn()->i64,
 }
+pub struct NativeReflectionExecutionOptions<'a>{
+    pub env:&'a std::collections::BTreeMap<String,String>,pub sources:&'a [super::model_preflight::ConfigSource],pub launcher:&'a super::model_preflight::Launcher,
+    pub parent_session_file:Option<&'a std::path::Path>,pub parent_cwd:Option<&'a std::path::Path>,pub route:Option<&'a super::fork_cost::MemoryLaunchRoute>,
+    pub sandbox:Option<&'a dyn Fn(super::spawn_types::ReflectionSpawnArgs)->Result<super::spawn_types::ReflectionSpawnArgs,String>>,
+    pub deadline_ms:Option<i64>,pub child:super::spawn_supervisor::ReflectionChildOptions<'a>,pub callbacks:NativeReflectionCallbacks<'a>,
+}
+pub struct NativeReflectionCallbacks<'a>{
+    pub ensure_renderer:&'a dyn Fn(),pub health_alert:&'a dyn Fn(&std::path::Path),pub append_launched:&'a dyn Fn()->Result<(),String>,pub warn:&'a dyn Fn(&str),
+}
 impl SenpiSubprocessRunner{
+    pub async fn launch_native(
+        &mut self,input:ReflectionRunnerInput<'_>,cache:&mut super::model_preflight::ModelPreflight,options:NativeReflectionExecutionOptions<'_>,
+        live:Option<&mut dyn ReflectionLiveSession>,
+        terminal_gate:impl FnOnce(&mut dyn FnMut()->Result<Option<super::run_finalization_types::ReservationRunResult>,String>)->Result<Option<super::run_finalization_types::ReservationRunResult>,String>,
+    )->Result<ReflectionRunResult,String>{
+        let callbacks=options.callbacks;
+        let settings=crate::reflection_settings::resolve_agent_reflection_settings(input.config.get("memory"),&input.identity.id)?;
+        let deadline=match options.deadline_ms{Some(deadline)=>deadline as f64,None=>settings["timeout_minutes"].as_f64().ok_or("reflection timeout missing")?*60_000.0};
+        let merge=settings["merge"].as_str().ok_or("reflection merge policy missing")?;
+        let context=super::run_finalization_types::RunFinalizationContext{identity:input.identity,reservation:input.reservation,launch:None,now_ms:input.now_ms};
+        let execution=super::runner_execution::ReflectionExecutionInput{run:input.run,resolution:input.resolution,identity:input.identity,config:input.config,env:options.env,sources:options.sources,launch:options.launcher,parent_session_file:options.parent_session_file,parent_cwd:options.parent_cwd,route:options.route,sandbox:options.sandbox,merge_policy:merge,hard_deadline_at:(input.now_ms)() as f64+deadline,options:options.child,finalization:&context};
+        let identity=input.identity;
+        self.launch(input,live,||super::runner_execution::execute_reflection_run(cache,execution,|repo,run|{
+            let exec=memory_core::git::exec::create_git_exec(Default::default());
+            memory_core::reflection::create_reflection_worktree(repo,&run.run_id,&identity.paths.worktrees,exec.as_ref(),None).map_err(|error|error.to_string())
+        },callbacks.append_launched,callbacks.warn,terminal_gate),callbacks.ensure_renderer,|run|Ok(Self::merged_metadata(identity,run)),callbacks.health_alert).await
+    }
     pub fn merged_metadata(identity:&MemoryIdentity,run_id:&str)->(Option<String>,Option<usize>){
         let path=identity.paths.reflection.join("runs").join(run_id).join("ledger.json");
         let Ok(value)=super::run_artifacts::read_run_json(&path)else{return (None,None);};let Ok(ledger)=super::reservation_run_ledger::parse_reservation_run_ledger(value)else{return (None,None);};
@@ -72,6 +98,12 @@ impl SenpiSubprocessRunner{
         let route=SenpiSubprocessRunner::choose_launch_route(&run,&resolution,Some(&Registry),Some(&session),None,true).unwrap();assert_eq!(route.route,super::super::fork_cost::Route::Quick);assert_eq!(route.model,"p/quick");
     }
     struct Reservation;
+    #[tokio::test]async fn native_unavailable_category_does_not_initialize_engine_or_preflight(){
+        let root=tempfile::tempdir().unwrap();let identity=MemoryIdentity{id:"agent".into(),safe_slug:"agent".into(),paths:memory_core::identity::layout::build_identity_paths(root.path(),"agent")};let run=reserved();
+        let resolution=ReflectionModelResolution::CategoryUnavailable{category:"quick".into(),cause:"no_registry",attempted_chain:None,missing_providers:None};let config=serde_json::json!({});let env=Default::default();let launcher=super::super::model_preflight::Launcher{command:"missing-must-not-run".into(),prefix_args:vec![]};
+        let result=SenpiSubprocessRunner::default().launch_native(ReflectionRunnerInput{run:&run,identity:&identity,config:&config,resolution:&resolution,reservation:&Reservation,started_at:"1970-01-01T00:00:00.000Z",now_ms:&||0},&mut super::super::model_preflight::ModelPreflight::default(),NativeReflectionExecutionOptions{env:&env,sources:&[],launcher:&launcher,parent_session_file:None,parent_cwd:None,route:None,sandbox:None,deadline_ms:None,child:super::super::spawn_supervisor::ReflectionChildOptions{termination_grace_ms:5000.0,max_output_bytes:1024,supervisor_command:std::path::Path::new("missing-supervisor"),supervisor_args:&[],launched_at:0},callbacks:NativeReflectionCallbacks{ensure_renderer:&||{},health_alert:&|_|{},append_launched:&||panic!("no launch"),warn:&|_|panic!("no preflight")}},None,|_|panic!("no terminal gate")).await.unwrap();
+        assert_eq!(result.reason.as_deref(),Some("category_unavailable"));assert!(!identity.paths.repo.exists());
+    }
     #[tokio::test]async fn completion_samples_clock_after_execution(){
         let root=tempfile::tempdir().unwrap();let identity=MemoryIdentity{id:"agent".into(),safe_slug:"agent".into(),paths:memory_core::identity::layout::build_identity_paths(root.path(),"agent")};
         let run=ReservedRun{run_id:"run".into(),request:memory_core::reflection::ReflectionRequest{trigger:memory_core::reflection::ReflectionTrigger::Manual,origin:None,conversation_ids:vec![],snapshots:vec![],focus:None,recent_n:None,target_doc:None},reserved_at:None,launcher_pid:None,launcher_hostname:None,launcher_process_start:None};

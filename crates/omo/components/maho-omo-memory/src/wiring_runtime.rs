@@ -3,6 +3,16 @@ use crate::{context::MemoryIdentityContext,identity_runtime::{MemoryIdentityRunt
 #[derive(Default)]pub struct MemoryRuntimeWiring{
     pub contexts:BTreeMap<String,MemoryIdentityContext>,runtimes:BTreeMap<String,MemoryIdentityRuntime>,
     journals:BTreeMap<String,MemoryJournalWiring>,facts:BTreeMap<String,MemoryFactsWiring>,
+    trigger_ledgers:BTreeMap<String,std::sync::Arc<std::sync::Mutex<crate::context::MemoryPendingLedger>>>,
+}
+pub type RuntimeReflectionLaunch=std::sync::Arc<dyn Fn(memory_core::reflection::ReservedRun)->Result<(),String>+Send+Sync>;
+struct RuntimeTriggerEngine{store:std::sync::Arc<memory_core::reflection::ReflectionReservationStore>,launch:RuntimeReflectionLaunch}
+impl crate::trigger_wiring::ReflectionTriggerEngine for RuntimeTriggerEngine{
+    fn evaluate(&self,conversation:&str,event:memory_core::reflection::ReflectionEvent)->Result<Option<memory_core::reflection::ReservationResult>,String>{
+        let result=self.store.evaluate(conversation,event).map_err(|error|error.to_string())?;
+        if let Some(result)=&result&&result.status=="active"{(self.launch)(result.run.clone())?;}
+        Ok(result)
+    }
 }
 pub struct RuntimeDreamSession<'a>{pub session_id:String,pub runtime:&'a MemoryIdentityRuntime,pub launch:&'a mut dyn FnMut(memory_core::reflection::ReservedRun)->Result<(),String>}
 #[derive(Debug)]pub enum RuntimeDreamError{Io(std::io::Error),Selector(crate::dream_selector::DreamSelectorError),Journal(memory_core::journal::store::JournalError),Reservation(memory_core::reflection::reservation::ReservationError),Launch(String)}
@@ -17,6 +27,13 @@ impl crate::dream_trigger_fire::DreamTriggerSession for RuntimeDreamSession<'_>{
     fn launch(&mut self,run:memory_core::reflection::ReservedRun)->Result<(),Self::Error>{(self.launch)(run).map_err(RuntimeDreamError::Launch)}
 }
 impl MemoryRuntimeWiring{
+    pub fn trigger_session_by_id(&mut self,session:&str,settings:impl FnOnce()->Result<serde_json::Value,String>,launch:RuntimeReflectionLaunch)->Result<Option<crate::trigger_wiring::ReflectionTriggerSession>,String>{
+        let Some(identity)=self.resolve_context(session).cloned()else{return Ok(None);};let settings=settings()?;
+        let enabled=crate::trigger_wiring::resolve_reflection_trigger_config(&settings,Some(&identity.identity))?.enabled;
+        let store=self.runtime_for(&identity,||Ok(settings))?.store.clone();
+        let ledger=self.trigger_ledgers.entry(session.into()).or_insert_with(||std::sync::Arc::new(std::sync::Mutex::new(identity.ledger))).clone();
+        Ok(Some(crate::trigger_wiring::ReflectionTriggerSession{conversation_id:session.into(),ledger,enabled,engine:std::sync::Arc::new(RuntimeTriggerEngine{store,launch})}))
+    }
     pub fn resolve_context(&self,session:&str)->Option<&MemoryIdentityContext>{self.contexts.get(session)}
     pub fn existing_facts_wiring(&mut self,identity:&str)->Option<&mut MemoryFactsWiring>{self.facts.get_mut(identity)}
     pub fn journal_wiring_for(&mut self,identity:&MemoryIdentityContext)->&mut MemoryJournalWiring{
@@ -36,6 +53,15 @@ impl MemoryRuntimeWiring{
 }
 #[cfg(test)]mod tests{
     use super::*;
+    #[test]fn trigger_runtime_launches_winning_reservation_and_reuses_pending_ledger(){
+        let root=tempfile::tempdir().unwrap();let identity=identity(root.path());let mut wiring=MemoryRuntimeWiring::default();wiring.contexts.insert("session".into(),identity.clone());
+        let calls=std::sync::Arc::new(std::sync::Mutex::new(vec![]));let captured=calls.clone();let launch:RuntimeReflectionLaunch=std::sync::Arc::new(move|run|{captured.lock().unwrap().push(run);Ok(())});
+        let session=wiring.trigger_session_by_id("session",||crate::reflection_settings::resolve_memory_settings(None),launch.clone()).unwrap().unwrap();
+        session.ledger.lock().unwrap().pending_compaction=true;
+        let again=wiring.trigger_session_by_id("session",||crate::reflection_settings::resolve_memory_settings(None),launch).unwrap().unwrap();assert!(std::sync::Arc::ptr_eq(&session.ledger,&again.ledger));assert!(again.ledger.lock().unwrap().pending_compaction);
+        let reserved=session.engine.evaluate("session",memory_core::reflection::ReflectionEvent::Manual{focus:None,recent_n:None,conversation_ids:None}).unwrap().unwrap();assert_eq!(reserved.status,"active");assert_eq!(calls.lock().unwrap()[0].run_id,reserved.run.run_id);
+        again.engine.evaluate("session",memory_core::reflection::ReflectionEvent::Manual{focus:None,recent_n:None,conversation_ids:None}).unwrap();assert_eq!(calls.lock().unwrap().len(),1);assert!(!identity.repo_path().exists());
+    }
     #[test]fn dream_runtime_captures_real_journal_and_launches_reserved_run(){
         let root=tempfile::tempdir().unwrap();let identity=identity(root.path());let journal=memory_core::journal::store::TranscriptJournal::new(memory_core::journal::store::TranscriptJournalOptions::new(identity.identity_paths.transcripts.join("session")));
         journal.append(&[memory_core::journal::entries::TranscriptEntry::Text(memory_core::journal::entries::TextTranscriptEntry::new("user","question","1970-01-01T00:00:00Z","m:user","m")),memory_core::journal::entries::TranscriptEntry::Text(memory_core::journal::entries::TextTranscriptEntry::new("assistant","answer","1970-01-01T00:00:00Z","m:assistant","m"))]).unwrap();

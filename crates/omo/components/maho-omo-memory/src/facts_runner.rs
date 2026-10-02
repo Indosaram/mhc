@@ -5,6 +5,18 @@ pub struct FactsExtractorRunner{pub identity:MemoryIdentity,pub queue:FactsQueue
 struct ActiveLaunch<'a>(&'a AtomicBool);impl Drop for ActiveLaunch<'_>{fn drop(&mut self){self.0.store(false,Ordering::Release);}}
 pub struct FactsAttemptInput<'a>{pub resolution:&'a ReflectionModelResolution,pub deadline_ms:i64,pub termination_grace_ms:i64}
 pub type FactsAttemptWork=std::pin::Pin<Box<dyn Future<Output=Result<FactsLaunchResult,String>>+Send>>;
+pub type NativeFactsSandbox=Arc<dyn Fn(crate::worker::spawn_types::FactsSpawnArgs)->Result<crate::worker::spawn_types::FactsSpawnArgs,String>+Send+Sync>;
+pub struct NativeFactsAttemptOptions{
+    pub resolution:crate::worker::resolve_model::ReflectionModelResolution,
+    pub env:std::collections::BTreeMap<String,String>,
+    pub config_sources:Vec<crate::worker::model_preflight::ConfigSource>,
+    pub launch:crate::worker::model_preflight::Launcher,
+    pub supervisor_command:std::path::PathBuf,pub supervisor_args:Vec<String>,
+    pub deadline_ms:i64,pub termination_grace_ms:i64,pub max_output_bytes:usize,
+    pub people:memory_core::facts::person_routing::FactsPeopleRouting,
+    pub sandbox:Option<NativeFactsSandbox>,
+    pub warn:Arc<dyn Fn(&str)+Send+Sync>,
+}
 pub struct NativeFactsExtractorPort{
     pub runner:Arc<FactsExtractorRunner>,
     pub attempt:Arc<dyn Fn(Arc<FactsExtractorRunner>,Option<FactsAbortSignal>)->FactsAttemptWork+Send+Sync>,
@@ -25,6 +37,29 @@ impl crate::facts_wiring::FactsExtractorPort for NativeFactsExtractorPort{
     }
 }
 impl FactsExtractorRunner{
+    pub fn native_extractor(self:Arc<Self>,options:NativeFactsAttemptOptions)->NativeFactsExtractorPort{
+        let people=options.people;let warn=options.warn.clone();let options=Arc::new(options);
+        let cache=Arc::new(tokio::sync::Mutex::new(crate::worker::model_preflight::ModelPreflight::default()));
+        NativeFactsExtractorPort{runner:self,people,warn,attempt:Arc::new(move|runner,signal|{
+            let options=options.clone();let cache=cache.clone();
+            Box::pin(async move{
+                let mut warn=|message:&str|(options.warn)(message);
+                runner.launch_pending_once(FactsAttemptInput{resolution:&options.resolution,deadline_ms:options.deadline_ms,termination_grace_ms:options.termination_grace_ms},signal.as_ref(),||runner.reconcile_runs(&options.people,&mut |message|(options.warn)(message)),|dir,payload,batch|{
+                    let runner=runner.clone();let options=options.clone();let cache=cache.clone();
+                    async move{
+                        let run_id=dir.file_name().ok_or("Facts run directory has no name")?.to_string_lossy().into_owned();
+                        let ledger:crate::facts_runner_types::FactsRunLedger=crate::worker::run_artifacts::read_run_json(&dir.join("ledger.json")).map_err(|error|error.to_string())?;
+                        let mut cache=cache.lock().await;
+                        runner.execute_child(&mut cache,crate::worker::facts_child_launch::FactsChildLaunchInput{
+                            sandbox:options.sandbox.as_deref().map(|sandbox|sandbox as &(dyn Fn(crate::worker::spawn_types::FactsSpawnArgs)->Result<crate::worker::spawn_types::FactsSpawnArgs,String>+Sync)),
+                            run_id:&run_id,run_dir:&dir,payload:&payload,resolution:&options.resolution,env:&options.env,config_sources:&options.config_sources,launch:&options.launch,hard_deadline_at:chrono::Utc::now().timestamp_millis() as f64+options.deadline_ms as f64,
+                            options:crate::worker::spawn_supervisor::FactsChildOptions{termination_grace_ms:options.termination_grace_ms as f64,max_output_bytes:options.max_output_bytes,supervisor_command:&options.supervisor_command,supervisor_args:&options.supervisor_args,batch_id:&batch,queued:&ledger.queued,launched_at:chrono::DateTime::parse_from_rfc3339(&ledger.started_at).map_err(|error|error.to_string())?.timestamp_millis()},
+                        },&options.people,&mut |message|(options.warn)(message)).await
+                    }
+                },&mut warn).await
+            })
+        })}
+    }
     pub fn new(identity:MemoryIdentity,now:Arc<dyn Fn()->i64+Send+Sync>)->Self{let queue=FactsQueue::new(FactsQueueOptions{identity_paths:identity.paths.clone(),now:Some(now.clone()),on_publish:None});let failures=FactsFailureStore::new(FactsFailureStoreOptions{identity_paths:identity.paths.clone(),now:Some(now.clone()),lock_wait_ms:None});Self{identity,queue,failures,active:AtomicBool::new(false),now}}
     pub async fn launch_pending<F:Future<Output=Result<FactsLaunchResult,String>>>(&self,signal:Option<&FactsAbortSignal>,attempt:impl FnMut()->F)->Result<FactsLaunchResult,String>{
         if signal.is_some_and(FactsAbortSignal::is_aborted){return Ok(FactsLaunchResult::Skipped);}
@@ -33,7 +68,7 @@ impl FactsExtractorRunner{
     }
     pub async fn launch_pending_once<F:Future<Output=Result<FactsLaunchResult,String>>>(
         &self,input:FactsAttemptInput<'_>,signal:Option<&FactsAbortSignal>,reconcile:impl FnOnce()->Result<bool,String>,
-        execute:impl FnOnce(std::path::PathBuf,FactsPayload,String)->F,warn:&mut dyn FnMut(&str),
+        execute:impl FnOnce(std::path::PathBuf,FactsPayload,String)->F,warn:&mut (dyn FnMut(&str)+Send),
     )->Result<FactsLaunchResult,String>{
         let aborted=||signal.is_some_and(FactsAbortSignal::is_aborted);
         if aborted(){return Ok(FactsLaunchResult::Skipped);}
@@ -44,13 +79,15 @@ impl FactsExtractorRunner{
         let failures=match crate::facts_launch_selection::read_launchable_failures(&self.failures,|message,error,_|warn(&format!("{message}: {error}"))){crate::facts_launch_selection::FactsFailuresRead::Read{failures}=>failures,_=>return Ok(FactsLaunchResult::Skipped)};
         let now=(self.now)();let instant=chrono::DateTime::from_timestamp_millis(now).ok_or("Invalid facts clock")?.to_rfc3339_opts(chrono::SecondsFormat::Millis,true);
         let selected=memory_core::facts::select_launchable(&pending,Some(&failures),&instant).selected;if selected.is_empty(){return Ok(FactsLaunchResult::Empty);}
-        let mut io=FactsIo{queue:&self.queue,instant:&instant,warn};let mut terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};
-        if let ReflectionModelResolution::CategoryUnavailable{cause,..}=input.resolution{terminal.preflight_fail(&crate::facts_failure_recording::queue_entry_targets(&selected),&crate::facts_failure_recording::preflight_failure_id(None),memory_core::facts::FactsFailureReason::QuickCategoryUnavailable,cause).map_err(|error|error.to_string())?;return Ok(FactsLaunchResult::Skipped);}
+        if let ReflectionModelResolution::CategoryUnavailable{cause,..}=input.resolution{let mut io=FactsIo{queue:&self.queue,instant:&instant,warn};let terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};terminal.preflight_fail(&crate::facts_failure_recording::queue_entry_targets(&selected),&crate::facts_failure_recording::preflight_failure_id(None),memory_core::facts::FactsFailureReason::QuickCategoryUnavailable,cause).map_err(|error|error.to_string())?;return Ok(FactsLaunchResult::Skipped);}
         crate::engine_session::prepare_memory_engine_session(&self.identity.id,&self.identity.paths,Default::default()).map_err(|error|error.to_string())?;
         let people=crate::facts_people_payload::read_facts_people_payload(&self.identity.paths.repo);
         let envelope=memory_core::facts::FactsPayloadEnvelope{version:1,identity:self.identity.id.clone(),today:instant[..10].into(),known_people:people.known_people,primary_human:people.primary_human};
         let capped=memory_core::facts::select_capped_facts_batch(&memory_core::facts::CappedFactsBatchInput{entries:selected.clone(),envelope:envelope.clone(),now:instant.clone(),max_bytes:None,starvation_ms:None});
-        if crate::facts_oversize::classify_oversize_payload(&mut terminal,&crate::facts_oversize::OversizeClassificationInput{envelope:&envelope,oversized:&capped.oversized,pending:&selected,envelope_oversized:capped.envelope_oversized,create_failure_id:None,max_bytes:None},&mut |_,_|{}).map_err(|error|error.to_string())?{return Ok(FactsLaunchResult::Skipped);}
+        {
+            let mut io=FactsIo{queue:&self.queue,instant:&instant,warn};let mut terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};
+            if crate::facts_oversize::classify_oversize_payload(&mut terminal,&crate::facts_oversize::OversizeClassificationInput{envelope:&envelope,oversized:&capped.oversized,pending:&selected,envelope_oversized:capped.envelope_oversized,create_failure_id:None,max_bytes:None},&mut |_,_|{}).map_err(|error|error.to_string())?{return Ok(FactsLaunchResult::Skipped);}
+        }
         if capped.selected.is_empty(){return Ok(FactsLaunchResult::Empty);}
         if aborted(){return Ok(FactsLaunchResult::Skipped);}let batch=memory_core::support::random::random_uuid();
         let dir=crate::facts_run_storage::reserve_facts_run_dir(&crate::facts_run_storage::ReserveFactsRunDirOptions{facts_dir:&self.identity.paths.facts,locks_dir:&self.identity.paths.locks,entries:&capped.selected,batch_id:&batch,launched_at:now,deadline_ms:Some(input.deadline_ms),termination_grace_ms:Some(input.termination_grace_ms),lock_wait_ms:None}).map_err(|error|error.to_string())?;
@@ -59,9 +96,9 @@ impl FactsExtractorRunner{
         let targets=crate::facts_failure_recording::queue_entry_targets(&capped.selected);
         let result=match execute(dir.clone(),envelope.to_payload(capped.selected),batch.clone()).await{
             Ok(result)=>result,
-            Err(error)=>{terminal.fail(&crate::facts_terminal_writes::FactsFailureWrite{run_dir:&dir,run_id:&run_id,batch_id:&batch,targets:&targets,reason:memory_core::facts::FactsFailureReason::ChildExit,detail:&error,outcome:None}).map_err(|error|error.to_string())?;FactsLaunchResult::Failed{run_id}},
+            Err(error)=>{let mut io=FactsIo{queue:&self.queue,instant:&instant,warn};let mut terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};terminal.fail(&crate::facts_terminal_writes::FactsFailureWrite{run_dir:&dir,run_id:&run_id,batch_id:&batch,targets:&targets,reason:memory_core::facts::FactsFailureReason::ChildExit,detail:&error,outcome:None}).map_err(|error|error.to_string())?;FactsLaunchResult::Failed{run_id}},
         };
-        self.prune(io.warn);Ok(result)
+        self.prune(warn);Ok(result)
     }
     pub fn finalize(&self,dir:&Path,people:&memory_core::facts::person_routing::FactsPeopleRouting,warn:&mut dyn FnMut(&str))->Result<FactsLaunchResult,String>{
         use memory_core::locks::{create_lock_record,CreateLockRecordOptions,AcquireLockOptions,with_lock,run_finalization_lock_path,memory_writer_lock_path,WithLockError};
@@ -85,7 +122,7 @@ impl FactsExtractorRunner{
         }).map_err(|error|error.to_string())?;
         self.prune(warn);Ok(result)
     }
-    pub async fn execute_child(&self,cache:&mut crate::worker::model_preflight::ModelPreflight,input:crate::worker::facts_child_launch::FactsChildLaunchInput<'_>,people:&memory_core::facts::person_routing::FactsPeopleRouting,warn:&mut dyn FnMut(&str))->Result<FactsLaunchResult,String>{
+    pub async fn execute_child(&self,cache:&mut crate::worker::model_preflight::ModelPreflight,input:crate::worker::facts_child_launch::FactsChildLaunchInput<'_>,people:&memory_core::facts::person_routing::FactsPeopleRouting,warn:&mut (dyn FnMut(&str)+Send))->Result<FactsLaunchResult,String>{
         let dir=input.run_dir;let run=input.run_id;let batch=input.options.batch_id;let targets=crate::facts_failure_recording::queue_entry_targets(&input.payload.entries);
         let child=match crate::worker::facts_child_launch::launch_facts_model_chain(cache,input,|message|warn(message)).await{
             Ok(child)=>child,
@@ -143,6 +180,20 @@ pub fn sweep_runner_artifacts(facts:&Path,warn:&mut dyn FnMut(&str)){crate::fact
         let signal=FactsAbortSignal::new();signal.abort();port.launch_pending(Some(&signal)).await.unwrap();assert_eq!(calls.load(Ordering::SeqCst),1);
         runner.active.store(true,Ordering::SeqCst);port.launch_pending(None).await.unwrap();assert_eq!(calls.load(Ordering::SeqCst),1);runner.active.store(false,Ordering::SeqCst);
         assert!(!runner.identity.paths.repo.exists());
+    }
+    #[tokio::test]async fn assembled_native_attempt_preserves_empty_and_unavailable_preflight(){
+        use crate::facts_wiring::FactsExtractorPort;
+        use memory_core::journal::entries::{TranscriptEntry,TextTranscriptEntry};
+        let root=tempfile::tempdir().unwrap();let runner=Arc::new(runner(root.path()));
+        let mut port=runner.clone().native_extractor(NativeFactsAttemptOptions{
+            resolution:ReflectionModelResolution::CategoryUnavailable{category:"quick".into(),cause:"no_registry",attempted_chain:None,missing_providers:None},
+            env:Default::default(),config_sources:vec![],launch:crate::worker::model_preflight::Launcher{command:"missing-child-must-not-run".into(),prefix_args:vec![]},supervisor_command:"missing-supervisor-must-not-run".into(),supervisor_args:vec![],deadline_ms:900000,termination_grace_ms:5000,max_output_bytes:1024,people:memory_core::facts::person_routing::FactsPeopleRouting{enabled:true,max_entries:40,max_entry_chars:200},sandbox:None,warn:Arc::new(|error|panic!("{error}")),
+        });
+        port.launch_pending(None).await.unwrap();assert!(!runner.identity.paths.repo.exists());
+        runner.queue.enqueue(memory_core::facts::queue::FactsEnqueueRequest{identity:"agent".into(),session_id:"session".into(),conversation_id:"conversation".into(),signal:None,entries:vec![TranscriptEntry::Text(TextTranscriptEntry::new("user","Question","1970-01-01T00:00:00.000Z","m:user","m")),TranscriptEntry::Text(TextTranscriptEntry::new("assistant","Answer","1970-01-01T00:00:00.000Z","m:assistant","m"))]}).unwrap();
+        port.launch_pending(None).await.unwrap();assert_eq!(runner.queue.list_pending().unwrap().len(),1);
+        assert!(!runner.identity.paths.repo.exists());assert!(!runner.identity.paths.facts.join("runs").exists());
+        let failures=runner.failures.read_failures().unwrap();assert_eq!(failures.entries.len(),1);
     }
     #[test]fn abandoned_sentinel_replays_without_outcome_or_payload(){
         let root=tempfile::tempdir().unwrap();let runner=runner(root.path());
