@@ -2,6 +2,30 @@ use serde_json::Value;
 
 pub const DEFAULT_IMAGE_MODEL: &str = "gpt-image-2.5-sunburst";
 
+pub const IMAGE_MODEL_NAMES: &[(&str, &str)] = &[
+    ("gpt-image-2.5-sunburst", "GPT Image 2.5 Sunburst"),
+    ("gpt-image-2.5-flare", "GPT Image 2.5 Flare"),
+    ("gpt-image-2", "GPT Image 2"),
+];
+pub struct GenerateImageBase<'a> {
+    pub model: &'a str, pub size: &'a str, pub quality: &'a str,
+    pub background: &'a str, pub output_format: &'a str, pub requested: usize, pub source: &'a str,
+}
+#[derive(Clone, Copy)]
+pub enum FailureReason { MissingConfig, ProviderNativeBypass, InvalidParams, WriteFailed, ProviderError }
+impl FailureReason {
+    fn wire(self) -> &'static str {
+        match self { Self::MissingConfig => "missing_config", Self::ProviderNativeBypass => "provider_native_bypass", Self::InvalidParams => "invalid_params", Self::WriteFailed => "write_failed", Self::ProviderError => "provider_error" }
+    }
+}
+pub fn failure(message: &str, reason: FailureReason, base: GenerateImageBase<'_>) -> Value {
+    serde_json::json!({"content":[{"type":"text","text":message}],"details":{
+        "model":base.model,"size":base.size,"quality":base.quality,"background":base.background,
+        "outputFormat":base.output_format,"requested":base.requested,"source":base.source,
+        "paths":[],"generated":0,"revisedPrompts":[],"error":message,"reason":reason.wire()
+    }})
+}
+
 pub fn parameters() -> Value {
     serde_json::json!({
   "type": "object",
