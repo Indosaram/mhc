@@ -1504,7 +1504,11 @@ name = "maho-codemode"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "bytes",
  "getrandom 0.4.2",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "maho-ai",
  "maho-ext-api",
  "maho-tools",
