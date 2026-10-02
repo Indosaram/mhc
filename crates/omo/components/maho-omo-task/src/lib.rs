@@ -40,3 +40,4 @@ pub mod event_bridge;
 pub mod task_skill_loader;
 pub mod dag_runtime;
 pub mod timers;
+pub mod registration;
