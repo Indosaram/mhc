@@ -53,6 +53,7 @@ pub mod tool_metadata;
 pub mod tools;
 pub mod worker;
 pub mod wiring_context;
+pub mod wiring_memory_write;
 
 // Todo 45 owns these module bodies; declaring the namespaces here keeps lib.rs
 // ownership with todo 43 without adding nonfunctional command implementations.
