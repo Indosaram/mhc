@@ -20,12 +20,14 @@ async fn persistent_python_calls_native_host_over_owned_bridge() {
     let artifacts = tempfile::tempdir().unwrap();
     let catalog_calls=Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let catalog_count=catalog_calls.clone();
+    let catalog_available=Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let available=catalog_available.clone();
     let session = Arc::new(CodemodeSessionManager::start(CreateCodemodeSessionManagerOptions {
         session_id:"session-test".into(), cwd:artifacts.path().into(), settings:CodemodeSettings::default(),
         availability: [(maho_codemode::tool::types::EvalLanguage::Py,true),(maho_codemode::tool::types::EvalLanguage::Js,true),(maho_codemode::tool::types::EvalLanguage::Rb,true),(maho_codemode::tool::types::EvalLanguage::Jl,false)].map(|(language,enabled)|(language,maho_codemode::interpreters::detect::LanguageAvailability {enabled,detected:if language==maho_codemode::tool::types::EvalLanguage::Py {maho_codemode::interpreters::detect::InterpreterDetection::Detected {path:"python3".into(),version:"3".into(),resolved_path:None}}else {maho_codemode::interpreters::detect::InterpreterDetection::Unavailable}})),
         local_roots:None, artifacts_dir:Some(artifacts.path().into()), session_env:None,
         executor:Arc::new(Fixture),
-        list_tools:Some(Arc::new(move || {let previous=catalog_count.fetch_add(1,std::sync::atomic::Ordering::SeqCst);if previous>0 {return Err("catalog unavailable".into());}Ok(vec![EvalSchemaToolInfo { name:"echo".into(), description:None, parameters:Some(json!({"type":"object"})) }])})),
+        list_tools:Some(Arc::new(move || {catalog_count.fetch_add(1,std::sync::atomic::Ordering::SeqCst);if !available.load(std::sync::atomic::Ordering::SeqCst) {return Err("catalog unavailable".into());}Ok(vec![EvalSchemaToolInfo { name:"echo".into(), description:None, parameters:Some(json!({"type":"object"})) }])})),
         complete:Arc::new(|request|Box::pin(async move { Ok(json!({"text":request.prompt,"details":{"model":"fixture/model","structured":false}})) })),
     }).await.unwrap());
     let port = session.bridge_endpoint().unwrap().0;
@@ -54,10 +56,14 @@ async fn persistent_python_calls_native_host_over_owned_bridge() {
     let next = kernel.run(PythonKernelRunOptions { cell_id:"persistent".into(), code:"print(x + 1)".into(), timeout_ms:Some(5000), on_started:None, on_message:Some(Arc::new(move |message| if let Some(text)=message["data"].as_str() { next_output.lock().expect("next output").push_str(text); })) }).await.unwrap();
     assert_eq!(next["ok"], true);
     assert!(output.lock().unwrap().contains("42"));
+    catalog_available.store(false,std::sync::atomic::Ordering::SeqCst);
     let failure=kernel.run(PythonKernelRunOptions {cell_id:"catalog-failure".into(),code:"tool_schema('echo')".into(),timeout_ms:Some(5000),on_started:None,on_message:None}).await.unwrap();
     assert_eq!(failure["ok"],false);
     assert!(failure["error"]["message"].as_str().unwrap().contains("catalog unavailable"));
     let helper=kernel.run(PythonKernelRunOptions {cell_id:"output-without-catalog".into(),code:"output('st_fixture')".into(),timeout_ms:Some(5000),on_started:None,on_message:None}).await.unwrap();
+    assert_eq!(catalog_calls.load(std::sync::atomic::Ordering::SeqCst),2,"Python ordinary and output calls must not query the schema catalog");
+    assert!(session.get_javascript_kernel().await.is_err(),"JS startup must propagate catalog failure");
+    catalog_available.store(true,std::sync::atomic::Ordering::SeqCst);
     let js=session.get_javascript_kernel().await.unwrap();
     let js_again=session.get_javascript_kernel().await.unwrap();
     assert!(Arc::ptr_eq(&js,&js_again));
@@ -66,15 +72,17 @@ async fn persistent_python_calls_native_host_over_owned_bridge() {
     assert!(Arc::ptr_eq(&js_native,&js_native_again));
     let js_result=js.run(maho_codemode::kernels::shared::subprocess_contract::KernelRunInput {cell_id:"js-local".into(),code:"var sessionValue=41; await write('local://js-receipt.txt','owned-js'); await read('local://js-receipt.txt')".into(),timeout_ms:Some(5000)},|_|{}).await.unwrap();
     let js_next=js.run(maho_codemode::kernels::shared::subprocess_contract::KernelRunInput {cell_id:"js-state".into(),code:"sessionValue+1".into(),timeout_ms:Some(5000)},|_|{}).await.unwrap();
+    let collision=js.run(maho_codemode::kernels::shared::subprocess_contract::KernelRunInput {cell_id:"host-collision".into(),code:"tool(function echo() { return 1; })".into(),timeout_ms:Some(5000)},|_|{}).await.unwrap();
     proxy.dispose().await;
     session.dispose().await.unwrap();
     assert_eq!(js_result["ok"],true,"{js_result}");
     assert_eq!(js_next["valueRepr"],"42");
+    assert_eq!(collision["ok"],false);
+    assert!(collision["error"]["message"].as_str().unwrap().contains("collides"));
     assert_eq!(tokio::fs::read_to_string(artifacts.path().join("local/js-receipt.txt")).await.unwrap(),"owned-js");
     assert!(js.pid().is_none());
     assert!(session.get_javascript_kernel().await.is_err());
     assert_eq!(helper["ok"],true,"output helper must not consult an unavailable schema registry");
-    assert_eq!(catalog_calls.load(std::sync::atomic::Ordering::SeqCst),2,"ordinary tool calls must not query the schema catalog");
     assert!(session.get_python_kernel("python3").await.is_err());
     assert!(tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err());
 }
