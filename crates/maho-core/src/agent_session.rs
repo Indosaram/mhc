@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 tokio::task_local! {
     static EXTENSION_EVENT_SIGNAL: maho_ext_api::AbortSignal;
+    static EXTENSION_COMPACTION_PREPARATION: maho_ext_api::CompactionPreparationDetails;
 }
 struct ExtensionEventSignalSubscription {
     signal: maho_ai::utils::abort::AbortSignal,
@@ -556,6 +557,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn is_idle(&self) -> bool { self.session().is_ok_and(|session| !session.is_streaming() && !session.work_barrier.has_active_work()) }
     fn is_project_trusted(&self) -> bool { self.session().is_ok_and(|session| session.with_settings_manager(|manager| manager.is_project_trusted())) }
     fn get_signal(&self) -> Option<maho_ext_api::AbortSignal> { EXTENSION_EVENT_SIGNAL.try_with(Clone::clone).ok() }
+    fn get_compaction_preparation(&self) -> Option<maho_ext_api::CompactionPreparationDetails> { EXTENSION_COMPACTION_PREPARATION.try_with(Clone::clone).ok() }
     fn abort(&self, source: Option<maho_ext_api::AbortSource>) {
         if let Ok(session) = self.session() {
             if source.unwrap_or(maho_ext_api::AbortSource::User) == maho_ext_api::AbortSource::User {
@@ -1490,7 +1492,7 @@ impl AgentSession {
             let before = {
                 let mut runner = self.extension_runner.lock().await;
                 if let Some(runner) = runner.as_mut() {
-                    runner.emit(maho_ext_api::ExtensionEvent::SessionBeforeCompact(maho_ext_api::SessionBeforeCompactEvent {
+                    let event = maho_ext_api::SessionBeforeCompactEvent {
                         reason: compact_reason, will_retry: reason != "manual", request_id: request_id.clone(),
                         preparation: maho_ext_api::CompactionPreparation {
                             settings: maho_ext_api::CompactionSettings { enabled: resolved.enabled, reserve_tokens: resolved.reserve_tokens as u64,
@@ -1503,8 +1505,22 @@ impl AgentSession {
                             previous_summary: preparation.previous_summary.clone(),
                         }, branch_entries: entries.iter().cloned().map(session_entry_from_value).collect(),
                         custom_instructions: instructions.map(str::to_owned), signal: extension_signal.clone(),
-                    }))
-                    .await.map_err(|error| error.to_string())?
+                    };
+                    let details = maho_ext_api::CompactionPreparationDetails {
+                        preparation: event.preparation.clone(),
+                        source_messages: Some(preparation.source_messages.iter().cloned().map(serde_json::from_value)
+                            .collect::<Result<_, _>>().map_err(|error| error.to_string())?),
+                        turn_prefix_source_messages: Some(preparation.turn_prefix_source_messages.iter().cloned().map(serde_json::from_value)
+                            .collect::<Result<_, _>>().map_err(|error| error.to_string())?),
+                        is_split_turn: preparation.is_split_turn,
+                        file_ops: maho_ext_api::CompactionFileOperations {
+                            read: preparation.file_ops.read.iter().cloned().collect(),
+                            written: preparation.file_ops.written.iter().cloned().collect(),
+                            edited: preparation.file_ops.edited.iter().cloned().collect(),
+                        },
+                    };
+                    EXTENSION_COMPACTION_PREPARATION.scope(details, runner.emit(maho_ext_api::ExtensionEvent::SessionBeforeCompact(event)))
+                        .await.map_err(|error| error.to_string())?
                 } else { maho_ext_api::EventResult::None }
             };
             let (result, from_extension) = match before {
@@ -4072,6 +4088,27 @@ mod tests {
         }).await;
         drop(subscription);
         assert!(actions.get_signal().is_none());
+    }
+
+    #[tokio::test]
+    async fn compaction_preparation_details_are_scoped_to_the_hook() {
+        use maho_ext_api::ExtensionContextActions;
+        let session = test_session();
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        let details = maho_ext_api::CompactionPreparationDetails {
+            preparation: maho_ext_api::CompactionPreparation {
+                settings: actions.get_compaction_settings(), messages_to_summarize: Vec::new(), turn_prefix_messages: Vec::new(),
+                tokens_before: 1, first_kept_entry_id: "kept".into(), previous_summary: None,
+            },
+            source_messages: Some(vec![make_user_message("prefix", None)]),
+            turn_prefix_source_messages: Some(vec![make_user_message("turn prefix", None)]),
+            is_split_turn: true,
+            file_ops: maho_ext_api::CompactionFileOperations { read: vec!["file".into()], ..Default::default() },
+        };
+        EXTENSION_COMPACTION_PREPARATION.scope(details.clone(), async {
+            assert_eq!(actions.get_compaction_preparation(), Some(details));
+        }).await;
+        assert!(actions.get_compaction_preparation().is_none());
     }
 
     #[tokio::test]

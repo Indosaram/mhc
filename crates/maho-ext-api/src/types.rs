@@ -305,6 +305,7 @@ pub trait ExtensionContextActions: Send + Sync {
     fn shutdown(&self);
     fn get_context_usage(&self) -> Option<ContextUsage>;
     fn get_compaction_settings(&self) -> CompactionSettings;
+    fn get_compaction_preparation(&self) -> Option<CompactionPreparationDetails> { None }
     fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64>;
     fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64;
     fn get_prompt_cache_keep_alive_settings(&self) -> PromptCacheKeepAliveSettings;
@@ -505,6 +506,7 @@ impl ExtensionContext {
     pub fn shutdown(&self) -> Result<(), ExtensionFailure> { self.actions()?.shutdown(); Ok(()) }
     pub fn get_context_usage(&self) -> Result<Option<ContextUsage>, ExtensionFailure> { Ok(self.actions()?.get_context_usage()) }
     pub fn get_compaction_settings(&self) -> Result<CompactionSettings, ExtensionFailure> { Ok(self.actions()?.get_compaction_settings()) }
+    pub fn get_compaction_preparation(&self) -> Result<Option<CompactionPreparationDetails>, ExtensionFailure> { Ok(self.actions()?.get_compaction_preparation()) }
     pub fn get_prompt_cache_safe_wait_seconds(&self) -> Result<Option<f64>, ExtensionFailure> { Ok(self.actions()?.get_prompt_cache_safe_wait_seconds()) }
     pub fn get_prompt_cache_goal_backstop_max_seconds(&self) -> Result<f64, ExtensionFailure> { Ok(self.actions()?.get_prompt_cache_goal_backstop_max_seconds()) }
     pub fn get_prompt_cache_keep_alive_settings(&self) -> Result<PromptCacheKeepAliveSettings, ExtensionFailure> { Ok(self.actions()?.get_prompt_cache_keep_alive_settings()) }
@@ -598,6 +600,18 @@ pub enum CompactionRejectionCause { CancelledByExtension, ExternalOwner, WouldOv
 pub struct CompactionResult { pub summary: String, pub first_kept_entry_id: String, pub tokens_before: u64, pub details: Option<JsonValue> }
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompactionPreparation { pub settings: CompactionSettings, pub messages_to_summarize: Vec<AgentMessage>, pub turn_prefix_messages: Vec<AgentMessage>, pub tokens_before: u64, pub first_kept_entry_id: String, pub previous_summary: Option<String> }
+/// Complete preparation data for session_before_compact, exposed additively so
+/// existing event and preparation constructors remain source-compatible.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompactionPreparationDetails {
+    pub preparation: CompactionPreparation,
+    pub source_messages: Option<Vec<AgentMessage>>,
+    pub turn_prefix_source_messages: Option<Vec<AgentMessage>>,
+    pub is_split_turn: bool,
+    pub file_ops: CompactionFileOperations,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CompactionFileOperations { pub read: Vec<String>, pub written: Vec<String>, pub edited: Vec<String> }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompactionSettings { pub enabled: bool, pub reserve_tokens: u64, pub keep_recent_tokens: u64 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

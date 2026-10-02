@@ -89,6 +89,7 @@ impl ExtensionContextActions for ContextSessionManager {
     fn shutdown(&self) { self.actions.shutdown(); }
     fn get_context_usage(&self) -> Option<ContextUsage> { self.actions.get_context_usage() }
     fn get_compaction_settings(&self) -> CompactionSettings { self.actions.get_compaction_settings() }
+    fn get_compaction_preparation(&self) -> Option<CompactionPreparationDetails> { self.active(); self.actions.get_compaction_preparation() }
     fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { self.actions.get_prompt_cache_safe_wait_seconds() }
     fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64 { self.actions.get_prompt_cache_goal_backstop_max_seconds() }
     fn get_prompt_cache_keep_alive_settings(&self) -> PromptCacheKeepAliveSettings { self.actions.get_prompt_cache_keep_alive_settings() }
