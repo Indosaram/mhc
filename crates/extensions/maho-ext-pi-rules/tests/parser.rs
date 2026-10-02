@@ -11,6 +11,8 @@ fn check(content: &str, expected: RuleFrontmatter, body: &str) {
 }
 #[test] fn no_frontmatter() { let c = "Use strict TypeScript.\n---\nKeep this horizontal rule."; check(c, frontmatter(None,None,None), c); }
 #[test] fn closing_delimiter_removes_only_one_carriage_return() { let content="---\nalwaysApply: true\n---\r\r\nbody";let result=parse_rule(content);assert!(result.diagnostic.is_some());assert_eq!(result.body,content);assert_eq!(result.frontmatter,RuleFrontmatter::default()); }
+#[test] fn scalar_empty_glob_is_preserved(){check("---\nglobs: \"\"\n---\nbody",frontmatter(None,single(""),None),"body");}
+#[test] fn javascript_whitespace_preserves_next_line_and_trims_bom(){check("---\n\u{feff}alwaysApply: true\ndescription: \u{0085}hello\u{0085}\n---\nbody",frontmatter(Some("\u{0085}hello\u{0085}"),None,Some(true)),"body");}
 #[test] fn valid_frontmatter() { check("---\ndescription: TypeScript rules\nglobs: [\"**/*.ts\", \"**/*.tsx\"]\nalwaysApply: true\n---\nUse type-only imports.", frontmatter(Some("TypeScript rules"),multiple(&["**/*.ts","**/*.tsx"]),Some(true)), "Use type-only imports."); }
 #[test] fn empty_frontmatter() { check("---\n---\n", frontmatter(None,None,None), ""); }
 #[test] fn malformed_is_salvaged() { let c="---\nglobs: [broken\n---\nbody"; let r=parse_rule(c); assert_eq!(r.body,c); assert_eq!(r.frontmatter,RuleFrontmatter::default()); assert!(r.diagnostic.is_some()); }

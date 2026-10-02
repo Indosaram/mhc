@@ -1,4 +1,5 @@
 use super::types::{ParsedRule, PatternList, RuleFrontmatter};
+fn js_whitespace(ch:char)->bool{matches!(ch,'\u{0009}'..='\u{000d}'|' '|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}')}
 
 pub fn parse_rule(content: &str) -> ParsedRule {
     let content = content.strip_prefix('\u{feff}').unwrap_or(content);
@@ -28,11 +29,11 @@ fn parse_yaml(yaml: &str) -> Result<RuleFrontmatter, String> {
     let mut globs = Vec::new();
     let mut index = 0;
     while let Some(raw) = lines.get(index) {
-        let line = strip_comment(raw).trim();
+        let line = strip_comment(raw).trim_matches(js_whitespace);
         if line.is_empty() { index += 1; continue; }
         let (key, value) = line.split_once(':').ok_or_else(|| format!("Expected key-value pair on line {}", index + 1))?;
-        let value = value.trim();
-        match key.trim() {
+        let value = value.trim_matches(js_whitespace);
+        match key.trim_matches(js_whitespace) {
             "description" => result.description = Some(parse_string(value)?),
             "alwaysApply" => result.always_apply = Some(match value {
                 "true" => true, "false" => false,
@@ -45,18 +46,18 @@ fn parse_yaml(yaml: &str) -> Result<RuleFrontmatter, String> {
                     let mut values = Vec::new();
                     while let Some(raw_item) = lines.get(index + 1) {
                         let item = strip_comment(raw_item);
-                        if item.trim().is_empty() { index += 1; continue; }
-                        if !item.starts_with(char::is_whitespace) { break; }
-                        let Some(item) = item.trim_start().strip_prefix('-') else { break; };
-                        values.push(parse_string(item.trim_start())?);
+                        if item.trim_matches(js_whitespace).is_empty() { index += 1; continue; }
+                        if !item.starts_with(js_whitespace) { break; }
+                        let Some(item) = item.trim_start_matches(js_whitespace).strip_prefix('-') else { break; };
+                        let parsed=parse_string(item.trim_start_matches(js_whitespace))?;if !parsed.is_empty(){values.push(parsed);}
                         index += 1;
                     }
                     values
                 } else {
                     let parsed = parse_string(value)?;
-                    if parsed.contains(',') { parsed.split(',').map(str::trim).map(str::to_owned).collect() } else { vec![parsed] }
+                    if parsed.contains(',') { parsed.split(',').map(|item|item.trim_matches(js_whitespace)).filter(|item|!item.is_empty()).map(str::to_owned).collect() } else { vec![parsed] }
                 };
-                for glob in values { if !glob.is_empty() && !globs.contains(&glob) { globs.push(glob); } }
+                for glob in values { if !globs.contains(&glob) { globs.push(glob); } }
             }
             _ => {}
         }
@@ -102,11 +103,11 @@ fn parse_inline(value: &str) -> Result<Vec<String>, String> {
         if ch == '\'' || ch == '"' {
             if quote == Some(ch) { quote = None; } else if quote.is_none() { quote = Some(ch); }
         } else if quote.is_none() && (ch == ',' || ch == ']') {
-            let part = value[start..index].trim();
+            let part = value[start..index].trim_matches(js_whitespace);
             if !part.is_empty() { let parsed = parse_string(part)?; if !parsed.is_empty() { values.push(parsed); } }
             start = index + 1;
             if ch == ']' {
-                if !value[start..].trim().is_empty() { return Err("Unexpected content after inline array".into()); }
+                if !value[start..].trim_matches(js_whitespace).is_empty() { return Err("Unexpected content after inline array".into()); }
                 return Ok(values);
             }
         }
