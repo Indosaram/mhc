@@ -3812,7 +3812,9 @@ impl AgentSession {
                 cwd: cwd.clone(), agent_dir: self.agent_dir(), prompt_paths: vec![entry.path.clone()], include_defaults: false,
             }) {
                 template.source_info = source_info(&template.file_path, &entry);
-                if !templates.iter().any(|known| known.name == template.name) { templates.push(template); }
+                if let Some(known) = templates.iter_mut().find(|known| known.name == template.name) {
+                    if known.file_path == template.file_path { *known = template; }
+                } else { templates.push(template); }
             }
         }
         for entry in resources.skill_paths {
@@ -3820,7 +3822,9 @@ impl AgentSession {
                 cwd: cwd.clone(), agent_dir: self.agent_dir(), skill_paths: vec![entry.path.clone()], include_defaults: false,
             }).skills {
                 skill.source_info = source_info(&skill.file_path, &entry);
-                if !skills.iter().any(|known| known.name == skill.name) { skills.push(skill); }
+                if let Some(known) = skills.iter_mut().find(|known| known.name == skill.name) {
+                    if known.file_path == skill.file_path { *known = skill; }
+                } else { skills.push(skill); }
             }
         }
         self.set_prompt_resources(templates, skills);
@@ -6094,6 +6098,12 @@ mod tests {
         let sources = maho_ext_api::ExtensionContextActions::get_loaded_hook_sources(
             &SessionExtensionActions(Arc::downgrade(&session.inner)));
         assert_eq!(sources.runtime_hook_source_paths, vec![dir.path().join("hooks.json")]);
+        std::fs::write(&prompt, "---\ndescription: updated prompt\n---\nupdated $1").expect("updated fixture");
+        session.extend_discovered_resources(maho_ext_api::DiscoveredResources {
+            prompt_paths: vec![entry(&prompt)], ..Default::default()
+        });
+        assert_eq!(session.prompt_templates().len(), 1);
+        assert_eq!(session.expand_input("/discovered file", true).expect("updated expansion"), "updated file");
     }
 
     #[tokio::test]
