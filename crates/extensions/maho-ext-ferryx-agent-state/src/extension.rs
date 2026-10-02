@@ -5,15 +5,9 @@ use std::{io::Write, net::{SocketAddr, TcpStream}, sync::{Arc, Mutex, mpsc}, thr
 
 struct Config { socket: Option<String>, port: Option<u16>, token: Option<String>, session_id: String }
 fn state_port(value: &str) -> Option<u16> {
-    let value = value.trim();
-    let number = if let Some(digits) = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
-        u64::from_str_radix(digits, 16).ok()? as f64
-    } else if let Some(digits) = value.strip_prefix("0o").or_else(|| value.strip_prefix("0O")) {
-        u64::from_str_radix(digits, 8).ok()? as f64
-    } else if let Some(digits) = value.strip_prefix("0b").or_else(|| value.strip_prefix("0B")) {
-        u64::from_str_radix(digits, 2).ok()? as f64
-    } else { value.parse::<f64>().ok()? };
-    (number.is_finite() && number.fract() == 0.0 && number > 0.0 && number <= 65535.0).then_some(number as u16)
+    let number = maho_ai::utils::js::string_to_number(value);
+    if !number.is_finite() || number.fract() != 0.0 || number <= 0.0 || number > 65535.0 { return None; }
+    number.to_string().parse().ok()
 }
 impl Config {
     fn from_env() -> Option<Self> {
@@ -33,7 +27,8 @@ impl Config {
         }
         #[cfg(unix)]
         if let Some(path) = &self.socket {
-            let mut stream = std::os::unix::net::UnixStream::connect(path)?;
+            let mut stream = socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None)?;
+            stream.connect_timeout(&socket2::SockAddr::unix(path)?, timeout)?;
             stream.set_write_timeout(Some(timeout))?;
             return stream.write_all(payload.as_bytes());
         }
@@ -131,8 +126,8 @@ mod tests {
     use std::io::BufRead;
     #[test]
     fn port_accepts_javascript_integer_number_forms() {
-        for value in [" 1234 ", "1234.0", "1.234e3", "+1234", "0x4d2", "0o2322", "0b10011010010"] { assert_eq!(state_port(value), Some(1234), "{value}"); }
-        for value in ["", "0", "-1", "65536", "1.2", "NaN", "Infinity", "port", "1234junk"] { assert_eq!(state_port(value), None, "{value}"); }
+        for value in [" 1234 ", "1234.0", "1.234e3", "+1234", "0x4d2", "0o2322", "0b10011010010", "\u{feff}1234\u{feff}", ".1234e4", "1234."] { assert_eq!(state_port(value), Some(1234), "{value}"); }
+        for value in ["", "0", "-1", "65536", "1.2", "NaN", "Infinity", "port", "1234junk", "\u{0085}1234", "+0x4d2", "0x+4d2", "1_234", "inf"] { assert_eq!(state_port(value), None, "{value}"); }
     }
     #[test]
     fn tcp_receives_framed_state_payload() {
@@ -154,6 +149,27 @@ mod tests {
         assert_eq!(payload["state"], "idle");
         assert_eq!(payload["token"], "fixture-token");
         assert_eq!(payload["providerSession"]["id"], "provider-session");
+        drop(delivery);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn unix_receives_payload_without_tcp_token() {
+        let fixture = tempfile::tempdir().expect("Unix delivery fixture");
+        let path = fixture.path().join("state.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind Unix fixture");
+        let peer = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept Unix payload");
+            stream.set_read_timeout(Some(Duration::from_secs(2))).expect("bound payload read");
+            let mut text = String::new();
+            std::io::BufReader::new(stream).read_line(&mut text).expect("read Unix frame");
+            serde_json::from_str::<Value>(&text).expect("parse Unix payload")
+        });
+        let delivery = Delivery::new(Config { socket: Some(path.to_string_lossy().into_owned()), port: None, token: Some("ignored".into()), session_id: "fixture-session".into() });
+        delivery.send(&mut State::default(), true, None);
+        let payload = peer.join().expect("join Unix peer");
+        assert_eq!(payload["state"], "idle");
+        assert!(payload.get("token").is_none());
+        assert!(payload.get("providerSession").is_none());
         drop(delivery);
     }
 }

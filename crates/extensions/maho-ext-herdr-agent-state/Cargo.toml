@@ -13,5 +13,8 @@ tokio = { version = "=1.52.3", features = ["rt"] }
 [dev-dependencies]
 tempfile = "=3.27.0"
 
+[target.'cfg(unix)'.dependencies]
+socket2 = "=0.6.3"
+
 [lints]
 workspace = true

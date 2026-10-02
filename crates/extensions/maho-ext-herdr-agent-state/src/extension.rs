@@ -12,11 +12,13 @@ impl Config {
     fn attempt(&self, payload: &str, timeout_ms: u64) -> std::io::Result<bool> {
         #[cfg(unix)]
         {
-            let mut stream = std::os::unix::net::UnixStream::connect(&self.socket)?;
-            let timeout = Some(Duration::from_millis(timeout_ms));
-            stream.set_write_timeout(timeout)?;
-            stream.set_read_timeout(timeout)?;
+            let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+            let remaining = || deadline.checked_duration_since(std::time::Instant::now()).filter(|duration| !duration.is_zero()).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::TimedOut, "Herdr request timed out"));
+            let mut stream = socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None)?;
+            stream.connect_timeout(&socket2::SockAddr::unix(&self.socket)?, remaining()?)?;
+            stream.set_write_timeout(Some(remaining()?))?;
             stream.write_all(payload.as_bytes())?;
+            stream.set_read_timeout(Some(remaining()?))?;
             let mut buffer = [0; 1024];
             Ok(stream.read(&mut buffer)? > 0)
         }
