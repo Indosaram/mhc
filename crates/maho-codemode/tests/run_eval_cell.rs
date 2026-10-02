@@ -8,6 +8,10 @@ impl EvalKernelManager for Manager {
         Box::pin(async move {assert_eq!(language,EvalLanguage::Py);Ok(self.0.clone() as Arc<dyn EvalKernel>)})
     }
 }
+struct JsManager(Arc<maho_codemode::kernels::js::context_manager::JavaScriptKernel>);
+impl EvalKernelManager for JsManager {
+    fn get_kernel(&self,language:EvalLanguage)->EvalKernelFuture<'_,Arc<dyn EvalKernel>> {Box::pin(async move {assert_eq!(language,EvalLanguage::Js);Ok(self.0.clone() as Arc<dyn EvalKernel>)})}
+}
 struct Images;
 impl EvalImageSdk for Images {
     fn resize_image<'a>(&'a self,_:Vec<u8>,_:&'a str,_:Option<usize>)->ImageFuture<'a,Option<ResizedImage>> {Box::pin(async {panic!("text-only eval must not resize images")})}
@@ -116,6 +120,22 @@ async fn ordinary_eval_does_not_read_the_host_catalog() {
     kernel.close().await.unwrap();
     assert_eq!(result.unwrap().details["cells"][0]["output"],"42");
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst),0,"source reads the catalog only when dispatch needs it");
+}
+
+#[tokio::test]
+async fn real_js_eval_entry_preserves_state_and_delivers_host_replies() {
+    let kernel=Arc::new(maho_codemode::kernels::js::context_manager::JavaScriptKernel::start(std::path::Path::new(env!("CARGO_MANIFEST_DIR")),"js-eval",4,None).await.unwrap());
+    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(JsManager(kernel.clone())),executor:Arc::new(Executor),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+    let mut first=invocation("js-first","var retained=41; print(retained); retained+1");first.input.language=EvalLanguage::Js;
+    let first=run_eval_cell(options.clone(),first).await;
+    let mut next=invocation("js-next","retained+2");next.input.language=EvalLanguage::Js;
+    let next=run_eval_cell(options.clone(),next).await;
+    let mut recursive=invocation("js-recursive","await tool.eval({})");recursive.input.language=EvalLanguage::Js;
+    let recursive=run_eval_cell(options,recursive).await;
+    kernel.close().await.unwrap();
+    assert!(first.unwrap().details["cells"][0]["output"].as_str().unwrap().contains("41"));
+    assert_eq!(next.unwrap().details["cells"][0]["output"],"43");
+    assert_eq!(recursive.unwrap().details["isError"],true);
 }
 
 #[tokio::test]
