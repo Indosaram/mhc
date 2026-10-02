@@ -152,6 +152,11 @@ impl ExtensionRunner {
         for error in self.runtime.take_provider_errors() { self.emit_error(error); }
         Ok(())
     }
+    pub fn bind_ui(&mut self, ui: Arc<dyn ExtensionUi>) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        self.context.ui = ui;
+        Ok(())
+    }
     pub fn bind_session_actions(&self, actions: Arc<dyn ExtensionSessionActions>) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;
         for extension in &self.extensions {

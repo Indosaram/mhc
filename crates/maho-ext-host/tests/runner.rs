@@ -48,6 +48,22 @@ fn context() -> ExtensionContext {
         get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions { cwd: "/tmp".into(), ..Default::default() }),
         registered_mcp_servers: Vec::new(), update_tool_hook_status: None }
 }
+
+#[tokio::test]
+async fn lifecycle_ui_emits_prompt_pair_and_rejects_stale_prompts() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let observed = events.clone();
+    let runtime = ExtensionRuntime::default();
+    let ui = maho_ext_host::ui::LifecycleUi::new(Arc::new(TestUi), runtime.clone(), Arc::new(move |event| observed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event)));
+    assert!(!ui.confirm("Confirm", "message", ExtensionUiDialogOptions::default()).await);
+    {
+        let events = events.lock().unwrap();
+        assert!(matches!(&events[0], ExtensionEvent::UiPromptStart { kind: UiPromptKind::Confirm, title: Some(title) } if title == "Confirm"));
+        assert!(matches!(&events[1], ExtensionEvent::UiPromptEnd { kind: UiPromptKind::Confirm, title: Some(title) } if title == "Confirm"));
+    }
+    runtime.invalidate("reloaded");
+    assert_eq!(ui.editor("late", None).await.unwrap_err().message, "reloaded");
+}
 fn extension(path: &str, kind: EventKind, handler: ExtensionHandler) -> LoadedExtension {
     let mut ext = LoadedExtension::new(path, "/tmp".into(), SourceInfo { path: path.into(), source: "inline".into(), ..Default::default() });
     ext.handlers.insert(kind, vec![handler]); ext

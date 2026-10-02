@@ -2721,6 +2721,18 @@ impl AgentSession {
         if let Err(error) = runner.bind_providers(Arc::new(crate::agent_session_runtime::ExtensionModelRuntimeActions(Mutex::new(self.model_runtime().clone())))) {
             self.emit(AgentSessionEvent::ContinuationError { error_message: error.message });
         }
+        if let Ok(context) = runner.create_context() {
+            let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+            let weak = Arc::downgrade(&self.inner);
+            let ui = maho_ext_host::ui::LifecycleUi::new(context.ui, runner.runtime.clone(), Arc::new(move |event| { let _ = events.send(event); }));
+            if let Err(error) = runner.bind_ui(Arc::new(ui)) { self.emit(AgentSessionEvent::ContinuationError { error_message: error.message }); }
+            tokio::spawn(async move {
+                while let Some(event) = receiver.recv().await {
+                    let Some(inner) = weak.upgrade() else { break; };
+                    AgentSession { inner }.dispatch_extension_event(event).await;
+                }
+            });
+        }
         *self.extension_runner.lock().await = Some(runner);
         let weak = Arc::downgrade(&self.inner);
         self.agent.set_transform_context(Some(Arc::new(move |messages, _signal| {
