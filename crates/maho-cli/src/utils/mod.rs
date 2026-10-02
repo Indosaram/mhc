@@ -16,3 +16,4 @@ pub mod exif_orientation;
 pub mod clipboard;
 pub mod syntax_highlight;
 pub mod management_http;
+pub mod changelog;
