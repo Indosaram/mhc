@@ -9,6 +9,11 @@ use tokio::io::{AsyncReadExt,AsyncWriteExt};
     let server=tokio::spawn(async move{let(mut socket,_)=listener.accept().await.expect("accept");let mut request=Vec::new();loop{let mut buffer=[0;4096];let count=socket.read(&mut buffer).await.expect("request");assert_ne!(count,0);request.extend_from_slice(&buffer[..count]);if request.windows(4).any(|window|window==b"\r\n\r\n"){break;}}socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Type: charset=utf-8\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.expect("response");});
     let result=fetch_url(&format!("http://{address}"),WebfetchFormat::Text,Some(5.0)).await.expect("fetch");tokio::time::timeout(std::time::Duration::from_secs(5),server).await.expect("timeout").expect("server");assert_eq!(result.content_type,"text/plain, charset=utf-8");
 }
+#[tokio::test]async fn content_type_preserves_latin1_header_bytes(){
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");let address=listener.local_addr().expect("address");
+    let server=tokio::spawn(async move{let(mut socket,_)=listener.accept().await.expect("accept");let mut request=Vec::new();loop{let mut buffer=[0;4096];let count=socket.read(&mut buffer).await.expect("request");assert_ne!(count,0);request.extend_from_slice(&buffer[..count]);if request.windows(4).any(|window|window==b"\r\n\r\n"){break;}}socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain; label=\xe9\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.expect("response");});
+    let result=fetch_url(&format!("http://{address}"),WebfetchFormat::Text,Some(5.0)).await.expect("fetch");tokio::time::timeout(std::time::Duration::from_secs(5),server).await.expect("timeout").expect("server");assert_eq!(result.content_type,"text/plain; label=\u{e9}");
+}
 #[tokio::test]
 async fn abort_after_headers_cancels_body_read(){
     let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap_or_else(|error|panic!("bind: {error}"));let address=listener.local_addr().unwrap_or_else(|error|panic!("address: {error}"));
