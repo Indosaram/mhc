@@ -1504,11 +1504,13 @@ dependencies = [
  "maho-interactive",
  "maho-tools",
  "maho-tui",
+ "percent-encoding",
  "regex",
  "serde_json",
  "sha2",
  "tempfile",
  "tokio",
+ "url",
 ]
 
 [[package]]

@@ -14,6 +14,8 @@ maho-interactive = { path = "../maho-interactive" }
 serde_json.workspace = true
 regex.workspace = true
 sha2.workspace = true
+url.workspace = true
+percent-encoding.workspace = true
 tokio = { workspace = true, features = ["time", "macros", "rt", "process", "io-util"] }
 
 [dev-dependencies]
