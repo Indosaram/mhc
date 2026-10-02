@@ -37,3 +37,20 @@ fn notice_entry_mapper_renders_durable_entry() {
     let mut component = renderer(&entry, &EntryRenderOptions { expanded: true }, &Theme::default()).unwrap();
     assert!(component.render(20).iter().any(|line| line.contains("Detail")));
 }
+
+#[test]
+fn notice_bytes_match_pinned_upstream_colored_box() {
+    let theme = Theme {
+        colors: [("accent".into(), "\x1b[31m".into()), ("dim".into(), "\x1b[31m".into()), ("warning".into(), "\x1b[31m".into())].into_iter().collect(),
+        backgrounds: [("customMessageBg".into(), "\x1b[44m".into())].into_iter().collect(), ..Default::default()
+    };
+    let mut component = build_notice_box(spec(), true, &theme);
+    assert_eq!(component.render(12), [
+        "\x1b[44m            \x1b[49m",
+        "\x1b[44m \x1b[31m\x1b[1mTitle\x1b[22m\x1b[39m      \x1b[49m",
+        "\x1b[44m \x1b[31mWhy\x1b[39m        \x1b[49m",
+        "\x1b[44m \x1b[31mExtra\x1b[39m      \x1b[49m",
+        "\x1b[44m \x1b[31mDetail\x1b[39m     \x1b[49m",
+        "\x1b[44m            \x1b[49m",
+    ]);
+}
