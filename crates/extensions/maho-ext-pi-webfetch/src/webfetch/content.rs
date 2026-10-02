@@ -1,3 +1,17 @@
+pub struct ReadableArticle{pub title:String,pub content:String,pub has_heading:bool}
+pub fn extract_explicit_article(html:&str)->Option<ReadableArticle>{
+    let document=dom_query::Document::from(html);
+    for selector in [".article_view",".tt_article_useless_p_margin",".entry-content",".contents_style",".post-content",".article-content",".content-article","#content .contents_style"]{
+        let candidate=document.select(selector).first();if candidate.is_empty(){continue;}
+        let cloned=dom_query::Document::fragment(candidate.html().as_ref());
+        cloned.select("script, style, noscript, iframe, object, embed, meta, link, nav, aside, footer, .another_category, .area_related, .related, .revenue_unit_wrap, .adsbygoogle, .container_postbtn, .postbtn_like, .comments, .comment, .tagTrail, .sidebar").remove();
+        if normalize_plain_text(&cloned.text()).encode_utf16().count()<30{continue;}
+        let mut title=String::new();for selector in [".tit_post",".entry-title",".post-title",".article-title","h1"]{title=normalize_plain_text(&document.select(selector).first().text());if !title.is_empty(){break;}}
+        if title.is_empty(){title=normalize_plain_text(&document.select("title").first().text());}
+        let root=cloned.select(selector).first();let content=root.inner_html().to_string();let has_heading=!root.select("h1,h2,h3,h4,h5,h6").is_empty();
+        return Some(ReadableArticle{title,content,has_heading});
+    }None
+}
 pub fn html_fragment_to_plain_text(html:&str)->String{
     let document=dom_query::Document::from(format!("<body>{html}</body>"));
     document.select("script, style, noscript, iframe, object, embed, meta, link").remove();
