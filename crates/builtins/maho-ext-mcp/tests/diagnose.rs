@@ -2,6 +2,15 @@ use std::{sync::{Arc,Mutex},time::Duration,collections::BTreeMap};
 use maho_ext_mcp::{config_schema::*,connection::*,log::McpLogger,health::with_mcp_session_expiry_retry,errors::{McpError,McpErrorKind}};
 fn config()->McpServerConfig {McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into()]),..Default::default()}}
 #[tokio::test]
+async fn diagnostic_overflow_kills_the_child_even_when_the_other_stream_stays_open() {
+    for stream in ["stdout","stderr"] {
+        let root=tempfile::tempdir().unwrap();let mut config=config();config.args=Some(vec!["-e".into(),format!("process.{stream}.write('x'.repeat(16384));process.stdin.resume();setInterval(()=>{{}},100000);")]);
+        let logger=Arc::new(Mutex::new(McpLogger::new("overflow",root.path(),None).unwrap()));
+        let error=tokio::time::timeout(Duration::from_secs(3),maho_ext_mcp::diagnose::diagnose_mcp_connect_failure("overflow",&config,None,&McpError::new(McpErrorKind::Connect,"failed"),logger)).await.unwrap();
+        assert!(error.message.contains(&"x".repeat(2048)));assert!(!error.message.contains("timed out"));
+    }
+}
+#[tokio::test]
 async fn stderr_diagnostics_are_redacted_and_retained() {
     let root=tempfile::tempdir().unwrap();let mut config=config();config.args.as_mut().unwrap().extend(["--fatal-missing-token".into(),"FOO_TOKEN=synthetic-secret".into()]);
     let connection=ServerConnection::new("fatal",config,None,Arc::new(Mutex::new(McpLogger::new("fatal",root.path(),None).unwrap())));

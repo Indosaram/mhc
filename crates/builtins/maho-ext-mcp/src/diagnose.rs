@@ -35,10 +35,16 @@ pub async fn diagnose_mcp_connect_failure(server:&str,config:&McpServerConfig,en
     process.stdout(Stdio::piped()).stderr(Stdio::piped());
     let output=async {
         let mut child=process.spawn()?;
-        let stdout=child.stdout.take().expect("piped diagnostic stdout");let stderr=child.stderr.take().expect("piped diagnostic stderr");
-        let capture=async {let mut out=Vec::new();let mut err=Vec::new();let mut stdout=stdout.take((MAX_BYTES*4+1) as u64);let mut stderr=stderr.take((MAX_BYTES*4+1) as u64);let (stdout,stderr)=tokio::join!(stdout.read_to_end(&mut out),stderr.read_to_end(&mut err));stdout?;stderr?;Ok::<_,std::io::Error>((out,err))};
-        let (stdout,stderr)=capture.await?;
-        if stdout.len()>MAX_BYTES*4 || stderr.len()>MAX_BYTES*4 {child.kill().await?;}
+        let mut stdout=child.stdout.take().expect("piped diagnostic stdout");let mut stderr=child.stderr.take().expect("piped diagnostic stderr");
+        let mut out=Vec::new();let mut err=Vec::new();let mut stdout_open=true;let mut stderr_open=true;let mut out_chunk=[0;1024];let mut err_chunk=[0;1024];
+        while stdout_open || stderr_open {
+            tokio::select! {
+                read=stdout.read(&mut out_chunk),if stdout_open=>{let read=read?;stdout_open=read!=0;out.extend_from_slice(&out_chunk[..read]);},
+                read=stderr.read(&mut err_chunk),if stderr_open=>{let read=read?;stderr_open=read!=0;err.extend_from_slice(&err_chunk[..read]);},
+            }
+            if out.len()>MAX_BYTES*4 || err.len()>MAX_BYTES*4 {child.kill().await?;break;}
+        }
+        let (stdout,stderr)=(out,err);
         child.wait().await?;Ok::<_,std::io::Error>((stdout,stderr))
     };
     let diagnostic=match tokio::time::timeout(Duration::from_millis(MCP_STDIO_DIAGNOSTIC_TIMEOUT_MS),output).await {
