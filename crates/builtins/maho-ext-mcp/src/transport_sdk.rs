@@ -143,7 +143,8 @@ impl McpClient {
                 if line.is_empty() {
                     let is_message=event_type.is_empty() || event_type=="message";event_type.clear();
                     if !is_message || data.is_empty(){data.clear();continue;}
-                    let event=serde_json::from_str::<Value>(&data).map_err(|e|failure(&self.server,McpErrorKind::Protocol,e.to_string(),"request"))?;data.clear();
+                    let parsed=serde_json::from_str::<Value>(&data);data.clear();
+                    let event=match parsed {Ok(event)=>event,Err(error)=>{eprintln!("MCP {} SSE message parse failed: {error}",self.server);continue;}};
                     if event.get("id")==value.get("id") && event.get("method").is_none(){return self.http_reply(event,value.get("id"));}
                     let _=self.notifications.send(event);
                 }
