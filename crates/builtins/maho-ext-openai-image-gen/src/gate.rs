@@ -6,6 +6,9 @@ pub struct NativeImageGenModel<'a> {
 pub fn is_enabled(value: Option<&str>) -> bool {
     !value.is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"))
 }
+pub fn is_open_ai_image_gen_enabled() -> bool {
+    is_enabled(std::env::var("PI_OPENAI_IMAGE_GEN").ok().as_deref())
+}
 pub fn supports_native_image_generation(target: Option<&NativeImageGenModel<'_>>) -> bool {
     let Some(target) = target else { return false; };
     if target.api != "openai-responses" { return false; }

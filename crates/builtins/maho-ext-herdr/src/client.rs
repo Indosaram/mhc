@@ -1,6 +1,6 @@
 use serde_json::{Map,Value,json};
 use std::{sync::{Arc,atomic::{AtomicU64,Ordering}},time::Duration,io};
-use tokio::{io::{AsyncReadExt,AsyncWriteExt},net::UnixStream,sync::oneshot};
+use tokio::{io::{AsyncReadExt,AsyncWriteExt},sync::oneshot};
 use std::sync::Mutex;
 static SEQUENCE:AtomicU64=AtomicU64::new(0);
 pub fn herdr_socket_target(path:&str,platform:&str)->String{
@@ -16,7 +16,10 @@ impl HerdrClient{
         let mut queue=self.queue.lock().expect("enqueue lock");let previous=queue.take();let (finished,next)=oneshot::channel();*queue=Some(next);
         async move{if let Some(previous)=previous{let _completion=previous.await;}let _completion=finished.send(());}
     }
-    pub fn new(socket_path:String,pane_id:String,now:Arc<dyn Fn()->u64+Send+Sync>)->Self{Self{target:socket_path,pane_id,now,queue:Mutex::new(None)}}
+    pub fn new(socket_path:String,pane_id:String,now:Arc<dyn Fn()->u64+Send+Sync>)->Self{
+        let platform=if cfg!(windows){"win32"}else{"linux"};
+        Self{target:herdr_socket_target(&socket_path,platform),pane_id,now,queue:Mutex::new(None)}
+    }
     pub fn send(&self,method:HerdrMethod,mut params:Map<String,Value>)->impl std::future::Future<Output=io::Result<()>>+Send+use<> {
         let mut queue=self.queue.lock().expect("enqueue lock");
         let previous_request=queue.take();let (finished,next)=oneshot::channel();*queue=Some(next);drop(queue);
@@ -33,7 +36,11 @@ impl HerdrClient{
         }
     }
     async fn attempt(target:&str,request:&Value)->io::Result<bool>{
-        let mut socket=UnixStream::connect(target).await?;let mut bytes=serde_json::to_vec(request)?;bytes.push(b'\n');socket.write_all(&bytes).await?;
+        #[cfg(unix)]
+        let mut socket=tokio::net::UnixStream::connect(target).await?;
+        #[cfg(windows)]
+        let mut socket=tokio::net::windows::named_pipe::ClientOptions::new().open(target)?;
+        let mut bytes=serde_json::to_vec(request)?;bytes.push(b'\n');socket.write_all(&bytes).await?;
         let mut buffer=Vec::new();let mut chunk=[0u8;4096];
         loop{
             let count=socket.read(&mut chunk).await?;if count==0{return Ok(false);}buffer.extend_from_slice(&chunk[..count]);
