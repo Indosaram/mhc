@@ -95,7 +95,7 @@ impl ExtensionContextActions for ContextSessionManager {
     fn get_look_at_settings(&self) -> LookAtSettings { self.actions.get_look_at_settings() }
     fn get_ask_user_settings(&self) -> AskUserSettings { self.actions.get_ask_user_settings() }
     fn get_image_settings(&self) -> ImageSettings { self.actions.get_image_settings() }
-    fn session_settings(&self) -> &dyn ExtensionSessionSettings { self.actions.session_settings() }
+    fn session_settings(&self) -> &dyn ExtensionSessionSettings { self.active(); self }
     fn compact(&self, options: CompactOptions) { self.actions.compact(options); }
     fn prepare_provider_request(&self, messages: Vec<AgentMessage>) -> ExtensionFuture<'_, ProviderRequestPreparation> {
         match &self.provider_runner {
@@ -125,6 +125,26 @@ impl ExtensionContextActions for ContextSessionManager {
     fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { self.actions.get_system_prompt_options() }
     fn get_loaded_hook_sources(&self) -> LoadedHookSources { self.actions.get_loaded_hook_sources() }
     fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools> { self.kernel_tools.as_deref().or_else(|| self.actions.kernel_tools()) }
+}
+
+impl ExtensionSessionSettings for ContextSessionManager {
+    fn get_retry_fallback_settings(&self) -> RetryFallbackSettings { self.active(); self.actions.session_settings().get_retry_fallback_settings() }
+    fn set_fallback_chain<'a>(&'a self, key: &'a str, entries: &'a [String]) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move { self.runtime.assert_active()?; self.actions.session_settings().set_fallback_chain(key, entries).await?; self.runtime.assert_active() })
+    }
+    fn remove_fallback_chain<'a>(&'a self, key: &'a str) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move { self.runtime.assert_active()?; self.actions.session_settings().remove_fallback_chain(key).await?; self.runtime.assert_active() })
+    }
+    fn set_model_fallback_enabled(&self, enabled: bool) -> ExtensionFuture<'_, ()> {
+        Box::pin(async move { self.runtime.assert_active()?; self.actions.session_settings().set_model_fallback_enabled(enabled).await?; self.runtime.assert_active() })
+    }
+    fn set_fallback_revert_policy(&self, policy: FallbackRevertPolicy) -> ExtensionFuture<'_, ()> {
+        Box::pin(async move { self.runtime.assert_active()?; self.actions.session_settings().set_fallback_revert_policy(policy).await?; self.runtime.assert_active() })
+    }
+    fn reload(&self) -> ExtensionFuture<'_, ()> {
+        Box::pin(async move { self.runtime.assert_active()?; self.actions.session_settings().reload().await?; self.runtime.assert_active() })
+    }
+    fn get_fallback_status(&self) -> Option<RetryFallbackStatus> { self.active(); self.actions.session_settings().get_fallback_status() }
 }
 
 #[derive(Clone)]

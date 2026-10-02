@@ -210,6 +210,8 @@ fn checked_tool_registration_rejects_reserved_name_and_nonobject_schema() {
 fn ui_prompt_events_expose_their_wire_reason_discriminant() {
     let event = ExtensionEvent::UiPromptStart { kind: UiPromptKind::Input, title: None };
     assert_eq!(event.ui_prompt_reason().unwrap().as_str(), "ui_prompt");
+    assert_eq!(event.ui_prompt_start_event(), Some(UiPromptStartEvent { reason: UiPromptReason::UiPrompt, kind: UiPromptKind::Input, title: None }));
+    assert!(event.ui_prompt_end_event().is_none());
     assert!(event.system_prompt_change_source().is_none());
 }
 

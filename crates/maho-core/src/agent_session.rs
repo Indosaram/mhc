@@ -548,10 +548,16 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn get_context_usage(&self) -> Option<maho_ext_api::ContextUsage> { self.session().ok()?.get_context_usage().map(|usage|
         maho_ext_api::ContextUsage { tokens: usage.tokens, context_window: usage.context_window, percent: usage.percent }) }
     fn get_compaction_settings(&self) -> maho_ext_api::CompactionSettings {
-        let raw = self.session().ok().and_then(|session| session.with_settings_manager(|manager| manager.get_value("compaction").cloned()));
-        maho_ext_api::CompactionSettings { enabled: raw.as_ref().and_then(|raw| raw.get("enabled")).and_then(Value::as_bool).unwrap_or(true),
-            reserve_tokens: raw.as_ref().and_then(|raw| raw.get("reserveTokens")).and_then(Value::as_u64).unwrap_or(16_384),
-            keep_recent_tokens: raw.as_ref().and_then(|raw| raw.get("keepRecentTokens")).and_then(Value::as_u64).unwrap_or(20_000) }
+        let session = self.session().unwrap_or_else(|error| std::panic::panic_any(error));
+        let model = session.model();
+        let raw = session.with_settings_manager(|manager| manager.get_value("compaction").cloned());
+        let settings = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
+            .transpose().unwrap_or_else(|error| std::panic::panic_any(maho_ext_api::ExtensionFailure::new(error.to_string())));
+        let resolved = crate::compaction_settings_resolver::resolve_compaction_settings(settings.as_ref(), Some(
+            crate::compaction_settings_access::CompactionModelSelector { provider: &model.provider, id: &model.id },
+        )).unwrap_or_else(|error| std::panic::panic_any(maho_ext_api::ExtensionFailure::new(error)));
+        maho_ext_api::CompactionSettings { enabled: resolved.enabled, reserve_tokens: resolved.reserve_tokens as u64,
+            keep_recent_tokens: resolved.keep_recent_tokens as u64 }
     }
     fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { self.session().ok()?.with_settings_manager(|manager| manager.get_number("promptCacheSafeWaitSeconds")) }
     fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64 {
@@ -3029,7 +3035,8 @@ impl AgentSession {
 
     fn append_extension_custom_message(&self, message: maho_agent::harness::messages::CustomMessage) -> Result<(), String> {
         let content = serde_json::to_value(&message.content).map_err(|error| error.to_string())?;
-        self.with_session_manager_mut(|manager| manager.append_custom_message(&message.custom_type, content, message.display, message.details.clone()));
+        let entry = self.with_session_manager_mut(|manager| manager.append_custom_message(&message.custom_type, content, message.display, message.details.clone()));
+        if let Some(id) = entry.get("id").and_then(Value::as_str) { self.emit_entry_appended(id); }
         let message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(message));
         let mut messages = self.messages(); messages.push(message.clone()); self.agent.set_messages(messages);
         self.state().message_revision += 1;
@@ -3842,6 +3849,7 @@ mod tests {
     fn extension_settings_read_live_configured_values() {
         use maho_ext_api::ExtensionContextActions;
         let session = test_session();
+        session.agent.set_model(test_model());
         let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
         assert_eq!(actions.get_prompt_cache_goal_backstop_max_seconds(), 270.0);
         session.with_settings_manager_mut(|manager| manager.set(crate::settings_manager::SettingsScope::Global,
@@ -3849,11 +3857,13 @@ mod tests {
                 "lookAt":{"enabled":false,"models":["faux/faux-1"]},
                 "askUser":{"enabled":false,"timeoutMinutes":200},
                 "images":{"autoResize":false,"blockImages":true},
+                "compaction":{"reserveTokens":100,"keepRecentTokens":200,"modelOverrides":{"faux/faux-1":{"reserveTokens":300,"keepRecentTokens":400}}},
                 "promptCache":{"goalBackstopMaxSeconds":99,"keepAlive":{"enabled":true,"maxRequestsPerSession":7,"maxCostUsdPerSession":0.3,"marginSeconds":11}}
             }).as_object().unwrap().clone())).unwrap();
         assert_eq!(actions.get_look_at_settings(), maho_ext_api::LookAtSettings { enabled: false, models: Some(vec!["faux/faux-1".to_owned()]) });
         assert_eq!(actions.get_ask_user_settings(), maho_ext_api::AskUserSettings { enabled: false, timeout_minutes: 120.0 });
         assert_eq!(actions.get_image_settings(), maho_ext_api::ImageSettings { auto_resize: false, block_images: true });
+        assert_eq!(actions.get_compaction_settings(), maho_ext_api::CompactionSettings { enabled: true, reserve_tokens: 300, keep_recent_tokens: 400 });
         assert_eq!(actions.get_prompt_cache_goal_backstop_max_seconds(), 99.0);
         assert_eq!(actions.get_prompt_cache_keep_alive_settings(), maho_ext_api::PromptCacheKeepAliveSettings {
             enabled: true, max_requests_per_session: 7, max_cost_usd_per_session: 0.3, margin_seconds: 11.0,
@@ -3926,6 +3936,10 @@ mod tests {
     fn extension_next_turn_message_is_retained_until_next_admission() {
         use maho_ext_api::ExtensionActions;
         let session = test_session();
+        session.state().extension_mode = ExtensionMode::Rpc;
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| lock(&captured).push(event.clone())));
         let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
         actions.send_message(maho_ext_api::CustomMessage {
             custom_type: "notice".into(), content: vec![maho_ext_api::ToolContent::text("later")], display: true, details: None,
@@ -3936,6 +3950,7 @@ mod tests {
         assert_eq!(session.messages()[0].role(), "custom");
         assert_eq!(session.pending_message_count(), 0);
         assert_eq!(session.with_session_manager(|manager| manager.entries())[0]["type"], "custom_message");
+        assert!(matches!(&lock(&events)[0], AgentSessionEvent::EntryAppended { .. }));
     }
 
     #[tokio::test]

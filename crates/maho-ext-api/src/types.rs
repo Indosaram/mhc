@@ -682,7 +682,29 @@ impl UiPromptReason { pub const fn as_str(self) -> &'static str { "ui_prompt" } 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SystemPromptChangeSource { ModelSelect }
 impl SystemPromptChangeSource { pub const fn as_str(self) -> &'static str { "model_select" } }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UiPromptStartEvent { pub reason: UiPromptReason, pub kind: UiPromptKind, pub title: Option<String> }
+pub type UiPromptEndEvent = UiPromptStartEvent;
+#[derive(Clone, Debug, PartialEq)]
+pub struct SystemPromptChangeEvent {
+    pub system_prompt: String, pub previous_system_prompt: String, pub system_prompt_name: Option<String>,
+    pub model: Model, pub previous_model: Option<Model>, pub source: SystemPromptChangeSource,
+}
 impl ExtensionEvent {
+    pub fn ui_prompt_start_event(&self) -> Option<UiPromptStartEvent> {
+        match self { Self::UiPromptStart { kind, title } => Some(UiPromptStartEvent { reason: UiPromptReason::UiPrompt, kind: *kind, title: title.clone() }), _ => None }
+    }
+    pub fn ui_prompt_end_event(&self) -> Option<UiPromptEndEvent> {
+        match self { Self::UiPromptEnd { kind, title } => Some(UiPromptEndEvent { reason: UiPromptReason::UiPrompt, kind: *kind, title: title.clone() }), _ => None }
+    }
+    pub fn system_prompt_change_event(&self) -> Option<SystemPromptChangeEvent> {
+        match self {
+            Self::SystemPromptChange { system_prompt, previous_system_prompt, system_prompt_name, model, previous_model } => Some(SystemPromptChangeEvent {
+                system_prompt: system_prompt.clone(), previous_system_prompt: previous_system_prompt.clone(), system_prompt_name: system_prompt_name.clone(),
+                model: model.clone(), previous_model: previous_model.clone(), source: SystemPromptChangeSource::ModelSelect,
+            }), _ => None,
+        }
+    }
     pub const fn ui_prompt_reason(&self) -> Option<UiPromptReason> {
         match self { Self::UiPromptStart { .. } | Self::UiPromptEnd { .. } => Some(UiPromptReason::UiPrompt), _ => None }
     }

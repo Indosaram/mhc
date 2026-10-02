@@ -884,7 +884,10 @@ async fn context_binding_reads_live_host_state_and_rejects_after_invalidation() 
     actions.revision.store(2, std::sync::atomic::Ordering::SeqCst); assert_eq!(ctx.get_message_revision().unwrap(), 2);
     let result = ctx.apply_compaction(CompactionResult { summary: "summary".into(), first_kept_entry_id: "id".into(), tokens_before: 100, details: None }, ApplyCompactionOptions { reason: CompactionReason::Extension, expected_revision: Some(1), expected_warm_anchor: None, signal: None }).await.unwrap();
     assert_eq!(result, ApplyCompactionResult::Stale);
+    let settings = ctx.session_settings().unwrap();
     runner.invalidate("old context"); assert_eq!(ctx.get_message_revision().unwrap_err().message, "old context"); assert!(ctx.abort(None).is_err());
+    assert_eq!(settings.set_model_fallback_enabled(false).await.unwrap_err().message, "old context");
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| settings.get_fallback_status())).is_err());
     for access in [ExtensionContext::is_idle as fn(&ExtensionContext) -> bool, ExtensionContext::is_compacting, ExtensionContext::is_project_trusted] {
         let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| access(&ctx))).unwrap_err();
         assert_eq!(error.downcast_ref::<ExtensionFailure>().unwrap().message, "old context");
