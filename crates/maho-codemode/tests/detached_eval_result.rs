@@ -24,3 +24,9 @@ fn terminal_duration_survives_and_stale_queue_is_removed() {
     assert_eq!(next.details["cells"][0]["status"], "complete");
     assert!(next.details["cells"][0].get("queuedBehind").is_none());
 }
+
+#[test]
+fn capacity_error_has_machine_consumed_code() {
+    let error = EvalBackgroundCapacityError::new(15, "cell", 30_000.0, &["other".into()]);
+    assert_eq!(error.code, "eval_background_capacity_reached");
+}
