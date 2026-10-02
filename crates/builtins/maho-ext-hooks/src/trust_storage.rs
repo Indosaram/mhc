@@ -83,6 +83,13 @@ fn release_result<T>(lease:DirectoryLease,result:std::io::Result<T>)->std::io::R
 mod tests {
     use super::*;
     #[test]
+    fn operation_error_survives_successful_release_and_combines_with_release_failure()->std::io::Result<()> {
+        let dir=tempfile::tempdir()?;let path=dir.path().join("state");let lease=DirectoryLease::acquire(&path)?;
+        let error=release_result::<()>(lease,Err(std::io::ErrorKind::PermissionDenied.into())).unwrap_err();assert_eq!(error.kind(),std::io::ErrorKind::PermissionDenied);assert!(!dir.path().join("state.lock").exists());
+        let lease=DirectoryLease::acquire(&path)?;std::fs::write(dir.path().join("state.lock/occupied"),b"busy")?;
+        let error=release_result::<()>(lease,Err(std::io::Error::other("operation failed"))).unwrap_err();assert!(error.to_string().contains("operation failed"));assert!(error.to_string().contains("lock release both failed"));std::fs::remove_file(dir.path().join("state.lock/occupied"))?;std::fs::remove_dir(dir.path().join("state.lock"))?;Ok(())
+    }
+    #[test]
     fn contention_retries_ten_attempts_but_other_errors_return_immediately() {
         let attempts=std::cell::Cell::new(0);let delays=std::cell::Cell::new(0);
         let error=retry_lock(|| {attempts.set(attempts.get()+1);Err(std::io::ErrorKind::AlreadyExists.into())},||delays.set(delays.get()+1)).unwrap_err();assert_eq!(error.kind(),std::io::ErrorKind::AlreadyExists);assert_eq!(attempts.get(),10);assert_eq!(delays.get(),9);
