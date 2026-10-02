@@ -173,6 +173,21 @@ impl ExtensionOAuthConfig for OAuthClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn expired_init_never_polls_or_prompts() {
+        use std::io::{BufRead,Write};
+        let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap(); let init = format!("http://{}/init",listener.local_addr().unwrap());
+        let peer = std::thread::spawn(move || { let (mut stream,_) = listener.accept().unwrap(); stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap(); let mut reader = std::io::BufReader::new(stream.try_clone().unwrap()); let mut line = String::new(); loop { line.clear(); reader.read_line(&mut line).unwrap(); if line == "\r\n" { break; } } let body = json!({"code":0,"data":{"flow_id":"expired","authorize_url":"https://example.test","expires_at":0,"poll_interval_sec":1}}).to_string(); write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap(); });
+        let callbacks = Callbacks { auth: Default::default() }; let error = OAuthClient { init, ..Default::default() }.login(&callbacks).await.unwrap_err(); assert!(error.to_string().contains("expired before completion")); peer.join().unwrap();
+    }
+    #[tokio::test]
+    async fn poll_fatal_status_and_retry_statuses_match_device_protocol() {
+        use std::io::{BufRead,Write};
+        let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap(); let poll = format!("http://{}/poll",listener.local_addr().unwrap());
+        let peer = std::thread::spawn(move || { for status in [403,408,429,500] { let (mut stream,_) = listener.accept().unwrap(); stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap(); let mut reader = std::io::BufReader::new(stream.try_clone().unwrap()); let mut line = String::new(); reader.read_line(&mut line).unwrap(); assert!(line.starts_with("GET /poll/fixture ")); loop { line.clear(); reader.read_line(&mut line).unwrap(); if line == "\r\n" { break; } } write!(stream,"HTTP/1.1 {status} fixture\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}} ").unwrap(); } });
+        let client = OAuthClient { poll, ..Default::default() }; let flow = DeviceFlow { id: "fixture".into(),token: "token".into(),url: "https://example.test".into(),expires: 0.0,interval: 1.0 }; let signal = maho_ai::utils::abort::operation_signal(None);
+        assert!(client.poll_once(&flow,&signal).await.unwrap_err().to_string().contains("cli poll request failed: 403")); for _ in 0..3 { assert!(client.poll_once(&flow,&signal).await.unwrap().is_none()); } peer.join().unwrap();
+    }
     struct Callbacks { auth: std::sync::Mutex<Option<String>> }
     impl OAuthLoginCallbacks for Callbacks {
         fn on_auth(&self, info: OAuthAuthInfo) { *self.auth.lock().expect("capture authorization") = Some(info.url); }
@@ -180,15 +195,17 @@ mod tests {
         fn on_prompt(&self, _: OAuthPrompt) -> maho_ai::types::BoxFuture<'_,String> { Box::pin(async { panic!("unexpected paste prompt") }) }
         fn on_select(&self, _: maho_ai::oauth::OAuthSelectPrompt) -> maho_ai::types::BoxFuture<'_,Option<String>> { Box::pin(async { None }) }
     }
-    #[tokio::test]
-    async fn device_login_persists_jwt_without_manual_prompt() {
+    async fn login_fixture(manual: bool, server_token: bool, jwt: bool) {
         use std::io::{BufRead,Read,Write};
         let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap();
         let base = format!("http://{}",listener.local_addr().unwrap());
         let peer = std::thread::spawn(move || {
+            let init_payload = if manual { json!({"code":0,"data":{}}) } else { json!({"code":0,"data":{"flow_id":"fixture","poll_token":if server_token { "poll-token" } else { "" },"authorize_url":"https://example.test/authorize","expires_at":now_ms()/1000.0+120.0,"poll_interval_sec":1}}) };
+            let mut login_payload = json!({"data":{"zai":{"access_token":"upstream"}}}); if jwt { login_payload["data"]["token"] = json!("jwt"); }
+            let mut init_auth = String::new();
             for (method,path,payload) in [
-                ("POST","/init",json!({"code":0,"data":{"flow_id":"fixture","poll_token":"poll-token","authorize_url":"https://example.test/authorize","expires_at":now_ms()/1000.0+120.0,"poll_interval_sec":1}})),
-                ("GET","/poll/fixture",json!({"data":{"zai":{"access_token":"upstream"},"token":"jwt"}})),
+                ("POST","/init",init_payload),
+                (if manual { "POST" } else { "GET" },if manual { "/broker" } else { "/poll/fixture" },login_payload),
                 ("POST","/api/auth/z/login",json!({"data":{"access_token":"business"}})),
                 ("GET","/api/biz/customer/getCustomerInfo",json!({"data":{"organizations":[{"organizationId":"org","projects":[{"projectId":"project"}]}]}})),
                 ("GET","/api/biz/v1/organization/org/projects/project/api_keys",json!({"data":[]})),
@@ -200,18 +217,30 @@ mod tests {
                 let mut headers = String::new(); let mut length = 0;
                 loop { line.clear(); reader.read_line(&mut line).unwrap(); if line == "\r\n" { break; } let lower = line.to_lowercase(); if let Some(value) = lower.strip_prefix("content-length:") { length = value.trim().parse().unwrap(); } headers.push_str(&lower); }
                 let mut body = vec![0;length]; reader.read_exact(&mut body).unwrap();
-                if path == "/init" { assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(),json!({"provider":"zai"})); }
-                if path == "/poll/fixture" { assert!(headers.contains("authorization: bearer poll-token")); }
+                if path == "/init" { assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(),json!({"provider":"zai"})); init_auth = headers.lines().find(|line|line.starts_with("authorization:")).unwrap().into(); }
+                if path == "/poll/fixture" { assert!(headers.contains(if server_token { "authorization: bearer poll-token" } else { &init_auth })); }
+                if path == "/broker" { let payload: Value = serde_json::from_slice(&body).unwrap(); assert_eq!(payload["code"],"fixture-code"); assert_eq!(payload["redirect_uri"],"zcode://oauth/callback"); assert!(!payload["state"].as_str().unwrap().is_empty()); }
                 if method == "POST" && path.ends_with("api_keys") { assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(),json!({"name":"zcode-api-key"})); }
                 let body = payload.to_string(); write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
             }
         });
-        let client = OAuthClient { init: format!("{base}/init"), poll: format!("{base}/poll"), api: base, ..Default::default() };
+        let client = OAuthClient { init: format!("{base}/init"), poll: format!("{base}/poll"), broker: format!("{base}/broker"), api: base, ..Default::default() };
         let callbacks = Callbacks { auth: Default::default() };
-        let credentials = client.login(&callbacks).await.unwrap(); peer.join().unwrap();
-        assert_eq!(credentials.access,"key.secret"); assert_eq!(credentials.refresh,"upstream"); assert_eq!(credentials.get_extra_str("zcodeJwtToken"),Some("jwt"));
-        assert_eq!(callbacks.auth.lock().unwrap().as_deref(),Some("https://example.test/authorize"));
+        let credentials = client.login(&FixtureCallbacks { inner: &callbacks, manual }).await.unwrap(); peer.join().unwrap();
+        assert_eq!(credentials.access,"key.secret"); assert_eq!(credentials.refresh,"upstream"); assert_eq!(credentials.get_extra_str("zcodeJwtToken"),jwt.then_some("jwt"));
+        if !manual { assert_eq!(callbacks.auth.lock().unwrap().as_deref(),Some("https://example.test/authorize")); }
     }
+    struct FixtureCallbacks<'a> { inner: &'a Callbacks, manual: bool }
+    impl OAuthLoginCallbacks for FixtureCallbacks<'_> {
+        fn on_auth(&self, info: OAuthAuthInfo) { self.inner.on_auth(info); }
+        fn on_device_code(&self, _: maho_ai::oauth::OAuthDeviceCodeInfo) {}
+        fn on_select(&self, _: maho_ai::oauth::OAuthSelectPrompt) -> maho_ai::types::BoxFuture<'_,Option<String>> { Box::pin(async { None }) }
+        fn on_prompt(&self, prompt: OAuthPrompt) -> maho_ai::types::BoxFuture<'_,String> { self.inner.on_prompt(prompt) }
+        fn on_manual_code_input(&self) -> Option<maho_ai::types::BoxFuture<'_,String>> { self.manual.then(|| Box::pin(async { let url = self.inner.auth.lock().unwrap().clone().unwrap(); let state = reqwest::Url::parse(&url).unwrap().query_pairs().find(|(key,_)|key == "state").unwrap().1.into_owned(); format!("zcode://oauth/callback?code=fixture-code&state={state}") }) as maho_ai::types::BoxFuture<'_,String>) }
+    }
+    #[tokio::test] async fn device_login_persists_jwt_without_manual_prompt() { login_fixture(false,true,true).await; }
+    #[tokio::test] async fn missing_server_token_uses_client_bearer_and_omits_absent_jwt() { login_fixture(false,false,false).await; }
+    #[tokio::test] async fn malformed_init_falls_back_to_manual_broker_and_preserves_jwt() { login_fixture(true,false,true).await; }
     #[test] fn callback_preserves_percent_encoded_code() { assert_eq!(callback_code("zcode://oauth/callback?code=a%2Bb&state=s", "s").unwrap(), "a+b"); }
     #[test] fn callback_rejects_duplicate_fields() { assert!(callback_code("zcode://oauth/callback?code=a&code=b&state=s", "s").is_err()); }
     #[test] fn callback_rejects_wrong_state() { assert!(callback_code("zcode://oauth/callback?code=a&state=wrong", "s").is_err()); }

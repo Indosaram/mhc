@@ -7,6 +7,9 @@ use std::{collections::BTreeMap, sync::{Arc, Mutex, OnceLock}, path::Path, io::W
 struct Runtime { credential: Option<(String,String)>, ticket: Option<crate::offpeak::Ticket>, task_id: Option<String>, pending: Option<PendingTicket> }
 struct PendingTicket { key: String, jwt: String, receiver: tokio::sync::watch::Receiver<Option<Option<String>>> }
 async fn acquire_ticket(runtime: Arc<Mutex<Runtime>>, headers: BTreeMap<String,String>, key: String, jwt: String) -> Option<String> {
+    acquire_ticket_from(runtime,crate::offpeak::TicketClient::new(headers),key,jwt).await
+}
+async fn acquire_ticket_from(runtime: Arc<Mutex<Runtime>>, client: crate::offpeak::TicketClient, key: String, jwt: String) -> Option<String> {
     let mut receiver = {
         let mut state = runtime.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(ticket) = &state.ticket && ticket.fresh(crate::oauth::now_ms(),&key,&jwt) { return Some(ticket.id.clone()); }
@@ -17,7 +20,7 @@ async fn acquire_ticket(runtime: Arc<Mutex<Runtime>>, headers: BTreeMap<String,S
             state.pending = Some(PendingTicket { key: key.clone(), jwt: jwt.clone(), receiver: receiver.clone() });
             let runtime = Arc::clone(&runtime);
             tokio::spawn(async move {
-                let id = crate::offpeak::TicketClient::new(headers).ensure(&jwt,&key,&task).await;
+                let id = client.ensure(&jwt,&key,&task).await;
                 let mut state = runtime.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 if state.credential.as_ref() == Some(&(key.clone(),jwt.clone())) && let Some(id) = &id { state.ticket = Some(crate::offpeak::Ticket::new(&key,&jwt,id.clone(),crate::oauth::now_ms())); }
                 if state.pending.as_ref().is_some_and(|pending|pending.key == key && pending.jwt == jwt) { state.pending = None; }
@@ -164,6 +167,44 @@ impl Extension for ZcodeOAuth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn offline_and_fresh_snapshots_restore_without_network_or_persistence_changes() {
+        use maho_ai::models_store::ModelsStore;
+        for allow_network in [false,true] {
+            let store = Arc::new(maho_ai::models_store::InMemoryModelsStore::new());
+            let stored = ModelsStoreEntry { models: crate::models::persisted(&[crate::models::model_config("stored".into(),"Stored".into())]), checked_at: Some(i64::MAX), ..Default::default() };
+            store.write("glm-zcode",&stored,None).await.unwrap();
+            let observed = Arc::new(Mutex::new(Vec::new()));
+            let models = maho_ai::models::create_models(Some(maho_ai::models::CreateModelsOptions { models_store: Some(store.clone()), auth: Some(Arc::new(KeyAuth)) }));
+            models.set_provider(Arc::new(RefreshProvider { urls: ("invalid-live-url".into(),"invalid-catalog-url".into()), observed: observed.clone() }));
+            let result = models.refresh(maho_ai::models::ModelsRefreshOptions { allow_network: Some(allow_network), ..Default::default() }).await;
+            assert!(result.errors.is_empty()); assert_eq!(observed.lock().unwrap()[0].id,"stored"); assert_eq!(store.read("glm-zcode",None).await.unwrap(),Some(stored));
+        }
+    }
+#[tokio::test]
+    async fn concurrent_ticket_waiters_share_one_acquisition_and_clear_pending() {
+        use std::io::{BufRead,Write};
+        let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap(); let base = format!("http://{}",listener.local_addr().unwrap());
+        let runtime = Arc::new(Mutex::new(Runtime { credential: Some(("key".into(),"jwt".into())), ..Default::default() }));
+        let (accepted,seen) = tokio::sync::oneshot::channel(); let (release,ready) = std::sync::mpsc::channel();
+        let peer = std::thread::spawn(move || { let (mut stream,_) = listener.accept().unwrap(); let mut reader = std::io::BufReader::new(stream.try_clone().unwrap()); let mut line = String::new(); loop { line.clear(); reader.read_line(&mut line).unwrap(); if line == "\r\n" { break; } } accepted.send(()).unwrap(); ready.recv_timeout(std::time::Duration::from_secs(3)).unwrap(); let body = json!({"ticket_id":"shared","state":"ready"}).to_string(); write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap(); });
+        let first_runtime = runtime.clone(); let first_base = base.clone();
+        let first = tokio::spawn(async move { acquire_ticket_from(first_runtime,crate::offpeak::TicketClient { base: first_base, ..crate::offpeak::TicketClient::new(BTreeMap::new()) },"key".into(),"jwt".into()).await });
+        tokio::time::timeout(std::time::Duration::from_secs(3),seen).await.unwrap().unwrap();
+        let mut second = Box::pin(acquire_ticket_from(runtime.clone(),crate::offpeak::TicketClient { base, ..crate::offpeak::TicketClient::new(BTreeMap::new()) },"key".into(),"jwt".into()));
+        assert!(std::future::poll_fn(|cx| std::task::Poll::Ready(second.as_mut().poll(cx).is_pending())).await);
+        release.send(()).unwrap(); assert_eq!(first.await.unwrap().as_deref(),Some("shared")); assert_eq!(second.await.as_deref(),Some("shared"));
+        assert!(runtime.lock().unwrap().pending.is_none()); peer.join().unwrap();
+    }
+    #[tokio::test]
+    async fn failed_ticket_is_retried_with_same_task_identity() {
+        use std::io::{BufRead,Read,Write};
+        let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap(); let base = format!("http://{}",listener.local_addr().unwrap());
+        let peer = std::thread::spawn(move || { let mut tasks = Vec::new(); for status in [429,200] { let (mut stream,_) = listener.accept().unwrap(); stream.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap(); let mut reader = std::io::BufReader::new(stream.try_clone().unwrap()); let mut line = String::new(); let mut len = 0; reader.read_line(&mut line).unwrap(); loop { line.clear(); reader.read_line(&mut line).unwrap(); if line == "\r\n" { break; } else if let Some(n) = line.to_lowercase().strip_prefix("content-length:") { len = n.trim().parse().unwrap(); } } let mut body = vec![0;len]; reader.read_exact(&mut body).unwrap(); tasks.push(serde_json::from_slice::<Value>(&body).unwrap()["task_id"].clone()); let body = json!({"ticket_id":"retried","state":"ready"}).to_string(); write!(stream,"HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap(); } assert_eq!(tasks[0],tasks[1]); assert!(tasks[0].as_str().unwrap().starts_with("omo-offpeak-")); });
+        let runtime = Arc::new(Mutex::new(Runtime::default()));
+        for expected in [None,Some("retried")] { let result = acquire_ticket_from(runtime.clone(),crate::offpeak::TicketClient { base: base.clone(), ..crate::offpeak::TicketClient::new(BTreeMap::new()) },"key".into(),"jwt".into()).await; assert_eq!(result.as_deref(),expected); assert!(runtime.lock().unwrap().pending.is_none()); }
+        peer.join().unwrap();
+    }
 struct RefreshProvider { urls: (String,String), observed: Arc<Mutex<Vec<maho_ext_api::ProviderModelConfig>>> }
     impl maho_ai::models::Provider for RefreshProvider {
         fn id(&self) -> &str { "glm-zcode" }

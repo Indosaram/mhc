@@ -92,6 +92,15 @@ impl Signing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn rejected_handshake_fails_open_and_retries_without_refetching_gate() {
+        use std::io::{BufRead,Write};
+        let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap(); let base = format!("http://{}",listener.local_addr().unwrap());
+        let peer = std::thread::spawn(move || { for path in ["/gate","/handshake","/handshake"] { let (mut stream,_) = listener.accept().unwrap(); stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap(); let mut reader = std::io::BufReader::new(stream.try_clone().unwrap()); let mut line = String::new(); reader.read_line(&mut line).unwrap(); assert!(line.contains(path)); loop { line.clear(); reader.read_line(&mut line).unwrap(); if line == "\r\n" { break; } } let body = if path == "/gate" { json!({"code":0,"data":{"codingPlanSignature":{"enable":true}}}) } else { json!({"code":403}) }.to_string(); write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap(); } });
+        let signing = Signing { gate: format!("{base}/gate"),handshake: format!("{base}/handshake"), ..Default::default() };
+        let headers = BTreeMap::from([("X-ZCode-Agent".into(),Some("glm".into())),("Authorization".into(),Some("Bearer kid123.sec456".into()))]);
+        assert!(signing.resolve(&headers).await.is_empty()); assert!(signing.resolve(&headers).await.is_empty()); peer.join().unwrap();
+    }
     #[test] fn key_split_preserves_secret_dots() { assert_eq!(parse_api_key("id.secret.more"), Some(("id","secret.more"))); }
     #[test] fn key_split_rejects_missing_halves() { for key in ["", "id", ".secret", "id."] { assert!(parse_api_key(key).is_none()); } }
     #[test] fn pow_satisfies_challenge() { let candidate = solve_pow("id","session","123","00000000000000000000000000000000").unwrap(); let challenge = hex(&Sha256::digest(b"id\nzcode\nsession\n123")); assert_eq!(Sha256::digest(format!("{}\n{candidate}",&challenge[..32]).as_bytes())[0],0); }

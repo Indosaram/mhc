@@ -15,6 +15,14 @@ impl SessionManager for Session {
 }
 struct Registry;
 struct Actions;
+#[derive(Default)]
+struct EntryActions(std::sync::Mutex<Vec<(String,Option<JsonValue>)>>);
+impl ExtensionActions for EntryActions {
+    fn send_message(&self, _: CustomMessage, _: SendMessageOptions) -> Result<(), ExtensionFailure> { Ok(()) }
+    fn send_user_message(&self, _: UserMessageContent, _: SendUserMessageOptions) -> Result<(), ExtensionFailure> { Ok(()) }
+    fn append_entry(&self, kind: &str, data: Option<JsonValue>) -> Result<(), ExtensionFailure> { self.0.lock().expect("capture entry").push((kind.into(),data)); Ok(()) }
+    fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> { Ok(Vec::new()) }
+}
 impl ExtensionActions for Actions {
     fn send_message(&self, _: CustomMessage, _: SendMessageOptions) -> Result<(), ExtensionFailure> { Ok(()) }
     fn send_user_message(&self, _: UserMessageContent, _: SendUserMessageOptions) -> Result<(), ExtensionFailure> { Ok(()) }
@@ -134,6 +142,16 @@ async fn native_toggle_reports_files_and_hides_widget() {
     assert!(ui.widget.lock().unwrap().as_ref().unwrap().iter().any(|line|line.contains("src/AGENTS.md")));
     (command.command.handler)("",&context).await.unwrap();
     assert!(ui.widget.lock().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn native_toggle_appends_machine_readable_cache_debug_entry() {
+    let (tree,mut runner) = fixture(); let actions = Arc::new(EntryActions::default());
+    let context = runner.create_context().unwrap(); runner.bind_core(actions.clone(),context.clone());
+    content(&mut runner,read_event(tree.path())).await.unwrap();
+    (runner.get_command("nested-agents").unwrap().command.handler)("",&context).await.unwrap();
+    let entries = actions.0.lock().unwrap(); let (kind,data) = entries.last().unwrap();
+    assert_eq!(kind,"nested-agents-md:debug"); let data = data.as_ref().unwrap(); assert_eq!(data["cacheSize"],1); assert_eq!(data["injectedFiles"].as_array().unwrap().len(),1);
 }
 
 #[tokio::test]

@@ -14,7 +14,7 @@ impl Ticket {
 }
 pub fn request_headers(jwt: &str, key: &str, id: &str) -> BTreeMap<String, String> { [("Authorization",format!("Bearer {jwt}")),("X-Coding-Plan-Api-Key",key.into()),("X-Off-Peak-Ticket-ID",id.into())].into_iter().map(|(key,value)|(key.into(),value)).collect() }
 pub fn route(models: Vec<ProviderModelConfig>, active: bool) -> Vec<ProviderModelConfig> {
-    let override_url = std::env::var("ZCODE_ANTHROPIC_BASE_URL").ok().filter(|value| !value.trim().is_empty());
+    let override_url = std::env::var("ZCODE_ANTHROPIC_BASE_URL").ok().map(|value| value.trim().to_owned()).filter(|value| !value.is_empty());
     let fallback = override_url.clone().unwrap_or_else(crate::models::resolve_base_url);
     models.into_iter().map(|mut model| {
         if active && override_url.is_none() && model.id.to_lowercase().contains("flash") { model.base_url = Some(OFFPEAK_BASE_URL.into()); }
