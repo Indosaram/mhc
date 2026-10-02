@@ -3907,9 +3907,12 @@ impl AgentSession {
         let messages = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()).messages);
         let messages = crate::messages::filter_context_excluded_messages(messages);
         let estimate = crate::compaction::estimate_context_tokens(&messages);
-        let compacted = self.with_session_manager(|manager|
-            crate::session_manager::get_latest_compaction_entry(&manager.branch(manager.leaf_id())).is_some());
-        let tokens = if compacted { messages.iter().map(crate::compaction::estimate_tokens).sum() } else { estimate.tokens };
+        let stale_usage = proactive && self.with_session_manager(|manager| {
+            let branch = manager.branch(manager.leaf_id());
+            let Some(boundary) = branch.iter().rposition(|entry| entry["type"] == "compaction") else { return false; };
+            crate::compaction::get_last_assistant_usage(&branch[boundary + 1..]).is_none()
+        });
+        let tokens = if stale_usage { messages.iter().map(crate::compaction::estimate_tokens).sum() } else { estimate.tokens };
         let reserve = if resolved.reserve_scaling_enabled {
             crate::compaction::compaction::resolve_reserve_tokens(model.context_window as f64, resolved.reserve_tokens as f64) as u64
         } else { resolved.reserve_tokens as u64 };
@@ -6367,6 +6370,35 @@ mod tests {
         let cleared = session.clear_queue(false);
         assert_eq!(cleared.steering, ["late steering ".repeat(200)]);
         assert_eq!(cleared.follow_up, ["late followup"]);
+    }
+
+    #[tokio::test]
+    async fn continuation_uses_post_compaction_usage_by_persistence_order() {
+        for post_boundary in [false, true] {
+            let session = test_session();
+            let mut model = test_model();
+            model.context_window = 128;
+            session.agent.set_model(model);
+            session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+                ("compaction".to_owned(), serde_json::json!({"reserveTokens":0,"reserveScalingEnabled":false,"keepRecentTokens":1})),
+            ])));
+            let mut assistant = maho_ai::providers::faux::faux_assistant_message("answer", Default::default());
+            assistant.usage.input = 1000;
+            assistant.timestamp = 0;
+            session.with_session_manager_mut(|manager| {
+                let kept = manager.append_message(serde_json::json!({"role":"user","content":"small","timestamp":0}));
+                manager.append_message(serde_json::to_value(&assistant).expect("assistant"));
+                manager.append_compaction("digest", kept["id"].as_str().expect("kept"), 1000, None, None, None);
+                if post_boundary { manager.append_message(serde_json::to_value(&assistant).expect("assistant")); }
+            });
+            session.rebuild_session_context().expect("context");
+            let mut extension = maho_ext_api::LoadedExtension::new("<inline:usage-admission>", session.cwd().into(), Default::default());
+            extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(|_, _| Box::pin(async {
+                Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult { cancel: Some(true), ..Default::default() }))
+            }))]);
+            session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+            assert_eq!(session.revalidate_scheduled_continuation_admission().await.is_err(), post_boundary);
+        }
     }
 
     #[tokio::test]
