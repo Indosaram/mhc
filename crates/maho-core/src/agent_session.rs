@@ -1344,13 +1344,25 @@ impl AgentSession {
             return Err("Prompt cancelled".to_owned());
         }
         if text.starts_with('/') && self.try_execute_extension_command(text).await? { return Ok(PromptDisposition::Handled); }
-        if self.is_streaming() {
+        if self.is_streaming() || self.is_compacting() {
+            if options.thinking_level.is_some() { return Err("Cannot set thinkingLevel on a queued prompt; set it after the current turn completes.".to_owned()); }
             let mode = options.streaming_behavior.ok_or_else(||
                 "Agent is already processing a prompt. Use steer() or followUp() to queue messages, or wait for completion.".to_owned())?;
             self.queue_user_input(text, options.images, mode, QueuedInputOptions { source: options.source, ..Default::default() }).await?;
             return Ok(PromptDisposition::Queued);
         }
-        let _admission = self.prompt_admission.lock().await;
+        let _admission = if let Some(signal) = &options.signal {
+            tokio::select! {
+                biased;
+                _ = signal.cancelled() => return Err("Prompt cancelled".to_owned()),
+                admission = self.prompt_admission.lock() => admission,
+            }
+        } else { self.prompt_admission.lock().await };
+        let weak = Arc::downgrade(&self.inner);
+        let _prompt_signal_bridge = options.signal.map(|signal| AbortSignalBridge(tokio::spawn(async move {
+            signal.cancelled().await;
+            if let Some(inner) = weak.upgrade() { AgentSession { inner }.abort().await; }
+        })));
         let _work = self.work_barrier.begin();
         self.state().user_aborted = false;
         let Some((text, images)) = self.run_input_handlers(text, options.images, options.source, None).await? else {
@@ -1366,7 +1378,10 @@ impl AgentSession {
                 crate::compaction_settings_access::CompactionModelSelector { provider: &model.provider, id: &model.id },
             ))?;
             if self.get_context_usage().and_then(|usage| usage.tokens).is_some_and(|tokens|
-                tokens.saturating_add(text.len().div_ceil(4) as u64) > model.context_window.saturating_sub(resolved.reserve_tokens as u64)) {
+                tokens.saturating_add(text.len().div_ceil(4) as u64) > model.context_window.saturating_sub(
+                    if resolved.reserve_scaling_enabled { crate::compaction::compaction::resolve_reserve_tokens(
+                        model.context_window as f64, resolved.reserve_tokens as f64,
+                    ) as u64 } else { resolved.reserve_tokens as u64 })) {
                 self.compact_for_model(None, &model, "pre-prompt").await?;
             }
         }
