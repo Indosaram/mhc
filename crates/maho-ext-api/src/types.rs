@@ -862,7 +862,7 @@ pub type BusHandler = Arc<dyn Fn(&JsonValue) + Send + Sync>;
 #[derive(Clone, Default)]
 struct BusState { next_id: u64, handlers: BTreeMap<String, Vec<(u64, BusHandler)>> }
 #[derive(Clone, Default)]
-pub struct EventBus { state: Arc<Mutex<BusState>>, registration_stale: Arc<std::sync::atomic::AtomicBool> }
+pub struct EventBus { state: Arc<Mutex<BusState>>, registration_stale: Arc<std::sync::atomic::AtomicBool>, runtime: Option<ExtensionRuntime> }
 pub struct BusSubscription { state: Arc<Mutex<BusState>>, channel: String, id: u64 }
 impl Drop for BusSubscription {
     fn drop(&mut self) {
@@ -872,7 +872,12 @@ impl Drop for BusSubscription {
 }
 impl EventBus {
     pub fn registration_scope(&self) -> Self {
-        Self { state: self.state.clone(), registration_stale: Arc::new(std::sync::atomic::AtomicBool::new(false)) }
+        Self { state: self.state.clone(), registration_stale: Arc::new(std::sync::atomic::AtomicBool::new(false)), runtime: self.runtime.clone() }
+    }
+    pub fn bind_runtime(&mut self, runtime: ExtensionRuntime) { self.runtime = Some(runtime); }
+    fn assert_active_or_panic(&self) {
+        if self.registration_stale.load(std::sync::atomic::Ordering::Acquire) { std::panic::panic_any(ExtensionFailure::new("Extension factory failed to load")); }
+        if let Some(runtime) = &self.runtime { runtime.assert_active_or_panic(); }
     }
     pub fn invalidate_registration(&self) { self.registration_stale.store(true, std::sync::atomic::Ordering::Release); }
     pub fn registration_checkpoint(&self) -> EventBusCheckpoint {
@@ -885,15 +890,14 @@ impl EventBus {
         state.next_id = next_id;
     }
     pub fn on(&self, channel: &str, handler: BusHandler) -> BusSubscription {
+        self.assert_active_or_panic();
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let id = state.next_id; state.next_id = state.next_id.wrapping_add(1);
-        if !self.registration_stale.load(std::sync::atomic::Ordering::Acquire) {
-            state.handlers.entry(channel.into()).or_default().push((id, handler));
-        }
+        state.handlers.entry(channel.into()).or_default().push((id, handler));
         BusSubscription { state: Arc::clone(&self.state), channel: channel.into(), id }
     }
     pub fn emit(&self, channel: &str, data: &JsonValue) {
-        if self.registration_stale.load(std::sync::atomic::Ordering::Acquire) { return; }
+        self.assert_active_or_panic();
         let handlers = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.get(channel).cloned().unwrap_or_default();
         for (_, handler) in handlers {
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(data))).is_err() { eprintln!("Event handler error ({channel}): native handler panicked"); }
@@ -1035,7 +1039,8 @@ pub struct ExtensionApi {
     pub cwd: PathBuf, pub profile: ExtensionSessionProfile, pub events: EventBus, pub runtime: ExtensionRuntime, pub registered: LoadedExtension,
 }
 impl ExtensionApi {
-    pub fn new(registered: LoadedExtension, profile: ExtensionSessionProfile, events: EventBus, runtime: ExtensionRuntime) -> Self {
+    pub fn new(registered: LoadedExtension, profile: ExtensionSessionProfile, mut events: EventBus, runtime: ExtensionRuntime) -> Self {
+        events.bind_runtime(runtime.clone());
         Self { cwd: registered.registration_cwd.clone(), profile, events, runtime, registered }
     }
     pub fn on(&mut self, event: EventKind, handler: ExtensionHandler) { self.runtime.assert_active_or_panic(); self.registered.handlers.entry(event).or_default().push(handler); }

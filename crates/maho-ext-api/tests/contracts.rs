@@ -58,6 +58,17 @@ fn stale_legacy_registration_throws_without_mutating_extension() {
 fn api(runtime: ExtensionRuntime) -> ExtensionApi {
     ExtensionApi::new(LoadedExtension::new("test", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), runtime)
 }
+
+#[test]
+fn captured_api_event_bus_rejects_access_after_runtime_replacement() {
+    let runtime = ExtensionRuntime::default();
+    let api = api(runtime.clone());
+    let captured = api.events.clone();
+    runtime.invalidate("replacement");
+    let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| captured.emit("late", &JsonValue::Null))).unwrap_err();
+    assert_eq!(error.downcast_ref::<ExtensionFailure>().unwrap().message, "replacement");
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| captured.on("late", Arc::new(|_| {})))).is_err());
+}
 #[derive(Default)]
 struct Providers(Mutex<Vec<String>>);
 impl ExtensionProviderActions for Providers {
@@ -216,10 +227,10 @@ fn invalid_registration_bus_cannot_emit_subscribe_or_clear_shared_handlers() {
     let observed = calls.clone();
     let _subscription = events.on("shared", Arc::new(move |_| { observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }));
     failed.invalidate_registration();
-    failed.emit("shared", &JsonValue::Null);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| failed.emit("shared", &JsonValue::Null))).is_err());
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     let late_calls = calls.clone();
-    let _late = failed.on("shared", Arc::new(move |_| { late_calls.fetch_add(10, std::sync::atomic::Ordering::SeqCst); }));
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| failed.on("shared", Arc::new(move |_| { late_calls.fetch_add(10, std::sync::atomic::Ordering::SeqCst); })))).is_err());
     failed.clear();
     events.emit("shared", &JsonValue::Null);
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
