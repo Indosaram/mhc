@@ -466,6 +466,21 @@ impl Drop for AbortSignalBridge {
     fn drop(&mut self) { self.0.abort(); }
 }
 
+struct PendingCompactionAdmissionGuard<'a> {
+    session: &'a AgentSession,
+    controller: crate::compaction::lifecycle::CompactionAbortController,
+}
+
+impl Drop for PendingCompactionAdmissionGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self.session.state();
+        if state.pending_compaction_admission.as_ref().is_some_and(|current| current.same(&self.controller)) {
+            self.controller.abort();
+            state.pending_compaction_admission = None;
+        }
+    }
+}
+
 impl SessionExtensionActions {
     fn session(&self) -> Result<AgentSession, maho_ext_api::ExtensionFailure> {
         self.0.upgrade().map(|inner| AgentSession { inner }).ok_or_else(|| maho_ext_api::ExtensionFailure::new("Session disposed"))
@@ -1773,6 +1788,7 @@ impl AgentSession {
             if let Some(prior) = &state.compaction_abort_controller { prior.abort(); }
             if let Some(signal) = &state.compaction_extension_signal { signal.abort(); }
         }
+        let pending_guard = PendingCompactionAdmissionGuard { session: self, controller: pending.clone() };
         self.agent.abort(None);
         self.abort_retry();
         let signal = pending.signal();
@@ -1790,6 +1806,7 @@ impl AgentSession {
                 state.pending_compaction_admission = None;
             }
         }
+        drop(pending_guard);
         let _admission = admission;
         let result = if pending.aborted() { Err("Compaction cancelled".to_owned()) }
             else { self.compact_for_model(instructions, &self.model(), "manual").await };
@@ -6400,6 +6417,24 @@ mod tests {
         assert_eq!(session.messages().len(), 1);
         assert_eq!(session.messages()[0].role(), "custom");
         assert_eq!(session.with_session_manager(|manager| manager.entries()).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn dropped_pending_compaction_releases_its_admission_owner() {
+        let session = test_session();
+        let admission = session.prompt_admission.lock().await;
+        {
+            let compact = session.compact(None);
+            tokio::pin!(compact);
+            std::future::poll_fn(|context| {
+                assert!(std::future::Future::poll(compact.as_mut(), context).is_pending());
+                std::task::Poll::Ready(())
+            }).await;
+            assert!(session.is_compacting());
+        }
+        assert!(!session.is_compacting());
+        assert!(!session.work_barrier.has_active_work());
+        drop(admission);
     }
 
     #[tokio::test]
