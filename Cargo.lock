@@ -1947,6 +1947,7 @@ version = "0.0.0"
 dependencies = [
  "dirs",
  "globset",
+ "maho-ext-api",
  "serde_json",
  "sha2",
  "tempfile",
@@ -1966,8 +1967,14 @@ dependencies = [
 name = "maho-ext-pi-websearch"
 version = "0.0.0"
 dependencies = [
+ "regex",
+ "reqwest",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-util",
  "url",
 ]
 
@@ -3638,6 +3645,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]
