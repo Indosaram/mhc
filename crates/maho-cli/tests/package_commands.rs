@@ -13,3 +13,19 @@ fn args(values: &[&str]) -> Vec<String> { values.iter().map(|value| (*value).to_
     assert!(parse_package_command(&args(&["update", "--extension"])).unwrap().missing_option_value.is_some());
     assert!(parse_package_command(&args(&["update", "--extension", "one", "--extension", "two"])).unwrap().conflicting_options.is_some());
 }
+#[test] fn update_target_precedence_preserves_positional_source() {
+    let parsed = parse_package_command(&args(&["update", "--extension", "resource"])).unwrap();
+    assert_eq!(parsed.source, None);
+    assert_eq!(parsed.update_target, Some(UpdateTarget::Extensions { source: Some("resource".to_owned()) }));
+    let parsed = parse_package_command(&args(&["update", "self", "--extensions"])).unwrap();
+    assert!(parsed.conflicting_options.is_none());
+    assert_eq!(parsed.update_target, Some(UpdateTarget::All));
+    assert!(parse_package_command(&args(&["update"])).unwrap().show_extensions_skipped_note);
+}
+#[test] fn update_conflicts_keep_first_error_and_models_target() {
+    let parsed = parse_package_command(&args(&["update", "--all", "--models", "--self", "--force"])).unwrap();
+    assert_eq!(parsed.update_target, Some(UpdateTarget::Models));
+    assert!(parsed.conflicting_options.unwrap().starts_with("--all"));
+    assert!(parsed.force);
+    assert!(parse_package_command(&args(&["install", "--force"])).unwrap().invalid_option.is_some());
+}
