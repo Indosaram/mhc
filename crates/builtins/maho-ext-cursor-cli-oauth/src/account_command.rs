@@ -98,6 +98,7 @@ pub fn register_with_router(api:&mut maho_ext_api::ExtensionApi,oauth:std::sync:
                         runtime.assert_active()?;
                         let ui=ctx.ui.clone();let has_ui=ctx.has_ui;
                         let mutation_runtime=runtime.clone();
+                        let imported_name=std::sync::Arc::new(std::sync::Mutex::new(None));let mutation_name=imported_name.clone();
                         store.modify(crate::oauth_login::PROVIDER_ID,Box::new(move |current|Box::pin(async move {
                             mutation_runtime.assert_active()?;
                             let current=current.and_then(Credential::into_oauth).unwrap_or_else(empty_credential);
@@ -110,24 +111,33 @@ pub fn register_with_router(api:&mut maho_ext_api::ExtensionApi,oauth:std::sync:
                                 }else {fallback}
                             };
                             mutation_runtime.assert_active()?;
+                            *mutation_name.lock().expect("imported account")=Some(name.clone());
                             Ok(Some(Credential::OAuth(crate::accounts::add_account(&current,crate::accounts::CursorCliAccountSlot {name,display_name:None,access:imported.access,refresh:imported.refresh,expires:imported.expires,source:crate::accounts::AccountSource::Import,blocked_until:None,block_reason:None})?)))
                         })),None).await?;
                         runtime.assert_active()?;
                         (oauth.persist_enabled)(true)?;
                         maho_ext_anthropic_subscription::account_events::emit_provider_accounts_changed(crate::oauth_login::PROVIDER_ID);
+                        let name=imported_name.lock().expect("imported account").take().unwrap_or_else(||"a new account".into());
+                        ctx.ui.notify(&format!("Imported local Cursor credential as '{name}' (copied into this provider's store)."),maho_ext_api::NotificationType::Info);
                     },
                     AccountAction::ImportNative=> {
                         let native=store.read("cursor",None).await?;
                         runtime.assert_active()?;
                         let mutation_runtime=runtime.clone();
+                        let imported_name=std::sync::Arc::new(std::sync::Mutex::new(None));let mutation_name=imported_name.clone();
                         store.modify(crate::oauth_login::PROVIDER_ID,Box::new(move |current|Box::pin(async move {
                             mutation_runtime.assert_active()?;
                             let current=current.and_then(Credential::into_oauth).unwrap_or_else(empty_credential);
-                            Ok(Some(Credential::OAuth(crate::oauth_login::import_native_credential(&current,native.as_ref())?)))
+                            let existing=list_accounts(&current)?;
+                            let updated=crate::oauth_login::import_native_credential(&current,native.as_ref())?;
+                            *mutation_name.lock().expect("imported account")=list_accounts(&updated)?.into_iter().find(|slot|!existing.iter().any(|before|before.name==slot.name)).map(|slot|slot.name);
+                            Ok(Some(Credential::OAuth(updated)))
                         })),None).await?;
                         runtime.assert_active()?;
                         (oauth.persist_enabled)(true)?;
                         maho_ext_anthropic_subscription::account_events::emit_provider_accounts_changed(crate::oauth_login::PROVIDER_ID);
+                        let name=imported_name.lock().expect("imported account").take().unwrap_or_else(||"a new account".into());
+                        ctx.ui.notify(&format!("Imported native Cursor credential as '{name}' (copied into this provider's store)."),maho_ext_api::NotificationType::Info);
                     },
                     AccountAction::Acknowledge=> {
                         if !ctx.has_ui { anyhow::bail!("/cursor-account acknowledge requires an interactive UI."); }
