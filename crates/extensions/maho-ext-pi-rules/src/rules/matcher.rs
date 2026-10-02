@@ -69,8 +69,10 @@ impl Matcher {
             for pattern in patterns{
                 let negated=pattern.starts_with('!');
                 let value=pattern.strip_prefix('!').unwrap_or(&pattern);
-                let normalized=normalize_literal_braces(value.strip_prefix("./").unwrap_or(value));
-                let compiled=if value.contains(['(',')','"','[','*','?','+']){match fancy_regex::Regex::new(&format!("^(?:{})$",js_regex_expression(&compile_expression(&normalized)))){Ok(expression)=>PathMatcher::Expression(expression),Err(_)=>PathMatcher::Never}}else{PathMatcher::Glob(GlobBuilder::new(&normalized).literal_separator(false).backslash_escape(false).allow_unclosed_class(true).empty_alternates(true).build()?.compile_matcher())};
+                let mut expression_value=value;let mut negate_count=0;
+                while expression_value.starts_with('!')&&(!expression_value.starts_with("!(")||expression_value.starts_with("!(?")){negate_count+=1;expression_value=&expression_value[1..];}
+                let normalized=normalize_literal_braces(expression_value.strip_prefix("./").unwrap_or(expression_value));
+                let compiled=if negate_count>0||value.contains(['(',')','"','[','*','?','+']){let expression=js_regex_expression(&compile_expression(&normalized));let expression=if negate_count%2==1{format!("^(?!^(?:{expression})$)[^\\n\\r\\u{{2028}}\\u{{2029}}]*$")}else{format!("^(?:{expression})$")};match fancy_regex::Regex::new(&expression){Ok(expression)=>PathMatcher::Expression(expression),Err(_)=>PathMatcher::Never}}else{PathMatcher::Glob(GlobBuilder::new(&normalized).literal_separator(false).backslash_escape(false).allow_unclosed_class(true).empty_alternates(true).build()?.compile_matcher())};
                 if negated{set.negative.push((value.into(),compiled));}else{set.positive.push((pattern,compiled));}
             }
             if self.sets.len()>=256{self.sets.pop_front();}

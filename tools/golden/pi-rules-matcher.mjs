@@ -45,6 +45,11 @@ patterns.push('@(a|b){x}', '@(a|b){1..3}', '@(a|b){x,y}', '@(a|b)[[:bogus:]]', '
 paths.push('a{x}', 'a3', 'ay', 'ac', 'a:]','as]', 'a[]');
 for (const pattern of patterns) if (!paths.includes(pattern)) paths.push(pattern);
 const cases = patterns.flatMap(pattern => { const matches = picomatch(pattern, { bash: true, dot: true }); return paths.map(path => ({ pattern, path, matched: matches(path) })); });
+for (const pattern of ['!foo', '!!foo', '!@(a|b)', '!(a|b)', '![z-a]', '!"*"']) {
+  const positive = picomatch('**', { bash: true, dot: true });
+  const excluded = picomatch(pattern.slice(1), { bash: true, dot: true });
+  for (const path of paths) cases.push({ pattern, path, matched: positive(path) && !excluded(path), exclusion: true });
+}
 const output = `${JSON.stringify(cases, null, 2)}\n`;
 if (process.argv[2]) writeFileSync(process.argv[2], output);
 else console.log(output);
