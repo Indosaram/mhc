@@ -1951,10 +1951,11 @@ impl AgentSession {
                     self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Rejected {
                         reason: compact_reason, request_id, rejection_cause,
                     })).await;
+                } else {
+                    self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionCompactFailed {
+                        reason: compact_reason, error_message, aborted: signal.aborted(), will_retry: false, from_extension: false,
+                    }).await;
                 }
-                self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionCompactFailed {
-                    reason: compact_reason, error_message, aborted: signal.aborted(), will_retry: false, from_extension: false,
-                }).await;
             }
         }
         execution
@@ -6121,6 +6122,42 @@ mod tests {
         assert_eq!(session.session_name().as_deref(), Some("Native Session Recovery"));
         assert_eq!(provider.get_call_log().len(), 2);
         assert!(session.state().session_title_abort_controller.is_none());
+    }
+
+    #[tokio::test]
+    async fn extension_compaction_rejection_has_no_execution_failure_event() {
+        let session = test_session();
+        session.agent.set_model(test_model());
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"keepRecentTokens":1})),
+        ])));
+        for text in ["old task", "recent task"] {
+            session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":text,"timestamp":0})));
+        }
+        session.rebuild_session_context().expect("context");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:compaction-rejection>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(|_, _| Box::pin(async {
+            Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {
+                cancel: Some(true), rejection_cause: Some(maho_ext_api::CompactionRejectionCause::CircuitBreaker),
+                reason: Some("cooldown active".to_owned()), ..Default::default()
+            }))
+        }))]);
+        for kind in [maho_ext_api::EventKind::SessionCompact, maho_ext_api::EventKind::SessionCompactFailed] {
+            let captured = events.clone();
+            extension.handlers.insert(kind, vec![Arc::new(move |event, _| {
+                lock(&captured).push(event.clone());
+                Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+            })]);
+        }
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        assert!(session.compact(None).await.is_err());
+        assert_eq!(session.compaction_state().status(), "failed");
+        let events = lock(&events);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Rejected {
+            rejection_cause: maho_ext_api::CompactionRejectionCause::CircuitBreaker, ..
+        })));
     }
 
     #[tokio::test]
