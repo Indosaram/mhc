@@ -162,7 +162,7 @@ impl SdkQueryHandle {
         if let Some(name) = server_name { initialize["sdkMcpServers"] = json!([name]); }
         if let Some(prompt) = options.get("systemPrompt") {
             if prompt.is_string() { initialize["systemPrompt"] = json!([prompt]); }
-            else if prompt["type"] == "preset" { if let Some(append) = prompt.get("append") { initialize["appendSystemPrompt"] = json!([append]); } }
+            else if prompt["type"] == "preset" { if let Some(append) = prompt.get("append") { initialize["appendSystemPrompt"] = append.clone(); } }
             else { initialize["systemPrompt"] = prompt.clone(); }
         }
         match handle.request(initialize).await {
@@ -575,6 +575,17 @@ mod tests {
         assert_eq!(query.next().await.expect("frame").expect("message")["result"], "hello");
         assert_eq!(query.interrupt().await.expect("interrupt")["still_queued"], json!([]));
         query.set_model("claude-test").await.expect("model"); query.close().await.expect("reaped");
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn preset_append_is_sent_as_string_not_singleton_array() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory=tempfile::tempdir().expect("directory");let script=directory.path().join("claude");
+        std::fs::write(&script,"#!/usr/bin/python3\nimport sys,json\nfor line in sys.stdin:\n f=json.loads(line)\n if f['type']=='control_request':\n  print(json.dumps({'type':'control_response','response':{'subtype':'success','request_id':f['request_id'],'response':f['request']}}),flush=True)\n").expect("script");
+        std::fs::set_permissions(&script,std::fs::Permissions::from_mode(0o700)).expect("permissions");
+        let query=tokio::time::timeout(std::time::Duration::from_secs(5),SdkQueryHandle::spawn(&script,&json!({"systemPrompt":{"type":"preset","preset":"claude_code","append":"exact append"}}),&BTreeMap::new())).await.expect("bounded initialize").expect("spawn");
+        assert_eq!(query.initialization["appendSystemPrompt"],"exact append");assert!(query.initialization.get("systemPrompt").is_none());
+        query.close().await.expect("reaped");
     }
     #[test]
     fn native_spawn_arguments_preserve_empty_tools_and_lineage() {
