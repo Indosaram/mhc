@@ -201,3 +201,32 @@ async fn cooperative_interrupt_settles_nested_host_wait_as_stale() {
     assert!(stop.unwrap());
     assert_eq!(child.unwrap().unwrap_err().code,KernelToolErrorCode::KernelToolStale);
 }
+
+#[tokio::test]
+async fn forced_worker_retirement_settles_nested_host_wait_as_stale() {
+    use maho_codemode::kernels::js::kernel_tools_types::*;
+    let kernel=JavaScriptKernel::start(Path::new(env!("CARGO_MANIFEST_DIR")),"bun-forced-nested-stop",4,None).await.unwrap();
+    let old=kernel.pid();
+    let parent=kernel.run_with_callbacks(KernelRunInput {cell_id:"blocked-parent".into(),code:"tool(async function blocked_lookup() { return await tool.read({}); }); await tool.parent({}); while(true) {}".into(),timeout_ms:None},None,None);
+    let child=async {
+        let parent_call=kernel.next_tool_call().await.unwrap();
+        let described=kernel.describe_kernel_tools(&["blocked_lookup".into()]).await.unwrap();
+        let descriptor=&described["results"][0]["descriptor"];
+        let invoke=kernel.invoke_kernel_tool(KernelToolsInvokeRequest {name:"blocked_lookup".into(),kernel_generation:descriptor["kernel_generation"].as_u64().unwrap(),definition_revision:descriptor["definition_revision"].as_u64().unwrap(),args:serde_json::json!({}),call_id:"forced-nested-stop".into()},KernelToolsInvokeOptions {signal:None,scope:None});
+        let stop=async {
+            kernel.next_tool_call().await.unwrap();
+            kernel.deliver_tool_reply(serde_json::json!({"type":"tool-reply","callId":parent_call["callId"],"ok":true,"value":null})).unwrap();
+            kernel.interrupt("forced-stop",Some("blocked-parent")).await
+        };
+        tokio::join!(async {tokio::time::timeout(std::time::Duration::from_secs(4),invoke).await},stop)
+    };
+    let (parent,(child,stop))=tokio::join!(parent,child);
+    let recovered=kernel.run(KernelRunInput {cell_id:"after-forced-stop".into(),code:"42".into(),timeout_ms:Some(5000)},|_|{}).await;
+    let fresh=kernel.pid()!=old;
+    kernel.close().await.unwrap();
+    assert_eq!(parent.unwrap()["ok"],false);
+    assert!(!stop.unwrap());
+    assert_eq!(child.unwrap().unwrap_err().code,KernelToolErrorCode::KernelToolStale);
+    assert!(fresh);
+    assert_eq!(recovered.unwrap()["valueRepr"],"42");
+}
