@@ -1449,7 +1449,12 @@ impl AgentSession {
             }
         }
         if let Some(pending) = self.pending_model_switch() {
-            self.compact_for_model(None, &pending.model, "manual").await?;
+            self.compact_for_model(None, &pending.model, "pre-prompt").await?;
+            let measured = self.with_session_manager(|manager| manager.build_context(manager.leaf_id())).messages.iter()
+                .map(crate::compaction::compaction::estimate_tokens).sum();
+            let admitted = self.reduce_for_switch_target(&pending.model, measured)?;
+            self.state().pending_model_switch = None;
+            self.assert_model_usable(&pending.model, admitted)?;
             self.set_model_internal(pending.model, pending.persist_default, maho_ext_api::ModelSelectSource::Set, false).await?;
         }
         if let Some(level) = options.thinking_level {
@@ -1600,9 +1605,20 @@ impl AgentSession {
         let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
         let configured = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
             .transpose().map_err(|error| error.to_string())?;
-        let resolved = crate::compaction_settings_resolver::resolve_compaction_settings(configured.as_ref(), Some(
+        let mut resolved = crate::compaction_settings_resolver::resolve_compaction_settings(configured.as_ref(), Some(
             crate::compaction_settings_access::CompactionModelSelector { provider: &budget_model.provider, id: &budget_model.id },
         ))?;
+        if self.pending_model_switch().is_some_and(|pending| models_are_equal(Some(&pending.model), Some(budget_model))) {
+            let window = budget_model.context_window;
+            let ratio = match window {
+                0..=16_000 => 0.45, 16_001..=32_000 => 0.5, 32_001..=64_000 => 0.55,
+                64_001..=128_000 => 0.6, 128_001..=512_000 => 0.7, _ => 0.8,
+            };
+            let keep = if window > 409_600 && resolved.keep_recent_tokens >= 10_000 {
+                resolved.keep_recent_tokens.max((window / 20).min(60_000) as i64)
+            } else { resolved.keep_recent_tokens };
+            resolved.keep_recent_tokens = keep.min(((window as f64 * (1.0 - ratio - 0.05)).floor() as i64).max(1_024)).max(1);
+        }
         let entries = self.with_session_manager(|manager| manager.branch(None));
         let preparation = prepare_compaction(&entries, &crate::compaction::settings::CompactionSettings {
             enabled: resolved.enabled, reserve_tokens: resolved.reserve_tokens, keep_recent_tokens: resolved.keep_recent_tokens,
