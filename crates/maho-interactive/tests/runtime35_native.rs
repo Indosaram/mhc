@@ -645,3 +645,78 @@ async fn fork_selector_defaults_to_latest_user_message() {
     assert_eq!(mode.editor.editor.get_text(), "latest-user");
     assert!(mode.render(80).join("\n").contains("earlier-user"));
 }
+
+#[tokio::test]
+async fn model_management_commands_cancel_without_consuming_provider_turn() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    for command in ["/scoped-models", "/favorite-models"] {
+        assert_eq!(mode.submit(command, Default::default()).await.expect("selector"), maho_core::agent_session::PromptDisposition::Handled);
+        for width in [40, 80, 120] { assert!(mode.render(width).join("\n").contains("faux-1")); }
+        mode.handle_input_at("\x1b", 0);
+        mode.handle_input_at("draft", 1);
+        assert_eq!(mode.editor.editor.get_text(), "draft");
+        mode.editor.editor.set_text("");
+    }
+    mode.submit("hi", Default::default()).await.expect("turn");
+    assert!(mode.render(80).join("\n").contains("hello"));
+}
+
+#[tokio::test]
+async fn scoped_model_selection_persists_and_restores_empty_enabled_set() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("/scoped-models", Default::default()).await.expect("selector");
+    mode.render(80);
+    mode.handle_input_at("\x18", 0);
+    mode.handle_input_at("\x13", 1);
+    mode.handle_input_at("\x1b", 2);
+    mode.render(80);
+    mode.submit("/scoped-models", Default::default()).await.expect("reopen");
+    let rendered = mode.render(80).join("\n");
+    assert!(!rendered.contains('✓'));
+    mode.handle_input_at("\x1b", 3);
+    mode.handle_input_at("draft", 4);
+    assert_eq!(mode.editor.editor.get_text(), "draft");
+}
+
+#[tokio::test]
+async fn configured_session_shortcut_opens_native_selector() {
+    use maho_tui::tui::Component;
+    let (mut mode, directory) = native_mode();
+    std::fs::write(directory.path().join("keybindings.json"), r#"{"app.session.renameCurrent":"ctrl+r"}"#).expect("configuration");
+    mode.handle_input_at("\x12", 0);
+    mode.render(80);
+    mode.handle_input_at("configured-name", 1);
+    mode.handle_input_at("\r", 2);
+    assert_eq!(mode.footer_snapshot().session_name.as_deref(), Some("configured-name"));
+}
+
+#[tokio::test]
+async fn trust_command_saves_only_future_project_decision() {
+    use maho_tui::tui::Component;
+    let (mut mode, directory) = native_mode();
+    mode.submit("/trust", Default::default()).await.expect("trust selector");
+    mode.render(80);
+    mode.handle_input_at("\r", 0);
+    let store = maho_core::trust_manager::ProjectTrustStore::new(&directory.path().to_string_lossy());
+    assert_eq!(store.get(&directory.path().to_string_lossy()).expect("saved trust"), Some(true));
+    mode.handle_input_at("draft", 1);
+    assert_eq!(mode.editor.editor.get_text(), "draft");
+}
+
+#[tokio::test]
+async fn settings_menu_toggles_native_compaction_and_releases_composer() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("/settings", Default::default()).await.expect("settings");
+    for width in [40, 80, 120] { mode.render(width); }
+    mode.handle_input_at("\r", 0);
+    mode.handle_input_at("\x1b", 1);
+    mode.submit("/settings", Default::default()).await.expect("reopen");
+    let rendered = mode.render(120).join("\n");
+    assert!(rendered.lines().any(|line| line.contains("Auto-compact") && line.contains("false")));
+    mode.handle_input_at("\x1b", 2);
+    mode.handle_input_at("draft", 3);
+    assert_eq!(mode.editor.editor.get_text(), "draft");
+}

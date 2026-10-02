@@ -56,13 +56,16 @@ pub struct InteractiveMode {
 }
 
 impl InteractiveMode {
+    fn keybindings(&self) -> maho_tui::keybindings::KeybindingsManager {
+        maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir())).inner().clone()
+    }
     fn output_pad(&self) -> usize { self.session.with_settings_manager(|settings| settings.get_number("outputPad").unwrap_or(1.0) as usize) }
     pub fn new(session: Arc<AgentSession>, theme: Theme, host: Rc<dyn maho_tui::components::editor::EditorTuiHost>) -> Self {
         let (sender, events) = tokio::sync::mpsc::unbounded_channel();
         let subscription = session.subscribe(Arc::new(move |event| { drop(sender.send(event.clone())); }));
         let submissions = Rc::new(RefCell::new(std::collections::VecDeque::new()));
         let captured = submissions.clone();
-        let keys = Arc::new(maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default()));
+        let keys = Arc::new(maho_core::keybindings::KeybindingsManager::create(Some(&session.agent_dir())).inner().clone());
         let mut editor = CustomEditor::new(host.clone(), editor_theme(&theme), keys, CustomEditorOptions::default());
         let (padding, max_visible) = session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
         editor.set_padding_x(padding as usize); editor.editor.set_autocomplete_max_visible(max_visible as usize);
@@ -168,13 +171,13 @@ impl InteractiveMode {
 
     fn handle_filtered_input_at(&mut self, data: &str, now_ms: u64) {
         if self.async_question_widget.is_some() {
-            let keys = maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default());
+            let keys = self.keybindings();
             if self.ui_dialog.is_none() && self.rename_input.is_none() && crate::components::ask_user_answer_key::matches_ask_user_answer_key(data, &maho_core::keybindings::host_platform(), &keys) { self.async_question_widget = None; return; }
         }
         if self.async_question_widget.is_none() && let Some(question) = &mut self.question { question.handle_input(data); if self.question_reply.borrow().is_none() { self.question = None; } return; }
         if self.ui_dialog.is_some() || self.rename_input.is_some() { self.handle_editor_input(data); return; }
         if self.shortcut_overlay { self.shortcut_overlay = false; return; }
-        let keys = maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default());
+        let keys = self.keybindings();
         if keys.matches(data, "app.model.select") { if let Err(error) = self.dispatch_command("/model") { self.show_status(error); } return; }
         for (action, command) in [("app.session.tree", "/tree"), ("app.session.fork", "/fork"), ("app.session.renameCurrent", "/rename")] {
             if keys.matches(data, action) { if let Err(error) = self.dispatch_command(command) { self.show_status(error); } return; }
@@ -217,7 +220,7 @@ impl InteractiveMode {
         let Some(data) = self.filter_terminal_input(data) else { return Ok(()); };
         let data = data.as_str();
         if self.ui_dialog.is_some() || self.rename_input.is_some() || (self.question.is_some() && self.async_question_widget.is_none()) { self.handle_filtered_input_at(data, now_ms); return Ok(()); }
-        let keys = maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default());
+        let keys = self.keybindings();
         if keys.matches(data, "app.model.cycleForward") || keys.matches(data, "app.model.cycleBackward") {
             if let Some(result) = self.session.cycle_model(keys.matches(data, "app.model.cycleForward")).await? { self.show_status(format!("Switched to {}", result.model.name)); }
             else { self.show_status("No other models available for cycling".into()); }
@@ -291,12 +294,12 @@ impl InteractiveMode {
         }
         if text.trim().starts_with("/resume ") {
             let path = get_path_command_argument(text.trim(), "/resume").ok_or("Missing session path")?;
-            if self.session.switch_session(&path).await? { self.rebuild_history(); self.editor.editor.set_text(""); }
+            if self.session.switch_session(&path).await? { self.rebuild_history(); self.editor.editor.set_text(""); self.show_status("Resumed session".into()); }
             return Ok(PromptDisposition::Handled);
         }
         if let Some(id) = text.trim().strip_prefix("/fork ") {
             let result = self.session.fork(id.trim(), false).await?;
-            if !result.cancelled { self.rebuild_history(); self.editor.editor.set_text(result.editor_text.as_deref().unwrap_or("")); }
+            if !result.cancelled { self.rebuild_history(); self.editor.editor.set_text(result.editor_text.as_deref().unwrap_or("")); self.show_status("Forked to new session".into()); }
             return Ok(PromptDisposition::Handled);
         }
         if let Some(id) = text.trim().strip_prefix("/tree ") {
@@ -306,7 +309,7 @@ impl InteractiveMode {
             if self.session.is_streaming() { self.restore_queued_messages(false); self.session.abort().await; }
             if self.session.is_compacting() { return Err("Wait for the current compaction or tree navigation to finish before navigating the session tree.".into()); }
             let result = self.session.navigate_tree(id.trim(), Default::default()).await?;
-            if !result.cancelled && result.aborted != Some(true) { self.rebuild_history(); if let Some(text) = result.editor_text { self.editor.editor.set_text(&text); } }
+            if !result.cancelled && result.aborted != Some(true) { self.rebuild_history(); if let Some(text) = result.editor_text { self.editor.editor.set_text(&text); } self.show_status("Navigated to selected point".into()); }
             return Ok(PromptDisposition::Handled);
         }
         if let Some(reference) = text.trim().strip_prefix("/model ") {
@@ -376,16 +379,148 @@ impl InteractiveMode {
 
     fn dispatch_command(&mut self, text: &str) -> Result<bool, String> {
         let text = text.trim();
+        if text == "/settings" {
+            use crate::components::settings_selector::{SettingsSelectorComponent, SettingsConfig, SettingsCallbacks, ThinkingLevel};
+            let mut config = SettingsConfig { auto_compact:self.session.auto_compaction_enabled(),
+                thinking_level:ThinkingLevel::from_name(self.session.thinking_level().as_str()).expect("session thinking level"),
+                available_thinking_levels:self.session.get_available_thinking_levels().into_iter().filter_map(|level| ThinkingLevel::from_name(level.as_str())).collect(), ..Default::default() };
+            let theme_registry = crate::theme::registry::ThemeRegistry::new(std::path::Path::new(&self.session.agent_dir()).join("themes"), &self.theme.name, self.theme.get_color_mode()).map_err(|error| error.to_string())?;
+            config.current_theme = self.theme.name.clone(); config.available_themes = theme_registry.get_available_themes_with_paths().into_iter().map(|theme| theme.name).collect();
+            self.session.with_settings_manager(|settings| {
+                macro_rules! boolean { ($field:ident, $key:literal) => { config.$field = settings.get_bool($key).unwrap_or(config.$field); }; }
+                macro_rules! number { ($field:ident, $key:literal) => { if let Some(value) = settings.get_number($key) { config.$field = value as _; } }; }
+                macro_rules! string { ($field:ident, $key:literal) => { if let Some(value) = settings.get_string($key) { config.$field = value; } }; }
+                boolean!(show_images, "showImages"); boolean!(auto_resize_images, "imageAutoResize"); boolean!(block_images, "blockImages"); boolean!(enable_skill_commands, "enableSkillCommands");
+                boolean!(hide_thinking_block, "hideThinkingBlock"); boolean!(smooth_streaming, "smoothStreaming"); boolean!(show_cache_miss_notices, "showCacheMissNotices"); boolean!(collapse_changelog, "collapseChangelog");
+                boolean!(enable_install_telemetry, "enableInstallTelemetry"); boolean!(show_hardware_cursor, "showHardwareCursor"); boolean!(quiet_startup, "quietStartup"); boolean!(clear_on_shrink, "clearOnShrink"); boolean!(show_terminal_progress, "showTerminalProgress"); boolean!(fullscreen_copy_on_select, "fullscreenCopyOnSelect");
+                number!(image_width_cells, "imageWidthCells"); number!(http_idle_timeout_ms, "httpIdleTimeoutMs"); number!(smooth_streaming_fps, "smoothStreamingFps"); number!(editor_padding_x, "editorPaddingX"); number!(output_pad, "outputPad"); number!(autocomplete_max_visible, "autocompleteMaxVisible");
+                string!(steering_mode, "steeringMode"); string!(follow_up_mode, "followUpMode"); string!(transport, "transport"); string!(double_escape_action, "doubleEscapeAction"); string!(tree_filter_mode, "treeFilterMode"); string!(fullscreen_scrollbar, "fullscreenScrollbar");
+                use crate::components::settings_selector::{MermaidRenderingMode, TuiMode, FullscreenExitOutput, DefaultProjectTrust};
+                config.terminal_mouse = settings.get_string("terminalMouse");
+                config.mermaid_rendering_mode = settings.get_string("mermaidRenderingMode").and_then(|value| MermaidRenderingMode::from_name(&value)).unwrap_or(config.mermaid_rendering_mode);
+                config.tui_mode = settings.get_string("tuiMode").and_then(|value| TuiMode::from_name(&value)).unwrap_or(config.tui_mode);
+                config.fullscreen_exit_output = settings.get_string("fullscreenExitOutput").and_then(|value| FullscreenExitOutput::from_name(&value)).unwrap_or(config.fullscreen_exit_output);
+                config.default_project_trust = match settings.get_string("defaultProjectTrust").as_deref() { Some("always") => DefaultProjectTrust::Always, Some("never") => DefaultProjectTrust::Never, _ => DefaultProjectTrust::Ask };
+                config.warnings.anthropic_extra_usage = settings.get_value("warnings").and_then(|value| value.get("anthropicExtraUsage")).and_then(serde_json::Value::as_bool);
+            });
+            let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+            let cancelled = self.ui_reply.clone();
+            let mut callbacks = SettingsCallbacks { on_cancel:Some(Box::new(move || { cancelled.borrow_mut().take(); })), ..Default::default() };
+            macro_rules! persist { ($field:ident, $key:literal, $ty:ty) => {{ let session = self.session.clone(); let ui = self.extension_ui.clone(); callbacks.$field = Some(Box::new(move |value: $ty| {
+                let values = [($key.into(), serde_json::json!(value))].into_iter().collect();
+                match session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) {
+                    Ok(()) => { drop(ui.sender.send(crate::interactive_extension_ui::UiRequest::SettingChanged($key.into(), serde_json::json!(value)))); }
+                    Err(error) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error),
+                }
+            })); }}; }
+            persist!(on_show_images_change, "showImages", bool); persist!(on_image_width_cells_change, "imageWidthCells", usize); persist!(on_auto_resize_images_change, "imageAutoResize", bool); persist!(on_block_images_change, "blockImages", bool); persist!(on_enable_skill_commands_change, "enableSkillCommands", bool);
+            persist!(on_transport_change, "transport", String); persist!(on_http_idle_timeout_ms_change, "httpIdleTimeoutMs", u64); persist!(on_theme_change, "theme", String); persist!(on_hide_thinking_block_change, "hideThinkingBlock", bool);
+            persist!(on_smooth_streaming_change, "smoothStreaming", bool); persist!(on_smooth_streaming_fps_change, "smoothStreamingFps", u32); persist!(on_show_cache_miss_notices_change, "showCacheMissNotices", bool); persist!(on_collapse_changelog_change, "collapseChangelog", bool); persist!(on_enable_install_telemetry_change, "enableInstallTelemetry", bool);
+            persist!(on_double_escape_action_change, "doubleEscapeAction", String); persist!(on_tree_filter_mode_change, "treeFilterMode", String); persist!(on_show_hardware_cursor_change, "showHardwareCursor", bool); persist!(on_editor_padding_x_change, "editorPaddingX", usize); persist!(on_output_pad_change, "outputPad", u8); persist!(on_autocomplete_max_visible_change, "autocompleteMaxVisible", usize);
+            persist!(on_quiet_startup_change, "quietStartup", bool); persist!(on_clear_on_shrink_change, "clearOnShrink", bool); persist!(on_show_terminal_progress_change, "showTerminalProgress", bool); persist!(on_terminal_mouse_change, "terminalMouse", String); persist!(on_fullscreen_scrollbar_change, "fullscreenScrollbar", String); persist!(on_fullscreen_copy_on_select_change, "fullscreenCopyOnSelect", bool);
+            let session = self.session.clone(); callbacks.on_auto_compact_change = Some(Box::new(move |enabled| { session.set_auto_compaction_enabled(enabled); let values = [("compaction".into(), serde_json::json!({"enabled":enabled}))].into_iter().collect(); if let Err(error) = session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) { session.emit(maho_ext_api::AgentSessionEvent::ContinuationError { error_message:error }); } }));
+            let session = self.session.clone(); callbacks.on_steering_mode_change = Some(Box::new(move |mode| session.set_steering_mode(if mode == "all" { maho_agent::types::QueueMode::All } else { maho_agent::types::QueueMode::OneAtATime })));
+            let session = self.session.clone(); callbacks.on_follow_up_mode_change = Some(Box::new(move |mode| session.set_follow_up_mode(if mode == "all" { maho_agent::types::QueueMode::All } else { maho_agent::types::QueueMode::OneAtATime })));
+            let session = self.session.clone(); callbacks.on_thinking_level_change = Some(Box::new(move |level| session.set_thinking_level(maho_ai::types::ModelThinkingLevel::parse(level.as_str()).expect("selector thinking level"))));
+            macro_rules! persist_enum { ($field:ident, $key:literal, $ty:ty, $value:expr) => {{ let session = self.session.clone(); let ui = self.extension_ui.clone(); callbacks.$field = Some(Box::new(move |value: $ty| {
+                let serialized = ($value)(value); let values = [($key.into(), serialized.clone())].into_iter().collect();
+                match session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) {
+                    Ok(()) => { drop(ui.sender.send(crate::interactive_extension_ui::UiRequest::SettingChanged($key.into(), serialized))); }
+                    Err(error) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error),
+                }
+            })); }}; }
+            use crate::components::settings_selector::{MermaidRenderingMode, TuiMode, FullscreenExitOutput, DefaultProjectTrust, WarningSettings};
+            persist_enum!(on_mermaid_rendering_mode_change, "mermaidRenderingMode", MermaidRenderingMode, |value: MermaidRenderingMode| serde_json::json!(value.as_str()));
+            persist_enum!(on_tui_mode_change, "tuiMode", TuiMode, |value: TuiMode| serde_json::json!(value.as_str()));
+            persist_enum!(on_fullscreen_exit_output_change, "fullscreenExitOutput", FullscreenExitOutput, |value: FullscreenExitOutput| serde_json::json!(value.as_str()));
+            persist_enum!(on_default_project_trust_change, "defaultProjectTrust", DefaultProjectTrust, |value: DefaultProjectTrust| serde_json::json!(match value { DefaultProjectTrust::Ask => "ask", DefaultProjectTrust::Always => "always", DefaultProjectTrust::Never => "never" }));
+            persist_enum!(on_warnings_change, "warnings", WarningSettings, |value: WarningSettings| serde_json::json!({"anthropicExtraUsage":value.anthropic_extra_usage}));
+            self.ui_dialog = Some(Box::new(SettingsSelectorComponent::new(&self.theme, config, callbacks, self.session.model().input.contains(&maho_ai::types::InputModality::Image))));
+            return Ok(true);
+        }
+        if text == "/trust" {
+            use crate::components::trust_selector::{TrustSelectorComponent, TrustSelectorOptions};
+            let cwd = self.session.cwd();
+            let store = maho_core::trust_manager::ProjectTrustStore::new(&self.session.agent_dir());
+            let saved_decision = store.get_entry(&cwd)?;
+            let project_trusted = self.session.with_settings_manager(|settings| settings.is_project_trusted());
+            let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+            let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let ui = self.extension_ui.clone();
+            self.ui_dialog = Some(Box::new(TrustSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), TrustSelectorOptions {
+                cwd, saved_decision, project_trusted,
+                on_select:Box::new(move |selection| {
+                    match store.set_many(&selection.updates) {
+                        Ok(()) => { selected.borrow_mut().take(); maho_ext_api::ExtensionUi::notify(ui.as_ref(), &format!("Saved trust decision: {}. Restart {} for this to take effect.", if selection.trusted { "trusted" } else { "untrusted" }, maho_core::config::app_name()), maho_ext_api::NotificationType::Info); }
+                        Err(error) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error),
+                    }
+                }), on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }),
+            })));
+            return Ok(true);
+        }
+        if matches!(text, "/scoped-models" | "/favorite-models") {
+            let favorites = text == "/favorite-models";
+            let models = self.session.model_registry().get_available();
+            if favorites && models.is_empty() { self.show_status("No models available".into()); return Ok(true); }
+            let key = if favorites { "favoriteModels" } else { "enabledModels" };
+            let configured: Option<Vec<String>> = self.session.with_settings_manager(|settings| settings.get_value(key).filter(|value| !value.is_null()).cloned()).map(serde_json::from_value).transpose().map_err(|error| error.to_string())?;
+            let stored = configured.clone().unwrap_or_default();
+            let catalog = self.session.model_registry().get_all();
+            let resolution = maho_core::model_resolver::resolve_model_scope_from_models(&stored, &catalog);
+            let candidate_ids: Vec<_> = models.iter().map(|model| format!("{}/{}", model.provider, model.id)).collect();
+            let entries = if favorites { self.session.favorite_models() } else { self.session.scoped_models() };
+            let enabled = if !entries.is_empty() { Some(entries.iter().map(|entry| format!("{}/{}", entry.model.provider, entry.model.id)).collect()) }
+                else if stored.is_empty() { if favorites || configured.is_some() { Some(Vec::new()) } else { None } }
+                else { Some(resolution.pattern_resolutions.iter().flat_map(|item| if item.unresolved { vec![item.pattern.clone()] } else { item.owned_ids.clone() }).collect()) };
+            let session = self.session.clone(); let available = models.clone();
+            let on_change = Box::new(move |ids: Option<Vec<String>>| {
+                let all_ids: Vec<_> = available.iter().map(|model| format!("{}/{}", model.provider, model.id)).collect();
+                let resolved = maho_core::model_resolver::resolve_model_scope_from_models(ids.as_deref().unwrap_or(&all_ids), &available);
+                let entries = resolved.scoped_models.into_iter().map(|entry| maho_core::agent_session::SessionModelEntry { model:entry.model, thinking_level:entry.thinking_level.map(|level| serde_json::from_value(serde_json::json!(level.as_str())).expect("resolved thinking level")), thinking_selection:entry.thinking_selection, service_tier:entry.service_tier.map(|tier| match tier.as_str() { "auto" => maho_ext_api::ServiceTier::Auto, "flex" => maho_ext_api::ServiceTier::Flex, "priority" => maho_ext_api::ServiceTier::Priority, _ => unreachable!("resolved service tier") }) }).collect();
+                if favorites { session.set_favorite_models(entries); }
+                else if ids.as_ref().is_some_and(|ids| available.iter().all(|model| ids.contains(&format!("{}/{}", model.provider, model.id)))) { session.set_scoped_models(Vec::new()); }
+                else { session.set_scoped_models(entries); }
+            });
+            let session = self.session.clone(); let ui = self.extension_ui.clone();
+            let on_persist = Box::new(move |ids: Option<Vec<String>>| {
+                let patterns = if favorites { crate::components::model_favorites::merge_favorite_patterns_for_persist(crate::components::model_favorites::FavoritePatternsForPersist { stored_patterns:&stored, pattern_resolutions:&resolution.pattern_resolutions, selected_ids:&ids, candidate_ids:&candidate_ids }) }
+                    else { ids.filter(|ids| !candidate_ids.iter().all(|id| ids.contains(id))) };
+                let values = [(key.into(), serde_json::json!(patterns))].into_iter().collect();
+                match session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) {
+                    Ok(()) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), if favorites { "Favorite models saved to settings" } else { "Model selection saved to settings" }, maho_ext_api::NotificationType::Info),
+                    Err(error) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error),
+                }
+            });
+            let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+            let cancelled = self.ui_reply.clone();
+            let keys = Arc::new(self.keybindings());
+            if favorites {
+                use crate::components::favorite_models_selector::{FavoriteModelsSelectorComponent, FavoriteModelsConfig, FavoriteModelsCallbacks};
+                let selected = self.ui_reply.clone(); let submissions = self.submissions.clone(); let current = self.session.model();
+                self.ui_dialog = Some(Box::new(FavoriteModelsSelectorComponent::new(&self.theme, keys,
+                    FavoriteModelsConfig { all_models:models.into_iter().map(|model| crate::components::model_selector::ModelEntry { provider:model.provider, id:model.id, name:model.name }).collect(), favorite_model_ids:enabled, current_model:Some(crate::components::model_selector::ModelEntry { provider:current.provider, id:current.id, name:current.name }) },
+                    FavoriteModelsCallbacks { on_change, on_persist, on_select:Box::new(move |model| { submissions.borrow_mut().push_back(format!("/model {}/{}", model.provider, model.id)); selected.borrow_mut().take(); }), on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }) })));
+            } else {
+                use crate::components::scoped_models_selector::{ScopedModelsSelectorComponent, ModelsConfig, ModelsCallbacks};
+                self.ui_dialog = Some(Box::new(ScopedModelsSelectorComponent::new(&self.theme, keys,
+                    ModelsConfig { all_models:models, enabled_model_ids:enabled, refresh_status:None },
+                    ModelsCallbacks { on_change, on_persist, on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }) })));
+            }
+            return Ok(true);
+        }
         if text == "/tree" {
-            let (tree, leaf) = self.session.with_session_manager(|manager| (manager.get_tree(None), manager.leaf_id().map(str::to_owned)));
-            let Some(tree) = tree else { self.show_status("No entries in session".into()); return Ok(true); };
+            let (tree, leaf) = self.session.with_session_manager(|manager| {
+                let entries = manager.entries();
+                let roots = entries.iter().filter(|entry| entry.get("parentId").is_none_or(serde_json::Value::is_null)).filter_map(|entry| entry["id"].as_str()).filter_map(|id| manager.get_tree(Some(id))).collect::<Vec<_>>();
+                (roots, manager.leaf_id().map(str::to_owned))
+            });
+            if tree.is_empty() { self.show_status("No entries in session".into()); return Ok(true); }
             let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
             let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone(); let session = self.session.clone();
             let filter = self.session.with_settings_manager(|settings| settings.get_value("treeFilterMode").and_then(serde_json::Value::as_str).unwrap_or("default").to_owned());
             let filter = match filter.as_str() { "no-tools" => crate::components::tree_selector::FilterMode::NoTools, "user-only" => crate::components::tree_selector::FilterMode::UserOnly, "labeled-only" => crate::components::tree_selector::FilterMode::LabeledOnly, "all" => crate::components::tree_selector::FilterMode::All, _ => crate::components::tree_selector::FilterMode::Default };
             self.ui_dialog = Some(Box::new(crate::components::tree_selector::TreeSelectorComponent::new(&self.theme,
-                Arc::new(maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default())),
-                vec![tree], leaf.as_deref(), self.editor_host.terminal_rows(),
+                Arc::new(self.keybindings()),
+                tree, leaf.as_deref(), self.editor_host.terminal_rows(),
                 Box::new(move |id| { submissions.borrow_mut().push_back(format!("/tree {id}")); selected.borrow_mut().take(); }), Box::new(move || { cancelled.borrow_mut().take(); }),
                 Some(Box::new(move |id, label| session.with_session_manager_mut(|manager| { manager.append_label(id, label); }))), None, Some(filter), std::env::var("HOME").ok())));
             return Ok(true);
@@ -431,7 +566,7 @@ impl InteractiveMode {
                 session.set_favorite_models(resolved.scoped_models.into_iter().map(|entry| maho_core::agent_session::SessionModelEntry { model:entry.model, thinking_level:entry.thinking_level.and_then(|level| serde_json::from_value(serde_json::json!(level.as_str())).ok()), thinking_selection:entry.thinking_selection, service_tier:entry.service_tier.map(|tier| match tier.as_str() { "auto" => maho_ext_api::ServiceTier::Auto, "flex" => maho_ext_api::ServiceTier::Flex, "priority" => maho_ext_api::ServiceTier::Priority, _ => unreachable!("resolved service tier") }) }).collect());
             });
             let scoped = self.session.scoped_models().into_iter().map(|entry| crate::components::model_selector::ScopedModelItem { model:ModelEntry { provider:entry.model.provider, id:entry.model.id, name:entry.model.name }, thinking_level:entry.thinking_level.map(|level| serde_json::to_value(level).expect("thinking level").as_str().expect("string level").to_owned()) }).collect();
-            let mut selector = ModelSelectorComponent::new(&self.theme, Arc::new(maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default())), 0, &models,
+            let mut selector = ModelSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), 0, &models,
                 Some(ModelEntry { provider:current.provider, id:current.id, name:current.name }),
                 scoped,
                 Box::new(move |model| { submissions.borrow_mut().push_back(format!("/model {}/{}", model.provider, model.id)); selected.borrow_mut().take(); }),
@@ -450,10 +585,18 @@ impl InteractiveMode {
             self.local_dialog_reply = Some(_receiver);
             *self.ui_reply.borrow_mut() = Some(reply);
             let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let session = self.session.clone();
+            let default = self.session.with_settings_manager(|settings| settings.get_string("defaultThinkingLevel")).and_then(|value| maho_ai::types::ModelThinkingLevel::parse(&value));
+            let default_session = self.session.clone(); let ui = self.extension_ui.clone();
             self.ui_dialog = Some(Box::new(crate::components::thinking_selector::ThinkingSelectorComponent::new(&self.theme,
-                Arc::new(maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default())),
-                crate::components::thinking_selector::ThinkingSelectorOptions { current:self.session.thinking_level(), available:self.session.get_available_thinking_levels(), default:None,
-                    on_select:Box::new(move |level| { session.set_session_thinking_level(level); selected.borrow_mut().take(); }), on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }), on_select_as_default:None })));
+                Arc::new(self.keybindings()),
+                crate::components::thinking_selector::ThinkingSelectorOptions { current:self.session.thinking_level(), available:self.session.get_available_thinking_levels(), default,
+                    on_select:Box::new(move |level| { session.set_session_thinking_level(level); selected.borrow_mut().take(); }), on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }), on_select_as_default:Some(Box::new(move |level| {
+                        let values = [("defaultThinkingLevel".into(), serde_json::json!(level.as_str()))].into_iter().collect();
+                        match default_session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) {
+                            Ok(()) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), &format!("Default thinking level: {}", level.as_str()), maho_ext_api::NotificationType::Info),
+                            Err(error) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error),
+                        }
+                    })) })));
             return Ok(true);
         }
         if matches!(text, "/quit" | "/exit") { self.shutdown_requested = true; return Ok(true); }
@@ -559,6 +702,30 @@ impl InteractiveMode {
     fn handle_ui_request(&mut self, request: crate::interactive_extension_ui::UiRequest) {
         use crate::interactive_extension_ui::UiRequest;
         match request {
+            UiRequest::SettingChanged(key, value) => {
+                match key.as_str() {
+                    "editorPaddingX" => self.editor.set_padding_x(value.as_u64().expect("editor padding") as usize),
+                    "autocompleteMaxVisible" => self.editor.editor.set_autocomplete_max_visible(value.as_u64().expect("autocomplete limit") as usize),
+                    "enableSkillCommands" => Self::setup_autocomplete(&self.session, &mut self.editor),
+                    "showImages" => { for component in &self.tool_cards { component.borrow_mut().set_show_images(value.as_bool().expect("show images")); } },
+                    "imageWidthCells" => { for component in &self.tool_cards { component.borrow_mut().set_image_width_cells(u32::try_from(value.as_u64().expect("image width")).expect("selector image width")); } },
+                    "hideThinkingBlock" => { self.reveal.hide_thinking = value.as_bool().expect("thinking visibility"); for component in &self.assistant_cards { component.borrow_mut().set_hide_thinking_block(self.reveal.hide_thinking); } if let Some(component) = &self.streaming { let content = self.reveal.resync_visibility(self.clock.elapsed().as_secs_f64() * 1000.0); component.borrow_mut().update_content(&content, Some(true)); } },
+                    "smoothStreaming" => { let smooth = value.as_bool().expect("smooth streaming"); self.reveal.smooth = smooth; self.tool_args_reveal.smooth = smooth; self.tool_reveal.smooth = smooth; self.tick(self.clock.elapsed().as_secs_f64() * 1000.0); },
+                    "smoothStreamingFps" => { let fps = value.as_f64().expect("streaming fps"); self.reveal.fps = fps; self.tool_args_reveal.fps = fps; self.tool_reveal.fps = fps; },
+                    "theme" => {
+                        let setting = value.as_str().expect("theme setting");
+                        let terminal_theme = if self.theme.name == "light" { crate::theme::TerminalTheme::Light } else { crate::theme::TerminalTheme::Dark };
+                        let name = crate::theme::resolve_theme_setting(Some(setting), terminal_theme).unwrap_or("dark");
+                        match crate::theme::registry::ThemeRegistry::new(std::path::Path::new(&self.session.agent_dir()).join("themes"), name, self.theme.get_color_mode()).and_then(|registry| registry.load_theme(name)) {
+                            Ok(theme) => { self.theme = theme; self.editor.editor.border_color = editor_theme(&self.theme).border_color; *self.extension_ui.theme.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = maho_ext_api::Theme { name:Some(self.theme.name.clone()), colors:self.theme.resolved_colors(), ..Default::default() }; self.rebuild_history(); },
+                            Err(error) => self.show_status(error.to_string()),
+                        }
+                    }
+                    "outputPad" => { for component in &self.assistant_cards { component.borrow_mut().set_output_pad(value.as_u64().expect("output padding") as usize); } if self.agent_idle { self.rebuild_history(); } },
+                    "showCacheMissNotices" if self.agent_idle => self.rebuild_history(),
+                    _ => self.chat.invalidate(),
+                }
+            }
             UiRequest::Question { request, options, reply } => {
                 use crate::components::ask_user_question_state as state;
                 let request = state::QuestionRequest { request_id:request.request_id, wait_for_answer:request.wait_for_answer, timeout_ms:request.timeout_ms,
@@ -591,7 +758,7 @@ impl InteractiveMode {
                 *self.ui_reply.borrow_mut() = Some(reply);
                 let selected = self.ui_reply.clone(); let cancelled = selected.clone();
                 self.ui_dialog = Some(Box::new(crate::components::extension_editor::ExtensionEditorComponent::new(&self.theme, self.editor_host.clone(),
-                    Arc::new(maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default())), &title, prefill.as_deref(),
+                    Arc::new(self.keybindings()), &title, prefill.as_deref(),
                     Box::new(move |text| { if let Some(reply) = selected.borrow_mut().take() { drop(reply.send(Some(text.into()))); } }),
                     Box::new(move || { if let Some(reply) = cancelled.borrow_mut().take() { drop(reply.send(None)); } }), Default::default(), None, None)));
             }
@@ -622,7 +789,7 @@ impl InteractiveMode {
             UiRequest::Select { title, options, reply } => {
                 *self.ui_reply.borrow_mut() = Some(reply);
                 let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone();
-                let keys = Arc::new(maho_tui::keybindings::KeybindingsManager::new(maho_core::keybindings::keybindings().clone(), Default::default()));
+                let keys = Arc::new(self.keybindings());
                 self.ui_dialog = Some(Box::new(crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, keys, &title, options,
                     Box::new(move |text| { if let Some(reply) = selected.borrow_mut().take() { drop(reply.send(Some(text.into()))); } }),
                     Box::new(move || { if let Some(reply) = cancelled.borrow_mut().take() { drop(reply.send(None)); } }), Default::default())));

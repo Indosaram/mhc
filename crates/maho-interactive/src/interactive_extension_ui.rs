@@ -15,6 +15,7 @@ pub enum UiRequest {
     WorkingVisible(bool),
     HiddenThinkingLabel(Option<String>),
     ToolsExpanded(bool),
+    SettingChanged(String, serde_json::Value),
     Editor { title: String, prefill: Option<String>, reply: tokio::sync::oneshot::Sender<Option<String>> },
     Question { request: QuestionRequest, options: QuestionOptions, reply: tokio::sync::oneshot::Sender<QuestionResponse> },
 }
