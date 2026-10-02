@@ -5,6 +5,18 @@ pub const EXPIRING_WITHIN_MS:f64=5.0*60000.0;
 pub enum TokenInjection {Ambient,OAuthSlots,ConfigDir}
 pub const PROVIDER_ID:&str="anthropic-subscription";
 pub struct ManagedPool {pub accounts:Vec<AccountSlot>,pub environment:BTreeMap<String,String>,pub lane:TokenInjection,pub pinned_account:Option<String>}
+impl ManagedPool {
+    pub async fn refresh_selected<F,Fut>(&self,store:&dyn maho_ai::auth::types::CredentialStore,selected:&mut AccountSlot,now:f64,signal:maho_ai::utils::abort::AbortSignal,refresh:F)->anyhow::Result<()>
+    where F:FnOnce(String,maho_ai::utils::abort::AbortSignal)->Fut+Send+'static,Fut:std::future::Future<Output=anyhow::Result<maho_ai::auth::types::OAuthCredential>>+Send+'static {
+        if selected.source==AccountSource::Env||now<selected.expires-EXPIRING_WITHIN_MS {return Ok(());}
+        let refreshed=crate::accounts::refresh_slot(store,PROVIDER_ID,&selected.name,refresh,signal,move |expires|now>=expires-EXPIRING_WITHIN_MS).await;
+        let update=match refreshed {
+            Ok(credential)=>{let empty=crate::accounts::empty_credential();crate::accounts::list_accounts(credential.as_ref().and_then(|value|value.as_oauth()).unwrap_or(&empty),Some(&|name|self.environment.get(name).cloned()))?.into_iter().find(|candidate|candidate.name==selected.name).ok_or_else(||anyhow::anyhow!("selected account disappeared during refresh"))},
+            Err(error)=>Err(error),
+        };
+        match update {Ok(updated)=>{*selected=updated;Ok(())},Err(error)=>{let detail=error.to_string();let classification=crate::errors::classify_sdk_error(&serde_json::json!(detail));anyhow::bail!("{}: {detail}",if classification.kind==crate::errors::SdkErrorKind::Other&&classification.retryable {"server_error"}else {"authentication_failed"});}}
+    }
+}
 pub async fn managed_pool(store:&dyn maho_ai::auth::types::CredentialStore,settings:&ProviderSettings,host:&BTreeMap<String,String>,request:Option<&BTreeMap<String,String>>)->anyhow::Result<Option<ManagedPool>> {
     use maho_ai::auth::types::Credential;
     let mut credential=store.read(PROVIDER_ID,None).await?;let environment=merge_request_auth_environment(host,request);let read_env=|name:&str|environment.get(name).cloned();let empty=crate::accounts::empty_credential();
@@ -33,6 +45,11 @@ pub fn prepared_environment(environment:&BTreeMap<String,String>,lane:TokenInjec
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn refresh_at_expiry_margin_updates_selected_slot_before_spawn() {
+        use maho_ai::{auth::{credential_store::InMemoryCredentialStore,types::{CredentialStore,Credential,OAuthCredential}},utils::abort::AbortController};
+        let store=InMemoryCredentialStore::new();let mut selected=slot();selected.name="work".into();selected.source=AccountSource::Login;selected.access="expired".into();selected.refresh="synthetic-refresh".into();selected.expires=EXPIRING_WITHIN_MS;let credential=crate::accounts::add_account(&crate::accounts::empty_credential(),selected.clone()).expect("account");store.modify(PROVIDER_ID,Box::new(move |_|Box::pin(async move {Ok(Some(Credential::OAuth(credential)))})),None).await.expect("seed");let pool=ManagedPool {accounts:vec![selected.clone()],environment:BTreeMap::new(),lane:TokenInjection::OAuthSlots,pinned_account:None};pool.refresh_selected(&store,&mut selected,0.0,AbortController::new().signal(),|_,_|async {Ok(OAuthCredential::new("fresh","fresh-refresh",1000000.0))}).await.expect("refresh");assert_eq!(selected.access,"fresh");let directory=tempfile::tempdir().expect("dir");assert_eq!(prepared_environment(&pool.environment,pool.lane,&selected,directory.path(),0).expect("spawn environment")["CLAUDE_CODE_OAUTH_TOKEN"],"fresh");
+    }
     #[tokio::test]
     async fn env_only_discovery_seeds_sentinel_and_settings_pin_wins() {
         use maho_ai::auth::{credential_store::InMemoryCredentialStore,types::CredentialStore};
