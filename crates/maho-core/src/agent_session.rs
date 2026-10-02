@@ -3412,7 +3412,21 @@ impl AgentSession {
             ..Default::default()
         };
         let prepared = maho_agent::tool_arguments::prepare_agent_tool_call_arguments(&tool, &tool_call);
-        if let Some(block) = self.preflight_tool_call(&prepared, Value::Object(prepared.arguments.clone())).await
+        let mut input = maho_ai::utils::validation::validate_tool_arguments(&tool.tool, &prepared)
+            .map_err(|error| ExecuteToolError { code: "invalid_params".to_owned(), tool_name: tool_name.to_owned(),
+                message: error.to_string(), active_tools: active_tools.clone() })?;
+        let hook_result = {
+            let mut guard = self.extension_runner.lock().await;
+            if let Some(runner) = guard.as_mut() {
+                let mut event = ToolCallEvent { tool_call_id: prepared.id.clone(), tool_name: prepared.name.clone(), input };
+                let result = runner.emit_tool_call(&mut event).await.map_err(|error| ExecuteToolError {
+                    code: "blocked".to_owned(), tool_name: tool_name.to_owned(), message: error.to_string(), active_tools: active_tools.clone(),
+                })?;
+                input = event.input;
+                result
+            } else { None }
+        };
+        if let Some(block) = hook_result
             && block.block == Some(true)
         {
             return Err(ExecuteToolError {
@@ -3422,13 +3436,37 @@ impl AgentSession {
                 active_tools,
             });
         }
-        let result = (tool.execute)(
+        let mut result = (tool.execute)(
             prepared.id.clone(),
-            Value::Object(prepared.arguments.clone()),
+            input.clone(),
             options.signal,
             None,
         )
         .await;
+        let mut guard = self.extension_runner.lock().await;
+        if let Some(runner) = guard.as_mut()
+            && runner.has_handlers(maho_ext_api::EventKind::ToolResult)
+        {
+            let hook = async {
+                let content = serde_json::from_value(serde_json::to_value(&result.content)
+                    .map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+                let rewrite = runner.emit_tool_result(maho_ext_api::ToolResultEvent {
+                    tool_call_id: prepared.id, tool_name: prepared.name, input, content,
+                    details: Some(result.details.clone()), is_error: result.is_error.unwrap_or(false), usage: result.usage,
+                }).await.map_err(|error| error.to_string())?;
+                if let Some(rewrite) = rewrite {
+                    if let Some(content) = rewrite.content {
+                        result.content = serde_json::from_value(serde_json::to_value(content)
+                            .map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+                    }
+                    if let Some(details) = rewrite.details { result.details = details; }
+                    if let Some(is_error) = rewrite.is_error { result.is_error = Some(is_error); }
+                    if let Some(usage) = rewrite.usage { result.usage = Some(usage); }
+                }
+                Ok::<(), String>(())
+            }.await;
+            hook.map_err(|message| ExecuteToolError { code: "blocked".to_owned(), tool_name: tool_name.to_owned(), message, active_tools })?;
+        }
         Ok(result)
     }
 
@@ -4921,6 +4959,23 @@ mod tests {
             execution_mode: None,
             tool,
         }
+    }
+
+    #[tokio::test]
+    async fn direct_tool_execution_validates_and_coerces_prepared_arguments() {
+        let session = test_session();
+        let mut tool = test_tool("validated");
+        tool.tool.parameters = serde_json::json!({"type":"object", "properties":{"count":{"type":"number"}}, "required":["count"]});
+        tool.execute = Arc::new(|_, args, _, _| Box::pin(async move {
+            AgentToolResult { details: args, terminate: Some(true), ..AgentToolResult::text("executed") }
+        }));
+        session.agent().set_tools(vec![tool]);
+        let error = session.execute_tool("validated", serde_json::json!({}), Default::default()).await.expect_err("required argument");
+        assert_eq!(error.code, "invalid_params");
+        assert_eq!(error.tool_name, "validated");
+        let result = session.execute_tool("validated", serde_json::json!({"count":"3"}), Default::default()).await.expect("coerced argument");
+        assert_eq!(result.details, serde_json::json!({"count":3}));
+        assert_eq!(result.terminate, Some(true));
     }
 
     fn test_definition(name: &str) -> ToolDefinition {
