@@ -461,9 +461,9 @@ impl ExtensionSessionActions for SessionActions {
     }
     fn get_active_tools(&self) -> Result<Vec<String>, ExtensionFailure> { Ok(self.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()) }
     fn set_active_tools(&self, names: Vec<String>) -> Result<(), ExtensionFailure> { *self.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = names; Ok(()) }
-    fn refresh_tools(&self) -> Result<(), ExtensionFailure> { Ok(()) }
-    fn register_removed_tool_hint(&self, _: &str, _: &str) -> Result<(), ExtensionFailure> { Ok(()) }
-    fn register_lazy_tool_activator(&self, _: LazyToolActivator) -> Result<(), ExtensionFailure> { Ok(()) }
+    fn refresh_tools(&self) -> Result<(), ExtensionFailure> { self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(("refresh".into(), None)); Ok(()) }
+    fn register_removed_tool_hint(&self, name: &str, hint: &str) -> Result<(), ExtensionFailure> { self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((name.into(), Some(JsonValue::String(hint.into())))); Ok(()) }
+    fn register_lazy_tool_activator(&self, activator: LazyToolActivator) -> Result<(), ExtensionFailure> { self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(("activator".into(), Some(JsonValue::Bool(activator("hidden"))))); Ok(()) }
     fn get_commands(&self) -> Result<Vec<SlashCommandInfo>, ExtensionFailure> { Ok(vec![]) }
     fn set_model(&self, _: Model) -> ExtensionFuture<'_, bool> { Box::pin(async { Err("not used".into()) }) }
     fn get_thinking_level(&self) -> Result<ThinkingLevel, ExtensionFailure> { Ok(ThinkingLevel::Low) }
@@ -486,6 +486,18 @@ async fn bound_session_actions_forward_state_and_preserve_typed_tool_errors() {
     assert_eq!(api.get_thinking_level().unwrap(), ThinkingLevel::Low);
     let error = api.execute_tool("hidden", JsonValue::Null, ExecuteToolOptions::default()).await.unwrap_err();
     assert_eq!(error.code, ExecuteToolErrorCode::InactiveTool); assert_eq!(error.active_tools, ["read"]);
+}
+
+#[test]
+fn runtime_registrations_forward_to_already_bound_session() {
+    let actions = Arc::new(SessionActions::default());
+    let runtime = ExtensionRuntime::default();
+    runtime.bind_session_actions(actions.clone());
+    let mut api = ExtensionApi::new(LoadedExtension::new("live", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), runtime);
+    api.register_lazy_tool_activator(Arc::new(|name| name == "hidden"));
+    api.register_removed_tool_hint("old", "use new");
+    api.register_tool(ToolDefinition::new("new", "new", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { Ok(ToolResult::text("ok")) }))));
+    assert_eq!(*actions.entries.lock().unwrap(), vec![("activator".into(), Some(JsonValue::Bool(true))), ("old".into(), Some(JsonValue::String("use new".into()))), ("refresh".into(), None)]);
 }
 #[test]
 fn native_loader_preserves_factory_identity_profile_and_order() {
@@ -780,6 +792,12 @@ async fn context_binding_reads_live_host_state_and_rejects_after_invalidation() 
     let result = ctx.apply_compaction(CompactionResult { summary: "summary".into(), first_kept_entry_id: "id".into(), tokens_before: 100, details: None }, ApplyCompactionOptions { reason: CompactionReason::Extension, expected_revision: Some(1), expected_warm_anchor: None, signal: None }).await.unwrap();
     assert_eq!(result, ApplyCompactionResult::Stale);
     runner.invalidate("old context"); assert_eq!(ctx.get_message_revision().unwrap_err().message, "old context"); assert!(ctx.abort(None).is_err());
+    for access in [ExtensionContext::is_idle as fn(&ExtensionContext) -> bool, ExtensionContext::is_compacting, ExtensionContext::is_project_trusted] {
+        let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| access(&ctx))).unwrap_err();
+        assert_eq!(error.downcast_ref::<ExtensionFailure>().unwrap().message, "old context");
+    }
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.get_system_prompt())).is_err());
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.get_registered_mcp_servers())).is_err());
 }
 
 #[tokio::test]

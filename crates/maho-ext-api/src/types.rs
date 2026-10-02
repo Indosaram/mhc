@@ -455,6 +455,10 @@ pub struct ExtensionContext {
     pub update_tool_hook_status: Option<ToolHookStatusUpdater>,
 }
 impl ExtensionContext {
+    fn assert_active_or_panic(&self) {
+        if let Some(actions) = self.session_manager.extension_context_actions()
+            && let Err(error) = actions.assert_active() { std::panic::panic_any(error); }
+    }
     pub fn actions(&self) -> Result<&dyn ExtensionContextActions, ExtensionFailure> {
         let actions = self.session_manager.extension_context_actions().ok_or_else(|| ExtensionFailure::new("Extension context actions are not bound"))?;
         actions.assert_active()?; Ok(actions)
@@ -494,13 +498,13 @@ impl ExtensionContext {
     }
     pub fn get_loaded_hook_sources(&self) -> Result<LoadedHookSources, ExtensionFailure> { Ok(self.actions()?.get_loaded_hook_sources()) }
     pub fn kernel_tools(&self) -> Result<Option<&dyn ExtensionKernelTools>, ExtensionFailure> { Ok(self.actions()?.kernel_tools()) }
-    pub fn is_idle(&self) -> bool { self.session_manager.extension_context_actions().map_or_else(|| (self.is_idle_fn)(), ExtensionContextActions::is_idle) }
-    pub async fn wait_for_idle(&self) { (self.wait_for_idle_fn)().await; }
-    pub fn is_project_trusted(&self) -> bool { self.session_manager.extension_context_actions().map_or_else(|| (self.is_project_trusted_fn)(), ExtensionContextActions::is_project_trusted) }
-    pub fn is_compacting(&self) -> bool { self.session_manager.extension_context_actions().map_or_else(|| (self.is_compacting_fn)(), ExtensionContextActions::is_compacting) }
-    pub fn get_system_prompt(&self) -> String { (self.get_system_prompt_fn)() }
-    pub fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { (self.get_system_prompt_options_fn)() }
-    pub fn get_registered_mcp_servers(&self) -> &[RegisteredMcpServerDeclaration] { &self.registered_mcp_servers }
+    pub fn is_idle(&self) -> bool { self.assert_active_or_panic(); self.session_manager.extension_context_actions().map_or_else(|| (self.is_idle_fn)(), ExtensionContextActions::is_idle) }
+    pub async fn wait_for_idle(&self) { self.assert_active_or_panic(); (self.wait_for_idle_fn)().await; }
+    pub fn is_project_trusted(&self) -> bool { self.assert_active_or_panic(); self.session_manager.extension_context_actions().map_or_else(|| (self.is_project_trusted_fn)(), ExtensionContextActions::is_project_trusted) }
+    pub fn is_compacting(&self) -> bool { self.assert_active_or_panic(); self.session_manager.extension_context_actions().map_or_else(|| (self.is_compacting_fn)(), ExtensionContextActions::is_compacting) }
+    pub fn get_system_prompt(&self) -> String { self.assert_active_or_panic(); (self.get_system_prompt_fn)() }
+    pub fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { self.assert_active_or_panic(); (self.get_system_prompt_options_fn)() }
+    pub fn get_registered_mcp_servers(&self) -> &[RegisteredMcpServerDeclaration] { self.assert_active_or_panic(); &self.registered_mcp_servers }
 }
 impl ToolContext for ExtensionContext {
     fn cwd(&self) -> &Path { &self.cwd }
@@ -1024,8 +1028,8 @@ impl ExtensionRuntime {
         self.assert_active()?;
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).actions.clone().ok_or_else(|| ExtensionFailure::new("Extension actions are unavailable during registration"))
     }
-    pub fn get_flag(&self, name: &str) -> Option<FlagValue> { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.get(name).cloned() }
-    pub fn set_flag(&self, name: &str, value: FlagValue) { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.insert(name.into(), value); }
+    pub fn get_flag(&self, name: &str) -> Option<FlagValue> { self.assert_active_or_panic(); self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.get(name).cloned() }
+    pub fn set_flag(&self, name: &str, value: FlagValue) { self.assert_active_or_panic(); self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.insert(name.into(), value); }
 }
 pub struct ExtensionApi {
     pub cwd: PathBuf, pub profile: ExtensionSessionProfile, pub events: EventBus, pub runtime: ExtensionRuntime, pub registered: LoadedExtension,
@@ -1046,7 +1050,13 @@ impl ExtensionApi {
         self.runtime.assert_active_or_panic();
         self.registered.shortcuts.insert(shortcut.into(), ExtensionShortcut { shortcut: shortcut.into(), description, handler, extension_path: self.registered.identity.path.clone() });
     }
-    pub fn register_lazy_tool_activator(&mut self, activator: LazyToolActivator) { self.runtime.assert_active_or_panic(); self.registered.lazy_tool_activators.push(activator); }
+    pub fn register_lazy_tool_activator(&mut self, activator: LazyToolActivator) {
+        self.runtime.assert_active_or_panic();
+        let actions = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone();
+        if let Some(actions) = actions
+            && let Err(error) = actions.register_lazy_tool_activator(Arc::clone(&activator)) { std::panic::panic_any(error); }
+        self.registered.lazy_tool_activators.push(activator);
+    }
     pub fn register_markdown_transformer(&mut self, transformer: MarkdownTransformer) { self.runtime.assert_active_or_panic(); self.registered.markdown_transformer = Some(transformer); }
     pub fn register_read_classifier(&self, classifier: ReadClassifier) -> Result<ReadClassifierSubscription, ExtensionFailure> {
         self.runtime.assert_active()?;
@@ -1069,8 +1079,7 @@ impl ExtensionApi {
         self.events.emit("senpi:extension-rpc-event", &event); Ok(())
     }
     pub fn register_tool(&mut self, definition: ToolDefinition) {
-        let tool = RegisteredTool { definition, source_info: self.registered.source_info.clone() };
-        if let Some(existing) = self.registered.tools.iter_mut().find(|t| t.definition.name == tool.definition.name) { *existing = tool; } else { self.registered.tools.push(tool); }
+        if let Err(error) = self.try_register_tool(definition) { std::panic::panic_any(error); }
     }
     pub fn try_register_tool(&mut self, definition: ToolDefinition) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;
@@ -1080,7 +1089,10 @@ impl ExtensionApi {
         if !definition.parameters.is_object() {
             return Err(ExtensionFailure::new(format!("Tool \"{}\" registered by extension \"{}\" must define an object parameter schema.", definition.name, self.registered.identity.path)));
         }
-        self.register_tool(definition);
+        let tool = RegisteredTool { definition, source_info: self.registered.source_info.clone() };
+        if let Some(existing) = self.registered.tools.iter_mut().find(|t| t.definition.name == tool.definition.name) { *existing = tool; } else { self.registered.tools.push(tool); }
+        let actions = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone();
+        if let Some(actions) = actions { actions.refresh_tools()?; }
         Ok(())
     }
     pub fn register_command(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandHandler) {
@@ -1099,7 +1111,7 @@ impl ExtensionApi {
         let flag = ExtensionFlag { name: name.into(), description, kind, extension_path: self.registered.identity.path.clone() };
         if let Some(existing) = self.registered.flags.iter_mut().find(|f| f.name == name) { *existing = flag; } else { self.registered.flags.push(flag); }
     }
-    pub fn get_flag(&self, name: &str) -> Option<FlagValue> { if self.registered.flags.iter().any(|flag| flag.name == name) { self.runtime.get_flag(name) } else { None } }
+    pub fn get_flag(&self, name: &str) -> Option<FlagValue> { self.runtime.assert_active_or_panic(); if self.registered.flags.iter().any(|flag| flag.name == name) { self.runtime.get_flag(name) } else { None } }
     pub fn set_flag(&self, name: &str, value: FlagValue) { self.runtime.set_flag(name, value); }
     pub fn register_message_renderer(&mut self, custom_type: &str, renderer: MessageRenderer) { self.runtime.assert_active_or_panic(); self.registered.message_renderers.insert(custom_type.into(), renderer); }
     pub fn register_entry_renderer(&mut self, custom_type: &str, renderer: EntryRenderer, options: EntryRendererOptions) { self.runtime.assert_active_or_panic(); self.registered.entry_renderers.insert(custom_type.into(), renderer); self.registered.entry_renderer_options.insert(custom_type.into(), options); }
@@ -1108,7 +1120,13 @@ impl ExtensionApi {
         let declaration = RegisteredMcpServerDeclaration { name: name.into(), config, extension_path: self.registered.identity.path.clone(), registration_cwd: self.cwd.clone() };
         if let Some(existing) = self.registered.mcp_servers.iter_mut().find(|s| s.name == name) { *existing = declaration; } else { self.registered.mcp_servers.push(declaration); }
     }
-    pub fn register_removed_tool_hint(&mut self, name: &str, hint: &str) { self.runtime.assert_active_or_panic(); self.registered.removed_tool_hints.insert(name.into(), hint.into()); }
+    pub fn register_removed_tool_hint(&mut self, name: &str, hint: &str) {
+        self.runtime.assert_active_or_panic();
+        let actions = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone();
+        if let Some(actions) = actions
+            && let Err(error) = actions.register_removed_tool_hint(name, hint) { std::panic::panic_any(error); }
+        self.registered.removed_tool_hints.insert(name.into(), hint.into());
+    }
     pub fn register_filesystem_policy(&mut self, policy: FilesystemPolicy) { self.runtime.assert_active_or_panic(); self.registered.filesystem_policies.push(policy); }
     pub fn send_message(&self, message: CustomMessage, options: SendMessageOptions) -> Result<(), ExtensionFailure> { self.runtime.actions()?.send_message(message, options) }
     pub fn send_user_message(&self, content: UserMessageContent, options: SendUserMessageOptions) -> Result<(), ExtensionFailure> { self.runtime.actions()?.send_user_message(content, options) }
