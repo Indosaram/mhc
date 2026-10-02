@@ -30,6 +30,24 @@ pub fn reader_initial_score(node:&dom_query::NodeRef<'_>,weight_classes:bool)->i
     }
     score
 }
+pub fn score_reader_candidates(elements:&[dom_query::NodeRef<'_>],weight_classes:bool)->Vec<(dom_query::NodeId,f64)> {
+    let mut candidates:Vec<(dom_query::NodeRef<'_>,f64)>=Vec::new();
+    for element in elements {
+        if element.parent().is_none_or(|parent|!parent.is_element()) {continue;}
+        let text=reader_inner_text(element,true);let length=text.encode_utf16().count();if length<25 {continue;}
+        let commas=text.chars().filter(|character|matches!(character,','|'\u{060c}'|'\u{fe50}'|'\u{fe10}'|'\u{fe11}'|'\u{2e41}'|'\u{2e34}'|'\u{2e32}'|'\u{ff0c}')).count();
+        let content_score=2.+commas as f64+(length/100).min(3) as f64;
+        let mut ancestor=element.parent();
+        for level in 0..5 {
+            let Some(node)=ancestor else {break;};ancestor=node.parent();
+            if !node.is_element() || node.parent().is_none_or(|parent|!parent.is_element()) {continue;}
+            let index=if let Some(index)=candidates.iter().position(|(candidate,_)|candidate.id==node.id) {index} else {candidates.push((node,f64::from(reader_initial_score(&node,weight_classes))));candidates.len()-1};
+            let divider=match level {0=>1,1=>2,_=>level*3};candidates[index].1+=content_score/divider as f64;
+        }
+    }
+    for (node,score) in &mut candidates {*score*=1.-reader_link_density(node);}
+    candidates.into_iter().map(|(node,score)|(node.id,score)).collect()
+}
 fn markdown_block(name:&str)->bool {matches!(name,"address"|"article"|"aside"|"audio"|"blockquote"|"body"|"canvas"|"center"|"dd"|"dir"|"div"|"dl"|"dt"|"fieldset"|"figcaption"|"figure"|"footer"|"form"|"frameset"|"h1"|"h2"|"h3"|"h4"|"h5"|"h6"|"header"|"hgroup"|"hr"|"html"|"isindex"|"li"|"main"|"menu"|"nav"|"noframes"|"noscript"|"ol"|"output"|"p"|"pre"|"section"|"table"|"tbody"|"td"|"tfoot"|"th"|"thead"|"tr"|"ul")}
 fn markdown_void(name:&str)->bool {matches!(name,"area"|"base"|"br"|"col"|"command"|"embed"|"hr"|"img"|"input"|"keygen"|"link"|"meta"|"param"|"source"|"track"|"wbr")}
 fn markdown_meaningful(name:&str)->bool {matches!(name,"a"|"table"|"thead"|"tbody"|"tfoot"|"th"|"td"|"iframe"|"script"|"audio"|"video")}
@@ -217,6 +235,14 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_candidate_scores_propagate_in_encounter_order() {
+        let document=dom_query::Document::from("<main><section><div><p>Paragraph contains enough text, with a comma.</p><p>tiny</p></div></section></main>");let paragraphs=document.select("p");let scores=score_reader_candidates(paragraphs.nodes(),false);
+        let names:Vec<_>=scores.iter().map(|(id,_)|dom_query::NodeRef::new(*id,&document.tree).node_name().unwrap().to_string()).collect();assert_eq!(names,vec!["div","section","main","body"]);
+        for ((_,actual),expected) in scores.iter().zip([8.,1.5,0.5,1./3.]) {assert!((actual-expected).abs()<1e-12);}
+    }
+    #[test] fn reader_candidate_scores_skip_short_text_and_scale_link_density() {
+        let document=dom_query::Document::from("<div><p><a href='https://example.test'>All linked text sufficiently long to score.</a></p></div><section><p>short</p></section>");let scores=score_reader_candidates(document.select("p").nodes(),true);assert_eq!(scores[0].1,0.);assert!(scores[1].1>0.);assert_eq!(scores.len(),2);
+    }
     #[test] fn reader_inner_text_collapses_runs_but_preserves_single_whitespace() {
         let document=dom_query::Document::from("<p> one\ttwo\nthree  four\u{00a0}\u{00a0}five </p>");let node=document.select("p");assert_eq!(reader_inner_text(&node.nodes()[0],true),"one\ttwo\nthree four five");assert_eq!(reader_inner_text(&node.nodes()[0],false),"one\ttwo\nthree  four\u{00a0}\u{00a0}five");
     }
