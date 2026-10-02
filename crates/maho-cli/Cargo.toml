@@ -17,6 +17,7 @@ sha2.workspace = true
 url.workspace = true
 percent-encoding.workspace = true
 base64 = "=0.22.1"
+reqwest = { workspace = true, features = ["rustls-tls"] }
 tokio = { workspace = true, features = ["time", "macros", "rt", "process", "io-util"] }
 
 [dev-dependencies]

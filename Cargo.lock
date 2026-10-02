@@ -1507,6 +1507,7 @@ dependencies = [
  "maho-tui",
  "percent-encoding",
  "regex",
+ "reqwest",
  "serde_json",
  "sha2",
  "tempfile",
