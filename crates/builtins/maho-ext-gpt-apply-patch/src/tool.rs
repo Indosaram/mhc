@@ -73,5 +73,14 @@ mod tests {
         }
     }
     #[test] fn retention_is_bounded_by_utf8_bytes() { assert!(retained_patch(Some(&"a".repeat(16*1024))).is_some()); assert!(retained_patch(Some(&"é".repeat(8193))).is_none()); assert!(retained_patch(None).is_none()); }
+    #[tokio::test] async fn upstream_partial_and_complete_failures_keep_structured_recovery() {
+        for partial in [false,true] {
+            let directory=tempfile::tempdir().unwrap();let context=Context(directory.path().into());let path=directory.path().join("existing.txt");tokio::fs::write(&path,b"actual\n").await.unwrap();
+            let add=if partial {"*** Add File: created.txt\n+created\n"} else {""};let input=format!("*** Begin Patch\n{add}*** Update File: existing.txt\n@@\n-expected\n+changed\n*** End Patch");
+            let result=(create_apply_patch_tool().execute)(maho_tools::definition::ToolCall{id:"failure",params:serde_json::json!({"input":input}),signal:Default::default(),context:Some(&context),on_update:None}).await.unwrap();
+            let details=result.details.unwrap();assert!(crate::extension::has_apply_patch_failures(&details));assert_eq!(details["result"]["failures"].as_array().unwrap().len(),1);assert_eq!(details["result"]["hasPartialSuccess"],partial);
+            assert_eq!(details["result"]["recoveryInstructions"]["mustReadFiles"],serde_json::json!(["existing.txt"]));assert_eq!(tokio::fs::read(&path).await.unwrap(),b"actual\n");assert_eq!(directory.path().join("created.txt").exists(),partial);
+        }
+    }
     #[test] fn empty_application_has_no_preview() { let result=ApplyPatchResult::default(); assert_eq!(applied_preview(&result),None); let (_,details)=execution_result(result); assert!(details.result.is_some()); assert_eq!(details.preview,None); }
 }
