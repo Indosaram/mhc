@@ -27,5 +27,7 @@ pub fn spawn_internal_process(role: InternalProcessRole, args: &[String], cwd: &
     command.args(args).current_dir(cwd).env_clear().envs(env).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     #[cfg(unix)]
     command.process_group(0);
+    #[cfg(windows)]
+    command.creation_flags(0x00000008 | 0x00000200 | 0x08000000);
     command.spawn()
 }

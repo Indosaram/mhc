@@ -1678,6 +1678,7 @@ name = "maho-cli"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "maho-agent",
  "maho-ai",
  "maho-core",
  "maho-interactive",

@@ -13,3 +13,8 @@ fn registry_document_selects_channel_or_version_and_rejects_empty_values() {
     assert_eq!(read_available_version(&payload, Some("beta")).as_deref(), Some("1.2.4-beta.1"));
     assert_eq!(read_available_version(&payload, Some("empty")), None);
 }
+#[tokio::test]
+async fn native_brand_without_registry_channel_does_not_advertise_engine_updates() {
+    assert!(get_latest_release("1.2.3", Default::default()).await.unwrap().is_none());
+    assert!(check_for_new_version("1.2.3").await.is_none());
+}

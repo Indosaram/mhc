@@ -72,6 +72,9 @@ fn run() -> Result<(), String> {
     if parsed.version { println!("{}", maho_core::config::display_version(env!("CARGO_PKG_VERSION"))); return Ok(()); }
     for diagnostic in &parsed.diagnostics { eprintln!("{}: {}", if diagnostic.error { "Error" } else { "Warning" }, diagnostic.message); }
     if parsed.diagnostics.iter().any(|d| d.error) { return Err("Invalid CLI arguments".to_owned()); }
+    if parsed.mode == Some(maho_cli::cli::args::Mode::Rpc) && !parsed.file_args.is_empty() { return Err("Error: @file arguments are not supported in RPC mode".to_owned()); }
+    maho_cli::cli::startup::validate_fork_flags(&parsed).map_err(|error| format!("Error: {error}"))?;
+    maho_cli::cli::startup::validate_session_id_flags(&parsed).map_err(|error| format!("Error: {error}"))?;
     if parsed.help { return output(&maho_cli::cli::args::help_text(grok, "")); }
     if parsed.list_tips { return output(&format!("{}\n", serde_json::to_string_pretty(&maho_cli::cli::list_tips::collect_tips()).map_err(|e| e.to_string())?)); }
     if let Some(search) = parsed.list_models.as_deref() {
