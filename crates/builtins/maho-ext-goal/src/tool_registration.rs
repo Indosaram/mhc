@@ -19,6 +19,19 @@ pub async fn execute_create_goal(reference:&crate::types::GoalStoreRef,objective
     let notice=validated.truncated.then(||crate::validation::objective_truncation_notice(&file));
     let result=goal_tool_result(Some(&goal),notice.as_deref())?; Ok((goal,result))
 }
+pub async fn execute_update_goal(reference:&crate::types::GoalStoreRef,accounting:&mut crate::index::GoalTurnAccounting,params:&Value,open_tasks:&[String],now_ms:f64)->Result<(crate::types::Goal,maho_ext_api::ToolResult),ToolError> {
+    let (status,reason)=parse_model_goal_update(params)?;
+    if status==ModelSettableGoalStatus::Complete&&!open_tasks.is_empty() { return Err(ToolError::Message(crate::todo_gate::open_todo_completion_error(open_tasks))); }
+    let seconds=(now_ms/1000.0).floor() as u64;
+    accounting.account(reference,crate::types::GoalAccountingMode::Active,None,now_ms,seconds).await.map_err(|error|ToolError::Message(error.to_string()))?;
+    let goal=crate::store::update_goal(reference,&crate::types::GoalUpdate { status:Some(match status { ModelSettableGoalStatus::Complete=>crate::types::GoalStatus::Complete,ModelSettableGoalStatus::Blocked=>crate::types::GoalStatus::Blocked }),reason,..Default::default() },crate::types::GoalUpdateSource::Model,seconds).await.map_err(|error|ToolError::Message(error.to_string()))?;
+    if goal.status==crate::types::GoalStatus::Blocked { accounting.mark_blocked(&goal); } else { accounting.mark_completed(&goal,now_ms); }
+    let result=goal_tool_result(Some(&goal),None)?; Ok((goal,result))
+}
+pub async fn execute_get_goal(reference:&crate::types::GoalStoreRef,accounting:&mut crate::index::GoalTurnAccounting,now_ms:f64)->Result<(Option<crate::types::Goal>,maho_ext_api::ToolResult),ToolError> {
+    let goal=accounting.account(reference,crate::types::GoalAccountingMode::Active,None,now_ms,(now_ms/1000.0).floor() as u64).await.map_err(|error|ToolError::Message(error.to_string()))?;
+    let result=goal_tool_result(goal.as_ref(),None)?; Ok((goal,result))
+}
 pub fn parse_model_goal_update(params:&Value)->Result<(ModelSettableGoalStatus,Option<String>),ToolError> {
     let status=match params["status"].as_str() { Some("complete")=>ModelSettableGoalStatus::Complete,Some("blocked")=>ModelSettableGoalStatus::Blocked,_=>return Err(ToolError::Message("status must be complete or blocked".into())) };
     let reason=params.get("reason").and_then(Value::as_str).map(|reason|reason.trim_matches(crate::validation::js_whitespace).to_owned());
@@ -31,6 +44,22 @@ pub fn parse_model_goal_update(params:&Value)->Result<(ModelSettableGoalStatus,O
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn update_completion_gate_precedes_accounting_and_marks_final_turn() {
+        let dir=tempfile::tempdir().unwrap(); let reference=crate::types::GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() };
+        let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap(); let mut accounting=crate::index::GoalTurnAccounting::default(); accounting.agent_start(Some(&goal),0.0);
+        assert!(execute_update_goal(&reference,&mut accounting,&json!({"status":"complete"}),&["unfinished".into()],1500.0).await.is_err());
+        assert_eq!(crate::store::read_goal(&reference).unwrap(),Some(goal));
+        let (goal,result)=execute_update_goal(&reference,&mut accounting,&json!({"status":"complete"}),&[],1500.0).await.unwrap();
+        assert_eq!(goal.status,crate::types::GoalStatus::Complete); assert_eq!(goal.time_used_seconds,2.0); assert_eq!(accounting.completed_this_turn.as_deref(),Some(goal.id.as_str()));
+        assert_eq!(result.details.unwrap()["goal"]["status"],"complete");
+    }
+    #[tokio::test] async fn get_checkpoints_elapsed_without_double_counting_and_handles_no_goal() {
+        let dir=tempfile::tempdir().unwrap(); let reference=crate::types::GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let mut accounting=crate::index::GoalTurnAccounting::default();
+        let (goal,result)=execute_get_goal(&reference,&mut accounting,0.0).await.unwrap(); assert!(goal.is_none()); assert!(result.details.unwrap()["goal"].is_null());
+        let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap(); accounting.agent_start(Some(&goal),0.0);
+        assert_eq!(execute_get_goal(&reference,&mut accounting,1500.0).await.unwrap().0.unwrap().time_used_seconds,2.0);
+        assert_eq!(execute_get_goal(&reference,&mut accounting,1500.0).await.unwrap().0.unwrap().time_used_seconds,2.0);
+    }
     #[tokio::test] async fn create_tool_returns_snapshot_and_rejects_unfinished_replacement() {
         let dir=tempfile::tempdir().unwrap(); let reference=crate::types::GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() };
         let (goal,result)=execute_create_goal(&reference,"work",0).await.unwrap(); assert_eq!(result.details.unwrap()["goal"]["objective"],goal.objective);
