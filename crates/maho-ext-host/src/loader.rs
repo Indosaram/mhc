@@ -51,6 +51,7 @@ pub fn load_extensions(factories: Vec<NativeExtensionFactory>, cwd: &std::path::
 }
 
 pub type AsyncExtensionFactory = std::sync::Arc<dyn for<'a> Fn(&'a mut ExtensionApi) -> ExtensionFuture<'a, ()> + Send + Sync>;
+#[derive(Clone)]
 pub struct NativeAsyncExtensionFactory {
     pub path: String,
     pub source_info: SourceInfo,

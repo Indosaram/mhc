@@ -220,22 +220,61 @@ pub struct ExtensionRunner {
     context_actions: Option<Arc<dyn ExtensionContextActions>>,
     reload: ReloadState,
     shutdown_budget: Option<Arc<dyn Fn() -> (u64, u64) + Send + Sync>>,
+    runtime_factory: Option<RuntimeFactory>,
+    factory_context: ExtensionContext,
+}
+pub type RuntimeFactory = Arc<dyn Fn(ExtensionContext) -> ExtensionFuture<'static, ExtensionRunner> + Send + Sync>;
+struct SharedExtension(Arc<dyn Extension>);
+impl Extension for SharedExtension {
+    fn register(&self, api: &mut ExtensionApi) { self.0.register(api); }
 }
 impl ExtensionRunner {
     pub fn new(extensions: Vec<LoadedExtension>, runtime: ExtensionRuntime, events: EventBus, context: ExtensionContext) -> Self {
-        Self { extensions, runtime, events, context, error_listeners: Vec::new(), errors: Vec::new(), warnings: Vec::new(),
-            shutdown_warn_ms: 2000, shutdown_timeout_ms: 10000, hook_observer: None, warning_listener: None, next_hook_index: 0, context_actions: None, reload: Arc::new(std::sync::Mutex::new(None)), shutdown_budget: None }
+        Self { extensions, runtime, events, factory_context: context.clone(), context, error_listeners: Vec::new(), errors: Vec::new(), warnings: Vec::new(),
+            shutdown_warn_ms: 2000, shutdown_timeout_ms: 10000, hook_observer: None, warning_listener: None, next_hook_index: 0, context_actions: None, reload: Arc::new(std::sync::Mutex::new(None)), shutdown_budget: None, runtime_factory: None }
     }
     pub fn from_static(extensions: Vec<Box<dyn Extension>>, context: ExtensionContext) -> Self {
+        Self::from_shared_static(extensions.into_iter().map(Arc::from).collect(), context)
+    }
+    fn from_shared_static(extensions: Vec<Arc<dyn Extension>>, context: ExtensionContext) -> Self {
+        let retained = extensions.clone();
         let factories = extensions.into_iter().enumerate().map(|(index, extension)| {
             let path = format!("<inline:{}>", index.saturating_add(1));
             let source_info = SourceInfo { path: path.clone(), source: "inline".into(), ..SourceInfo::default() };
-            crate::loader::NativeExtensionFactory { path, source_info, extension }
+            crate::loader::NativeExtensionFactory { path, source_info, extension: Box::new(SharedExtension(extension)) }
         }).collect();
         let loaded = crate::loader::load_extensions(factories, &context.cwd, ExtensionSessionProfile::default());
         let mut runner = Self::new(loaded.extensions, loaded.runtime, loaded.events, context);
+        runner.runtime_factory = Some(Arc::new(move |context| {
+            let extensions = retained.clone();
+            Box::pin(async move { Ok(Self::from_shared_static(extensions, context)) })
+        }));
         for error in loaded.errors { runner.emit_error(error); }
         runner
+    }
+    pub fn set_runtime_factory(&mut self, factory: RuntimeFactory) { self.runtime_factory = Some(factory); }
+    pub fn from_async_factories(factories: Vec<crate::loader::NativeAsyncExtensionFactory>, context: ExtensionContext, profile: ExtensionSessionProfile) -> ExtensionFuture<'static, Self> {
+        Box::pin(async move {
+            let retained = factories.clone();
+            let loaded = crate::loader::load_extensions_async(factories, &context.cwd, profile.clone()).await;
+            let mut runner = Self::new(loaded.extensions, loaded.runtime, loaded.events, context);
+            runner.set_runtime_factory(Arc::new(move |context| Self::from_async_factories(retained.clone(), context, profile.clone())));
+            for error in loaded.errors { runner.emit_error(error); }
+            Ok(runner)
+        })
+    }
+    pub async fn recreate(&self) -> Result<Self, ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let factory = self.runtime_factory.as_ref().ok_or_else(|| ExtensionFailure::new("Extension runtime factory is not bound"))?;
+        let mut runner = factory(self.factory_context.clone()).await?;
+        runner.runtime_factory = self.runtime_factory.clone();
+        runner.error_listeners = self.error_listeners.clone();
+        runner.warning_listener = self.warning_listener.clone();
+        runner.hook_observer = self.hook_observer.clone();
+        runner.shutdown_budget = self.shutdown_budget.clone();
+        runner.shutdown_warn_ms = self.shutdown_warn_ms;
+        runner.shutdown_timeout_ms = self.shutdown_timeout_ms;
+        Ok(runner)
     }
     pub fn bind_core(&mut self, actions: Arc<dyn ExtensionActions>, context: ExtensionContext) {
         self.runtime.bind(actions); self.context = context;

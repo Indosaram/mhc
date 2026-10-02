@@ -344,6 +344,27 @@ async fn resource_discovery_records_are_isolated_between_handlers() {
     assert_eq!(result.hook_paths[0].extension_path, "b");
 }
 
+struct GenerationExtension(Arc<std::sync::atomic::AtomicUsize>);
+impl Extension for GenerationExtension {
+    fn register(&self, api: &mut ExtensionApi) {
+        let generation = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        api.register_command("generation", Some(generation.to_string()), None, Arc::new(|_, _| Box::pin(async { Ok(()) })));
+    }
+}
+
+#[tokio::test]
+async fn static_runtime_recreation_runs_factories_with_independent_generation() {
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let first = ExtensionRunner::from_static(vec![Box::new(GenerationExtension(count.clone()))], context());
+    let next = first.recreate().await.unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
+    first.invalidate("replaced");
+    assert!(first.create_context().is_err());
+    assert!(next.create_context().is_ok());
+    assert_eq!(next.get_command("generation").unwrap().command.description.as_deref(), Some("1"));
+    assert_eq!(first.get_command("generation").unwrap().command.description.as_deref(), Some("0"));
+}
+
 #[test]
 fn mcp_servers_first_wins_and_context_exposes_aggregate() {
     let mut a = extension("a", EventKind::AgentStart, none()); let mut b = extension("b", EventKind::AgentStart, none());
