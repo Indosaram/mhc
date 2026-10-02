@@ -17,4 +17,23 @@ pub enum HostToSessionWorker{
     Command{request:u64,command:serde_json::Value,#[serde(skip_serializing_if="Option::is_none")]connection:Option<String>,display:WorkerDisplay},
     Display{display:WorkerDisplay},CancelUi,Close,
 }
+#[derive(Clone)]
+pub enum SessionWorkerToHost{
+    Prepared{request:u64,session_path:String},
+    Ready{request:u64,snapshot:WorkerSnapshot},
+    Result{request:u64,error:Option<String>},
+    Reserve{path:String,signal:crate::session_worker_signals::WorkerSignal},
+    Snapshot{snapshot:WorkerSnapshot,signal:crate::session_worker_signals::WorkerSignal,settled:Option<bool>},
+    ControlDone{control:WorkerControlKind},
+    Output{record:serde_json::Value,connection:Option<String>,signal:crate::session_worker_signals::WorkerSignal,activity:WorkerActivity,snapshot:Option<WorkerSnapshot>},
+    Width{connection:Option<String>,width:f64,signal:crate::session_worker_signals::WorkerSignal},
+    Capabilities{connection:Option<String>,capabilities:Vec<String>,signal:crate::session_worker_signals::WorkerSignal},
+    RequestClose,Failure{error:String},
+}
+#[derive(Debug,Clone,Copy,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(rename_all="snake_case")]
+pub enum WorkerControlKind{Display,CancelUi}
+#[derive(Debug,Clone,PartialEq,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct WorkerActivity{pub busy:bool,#[serde(skip_serializing_if="Option::is_none")]pub handoff_busy:Option<bool>,pub streaming:bool}
 #[cfg(test)]mod tests{use super::*;#[test]fn credit_codes_and_optional_snapshot_fields(){assert_eq!(worker_credit_code(SessionWriteGrant::Granted),1);assert_eq!(worker_credit_code(SessionWriteGrant::Conflict),2);assert_eq!(worker_credit_code(SessionWriteGrant::Limit),3);let snapshot=WorkerSnapshot{state:serde_json::json!({}),session_path:None,live_session_paths:vec![],busy:false,handoff_busy:None,streaming:false};let wire=serde_json::to_value(snapshot).unwrap();assert!(wire.get("sessionPath").is_none());assert!(wire.get("handoffBusy").is_none());assert_eq!(wire["liveSessionPaths"],serde_json::json!([]));}}
