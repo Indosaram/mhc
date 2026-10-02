@@ -1934,7 +1934,7 @@ impl AgentSession {
                 rejection = Some(maho_ext_api::CompactionRejectionCause::StaleRevision);
                 return Err("Conversation changed during compaction".to_owned());
             }
-            let entry = self.apply_compaction(&result).map_err(|error| {
+            let entry = self.apply_compaction_internal(&result, Some(from_extension)).map_err(|error| {
                 if error == "Compaction rejected: summary-would-overflow" { rejection = Some(maho_ext_api::CompactionRejectionCause::WouldOverflow); }
                 error
             })?;
@@ -2004,6 +2004,10 @@ impl AgentSession {
     }
 
     pub fn apply_compaction(&self, result: &crate::compaction::compaction::CompactionResult) -> Result<Value, String> {
+        self.apply_compaction_internal(result, None)
+    }
+
+    fn apply_compaction_internal(&self, result: &crate::compaction::compaction::CompactionResult, from_hook: Option<bool>) -> Result<Value, String> {
         let mut branch = self.with_session_manager(|manager| manager.branch(None));
         if !branch.iter().any(|entry| entry.get("id").and_then(Value::as_str) == Some(result.first_kept_entry_id.as_str())) {
             return Err("Compaction first kept entry is not on the current branch".to_owned());
@@ -2030,7 +2034,7 @@ impl AgentSession {
         }
         let usage = result.usage.as_ref().map(serde_json::to_value).transpose().map_err(|error| error.to_string())?;
         let entry = self.with_session_manager_mut(|manager| manager.append_compaction(
-            &result.summary, &result.first_kept_entry_id, result.tokens_before, result.details.clone(), usage, None,
+            &result.summary, &result.first_kept_entry_id, result.tokens_before, result.details.clone(), usage, from_hook,
         ));
         let context = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
         self.agent.set_messages(context.messages.into_iter().map(session_message_from_value).collect::<Result<_, _>>()
@@ -6414,6 +6418,7 @@ mod tests {
         });
         session.compact(None).await.expect("compaction");
         assert_eq!(*lock(&order), ["end", "hook"]);
+        assert_eq!(session.with_session_manager(|manager| manager.entries().last().expect("compaction")["fromHook"].clone()), true);
         let guard = session.retry_fallback.lock().await;
         let fallback = guard.as_ref().expect("controller").state.as_ref().expect("fallback remains for never policy");
         assert!(!fallback.pinned_by_refusal);
