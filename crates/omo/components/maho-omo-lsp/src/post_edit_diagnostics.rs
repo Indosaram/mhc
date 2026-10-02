@@ -269,4 +269,12 @@ mod tests {
         assert!(text[2].ends_with("\nexploded"));
         assert!(text[3].ends_with("\nc"));
     }
+    #[tokio::test]
+    async fn diagnostics_concurrency_is_four() {
+        use std::sync::atomic::{AtomicUsize,Ordering};
+        let active=Arc::new(AtomicUsize::new(0));let peak=Arc::new(AtomicUsize::new(0));
+        let e=event("edit",json!({"filePaths":["a","b","a","c","d","e","f"]}),false);
+        let r=append_post_edit_diagnostics(&e,|p| {let active=Arc::clone(&active);let peak=Arc::clone(&peak);async move {let n=active.fetch_add(1,Ordering::SeqCst)+1;peak.fetch_max(n,Ordering::SeqCst);let mut first=true;std::future::poll_fn(|cx| {if first {first=false;cx.waker().wake_by_ref();std::task::Poll::Pending} else {std::task::Poll::Ready(())}}).await;active.fetch_sub(1,Ordering::SeqCst);if p=="c" {Err(DiagnosticsRunnerError::new("server exploded"))} else {Ok(PostEditDiagnosticsOutcome::Text(if p=="e" {"No diagnostics found".into()} else {p}))}}},None).await.unwrap();
+        assert_eq!(peak.load(Ordering::SeqCst),4);assert_eq!(active.load(Ordering::SeqCst),0);assert_eq!(r.content.unwrap().len(),6);
+    }
 }
