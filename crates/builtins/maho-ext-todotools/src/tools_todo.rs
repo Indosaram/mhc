@@ -1,0 +1,40 @@
+// Copyright (c) 2025 Mario Zechner; Copyright (c) 2025-2026 Can Bölük.
+// Adapted from oh-my-pi's MIT-licensed todo tool via senpi.
+use crate::todo_types::{TodoOpEntry,TodoOperation};
+pub fn phase_roman_numeral(mut index:usize)->String {
+    let mut output=String::new();
+    for (value,symbol) in [(1000,"M"),(900,"CM"),(500,"D"),(400,"CD"),(100,"C"),(90,"XC"),(50,"L"),(40,"XL"),(10,"X"),(9,"IX"),(5,"V"),(4,"IV"),(1,"I")] { while index>=value { output.push_str(symbol); index-=value; } } output
+}
+pub fn count_init_items(params:&TodoOpEntry)->(usize,usize) {
+    if let Some(list)=&params.list { return (list.len(),list.iter().map(|phase|phase.items.len()).sum()); }
+    params.items.as_ref().map_or((0,0),|items|(usize::from(!items.is_empty()),items.len()))
+}
+fn count_label(count:usize,singular:&str)->String { format!("{count} {singular}{}",if count==1 { "" } else { "s" }) }
+pub fn plan_execution(raw:&serde_json::Value,previous:&[crate::todo_types::TodoPhase],storage:crate::todo_types::TodoStorage)->Result<(String,crate::todo_types::TodoToolDetails),String> {
+    let normalized=crate::normalize::normalize_todo_params(raw,previous);
+    let entry=match (normalized.error,normalized.entry) { (Some(error),_)=>return Err(format!("{error}\n\n{}",crate::todo_format::format_summary(previous,&[],true))),(_,Some(entry))=>entry,_=>return Err(format!("Missing \"op\". Example: {{\"op\":\"init\",\"list\":[{{\"phase\":\"Setup\",\"items\":[\"...\"]}}]}}\n\n{}",crate::todo_format::format_summary(previous,&[],true))) };
+    let mut corrections=normalized.corrections; let read_only=entry.op==TodoOperation::View;
+    let applied=crate::todo_operations::apply_params(previous.to_vec(),&entry,Some(&mut corrections));
+    if !applied.errors.is_empty() { return Err(crate::todo_format::format_summary(previous,&applied.errors,read_only)); }
+    let completed=if read_only { vec![] } else { crate::todo_query::get_completion_transitions(previous,&applied.phases) };
+    let summary=crate::todo_format::format_summary(&applied.phases,&[],read_only);
+    let text=if corrections.is_empty() { summary } else { format!("{}\n\n{summary}",corrections.join("\n")) };
+    Ok((text,crate::todo_types::TodoToolDetails{op:Some(entry.op),phases:applied.phases,storage,corrections:if corrections.is_empty() { None } else { Some(corrections) },completed_tasks:if completed.is_empty() { None } else { Some(completed) }}))
+}
+pub fn render_call_label(params:&TodoOpEntry)->String {
+    let clean=|value:&str|crate::todo_format::sanitize_todo_text(value);
+    match params.op {
+        TodoOperation::Init=>{ let (phases,tasks)=count_init_items(params); format!("todo init ({}, {})",count_label(phases,"phase"),count_label(tasks,"task")) },
+        TodoOperation::Append=>{ let phase=clean(params.phase.as_deref().unwrap_or("")); format!("todo append: {} ({})",if phase.is_empty() { "(missing phase)" } else { &phase },count_label(params.items.as_ref().map_or(0,Vec::len),"item")) },
+        TodoOperation::Start|TodoOperation::Done|TodoOperation::Drop=>{ let target=clean(params.task.as_deref().or(params.phase.as_deref()).unwrap_or("")); let op=match params.op { TodoOperation::Start=>"start",TodoOperation::Done=>"done",TodoOperation::Drop=>"drop",_=>unreachable!() }; format!("todo {op}: {}",if target.is_empty() { "(missing target)" } else { &target }) },
+        TodoOperation::Rm=>{ let target=clean(params.task.as_deref().or(params.phase.as_deref()).unwrap_or("all")); format!("todo rm: {}",if target.is_empty() { "all" } else { &target }) },TodoOperation::View=>"todo view".into(),
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test] fn planned_done_includes_completion_transition() { let previous=vec![crate::todo_types::TodoPhase{name:"Setup".into(),tasks:vec![crate::todo_types::TodoItem{content:"Task".into(),status:crate::todo_types::TodoStatus::InProgress}]}]; let (_,details)=plan_execution(&serde_json::json!({"op":"done","task":"Task"}),&previous,crate::todo_types::TodoStorage::Memory).unwrap(); assert_eq!(details.completed_tasks.unwrap()[0].content,"Task"); assert_eq!(previous[0].tasks[0].status,crate::todo_types::TodoStatus::InProgress); }
+    #[test] fn planned_view_keeps_current_state() { let (_,details)=plan_execution(&serde_json::json!({"op":"view"}),&[],crate::todo_types::TodoStorage::Session).unwrap(); assert_eq!(details.completed_tasks,None); assert_eq!(details.storage,crate::todo_types::TodoStorage::Session); }
+    #[test] fn roman_numerals_cover_subtractive_pairs() { assert_eq!(phase_roman_numeral(0),""); assert_eq!(phase_roman_numeral(1994),"MCMXCIV"); assert_eq!(phase_roman_numeral(49),"XLIX"); }
+    #[test] fn phased_init_counts_each_task() { let params=TodoOpEntry{op:TodoOperation::Init,list:Some(vec![crate::todo_types::TodoPhaseInput{phase:"One".into(),items:vec!["a".into(),"b".into()]}]),task:None,phase:None,items:Some(vec!["ignored".into()])}; assert_eq!(count_init_items(&params),(1,2)); assert_eq!(render_call_label(&params),"todo init (1 phase, 2 tasks)"); }
+}

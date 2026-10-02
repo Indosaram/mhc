@@ -12,3 +12,4 @@ pub mod todo_widget;
 pub mod state;
 pub mod commands;
 pub mod prompt;
+pub mod tools_todo;

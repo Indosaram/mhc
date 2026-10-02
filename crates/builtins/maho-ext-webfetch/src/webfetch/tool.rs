@@ -1,4 +1,6 @@
 use super::fetcher::WebfetchFormat;
+pub fn requires_html_conversion(content_type:&str,format:WebfetchFormat)->bool { let content_type=content_type.to_lowercase(); format!=WebfetchFormat::Html && (content_type.contains("text/html") || content_type.contains("application/xhtml+xml")) }
+pub fn parameters()->serde_json::Value { serde_json::json!({"type":"object","properties":{"url":{"type":"string","description":"The URL to fetch content from"},"format":{"type":"string","enum":["markdown","text","html"],"description":"The format to return the content in. Defaults to markdown."},"timeout":{"type":"number","description":"Optional timeout in seconds. Maximum 120."}},"required":["url"]}) }
 pub const DEFAULT_OUTPUT_MAX_BYTES:usize=50*1024;
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct WebfetchOutputCap { pub text:String,pub notice:Option<String>,pub truncated:bool,pub output_bytes:usize,pub total_bytes:usize }
@@ -23,6 +25,7 @@ pub fn cap_webfetch_output(text:&str)->WebfetchOutputCap {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn only_html_text_and_markdown_require_conversion() { assert!(requires_html_conversion("Text/HTML; charset=utf-8",WebfetchFormat::Markdown)); assert!(requires_html_conversion("application/xhtml+xml",WebfetchFormat::Text)); assert!(!requires_html_conversion("text/html",WebfetchFormat::Html)); assert!(!requires_html_conversion("application/json",WebfetchFormat::Markdown)); }
     #[test] fn small_output_is_unchanged() { assert_eq!(cap_webfetch_output("hello"),WebfetchOutputCap{text:"hello".into(),notice:None,truncated:false,output_bytes:5,total_bytes:5}); }
     #[test] fn whole_lines_are_kept() { let input=format!("first\n{}", "x".repeat(DEFAULT_OUTPUT_MAX_BYTES)); let result=cap_webfetch_output(&input); assert_eq!(result.text,"first"); assert_eq!(result.output_bytes,5); assert!(result.truncated); }
     #[test] fn oversized_first_line_keeps_utf8_safe_prefix() { let result=cap_webfetch_output(&"한".repeat(DEFAULT_OUTPUT_MAX_BYTES)); assert_eq!(result.output_bytes,DEFAULT_OUTPUT_MAX_BYTES-2); assert!(result.text.chars().all(|c|c=='한')); }

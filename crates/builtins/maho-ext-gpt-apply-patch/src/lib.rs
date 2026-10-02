@@ -14,3 +14,4 @@ pub mod constants;
 pub mod apply;
 pub mod patch_diff;
 pub mod preview;
+pub mod tool;
