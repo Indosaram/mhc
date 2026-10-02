@@ -111,10 +111,49 @@ impl GoalRuntime {
         if let Some(goal)=goal.as_ref().filter(|goal|goal.status==GoalStatus::Active) { state.accounting.begin(goal,(self.now)()); }
         self.refresh(&mut state,&context,goal.as_ref()).await?; Ok(goal)
     }
+    pub async fn maybe_prompt_resume_stopped_goal(&self,context:&ExtensionContext,reason:&str,goal:Option<&Goal>,queue:&crate::command_registration::QueueGoalContinuation)->Result<bool,ExtensionFailure> {
+        if !crate::lifecycle_helpers::is_resume_of_stopped_goal(context,reason,goal)? { return Ok(false); }
+        let Some(goal)=goal else { return Ok(false); };
+        if context.mode==maho_ext_api::ExtensionMode::Rpc {
+            context.ui.notify(&format!("Goal remains {} after session resume. Resume it explicitly after the session finishes loading.",goal.status),maho_ext_api::NotificationType::Info); return Ok(true);
+        }
+        let choices=["Resume goal".into(),"Leave stopped".into()];
+        if context.ui.select(&format!("Resume {} goal?\nGoal: {}",goal.status,goal.objective),&choices,Default::default()).await.as_deref()!=Some("Resume goal") { return Ok(true); }
+        let resumed=crate::store::update_goal(&(self.reference)(context),&GoalUpdate { status:Some(GoalStatus::Active),..Default::default() },GoalUpdateSource::User,((self.now)()/1000.0).floor() as u64).await.map_err(failure)?;
+        { let mut state=self.state.lock().await; state.accounting.begin(&resumed,(self.now)()); self.refresh(&mut state,context,Some(&resumed)).await?; }
+        context.ui.notify(&format!("Goal {}\n{}",crate::format::goal_status_label(resumed.status),crate::format::format_goal_for_tool(Some(&resumed)).map_err(failure)?),maho_ext_api::NotificationType::Info);
+        queue(context,&resumed).await?; Ok(true)
+    }
 }
 fn failure(error:crate::errors::GoalError)->ExtensionFailure { ExtensionFailure::new(error.to_string()) }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn registered_replacement_confirmation_cancels_without_accounting_or_delivery() {
+        use maho_ext_api::*;
+        for accepted in [false,true] {
+            let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone(); let original=crate::store::create_goal(&reference,"Original",None,0).await.unwrap();
+            let runtime=Arc::new(GoalRuntime::new(Arc::new(move |_|stored.clone()),Arc::new(||2000.0))); let mut api=ExtensionApi::new(LoadedExtension::new("goal","/tmp".into(),Default::default()),Default::default(),Default::default(),Default::default());
+            let delivered=Arc::new(std::sync::atomic::AtomicBool::new(false)); let capture=delivered.clone(); runtime.register_command(&mut api,Arc::new(move |_,_| { capture.store(true,std::sync::atomic::Ordering::SeqCst); Box::pin(async { Ok(()) }) }));
+            let ui=Arc::new(crate::test_context::Ui::default()); *ui.selection.lock().unwrap()=Some(if accepted { "Replace current goal" } else { "Cancel" }.into()); let mut context=crate::test_context::context(); context.ui=ui.clone();
+            api.registered.commands[0].handler.as_ref()("Replacement",&context).await.unwrap(); assert_eq!(delivered.load(std::sync::atomic::Ordering::SeqCst),accepted); assert_eq!(ui.choices.lock().unwrap()[0],["Replace current goal","Cancel"]);
+            let current=crate::store::read_goal(&reference).unwrap().unwrap(); if accepted { assert_ne!(current.id,original.id); assert_eq!(current.objective,"Replacement"); } else { assert_eq!(current,original); }
+            if let Some(worker)=runtime.state.lock().await.ticker.stop().unwrap() { match worker.await { Ok(result)=>result.unwrap(),Err(error)=>assert!(error.is_cancelled()) } }
+        }
+    }
+    #[tokio::test] async fn stopped_resume_confirmation_preserves_rpc_and_declined_goals() {
+        for (rpc,choice,resumed) in [(true,Some("Resume goal"),false),(false,None,false),(false,Some("Leave stopped"),false),(false,Some("Resume goal"),true)] {
+            let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+            let original=crate::store::create_goal(&reference,"work",None,0).await.unwrap(); let paused=crate::store::update_goal(&reference,&GoalUpdate { status:Some(GoalStatus::Paused),..Default::default() },GoalUpdateSource::User,1).await.unwrap();
+            let runtime=GoalRuntime::new(Arc::new(move |_|stored.clone()),Arc::new(||2000.0)); let ui=Arc::new(crate::test_context::Ui::default()); *ui.selection.lock().unwrap()=choice.map(str::to_owned); let mut context=crate::test_context::context(); context.ui=ui.clone(); if rpc { context.mode=maho_ext_api::ExtensionMode::Rpc; }
+            let session=crate::test_context::bind_session(&mut context);
+            let delivered=Arc::new(std::sync::atomic::AtomicBool::new(false)); let capture=delivered.clone(); let queue:crate::command_registration::QueueGoalContinuation=Arc::new(move |_,goal| { assert_eq!(goal.status,GoalStatus::Active); capture.store(true,std::sync::atomic::Ordering::SeqCst); Box::pin(async { Ok(()) }) });
+            assert!(runtime.maybe_prompt_resume_stopped_goal(&context,"resume",Some(&paused),&queue).await.unwrap()); assert_eq!(delivered.load(std::sync::atomic::Ordering::SeqCst),resumed);
+            let current=crate::store::read_goal(&reference).unwrap().unwrap(); assert_eq!(current.id,original.id); assert_eq!(current.status,if resumed { GoalStatus::Active } else { GoalStatus::Paused });
+            assert_eq!(ui.choices.lock().unwrap().len(),usize::from(!rpc)); if !rpc { assert_eq!(ui.choices.lock().unwrap()[0],["Resume goal","Leave stopped"]); }
+            if let Some(worker)=runtime.state.lock().await.ticker.stop().unwrap() { match worker.await { Ok(result)=>result.unwrap(),Err(error)=>assert!(error.is_cancelled()) } }
+            session.dispose().await;
+        }
+    }
     fn assistant_usage(input:u64,output:u64)->maho_agent::types::AgentMessage {
         serde_json::from_value(serde_json::json!({"role":"assistant","content":[],"api":"faux","provider":"faux","model":"faux","usage":{"input":input,"output":output,"cacheRead":0,"cacheWrite":0,"totalTokens":input+output,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0})).unwrap()
     }
