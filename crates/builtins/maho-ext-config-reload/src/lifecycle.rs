@@ -4,17 +4,55 @@ use crate::{index::*, log::{ConfigReloadLogger, LogEvent, LogLevel}, protocol::*
 
 #[derive(Default)]
 pub struct ConfigReload;
+struct ReloadHandoff { hashes: BTreeMap<PathBuf, String>, contents: BTreeMap<PathBuf, String>, requested: std::time::Instant, changes: Vec<PendingChange> }
+static HANDOFFS: std::sync::OnceLock<Mutex<ConfigReloadHandoffRegistry<ReloadHandoff>>> = std::sync::OnceLock::new();
 struct WatchRun { cancel: tokio::sync::watch::Sender<bool>, task: tokio::task::JoinHandle<Result<(), String>> }
 #[derive(Default)]
-struct State { generation: u64, run: Option<WatchRun>, pending: PendingChanges, in_flight: bool, deferred_notice: bool, veto: crate::reload_deferral::ReloadVetoDeferral, flush_generation: Option<u64> }
+struct State { generation: u64, run: Option<WatchRun>, pending: PendingChanges, in_flight: bool, deferred_notice: bool, veto: crate::reload_deferral::ReloadVetoDeferral, flush_generation: Option<u64>, hashes: BTreeMap<PathBuf, String>, contents: BTreeMap<PathBuf, String> }
 impl Extension for ConfigReload {
     fn register(&self, api: &mut ExtensionApi) {
         let state = Arc::new(Mutex::new(State::default()));
         let shared = Arc::clone(&state);
         let events = api.events.clone();
-        api.on(EventKind::SessionStart, Arc::new(move |_, ctx| {
+        api.on(EventKind::SessionStart, Arc::new(move |event, ctx| {
             let state = Arc::clone(&shared); let events = events.clone();
-            Box::pin(async move { start(state, ctx.clone(), events, true).await?; Ok(EventResult::None) })
+            Box::pin(async move {
+                let reloading = matches!(event, maho_ext_api::ExtensionEvent::SessionStart(event) if event.reason == maho_ext_api::SessionReason::Reload);
+                start(Arc::clone(&state), ctx.clone(), events.clone(), true).await?;
+                if reloading {
+                    let handoff = HANDOFFS.get_or_init(Mutex::default).lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.take(ctx.session_manager.session_id());
+                    if let Some(handoff) = handoff {
+                        let mut paths = std::collections::BTreeSet::new();
+                        for change in &handoff.changes {
+                            paths.extend(change.paths.iter().cloned());
+                            events.emit(CONFIG_WATCH_RELOADED, &serde_json::json!({"registrationId":change.registration_id,"paths":change.paths}));
+                        }
+                        ctx.ui.notify(&format!("Hot-reloaded: {}", paths.iter().map(|path| path.to_string_lossy()).collect::<Vec<_>>().join(", ")), NotificationType::Info);
+                        let mut logger = ConfigReloadLogger::new(&ctx.agent_dir, None).map_err(|error| ExtensionFailure::new(error.to_string()))?;
+                        logger.log(LogLevel::Info, LogEvent::ReloadCompleted { duration_ms: handoff.requested.elapsed().as_secs_f64() * 1000.0 });
+                        let (changed, rejected) = {
+                            let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
+                            let changed = compare_snapshots(&handoff.hashes, &state.hashes);
+                            let snapshot = state.hashes.clone();
+                            let mut rejected = None;
+                            if !changed.is_empty() {
+                                state.contents = handoff.contents;
+                                let significant = significant_changed_paths(&changed, &snapshot, &mut state.contents, &ctx.agent_dir, &ctx.cwd, &mut logger);
+                                let errors = validate_builtin_paths(&significant, &ctx.agent_dir, &ctx.cwd);
+                                if errors.is_empty() && !significant.is_empty() { state.pending.add("builtin", &significant); }
+                                else if !errors.is_empty() { rejected = Some((significant, errors)); }
+                            }
+                            (changed, rejected)
+                        };
+                        if let Some((paths, errors)) = rejected {
+                            ctx.ui.notify(&format!("Config change rejected: {}", errors.join("; ")), NotificationType::Error);
+                            events.emit(CONFIG_WATCH_REJECTED, &serde_json::json!({"registrationId":"builtin","paths":paths,"errors":errors}));
+                        }
+                        if !changed.is_empty() { schedule_flush(state, ctx.clone(), None)?; }
+                    }
+                }
+                Ok(EventResult::None)
+            })
         }));
         for kind in [EventKind::AgentEnd, EventKind::AgentSettled] {
             let state = Arc::clone(&state);
@@ -32,9 +70,14 @@ impl Extension for ConfigReload {
                 Ok(EventResult::ProjectTrust(maho_ext_api::ProjectTrustEventResult { trusted: maho_ext_api::TrustDecision::Undecided, remember: None }))
             })
         }));
-        api.on(EventKind::SessionShutdown, Arc::new(move |_, _| {
+        api.on(EventKind::SessionShutdown, Arc::new(move |event, ctx| {
             let state = Arc::clone(&state);
-            Box::pin(async move { stop(&state, true).await?; Ok(EventResult::None) })
+            Box::pin(async move {
+                if !matches!(event, maho_ext_api::ExtensionEvent::SessionShutdown(event) if event.reason == maho_ext_api::SessionReason::Reload) {
+                    HANDOFFS.get_or_init(Mutex::default).lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.delete(ctx.session_manager.session_id());
+                }
+                stop(&state, true).await?; Ok(EventResult::None)
+            })
         }));
     }
 }
@@ -76,6 +119,10 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
     let mut engine = NativeWatchEngine::with_debounce(watched, Arc::clone(&on_error), debounce).map_err(ExtensionFailure::new)?;
     let mut contents = BTreeMap::new();
     crate::routine_settings::refresh_settings_content_snapshots(&mut contents, &ctx.agent_dir, &ctx.cwd);
+    {
+        let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
+        state.hashes = engine.engine.get_baseline_snapshot(); state.contents = contents.clone();
+    }
     logger.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.log(LogLevel::Info, LogEvent::WatcherStarted { target_count: targets.len() as f64 });
     let generation = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.generation;
     let (cancel, mut cancelled) = tokio::sync::watch::channel(false);
@@ -92,6 +139,10 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
                 let mut logger = logger.lock().map_err(|error| error.to_string())?;
                 significant_changed_paths(&change.changed_paths, &engine.engine.get_baseline_snapshot(), &mut contents, &ctx.agent_dir, &ctx.cwd, &mut logger)
             };
+            {
+                let mut state = shared.lock().map_err(|error| error.to_string())?;
+                state.hashes = engine.engine.get_baseline_snapshot(); state.contents = contents.clone();
+            }
             for (id, paths) in group_changed_paths(&paths, &targets) {
                 let errors = validate_builtin_paths(&paths, &ctx.agent_dir, &ctx.cwd);
                 if !errors.is_empty() {
@@ -182,17 +233,27 @@ async fn flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_generat
             state.veto.defer(veto.reason.as_deref())
         };
         if let Some(notice) = notice { ctx.ui.notify(&notice, NotificationType::Info); }
+        let mut logger = ConfigReloadLogger::new(&ctx.agent_dir, None).map_err(|error| ExtensionFailure::new(error.to_string()))?;
+        logger.log(LogLevel::Info, LogEvent::ReloadDeferred { reason: veto.reason.as_deref().unwrap_or("extension veto") });
         return Ok(Some(Duration::from_millis(1000)));
     }
-    let paths = {
+    let (paths, handoff) = {
         let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
         if state.generation != generation || state.in_flight || state.pending.is_empty() { return Ok(None); }
         state.veto.reset();
         state.in_flight = true;
-        state.pending.snapshot().into_iter().flat_map(|change| change.paths).collect::<std::collections::BTreeSet<_>>()
+        let changes = state.pending.snapshot();
+        let paths = changes.iter().flat_map(|change| change.paths.iter().cloned()).collect::<std::collections::BTreeSet<_>>();
+        let handoff = ReloadHandoff { hashes: state.hashes.clone(), contents: state.contents.clone(), requested: std::time::Instant::now(), changes };
+        (paths, handoff)
     };
+    HANDOFFS.get_or_init(Mutex::default).lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.set(ctx.session_manager.session_id().into(), handoff);
+    let mut logger = ConfigReloadLogger::new(&ctx.agent_dir, None).map_err(|error| ExtensionFailure::new(error.to_string()))?;
+    let logged_paths = paths.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>();
+    logger.log(LogLevel::Info, LogEvent::ReloadRequested { reason: "config changed", paths: &logged_paths });
     ctx.ui.notify(&format!("Hot-reloading: {}", paths.iter().map(|path| path.to_string_lossy()).collect::<Vec<_>>().join(", ")), NotificationType::Info);
     let result = ctx.request_reload().await;
+    HANDOFFS.get_or_init(Mutex::default).lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.delete(ctx.session_manager.session_id());
     let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
     if state.generation == generation { state.in_flight = false; }
     result.map(|()| None)
