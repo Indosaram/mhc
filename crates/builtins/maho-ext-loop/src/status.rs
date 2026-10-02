@@ -75,6 +75,11 @@ pub fn format_loop_status(state: &LoopState, now_ms: f64) -> Option<String> {
 pub fn format_noop_fold(noop_streak: f64) -> String { if noop_streak < 2.0 { String::new() } else { format!("\u{21bb} {} loop ticks with no actionable change",maho_ai::utils::js::number_to_string(noop_streak)) } }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn ticker_deduplicates_same_text_but_emits_changed_countdown() {
+        let seen=Arc::new(Mutex::new(Vec::new())); let capture=seen.clone(); let render:LoopStatusRender=Arc::new(move |_,text| { capture.lock().unwrap().push(text.map(str::to_owned)); Ok(()) });
+        let mut current=(Some(state("waiting",60_000.0)),None); tick_status(&mut current,&render,0.0).unwrap(); tick_status(&mut current,&render,1.0).unwrap(); assert_eq!(seen.lock().unwrap().len(),2);
+        tick_status(&mut current,&render,2.0).unwrap(); assert_eq!(seen.lock().unwrap().len(),2); tick_status(&mut current,&render,1001.0).unwrap(); assert_eq!(seen.lock().unwrap().len(),3);
+    }
     fn state(phase: &str, due: f64) -> LoopState { serde_json::from_value(serde_json::json!({"version":1,"sessionId":"s","updatedAt":0,"activeDynamicId":null,"entries":{"a":{"id":"a","kind":"fixed","phase":phase,"originalArgs":"5m check","reentryPrompt":"/loop 5m check","payload":{"type":"prompt","prompt":"check"},"createdAt":0,"lastFiredAt":null,"expiresAt":1000000000000.0,"lastScheduledForAt":null,"coalescedFirePending":false,"queuedForAt":null,"noopStreak":0,"tickCount":0,"sentinelDelivery":{"autonomousPreambleDelivered":false,"lastLoopFileDelivered":null,"forceFullDelivery":false},"wakeSources":[],"requestedInterval":{"value":5,"unit":"m","raw":"5m"},"effectiveInterval":{"value":5,"unit":"m","human":"5 minutes","rounded":false},"cronExpression":"*/5 * * * *","nextFireAt":due,"intervalMs":300000}}})).unwrap() }
     #[test] fn nothing_armed_has_no_status() { let state=state("ended",60000.0); let result=format_loop_status(&state,0.0); assert!(result.is_none()); }
     #[test] fn fixed_countdown_is_selected() { let state=state("waiting",60000.0); let result=format_loop_status(&state,0.0).unwrap(); assert!(result.contains("fixed")); assert!(result.contains("1m")); }

@@ -120,6 +120,13 @@ pub fn clear_loop_state_snapshot(reference:&LoopStoreRef) { store(reference).cle
         let mut invalid_kind=value.clone(); invalid_kind["kind"]="unknown".into(); assert_eq!(validate_entry("d",&invalid_kind).unwrap_err().to_string(),"loop entry d has an unknown kind");
         let mut invalid_payload=value; invalid_payload["payload"]=serde_json::json!({"type":"sentinel","sentinel":"unknown"}); assert_eq!(validate_entry("d",&invalid_payload).unwrap_err().to_string(),"loop entry d has an unknown payload sentinel");
     }
+    #[test] fn lifecycle_terminal_fields_are_exclusive_and_required_at_store_boundary() {
+        let mut scheduler=crate::scheduler::LoopScheduler::new("s",None,&BTreeMap::new()); scheduler.create_dynamic(crate::scheduler::CreateDynamicRequest { original_args:"check".into(),reentry_prompt:"check".into(),payload:LoopPayload::Prompt { prompt:"check".into() } },"d".into(),1000.0);
+        let active=serde_json::to_value(&scheduler.state.entries["d"]).unwrap();
+        for field in ["endedAt","endReason","endDetail"] { let mut contaminated=active.clone(); contaminated[field]=serde_json::Value::Null; assert!(validate_entry("d",&contaminated).is_err()); }
+        scheduler.stop("d","user-stop",2000.0); let ended=serde_json::to_value(&scheduler.state.entries["d"]).unwrap(); validate_entry("d",&ended).unwrap();
+        for field in ["endedAt","endReason"] { let mut incomplete=ended.clone(); incomplete.as_object_mut().unwrap().remove(field); assert!(validate_entry("d",&incomplete).is_err()); }
+    }
     #[test] fn upstream_dangling_active_dynamic_id_fails_closed() {
         let mut raw=serde_json::to_value(empty_loop_state("s")).unwrap(); raw["activeDynamicId"]="missing".into();
         assert!(parse_payload(&raw,&SidecarStoreRef { base_dir:"/tmp".into(),session_id:"s".into() }).is_err());
