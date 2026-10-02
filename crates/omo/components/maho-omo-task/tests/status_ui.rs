@@ -27,6 +27,12 @@ fn fixture(background:bool,mode:ExtensionMode)->(Arc<TaskStatusUi>,Arc<Timers>,A
     status.sync_now(); let widgets=ui.widgets.lock().expect("widgets"); let Some(WidgetContent::Lines(rows))=&widgets[0].0 else { panic!("rows"); }; assert_eq!(rows.len(),2); assert!(rows[0].contains("한")); assert!(rows[0].contains("category:ultrabrain")); assert!(!rows[0].chars().any(|c| c.is_control())); assert_eq!(timers.count(),0);
 }
 #[test] fn rpc_mode_does_not_render_widget() { let (status,timers,ui,_)=fixture(true,ExtensionMode::Rpc); status.sync_now(); assert_eq!(timers.count(),0); assert!(ui.widgets.lock().expect("widgets").is_empty()); }
+#[test] fn uncaptured_runtime_never_queries_manager() {
+    struct Unavailable;
+    impl StatusUiManager for Unavailable { fn list(&self,_:&str)->Vec<TaskRecord> { panic!("uncaptured runtime must not query tasks") } }
+    let timers=Arc::new(Timers::default()); let status=TaskStatusUi::new(Arc::new(Unavailable),Arc::new(Mutex::new(TaskRuntimeContext::new("/tmp".into()))),timers.clone(),Arc::new(|| 1000),Arc::new(|| Some(80)));
+    status.sync_now(); assert_eq!(timers.count(),0); status.dispose();
+}
 #[test] fn terminal_set_clears_widget() { let (status,timers,ui,manager)=fixture(false,ExtensionMode::Tui); manager.records.lock().expect("records")[0].status=TaskStatus::Completed; status.sync_now(); assert_eq!(timers.count(),0); assert!(ui.widgets.lock().expect("widgets")[0].0.is_none()); }
 #[test] fn repeated_schedule_coalesces_to_one_render() { let (status,timers,ui,_)=fixture(false,ExtensionMode::Tui); for _ in 0..3 { status.schedule_sync(); } assert_eq!(timers.count(),1); assert!(ui.widgets.lock().expect("widgets").is_empty()); timers.fire(); assert_eq!(ui.widgets.lock().expect("widgets").len(),1); assert_eq!(timers.count(),0); }
 #[test] fn subscribes_before_debounce_and_dispose_removes_listener_and_timer() { let (status,timers,ui,manager)=fixture(true,ExtensionMode::Tui); status.schedule_sync(); assert_eq!(manager.listeners.lock().expect("listeners").len(),1); assert_eq!(timers.count(),1); status.dispose(); assert_eq!(timers.count(),0); assert!(manager.listeners.lock().expect("listeners").is_empty()); timers.fire(); assert!(ui.widgets.lock().expect("widgets").is_empty()); }

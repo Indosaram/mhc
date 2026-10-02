@@ -22,6 +22,11 @@ fn fixture(mode:ExtensionMode)->(Arc<DagStatusUi>,Arc<Timers>,Arc<support::Ui>,A
 #[test] fn live_run_renders_below_editor_and_reuses_refresh_timer() { let (status,timers,ui,_,_root)=fixture(ExtensionMode::Tui); status.sync_now(); assert_eq!(timers.count(),1); status.on_activity("run-1","a","reading"); assert_eq!(timers.count(),1); timers.fire(1000); let widgets=ui.widgets.lock().expect("widgets"); assert_eq!(widgets.len(),2); assert_eq!(widgets[0].1,WidgetPlacement::BelowEditor); assert!(matches!(&widgets[0].0,Some(WidgetContent::Lines(rows)) if rows.len()==2)); status.dispose(); assert_eq!(timers.count(),0); }
 #[test] fn terminal_run_clears_widget_and_live_refresh() { let (status,timers,ui,runs,_root)=fixture(ExtensionMode::Tui); status.sync_now(); runs.0.lock().expect("run").as_mut().expect("run").status=DagRunStatus::Completed; timers.fire(1000); assert_eq!(timers.count(),0); assert!(ui.widgets.lock().expect("widgets").last().expect("widget").0.is_none()); }
 #[test] fn headless_mode_produces_no_widget_or_refresh() { let (status,timers,ui,_,_root)=fixture(ExtensionMode::Rpc); status.sync_now(); assert_eq!(timers.count(),0); assert!(ui.widgets.lock().expect("widgets").is_empty()); }
+#[test] fn uncaptured_runtime_never_queries_dag_manager() {
+    struct Unavailable;
+    impl DagStatusUiManager for Unavailable { fn list(&self,_:&str)->Vec<DagRunSummary> { panic!("uncaptured runtime must not query runs") } fn snapshot(&self,_:&str,_:&str)->Option<DagRunSnapshot> { panic!("uncaptured runtime must not query snapshots") } }
+    let timers=Arc::new(Timers::default()); let status=DagStatusUi::new(Arc::new(Unavailable),Arc::new(Mutex::new(TaskRuntimeContext::new("/tmp".into()))),timers.clone()); status.sync_now(); assert_eq!(timers.count(),0); status.dispose();
+}
 #[test] fn node_transitions_advance_wave_and_preserve_routes() {
     use senpi_task::dag::types::{DagNodeState,DagRoute,DagWave};
     let (status,timers,ui,runs,_root)=fixture(ExtensionMode::Tui);
