@@ -5,6 +5,31 @@ use maho_ext_host::loader::NativeExtensionFactory;
 use maho_test_support::{faux::FauxScript, faux_session::FauxSession};
 
 #[tokio::test]
+async fn queued_registry_handler_rechecks_retirement_after_lock_acquisition() {
+    struct RegistryAssertion;
+    impl maho_ext_api::Extension for RegistryAssertion {
+        fn register(&self,api:&mut maho_ext_api::ExtensionApi) {
+            let registry=Arc::new(tokio::sync::Mutex::new(maho_ext_anthropic_subscription::session_stream::SessionRegistry::default()));
+            maho_ext_anthropic_subscription::session_registry_wiring::register(api,registry.clone());
+            let handler=api.registered.handlers[&maho_ext_api::EventKind::SessionStart][0].clone();let runtime=api.runtime.clone();
+            api.register_command("assert-retired-registry",None,None,Arc::new(move |_,ctx| {
+                let registry=registry.clone();let runtime=runtime.clone();let handler=handler.clone();Box::pin(async move {
+                    let held=registry.lock().await;
+                    let mut event=maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {reason:maho_ext_api::SessionReason::New,initial_model_provenance:None,previous_session_file:None});
+                    let mut pending=handler(&mut event,ctx);
+                    std::future::poll_fn(|cx| {assert!(pending.as_mut().poll(cx).is_pending());std::task::Poll::Ready(())}).await;
+                    runtime.invalidate("retired queued registry handler");drop(held);
+                    assert!(tokio::time::timeout(std::time::Duration::from_secs(5),pending).await.expect("bounded handler").is_err());
+                    assert!(registry.lock().await.entries.is_empty());Ok(())
+                })
+            }));
+        }
+    }
+    let session=FauxSession::new(FauxScript {name:"retired-registry".into(),prompt:"/assert-retired-registry".into(),responses:Vec::new()}).with_native_extension(NativeExtensionFactory {path:"<registry-assertion>".into(),source_info:Default::default(),extension:Box::new(RegistryAssertion)});
+    tokio::time::timeout(std::time::Duration::from_secs(10),session.run_native()).await.expect("bounded scenario").expect("scenario");
+}
+
+#[tokio::test]
 async fn retired_account_mutations_cannot_write_after_waiting_for_store_lock() {
     for action in ["pin work", "unpin", "remove work"] {
         let store=Arc::new(InMemoryCredentialStore::new());

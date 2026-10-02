@@ -77,8 +77,10 @@ pub fn register(api: &mut maho_ext_api::ExtensionApi, watch: std::sync::Arc<std:
     use maho_ext_api::{EventKind, ExtensionEvent, EventResult};
     for kind in [EventKind::SessionStart, EventKind::SessionTree, EventKind::SessionShutdown] {
         let watch = watch.clone();
+        let runtime=api.runtime.clone();
         api.on(kind, std::sync::Arc::new(move |event, ctx| {
-            let watch = watch.clone(); Box::pin(async move {
+            let watch = watch.clone();let runtime=runtime.clone(); Box::pin(async move {
+                runtime.assert_active()?;
                 let session = ctx.session_manager.session_id().to_owned();
                 let mut watch = watch.lock().expect("tool watch");
                 if event.kind() == EventKind::SessionShutdown { watch.delete_session(&session); }
@@ -96,6 +98,7 @@ pub fn register(api: &mut maho_ext_api::ExtensionApi, watch: std::sync::Arc<std:
     api.on(EventKind::ToolExecutionEnd, std::sync::Arc::new(move |event, ctx| {
         let watch = watch.clone(); let runtime = runtime.clone(); let cwd = cwd.clone(); let profile = profile.clone();
         Box::pin(async move {
+            runtime.assert_active()?;
             if maho_ai::legacy_provider_ids::normalize_provider_id(ctx.model.as_ref().map_or("", |model| &model.provider)) != "anthropic-subscription" { return Ok(EventResult::None); }
             if let ExtensionEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } = event {
                 let content = content_text(&result["content"]);

@@ -10,9 +10,11 @@ pub fn register(api: &mut ExtensionApi, registry: Arc<tokio::sync::Mutex<Session
         api.on(kind, Arc::new(move |event, ctx| {
             let registry = registry.clone(); let boundary = boundary.clone();
             let runtime = runtime.clone(); let cwd = cwd.clone(); let profile = profile.clone(); Box::pin(async move {
+                runtime.assert_active()?;
                 let session = ctx.session_manager.session_id().to_owned();
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_millis() as u64;
                 let mut registry = registry.lock().await;
+                runtime.assert_active()?;
                 match event {
                     ExtensionEvent::SessionStart(event) if event.reason != maho_ext_api::SessionReason::Reload => {
                         registry.bindings.forget(&session); registry.bindings.remember_invalidation(&session, None);
