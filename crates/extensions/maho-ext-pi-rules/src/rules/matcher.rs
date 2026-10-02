@@ -20,6 +20,18 @@ pub fn normalize_globs(frontmatter:&RuleFrontmatter)->Vec<String>{
     result
 }
 pub fn hash_content(body:&str)->String{format!("{:x}",Sha256::digest(body.as_bytes()))}
+fn normalize_literal_braces(pattern:&str)->String{
+    let mut stack:Vec<(usize,bool)>=Vec::new();let mut literal=Vec::new();let mut in_class=false;
+    for (index,value) in pattern.char_indices(){match value{
+        '['=>in_class=true,']'=>in_class=false,
+        '{' if !in_class=>stack.push((index,false)),
+        ',' if !in_class=>{if let Some((_,alternate))=stack.last_mut(){*alternate=true;}},
+        '}' if !in_class=>{if let Some((start,alternate))=stack.pop(){if !alternate&&!pattern[start+1..index].contains(".."){literal.extend([start,index]);}}else{literal.push(index);}},
+        _=>{}
+    }}
+    literal.extend(stack.into_iter().map(|(index,_)|index));
+    let mut result=String::new();for (index,value) in pattern.char_indices(){if literal.contains(&index){result.push('[');result.push(value);result.push(']');}else{result.push(value);}}result
+}
 impl Matcher {
     pub fn reset_cache(&mut self){self.sets.clear();}
     pub fn cache_stats(&self)->MatcherCacheStats{MatcherCacheStats{entries:self.sets.len(),compiled_patterns:self.sets.iter().map(|set|set.positive.len()+set.negative.len()).sum()}}
@@ -36,7 +48,8 @@ impl Matcher {
             for pattern in patterns{
                 let negated=pattern.starts_with('!');
                 let value=pattern.strip_prefix('!').unwrap_or(&pattern);
-                let compiled=GlobBuilder::new(value).literal_separator(false).backslash_escape(false).allow_unclosed_class(true).empty_alternates(true).build()?.compile_matcher();
+                let normalized=normalize_literal_braces(value);
+                let compiled=GlobBuilder::new(&normalized).literal_separator(false).backslash_escape(false).allow_unclosed_class(true).empty_alternates(true).build()?.compile_matcher();
                 if negated{set.negative.push(compiled);}else{set.positive.push((pattern,compiled));}
             }
             if self.sets.len()>=256{self.sets.pop_front();}
