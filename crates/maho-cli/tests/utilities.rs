@@ -1,5 +1,21 @@
 use maho_cli::cli::{auth_command::{parse_auth_command, AuthCommandKind}, experimental::command::{parse_options, string_option, flag_option}};
 fn args(values: &[&str]) -> Vec<String> { values.iter().map(|v| (*v).to_owned()).collect() }
+#[cfg(unix)]
+#[test] fn open_free_resolution_applies_parent_after_symlink() {
+    use maho_cli::utils::paths::*;
+    let root = tempfile::tempdir().unwrap();
+    let outside = root.path().join("outside");
+    std::fs::create_dir_all(outside.join("dir")).unwrap();
+    std::os::unix::fs::symlink(outside.join("dir"), root.path().join("jump")).unwrap();
+    std::os::unix::fs::symlink("jump/../secret", root.path().join("entry")).unwrap();
+    assert_eq!(realpath_without_open_strict(&root.path().join("entry").to_string_lossy()).unwrap(), outside.join("secret").to_string_lossy());
+}
+#[cfg(unix)]
+#[test] fn open_free_strict_resolution_rejects_symlink_loop() {
+    let root = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink("loop", root.path().join("loop")).unwrap();
+    assert!(maho_cli::utils::paths::realpath_without_open_strict(&root.path().join("loop").to_string_lossy()).is_err());
+}
 #[test] fn syntax_html_uses_innermost_scope_and_prefix_fallback() {
     use maho_cli::utils::syntax_highlight::*;
     let mut theme = HighlightTheme::new();

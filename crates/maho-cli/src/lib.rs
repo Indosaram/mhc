@@ -10,3 +10,4 @@ pub mod nearest_parent_config;
 pub mod utils;
 pub mod extension_system_migration;
 pub mod experimental;
+pub mod package_manager_cli;
