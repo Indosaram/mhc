@@ -1,3 +1,4 @@
+pub mod index;
 pub mod goal {
     pub mod command;
     pub mod command_registration;
