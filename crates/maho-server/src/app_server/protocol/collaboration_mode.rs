@@ -13,6 +13,7 @@ pub struct CollaborationModeMask {pub name:String,pub mode:Option<CollaborationM
 pub struct CollaborationModeListParams {}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 pub struct CollaborationModeListResponse {pub data:Vec<CollaborationModeMask>}
+pub static SENPI_COLLABORATION_MODE:std::sync::LazyLock<CollaborationMode>=std::sync::LazyLock::new(||build_senpi_collaboration_mode("unknown".into(),Some("off".into())));
 pub fn build_senpi_collaboration_mode(model:String,reasoning_effort:Option<String>) -> CollaborationMode {
     CollaborationMode {mode:CollaborationModeKind::Default,settings:CollaborationModeSettings {model,reasoning_effort,developer_instructions:None}}
 }
