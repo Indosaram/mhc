@@ -17,6 +17,12 @@ fn picomatch_negation_and_literal_character_classes_match_pinned_behavior() {
     assert!(matches_mcp_tool_pattern("[abc]","[abc]"));assert!(matches_mcp_tool_pattern("[abc]","a"));assert!(!matches_mcp_tool_pattern("[abc]","d"));
 }
 #[test]
+fn picomatch_question_mark_does_not_cross_slash_but_bash_star_does() {
+    assert!(matches_mcp_tool_pattern("a?","aX"));
+    assert!(!matches_mcp_tool_pattern("a?","a/"));
+    assert!(matches_mcp_tool_pattern("a*","a/x"));
+}
+#[test]
 fn threshold_boundary_selects_search_at_eleven() {
     assert_eq!(compute_mcp_exposure_policy(&entries(10),&McpServerConfig::default(),&default_settings()).mode,Exposure::Direct);
     assert_eq!(compute_mcp_exposure_policy(&entries(11),&McpServerConfig::default(),&default_settings()).mode,Exposure::Search);

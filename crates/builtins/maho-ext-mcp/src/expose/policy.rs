@@ -21,7 +21,18 @@ pub fn compute_mcp_exposure_policy<T:CatalogIdentity+Clone>(entries:&[T],config:
 pub fn matches_mcp_tool_pattern(pattern:&str,tool:&str)->bool {
     let mut pattern=pattern;let mut negate=false;
     while pattern.starts_with('!') && !pattern.starts_with("!("){negate = !negate;pattern=&pattern[1..];}
-    let matched=match globset::GlobBuilder::new(pattern).literal_separator(false).build() {Ok(glob)=>glob.compile_matcher().is_match(tool) || pattern==tool,Err(_)=>pattern==tool};
+    let mut translated=String::new();let mut escaped=false;let mut in_class=false;
+    for character in pattern.chars() {
+        if escaped {translated.push(character);escaped=false;continue;}
+        match character {
+            '\\'=>{translated.push(character);escaped=true;}
+            '['=>{translated.push(character);in_class=true;}
+            ']'=>{translated.push(character);in_class=false;}
+            '?' if !in_class=>translated.push_str("[!/]"),
+            _=>translated.push(character),
+        }
+    }
+    let matched=match globset::GlobBuilder::new(&translated).literal_separator(false).build() {Ok(glob)=>glob.compile_matcher().is_match(tool) || pattern==tool,Err(_)=>pattern==tool};
     matched!=negate
 }
 fn safe_match(pattern:&str,tool:&str)->bool {matches_mcp_tool_pattern(pattern,tool)}
