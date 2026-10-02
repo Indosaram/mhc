@@ -78,6 +78,16 @@ fn injected_windows_resolution_uses_host_path_delimiter() {
     assert_eq!(resolve_command_path("probe",&env,root.path(),true),Some(root.path().join("probe.exe")));
 }
 
+#[cfg(unix)]
+#[test]
+fn path_directory_trailing_backslash_does_not_add_separator() {
+    let root=tempfile::tempdir().unwrap();
+    let expected=root.path().join("folder\\probe.exe");
+    std::fs::write(&expected,"fixture").unwrap();
+    let env=std::collections::HashMap::from([("PATH".into(),format!("{}/folder\\",root.path().display())),("PATHEXT".into(),".EXE".into())]);
+    assert_eq!(resolve_command_path("probe",&env,root.path(),true),Some(expected));
+}
+
 #[tokio::test]
 async fn disabled_languages_are_unavailable_without_probing() {
     let mut settings = maho_codemode::config::settings::CodemodeSettings::default();
