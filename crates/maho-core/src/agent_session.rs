@@ -605,17 +605,23 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             })
         })
     }
-    fn begin_compaction(&self, _options: maho_ext_api::BeginCompactionOptions) -> Option<maho_ext_api::AbortSignal> {
+    fn begin_compaction(&self, options: maho_ext_api::BeginCompactionOptions) -> Option<maho_ext_api::AbortSignal> {
         let session = self.session().ok()?;
         if session.is_compacting() { return None; }
-        session.state().compaction_abort_controller = Some(maho_ai::utils::abort::AbortController::new());
-        Some(maho_ext_api::AbortSignal::default())
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let cancellation = controller.signal();
+        let signal = maho_ext_api::AbortSignal::default();
+        let observed = signal.clone();
+        session.state().compaction_abort_controller = Some(controller);
+        session.emit(AgentSessionEvent::CompactionStart { reason: options.reason, request_id: None });
+        tokio::spawn(async move { cancellation.cancelled().await; observed.abort(); });
+        Some(signal)
     }
     fn update_compaction(&self, options: maho_ext_api::UpdateCompactionOptions) { if let Ok(session) = self.session() {
         session.emit(AgentSessionEvent::CompactionProgress { reason: options.reason, delta: options.delta, text: options.text });
     } }
     fn end_compaction(&self, options: maho_ext_api::EndCompactionOptions) { if let Ok(session) = self.session() {
-        session.state().compaction_abort_controller = None;
+        if let Some(controller) = session.state().compaction_abort_controller.take() { controller.abort(None); }
         session.emit(AgentSessionEvent::CompactionEnd { reason: options.reason, result: None, aborted: options.aborted.unwrap_or(false),
             will_retry: false, request_id: None, accepted: None, rejection_cause: None, error_message: options.error_message });
     } }
@@ -2753,6 +2759,17 @@ impl AgentSession {
                 }
             });
         }
+        let tool_runner = runner.clone();
+        let context_factory: maho_ext_host::wrapper::ToolContextFactory = Arc::new(move || tool_runner.create_context());
+        let mut active = self.get_active_tool_names();
+        for registered in runner.get_all_registered_tools() {
+            let definition = registered.definition.clone();
+            let source = registered.source_info.clone();
+            let tool = maho_ext_host::wrapper::wrap_registered_tool(registered, runner.runtime.clone(), context_factory.clone());
+            if !active.contains(&definition.name) { active.push(definition.name.clone()); }
+            self.register_tool_definition(definition, source, tool);
+        }
+        self.set_active_tools_by_name(active);
         *self.extension_runner.lock().await = Some(runner);
         let weak = Arc::downgrade(&self.inner);
         self.agent.set_transform_context(Some(Arc::new(move |messages, _signal| {
@@ -3855,6 +3872,21 @@ mod tests {
         }).await.unwrap();
         assert_eq!(result, maho_ext_api::ApplyCompactionResult::Stale);
         assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn extension_compaction_signal_observes_real_session_cancellation() {
+        use maho_ext_api::ExtensionContextActions;
+        let session = test_session();
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        let signal = actions.begin_compaction(maho_ext_api::BeginCompactionOptions { reason: maho_ext_api::CompactionReason::Extension }).unwrap();
+        session.abort_compaction();
+        tokio::time::timeout(std::time::Duration::from_secs(1), signal.cancelled()).await.unwrap();
+        assert!(signal.is_aborted());
+        actions.end_compaction(maho_ext_api::EndCompactionOptions {
+            reason: maho_ext_api::CompactionReason::Extension, signal: Some(signal), aborted: Some(true), error_message: None,
+        });
+        assert!(!session.is_compacting());
     }
 
     #[tokio::test]
