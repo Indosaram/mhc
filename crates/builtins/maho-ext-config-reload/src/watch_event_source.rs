@@ -99,6 +99,7 @@ fn run_worker(receiver: mpsc::Receiver<Command>, sender: mpsc::Sender<Command>) 
                         Err(error) => (subscription.on_error)(error.to_string(), subscription.path.clone()),
                         Ok(event) => {
                             let event_type = if matches!(event.kind, notify::EventKind::Create(_) | notify::EventKind::Remove(_) | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))) { "rename" } else { "change" };
+                            if event.paths.is_empty() { (subscription.listener)(event_type, None); }
                             for path in &event.paths {
                                 if let Ok(relative) = path.strip_prefix(&subscription.path)
                                     && (subscription.recursive || relative.components().count() <= 1) { (subscription.listener)(event_type, Some(relative.into())); }
@@ -108,5 +109,25 @@ fn run_worker(receiver: mpsc::Receiver<Command>, sender: mpsc::Sender<Command>) 
                 }
             },
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn pathless_events_request_a_full_rescan() {
+        let root = tempfile::tempdir().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let event_sender = sender.clone();
+        let worker = thread::spawn(move || run_worker(receiver, event_sender));
+        let (events, received) = mpsc::channel();
+        sender.send(Command::Watch(1, Subscription { path: root.path().into(), recursive: false, active: Arc::new(AtomicBool::new(true)), listener: Arc::new(move |kind, path| { events.send((kind.to_owned(), path)).unwrap(); }), on_error: Arc::new(|error, _| panic!("{error}")) })).unwrap();
+        let (ready, barrier) = mpsc::channel();
+        sender.send(Command::Barrier(ready)).unwrap();
+        barrier.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        sender.send(Command::Event(1, Ok(Event::new(notify::EventKind::Any)))).unwrap();
+        assert_eq!(received.recv_timeout(std::time::Duration::from_secs(5)).unwrap(), ("change".into(), None));
+        sender.send(Command::Shutdown).unwrap();
+        worker.join().unwrap();
     }
 }
