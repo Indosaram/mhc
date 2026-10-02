@@ -12,7 +12,7 @@ pub fn parse_input(input: &[Value]) -> Result<ParsedInput, JsonRpcError> {
         match item["type"].as_str() {
             Some("text") => {
                 let value = item["text"].as_str().ok_or_else(|| JsonRpcError::new(-32602,"Invalid params: text input must not be empty"))?;
-                if value.trim().is_empty() { return Err(JsonRpcError::new(-32602,"Invalid params: text input must not be empty")); }
+                if maho_ai::utils::js::trim(value).is_empty() { return Err(JsonRpcError::new(-32602,"Invalid params: text input must not be empty")); }
                 text.push(value);
                 content.push(json!({"type":"text","text":value,"text_elements":item.get("text_elements").filter(|value| !value.is_null()).cloned().unwrap_or_else(||json!([]))}));
             },

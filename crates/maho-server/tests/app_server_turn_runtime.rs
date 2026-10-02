@@ -39,3 +39,9 @@ fn user_message_retains_client_identity_and_content() {
     assert!(uuid::Uuid::parse_str(generated["id"].as_str().unwrap()).is_ok());
     assert!(generated["clientId"].is_null());
 }
+
+#[test]
+fn text_validation_uses_ecmascript_trim_without_altering_input() {
+    assert_eq!(parse_input(&[json!({"type":"text","text":"\u{feff}"})]).err().unwrap().code,-32602);
+    assert_eq!(parse_input(&[json!({"type":"text","text":"\u{0085}"})]).unwrap().text,"\u{0085}");
+}

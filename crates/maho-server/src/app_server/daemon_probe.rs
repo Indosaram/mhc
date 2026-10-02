@@ -21,7 +21,7 @@ pub async fn probe_websocket(url: &str, token: Option<&str>, timeout_ms: u64, ve
 pub async fn probe_listen(token_file: &Path, listen: &Value, timeout_ms: u64, version: &str) -> Result<Option<String>, std::io::Error> {
     if listen["kind"] == "stdio" { return Ok(None); }
     let token = match tokio::fs::read_to_string(token_file).await {
-        Ok(token) => Some(token.trim().to_owned()),
+        Ok(token) => Some(maho_ai::utils::js::trim(&token).to_owned()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound && listen["kind"] == "ws" => return Ok(None),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error),

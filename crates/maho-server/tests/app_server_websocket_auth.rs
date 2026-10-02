@@ -20,3 +20,14 @@ async fn managed_token_self_heals_blank_file_and_explicit_blank_file_fails_close
     let reloaded = resolve_websocket_listener_auth(None, Some(&path)).await.unwrap();
     assert!(is_websocket_request_authorized(Some(&format!("Bearer {token}")), &reloaded));
 }
+
+#[tokio::test]
+async fn token_file_trims_bom_but_preserves_next_line_character() {
+    let directory = tempfile::tempdir().unwrap();let path = directory.path().join("token");
+    tokio::fs::write(&path,"\u{feff}fixture\u{feff}").await.unwrap();
+    let auth = resolve_websocket_listener_auth(Some(WebSocketListenerAuth::TokenFile(path.clone())),None).await.unwrap();
+    assert!(is_websocket_request_authorized(Some("Bearer fixture"),&auth));
+    tokio::fs::write(&path,"\u{0085}").await.unwrap();
+    let auth = resolve_websocket_listener_auth(Some(WebSocketListenerAuth::TokenFile(path)),None).await.unwrap();
+    assert!(is_websocket_request_authorized(Some("Bearer \u{0085}"),&auth));
+}

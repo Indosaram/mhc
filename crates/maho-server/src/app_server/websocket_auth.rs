@@ -5,7 +5,7 @@ use tokio::io::AsyncWriteExt;
 
 pub enum WebSocketListenerAuth { Off, TokenFile(PathBuf), TokenValue(String) }
 pub enum ResolvedWebSocketListenerAuth { Off, Bearer { token: String, path: Option<PathBuf> } }
-fn trim_token(token: &str) -> &str { token.trim_matches(|character: char| character.is_whitespace() || character == '\u{feff}') }
+fn trim_token(token: &str) -> &str { maho_ai::utils::js::trim(token) }
 pub async fn resolve_websocket_listener_auth(auth: Option<WebSocketListenerAuth>, default_path: Option<&Path>) -> io::Result<ResolvedWebSocketListenerAuth> {
     let (path, managed) = match auth {
         Some(WebSocketListenerAuth::Off) => return Ok(ResolvedWebSocketListenerAuth::Off),

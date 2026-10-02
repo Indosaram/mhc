@@ -23,7 +23,7 @@ fn optional<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
 pub fn parse_search_params(value: &Value) -> Result<ParsedSearchParams, JsonRpcError> {
     let term = optional(value, "searchTerm")
         .and_then(Value::as_str)
-        .map(str::trim)
+        .map(maho_ai::utils::js::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| invalid("thread/search requires a non-empty searchTerm"))?;
     let cursor = match optional(value, "cursor") {

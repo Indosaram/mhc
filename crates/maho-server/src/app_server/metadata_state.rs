@@ -32,7 +32,7 @@ impl ThreadMetadataState {
         for key in ["sha", "branch", "originUrl"] {
             match object.get(key) {
                 None | Some(Value::Null) => {},
-                Some(Value::String(value)) if !value.trim().is_empty() => info[key] = json!(value.trim()),
+                Some(Value::String(value)) if !maho_ai::utils::js::trim(value).is_empty() => info[key] = json!(maho_ai::utils::js::trim(value)),
                 _ => return Err(MetadataStateError::State { path, message: format!("Invalid metadata gitInfo.{key}") }),
             }
         }
@@ -81,7 +81,7 @@ pub fn parse_git_info_update(value: &Value) -> Result<Value, ThreadMetadataUpdat
         if let Some(value) = object.get(key) {
             let parsed = match value {
                 Value::Null => Value::Null,
-                Value::String(value) if !value.trim().is_empty() => Value::String(value.trim().into()),
+                Value::String(value) if !maho_ai::utils::js::trim(value).is_empty() => Value::String(maho_ai::utils::js::trim(value).into()),
                 _ => return Err(ThreadMetadataUpdateError(format!("gitInfo.{key} must not be empty"))),
             };
             update.insert(key.into(), parsed);

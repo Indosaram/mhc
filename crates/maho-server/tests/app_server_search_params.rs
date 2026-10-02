@@ -50,3 +50,10 @@ fn invalid_values_return_invalid_request_not_params() {
         assert_eq!(parse_search_params(&value).unwrap_err().code, -32600);
     }
 }
+
+#[test]
+fn search_term_uses_ecmascript_whitespace_not_rust_unicode_whitespace() {
+    assert_eq!(parse_search_params(&json!({"searchTerm":"\u{feff}Hello\u{feff}"})).unwrap().search_term,"hello");
+    assert_eq!(parse_search_params(&json!({"searchTerm":"\u{0085}Hello\u{0085}"})).unwrap().search_term,"\u{0085}hello\u{0085}");
+    assert_eq!(parse_search_params(&json!({"searchTerm":"\u{feff}"})).unwrap_err().code,-32600);
+}

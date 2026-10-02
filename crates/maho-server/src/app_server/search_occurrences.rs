@@ -19,7 +19,7 @@ pub fn markdown_to_search_text(markdown: &str) -> String {Lexer::new().lex(markd
 pub(super) fn parse_occurrence_params(params: &Value) -> Result<(&str,&str,Option<&String>,usize),JsonRpcError> {
     let invalid = |message: &str|JsonRpcError::new(-32600,message);
     let id = params["threadId"].as_str().filter(|id|!id.is_empty()).ok_or_else(||invalid("thread/searchOccurrences requires a non-empty threadId"))?;
-    let term = params["searchTerm"].as_str().filter(|term|!term.trim().is_empty()).ok_or_else(||invalid("thread/searchOccurrences requires a non-empty searchTerm"))?;
+    let term = params["searchTerm"].as_str().filter(|term|!maho_ai::utils::js::trim(term).is_empty()).ok_or_else(||invalid("thread/searchOccurrences requires a non-empty searchTerm"))?;
     let cursor = match params.get("cursor") {None|Some(Value::Null)=>None,Some(Value::String(value))=>Some(value),_=>return Err(invalid("thread/searchOccurrences received an invalid cursor"))};
     let limit = match params.get("limit").filter(|value|!value.is_null()) {None=>50,Some(value)=>value.as_f64().filter(|value|value.fract() == 0.0 && *value >= 0.0 && *value <= f64::from(u32::MAX)).map(|value|value.clamp(1.0,250.0) as usize).ok_or_else(||invalid("thread/searchOccurrences received an invalid limit"))?};
     Ok((id,term,cursor,limit))
