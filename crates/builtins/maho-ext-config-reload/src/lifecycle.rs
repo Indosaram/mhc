@@ -318,7 +318,7 @@ async fn flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_generat
     logger.log(LogLevel::Info, LogEvent::ReloadRequested { reason: "config changed", paths: &logged_paths });
     ctx.ui.notify(&format!("Hot-reloading: {}", paths.iter().map(|path| path.to_string_lossy()).collect::<Vec<_>>().join(", ")), NotificationType::Info);
     let result = ctx.request_reload().await;
-    HANDOFFS.get_or_init(Mutex::default).lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.delete(ctx.session_manager.session_id());
+    HANDOFFS.get_or_init(Mutex::default).lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.delete(&handoff_key(&state, &ctx)?);
     let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
     if state.generation == generation { state.in_flight = false; }
     if let Err(error) = result { logger.log(LogLevel::Error, LogEvent::WatcherError { path: "reload", message: &error.to_string() }); }
