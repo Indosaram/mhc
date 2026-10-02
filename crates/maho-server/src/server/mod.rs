@@ -6,5 +6,6 @@ pub mod session_router;
 pub mod state_codec;
 pub mod types;
 pub mod unix;
+pub mod testing;
 
 pub use runtime::Server;
