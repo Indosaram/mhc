@@ -264,6 +264,69 @@ pub fn reader_grab_article<'a>(document:&'a dom_query::Document,title:&str,metad
     }
     attempts.sort_by_key(|(_,length)|std::cmp::Reverse(*length));attempts.into_iter().find(|(_,length)|*length>0).map(|(article,_)|article)
 }
+pub fn reader_fix_relative_uris(root:&dom_query::NodeRef<'_>,base:&str,document_url:&str) {
+    static SRCSET:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(\S+)(\s+[\d.]+[xw])?(\s*(?:,|$))").expect("literal pattern"));
+    let absolute=|value:&str|if base==document_url&&value.starts_with('#') {value.to_owned()} else {super::parse_web_document::resolve_web_url(value,base).map_or_else(||value.to_owned(),String::from)};
+    let selection=dom_query::Selection::from(*root);
+    for link in selection.select("a").nodes() {
+        let Some(href)=link.attr("href").filter(|href|!href.is_empty()) else {continue;};
+        if href.starts_with("javascript:") {
+            let children=link.children();if children.len()==1&&children[0].is_text() {link.replace_with(&children[0]);}
+            else {link.rename("span");link.remove_all_attrs();}
+        } else {link.set_attr("href",&absolute(&href));}
+    }
+    for media in selection.select("img,picture,figure,video,audio,source").nodes() {
+        for attribute in ["src","poster"] {if let Some(value)=media.attr(attribute).filter(|value|!value.is_empty()) {media.set_attr(attribute,&absolute(&value));}}
+        if let Some(value)=media.attr("srcset").filter(|value|!value.is_empty()) {let normalized=SRCSET.replace_all(&value,|capture:&regex::Captures<'_>|format!("{}{}{}",absolute(&capture[1]),capture.get(2).map_or("",|part|part.as_str()),&capture[3]));media.set_attr("srcset",&normalized);}
+    }
+}
+pub fn reader_jsonld(document:&dom_query::Document)->(Option<String>,Option<String>) {
+    static ARTICLE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^Article|AdvertiserContentArticle|NewsArticle|AnalysisNewsArticle|AskPublicNewsArticle|BackgroundNewsArticle|OpinionNewsArticle|ReportageNewsArticle|ReviewNewsArticle|Report|SatiricalArticle|ScholarlyArticle|MedicalScholarlyArticle|SocialMediaPosting|BlogPosting|LiveBlogPosting|DiscussionForumPosting|TechArticle|APIReference$").expect("literal pattern"));
+    static CONTEXT:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^https?://schema\.org/?$").expect("literal pattern"));
+    static CDATA:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^\s*<!\[CDATA\[|\]\]>\s*$").expect("literal pattern"));
+    let article=|value:&serde_json::Value|value.get("@type").and_then(serde_json::Value::as_str).is_some_and(|kind|ARTICLE.is_match(kind));
+    for script in document.select("script").nodes() {
+        if script.attr("type").as_deref()!=Some("application/ld+json") {continue;}
+        let text=script.text();let Ok(parsed)=serde_json::from_str::<serde_json::Value>(&CDATA.replace_all(&text,"")) else {continue;};
+        let mut selected=if let Some(array)=parsed.as_array() {let Some(value)=array.iter().find(|value|article(value)) else {continue;};value} else {&parsed};
+        let context=selected.get("@context").and_then(|context|context.as_str().or_else(||context.get("@vocab").and_then(serde_json::Value::as_str)));if !context.is_some_and(|context|CONTEXT.is_match(context)) {continue;}
+        if selected.get("@type").is_none_or(|kind|kind.is_null()||kind.as_str()==Some("")) {
+            let Some(value)=selected.get("@graph").and_then(serde_json::Value::as_array).and_then(|graph|graph.iter().find(|value|article(value))) else {continue;};selected=value;
+        }
+        if !article(selected) {continue;}
+        let name=selected.get("name").and_then(serde_json::Value::as_str);let headline=selected.get("headline").and_then(serde_json::Value::as_str);
+        let title=match (name,headline) {
+            (Some(name),Some(headline)) if name!=headline=> {let title=reader_article_title(document);Some(if reader_text_similarity(headline,&title)>0.75&&reader_text_similarity(name,&title)<=0.75 {headline} else {name}.to_owned())},
+            (Some(name),_)=>Some(name.trim_matches(js_whitespace).to_owned()),(_,Some(headline))=>Some(headline.trim_matches(js_whitespace).to_owned()),_=>None,
+        };
+        let author=selected.get("author");let byline=author.and_then(|author|author.get("name")).and_then(serde_json::Value::as_str).map(|name|name.trim_matches(js_whitespace).to_owned()).or_else(|| {
+            let authors=author?.as_array()?;authors.first()?.get("name")?.as_str()?;Some(authors.iter().filter_map(|author|author.get("name").and_then(serde_json::Value::as_str)).map(|name|name.trim_matches(js_whitespace)).collect::<Vec<_>>().join(", "))
+        });
+        return (title,byline);
+    }
+    (None,None)
+}
+pub fn reader_unescape_entities(text:&str)->String {
+    static NAMED:LazyLock<Regex>=LazyLock::new(||Regex::new(r"&(quot|amp|apos|lt|gt);").expect("literal pattern"));
+    static NUMERIC:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)&#(?:x([0-9a-f]+)|([0-9]+));").expect("literal pattern"));
+    let named=NAMED.replace_all(text,|capture:&regex::Captures<'_>|match &capture[1] {"quot"=>"\"","amp"=>"&","apos"=>"'","lt"=>"<",_=>">"});
+    NUMERIC.replace_all(&named,|capture:&regex::Captures<'_>| {let value=if let Some(hex)=capture.get(1) {u32::from_str_radix(hex.as_str(),16)} else {capture[2].parse()};value.ok().filter(|value|*value!=0).and_then(char::from_u32).unwrap_or('\u{fffd}').to_string()}).into_owned()
+}
+pub fn reader_metadata(document:&dom_query::Document,jsonld_title:Option<&str>,jsonld_byline:Option<&str>)->(String,Option<String>) {
+    static PROPERTY:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)\s*(article|dc|dcterm|og|twitter)\s*:\s*(author|creator|description|published_time|title|site_name)\s*").expect("literal pattern"));
+    static NAME:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)^\s*(?:(dc|dcterm|og|twitter|parsely|weibo:(article|webpage))\s*[-\.:]\s*)?(author|creator|pub-date|description|title|site_name)\s*$").expect("literal pattern"));
+    let mut values=std::collections::HashMap::new();
+    for node in document.select("meta").nodes() {
+        let Some(content)=node.attr("content").filter(|content|!content.is_empty()) else {continue;};let property=node.attr("property").unwrap_or_default();
+        let key=if let Some(found)=PROPERTY.find(&property) {found.as_str().to_lowercase().chars().filter(|character|!js_whitespace(*character)).collect::<String>()}
+        else {let name=node.attr("name").unwrap_or_default();if !NAME.is_match(&name) {continue;}name.to_lowercase().chars().filter(|character|!js_whitespace(*character)).map(|character|if character=='.' {':'} else {character}).collect()};
+        values.insert(key,content.trim_matches(js_whitespace).to_owned());
+    }
+    let first=|keys:&[&str]|keys.iter().find_map(|key|values.get(*key).filter(|value|!value.is_empty()).cloned());
+    let title=jsonld_title.filter(|value|!value.is_empty()).map(str::to_owned).or_else(||first(&["dc:title","dcterm:title","og:title","weibo:article:title","weibo:webpage:title","title","twitter:title","parsely-title"])).unwrap_or_else(||reader_article_title(document));
+    let byline=jsonld_byline.filter(|value|!value.is_empty()).map(str::to_owned).or_else(||first(&["dc:creator","dcterm:creator","author","parsely-author"])).or_else(||values.get("article:author").filter(|value|url::Url::parse(value).is_err()).cloned());
+    (reader_unescape_entities(&title),byline.map(|value|reader_unescape_entities(&value)))
+}
 pub fn reader_unwrap_noscript_images(document:&dom_query::Document) {
     fn single_image(mut node:dom_query::NodeRef<'_>)->bool {
         loop {if node.node_name().as_deref()==Some("img") {return true;}let children=node.element_children();if children.len()!=1||!node.text().trim_matches(js_whitespace).is_empty() {return false;}node=children[0];}
@@ -581,6 +644,27 @@ pub fn html_fragment_to_markdown(root:&dom_query::NodeRef<'_>)->String {
     process(&root,false).trim_start_matches(['\t','\r','\n']).trim_end_matches(js_whitespace).into()
 }
 pub struct ReadableArticle { pub document:dom_query::Document,pub root:dom_query::NodeId,pub title:String,pub has_heading:bool }
+pub fn extract_readable_article(web:&super::parse_web_document::WebDocument)->Option<ReadableArticle> {
+    if let Some(article)=extract_explicit_article(&web.document) {return Some(article);}
+    let cloned=super::parse_web_document::apply_web_document_url(web.document.clone(),&web.url);
+    reader_unwrap_noscript_images(&cloned.document);let (jsonld_title,jsonld_byline)=reader_jsonld(&cloned.document);cloned.document.select("script,noscript").remove();reader_prepare_document(&cloned.document);
+    let (title,byline)=reader_metadata(&cloned.document,jsonld_title.as_deref(),jsonld_byline.as_deref());let article=reader_grab_article(&cloned.document,&title,byline.as_deref())?;
+    if article.text().is_empty() {return None;}
+    reader_fix_relative_uris(&article,&cloned.base_uri,&cloned.document_uri);reader_simplify_nested(article);reader_clean_classes(&article,&["page"]);
+    let title=select_preferred_title(&cloned.document,&title);let has_heading=!dom_query::Selection::from(article).select("h1,h2,h3,h4,h5,h6").is_empty();let root=article.id;
+    Some(ReadableArticle{document:cloned.document,root,title,has_heading})
+}
+pub fn html_to_markdown(html:&str,url:&str)->String {
+    let web=super::parse_web_document::parse_web_document(html,url);let article=extract_readable_article(&web);
+    let root=if let Some(article)=&article {article.document.tree.get_unchecked(&article.root)} else {web.document.select("body").nodes()[0]};super::parse_web_document::normalize_web_urls(&dom_query::Selection::from(root),&web);
+    let markdown=normalize_markdown(&html_fragment_to_markdown(&root));let Some(article)=article else {return markdown;};
+    if article.title.is_empty()||article.has_heading||markdown.starts_with(&format!("# {}",article.title)) {markdown} else {format!("# {}\n\n{markdown}",article.title).trim_matches(js_whitespace).to_owned()}
+}
+pub fn html_to_text(html:&str,url:&str)->String {
+    let web=super::parse_web_document::parse_web_document(html,url);let Some(article)=extract_readable_article(&web) else {return html_fragment_to_plain_text(&web.document.select("body").nodes()[0]);};
+    let body=html_fragment_to_plain_text(&article.document.tree.get_unchecked(&article.root));
+    if article.title.is_empty()||article.has_heading||body.starts_with(&article.title) {body} else {format!("{}\n\n{body}",article.title).trim_matches(js_whitespace).to_owned()}
+}
 pub fn extract_explicit_article(document:&dom_query::Document)->Option<ReadableArticle> {
     for selector in [".article_view",".tt_article_useless_p_margin",".entry-content",".contents_style",".post-content",".article-content",".content-article","#content .contents_style"] {
         let cloned=document.clone();
@@ -621,6 +705,19 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn converter_entrypoints_select_article_and_resolve_urls() {
+        let html="<title>Article title</title><div class='entry-content'><p>A sufficiently long explicit article paragraph for extraction.</p><a href='child'>Link</a></div><aside>noise</aside>";let markdown=html_to_markdown(html,"https://example.test/posts/a");assert!(markdown.starts_with("# Article title\n\n"));assert!(markdown.contains("[Link](https://example.test/posts/child)"));assert!(!markdown.contains("noise"));let text=html_to_text(html,"https://example.test/posts/a");assert!(text.starts_with("Article title\n\n"));assert!(!text.contains("https://"));
+        let html="<title>Fallback title</title><article><p>A readable fallback paragraph with enough words to pass the configured eighty character threshold in the reader.</p></article>";assert!(html_to_markdown(html,"https://example.test/").contains("readable fallback paragraph"));assert!(html_to_text(html,"https://example.test/").starts_with("Fallback title\n\n"));
+    }
+    #[test] fn reader_relative_uris_preserve_hashes_and_javascript_child_shapes() {
+        let document=dom_query::Document::from("<main><a href='#part'>hash</a><a href='javascript:x'>text</a><a href='javascript:x' class='drop'><b>bold</b> text</a><video poster='poster.png'><source src='movie.mp4'></video><img srcset='small.png 1x, large.png 2x'></main>");reader_fix_relative_uris(&document.select("main").nodes()[0],"https://example.test/posts/a","https://example.test/posts/a");assert_eq!(document.select("a").length(),1);assert_eq!(document.select("a").attr("href").as_deref(),Some("#part"));assert!(document.select("span").attr("class").is_none());assert_eq!(document.select("span b").text().as_ref(),"bold");assert_eq!(document.select("video").attr("poster").as_deref(),Some("https://example.test/posts/poster.png"));assert_eq!(document.select("img").attr("srcset").as_deref(),Some("https://example.test/posts/small.png 1x, https://example.test/posts/large.png 2x"));
+    }
+    #[test] fn reader_jsonld_selects_graph_headline_and_first_valid_metadata() {
+        let document=dom_query::Document::from(r#"<title>A detailed headline with many words</title><script type='application/ld+json'>{"@context":"https://schema.org","@graph":[{"@type":"NewsArticle","name":"Site","headline":"A detailed headline with many words","author":[{"name":" One "},{"name":"Two"}]}]}</script><script type='application/ld+json'>{"@context":"https://schema.org","@type":"Article","name":"Later"}</script>"#);assert_eq!(reader_jsonld(&document),(Some("A detailed headline with many words".into()),Some("One, Two".into())));
+    }
+    #[test] fn reader_metadata_preserves_priority_first_property_and_entity_order() {
+        let document=dom_query::Document::from("<title>Fallback</title><meta property='og:title twitter:title' content='OG &amp;amp;#65;'><meta name='dc.title' content='DC'><meta property='article:author' content='https://example.test/author'>");assert_eq!(reader_metadata(&document,None,None),("DC".into(),None));assert_eq!(reader_metadata(&document,Some("JSON"),Some("Writer")),("JSON".into(),Some("Writer".into())));assert_eq!(reader_unescape_entities("&amp;#65; &#0; &#xD800; &AMP;"),"A � � &AMP;");
+    }
     #[test] fn reader_noscript_prepass_preserves_previous_image_sources() {
         let document=dom_query::Document::from("<main><img id='empty'><img src='old.png' data-src='lazy.png'><noscript><img src='new.png'></noscript></main>");reader_unwrap_noscript_images(&document);assert!(document.select("#empty").is_empty());assert_eq!(document.select("main > img").attr("src").as_deref(),Some("new.png"));assert_eq!(document.select("main > img").attr("data-old-src").as_deref(),Some("old.png"));assert_eq!(document.select("main > img").attr("data-src").as_deref(),Some("lazy.png"));
     }
