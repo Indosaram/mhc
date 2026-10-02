@@ -1,3 +1,4 @@
+pub mod proxy;
 pub mod naming;
 pub mod pagination;
 pub mod schema_compat;
