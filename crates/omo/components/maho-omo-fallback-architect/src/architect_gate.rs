@@ -1,7 +1,10 @@
 use std::path::Path;
 use maho_ext_api::ModelRegistry;
 pub fn has_active_architect_category(cwd:&Path,registry:Option<&dyn ModelRegistry>)->bool {
-    let result=maho_omo_config_resolution::load_senpi_omo_config(omo_config_core::LoadOmoConfigOptions{cwd:Some(cwd.to_string_lossy().into_owned()),..Default::default()});
+    has_active_architect_category_with_env(cwd,None,registry)
+}
+pub fn has_active_architect_category_with_env(cwd:&Path,env:Option<std::collections::BTreeMap<String,String>>,registry:Option<&dyn ModelRegistry>)->bool {
+    let result=maho_omo_config_resolution::load_senpi_omo_config(omo_config_core::LoadOmoConfigOptions{cwd:Some(cwd.to_string_lossy().into_owned()),env,..Default::default()});
     if let Some(architect)=result.config.get("categories").and_then(|v|v.get("architect")) { return architect["disable"]!=true; }
     let Some(registry)=registry else { return false; };
     struct Registry<'a>(&'a dyn ModelRegistry);

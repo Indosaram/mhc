@@ -16,6 +16,7 @@ maho-senpi-task = { path = "../../senpi-task" }
 
 [dev-dependencies]
 tokio = { version = "=1.52.3", features = ["macros", "rt"] }
+tempfile = "=3.27.0"
 
 [lints]
 workspace = true
