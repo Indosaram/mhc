@@ -5,5 +5,30 @@ edition.workspace = true
 publish.workspace = true
 license = "MIT"
 
+[dependencies]
+maho-core = { path = "../maho-core" }
+maho-agent = { path = "../maho-agent" }
+maho-tools = { path = "../maho-tools" }
+maho-ai = { path = "../maho-ai" }
+maho-ext-api = { path = "../maho-ext-api" }
+maho-tui = { path = "../maho-tui" }
+chrono = { workspace = true, features = ["std", "clock"] }
+rustix = { version = "=1.1.4", features = ["process"] }
+sha2.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror.workspace = true
+getrandom = "=0.3.4"
+subtle = "=2.6.1"
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
+tokio = { workspace = true, features = ["io-util", "sync", "rt", "macros", "net", "time", "fs"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+maho-ext-host = { path = "../maho-ext-host" }
+maho-test-support = { path = "../maho-test-support", features = ["sdk"] }
+tokio = { workspace = true, features = ["test-util"] }
+
 [lints]
 workspace = true
