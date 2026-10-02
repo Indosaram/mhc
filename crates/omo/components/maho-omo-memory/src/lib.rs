@@ -31,6 +31,7 @@ pub mod memory_rpc_snapshot_state;
 pub mod memory_rpc_bridge;
 pub mod policy_guard;
 pub mod skills_usage_ledger;
+pub mod skills_usage_tracker;
 pub mod status;
 pub mod status_live;
 pub mod status_live_wiring;
