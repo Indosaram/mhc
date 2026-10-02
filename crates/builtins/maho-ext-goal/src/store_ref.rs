@@ -17,4 +17,10 @@ pub fn goal_store_ref(session:&SessionManager,cwd:&str)->GoalStoreRef {
     #[test] fn different_working_directories_have_separate_namespaces() {
         let session=SessionManager::in_memory("/workspace",None,None); let first=goal_store_ref(&session,"/first"); let second=goal_store_ref(&session,"/second"); assert_ne!(first.base_dir,second.base_dir);
     }
+    #[test] fn persisted_session_uses_session_directory_not_cwd_namespace() {
+        let temp=tempfile::tempdir().unwrap(); let directory=temp.path().to_str().unwrap();
+        let session=SessionManager::create("/workspace",Some(directory),None);
+        assert!(session.session_file().is_some()); let result=goal_store_ref(&session,"/different");
+        assert_eq!(result.base_dir,temp.path().join("extensions/goal")); assert_eq!(result.thread_id,session.session_id());
+    }
 }

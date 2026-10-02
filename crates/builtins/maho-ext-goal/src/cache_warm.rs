@@ -29,10 +29,10 @@ pub fn estimate_cache_warm_metrics(model: Option<&Model>, env: &ProviderEnv, usa
 pub fn format_wake_duration(ms: f64) -> String { let seconds = (ms / 1000.0 + 0.5).floor(); if seconds < 60.0 { return format!("{seconds}s"); } let minutes = (seconds / 60.0).floor(); let rest_seconds = seconds % 60.0; if minutes < 60.0 { return if rest_seconds == 0.0 { format!("{minutes}m") } else { format!("{minutes}m {rest_seconds}s") }; } let hours = (minutes / 60.0).floor(); let rest_minutes = minutes % 60.0; if rest_minutes == 0.0 { format!("{hours}h") } else { format!("{hours}h {rest_minutes}m") } }
 pub fn format_cache_ttl(seconds: f64) -> String { if seconds % 3600.0 == 0.0 { format!("{}h", seconds / 3600.0) } else if seconds % 60.0 == 0.0 { format!("{}m", seconds / 60.0) } else { format!("{seconds}s") } }
 pub fn format_warm_token_count(tokens:f64)->String {
-    let compact=|value:f64,suffix:&str| { let rendered=format!("{value:.1}"); format!("{}{suffix}",rendered.strip_suffix(".0").unwrap_or(&rendered)) };
+    let compact=|value:f64,suffix:&str| { let rendered=crate::format::fixed_decimal(value,1); format!("{}{suffix}",rendered.strip_suffix(".0").unwrap_or(&rendered)) };
     if tokens>=1_000_000.0 { compact(tokens/1_000_000.0,"M") } else if tokens>=1000.0 { compact(tokens/1000.0,"K") } else { format!("{}",tokens.trunc().max(0.0)) }
 }
-pub fn format_saved_usd(value: f64) -> String { if value < 0.0005 { "<$0.001".into() } else if value < 1.0 { format!("${value:.3}") } else { format!("${value:.2}") } }
+pub fn format_saved_usd(value: f64) -> String { if value < 0.0005 { "<$0.001".into() } else if value < 1.0 { format!("${}",crate::format::fixed_decimal(value,3)) } else { format!("${}",crate::format::fixed_decimal(value,2)) } }
 #[cfg(test)] mod tests {
     use super::*;
     fn model() -> Model { serde_json::from_value(serde_json::json!({"id":"claude-cache-test","name":"Claude Cache Test","api":"anthropic-messages","provider":"anthropic","baseUrl":"https://gateway.example.invalid/v1","reasoning":false,"input":["text"],"cost":{"input":3,"output":15,"cacheRead":0.3,"cacheWrite":3.75},"contextWindow":200000,"maxTokens":8192})).unwrap() }
@@ -42,4 +42,8 @@ pub fn format_saved_usd(value: f64) -> String { if value < 0.0005 { "<$0.001".in
     #[test] fn capable_model_derives_ttl_and_savings() { let result = estimate_cache_warm_metrics(Some(&model()), &ProviderEnv::new(), Some((100000.0,20000.0))).unwrap(); assert!((result.ttl_seconds.unwrap()-300.0).abs()<f64::EPSILON); assert!((result.estimated_saved_usd.unwrap()-0.324).abs()<0.000001); }
     #[test] fn ttl_only_metrics_are_preserved() { let result = estimate_cache_warm_metrics(Some(&model()), &ProviderEnv::new(), Some((0.0,0.0))).unwrap(); assert!((result.ttl_seconds.unwrap()-300.0).abs()<f64::EPSILON); assert!(result.estimated_saved_usd.is_none()); }
     #[test] fn malformed_usage_and_negative_margin_are_clamped() { let absent = estimate_cache_warm_metrics(None, &ProviderEnv::new(), Some((-50.0,f64::NAN))); let mut model = model(); model.cost.input=0.2; model.cost.cache_read=0.5; let result = estimate_cache_warm_metrics(Some(&model), &ProviderEnv::new(), Some((1000.0,0.0))).unwrap(); assert!(absent.is_none()); assert!(result.estimated_saved_usd.unwrap().abs()<f64::EPSILON); }
+    #[test] fn cached_token_and_usd_ties_match_javascript_fixed() {
+        assert_eq!(format_warm_token_count(1250.0),"1.3K"); assert_eq!(format_warm_token_count(1150.0),"1.1K");
+        for (value,expected) in [(0.0004,"<$0.001"),(0.0625,"$0.063"),(1.125,"$1.13"),(1.005,"$1.00"),(1e21,"$1e+21")] { assert_eq!(format_saved_usd(value),expected); }
+    }
 }

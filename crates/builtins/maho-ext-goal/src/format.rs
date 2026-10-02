@@ -6,19 +6,20 @@ pub fn format_goal_elapsed_seconds(value:f64)->String {
     if hours>=24.0 { return format!("{}d {}h {remaining}m",(hours/24.0).trunc(),hours%24.0); }
     if remaining==0.0 { format!("{hours}h") } else { format!("{hours}h {remaining}m") }
 }
-fn one_decimal(value:f64)->String {
+pub(crate) fn fixed_decimal(value:f64,places:u32)->String {
     if !value.is_finite() || value.abs()>=1e21 { return maho_ai::utils::js::number_to_string(value); }
     let bits=value.abs().to_bits(); let exponent=((bits>>52)&0x7ff) as i32;
     let mantissa=u128::from(bits&((1_u64<<52)-1))|if exponent==0 { 0 } else { 1_u128<<52 };
     let shift=if exponent==0 { -1074 } else { exponent-1023-52 };
-    let scaled=mantissa*10;
+    let scale=10_u128.pow(places); let scaled=mantissa*scale;
     let rounded=if shift>=0 { scaled<<shift } else {
         let right=(-shift) as u32;
         if right>=128 { 0 } else { (scaled>>right)+u128::from((scaled&((1_u128<<right)-1))>=(1_u128<<(right-1))) }
     };
     let sign=if value<0.0 { "-" } else { "" };
-    if rounded%10==0 { format!("{sign}{}",rounded/10) } else { format!("{sign}{}.{}",rounded/10,rounded%10) }
+    format!("{sign}{}.{:0width$}",rounded/scale,rounded%scale,width=places as usize)
 }
+fn one_decimal(value:f64)->String { let rendered=fixed_decimal(value,1); rendered.strip_suffix(".0").unwrap_or(&rendered).into() }
 pub fn format_tokens_compact(value:f64)->String { if value.abs()>=1_000_000.0 { format!("{}M",one_decimal(value/1_000_000.0)) } else if value.abs()>=1000.0 { format!("{}K",one_decimal(value/1000.0)) } else { format!("{}",value.trunc()) } }
 pub const fn goal_status_label(status:GoalStatus)->&'static str { match status { GoalStatus::Active=>"active",GoalStatus::Paused=>"paused",GoalStatus::Blocked=>"blocked",GoalStatus::Complete=>"complete" } }
 pub fn iso_timestamp(seconds:u64)->Option<String> {
