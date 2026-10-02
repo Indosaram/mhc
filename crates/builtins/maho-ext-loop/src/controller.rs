@@ -59,7 +59,8 @@ impl NativeLoopController {
         *owner=Some(session); Ok(())
     }
     async fn dispatch(&self,session:&mut Session,tick:&crate::scheduler::LoopTick)->Result<(),ExtensionFailure> {
-        session.runtime.dispatch_tick(&self.api,&session.context,&session.reference,tick,&self.home).await?;
+        let result=session.runtime.dispatch_tick(&self.api,&session.context,&session.reference,tick,&self.home).await;
+        if session.runtime.store_failure.is_none() { result?; }
         self.refresh(session).await
     }
     async fn due(&self,session:&mut Session,id:&str)->Result<(),ExtensionFailure> {
