@@ -540,10 +540,14 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn get_context_usage(&self) -> Option<maho_ext_api::ContextUsage> { self.session().ok()?.get_context_usage().map(|usage|
         maho_ext_api::ContextUsage { tokens: usage.tokens, context_window: usage.context_window, percent: usage.percent }) }
     fn get_compaction_settings(&self) -> maho_ext_api::CompactionSettings {
-        let raw = self.session().ok().and_then(|session| session.with_settings_manager(|manager| manager.get_value("compaction").cloned()));
-        maho_ext_api::CompactionSettings { enabled: raw.as_ref().and_then(|raw| raw.get("enabled")).and_then(Value::as_bool).unwrap_or(true),
-            reserve_tokens: raw.as_ref().and_then(|raw| raw.get("reserveTokens")).and_then(Value::as_u64).unwrap_or(16_384),
-            keep_recent_tokens: raw.as_ref().and_then(|raw| raw.get("keepRecentTokens")).and_then(Value::as_u64).unwrap_or(20_000) }
+        let session = self.session().ok();
+        let raw = session.as_ref().and_then(|session| session.with_settings_manager(|manager| manager.get_value("compaction").cloned()));
+        let model_key = session.as_ref().map(|session| { let model = session.model(); format!("{}/{}", model.provider, model.id) });
+        let overrides = model_key.as_ref().and_then(|key| raw.as_ref()?.get("modelOverrides")?.get(key));
+        let tokens = |key, default| overrides.and_then(|value| value.get(key)).and_then(Value::as_u64)
+            .or_else(|| raw.as_ref().and_then(|value| value.get(key)).and_then(Value::as_u64)).unwrap_or(default);
+        maho_ext_api::CompactionSettings { enabled: session.as_ref().is_none_or(AgentSession::auto_compaction_enabled),
+            reserve_tokens: tokens("reserveTokens", 16_384), keep_recent_tokens: tokens("keepRecentTokens", 20_000) }
     }
     fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> {
         let session = self.session().ok()?;
@@ -5071,6 +5075,22 @@ mod tests {
             &SessionExtensionActions(Arc::downgrade(&session.inner)));
         assert_eq!(sources.global_hooks_path, std::path::Path::new(&session.agent_dir()).join("hooks.json"));
         assert_eq!(sources.project_hooks_path, std::path::Path::new(&session.cwd()).join(crate::config::config_dir_name()).join("hooks.json"));
+    }
+
+    #[test]
+    fn compaction_context_reports_model_and_session_overrides() {
+        let session = test_session();
+        session.agent().set_model(test_model());
+        session.with_settings_manager_mut(|manager| manager.set(crate::settings_manager::SettingsScope::Global,
+            &Map::from_iter([("compaction".to_owned(), serde_json::json!({"enabled":true,"reserveTokens":100,
+                "keepRecentTokens":200,"modelOverrides":{"faux/faux-1":{"reserveTokens":300,"keepRecentTokens":400}}}))])))
+            .expect("settings");
+        session.set_auto_compaction_enabled(false);
+        let settings = maho_ext_api::ExtensionContextActions::get_compaction_settings(
+            &SessionExtensionActions(Arc::downgrade(&session.inner)));
+        assert!(!settings.enabled);
+        assert_eq!(settings.reserve_tokens, 300);
+        assert_eq!(settings.keep_recent_tokens, 400);
     }
 
     fn test_definition(name: &str) -> ToolDefinition {
