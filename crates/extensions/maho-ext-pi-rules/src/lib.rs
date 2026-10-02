@@ -7,6 +7,7 @@ pub mod rules {
     pub mod ordering;
     pub mod parser;
     pub mod project_root;
+    pub mod scanner;
     pub mod truncator;
     pub mod types;
 }
