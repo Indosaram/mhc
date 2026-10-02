@@ -417,7 +417,9 @@ impl InteractiveMode {
             let stored: Vec<String> = self.session.with_settings_manager(|settings| settings.get_value("favoriteModels").cloned()).map(serde_json::from_value).transpose().map_err(|error| error.to_string())?.unwrap_or_default();
             let catalog = self.session.model_registry().get_all();
             let resolutions = maho_core::model_resolver::resolve_model_scope_from_models(&stored, &catalog).pattern_resolutions;
-            let favorite_ids = (!stored.is_empty()).then(|| resolutions.iter().flat_map(|resolution| resolution.owned_ids.clone()).collect());
+            let candidate_ids = models.iter().map(ModelEntry::full_id).collect::<Vec<_>>();
+            let session_favorites = self.session.favorite_models().into_iter().map(|entry| format!("{}/{}", entry.model.provider, entry.model.id)).filter(|id| candidate_ids.contains(id)).collect::<Vec<_>>();
+            let favorite_ids = Some(if session_favorites.is_empty() { resolutions.iter().flat_map(|resolution| resolution.owned_ids.clone()).filter(|id| candidate_ids.contains(id)).collect() } else { session_favorites });
             let session = self.session.clone(); let ui = self.extension_ui.clone();
             let favorite_callback = Box::new(move |ids: crate::components::favorite_model_ids::FavoriteModelIds, candidates: &[ModelEntry], _: &ModelEntry| {
                 let candidate_ids = candidates.iter().map(ModelEntry::full_id).collect::<Vec<_>>();
