@@ -23,6 +23,7 @@ impl ModelRegistry for TestRegistry {
 }
 struct TestUi;
 impl ExtensionUi for TestUi {
+    fn factories(&self) -> Option<&dyn ExtensionUiFactories> { Some(self) }
     fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
     fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> { Box::pin(async { false }) }
     fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
@@ -38,6 +39,12 @@ impl ExtensionUi for TestUi {
     fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Err("UI not available".into()) }) }
     fn theme(&self) -> Theme { Theme::default() }
 }
+impl ExtensionUiFactories for TestUi {
+    fn set_widget_factory(&self, _: &str, _: Option<TuiComponentFactory>, _: ExtensionWidgetOptions) {}
+    fn set_header_factory(&self, _: Option<TuiComponentFactory>) {}
+    fn set_footer_factory(&self, _: Option<FooterComponentFactory>) {}
+    fn custom_factory(&self, _: CustomComponentFactory, _: CustomUiFactoryOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Err("UI not available".into()) }) }
+}
 fn context() -> ExtensionContext {
     ExtensionContext { ui: Arc::new(TestUi), mode: ExtensionMode::Print, has_ui: false, cwd: "/tmp".into(), agent_dir: "/tmp/agent".into(),
         session_manager: Arc::new(TestSession), model_registry: Arc::new(TestRegistry), model: None, thinking_level: None,
@@ -47,6 +54,45 @@ fn context() -> ExtensionContext {
         is_compacting_fn: Arc::new(|| false), get_system_prompt_fn: Arc::new(|| "base".into()),
         get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions { cwd: "/tmp".into(), ..Default::default() }),
         registered_mcp_servers: Vec::new(), update_tool_hook_status: None }
+}
+
+#[tokio::test]
+async fn lifecycle_ui_emits_prompt_pair_and_rejects_stale_prompts() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let observed = events.clone();
+    let runtime = ExtensionRuntime::default();
+    let ui = maho_ext_host::ui::LifecycleUi::new(Arc::new(TestUi), runtime.clone(), Arc::new(move |event| observed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event)));
+    assert!(!ui.confirm("Confirm", "message", ExtensionUiDialogOptions::default()).await);
+    {
+        let events = events.lock().unwrap();
+        assert!(matches!(&events[0], ExtensionEvent::UiPromptStart { kind: UiPromptKind::Confirm, title: Some(title) } if title == "Confirm"));
+        assert!(matches!(&events[1], ExtensionEvent::UiPromptEnd { kind: UiPromptKind::Confirm, title: Some(title) } if title == "Confirm"));
+    }
+    runtime.invalidate("reloaded");
+    assert_eq!(ExtensionUi::editor(&ui, "late", None).await.unwrap_err().message, "reloaded");
+}
+
+#[test]
+fn retained_ui_factory_interface_cannot_bypass_stale_guard() {
+    let runtime = ExtensionRuntime::default();
+    let ui = maho_ext_host::ui::LifecycleUi::new(Arc::new(TestUi), runtime.clone(), Arc::new(|_| {}));
+    let factories = ui.factories().unwrap();
+    factories.set_header_factory(None);
+    runtime.invalidate("replaced");
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| factories.set_header_factory(None))).unwrap_err();
+    assert_eq!(failure.downcast_ref::<ExtensionFailure>().unwrap().message, "replaced");
+}
+
+#[tokio::test]
+async fn completed_dialog_rejects_runtime_invalidated_after_prompt_start() {
+    let runtime = ExtensionRuntime::default();
+    let captured = runtime.clone();
+    let ui = maho_ext_host::ui::LifecycleUi::new(Arc::new(TestUi), runtime, Arc::new(move |event| {
+        if matches!(event, ExtensionEvent::UiPromptStart { .. }) { captured.invalidate("replaced during dialog"); }
+    }));
+    let result = tokio::spawn(async move { ui.confirm("confirm", "message", Default::default()).await }).await;
+    let panic = result.unwrap_err().into_panic();
+    assert_eq!(panic.downcast_ref::<ExtensionFailure>().unwrap().message, "replaced during dialog");
 }
 fn extension(path: &str, kind: EventKind, handler: ExtensionHandler) -> LoadedExtension {
     let mut ext = LoadedExtension::new(path, "/tmp".into(), SourceInfo { path: path.into(), source: "inline".into(), ..Default::default() });
@@ -220,6 +266,25 @@ async fn tool_call_errors_propagate_like_upstream() {
     assert_eq!(runner.emit_tool_call(&mut event).await.unwrap_err().message, "boom"); assert!(runner.errors.is_empty());
 }
 #[tokio::test]
+async fn invalidating_tool_hook_does_not_publish_mutated_input() {
+    let mut runner = runner(vec![]);
+    let runtime = runner.runtime.clone();
+    let handler: ExtensionHandler = Arc::new(move |event, _| {
+        let runtime = runtime.clone();
+        Box::pin(async move {
+            let ExtensionEvent::ToolCall(event) = event else { panic!() };
+            event.input = JsonValue::Bool(true);
+            runtime.invalidate("replaced during tool hook");
+            Ok(EventResult::None)
+        })
+    });
+    runner.extensions.push(extension("invalidate", EventKind::ToolCall, handler));
+    let mut event = ToolCallEvent { tool_call_id: "call".into(), tool_name: "bash".into(), input: JsonValue::Null };
+    assert_eq!(runner.emit_tool_call(&mut event).await.unwrap_err().message, "replaced during tool hook");
+    assert_eq!(event.input, JsonValue::Null);
+    assert_eq!(runner.emit_tool_result(result_event()).await.unwrap_err().message, "replaced during tool hook");
+}
+#[tokio::test]
 async fn hook_updates_are_sanitized_bounded_and_stale_updates_ignored() {
     let updater = Arc::new(Mutex::new(None)); let capture = Arc::clone(&updater);
     let handler: ExtensionHandler = Arc::new(move |_, ctx| { let capture = Arc::clone(&capture); Box::pin(async move { let update = ctx.update_tool_hook_status.clone().unwrap(); update("line\u{1b}[31mone\ntwo\t\u{7} done"); update(&"x".repeat(200)); *capture.lock().unwrap() = Some(update); Ok(EventResult::None) }) });
@@ -262,6 +327,61 @@ async fn resources_preserve_scope_origin_and_order() {
     let handler: ExtensionHandler = Arc::new(|event, _| Box::pin(async move { let ExtensionEvent::ResourcesDiscover(event) = event else { panic!() }; assert!(event.scoped_entries); Ok(EventResult::ResourcesDiscover(ResourcesDiscoverResult { skill_paths: vec![ResourceDiscoverEntry { path: "one".into(), scope: Some(SourceScope::User) }, "two".to_string().into()], ..Default::default() })) }));
     let result = runner(vec![extension("a", EventKind::ResourcesDiscover, handler)]).emit_resources_discover("/tmp".into(), SessionReason::Startup).await.unwrap(); assert_eq!(result.skill_paths[0].scope, Some(SourceScope::User)); assert_eq!(result.skill_paths[1].scope, None); assert_eq!(result.skill_paths[1].extension_path, "a");
 }
+#[tokio::test]
+async fn resource_discovery_records_are_isolated_between_handlers() {
+    let mutate: ExtensionHandler = Arc::new(|event, _| Box::pin(async move {
+        *event = ExtensionEvent::AgentStart;
+        Ok(EventResult::None)
+    }));
+    let observe: ExtensionHandler = Arc::new(|event, _| Box::pin(async move {
+        let ExtensionEvent::ResourcesDiscover(event) = event else { panic!("fresh discovery record required") };
+        assert_eq!(event.cwd, std::path::PathBuf::from("/tmp"));
+        assert!(event.scoped_entries);
+        Ok(EventResult::ResourcesDiscover(ResourcesDiscoverResult { hook_paths: vec!["hook".to_owned().into()], ..Default::default() }))
+    }));
+    let result = runner(vec![extension("a", EventKind::ResourcesDiscover, mutate), extension("b", EventKind::ResourcesDiscover, observe)])
+        .emit_resources_discover("/tmp".into(), SessionReason::Reload).await.unwrap();
+    assert_eq!(result.hook_paths[0].extension_path, "b");
+}
+
+struct GenerationExtension(Arc<std::sync::atomic::AtomicUsize>);
+impl Extension for GenerationExtension {
+    fn register(&self, api: &mut ExtensionApi) {
+        let generation = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        api.register_command("generation", Some(generation.to_string()), None, Arc::new(|_, _| Box::pin(async { Ok(()) })));
+    }
+}
+
+#[tokio::test]
+async fn static_runtime_recreation_runs_factories_with_independent_generation() {
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let first = ExtensionRunner::from_static(vec![Box::new(GenerationExtension(count.clone()))], context());
+    let next = first.recreate().await.unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
+    first.invalidate("replaced");
+    assert!(first.create_context().is_err());
+    assert!(next.create_context().is_ok());
+    assert_eq!(next.get_command("generation").unwrap().command.description.as_deref(), Some("1"));
+    assert_eq!(first.get_command("generation").unwrap().command.description.as_deref(), Some("0"));
+}
+
+#[tokio::test]
+async fn removal_notification_runs_after_invalidation_without_reviving_context() {
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let captured = observed.clone();
+    let handler: ExtensionHandler = Arc::new(move |event, ctx| {
+        assert!(ctx.actions().is_err());
+        if let ExtensionEvent::SessionExtensionsRemoved { removed, .. } = event { captured.lock().unwrap().extend(removed.clone()); }
+        Box::pin(async { Ok(EventResult::None) })
+    });
+    let mut runner = runner(vec![extension("removed", EventKind::SessionExtensionsRemoved, handler)]);
+    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) });
+    runner.bind_context_actions(actions).unwrap();
+    runner.invalidate("replaced");
+    runner.emit_removed_extensions(SessionReason::Reload, vec![ExtensionIdentity { path: "removed".into(), resolved_path: "removed".into() }]).await;
+    assert_eq!(observed.lock().unwrap()[0].path, "removed");
+}
+
 #[test]
 fn mcp_servers_first_wins_and_context_exposes_aggregate() {
     let mut a = extension("a", EventKind::AgentStart, none()); let mut b = extension("b", EventKind::AgentStart, none());
@@ -288,6 +408,116 @@ fn context_signal_observes_cancellation() { let mut ctx = context(); let signal 
 fn context_print_mode_and_tool_context_contract() { let ctx = context(); assert_eq!(ctx.mode, ExtensionMode::Print); assert!(!ctx.has_ui); assert_eq!(ToolContext::cwd(&ctx), Path::new("/tmp")); assert_eq!(ToolContext::session_manager(&ctx).session_id(), "session"); }
 #[test]
 fn invalidated_runner_rejects_new_context() { let runner = runner(vec![]); runner.invalidate("stale"); assert_eq!(runner.create_context().err().unwrap().message, "stale"); }
+
+#[tokio::test]
+async fn retained_api_event_registration_updates_an_existing_runner() {
+    let mut runner = runner(vec![]);
+    let scope = runner.runtime.registration_scope();
+    let mut api = ExtensionApi::new(LoadedExtension::new("late", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), scope.clone());
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let first = calls.clone();
+    api.on(EventKind::AgentStart, Arc::new(move |_, _| {
+        first.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async { Ok(EventResult::None) })
+    }));
+    scope.commit_registration().unwrap();
+    runner.extensions.push(api.registered.clone());
+    runner.emit(ExtensionEvent::AgentStart).await.unwrap();
+    let second = calls.clone();
+    api.on(EventKind::AgentStart, Arc::new(move |_, _| {
+        second.fetch_add(10, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async { Ok(EventResult::None) })
+    }));
+    assert!(runner.has_handlers(EventKind::AgentStart));
+    runner.emit(ExtensionEvent::AgentStart).await.unwrap();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 12);
+}
+
+#[tokio::test]
+async fn invalidated_empty_dispatch_and_handled_input_reject_stale_results() {
+    let mut empty = runner(vec![]);
+    empty.invalidate("stale");
+    assert_eq!(empty.emit_context(&[], None).await.unwrap_err().message, "stale");
+    assert_eq!(empty.emit_input(input()).await.unwrap_err().message, "stale");
+    assert_eq!(empty.emit_resources_discover("/tmp".into(), SessionReason::Startup).await.unwrap_err().message, "stale");
+    assert_eq!(empty.emit_user_bash("true".into(), false, "/tmp".into()).await.err().unwrap().message, "stale");
+    let mut active = runner(vec![]);
+    let runtime = active.runtime.clone();
+    active.extensions.push(extension("invalidate", EventKind::Input, Arc::new(move |_, _| {
+        let runtime = runtime.clone();
+        Box::pin(async move { runtime.invalidate("replaced during input"); Ok(EventResult::Input(InputEventResult::Handled)) })
+    })));
+    assert_eq!(active.emit_input(input()).await.unwrap_err().message, "replaced during input");
+}
+
+#[tokio::test]
+async fn idle_wait_rejects_context_invalidated_during_host_wait() {
+    let mut runner = runner(vec![]);
+    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) })).unwrap();
+    let mut ctx = runner.create_context().unwrap();
+    let runtime = runner.runtime.clone();
+    ctx.wait_for_idle_fn = Arc::new(move || {
+        let runtime = runtime.clone();
+        Box::pin(async move { runtime.invalidate("replaced during idle wait"); })
+    });
+    let result = tokio::spawn(async move { ctx.wait_for_idle().await; }).await;
+    let panic = result.unwrap_err().into_panic();
+    assert_eq!(panic.downcast_ref::<ExtensionFailure>().unwrap().message, "replaced during idle wait");
+}
+
+#[tokio::test]
+async fn shutdown_budget_is_resolved_only_when_handlers_exist() {
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = reads.clone();
+    let mut runner = runner(vec![]);
+    runner.set_shutdown_budget_resolver(Arc::new(move || { observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst); (0, 25) }));
+    let event = || ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason: SessionReason::Quit, target_session_file: None, signal: None });
+    runner.emit(event()).await.unwrap();
+    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+    runner.extensions.push(extension("handler", EventKind::SessionShutdown, none()));
+    runner.emit(event()).await.unwrap();
+    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!((runner.shutdown_warn_ms, runner.shutdown_timeout_ms), (0, 25));
+}
+
+#[test]
+fn retained_tool_context_getters_reject_invalidated_runtime() {
+    let mut runner = runner(vec![]);
+    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) })).unwrap();
+    let context = runner.create_context().unwrap();
+    runner.invalidate("replaced");
+    let tool: &dyn ToolContext = &context;
+    for getter in [
+        Box::new(|| { tool.cwd(); }) as Box<dyn Fn()>,
+        Box::new(|| { tool.model(); }),
+        Box::new(|| { tool.thinking_level(); }),
+        Box::new(|| { tool.session_manager(); }),
+        Box::new(|| { tool.goal_store_file(); }),
+    ] {
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(getter)).unwrap_err();
+        assert_eq!(panic.downcast_ref::<ExtensionFailure>().unwrap().message, "replaced");
+    }
+}
+#[test]
+fn retained_context_actions_cannot_bypass_runtime_invalidation() {
+    let mut runner = runner(vec![]);
+    let host = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) });
+    runner.bind_context_actions(host.clone()).unwrap();
+    let context = runner.create_context().unwrap();
+    let actions = context.actions().unwrap();
+    runner.invalidate("replaced");
+    for operation in [
+        Box::new(|| { actions.get_model(); }) as Box<dyn Fn()>,
+        Box::new(|| { actions.get_message_revision(); }),
+        Box::new(|| { actions.abort(None); }),
+        Box::new(|| { actions.kernel_tools(); }),
+    ] {
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)).unwrap_err();
+        assert_eq!(panic.downcast_ref::<ExtensionFailure>().unwrap().message, "replaced");
+    }
+    assert!(host.aborted.lock().unwrap().is_none());
+}
+
 #[tokio::test(start_paused = true)]
 async fn shutdown_hard_cap_aborts_and_runs_next_handler() {
     let signal = Arc::new(Mutex::new(None)); let capture = Arc::clone(&signal);
@@ -342,6 +572,24 @@ async fn message_end_chains_same_role_replacements() {
 async fn message_end_no_replacement_returns_none() {
     let original = AgentMessage::Llm(Message::User(UserMessage { content: UserContent::Text("original".into()), timestamp: 1 }));
     assert!(runner(vec![extension("a", EventKind::MessageEnd, none())]).emit_message_end(original).await.unwrap().is_none());
+}
+#[tokio::test]
+async fn message_end_event_replacement_does_not_change_later_handler_input() {
+    let original = AgentMessage::Llm(Message::User(UserMessage { content: UserContent::Text("original".into()), timestamp: 1 }));
+    let mutation: ExtensionHandler = Arc::new(|event, _| Box::pin(async move {
+        *event = ExtensionEvent::AgentStart;
+        Ok(EventResult::None)
+    }));
+    let expected = original.clone();
+    let observe: ExtensionHandler = Arc::new(move |event, _| {
+        let expected = expected.clone();
+        Box::pin(async move {
+            let ExtensionEvent::MessageEnd { message } = event else { panic!("event replacement escaped its handler") };
+            assert_eq!(*message, expected);
+            Ok(EventResult::None)
+        })
+    });
+    assert!(runner(vec![extension("mutation", EventKind::MessageEnd, mutation), extension("observe", EventKind::MessageEnd, observe)]).emit_message_end(original).await.unwrap().is_none());
 }
 #[test]
 fn mcp_collision_diagnostic_names_both_owners() {
@@ -461,9 +709,9 @@ impl ExtensionSessionActions for SessionActions {
     }
     fn get_active_tools(&self) -> Result<Vec<String>, ExtensionFailure> { Ok(self.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()) }
     fn set_active_tools(&self, names: Vec<String>) -> Result<(), ExtensionFailure> { *self.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = names; Ok(()) }
-    fn refresh_tools(&self) -> Result<(), ExtensionFailure> { Ok(()) }
-    fn register_removed_tool_hint(&self, _: &str, _: &str) -> Result<(), ExtensionFailure> { Ok(()) }
-    fn register_lazy_tool_activator(&self, _: LazyToolActivator) -> Result<(), ExtensionFailure> { Ok(()) }
+    fn refresh_tools(&self) -> Result<(), ExtensionFailure> { self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(("refresh".into(), None)); Ok(()) }
+    fn register_removed_tool_hint(&self, name: &str, hint: &str) -> Result<(), ExtensionFailure> { self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((name.into(), Some(JsonValue::String(hint.into())))); Ok(()) }
+    fn register_lazy_tool_activator(&self, activator: LazyToolActivator) -> Result<(), ExtensionFailure> { self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(("activator".into(), Some(JsonValue::Bool(activator("hidden"))))); Ok(()) }
     fn get_commands(&self) -> Result<Vec<SlashCommandInfo>, ExtensionFailure> { Ok(vec![]) }
     fn set_model(&self, _: Model) -> ExtensionFuture<'_, bool> { Box::pin(async { Err("not used".into()) }) }
     fn get_thinking_level(&self) -> Result<ThinkingLevel, ExtensionFailure> { Ok(ThinkingLevel::Low) }
@@ -486,6 +734,18 @@ async fn bound_session_actions_forward_state_and_preserve_typed_tool_errors() {
     assert_eq!(api.get_thinking_level().unwrap(), ThinkingLevel::Low);
     let error = api.execute_tool("hidden", JsonValue::Null, ExecuteToolOptions::default()).await.unwrap_err();
     assert_eq!(error.code, ExecuteToolErrorCode::InactiveTool); assert_eq!(error.active_tools, ["read"]);
+}
+
+#[test]
+fn runtime_registrations_forward_to_already_bound_session() {
+    let actions = Arc::new(SessionActions::default());
+    let runtime = ExtensionRuntime::default();
+    runtime.bind_session_actions(actions.clone());
+    let mut api = ExtensionApi::new(LoadedExtension::new("live", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), runtime);
+    api.register_lazy_tool_activator(Arc::new(|name| name == "hidden"));
+    api.register_removed_tool_hint("old", "use new");
+    api.register_tool(ToolDefinition::new("new", "new", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { Ok(ToolResult::text("ok")) }))));
+    assert_eq!(*actions.entries.lock().unwrap(), vec![("activator".into(), Some(JsonValue::Bool(true))), ("old".into(), Some(JsonValue::String("use new".into()))), ("refresh".into(), None)]);
 }
 #[test]
 fn native_loader_preserves_factory_identity_profile_and_order() {
@@ -519,6 +779,67 @@ async fn registered_tool_wrapper_supplies_context_and_reports_new_active_tools()
     let result = (tool.execute)("call".into(), JsonValue::Null, None, None).await;
     assert_eq!(result.added_tool_names, Some(vec!["new".into()])); assert_ne!(result.is_error, Some(true));
 }
+
+#[tokio::test]
+async fn extension_executor_receives_full_context_and_preserves_agent_result_fields() {
+    let runtime = ExtensionRuntime::default();
+    runtime.bind_session_actions(Arc::new(SessionActions::default()));
+    let mut api = ExtensionApi::new(LoadedExtension::new("fixture", "/tmp".into(), SourceInfo::default()), Default::default(), EventBus::default(), runtime.clone());
+    let definition = ToolDefinition::new("full", "full", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { panic!("legacy executor must not run") })));
+    api.register_tool_with_extension_context(definition, Arc::new(|id, params, signal, update, ctx| Box::pin(async move {
+        assert_eq!(id, "call"); assert_eq!(params, JsonValue::Null); assert!(signal.is_none());
+        assert!(ctx.is_idle()); assert_eq!(ctx.cwd, std::path::PathBuf::from("/tmp"));
+        if let Some(update) = update { update(AgentToolResult::text("partial")); }
+        let mut result = AgentToolResult::text("done");
+        result.terminate = Some(true); result.added_tool_names = Some(vec!["custom".into()]);
+        Ok(result)
+    }))).unwrap();
+    let tool = maho_ext_host::wrapper::wrap_registered_tool(api.registered.tools[0].clone(), runtime, Arc::new(|| Ok(context())));
+    let updates = Arc::new(std::sync::atomic::AtomicUsize::new(0)); let observed = updates.clone();
+    let result = (tool.execute)("call".into(), JsonValue::Null, None, Some(Arc::new(move |_| { observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }))).await;
+    assert_eq!(result.terminate, Some(true)); assert_eq!(result.added_tool_names, Some(vec!["custom".into()]));
+    assert_eq!(updates.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn typed_tool_decodes_parameters_and_serializes_detail_updates() {
+    let runtime = ExtensionRuntime::default(); runtime.bind_session_actions(Arc::new(SessionActions::default()));
+    let mut api = ExtensionApi::new(LoadedExtension::new("typed", "/tmp".into(), SourceInfo::default()), Default::default(), EventBus::default(), runtime.clone());
+    let definition = ToolDefinition::new("typed", "typed", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { panic!("legacy executor must not run") })));
+    api.register_typed_tool(definition, Arc::new(|_, params: BTreeMap<String, u64>, _, update: Option<TypedToolUpdateCallback<u64>>, _| Box::pin(async move {
+        let value = params["value"];
+        let result = TypedAgentToolResult { content: vec![ContentBlock::text("done")], details: value, usage: None, added_tool_names: None, terminate: Some(true), is_error: None };
+        if let Some(update) = update { update(result.clone())?; }
+        Ok(result)
+    }))).unwrap();
+    let tool = maho_ext_host::wrapper::wrap_registered_tool(api.registered.tools[0].clone(), runtime, Arc::new(|| Ok(context())));
+    let updates = Arc::new(Mutex::new(Vec::new())); let observed = updates.clone();
+    let params = JsonValue::Object([("value".into(), JsonValue::from(7u64))].into_iter().collect());
+    let result = (tool.execute)("call".into(), params, None, Some(Arc::new(move |result| observed.lock().unwrap().push(result.details)))).await;
+    assert_eq!(result.details, JsonValue::from(7u64)); assert_eq!(result.terminate, Some(true));
+    assert_eq!(*updates.lock().unwrap(), vec![JsonValue::from(7u64)]);
+    let result = (tool.execute)("invalid".into(), JsonValue::Null, None, None).await;
+    assert_eq!(result.is_error, Some(true));
+}
+
+#[test]
+fn static_runner_uses_one_based_identity_and_isolates_failed_factories() {
+    struct Failed;
+    impl Extension for Failed { fn register(&self, api: &mut ExtensionApi) {
+        api.register_flag("discarded", FlagType::Boolean { default: Some(true) }, None);
+        panic!("factory failed");
+    } }
+    struct Good;
+    impl Extension for Good { fn register(&self, api: &mut ExtensionApi) {
+        api.register_flag("kept", FlagType::Boolean { default: Some(true) }, None);
+    } }
+    let runner = ExtensionRunner::from_static(vec![Box::new(Failed), Box::new(Good)], context());
+    assert_eq!(runner.extensions.len(), 1);
+    assert_eq!(runner.extensions[0].identity.path, "<inline:2>");
+    assert_eq!(runner.errors[0].extension_path, "<inline:1>");
+    assert_eq!(runner.runtime.get_flag("discarded"), None);
+    assert_eq!(runner.runtime.get_flag("kept"), Some(FlagValue::Boolean(true)));
+}
 #[test]
 fn rpc_events_use_the_shared_channel_and_normalized_envelope() {
     let runtime = ExtensionRuntime::default(); let events = EventBus::default();
@@ -531,6 +852,220 @@ fn rpc_events_use_the_shared_channel_and_normalized_envelope() {
     api.rpc_handle(" echo ", Arc::new(|data| Box::pin(async move { Ok(data) }))).unwrap();
     assert!(api.rpc_handle("echo", Arc::new(|data| Box::pin(async move { Ok(data) }))).is_err());
     runtime.invalidate("stale"); assert!(api.rpc_emit("progress", &JsonValue::Null).is_err());
+}
+
+#[tokio::test]
+async fn invocation_disposes_when_tool_execution_fails() {
+    let disposed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = disposed.clone();
+    let runtime = ExtensionRuntime::default();
+    runtime.bind_session_actions(Arc::new(SessionActions::default()));
+    let definition = ToolDefinition::new("fail", "fail", JsonValue::Object(Default::default()), Arc::new(|_| {
+        Box::pin(async { Err(ToolError::Message("failed".into())) })
+    }));
+    let factory = Arc::new(move |signal| {
+        let mut ctx = context();
+        ctx.signal = signal;
+        let disposed = disposed.clone();
+        Ok(maho_ext_host::wrapper::ToolInvocation::new(ctx, move || {
+            disposed.store(true, std::sync::atomic::Ordering::SeqCst);
+        }))
+    });
+    let tool = maho_ext_host::wrapper::wrap_registered_tool_with_invocation(
+        RegisteredTool { definition, source_info: SourceInfo::default() }, runtime, factory,
+    );
+    let result = (tool.execute)("call".into(), JsonValue::Null, None, None).await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(observed.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn failed_async_factory_rolls_back_flags_and_subscriptions() {
+    use maho_ext_host::loader::*;
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let observed = calls.clone();
+    let failed = NativeAsyncExtensionFactory {
+        path: "failed".into(), source_info: SourceInfo::default(),
+        factory: Arc::new(move |api| {
+            let calls = calls.clone();
+            Box::pin(async move {
+                api.register_flag("owned", FlagType::Boolean { default: Some(true) }, None);
+                let subscription = api.events.on("test", Arc::new(move |_| calls.lock().unwrap().push("failed")));
+                std::mem::forget(subscription);
+                Err("factory failed".into())
+            })
+        }),
+    };
+    let succeeding = NativeAsyncExtensionFactory {
+        path: "good".into(), source_info: SourceInfo::default(),
+        factory: Arc::new(|api| Box::pin(async move {
+            api.register_flag("owned", FlagType::Boolean { default: Some(false) }, None);
+            Ok(())
+        })),
+    };
+    let loaded = load_extensions_async(vec![failed, succeeding], Path::new("/tmp"), ExtensionSessionProfile::default()).await;
+    loaded.events.emit("test", &JsonValue::Null);
+    assert!(observed.lock().unwrap().is_empty());
+    assert_eq!(loaded.runtime.get_flag("owned"), Some(FlagValue::Boolean(false)));
+    assert_eq!(loaded.extensions.len(), 1);
+    assert_eq!(loaded.extensions[0].identity.path, "good");
+    assert_eq!(loaded.errors[0].extension_path, "failed");
+}
+
+#[test]
+fn protected_shortcut_is_rejected_and_extension_collision_is_reported() {
+    let mut first = LoadedExtension::new("first", "/tmp".into(), SourceInfo::default());
+    let mut second = LoadedExtension::new("second", "/tmp".into(), SourceInfo::default());
+    for extension in [&mut first, &mut second] {
+        for key in ["ctrl+c", "ctrl+x"] {
+            extension.shortcuts.insert(key.into(), ExtensionShortcut {
+                shortcut: key.into(), description: None,
+                handler: Arc::new(|_| Box::pin(async { Ok(()) })),
+                extension_path: extension.identity.path.clone(),
+            });
+        }
+    }
+    let builtins = [("ctrl+c".into(), BuiltinShortcut { keybinding: "interrupt".into(), restrict_override: true })].into_iter().collect();
+    let (shortcuts, diagnostics) = runner(vec![first, second]).resolve_shortcuts(&builtins);
+    assert!(!shortcuts.contains_key("ctrl+c"));
+    assert_eq!(shortcuts["ctrl+x"].extension_path, "second");
+    assert_eq!(diagnostics.len(), 3);
+    assert_eq!(diagnostics.iter().map(|diagnostic| diagnostic.path.as_str()).collect::<Vec<_>>(), ["first", "second", "second"]);
+}
+
+#[tokio::test]
+async fn panicking_async_factory_is_isolated_and_rolls_back_registration() {
+    use maho_ext_host::loader::*;
+    let failed = NativeAsyncExtensionFactory {
+        path: "panic".into(), source_info: SourceInfo::default(),
+        factory: Arc::new(|api| Box::pin(async move {
+            api.register_flag("owned", FlagType::Boolean { default: Some(true) }, None);
+            panic!("factory panic");
+        })),
+    };
+    let good = NativeAsyncExtensionFactory {
+        path: "good".into(), source_info: SourceInfo::default(),
+        factory: Arc::new(|api| Box::pin(async move {
+            api.register_flag("owned", FlagType::Boolean { default: Some(false) }, None);
+            Ok(())
+        })),
+    };
+    let loaded = load_extensions_async(vec![failed, good], Path::new("/tmp"), ExtensionSessionProfile::default()).await;
+    assert_eq!(loaded.runtime.get_flag("owned"), Some(FlagValue::Boolean(false)));
+    assert_eq!(loaded.extensions.len(), 1);
+    assert_eq!(loaded.errors.len(), 1);
+    assert_eq!(loaded.errors[0].extension_path, "panic");
+}
+
+#[tokio::test]
+async fn registration_failure_preserves_typed_factory_diagnostic() {
+    use maho_ext_host::loader::*;
+    let factory = NativeAsyncExtensionFactory {
+        path: "invalid-mcp".into(), source_info: SourceInfo::default(),
+        factory: Arc::new(|api| Box::pin(async move {
+            api.register_mcp_server("missing", McpServerDeclaration::default());
+            Ok(())
+        })),
+    };
+    let loaded = load_extensions_async(vec![factory], Path::new("/tmp"), ExtensionSessionProfile::default()).await;
+    assert!(loaded.extensions.is_empty());
+    assert_eq!(loaded.errors.len(), 1);
+    assert_eq!(loaded.errors[0].extension_path, "invalid-mcp");
+    assert!(loaded.errors[0].error.contains("mcpServers.missing.command"));
+}
+
+#[tokio::test]
+async fn cancelling_pending_factory_invalidates_retained_capabilities() {
+    use maho_ext_host::loader::*;
+    let (started, received) = tokio::sync::oneshot::channel();
+    let started = Arc::new(Mutex::new(Some(started)));
+    let factory = NativeAsyncExtensionFactory {
+        path: "pending".into(), source_info: SourceInfo::default(),
+        factory: Arc::new(move |api| {
+            assert!(started.lock().unwrap().take().unwrap().send(api.runtime.clone()).is_ok());
+            Box::pin(std::future::pending())
+        }),
+    };
+    let loading = tokio::spawn(async move { load_extensions_async(vec![factory], Path::new("/tmp"), ExtensionSessionProfile::default()).await });
+    let retained = received.await.unwrap();
+    loading.abort();
+    assert!(matches!(loading.await, Err(error) if error.is_cancelled()));
+    assert!(retained.assert_active().is_err());
+}
+
+#[tokio::test]
+async fn inline_factory_names_and_hidden_identities_preserve_load_order() {
+    use maho_ext_host::loader::*;
+    let factory: AsyncExtensionFactory = Arc::new(|_| Box::pin(async { Ok(()) }));
+    let loaded = load_inline_extensions(vec![
+        NativeInlineExtension { name: None, hidden: false, factory: factory.clone() },
+        NativeInlineExtension { name: Some("named".into()), hidden: true, factory },
+    ], Path::new("/tmp"), ExtensionSessionProfile::default()).await;
+    assert_eq!(loaded.loaded.extensions.iter().map(|extension| extension.identity.path.as_str()).collect::<Vec<_>>(), ["<inline:1>", "<inline:named>"]);
+    assert_eq!(loaded.hidden_paths.into_iter().collect::<Vec<_>>(), ["<inline:named>"]);
+}
+
+#[tokio::test]
+async fn provider_transform_rejects_result_after_runtime_invalidation() {
+    let runtime = ExtensionRuntime::default();
+    let captured = runtime.clone();
+    let handler: ExtensionHandler = Arc::new(move |_, _| {
+        let runtime = captured.clone();
+        Box::pin(async move {
+            runtime.invalidate("reloaded");
+            Ok(EventResult::ProviderPayload(JsonValue::Bool(true)))
+        })
+    });
+    let mut runner = ExtensionRunner::new(vec![extension("invalidate", EventKind::BeforeProviderRequest, handler)], runtime, EventBus::default(), context());
+    let error = runner.emit_before_provider_request(JsonValue::Null, None).await.unwrap_err();
+    assert_eq!(error.message, "reloaded");
+}
+
+#[tokio::test]
+async fn failed_factory_retained_runtime_is_stale_without_poisoning_successful_factory() {
+    use maho_ext_host::loader::*;
+    let retained = Arc::new(std::sync::Mutex::new(None));
+    let captured = retained.clone();
+    let failed: AsyncExtensionFactory = Arc::new(move |api| {
+        *captured.lock().unwrap() = Some(api.runtime.clone());
+        Box::pin(async { Err(ExtensionFailure::new("factory error")) })
+    });
+    let loaded = load_extensions_async(vec![
+        NativeAsyncExtensionFactory { path: "failed".into(), source_info: SourceInfo::default(), factory: failed },
+        NativeAsyncExtensionFactory { path: "success".into(), source_info: SourceInfo::default(), factory: Arc::new(|_| Box::pin(async { Ok(()) })) },
+    ], Path::new("/tmp"), ExtensionSessionProfile::default()).await;
+    let failed_runtime = retained.lock().unwrap().take().unwrap();
+    assert!(failed_runtime.register_provider(ProviderRegistration::Config { name: "late".into(), config: Box::default() }, "failed").is_err());
+    assert!(loaded.runtime.assert_active().is_ok());
+    assert_eq!(loaded.extensions.len(), 1);
+    assert_eq!(loaded.extensions[0].identity.path, "success");
+}
+
+#[tokio::test]
+async fn invocation_disposes_when_pending_execution_is_dropped() {
+    let disposed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = disposed.clone();
+    let runtime = ExtensionRuntime::default();
+    runtime.bind_session_actions(Arc::new(SessionActions::default()));
+    let definition = ToolDefinition::new("pending", "pending", JsonValue::Object(Default::default()), Arc::new(|_| {
+        Box::pin(std::future::pending())
+    }));
+    let factory = Arc::new(move |_| {
+        let disposed = disposed.clone();
+        Ok(maho_ext_host::wrapper::ToolInvocation::new(context(), move || {
+            disposed.store(true, std::sync::atomic::Ordering::SeqCst);
+        }))
+    });
+    let tool = maho_ext_host::wrapper::wrap_registered_tool_with_invocation(
+        RegisteredTool { definition, source_info: SourceInfo::default() }, runtime, factory,
+    );
+    let mut execution = (tool.execute)("call".into(), JsonValue::Null, None, None);
+    std::future::poll_fn(|cx| {
+        assert!(execution.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    }).await;
+    drop(execution);
+    assert!(observed.load(std::sync::atomic::Ordering::SeqCst));
 }
 
 struct ContextActions { revision: std::sync::atomic::AtomicU64, aborted: Mutex<Option<AbortSource>> }
@@ -551,9 +1086,14 @@ impl ExtensionContextActions for ContextActions {
     fn is_idle(&self) -> bool { false }
     fn is_project_trusted(&self) -> bool { false }
     fn get_signal(&self) -> Option<AbortSignal> { None }
+    fn get_steering_signal(&self) -> Option<AbortSignal> { Some(AbortSignal::default()) }
+    fn get_thinking_level(&self) -> Option<ThinkingLevel> { Some(ThinkingLevel::High) }
     fn abort(&self, source: Option<AbortSource>) { *self.aborted.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = source; }
     fn has_pending_messages(&self) -> bool { true }
-    fn request_reload(&self) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
+    fn request_reload(&self) -> ExtensionFuture<'_, ()> { Box::pin(async move {
+        self.revision.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }) }
     fn is_compacting(&self) -> bool { true }
     fn check_reload_veto(&self) -> ExtensionFuture<'_, ReloadVetoDecision> { Box::pin(async { Ok(ReloadVetoDecision { cancelled: true, reason: Some("busy".into()) }) }) }
     fn shutdown(&self) {}
@@ -570,9 +1110,13 @@ impl ExtensionContextActions for ContextActions {
     fn prepare_provider_request(&self, messages: Vec<AgentMessage>) -> ExtensionFuture<'_, ProviderRequestPreparation> {
         Box::pin(async move { Ok(ProviderRequestPreparation { messages, transform_payload: Arc::new(|payload| Box::pin(async move { Ok(payload) })), transform_headers: Arc::new(|headers| Box::pin(async move { Ok(headers) })) }) })
     }
-    fn begin_compaction(&self, _: BeginCompactionOptions) -> Option<AbortSignal> { None }
-    fn update_compaction(&self, _: UpdateCompactionOptions) {}
-    fn end_compaction(&self, _: EndCompactionOptions) {}
+    fn begin_compaction(&self, _: BeginCompactionOptions) -> Option<AbortSignal> { Some(AbortSignal::default()) }
+    fn update_compaction(&self, options: UpdateCompactionOptions) {
+        if options.signal.is_some_and(|signal| signal.is_aborted()) { self.revision.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
+    }
+    fn end_compaction(&self, options: EndCompactionOptions) {
+        if options.signal.is_some_and(|signal| signal.is_aborted()) { self.revision.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
+    }
     fn get_message_revision(&self) -> u64 { self.revision.load(std::sync::atomic::Ordering::SeqCst) }
     fn apply_compaction(&self, _: CompactionResult, options: ApplyCompactionOptions) -> ExtensionFuture<'_, ApplyCompactionResult> {
         Box::pin(async move { Ok(if options.expected_revision == Some(self.get_message_revision()) { ApplyCompactionResult::Applied } else { ApplyCompactionResult::Stale }) })
@@ -588,13 +1132,26 @@ async fn context_binding_reads_live_host_state_and_rejects_after_invalidation() 
     let mut runner = runner(vec![]); runner.bind_context_actions(actions.clone()).unwrap();
     let ctx = runner.create_context().unwrap();
     assert_eq!(ctx.agent_dir, std::path::PathBuf::from("/fixture/agent")); assert_eq!(ctx.effective_service_tier, Some(ServiceTier::Flex));
+    assert_eq!(ctx.thinking_level, Some(ThinkingLevel::High));
+    assert!(ctx.steering_signal.is_some());
     assert!(!ctx.is_idle()); assert!(ctx.is_compacting()); assert_eq!(ctx.get_system_prompt(), "live prompt");
     assert!(ctx.has_pending_messages().unwrap()); assert!(ctx.check_reload_veto().await.unwrap().cancelled);
     ctx.abort(Some(AbortSource::User)).unwrap(); assert_eq!(*actions.aborted.lock().unwrap(), Some(AbortSource::User));
     actions.revision.store(2, std::sync::atomic::Ordering::SeqCst); assert_eq!(ctx.get_message_revision().unwrap(), 2);
     let result = ctx.apply_compaction(CompactionResult { summary: "summary".into(), first_kept_entry_id: "id".into(), tokens_before: 100, details: None }, ApplyCompactionOptions { reason: CompactionReason::Extension, expected_revision: Some(1), expected_warm_anchor: None, signal: None }).await.unwrap();
     assert_eq!(result, ApplyCompactionResult::Stale);
+    let settings = ctx.session_settings().unwrap();
     runner.invalidate("old context"); assert_eq!(ctx.get_message_revision().unwrap_err().message, "old context"); assert!(ctx.abort(None).is_err());
+    assert_eq!(settings.set_model_fallback_enabled(false).await.unwrap_err().message, "old context");
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| settings.get_fallback_status())).is_err());
+    for access in [ExtensionContext::is_idle as fn(&ExtensionContext) -> bool, ExtensionContext::is_compacting, ExtensionContext::is_project_trusted] {
+        let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| access(&ctx))).unwrap_err();
+        assert_eq!(error.downcast_ref::<ExtensionFailure>().unwrap().message, "old context");
+    }
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.get_system_prompt())).is_err());
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.get_registered_mcp_servers())).is_err());
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.session_manager.get_entries())).is_err());
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.session_manager.session_id())).is_err());
 }
 
 #[tokio::test]
@@ -603,6 +1160,77 @@ async fn before_agent_start_keeps_prompt_chaining_with_bound_live_context() {
     let mut runner = runner(vec![extension("first", EventKind::BeforeAgentStart, prompt("1")), extension("second", EventKind::BeforeAgentStart, prompt("2"))]);
     runner.bind_context_actions(actions).unwrap();
     assert_eq!(runner.emit_before_agent_start(before()).await.unwrap().unwrap().system_prompt.as_deref(), Some("base12"));
+}
+
+#[test]
+fn compaction_signal_is_inherited_within_one_context_not_across_invocations() {
+    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) });
+    let mut runner = runner(vec![]);
+    runner.bind_context_actions(actions.clone()).unwrap();
+    let first = runner.create_context().unwrap();
+    let second = runner.create_context().unwrap();
+    first.begin_compaction(BeginCompactionOptions { reason: CompactionReason::Extension }).unwrap().unwrap().abort();
+    let update = || UpdateCompactionOptions { reason: CompactionReason::Extension, signal: None, delta: None, text: None };
+    first.update_compaction(update()).unwrap();
+    second.update_compaction(update()).unwrap();
+    first.end_compaction(EndCompactionOptions { reason: CompactionReason::Extension, signal: None, aborted: None, error_message: None }).unwrap();
+    assert_eq!(actions.revision.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+struct KernelCapabilities(bool);
+#[tokio::test]
+async fn retained_kernel_capabilities_reject_stale_describe_and_invoke() {
+    use maho_ext_host::kernel_tools_context::with_kernel_tools;
+    let mut runner = runner(vec![]);
+    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) })).unwrap();
+    with_kernel_tools(Arc::new(KernelCapabilities(true)), async {
+        let context = runner.create_context().unwrap();
+        let tools = context.kernel_tools().unwrap().unwrap();
+        runner.invalidate("replaced");
+        assert_eq!(tools.describe(&[]).await.unwrap_err().message, "replaced");
+        assert_eq!(tools.invoke(KernelToolInvokeRequest { name: "test".into(), kernel_generation: 1, definition_revision: 1, args: JsonValue::Null, call_id: "call".into() }, Default::default()).await.unwrap_err().message, "replaced");
+    }).await;
+}
+impl ExtensionKernelTools for KernelCapabilities {
+    fn invoke_scope(&self) -> bool { self.0 }
+    fn describe<'a>(&'a self, _: &'a [String]) -> ExtensionFuture<'a, JsonValue> { Box::pin(async { Ok(JsonValue::Null) }) }
+    fn invoke(&self, _: KernelToolInvokeRequest, _: KernelToolInvokeOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Ok(JsonValue::Null) }) }
+}
+
+#[tokio::test]
+async fn concurrent_context_reload_requests_share_one_host_operation() {
+    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) });
+    let mut runner = runner(vec![]);
+    runner.bind_context_actions(actions.clone()).unwrap();
+    let first = runner.create_context().unwrap();
+    let second = runner.create_context().unwrap();
+    let (one, two) = tokio::join!(first.request_reload(), second.request_reload());
+    one.unwrap();
+    two.unwrap();
+    assert_eq!(actions.revision.load(std::sync::atomic::Ordering::SeqCst), 1);
+    first.request_reload().await.unwrap();
+    assert_eq!(actions.revision.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn nested_kernel_invocations_restore_outer_capability_scope() {
+    use maho_ext_host::kernel_tools_context::*;
+    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) });
+    let mut runner = runner(vec![]);
+    runner.bind_context_actions(actions).unwrap();
+    let retained = runner.create_context().unwrap();
+    with_kernel_tools(Arc::new(KernelCapabilities(true)), async {
+        assert!(retained.kernel_tools().unwrap().unwrap().invoke_scope());
+        assert!(runner.create_context().unwrap().kernel_tools().unwrap().unwrap().invoke_scope());
+        with_kernel_tools(Arc::new(KernelCapabilities(false)), async {
+            assert!(!retained.kernel_tools().unwrap().unwrap().invoke_scope());
+            assert!(!runner.create_context().unwrap().kernel_tools().unwrap().unwrap().invoke_scope());
+        }).await;
+        assert!(current_kernel_tools().unwrap().invoke_scope());
+    }).await;
+    assert!(current_kernel_tools().is_none());
+    assert!(retained.kernel_tools().unwrap().is_none());
+    assert!(runner.create_context().unwrap().kernel_tools().unwrap().is_none());
 }
 
 #[tokio::test]
@@ -618,6 +1246,48 @@ async fn provider_request_metadata_reaches_handlers_while_payloads_chain() {
     assert_eq!(result, JsonValue::String("payload:next".into()));
 }
 
+#[tokio::test]
+async fn prepared_provider_request_chains_local_transforms_and_rejects_stale_callbacks() {
+    let payload: ExtensionHandler = Arc::new(|event, _| Box::pin(async move {
+        let ExtensionEvent::BeforeProviderRequest { payload, .. } = event else { panic!("payload event") };
+        Ok(EventResult::ProviderPayload(JsonValue::String(format!("{}:next", payload.as_str().unwrap()))))
+    }));
+    let headers: ExtensionHandler = Arc::new(|event, _| Box::pin(async move {
+        let ExtensionEvent::BeforeProviderHeaders { headers } = event else { panic!("headers event") };
+        headers.insert("X-Prepared".into(), Some("yes".into()));
+        Ok(EventResult::None)
+    }));
+    let runner = runner(vec![extension("owner", EventKind::BeforeProviderRequest, payload.clone()),
+        extension("other", EventKind::BeforeProviderRequest, payload), extension("headers", EventKind::BeforeProviderHeaders, headers)]);
+    let preparation = runner.prepare_provider_request(Vec::new(), Some("owner".into())).await.unwrap();
+    assert!(preparation.messages.is_empty());
+    assert_eq!((preparation.transform_payload)(JsonValue::String("base".into())).await.unwrap(), JsonValue::String("base:next".into()));
+    assert_eq!((preparation.transform_headers)(BTreeMap::new()).await.unwrap()["X-Prepared"].as_deref(), Some("yes"));
+    runner.invalidate("reloaded");
+    assert_eq!((preparation.transform_payload)(JsonValue::Null).await.unwrap_err().message, "reloaded");
+    assert_eq!((preparation.transform_headers)(BTreeMap::new()).await.unwrap_err().message, "reloaded");
+}
+
+#[tokio::test]
+async fn handler_provider_preparation_excludes_its_owner_without_reentering_session_actions() {
+    let outer: ExtensionHandler = Arc::new(|_, ctx| Box::pin(async move {
+        let request = ctx.prepare_provider_request(Vec::new()).await?;
+        let payload = (request.transform_payload)(JsonValue::String("base".into())).await?;
+        assert_eq!(payload, JsonValue::String("base:other".into()));
+        Ok(EventResult::None)
+    }));
+    let owner_payload: ExtensionHandler = Arc::new(|_, _| Box::pin(async { panic!("owner must be excluded") }));
+    let other_payload: ExtensionHandler = Arc::new(|event, _| Box::pin(async move {
+        let ExtensionEvent::BeforeProviderRequest { payload, .. } = event else { panic!("payload event") };
+        Ok(EventResult::ProviderPayload(JsonValue::String(format!("{}:other", payload.as_str().unwrap()))))
+    }));
+    let mut owner = extension("owner", EventKind::AgentStart, outer);
+    owner.handlers.insert(EventKind::BeforeProviderRequest, vec![owner_payload]);
+    let mut runner = runner(vec![owner, extension("other", EventKind::BeforeProviderRequest, other_payload)]);
+    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) })).unwrap();
+    runner.emit(ExtensionEvent::AgentStart).await.unwrap();
+}
+
 struct CommandActions(Mutex<Vec<String>>);
 impl ExtensionCommandContextActions for CommandActions {
     fn wait_for_idle(&self) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
@@ -629,8 +1299,109 @@ impl ExtensionCommandContextActions for CommandActions {
     fn edit_assistant_message<'a>(&'a self, _: &'a str, _: &'a str, _: EditMessageOptions) -> ExtensionFuture<'a, EditMessageResult> { Box::pin(async { Ok(EditMessageResult { unchanged: Some(true), ..Default::default() }) }) }
     fn edit_user_message<'a>(&'a self, _: &'a str, _: &'a str, _: EditMessageOptions) -> ExtensionFuture<'a, EditMessageResult> { Box::pin(async { Ok(EditMessageResult { entry_id: Some("edited".into()), ..Default::default() }) }) }
     fn switch_session<'a>(&'a self, _: &'a str, _: SwitchSessionOptions) -> ExtensionFuture<'a, SessionNavigationResult> { Box::pin(async { Ok(SessionNavigationResult { cancelled: false }) }) }
-    fn reload(&self) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
+    fn reload(&self) -> ExtensionFuture<'_, ()> { Box::pin(async move { self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("reload".into()); Ok(()) }) }
 }
+#[tokio::test]
+async fn command_reload_requests_share_the_same_pending_operation() {
+    let runner = runner(vec![]);
+    let actions = Arc::new(CommandActions(Mutex::new(vec![])));
+    let first = runner.create_command_context(actions.clone()).unwrap();
+    let second = runner.create_command_context(actions.clone()).unwrap();
+    let (one, two) = tokio::join!(first.reload(), second.reload());
+    one.unwrap(); two.unwrap();
+    assert_eq!(*actions.0.lock().unwrap(), ["reload"]);
+    first.reload().await.unwrap();
+    assert_eq!(*actions.0.lock().unwrap(), ["reload", "reload"]);
+}
+#[tokio::test]
+async fn retained_command_actions_reject_stale_navigation_before_host_call() {
+    let runner = runner(vec![]);
+    let host = Arc::new(CommandActions(Mutex::new(vec![])));
+    let context = runner.create_command_context(host.clone()).unwrap();
+    let actions = context.actions.clone();
+    runner.invalidate("replaced");
+    assert_eq!(actions.navigate_tree("leaf", Default::default()).await.unwrap_err().message, "replaced");
+    assert_eq!(actions.reload().await.unwrap_err().message, "replaced");
+    assert!(host.0.lock().unwrap().is_empty());
+}
+#[tokio::test]
+async fn replaced_session_callback_messages_reject_stale_context() {
+    let runner = runner(vec![]);
+    let context = ReplacedSessionContext {
+        context: runner.create_command_context(Arc::new(CommandActions(Mutex::new(vec![])))).unwrap(),
+        message_actions: Arc::new(SessionActions { active: Mutex::new(vec![]), name: Mutex::new(None), fast: Mutex::new(false), entries: Mutex::new(vec![]) }),
+    };
+    runner.invalidate("replaced");
+    assert_eq!(context.send_user_message(UserMessageContent::Text("late".into()), Default::default()).await.unwrap_err().message, "replaced");
+    assert_eq!(context.send_message(CustomMessage { custom_type: "late".into(), content: vec![], display: false, details: None }, Default::default()).await.unwrap_err().message, "replaced");
+}
+#[tokio::test]
+async fn legacy_command_replacement_removes_prior_context_handler() {
+    let mut api = ExtensionApi::new(LoadedExtension::new("commands", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+    api.register_command_with_context("jump", None, None, Arc::new(|_, _| Box::pin(async { Err("old handler".into()) })));
+    let invoked = Arc::new(Mutex::new(false));
+    let captured = invoked.clone();
+    api.register_command("jump", None, None, Arc::new(move |_, _| {
+        let captured = captured.clone();
+        Box::pin(async move { *captured.lock().unwrap() = true; Ok(()) })
+    }));
+    let runner = runner(vec![api.registered]);
+    let context = runner.create_command_context(Arc::new(CommandActions(Mutex::new(vec![])))).unwrap();
+    runner.invoke_command("jump", "", &context).await.unwrap();
+    assert!(*invoked.lock().unwrap());
+}
+#[tokio::test]
+async fn retained_api_commands_reach_existing_runner_and_replace_context_handlers() {
+    let mut runner = runner(vec![]);
+    let scope = runner.runtime.registration_scope();
+    let mut api = ExtensionApi::new(LoadedExtension::new("late-command", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), scope.clone());
+    scope.commit_registration().unwrap();
+    runner.extensions.push(api.registered.clone());
+    api.register_command_with_context("late", None, None, Arc::new(|_, _| Box::pin(async { Err("context handler".into()) })));
+    api.register_filesystem_policy(FilesystemPolicy { check: Arc::new(|_| Box::pin(async { Ok(FilesystemPolicyDecision::Allow) })), denied_roots: Some(vec!["/late-root".into()]) });
+    assert_eq!(runner.get_filesystem_policy_denied_roots(), vec![std::path::PathBuf::from("/late-root")]);
+    api.register_command_with_completions("complete", None, None, Arc::new(|_, _| Box::pin(async { Ok(()) })), Arc::new(|prefix| Box::pin(async move { Ok(Some(vec![AutocompleteItem { value: prefix.into(), label: "choice".into(), description: None }])) })));
+    assert_eq!(runner.get_command_argument_completions("complete", "prefix").await.unwrap().unwrap()[0].value, "prefix");
+    api.register_command("complete", None, None, Arc::new(|_, _| Box::pin(async { Ok(()) })));
+    assert!(runner.get_command_argument_completions("complete", "prefix").await.unwrap().is_none());
+    api.register_shortcut("CTRL+K", Some("late shortcut".into()), Arc::new(|_| Box::pin(async { Ok(()) })));
+    assert_eq!(runner.get_shortcuts()["ctrl+k"].description.as_deref(), Some("late shortcut"));
+    assert!(runner.resolve_shortcuts(&Default::default()).0.contains_key("ctrl+k"));
+    api.register_markdown_transformer(Arc::new(|text, _| format!("late:{text}")));
+    assert_eq!(runner.transform_markdown("input", &MarkdownTransformContext { message_type: MarkdownMessageType::User, is_streaming: false, available_width: 80 }), "late:input");
+    api.rpc_handle("late", Arc::new(|data| Box::pin(async move { Ok(data) }))).unwrap();
+    assert_eq!(runner.handle_rpc_request("late", JsonValue::Bool(true)).await.unwrap(), JsonValue::Bool(true));
+    api.register_flag("late", FlagType::Boolean { default: Some(true) }, Some("late flag".into()));
+    assert_eq!(runner.get_flags()["late"].description.as_deref(), Some("late flag"));
+    api.register_tool_with_renderers(ToolDefinition::new("late_tool", "late tool", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { Ok(ToolResult::text("done")) }))), ToolRenderers::<usize, String> { render_call: None, render_result: None }).unwrap();
+    assert!(runner.get_all_registered_tools().iter().any(|tool| tool.definition.name == "late_tool"));
+    assert_eq!(runner.get_tool_definition_owned("late_tool").unwrap().description, "late tool");
+    assert!(runner.get_tool_renderers::<usize, String>("late_tool").is_some());
+    api.register_tool(ToolDefinition::new("late_tool", "replacement", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { Ok(ToolResult::text("done")) }))));
+    assert!(runner.get_tool_renderers::<usize, String>("late_tool").is_none());
+    api.register_mcp_server("late", McpServerDeclaration { command: Some("late-command".into()), ..Default::default() });
+    assert_eq!(runner.get_registered_mcp_servers()[0].config.command.as_deref(), Some("late-command"));
+    assert_eq!(runner.create_context().unwrap().registered_mcp_servers[0].name, "late");
+    let message_renderer: MessageRenderer = Arc::new(|_, _, _| None);
+    api.register_message_renderer("late", message_renderer.clone());
+    assert!(Arc::ptr_eq(&runner.get_message_renderer_owned("late").unwrap(), &message_renderer));
+    let entry_renderer: EntryRenderer = Arc::new(|_, _, _| None);
+    api.register_entry_renderer("late", entry_renderer.clone(), EntryRendererOptions::default());
+    let (registered_renderer, options) = runner.get_entry_renderer_owned("late").unwrap();
+    assert!(Arc::ptr_eq(&registered_renderer, &entry_renderer));
+    assert!(options.is_some());
+    api.register_entry_renderer_optional("late", entry_renderer.clone(), None);
+    let (registered_renderer, options) = runner.get_entry_renderer_owned("late").unwrap();
+    assert!(Arc::ptr_eq(&registered_renderer, &entry_renderer));
+    assert!(options.is_none());
+    let context = runner.create_command_context(Arc::new(CommandActions(Mutex::new(vec![])))).unwrap();
+    assert!(runner.get_command("late").is_some());
+    assert_eq!(runner.invoke_command("late", "", &context).await.unwrap_err().message, "context handler");
+    api.register_command("late", None, None, Arc::new(|_, _| Box::pin(async { Ok(()) })));
+    runner.invoke_command("late", "", &context).await.unwrap();
+    assert_eq!(runner.get_registered_commands().len(), 2);
+}
+
 #[tokio::test]
 async fn command_invocation_uses_command_capable_context_without_changing_legacy_handlers() {
     let mut api = ExtensionApi::new(LoadedExtension::new("commands", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
@@ -647,7 +1418,7 @@ async fn command_invocation_uses_command_capable_context_without_changing_legacy
     assert!(runner.invoke_command("missing", "", &ctx).await.is_err());
     runner.invalidate("replaced command context");
     assert_eq!(ctx.navigate_tree("old leaf", ExtensionTreeNavigationOptions::default()).await.unwrap_err().message, "replaced command context");
-    assert_eq!(*actions.0.lock().unwrap(), ["leaf"]);
+    assert_eq!(*actions.0.lock().unwrap(), ["leaf", "reload"]);
 }
 #[tokio::test]
 async fn question_without_ui_returns_unavailable_and_preserves_unanswered_ids() {

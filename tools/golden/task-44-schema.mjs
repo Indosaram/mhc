@@ -1,0 +1,24 @@
+import { resolve, join } from "node:path";
+import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
+import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
+const upstream=resolve(process.env.OMO_SRC ?? "/home/indo/code/oh-my-openagent");
+const expected="77f3067f157a4f88e6d8ed48b3a6c338654402ed";
+const head=execFileSync("git",["--no-pager","-C",upstream,"rev-parse","HEAD"],{encoding:"utf8"}).trim();
+if(head!==expected) throw new Error(`omo source pin mismatch: ${head}`);
+const path=join(upstream,"packages/omo-senpi/src/components/task/dag-tool.ts");
+const source=readFileSync(path,"utf8");
+const start=source.indexOf("export const DAG_TOOL_NAME");
+const end=source.indexOf("export type DagToolInput");
+if(start<0 || end<start) throw new Error("DAG schema source boundaries missing");
+const require=createRequire(path);
+const result=await Bun.build({entrypoints:["task-schema"],target:"bun",plugins:[{name:"pinned-schema",setup(builder){
+    builder.onResolve({filter:/^task-schema$/},()=>({path:"task-schema",namespace:"schema"}));
+    builder.onLoad({filter:/.*/,namespace:"schema"},()=>({loader:"ts",contents:`import { Type } from ${JSON.stringify(require.resolve("typebox"))};\n${source.slice(start,end)}`}));
+}}]});
+if(!result.success) throw new AggregateError(result.logs,"Schema bundle failed");
+const module=await import(`data:text/javascript;base64,${Buffer.from(await result.outputs[0].text()).toString("base64")}`);
+const out=resolve(import.meta.dir,"../../crates/omo/components/maho-omo-task/tests/golden");
+mkdirSync(out,{recursive:true});
+writeFileSync(join(out,"dag-schema.json"),JSON.stringify({source:expected,parameters:module.DagToolParams},null,2)+"\n");
+console.log(`Generated DAG schema from ${expected}`);

@@ -10,10 +10,125 @@ pub use maho_tools::{ToolContext, ToolDefinition, FilesystemPolicy, FilesystemPo
 pub use maho_tools::definition::{AbortSignal, ToolContent, ToolResult, ToolSessionManager, ToolExposure, ToolExecutionMode, ToolError, ToolCall};
 pub use maho_tools::filesystem_policy::FilesystemOperation;
 pub use maho_tui::tui::Component;
+pub use maho_tui::autocomplete::AutocompleteItem;
+pub use maho_tools::{bash::BashToolInput, read::ReadToolInput, edit::EditToolInput, write::WriteToolInput, grep::index::GrepToolInput, find::FindToolInput, ls::LsToolInput};
+
+pub fn define_tool(tool: ToolDefinition) -> ToolDefinition { tool }
+pub fn is_tool_call_event_type(name: &str, event: &ToolCallEvent) -> bool { event.tool_name == name }
+pub fn is_bash_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "bash" }
+pub fn is_power_shell_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "powershell" }
+pub fn is_read_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "read" }
+pub fn is_edit_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "edit" }
+pub fn is_write_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "write" }
+pub fn is_grep_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "grep" }
+pub fn is_find_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "find" }
+pub fn is_ls_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "ls" }
 
 pub type ExtensionFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ExtensionFailure>> + Send + 'a>>;
 pub type UiFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub type ToolHookStatusUpdater = Arc<dyn Fn(&str) + Send + Sync>;
+pub type ExtensionToolExecutor = Arc<dyn for<'a> Fn(&'a str, JsonValue, Option<maho_ai::utils::abort::AbortSignal>, Option<maho_agent::types::AgentToolUpdateCallback>, &'a ExtensionContext) -> ExtensionFuture<'a, AgentToolResult> + Send + Sync>;
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypedAgentToolResult<TDetails> {
+    pub content: Vec<ContentBlock>, pub details: TDetails, pub usage: Option<Usage>,
+    pub added_tool_names: Option<Vec<String>>, pub terminate: Option<bool>, pub is_error: Option<bool>,
+}
+impl<TDetails: serde::Serialize> TypedAgentToolResult<TDetails> {
+    pub fn into_agent_result(self) -> Result<AgentToolResult, ExtensionFailure> {
+        Ok(AgentToolResult { content: self.content, details: serde_json::to_value(self.details).map_err(|error| ExtensionFailure::new(error.to_string()))?,
+            usage: self.usage, added_tool_names: self.added_tool_names, terminate: self.terminate, is_error: self.is_error })
+    }
+}
+impl<TDetails: serde::de::DeserializeOwned> TypedAgentToolResult<TDetails> {
+    pub fn from_agent_result(result: &AgentToolResult) -> Result<Self, ExtensionFailure> {
+        Ok(Self { content: result.content.clone(), details: serde_json::from_value(result.details.clone()).map_err(|error| ExtensionFailure::new(error.to_string()))?,
+            usage: result.usage, added_tool_names: result.added_tool_names.clone(), terminate: result.terminate, is_error: result.is_error })
+    }
+}
+pub type TypedToolUpdateCallback<TDetails> = Arc<dyn Fn(TypedAgentToolResult<TDetails>) -> Result<(), ExtensionFailure> + Send + Sync>;
+pub type TypedExtensionToolExecutor<TArgs, TDetails> = Arc<dyn for<'a> Fn(&'a str, TArgs, Option<maho_ai::utils::abort::AbortSignal>, Option<TypedToolUpdateCallback<TDetails>>, &'a ExtensionContext) -> ExtensionFuture<'a, TypedAgentToolResult<TDetails>> + Send + Sync>;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ToolRenderResultOptions { pub expanded: bool, pub is_partial: bool }
+pub struct ToolRenderContext<TState, TArgs> {
+    pub args: TArgs,
+    pub tool_call_id: String,
+    pub invalidate: std::rc::Rc<dyn Fn()>,
+    pub last_component: Option<Box<dyn Component>>,
+    pub state: TState,
+    pub cwd: PathBuf,
+    pub execution_started: bool,
+    pub args_complete: bool,
+    pub is_partial: bool,
+    pub expanded: bool,
+    pub show_images: bool,
+    pub image_protocol: Option<maho_tui::image_stub::ImageProtocol>,
+    pub is_error: bool,
+    pub has_result: Option<bool>,
+    pub spinner_frame: Option<usize>,
+}
+pub type ToolCallRenderer<TState, TArgs> = Arc<dyn Fn(&TArgs, &Theme, &mut ToolRenderContext<TState, TArgs>) -> Box<dyn Component> + Send + Sync>;
+pub type ToolResultRenderer<TState, TArgs> = Arc<dyn Fn(&AgentToolResult, ToolRenderResultOptions, &Theme, &mut ToolRenderContext<TState, TArgs>) -> Box<dyn Component> + Send + Sync>;
+pub type TypedToolResultRenderer<TState, TArgs, TDetails> = Arc<dyn Fn(&TypedAgentToolResult<TDetails>, ToolRenderResultOptions, &Theme, &mut ToolRenderContext<TState, TArgs>) -> Box<dyn Component> + Send + Sync>;
+pub fn typed_tool_result_renderer<TState: 'static, TArgs: 'static, TDetails: serde::de::DeserializeOwned + 'static>(renderer: TypedToolResultRenderer<TState, TArgs, TDetails>) -> ToolResultRenderer<TState, TArgs> {
+    Arc::new(move |result, options, theme, context| {
+        match TypedAgentToolResult::from_agent_result(result) {
+            Ok(result) => renderer(&result, options, theme, context),
+            Err(error) => std::panic::panic_any(error),
+        }
+    })
+}
+pub struct ToolRenderers<TState, TArgs> {
+    pub render_call: Option<ToolCallRenderer<TState, TArgs>>,
+    pub render_result: Option<ToolResultRenderer<TState, TArgs>>,
+}
+pub struct ToolRendererSession<TState, TArgs> {
+    pub renderers: Arc<ToolRenderers<TState, TArgs>>,
+    pub context: ToolRenderContext<TState, TArgs>,
+}
+pub struct ToolRendererSlots<TState, TArgs> {
+    pub session: ToolRendererSession<TState, TArgs>,
+    call_component: Option<Box<dyn Component>>,
+    result_component: Option<Box<dyn Component>>,
+}
+impl<TState, TArgs> ToolRendererSession<TState, TArgs> {
+    pub fn into_slots(mut self) -> ToolRendererSlots<TState, TArgs> {
+        let call_component = self.context.last_component.take();
+        ToolRendererSlots { session: self, call_component, result_component: None }
+    }
+}
+impl<TState, TArgs: Clone> ToolRendererSlots<TState, TArgs> {
+    pub fn render_call(&mut self, theme: &Theme, width: usize) -> Option<Vec<String>> {
+        self.session.context.last_component = self.call_component.take();
+        let lines = self.session.render_call(theme, width);
+        self.call_component = self.session.context.last_component.take();
+        lines
+    }
+    pub fn render_result(&mut self, result: &AgentToolResult, theme: &Theme, width: usize) -> Option<Vec<String>> {
+        self.session.context.last_component = self.result_component.take();
+        let lines = self.session.render_result(result, theme, width);
+        self.result_component = self.session.context.last_component.take();
+        lines
+    }
+}
+impl<TState, TArgs: Clone> ToolRendererSession<TState, TArgs> {
+    pub fn render_call(&mut self, theme: &Theme, width: usize) -> Option<Vec<String>> {
+        let renderer = self.renderers.render_call.as_ref()?;
+        let args = self.context.args.clone();
+        let mut component = renderer(&args, theme, &mut self.context);
+        let lines = component.render(width);
+        self.context.last_component = Some(component);
+        Some(lines)
+    }
+    pub fn render_result(&mut self, result: &AgentToolResult, theme: &Theme, width: usize) -> Option<Vec<String>> {
+        let renderer = self.renderers.render_result.as_ref()?;
+        let options = ToolRenderResultOptions { expanded: self.context.expanded, is_partial: self.context.is_partial };
+        let mut component = renderer(result, options, theme, &mut self.context);
+        let lines = component.render(width);
+        self.context.last_component = Some(component);
+        Some(lines)
+    }
+}
 
 pub type LazyToolActivator = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 pub type ShortcutHandler = Arc<dyn for<'a> Fn(&'a ExtensionContext) -> ExtensionFuture<'a, ()> + Send + Sync>;
@@ -46,10 +161,40 @@ pub struct ProviderConfig {
     pub auth_header: Option<bool>, pub models: Option<Vec<ProviderModelConfig>>, pub refresh_models: Option<ProviderRefresh>,
     pub oauth: Option<Arc<dyn maho_ai::auth::types::OAuthAuth>>, pub fallback_eligible: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
+#[derive(Clone, Debug, Default)]
+pub struct ProviderModelOptions {
+    pub service_tier: Option<maho_ai::types::ServiceTierPreference>,
+    pub prompt_preset: Option<String>,
+    pub sampling_params: Option<BTreeMap<String, JsonValue>>,
+    pub cache_retention: Option<maho_ai::types::CacheRetention>,
+}
+/// Complete provider options without changing existing config struct literals.
+#[derive(Clone, Default)]
+pub struct ProviderConfigOptions {
+    pub config: ProviderConfig,
+    pub model_options: BTreeMap<String, ProviderModelOptions>,
+    pub retry_policy: Option<maho_ai::utils::retry_profile::types::RetryPolicyProfile>,
+}
+pub trait ExtensionOAuthConfig: Send + Sync {
+    fn name(&self) -> &str;
+    fn is_subscription(&self) -> bool { false }
+    fn uses_callback_server(&self) -> Option<bool> { None }
+    fn login<'a>(&'a self, callbacks: &'a dyn maho_ai::oauth::OAuthLoginCallbacks) -> ExtensionFuture<'a, maho_ai::oauth::OAuthCredentials>;
+    fn refresh_token<'a>(&'a self, credentials: &'a maho_ai::oauth::OAuthCredentials, signal: &'a maho_ai::utils::abort::AbortSignal) -> ExtensionFuture<'a, maho_ai::oauth::OAuthCredentials>;
+    fn get_api_key(&self, credentials: &maho_ai::oauth::OAuthCredentials) -> String;
+    fn modify_models(&self, models: Vec<Model>, _: &maho_ai::oauth::OAuthCredentials) -> Vec<Model> { models }
+}
 #[derive(Clone)]
-pub enum ProviderRegistration { Config { name: String, config: Box<ProviderConfig> }, Native(Arc<dyn maho_ai::models::Provider>) }
+pub enum ProviderRegistration { Config { name: String, config: Box<ProviderConfig> }, ConfigOptions { name: String, options: Box<ProviderConfigOptions> }, Native(Arc<dyn maho_ai::models::Provider>) }
+/// Object-only request fields for callers that want schema constraints at construction.
+#[derive(Clone, Default)]
+pub struct ProviderObjectConfig {
+    pub config: ProviderConfig,
+    pub extra_body: Option<BTreeMap<String, JsonValue>>,
+    pub model_extra_bodies: BTreeMap<String, BTreeMap<String, JsonValue>>,
+}
 impl ProviderRegistration {
-    pub fn name(&self) -> &str { match self { Self::Config { name, .. } => name, Self::Native(provider) => provider.id() } }
+    pub fn name(&self) -> &str { match self { Self::Config { name, .. } | Self::ConfigOptions { name, .. } => name, Self::Native(provider) => provider.id() } }
 }
 pub trait ExtensionProviderActions: Send + Sync {
     fn register_provider(&self, registration: ProviderRegistration, extension_path: &str) -> Result<(), ExtensionFailure>;
@@ -240,6 +385,8 @@ pub trait ExtensionContextActions: Send + Sync {
     fn is_idle(&self) -> bool;
     fn is_project_trusted(&self) -> bool;
     fn get_signal(&self) -> Option<AbortSignal>;
+    fn get_steering_signal(&self) -> Option<AbortSignal> { None }
+    fn get_thinking_level(&self) -> Option<ThinkingLevel> { None }
     fn abort(&self, source: Option<AbortSource>);
     fn has_pending_messages(&self) -> bool;
     fn request_reload(&self) -> ExtensionFuture<'_, ()>;
@@ -248,6 +395,7 @@ pub trait ExtensionContextActions: Send + Sync {
     fn shutdown(&self);
     fn get_context_usage(&self) -> Option<ContextUsage>;
     fn get_compaction_settings(&self) -> CompactionSettings;
+    fn get_compaction_preparation(&self) -> Option<CompactionPreparationDetails> { None }
     fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64>;
     fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64;
     fn get_prompt_cache_keep_alive_settings(&self) -> PromptCacheKeepAliveSettings;
@@ -326,12 +474,58 @@ pub trait ExtensionUiActions: Send + Sync {
 pub enum NotificationType { Info, Warning, Error }
 /// Components retain senpi's render/invalidate/input contract; creation occurs on the UI thread.
 pub type ComponentFactory = Arc<dyn Fn(&Theme) -> Box<dyn Component> + Send + Sync>;
+pub trait ExtensionTuiHost {
+    fn request_render(&self);
+    fn dimensions(&self) -> (u16, u16);
+}
+pub trait ReadonlyFooterDataProvider {
+    fn get_git_branch(&self) -> Option<String>;
+    fn get_extension_statuses(&self) -> BTreeMap<String, String>;
+    fn get_available_provider_count(&self) -> usize;
+    fn on_branch_change(&self, callback: Arc<dyn Fn() + Send + Sync>) -> UiUnsubscribe;
+}
+pub type TuiComponentFactory = Arc<dyn Fn(&dyn ExtensionTuiHost, &Theme) -> Box<dyn Component> + Send + Sync>;
+pub type FooterComponentFactory = Arc<dyn Fn(&dyn ExtensionTuiHost, &Theme, &dyn ReadonlyFooterDataProvider) -> Box<dyn Component> + Send + Sync>;
+pub type CustomUiDone = std::rc::Rc<dyn Fn(JsonValue)>;
+pub type CustomComponentFuture<'a> = Pin<Box<dyn Future<Output = Result<Box<dyn Component>, ExtensionFailure>> + 'a>>;
+pub type CustomComponentFactory = Arc<dyn for<'a> Fn(&'a dyn ExtensionTuiHost, &'a Theme, &'a maho_tui::keybindings::KeybindingsManager, CustomUiDone) -> CustomComponentFuture<'a> + Send + Sync>;
+pub type OverlayOptionsFactory = Arc<dyn Fn() -> maho_tui::tui::OverlayOptions + Send + Sync>;
+#[derive(Clone)]
+pub enum ExtensionOverlayOptions { Static(OverlayOptionsFactory), Dynamic(OverlayOptionsFactory) }
+#[derive(Clone, Default)]
+pub struct CustomUiFactoryOptions {
+    pub overlay: bool,
+    pub overlay_options: Option<ExtensionOverlayOptions>,
+    pub on_handle: Option<Arc<dyn Fn(maho_tui::tui::OverlayHandle) + Send + Sync>>,
+}
+pub trait ExtensionUiFactories: Send + Sync {
+    fn set_widget_factory(&self, key: &str, factory: Option<TuiComponentFactory>, options: ExtensionWidgetOptions);
+    fn set_header_factory(&self, factory: Option<TuiComponentFactory>);
+    fn set_footer_factory(&self, factory: Option<FooterComponentFactory>);
+    fn custom_factory(&self, factory: CustomComponentFactory, options: CustomUiFactoryOptions) -> ExtensionFuture<'_, JsonValue>;
+}
 #[derive(Clone)]
 pub enum WidgetContent { Lines(Vec<String>), Component(ComponentFactory) }
 #[derive(Clone, Debug, Default)]
 pub struct CustomUiOptions { pub overlay: bool, pub overlay_options: Option<JsonValue> }
 pub trait ExtensionUi: Send + Sync {
     fn actions(&self) -> Option<&dyn ExtensionUiActions> { None }
+    fn factories(&self) -> Option<&dyn ExtensionUiFactories> { None }
+    fn set_widget_factory(&self, key: &str, factory: Option<TuiComponentFactory>, options: ExtensionWidgetOptions) -> Result<(), ExtensionFailure> {
+        self.factories().ok_or_else(|| ExtensionFailure::new("Widget factories are not available"))?.set_widget_factory(key, factory, options);
+        Ok(())
+    }
+    fn set_header_factory(&self, factory: Option<TuiComponentFactory>) -> Result<(), ExtensionFailure> {
+        self.factories().ok_or_else(|| ExtensionFailure::new("Header factories are not available"))?.set_header_factory(factory);
+        Ok(())
+    }
+    fn set_footer_factory(&self, factory: Option<FooterComponentFactory>) -> Result<(), ExtensionFailure> {
+        self.factories().ok_or_else(|| ExtensionFailure::new("Footer factories are not available"))?.set_footer_factory(factory);
+        Ok(())
+    }
+    fn custom_factory(&self, factory: CustomComponentFactory, options: CustomUiFactoryOptions) -> ExtensionFuture<'_, JsonValue> {
+        match self.factories() { Some(factories) => factories.custom_factory(factory, options), None => Box::pin(async { Err(ExtensionFailure::new("Custom UI factories are not available")) }) }
+    }
     fn question(&self, request: QuestionRequest, options: QuestionOptions) -> ExtensionFuture<'_, QuestionResponse> {
         match self.actions() { Some(actions) => actions.question(request, options), None => Box::pin(async move { Ok(QuestionResponse { status: QuestionStatus::Unavailable, answers: BTreeMap::new(), comment: None, unanswered: request.questions.into_iter().map(|question| question.id).collect(), auto_resolved_after_ms: None }) }) }
     }
@@ -383,6 +577,10 @@ pub struct ExtensionContext {
     pub update_tool_hook_status: Option<ToolHookStatusUpdater>,
 }
 impl ExtensionContext {
+    fn assert_active_or_panic(&self) {
+        if let Some(actions) = self.session_manager.extension_context_actions()
+            && let Err(error) = actions.assert_active() { std::panic::panic_any(error); }
+    }
     pub fn actions(&self) -> Result<&dyn ExtensionContextActions, ExtensionFailure> {
         let actions = self.session_manager.extension_context_actions().ok_or_else(|| ExtensionFailure::new("Extension context actions are not bound"))?;
         actions.assert_active()?; Ok(actions)
@@ -390,10 +588,15 @@ impl ExtensionContext {
     pub fn abort(&self, source: Option<AbortSource>) -> Result<(), ExtensionFailure> { self.actions()?.abort(source); Ok(()) }
     pub fn has_pending_messages(&self) -> Result<bool, ExtensionFailure> { Ok(self.actions()?.has_pending_messages()) }
     pub async fn request_reload(&self) -> Result<(), ExtensionFailure> { self.actions()?.request_reload().await }
-    pub async fn check_reload_veto(&self) -> Result<ReloadVetoDecision, ExtensionFailure> { self.actions()?.check_reload_veto().await }
+    pub async fn check_reload_veto(&self) -> Result<ReloadVetoDecision, ExtensionFailure> {
+        let result = self.actions()?.check_reload_veto().await?;
+        self.actions()?;
+        Ok(result)
+    }
     pub fn shutdown(&self) -> Result<(), ExtensionFailure> { self.actions()?.shutdown(); Ok(()) }
     pub fn get_context_usage(&self) -> Result<Option<ContextUsage>, ExtensionFailure> { Ok(self.actions()?.get_context_usage()) }
     pub fn get_compaction_settings(&self) -> Result<CompactionSettings, ExtensionFailure> { Ok(self.actions()?.get_compaction_settings()) }
+    pub fn get_compaction_preparation(&self) -> Result<Option<CompactionPreparationDetails>, ExtensionFailure> { Ok(self.actions()?.get_compaction_preparation()) }
     pub fn get_prompt_cache_safe_wait_seconds(&self) -> Result<Option<f64>, ExtensionFailure> { Ok(self.actions()?.get_prompt_cache_safe_wait_seconds()) }
     pub fn get_prompt_cache_goal_backstop_max_seconds(&self) -> Result<f64, ExtensionFailure> { Ok(self.actions()?.get_prompt_cache_goal_backstop_max_seconds()) }
     pub fn get_prompt_cache_keep_alive_settings(&self) -> Result<PromptCacheKeepAliveSettings, ExtensionFailure> { Ok(self.actions()?.get_prompt_cache_keep_alive_settings()) }
@@ -402,28 +605,36 @@ impl ExtensionContext {
     pub fn get_image_settings(&self) -> Result<ImageSettings, ExtensionFailure> { Ok(self.actions()?.get_image_settings()) }
     pub fn session_settings(&self) -> Result<&dyn ExtensionSessionSettings, ExtensionFailure> { Ok(self.actions()?.session_settings()) }
     pub fn compact(&self, options: CompactOptions) -> Result<(), ExtensionFailure> { self.actions()?.compact(options); Ok(()) }
-    pub async fn prepare_provider_request(&self, messages: Vec<AgentMessage>) -> Result<ProviderRequestPreparation, ExtensionFailure> { self.actions()?.prepare_provider_request(messages).await }
+    pub async fn prepare_provider_request(&self, messages: Vec<AgentMessage>) -> Result<ProviderRequestPreparation, ExtensionFailure> {
+        let result = self.actions()?.prepare_provider_request(messages).await?;
+        self.actions()?;
+        Ok(result)
+    }
     pub fn begin_compaction(&self, options: BeginCompactionOptions) -> Result<Option<AbortSignal>, ExtensionFailure> { Ok(self.actions()?.begin_compaction(options)) }
     pub fn update_compaction(&self, options: UpdateCompactionOptions) -> Result<(), ExtensionFailure> { self.actions()?.update_compaction(options); Ok(()) }
     pub fn end_compaction(&self, options: EndCompactionOptions) -> Result<(), ExtensionFailure> { self.actions()?.end_compaction(options); Ok(()) }
     pub fn get_message_revision(&self) -> Result<u64, ExtensionFailure> { Ok(self.actions()?.get_message_revision()) }
-    pub async fn apply_compaction(&self, result: CompactionResult, options: ApplyCompactionOptions) -> Result<ApplyCompactionResult, ExtensionFailure> { self.actions()?.apply_compaction(result, options).await }
+    pub async fn apply_compaction(&self, result: CompactionResult, options: ApplyCompactionOptions) -> Result<ApplyCompactionResult, ExtensionFailure> {
+        let result = self.actions()?.apply_compaction(result, options).await?;
+        self.actions()?;
+        Ok(result)
+    }
     pub fn get_loaded_hook_sources(&self) -> Result<LoadedHookSources, ExtensionFailure> { Ok(self.actions()?.get_loaded_hook_sources()) }
     pub fn kernel_tools(&self) -> Result<Option<&dyn ExtensionKernelTools>, ExtensionFailure> { Ok(self.actions()?.kernel_tools()) }
-    pub fn is_idle(&self) -> bool { self.session_manager.extension_context_actions().map_or_else(|| (self.is_idle_fn)(), ExtensionContextActions::is_idle) }
-    pub async fn wait_for_idle(&self) { (self.wait_for_idle_fn)().await; }
-    pub fn is_project_trusted(&self) -> bool { self.session_manager.extension_context_actions().map_or_else(|| (self.is_project_trusted_fn)(), ExtensionContextActions::is_project_trusted) }
-    pub fn is_compacting(&self) -> bool { self.session_manager.extension_context_actions().map_or_else(|| (self.is_compacting_fn)(), ExtensionContextActions::is_compacting) }
-    pub fn get_system_prompt(&self) -> String { (self.get_system_prompt_fn)() }
-    pub fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { (self.get_system_prompt_options_fn)() }
-    pub fn get_registered_mcp_servers(&self) -> &[RegisteredMcpServerDeclaration] { &self.registered_mcp_servers }
+    pub fn is_idle(&self) -> bool { self.assert_active_or_panic(); self.session_manager.extension_context_actions().map_or_else(|| (self.is_idle_fn)(), ExtensionContextActions::is_idle) }
+    pub async fn wait_for_idle(&self) { self.assert_active_or_panic(); (self.wait_for_idle_fn)().await; self.assert_active_or_panic(); }
+    pub fn is_project_trusted(&self) -> bool { self.assert_active_or_panic(); self.session_manager.extension_context_actions().map_or_else(|| (self.is_project_trusted_fn)(), ExtensionContextActions::is_project_trusted) }
+    pub fn is_compacting(&self) -> bool { self.assert_active_or_panic(); self.session_manager.extension_context_actions().map_or_else(|| (self.is_compacting_fn)(), ExtensionContextActions::is_compacting) }
+    pub fn get_system_prompt(&self) -> String { self.assert_active_or_panic(); (self.get_system_prompt_fn)() }
+    pub fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { self.assert_active_or_panic(); (self.get_system_prompt_options_fn)() }
+    pub fn get_registered_mcp_servers(&self) -> &[RegisteredMcpServerDeclaration] { self.assert_active_or_panic(); &self.registered_mcp_servers }
 }
 impl ToolContext for ExtensionContext {
-    fn cwd(&self) -> &Path { &self.cwd }
-    fn model(&self) -> Option<&Model> { self.model.as_ref() }
-    fn thinking_level(&self) -> Option<ThinkingLevel> { self.thinking_level }
-    fn session_manager(&self) -> &dyn ToolSessionManager { self.session_manager.as_ref() }
-    fn goal_store_file(&self) -> Option<&Path> { self.goal_store_file.as_deref() }
+    fn cwd(&self) -> &Path { self.assert_active_or_panic(); &self.cwd }
+    fn model(&self) -> Option<&Model> { self.assert_active_or_panic(); self.model.as_ref() }
+    fn thinking_level(&self) -> Option<ThinkingLevel> { self.assert_active_or_panic(); self.thinking_level }
+    fn session_manager(&self) -> &dyn ToolSessionManager { self.assert_active_or_panic(); self.session_manager.as_ref() }
+    fn goal_store_file(&self) -> Option<&Path> { self.assert_active_or_panic(); self.goal_store_file.as_deref() }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -479,6 +690,18 @@ pub enum CompactionRejectionCause { CancelledByExtension, ExternalOwner, WouldOv
 pub struct CompactionResult { pub summary: String, pub first_kept_entry_id: String, pub tokens_before: u64, pub details: Option<JsonValue> }
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompactionPreparation { pub settings: CompactionSettings, pub messages_to_summarize: Vec<AgentMessage>, pub turn_prefix_messages: Vec<AgentMessage>, pub tokens_before: u64, pub first_kept_entry_id: String, pub previous_summary: Option<String> }
+/// Complete preparation data for session_before_compact, exposed additively so
+/// existing event and preparation constructors remain source-compatible.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompactionPreparationDetails {
+    pub preparation: CompactionPreparation,
+    pub source_messages: Option<Vec<AgentMessage>>,
+    pub turn_prefix_source_messages: Option<Vec<AgentMessage>>,
+    pub is_split_turn: bool,
+    pub file_ops: CompactionFileOperations,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CompactionFileOperations { pub read: Vec<String>, pub written: Vec<String>, pub edited: Vec<String> }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompactionSettings { pub enabled: bool, pub reserve_tokens: u64, pub keep_recent_tokens: u64 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -558,6 +781,42 @@ pub enum AbortSource { User, System, Provider }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UiPromptKind { Select, Confirm, Input, Editor, Custom, Question }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiPromptReason { UiPrompt }
+impl UiPromptReason { pub const fn as_str(self) -> &'static str { "ui_prompt" } }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemPromptChangeSource { ModelSelect }
+impl SystemPromptChangeSource { pub const fn as_str(self) -> &'static str { "model_select" } }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UiPromptStartEvent { pub reason: UiPromptReason, pub kind: UiPromptKind, pub title: Option<String> }
+pub type UiPromptEndEvent = UiPromptStartEvent;
+#[derive(Clone, Debug, PartialEq)]
+pub struct SystemPromptChangeEvent {
+    pub system_prompt: String, pub previous_system_prompt: String, pub system_prompt_name: Option<String>,
+    pub model: Model, pub previous_model: Option<Model>, pub source: SystemPromptChangeSource,
+}
+impl ExtensionEvent {
+    pub fn ui_prompt_start_event(&self) -> Option<UiPromptStartEvent> {
+        match self { Self::UiPromptStart { kind, title } => Some(UiPromptStartEvent { reason: UiPromptReason::UiPrompt, kind: *kind, title: title.clone() }), _ => None }
+    }
+    pub fn ui_prompt_end_event(&self) -> Option<UiPromptEndEvent> {
+        match self { Self::UiPromptEnd { kind, title } => Some(UiPromptEndEvent { reason: UiPromptReason::UiPrompt, kind: *kind, title: title.clone() }), _ => None }
+    }
+    pub fn system_prompt_change_event(&self) -> Option<SystemPromptChangeEvent> {
+        match self {
+            Self::SystemPromptChange { system_prompt, previous_system_prompt, system_prompt_name, model, previous_model } => Some(SystemPromptChangeEvent {
+                system_prompt: system_prompt.clone(), previous_system_prompt: previous_system_prompt.clone(), system_prompt_name: system_prompt_name.clone(),
+                model: model.clone(), previous_model: previous_model.clone(), source: SystemPromptChangeSource::ModelSelect,
+            }), _ => None,
+        }
+    }
+    pub const fn ui_prompt_reason(&self) -> Option<UiPromptReason> {
+        match self { Self::UiPromptStart { .. } | Self::UiPromptEnd { .. } => Some(UiPromptReason::UiPrompt), _ => None }
+    }
+    pub const fn system_prompt_change_source(&self) -> Option<SystemPromptChangeSource> {
+        match self { Self::SystemPromptChange { .. } => Some(SystemPromptChangeSource::ModelSelect), _ => None }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputDisposition { Handled, Queued, Started, Rejected }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExtensionIdentity { pub path: String, pub resolved_path: String }
@@ -605,6 +864,7 @@ pub enum FlagType { Boolean { default: Option<bool> }, String { default: Option<
 #[derive(Clone, Debug)]
 pub struct ExtensionFlag { pub name: String, pub description: Option<String>, pub kind: FlagType, pub extension_path: String }
 pub type CommandHandler = Arc<dyn for<'a> Fn(&'a str, &'a ExtensionContext) -> ExtensionFuture<'a, ()> + Send + Sync>;
+pub type CommandArgumentCompletions = Arc<dyn for<'a> Fn(&'a str) -> ExtensionFuture<'a, Option<Vec<maho_tui::autocomplete::AutocompleteItem>>> + Send + Sync>;
 pub type CommandContextHandler = Arc<dyn for<'a> Fn(&'a str, &'a ExtensionCommandContext) -> ExtensionFuture<'a, ()> + Send + Sync>;
 #[derive(Clone, Debug, Default)]
 pub struct ExtensionTreeNavigationOptions { pub summarize: Option<bool>, pub custom_instructions: Option<String>, pub replace_instructions: Option<bool>, pub label: Option<String>, pub expected_leaf_id: Option<String> }
@@ -636,12 +896,31 @@ pub trait ExtensionCommandContextActions: Send + Sync {
 pub struct ExtensionCommandContext { pub context: ExtensionContext, pub actions: Arc<dyn ExtensionCommandContextActions>, pub runtime: ExtensionRuntime }
 impl std::ops::Deref for ExtensionCommandContext { type Target = ExtensionContext; fn deref(&self) -> &Self::Target { &self.context } }
 impl ExtensionCommandContext {
-    pub async fn wait_for_idle(&self) -> Result<(), ExtensionFailure> { self.runtime.assert_active()?; self.actions.wait_for_idle().await }
+    pub async fn wait_for_idle(&self) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        self.actions.wait_for_idle().await?;
+        self.runtime.assert_active()
+    }
     pub async fn new_session(&self, options: NewSessionOptions) -> Result<SessionNavigationResult, ExtensionFailure> { self.runtime.assert_active()?; self.actions.new_session(options).await }
     pub async fn fork(&self, entry_id: &str, options: ForkOptions) -> Result<SessionNavigationResult, ExtensionFailure> { self.runtime.assert_active()?; self.actions.fork(entry_id, options).await }
-    pub async fn navigate_tree(&self, target_id: &str, options: ExtensionTreeNavigationOptions) -> Result<SessionNavigationResult, ExtensionFailure> { self.runtime.assert_active()?; self.actions.navigate_tree(target_id, options).await }
-    pub async fn edit_assistant_message(&self, entry_id: &str, text: &str, options: EditMessageOptions) -> Result<EditMessageResult, ExtensionFailure> { self.runtime.assert_active()?; self.actions.edit_assistant_message(entry_id, text, options).await }
-    pub async fn edit_user_message(&self, entry_id: &str, text: &str, options: EditMessageOptions) -> Result<EditMessageResult, ExtensionFailure> { self.runtime.assert_active()?; self.actions.edit_user_message(entry_id, text, options).await }
+    pub async fn navigate_tree(&self, target_id: &str, options: ExtensionTreeNavigationOptions) -> Result<SessionNavigationResult, ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let result = self.actions.navigate_tree(target_id, options).await?;
+        self.runtime.assert_active()?;
+        Ok(result)
+    }
+    pub async fn edit_assistant_message(&self, entry_id: &str, text: &str, options: EditMessageOptions) -> Result<EditMessageResult, ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let result = self.actions.edit_assistant_message(entry_id, text, options).await?;
+        self.runtime.assert_active()?;
+        Ok(result)
+    }
+    pub async fn edit_user_message(&self, entry_id: &str, text: &str, options: EditMessageOptions) -> Result<EditMessageResult, ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let result = self.actions.edit_user_message(entry_id, text, options).await?;
+        self.runtime.assert_active()?;
+        Ok(result)
+    }
     pub async fn switch_session(&self, path: &str, options: SwitchSessionOptions) -> Result<SessionNavigationResult, ExtensionFailure> { self.runtime.assert_active()?; self.actions.switch_session(path, options).await }
     pub async fn reload(&self) -> Result<(), ExtensionFailure> { self.runtime.assert_active()?; self.actions.reload().await }
 }
@@ -649,8 +928,8 @@ impl ExtensionCommandContext {
 pub struct ReplacedSessionContext { pub context: ExtensionCommandContext, pub message_actions: Arc<dyn ExtensionActions> }
 impl std::ops::Deref for ReplacedSessionContext { type Target = ExtensionCommandContext; fn deref(&self) -> &Self::Target { &self.context } }
 impl ReplacedSessionContext {
-    pub async fn send_message(&self, message: CustomMessage, options: SendMessageOptions) -> Result<(), ExtensionFailure> { self.message_actions.send_message(message, options) }
-    pub async fn send_user_message(&self, content: UserMessageContent, options: SendUserMessageOptions) -> Result<(), ExtensionFailure> { self.message_actions.send_user_message(content, options) }
+    pub async fn send_message(&self, message: CustomMessage, options: SendMessageOptions) -> Result<(), ExtensionFailure> { self.context.runtime.assert_active()?; self.message_actions.send_message(message, options) }
+    pub async fn send_user_message(&self, content: UserMessageContent, options: SendUserMessageOptions) -> Result<(), ExtensionFailure> { self.context.runtime.assert_active()?; self.message_actions.send_user_message(content, options) }
 }
 #[derive(Clone)]
 pub struct RegisteredCommand { pub name: String, pub source_info: SourceInfo, pub description: Option<String>, pub argument_hint: Option<String>, pub handler: CommandHandler }
@@ -678,6 +957,11 @@ pub type EntryReplaces = Arc<dyn Fn(&SessionEntry, &SessionEntry) -> bool + Send
 pub struct EntryRendererOptions { pub replaces: Option<EntryReplaces> }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum SessionKind { #[default] Interactive, Worker }
+pub type SessionContext = BTreeMap<String, String>;
+pub const EMPTY_SESSION_CONTEXT: SessionContext = BTreeMap::new();
+pub const DEFAULT_EXTENSION_SESSION_PROFILE: ExtensionSessionProfile = ExtensionSessionProfile {
+    shared_host_enabled: false, session_kind: SessionKind::Interactive, session_context: EMPTY_SESSION_CONTEXT,
+};
 #[derive(Clone, Debug, Default)]
 pub struct ExtensionSessionProfile { pub shared_host_enabled: bool, pub session_kind: SessionKind, pub session_context: BTreeMap<String, String> }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -725,6 +1009,7 @@ pub trait ExtensionSessionActions: Send + Sync {
     fn get_active_tools(&self) -> Result<Vec<String>, ExtensionFailure>;
     fn set_active_tools(&self, names: Vec<String>) -> Result<(), ExtensionFailure>;
     fn refresh_tools(&self) -> Result<(), ExtensionFailure>;
+    fn install_registered_tool(&self, _tool: RegisteredTool) -> Result<(), ExtensionFailure> { self.refresh_tools() }
     fn register_removed_tool_hint(&self, name: &str, hint: &str) -> Result<(), ExtensionFailure>;
     fn register_lazy_tool_activator(&self, activator: LazyToolActivator) -> Result<(), ExtensionFailure>;
     fn get_commands(&self) -> Result<Vec<SlashCommandInfo>, ExtensionFailure>;
@@ -738,10 +1023,10 @@ pub trait ExtensionSessionActions: Send + Sync {
 }
 
 pub type BusHandler = Arc<dyn Fn(&JsonValue) + Send + Sync>;
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct BusState { next_id: u64, handlers: BTreeMap<String, Vec<(u64, BusHandler)>> }
 #[derive(Clone, Default)]
-pub struct EventBus { state: Arc<Mutex<BusState>> }
+pub struct EventBus { state: Arc<Mutex<BusState>>, registration_stale: Arc<std::sync::atomic::AtomicBool>, runtime: Option<ExtensionRuntime>, registration_subscriptions: Arc<Mutex<Vec<u64>>> }
 pub struct BusSubscription { state: Arc<Mutex<BusState>>, channel: String, id: u64 }
 impl Drop for BusSubscription {
     fn drop(&mut self) {
@@ -750,20 +1035,51 @@ impl Drop for BusSubscription {
     }
 }
 impl EventBus {
+    pub fn registration_scope(&self) -> Self {
+        Self { state: self.state.clone(), registration_stale: Arc::new(std::sync::atomic::AtomicBool::new(false)), runtime: self.runtime.clone(), registration_subscriptions: Arc::default() }
+    }
+    pub fn bind_runtime(&mut self, runtime: ExtensionRuntime) { self.runtime = Some(runtime); }
+    fn assert_active_or_panic(&self) {
+        if self.registration_stale.load(std::sync::atomic::Ordering::Acquire) { std::panic::panic_any(ExtensionFailure::new("Extension factory failed to load")); }
+        if let Some(runtime) = &self.runtime { runtime.assert_active_or_panic(); }
+    }
+    pub fn invalidate_registration(&self) {
+        self.registration_stale.store(true, std::sync::atomic::Ordering::Release);
+        let owned = std::mem::take(&mut *self.registration_subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        for handlers in self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.values_mut() {
+            handlers.retain(|(id, _)| !owned.contains(id));
+        }
+    }
+    pub fn registration_checkpoint(&self) -> EventBusCheckpoint {
+        EventBusCheckpoint(self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
+    }
+    pub fn rollback_registration(&self, checkpoint: EventBusCheckpoint) {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let next_id = state.next_id;
+        *state = checkpoint.0;
+        state.next_id = next_id;
+    }
     pub fn on(&self, channel: &str, handler: BusHandler) -> BusSubscription {
+        self.assert_active_or_panic();
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let id = state.next_id; state.next_id = state.next_id.wrapping_add(1);
         state.handlers.entry(channel.into()).or_default().push((id, handler));
+        self.registration_subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(id);
         BusSubscription { state: Arc::clone(&self.state), channel: channel.into(), id }
     }
     pub fn emit(&self, channel: &str, data: &JsonValue) {
+        self.assert_active_or_panic();
         let handlers = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.get(channel).cloned().unwrap_or_default();
         for (_, handler) in handlers {
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(data))).is_err() { eprintln!("Event handler error ({channel}): native handler panicked"); }
         }
     }
-    pub fn clear(&self) { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.clear(); }
+    pub fn clear(&self) {
+        if self.registration_stale.load(std::sync::atomic::Ordering::Acquire) { return; }
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.clear();
+    }
 }
+pub struct EventBusCheckpoint(BusState);
 
 /// Native factories are passed by the CLI as an explicit Vec<Box<dyn Extension>>.
 pub trait Extension: Send + Sync { fn register(&self, api: &mut ExtensionApi); }
@@ -777,38 +1093,116 @@ pub struct LoadedExtension {
     pub shortcuts: BTreeMap<String, ExtensionShortcut>, pub lazy_tool_activators: Vec<LazyToolActivator>,
     pub markdown_transformer: Option<MarkdownTransformer>, pub rpc_handlers: BTreeMap<String, ExtensionRpcRequestHandler>,
     pub command_context_handlers: BTreeMap<String, CommandContextHandler>,
+    pub command_argument_completions: BTreeMap<String, CommandArgumentCompletions>,
+    pub tool_renderers: BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>,
 }
 impl LoadedExtension {
     pub fn new(path: &str, cwd: PathBuf, source_info: SourceInfo) -> Self {
         Self { identity: ExtensionIdentity { path: path.into(), resolved_path: path.into() }, source_info, registration_cwd: cwd,
             handlers: BTreeMap::new(), tools: Vec::new(), commands: Vec::new(), flags: Vec::new(), message_renderers: BTreeMap::new(),
             entry_renderers: BTreeMap::new(), entry_renderer_options: BTreeMap::new(), mcp_servers: Vec::new(), removed_tool_hints: BTreeMap::new(), filesystem_policies: Vec::new(),
-            shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new() }
+            shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new(), command_argument_completions: BTreeMap::new(), tool_renderers: BTreeMap::new() }
     }
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct RuntimeState {
     flags: BTreeMap<String, FlagValue>, actions: Option<Arc<dyn ExtensionActions>>, stale: Option<String>,
     provider_actions: Option<Arc<dyn ExtensionProviderActions>>, pending_providers: Vec<(ProviderRegistration, String)>,
     read_classifiers: Vec<(u64, ReadClassifier)>, next_classifier_id: u64,
     session_actions: Option<Arc<dyn ExtensionSessionActions>>,
     provider_errors: Vec<ExtensionError>,
+    registered_providers: BTreeMap<String, String>,
+    live_handlers: BTreeMap<(String, EventKind), Vec<ExtensionHandler>>,
+    live_commands: BTreeMap<String, LiveCommandRegistrations>,
+    live_command_argument_completions: BTreeMap<String, BTreeMap<String, CommandArgumentCompletions>>,
+    live_shortcuts: BTreeMap<String, BTreeMap<String, ExtensionShortcut>>,
+    live_markdown_transformers: BTreeMap<String, MarkdownTransformer>,
+    live_rpc_handlers: BTreeMap<String, BTreeMap<String, ExtensionRpcRequestHandler>>,
+    live_flags: BTreeMap<String, Vec<ExtensionFlag>>,
+    live_tools: BTreeMap<String, Vec<RegisteredTool>>,
+    live_mcp_servers: BTreeMap<String, Vec<RegisteredMcpServerDeclaration>>,
+    live_message_renderers: BTreeMap<String, BTreeMap<String, MessageRenderer>>,
+    live_entry_renderers: BTreeMap<String, LiveEntryRenderers>,
+    live_filesystem_policies: BTreeMap<String, Vec<FilesystemPolicy>>,
+    live_tool_renderers: BTreeMap<String, BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>>,
+    extension_tool_executors: BTreeMap<(String, String), ExtensionToolExecutor>,
 }
+pub type LiveCommandRegistrations = (Vec<RegisteredCommand>, BTreeMap<String, CommandContextHandler>);
+pub type LiveEntryRenderers = BTreeMap<String, (EntryRenderer, Option<EntryRendererOptions>)>;
 #[derive(Clone, Default)]
-pub struct ExtensionRuntime { state: Arc<Mutex<RuntimeState>> }
+pub struct ExtensionRuntime { state: Arc<Mutex<RuntimeState>>, registration_stale: Arc<Mutex<Option<String>>>, registration_pending: Arc<Mutex<Option<RegistrationPending>>>, registration_classifiers: Arc<Mutex<Vec<u64>>> }
+#[derive(Default)]
+struct RegistrationPending { flags: BTreeMap<String, FlagValue>, providers: Vec<ProviderRegistrationChange>, tool_executors: BTreeMap<(String, String), ExtensionToolExecutor> }
+enum ProviderRegistrationChange { Register(ProviderRegistration, String), Unregister(String, String) }
+pub struct RuntimeRegistrationCheckpoint(RuntimeState);
 impl ExtensionRuntime {
+    pub fn registration_scope(&self) -> Self {
+        Self { state: self.state.clone(), registration_stale: Arc::new(Mutex::new(None)), registration_pending: Arc::new(Mutex::new(Some(RegistrationPending::default()))), registration_classifiers: Arc::default() }
+    }
+    pub fn commit_registration(&self) -> Result<(), ExtensionFailure> {
+        self.assert_active()?;
+        let pending = self.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(pending) = pending {
+            {
+                let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                for (name, value) in pending.flags { state.flags.entry(name).or_insert(value); }
+                state.extension_tool_executors.extend(pending.tool_executors);
+            }
+            for change in pending.providers { match change {
+                ProviderRegistrationChange::Register(registration, path) => self.register_provider(registration, &path)?,
+                ProviderRegistrationChange::Unregister(name, path) => self.unregister_provider(&name, &path)?,
+            } }
+        }
+        Ok(())
+    }
+    fn register_flag_default(&self, name: &str, value: FlagValue) {
+        let mut pending = self.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pending) = pending.as_mut() { pending.flags.entry(name.into()).or_insert(value); }
+        else { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.entry(name.into()).or_insert(value); }
+    }
+    pub fn invalidate_registration(&self, message: &str) {
+        self.registration_stale.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(|| message.into());
+        self.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        let owned = std::mem::take(&mut *self.registration_classifiers.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).read_classifiers.retain(|(id, _)| !owned.contains(id));
+    }
+    pub fn registration_checkpoint(&self) -> RuntimeRegistrationCheckpoint {
+        RuntimeRegistrationCheckpoint(self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
+    }
+    pub fn rollback_registration(&self, checkpoint: RuntimeRegistrationCheckpoint) {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let next_id = state.next_classifier_id;
+        *state = checkpoint.0;
+        state.next_classifier_id = next_id;
+    }
     pub fn bind_session_actions(&self, actions: Arc<dyn ExtensionSessionActions>) { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions = Some(actions); }
     pub fn session_actions(&self) -> Result<Arc<dyn ExtensionSessionActions>, ExtensionFailure> {
         self.assert_active()?;
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone().ok_or_else(|| ExtensionFailure::new("Extension session actions are unavailable during registration"))
     }
+    fn assert_active_or_panic(&self) {
+        if let Err(error) = self.assert_active() { std::panic::panic_any(error); }
+    }
     pub fn assert_active(&self) -> Result<(), ExtensionFailure> {
+        if let Some(message) = &*self.registration_stale.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
+            return Err(ExtensionFailure::new(message.clone()));
+        }
         let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(message) = &state.stale { return Err(ExtensionFailure::new(message.clone())); } Ok(())
     }
     pub fn invalidate(&self, message: &str) {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         state.stale.get_or_insert_with(|| message.into()); state.read_classifiers.clear(); state.pending_providers.clear();
+        state.live_handlers.clear();
+        state.live_commands.clear();
+        state.live_command_argument_completions.clear();
+        state.live_shortcuts.clear();
+        state.live_markdown_transformers.clear(); state.live_rpc_handlers.clear();
+        state.live_flags.clear();
+        state.live_tools.clear(); state.live_tool_renderers.clear(); state.extension_tool_executors.clear();
+        state.live_mcp_servers.clear();
+        state.live_message_renderers.clear(); state.live_entry_renderers.clear();
+        state.live_filesystem_policies.clear();
     }
     pub fn bind_providers(&self, actions: Arc<dyn ExtensionProviderActions>) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
@@ -817,29 +1211,115 @@ impl ExtensionRuntime {
             state.provider_actions = Some(Arc::clone(&actions)); std::mem::take(&mut state.pending_providers)
         };
         for (registration, path) in pending {
+            let name = registration.name().to_owned();
             if let Err(error) = actions.register_provider(registration, &path) {
                 self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider_errors.push(ExtensionError { extension_path: path, event: "register_provider".into(), error: error.message, stack: error.stack });
+            } else {
+                self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).registered_providers.insert(name, path);
             }
         }
         Ok(())
     }
+    pub fn dispose_providers(&self) -> Result<(), ExtensionFailure> {
+        let (actions, providers) = {
+            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            (state.provider_actions.clone(), std::mem::take(&mut state.registered_providers))
+        };
+        if let Some(actions) = actions {
+            for (name, path) in providers { actions.unregister_provider(&name, &path)?; }
+        }
+        Ok(())
+    }
     pub fn take_provider_errors(&self) -> Vec<ExtensionError> { std::mem::take(&mut self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider_errors) }
+    pub fn live_handlers(&self, path: &str, kind: EventKind) -> Option<Vec<ExtensionHandler>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_handlers.get(&(path.into(), kind)).cloned()
+    }
+    pub fn live_commands(&self, path: &str) -> Option<LiveCommandRegistrations> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_commands.get(path).cloned()
+    }
+    pub fn live_shortcuts(&self, path: &str) -> Option<BTreeMap<String, ExtensionShortcut>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_shortcuts.get(path).cloned()
+    }
+    pub fn live_markdown_transformer(&self, path: &str) -> Option<MarkdownTransformer> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_markdown_transformers.get(path).cloned()
+    }
+    pub fn live_rpc_handlers(&self, path: &str) -> Option<BTreeMap<String, ExtensionRpcRequestHandler>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_rpc_handlers.get(path).cloned()
+    }
+    pub fn live_flags(&self, path: &str) -> Option<Vec<ExtensionFlag>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_flags.get(path).cloned()
+    }
+    pub fn live_tools(&self, path: &str) -> Option<Vec<RegisteredTool>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_tools.get(path).cloned()
+    }
+    pub fn live_mcp_servers(&self, path: &str) -> Option<Vec<RegisteredMcpServerDeclaration>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_mcp_servers.get(path).cloned()
+    }
+    pub fn live_filesystem_policies(&self, path: &str) -> Option<Vec<FilesystemPolicy>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_filesystem_policies.get(path).cloned()
+    }
+    pub fn live_command_argument_completions(&self, path: &str) -> Option<BTreeMap<String, CommandArgumentCompletions>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_command_argument_completions.get(path).cloned()
+    }
+    pub fn live_message_renderers(&self, path: &str) -> Option<BTreeMap<String, MessageRenderer>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_message_renderers.get(path).cloned()
+    }
+    pub fn live_entry_renderers(&self, path: &str) -> Option<LiveEntryRenderers> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_entry_renderers.get(path).cloned()
+    }
+    pub fn live_tool_renderer(&self, path: &str, name: &str) -> Option<Option<Arc<dyn std::any::Any + Send + Sync>>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_tool_renderers.get(path).map(|renderers| renderers.get(name).cloned())
+    }
+    pub fn extension_tool_executor(&self, path: &str, name: &str) -> Option<ExtensionToolExecutor> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extension_tool_executors.get(&(path.into(), name.into())).cloned()
+    }
     pub fn register_provider(&self, registration: ProviderRegistration, path: &str) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
+        let config = match &registration {
+            ProviderRegistration::Config { name, config } => Some((name, config.as_ref())),
+            ProviderRegistration::ConfigOptions { name, options } => Some((name, &options.config)),
+            ProviderRegistration::Native(_) => None,
+        };
+        if let Some((name, config)) = config {
+            if config.stream_simple.is_some() && config.api.is_none() {
+                return Err(ExtensionFailure::new(format!("Provider {name}: \"api\" is required when registering streamSimple.")));
+            }
+            if config.extra_body.as_ref().is_some_and(|body| !body.is_object()) {
+                return Err(ExtensionFailure::new(format!("Provider {name}: extraBody must be an object")));
+            }
+            for model in config.models.iter().flatten() {
+                if model.extra_body.as_ref().is_some_and(|body| !body.is_object()) {
+                    return Err(ExtensionFailure::new(format!("Provider {name}, model {}: extraBody must be an object", model.id)));
+                }
+            }
+        }
+        {
+            let mut pending = self.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(pending) = pending.as_mut() { pending.providers.push(ProviderRegistrationChange::Register(registration, path.into())); return Ok(()); }
+        }
         let actions = {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             match &state.provider_actions { Some(actions) => Arc::clone(actions), None => { state.pending_providers.push((registration, path.into())); return Ok(()); } }
         };
-        actions.register_provider(registration, path)
+        let name = registration.name().to_owned();
+        actions.register_provider(registration, path)?;
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).registered_providers.insert(name, path.into());
+        Ok(())
     }
     pub fn unregister_provider(&self, name: &str, path: &str) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
+        {
+            let mut pending = self.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(pending) = pending.as_mut() { pending.providers.push(ProviderRegistrationChange::Unregister(name.into(), path.into())); return Ok(()); }
+        }
         let actions = {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             state.pending_providers.retain(|(registration, _)| registration.name() != name);
             state.provider_actions.clone()
         };
-        match actions { Some(actions) => actions.unregister_provider(name, path), None => Ok(()) }
+        if let Some(actions) = actions { actions.unregister_provider(name, path)?; }
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).registered_providers.remove(name);
+        Ok(())
     }
     pub fn classify_read(&self, path: &Path, cwd: &Path) -> Option<CompactReadClassification> {
         let classifiers = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).read_classifiers.clone();
@@ -855,33 +1335,73 @@ impl ExtensionRuntime {
         self.assert_active()?;
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).actions.clone().ok_or_else(|| ExtensionFailure::new("Extension actions are unavailable during registration"))
     }
-    pub fn get_flag(&self, name: &str) -> Option<FlagValue> { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.get(name).cloned() }
-    pub fn set_flag(&self, name: &str, value: FlagValue) { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.insert(name.into(), value); }
+    pub fn get_flag(&self, name: &str) -> Option<FlagValue> {
+        self.assert_active_or_panic();
+        let existing = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.get(name).cloned();
+        existing.or_else(|| self.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(|pending| pending.flags.get(name).cloned()))
+    }
+    pub fn set_flag(&self, name: &str, value: FlagValue) { self.assert_active_or_panic(); self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.insert(name.into(), value); }
 }
 pub struct ExtensionApi {
     pub cwd: PathBuf, pub profile: ExtensionSessionProfile, pub events: EventBus, pub runtime: ExtensionRuntime, pub registered: LoadedExtension,
 }
 impl ExtensionApi {
-    pub fn new(registered: LoadedExtension, profile: ExtensionSessionProfile, events: EventBus, runtime: ExtensionRuntime) -> Self {
+    pub fn new(registered: LoadedExtension, profile: ExtensionSessionProfile, mut events: EventBus, runtime: ExtensionRuntime) -> Self {
+        events.bind_runtime(runtime.clone());
         Self { cwd: registered.registration_cwd.clone(), profile, events, runtime, registered }
     }
-    pub fn on(&mut self, event: EventKind, handler: ExtensionHandler) { self.registered.handlers.entry(event).or_default().push(handler); }
+    pub fn on(&mut self, event: EventKind, handler: ExtensionHandler) {
+        self.runtime.assert_active_or_panic();
+        let handlers = self.registered.handlers.entry(event).or_default();
+        handlers.push(handler);
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_handlers.insert((self.registered.identity.path.clone(), event), handlers.clone());
+        }
+    }
     pub fn register_provider(&self, name: &str, config: ProviderConfig) -> Result<(), ExtensionFailure> {
         self.runtime.register_provider(ProviderRegistration::Config { name: name.into(), config: Box::new(config) }, &self.registered.identity.path)
+    }
+    pub fn register_provider_with_options(&self, name: &str, options: ProviderConfigOptions) -> Result<(), ExtensionFailure> {
+        self.runtime.register_provider(ProviderRegistration::ConfigOptions { name: name.into(), options: Box::new(options) }, &self.registered.identity.path)
+    }
+    pub fn register_provider_object(&self, name: &str, mut config: ProviderObjectConfig) -> Result<(), ExtensionFailure> {
+        if let Some(body) = config.extra_body { config.config.extra_body = Some(JsonValue::Object(body.into_iter().collect())); }
+        if let Some(models) = &mut config.config.models {
+            for model in models {
+                if let Some(body) = config.model_extra_bodies.remove(&model.id) { model.extra_body = Some(JsonValue::Object(body.into_iter().collect())); }
+            }
+        }
+        self.register_provider(name, config.config)
     }
     pub fn register_native_provider(&self, provider: Arc<dyn maho_ai::models::Provider>) -> Result<(), ExtensionFailure> {
         self.runtime.register_provider(ProviderRegistration::Native(provider), &self.registered.identity.path)
     }
     pub fn unregister_provider(&self, name: &str) -> Result<(), ExtensionFailure> { self.runtime.unregister_provider(name, &self.registered.identity.path) }
     pub fn register_shortcut(&mut self, shortcut: &str, description: Option<String>, handler: ShortcutHandler) {
+        self.runtime.assert_active_or_panic();
         self.registered.shortcuts.insert(shortcut.into(), ExtensionShortcut { shortcut: shortcut.into(), description, handler, extension_path: self.registered.identity.path.clone() });
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_shortcuts.insert(self.registered.identity.path.clone(), self.registered.shortcuts.clone());
+        }
     }
-    pub fn register_lazy_tool_activator(&mut self, activator: LazyToolActivator) { self.registered.lazy_tool_activators.push(activator); }
-    pub fn register_markdown_transformer(&mut self, transformer: MarkdownTransformer) { self.registered.markdown_transformer = Some(transformer); }
+    pub fn register_lazy_tool_activator(&mut self, activator: LazyToolActivator) {
+        self.runtime.assert_active_or_panic();
+        let actions = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone();
+        if let Some(actions) = actions
+            && let Err(error) = actions.register_lazy_tool_activator(Arc::clone(&activator)) { std::panic::panic_any(error); }
+        self.registered.lazy_tool_activators.push(activator);
+    }
+    pub fn register_markdown_transformer(&mut self, transformer: MarkdownTransformer) {
+        self.runtime.assert_active_or_panic(); self.registered.markdown_transformer = Some(transformer.clone());
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_markdown_transformers.insert(self.registered.identity.path.clone(), transformer);
+        }
+    }
     pub fn register_read_classifier(&self, classifier: ReadClassifier) -> Result<ReadClassifierSubscription, ExtensionFailure> {
         self.runtime.assert_active()?;
         let mut state = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let id = state.next_classifier_id; state.next_classifier_id = id.wrapping_add(1); state.read_classifiers.push((id, classifier));
+        self.runtime.registration_classifiers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(id);
         Ok(ReadClassifierSubscription { state: Arc::clone(&self.runtime.state), id })
     }
     pub fn rpc_handle(&mut self, name: &str, handler: ExtensionRpcRequestHandler) -> Result<(), ExtensionFailure> {
@@ -889,7 +1409,11 @@ impl ExtensionApi {
         let name = name.trim();
         if name.is_empty() { return Err(ExtensionFailure::new("RPC extension request name must not be empty")); }
         if self.registered.rpc_handlers.contains_key(name) { return Err(ExtensionFailure::new(format!("RPC extension request handler already registered: {name}"))); }
-        self.registered.rpc_handlers.insert(name.into(), handler); Ok(())
+        self.registered.rpc_handlers.insert(name.into(), handler);
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_rpc_handlers.insert(self.registered.identity.path.clone(), self.registered.rpc_handlers.clone());
+        }
+        Ok(())
     }
     pub fn rpc_emit(&self, name: &str, data: &JsonValue) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;
@@ -899,33 +1423,163 @@ impl ExtensionApi {
         self.events.emit("senpi:extension-rpc-event", &event); Ok(())
     }
     pub fn register_tool(&mut self, definition: ToolDefinition) {
-        let tool = RegisteredTool { definition, source_info: self.registered.source_info.clone() };
-        if let Some(existing) = self.registered.tools.iter_mut().find(|t| t.definition.name == tool.definition.name) { *existing = tool; } else { self.registered.tools.push(tool); }
+        if let Err(error) = self.try_register_tool(definition) { std::panic::panic_any(error); }
+    }
+    pub fn register_tool_with_extension_context(&mut self, definition: ToolDefinition, execute: ExtensionToolExecutor) -> Result<(), ExtensionFailure> {
+        let name = definition.name.clone();
+        self.try_register_tool(definition)?;
+        let path = if self.registered.source_info.path.is_empty() { self.registered.identity.path.clone() } else { self.registered.source_info.path.clone() };
+        let key = (path, name);
+        let mut pending = self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pending) = pending.as_mut() { pending.tool_executors.insert(key, execute); }
+        else { self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extension_tool_executors.insert(key, execute); }
+        Ok(())
+    }
+    pub fn register_typed_tool<TArgs: serde::de::DeserializeOwned + Send + 'static, TDetails: serde::Serialize + Send + 'static>(&mut self, definition: ToolDefinition, execute: TypedExtensionToolExecutor<TArgs, TDetails>) -> Result<(), ExtensionFailure> {
+        self.register_tool_with_extension_context(definition, Arc::new(move |id, params, signal, update, context| {
+            let execute = execute.clone();
+            Box::pin(async move {
+                let params = serde_json::from_value(params).map_err(|error| ExtensionFailure::new(error.to_string()))?;
+                let update = update.map(|update| Arc::new(move |result: TypedAgentToolResult<TDetails>| { update(result.into_agent_result()?); Ok(()) }) as TypedToolUpdateCallback<TDetails>);
+                execute(id, params, signal, update, context).await?.into_agent_result()
+            })
+        }))
+    }
+    pub fn register_tool_with_renderers<TState: 'static, TArgs: Clone + 'static>(&mut self, definition: ToolDefinition, renderers: ToolRenderers<TState, TArgs>) -> Result<(), ExtensionFailure> {
+        let name = definition.name.clone();
+        self.try_register_tool(definition)?;
+        self.registered.tool_renderers.insert(name, Arc::new(renderers));
+        self.publish_tools();
+        Ok(())
+    }
+    pub fn try_register_tool(&mut self, definition: ToolDefinition) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        if definition.name == "tool_search" && self.registered.source_info.source != "builtin" {
+            return Err(ExtensionFailure::new("Tool name \"tool_search\" is reserved for the builtin tool-search extension."));
+        }
+        if !definition.parameters.is_object() {
+            return Err(ExtensionFailure::new(format!("Tool \"{}\" registered by extension \"{}\" must define an object parameter schema.", definition.name, self.registered.identity.path)));
+        }
+        let mut source_info = self.registered.source_info.clone();
+        if source_info.path.is_empty() { source_info.path = self.registered.identity.path.clone(); }
+        let key = (source_info.path.clone(), definition.name.clone());
+        let mut pending = self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pending) = pending.as_mut() { pending.tool_executors.remove(&key); }
+        else { self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extension_tool_executors.remove(&key); }
+        drop(pending);
+        self.registered.tool_renderers.remove(&definition.name);
+        let tool = RegisteredTool { definition, source_info };
+        if let Some(existing) = self.registered.tools.iter_mut().find(|t| t.definition.name == tool.definition.name) { *existing = tool.clone(); } else { self.registered.tools.push(tool.clone()); }
+        let actions = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone();
+        if let Some(actions) = actions { actions.install_registered_tool(tool)?; }
+        self.publish_tools();
+        Ok(())
+    }
+    fn publish_tools(&self) {
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            let mut state = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.live_tools.insert(self.registered.identity.path.clone(), self.registered.tools.clone());
+            state.live_tool_renderers.insert(self.registered.identity.path.clone(), self.registered.tool_renderers.clone());
+        }
     }
     pub fn register_command(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandHandler) {
+        self.runtime.assert_active_or_panic();
+        self.registered.command_context_handlers.remove(name);
+        self.registered.command_argument_completions.remove(name);
         let command = RegisteredCommand { name: name.into(), source_info: self.registered.source_info.clone(), description, argument_hint, handler };
         if let Some(existing) = self.registered.commands.iter_mut().find(|c| c.name == name) { *existing = command; } else { self.registered.commands.push(command); }
+        self.publish_commands();
+    }
+    fn publish_commands(&self) {
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            let mut state = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.live_commands.insert(self.registered.identity.path.clone(), (self.registered.commands.clone(), self.registered.command_context_handlers.clone()));
+            state.live_command_argument_completions.insert(self.registered.identity.path.clone(), self.registered.command_argument_completions.clone());
+        }
+    }
+    pub fn register_command_with_completions(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandHandler, completions: CommandArgumentCompletions) {
+        self.register_command(name, description, argument_hint, handler);
+        self.registered.command_argument_completions.insert(name.into(), completions);
+        self.publish_commands();
     }
     pub fn register_command_with_context(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandContextHandler) {
         self.register_command(name, description, argument_hint, Arc::new(|_, _| Box::pin(async { Err(ExtensionFailure::new("Command requires a command-capable context")) })));
         self.registered.command_context_handlers.insert(name.into(), handler);
+        self.publish_commands();
     }
     pub fn register_flag(&mut self, name: &str, kind: FlagType, description: Option<String>) {
+        self.runtime.assert_active_or_panic();
         let default = match &kind { FlagType::Boolean { default } => default.map(FlagValue::Boolean), FlagType::String { default } => default.clone().map(FlagValue::String) };
-        if let Some(value) = default { let mut state = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner); state.flags.entry(name.into()).or_insert(value); }
+        if let Some(value) = default { self.runtime.register_flag_default(name, value); }
         let flag = ExtensionFlag { name: name.into(), description, kind, extension_path: self.registered.identity.path.clone() };
         if let Some(existing) = self.registered.flags.iter_mut().find(|f| f.name == name) { *existing = flag; } else { self.registered.flags.push(flag); }
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_flags.insert(self.registered.identity.path.clone(), self.registered.flags.clone());
+        }
     }
-    pub fn get_flag(&self, name: &str) -> Option<FlagValue> { if self.registered.flags.iter().any(|flag| flag.name == name) { self.runtime.get_flag(name) } else { None } }
+    pub fn get_flag(&self, name: &str) -> Option<FlagValue> { self.runtime.assert_active_or_panic(); if self.registered.flags.iter().any(|flag| flag.name == name) { self.runtime.get_flag(name) } else { None } }
     pub fn set_flag(&self, name: &str, value: FlagValue) { self.runtime.set_flag(name, value); }
-    pub fn register_message_renderer(&mut self, custom_type: &str, renderer: MessageRenderer) { self.registered.message_renderers.insert(custom_type.into(), renderer); }
-    pub fn register_entry_renderer(&mut self, custom_type: &str, renderer: EntryRenderer, options: EntryRendererOptions) { self.registered.entry_renderers.insert(custom_type.into(), renderer); self.registered.entry_renderer_options.insert(custom_type.into(), options); }
+    pub fn register_message_renderer(&mut self, custom_type: &str, renderer: MessageRenderer) {
+        self.runtime.assert_active_or_panic(); self.registered.message_renderers.insert(custom_type.into(), renderer);
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_message_renderers.insert(self.registered.identity.path.clone(), self.registered.message_renderers.clone());
+        }
+    }
+    pub fn register_entry_renderer(&mut self, custom_type: &str, renderer: EntryRenderer, options: EntryRendererOptions) {
+        self.register_entry_renderer_optional(custom_type, renderer, Some(options));
+    }
+    pub fn register_entry_renderer_optional(&mut self, custom_type: &str, renderer: EntryRenderer, options: Option<EntryRendererOptions>) {
+        self.runtime.assert_active_or_panic(); self.registered.entry_renderers.insert(custom_type.into(), renderer);
+        if let Some(options) = options { self.registered.entry_renderer_options.insert(custom_type.into(), options); }
+        else { self.registered.entry_renderer_options.remove(custom_type); }
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            let renderers = self.registered.entry_renderers.iter().map(|(name, renderer)| (name.clone(), (renderer.clone(), self.registered.entry_renderer_options.get(name).cloned()))).collect();
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_entry_renderers.insert(self.registered.identity.path.clone(), renderers);
+        }
+    }
     pub fn register_mcp_server(&mut self, name: &str, config: McpServerDeclaration) {
+        if let Err(error) = self.try_register_mcp_server(name, config) { std::panic::panic_any(error); }
+    }
+    pub fn try_register_mcp_server(&mut self, name: &str, config: McpServerDeclaration) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        for (field, value) in [
+            ("idleTimeoutMin", config.idle_timeout_min), ("requestTimeoutMs", config.request_timeout_ms),
+            ("connectTimeoutMs", config.connect_timeout_ms), ("startupTimeoutMs", config.startup_timeout_ms),
+        ] {
+            if value.is_some_and(|value| !value.is_finite()) {
+                return Err(ExtensionFailure::new(format!("Invalid MCP server declaration \"{name}\": {field}: must be number")));
+            }
+        }
+        if config.enabled != Some(false) {
+            let transport = config.transport.unwrap_or_else(|| if config.url.as_ref().is_some_and(|url| !url.is_empty()) { McpTransport::Http } else { McpTransport::Stdio });
+            let (field, endpoint, kind) = match transport {
+                McpTransport::Stdio => ("command", config.command.as_deref(), "stdio"),
+                McpTransport::Http => ("url", config.url.as_deref(), "http"),
+            };
+            if endpoint.is_none_or(|endpoint| endpoint.trim().is_empty()) {
+                return Err(ExtensionFailure::new(format!("Invalid MCP server declaration \"{name}\": mcpServers.{name}.{field}: Required for enabled {kind} server")));
+            }
+        }
         let declaration = RegisteredMcpServerDeclaration { name: name.into(), config, extension_path: self.registered.identity.path.clone(), registration_cwd: self.cwd.clone() };
         if let Some(existing) = self.registered.mcp_servers.iter_mut().find(|s| s.name == name) { *existing = declaration; } else { self.registered.mcp_servers.push(declaration); }
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_mcp_servers.insert(self.registered.identity.path.clone(), self.registered.mcp_servers.clone());
+        }
+        Ok(())
     }
-    pub fn register_removed_tool_hint(&mut self, name: &str, hint: &str) { self.registered.removed_tool_hints.insert(name.into(), hint.into()); }
-    pub fn register_filesystem_policy(&mut self, policy: FilesystemPolicy) { self.registered.filesystem_policies.push(policy); }
+    pub fn register_removed_tool_hint(&mut self, name: &str, hint: &str) {
+        self.runtime.assert_active_or_panic();
+        let actions = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone();
+        if let Some(actions) = actions
+            && let Err(error) = actions.register_removed_tool_hint(name, hint) { std::panic::panic_any(error); }
+        self.registered.removed_tool_hints.insert(name.into(), hint.into());
+    }
+    pub fn register_filesystem_policy(&mut self, policy: FilesystemPolicy) {
+        self.runtime.assert_active_or_panic(); self.registered.filesystem_policies.push(policy);
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_filesystem_policies.insert(self.registered.identity.path.clone(), self.registered.filesystem_policies.clone());
+        }
+    }
     pub fn send_message(&self, message: CustomMessage, options: SendMessageOptions) -> Result<(), ExtensionFailure> { self.runtime.actions()?.send_message(message, options) }
     pub fn send_user_message(&self, content: UserMessageContent, options: SendUserMessageOptions) -> Result<(), ExtensionFailure> { self.runtime.actions()?.send_user_message(content, options) }
     pub fn append_entry(&self, custom_type: &str, data: Option<JsonValue>) -> Result<(), ExtensionFailure> { self.runtime.actions()?.append_entry(custom_type, data) }
@@ -937,18 +1591,30 @@ impl ExtensionApi {
     pub fn set_active_tools(&self, names: Vec<String>) -> Result<(), ExtensionFailure> { self.runtime.session_actions()?.set_active_tools(names) }
     pub fn refresh_tools(&self) -> Result<(), ExtensionFailure> { self.runtime.session_actions()?.refresh_tools() }
     pub fn get_commands(&self) -> Result<Vec<SlashCommandInfo>, ExtensionFailure> { self.runtime.session_actions()?.get_commands() }
-    pub async fn set_model(&self, model: Model) -> Result<bool, ExtensionFailure> { self.runtime.session_actions()?.set_model(model).await }
+    pub async fn set_model(&self, model: Model) -> Result<bool, ExtensionFailure> {
+        let result = self.runtime.session_actions()?.set_model(model).await?;
+        self.runtime.assert_active()?;
+        Ok(result)
+    }
     pub fn get_thinking_level(&self) -> Result<ThinkingLevel, ExtensionFailure> { self.runtime.session_actions()?.get_thinking_level() }
     pub fn set_thinking_level(&self, level: ThinkingLevel) -> Result<(), ExtensionFailure> { self.runtime.session_actions()?.set_thinking_level(level) }
-    pub async fn set_session_model(&self, model: Model) -> Result<bool, ExtensionFailure> { self.runtime.session_actions()?.set_session_model(model).await }
+    pub async fn set_session_model(&self, model: Model) -> Result<bool, ExtensionFailure> {
+        let result = self.runtime.session_actions()?.set_session_model(model).await?;
+        self.runtime.assert_active()?;
+        Ok(result)
+    }
     pub fn set_session_thinking_level(&self, level: ThinkingLevel) -> Result<(), ExtensionFailure> { self.runtime.session_actions()?.set_session_thinking_level(level) }
     pub fn set_session_fast_mode(&self, enabled: bool) -> Result<(), ExtensionFailure> { self.runtime.session_actions()?.set_session_fast_mode(enabled) }
     pub async fn execute_tool(&self, name: &str, params: JsonValue, options: ExecuteToolOptions) -> Result<maho_agent::types::AgentToolResult, ExecuteToolError> {
         let actions = self.runtime.session_actions().map_err(|error| ExecuteToolError { code: ExecuteToolErrorCode::Blocked, tool_name: name.into(), message: error.message, active_tools: Vec::new() })?;
-        actions.execute_tool(name, params, options).await
+        let result = actions.execute_tool(name, params, options).await?;
+        self.runtime.assert_active().map_err(|error| ExecuteToolError { code: ExecuteToolErrorCode::Blocked, tool_name: name.into(), message: error.message, active_tools: Vec::new() })?;
+        Ok(result)
     }
     pub async fn exec(&self, command: &str, args: &[String], options: ExecOptions) -> Result<ExecResult, ExtensionFailure> {
-        self.runtime.session_actions()?.exec(command, args, &self.cwd, options).await
+        let result = self.runtime.session_actions()?.exec(command, args, &self.cwd, options).await?;
+        self.runtime.assert_active()?;
+        Ok(result)
     }
 }
 
