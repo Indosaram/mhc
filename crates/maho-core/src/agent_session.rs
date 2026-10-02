@@ -2681,7 +2681,14 @@ impl AgentSession {
         let collected = self.with_session_manager(|manager| crate::compaction::branch_summarization::collect_entries_for_branch_summary(
             manager, old_leaf.as_deref(), target_id,
         ));
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let navigation_signal = controller.signal();
+        self.state().branch_summary_abort_controller = Some(controller);
         let signal = maho_ext_api::AbortSignal::default();
+        let hook_signal = signal.clone();
+        let abort_signal = navigation_signal.clone();
+        let _bridge = AbortSignalBridge(tokio::spawn(async move { abort_signal.cancelled().await; hook_signal.abort(); }));
+        let result = async {
         let before = self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeTree {
             preparation: maho_ext_api::TreePreparation { target_id: target_id.to_owned(), old_leaf_id: old_leaf.clone(), common_ancestor_id: collected.common_ancestor_id,
                 entries_to_summarize: collected.entries.iter().cloned().map(session_entry_from_value).collect(), user_wants_summary: options.summarize.unwrap_or(false), custom_instructions: options.custom_instructions.clone(),
@@ -2694,10 +2701,10 @@ impl AgentSession {
         let mut summary = if options.summarize == Some(true) { before.summary.clone() } else { None };
         let from_extension = summary.is_some();
         if options.summarize == Some(true) && !collected.entries.is_empty() && summary.is_none() {
-            summary = Some(self.generate_branch_summary(&collected.entries, options.custom_instructions.as_deref(),
-                options.replace_instructions.unwrap_or(false)).await?);
-            if summary.as_ref().is_some_and(|summary| summary["aborted"] == true) {
-                return Ok(AssistantEditResult { cancelled: true, ..Default::default() });
+            summary = Some(self.generate_branch_summary_with_signal(&collected.entries, options.custom_instructions.as_deref(),
+                options.replace_instructions.unwrap_or(false), navigation_signal.clone()).await?);
+            if navigation_signal.aborted() || summary.as_ref().is_some_and(|summary| summary["aborted"] == true) {
+                return Ok(AssistantEditResult { cancelled: true, aborted: Some(true), ..Default::default() });
             }
         }
         if self.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)) != old_leaf {
@@ -2728,19 +2735,13 @@ impl AgentSession {
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionTree { new_leaf_id: self.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)),
             old_leaf_id: old_leaf, summary_entry: summary_entry.clone().map(session_entry_from_value), from_extension: Some(from_extension) }).await;
         Ok(AssistantEditResult { editor_text, summary_entry, entry_id: replacement_entry.as_ref().and_then(|entry| entry.get("id")).and_then(Value::as_str).map(str::to_owned), ..Default::default() })
+        }.await;
+        self.state().branch_summary_abort_controller = None;
+        result
     }
 
     pub fn abort_branch_summary(&self) {
         if let Some(controller) = &self.state().branch_summary_abort_controller { controller.abort(None); }
-    }
-
-    async fn generate_branch_summary(&self, entries: &[Value], custom_instructions: Option<&str>, replace_instructions: bool) -> Result<Value, String> {
-        let controller = maho_ai::utils::abort::AbortController::new();
-        let signal = controller.signal();
-        self.state().branch_summary_abort_controller = Some(controller);
-        let result = self.generate_branch_summary_with_signal(entries, custom_instructions, replace_instructions, signal.clone()).await;
-        self.state().branch_summary_abort_controller = None;
-        if signal.aborted() { Ok(serde_json::json!({"aborted":true})) } else { result }
     }
 
     async fn generate_branch_summary_with_signal(&self, entries: &[Value], custom_instructions: Option<&str>, replace_instructions: bool,
