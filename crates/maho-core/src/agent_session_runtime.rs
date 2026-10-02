@@ -421,6 +421,10 @@ mod tests {
         assert!(runtime.import_from_jsonl("/missing-import-fixture.jsonl", None).await.unwrap_err().contains("File not found"));
         let source = dir.path().join("import-fixture.jsonl");
         runtime.session().export_to_jsonl(source.to_str()).expect("export fixture");
+        let import_directory = dir.path().join("imported");
+        runtime.session().with_session_manager_mut(|manager| {
+            *manager = crate::session_manager::SessionManager::create(&cwd, import_directory.to_str(), None);
+        });
         assert!(runtime.import_from_jsonl(source.to_str().unwrap(), None).await.expect("import"));
         let first_import = runtime.session().session_file().expect("imported path");
         assert!(first_import.ends_with("import-fixture.jsonl"));
