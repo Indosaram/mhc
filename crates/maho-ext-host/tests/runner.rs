@@ -780,6 +780,27 @@ async fn registered_tool_wrapper_supplies_context_and_reports_new_active_tools()
     assert_eq!(result.added_tool_names, Some(vec!["new".into()])); assert_ne!(result.is_error, Some(true));
 }
 
+#[tokio::test]
+async fn extension_executor_receives_full_context_and_preserves_agent_result_fields() {
+    let runtime = ExtensionRuntime::default();
+    runtime.bind_session_actions(Arc::new(SessionActions::default()));
+    let mut api = ExtensionApi::new(LoadedExtension::new("fixture", "/tmp".into(), SourceInfo::default()), Default::default(), EventBus::default(), runtime.clone());
+    let definition = ToolDefinition::new("full", "full", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { panic!("legacy executor must not run") })));
+    api.register_tool_with_extension_context(definition, Arc::new(|id, params, signal, update, ctx| Box::pin(async move {
+        assert_eq!(id, "call"); assert_eq!(params, JsonValue::Null); assert!(signal.is_none());
+        assert!(ctx.is_idle()); assert_eq!(ctx.cwd, std::path::PathBuf::from("/tmp"));
+        if let Some(update) = update { update(AgentToolResult::text("partial")); }
+        let mut result = AgentToolResult::text("done");
+        result.terminate = Some(true); result.added_tool_names = Some(vec!["custom".into()]);
+        Ok(result)
+    }))).unwrap();
+    let tool = maho_ext_host::wrapper::wrap_registered_tool(api.registered.tools[0].clone(), runtime, Arc::new(|| Ok(context())));
+    let updates = Arc::new(std::sync::atomic::AtomicUsize::new(0)); let observed = updates.clone();
+    let result = (tool.execute)("call".into(), JsonValue::Null, None, Some(Arc::new(move |_| { observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }))).await;
+    assert_eq!(result.terminate, Some(true)); assert_eq!(result.added_tool_names, Some(vec!["custom".into()]));
+    assert_eq!(updates.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
 #[test]
 fn static_runner_uses_one_based_identity_and_isolates_failed_factories() {
     struct Failed;

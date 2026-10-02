@@ -27,6 +27,7 @@ pub fn is_ls_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "
 pub type ExtensionFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ExtensionFailure>> + Send + 'a>>;
 pub type UiFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub type ToolHookStatusUpdater = Arc<dyn Fn(&str) + Send + Sync>;
+pub type ExtensionToolExecutor = Arc<dyn for<'a> Fn(&'a str, JsonValue, Option<maho_ai::utils::abort::AbortSignal>, Option<maho_agent::types::AgentToolUpdateCallback>, &'a ExtensionContext) -> ExtensionFuture<'a, AgentToolResult> + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ToolRenderResultOptions { pub expanded: bool, pub is_partial: bool }
@@ -1096,13 +1097,14 @@ struct RuntimeState {
     live_entry_renderers: BTreeMap<String, LiveEntryRenderers>,
     live_filesystem_policies: BTreeMap<String, Vec<FilesystemPolicy>>,
     live_tool_renderers: BTreeMap<String, BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>>,
+    extension_tool_executors: BTreeMap<(String, String), ExtensionToolExecutor>,
 }
 pub type LiveCommandRegistrations = (Vec<RegisteredCommand>, BTreeMap<String, CommandContextHandler>);
 pub type LiveEntryRenderers = BTreeMap<String, (EntryRenderer, Option<EntryRendererOptions>)>;
 #[derive(Clone, Default)]
 pub struct ExtensionRuntime { state: Arc<Mutex<RuntimeState>>, registration_stale: Arc<Mutex<Option<String>>>, registration_pending: Arc<Mutex<Option<RegistrationPending>>>, registration_classifiers: Arc<Mutex<Vec<u64>>> }
 #[derive(Default)]
-struct RegistrationPending { flags: BTreeMap<String, FlagValue>, providers: Vec<ProviderRegistrationChange> }
+struct RegistrationPending { flags: BTreeMap<String, FlagValue>, providers: Vec<ProviderRegistrationChange>, tool_executors: BTreeMap<(String, String), ExtensionToolExecutor> }
 enum ProviderRegistrationChange { Register(ProviderRegistration, String), Unregister(String, String) }
 pub struct RuntimeRegistrationCheckpoint(RuntimeState);
 impl ExtensionRuntime {
@@ -1116,6 +1118,7 @@ impl ExtensionRuntime {
             {
                 let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 for (name, value) in pending.flags { state.flags.entry(name).or_insert(value); }
+                state.extension_tool_executors.extend(pending.tool_executors);
             }
             for change in pending.providers { match change {
                 ProviderRegistrationChange::Register(registration, path) => self.register_provider(registration, &path)?,
@@ -1168,7 +1171,7 @@ impl ExtensionRuntime {
         state.live_shortcuts.clear();
         state.live_markdown_transformers.clear(); state.live_rpc_handlers.clear();
         state.live_flags.clear();
-        state.live_tools.clear(); state.live_tool_renderers.clear();
+        state.live_tools.clear(); state.live_tool_renderers.clear(); state.extension_tool_executors.clear();
         state.live_mcp_servers.clear();
         state.live_message_renderers.clear(); state.live_entry_renderers.clear();
         state.live_filesystem_policies.clear();
@@ -1238,6 +1241,9 @@ impl ExtensionRuntime {
     }
     pub fn live_tool_renderer(&self, path: &str, name: &str) -> Option<Option<Arc<dyn std::any::Any + Send + Sync>>> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_tool_renderers.get(path).map(|renderers| renderers.get(name).cloned())
+    }
+    pub fn extension_tool_executor(&self, path: &str, name: &str) -> Option<ExtensionToolExecutor> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extension_tool_executors.get(&(path.into(), name.into())).cloned()
     }
     pub fn register_provider(&self, registration: ProviderRegistration, path: &str) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
@@ -1391,6 +1397,16 @@ impl ExtensionApi {
     pub fn register_tool(&mut self, definition: ToolDefinition) {
         if let Err(error) = self.try_register_tool(definition) { std::panic::panic_any(error); }
     }
+    pub fn register_tool_with_extension_context(&mut self, definition: ToolDefinition, execute: ExtensionToolExecutor) -> Result<(), ExtensionFailure> {
+        let name = definition.name.clone();
+        self.try_register_tool(definition)?;
+        let path = if self.registered.source_info.path.is_empty() { self.registered.identity.path.clone() } else { self.registered.source_info.path.clone() };
+        let key = (path, name);
+        let mut pending = self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pending) = pending.as_mut() { pending.tool_executors.insert(key, execute); }
+        else { self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extension_tool_executors.insert(key, execute); }
+        Ok(())
+    }
     pub fn register_tool_with_renderers<TState: 'static, TArgs: Clone + 'static>(&mut self, definition: ToolDefinition, renderers: ToolRenderers<TState, TArgs>) -> Result<(), ExtensionFailure> {
         let name = definition.name.clone();
         self.try_register_tool(definition)?;
@@ -1406,8 +1422,15 @@ impl ExtensionApi {
         if !definition.parameters.is_object() {
             return Err(ExtensionFailure::new(format!("Tool \"{}\" registered by extension \"{}\" must define an object parameter schema.", definition.name, self.registered.identity.path)));
         }
+        let mut source_info = self.registered.source_info.clone();
+        if source_info.path.is_empty() { source_info.path = self.registered.identity.path.clone(); }
+        let key = (source_info.path.clone(), definition.name.clone());
+        let mut pending = self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pending) = pending.as_mut() { pending.tool_executors.remove(&key); }
+        else { self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extension_tool_executors.remove(&key); }
+        drop(pending);
         self.registered.tool_renderers.remove(&definition.name);
-        let tool = RegisteredTool { definition, source_info: self.registered.source_info.clone() };
+        let tool = RegisteredTool { definition, source_info };
         if let Some(existing) = self.registered.tools.iter_mut().find(|t| t.definition.name == tool.definition.name) { *existing = tool.clone(); } else { self.registered.tools.push(tool.clone()); }
         let actions = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone();
         if let Some(actions) = actions { actions.install_registered_tool(tool)?; }

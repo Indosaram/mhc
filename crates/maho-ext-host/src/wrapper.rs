@@ -19,6 +19,8 @@ impl Drop for ToolInvocation {
     }
 }
 pub type ToolInvocationFactory = Arc<dyn Fn(Option<AbortSignal>) -> Result<ToolInvocation, ExtensionFailure> + Send + Sync>;
+struct AbortSubscription(maho_ai::utils::abort::AbortSignal, maho_ai::utils::abort::ListenerId);
+impl Drop for AbortSubscription { fn drop(&mut self) { self.0.remove_abort_listener(self.1); } }
 
 pub fn wrap_registered_tool(registered: RegisteredTool, runtime: ExtensionRuntime, context_factory: ToolContextFactory) -> AgentTool {
     wrap_registered_tool_with_invocation(registered, runtime, Arc::new(move |signal| {
@@ -29,6 +31,9 @@ pub fn wrap_registered_tool(registered: RegisteredTool, runtime: ExtensionRuntim
 }
 
 pub fn wrap_registered_tool_with_invocation(registered: RegisteredTool, runtime: ExtensionRuntime, context_factory: ToolInvocationFactory) -> AgentTool {
+    let extension_path = registered.source_info.path.clone();
+    let tool_name = registered.definition.name.clone();
+    let invocation_factory = context_factory.clone();
     let context = Arc::clone(&context_factory);
     let mut definition = registered.definition;
     let execute_definition = Arc::clone(&definition.execute);
@@ -45,6 +50,8 @@ pub fn wrap_registered_tool_with_invocation(registered: RegisteredTool, runtime:
     tool.execute = Arc::new(move |id, params, signal, on_update| {
         let execute = Arc::clone(&execute);
         let runtime = runtime.clone();
+        let extension_execute = runtime.extension_tool_executor(&extension_path, &tool_name);
+        let invocation_factory = invocation_factory.clone();
         Box::pin(async move {
             let actions = match runtime.session_actions() {
                 Ok(actions) => actions,
@@ -54,7 +61,21 @@ pub fn wrap_registered_tool_with_invocation(registered: RegisteredTool, runtime:
                 Ok(names) => names,
                 Err(error) => { let mut result = AgentToolResult::text(error.message); result.is_error = Some(true); return result; }
             };
-            let mut result = execute(id, params, signal, on_update).await;
+            let mut result = if let Some(extension_execute) = extension_execute {
+                let local = AbortSignal::default();
+                let listener = signal.as_ref().map(|signal| {
+                    let cancellation = local.clone();
+                    let listener = signal.add_abort_listener(move |_| cancellation.abort());
+                    if signal.aborted() { local.abort(); }
+                    AbortSubscription(signal.clone(), listener)
+                });
+                let result = match invocation_factory(Some(local)) {
+                    Ok(invocation) => extension_execute(&id, params, signal.clone(), on_update, &invocation.context).await,
+                    Err(error) => Err(error),
+                };
+                drop(listener);
+                match result { Ok(result) => result, Err(error) => { let mut result = AgentToolResult::text(error.message); result.is_error = Some(true); result } }
+            } else { execute(id, params, signal, on_update).await };
             if let Err(error) = runtime.assert_active() {
                 result.is_error = Some(true);
                 result.content.push(ContentBlock::text(error.message));

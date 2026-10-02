@@ -82,6 +82,24 @@ fn api(runtime: ExtensionRuntime) -> ExtensionApi {
 }
 
 #[test]
+fn extension_tool_executor_is_published_only_after_factory_commit() {
+    let runtime = ExtensionRuntime::default();
+    let scope = runtime.registration_scope();
+    let mut api = api(scope.clone());
+    let definition = ToolDefinition::new("full", "full", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { Ok(ToolResult::text("legacy")) })));
+    api.register_tool_with_extension_context(definition, Arc::new(|_, _, _, _, _| Box::pin(async { Ok(AgentToolResult::text("full")) }))).unwrap();
+    assert!(runtime.extension_tool_executor("test", "full").is_none());
+    scope.commit_registration().unwrap();
+    assert!(runtime.extension_tool_executor("test", "full").is_some());
+    let failed = runtime.registration_scope();
+    let mut failed_api = self::api(failed.clone());
+    let definition = ToolDefinition::new("failed", "failed", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { Ok(ToolResult::text("legacy")) })));
+    failed_api.register_tool_with_extension_context(definition, Arc::new(|_, _, _, _, _| Box::pin(async { Ok(AgentToolResult::text("failed")) }))).unwrap();
+    failed.invalidate_registration("failed");
+    assert!(runtime.extension_tool_executor("test", "failed").is_none());
+}
+
+#[test]
 fn captured_api_event_bus_rejects_access_after_runtime_replacement() {
     let runtime = ExtensionRuntime::default();
     let api = api(runtime.clone());
