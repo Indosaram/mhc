@@ -83,4 +83,8 @@ mod tests {
     #[test] fn invalid_operation_fails() { assert!(normalize_todo_params(&json!({"op":"invalid"}),&[]).error.is_some()); }
     #[test] fn done_list_cannot_bulk_complete() { assert!(normalize_todo_params(&json!({"op":"done","list":[{"phase":"A","items":["x"]}]}),&[]).error.is_some()); }
     #[test] fn explicit_clear_and_items_conflict() { assert!(normalize_todo_params(&json!({"op":"init","list":[],"items":["x"]}),&[]).error.is_some()); }
+    #[test] fn upstream_whitespace_padded_rm_has_no_targets() {
+        let result=normalize_todo_params(&json!({"op":"rm","task":" \t","phase":" \n "}),&[]);
+        assert!(result.error.is_none());assert_eq!(result.corrections.len(),1);assert_eq!(result.entry,Some(TodoOpEntry{op:TodoOperation::Rm,list:None,task:None,phase:None,items:None}));
+    }
 }

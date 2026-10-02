@@ -178,4 +178,13 @@ mod tests {
         assert_ne!(index.search("get library docs",10,&Bm25SearchOptions{exact_match:Some(false),..Default::default()})[0].name,"mcp_docs_get-library-docs");
         for query in ["get-library-docs","get_library_docs","GET-LIBRARY-DOCS","mcp_docs_get-library-docs"] {let results=index.search(query,25,&Default::default());assert_eq!(results[0].name,"mcp_docs_get-library-docs");assert!(results[0].exact);}
     }
+    #[test] fn upstream_fifty_tool_mcp_corpus_relevance_and_server_filter() {
+        let mut documents=Vec::new();
+        for server in ["docs","github","fs","db","web"] {for pair in ["get-library","list-issue","search-file","create-record","delete-page","update-user","read-commit","write-branch","fetch-table","resolve-session"] {
+            let mut document=doc(&format!("mcp_{server}_{pair}"));document.label=pair.into();document.aliases=vec![pair.into()];document.description=Some(format!("{} on the {server} server",pair.replacen('-'," a ",1)));document.source=ToolSearchSource::Mcp;document.group=server.into();document.owner_label=server.into();document.registration_id=format!("mcp:{server}:{pair}");documents.push(document);
+        }}
+        let index=build_bm25_index(&documents);
+        for (query,expected) in [("docs search file","mcp_docs_search-file"),("github create record","mcp_github_create-record"),("fs delete page","mcp_fs_delete-page"),("db list issue","mcp_db_list-issue"),("web fetch table","mcp_web_fetch-table")] {assert!(index.search(query,3,&Default::default()).iter().any(|result|result.name==expected));}
+        let results=index.search("get",20,&Bm25SearchOptions{group:Some("github".into()),..Default::default()});assert!(!results.is_empty());assert!(results.iter().all(|result|result.doc.group=="github"));
+    }
 }
