@@ -137,6 +137,40 @@ impl EvalDetachedCellManager {
         self.terminal_snapshots.get(cell_id).cloned().ok_or_else(|| format!("Unknown detached eval cell \"{cell_id}\""))
     }
 
+    pub async fn stop(manager: &Arc<Mutex<Self>>, cell_id: &str, reason: &str) -> Result<EvalDetachedCellSnapshot,String> {
+        let cell={
+            let manager=manager.lock().expect("cell manager lock");
+            let Some(cell)=manager.cells.get(cell_id) else {return manager.peek(cell_id);};
+            cell.clone()
+        };
+        let (kernel,queued,detached,on_kill)={let cell=cell.lock().expect("managed cell lock");(cell.kernel.clone(),cell.source.state==EvalDetachedCellState::Queued,cell.source.detached,cell.on_kill.clone())};
+        if queued {
+            let removed=if let Some(kernel)=kernel {kernel.cancel_queued(cell_id,reason).await?} else {false};
+            cell.lock().expect("managed cell lock").source.state_retained=Some(true);
+            manager.lock().expect("cell manager lock").cancel_without_interrupt(&cell);
+            if !removed && let Some(on_kill)=on_kill {on_kill(reason.into());}
+        } else if detached {
+            let (settled,signal)=tokio::sync::watch::channel(false);
+            cell.lock().expect("managed cell lock").interrupt_outcome=Some(signal);
+            let cancelled=manager.lock().expect("cell manager lock").cancel_without_interrupt(&cell);
+            let outcome=if cancelled && let Some(kernel)=kernel {
+                match kernel.interrupt(reason,Some(cell_id)).await {
+                    Ok(handle)=>{
+                        cell.lock().expect("managed cell lock").source.interrupt_note=handle.note;
+                        handle.state_retained.await.map(|retained|cell.lock().expect("managed cell lock").source.state_retained=Some(retained))
+                    }
+                    Err(error)=>Err(error),
+                }
+            } else {Ok(())};
+            settled.send_replace(true);
+            let now=(manager.lock().expect("cell manager lock").options.now)();
+            let snapshot=snapshot_detached_cell(&cell.lock().expect("managed cell lock").source,now);
+            manager.lock().expect("cell manager lock").terminal_snapshots.remember(snapshot);
+            outcome?;
+        }
+        manager.lock().expect("cell manager lock").peek(cell_id)
+    }
+
     pub fn live_cells(&self, language: Option<EvalLanguage>, except: Option<&str>) -> Vec<EvalDetachedCellSnapshot> {
         let mut live: Vec<_> = self.cells.values().filter_map(|cell| {
             let cell = cell.lock().expect("managed cell poisoned");

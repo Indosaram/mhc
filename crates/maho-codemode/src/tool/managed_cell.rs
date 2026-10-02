@@ -12,6 +12,8 @@ pub struct ManagedCell {
     pub deadlines: CellDeadlines,
     pub terminal: watch::Sender<Option<EvalDetachedCellSnapshot>>,
     pub interrupt_outcome: Option<watch::Receiver<bool>>,
+    pub kernel: Option<std::sync::Arc<dyn super::types::EvalKernel>>,
+    pub on_kill: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
 }
 
 pub fn create_managed_cell(cell_id: String, input: EvalToolInput, artifacts_dir: Option<&Path>, now_ms: f64, default_hard_limit_seconds: f64, default_run_budget_seconds: f64) -> ManagedCell {
@@ -21,5 +23,5 @@ pub fn create_managed_cell(cell_id: String, input: EvalToolInput, artifacts_dir:
     deadlines.pause();
     let spill_path = detached_notification_spill_path(artifacts_dir, &cell_id);
     let (terminal, _) = watch::channel(None);
-    ManagedCell { source:DetachedCellResultSource { cell_id,input,started_at_ms:now_ms,run_started_at_ms:None,detached:false,state:EvalDetachedCellState::Queued,queue_snapshot:None,state_retained:None,interrupt_note:None,live_result:None,terminal_result:None,hard_limited:false,hard_limit_seconds:Some(hard_limit_seconds),run_budget_exhausted:false,run_budget_seconds:Some(run_budget_seconds) },spill_path,can_detach:false,was_detached:false,notification_queued:false,deadlines,terminal,interrupt_outcome:None }
+    ManagedCell { source:DetachedCellResultSource { cell_id,input,started_at_ms:now_ms,run_started_at_ms:None,detached:false,state:EvalDetachedCellState::Queued,queue_snapshot:None,state_retained:None,interrupt_note:None,live_result:None,terminal_result:None,hard_limited:false,hard_limit_seconds:Some(hard_limit_seconds),run_budget_exhausted:false,run_budget_seconds:Some(run_budget_seconds) },spill_path,can_detach:false,was_detached:false,notification_queued:false,deadlines,terminal,interrupt_outcome:None,kernel:None,on_kill:None }
 }

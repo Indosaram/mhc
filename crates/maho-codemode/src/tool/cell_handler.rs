@@ -1,0 +1,92 @@
+use std::sync::Arc;
+use serde_json::{Value, json};
+use maho_ext_api::ExecuteToolOptions;
+use crate::{bridges::{agent_bridge::AgentBridge, output_bridge::OutputExecuteTool, schema_bridge::EvalSchemaToolInfo, reserved_dispatch::{ReservedDispatchContext, is_reserved_tool_name, run_reserved_tool}, schema_hint::append_schema_hint}, config::settings::CodemodeSettings};
+use super::{cell_runtime::CellResultBuilder, call_capture::*, tool_result_marshal::{marshal_tool_result, tool_result_is_error}, status_events::upsert_status_event};
+
+pub struct CellBridgeRuntime {
+    pub executor: Arc<dyn OutputExecuteTool>,
+    pub tools: Option<Vec<EvalSchemaToolInfo>>,
+    pub settings: CodemodeSettings,
+    pub signal: maho_ai::utils::abort::AbortSignal,
+    pub deliver_reply: Arc<dyn Fn(Value) + Send + Sync>,
+    pub complete: Option<CellCompletionHandler>,
+}
+
+pub type CellCompletionHandler = Arc<dyn Fn(crate::completion::handler::CompletionRequest, maho_ai::utils::abort::AbortSignal) -> std::pin::Pin<Box<dyn std::future::Future<Output=Result<Value,crate::completion::handler::CompletionError>> + Send>> + Send + Sync>;
+
+pub struct CellHandler {
+    pub builder: CellResultBuilder,
+    runtime: CellBridgeRuntime,
+    agent_bridge: AgentBridge,
+}
+
+impl CellHandler {
+    pub fn new(builder: CellResultBuilder, runtime: CellBridgeRuntime) -> Self { Self {builder,runtime,agent_bridge:AgentBridge::default()} }
+
+    pub async fn handle(&mut self, message: &Value) -> Result<(), String> {
+        if !self.builder.state.active { return Ok(()); }
+        match message["type"].as_str() {
+            Some("text") => self.builder.push(message["data"].as_str().unwrap_or("")).await?,
+            Some("phase") => self.builder.set_phase(message["title"].as_str().unwrap_or("").into()),
+            Some("status") => if self.runtime.settings.status_events { upsert_status_event(&mut self.builder.state.status_events,message["event"].clone());self.builder.emit_update(false); },
+            Some("log") => self.builder.push(&format!("{}\n",message["message"].as_str().unwrap_or(""))).await?,
+            Some("display") => self.builder.display(message["mimeType"].as_str().unwrap_or(""),message["dataBase64"].as_str().unwrap_or("")).await?,
+            Some("tool-call") => self.handle_tool_call(message).await,
+            Some("ready" | "init-failed" | "result" | "closed" | "kernel-tool-describe-reply" | "kernel-tool-invoke-reply") => {},
+            _ => return Err(format!("Unhandled kernel message: {message}")),
+        }
+        Ok(())
+    }
+
+    async fn handle_tool_call(&mut self, message: &Value) {
+        let started=now_ms();
+        let name=message["toolName"].as_str().unwrap_or("");
+        let call_id=message["callId"].as_str().unwrap_or("");
+        let metric=create_tool_call_metric(name,started);
+        let metric_index=self.builder.state.tool_call_metrics.len();
+        self.builder.state.tool_call_metrics.push(metric.clone());
+        let args=bound_tool_call_args(&message["args"]);
+        let mut capture=ToolCallCapture {call_id:cap_code_points(call_id,MAX_CAPTURED_IDENTIFIER_CODE_POINTS),args:args.args,started_at:started,metric,include_details:name!=crate::bridge::reserved::RESERVED_SCHEMA_TOOL,args_truncated:args.truncated};
+        if name=="completion" && let Some(complete)=&self.runtime.complete {
+            let signal=self.runtime.signal.clone();
+            let summary=crate::completion::tool_bridge::handle_completion_tool_call(call_id,&message["args"],|request|complete(request,signal),||self.builder.state.active,|reply|(self.runtime.deliver_reply)(reply)).await;
+            if self.builder.state.active {
+                record_tool_call(&mut self.builder.state.tool_calls,summary.ok,&mut capture,None,summary.error.as_deref(),now_ms());
+                self.builder.state.tool_call_metrics[metric_index]=capture.metric;
+                self.builder.emit_update(false);
+            }
+            return;
+        }
+        let options=ExecuteToolOptions {signal:Some(self.runtime.signal.clone()),..Default::default()};
+        let reply:Result<(Value,bool,Option<String>,Option<String>),String> = if name=="eval" {
+            Err("recursive eval is not allowed".into())
+        } else if is_reserved_tool_name(name) {
+            run_reserved_tool(name,ReservedDispatchContext {call_id,args:&message["args"],executor:self.runtime.executor.as_ref(),task_tool_name:&self.runtime.settings.task_tools.task,task_output_tool_name:&self.runtime.settings.task_tools.output,tools:self.runtime.tools.as_deref(),execute_options:options,emit_status:None,agent_bridge:&self.agent_bridge}).await.map(|value|(value,true,None,None)).map_err(|error|error.to_string())
+        } else {
+            self.runtime.executor.execute_tool(name,message["args"].clone(),options).await.map(|result| {
+                let ok=!tool_result_is_error(&result);
+                let preview=ok.then(||tool_call_result_preview(&result)).flatten();
+                let error=(!ok).then(||result.content.iter().find_map(|part| match part {maho_ext_api::ContentBlock::Text(content)=>Some(cap_code_points(&crate::host_sdk::sanitize_terminal_label(&content.text),512)),_=>None})).flatten();
+                (marshal_tool_result(&result),ok,preview,error)
+            }).map_err(|error|error.to_string())
+        };
+        if !self.builder.state.active {return;}
+        match reply {
+            Ok((value,ok,preview,error)) => {
+                record_tool_call(&mut self.builder.state.tool_calls,ok,&mut capture,preview.as_deref(),error.as_deref(),now_ms());
+                (self.runtime.deliver_reply)(json!({"type":"tool-reply","callId":call_id,"ok":true,"value":value}));
+            }
+            Err(error) => {
+                let parameters=self.runtime.tools.as_ref().and_then(|tools|tools.iter().find(|tool|tool.name==name)).and_then(|tool|tool.parameters.as_ref());
+                let error=if name=="eval" {error} else {parameters.map_or_else(||error.clone(),|schema|append_schema_hint(&error,name,schema))};
+                record_tool_call(&mut self.builder.state.tool_calls,false,&mut capture,None,Some(&error),now_ms());
+                (self.runtime.deliver_reply)(json!({"type":"tool-reply","callId":call_id,"ok":false,"error":{"message":error}}));
+            }
+        }
+        self.builder.state.tool_call_metrics[metric_index]=capture.metric;
+        self.builder.emit_update(false);
+    }
+}
+
+fn now_ms() -> f64 {std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system clock").as_secs_f64()*1000.0}

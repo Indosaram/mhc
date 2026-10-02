@@ -39,3 +39,29 @@ async fn queued_cancellation_does_not_interrupt_active_cell() {
     assert_eq!(kernel.run(input("after","1+1")).await.unwrap()["valueRepr"],"2");
     kernel.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn cell_execution_delivers_interrupt_to_real_python_kernel() {
+    use std::sync::{Arc,Mutex};
+    use maho_ai::utils::abort::{AbortController,AbortReason};
+    use maho_codemode::tool::{cell_execution::CellExecution,types::{EvalKernel,EvalKernelRunInput}};
+    let kernel=Arc::new(PythonKernel::start(options()).await.unwrap());
+    let caller=AbortController::new();
+    let execution=CellExecution::new(caller.signal(),"bound".into(),None,Arc::new(|_|{}));
+    execution.set_kernel(kernel.clone());
+    let (started_tx,started_rx)=tokio::sync::oneshot::channel();
+    let started_tx=Mutex::new(Some(started_tx));
+    let run=EvalKernel::run(kernel.as_ref(),EvalKernelRunInput {
+        cell_id:"bound".into(),code:"import sys,json\nvalue=41\nsys.__stdout__.write(json.dumps({'type':'text','stream':'stdout','data':'started'})+'\\n')\nsys.__stdout__.flush()\nwhile True: pass".into(),timeout_ms:None,on_started:None,
+        on_message:Some(Arc::new(move |message|{if message["data"]=="started" && let Some(sender)=started_tx.lock().unwrap().take(){sender.send(()).unwrap();}})),
+    });
+    let cancel=async {
+        tokio::time::timeout(Duration::from_secs(5),started_rx).await.unwrap().unwrap();
+        caller.abort(Some(AbortReason::new("AbortError","cancel bound")));
+    };
+    let (result,())=tokio::join!(execution.wait(run),cancel);
+    assert_eq!(result,Err("cancel bound".into()));
+    assert_eq!(kernel.run(input("after-bound","value+1")).await.unwrap()["valueRepr"],"42");
+    execution.finish();
+    kernel.close().await.unwrap();
+}

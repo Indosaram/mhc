@@ -1,4 +1,4 @@
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EvalLanguage { Js, Py, Rb, Jl }
 
@@ -37,6 +37,47 @@ pub enum EvalToolRequest {
     List,
     Peek { cell_id: String },
     Stop { cell_id: String },
+}
+
+pub type EvalKernelFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + Send + 'a>>;
+pub struct EvalKernelRunInput {
+    pub cell_id: String,
+    pub code: String,
+    pub timeout_ms: Option<u64>,
+    pub on_started: Option<crate::kernels::shared::subprocess_run::KernelStartedCallback>,
+    pub on_message: Option<crate::kernels::shared::subprocess_run::KernelMessageCallback>,
+}
+pub struct KernelInterruptHandle {
+    pub state_retained: EvalKernelFuture<'static, bool>,
+    pub note: Option<String>,
+}
+pub trait EvalKernel: Send + Sync {
+    fn run(&self, input: EvalKernelRunInput) -> EvalKernelFuture<'_, serde_json::Value>;
+    fn cancel_queued<'a>(&'a self, cell_id: &'a str, reason: &'a str) -> EvalKernelFuture<'a, bool>;
+    fn interrupt<'a>(&'a self, reason: &'a str, cell_id: Option<&'a str>) -> EvalKernelFuture<'a, KernelInterruptHandle>;
+    fn queue_snapshot(&self) -> (Option<String>, Vec<String>);
+    fn deliver_tool_reply(&self, message: serde_json::Value) -> Result<(), String>;
+    fn reset(&self) -> EvalKernelFuture<'_, ()>;
+    fn close(&self) -> EvalKernelFuture<'_, ()>;
+}
+
+impl EvalKernel for crate::kernels::py::kernel::PythonKernel {
+    fn run(&self, input: EvalKernelRunInput) -> EvalKernelFuture<'_, serde_json::Value> {
+        Box::pin(self.run(crate::kernels::py::kernel_contract::PythonKernelRunOptions {cell_id:input.cell_id,code:input.code,timeout_ms:input.timeout_ms,on_started:input.on_started,on_message:input.on_message}))
+    }
+    fn cancel_queued<'a>(&'a self, cell_id: &'a str, reason: &'a str) -> EvalKernelFuture<'a, bool> {Box::pin(async move {Ok(self.cancel_queued(cell_id,reason).await)})}
+    fn interrupt<'a>(&'a self, reason: &'a str, cell_id: Option<&'a str>) -> EvalKernelFuture<'a, KernelInterruptHandle> {
+        Box::pin(async move {
+            let retained=self.interrupt(reason,cell_id).await?;
+            Ok(KernelInterruptHandle {state_retained:Box::pin(async move {Ok(retained)}),note:None})
+        })
+    }
+    fn queue_snapshot(&self) -> (Option<String>,Vec<String>) {
+        self.queue_snapshot()
+    }
+    fn deliver_tool_reply(&self, _:serde_json::Value) -> Result<(),String> {Ok(())}
+    fn reset(&self) -> EvalKernelFuture<'_,()> {Box::pin(self.reset())}
+    fn close(&self) -> EvalKernelFuture<'_,()> {Box::pin(self.close())}
 }
 
 pub struct EvalDeadlineSeconds {
