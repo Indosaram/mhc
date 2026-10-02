@@ -802,6 +802,30 @@ async fn extension_executor_receives_full_context_and_preserves_agent_result_fie
 }
 
 #[tokio::test]
+async fn retained_extension_executor_rejects_replaced_runtime() {
+    let runtime = ExtensionRuntime::default();
+    let mut api = ExtensionApi::new(LoadedExtension::new("retained", "/tmp".into(), SourceInfo::default()), Default::default(), EventBus::default(), runtime.clone());
+    let definition = ToolDefinition::new("full", "full", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { panic!("legacy executor must not run") })));
+    api.register_tool_with_extension_context(definition, Arc::new(|_, _, _, _, _| Box::pin(async { Ok(AgentToolResult::text("unexpected")) }))).unwrap();
+    let execute = runtime.extension_tool_executor("retained", "full").unwrap();
+    runtime.invalidate("replaced");
+    let ctx = context();
+    let result = execute("call", JsonValue::Null, None, None, &ctx).await;
+    assert_eq!(result.unwrap_err().message, "replaced");
+
+    let runtime = ExtensionRuntime::default();
+    let captured = runtime.clone();
+    let mut api = ExtensionApi::new(LoadedExtension::new("during", "/tmp".into(), SourceInfo::default()), Default::default(), EventBus::default(), runtime.clone());
+    let definition = ToolDefinition::new("full", "full", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { panic!("legacy executor must not run") })));
+    api.register_tool_with_extension_context(definition, Arc::new(move |_, _, _, _, _| {
+        let captured = captured.clone();
+        Box::pin(async move { captured.invalidate("during execution"); Ok(AgentToolResult::text("discarded")) })
+    })).unwrap();
+    let execute = runtime.extension_tool_executor("during", "full").unwrap();
+    assert_eq!(execute("call", JsonValue::Null, None, None, &ctx).await.unwrap_err().message, "during execution");
+}
+
+#[tokio::test]
 async fn typed_tool_decodes_parameters_and_serializes_detail_updates() {
     let runtime = ExtensionRuntime::default(); runtime.bind_session_actions(Arc::new(SessionActions::default()));
     let mut api = ExtensionApi::new(LoadedExtension::new("typed", "/tmp".into(), SourceInfo::default()), Default::default(), EventBus::default(), runtime.clone());
