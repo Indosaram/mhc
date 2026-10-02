@@ -2312,6 +2312,13 @@ impl AgentSession {
             self.emit(AgentSessionEvent::AutoRetryStart { attempt, max_attempts, delay_ms, error_message: error });
             let mut messages = self.messages();
             if messages.last().is_some_and(|message| message.role() == "assistant") {
+                let failed_value = serde_json::to_value(messages.last().expect("assistant tail")).map_err(|error| error.to_string())?;
+                self.with_session_manager_mut(|manager| {
+                    let branch = manager.branch(manager.leaf_id().or(Some("")));
+                    if let Some(entry) = branch.last().filter(|entry| entry.get("message") == Some(&failed_value)) {
+                        manager.set_leaf(entry.get("parentId").and_then(Value::as_str));
+                    }
+                });
                 messages.pop();
                 self.agent.set_messages(messages);
                 self.state().message_revision += 1;
@@ -7051,6 +7058,10 @@ mod tests {
             .await.expect("bounded prompt").expect("prompt");
         assert!(!session.is_retrying());
         assert_eq!(session.with_session_manager(|manager| manager.entries().len()), 4);
+        let branch = session.with_session_manager(|manager| manager.branch(manager.leaf_id().or(Some(""))));
+        assert_eq!(branch.len(), 2);
+        assert_eq!(branch[0]["message"]["role"], "user");
+        assert_eq!(branch[1]["message"]["stopReason"], "error");
         assert_eq!(session.messages().len(), 2);
     }
 
