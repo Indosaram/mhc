@@ -21,10 +21,22 @@ pub fn build_mcp_tool_definitions(entries:&[McpToolCatalogEntry],agent_dir:PathB
             Box::pin(async move {
                 call.signal.check()?;
                 let params=if call.params.is_object(){call.params}else{json!({})};
-                let result=tokio::select! {
-                    result=entry.client.request("tools/call",json!({"name":entry.tool,"arguments":params}),entry.request_timeout)=>result.map_err(|error|ToolError::Message(format!("ToolExecError: {error}")))?,
+                let token=format!("native:{}:{}:{}",entry.server,entry.tool,call.id);
+                let mut notifications=entry.client.notifications.subscribe();
+                let request=entry.client.request("tools/call",json!({"name":entry.tool,"arguments":params,"_meta":{"progressToken":token}}),entry.request_timeout);tokio::pin!(request);
+                let result=loop {tokio::select! {
+                    biased;
                     ()=call.signal.cancelled()=>return Err(ToolError::Aborted),
-                };
+                    notification=notifications.recv()=>{
+                        let value=match notification {Ok(value)=>value,Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>continue,Err(_)=>continue};
+                        let progress=value.get("params").unwrap_or(&Value::Null);
+                        if value.get("method").and_then(Value::as_str)==Some("notifications/progress") && progress.get("progressToken")==Some(&json!(token)) && let Some(update)=&call.on_update {
+                            let total=progress.get("total").map_or_else(String::new,|total|format!("/{total}"));let message=progress.get("message").and_then(Value::as_str).map_or_else(String::new,|message|format!(" {message}"));
+                            update(ToolResult {content:vec![ToolContent::text(format!("{}/{} progress {}{total}{message}",entry.server,entry.tool,progress.get("progress").unwrap_or(&Value::Null)))],details:Some(json!({"progress":progress,"server":entry.server,"tool":entry.tool}))})?;
+                        }
+                    }
+                    result=&mut request=>break result.map_err(|error|ToolError::Message(format!("ToolExecError: {error}")))?,
+                }};
                 mapped_guarded_result(&entry,&result,&agent_dir,&artifacts,output_guard.as_ref())
             })
         }));

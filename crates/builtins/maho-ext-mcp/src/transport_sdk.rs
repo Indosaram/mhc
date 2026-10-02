@@ -70,7 +70,7 @@ impl McpClient {
     pub async fn request(&self,method:&str,params:Value,timeout:Duration)->Result<Value,McpError> {
         let id=self.next_id.fetch_add(1,Ordering::Relaxed);let (sender,receiver)=oneshot::channel();
         self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id,sender);
-        struct PendingRequest {pending:Arc<Mutex<BTreeMap<u64,oneshot::Sender<Result<Value,McpError>>>>>,id:u64}
+        struct PendingRequest {pending:Arc<Mutex<BTreeMap<u64,Reply>>>,id:u64}
         impl Drop for PendingRequest {fn drop(&mut self){self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&self.id);}}
         let _pending=PendingRequest {pending:self.pending.clone(),id};
         let result=async {

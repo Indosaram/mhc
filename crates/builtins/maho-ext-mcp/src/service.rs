@@ -87,6 +87,33 @@ impl McpService {
         }
         crate::status::format_mcp_status(title,&rows)
     }
+    pub async fn wire_status_snapshot(&self)->crate::service_types::McpWireStatusSnapshot {
+        use crate::service_types::*;
+        let mut snapshot=McpWireStatusSnapshot::default();let Some(config)=&self.config else{return snapshot;};
+        for (name,server) in &config.servers {
+            let entry=if let Some(connection)=self.connections.get(name){Some(connection.entry.lock().await)}else{None};
+            let mode=server.config.as_ref().map(crate::auth::context::resolve_auth_mode);
+            let auth_status=match mode {
+                Some(crate::auth::context::ServerAuthMode::Bearer)=>McpWireAuthStatus::BearerToken,
+                Some(crate::auth::context::ServerAuthMode::OAuth)=>{
+                    let logged_in=self.agent_dir.as_ref().zip(server.config.as_ref()).and_then(|(dir,config)|config.url.as_ref().map(|url|crate::auth::token_store::McpTokenStore::new(dir,name,url))).and_then(|store|store.read().ok().flatten()).is_some_and(|record|record.access_token.is_some());
+                    if logged_in{McpWireAuthStatus::OAuth}else{McpWireAuthStatus::NotLoggedIn}
+                }
+                _=>McpWireAuthStatus::Unsupported,
+            };
+            let mut wire=McpWireStatusServer {name:name.clone(),server_info:None,tools:Vec::new(),resources:Vec::new(),resource_templates:Vec::new(),auth_status,status:Some(entry.as_ref().map_or(McpWireServerStatus::Config(server.state),|entry|McpWireServerStatus::Connection(entry.connection.state())))};
+            if let Some(cached)=entry.as_ref().and_then(|entry|entry.cached_catalog.as_ref()) {
+                wire.tools=cached.tools.iter().filter_map(|tool|serde_json::from_value(tool.clone()).ok()).collect();wire.resources=cached.resources.iter().filter_map(|resource|serde_json::from_value(resource.clone()).ok()).collect();
+            }
+            if let Some(client)=entry.as_ref().filter(|entry|entry.connection.state()==crate::connection::ServerConnectionState::Connected).and_then(|entry|entry.connection.client().ok()) {
+                wire.server_info=serde_json::from_value(client.server_info.read().await.clone()).ok();
+                let timeout=std::time::Duration::from_secs_f64(server.config.as_ref().and_then(|config|config.request_timeout_ms).unwrap_or(30000.0)/1000.0);
+                if let Ok(templates)=crate::catalog::collect_client_pages(&client,"resources/templates/list","resourceTemplates",timeout).await {wire.resource_templates=templates.items.into_iter().filter_map(|template|serde_json::from_value(template).ok()).collect();}
+            }
+            snapshot.servers.push(wire);
+        }
+        snapshot
+    }
     pub async fn test_server(&self,name:&str)->Result<(f64,usize),McpServiceError> {
         let started=tokio::time::Instant::now();self.connect_server(name).await?;
         let connection=self.connections.get(name).ok_or_else(||crate::errors::McpError::new(crate::errors::McpErrorKind::Connect,format!("Unknown MCP server: {name}")))?;

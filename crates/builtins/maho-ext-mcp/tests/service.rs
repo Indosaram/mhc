@@ -9,6 +9,7 @@ async fn repeated_attach_retains_connections_and_disabled_config_detaches_them()
     service.attach_session(cwd.path(),root.path(),&BTreeMap::new(),true,std::slice::from_ref(&declaration)).await.unwrap();assert_eq!(registry.size(),1);
     let physical=service.connections["fixture"].entry.lock().await.connection.clone();service.connect_server("fixture").await.unwrap();assert!(!matches!(service.server_snapshots().await[0].lifecycle_state,McpLifecycleState::Other(McpUnspawnedState::NotSpawned)));
     let (_,tools)=service.test_server("fixture").await.unwrap();assert!(tools>0);assert_eq!(service.server_snapshots().await[0].counters.call_count,1);
+    let wire=service.wire_status_snapshot().await;assert_eq!(wire.servers.len(),1);assert_eq!(wire.servers[0].name,"fixture");assert!(!wire.servers[0].tools.is_empty());assert!(wire.servers[0].server_info.is_some());
     service.attach_session(cwd.path(),root.path(),&BTreeMap::new(),true,std::slice::from_ref(&declaration)).await.unwrap();assert!(Arc::ptr_eq(&physical,&service.connections["fixture"].entry.lock().await.connection));
     let mut disabled=declaration;disabled.config.enabled=Some(false);service.attach_session(cwd.path(),root.path(),&BTreeMap::new(),true,&[disabled]).await.unwrap();assert_eq!(registry.size(),0);assert!(service.connections.is_empty());
     service.dispose().await.unwrap();
