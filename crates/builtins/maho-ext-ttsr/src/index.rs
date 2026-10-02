@@ -81,13 +81,24 @@ fn handle(state:&mut State,api:&ExtensionApi,event:&ExtensionEvent,ctx:&Extensio
     Ok(EventResult::None)
 }
 pub struct TtsrExtension;
+fn interrupt_input(state:&Arc<Mutex<State>>,data:&str,keys:&maho_tui::keybindings::KeybindingsManager)->Option<maho_ext_api::TerminalInputResult> {
+    if keys.matches(data,"app.interrupt") { state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel(); }
+    None
+}
 impl Extension for TtsrExtension {
     fn register(&self,api:&mut ExtensionApi) {
         api.register_flag("ttsr-disabled",FlagType::Boolean { default:Some(false) },Some("Disable TTSR stream-rule detection.".into()));
         api.register_flag("ttsr-rules-disabled",FlagType::String { default:Some(String::new()) },Some("Comma-separated TTSR rule names to disable.".into()));
         let state=Arc::new(Mutex::new(State::default())); let public=Arc::clone(&state); register_ttsr_commands(api,Arc::new(move ||public.lock().unwrap_or_else(std::sync::PoisonError::into_inner).public_state()));
         let actions=Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));
-        for kind in [EventKind::SessionStart,EventKind::SessionAbort,EventKind::Input,EventKind::AgentEnd,EventKind::TurnStart,EventKind::TurnEnd,EventKind::MessageUpdate,EventKind::MessageEnd,EventKind::AgentSettled] { let state=Arc::clone(&state); let actions=Arc::clone(&actions); api.on(kind,Arc::new(move |event,ctx| { let state=Arc::clone(&state); let actions=Arc::clone(&actions); Box::pin(async move { let mut state=state.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?; handle(&mut state,&actions,event,ctx) }) })); }
+        for kind in [EventKind::SessionStart,EventKind::SessionAbort,EventKind::Input,EventKind::AgentEnd,EventKind::TurnStart,EventKind::TurnEnd,EventKind::MessageUpdate,EventKind::MessageEnd,EventKind::AgentSettled] { let state=Arc::clone(&state); let actions=Arc::clone(&actions); api.on(kind,Arc::new(move |event,ctx| { let state=Arc::clone(&state); let actions=Arc::clone(&actions); Box::pin(async move {
+            let initializing=state.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?.watcher.is_none();
+            let result={ let mut locked=state.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?; handle(&mut locked,&actions,event,ctx)? };
+            if initializing&&ctx.mode==maho_ext_api::ExtensionMode::Tui&&state.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?.watcher.is_some() {
+                let _=ctx.ui.on_terminal_input(Arc::new(move |data|interrupt_input(&state,data,&maho_tui::keybindings::get_keybindings())));
+            }
+            Ok(result)
+        }) })); }
     }
 }
 #[cfg(test)] mod tests {
@@ -108,5 +119,14 @@ impl Extension for TtsrExtension {
     }
     #[test] fn native_registration_exposes_flags_command_and_nine_hooks() { let mut api=ExtensionApi::new(maho_ext_api::LoadedExtension::new("ttsr",".".into(),Default::default()),Default::default(),Default::default(),Default::default()); TtsrExtension.register(&mut api); assert_eq!(api.registered.handlers.len(),9); assert_eq!(api.registered.commands[0].name,"ttsr"); assert_eq!(api.registered.flags.len(),2); }
     #[test] fn cancel_drops_remediation_and_disarms_recovery() { let mut state=State { pending_nudge:Some(build_nudge_message("test","test")),..Default::default() }; state.cancel(); assert!(state.generation_state.user_cancelled); assert!(state.pending_nudge.is_none()); }
+    #[test] fn configured_interrupt_cancels_pending_remediation_without_consuming_input() {
+        use maho_tui::keybindings::{KeybindingsManager,KeybindingDefinition,KeybindingDefinitions};
+        let mut definitions=KeybindingDefinitions::new();
+        definitions.insert("app.interrupt".into(),KeybindingDefinition { default_keys:"escape".into(),description:Some("interrupt".into()) });
+        let keys=KeybindingsManager::new(definitions,Default::default());
+        let state=Arc::new(Mutex::new(State { pending_nudge:Some(build_nudge_message("test","test")),..Default::default() }));
+        assert!(interrupt_input(&state,"x",&keys).is_none()); assert!(state.lock().unwrap().pending_nudge.is_some());
+        assert!(interrupt_input(&state,"\u{1b}",&keys).is_none()); assert!(state.lock().unwrap().generation_state.user_cancelled); assert!(state.lock().unwrap().pending_nudge.is_none());
+    }
     #[test] fn generation_reset_preserves_queued_nudge_but_releases_abort_claim() { let mut state=State { pending_nudge:Some(build_nudge_message("test","test")),generation_state:GenerationDetectionState { abort_claimed:true,..Default::default() },..Default::default() }; state.reset_generation(); assert!(!state.generation_state.abort_claimed); assert!(state.pending_nudge.is_some()); assert_eq!(state.generation,1); }
 }
