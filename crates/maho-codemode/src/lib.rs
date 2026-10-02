@@ -1,6 +1,7 @@
 pub mod bridge;
 pub mod config;
 pub mod extension;
+pub mod host_sdk;
 pub mod interpreters;
 pub mod kernels;
 pub mod output;
