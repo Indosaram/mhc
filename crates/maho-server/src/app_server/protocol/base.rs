@@ -15,7 +15,7 @@ pub type SelectedCapabilityRoot=JsonValue;
 #[serde(untagged)]
 pub enum RequestId {String(String),Number(serde_json::Number)}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
-pub struct ClientInfo {pub name:String,pub title:Option<String>,pub version:String}
+pub struct ClientInfo {pub name:String,#[serde(deserialize_with="super::nullable::deserialize_required")]pub title:Option<String>,pub version:String}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct InitializeCapabilities {
@@ -27,7 +27,7 @@ pub struct InitializeCapabilities {
 }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct InitializeParams {pub client_info:ClientInfo,pub capabilities:Option<InitializeCapabilities>}
+pub struct InitializeParams {pub client_info:ClientInfo,#[serde(deserialize_with="super::nullable::deserialize_required")]pub capabilities:Option<InitializeCapabilities>}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct InitializeResponse {pub user_agent:String,pub codex_home:AbsolutePathBuf,pub platform_family:String,pub platform_os:String}

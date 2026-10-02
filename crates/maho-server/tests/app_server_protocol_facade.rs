@@ -1,6 +1,19 @@
 use maho_server::app_server::protocol::{collaboration_mode::*,fuzzy_search::*};
 use serde_json::json;
 #[test]
+fn facade_nullable_fields_require_keys() {
+    use maho_server::app_server::protocol::{base::ClientInfo,config::Config};
+    assert!(serde_json::from_value::<ClientInfo>(json!({"name":"client","version":"1"})).is_err());
+    assert!(serde_json::from_value::<ClientInfo>(json!({"name":"client","version":"1","title":null})).is_ok());
+    let value=json!({"model":null,"model_provider":null,"approval_policy":null,"sandbox_mode":null,"model_reasoning_effort":null});
+    assert!(serde_json::from_value::<Config>(value.clone()).is_ok());
+    for key in value.as_object().unwrap().keys() {
+        let mut missing=value.clone();missing.as_object_mut().unwrap().remove(key);
+        assert!(serde_json::from_value::<Config>(missing).is_err());
+    }
+}
+
+#[test]
 fn facade_numeric_ids_and_optional_json_preserve_wire_values() {
     use maho_server::app_server::protocol::{base::RequestId,catalogs::Tool};
     for value in [json!(1),json!(1.5)] {
