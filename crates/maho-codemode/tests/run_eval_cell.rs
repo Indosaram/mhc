@@ -111,7 +111,7 @@ async fn ordinary_eval_does_not_read_the_host_catalog() {
     let mut options=Arc::try_unwrap(options).ok().expect("fixture options ownership");
     let calls=Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let count=calls.clone();
-    options.list_tools=Some(Arc::new(move || {count.fetch_add(1,std::sync::atomic::Ordering::SeqCst);vec![]}));
+    options.list_tools=Some(Arc::new(move || {count.fetch_add(1,std::sync::atomic::Ordering::SeqCst);Ok(vec![])}));
     let result=run_eval_cell(Arc::new(options),invocation("no-catalog","6*7")).await;
     kernel.close().await.unwrap();
     assert_eq!(result.unwrap().details["cells"][0]["output"],"42");

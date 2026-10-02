@@ -1,7 +1,7 @@
 use std::{collections::HashMap,path::PathBuf,sync::{Arc,Mutex}};
 use maho_ai::utils::abort::AbortSignal;
 use maho_ext_api::AgentToolResult;
-use crate::{bridges::{output_bridge::OutputExecuteTool,schema_bridge::EvalSchemaToolInfo},config::settings::CodemodeSettings,prompt::eval_prompt::EvalPromptOptions};
+use crate::{bridges::{output_bridge::OutputExecuteTool,schema_bridge::EvalToolCatalog},config::settings::CodemodeSettings,prompt::eval_prompt::EvalPromptOptions};
 use super::{types::{EvalKernel,EvalKernelFuture,EvalLanguage,EvalRuntimeInfo,EvalToolInput},detached_cell_manager::EvalDetachedCellManager,cell_handler::CellCompletionHandler,image_resize::EvalImageSdk};
 
 pub trait EvalKernelManager: Send + Sync {
@@ -12,7 +12,7 @@ pub type CellSettledCallback=Arc<dyn Fn(serde_json::Value)+Send+Sync>;
 pub struct CreateEvalToolOptions {
     pub kernel_manager: Arc<dyn EvalKernelManager>,
     pub executor: Arc<dyn OutputExecuteTool>,
-    pub list_tools: Option<Arc<dyn Fn()->Vec<EvalSchemaToolInfo>+Send+Sync>>,
+    pub list_tools: Option<EvalToolCatalog>,
     pub complete: Option<CellCompletionHandler>,
     pub settings: CodemodeSettings,
     pub artifacts_dir: Option<PathBuf>,
