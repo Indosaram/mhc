@@ -400,6 +400,7 @@ struct AgentSessionState {
     pending_model_switch: Option<PendingModelSwitch>,
     compaction_abort_controller: Option<maho_ai::utils::abort::AbortController>,
     prompt_templates: Vec<crate::prompt_templates::PromptTemplate>,
+    extension_commands: Vec<maho_ext_api::SlashCommandInfo>,
     skills: Vec<crate::skills::Skill>,
     bash_abort_signals: BTreeMap<String, maho_ext_api::AbortSignal>,
     pending_bash_messages: Vec<maho_agent::harness::messages::BashExecutionMessage>,
@@ -1000,6 +1001,7 @@ impl AgentSession {
             pending_model_switch: None,
             compaction_abort_controller: None,
             prompt_templates: Vec::new(),
+            extension_commands: Vec::new(),
             skills: Vec::new(),
             bash_abort_signals: BTreeMap::new(),
             pending_bash_messages: Vec::new(),
@@ -2770,6 +2772,10 @@ impl AgentSession {
             self.register_tool_definition(definition, source, tool);
         }
         self.set_active_tools_by_name(active);
+        self.state().extension_commands = runner.get_registered_commands().into_iter().map(|command| maho_ext_api::SlashCommandInfo {
+            name: command.invocation_name, description: command.command.description,
+            argument_hint: command.command.argument_hint, source_info: Some(command.command.source_info),
+        }).collect();
         *self.extension_runner.lock().await = Some(runner);
         let weak = Arc::downgrade(&self.inner);
         self.agent.set_transform_context(Some(Arc::new(move |messages, _signal| {
@@ -2787,10 +2793,12 @@ impl AgentSession {
     }
 
     pub fn get_commands(&self) -> Vec<maho_ext_api::SlashCommandInfo> {
-        self.prompt_templates().into_iter().map(|template| maho_ext_api::SlashCommandInfo {
-            name: template.name, description: Some(template.description),
+        let mut commands = self.state().extension_commands.clone();
+        commands.extend(self.prompt_templates().into_iter().map(|template| maho_ext_api::SlashCommandInfo {
+            name: template.name, description: Some(template.description), argument_hint: template.argument_hint,
             ..Default::default()
-        }).collect()
+        }));
+        commands
     }
 
     pub async fn continue_session(&self) -> Result<(), String> {
@@ -4562,6 +4570,12 @@ mod tests {
         }], Vec::new());
         assert_eq!(session.expand_input("/review file", true).expect("expand"), "review file");
         assert_eq!(session.expand_input("/review file", false).expect("raw"), "/review file");
+        session.state().extension_commands.push(maho_ext_api::SlashCommandInfo {
+            name: "extension".into(), description: Some("extension command".into()), argument_hint: Some("target".into()), source_info: None,
+        });
+        let commands = session.get_commands();
+        assert_eq!(commands.iter().map(|command| command.name.as_str()).collect::<Vec<_>>(), ["extension", "review"]);
+        assert_eq!(commands[0].argument_hint.as_deref(), Some("target"));
     }
 
     #[tokio::test]
