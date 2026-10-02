@@ -77,7 +77,7 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
     let builder=CellResultBuilder::new(state,EvalOutputOptions {artifact_path:options.artifacts_dir.as_ref().map(|root|root.join(format!("eval-{}.log",uuid::Uuid::new_v4()))),head_bytes:options.settings.output_sink.head_bytes as usize,max_columns:options.settings.output_sink.max_columns as usize,provider:None,api:None,image_sdk:options.image_sdk.clone()});
     let reply_kernel=kernel.clone();
     let (messages_tx,mut messages)=tokio::sync::mpsc::unbounded_channel();
-    let mut handler=CellHandler::new(builder,CellBridgeRuntime {executor:options.executor.clone(),tools:options.list_tools.as_ref().map(|list|list()),settings:options.settings.clone(),signal:bridge_signal,complete:options.complete.clone(),deliver_reply:Arc::new(move |reply|{let _=reply_kernel.deliver_tool_reply(reply);})});
+    let mut handler=CellHandler::new(builder,CellBridgeRuntime {executor:options.executor.clone(),tools:options.list_tools.clone(),settings:options.settings.clone(),signal:bridge_signal,complete:options.complete.clone(),deliver_reply:Arc::new(move |reply|{let _=reply_kernel.deliver_tool_reply(reply);})});
     let live=Arc::new(Mutex::new(handler.builder.live_result()));
     let live_provider=live.clone();let queue_kernel=kernel.clone();
     manager.lock().expect("cell manager lock").bind_kernel(&cell,Arc::new(move ||live_provider.lock().expect("live result lock").clone()),Arc::new(move ||queue_kernel.queue_snapshot()));

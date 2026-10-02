@@ -6,12 +6,14 @@ use super::{cell_runtime::CellResultBuilder, call_capture::*, tool_result_marsha
 
 pub struct CellBridgeRuntime {
     pub executor: Arc<dyn OutputExecuteTool>,
-    pub tools: Option<Vec<EvalSchemaToolInfo>>,
+    pub tools: Option<CellToolCatalog>,
     pub settings: CodemodeSettings,
     pub signal: maho_ai::utils::abort::AbortSignal,
     pub deliver_reply: Arc<dyn Fn(Value) + Send + Sync>,
     pub complete: Option<CellCompletionHandler>,
 }
+
+pub type CellToolCatalog = Arc<dyn Fn() -> Vec<EvalSchemaToolInfo> + Send + Sync>;
 
 pub type CellCompletionHandler = Arc<dyn Fn(crate::completion::handler::CompletionRequest, maho_ai::utils::abort::AbortSignal) -> std::pin::Pin<Box<dyn std::future::Future<Output=Result<Value,crate::completion::handler::CompletionError>> + Send>> + Send + Sync>;
 
@@ -62,7 +64,8 @@ impl CellHandler {
         let reply:Result<(Value,bool,Option<String>,Option<String>),String> = if name=="eval" {
             Err("recursive eval is not allowed".into())
         } else if is_reserved_tool_name(name) {
-            run_reserved_tool(name,ReservedDispatchContext {call_id,args:&message["args"],executor:self.runtime.executor.as_ref(),task_tool_name:&self.runtime.settings.task_tools.task,task_output_tool_name:&self.runtime.settings.task_tools.output,tools:self.runtime.tools.as_deref(),execute_options:options,emit_status:None,agent_bridge:&self.agent_bridge}).await.map(|value|(value,true,None,None)).map_err(|error|error.to_string())
+            let tools=if name==crate::bridge::reserved::RESERVED_OUTPUT_TOOL {None} else {self.runtime.tools.as_ref().map(|list|list())};
+            run_reserved_tool(name,ReservedDispatchContext {call_id,args:&message["args"],executor:self.runtime.executor.as_ref(),task_tool_name:&self.runtime.settings.task_tools.task,task_output_tool_name:&self.runtime.settings.task_tools.output,tools:tools.as_deref(),execute_options:options,emit_status:None,agent_bridge:&self.agent_bridge}).await.map(|value|(value,true,None,None)).map_err(|error|error.to_string())
         } else {
             self.runtime.executor.execute_tool(name,message["args"].clone(),options).await.map(|result| {
                 let ok=!tool_result_is_error(&result);
@@ -78,7 +81,8 @@ impl CellHandler {
                 (self.runtime.deliver_reply)(json!({"type":"tool-reply","callId":call_id,"ok":true,"value":value}));
             }
             Err(error) => {
-                let parameters=self.runtime.tools.as_ref().and_then(|tools|tools.iter().find(|tool|tool.name==name)).and_then(|tool|tool.parameters.as_ref());
+                let tools=if name=="eval" {None} else {self.runtime.tools.as_ref().map(|list|list())};
+                let parameters=tools.as_ref().and_then(|tools|tools.iter().find(|tool|tool.name==name)).and_then(|tool|tool.parameters.as_ref());
                 let error=if name=="eval" {error} else {parameters.map_or_else(||error.clone(),|schema|append_schema_hint(&error,name,schema))};
                 record_tool_call(&mut self.builder.state.tool_calls,false,&mut capture,None,Some(&error),now_ms());
                 (self.runtime.deliver_reply)(json!({"type":"tool-reply","callId":call_id,"ok":false,"error":{"message":error}}));

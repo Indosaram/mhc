@@ -106,6 +106,19 @@ async fn real_eval_chain_preserves_output_state_and_terminal_snapshot() {
 }
 
 #[tokio::test]
+async fn ordinary_eval_does_not_read_the_host_catalog() {
+    let (kernel,options)=fixture().await;
+    let mut options=Arc::try_unwrap(options).ok().expect("fixture options ownership");
+    let calls=Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count=calls.clone();
+    options.list_tools=Some(Arc::new(move || {count.fetch_add(1,std::sync::atomic::Ordering::SeqCst);vec![]}));
+    let result=run_eval_cell(Arc::new(options),invocation("no-catalog","6*7")).await;
+    kernel.close().await.unwrap();
+    assert_eq!(result.unwrap().details["cells"][0]["output"],"42");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst),0,"source reads the catalog only when dispatch needs it");
+}
+
+#[tokio::test]
 async fn registered_eval_tool_runs_and_lists_real_kernel_results() {
     use maho_tools::definition::{ToolCall,AbortSignal};
     let (kernel,options)=fixture().await;
