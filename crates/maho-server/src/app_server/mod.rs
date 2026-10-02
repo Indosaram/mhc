@@ -26,6 +26,7 @@ pub mod websocket;
 pub mod start_options;
 pub mod unix_socket;
 pub mod fuzzy_files;
+pub mod account;
 pub mod errors;
 pub mod daemon_probe;
 pub mod cli_args;

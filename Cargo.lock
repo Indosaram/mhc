@@ -2098,6 +2098,8 @@ dependencies = [
  "chrono",
  "futures-util",
  "maho-agent",
+ "maho-ai",
+ "maho-core",
  "maho-ext-api",
  "maho-ext-host",
  "rand",
