@@ -3,6 +3,7 @@ pub mod config;
 pub mod rules {
     pub mod cache;
     pub mod constants;
+    pub mod engine;
     pub mod finder;
     pub mod formatter;
     pub mod matcher;
