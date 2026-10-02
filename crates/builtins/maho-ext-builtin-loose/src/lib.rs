@@ -4,4 +4,5 @@ pub mod service_tier;
 pub mod tps;
 pub mod account_display_name;
 pub mod oauth_login_interaction;
+pub mod diff;
 
