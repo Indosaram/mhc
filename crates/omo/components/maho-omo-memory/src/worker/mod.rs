@@ -31,3 +31,6 @@ pub mod reflection_spawn_input;
 pub mod run_finalization_git;
 pub mod run_finalization_settlement;
 pub mod run_finalization;
+pub mod spawn_supervisor_support;
+pub mod run_sentinel;
+pub mod supervisor_process_identity;
