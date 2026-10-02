@@ -7,6 +7,7 @@ use tokio::sync::{mpsc, oneshot};
 use super::{local_module_loader::{LocalModuleLoader, LocalModuleLoaderOptions, PREPARED_CELL_PREFIX}, run_queue::{JavaScriptRunQueue, stopped_result}, worker_slot::WorkerSlot, worker_startup::WorkerStartupOptions, interrupt_bounds::{INTERRUPT_ACK_MS, JS_INTERRUPT_GRACE_MS}};
 
 type Snapshot = (Option<String>, Vec<String>);
+pub type KernelToolNames = Arc<dyn Fn()->Result<(Vec<String>,Vec<String>),String>+Send+Sync>;
 enum Command {
     Run(KernelRunInput, Option<KernelMessageCallback>, Option<KernelStartedCallback>, oneshot::Sender<Result<Value, String>>),
     Cancel(String, String, oneshot::Sender<bool>),
@@ -17,10 +18,10 @@ enum Command {
     Close(oneshot::Sender<Result<(), String>>),
 }
 
-struct WorkerOptions { cwd: PathBuf, session_id: String, width: u64, environment: Option<SessionEnvironment>, connection: BridgeConnectionConfig, executable: PathBuf }
+struct WorkerOptions { cwd: PathBuf, session_id: String, width: u64, environment: Option<SessionEnvironment>, connection: BridgeConnectionConfig, executable: PathBuf, names: KernelToolNames }
 impl WorkerOptions {
-    fn startup(&self) -> WorkerStartupOptions<'_> {
-        WorkerStartupOptions {cwd:&self.cwd, session_id:&self.session_id, parallel_pool_width:self.width, connection:&self.connection, generation:0, host_tool_names:&[], foreign_language_names:&[], session_env:self.environment.as_ref(), worker_entry:None, environment:crate::kernels::shared::runtime_asset::CodemodeRuntimeAssetEnvironment {bun_version:None,executable_path:&self.executable}}
+    fn startup<'a>(&'a self,names:&'a (Vec<String>,Vec<String>)) -> WorkerStartupOptions<'a> {
+        WorkerStartupOptions {cwd:&self.cwd, session_id:&self.session_id, parallel_pool_width:self.width, connection:&self.connection, generation:0, host_tool_names:&names.0, foreign_language_names:&names.1, session_env:self.environment.as_ref(), worker_entry:None, environment:crate::kernels::shared::runtime_asset::CodemodeRuntimeAssetEnvironment {bun_version:None,executable_path:&self.executable}}
     }
 }
 
@@ -37,10 +38,14 @@ impl JavaScriptKernel {
         Self::start_with_connection(cwd,session_id,parallel_pool_width,session_env,BridgeConnectionConfig {port:1,token:"worker-transport".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:Some(parallel_pool_width)}).await
     }
     pub async fn start_with_connection(cwd:&Path,session_id:&str,parallel_pool_width:u64,session_env:Option<SessionEnvironment>,connection:BridgeConnectionConfig)->Result<Self,ProcessError> {
+        Self::start_with_names(cwd,session_id,parallel_pool_width,session_env,connection,Arc::new(||Ok((vec![],vec![])))).await
+    }
+    pub async fn start_with_names(cwd:&Path,session_id:&str,parallel_pool_width:u64,session_env:Option<SessionEnvironment>,connection:BridgeConnectionConfig,names:KernelToolNames)->Result<Self,ProcessError> {
         let loader=LocalModuleLoader::new(&LocalModuleLoaderOptions {cwd:cwd.into(),local_roots:connection.local_roots.clone(),artifacts_dir:connection.artifacts_dir.as_ref().map(PathBuf::from)})?;
-        let options=WorkerOptions {cwd:cwd.into(),session_id:session_id.into(),width:parallel_pool_width,environment:session_env,executable:std::env::current_exe()?,connection};
+        let options=WorkerOptions {cwd:cwd.into(),session_id:session_id.into(),width:parallel_pool_width,environment:session_env,executable:std::env::current_exe()?,connection,names};
         let mut slot=WorkerSlot::default();
-        slot.ensure_ready(options.startup(),&maho_ai::utils::abort::AbortController::new().signal()).await?;
+        let names=(options.names)().map_err(ProcessError::Startup)?;
+        slot.ensure_ready(options.startup(&names),&maho_ai::utils::abort::AbortController::new().signal()).await?;
         let pid=Arc::new(Mutex::new(slot.pid()));
         let snapshot=Arc::new(Mutex::new((None,vec![])));
         let (commands,receiver)=mpsc::unbounded_channel();
@@ -143,11 +148,16 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
     let mut deadline=None;
     loop {
         if runs.active().is_none() && runs.has_waiting() {
-            let ready=slot.ensure_ready(options.startup(),&maho_ai::utils::abort::AbortController::new().signal()).await;
+            let ready=async {let names=(options.names)().map_err(ProcessError::Startup)?;slot.ensure_ready(options.startup(&names),&maho_ai::utils::abort::AbortController::new().signal()).await}.await;
             if let Err(error)=ready {runs.reject_waiting(&error.to_string());}
             else if let Some(run)=runs.start_next(origin.elapsed().as_secs_f64()*1000.0) {
                 deadline=run.input.timeout_ms.filter(|ms|*ms>0).map(|ms|tokio::time::Instant::now()+Duration::from_millis(ms));
-                if let Err(error)=slot.post_message(&json!({"type":"run","cellId":run.input.cell_id,"code":run.input.code})).await {
+                let posted=async {
+                    let names=(options.names)().map_err(ProcessError::Startup)?;
+                    slot.post_message(&json!({"type":"kernel-tools-names","hostToolNames":names.0,"foreignLanguageNames":names.1})).await?;
+                    slot.post_message(&json!({"type":"run","cellId":run.input.cell_id,"code":run.input.code,"timeoutMs":run.input.timeout_ms})).await
+                }.await;
+                if let Err(error)=posted {
                     runs.settle_all(&error.to_string());
                     if let Err(error)=slot.retire().await {eprintln!("JS retirement failed: {error}");}
                     deadline=None;
@@ -176,7 +186,7 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
                 Some(Command::Reset(response))=>{
                     tools.reject_all(super::kernel_tools_errors::kernel_tool_error(super::kernel_tools_errors::KernelToolErrorCode::KernelToolStale,"JavaScript worker reset",None));
                     runs.settle_all("JS kernel reset");calls.clear_tool_calls();deadline=None;
-                    let result=async {slot.retire().await?;slot.ensure_ready(options.startup(),&maho_ai::utils::abort::AbortController::new().signal()).await}.await.map_err(|error|error.to_string());
+                    let result=async {slot.retire().await?;let names=(options.names)().map_err(ProcessError::Startup)?;slot.ensure_ready(options.startup(&names),&maho_ai::utils::abort::AbortController::new().signal()).await}.await.map_err(|error|error.to_string());
                     let _=response.send(result);
                 }
                 Some(Command::Close(response))=>{

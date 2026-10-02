@@ -87,3 +87,21 @@ async fn live_kernel_tool_host_pump_describes_and_invokes_worker_definition() {
     assert_eq!(defined["ok"],true);
     assert_eq!(result.unwrap(),42);
 }
+
+#[tokio::test]
+async fn live_name_sources_refresh_before_every_cell_and_recovery() {
+    use std::sync::{Arc,Mutex};
+    let names=Arc::new(Mutex::new((vec!["host_reserved".to_string()],vec!["foreign_reserved".to_string()])));
+    let source=names.clone();
+    let kernel=JavaScriptKernel::start_with_names(Path::new(env!("CARGO_MANIFEST_DIR")),"bun-names",4,None,maho_codemode::bridge::protocol::BridgeConnectionConfig {port:1,token:"fixture".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:None},Arc::new(move ||Ok(source.lock().unwrap().clone()))).await.unwrap();
+    let mut results=Vec::new();
+    for name in ["host_reserved","foreign_reserved"] {
+        results.push(kernel.run(KernelRunInput {cell_id:name.into(),code:format!("tool(function {name}() {{ return 1; }})"),timeout_ms:Some(5000)},|_|{}).await.unwrap());
+    }
+    *names.lock().unwrap()=(vec!["later_host".into()],vec![]);
+    results.push(kernel.run(KernelRunInput {cell_id:"refresh".into(),code:"tool(function later_host() { return 1; })".into(),timeout_ms:Some(5000)},|_|{}).await.unwrap());
+    kernel.reset().await.unwrap();
+    results.push(kernel.run(KernelRunInput {cell_id:"reset".into(),code:"tool(function later_host() { return 1; })".into(),timeout_ms:Some(5000)},|_|{}).await.unwrap());
+    kernel.close().await.unwrap();
+    for result in results {assert_eq!(result["ok"],false,"{result}");assert!(result["error"]["message"].as_str().unwrap().contains("collides"));}
+}
