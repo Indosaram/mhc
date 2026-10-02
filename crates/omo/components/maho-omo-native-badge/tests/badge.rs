@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 use maho_ext_api::*;
 use maho_omo_native_badge::*;
 mod support;
+#[tokio::test] async fn settled_republishes_through_context_ui() {let mut api=api();NativeBadgeComponent.register(&mut api);let ui=Arc::new(Ui::default());let mut ctx=support::context();ctx.ui=ui.clone();for _ in 0..2 {api.registered.handlers[&EventKind::AgentSettled][0](&mut ExtensionEvent::AgentSettled,&ctx).await.expect("dispatch");}let calls=ui.0.lock().expect("status");assert_eq!(calls.len(),2);assert_eq!(calls[0],calls[1]);}
 #[tokio::test] async fn session_start_publishes_through_context_ui() {let mut api=api();NativeBadgeComponent.register(&mut api);let ui=Arc::new(Ui::default());let mut ctx=support::context();ctx.ui=ui.clone();let mut event=ExtensionEvent::SessionStart(SessionStartEvent{reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None});api.registered.handlers[&EventKind::SessionStart][0](&mut event,&ctx).await.expect("dispatch");assert_eq!(*ui.0.lock().expect("status"),vec![(NATIVE_BADGE_STATUS_KEY.into(),Some(NATIVE_BADGE_TEXT.into()))]);}
 
 #[derive(Default)]
