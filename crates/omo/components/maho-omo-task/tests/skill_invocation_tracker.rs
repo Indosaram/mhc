@@ -2,6 +2,14 @@ use maho_ext_api::InputSource;
 use maho_omo_task::skill_invocation_tracker::SkillInvocationTracker;
 use senpi_task::agents::SkillInvocationState;
 use serde_json::json;
+mod support;
+#[tokio::test] async fn registered_events_capture_input_tool_result_and_shutdown() {
+    use maho_ext_api::{EventKind,ExtensionEvent,InputEvent,ToolResultEvent,SessionShutdownEvent,SessionReason};
+    let tracker=SkillInvocationTracker::new().expect("tracker"); let mut api=support::api(); tracker.register(&mut api); let context=support::context();
+    let mut event=ExtensionEvent::Input(InputEvent { input_id:"input".into(),text:"/skill:ulw-plan".into(),images:None,source:InputSource::Interactive,streaming_behavior:None }); api.registered.handlers[&EventKind::Input][0](&mut event,&context).await.expect("input"); assert!(tracker.state_for("session").has_user_requested("ulw-plan")); assert!(!tracker.state_for("foreign").has_invoked("ulw-plan"));
+    let mut event=ExtensionEvent::ToolResult(ToolResultEvent { tool_call_id:"call".into(),tool_name:"write".into(),input:json!({"path":".omo/plans/a.md"}),content:vec![],details:None,is_error:false,usage:None }); api.registered.handlers[&EventKind::ToolResult][0](&mut event,&context).await.expect("result"); assert!(tracker.state_for("session").has_plan_artifact());
+    let mut event=ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason:SessionReason::Quit,target_session_file:None,signal:None }); api.registered.handlers[&EventKind::SessionShutdown][0](&mut event,&context).await.expect("shutdown"); let state=tracker.state_for("session"); assert!(!state.has_invoked("ulw-plan")); assert!(!state.has_user_requested("ulw-plan")); assert!(!state.has_plan_artifact());
+}
 #[test] fn spawn_policy_reads_current_tracked_gate_and_plan_state() {
     use senpi_task::tools::task::spawn_policy::{SpawnPolicyDeps,PlanReviewContractOutcome};
     let tracker=SkillInvocationTracker::new().expect("tracker"); assert!(tracker.invocation_gate_denial("momus","a").is_some()); assert!(tracker.invocation_gate_denial("explore","a").is_none());
