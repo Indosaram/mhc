@@ -50,7 +50,10 @@ pub fn create_web_search_tool(get_config:std::sync::Arc<dyn Fn()->super::types::
                 super::types::ConfigLoadResult::Ok{config,..}=>config,
                 super::types::ConfigLoadResult::Err{reason,message,..}=>return Ok(error_result(message,Some(match reason { super::types::ConfigLoadFailureReason::MissingConfig=>"missing_config",super::types::ConfigLoadFailureReason::InvalidConfig=>"invalid_config",super::types::ConfigLoadFailureReason::MissingApiKey=>"missing_api_key",super::types::ConfigLoadFailureReason::ProviderNativeBypass=>"provider_native_bypass" }))),
             };
-            if config.auto { return Err(ToolError::Message("Native search discovery requires ModelRegistry.getApiKeyAndHeaders binding".into())); }
+            if config.auto {
+                call.signal.check()?;
+                return Err(ToolError::Message("Native search discovery requires ModelRegistry.getApiKeyAndHeaders binding".into()));
+            }
             let request=request_from_arguments(query.clone(),allowed.clone(),blocked.clone(),&config).map_err(ToolError::Message)?;
             let labels:Vec<_>=config.providers.iter().map(|entry|super::search::provider_entry_label(entry.config.provider.as_str(),entry.config.id.as_deref(),None)).collect();
             let mut progress=json!({"phase":"searching","query":query,"providerLabels":labels,"maxResults":request.max_results,"strategy":match config.strategy { RoutingStrategy::Priority=>"priority",RoutingStrategy::RoundRobin=>"round-robin",RoutingStrategy::FillFirst=>"fill-first" }});
@@ -107,6 +110,11 @@ mod tests {
     #[tokio::test] async fn native_executor_does_not_shim_unbound_auto_discovery() {
         let tool=create_web_search_tool(std::sync::Arc::new(||super::super::types::ConfigLoadResult::Ok{config:config(),source:"test".into()}));
         assert!(matches!((tool.execute)(maho_tools::definition::ToolCall{id:"auto",params:json!({"query":"docs"}),signal:Default::default(),context:None,on_update:None}).await,Err(maho_tools::definition::ToolError::Message(_))));
+    }
+    #[tokio::test] async fn aborted_auto_route_without_context_preserves_cancellation() {
+        let tool=create_web_search_tool(std::sync::Arc::new(||super::super::types::ConfigLoadResult::Ok{config:config(),source:"test".into()}));
+        let signal=maho_tools::definition::AbortSignal::default();signal.abort();
+        assert!(matches!((tool.execute)(maho_tools::definition::ToolCall{id:"auto",params:json!({"query":"docs"}),signal,context:None,on_update:None}).await,Err(maho_tools::definition::ToolError::Aborted)));
     }
     #[test] fn search_details_use_source_fields_and_omit_absent_values() {
         let details=super::super::types::SearchDetails{provider:SearchProvider::Exa,entry_id:None,query:"docs".into(),results:vec![super::super::types::SearchResultItem{title:"Docs".into(),url:"https://example.com".into(),snippet:None,source:None,score:Some(0.),published_at:Some("2026-10-02".into())}],duration_ms:2.,truncated:false,strategy:Some(RoutingStrategy::RoundRobin),attempts:Some(vec![]),answer:None,error:None};
