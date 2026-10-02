@@ -1862,6 +1862,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "dirs",
  "maho-ai",
  "maho-ext-api",
  "maho-ext-builtin-loose",
@@ -1873,6 +1874,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+ "unicode-normalization",
 ]
 
 [[package]]

@@ -18,6 +18,8 @@ regex = "=1.12.3"
 serde_json = { version = "=1.0.149", features = ["preserve_order"] }
 tokio = { version = "=1.52.3", features = ["sync", "process", "time", "io-util", "rt", "macros"] }
 tempfile = "=3.27.0"
+dirs = "=6.0.0"
+unicode-normalization = "=0.1.25"
 
 [dev-dependencies]
 maho-ext-host = { path = "../../maho-ext-host" }

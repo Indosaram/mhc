@@ -349,8 +349,11 @@ pub fn transcript_messages(entries: &[Value]) -> Vec<Value> {
 }
 
 pub async fn get_session_messages(session: &str, cwd: &Path, environment: &BTreeMap<String,String>) -> anyhow::Result<Vec<Value>> {
+    use unicode_normalization::UnicodeNormalization;
     if !regex::Regex::new(r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").expect("session UUID").is_match(session) {return Ok(Vec::new());}
-    let root=environment.get("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from).or_else(||environment.get("HOME").map(|home|std::path::PathBuf::from(home).join(".claude"))).ok_or_else(||anyhow::anyhow!("Claude transcript HOME is unavailable"))?.join("projects");
+    let home=environment.get(if cfg!(windows) {"USERPROFILE"}else {"HOME"}).map(std::path::PathBuf::from).or_else(dirs::home_dir);
+    let config=environment.get("CLAUDE_CONFIG_DIR").cloned().or_else(||home.map(|home|home.join(".claude").to_string_lossy().into_owned())).ok_or_else(||anyhow::anyhow!("Claude transcript HOME is unavailable"))?;
+    let root=std::path::PathBuf::from(config.nfc().collect::<String>()).join("projects");
     let original_cwd=cwd.to_string_lossy().into_owned();
     let cwd=std::fs::canonicalize(cwd).unwrap_or_else(|_|cwd.to_owned());
     let mut worktrees=vec![cwd.clone()];
@@ -364,7 +367,8 @@ pub async fn get_session_messages(session: &str, cwd: &Path, environment: &BTree
     let override_key=environment.get("CLAUDE_CODE_PROJECT_DIR_NAME").filter(|key|environment.contains_key("CLAUDE_CONFIG_DIR") && regex::Regex::new(r"^[A-Za-z0-9_-]{1,64}$").expect("project key").is_match(key) && !regex::Regex::new(r"(?i)^(con|prn|aux|nul|com[0-9]|lpt[0-9])$").expect("reserved project key").is_match(key));
     for worktree in worktrees {
         let worktree=std::fs::canonicalize(&worktree).unwrap_or(worktree);
-        let path=worktree.to_string_lossy();let key=transcript_project_key(&path);
+        let path=worktree.to_string_lossy();
+        let path=if cfg!(target_os="macos") {path.nfc().collect::<String>()}else {path.into_owned()};let key=transcript_project_key(&path);
         let mut projects=Vec::new();if let Some(key)=override_key {projects.push(root.join(key));}projects.push(root.join(&key));
         let windows_alias=cfg!(windows).then(||original_cwd.clone()).filter(|original|original.len()>2 && original.as_bytes()[1]==b':' && original.as_bytes()[0].is_ascii_alphabetic());
         if let Some(original)=windows_alias {
@@ -477,6 +481,17 @@ mod tests {
         let environment=BTreeMap::from([("CLAUDE_CONFIG_DIR".into(),config.to_string_lossy().into_owned())]);
         let messages=get_session_messages(session,&cwd,&environment).await.expect("relocated project");
         assert_eq!(messages.len(),1);assert_eq!(messages[0]["uuid"],"anchor");
+    }
+    #[tokio::test]
+    async fn transcript_reader_normalizes_config_root_to_nfc() {
+        use unicode_normalization::UnicodeNormalization;
+        let directory=tempfile::tempdir().expect("directory");let cwd=std::fs::canonicalize(directory.path()).expect("cwd");
+        let config=directory.path().join("cafe\u{301}");let normalized=config.to_string_lossy().nfc().collect::<String>();
+        let project=std::path::PathBuf::from(normalized).join("projects").join(transcript_project_key(&cwd.to_string_lossy()));std::fs::create_dir_all(&project).expect("project");
+        let session="00000000-0000-0000-0000-000000000006";
+        std::fs::write(project.join(format!("{session}.jsonl")),json!({"type":"assistant","uuid":"anchor","sessionId":session}).to_string()+"\n").expect("transcript");
+        let environment=BTreeMap::from([("CLAUDE_CONFIG_DIR".into(),config.to_string_lossy().into_owned())]);
+        assert_eq!(get_session_messages(session,&cwd,&environment).await.expect("normalized root")[0]["uuid"],"anchor");
     }
     #[test]
     fn transcript_projection_exposes_queued_users_only_before_reply() {
