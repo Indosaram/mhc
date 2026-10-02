@@ -20,6 +20,12 @@ pub fn with_monitor_state(mut result:TerminalToolResult,id:&str,paused:bool,drop
 mod tests {
     use super::*;
     #[test]
+    fn live_output_filter_consumes_delta_once_and_invalid_regex_keeps_output()->Result<(),RuntimeError> {
+        let runtime=TerminalRuntimeSession::start("output",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'keep\\ndrop\\n'"))?;runtime.wait(std::time::Duration::from_secs(5))?;
+        let result=execute_bash_output(Some(&runtime),"bash_1",Some("keep"))?;assert!(result.content[0].text.contains("keep"));assert!(!result.content[0].text.contains("drop"));assert!(execute_bash_output(Some(&runtime),"bash_1",None)?.content[0].text.contains("(no new output)"));runtime.dispose()?;
+        let runtime=TerminalRuntimeSession::start("output",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'unfiltered\\n'"))?;runtime.wait(std::time::Duration::from_secs(5))?;assert!(execute_bash_output(Some(&runtime),"bash_2",Some("["))?.content[0].text.contains("unfiltered"));runtime.dispose()
+    }
+    #[test]
     fn muted_log_metadata_reports_burned_lines_only_while_paused() {
         let paused=with_monitor_state(super::super::context::text_result("output"),"mon_saved",true,3);assert_eq!(paused.details.as_ref().unwrap()["monitorMuted"],true);assert_eq!(paused.details.as_ref().unwrap()["mutedDropped"],3);
         let live=with_monitor_state(super::super::context::text_result("output"),"mon_saved",false,3);assert_eq!(live.details.as_ref().unwrap()["monitorMuted"],false);assert_eq!(live.details.as_ref().unwrap()["mutedDropped"],0);assert_eq!(live.content[0].text,"output");
