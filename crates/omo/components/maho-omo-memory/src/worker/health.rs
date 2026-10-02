@@ -1,6 +1,5 @@
 use std::{collections::BTreeMap, path::Path};
 use memory_core::reflection::machine::ReflectionOutcome;
-use serde::Deserialize;
 
 pub const REFLECTION_HEALTH_STALE_MS: i64 = 7 * 24 * 60 * 60_000;
 #[derive(Clone, Debug)]
@@ -16,11 +15,13 @@ pub struct ReflectionHealth {
     pub counts: HealthCounts, pub pending_count: usize, pub recent_failure_fingerprints: Vec<String>,
     pub streak_since_iso: Option<String>,
 }
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct HealthRecord {
     run_id: Option<String>, outcome: ReflectionOutcome, reason: Option<String>, detail: Option<String>,
     finished_at: String, delivery: Option<serde_json::Value>,
+}
+fn read_health_record(bytes:&[u8])->Option<HealthRecord>{
+    let value:serde_json::Value=serde_json::from_slice(bytes).ok()?;let value=value.as_object()?;
+    Some(HealthRecord{run_id:value.get("runId").and_then(serde_json::Value::as_str).map(str::to_owned),outcome:serde_json::from_value(value.get("outcome")?.clone()).ok()?,reason:value.get("reason").and_then(serde_json::Value::as_str).map(str::to_owned),detail:value.get("detail").and_then(serde_json::Value::as_str).map(str::to_owned),finished_at:value.get("finishedAt")?.as_str()?.into(),delivery:value.get("delivery").filter(|value|value.is_object()).cloned()})
 }
 fn timestamp(value: &str) -> Option<i64> { chrono::DateTime::parse_from_rfc3339(value).ok().map(|time| time.timestamp_millis()) }
 pub fn reflection_failure_fingerprint(reason: Option<&str>, detail: Option<&str>) -> String {
@@ -30,7 +31,7 @@ pub fn reflection_failure_fingerprint(reason: Option<&str>, detail: Option<&str>
 pub fn read_reflection_health(completions_dir: &Path, limit: usize, now: i64) -> ReflectionHealth {
     let Ok(names) = std::fs::read_dir(completions_dir) else { return ReflectionHealth::default(); };
     let mut records: Vec<HealthRecord> = names.filter_map(Result::ok).filter(|entry| entry.path().extension().is_some_and(|extension| extension == "json"))
-        .filter_map(|entry| std::fs::read(entry.path()).ok()).filter_map(|bytes| serde_json::from_slice(&bytes).ok()).collect();
+        .filter_map(|entry| std::fs::read(entry.path()).ok()).filter_map(|bytes| read_health_record(&bytes)).collect();
     records.sort_by(|left, right| match (timestamp(&right.finished_at), timestamp(&left.finished_at)) { (Some(right), Some(left)) => right.cmp(&left), _ => std::cmp::Ordering::Equal });
     records.truncate(limit);
     let mut health = ReflectionHealth::default();
@@ -63,6 +64,10 @@ pub fn read_reflection_health(completions_dir: &Path, limit: usize, now: i64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]fn malformed_optional_fields_preserve_valid_health_record(){
+        let root=tempfile::tempdir().unwrap();std::fs::write(root.path().join("record.json"),serde_json::to_vec(&serde_json::json!({"runId":12,"outcome":"failed","reason":false,"detail":[],"finishedAt":"2026-08-12T00:00:00Z","delivery":{"status":"pending"}})).unwrap()).unwrap();
+        let health=read_reflection_health(root.path(),100,0);assert_eq!(health.streak,1);assert_eq!(health.counts.failed,1);assert_eq!(health.pending_count,1);assert_eq!(health.fingerprint,"failed:");assert_eq!(health.last_outcome.unwrap().run_id,"");assert_eq!(health.last_failure.unwrap().detail,None);
+    }
     fn write(root: &Path, id: &str, finished: &str, outcome: &str, detail: &str, pending: bool) {
         std::fs::write(root.join(format!("{id}.json")), serde_json::to_vec(&serde_json::json!({"runId": id, "outcome": outcome, "reason": "child_exit", "detail": detail, "finishedAt": finished, "delivery": {"status": if pending {"pending"} else {"consumed"}}})).unwrap()).unwrap();
     }
