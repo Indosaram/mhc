@@ -50,6 +50,25 @@ impl AnthropicNativeToolSearchAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn upstream_canonical_server_and_local_search_contract() {
+        let payload=json!({"tools":[{"name":"tool_search","description":"search","input_schema":{}},{"name":"mcp_docs_get-library-docs","description":"docs","input_schema":{}}]});
+        let config=AnthropicNativeInjectionConfig{search_tool_name:Some("tool_search"),is_deferrable:&|name|name.starts_with("mcp_"),catalog:&[],get_tool_definition:&|_|None};
+        let out=add_anthropic_native_tool_search(Some(&AnthropicToolSearchTarget::Api("anthropic-messages")),&payload,&config);
+        let tools=out["tools"].as_array().unwrap();
+        assert_eq!(tools.iter().filter(|tool|tool["type"]=="tool_search_tool_bm25_20251119").collect::<Vec<_>>(),vec![&json!({"type":"tool_search_tool_bm25_20251119","name":"tool_search_tool_bm25"})]);
+        assert_eq!(tools[0],payload["tools"][0]);
+        assert_eq!(add_anthropic_native_tool_search(Some(&AnthropicToolSearchTarget::Api("openai-responses")),&payload,&config),payload);
+    }
+    #[test] fn upstream_tool_references_and_proxy_contract() {
+        assert_eq!(build_tool_reference_blocks(&["mcp_docs_get-library-docs".into(),"mcp_docs_resolve-library-id".into()]),vec![json!({"type":"tool_reference","tool_name":"mcp_docs_get-library-docs"}),json!({"type":"tool_reference","tool_name":"mcp_docs_resolve-library-id"})]);
+        let payload=json!({"tools":[{"name":"tool_search"}]});
+        let config=AnthropicNativeInjectionConfig{search_tool_name:Some("tool_search"),is_deferrable:&|_|true,catalog:&[],get_tool_definition:&|_|None};
+        let target=AnthropicToolSearchTarget::Model{api:"anthropic-messages",id:"claude-opus-5",provider:"openmodel",supports_tool_references:None};
+        assert_eq!(add_anthropic_native_tool_search(Some(&target),&payload,&config),payload);
+        let target=AnthropicToolSearchTarget::Model{api:"anthropic-messages",id:"claude-opus-5",provider:"anthropic",supports_tool_references:None};
+        let out=add_anthropic_native_tool_search(Some(&target),&payload,&config);
+        assert_eq!(out["tools"][1],json!({"type":"tool_search_tool_bm25_20251119","name":"tool_search_tool_bm25"}));
+    }
     #[test] fn defer_preserves_cache_control_and_search() {
         let config=AnthropicNativeInjectionConfig{search_tool_name:Some("tool_search"),is_deferrable:&|_|true,catalog:&[],get_tool_definition:&|_|None};
         let out=add_anthropic_native_tool_search(Some(&AnthropicToolSearchTarget::Api("anthropic-messages")),&json!({"tools":[{"name":"tool_search"},{"name":"read","cache_control":{}},{"name":"write"}]}),&config);
