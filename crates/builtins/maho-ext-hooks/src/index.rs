@@ -12,19 +12,31 @@ use crate::tool_adapter::*;
 use crate::prompt_adapter::*;
 
 pub struct HookRuntimeState {pub parsed:ParsedHookConfig,pub trust:HookTrustState,pub storage:FileHookStateStorage}
-pub fn refresh_state(ctx:&ExtensionContext)->Result<HookRuntimeState,ExtensionFailure> {
+fn source_options(ctx:&ExtensionContext)->Result<HookConfigLoaderOptions,ExtensionFailure> {
     let sources=ctx.get_loaded_hook_sources()?;
     let text=|path:&std::path::Path|path.to_string_lossy().into_owned();
     let paths=|paths:&[std::path::PathBuf]|paths.iter().map(|path|text(path)).collect();
-    let options=HookConfigLoaderOptions {cwd:text(&sources.cwd),agent_dir:text(&sources.agent_dir),global_settings_hooks:sources.global_settings_hooks,project_settings_hooks:sources.project_settings_hooks,global_hooks_path:Some(text(&sources.global_hooks_path)),project_hooks_path:Some(text(&sources.project_hooks_path)),global_hook_source_paths:paths(&sources.global_hook_source_paths),project_hook_source_paths:paths(&sources.project_hook_source_paths),pre_session_hook_source_paths:paths(&sources.pre_session_hook_source_paths),runtime_hook_source_paths:paths(&sources.runtime_hook_source_paths)};
-    let parsed=load_hook_config_files(&options);let storage=FileHookStateStorage::new(&sources.agent_dir,&sources.cwd);
+    Ok(HookConfigLoaderOptions {cwd:text(&sources.cwd),agent_dir:text(&sources.agent_dir),global_settings_hooks:sources.global_settings_hooks,project_settings_hooks:sources.project_settings_hooks,global_hooks_path:Some(text(&sources.global_hooks_path)),project_hooks_path:Some(text(&sources.project_hooks_path)),global_hook_source_paths:paths(&sources.global_hook_source_paths),project_hook_source_paths:paths(&sources.project_hook_source_paths),pre_session_hook_source_paths:paths(&sources.pre_session_hook_source_paths),runtime_hook_source_paths:paths(&sources.runtime_hook_source_paths)})
+}
+pub fn refresh_state(ctx:&ExtensionContext)->Result<HookRuntimeState,ExtensionFailure> {
+    let options=source_options(ctx)?;
+    let parsed=load_hook_config_files(&options);let storage=FileHookStateStorage::new(std::path::Path::new(&options.agent_dir),std::path::Path::new(&options.cwd));
     let mut trust=storage.read(HookTrustStorageScope::Global).map_err(|error|ExtensionFailure::new(error.to_string()))?;
     let project=if ctx.is_project_trusted() {storage.read(HookTrustStorageScope::Project).map_err(|error|ExtensionFailure::new(error.to_string()))?} else {empty_hook_trust_state()};trust.hooks.extend(project.hooks);
     Ok(HookRuntimeState {parsed,trust,storage})
 }
+async fn refresh_notification_state(ctx:&ExtensionContext)->Result<HookRuntimeState,ExtensionFailure> {
+    let options=source_options(ctx)?;let parsed=crate::config_loader::load_hook_config_sources_async(&options).await;
+    let storage=FileHookStateStorage::new(std::path::Path::new(&options.agent_dir),std::path::Path::new(&options.cwd));
+    let (global,project)=tokio::join!(storage.read_async(HookTrustStorageScope::Global),async {
+        if ctx.is_project_trusted() {storage.read_async(HookTrustStorageScope::Project).await}else {Ok(empty_hook_trust_state())}
+    });
+    let mut trust=global.map_err(|error|ExtensionFailure::new(error.to_string()))?;trust.hooks.extend(project.map_err(|error|ExtensionFailure::new(error.to_string()))?.hooks);
+    Ok(HookRuntimeState {parsed,trust,storage})
+}
 async fn dispatch(ctx:&ExtensionContext,input:serde_json::Value)->Result<HookDispatchResult,ExtensionFailure> {
-    let mut state=refresh_state(ctx)?;let cwd=ctx.cwd.clone();let signal=ctx.signal.clone();let wire=input.clone();
-    let mut lifecycle_diagnostics=Vec::new();
+    let mut state=if input.get("event").and_then(serde_json::Value::as_str)==Some("Notification") {refresh_notification_state(ctx).await?}else {refresh_state(ctx)?};let cwd=ctx.cwd.clone();let signal=ctx.signal.clone();let wire=input.clone();
+    let mut lifecycle_diagnostics=if input.get("event").and_then(serde_json::Value::as_str)==Some("Notification") {state.parsed.diagnostics.clone()}else {Vec::new()};
     if matches!(input.get("event").and_then(serde_json::Value::as_str),Some("SessionStart"|"PreCompact"|"PostCompact"|"Notification")) {
         let platform=if cfg!(windows) {"win32"} else {"linux"};let mut selected=Vec::new();let mut trust=empty_hook_trust_state();
         for handler in state.parsed.executable_handlers {

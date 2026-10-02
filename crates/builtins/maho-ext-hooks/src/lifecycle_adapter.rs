@@ -13,10 +13,11 @@ pub fn lifecycle_result_details(event:&str,result:Option<&HookDispatchResult>)->
         let Ok(raw)=serde_json::from_str::<Value>(summary.run.stdout.trim()) else {continue;};let Some(raw)=raw.as_object() else {continue;};let specific=raw.get("hookSpecificOutput").and_then(Value::as_object);
         if specific.and_then(|raw|raw.get("hookEventName")).is_some_and(|name|name.as_str()!=Some(event)) {continue;}
         let field=|name:&str|specific.and_then(|raw|raw.get(name)).filter(|value|!value.is_null()).or_else(||raw.get(name)).and_then(Value::as_str).map(str::trim).filter(|text|!text.is_empty());
-        if event!="PreCompact" {if let Some(context)=field("additionalContext") {details.contexts.push(context.to_owned());}}
+        if event=="Notification" {if let Some(context)=summary.output.get("additionalContext").and_then(Value::as_str) {details.contexts.push(context.to_owned());}}
+        else if event!="PreCompact" {if let Some(context)=field("additionalContext") {details.contexts.push(context.to_owned());}}
         else {
             for (name,message) in [("additionalContext","PreCompact additionalContext is diagnostic-only in builtin hooks v1."),("customInstructions","PreCompact customInstructions cannot mutate compaction in builtin hooks v1.")] {if field(name).is_some() {details.diagnostics.push(diagnostic(DiagnosticDraft {code:"unsupported_field",event:Some(event),message:message.to_owned(),path:format!("stdout.hookSpecificOutput.{name}"),severity:Some(Severity::Warning)},&summary.handler.source));}}
-            if !details.cancel&&matches!(raw.get("decision").and_then(Value::as_str).map(str::trim),Some("block"|"deny")) {details.cancel=true;details.reason=specific.and_then(|raw|raw.get("permissionDecisionReason")).or_else(||raw.get("reason")).and_then(Value::as_str).map(str::trim).filter(|text|!text.is_empty()).map(str::to_owned);}
+            if !details.cancel&&matches!(raw.get("decision").and_then(Value::as_str).map(str::trim),Some("block"|"deny")) {details.cancel=true;details.reason=specific.and_then(|raw|raw.get("permissionDecisionReason")).filter(|value|!value.is_null()).or_else(||raw.get("reason")).and_then(Value::as_str).map(str::trim).filter(|text|!text.is_empty()).map(str::to_owned);}
         }
     }
     if event=="PreCompact" && let HookDispatchDecision::Block {reason,..}=&result.decision {details.cancel=true;details.reason=reason.clone();}

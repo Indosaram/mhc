@@ -91,6 +91,7 @@ pub struct MonitorRegistry {
     file_snapshots:std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String,MonitorSnapshotEntry>>>,
     next_file_id:usize,
     transitions:tokio::sync::watch::Sender<Vec<MonitorSnapshotEntry>>,
+    parked:tokio::sync::watch::Sender<bool>,
 }
 fn publish_snapshot(records:&std::sync::Mutex<std::collections::BTreeMap<String,CommandMonitor>>,files:&std::sync::Mutex<std::collections::BTreeMap<String,MonitorSnapshotEntry>>,sender:&tokio::sync::watch::Sender<Vec<MonitorSnapshotEntry>>) {
     let mut snapshot=records.lock().expect("monitor records").values().map(|record|record.snapshot.clone()).collect::<Vec<_>>();snapshot.extend(files.lock().expect("file snapshots").values().cloned());
@@ -98,7 +99,9 @@ fn publish_snapshot(records:&std::sync::Mutex<std::collections::BTreeMap<String,
 }
 fn now_ms()->f64 {std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("epoch").as_secs_f64()*1000.0}
 impl MonitorRegistry {
-    pub fn new(emit:impl Fn(MonitorEvent)+Send+Sync+'static)->Self {Self {records:Default::default(),tasks:vec![],emit:std::sync::Arc::new(emit),files:Default::default(),file_snapshots:Default::default(),next_file_id:0,transitions:tokio::sync::watch::channel(vec![]).0}}
+    pub fn new(emit:impl Fn(MonitorEvent)+Send+Sync+'static)->Self {Self {records:Default::default(),tasks:vec![],emit:std::sync::Arc::new(emit),files:Default::default(),file_snapshots:Default::default(),next_file_id:0,transitions:tokio::sync::watch::channel(vec![]).0,parked:tokio::sync::watch::channel(false).0}}
+    pub fn park(&self) {self.parked.send_replace(true);}
+    pub fn unpark(&self) {self.parked.send_replace(false);}
     pub fn subscribe_state(&self)->tokio::sync::watch::Receiver<Vec<MonitorSnapshotEntry>> {self.transitions.subscribe()}
     pub fn muted_dropped(&self,id:&str)->usize {self.records.lock().expect("monitor records").get(id).map_or(0,|record|record.muted_dropped)}
     fn publish_state(&self) {publish_snapshot(&self.records,&self.file_snapshots,&self.transitions);}
@@ -131,17 +134,19 @@ impl MonitorRegistry {
         snapshots.lock().expect("file snapshots").get_mut(&id).expect("registered file snapshot").fire_count=Some(0);
         self.publish_state();let records=self.records.clone();let transitions=self.transitions.clone();
         let mut state=self.subscribe_state();
+        let mut parked=self.parked.subscribe();
         let expires=tokio::time::Instant::now()+std::time::Duration::from_millis(timeout_ms);
         let watch=tokio::spawn(async move {
             let period=std::time::Duration::from_millis(crate::monitor_file_watch::FILE_MONITOR_POLL_MS);
             let mut timer=tokio::time::interval_at(tokio::time::Instant::now()+period,period);timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let deadline=tokio::time::sleep_until(expires);tokio::pin!(deadline);
             loop {
-                let paused=checker.lock().expect("file monitor").paused;
+                let paused=checker.lock().expect("file monitor").paused||*parked.borrow();
                 let timed_out=tokio::select! {
                     _=timer.tick(),if !paused=>false,
                     _=&mut deadline=>true,
                     changed=state.changed()=>{if changed.is_err() {return;}state.borrow_and_update();timer.reset();continue;}
+                    changed=parked.changed()=>{if changed.is_err() {return;}let resumed=!*parked.borrow_and_update();if resumed {timer.reset_immediately();}else {timer.reset();}continue;}
                 };
                 let (events,settled)={let mut file=checker.lock().expect("file monitor");let events=if timed_out {file.stop(if persistent {"watcher expired"} else {"watcher timed_out"}).into_iter().collect()} else {match file.check() {Ok(events)=>events,Err(error)=>file.stop(&format!("watcher error: {error}")).into_iter().collect()}};(events,file.settled)};
                 if settled {snapshots.lock().expect("file snapshots").remove(&runtime_id);}
@@ -265,6 +270,17 @@ mod registry_tests {
         registry.register_file("created",&path,crate::terminal_manifest_model::FileEvent::Create,1000).unwrap();
         tokio::time::advance(std::time::Duration::from_millis(1000)).await;
         assert!(matches!(events.recv().await,Some(MonitorEvent::Summary {summary,..}) if summary=="watcher timed_out"));assert!(registry.snapshot().is_empty());
+    }
+    #[tokio::test(start_paused=true)]
+    async fn parked_files_do_not_read_changes_and_unpark_preserves_explicit_mute() {
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("created");
+        let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let mut registry=MonitorRegistry::new(move |event| {sender.send(event).unwrap();});
+        let (active,_)=registry.register_persistent_file("active",&path,crate::terminal_manifest_model::FileEvent::Create).unwrap();
+        let (muted,_)=registry.register_persistent_file("muted",&path,crate::terminal_manifest_model::FileEvent::Create).unwrap();
+        registry.pause(std::slice::from_ref(&muted));registry.park();std::fs::write(&path,b"ready").unwrap();
+        tokio::time::advance(std::time::Duration::from_millis(1000)).await;assert!(events.try_recv().is_err());assert_eq!(registry.snapshot().len(),2);
+        registry.unpark();assert!(matches!(events.recv().await,Some(MonitorEvent::Line {id,..}) if id==active));assert!(matches!(events.recv().await,Some(MonitorEvent::Summary {id,..}) if id==active));
+        assert_eq!(registry.snapshot().len(),1);assert!(registry.snapshot()[0].paused);assert_eq!(registry.snapshot()[0].id,muted);registry.dispose();
     }
     #[tokio::test]
     async fn file_rearm_callbacks_can_read_command_records() {

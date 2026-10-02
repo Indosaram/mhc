@@ -37,6 +37,14 @@ impl Extension for TerminalExtension {
             if let Some(notifier)=event_notifier.lock().expect("monitor notifier").as_ref() && let Err(error)=notifier.notify_event(event) {eprintln!("monitor delivery failed: {error}");}
         })));
         let status_task:Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>=Arc::new(Mutex::new(None));
+        for kind in [EventKind::SessionParked,EventKind::SessionResumed] {
+            let monitors=monitors.clone();
+            api.on(kind,Arc::new(move |_,_| {let monitors=monitors.clone();Box::pin(async move {
+                let monitors=monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?;
+                if kind==EventKind::SessionParked {monitors.park();}else {monitors.unpark();}
+                Ok(EventResult::None)
+            })}));
+        }
         let status_monitors=monitors.clone();let start_status=status_task.clone();
         api.on(EventKind::SessionStart,Arc::new(move |_,ctx| {let monitors=status_monitors.clone();let status=start_status.clone();Box::pin(async move {
             let mut status=status.lock().map_err(|_|ExtensionFailure::new("monitor status state poisoned"))?;if let Some(task)=status.take() {task.abort();}
