@@ -3,14 +3,16 @@ use crate::{types::*,command::{ParsedGoalCommand,parse_goal_command},format::{fo
 use maho_ext_api::{ExtensionApi,ExtensionContext,ExtensionFailure,ExtensionFuture,NotificationType};
 pub type AccountGoal=Arc<dyn for<'a> Fn(&'a ExtensionContext,GoalAccountingMode)->ExtensionFuture<'a,Option<Goal>>+Send+Sync>;
 pub type QueueGoalContinuation=Arc<dyn Fn(&ExtensionContext,&Goal)->Result<(),ExtensionFailure>+Send+Sync>;
-pub type RefreshGoalUi=Arc<dyn Fn(&ExtensionContext,Option<&Goal>)+Send+Sync>;
+pub type RefreshGoalUi=Arc<dyn for<'a> Fn(&'a ExtensionContext,Option<&'a Goal>)->ExtensionFuture<'a,()>+Send+Sync>;
+pub type BeginGoalAccounting=Arc<dyn for<'a> Fn(&'a Goal)->ExtensionFuture<'a,()>+Send+Sync>;
+pub type StopGoalAccounting=Arc<dyn for<'a> Fn(&'a str)->ExtensionFuture<'a,()>+Send+Sync>;
 pub struct GoalCommandRegistrationDeps {
     pub goal_store_ref:Arc<dyn Fn(&ExtensionContext)->GoalStoreRef+Send+Sync>,
     pub now:Arc<dyn Fn()->u64+Send+Sync>,
     pub account_current_agent_turn:AccountGoal,
-    pub begin_agent_goal_accounting:Arc<dyn Fn(&Goal)+Send+Sync>,
-    pub stop_agent_goal_accounting:Arc<dyn Fn(&str)+Send+Sync>,
-    pub clear_agent_goal_accounting:Arc<dyn Fn()+Send+Sync>,
+    pub begin_agent_goal_accounting:BeginGoalAccounting,
+    pub stop_agent_goal_accounting:StopGoalAccounting,
+    pub clear_agent_goal_accounting:Arc<dyn Fn()->ExtensionFuture<'static,()>+Send+Sync>,
     pub queue_goal_continuation:QueueGoalContinuation,
     pub refresh_goal_ui:RefreshGoalUi,
 }
@@ -28,21 +30,21 @@ async fn run_goal_command(args:&str,ctx:&ExtensionContext,deps:&GoalCommandRegis
     match parse_goal_command(args) {
         ParsedGoalCommand::Show=>{
             let goal=crate::store::read_goal(&reference).map_err(failure)?;
-            (deps.refresh_goal_ui)(ctx,goal.as_ref());
+            (deps.refresh_goal_ui)(ctx,goal.as_ref()).await?;
             let text=if goal.is_none() { "Usage: /goal <objective>\nNo goal is currently set.".into() } else { format_goal_for_tool(goal.as_ref()).map_err(failure)? };
             ctx.ui.notify(&text,if goal.is_some() { NotificationType::Info } else { NotificationType::Warning });
         },
         ParsedGoalCommand::Clear=>{
             (deps.account_current_agent_turn)(ctx,GoalAccountingMode::Active).await?;
             let cleared=crate::store::clear_goal(&reference).await.map_err(failure)?;
-            (deps.clear_agent_goal_accounting)(); (deps.refresh_goal_ui)(ctx,None);
+            (deps.clear_agent_goal_accounting)().await?; (deps.refresh_goal_ui)(ctx,None).await?;
             ctx.ui.notify(if cleared { "Goal cleared" } else { "No goal to clear\nThis thread does not currently have a goal." },if cleared { NotificationType::Info } else { NotificationType::Warning });
         },
         ParsedGoalCommand::SetStatus(status)=>{
             if status==GoalStatus::Paused { (deps.account_current_agent_turn)(ctx,GoalAccountingMode::Active).await?; }
             let goal=crate::store::update_goal(&reference,&GoalUpdate { status:Some(status),..Default::default() },GoalUpdateSource::User,(deps.now)()).await.map_err(failure)?;
-            if goal.status==GoalStatus::Active { (deps.begin_agent_goal_accounting)(&goal); } else { (deps.stop_agent_goal_accounting)(&goal.id); }
-            show_and_queue(ctx,&goal,deps)?;
+            if goal.status==GoalStatus::Active { (deps.begin_agent_goal_accounting)(&goal).await?; } else { (deps.stop_agent_goal_accounting)(&goal.id).await?; }
+            show_and_queue(ctx,&goal,deps).await?;
         },
         ParsedGoalCommand::SetObjective(objective)=>{
             let current=crate::store::read_goal(&reference).map_err(failure)?;
@@ -53,15 +55,15 @@ async fn run_goal_command(args:&str,ctx:&ExtensionContext,deps:&GoalCommandRegis
             }
             if current.as_ref().is_some_and(|goal|goal.status==GoalStatus::Active) { (deps.account_current_agent_turn)(ctx,GoalAccountingMode::Active).await?; }
             let goal=if current.is_none() { crate::store::create_goal(&reference,&objective,None,(deps.now)()).await } else { crate::store::update_goal(&reference,&GoalUpdate { objective:Some(objective),..Default::default() },GoalUpdateSource::User,(deps.now)()).await }.map_err(failure)?;
-            if goal.status==GoalStatus::Active { (deps.begin_agent_goal_accounting)(&goal); }
-            show_and_queue(ctx,&goal,deps)?;
+            if goal.status==GoalStatus::Active { (deps.begin_agent_goal_accounting)(&goal).await?; }
+            show_and_queue(ctx,&goal,deps).await?;
         },
     }
     Ok(())
 }
 fn failure(error:crate::errors::GoalError)->ExtensionFailure { ExtensionFailure::new(error.to_string()) }
-fn show_and_queue(ctx:&ExtensionContext,goal:&Goal,deps:&GoalCommandRegistrationDeps)->Result<(),ExtensionFailure> {
-    (deps.refresh_goal_ui)(ctx,Some(goal));
+async fn show_and_queue(ctx:&ExtensionContext,goal:&Goal,deps:&GoalCommandRegistrationDeps)->Result<(),ExtensionFailure> {
+    (deps.refresh_goal_ui)(ctx,Some(goal)).await?;
     ctx.ui.notify(&format!("Goal {}\n{}",goal_status_label(goal.status),format_goal_for_tool(Some(goal)).map_err(failure)?),NotificationType::Info);
     (deps.queue_goal_continuation)(ctx,goal)
 }

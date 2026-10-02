@@ -34,6 +34,18 @@ impl GoalRuntime {
         let (goal,result)=crate::tool_registration::execute_get_goal(&(self.reference)(context),&mut state.accounting,(self.now)()).await?;
         self.refresh(&mut state,context,goal.as_ref()).await.map_err(|error|maho_ext_api::ToolError::Message(error.message))?; Ok(result)
     }
+    pub fn register_command(self:&Arc<Self>,api:&mut maho_ext_api::ExtensionApi,queue:crate::command_registration::QueueGoalContinuation) {
+        let account=self.clone(); let begin=self.clone(); let stop=self.clone(); let clear=self.clone(); let refresh=self.clone(); let now=self.now.clone();
+        crate::command_registration::register_goal_command(api,Arc::new(crate::command_registration::GoalCommandRegistrationDeps {
+            goal_store_ref:self.reference.clone(),now:Arc::new(move ||(now()/1000.0).floor() as u64),
+            account_current_agent_turn:Arc::new(move |context,mode| { let runtime=account.clone(); Box::pin(async move { let mut state=runtime.state.lock().await; let now=(runtime.now)(); state.accounting.account(&(runtime.reference)(context),mode,None,now,(now/1000.0).floor() as u64).await.map_err(failure) }) }),
+            begin_agent_goal_accounting:Arc::new(move |goal| { let runtime=begin.clone(); Box::pin(async move { runtime.state.lock().await.accounting.begin(goal,(runtime.now)()); Ok(()) }) }),
+            stop_agent_goal_accounting:Arc::new(move |id| { let runtime=stop.clone(); Box::pin(async move { runtime.state.lock().await.accounting.stop(id); Ok(()) }) }),
+            clear_agent_goal_accounting:Arc::new(move || { let runtime=clear.clone(); Box::pin(async move { runtime.state.lock().await.accounting.clear(); Ok(()) }) }),
+            refresh_goal_ui:Arc::new(move |context,goal| { let runtime=refresh.clone(); Box::pin(async move { let mut state=runtime.state.lock().await; runtime.refresh(&mut state,context,goal).await }) }),
+            queue_goal_continuation:queue,
+        }));
+    }
     pub async fn event(&self,event:&ExtensionEvent,context:&ExtensionContext)->Result<Option<Goal>,ExtensionFailure> {
         let mut state=self.state.lock().await; let reference=(self.reference)(context); let now=(self.now)(); let seconds=(now/1000.0).floor() as u64;
         let mut goal=if matches!(event,ExtensionEvent::SessionStart(_)) { None } else { crate::store::read_goal(&reference).map_err(failure)? };
@@ -88,6 +100,20 @@ impl GoalRuntime {
 fn failure(error:crate::errors::GoalError)->ExtensionFailure { ExtensionFailure::new(error.to_string()) }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn registered_command_uses_owned_accounting_and_refresh_before_queue() {
+        use maho_ext_api::*;
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+        let runtime=Arc::new(GoalRuntime::new(Arc::new(move |_|stored.clone()),Arc::new(||0.0)));
+        let mut api=ExtensionApi::new(LoadedExtension::new("goal","/tmp".into(),Default::default()),Default::default(),Default::default(),Default::default());
+        let observed=Arc::new(Mutex::new(Vec::new())); let captured=observed.clone(); let stored=reference.clone();
+        runtime.register_command(&mut api,Arc::new(move |_,goal| { assert_eq!(crate::store::read_goal(&stored).unwrap().unwrap().status,goal.status); captured.lock().unwrap().push(goal.status); Ok(()) }));
+        let handler=api.registered.commands[0].handler.clone(); let context=crate::test_context::context();
+        handler("work",&context).await.unwrap(); assert!(runtime.state.lock().await.ticker.running());
+        handler("pause",&context).await.unwrap(); assert!(!runtime.state.lock().await.ticker.running());
+        handler("resume",&context).await.unwrap(); assert!(runtime.state.lock().await.ticker.running());
+        handler("clear",&context).await.unwrap(); assert!(!runtime.state.lock().await.ticker.running()); assert!(crate::store::read_goal(&reference).unwrap().is_none());
+        assert_eq!(*observed.lock().unwrap(),vec![GoalStatus::Active,GoalStatus::Paused,GoalStatus::Active]);
+    }
     #[tokio::test] async fn owned_tools_share_accounting_and_completion_retires_footer() {
         let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
         let clock=Arc::new(std::sync::atomic::AtomicU64::new(0)); let reading=clock.clone();
