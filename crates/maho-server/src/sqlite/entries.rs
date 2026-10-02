@@ -12,7 +12,7 @@ pub fn insert_entry(db: &Connection, session: &str, entry: &Entry) -> Result<(),
         .ok_or_else(|| ValueError::Options("Invalid entry payload".into()))?;
     fields.remove("type");
     fields.remove("customType");
-    db.execute("INSERT INTO entries (session_id,id,parent_id,seq,type,custom_type,timestamp,payload) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",params![session,entry.id,entry.parent_id,entry.seq,kind,custom,entry.timestamp,serde_json::to_string(&payload)?])?;
+    db.prepare_cached("INSERT INTO entries (session_id,id,parent_id,seq,type,custom_type,timestamp,payload) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)")?.execute(params![session,entry.id,entry.parent_id,entry.seq,kind,custom,entry.timestamp,serde_json::to_string(&payload)?])?;
     Ok(())
 }
 pub fn scan_entries(
@@ -100,7 +100,7 @@ pub fn read_entries(
         .collect())
 }
 pub fn insert_usage(db: &Connection, session: &str, usage: &UsageRow) -> Result<(), ValueError> {
-    db.execute("INSERT INTO usage_ledger (session_id,id,seq,entry_id,adjustment,usage,details) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![session,usage.id,usage.seq,usage.entry_id,usage.adjustment,serde_json::to_string(&usage.usage)?,usage.details.as_ref().map(serde_json::to_string).transpose()?])?;
+    db.prepare_cached("INSERT INTO usage_ledger (session_id,id,seq,entry_id,adjustment,usage,details) VALUES (?1,?2,?3,?4,?5,?6,?7)")?.execute(params![session,usage.id,usage.seq,usage.entry_id,usage.adjustment,serde_json::to_string(&usage.usage)?,usage.details.as_ref().map(serde_json::to_string).transpose()?])?;
     Ok(())
 }
 pub fn scan_usage(

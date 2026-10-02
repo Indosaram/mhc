@@ -83,22 +83,7 @@ pub async fn saved_listen(paths: &DaemonPaths, fallback: &Value) -> std::io::Res
 }
 pub async fn run_daemon_command(paths: &DaemonPaths, verb: super::cli_args::DaemonVerb, listen: &Value, version: &str, executable: &Path, prefix_args: &[String]) -> std::io::Result<Value> {
     tokio::fs::create_dir_all(&paths.dir).await?;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    let database = loop {
-        if tokio::fs::metadata(&paths.lock_file).await.is_ok_and(|metadata|metadata.is_dir()) {return Err(std::io::Error::other(format!("Legacy lock directory is present at {}",paths.lock_file.display())));}
-        let path = paths.lock_file.clone();
-        let acquired = tokio::task::spawn_blocking(move || {
-            let database = rusqlite::Connection::open(path)?;
-            database.busy_timeout(std::time::Duration::from_millis(100))?;
-            database.execute_batch("BEGIN EXCLUSIVE;")?;
-            Ok::<_,rusqlite::Error>(database)
-        }).await.map_err(std::io::Error::other)?;
-        match acquired {
-            Ok(database) => break database,
-            Err(rusqlite::Error::SqliteFailure(error,_)) if matches!(error.code,rusqlite::ErrorCode::DatabaseBusy|rusqlite::ErrorCode::DatabaseLocked) && tokio::time::Instant::now() < deadline => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
-            Err(error) => return Err(std::io::Error::other(error)),
-        }
-    };
+    let mut lock = maho_rpc::ownership_safe_lock::acquire_ownership_safe_lock(&paths.lock_file,Default::default()).await.map_err(std::io::Error::other)?;
     let listen = if verb == super::cli_args::DaemonVerb::Start {listen.clone()} else {saved_listen(paths,listen).await?};
     let result = match verb {
         super::cli_args::DaemonVerb::Start => start_daemon(paths,&listen,version,executable,prefix_args).await,
@@ -106,6 +91,6 @@ pub async fn run_daemon_command(paths: &DaemonPaths, verb: super::cli_args::Daem
         super::cli_args::DaemonVerb::Status => status_daemon(paths,&listen,version).await,
         super::cli_args::DaemonVerb::Restart => match stop_daemon(paths,&listen,version).await {Ok(_) => start_daemon(paths,&listen,version,executable,prefix_args).await,Err(error) => Err(error)},
     };
-    database.execute_batch("COMMIT;").map_err(std::io::Error::other)?;
+    lock.release().map_err(std::io::Error::other)?;
     result
 }

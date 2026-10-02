@@ -10,9 +10,11 @@ serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = { version = "=1.0.149", features = ["preserve_order", "float_roundtrip"] }
 thiserror = "=2.0.18"
 uuid = { version = "=1.20.0", features = ["v4", "v7"] }
-rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled", "cache"] }
 maho-agent = { path = "../maho-agent" }
 maho-core = { path = "../maho-core" }
+maho-rpc = { path = "../maho-rpc" }
+maho-tui = { path = "../maho-tui" }
 maho-ai = { path = "../maho-ai" }
 maho-ext-host = { path = "../maho-ext-host" }
 maho-ext-api = { path = "../maho-ext-api" }

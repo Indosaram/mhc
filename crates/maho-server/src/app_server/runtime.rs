@@ -7,6 +7,7 @@ pub struct AppServerRuntime {
     pub core: Arc<RwLock<ServerCore>>,
     pub threads: Arc<ThreadRegistry>,
     pub turn_log: Arc<Mutex<TurnLog>>,
+    fuzzy_search: super::fuzzy_search_service::FuzzyFileSearchService,
 }
 fn required_string<'a>(params: &'a Value, key: &str) -> Result<&'a str, JsonRpcError> {
     params[key].as_str().filter(|value| !value.is_empty()).ok_or_else(|| JsonRpcError::new(-32603, format!("Invalid params: {key} is required")))
@@ -25,6 +26,11 @@ impl AppServerRuntime {
         }));
         super::skills::register_skill_methods(&mut core.registry, agent_dir, cwd.clone());
         let notification_core = Arc::new(std::sync::OnceLock::<std::sync::Weak<RwLock<ServerCore>>>::new());
+        let fuzzy_core = notification_core.clone();
+        let fuzzy_search = super::fuzzy_search_service::FuzzyFileSearchService::new(Arc::new(move |notification| {
+            if let Some(core) = fuzzy_core.get().and_then(std::sync::Weak::upgrade) {tokio::spawn(async move {if let Err(error) = core.read().await.broadcast_notification(notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fuzzy search notification: {}",error.message);}});}
+        }));
+        super::fuzzy_search_methods::register_fuzzy_file_search_methods(&mut core.registry,fuzzy_search.clone());
         for method in ["thread/start", "thread/resume", "thread/read", "thread/unsubscribe", "thread/loaded/list", "thread/name/set"] {
             let threads = threads.clone(); let turn_log = turn_log.clone(); let cwd = cwd.clone(); let version = version.clone();
             let notification_core = notification_core.clone();
@@ -79,8 +85,11 @@ impl AppServerRuntime {
         super::turns::register_turn_methods(&core, threads.clone(), turn_log.clone()).await;
         super::settings_handlers::register_thread_settings(&core,threads.clone()).await;
         let archive = Arc::new(super::archive_state::ThreadArchiveState::new(threads.session_dir.as_ref().map(Into::into)));
-        super::metadata_handlers::register_metadata_handlers(&core,threads.clone(),turn_log.clone(),archive,version).await;
-        Self { core, threads, turn_log }
+        super::metadata_handlers::register_metadata_handlers(&core,threads.clone(),turn_log.clone(),archive.clone(),version.clone()).await;
+        super::list_handlers::register_list_handlers(&core,threads.clone(),archive.clone(),version.clone()).await;
+        super::search::register_search_handler(&core,threads.clone(),archive.clone(),turn_log.clone(),version).await;
+        super::history_handlers::register_history_handlers(&core,threads.clone(),archive,turn_log.clone()).await;
+        Self { core, threads, turn_log, fuzzy_search }
     }
-    pub async fn dispose(&self) { self.threads.dispose().await; }
+    pub async fn dispose(&self) { self.fuzzy_search.dispose();self.threads.dispose().await; }
 }

@@ -84,8 +84,7 @@ pub async fn register_turn_methods(core: &Arc<RwLock<ServerCore>>, threads: Arc<
                 { let mut entry = entry.lock().await; entry.active_turn = None; entry.updated_at = completion.to_rfc3339_opts(chrono::SecondsFormat::Millis,true); }
                 let turn = build_turn(&turn_id,if interrupted {"interrupted"} else if result.is_ok() {"completed"} else {"failed"},started,Some(completion.timestamp_millis() as f64),&items,result.as_ref().err().map(String::as_str));
                 emit(&core,&entry,json!({"method":"thread/status/changed","params":{"threadId":id,"status":{"type":"idle"}}})).await;
-                if result.is_err() { emit(&core,&entry,json!({"method":"error","params":{"threadId":id,"turnId":turn_id,"error":turn["error"],"willRetry":false}})).await; }
-                emit(&core,&entry,json!({"method":"turn/completed","params":{"threadId":id,"turn":turn}})).await;
+                for notification in super::turn_terminal::turn_terminal_notifications(&id,turn) {emit(&core,&entry,notification).await;}
             }); });
             Ok(response)
         })

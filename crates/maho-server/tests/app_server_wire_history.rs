@@ -13,3 +13,19 @@ fn persisted_messages_reconstruct_turns_and_summary_views() {
     assert_eq!(summary["items"][1]["id"],"a2");
     assert!(logged_turn_with_view(&turns[0],"notLoaded")["items"].as_array().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn unloaded_history_reads_disk_without_creating_a_native_session() {
+    use maho_server::app_server::{archive_state::ThreadArchiveState,history_handlers::thread_history_turns,thread_registry::ThreadRegistry,turn_log::TurnLog};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("session.jsonl");
+    let records = [json!({"type":"session","id":"disk","version":3,"cwd":"/work","timestamp":"2020-01-01T00:00:00.000Z"}),json!({"type":"message","id":"u","parentId":null,"timestamp":"2020-01-01T00:00:01.000Z","message":{"role":"user","content":"hello"}}),json!({"type":"message","id":"a","parentId":"u","timestamp":"2020-01-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"persisted"}]}})];
+    std::fs::write(path,records.map(|record|record.to_string()).join("\n")).unwrap();
+    let registry = ThreadRegistry::new(directory.path().display().to_string(),Some(directory.path().display().to_string()),None);
+    let archive = ThreadArchiveState::new(Some(directory.path().into()));
+    let log = tokio::sync::Mutex::new(TurnLog::default());
+    let turns = thread_history_turns("disk",&registry,&archive,&log).await.unwrap();
+    assert_eq!(turns.len(),1);
+    assert_eq!(turns[0].items[1]["text"],"persisted");
+    assert!(registry.list_loaded().await.is_empty());
+}

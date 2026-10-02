@@ -1,4 +1,10 @@
 pub mod envelope;
+pub mod search_occurrences;
+pub mod handler_params;
+pub mod search;
+pub mod turn_terminal;
+pub mod list_handlers;
+pub mod history_handlers;
 pub mod search_cache;
 pub mod metadata_handlers;
 pub mod registry_listing;
