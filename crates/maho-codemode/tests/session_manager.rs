@@ -9,6 +9,7 @@ impl OutputExecuteTool for Fixture {
         Box::pin(async move {
             assert!(!options.signal.expect("request signal").aborted());
             if name=="task_output" {return Ok(AgentToolResult::text("transcript"));}
+            if name=="inactive" {return Err(maho_ext_api::ExecuteToolError {code:maho_ext_api::ExecuteToolErrorCode::InactiveTool,tool_name:name.into(),message:"inactive fixture".into(),active_tools:vec!["echo".into()]});}
             assert_eq!(name, "echo");
             Ok(AgentToolResult::text(params["text"].as_str().expect("echo text")))
         })
@@ -56,6 +57,8 @@ async fn persistent_python_calls_native_host_over_owned_bridge() {
     let next = kernel.run(PythonKernelRunOptions { cell_id:"persistent".into(), code:"print(x + 1)".into(), timeout_ms:Some(5000), on_started:None, on_message:Some(Arc::new(move |message| if let Some(text)=message["data"].as_str() { next_output.lock().expect("next output").push_str(text); })) }).await.unwrap();
     assert_eq!(next["ok"], true);
     assert!(output.lock().unwrap().contains("42"));
+    let codes=Arc::new(Mutex::new(String::new()));let observed=codes.clone();
+    let coded=kernel.run(PythonKernelRunOptions {cell_id:"coded-failure".into(),code:"try:\n tool.inactive({})\nexcept Exception as error:\n print(getattr(error, 'code', 'missing'))".into(),timeout_ms:Some(5000),on_started:None,on_message:Some(Arc::new(move |message|if let Some(text)=message["data"].as_str() {observed.lock().unwrap().push_str(text);} ))}).await.unwrap();
     catalog_available.store(false,std::sync::atomic::Ordering::SeqCst);
     let failure=kernel.run(PythonKernelRunOptions {cell_id:"catalog-failure".into(),code:"tool_schema('echo')".into(),timeout_ms:Some(5000),on_started:None,on_message:None}).await.unwrap();
     assert_eq!(failure["ok"],false);
@@ -75,6 +78,8 @@ async fn persistent_python_calls_native_host_over_owned_bridge() {
     let collision=js.run(maho_codemode::kernels::shared::subprocess_contract::KernelRunInput {cell_id:"host-collision".into(),code:"tool(function echo() { return 1; })".into(),timeout_ms:Some(5000)},|_|{}).await.unwrap();
     proxy.dispose().await;
     session.dispose().await.unwrap();
+    assert_eq!(coded["ok"],true);
+    assert!(codes.lock().unwrap().contains("inactive_tool"),"bridge must preserve native execute error code");
     assert_eq!(js_result["ok"],true,"{js_result}");
     assert_eq!(js_next["valueRepr"],"42");
     assert_eq!(collision["ok"],false);

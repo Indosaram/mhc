@@ -55,7 +55,15 @@ impl CodemodeSessionManager {
                     } else {
                         executor.execute_tool(&request.tool_name, request.args, execute_options).await
                             .map(|result| marshal_tool_result(&result))
-                            .map_err(|error| json!({"name":"Error","message":error.to_string()}))
+                            .map_err(|error| {
+                                let code=match error.code {
+                                    maho_ext_api::ExecuteToolErrorCode::UnknownTool=>"unknown_tool",
+                                    maho_ext_api::ExecuteToolErrorCode::InactiveTool=>"inactive_tool",
+                                    maho_ext_api::ExecuteToolErrorCode::InvalidParams=>"invalid_params",
+                                    maho_ext_api::ExecuteToolErrorCode::Blocked=>"blocked",
+                                };
+                                json!({"name":"Error","message":error.to_string(),"code":code})
+                            })
                     }
                 })
             }),
