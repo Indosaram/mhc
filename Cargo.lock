@@ -1768,8 +1768,10 @@ version = "0.0.0"
 name = "maho-ext-openai-image-gen"
 version = "0.0.0"
 dependencies = [
+ "maho-ai",
  "maho-ext-imagegen",
  "serde_json",
+ "tempfile",
  "url",
 ]
 

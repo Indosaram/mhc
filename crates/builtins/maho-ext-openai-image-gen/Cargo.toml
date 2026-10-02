@@ -9,6 +9,10 @@ license = "MIT"
 serde_json.workspace = true
 url.workspace = true
 maho-ext-imagegen = { path = "../maho-ext-imagegen" }
+maho-ai = { path = "../../maho-ai" }
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
