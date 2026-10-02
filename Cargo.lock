@@ -1671,6 +1671,21 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-hooks"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "fancy-regex",
+ "futures",
+ "maho-core",
+ "maho-ext-api",
+ "maho-tools",
+ "nix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-host"
@@ -1791,6 +1806,23 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-terminal"
 version = "0.0.0"
+dependencies = [
+ "fancy-regex",
+ "indexmap",
+ "maho-ai",
+ "maho-core",
+ "maho-ext-api",
+ "maho-pty",
+ "maho-tools",
+ "nix",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-todotools"
