@@ -55,3 +55,22 @@ async fn pulled_host_call_reply_resumes_real_worker() {
     assert_eq!(result.unwrap()["valueRepr"],"42");
     kernel.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn cooperative_interrupt_preserves_live_worker_globals() {
+    let kernel=JavaScriptKernel::start(Path::new(env!("CARGO_MANIFEST_DIR")),"bun-retained",4,None).await.unwrap();
+    let pid=kernel.pid().unwrap();
+    let run=kernel.run_with_callbacks(KernelRunInput {cell_id:"parked".into(),code:"var retained=41; await tool.park({})".into(),timeout_ms:None},None,None);
+    let stop=async {
+        tokio::time::timeout(std::time::Duration::from_secs(3),kernel.next_tool_call()).await.unwrap().unwrap();
+        kernel.interrupt("test stop",Some("parked")).await.unwrap()
+    };
+    let (result,retained)=tokio::join!(run,stop);
+    let after=kernel.run(KernelRunInput {cell_id:"retained".into(),code:"retained+1".into(),timeout_ms:Some(5000)},|_|{}).await;
+    let same_pid=kernel.pid()==Some(pid);
+    kernel.close().await.unwrap();
+    assert!(!result.unwrap()["ok"].as_bool().unwrap());
+    assert!(retained,"bridge wait should settle cooperatively without losing globals");
+    assert!(same_pid);
+    assert_eq!(after.unwrap()["valueRepr"],"42");
+}
