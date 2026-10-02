@@ -4,6 +4,24 @@ static WHITESPACE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"[\t\x0c\x0b \u{00
 static BEFORE_NEWLINE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"[ \t]+\n").expect("literal pattern"));
 static AFTER_NEWLINE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\n[ \t]+").expect("literal pattern"));
 static NEWLINES:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\n{3,}").expect("literal pattern"));
+pub struct ReadableArticle { pub document:dom_query::Document,pub root:dom_query::NodeId,pub title:String,pub has_heading:bool }
+pub fn extract_explicit_article(document:&dom_query::Document)->Option<ReadableArticle> {
+    for selector in [".article_view",".tt_article_useless_p_margin",".entry-content",".contents_style",".post-content",".article-content",".content-article","#content .contents_style"] {
+        let cloned=document.clone();
+        let candidate=cloned.select_single(selector);let Some(root)=candidate.nodes().first() else {continue;};
+        candidate.select("script, style, noscript, iframe, object, embed, meta, link, nav, aside, footer, .another_category, .area_related, .related, .revenue_unit_wrap, .adsbygoogle, .container_postbtn, .postbtn_like, .comments, .comment, .tagTrail, .sidebar").remove();
+        if normalize_plain_text(&root.text()).encode_utf16().count()<30 {continue;}
+        let title=select_preferred_title(document,&document.select("title").text());let has_heading=!candidate.select("h1, h2, h3, h4, h5, h6").is_empty();let root=root.id;
+        return Some(ReadableArticle{document:cloned,root,title,has_heading});
+    }
+    None
+}
+pub fn select_preferred_title(document:&dom_query::Document,fallback:&str)->String {
+    for selector in [".tit_post",".entry-title",".post-title",".article-title","h1"] {
+        let title=normalize_plain_text(&document.select_single(selector).text());if !title.is_empty() {return title;}
+    }
+    normalize_plain_text(fallback)
+}
 pub fn html_fragment_to_plain_text(root:&dom_query::NodeRef<'_>)->String {
     fn visit(node:&dom_query::NodeRef<'_>,output:&mut String,is_root:bool) {
         if node.is_text() {output.push_str(&node.text());return;}
@@ -27,6 +45,21 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn explicit_selector_priority_skips_missing_and_short_candidates() {
+        let document=dom_query::Document::from("<div class='article_view'>short</div><div class='entry-content'>Chosen entry content has at least thirty characters.</div><div class='post-content'>Later post content is sufficiently long too.</div>");
+        let article=extract_explicit_article(&document).unwrap();assert!(html_fragment_to_plain_text(&dom_query::NodeRef::new(article.root,&article.document.tree)).starts_with("Chosen entry"));
+    }
+    #[test] fn explicit_selection_removes_noise_and_keeps_original() {
+        let document=dom_query::Document::from("<title>Fallback</title><h1 class='tit_post'> Preferred title </h1><div class='article_view'><p>Article text with enough characters for selection.</p><nav>nav noise</nav><div class='comments'>comment noise</div></div>");let original=document.html();
+        let article=extract_explicit_article(&document).unwrap();let text=html_fragment_to_plain_text(&dom_query::NodeRef::new(article.root,&article.document.tree));assert!(!text.contains("noise"));assert_eq!(article.title,"Preferred title");assert!(!article.has_heading);assert_eq!(document.html(),original);
+    }
+    #[test] fn explicit_threshold_counts_utf16_and_heading_descendants() {
+        let document=dom_query::Document::from(format!("<div class='post-content'><h2>{}</h2></div>","😀".repeat(15)));let article=extract_explicit_article(&document).unwrap();assert!(article.has_heading);
+        assert!(extract_explicit_article(&dom_query::Document::from(format!("<div class='post-content'>{}</div>","😀".repeat(14)))).is_none());
+    }
+    #[test] fn title_selection_uses_first_match_then_next_selector_then_fallback() {
+        let document=dom_query::Document::from("<div class='tit_post'> </div><div class='tit_post'>ignored second match</div><div class='entry-title'> Entry  title </div><h1>Heading</h1>");assert_eq!(select_preferred_title(&document,"fallback"),"Entry title");assert_eq!(select_preferred_title(&dom_query::Document::from("<p>body</p>")," fallback\t title "),"fallback title");
+    }
     #[test] fn fragment_plain_text_preserves_source_block_and_cell_breaks() {
         let document=dom_query::Document::from("<div id='root'><p>one <strong>two</strong><br>three</p><table><tr><th>A</th><td>B</td></tr><tr><td>C</td><td>D</td></tr></table><p>last</p></div>");
         assert_eq!(html_fragment_to_plain_text(&document.select("#root").nodes()[0]),"one two\nthree\n\nA\nB\n\nC\nD\n\nlast");
