@@ -31,7 +31,11 @@ impl McpRefreshManager {
                     match request_tokens(&client,&info,&information,form.clone()).await {
                         Ok(tokens)=>{store.write_unlocked(Some(&merge_tokens_into_stored_auth(current.clone(),&tokens,&store.server_url,chrono::Utc::now().timestamp_millis() as f64)))?;return Ok(tokens);}
                         Err(OAuthRequestError::Flow(error)) if error.oauth_kind==OAuthFailureKind::InvalidGrant=>{store.write_unlocked(None)?;return Err(OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::InvalidGrant,format!("MCP server {} refresh rejected (invalid_grant); credentials cleared, re-authentication required.",store.server_name)))));}
-                        Err(_) if attempt<max_retries=>{tokio::time::sleep(delay).await;}
+                        Err(error) if attempt<max_retries && match &error {
+                            OAuthRequestError::Flow(flow)=>super::oauth_errors::is_transient_token_error(&serde_json::json!({"errorCode":flow.error.message,"message":flow.error.message})),
+                            OAuthRequestError::Http(http) if http.is_connect()=>true,
+                            _=>super::oauth_errors::is_transient_token_error(&Value::String(error.to_string())),
+                        }=>{tokio::time::sleep(delay).await;}
                         Err(_)=>return Err(OAuthRequestError::Flow(Box::new(OAuthFlowError::new(OAuthFailureKind::Transient,format!("MCP server {} token refresh failed transiently; will retry on next use.",store.server_name))))),
                     }
                 }

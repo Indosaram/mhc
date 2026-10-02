@@ -37,3 +37,21 @@ async fn missing_refresh_token_is_reported_before_discovery() {
     let manager=McpRefreshManager::new(std::sync::Arc::new(McpOAuthProvider::new(store)),reqwest::Client::new());
     assert!(matches!(manager.refresh().await,Err(OAuthRequestError::Flow(error)) if error.oauth_kind==OAuthFailureKind::NeedsAuth));
 }
+#[tokio::test]
+async fn refresh_does_not_retry_unclassified_token_errors() {
+    use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+    use maho_ext_mcp::auth::{oauth_provider::McpOAuthProvider,token_store::McpTokenStore};
+    let hits=Arc::new(AtomicUsize::new(0));let observed=hits.clone();
+    let app=axum::Router::new().route("/token",axum::routing::post(move||{let hits=observed.clone();async move {hits.fetch_add(1,Ordering::SeqCst);(axum::http::StatusCode::BAD_REQUEST,axum::Json(json!({"error":"invalid_request"})))}}));
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let base=format!("http://{}",listener.local_addr().unwrap());
+    let (shutdown,closed)=tokio::sync::oneshot::channel();
+    let server=tokio::spawn(async move {axum::serve(listener,app).with_graceful_shutdown(async {let _=closed.await;}).await.unwrap();});
+    let root=tempfile::tempdir().unwrap();let store=McpTokenStore::new(root.path(),"nontransient",&base);
+    store.write(McpStoredAuth {access_token:Some("fixture-stale".into()),refresh_token:Some("fixture-refresh".into()),expires_at:Some(0.0),discovery_state:Some(json!({"authorizationServerUrl":base,"authorizationServerMetadata":{"token_endpoint":format!("{base}/token")},"resourceMetadata":null})),..Default::default()}).unwrap();
+    let mut provider=McpOAuthProvider::new(store.clone());provider.client_id=Some("fixture-client".into());
+    let mut manager=McpRefreshManager::new(Arc::new(provider),reqwest::Client::new());manager.retry_delay=std::time::Duration::ZERO;
+    let result=manager.refresh().await;shutdown.send(()).unwrap();server.await.unwrap();
+    assert!(matches!(result,Err(OAuthRequestError::Flow(error)) if error.oauth_kind==OAuthFailureKind::Transient));
+    assert_eq!(hits.load(Ordering::SeqCst),1);
+    assert_eq!(store.read().unwrap().unwrap().refresh_token.as_deref(),Some("fixture-refresh"));
+}
