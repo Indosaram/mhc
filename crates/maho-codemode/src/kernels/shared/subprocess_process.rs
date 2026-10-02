@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::mpsc;
 
@@ -61,13 +61,14 @@ impl SubprocessProcess {
             }
         });
         let stderr_task = tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
+            let mut stderr = stderr;
+            let mut chunk = [0u8; 8192];
             loop {
-                match lines.next_line().await {
-                    Ok(Some(line)) => {
-                        if error_sender.send(serde_json::json!({"type":"text","stream":"stderr","data":format!("{line}\n")})).await.is_err() { return; }
+                match stderr.read(&mut chunk).await {
+                    Ok(0) => return,
+                    Ok(length) => {
+                        if error_sender.send(serde_json::json!({"type":"text","stream":"stderr","data":String::from_utf8_lossy(&chunk[..length])})).await.is_err() { return; }
                     }
-                    Ok(None) => return,
                     Err(error) => { eprintln!("kernel stderr read failed: {error}"); return; }
                 }
             }
