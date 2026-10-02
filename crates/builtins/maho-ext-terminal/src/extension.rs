@@ -82,6 +82,7 @@ impl Extension for TerminalExtension {
         api.on(EventKind::SessionStart,Arc::new(move |_,ctx| {let notifier=lifecycle_notifier.clone();let monitors=lifecycle_monitors.clone();let sender=sender.clone();let lifecycle_delivery=lifecycle_delivery.clone();Box::pin(async move {
             use maho_ext_api::types::{ExtensionMode,CustomMessage,SendMessageOptions,DeliverAs};
             *lifecycle_delivery.lock().map_err(|_|ExtensionFailure::new("terminal delivery state poisoned"))?=crate::notify::get_terminal_notification_delivery(crate::settings::TERMINAL_SETTINGS_DEFAULTS.notify,Some(match ctx.mode {ExtensionMode::Print=>"print",ExtensionMode::Json=>"json",_=>"interactive"}),ctx.model.is_some(),false);
+            notifier.lock().map_err(|_|ExtensionFailure::new("monitor notifier state poisoned"))?.take();
             if matches!(ctx.mode,ExtensionMode::Print|ExtensionMode::Json)||ctx.model.is_none() {return Ok(EventResult::None);}
             let delivery=crate::monitor_notify::MonitorNotifier::new(crate::settings::TERMINAL_SETTINGS_DEFAULTS.monitor,move |injection| {
                 if !injection.pause_ids.is_empty() {monitors.lock().expect("monitor registry").pause(&injection.pause_ids);}
