@@ -121,4 +121,16 @@ mod tests {
     #[test] fn moved_when_patch_updates_file() { let requests = parse_patch_requests("*** Update File: a.ts\n*** Move to: b.ts\n-x\n+y", "apply_patch"); assert_eq!(requests[0].file_path, "b.ts"); }
     #[test] fn ignored_when_patch_deletes_file() { assert!(parse_patch_requests("*** Delete File: a.ts", "apply_patch").is_empty()); }
     #[test] fn hook_when_request_present() { let requests = extract_comment_check_requests(&event("write", json!({"path":"a.ts","content":"x"}))); let input = to_hook_input(&requests[0], "session", "/work"); assert_eq!(input.session_id, "session"); assert_eq!(input.hook_event_name, "PostToolUse"); assert_eq!(input.tool_response, None); }
+    #[test]
+    fn patch_metadata_uses_full_files_and_move_path() {
+        let mut value = event("apply_patch", json!({"input":"*** Begin Patch\n*** End Patch"}));
+        value.details = Some(json!({"files":[{"filePath":"added.ts","before":"","after":"added\n","type":"add"},{"filePath":"old.ts","movePath":"new.ts","before":"before\n","after":"after\n","type":"update"},{"filePath":"deleted.ts","before":"deleted","after":"","type":"delete"}]}));
+        let requests = extract_comment_check_requests(&value);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].tool_name, "Write");
+        assert_eq!(requests[0].tool_input.content.as_deref(), Some("added\n"));
+        assert_eq!(requests[1].file_path, "new.ts");
+        assert_eq!(requests[1].tool_input.old_string.as_deref(), Some("before\n"));
+        assert_eq!(requests[1].tool_input.new_string.as_deref(), Some("after\n"));
+    }
 }
