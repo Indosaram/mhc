@@ -18,3 +18,12 @@ pub fn extensions(language: &str) -> &'static [&'static str] {
         _ => &[],
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test] fn language_count() { assert_eq!(CLI_LANGUAGES.len(), 25); }
+    #[test] fn language_order() { assert_eq!(CLI_LANGUAGES, ["bash", "c", "cpp", "csharp", "css", "elixir", "go", "haskell", "html", "java", "javascript", "json", "kotlin", "lua", "nix", "php", "python", "ruby", "rust", "scala", "solidity", "swift", "typescript", "tsx", "yaml"]); }
+    #[test] fn default_limits() { assert_eq!((DEFAULT_TIMEOUT_MS, DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_MAX_MATCHES), (300_000, 1024 * 1024, 500)); }
+    #[test] fn python_extensions() { assert!(extensions("python").contains(&".py")); assert!(extensions("python").contains(&".pyi")); }
+}
