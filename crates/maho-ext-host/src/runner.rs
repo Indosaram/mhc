@@ -633,9 +633,9 @@ impl ExtensionRunner {
     }
     pub async fn emit_resources_discover(&mut self, cwd: std::path::PathBuf, reason: SessionReason) -> Result<DiscoveredResources, ExtensionFailure> {
         self.runtime.assert_active()?;
-        let mut event = ExtensionEvent::ResourcesDiscover(ResourcesDiscoverEvent { cwd, reason, scoped_entries: true });
         let mut combined = DiscoveredResources::default();
         for (path, handler) in self.handlers(EventKind::ResourcesDiscover) {
+            let mut event = ExtensionEvent::ResourcesDiscover(ResourcesDiscoverEvent { cwd: cwd.clone(), reason, scoped_entries: true });
             let context = self.create_context_for_extension(Some(&path))?;
             match handler(&mut event, &context).await {
                 Ok(EventResult::ResourcesDiscover(next)) => {

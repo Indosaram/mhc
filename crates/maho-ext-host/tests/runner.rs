@@ -327,6 +327,23 @@ async fn resources_preserve_scope_origin_and_order() {
     let handler: ExtensionHandler = Arc::new(|event, _| Box::pin(async move { let ExtensionEvent::ResourcesDiscover(event) = event else { panic!() }; assert!(event.scoped_entries); Ok(EventResult::ResourcesDiscover(ResourcesDiscoverResult { skill_paths: vec![ResourceDiscoverEntry { path: "one".into(), scope: Some(SourceScope::User) }, "two".to_string().into()], ..Default::default() })) }));
     let result = runner(vec![extension("a", EventKind::ResourcesDiscover, handler)]).emit_resources_discover("/tmp".into(), SessionReason::Startup).await.unwrap(); assert_eq!(result.skill_paths[0].scope, Some(SourceScope::User)); assert_eq!(result.skill_paths[1].scope, None); assert_eq!(result.skill_paths[1].extension_path, "a");
 }
+#[tokio::test]
+async fn resource_discovery_records_are_isolated_between_handlers() {
+    let mutate: ExtensionHandler = Arc::new(|event, _| Box::pin(async move {
+        *event = ExtensionEvent::AgentStart;
+        Ok(EventResult::None)
+    }));
+    let observe: ExtensionHandler = Arc::new(|event, _| Box::pin(async move {
+        let ExtensionEvent::ResourcesDiscover(event) = event else { panic!("fresh discovery record required") };
+        assert_eq!(event.cwd, std::path::PathBuf::from("/tmp"));
+        assert!(event.scoped_entries);
+        Ok(EventResult::ResourcesDiscover(ResourcesDiscoverResult { hook_paths: vec!["hook".to_owned().into()], ..Default::default() }))
+    }));
+    let result = runner(vec![extension("a", EventKind::ResourcesDiscover, mutate), extension("b", EventKind::ResourcesDiscover, observe)])
+        .emit_resources_discover("/tmp".into(), SessionReason::Reload).await.unwrap();
+    assert_eq!(result.hook_paths[0].extension_path, "b");
+}
+
 #[test]
 fn mcp_servers_first_wins_and_context_exposes_aggregate() {
     let mut a = extension("a", EventKind::AgentStart, none()); let mut b = extension("b", EventKind::AgentStart, none());
