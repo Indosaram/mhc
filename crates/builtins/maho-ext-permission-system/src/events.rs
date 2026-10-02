@@ -3,6 +3,8 @@ use maho_ext_api::{BusSubscription, EventBus};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+pub type PermissionAskedEvent = Request;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PermissionRepliedEvent {
     #[serde(rename = "requestID")]

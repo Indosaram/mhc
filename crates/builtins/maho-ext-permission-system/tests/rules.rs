@@ -13,16 +13,16 @@ fn evaluate_last() { let rules=vec![rule("read","*",Action::Deny),rule("read","s
 fn evaluate_nomatch() { let rules=vec![rule("read","docs/*",Action::Allow)]; let r=evaluate("read","src/main.ts",&[&rules]); assert_eq!(r.action,Action::Ask); assert_eq!(r.pattern,"*"); }
 
 #[test]
-fn evaluate_merged() { let rules=vec![rule("*","*",Action::Deny),rule("read","src/*",Action::Allow)]; let r=evaluate("read","src/main.ts",&[&rules]); assert_eq!(r.action,Action::Allow); assert_eq!(r.pattern,"src/*"); }
+fn evaluate_merged() { let defaults=vec![rule("*","*",Action::Deny)]; let overrides=vec![rule("read","src/*",Action::Allow)]; let r=evaluate("read","src/main.ts",&[&defaults,&overrides]); assert_eq!(r.action,Action::Allow); assert_eq!(r.pattern,"src/*"); }
 
 #[test]
-fn evaluate_override() { let rules=vec![rule("read","src/*",Action::Deny),rule("read","src/*",Action::Allow)]; let r=evaluate("read","src/main.ts",&[&rules]); assert_eq!(r.action,Action::Allow); assert_eq!(r.pattern,"src/*"); }
+fn evaluate_override() { let defaults=vec![rule("read","src/*",Action::Deny)]; let overrides=vec![rule("read","src/*",Action::Allow)]; let r=evaluate("read","src/main.ts",&[&defaults,&overrides]); assert_eq!(r.action,Action::Allow); assert_eq!(r.pattern,"src/*"); }
 
 #[test]
-fn evaluate_earlier() { let rules=vec![rule("read","src/*",Action::Allow),rule("write","src/*",Action::Deny)]; let r=evaluate("read","src/main.ts",&[&rules]); assert_eq!(r.action,Action::Allow); assert_eq!(r.pattern,"src/*"); }
+fn evaluate_earlier() { let defaults=vec![rule("read","src/*",Action::Allow)]; let overrides=vec![rule("write","src/*",Action::Deny)]; let r=evaluate("read","src/main.ts",&[&defaults,&overrides]); assert_eq!(r.action,Action::Allow); assert_eq!(r.pattern,"src/*"); }
 
 #[test]
-fn evaluate_three() { let rules=vec![rule("*","*",Action::Deny),rule("read","src/*",Action::Allow),rule("read","src/private/*",Action::Ask)]; let r=evaluate("read","src/private/secret.ts",&[&rules]); assert_eq!(r.action,Action::Ask); assert_eq!(r.pattern,"src/private/*"); }
+fn evaluate_three() { let defaults=vec![rule("*","*",Action::Deny)]; let workspace=vec![rule("read","src/*",Action::Allow)]; let session=vec![rule("read","src/private/*",Action::Ask)]; let r=evaluate("read","src/private/secret.ts",&[&defaults,&workspace,&session]); assert_eq!(r.action,Action::Ask); assert_eq!(r.pattern,"src/private/*"); }
 
 #[test]
 fn evaluate_all() { let rules=vec![rule("*","*",Action::Deny)]; let r=evaluate("bash","rm -rf /tmp/demo",&[&rules]); assert_eq!(r.action,Action::Deny); assert_eq!(r.pattern,"*"); }
@@ -43,7 +43,7 @@ fn evaluate_specific() { let rules=vec![rule("read","*",Action::Deny),rule("read
 fn evaluate_late_global() { let rules=vec![rule("read","src/*",Action::Allow),rule("read","*",Action::Deny)]; let r=evaluate("read","src/main.ts",&[&rules]); assert_eq!(r.action,Action::Deny); assert_eq!(r.pattern,"*"); }
 
 #[test]
-fn evaluate_empty() { let rules=vec![]; let r=evaluate("read","docs/readme.md",&[&rules]); assert_eq!(r.action,Action::Ask); assert_eq!(r.pattern,"*"); }
+fn evaluate_empty() { let r=evaluate("read","docs/readme.md",&[]); assert_eq!(r.action,Action::Ask); assert_eq!(r.pattern,"*"); }
 
 #[test]
 fn evaluate_wrong_permission() { let rules=vec![rule("write","docs/*",Action::Deny)]; let r=evaluate("read","docs/readme.md",&[&rules]); assert_eq!(r.action,Action::Ask); assert_eq!(r.pattern,"*"); }
