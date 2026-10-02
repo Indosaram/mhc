@@ -28,7 +28,7 @@ pub fn resolve_command_path(command: &str, env: &HashMap<String, String>, cwd: &
         return executable(if path.is_absolute() { path.into() } else { cwd.join(path) });
     }
     let path = env.get("PATH").or_else(|| env.get("Path"))?;
-    for directory in path.split(if windows { ';' } else { ':' }).filter(|s| !s.is_empty()) {
+    for directory in path.split(if cfg!(windows) { ';' } else { ':' }).filter(|s| !s.is_empty()) {
         if let Some(found) = executable(Path::new(directory).join(command)) { return Some(found); }
     }
     None

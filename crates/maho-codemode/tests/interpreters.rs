@@ -62,6 +62,16 @@ fn windows_extension_candidates_prefer_lowercase_before_original() {
     assert_eq!(resolve_command_path("probe",&env,root.path(),true),Some(root.path().join("probe.exe")));
 }
 
+#[test]
+fn injected_windows_resolution_uses_host_path_delimiter() {
+    let root=tempfile::tempdir().unwrap();
+    let first=root.path().join("missing");
+    std::fs::write(root.path().join("probe.exe"),"fixture").unwrap();
+    let path=std::env::join_paths([first.as_path(),root.path()]).unwrap();
+    let env=std::collections::HashMap::from([("PATH".into(),path.to_string_lossy().into_owned()),("PATHEXT".into(),".EXE".into())]);
+    assert_eq!(resolve_command_path("probe",&env,root.path(),true),Some(root.path().join("probe.exe")));
+}
+
 #[tokio::test]
 async fn disabled_languages_are_unavailable_without_probing() {
     let mut settings = maho_codemode::config::settings::CodemodeSettings::default();
