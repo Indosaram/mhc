@@ -33,3 +33,67 @@ impl ExtensionActions for Actions {
  let messages=actions.0.lock().expect("messages");assert_eq!(messages.len(),1);assert!(!messages[0].0.display);assert!(messages[0].1.trigger_turn);assert_eq!(messages[0].1.deliver_as,Some(DeliverAs::FollowUp));Ok(())
 }
 #[tokio::test] async fn missing_binary_registers_inert_handlers() {let mut api=ExtensionApi::new(LoadedExtension::new("loop","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());maho_omo_ulw_loop::index::UlwLoopComponent{bin:None,js_runtime:"bun".into(),run_command:None}.register(&mut api);let mut event=ExtensionEvent::AgentEnd{messages:vec![],aborted:Some(false),abort_source:None,will_retry:Some(false)};assert!(matches!(api.registered.handlers[&EventKind::AgentEnd][0](&mut event,&support::context()).await.expect("dispatch"),EventResult::None));}
+
+fn register_status() -> (ExtensionApi, Arc<Actions>, Arc<std::sync::atomic::AtomicUsize>) {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let captured = calls.clone();
+    let actions = Arc::new(Actions::default());
+    let runtime = ExtensionRuntime::default();
+    runtime.bind(actions.clone());
+    let mut api = ExtensionApi::new(LoadedExtension::new("loop", "/tmp".into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(), EventBus::default(), runtime);
+    maho_omo_ulw_loop::index::UlwLoopComponent { bin: Some("/toolkit".into()), js_runtime: "bun".into(),
+        run_command: Some(Arc::new(move |bin, args, cwd| {
+            assert_eq!(bin, "/toolkit");
+            assert_eq!(args, ["ulw-loop", "status", "--json"]);
+            assert_eq!(cwd, std::path::PathBuf::from("/tmp"));
+            captured.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(maho_omo_ulw_loop::omo_command::CommandResult {
+                code: 0, stdout: r#"{"ok":true,"plan":{"goals":[{"status":"pending"}]}}"#.into()
+            }) })
+        })) }.register(&mut api);
+    (api, actions, calls)
+}
+
+async fn end(api: &ExtensionApi) {
+    let mut event = ExtensionEvent::AgentEnd { messages: Vec::new(), aborted: Some(false),
+        abort_source: None, will_retry: Some(false) };
+    api.registered.handlers[&EventKind::AgentEnd][0](&mut event, &support::context()).await.expect("dispatch");
+}
+
+#[tokio::test]
+async fn idle_user_input_resets_stale_status_without_querying() {
+    let (api, actions, calls) = register_status();
+    end(&api).await;
+    end(&api).await;
+    assert_eq!(actions.0.lock().expect("messages").len(), 1);
+    let mut event = ExtensionEvent::Input(InputEvent { input_id: "id".into(), text: "literal prompt".into(),
+        images: None, source: InputSource::Interactive, streaming_behavior: None });
+    assert!(matches!(api.registered.handlers[&EventKind::Input][0](&mut event, &support::context()).await.expect("dispatch"),
+        EventResult::Input(InputEventResult::Continue)));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    end(&api).await;
+    assert_eq!(actions.0.lock().expect("messages").len(), 2);
+}
+
+#[tokio::test]
+async fn extension_input_preserves_stale_status_guard() {
+    let (api, actions, _) = register_status();
+    end(&api).await;
+    let mut event = ExtensionEvent::Input(InputEvent { input_id: "id".into(), text: "generated prompt".into(),
+        images: None, source: InputSource::Extension, streaming_behavior: Some(StreamingBehavior::FollowUp) });
+    assert!(matches!(api.registered.handlers[&EventKind::Input][0](&mut event, &support::context()).await.expect("dispatch"),
+        EventResult::Input(InputEventResult::Continue)));
+    end(&api).await;
+    assert_eq!(actions.0.lock().expect("messages").len(), 1);
+}
+
+#[tokio::test]
+async fn unrelated_tool_results_do_not_query_loop_status() {
+    let (api, _, calls) = register_status();
+    let mut event = ExtensionEvent::ToolResult(ToolResultEvent { tool_name: "read".into(),
+        tool_call_id: "id".into(), input: serde_json::json!({}), content: Vec::new(), details: None,
+        is_error: false, usage: None });
+    api.registered.handlers[&EventKind::ToolResult][0](&mut event, &support::context()).await.expect("dispatch");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
