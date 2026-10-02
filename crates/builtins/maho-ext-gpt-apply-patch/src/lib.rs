@@ -9,3 +9,5 @@ pub mod workspace;
 pub mod errors;
 pub mod recovery;
 pub mod preview_format;
+pub mod extension;
+pub mod constants;

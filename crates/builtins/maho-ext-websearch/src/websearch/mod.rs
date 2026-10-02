@@ -4,3 +4,4 @@ pub mod types;
 pub mod search;
 pub mod config;
 pub mod native;
+pub mod tool;
