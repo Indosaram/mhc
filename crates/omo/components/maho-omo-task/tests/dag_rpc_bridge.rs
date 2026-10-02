@@ -21,3 +21,10 @@ fn fixture() -> (Arc<maho_omo_task::dag_rpc_bridge::DagRpcBridge>, Arc<Timers>, 
 #[test] fn detach_clears_all_timers_and_pending_activity() { let (bridge,timers,events) = fixture(); bridge.attach(); bridge.publish_activity(json!({"runId":"run","nodeId":"a"})); bridge.detach(); assert_eq!(timers.count(),0); timers.fire(150); bridge.forward(&json!({"runId":"run","seq":1})); assert!(events.lock().unwrap().is_empty()); }
 #[test] fn reattach_resets_snapshot_fingerprint() { let (bridge,timers,events) = fixture(); bridge.attach(); timers.fire(50); bridge.detach(); bridge.attach(); timers.fire(50); assert_eq!(events.lock().unwrap().len(),2); }
 #[test] fn disposal_prevents_future_attachment() { let (bridge,timers,_) = fixture(); bridge.attach(); bridge.dispose(); bridge.attach(); assert_eq!(timers.count(),0); }
+#[test] fn activity_preserves_first_insertion_order_when_updated() {
+    let (bridge,timers,events) = fixture(); bridge.attach();
+    for (node,activity) in [("z","first"),("a","second"),("z","last")] { bridge.publish_activity(json!({"runId":"run","nodeId":node,"activity":activity})); }
+    timers.fire(150); let events = events.lock().expect("events lock");
+    assert_eq!(events.iter().map(|(_,value)| value["nodeId"].as_str().expect("node")).collect::<Vec<_>>(),["z","a"]);
+    assert_eq!(events[0].1["activity"],"last");
+}

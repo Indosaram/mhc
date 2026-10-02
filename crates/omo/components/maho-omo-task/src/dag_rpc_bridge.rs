@@ -7,7 +7,7 @@ pub const DAG_ACTIVITY_COALESCE_MS: u64 = 150;
 pub const DAG_SNAPSHOT_DEBOUNCE_MS: u64 = 50;
 #[derive(Default)]
 struct State {
-    subscriptions: BTreeMap<String, Unsubscribe>, head_seq: BTreeMap<String, u64>, pending_activity: BTreeMap<String, Value>,
+    subscriptions: BTreeMap<String, Unsubscribe>, head_seq: BTreeMap<String, u64>, pending_activity: Vec<(String, Value)>,
     heartbeat: Option<u64>, activity_flush: Option<u64>, snapshot_flush: Option<u64>, fingerprint: Option<String>, attached: bool, disposed: bool,
 }
 pub struct DagRpcBridge { deps: DagRpcBridgeDeps, state: Mutex<State> }
@@ -51,7 +51,8 @@ impl DagRpcBridge {
     pub fn publish_activity(self: &Arc<Self>, event: Value) {
         let key = format!("{}\0{}", event.get("runId").and_then(Value::as_str).unwrap_or_default(), event.get("nodeId").and_then(Value::as_str).unwrap_or_default());
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner); if !state.attached { return; }
-        state.pending_activity.insert(key, event);
+        if let Some((_, pending)) = state.pending_activity.iter_mut().find(|(pending_key, _)| pending_key == &key) { *pending = event; }
+        else { state.pending_activity.push((key, event)); }
         if state.activity_flush.is_some() { return; }
         let weak = Arc::downgrade(self);
         state.activity_flush = Some(self.deps.timers.set(Box::new(move || { if let Some(bridge) = weak.upgrade() { bridge.flush_activity(); } }), self.deps.activity_coalesce_ms.unwrap_or(DAG_ACTIVITY_COALESCE_MS)));
@@ -59,7 +60,7 @@ impl DagRpcBridge {
     fn flush_activity(&self) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner); state.activity_flush = None;
         let events = std::mem::take(&mut state.pending_activity); if !state.attached { return; } drop(state);
-        for event in events.into_values() { (self.deps.emit)("omo.dag.activity", event); }
+        for (_, event) in events { (self.deps.emit)("omo.dag.activity", event); }
     }
     pub fn notify_store_mutation(self: &Arc<Self>) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner); if !state.attached || state.snapshot_flush.is_some() { return; }
