@@ -413,6 +413,8 @@ struct AgentSessionState {
     extension_event_signal: Option<maho_ext_api::AbortSignal>,
     compaction_extension_signal: Option<maho_ext_api::AbortSignal>,
     branch_summary_abort_controller: Option<maho_ai::utils::abort::AbortController>,
+    session_title_abort_controller: Option<maho_ai::utils::abort::AbortController>,
+    disposed: bool,
 }
 
 fn name_set(names: Option<Vec<String>>) -> Option<BTreeSet<String>> {
@@ -1173,6 +1175,8 @@ impl AgentSession {
             extension_event_signal: None,
             compaction_extension_signal: None,
             branch_summary_abort_controller: None,
+            session_title_abort_controller: None,
+            disposed: false,
         };
         let session = Self { inner: Arc::new(AgentSessionInner {
             agent,
@@ -1561,7 +1565,10 @@ impl AgentSession {
         self.agent.prompt(maho_agent::agent::AgentPromptInput::Messages(messages)).await;
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
-        if self.state().auto_title_sessions { self.generate_session_title_if_needed(&text).await; }
+        if self.state().auto_title_sessions {
+            let session = self.clone();
+            tokio::spawn(async move { session.generate_session_title_if_needed(&text).await; });
+        }
         drop(_work);
         drop(_admission);
         self.emit_agent_settled().await;
@@ -2830,12 +2837,19 @@ impl AgentSession {
 
     pub async fn generate_session_title_if_needed(&self, prompt: &str) {
         if self.session_name().is_some() || crate::session_title_generator::should_skip_session_title(prompt) { return; }
+        let controller = maho_ai::utils::abort::AbortController::new();
+        {
+            let mut state = self.state();
+            if state.disposed || state.session_title_abort_controller.is_some() { return; }
+            state.session_title_abort_controller = Some(controller.clone());
+        }
+        let signal = controller.signal();
         let session_id = self.session_id();
         let generation = async {
             let model = self.model();
             let auth = self.get_summarization_request_auth(&model).await?;
             let response = self.model_runtime().complete(&auth.model, &crate::session_title_generator::build_title_context(prompt), Some(maho_ai::types::StreamOptions {
-                request: maho_ai::types::ProviderRequestOptions { api_key: auth.api_key,
+                request: maho_ai::types::ProviderRequestOptions { api_key: auth.api_key, signal: Some(signal.clone()),
                     headers: auth.headers.map(|headers| headers.into_iter().map(|(key,value)| (key,Some(value))).collect()),
                     stream_kind: Some(maho_ai::types::StreamKind::Auxiliary), env: auth.env, ..Default::default() },
                 max_tokens: Some(64), session_id: Some(session_id.clone()),
@@ -2846,6 +2860,8 @@ impl AgentSession {
             if let Some(error) = crate::session_title_generator::title_error_message(&response) { return Err(error); }
             Ok::<_, String>(crate::session_title_generator::parse_session_title(&response))
         }.await;
+        if signal.aborted() { return; }
+        self.state().session_title_abort_controller = None;
         match generation {
             Ok(Some(title)) if self.session_id() == session_id && self.session_name().is_none() => self.set_session_name(&title),
             Ok(_) => {}, Err(error) => self.emit(AgentSessionEvent::ContinuationError { error_message: error }),
@@ -3988,6 +4004,8 @@ impl AgentSession {
     /// contexts, disconnecting the agent subscription and the wake-source unsubscribe, and the
     /// session manager's own dispose; each lands with the slice that owns it.
     pub async fn dispose(&self) {
+        self.state().disposed = true;
+        if let Some(controller) = self.state().session_title_abort_controller.take() { controller.abort(None); }
         self.cancel_probe_back();
         self.abort_retry();
         self.abort_compaction();
@@ -6008,6 +6026,45 @@ mod tests {
         assert_eq!(session.with_session_manager(|manager| manager.entries()), entries);
         assert_eq!(session.compaction_state().status(), "aborted");
         assert!(!session.is_compacting());
+    }
+
+    #[tokio::test]
+    async fn disposal_cancels_title_and_prevents_late_background_launch() {
+        use maho_ai::providers::faux::{faux_provider, RegisterFauxProviderOptions};
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let started = Arc::new(Mutex::new(Some(started)));
+        let (release, released) = tokio::sync::watch::channel(false);
+        let provider = faux_provider(RegisterFauxProviderOptions {
+            scheduler_hook: Some(Arc::new(move || {
+                let started = started.clone(); let mut released = released.clone();
+                Box::pin(async move {
+                    if let Some(started) = lock(&started).take() { started.send(()).expect("observer"); }
+                    released.wait_for(|released| *released).await.expect("release");
+                })
+            })), ..Default::default()
+        });
+        provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("<title>Stale Title</title>", Default::default()).into()]);
+        let session = test_session_with_stream_function(false);
+        session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
+        runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
+            config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".to_owned()), ..Default::default() },
+            ..Default::default()
+        }).expect("auth");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(session.generate_session_title_if_needed("Implement a native session"), async {
+                entered.await.expect("title request started");
+                assert!(session.state().session_title_abort_controller.is_some());
+                session.dispose().await;
+                release.send_replace(true);
+            });
+        }).await.expect("bounded title cancellation");
+        assert!(session.session_name().is_none());
+        assert!(provider.get_call_log()[0].options.as_ref().expect("options").request.signal.as_ref().expect("signal").aborted());
+        session.generate_session_title_if_needed("Implement another feature").await;
+        assert_eq!(provider.get_call_log().len(), 1);
+        assert!(session.state().session_title_abort_controller.is_none());
     }
 
     #[tokio::test]
