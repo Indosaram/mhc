@@ -1257,6 +1257,8 @@ async fn retained_api_commands_reach_existing_runner_and_replace_context_handler
     scope.commit_registration().unwrap();
     runner.extensions.push(api.registered.clone());
     api.register_command_with_context("late", None, None, Arc::new(|_, _| Box::pin(async { Err("context handler".into()) })));
+    api.register_filesystem_policy(FilesystemPolicy { check: Arc::new(|_| Box::pin(async { Ok(FilesystemPolicyDecision::Allow) })), denied_roots: Some(vec!["/late-root".into()]) });
+    assert_eq!(runner.get_filesystem_policy_denied_roots(), vec![std::path::PathBuf::from("/late-root")]);
     api.register_shortcut("CTRL+K", Some("late shortcut".into()), Arc::new(|_| Box::pin(async { Ok(()) })));
     assert_eq!(runner.get_shortcuts()["ctrl+k"].description.as_deref(), Some("late shortcut"));
     assert!(runner.resolve_shortcuts(&Default::default()).0.contains_key("ctrl+k"));

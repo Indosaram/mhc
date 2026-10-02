@@ -445,7 +445,9 @@ impl ExtensionRunner {
     }
     pub fn get_entry_renderer(&self, custom_type: &str) -> Option<&EntryRenderer> { self.extensions.iter().find_map(|e| e.entry_renderers.get(custom_type)) }
     pub fn get_entry_renderer_options(&self, custom_type: &str) -> Option<&EntryRendererOptions> { self.extensions.iter().find(|e| e.entry_renderers.contains_key(custom_type)).and_then(|e| e.entry_renderer_options.get(custom_type)) }
-    pub fn get_filesystem_policy_denied_roots(&self) -> Vec<std::path::PathBuf> { self.extensions.iter().flat_map(|e| &e.filesystem_policies).flat_map(|p| p.denied_roots.clone().unwrap_or_default()).collect() }
+    pub fn get_filesystem_policy_denied_roots(&self) -> Vec<std::path::PathBuf> {
+        self.extensions.iter().flat_map(|extension| self.runtime.live_filesystem_policies(&extension.identity.path).unwrap_or_else(|| extension.filesystem_policies.clone())).flat_map(|policy| policy.denied_roots.unwrap_or_default()).collect()
+    }
 
     pub async fn emit(&mut self, mut event: ExtensionEvent) -> Result<EventResult, ExtensionFailure> {
         self.runtime.assert_active()?;

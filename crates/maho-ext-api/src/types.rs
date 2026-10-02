@@ -1080,6 +1080,7 @@ struct RuntimeState {
     live_mcp_servers: BTreeMap<String, Vec<RegisteredMcpServerDeclaration>>,
     live_message_renderers: BTreeMap<String, BTreeMap<String, MessageRenderer>>,
     live_entry_renderers: BTreeMap<String, LiveEntryRenderers>,
+    live_filesystem_policies: BTreeMap<String, Vec<FilesystemPolicy>>,
     live_tool_renderers: BTreeMap<String, BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>>,
 }
 pub type LiveCommandRegistrations = (Vec<RegisteredCommand>, BTreeMap<String, CommandContextHandler>);
@@ -1155,6 +1156,7 @@ impl ExtensionRuntime {
         state.live_tools.clear(); state.live_tool_renderers.clear();
         state.live_mcp_servers.clear();
         state.live_message_renderers.clear(); state.live_entry_renderers.clear();
+        state.live_filesystem_policies.clear();
     }
     pub fn bind_providers(&self, actions: Arc<dyn ExtensionProviderActions>) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
@@ -1193,6 +1195,9 @@ impl ExtensionRuntime {
     }
     pub fn live_mcp_servers(&self, path: &str) -> Option<Vec<RegisteredMcpServerDeclaration>> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_mcp_servers.get(path).cloned()
+    }
+    pub fn live_filesystem_policies(&self, path: &str) -> Option<Vec<FilesystemPolicy>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_filesystem_policies.get(path).cloned()
     }
     pub fn live_message_renderers(&self, path: &str) -> Option<BTreeMap<String, MessageRenderer>> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_message_renderers.get(path).cloned()
@@ -1464,7 +1469,12 @@ impl ExtensionApi {
             && let Err(error) = actions.register_removed_tool_hint(name, hint) { std::panic::panic_any(error); }
         self.registered.removed_tool_hints.insert(name.into(), hint.into());
     }
-    pub fn register_filesystem_policy(&mut self, policy: FilesystemPolicy) { self.runtime.assert_active_or_panic(); self.registered.filesystem_policies.push(policy); }
+    pub fn register_filesystem_policy(&mut self, policy: FilesystemPolicy) {
+        self.runtime.assert_active_or_panic(); self.registered.filesystem_policies.push(policy);
+        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+            self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_filesystem_policies.insert(self.registered.identity.path.clone(), self.registered.filesystem_policies.clone());
+        }
+    }
     pub fn send_message(&self, message: CustomMessage, options: SendMessageOptions) -> Result<(), ExtensionFailure> { self.runtime.actions()?.send_message(message, options) }
     pub fn send_user_message(&self, content: UserMessageContent, options: SendUserMessageOptions) -> Result<(), ExtensionFailure> { self.runtime.actions()?.send_user_message(content, options) }
     pub fn append_entry(&self, custom_type: &str, data: Option<JsonValue>) -> Result<(), ExtensionFailure> { self.runtime.actions()?.append_entry(custom_type, data) }
