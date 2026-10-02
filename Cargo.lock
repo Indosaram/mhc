@@ -1909,8 +1909,11 @@ dependencies = [
 name = "maho-ext-websearch"
 version = "0.0.0"
 dependencies = [
+ "maho-tools",
  "regex",
+ "reqwest 0.13.2",
  "serde_json",
+ "tokio",
  "url",
 ]
 

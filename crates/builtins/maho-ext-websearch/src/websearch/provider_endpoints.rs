@@ -1,5 +1,6 @@
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum SearchProvider { Exa,Tavily,Brave,DuckduckgoHtml,Deepseek,Serper,GoogleCse,Zai,Openai,Codex,Anthropic,Perplexity,Xai,Kimi }
+impl SearchProvider { pub const fn as_str(self)->&'static str { match self { Self::Exa=>"exa",Self::Tavily=>"tavily",Self::Brave=>"brave",Self::DuckduckgoHtml=>"duckduckgo-html",Self::Deepseek=>"deepseek",Self::Serper=>"serper",Self::GoogleCse=>"google-cse",Self::Zai=>"z-ai",Self::Openai=>"openai",Self::Codex=>"codex",Self::Anthropic=>"anthropic",Self::Perplexity=>"perplexity",Self::Xai=>"xai",Self::Kimi=>"kimi" } } }
 pub const fn default_provider_url(provider:SearchProvider)->&'static str {
     match provider {
         SearchProvider::Exa=>"https://api.exa.ai/search",
