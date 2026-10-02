@@ -1,6 +1,22 @@
 use crate::{types::{ApplyPatchOperation,ApplyPatchPreview,ApplyPatchPreviewFile},workspace::resolve_patch_path};
 pub const PATCH_PREVIEW_MAX_LINES:usize=16;
 pub const PATCH_PREVIEW_MAX_CHARS:usize=4000;
+#[derive(Default)]
+pub struct ApplyPatchRenderState { pub cwd:String,pub patch_text:String,pub call_text:String,pub collapsed:String,pub expanded:String,pub streaming:std::sync::Arc<std::sync::Mutex<crate::streaming_render::StreamingRenderState>> }
+type RenderStates=std::sync::Mutex<std::collections::BTreeMap<String,std::sync::Arc<std::sync::Mutex<ApplyPatchRenderState>>>>;
+static RENDER_STATES:std::sync::LazyLock<RenderStates>=std::sync::LazyLock::new(||std::sync::Mutex::new(std::collections::BTreeMap::new()));
+pub fn get_apply_patch_render_state(tool_call_id:&str,cwd:&str,patch_text:&str)->std::sync::Arc<std::sync::Mutex<ApplyPatchRenderState>> {
+    let mut states=RENDER_STATES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(existing)=states.get(tool_call_id) { let state=existing.lock().unwrap_or_else(std::sync::PoisonError::into_inner); if state.cwd==cwd && state.patch_text==patch_text { return existing.clone(); } }
+    let streaming=states.get(tool_call_id).map(|existing|existing.lock().unwrap_or_else(std::sync::PoisonError::into_inner).streaming.clone()).unwrap_or_default();
+    let mut state=ApplyPatchRenderState{cwd:cwd.into(),patch_text:patch_text.into(),call_text:format_in_flight_call_text(patch_text),streaming,..Default::default()};
+    if let Ok(hunks)=crate::parser::parse_patch(patch_text) && !hunks.is_empty() {
+        let files=hunks.into_iter().map(|hunk| { let (file_path,move_path,operation)=match hunk { crate::types::ParsedPatch::Add{file_path,..}=>(file_path,None,ApplyPatchOperation::Add),crate::types::ParsedPatch::Delete{file_path}=>(file_path,None,ApplyPatchOperation::Delete),crate::types::ParsedPatch::Update{file_path,move_path,..}=>(file_path,move_path,ApplyPatchOperation::Update) }; ApplyPatchPreviewFile{file_path,move_path,operation,diff:String::new(),patch:None,binary:None,added:0,removed:0} }).collect();
+        let preview=ApplyPatchPreview{files,added:0,removed:0}; state.collapsed=format_patch_preview(&preview,cwd,false); state.expanded=format_patch_preview(&preview,cwd,true);
+    }
+    let state=std::sync::Arc::new(std::sync::Mutex::new(state)); states.insert(tool_call_id.into(),state.clone()); state
+}
+pub fn clear_apply_patch_render_state() { RENDER_STATES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear(); }
 fn js_whitespace(character:char)->bool { matches!(character,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}') }
 pub fn format_in_flight_call_text(patch_text:&str)->String {
     let paths=crate::text::extract_patched_paths(patch_text);
@@ -50,6 +66,13 @@ pub fn format_patch_preview(preview:&ApplyPatchPreview,cwd:&str,expanded:bool)->
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn render_state_identity_and_stream_are_retained_by_call_id() {
+        let patch="*** Begin Patch\n*** Add File: a\n+one\n*** End Patch";
+        let first=get_apply_patch_render_state("cache-identity","/root",patch); first.lock().unwrap().streaming.lock().unwrap().update("*** Begin Patch\n*** Add File: a\n");
+        assert!(std::sync::Arc::ptr_eq(&first,&get_apply_patch_render_state("cache-identity","/root",patch)));
+        let next=get_apply_patch_render_state("cache-identity","/other",patch); assert!(!std::sync::Arc::ptr_eq(&first,&next)); assert_eq!(next.lock().unwrap().streaming.lock().unwrap().hunks.len(),1); assert_eq!(first.lock().unwrap().streaming.lock().unwrap().hunks.len(),1);
+        RENDER_STATES.lock().unwrap().remove("cache-identity");
+    }
     #[test] fn absolute_dot_segments_are_normalized_only_inside_cwd() { assert_eq!(display_path("/root/other/../src/a","/root"),"src/a"); assert_eq!(display_path("/root/../elsewhere/a","/root"),"/root/../elsewhere/a"); }
     #[test] fn changed_hunk_is_kept_in_line_window() { let lines=(1..=40).map(|i|format!("{}{:2} line",if i==30 { '+' } else { ' ' },i)).collect::<Vec<_>>().join("\n"); let preview=truncate_preview(&lines); assert!(preview.contains("+30 line")); assert_eq!(preview.lines().count(),16); assert!(preview.starts_with('…')); }
     #[test] fn plain_text_uses_head_and_tail() { let lines=(0..20).map(|i|i.to_string()).collect::<Vec<_>>().join("\n"); let preview=truncate_preview(&lines); assert_eq!(preview.lines().count(),16); assert!(preview.contains("7\n…\n13")); }
