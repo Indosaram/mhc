@@ -17,8 +17,6 @@ pub fn load_extensions(factories: Vec<NativeExtensionFactory>, cwd: &std::path::
     let mut extensions = Vec::new();
     let mut errors = Vec::new();
     for factory in factories {
-        let runtime_checkpoint = runtime.registration_checkpoint();
-        let events_checkpoint = events.registration_checkpoint();
         let mut api = ExtensionApi::new(LoadedExtension::new(&factory.path, cwd.to_owned(), factory.source_info), profile.clone(), events.registration_scope(), runtime.registration_scope());
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| factory.extension.register(&mut api))) {
             Ok(()) => match api.runtime.commit_registration() {
@@ -26,16 +24,12 @@ pub fn load_extensions(factories: Vec<NativeExtensionFactory>, cwd: &std::path::
                 Err(error) => {
                     api.runtime.invalidate_registration("Extension factory failed to load");
                     api.events.invalidate_registration();
-                    runtime.rollback_registration(runtime_checkpoint);
-                    events.rollback_registration(events_checkpoint);
                     errors.push(ExtensionError { extension_path: factory.path, event: "load".into(), error: format!("Failed to load extension: {}", error.message), stack: error.stack });
                 }
             },
             Err(payload) => {
                 api.runtime.invalidate_registration("Extension factory failed to load");
                 api.events.invalidate_registration();
-                runtime.rollback_registration(runtime_checkpoint);
-                events.rollback_registration(events_checkpoint);
                 let message = payload.downcast_ref::<String>().cloned()
                     .or_else(|| payload.downcast_ref::<&str>().map(|message| (*message).to_owned()))
                     .unwrap_or_else(|| "Native extension factory panicked".into());
@@ -78,8 +72,6 @@ pub async fn load_extensions_async(factories: Vec<NativeAsyncExtensionFactory>, 
     let mut extensions = Vec::new();
     let mut errors = Vec::new();
     for factory in factories {
-        let runtime_checkpoint = runtime.registration_checkpoint();
-        let events_checkpoint = events.registration_checkpoint();
         let mut api = ExtensionApi::new(LoadedExtension::new(&factory.path, cwd.to_owned(), factory.source_info), profile.clone(), events.registration_scope(), runtime.registration_scope());
         let outcome = {
             let mut future = Box::pin(async { (factory.factory)(&mut api).await });
@@ -101,8 +93,6 @@ pub async fn load_extensions_async(factories: Vec<NativeAsyncExtensionFactory>, 
             Err(error) => {
                 api.runtime.invalidate_registration("Extension factory failed to load");
                 api.events.invalidate_registration();
-                runtime.rollback_registration(runtime_checkpoint);
-                events.rollback_registration(events_checkpoint);
                 errors.push(ExtensionError { extension_path: factory.path, event: "load".into(), error: format!("Failed to load extension: {}", error.message), stack: error.stack });
             }
         }

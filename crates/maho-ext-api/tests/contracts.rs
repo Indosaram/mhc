@@ -118,11 +118,16 @@ fn discarded_factory_does_not_revert_another_runtime_writer() {
     let scope = runtime.registration_scope();
     let mut api = api(scope.clone());
     api.register_flag("pending", FlagType::Boolean { default: Some(true) }, None);
+    let leaked = api.register_read_classifier(Arc::new(|_, _| Some(CompactReadClassification { kind: CompactReadKind::Docs, label: "discard".into(), headline: None }))).unwrap();
+    let good = ExtensionApi::new(LoadedExtension::new("good", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), runtime.clone());
+    let retained = good.register_read_classifier(Arc::new(|_, _| Some(CompactReadClassification { kind: CompactReadKind::Docs, label: "keep".into(), headline: None }))).unwrap();
     runtime.set_flag("external", FlagValue::Boolean(false));
     scope.invalidate_registration("failed");
     assert_eq!(runtime.get_flag("pending"), None);
     assert_eq!(runtime.get_flag("external"), Some(FlagValue::Boolean(false)));
     assert!(scope.commit_registration().is_err());
+    assert_eq!(runtime.classify_read(std::path::Path::new("/docs"), std::path::Path::new("/tmp")).unwrap().label, "keep");
+    drop((leaked, retained));
 }
 #[test]
 fn invalidation_rejects_provider_changes_and_discards_pending_registrations() {

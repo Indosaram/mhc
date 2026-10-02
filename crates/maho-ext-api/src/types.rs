@@ -266,6 +266,8 @@ pub trait ExtensionContextActions: Send + Sync {
     fn is_idle(&self) -> bool;
     fn is_project_trusted(&self) -> bool;
     fn get_signal(&self) -> Option<AbortSignal>;
+    fn get_steering_signal(&self) -> Option<AbortSignal> { None }
+    fn get_thinking_level(&self) -> Option<ThinkingLevel> { None }
     fn abort(&self, source: Option<AbortSource>);
     fn has_pending_messages(&self) -> bool;
     fn request_reload(&self) -> ExtensionFuture<'_, ()>;
@@ -862,7 +864,7 @@ pub type BusHandler = Arc<dyn Fn(&JsonValue) + Send + Sync>;
 #[derive(Clone, Default)]
 struct BusState { next_id: u64, handlers: BTreeMap<String, Vec<(u64, BusHandler)>> }
 #[derive(Clone, Default)]
-pub struct EventBus { state: Arc<Mutex<BusState>>, registration_stale: Arc<std::sync::atomic::AtomicBool>, runtime: Option<ExtensionRuntime> }
+pub struct EventBus { state: Arc<Mutex<BusState>>, registration_stale: Arc<std::sync::atomic::AtomicBool>, runtime: Option<ExtensionRuntime>, registration_subscriptions: Arc<Mutex<Vec<u64>>> }
 pub struct BusSubscription { state: Arc<Mutex<BusState>>, channel: String, id: u64 }
 impl Drop for BusSubscription {
     fn drop(&mut self) {
@@ -872,14 +874,20 @@ impl Drop for BusSubscription {
 }
 impl EventBus {
     pub fn registration_scope(&self) -> Self {
-        Self { state: self.state.clone(), registration_stale: Arc::new(std::sync::atomic::AtomicBool::new(false)), runtime: self.runtime.clone() }
+        Self { state: self.state.clone(), registration_stale: Arc::new(std::sync::atomic::AtomicBool::new(false)), runtime: self.runtime.clone(), registration_subscriptions: Arc::default() }
     }
     pub fn bind_runtime(&mut self, runtime: ExtensionRuntime) { self.runtime = Some(runtime); }
     fn assert_active_or_panic(&self) {
         if self.registration_stale.load(std::sync::atomic::Ordering::Acquire) { std::panic::panic_any(ExtensionFailure::new("Extension factory failed to load")); }
         if let Some(runtime) = &self.runtime { runtime.assert_active_or_panic(); }
     }
-    pub fn invalidate_registration(&self) { self.registration_stale.store(true, std::sync::atomic::Ordering::Release); }
+    pub fn invalidate_registration(&self) {
+        self.registration_stale.store(true, std::sync::atomic::Ordering::Release);
+        let owned = std::mem::take(&mut *self.registration_subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        for handlers in self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.values_mut() {
+            handlers.retain(|(id, _)| !owned.contains(id));
+        }
+    }
     pub fn registration_checkpoint(&self) -> EventBusCheckpoint {
         EventBusCheckpoint(self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
     }
@@ -894,6 +902,7 @@ impl EventBus {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let id = state.next_id; state.next_id = state.next_id.wrapping_add(1);
         state.handlers.entry(channel.into()).or_default().push((id, handler));
+        self.registration_subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(id);
         BusSubscription { state: Arc::clone(&self.state), channel: channel.into(), id }
     }
     pub fn emit(&self, channel: &str, data: &JsonValue) {
@@ -940,14 +949,14 @@ struct RuntimeState {
     provider_errors: Vec<ExtensionError>,
 }
 #[derive(Clone, Default)]
-pub struct ExtensionRuntime { state: Arc<Mutex<RuntimeState>>, registration_stale: Arc<Mutex<Option<String>>>, registration_pending: Arc<Mutex<Option<RegistrationPending>>> }
+pub struct ExtensionRuntime { state: Arc<Mutex<RuntimeState>>, registration_stale: Arc<Mutex<Option<String>>>, registration_pending: Arc<Mutex<Option<RegistrationPending>>>, registration_classifiers: Arc<Mutex<Vec<u64>>> }
 #[derive(Default)]
 struct RegistrationPending { flags: BTreeMap<String, FlagValue>, providers: Vec<ProviderRegistrationChange> }
 enum ProviderRegistrationChange { Register(ProviderRegistration, String), Unregister(String, String) }
 pub struct RuntimeRegistrationCheckpoint(RuntimeState);
 impl ExtensionRuntime {
     pub fn registration_scope(&self) -> Self {
-        Self { state: self.state.clone(), registration_stale: Arc::new(Mutex::new(None)), registration_pending: Arc::new(Mutex::new(Some(RegistrationPending::default()))) }
+        Self { state: self.state.clone(), registration_stale: Arc::new(Mutex::new(None)), registration_pending: Arc::new(Mutex::new(Some(RegistrationPending::default()))), registration_classifiers: Arc::default() }
     }
     pub fn commit_registration(&self) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
@@ -972,6 +981,8 @@ impl ExtensionRuntime {
     pub fn invalidate_registration(&self, message: &str) {
         self.registration_stale.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(|| message.into());
         self.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        let owned = std::mem::take(&mut *self.registration_classifiers.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).read_classifiers.retain(|(id, _)| !owned.contains(id));
     }
     pub fn registration_checkpoint(&self) -> RuntimeRegistrationCheckpoint {
         RuntimeRegistrationCheckpoint(self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
@@ -1103,6 +1114,7 @@ impl ExtensionApi {
         self.runtime.assert_active()?;
         let mut state = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let id = state.next_classifier_id; state.next_classifier_id = id.wrapping_add(1); state.read_classifiers.push((id, classifier));
+        self.runtime.registration_classifiers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(id);
         Ok(ReadClassifierSubscription { state: Arc::clone(&self.runtime.state), id })
     }
     pub fn rpc_handle(&mut self, name: &str, handler: ExtensionRpcRequestHandler) -> Result<(), ExtensionFailure> {
