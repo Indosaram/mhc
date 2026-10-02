@@ -18,6 +18,9 @@ maho-ext-api = { path = "../../maho-ext-api" }
 tokio = { version = "=1.52.3", features = ["rt", "macros", "time", "sync"] }
 
 [dev-dependencies]
+maho-agent = { path = "../../maho-agent" }
+maho-ai = { path = "../../maho-ai" }
+maho-ext-host = { path = "../../maho-ext-host" }
 tempfile = "=3.27.0"
 tokio = { version = "=1.52.3", features = ["test-util"] }
 

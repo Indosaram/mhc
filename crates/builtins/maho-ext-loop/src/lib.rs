@@ -16,3 +16,7 @@ pub mod creation;
 pub mod runtime;
 pub mod activation;
 pub mod lifecycle_hooks;
+pub mod controller;
+pub mod extension;
+pub use extension::LoopExtension;
+#[cfg(test)] mod controller_tests;
