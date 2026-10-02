@@ -8,10 +8,19 @@ pub fn tool_with_resolver(replace: bool, resolver: Arc<crate::binary_path::Binar
     definition.execute = Arc::new(move |call| {
         let resolver = Arc::clone(&resolver);
         Box::pin(async move {
+            let language = call.params.get("lang").and_then(Value::as_str).unwrap_or("undefined");
+            if !CLI_LANGUAGES.contains(&language) { return Ok(ToolResult::text(format!("Unsupported language: {language}"))); }
             let Some(binary) = resolver.resolve().await else {
                 let result = crate::types::SgResult { error: Some("ast-grep (sg) binary not found.\n\nInstall options:\n  npm install -g @ast-grep/cli\n  cargo install ast-grep --locked\n  brew install ast-grep".into()), ..Default::default() };
-                let text = if replace { format_replace_result(&result, call.params.get("dryRun") != Some(&Value::Bool(false))) } else { format_search_result(&result) };
-                return Ok(ToolResult { content: vec![ToolContent::text(text)], details: Some(serde_json::to_value(result)?) });
+                let dry_run = call.params.get("dryRun") != Some(&Value::Bool(false));
+                let text = if replace { format_replace_result(&result, dry_run) } else { format_search_result(&result) };
+                let mut details = serde_json::to_value(result)?;
+                details["pattern"] = call.params["pattern"].clone();
+                details["lang"] = json!(language);
+                details["paths"] = call.params.get("paths").filter(|value| value.as_array().is_some_and(|paths| !paths.is_empty())).cloned().unwrap_or_else(|| json!([call.context.map_or_else(|| ".".to_owned(), |ctx| ctx.cwd().to_string_lossy().into_owned())]));
+                if let Some(globs) = call.params.get("globs") { details["globs"] = globs.clone(); }
+                if replace { details["rewrite"] = call.params["rewrite"].clone(); details["dryRun"] = json!(dry_run); }
+                return Ok(ToolResult { content: vec![ToolContent::text(text)], details: Some(details) });
             };
             (tool(replace, binary).execute)(call).await
         })
