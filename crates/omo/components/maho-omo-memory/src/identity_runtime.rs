@@ -8,7 +8,7 @@ impl IdentitySandbox{
     pub fn apply(&mut self,input:IdentitySandboxInput<'_>,mut args:crate::worker::spawn_types::ReflectionSpawnArgs,which:&dyn Fn(&str)->Option<String>,warn:impl FnOnce(&str))->Result<crate::worker::spawn_types::ReflectionSpawnArgs,String>{
         let IdentitySandboxInput{identity,policy,agent_dir,platform}=input;
         if self.built.is_none(){
-            let mut writes=vec![identity.identity_paths.reflection.clone(),agent_dir.into()];
+            let mut writes=vec![identity.identity_paths.reflection_sessions.clone(),identity.identity_paths.reflection.clone(),agent_dir.into()];
             if let Some(config)=args.env.get("XDG_CONFIG_HOME"){writes.push(config.into());}
             let transform=crate::sandbox::build_sandbox_transform(&crate::sandbox::ReflectionSandboxInput{policy,worktree_dir:&identity.identity_paths.worktrees,git_common_dir:&identity.identity_paths.repo,payload_paths:std::slice::from_ref(&identity.identity_paths.transcripts),runtime_writes:&writes,foreign_roots:&[],command:&args.command,env:&args.env,platform},which).map_err(|error|error.to_string())?;
             if let Some(warning)=&transform.warning{warn(warning);}
@@ -21,6 +21,28 @@ impl IdentitySandbox{
 
 pub fn as_memory_identity(context:&MemoryIdentityContext)->MemoryIdentity{
     MemoryIdentity{id:context.identity.clone(),safe_slug:sanitize_to_slug(&context.identity),paths:context.identity_paths.clone()}
+}
+pub struct MemoryIdentityRuntime{
+    pub identity:MemoryIdentityContext,pub store:Arc<ReflectionReservationStore>,
+    pub runner:crate::worker::runner::SenpiSubprocessRunner,pub sandbox:IdentitySandbox,
+}
+pub fn create_identity_runtime(identity:MemoryIdentityContext,settings:&serde_json::Value)->Result<MemoryIdentityRuntime,String>{
+    let store=create_identity_reservation_store(&identity,settings)?;
+    Ok(MemoryIdentityRuntime{identity,store,runner:Default::default(),sandbox:Default::default()})
+}
+impl MemoryIdentityRuntime{
+    pub async fn launch<F:std::future::Future<Output=Result<crate::worker::runner_types::ReflectionRunResult,String>>>(
+        &self,mut run:memory_core::reflection::ReservedRun,mut launch:impl FnMut(memory_core::reflection::ReservedRun)->F,warn:impl FnOnce(&str),
+    ){
+        loop{match launch(run).await{
+            Ok(result)=>match result.launch{Some(next)=>run=next,None=>return},
+            Err(error)=>{warn(&error);return;}
+        }}
+    }
+    pub async fn reconcile(&self,now:&dyn Fn()->i64,recovery:&dyn crate::worker::run_reconciliation::ReflectionRecoveryPort,launch:&dyn Fn(&memory_core::reflection::ReservedRun))->Result<Vec<(String,String)>,String>{
+        let identity=as_memory_identity(&self.identity);
+        crate::worker::run_reconciliation::reconcile_reflection_runs(&crate::worker::run_finalization_types::RunFinalizationContext{identity:&identity,reservation:self.store.as_ref(),launch:Some(launch),now_ms:now},recovery).await
+    }
 }
 pub fn create_identity_reservation_store(context:&MemoryIdentityContext,settings:&serde_json::Value)->Result<Arc<ReflectionReservationStore>,String>{
     let config=crate::trigger_wiring::resolve_reflection_trigger_config(settings,Some(&context.identity))?.config;

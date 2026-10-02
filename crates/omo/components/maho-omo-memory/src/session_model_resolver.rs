@@ -6,6 +6,10 @@ pub fn resolve_memory_session_model(context:&serde_json::Value)->Option<Reflecti
     let id=model.get("id")?.as_str().filter(|id|!id.is_empty())?;
     Some(ReflectionSessionModel{provider:provider.into(),id:id.into()})
 }
+pub fn resolve_native_memory_session_model(context:&maho_ext_api::ExtensionContext)->Option<ReflectionSessionModel>{
+    let model=context.model.as_ref()?;if model.provider.is_empty()||model.id.is_empty(){return None;}
+    Some(ReflectionSessionModel{provider:model.provider.clone(),id:model.id.clone()})
+}
 #[cfg(test)]
 mod tests {
     use super::*;

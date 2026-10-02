@@ -9,6 +9,7 @@ pub mod dream_trigger_fire;
 pub mod dream_trigger;
 pub mod engine_session;
 pub mod identity_runtime;
+pub mod index;
 pub mod journal_wiring;
 pub mod nudge_wiring;
 pub mod guard;
@@ -18,6 +19,7 @@ pub mod facts_launch_selection;
 pub mod facts_oversize;
 pub mod facts_people_payload;
 pub mod facts_runner_types;
+pub mod facts_runner;
 pub mod facts_wiring;
 pub mod facts_run_storage;
 pub mod facts_run_prune;
@@ -57,6 +59,9 @@ pub mod worker;
 pub mod wiring_context;
 pub mod wiring_memory_write;
 pub mod wiring_static;
+pub mod wiring_runtime;
+pub mod wiring_types;
+pub mod wiring;
 pub mod wiring_reflection_live;
 
 // Todo 45 owns these module bodies; declaring the namespaces here keeps lib.rs

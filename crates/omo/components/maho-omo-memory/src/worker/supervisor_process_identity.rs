@@ -47,6 +47,9 @@ pub struct CancelSupervisorDeadline(Option<tokio::task::JoinHandle<()>>);
 impl CancelSupervisorDeadline {
     pub fn cancel(&mut self) { if let Some(task) = self.0.take() { task.abort(); } }
 }
+impl Drop for CancelSupervisorDeadline {
+    fn drop(&mut self) { self.cancel(); }
+}
 
 fn record_test_termination(env: &BTreeMap<String, String>, action: &str, pid: u32) -> std::io::Result<()> {
     if env.get("OMO_MEMORY_SUPERVISOR_ALLOW_TEST_SEAMS").is_some_and(|value| value == "1") && let Some(directory) = env.get("OMO_MEMORY_SUPERVISOR_TASKKILL_RUN_DIR") {
@@ -66,7 +69,7 @@ fn test_command(env: &BTreeMap<String,String>, name: &str) -> std::io::Result<Op
 fn spawn_termination_command(command: &[String], args: &[String], env: &BTreeMap<String,String>, synchronous: bool) -> std::io::Result<()> {
     let mut child=std::process::Command::new(&command[0]);
     child.args(&command[1..]).args(args).envs(env).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    if synchronous { child.status()?; } else { let mut child=child.spawn()?; std::thread::spawn(move || { let _=child.wait(); }); }
+    if synchronous { child.status()?; } else { let mut child=child.spawn()?; std::thread::spawn(move || { if let Err(error)=child.wait(){eprintln!("termination command wait failed: {error}");} }); }
     Ok(())
 }
 
@@ -87,7 +90,19 @@ pub fn record_supervisor_graceful_deadline(pid: Option<u32>, env: &BTreeMap<Stri
 
 pub fn terminate_supervisor_child_gracefully(platform: SupervisorRuntimePlatform, wrapper: &mut tokio::process::Child, env: &BTreeMap<String,String>) -> std::io::Result<()> {
     match platform {
-        SupervisorRuntimePlatform::Win32 => { record_supervisor_graceful_deadline(wrapper.id(),env)?; wrapper.start_kill() },
+        SupervisorRuntimePlatform::Win32 => {
+            record_supervisor_graceful_deadline(wrapper.id(),env)?;
+            #[cfg(unix)]
+            {
+                let Some(pid)=wrapper.id()else{return Ok(());};
+                match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32),nix::sys::signal::Signal::SIGTERM){
+                    Ok(())|Err(nix::errno::Errno::ESRCH)=>Ok(()),
+                    Err(error)=>Err(std::io::Error::from_raw_os_error(error as i32)),
+                }
+            }
+            #[cfg(not(unix))]
+            { wrapper.start_kill() }
+        },
         SupervisorRuntimePlatform::Posix => match wrapper.id() { Some(pid)=>signal_supervisor_process_group(pid,"SIGTERM",env),None=>Ok(()) },
     }
 }

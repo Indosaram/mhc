@@ -12,8 +12,21 @@ pub struct DreamTriggerOptions {
     pub launch:DreamLaunch,pub warn:Arc<dyn Fn(&str)+Send+Sync>,
 }
 pub struct DreamTriggerWiring {options:Arc<DreamTriggerOptions>,timers:Arc<Mutex<BTreeMap<String,maho_ext_api::AbortSignal>>>,in_flight:Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>}
+struct DreamShutdownEvaluator(Arc<DreamTriggerWiring>);
+struct AbortDreamOnReturn(maho_ext_api::AbortSignal);
+impl Drop for AbortDreamOnReturn { fn drop(&mut self) { self.0.abort(); } }
+impl crate::shutdown_drain::ShutdownEvaluator for DreamShutdownEvaluator {
+    fn evaluate<'a>(&'a mut self,input:crate::shutdown_drain::ShutdownEvaluatorInput<'a>)->crate::shutdown_drain::ShutdownWork<'a>{
+        Box::pin(async move{
+            if input.signal.aborted(){return Ok(());}
+            let signal=maho_ext_api::AbortSignal::default();let _abort=AbortDreamOnReturn(signal.clone());
+            self.0.shutdown_evaluate(input.session_id,input.deadline_at,signal).await
+        })
+    }
+}
 impl DreamTriggerWiring {
     pub fn new(options:DreamTriggerOptions)->Self{Self{options:Arc::new(options),timers:Default::default(),in_flight:Default::default()}}
+    pub fn shutdown_evaluator(self:&Arc<Self>)->Box<dyn crate::shutdown_drain::ShutdownEvaluator>{Box::new(DreamShutdownEvaluator(self.clone()))}
     pub fn register(&self,api:&mut ExtensionApi) {
         for kind in [EventKind::AgentSettled,EventKind::Input,EventKind::AgentStart,EventKind::SessionCompact,EventKind::SessionShutdown,EventKind::SessionAbort] {
             let options=self.options.clone();let timers=self.timers.clone();let in_flight=self.in_flight.clone();
@@ -86,5 +99,21 @@ mod tests {
     #[tokio::test]
     async fn idle_wait_does_not_wait_for_armed_timers() {
         let wiring=wiring(false,Default::default());wiring.when_idle().await;
+    }
+    #[tokio::test]
+    async fn dropping_shutdown_evaluation_aborts_the_launched_dream_signal(){
+        let captured=Arc::new(Mutex::new(None));let seen=captured.clone();
+        let wiring=Arc::new(DreamTriggerWiring::new(DreamTriggerOptions{
+            resolve_session:Arc::new(|_|None),resolve_active_session:Arc::new(||None),resolve_settings:Arc::new(|_|Default::default()),
+            launch:Arc::new(move|session,origin,request,signal|{
+                assert_eq!(session,"session");assert_eq!(origin,DreamOrigin::Shutdown);assert_eq!(request.deadline_at,Some(1500.0));
+                *seen.lock().unwrap()=signal;Box::pin(std::future::pending())
+            }),warn:Arc::new(|error|panic!("{error}")),
+        }));
+        let mut evaluator=wiring.shutdown_evaluator();
+        let mut work=evaluator.evaluate(crate::shutdown_drain::ShutdownEvaluatorInput{reason:crate::shutdown_drain::ShutdownReason::Quit,session_id:"session",deadline_at:1500.0,signal:Default::default()});
+        assert!(std::future::poll_fn(|context|std::task::Poll::Ready(work.as_mut().poll(context).is_pending())).await);
+        let signal=captured.lock().unwrap().clone().unwrap();assert!(!signal.is_aborted());
+        drop(work);assert!(signal.is_aborted());
     }
 }

@@ -6,6 +6,42 @@ use maho_omo_memory::{context::MemoryIdentityContext,binding::MemorySessionBindi
 use memory_core::git::{GitMemoryRepo,InitializeGitRepoOptions,GitSeedFile};
 
 struct MemoryExtension { identity:MemoryIdentityContext,captured:Arc<Mutex<Vec<String>>> }
+struct RootExtension { component:Arc<maho_omo_memory::index::MemoryComponent>,bound:Arc<Mutex<Vec<String>>> }
+struct WiredRootExtension{
+    component:Arc<maho_omo_memory::index::MemoryComponent>,
+    wiring:Arc<tokio::sync::Mutex<maho_omo_memory::wiring::MemoryWiring>>,
+    reconciled:Arc<Mutex<Vec<String>>>,
+}
+impl Extension for WiredRootExtension{
+    fn register(&self,api:&mut ExtensionApi){
+        let reconciled=self.reconciled.clone();
+        maho_omo_memory::wiring::MemoryWiring::register_native(self.wiring.clone(),&self.component,api,maho_omo_memory::wiring_types::NativeMemoryWiringOptions{
+            facts:Arc::new(|identity,_|Ok(maho_omo_memory::facts_wiring::MemoryFactsWiringOptions{identity:identity.identity.clone(),identity_paths:identity.identity_paths.clone(),facts_enabled:Box::new(||true),debounce_settles:Box::new(||4),extractor:None,now:Some(Arc::new(||0)),warn:Arc::new(|error|panic!("{error}"))})),
+            reconcile:Arc::new(move|identity|{reconciled.lock().unwrap_or_else(|error|panic!("reconcile capture: {error}")).push(identity.identity);Box::pin(async{Ok(())})}),
+            now:Arc::new(||0.0),warn:Arc::new(|error|panic!("{error}")),
+        },|_|{}).unwrap_or_else(|error|panic!("native wiring registration: {error}"));
+    }
+}
+#[tokio::test]
+async fn native_assembled_root_reconciles_and_enqueues_settled_journal(){
+    let root=tempfile::tempdir().unwrap();let component=maho_omo_memory::index::MemoryComponent::new(maho_omo_memory::index::MemoryComponentOptions{
+        env:std::collections::BTreeMap::from([("HOME".into(),root.path().to_string_lossy().into_owned())]),cwd:root.path().into(),now:Arc::new(||0.0),disabled:Arc::new(||false),load_config:Arc::new(||Ok(serde_json::json!({}))),
+    });
+    let wiring=Arc::new(tokio::sync::Mutex::new(maho_omo_memory::wiring::create_memory_wiring(maho_omo_memory::wiring_types::MemoryWiringOptions{runtime:Default::default(),skills_usage:Default::default()})));
+    let reconciled=Arc::new(Mutex::new(vec![]));
+    let session=FauxSession::new(FauxScript{name:"memory-wired-root".into(),prompt:"settled question".into(),responses:vec![FauxResponse{content:"settled answer".into(),stop_reason:"stop".into()}]}).with_native_extension(NativeExtensionFactory{path:"<memory-wired-root>".into(),source_info:Default::default(),extension:Box::new(WiredRootExtension{component,wiring:wiring.clone(),reconciled:reconciled.clone()})});
+    tokio::time::timeout(std::time::Duration::from_secs(10),session.run_native()).await.unwrap().unwrap();
+    let identities=reconciled.lock().unwrap().clone();assert_eq!(identities.len(),1);
+    let mut wiring=wiring.lock().await;let context=wiring.runtime.contexts.values().next().unwrap().clone();
+    let pending=wiring.runtime.existing_facts_wiring(&identities[0]).unwrap().reconcile_pending();assert_eq!(pending.len(),1);
+    let journal=memory_core::journal::store::TranscriptJournal::new(memory_core::journal::store::TranscriptJournalOptions::new(context.identity_paths.transcripts.join(&pending[0].conversation_id)));
+    assert_eq!(journal.get_state().unwrap().total_completed_steps,1);assert!(!context.repo_path().exists());
+}
+impl Extension for RootExtension {
+    fn register(&self,api:&mut ExtensionApi){let bound=self.bound.clone();let result=self.component.register(api,maho_omo_memory::index::MemoryComponentHooks{after_bind:Arc::new(move |session,identity,_|{assert!(!identity.repo_path().exists());match bound.lock(){Ok(mut bound)=>bound.push(session.into()),Err(error)=>panic!("capture lock poisoned: {error}")};Box::pin(async{Ok(())})}),shutdown:Arc::new(|_,_,_|Box::pin(async{Ok(())})),clear_status:Arc::new(|_|{}),warn:Arc::new(|message|panic!("{message}"))},|_|{});if let Err(error)=result{panic!("root registration failed: {error}");}}
+}
+#[tokio::test]
+async fn native_root_binds_identity_without_creating_storage(){let root=tempfile::tempdir().unwrap();let component=maho_omo_memory::index::MemoryComponent::new(maho_omo_memory::index::MemoryComponentOptions{env:std::collections::BTreeMap::from([("HOME".into(),root.path().to_string_lossy().into_owned())]),cwd:root.path().into(),now:Arc::new(||42.0),disabled:Arc::new(||false),load_config:Arc::new(||Ok(serde_json::json!({})))});let bound=Arc::new(Mutex::new(Vec::new()));let session=FauxSession::new(FauxScript{name:"memory-root".into(),prompt:"hello".into(),responses:vec![FauxResponse{content:"answer".into(),stop_reason:"stop".into()}]}).with_native_extension(NativeExtensionFactory{path:"<memory-root>".into(),source_info:Default::default(),extension:Box::new(RootExtension{component:component.clone(),bound:bound.clone()})});let result=tokio::time::timeout(std::time::Duration::from_secs(10),session.run_native()).await.unwrap().unwrap();assert_eq!(bound.lock().unwrap().len(),1);assert!(result["entries"].as_array().unwrap().iter().any(|entry|entry["customType"]==maho_omo_memory::binding::MEMORY_BINDING_CUSTOM_TYPE&&entry["data"]["boundAt"]==42.0));assert_eq!(component.supervisor.ref_count(),0);assert!(component.sessions.lock().unwrap().is_empty());}
 impl Extension for MemoryExtension {
     fn register(&self,api:&mut ExtensionApi) {
         let identity=self.identity.clone();

@@ -15,6 +15,12 @@ pub fn resolve_parent_cache_reusable(context:Option<&dyn MemorySessionContext>)-
 pub fn resolve_parent_session_file(context:Option<&dyn MemorySessionContext>)->Option<String>{
     context?.session_manager()?.get_session_file().as_str().filter(|file|!file.is_empty()).map(str::to_owned)
 }
+pub fn resolve_native_parent_context_tokens(context:&maho_ext_api::ExtensionContext)->Result<Option<f64>,maho_ext_api::ExtensionFailure>{
+    Ok(context.get_context_usage()?.and_then(|usage|usage.tokens).map(|tokens|tokens as f64).filter(|tokens|*tokens>0.0))
+}
+pub fn resolve_native_parent_session_file(context:&maho_ext_api::ExtensionContext)->Option<String>{
+    context.session_manager.session_file().filter(|path|!path.as_os_str().is_empty()).map(|path|path.to_string_lossy().into_owned())
+}
 #[cfg(test)]
 mod tests{
     use super::*;

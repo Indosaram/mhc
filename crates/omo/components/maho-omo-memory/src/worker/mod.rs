@@ -35,6 +35,15 @@ pub mod spawn_supervisor_support;
 pub mod run_sentinel;
 pub mod run_outcome_publication;
 pub mod supervisor_process_identity;
+pub mod memory_run_supervisor;
+#[cfg(test)]
+pub mod memory_run_supervisor_ic8_process_groups;
+#[cfg(test)]
+pub mod memory_run_supervisor_ic8_exit_resources;
+#[cfg(test)]
+pub mod memory_run_supervisor_ic8_harness;
+#[cfg(test)]
+pub mod fixtures;
 pub mod supervisor_test_signals;
 pub mod run_terminal_gate;
 pub mod spawn_supervisor;
@@ -46,3 +55,4 @@ pub mod facts_child_launch;
 pub mod entry_renderers;
 pub mod completion_renderers;
 pub mod runner_execution;
+pub mod runner;
