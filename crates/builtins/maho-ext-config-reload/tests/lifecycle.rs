@@ -8,6 +8,15 @@ impl SessionManager for FixtureSession {
     fn get_leaf_id(&self) -> Option<String> { None } fn get_session_name(&self) -> Option<String> { None }
 }
 struct FixtureRegistry;
+struct BoundSession(Arc<dyn ExtensionContextActions>);
+impl ToolSessionManager for BoundSession { fn session_id(&self) -> &str { "reload-fixture" } fn session_file(&self) -> Option<&Path> { None } }
+impl SessionManager for BoundSession {
+    fn get_entries(&self) -> Vec<SessionEntry> { vec![] }
+    fn get_branch(&self) -> Vec<SessionEntry> { vec![] }
+    fn get_leaf_id(&self) -> Option<String> { None }
+    fn get_session_name(&self) -> Option<String> { None }
+    fn extension_context_actions(&self) -> Option<&dyn ExtensionContextActions> { Some(self.0.as_ref()) }
+}
 impl ModelRegistry for FixtureRegistry {
     fn get_all(&self) -> Vec<Model> { vec![] } fn get_available(&self) -> Vec<Model> { vec![] }
     fn find(&self, _: &str, _: &str) -> Option<Model> { None } fn has_configured_auth(&self, _: &Model) -> bool { false }
@@ -51,6 +60,54 @@ async fn print_session_emits_disabled_readiness_and_shutdown_joins() {
     let mut shutdown = ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason: SessionReason::Quit, target_session_file: None, signal: None });
     (api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown, &ctx).await.unwrap();
 }
+#[tokio::test]
+async fn idle_change_reloads_real_session_and_consumes_handoff() {
+    use maho_core::{sdk::{create_agent_session, CreateAgentSessionOptions}, model_runtime::{ModelRuntime, CreateModelRuntimeOptions}};
+    use maho_ext_host::{ExtensionRunner, loader::{load_extensions, NativeExtensionFactory}};
+    use maho_ext_config_reload::protocol::*;
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().to_string_lossy().into_owned();
+    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let model = provider.get_model(Some("faux-1")).unwrap();
+    let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
+        models_path: Some(root.path().join("models.json")), auth_path: Some(root.path().join("auth.json")), providers: Some(vec![provider.provider.clone()]), ..Default::default()
+    });
+    let session = create_agent_session(CreateAgentSessionOptions {
+        cwd: Some(cwd.clone()), agent_dir: Some(cwd.clone()), model: Some(model), model_runtime: Some(runtime),
+        session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
+        settings_manager: Some(maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()), false)),
+        auto_title_sessions: Some(false), ..Default::default()
+    }).await.unwrap().session;
+    let mut ctx = context(root.path());
+    ctx.mode = ExtensionMode::Tui;
+    ctx.session_manager = Arc::new(BoundSession(session.extension_context_actions()));
+    let (sender, mut reloaded) = tokio::sync::mpsc::unbounded_channel();
+    let subscriptions = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let retained = Arc::clone(&subscriptions);
+    let factory: maho_ext_host::runner::RuntimeFactory = Arc::new(move |ctx| {
+        let sender = sender.clone();
+        let retained = Arc::clone(&retained);
+        Box::pin(async move {
+            let loaded = load_extensions(vec![NativeExtensionFactory { path: "config-reload".into(), source_info: Default::default(), extension: Box::new(maho_ext_config_reload::ConfigReload) }], &ctx.cwd, Default::default());
+            assert!(loaded.errors.is_empty());
+            let subscription = loaded.events.on(CONFIG_WATCH_RELOADED, Arc::new(move |value| { sender.send(value.clone()).unwrap(); }));
+            retained.lock().unwrap().push(subscription);
+            Ok(ExtensionRunner::new(loaded.extensions, loaded.runtime, loaded.events, ctx))
+        })
+    });
+    let mut runner = factory(ctx).await.unwrap();
+    runner.set_runtime_factory(factory);
+    session.set_extension_runner(runner).await;
+    session.bind_extensions(maho_core::agent_session::ExtensionBindings { mode: Some(ExtensionMode::Tui), ..Default::default() }).await;
+    let staged = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+    std::fs::write(staged.path(), "{\"fixture\":\"ctrl+x\"}").unwrap();
+    let path = root.path().join("keybindings.json");
+    std::fs::rename(staged.path(), &path).unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), reloaded.recv()).await.unwrap().unwrap();
+    assert_eq!(result, serde_json::json!({"registrationId":"builtin","paths":[path]}));
+    session.dispose().await;
+}
+
 #[tokio::test]
 async fn invalid_settings_event_is_rejected_and_logged_without_change_delivery() {
     use maho_ext_config_reload::protocol::*;
