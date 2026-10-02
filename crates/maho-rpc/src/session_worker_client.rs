@@ -11,6 +11,8 @@ impl WorkerControls{
         if display{self.display_pending=false;if let Some(latest)=self.latest_display.take(){return self.post(WorkerControl::Display(latest));}}else{self.cancel_pending=false;}None
     }
     pub fn stop(&mut self){self.stopped=true;}
+    pub fn post_envelope(&mut self,control:WorkerControl)->Option<crate::session_worker_protocol::HostToSessionWorker>{self.post(control).map(|control|match control{WorkerControl::Display(display)=>crate::session_worker_protocol::HostToSessionWorker::Display{display},WorkerControl::CancelUi=>crate::session_worker_protocol::HostToSessionWorker::CancelUi})}
+    pub fn receive_control_done(&mut self,control:crate::session_worker_protocol::WorkerControlKind)->Option<crate::session_worker_protocol::HostToSessionWorker>{self.control_done(control==crate::session_worker_protocol::WorkerControlKind::Display).map(|control|match control{WorkerControl::Display(display)=>crate::session_worker_protocol::HostToSessionWorker::Display{display},WorkerControl::CancelUi=>crate::session_worker_protocol::HostToSessionWorker::CancelUi})}
 }
 pub fn worker_busy(active_requests:usize,snapshot:Option<&WorkerSnapshot>)->bool{active_requests>0||snapshot.is_some_and(|snapshot|snapshot.busy)}
 pub fn worker_handoff_busy(active_requests:usize,snapshot:Option<&WorkerSnapshot>)->bool{active_requests>0||snapshot.is_some_and(|snapshot|snapshot.handoff_busy.unwrap_or(snapshot.busy))}
