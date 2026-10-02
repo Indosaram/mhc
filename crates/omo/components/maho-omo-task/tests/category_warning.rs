@@ -2,6 +2,22 @@ use std::sync::{Arc, Mutex};
 use maho_omo_task::category_unavailable_warning::create_category_unavailable_warning_planner;
 use senpi_task::manager::types::{ChildPlanner, PlanResolutionCode, PlanResolutionError};
 use serde_json::{json, Value};
+pub mod support;
+
+#[test] fn native_warning_delivery_notifies_when_captured_and_never_triggers_turn() {
+    use maho_ext_api::*;
+    #[derive(Default)] struct Actions(Mutex<Vec<(CustomMessage,SendMessageOptions)>>);
+    impl ExtensionActions for Actions {
+        fn send_message(&self,message:CustomMessage,options:SendMessageOptions)->Result<(),ExtensionFailure> { self.0.lock().expect("messages").push((message,options)); Ok(()) }
+        fn send_user_message(&self,_:UserMessageContent,_:SendUserMessageOptions)->Result<(),ExtensionFailure> { panic!("not a user message") }
+        fn append_entry(&self,_:&str,_:Option<JsonValue>)->Result<(),ExtensionFailure> { panic!("not an entry") }
+        fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure> { Ok(vec![]) }
+    }
+    let actions=Actions::default(); let ui=support::Ui::default(); let details=json!({"category":"quick","reason":"no_chain_rung_available"});
+    for ui in [None,Some(&ui as &dyn ExtensionUi)] { maho_omo_task::category_unavailable_warning::deliver_category_warning(&actions,ui,"unavailable",details.clone()).expect("delivery"); }
+    assert_eq!(ui.notifications.lock().expect("notifications").len(),1); let messages=actions.0.lock().expect("messages"); assert_eq!(messages.len(),2);
+    for (message,options) in messages.iter() { assert_eq!(message.custom_type,"senpi-task.category-unavailable"); assert!(message.display); assert_eq!(message.details.as_ref(),Some(&details)); assert!(!options.trigger_turn); assert_eq!(options.deliver_as,None); }
+}
 
 fn run(config: Value, settings: Value, dead_chain: bool, repetitions: usize) -> usize {
     let planner: ChildPlanner = Arc::new(move |_| {
