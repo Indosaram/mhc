@@ -2977,6 +2977,7 @@ impl AgentSession {
     pub async fn dispose(&self) {
         self.agent.abort(None);
         lock(&self.agent_subscription).take();
+        self.state().extension_event_sender.take();
         {
             let mut guard = self.extension_runner.lock().await;
             if let Some(runner) = guard.as_mut() {
@@ -4100,6 +4101,8 @@ mod tests {
     #[tokio::test]
     async fn dispose_clears_the_listeners() {
         let session = test_session();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        session.state().extension_event_sender = Some(sender);
         let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = Arc::clone(&seen);
         let _subscription = session.subscribe(Arc::new(move |_| {
@@ -4108,6 +4111,7 @@ mod tests {
         session.dispose().await;
         session.emit(AgentSessionEvent::AgentIdle);
         assert_eq!(seen.load(Ordering::SeqCst), 0);
+        assert!(receiver.recv().await.is_none());
     }
 
     #[test]
