@@ -26,11 +26,21 @@ pub fn estimate_cache_warm_metrics(model: Option<&Model>, env: &ProviderEnv, usa
     let estimated_saved_usd = model.filter(|_| cached_tokens > 0.0).map(|model| (model.cost.input - model.cost.cache_read).max(0.0) * cached_tokens / 1_000_000.0);
     Some(GoalCacheWarmMetrics { ttl_seconds, cached_tokens, estimated_saved_usd })
 }
-pub fn format_wake_duration(ms: f64) -> String { let seconds = (ms / 1000.0 + 0.5).floor(); if seconds < 60.0 { return format!("{seconds}s"); } let minutes = (seconds / 60.0).floor(); let rest_seconds = seconds % 60.0; if minutes < 60.0 { return if rest_seconds == 0.0 { format!("{minutes}m") } else { format!("{minutes}m {rest_seconds}s") }; } let hours = (minutes / 60.0).floor(); let rest_minutes = minutes % 60.0; if rest_minutes == 0.0 { format!("{hours}h") } else { format!("{hours}h {rest_minutes}m") } }
-pub fn format_cache_ttl(seconds: f64) -> String { if seconds % 3600.0 == 0.0 { format!("{}h", seconds / 3600.0) } else if seconds % 60.0 == 0.0 { format!("{}m", seconds / 60.0) } else { format!("{seconds}s") } }
+pub fn format_wake_duration(ms: f64) -> String {
+    let number=maho_ai::utils::js::number_to_string;
+    let seconds=(ms/1000.0+0.5).floor(); if seconds<60.0 { return format!("{}s",number(seconds)); }
+    let minutes=(seconds/60.0).floor(); let rest_seconds=seconds%60.0;
+    if minutes<60.0 { return if rest_seconds==0.0 { format!("{}m",number(minutes)) } else { format!("{}m {}s",number(minutes),number(rest_seconds)) }; }
+    let hours=(minutes/60.0).floor(); let rest_minutes=minutes%60.0;
+    if rest_minutes==0.0 { format!("{}h",number(hours)) } else { format!("{}h {}m",number(hours),number(rest_minutes)) }
+}
+pub fn format_cache_ttl(seconds: f64) -> String {
+    let number=maho_ai::utils::js::number_to_string;
+    if seconds%3600.0==0.0 { format!("{}h",number(seconds/3600.0)) } else if seconds%60.0==0.0 { format!("{}m",number(seconds/60.0)) } else { format!("{}s",number(seconds)) }
+}
 pub fn format_warm_token_count(tokens:f64)->String {
     let compact=|value:f64,suffix:&str| { let rendered=crate::format::fixed_decimal(value,1); format!("{}{suffix}",rendered.strip_suffix(".0").unwrap_or(&rendered)) };
-    if tokens>=1_000_000.0 { compact(tokens/1_000_000.0,"M") } else if tokens>=1000.0 { compact(tokens/1000.0,"K") } else { format!("{}",tokens.trunc().max(0.0)) }
+    if tokens>=1_000_000.0 { compact(tokens/1_000_000.0,"M") } else if tokens>=1000.0 { compact(tokens/1000.0,"K") } else { maho_ai::utils::js::number_to_string(if tokens.is_nan() { tokens } else { tokens.trunc().max(0.0) }) }
 }
 pub fn format_saved_usd(value: f64) -> String { if value < 0.0005 { "<$0.001".into() } else if value < 1.0 { format!("${}",crate::format::fixed_decimal(value,3)) } else { format!("${}",crate::format::fixed_decimal(value,2)) } }
 #[cfg(test)] mod tests {
@@ -45,5 +55,9 @@ pub fn format_saved_usd(value: f64) -> String { if value < 0.0005 { "<$0.001".in
     #[test] fn cached_token_and_usd_ties_match_javascript_fixed() {
         assert_eq!(format_warm_token_count(1250.0),"1.3K"); assert_eq!(format_warm_token_count(1150.0),"1.1K");
         for (value,expected) in [(0.0004,"<$0.001"),(0.0625,"$0.063"),(1.125,"$1.13"),(1.005,"$1.00"),(1e21,"$1e+21")] { assert_eq!(format_saved_usd(value),expected); }
+    }
+    #[test] fn duration_ttl_and_nonfinite_tokens_match_javascript_numbers() {
+        for (ms,expected) in [(-0.0,"0s"),(-400.0,"0s"),(59500.0,"1m"),(61500.0,"1m 2s"),(3600000.0,"1h"),(3660000.0,"1h 1m")] { assert_eq!(format_wake_duration(ms),expected); }
+        assert_eq!(format_cache_ttl(1e-7),"1e-7s"); assert_eq!(format_warm_token_count(f64::NAN),"NaN"); assert_eq!(format_warm_token_count(-0.0),"0");
     }
 }
