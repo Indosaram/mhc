@@ -25,3 +25,4 @@ pub mod image_convert;
 pub mod clipboard_image;
 pub mod git;
 pub mod tools_manager;
+pub mod image_process;
