@@ -19,6 +19,7 @@ async fn persistent_python_calls_native_host_over_owned_bridge() {
     let artifacts = tempfile::tempdir().unwrap();
     let session = CodemodeSessionManager::start(CreateCodemodeSessionManagerOptions {
         session_id:"session-test".into(), cwd:artifacts.path().into(), settings:CodemodeSettings::default(),
+        availability: [(maho_codemode::tool::types::EvalLanguage::Py,true),(maho_codemode::tool::types::EvalLanguage::Js,true),(maho_codemode::tool::types::EvalLanguage::Rb,true),(maho_codemode::tool::types::EvalLanguage::Jl,false)].map(|(language,enabled)|(language,maho_codemode::interpreters::detect::LanguageAvailability {enabled,detected:if language==maho_codemode::tool::types::EvalLanguage::Py {maho_codemode::interpreters::detect::InterpreterDetection::Detected {path:"python3".into(),version:"3".into(),resolved_path:None}}else {maho_codemode::interpreters::detect::InterpreterDetection::Unavailable}})),
         local_roots:None, artifacts_dir:Some(artifacts.path().into()), session_env:None,
         executor:Arc::new(Fixture),
         list_tools:Some(Arc::new(|| vec![EvalSchemaToolInfo { name:"echo".into(), description:None, parameters:Some(json!({"type":"object"})) }])),
@@ -27,6 +28,10 @@ async fn persistent_python_calls_native_host_over_owned_bridge() {
     let port = session.bridge_endpoint().unwrap().0;
     let kernel = session.get_python_kernel("python3").await.unwrap();
     assert!(Arc::ptr_eq(&kernel, &session.get_python_kernel("python3").await.unwrap()));
+    let native=maho_codemode::tool::eval_tool_options::EvalKernelManager::get_kernel(&session,maho_codemode::tool::types::EvalLanguage::Py).await.unwrap();
+    let native_again=maho_codemode::tool::eval_tool_options::EvalKernelManager::get_kernel(&session,maho_codemode::tool::types::EvalLanguage::Py).await.unwrap();
+    assert!(Arc::ptr_eq(&native,&native_again));
+    assert!(session.get_subprocess_kernel(maho_codemode::tool::types::EvalLanguage::Jl).await.is_err());
     let messages = Arc::new(Mutex::new(Vec::new()));
     let output = messages.clone();
     let result = kernel.run(PythonKernelRunOptions {
