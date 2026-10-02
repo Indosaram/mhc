@@ -6,3 +6,5 @@ pub mod experimental;
 pub mod auth_command;
 pub mod help_flags_cache;
 pub mod file_processor;
+pub mod help_fast_path;
+pub mod host_command;
