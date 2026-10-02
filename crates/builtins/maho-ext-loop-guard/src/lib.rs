@@ -4,5 +4,6 @@ pub mod escalation;
 pub mod similarity;
 pub mod tracker;
 pub mod notice;
+pub mod renderer;
 pub mod index;
 pub use index::LoopGuardExtension;
