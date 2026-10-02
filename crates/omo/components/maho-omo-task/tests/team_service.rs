@@ -61,3 +61,18 @@ fn input()->CreateTeamTaskServiceInput { CreateTeamTaskServiceInput { subject:"w
 #[test] fn curated_read_only_agent_rejected_before_member_launch() {
     let f=fixture(); assert!(f.service.create_team(&CreateTeamToolInput { team_name:None,inline_spec:Some(json!({"name":"curated-team","members":[{"name":"momus","kind":"subagent_type","subagent_type":"momus","prompt":"review"}]})) }).is_err()); assert_eq!(f.service.list_teams().expect("teams").len(),1);
 }
+#[test] fn shutdown_request_rejection_and_approval_persist_through_service() {
+    let f=fixture(); let requested=f.service.request_shutdown(&f.run,"beta").expect("request");
+    assert_eq!(requested.shutdown_requests.len(),1); assert_eq!(requested.shutdown_requests[0].requested_at,1000);
+    let rejected=f.service.reject_shutdown(&f.run,"beta","continue work").expect("reject");
+    assert_eq!(rejected.shutdown_requests[0].rejected_reason.as_deref(),Some("continue work")); assert_eq!(rejected.shutdown_requests[0].rejected_at,Some(1000));
+    f.service.request_shutdown(&f.run,"beta").expect("new request");
+    let approved=f.service.approve_shutdown(&f.run,"beta").expect("approve");
+    assert_eq!(approved.shutdown_requests.last().expect("latest").approved_at,Some(1000));
+    let persisted=f.service.status(&f.run).expect("status"); assert_eq!(persisted.shutdown_requests,approved.shutdown_requests);
+}
+#[test] fn shutdown_errors_preserve_native_machine_codes() {
+    let f=fixture(); let unknown=f.service.request_shutdown(&f.run,"missing").expect_err("unknown member"); assert_eq!(unknown.code.as_deref(),Some("unknown_member"));
+    let no_request=f.service.approve_shutdown(&f.run,"beta").expect_err("no request"); assert_eq!(no_request.code.as_deref(),Some("no_pending_request"));
+    assert!(f.service.status(&f.run).expect("status").shutdown_requests.is_empty());
+}
