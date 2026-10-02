@@ -95,6 +95,16 @@ pub fn normalize_tool_name(name: &str) -> String { name.to_lowercase().chars().f
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn upstream_generalized_fields_are_searchable() {
+        let mut group=doc("group_hit");group.group="payments".into();
+        let mut owner=doc("owner_hit");owner.owner_label="Accounting".into();
+        let mut description=doc("description_hit");description.description=Some("invoices".into());
+        let mut supplemental=doc("search_text_hit");supplemental.search_text=Some("reconciliation".into());
+        let index=build_bm25_index(&[group,owner,description,supplemental]);
+        for (query,name) in [("payments","group_hit"),("accounting","owner_hit"),("invoices","description_hit"),("reconciliation","search_text_hit")] {
+            let results=index.search(query,25,&Default::default());assert_eq!(results[0].name,name);assert!(!results[0].exact);
+        }
+    }
     fn doc(name: &str) -> ToolSearchDocument { ToolSearchDocument { name: name.into(), label: name.into(), aliases: vec![], description: None, search_text: None, keywords: vec![], source: ToolSearchSource::Extension, group: "utilities".into(), owner_label: "Utilities".into(), registration_id: format!("registration:{name}") } }
     #[test] fn scoring_preserves_source_query_term_accumulation_order() { let mut document=doc("rank"); document.label="Rank".into(); document.description=Some("zeta alpha beta gamma delta delta delta".into()); let result=build_bm25_index(&[document]).search("zeta alpha delta beta gamma",25,&Bm25SearchOptions{exact_match:Some(false),..Default::default()}); assert_eq!(result[0].score,1.5711867033904954); }
     #[test] fn tokenizer() { assert_eq!(tokenize_tool_text("HTTPServerV2 resolveLibraryId get-library-docs"), ["http","server","v2","resolve","library","id","get","library","docs"]); }
