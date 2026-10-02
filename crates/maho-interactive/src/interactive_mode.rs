@@ -190,6 +190,7 @@ impl InteractiveMode {
         if keys.matches(data, "app.thinking.toggle") {
             self.reveal.hide_thinking = !self.reveal.hide_thinking;
             let hidden = self.reveal.hide_thinking;
+            if let Some(component) = &self.streaming { let content = self.reveal.resync_visibility(self.clock.elapsed().as_secs_f64() * 1000.0); component.borrow_mut().update_content(&content, Some(true)); }
             if let Err(error) = self.session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &[("hideThinkingBlock".into(), serde_json::json!(hidden))].into_iter().collect())) { self.show_status(error); }
             for component in &self.assistant_cards { component.borrow_mut().set_hide_thinking_block(self.reveal.hide_thinking); }
             self.show_status(format!("Thinking blocks: {}", if hidden { "hidden" } else { "visible" }));
