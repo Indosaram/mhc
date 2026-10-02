@@ -3047,6 +3047,46 @@ impl AgentSession {
             self.emit(AgentSessionEvent::ContinuationError { error_message: error.message });
         }
         *self.extension_runner.lock().await = Some(runner);
+        if self.state().uses_default_stream_function {
+            let weak = Arc::downgrade(&self.inner);
+            self.agent.set_stream_function(Arc::new(move |model, context, options| {
+                let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
+                let output = stream.clone();
+                let weak = weak.clone();
+                let model = model.clone();
+                let context = context.clone();
+                tokio::spawn(async move {
+                    let Some(inner) = weak.upgrade() else {
+                        output.fail(maho_ai::utils::event_stream::StreamError::new("Session disposed")); return;
+                    };
+                    let session = AgentSession { inner };
+                    let mut options = options.unwrap_or_default();
+                    let headers = options.simple.stream.request.headers.take().unwrap_or_default();
+                    let transformed = {
+                        let mut runner = session.extension_runner.lock().await;
+                        match runner.as_mut() {
+                            Some(runner) => runner.emit_before_provider_headers(headers).await,
+                            None => Ok(headers),
+                        }
+                    };
+                    match transformed {
+                        Ok(headers) => options.simple.stream.request.headers = Some(headers),
+                        Err(error) => { output.fail(maho_ai::utils::event_stream::StreamError::new(error.message)); return; }
+                    }
+                    let upstream = session.model_runtime().stream_simple(&model, &context, Some(options.simple));
+                    loop {
+                        match upstream.next().await {
+                            Ok(Some(event)) => output.push(event),
+                            Ok(None) => { match upstream.result().await {
+                                Ok(message) => output.end(Some(message)), Err(error) => output.fail(error),
+                            }; return; }
+                            Err(error) => { output.fail(error); return; }
+                        }
+                    }
+                });
+                stream
+            }));
+        }
         let weak = Arc::downgrade(&self.inner);
         self.agent.set_transform_context(Some(Arc::new(move |messages, signal| {
             let weak = weak.clone(); Box::pin(async move {
