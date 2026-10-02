@@ -620,9 +620,9 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         })
     }
     fn get_system_prompt(&self) -> String { self.session().map_or_else(|_| String::new(), |session| session.system_prompt()) }
-    fn get_system_prompt_options(&self) -> maho_ext_api::BuildSystemPromptOptions { maho_ext_api::BuildSystemPromptOptions {
-        cwd: self.session().map_or_else(|_| Default::default(), |session| session.cwd().into()), ..Default::default()
-    } }
+    fn get_system_prompt_options(&self) -> maho_ext_api::BuildSystemPromptOptions {
+        self.session().map_or_else(|_| Default::default(), |session| session.extension_system_prompt_options())
+    }
     fn get_loaded_hook_sources(&self) -> maho_ext_api::LoadedHookSources {
         let session = self.session().ok(); let cwd = session.as_ref().map_or_else(std::path::PathBuf::new, |session| session.cwd().into());
         let dir = session.as_ref().map_or_else(std::path::PathBuf::new, |session| session.agent_dir().into());
@@ -631,6 +631,9 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             pre_session_hook_source_paths: Vec::new(), runtime_hook_source_paths: Vec::new() }
     }
     fn kernel_tools(&self) -> Option<&dyn maho_ext_api::ExtensionKernelTools> { None }
+    fn get_thinking_level(&self) -> Option<ThinkingLevel> {
+        self.session().ok().and_then(|session| thinking_level_from_model_level(session.thinking_level()))
+    }
 }
 
 impl maho_ext_api::ExtensionActions for SessionExtensionActions {
@@ -1264,7 +1267,7 @@ impl AgentSession {
             let mut runner = self.extension_runner.lock().await;
             match runner.as_mut() { Some(runner) => runner.emit_before_agent_start(maho_ext_api::BeforeAgentStartEvent {
                 prompt: text.clone(), images: images.clone(), system_prompt: base_system_prompt,
-                system_prompt_options: maho_ext_api::BuildSystemPromptOptions { cwd: self.cwd().into(), ..Default::default() },
+                system_prompt_options: self.extension_system_prompt_options(),
             }).await.map_err(|error| error.to_string())?, None => None }
         };
         if let Some(before) = before {
@@ -1769,9 +1772,7 @@ impl AgentSession {
             match runner.as_mut() {
                 Some(runner) => runner.emit_model_select(maho_ext_api::ModelSelectEvent {
                     model: model.clone(), previous_model: Some(previous.clone()), source,
-                    system_prompt: old_prompt.clone(), system_prompt_options: maho_ext_api::BuildSystemPromptOptions {
-                        cwd: self.cwd().into(), ..Default::default()
-                    },
+                    system_prompt: old_prompt.clone(), system_prompt_options: self.extension_system_prompt_options(),
                 }).await.map_err(|error| error.to_string()),
                 None => Ok(None),
             }
@@ -2070,6 +2071,29 @@ impl AgentSession {
         });
         self.state().base_system_prompt = base.clone();
         self.agent.set_system_prompt(base);
+    }
+
+    fn extension_system_prompt_options(&self) -> maho_ext_api::BuildSystemPromptOptions {
+        maho_ext_api::BuildSystemPromptOptions {
+            cwd: self.cwd().into(), tools: self.get_active_tool_names(),
+            skills: self.state().skills.iter().map(|skill| maho_ext_api::Skill {
+                name: skill.name.clone(), description: skill.description.clone(), file_path: skill.file_path.clone(),
+                base_dir: skill.base_dir.clone(), disable_model_invocation: skill.disable_model_invocation,
+                source_info: maho_ext_api::SourceInfo {
+                    path: skill.source_info.path.clone(), source: skill.source_info.source.clone(), base_dir: skill.source_info.base_dir.clone(),
+                    scope: match skill.source_info.scope {
+                        crate::source_info::SourceScope::User => maho_ext_api::SourceScope::User,
+                        crate::source_info::SourceScope::Project => maho_ext_api::SourceScope::Project,
+                        crate::source_info::SourceScope::Temporary => maho_ext_api::SourceScope::Temporary,
+                        crate::source_info::SourceScope::System => maho_ext_api::SourceScope::System,
+                    },
+                    origin: match skill.source_info.origin {
+                        crate::source_info::SourceOrigin::Package => maho_ext_api::SourceOrigin::Package,
+                        crate::source_info::SourceOrigin::TopLevel => maho_ext_api::SourceOrigin::TopLevel,
+                    },
+                },
+            }).collect(), ..Default::default()
+        }
     }
 
     pub async fn reload(&self) -> Result<bool, String> {
@@ -3727,6 +3751,17 @@ mod tests {
         let session = test_session();
         let error = session.get_required_request_auth(&test_model()).await.expect_err("refused");
         assert!(error.contains("No API key found for faux"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn extension_fallback_chain_updates_roundtrip_through_real_settings() {
+        use maho_ext_api::ExtensionSessionSettings;
+        let session = test_session();
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        actions.set_fallback_chain("faux-1", &["faux/faux-2".into()]).await.unwrap();
+        assert_eq!(actions.get_retry_fallback_settings().chains["faux-1"], ["faux/faux-2"]);
+        actions.remove_fallback_chain("faux-1").await.unwrap();
+        assert!(!actions.get_retry_fallback_settings().chains.contains_key("faux-1"));
     }
 
     #[tokio::test]

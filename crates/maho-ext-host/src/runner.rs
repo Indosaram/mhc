@@ -34,6 +34,8 @@ impl ExtensionContextActions for ContextSessionManager {
     fn is_idle(&self) -> bool { self.actions.is_idle() }
     fn is_project_trusted(&self) -> bool { self.actions.is_project_trusted() }
     fn get_signal(&self) -> Option<AbortSignal> { self.actions.get_signal() }
+    fn get_steering_signal(&self) -> Option<AbortSignal> { self.actions.get_steering_signal() }
+    fn get_thinking_level(&self) -> Option<ThinkingLevel> { self.actions.get_thinking_level() }
     fn abort(&self, source: Option<AbortSource>) { self.actions.abort(source); }
     fn has_pending_messages(&self) -> bool { self.actions.has_pending_messages() }
     fn request_reload(&self) -> ExtensionFuture<'_, ()> {
@@ -246,6 +248,7 @@ impl ExtensionRunner {
             context.model = actions.get_model(); context.service_tier = actions.get_service_tier();
             context.effective_service_tier = actions.get_effective_service_tier(); context.scoped_models = actions.get_scoped_models();
             context.agent_dir = actions.get_agent_dir(); context.signal = actions.get_signal();
+            context.steering_signal = actions.get_steering_signal(); context.thinking_level = actions.get_thinking_level();
         }
         context.loaded_extension_paths = self.extensions.iter().map(|e| e.identity.resolved_path.clone()).collect();
         context.registered_mcp_servers = self.get_registered_mcp_servers();

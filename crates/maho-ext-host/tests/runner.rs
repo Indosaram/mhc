@@ -760,6 +760,8 @@ impl ExtensionContextActions for ContextActions {
     fn is_idle(&self) -> bool { false }
     fn is_project_trusted(&self) -> bool { false }
     fn get_signal(&self) -> Option<AbortSignal> { None }
+    fn get_steering_signal(&self) -> Option<AbortSignal> { Some(AbortSignal::default()) }
+    fn get_thinking_level(&self) -> Option<ThinkingLevel> { Some(ThinkingLevel::High) }
     fn abort(&self, source: Option<AbortSource>) { *self.aborted.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = source; }
     fn has_pending_messages(&self) -> bool { true }
     fn request_reload(&self) -> ExtensionFuture<'_, ()> { Box::pin(async move {
@@ -804,6 +806,8 @@ async fn context_binding_reads_live_host_state_and_rejects_after_invalidation() 
     let mut runner = runner(vec![]); runner.bind_context_actions(actions.clone()).unwrap();
     let ctx = runner.create_context().unwrap();
     assert_eq!(ctx.agent_dir, std::path::PathBuf::from("/fixture/agent")); assert_eq!(ctx.effective_service_tier, Some(ServiceTier::Flex));
+    assert_eq!(ctx.thinking_level, Some(ThinkingLevel::High));
+    assert!(ctx.steering_signal.is_some());
     assert!(!ctx.is_idle()); assert!(ctx.is_compacting()); assert_eq!(ctx.get_system_prompt(), "live prompt");
     assert!(ctx.has_pending_messages().unwrap()); assert!(ctx.check_reload_veto().await.unwrap().cancelled);
     ctx.abort(Some(AbortSource::User)).unwrap(); assert_eq!(*actions.aborted.lock().unwrap(), Some(AbortSource::User));
