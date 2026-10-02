@@ -16,6 +16,10 @@ struct Manager(Mutex<Vec<TaskRecord>>);
     let manager=create_task_manager(TaskManagerOptions::new(store,ManagedRunners { in_process:Arc::new(NoLaunch),process:Arc::new(NoLaunch) },Arc::new(|_| Ok(ResolvedChildPlan { model:"faux/faux".into(),..Default::default() })),root.path().to_string_lossy()));
     let view=TaskResumptionChannelManager { manager:Arc::new(manager),ownership:TeamMemberOwnershipDeps { state_dir,team_bounds:bounds,load_runtime_state:None } };
     assert_eq!(view.list("parent"),vec![record.clone()]); assert!(view.list("foreign").is_empty()); assert!(!view.was_background(&record.task_id)); assert!(view.is_owned_team_member(&record,"parent")); assert!(!view.is_owned_team_member(&record,"foreign"));
+    let events=EventBus::default(); let received=Arc::new(Mutex::new(vec![])); let sink=received.clone(); let _subscription=events.on(RESUMPTION_CHANNEL_STATE_EVENT,Arc::new(move |event| sink.lock().expect("events").push(event.clone())));
+    let mut emitter=ResumptionChannelEmitter::new(events,Arc::new(view),Arc::new(|| Some("parent".into()))); emitter.emit_session_start();
+    { let events=received.lock().expect("events"); assert_eq!(events[0]["activeCount"],1); assert_eq!(events[0]["channels"][0]["id"],record.task_id); }
+    emitter.emit_shutdown(); assert_eq!(received.lock().expect("events")[1]["activeCount"],0);
 }
 impl ResumptionChannelManager for Manager {
     fn list(&self, _: &str) -> Vec<TaskRecord> { self.0.lock().expect("valid test state").clone() }
