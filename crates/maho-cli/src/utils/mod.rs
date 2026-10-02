@@ -23,3 +23,4 @@ pub mod image_resize_core;
 pub mod image_resize;
 pub mod image_convert;
 pub mod clipboard_image;
+pub mod git;
