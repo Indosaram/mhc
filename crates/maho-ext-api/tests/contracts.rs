@@ -195,3 +195,20 @@ fn typed_tool_renderer_retains_state_across_render_calls() {
     let mut second = renderer(&"input".into(), &Theme::default(), &mut context);
     assert_eq!(second.render(80), ["input:2"]);
 }
+
+#[test]
+fn invalid_registration_bus_cannot_emit_subscribe_or_clear_shared_handlers() {
+    let events = EventBus::default();
+    let failed = events.registration_scope();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let _subscription = events.on("shared", Arc::new(move |_| { observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }));
+    failed.invalidate_registration();
+    failed.emit("shared", &JsonValue::Null);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let late_calls = calls.clone();
+    let _late = failed.on("shared", Arc::new(move |_| { late_calls.fetch_add(10, std::sync::atomic::Ordering::SeqCst); }));
+    failed.clear();
+    events.emit("shared", &JsonValue::Null);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}

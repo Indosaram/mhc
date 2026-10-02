@@ -665,6 +665,26 @@ async fn provider_transform_rejects_result_after_runtime_invalidation() {
 }
 
 #[tokio::test]
+async fn failed_factory_retained_runtime_is_stale_without_poisoning_successful_factory() {
+    use maho_ext_host::loader::*;
+    let retained = Arc::new(std::sync::Mutex::new(None));
+    let captured = retained.clone();
+    let failed: AsyncExtensionFactory = Arc::new(move |api| {
+        *captured.lock().unwrap() = Some(api.runtime.clone());
+        Box::pin(async { Err(ExtensionFailure::new("factory error")) })
+    });
+    let loaded = load_extensions_async(vec![
+        NativeAsyncExtensionFactory { path: "failed".into(), source_info: SourceInfo::default(), factory: failed },
+        NativeAsyncExtensionFactory { path: "success".into(), source_info: SourceInfo::default(), factory: Arc::new(|_| Box::pin(async { Ok(()) })) },
+    ], Path::new("/tmp"), ExtensionSessionProfile::default()).await;
+    let failed_runtime = retained.lock().unwrap().take().unwrap();
+    assert!(failed_runtime.register_provider(ProviderRegistration::Config { name: "late".into(), config: Box::default() }, "failed").is_err());
+    assert!(loaded.runtime.assert_active().is_ok());
+    assert_eq!(loaded.extensions.len(), 1);
+    assert_eq!(loaded.extensions[0].identity.path, "success");
+}
+
+#[tokio::test]
 async fn invocation_disposes_when_pending_execution_is_dropped() {
     let disposed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let observed = disposed.clone();

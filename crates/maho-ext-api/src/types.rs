@@ -858,7 +858,7 @@ pub type BusHandler = Arc<dyn Fn(&JsonValue) + Send + Sync>;
 #[derive(Clone, Default)]
 struct BusState { next_id: u64, handlers: BTreeMap<String, Vec<(u64, BusHandler)>> }
 #[derive(Clone, Default)]
-pub struct EventBus { state: Arc<Mutex<BusState>> }
+pub struct EventBus { state: Arc<Mutex<BusState>>, registration_stale: Arc<std::sync::atomic::AtomicBool> }
 pub struct BusSubscription { state: Arc<Mutex<BusState>>, channel: String, id: u64 }
 impl Drop for BusSubscription {
     fn drop(&mut self) {
@@ -867,6 +867,10 @@ impl Drop for BusSubscription {
     }
 }
 impl EventBus {
+    pub fn registration_scope(&self) -> Self {
+        Self { state: self.state.clone(), registration_stale: Arc::new(std::sync::atomic::AtomicBool::new(false)) }
+    }
+    pub fn invalidate_registration(&self) { self.registration_stale.store(true, std::sync::atomic::Ordering::Release); }
     pub fn registration_checkpoint(&self) -> EventBusCheckpoint {
         EventBusCheckpoint(self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
     }
@@ -879,16 +883,22 @@ impl EventBus {
     pub fn on(&self, channel: &str, handler: BusHandler) -> BusSubscription {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let id = state.next_id; state.next_id = state.next_id.wrapping_add(1);
-        state.handlers.entry(channel.into()).or_default().push((id, handler));
+        if !self.registration_stale.load(std::sync::atomic::Ordering::Acquire) {
+            state.handlers.entry(channel.into()).or_default().push((id, handler));
+        }
         BusSubscription { state: Arc::clone(&self.state), channel: channel.into(), id }
     }
     pub fn emit(&self, channel: &str, data: &JsonValue) {
+        if self.registration_stale.load(std::sync::atomic::Ordering::Acquire) { return; }
         let handlers = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.get(channel).cloned().unwrap_or_default();
         for (_, handler) in handlers {
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(data))).is_err() { eprintln!("Event handler error ({channel}): native handler panicked"); }
         }
     }
-    pub fn clear(&self) { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.clear(); }
+    pub fn clear(&self) {
+        if self.registration_stale.load(std::sync::atomic::Ordering::Acquire) { return; }
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.clear();
+    }
 }
 pub struct EventBusCheckpoint(BusState);
 
@@ -922,9 +932,15 @@ struct RuntimeState {
     provider_errors: Vec<ExtensionError>,
 }
 #[derive(Clone, Default)]
-pub struct ExtensionRuntime { state: Arc<Mutex<RuntimeState>> }
+pub struct ExtensionRuntime { state: Arc<Mutex<RuntimeState>>, registration_stale: Arc<Mutex<Option<String>>> }
 pub struct RuntimeRegistrationCheckpoint(RuntimeState);
 impl ExtensionRuntime {
+    pub fn registration_scope(&self) -> Self {
+        Self { state: self.state.clone(), registration_stale: Arc::new(Mutex::new(None)) }
+    }
+    pub fn invalidate_registration(&self, message: &str) {
+        self.registration_stale.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(|| message.into());
+    }
     pub fn registration_checkpoint(&self) -> RuntimeRegistrationCheckpoint {
         RuntimeRegistrationCheckpoint(self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
     }
@@ -940,6 +956,9 @@ impl ExtensionRuntime {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone().ok_or_else(|| ExtensionFailure::new("Extension session actions are unavailable during registration"))
     }
     pub fn assert_active(&self) -> Result<(), ExtensionFailure> {
+        if let Some(message) = &*self.registration_stale.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
+            return Err(ExtensionFailure::new(message.clone()));
+        }
         let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(message) = &state.stale { return Err(ExtensionFailure::new(message.clone())); } Ok(())
     }
