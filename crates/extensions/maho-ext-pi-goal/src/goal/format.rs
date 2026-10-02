@@ -1,12 +1,19 @@
 use super::types::*;
 pub fn format_goal_elapsed_seconds(value:f64)->String{
+    if value.is_nan(){return "NaNh NaNm".into();}
+    if value==f64::INFINITY{return "Infinityd NaNh NaNm".into();}
     let seconds=value.trunc().max(0.0);if seconds<60.0{return format!("{seconds:.0}s");}
     let minutes=(seconds/60.0).trunc();if minutes<60.0{return format!("{minutes:.0}m");}
     let hours=(minutes/60.0).trunc();let remaining_minutes=minutes%60.0;
     if hours>=24.0{return format!("{:.0}d {:.0}h {remaining_minutes:.0}m",(hours/24.0).trunc(),hours%24.0);}
     if remaining_minutes==0.0{format!("{hours:.0}h")}else{format!("{hours:.0}h {remaining_minutes:.0}m")}
 }
-pub fn format_tokens_compact(value:f64)->String{let abs=value.abs();if abs>=1_000_000.0{format!("{}M",one_decimal(value/1_000_000.0))}else if abs>=1000.0{format!("{}K",one_decimal(value/1000.0))}else{format!("{:.0}",value.trunc())}}
+pub fn format_tokens_compact(value:f64)->String{
+    if value.is_nan(){return "NaN".into();}
+    if value.is_infinite(){return if value.is_sign_negative(){"-InfinityM"}else{"InfinityM"}.into();}
+    if value.trunc()==0.0{return "0".into();}
+    let abs=value.abs();if abs>=1_000_000.0{format!("{}M",one_decimal(value/1_000_000.0))}else if abs>=1000.0{format!("{}K",one_decimal(value/1000.0))}else{format!("{:.0}",value.trunc())}
+}
 fn one_decimal(value:f64)->String{let rounded=format!("{value:.1}");rounded.strip_suffix(".0").unwrap_or(&rounded).into()}
 pub const fn goal_status_label(status:GoalStatus)->&'static str{match status{GoalStatus::Active=>"active",GoalStatus::Paused=>"paused",GoalStatus::Blocked=>"blocked",GoalStatus::Complete=>"complete"}}
 fn number(value:u64)->f64{value.to_string().parse().unwrap_or_else(|_|unreachable!("u64 decimal fits f64"))}
