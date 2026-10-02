@@ -132,7 +132,7 @@ fn groups_from_details(details: &Value) -> Vec<Group> {
 
 fn overflow_hint(remaining: usize, unit: &str, theme: &Theme) -> String {
     format!(
-        "{}{}{}",
+        "{} {}{}",
         theme.fg(ThemeColor::Muted, &format!("... ({remaining} more {unit},")),
         key_hint("app.tools.expand", "to expand", theme),
         theme.fg(ThemeColor::Muted, ")")
