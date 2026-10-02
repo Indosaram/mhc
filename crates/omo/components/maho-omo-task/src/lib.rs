@@ -1,5 +1,8 @@
 //! Native adapter for the pinned omo task component.
 pub mod renderers;
+pub mod usage_guidance;
+pub mod category_unavailable_warning;
+pub mod resumption_channel_emitter;
 pub mod status_row_format;
 pub mod commands;
 pub mod dag_status_row_format;
