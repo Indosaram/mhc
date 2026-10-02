@@ -4,6 +4,13 @@ use std::collections::BTreeMap;
 use senpi_task::dag::{store::{DagFileStore,DagEventReadOptions,DagStoreError},types::DagRunEvent};
 
 pub type DurableDagListener=Arc<dyn Fn(&DagRunEvent)+Send+Sync>;
+pub fn dag_activity_payload(run:&str,node:&str,task:&str,at:&str,details:&senpi_task::progress::ToolProgressDetails)->serde_json::Value {
+    let mut activity=serde_json::json!({"schemaVersion":1,"runId":run,"nodeId":node,"taskId":task,"at":at,"activity":details.progress.activity,"turns":details.turns});
+    if let Some(tool)=&details.current_tool { activity["currentTool"]=serde_json::json!(tool); }
+    if let Some(line)=&details.last_assistant_line { activity["lastAssistantLine"]=serde_json::json!(line); }
+    if let Some(calls)=details.tool_calls { activity["toolCalls"]=serde_json::json!(calls); }
+    activity
+}
 pub fn publish_scheduler_event(event:&DagRunEvent,delivered:&mut BTreeMap<String,u64>,listeners:&BTreeMap<String,Vec<DurableDagListener>>,on_event:&DurableDagListener) {
     if *delivered.get(&event.run_id).unwrap_or(&0)>=event.seq { return; }
     delivered.insert(event.run_id.clone(),event.seq);
