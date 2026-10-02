@@ -36,6 +36,8 @@ pub fn arguments(options: &Value) -> Vec<String> {
     }
     if let Some(tools) = options["tools"].as_array() { args.extend(["--tools".into(), tools.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(",")]); }
     if let Some(sources) = options["settingSources"].as_array() { args.push(format!("--setting-sources={}", sources.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(","))); }
+    args.extend(["--permission-prompt-tool".into(), "stdio".into()]);
+    if options["mcpServers"].is_object() { args.extend(["--mcp-config".into(), json!({"mcpServers":options["mcpServers"]}).to_string()]); }
     let mut extra = options["extraArgs"].as_object().cloned().unwrap_or_default();
     if let Some(settings) = options.get("settings") { extra.insert("settings".into(), settings.clone()); }
     for (key, value) in extra {
@@ -64,6 +66,8 @@ impl SdkQueryHandle {
         let stdout = child.stdout.take().expect("piped stdout");
         let (commands, mut command_rx) = mpsc::unbounded_channel();
         let (events, messages) = mpsc::unbounded_channel();
+        let custom_server = options["customTools"].as_array().and_then(|tools| crate::custom_tools::build_custom_tool_server(tools));
+        let server_name = custom_server.as_ref().map(|server| server.name);
         let task = tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             let mut pending = BTreeMap::<String, oneshot::Sender<anyhow::Result<Value>>>::new();
@@ -97,7 +101,23 @@ impl SdkQueryHandle {
                                     }
                                 },
                                 Some("control_request") => {
-                                    write_frame(&mut stdin, &json!({"type":"control_response","response":{"subtype":"error","request_id":frame["request_id"],"error":format!("Unsupported control request subtype: {}",frame["request"]["subtype"].as_str().unwrap_or(""))}})).await?;
+                                    let request = &frame["request"];
+                                    let result = match request["subtype"].as_str() {
+                                        Some("can_use_tool") => {
+                                            let mut denied = crate::tools::deny_tool_execution(); denied["toolUseID"] = request["tool_use_id"].clone(); Ok(denied)
+                                        },
+                                        Some("mcp_message") => match custom_server.as_ref().filter(|server| request["server_name"] == server.name) {
+                                            Some(server) => Ok(json!({"mcp_response":server.rpc(&request["message"])})),
+                                            None => Err(format!("SDK MCP server not found: {}",request["server_name"].as_str().unwrap_or(""))),
+                                        },
+                                        Some("elicitation") => Ok(json!({"action":"decline"})),
+                                        _ => Err(format!("Unsupported control request subtype: {}",request["subtype"].as_str().unwrap_or(""))),
+                                    };
+                                    let response = match result {
+                                        Ok(value) => json!({"subtype":"success","request_id":frame["request_id"],"response":value}),
+                                        Err(error) => json!({"subtype":"error","request_id":frame["request_id"],"error":error}),
+                                    };
+                                    write_frame(&mut stdin, &json!({"type":"control_response","response":response})).await?;
                                 },
                                 Some("keep_alive" | "control_cancel_request") => {},
                                 _ => { let _ = events.send(Ok(frame)); },
@@ -119,6 +139,7 @@ impl SdkQueryHandle {
         });
         let mut handle = Self {commands, messages, task: Some(task), initialization: Value::Null};
         let mut initialize = json!({"subtype":"initialize","hooks":{}});
+        if let Some(name) = server_name { initialize["sdkMcpServers"] = json!([name]); }
         if let Some(prompt) = options.get("systemPrompt") {
             if prompt.is_string() { initialize["systemPrompt"] = json!([prompt]); }
             else if prompt["type"] == "preset" { if let Some(append) = prompt.get("append") { initialize["appendSystemPrompt"] = json!([append]); } }
@@ -196,5 +217,17 @@ mod tests {
         let mut query = SdkQueryHandle::spawn(&script,&json!({}),&BTreeMap::new()).await.expect("query");
         let worker = query.task.take().expect("worker"); drop(query);
         tokio::time::timeout(std::time::Duration::from_secs(5),worker).await.expect("bounded cleanup").expect("reaped worker");
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_requests_host_denial_and_native_mcp_tool_list_and_call() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().expect("dir"); let script = directory.path().join("claude");
+        std::fs::write(&script, "#!/usr/bin/python3\nimport sys,json\ndef read(): return json.loads(sys.stdin.readline())\ndef send(f): print(json.dumps(f),flush=True)\nf=read()\nassert f['request']['sdkMcpServers']==['custom-tools']\nsend({'type':'control_response','response':{'subtype':'success','request_id':f['request_id'],'response':{}}})\nfor request in [{'subtype':'can_use_tool','tool_name':'Bash','input':{'command':'false'},'tool_use_id':'t'}, {'subtype':'mcp_message','server_name':'custom-tools','message':{'jsonrpc':'2.0','id':1,'method':'tools/list'}}, {'subtype':'mcp_message','server_name':'custom-tools','message':{'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'search','arguments':{'query':'symbol'}}}}]:\n send({'type':'control_request','request_id':'child','request':request})\n response=read()['response']\n assert response['subtype']=='success'\n if request['subtype']=='can_use_tool': assert response['response']['behavior']=='deny' and response['response']['toolUseID']=='t'\n elif request['message']['method']=='tools/list': assert response['response']['mcp_response']['result']['tools'][0]['name']=='search'\n else: assert response['response']['mcp_response']['result']['isError']==True\nsend({'type':'result','subtype':'success','result':'callbacks checked'})\nfor line in sys.stdin: pass\n").expect("script");
+        std::fs::set_permissions(&script,std::fs::Permissions::from_mode(0o700)).expect("permissions");
+        let options = json!({"customTools":[{"name":"search","description":"Search","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}]});
+        let mut query = SdkQueryHandle::spawn(&script,&options,&BTreeMap::new()).await.expect("query");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5),query.next()).await.expect("bounded callbacks").expect("frame").expect("result");
+        assert_eq!(result["result"],"callbacks checked"); query.close().await.expect("close");
     }
 }
