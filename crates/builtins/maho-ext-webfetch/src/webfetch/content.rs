@@ -48,6 +48,23 @@ pub fn score_reader_candidates(elements:&[dom_query::NodeRef<'_>],weight_classes
     for (node,score) in &mut candidates {*score*=1.-reader_link_density(node);}
     candidates.into_iter().map(|(node,score)|(node.id,score)).collect()
 }
+pub fn reader_top_candidates(candidates:&[(dom_query::NodeId,f64)])->Vec<(dom_query::NodeId,f64)> {
+    let mut top:Vec<(dom_query::NodeId,f64)>=Vec::new();
+    for candidate in candidates {
+        if let Some(index)=(0..5).find(|index|top.get(*index).is_none_or(|current|candidate.1>current.1)) {
+            top.insert(index,*candidate);top.truncate(5);
+        }
+    }
+    top
+}
+pub fn reader_include_sibling(sibling:&dom_query::NodeRef<'_>,top:&dom_query::NodeRef<'_>,top_score:f64,sibling_score:Option<f64>)->bool {
+    if sibling.id==top.id {return true;}
+    let class=top.attr("class").unwrap_or_default();let bonus=if !class.is_empty()&&sibling.attr("class").unwrap_or_default()==class {top_score*0.2} else {0.};
+    if sibling_score.is_some_and(|score|score+bonus>=10_f64.max(top_score*0.2)) {return true;}
+    if sibling.node_name().as_deref()!=Some("p") {return false;}
+    let text=reader_inner_text(sibling,true);let length=text.encode_utf16().count();let density=reader_link_density(sibling);
+    (length>80&&density<0.25)||(length<80&&length>0&&density==0.&&(text.ends_with('.')||text.contains(". ")))
+}
 fn markdown_block(name:&str)->bool {matches!(name,"address"|"article"|"aside"|"audio"|"blockquote"|"body"|"canvas"|"center"|"dd"|"dir"|"div"|"dl"|"dt"|"fieldset"|"figcaption"|"figure"|"footer"|"form"|"frameset"|"h1"|"h2"|"h3"|"h4"|"h5"|"h6"|"header"|"hgroup"|"hr"|"html"|"isindex"|"li"|"main"|"menu"|"nav"|"noframes"|"noscript"|"ol"|"output"|"p"|"pre"|"section"|"table"|"tbody"|"td"|"tfoot"|"th"|"thead"|"tr"|"ul")}
 fn markdown_void(name:&str)->bool {matches!(name,"area"|"base"|"br"|"col"|"command"|"embed"|"hr"|"img"|"input"|"keygen"|"link"|"meta"|"param"|"source"|"track"|"wbr")}
 fn markdown_meaningful(name:&str)->bool {matches!(name,"a"|"table"|"thead"|"tbody"|"tfoot"|"th"|"td"|"iframe"|"script"|"audio"|"video")}
@@ -235,6 +252,16 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_sibling_selection_preserves_exact_length_and_score_boundaries() {
+        let document=dom_query::Document::from(format!("<div id='top' class='article'></div><div id='same' class='article'></div><p id='short'>Sentence.</p><p id='exact'>{}</p><p id='long'>{}</p><p id='linked'><a href='x'>Sentence.</a></p>","x".repeat(80),"x".repeat(81)));let top=document.select("#top");let top=&top.nodes()[0];
+        assert!(reader_include_sibling(top,top,50.,None));assert!(reader_include_sibling(&document.select("#same").nodes()[0],top,50.,Some(0.)));assert!(!reader_include_sibling(&document.select("#same").nodes()[0],top,50.,None));
+        assert!(reader_include_sibling(&document.select("#short").nodes()[0],top,50.,None));assert!(!reader_include_sibling(&document.select("#exact").nodes()[0],top,50.,None));assert!(reader_include_sibling(&document.select("#long").nodes()[0],top,50.,None));assert!(!reader_include_sibling(&document.select("#linked").nodes()[0],top,50.,None));
+    }
+    #[test] fn reader_top_candidates_keep_equal_score_encounter_order_and_limit() {
+        let document=dom_query::Document::from("<div></div><div></div><div></div><div></div><div></div><div></div><div></div>");let nodes=document.select("div");
+        let candidates:Vec<_>=nodes.nodes().iter().zip([1.,3.,3.,2.,0.,4.,3.]).map(|(node,score)|(node.id,score)).collect();let top=reader_top_candidates(&candidates);
+        assert_eq!(top,vec![candidates[5],candidates[1],candidates[2],candidates[6],candidates[3]]);
+    }
     #[test] fn reader_candidate_scores_propagate_in_encounter_order() {
         let document=dom_query::Document::from("<main><section><div><p>Paragraph contains enough text, with a comma.</p><p>tiny</p></div></section></main>");let paragraphs=document.select("p");let scores=score_reader_candidates(paragraphs.nodes(),false);
         let names:Vec<_>=scores.iter().map(|(id,_)|dom_query::NodeRef::new(*id,&document.tree).node_name().unwrap().to_string()).collect();assert_eq!(names,vec!["div","section","main","body"]);
