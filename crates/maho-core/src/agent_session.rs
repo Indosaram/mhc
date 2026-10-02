@@ -1863,7 +1863,16 @@ impl AgentSession {
                     && !matches!(message.stop_reason, StopReason::Error | StopReason::Aborted)
                 {
                     let model = self.model();
-                    let threshold = model.context_window.saturating_sub(16_384);
+                    let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
+                    let configured = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
+                        .transpose().map_err(|error| error.to_string())?;
+                    let resolved = crate::compaction_settings_resolver::resolve_compaction_settings(configured.as_ref(), Some(
+                        crate::compaction_settings_access::CompactionModelSelector { provider: &model.provider, id: &model.id },
+                    ))?;
+                    let reserve = if resolved.reserve_scaling_enabled {
+                        crate::compaction::compaction::resolve_reserve_tokens(model.context_window as f64, resolved.reserve_tokens as f64) as u64
+                    } else { resolved.reserve_tokens as u64 };
+                    let threshold = model.context_window.saturating_sub(reserve);
                     if self.get_context_usage().and_then(|usage| usage.tokens).is_some_and(|tokens| tokens > threshold) {
                         self.compact_for_model(None, &model, "threshold").await?;
                     }
@@ -2174,6 +2183,11 @@ impl AgentSession {
             self.emit(AgentSessionEvent::ModelChangePending { model, budget, notice });
             return Ok(None);
         }
+        if matches!(source, maho_ext_api::ModelSelectSource::Set | maho_ext_api::ModelSelectSource::Cycle)
+            && let Some(controller) = self.retry_fallback.lock().await.as_mut()
+        {
+            controller.clear_for_manual_model_change(&model);
+        }
         let old_prompt = self.system_prompt();
         let old_thinking = self.thinking_level();
         let old_tier = self.service_tier();
@@ -2184,9 +2198,8 @@ impl AgentSession {
             match runner.as_mut() {
                 Some(runner) => runner.emit_model_select(maho_ext_api::ModelSelectEvent {
                     model: model.clone(), previous_model: Some(previous.clone()), source,
-                    system_prompt: old_prompt.clone(), system_prompt_options: maho_ext_api::BuildSystemPromptOptions {
-                        cwd: self.cwd().into(), ..Default::default()
-                    },
+                    system_prompt: old_prompt.clone(), system_prompt_options: maho_ext_api::ExtensionContextActions::get_system_prompt_options(
+                        &SessionExtensionActions(Arc::downgrade(&self.inner))),
                 }).await.map_err(|error| error.to_string()),
                 None => Ok(None),
             }
@@ -2398,6 +2411,9 @@ impl AgentSession {
         if options.summarize == Some(true) && !collected.entries.is_empty() && summary.is_none() {
             summary = Some(self.generate_branch_summary(&collected.entries, options.custom_instructions.as_deref(),
                 options.replace_instructions.unwrap_or(false)).await?);
+            if summary.as_ref().is_some_and(|summary| summary["aborted"] == true) {
+                return Ok(AssistantEditResult { cancelled: true, ..Default::default() });
+            }
         }
         if self.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)) != old_leaf {
             return Err("Session leaf changed during tree navigation".to_owned());
@@ -2434,8 +2450,21 @@ impl AgentSession {
         let model = self.model();
         let reserve = self.with_settings_manager(|manager| manager.get_value("branchSummary")
             .and_then(|value| value.get("reserveTokens")).and_then(Value::as_i64)).unwrap_or(16_384);
-        let preparation = branch_summarization::prepare_branch_entries(entries, model.context_window as i64 - reserve);
+        let preparation = branch_summarization::prepare_branch_entries(entries,
+            if model.context_window == 0 { 128_000 } else { model.context_window as i64 } - reserve);
         if preparation.messages.is_empty() { return Ok(serde_json::json!({"summary":"No content to summarize"})); }
+        let before = self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeCompact(maho_ext_api::SessionBeforeCompactEvent {
+            reason: maho_ext_api::CompactionReason::Branch, will_retry: false, request_id: uuid::Uuid::new_v4().to_string(),
+            preparation: maho_ext_api::CompactionPreparation {
+                settings: maho_ext_api::CompactionSettings { enabled: true, reserve_tokens: reserve as u64, keep_recent_tokens: 0 },
+                messages_to_summarize: preparation.messages.iter().cloned().map(serde_json::from_value).collect::<Result<_,_>>()
+                    .map_err(|error| error.to_string())?, turn_prefix_messages: Vec::new(), tokens_before: preparation.total_tokens as u64,
+                first_kept_entry_id: entries.first().and_then(|entry| entry["id"].as_str()).unwrap_or_default().to_owned(), previous_summary: None,
+            }, branch_entries: entries.iter().cloned().map(session_entry_from_value).collect(),
+            custom_instructions: custom_instructions.map(str::to_owned), signal: maho_ext_api::AbortSignal::default(),
+        })).await?;
+        if before.cancel == Some(true) { return Ok(serde_json::json!({"aborted":true})); }
+        if let Some(result) = before.compaction { return Ok(serde_json::json!({"summary":result.summary})); }
         let instructions = match custom_instructions {
             Some(instructions) if replace_instructions => instructions.to_owned(),
             Some(instructions) => format!("{}\n\nAdditional focus: {instructions}", branch_summarization::BRANCH_SUMMARY_PROMPT),
@@ -3069,11 +3098,9 @@ impl AgentSession {
         requested.dedup();
 
         let mut tools = Vec::new();
-        let mut valid_names = Vec::new();
         for name in filtered {
             if let Some(tool) = self.state().tool_registry.get(&name).cloned() {
                 tools.push(tool);
-                valid_names.push(name);
             }
         }
         self.agent.set_tools(tools);
@@ -3222,7 +3249,21 @@ impl AgentSession {
         if let Err(error) = runner.bind_providers(Arc::new(crate::agent_session_runtime::ExtensionModelRuntimeActions(Mutex::new(self.model_runtime().clone())))) {
             self.emit(AgentSessionEvent::ContinuationError { error_message: error.message });
         }
+        let weak = Arc::downgrade(&self.inner);
+        let context_factory: maho_ext_host::wrapper::ToolContextFactory = Arc::new(move || {
+            let inner = weak.upgrade().ok_or_else(|| maho_ext_api::ExtensionFailure::new("Session disposed"))?;
+            let runner = inner.extension_runner.try_lock().map_err(|_| maho_ext_api::ExtensionFailure::new("Extension runner is busy"))?;
+            runner.as_ref().ok_or_else(|| maho_ext_api::ExtensionFailure::new("Extension runner is unavailable"))?.create_context()
+        });
+        let mut active = self.get_active_tool_names();
+        for registered in runner.get_all_registered_tools() {
+            let name = registered.definition.name.clone();
+            let tool = maho_ext_host::wrapper::wrap_registered_tool(registered.clone(), runner.runtime.clone(), context_factory.clone());
+            self.register_tool_definition(registered.definition, registered.source_info, tool);
+            if !active.contains(&name) { active.push(name); }
+        }
         *self.extension_runner.lock().await = Some(runner);
+        self.set_active_tools_by_name(active);
         if self.state().uses_default_stream_function {
             let weak = Arc::downgrade(&self.inner);
             self.agent.set_stream_function(Arc::new(move |model, context, options| {
@@ -3927,6 +3968,10 @@ impl AgentSession {
         let effective = if available.contains(&level) { level } else { clamp_thinking_level(level, &available) };
         let previous = self.agent.state().thinking_level;
         let changing = effective != previous;
+        if changing && let Ok(mut controller) = self.retry_fallback.try_lock()
+            && let Some(controller) = controller.as_mut() {
+            controller.note_manual_thinking_level();
+        }
 
         self.agent.set_thinking_level(effective);
 
@@ -4755,6 +4800,11 @@ mod tests {
     fn extension_context_reads_configured_settings_and_timeout_bounds() {
         use maho_ext_api::ExtensionContextActions;
         let session = test_session();
+        session.register_tool_definition(test_definition("read"), empty_source_info(), test_tool("read"));
+        session.set_active_tools_by_name(vec!["read".to_owned()]);
+        let options = SessionExtensionActions(Arc::downgrade(&session.inner)).get_system_prompt_options();
+        assert_eq!(options.tools, vec!["read"]);
+        assert_eq!(options.cwd, std::path::PathBuf::from(session.cwd()));
         session.with_settings_manager_mut(|manager| manager.set(
             crate::settings_manager::SettingsScope::Global,
             &Map::from_iter([
