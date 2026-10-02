@@ -68,9 +68,12 @@ impl Drop for Delivery {
     }
 }
 
-struct Runtime { state: State, seq: u128, reference: Option<(&'static str, String)> }
+struct Runtime { state: State, seq: u128, reference: Option<(&'static str, String)>, clock: Arc<dyn Fn() -> u128 + Send + Sync>, suffix: Arc<dyn Fn() -> String + Send + Sync> }
 impl Runtime {
-    fn new() -> Self { Self { state: State::default(), seq: now_ms().saturating_mul(1000), reference: None } }
+    fn new() -> Self { Self::with_sources(Arc::new(now_ms), Arc::new(|| maho_ai::utils::text::to_radix_36(rand::random::<u64>() >> 11))) }
+    fn with_sources(clock: Arc<dyn Fn() -> u128 + Send + Sync>, suffix: Arc<dyn Fn() -> String + Send + Sync>) -> Self {
+        Self { state: State::default(), seq: clock().saturating_mul(1000), reference: None, clock, suffix }
+    }
     fn update_reference(&mut self, ctx: &ExtensionContext) {
         let path = ctx.session_manager.session_file().map(|path| path.to_string_lossy().into_owned());
         self.reference = session_reference(path.as_deref(), Some(ctx.session_manager.session_id()));
@@ -80,7 +83,8 @@ impl Runtime {
         let mut params = json!({"pane_id":config.pane,"source":"herdr:pi","agent":"pi","seq":self.seq});
         if let Some((key, value)) = &self.reference { params[*key] = json!(value); }
         if let Some(reason) = reason { params["session_start_source"] = json!(reason); }
-        json!({"id":format!("herdr:pi:{}:{}", now_ms(), self.seq),"method":method,"params":params})
+        let prefix = if method == "pane.report_agent_session" { "herdr:pi:session" } else { "herdr:pi" };
+        json!({"id":format!("{prefix}:{}:{}", (self.clock)(), (self.suffix)()),"method":method,"params":params})
     }
     fn publish(&mut self, delivery: &Delivery, force: bool) {
         let Some((state, message)) = self.state.publish(force) else { return; };
@@ -168,6 +172,20 @@ impl Extension for HerdrAgentState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn request_identity_uses_random_suffix_not_sequence() {
+        let mut runtime = Runtime::with_sources(Arc::new(|| 123), Arc::new(|| "fixture-random".into()));
+        runtime.reference = Some(("agent_session_id", "session".into()));
+        let config = Config { socket: "unused".into(), pane: "pane".into() };
+        let session = runtime.request(&config, "pane.report_agent_session", Some("startup"));
+        let state = runtime.request(&config, "pane.report_agent", None);
+        assert_eq!(session["id"], "herdr:pi:session:123:fixture-random");
+        assert_eq!(state["id"], "herdr:pi:123:fixture-random");
+        assert_eq!(session["params"]["seq"], 123001);
+        assert_eq!(state["params"]["seq"], 123002);
+        assert_eq!(session["params"]["session_start_source"], "startup");
+        assert_eq!(state["params"]["agent_session_id"], "session");
+    }
     #[test] fn inactive_when_falsy() { for value in [Value::Null, json!(false), json!(0), json!("")] { assert!(!truthy(Some(&value))); } assert!(!truthy(None)); }
     #[test] fn active_when_truthy() { for value in [json!(true), json!(1), json!("active"), json!([]), json!({})] { assert!(truthy(Some(&value))); } }
     #[cfg(unix)]
