@@ -134,12 +134,15 @@ impl McpClient {
             let reply=response.json::<Value>().await.map_err(|e|failure(&self.server,McpErrorKind::Protocol,e.to_string(),"request"))?;
             return self.http_reply(reply,value.get("id"));
         }
-        let mut buffer=Vec::new();let mut data=String::new();let mut skip_lf=false;let mut first_line=true;
+        let mut buffer=Vec::new();let mut data=String::new();let mut event_type=String::new();let mut skip_lf=false;let mut first_line=true;
         while let Some(chunk)=response.chunk().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"request"))? {
             buffer.extend_from_slice(&chunk);
             while let Some(line)=take_sse_line(&mut buffer,&mut skip_lf,&mut first_line) {
                 if let Some(part)=line.strip_prefix("data:"){if !data.is_empty(){data.push('\n');}data.push_str(part.strip_prefix(' ').unwrap_or(part));}
-                if line.is_empty() && !data.is_empty() {
+                if let Some(kind)=line.strip_prefix("event:"){event_type=kind.strip_prefix(' ').unwrap_or(kind).into();}
+                if line.is_empty() {
+                    let is_message=event_type.is_empty() || event_type=="message";event_type.clear();
+                    if !is_message || data.is_empty(){data.clear();continue;}
                     let event=serde_json::from_str::<Value>(&data).map_err(|e|failure(&self.server,McpErrorKind::Protocol,e.to_string(),"request"))?;data.clear();
                     if event.get("id")==value.get("id") && event.get("method").is_none(){return self.http_reply(event,value.get("id"));}
                     let _=self.notifications.send(event);
@@ -185,15 +188,17 @@ impl McpClient {
                     Ok(response) if response.status()==reqwest::StatusCode::METHOD_NOT_ALLOWED=>return,
                     Ok(mut response) if response.status().is_success()=>{
                         failed_attempts=0;
-                        let mut buffer=Vec::new();let mut data=String::new();let mut skip_lf=false;let mut first_line=true;
+                        let mut buffer=Vec::new();let mut data=String::new();let mut event_type=String::new();let mut skip_lf=false;let mut first_line=true;
                         while let Ok(Some(chunk))=response.chunk().await {
                             buffer.extend_from_slice(&chunk);
                             while let Some(line)=take_sse_line(&mut buffer,&mut skip_lf,&mut first_line) {
                                 if let Some(part)=line.strip_prefix("data:"){if !data.is_empty(){data.push('\n');}data.push_str(part.strip_prefix(' ').unwrap_or(part));}
+                                if let Some(kind)=line.strip_prefix("event:"){event_type=kind.strip_prefix(' ').unwrap_or(kind).into();}
                                 if let Some(id)=line.strip_prefix("id:"){last_event_id=Some(id.trim_start_matches(' ').to_owned());}
                                 if let Some(retry)=line.strip_prefix("retry:").and_then(|retry|retry.trim().parse::<u64>().ok()){retry_ms=retry;}
-                                if line.is_empty() && !data.is_empty() {
-                                    if let Ok(value)=serde_json::from_str::<Value>(&data){let _=notifications.send(value);}data.clear();
+                                if line.is_empty() {
+                                    if (event_type.is_empty() || event_type=="message") && !data.is_empty() && let Ok(value)=serde_json::from_str::<Value>(&data){let _=notifications.send(value);}
+                                    data.clear();event_type.clear();
                                 }
                             }
                         }
