@@ -30,10 +30,14 @@ pub async fn execute_schedule_wakeup(scheduler:&dyn ScheduleWakeupSchedulerPort,
     let prompt=params["prompt"].as_str().filter(|prompt|!js_trim(prompt).is_empty()).ok_or_else(||ToolError::Message("prompt is required and must be non-empty unless stop is true.".into()))?;
     let loop_id=dynamic_id(scheduler)?; let delay=requested.clamp(MIN_WAKEUP_DELAY_SECONDS,MAX_WAKEUP_DELAY_SECONDS); let clamped=delay!=requested; let noop=params["noop"]==true;
     let outcome=scheduler.schedule_wakeup(ScheduleWakeupRequest { loop_id:loop_id.clone(),requested_delay_seconds:requested,delay_seconds:delay,reason:reason.into(),prompt:prompt.into(),noop }).await.map_err(|error|ToolError::Message(error.message))?;
-    let text=if clamped { format!("Scheduled loop {loop_id} in {delay}s; requested {requested}s was clamped to the supported 60-3600s range.") } else { format!("Scheduled loop {loop_id} in {delay}s.") };
+    let requested_label=maho_ai::utils::js::number_to_string(requested);
+    let text=if clamped { format!("Scheduled loop {loop_id} in {delay}s; requested {requested_label}s was clamped to the supported 60-3600s range.") } else { format!("Scheduled loop {loop_id} in {delay}s.") };
     let mut details=json!({"ok":true,"action":"scheduled","loopId":loop_id,"wakeupId":outcome.wakeup_id,"requestedDelaySeconds":requested,"delaySeconds":delay,"clamped":clamped,"dueAt":outcome.due_at,"reason":reason,"prompt":prompt,"noop":noop,"noopStreak":outcome.noop_streak}); if let Some(id)=outcome.replaced_wakeup_id { details["replacedWakeupId"]=id.into(); }
     Ok(ToolResult { content:vec![maho_ext_api::ToolContent::text(text)],details:Some(details) })
 }
+#[cfg(test)]
+#[path="tools_parity_tests.rs"]
+mod parity_tests;
 pub fn schedule_wakeup_schema()->Value { json!({"type":"object","properties":{"delaySeconds":{"type":"integer","description":"Dynamic loop delay in seconds. Values are clamped to 60-3600."},"reason":{"type":"string","minLength":1,"description":"Why this wakeup or stop is appropriate. Must not be blank."},"prompt":{"type":"string","description":"Prompt to dispatch when the wakeup fires. Required unless stop is true; preserve the original /loop command verbatim for normal dynamic re-entry."},"stop":{"type":"boolean","description":"End the active dynamic loop immediately instead of scheduling another wakeup."},"noop":{"type":"boolean","description":"True when this iteration observed no actionable change. Consecutive noop iterations are folded in the terminal view. Omit when stopping."}},"required":["reason"],"additionalProperties":false}) }
 pub fn register_loop_tools(api:&mut ExtensionApi,scheduler:Arc<dyn ScheduleWakeupSchedulerPort>) {
     let mut definition=ToolDefinition::new(SCHEDULE_WAKEUP_TOOL,SCHEDULE_WAKEUP_DESCRIPTION,schedule_wakeup_schema(),Arc::new(move |call| { let scheduler=Arc::clone(&scheduler); Box::pin(async move { execute_schedule_wakeup(scheduler.as_ref(),&call.params).await }) })); definition.label="Schedule Wakeup".into(); definition.exposure=Some(ToolExposure::Search); definition.allow_lazy_activation=Some(false); definition.execution_mode=Some(ToolExecutionMode::Sequential);
