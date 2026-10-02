@@ -15,7 +15,7 @@ pub fn cap_webfetch_output(text:&str)->WebfetchOutputCap{
     }
     let head=if lines.is_empty(){
         let mut end=DEFAULT_OUTPUT_MAX_BYTES;while !text.is_char_boundary(end){end-=1;}
-        let prefix=&text[..end];prefix.strip_suffix('\u{fffd}').unwrap_or(prefix).to_owned()
+        let prefix=&text[..end];if end==DEFAULT_OUTPUT_MAX_BYTES{prefix.strip_suffix('\u{fffd}').unwrap_or(prefix).to_owned()}else{prefix.to_owned()}
     }else{lines.join("\n")};
     let output_bytes=head.len();
     let notice=format!("\n\n[Output truncated: {} of {} shown ({} limit). Re-fetch a more specific URL or use web_search for targeted content.]",format_byte_size(output_bytes),format_byte_size(total_bytes),format_byte_size(DEFAULT_OUTPUT_MAX_BYTES));

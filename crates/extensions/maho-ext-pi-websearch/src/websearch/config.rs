@@ -59,7 +59,8 @@ pub fn load_websearch_config(cwd: &Path,home: &Path) -> Result<ConfigLoadResult,
     for path in [cwd.join(".pi/websearch.json"),home.join("websearch.json"),home.join(".pi/websearch.json")] {
         if !path.try_exists().unwrap_or(false){continue;}
         let source=path.to_string_lossy().into_owned();
-        let content=std::fs::read_to_string(&path)?;
+        let bytes=std::fs::read(&path)?;
+        let content=String::from_utf8_lossy(&bytes);
         let raw=serde_json::from_str::<Value>(&content).ok();
         let Some(raw)=raw.as_ref().and_then(Value::as_object)else{return Ok(ConfigLoadResult::Failure{reason:ConfigLoadFailureReason::InvalidConfig,message:format!("Invalid JSON object in {source}"),source:Some(source)});};
         let Some(config)=config_from_object(raw)else{return Ok(ConfigLoadResult::Failure{reason:ConfigLoadFailureReason::InvalidConfig,message:format!("Invalid provider config in {source}"),source:Some(source)});};
