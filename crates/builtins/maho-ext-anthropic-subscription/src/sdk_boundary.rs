@@ -25,8 +25,15 @@ pub fn arguments(options: &Value) -> Vec<String> {
         }
     }
     if let Some(thinking) = options.get("thinking") {
-        if let Some(kind) = thinking["type"].as_str() { args.extend(["--thinking".into(), kind.into()]); }
-        if let Some(display) = thinking["display"].as_str() { args.extend(["--thinking-display".into(), display.into()]); }
+        match thinking["type"].as_str() {
+            Some("enabled")=> {
+                if let Some(budget)=thinking.get("budgetTokens") {args.extend(["--max-thinking-tokens".into(),budget.to_string()]);}
+                else {args.extend(["--thinking".into(),"adaptive".into()]);}
+            },
+            Some(kind @ ("adaptive"|"disabled"))=>args.extend(["--thinking".into(),kind.into()]),
+            _=>{},
+        }
+        if thinking["type"]!="disabled" && let Some(display) = thinking["display"].as_str() { args.extend(["--thinking-display".into(), display.into()]); }
     }
     for (key, flag) in [("resume", "resume"), ("resumeSessionAt", "resume-session-at"), ("sessionId", "session-id")] {
         if let Some(value) = options[key].as_str() { args.push(format!("--{flag}={value}")); }
@@ -573,6 +580,13 @@ mod tests {
     fn native_spawn_arguments_preserve_empty_tools_and_lineage() {
         let args = arguments(&json!({"tools":[],"settingSources":[],"resume":"parent","forkSession":true,"sessionId":"child","extraArgs":{"strict-mcp-config":null},"settings":{"autoCompactEnabled":true}}));
         assert!(args.windows(2).any(|pair| pair == ["--tools", ""])); assert!(args.contains(&"--setting-sources=".into())); assert!(args.contains(&"--resume=parent".into())); assert!(args.contains(&"--fork-session".into())); assert!(args.contains(&"--strict-mcp-config".into()));
+    }
+    #[test]
+    fn native_thinking_arguments_follow_sdk_budget_and_display_rules() {
+        let enabled=arguments(&json!({"thinking":{"type":"enabled","budgetTokens":2048,"display":"summarized"}}));
+        assert!(enabled.windows(2).any(|pair|pair==["--max-thinking-tokens","2048"]));assert!(!enabled.contains(&"--thinking".into()));
+        let adaptive=arguments(&json!({"thinking":{"type":"enabled"}}));assert!(adaptive.windows(2).any(|pair|pair==["--thinking","adaptive"]));
+        let disabled=arguments(&json!({"thinking":{"type":"disabled","display":"summarized"}}));assert!(!disabled.contains(&"--thinking-display".into()));
     }
     #[cfg(unix)]
     #[tokio::test]
