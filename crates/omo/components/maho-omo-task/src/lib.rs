@@ -1,1 +1,22 @@
-
+//! Native adapter for the pinned omo task component.
+pub mod renderers;
+pub mod status_row_format;
+pub mod commands;
+pub mod dag_status_row_format;
+pub mod dag_commands;
+pub mod runtime_context;
+pub mod reload_guard;
+pub mod surface;
+pub mod task_rpc_codec;
+pub mod status_ui;
+pub mod dag_status_ui;
+pub mod tools;
+pub mod dag_tool;
+pub mod planner;
+pub mod parent_notifier;
+pub mod session_transition_bridge;
+pub mod residency_registry;
+pub mod dag_wake_source;
+pub mod dag_snapshot_payload;
+pub mod engine_runners;
+pub mod dag_wake;

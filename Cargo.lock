@@ -1989,6 +1989,15 @@ version = "0.0.0"
 [[package]]
 name = "maho-omo-task"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "maho-ext-api",
+ "maho-senpi-task",
+ "maho-tui",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "maho-omo-telemetry"
