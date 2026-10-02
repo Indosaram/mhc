@@ -43,6 +43,8 @@ fn handle(state:&mut State,api:&ExtensionApi,event:&ExtensionEvent,ctx:&Extensio
 pub struct LoopGuardExtension;
 impl Extension for LoopGuardExtension {
     fn register(&self,api:&mut ExtensionApi) {
+        api.register_message_renderer(LOOP_GUARD_NOTICE_CUSTOM_TYPE,crate::renderer::render_loop_guard_notice());
+        api.register_message_renderer(LOOP_GUARD_ESCALATION_CUSTOM_TYPE,crate::renderer::render_loop_guard_escalation());
         let state=Arc::new(Mutex::new(State::default()));
         let actions=Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));
         for kind in [EventKind::SessionStart,EventKind::SessionShutdown,EventKind::Input,EventKind::ToolExecutionStart,EventKind::TurnEnd,EventKind::ToolCall,EventKind::AgentStart,EventKind::AgentSettled] {
@@ -57,6 +59,8 @@ impl Extension for LoopGuardExtension {
         let mut api=ExtensionApi::new(maho_ext_api::LoadedExtension::new("loop-guard",".".into(),Default::default()),Default::default(),Default::default(),Default::default());
         LoopGuardExtension.register(&mut api);
         assert_eq!(api.registered.handlers.len(),8);
+        assert!(api.registered.message_renderers.contains_key(LOOP_GUARD_NOTICE_CUSTOM_TYPE));
+        assert!(api.registered.message_renderers.contains_key(LOOP_GUARD_ESCALATION_CUSTOM_TYPE));
         for kind in [EventKind::SessionStart,EventKind::SessionShutdown,EventKind::Input,EventKind::ToolExecutionStart,EventKind::TurnEnd,EventKind::ToolCall,EventKind::AgentStart,EventKind::AgentSettled] { assert_eq!(api.registered.handlers[&kind].len(),1); }
     }
     #[test] fn wake_and_hold_emit_only_transitions_and_reset_releases_both() {
