@@ -61,3 +61,27 @@ pub fn create_blocking_remote_compaction_event(
         signal,
     }
 }
+
+pub struct AbortLink {
+    source: maho_ai::utils::abort::AbortSignal,
+    listener: maho_ai::utils::abort::ListenerId,
+}
+impl Drop for AbortLink {
+    fn drop(&mut self) { self.source.remove_abort_listener(self.listener); }
+}
+pub fn link_abort_signal(source: Option<&maho_ai::utils::abort::AbortSignal>, target: &maho_ai::utils::abort::AbortController) -> Option<AbortLink> {
+    let source = source?;
+    if source.aborted() { target.abort(None); return None; }
+    let target = target.clone();
+    let listener = source.add_abort_listener(move |_|target.abort(None));
+    Some(AbortLink { source: source.clone(), listener })
+}
+
+pub fn create_live_blocking_remote_compaction_event(
+    context: &maho_ext_api::ExtensionContext,
+    preparation: maho_ext_api::CompactionPreparation,
+    custom_instructions: String,
+    signal: maho_ext_api::AbortSignal,
+) -> maho_ext_api::SessionBeforeCompactEvent {
+    create_blocking_remote_compaction_event(context, preparation, maho_core::session_manager::create_session_id(), custom_instructions, signal)
+}

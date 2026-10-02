@@ -9,6 +9,18 @@ fn summary_joins_only_text_blocks() {
     assert!(is_assistant_message(&message));
     assert!(!is_assistant_message(&json!({"role":"assistant"})));
 }
+#[test]
+fn failure_metadata_preserves_refusal_and_truncation_boundaries() {
+    use maho_ext_compaction::deterministic_fallback::SummaryFailure;
+    let model: Model = serde_json::from_value(json!({"id":"m","name":"m","provider":"faux","api":"faux","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":10000,"maxTokens":1000})).unwrap();
+    let mut response = maho_ai::utils::lazy::setup_error_message(&model, "upstream_stream_truncated");
+    assert!(matches!(maho_ext_compaction::speculative::summary_request_failure(&response), SummaryFailure::Request { transient: true, truncated: true, refused: false }));
+    response.error_message = Some("not_upstream_stream_truncated_suffix".into());
+    assert!(matches!(maho_ext_compaction::speculative::summary_request_failure(&response), SummaryFailure::Request { truncated: false, .. }));
+    response.error_message = Some("upstream_stream_truncated 503".into());
+    response.stop_details = Some(maho_ai::types::AssistantStopDetails::Sensitive);
+    assert!(matches!(maho_ext_compaction::speculative::summary_request_failure(&response), SummaryFailure::Request { transient: false, truncated: false, refused: true }));
+}
 
 #[test]
 fn summary_reserve_and_disabled_reasoning_are_bounded() {

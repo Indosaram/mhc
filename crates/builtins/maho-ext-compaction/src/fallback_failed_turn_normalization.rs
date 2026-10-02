@@ -1,9 +1,21 @@
-use maho_ai::{types::Message, utils::drop_failed_assistant_turns::drop_failed_assistant_turns};
+use maho_ai::types::{ContentBlock, Message, StopReason};
+use std::collections::HashSet;
 
 pub fn mark_failed_turn_fragments(messages: &[Message]) -> Vec<bool> {
-    let retained = drop_failed_assistant_turns(messages);
-    let mut next = retained.iter().peekable();
-    messages.iter().map(|message| {
-        if next.peek().is_some_and(|kept| *kept == message) { next.next(); false } else { true }
+    let mut kept_ids = HashSet::new();
+    let mut failed_ids = HashSet::new();
+    for message in messages {
+        if let Message::Assistant(assistant) = message {
+            let ids = if matches!(assistant.stop_reason, StopReason::Error | StopReason::Aborted) { &mut failed_ids } else { &mut kept_ids };
+            for block in &assistant.content {
+                if let ContentBlock::ToolCall(call) = block { ids.insert(&call.id); }
+            }
+        }
+    }
+    failed_ids.retain(|id|!kept_ids.contains(id));
+    messages.iter().map(|message|match message {
+        Message::Assistant(assistant) => matches!(assistant.stop_reason, StopReason::Error | StopReason::Aborted),
+        Message::ToolResult(result) => failed_ids.contains(&result.tool_call_id),
+        _ => false,
     }).collect()
 }

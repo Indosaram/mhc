@@ -86,6 +86,17 @@ impl std::fmt::Display for SummaryGenerationError {
     }
 }
 
+pub fn summary_request_failure(response: &maho_ai::types::AssistantMessage) -> crate::deterministic_fallback::SummaryFailure {
+    let refused = matches!(response.stop_details, Some(maho_ai::types::AssistantStopDetails::Refusal { .. } | maho_ai::types::AssistantStopDetails::Sensitive));
+    let message = response.error_message.as_deref().unwrap_or_default();
+    let truncated = !refused && message.match_indices("upstream_stream_truncated").any(|(index, marker)| {
+        let word = |character: char| character.is_ascii_alphanumeric() || character == '_';
+        message[..index].chars().next_back().is_none_or(|character| !word(character))
+            && message[index + marker.len()..].chars().next().is_none_or(|character| !word(character))
+    });
+    crate::deterministic_fallback::SummaryFailure::Request { transient: truncated || maho_ai::utils::retry::is_retryable_assistant_error(response), refused, truncated }
+}
+
 pub async fn run_extension_compaction(
     snapshot: &SpeculativeCompactionSnapshot,
     api_key: Option<String>,
@@ -130,7 +141,8 @@ pub async fn run_extension_compaction(
             |error| retry_eligible && started.elapsed().as_secs_f64() * 1000. < total_ms
                 && crate::summarization_retry::allow_summarization_retry(retry_started.elapsed().as_secs_f64() * 1000., Some(attempt_ms))
                 && match error {
-                    SummaryGenerationError::Request(response) => maho_ai::utils::retry::is_retryable_assistant_error(response),
+                    SummaryGenerationError::Request(response) => !response.error_message.as_deref().is_some_and(|message|message.starts_with("senpi:no-turn-retry:"))
+                        && matches!(summary_request_failure(response), crate::deterministic_fallback::SummaryFailure::Request { transient: true, truncated: false, .. }),
                     SummaryGenerationError::Stream(summary::SummaryStreamError::Provider(error)) => maho_ai::utils::retry::is_retryable_error_message(&error.to_string()),
                     _ => false,
                 },
