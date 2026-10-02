@@ -8,4 +8,13 @@ pub struct WorkerDisplay{pub revision:f64,pub width:f64,pub rendered:bool,pub ca
 #[derive(Debug,Clone,Serialize,Deserialize,PartialEq)]
 #[serde(rename_all="camelCase")]
 pub struct WorkerSnapshot{pub state:serde_json::Value,#[serde(skip_serializing_if="Option::is_none")]pub session_path:Option<String>,pub live_session_paths:Vec<String>,pub busy:bool,#[serde(skip_serializing_if="Option::is_none")]pub handoff_busy:Option<bool>,pub streaming:bool}
+#[derive(Debug,Clone,Serialize,Deserialize,PartialEq)]
+#[serde(tag="type",rename_all="snake_case",rename_all_fields="camelCase")]
+pub enum HostToSessionWorker{
+    Prepare{request:u64,configuration:serde_json::Value,profile:serde_json::Value},
+    Commit{request:u64},
+    Bind{request:u64,session_id:String,display:WorkerDisplay,#[serde(skip_serializing_if="Option::is_none")]connection:Option<String>},
+    Command{request:u64,command:serde_json::Value,#[serde(skip_serializing_if="Option::is_none")]connection:Option<String>,display:WorkerDisplay},
+    Display{display:WorkerDisplay},CancelUi,Close,
+}
 #[cfg(test)]mod tests{use super::*;#[test]fn credit_codes_and_optional_snapshot_fields(){assert_eq!(worker_credit_code(SessionWriteGrant::Granted),1);assert_eq!(worker_credit_code(SessionWriteGrant::Conflict),2);assert_eq!(worker_credit_code(SessionWriteGrant::Limit),3);let snapshot=WorkerSnapshot{state:serde_json::json!({}),session_path:None,live_session_paths:vec![],busy:false,handoff_busy:None,streaming:false};let wire=serde_json::to_value(snapshot).unwrap();assert!(wire.get("sessionPath").is_none());assert!(wire.get("handoffBusy").is_none());assert_eq!(wire["liveSessionPaths"],serde_json::json!([]));}}
