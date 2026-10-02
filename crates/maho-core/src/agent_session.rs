@@ -693,7 +693,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
                     first_kept_entry_id: anchor.first_kept_entry_id, prefix_entry_ids: anchor.prefix_entry_ids,
                     latest_compaction_entry_id: anchor.latest_compaction_entry_id,
                 };
-                if !session.with_session_manager(|manager| crate::compaction::warm_anchor::is_warm_summary_anchor_valid(&snapshot, &manager.branch(None))) {
+                if !session.with_session_manager(|manager| crate::compaction::warm_anchor::is_warm_summary_anchor_valid(&snapshot, &manager.branch(manager.leaf_id().or(Some(""))))) {
                     return Ok(maho_ext_api::ApplyCompactionResult::Stale);
                 }
             }
@@ -987,7 +987,7 @@ impl maho_ext_api::SessionManager for SessionContextManager {
         self.session.with_session_manager(|manager| manager.entries()).into_iter().map(session_entry_from_value).collect()
     }
     fn get_branch(&self) -> Vec<maho_ext_api::SessionEntry> {
-        self.session.with_session_manager(|manager| manager.branch(None)).into_iter().map(session_entry_from_value).collect()
+        self.session.with_session_manager(|manager| manager.branch(manager.leaf_id().or(Some("")))).into_iter().map(session_entry_from_value).collect()
     }
     fn get_leaf_id(&self) -> Option<String> { self.session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)) }
     fn get_session_name(&self) -> Option<String> { self.session.session_name() }
@@ -1796,7 +1796,7 @@ impl AgentSession {
             } else { resolved.keep_recent_tokens };
             resolved.keep_recent_tokens = keep.min(((window as f64 * (1.0 - ratio - 0.05)).floor() as i64).max(1_024)).max(1);
         }
-        let entries = self.with_session_manager(|manager| manager.branch(None));
+        let entries = self.with_session_manager(|manager| manager.branch(manager.leaf_id().or(Some(""))));
         let preparation = prepare_compaction(&entries, &crate::compaction::settings::CompactionSettings {
             enabled: resolved.enabled, reserve_tokens: resolved.reserve_tokens, keep_recent_tokens: resolved.keep_recent_tokens,
             ..crate::compaction::settings::default_compaction_settings()
@@ -2061,7 +2061,7 @@ impl AgentSession {
     }
 
     fn apply_compaction_internal(&self, result: &crate::compaction::compaction::CompactionResult, from_hook: Option<bool>) -> Result<Value, String> {
-        let mut branch = self.with_session_manager(|manager| manager.branch(None));
+        let mut branch = self.with_session_manager(|manager| manager.branch(manager.leaf_id().or(Some(""))));
         if !branch.iter().any(|entry| entry.get("id").and_then(Value::as_str) == Some(result.first_kept_entry_id.as_str())) {
             return Err("Compaction first kept entry is not on the current branch".to_owned());
         }
@@ -7122,6 +7122,26 @@ mod tests {
         assert_eq!(session.messages().len(), 2);
         assert_eq!(user_message_text(&session.messages()[1]), "recent");
         assert_eq!(session.with_session_manager(|manager| manager.entries().last().expect("entry")["type"].clone()), "compaction");
+    }
+
+    #[test]
+    fn compaction_retention_uses_selected_leaf_instead_of_last_appended_branch() {
+        let session = test_session();
+        session.agent.set_model(test_model());
+        let selected = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"selected","timestamp":0})));
+        let abandoned = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"abandoned","timestamp":1})));
+        session.with_session_manager_mut(|manager| manager.set_leaf(selected["id"].as_str()));
+        let result = crate::compaction::compaction::CompactionResult { summary: "summary".to_owned(),
+            first_kept_entry_id: abandoned["id"].as_str().expect("abandoned").to_owned(), tokens_before: 100,
+            estimated_tokens_after: None, usage: None, details: None };
+        assert_eq!(session.apply_compaction(&result).expect_err("off branch"), "Compaction first kept entry is not on the current branch");
+        assert_eq!(session.with_session_manager(|manager| manager.entries()).len(), 2);
+        let context = SessionContextManager::new(&session);
+        assert_eq!(maho_ext_api::SessionManager::get_branch(&context).len(), 1);
+        session.apply_compaction(&crate::compaction::compaction::CompactionResult {
+            first_kept_entry_id: selected["id"].as_str().expect("selected").to_owned(), ..result
+        }).expect("selected branch compaction");
+        assert_eq!(user_message_text(&session.messages()[1]), "selected");
     }
 
     #[test]
