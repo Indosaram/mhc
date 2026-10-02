@@ -46,3 +46,15 @@ async fn termination_retires_process_group() {
     process.terminate("TERM", Duration::from_millis(10)).await.unwrap();
     assert!(!Path::new(&format!("/proc/{pid}")).exists());
 }
+
+#[tokio::test]
+async fn shutdown_reaps_child_even_when_close_frame_cannot_be_written() {
+    let env=std::env::vars().collect();
+    let mut process=SubprocessProcess::spawn("python3", &["-u".into(),"-c".into(),"import os,signal; os.close(0); print('{\"type\":\"ready\"}',flush=True); signal.pause()".into()],Path::new("/tmp"),&env).unwrap();
+    let pid=process.pid().unwrap();
+    assert_eq!(tokio::time::timeout(Duration::from_secs(5),process.next_message()).await.unwrap().unwrap()["type"],"ready");
+    let shutdown=process.shutdown(Some(&json!({"type":"close"}))).await;
+    process.terminate("TERM",Duration::from_millis(1500)).await.unwrap();
+    assert!(shutdown.is_ok(),"a broken stdin must not prevent shutdown retirement");
+    assert!(!Path::new(&format!("/proc/{pid}")).exists());
+}

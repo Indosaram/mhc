@@ -101,7 +101,7 @@ impl SubprocessProcess {
         Ok(())
     }
     pub async fn shutdown(&mut self, frame: Option<&Value>) -> Result<(), ProcessError> {
-        if let Some(frame) = frame { self.send(frame).await?; }
+        if let Some(frame) = frame { let _ = self.send(frame).await; }
         self.terminate("TERM", Duration::from_millis(1500)).await
     }
     async fn signal(&mut self, signal: &str) -> Result<(), ProcessError> {
