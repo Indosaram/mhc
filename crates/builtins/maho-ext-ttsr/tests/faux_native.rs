@@ -7,6 +7,20 @@ fn session(prompt:&str)->FauxSession {
         .with_native_extension(NativeExtensionFactory { path:"<ttsr>".into(),source_info:Default::default(),extension:Box::new(maho_ext_ttsr::index::TtsrExtension) })
 }
 #[tokio::test]
+async fn native_disabled_rule_flag_trims_ecmascript_bom() {
+    struct Disabled;
+    impl maho_ext_api::Extension for Disabled {
+        fn register(&self,api:&mut maho_ext_api::ExtensionApi) {
+            api.set_flag("ttsr-rules-disabled",maho_ext_api::FlagValue::String("\u{feff}fabricated-unavailable-tool-call\u{feff}".into()));
+            maho_ext_api::Extension::register(&maho_ext_ttsr::index::TtsrExtension,api);
+        }
+    }
+    let session=FauxSession::new(FauxScript { name:"disabled-rule".into(),prompt:"answer".into(),responses:Vec::new() }).with_native_extension(NativeExtensionFactory { path:"<ttsr>".into(),source_info:Default::default(),extension:Box::new(Disabled) }).with_native_responses(vec![faux_assistant_message("<unavailable-tool-call>",Default::default())]);
+    let result=tokio::time::timeout(std::time::Duration::from_secs(10),session.run_native()).await.unwrap().unwrap();
+    assert!(!result["entries"].as_array().unwrap().iter().any(|entry|entry["customType"]=="rule-activation"));
+    assert_eq!(result["messages"].as_array().unwrap().iter().find(|message|message["role"]=="assistant").unwrap()["stopReason"],"stop");
+}
+#[tokio::test]
 async fn native_status_command_requires_no_provider_turn() {
     let result=tokio::time::timeout(std::time::Duration::from_secs(10),session("/ttsr").run_native()).await.unwrap().unwrap();
     assert_eq!(result["messages"],serde_json::json!([]));

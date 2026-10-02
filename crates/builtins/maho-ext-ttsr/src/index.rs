@@ -19,7 +19,7 @@ impl State {
     fn initialize(&mut self,api:&ExtensionApi,ctx:&ExtensionContext) {
         if self.watcher.is_some() { return; }
         self.disabled=matches!(api.get_flag("ttsr-disabled"),Some(FlagValue::Boolean(true)));
-        let disabled=match api.get_flag("ttsr-rules-disabled") { Some(FlagValue::String(value))=>value.split(',').map(str::trim).filter(|name|!name.is_empty()).map(str::to_owned).collect::<Vec<_>>(),_=>vec![] };
+        let disabled=match api.get_flag("ttsr-rules-disabled") { Some(FlagValue::String(value))=>value.split(',').map(maho_ai::utils::js::trim).filter(|name|!name.is_empty()).map(str::to_owned).collect::<Vec<_>>(),_=>vec![] };
         self.repetitive_turns.configure(&disabled.iter().cloned().collect());
         let mut manager=TtsrManager::new(TtsrSettings { enabled:!self.disabled,disabled_rules:disabled.clone(),..Default::default() });
         let entries=ctx.session_manager.get_entries();
