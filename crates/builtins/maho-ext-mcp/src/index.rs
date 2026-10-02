@@ -8,12 +8,23 @@ pub fn register_mcp_lifecycle(api:&mut ExtensionApi,registry:Arc<HostMcpRegistry
         let args=crate::commands::split_command_args(raw).map_err(|error|ExtensionFailure::new(error.to_string()))?;
         let subcommand=args.first().map_or("status",String::as_str);let name=args.get(1).map_or("",String::as_str);let mut service=service.lock().await;
         let result:Result<String,String>=match subcommand {
-            "status"|"list"=>{let snapshots=service.server_snapshots().await;Ok(snapshots.iter().map(|snapshot|format!("{}: {:?}",snapshot.name,snapshot.lifecycle_state)).collect::<Vec<_>>().join("\n"))},
-            "test"=>service.connect_server(name).await.map(|()|format!("MCP test {name} ok")).map_err(|error|error.to_string()),
+            "status"|"list"=>Ok(service.status("MCP servers").await),
+            "test"=>service.test_server(name).await.map(|(elapsed,count)|format!("MCP test {name} ok ({elapsed:.0}ms): {count} tools")).map_err(|error|error.to_string()),
             "reconnect"=>service.reconnect_server(name).await.map(|()|format!("MCP reconnect {name} connected")).map_err(|error|error.to_string()),
             "auth-start"=>service.auth_start(name).await.map(|url|format!("Open this URL, approve, then run /mcp auth-complete {name} <redirect-url>:\n{url}")).map_err(|error|error.to_string()),
+            "auth"=>service.auth(name,ctx.has_ui,|url|async move {ctx.ui.notify(&format!("Open this URL to authorize {name}:\n{url}"),maho_ext_api::NotificationType::Info);Ok(())}).await.map(|url|url.map_or_else(||format!("MCP server {name} authorized"),|url|format!("Open this URL, then /mcp auth-complete {name} <redirect-url>:\n{url}"))).map_err(|error|error.to_string()),
             "auth-complete"=>service.auth_complete(name,args.get(2).map_or("",String::as_str)).await.map(|()|format!("MCP server {name} authorized")).map_err(|error|error.to_string()),
             "logout"=>service.logout(name).await.map(|()|format!("MCP server {name} logged out")).map_err(|error|error.to_string()),
+            "logs"=>{if let Some(connection)=service.connections.get(name){let entry=connection.entry.lock().await;let lines=entry.logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_ring_buffer();let lines=lines.into_iter().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>();Ok(if lines.is_empty(){format!("MCP logs for {name}: (empty)")}else{lines.join("\n")})}else{Err(format!("Unknown MCP server: {name}"))}},
+            "add"=>{
+                if name.is_empty() || args.len()<3 {Err("Usage: /mcp add <name> <command...|url>".into())}
+                else if !ctx.has_ui {Err("Cannot add MCP server without UI confirmation.".into())}
+                else if !ctx.ui.confirm("Add MCP server?",&format!("{name}: {}",args[2..].join(" ")),Default::default()).await {Ok("MCP add cancelled".into())}
+                else {let config=crate::commands::parse_server_config(&args[2..]);match crate::config_edit::add_global_mcp_server(&ctx.agent_dir,name,&config) {Err(error)=>Err(error.to_string()),Ok(_)=>{let env=std::env::vars().collect();service.attach_session(&ctx.cwd,&ctx.agent_dir,&env,ctx.is_project_trusted(),&ctx.registered_mcp_servers).await.map(|()|format!("Added MCP server {name}")).map_err(|error|error.to_string())}}}
+            },
+            "enable"|"disable"=>{
+                match crate::config_edit::set_global_mcp_server_enabled(&ctx.agent_dir,name,subcommand=="enable") {Err(error)=>Err(error.to_string()),Ok(false)=>Err(format!("MCP server {name} is not in the global config file")),Ok(true)=>{let env=std::env::vars().collect();service.attach_session(&ctx.cwd,&ctx.agent_dir,&env,ctx.is_project_trusted(),&ctx.registered_mcp_servers).await.map(|()|format!("{} MCP server {name}",if subcommand=="enable"{"Enabled"}else{"Disabled"})).map_err(|error|error.to_string())}}
+            },
             _=>Err(format!("Unknown MCP subcommand: {subcommand}")),
         };
         match result {Ok(message)=>ctx.ui.notify(&message,maho_ext_api::NotificationType::Info),Err(error)=>ctx.ui.notify(&error,maho_ext_api::NotificationType::Error)}Ok(())

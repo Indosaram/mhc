@@ -54,6 +54,17 @@ impl McpService {
         Ok(crate::auth::commands_auth::build_provider(name,config,agent_dir,self.config.as_ref().and_then(|config|config.settings.oauth_callback_url.as_deref()))?)
     }
     pub async fn auth_start(&mut self,name:&str)->Result<String,McpServiceError> {let provider=self.auth_provider(name)?;Ok(crate::auth::commands_auth::run_auth_start(name,provider,&mut self.pending_auth,&reqwest::Client::new()).await?)}
+    pub async fn auth<F,Fut>(&mut self,name:&str,has_ui:bool,on_authorization:F)->Result<Option<String>,McpServiceError>
+    where F:FnOnce(url::Url)->Fut,Fut:std::future::Future<Output=Result<(),crate::auth::oauth::OAuthRequestError>> {
+        let provider=self.auth_provider(name)?;
+        let config=self.config.as_ref().and_then(|config|config.servers.get(name)).and_then(|server|server.config.as_ref());
+        let oauth=config.and_then(|config|config.oauth.as_ref());
+        if oauth.is_some_and(|oauth|oauth.flow==Some(crate::config_schema::OAuthFlow::ClientCredentials)) {crate::auth::commands_auth::run_client_credentials_auth(&provider,&reqwest::Client::new()).await?;self.reconnect_server(name).await?;return Ok(None);}
+        if !has_ui{return Err(crate::errors::McpError::new(crate::errors::McpErrorKind::Auth,format!("MCP server {name} needs interactive OAuth. Run senpi in a terminal, then: /mcp auth-start {name} and /mcp auth-complete {name} <redirect-url>")).into());}
+        if self.config.as_ref().and_then(|config|config.settings.oauth_callback_url.as_ref()).is_some(){return self.auth_start(name).await.map(Some);}
+        let port=oauth.filter(|oauth|oauth.client_id.is_some() && oauth.client_metadata_url.is_none()).and_then(|oauth|oauth.callback_port);
+        crate::auth::commands_auth::run_loopback_auth(provider,port,&reqwest::Client::new(),on_authorization).await?;self.reconnect_server(name).await?;Ok(None)
+    }
     pub async fn auth_complete(&mut self,name:&str,redirect:&str)->Result<(),McpServiceError> {crate::auth::commands_auth::run_auth_complete(name,redirect,&mut self.pending_auth,&reqwest::Client::new()).await?;self.reconnect_server(name).await}
     pub async fn logout(&mut self,name:&str)->Result<(),McpServiceError> {let provider=self.auth_provider(name)?;crate::auth::commands_auth::run_logout(name,&provider,&mut self.pending_auth)?;if let Some(connection)=self.connections.get(name){let entry=connection.entry.lock().await;entry.connection.mark_failure(crate::connection::ServerConnectionState::NeedsAuth,Some(crate::errors::McpError::new(crate::errors::McpErrorKind::Auth,"MCP credentials cleared")));}Ok(())}
     pub async fn wait_for_deferred_attach(&self,timeout:std::time::Duration)->crate::startup_race::McpStartupRaceResult {self.deferred.wait(timeout).await}
@@ -64,6 +75,23 @@ impl McpService {
             snapshots.push(crate::service_snapshot::build_mcp_server_snapshot(name,Some(server),entry.as_ref().map(|entry|entry.connection.as_ref()),entry.as_deref(),chrono::Utc::now().timestamp_millis() as f64));
         }
         snapshots
+    }
+    pub async fn status(&self,title:&str)->String {
+        let mut rows=Vec::new();
+        for snapshot in self.server_snapshots().await {
+            let entry=if let Some(connection)=self.connections.get(&snapshot.name){Some(connection.entry.lock().await)}else{None};
+            let exposure=crate::service_exposure::get_mcp_service_exposure_status(&snapshot.name,self.config.as_ref(),entry.as_deref()).await;
+            rows.push(crate::status::McpStatusRow {snapshot,exposure});
+        }
+        crate::status::format_mcp_status(title,&rows)
+    }
+    pub async fn test_server(&self,name:&str)->Result<(f64,usize),McpServiceError> {
+        let started=tokio::time::Instant::now();self.connect_server(name).await?;
+        let connection=self.connections.get(name).ok_or_else(||crate::errors::McpError::new(crate::errors::McpErrorKind::Connect,format!("Unknown MCP server: {name}")))?;
+        let mut entry=connection.entry.lock().await;let result=entry.connection.client()?.request("tools/list",serde_json::json!({}),std::time::Duration::from_secs(2)).await;
+        let elapsed=started.elapsed().as_secs_f64()*1000.0;entry.counters.call_count+=1;entry.counters.total_latency_ms+=elapsed;
+        if result.is_err(){entry.counters.error_count+=1;}
+        Ok((elapsed,result?.get("tools").and_then(serde_json::Value::as_array).map_or(0,Vec::len)))
     }
     pub async fn dispose(&mut self)->Result<(),McpServiceError> {
         let connections=std::mem::take(&mut self.connections);

@@ -43,5 +43,7 @@ async fn real_idp_authorization_persists_tokens_and_rejects_replayed_state() {
     let mut pending=std::collections::BTreeMap::new();let authorization=maho_ext_mcp::auth::commands_auth::run_auth_start("paste",paste,&mut pending,&client).await.unwrap();assert!(pending.contains_key("paste"));
     let redirect=client.get(authorization).send().await.unwrap().headers().get("location").unwrap().to_str().unwrap().to_owned();
     maho_ext_mcp::auth::commands_auth::run_auth_complete("paste",&redirect,&mut pending,&client).await.unwrap();assert!(pending.is_empty());assert!(maho_ext_mcp::auth::commands_auth::run_auth_complete("paste",&redirect,&mut pending,&client).await.is_err());
+    let loopback_root=tempfile::tempdir().unwrap();let loopback_store=McpTokenStore::new(loopback_root.path(),"loopback",ready["mcpUrl"].as_str().unwrap());let loopback=McpOAuthProvider::new(loopback_store.clone());
+    maho_ext_mcp::auth::commands_auth::run_loopback_auth(loopback,None,&client,|authorization|async {let redirect=client.get(authorization).send().await?.headers().get("location").unwrap().to_str().unwrap().to_owned();client.get(redirect).send().await?.error_for_status()?;Ok(())}).await.unwrap();assert!(loopback_store.read().unwrap().unwrap().access_token.unwrap().starts_with("SENTINEL_AT_"));
     child.kill().await.unwrap();child.wait().await.unwrap();
 }

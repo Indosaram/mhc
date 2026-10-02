@@ -8,6 +8,7 @@ async fn repeated_attach_retains_connections_and_disabled_config_detaches_them()
     let declaration=maho_ext_api::RegisteredMcpServerDeclaration {name:"fixture".into(),config:maho_ext_api::McpServerDeclaration {transport:Some(maho_ext_api::McpTransport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into()]),..Default::default()},extension_path:"fixture-extension".into(),registration_cwd:cwd.path().into()};
     service.attach_session(cwd.path(),root.path(),&BTreeMap::new(),true,std::slice::from_ref(&declaration)).await.unwrap();assert_eq!(registry.size(),1);
     let physical=service.connections["fixture"].entry.lock().await.connection.clone();service.connect_server("fixture").await.unwrap();assert!(!matches!(service.server_snapshots().await[0].lifecycle_state,McpLifecycleState::Other(McpUnspawnedState::NotSpawned)));
+    let (_,tools)=service.test_server("fixture").await.unwrap();assert!(tools>0);assert_eq!(service.server_snapshots().await[0].counters.call_count,1);
     service.attach_session(cwd.path(),root.path(),&BTreeMap::new(),true,std::slice::from_ref(&declaration)).await.unwrap();assert!(Arc::ptr_eq(&physical,&service.connections["fixture"].entry.lock().await.connection));
     let mut disabled=declaration;disabled.config.enabled=Some(false);service.attach_session(cwd.path(),root.path(),&BTreeMap::new(),true,&[disabled]).await.unwrap();assert_eq!(registry.size(),0);assert!(service.connections.is_empty());
     service.dispose().await.unwrap();
