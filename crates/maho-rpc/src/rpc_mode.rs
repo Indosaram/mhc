@@ -15,8 +15,20 @@ pub async fn run_command_stream(session:&maho_core::agent_session::AgentSession,
     use tokio::io::{AsyncReadExt,AsyncWriteExt};
     let mut reader=crate::jsonl::JsonlLineReader::new(crate::jsonl::MAX_RPC_LINE_CHARACTERS).expect("positive line limit");
     let mut bytes=[0;8192];
+    let(events_tx,mut events)=tokio::sync::mpsc::unbounded_channel();
+    let _subscription=session.subscribe(std::sync::Arc::new(move|event|{let _=events_tx.send(crate::session_binding::session_event_record(event));}));
     loop{
-        let count=input.read(&mut bytes).await?;
+        let count=tokio::select!{
+            event=events.recv()=>{
+                if let Some(event)=event{
+                    let event=event.map_err(std::io::Error::other)?;
+                    let wire=crate::json_event::to_json_event(&event).map_err(std::io::Error::other)?;
+                    output.write_all(crate::jsonl::serialize_json_line(&wire)?.as_bytes()).await?;
+                }
+                continue;
+            },
+            count=input.read(&mut bytes)=>count?,
+        };
         let records=if count==0{reader.finish()}else{reader.push(&bytes[..count])};
         for record in records{
             let crate::jsonl::LineRecord::Line(line)=record else{
@@ -26,7 +38,17 @@ pub async fn run_command_stream(session:&maho_core::agent_session::AgentSession,
             };
             let response=crate::connection_handler::handle_input_line(session,&line).await?;
             let Some(response)=response else{return Err(std::io::Error::new(std::io::ErrorKind::Unsupported,"RPC command requires unfinished runtime binding"));};
+            while let Ok(event)=events.try_recv(){
+                let event=event.map_err(std::io::Error::other)?;
+                let wire=crate::json_event::to_json_event(&event).map_err(std::io::Error::other)?;
+                output.write_all(crate::jsonl::serialize_json_line(&wire)?.as_bytes()).await?;
+            }
             output.write_all(response.as_bytes()).await?;
+        }
+        while let Ok(event)=events.try_recv(){
+            let event=event.map_err(std::io::Error::other)?;
+            let wire=crate::json_event::to_json_event(&event).map_err(std::io::Error::other)?;
+            output.write_all(crate::jsonl::serialize_json_line(&wire)?.as_bytes()).await?;
         }
         if count==0{output.flush().await?;return Ok(());}
     }

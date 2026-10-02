@@ -1,8 +1,94 @@
 use maho_core::agent_session::{AgentSession,QueuedInputOptions};
 use crate::rpc_types::{RpcCommand,RpcCommandBody,RpcResponse,RpcResponseResult,ResponseRecordType};
+pub fn json_parse_error_message(input:&str)->String{
+    struct Parser<'a>{bytes:&'a [u8],at:usize}
+    impl Parser<'_>{
+        fn space(&mut self){while self.bytes.get(self.at).is_some_and(|byte|matches!(byte,b' '|b'\n'|b'\r'|b'\t')){self.at+=1;}}
+        fn string(&mut self)->Result<(),String>{
+            self.at+=1;
+            while let Some(&byte)=self.bytes.get(self.at){
+                self.at+=1;
+                match byte{
+                    b'"'=>return Ok(()),
+                    0..=31=>return Err("Unterminated string".into()),
+                    b'\\'=>{
+                        let Some(&escape)=self.bytes.get(self.at)else{return Err("Unterminated string".into());};self.at+=1;
+                        match escape{
+                            b'"'|b'\\'|b'/'|b'b'|b'f'|b'n'|b'r'|b't'=>{},
+                            b'u'=>{
+                                let digits=&self.bytes[self.at..self.bytes.len().min(self.at+4)];
+                                if digits.len()<4||digits.contains(&b'"'){return Err("\\u must be followed by 4 hex digits".into());}
+                                if !digits.iter().all(u8::is_ascii_hexdigit){return Err(format!("\"\\u{}\" is not a valid unicode escape",String::from_utf8_lossy(digits)));}self.at+=4;
+                            },
+                            _=>return Err(format!("Invalid escape character {}",String::from_utf8_lossy(&self.bytes[self.at-1..]).chars().next().unwrap_or_default())),
+                        }
+                    },_=>{}
+                }
+            }
+            Err("Unterminated string".into())
+        }
+        fn value(&mut self)->Result<(),String>{
+            self.space();let Some(&byte)=self.bytes.get(self.at)else{return Err("Unexpected EOF".into());};
+            match byte{
+                b'"'=>self.string(),
+                b'{'=>{
+                    self.at+=1;self.space();if self.bytes.get(self.at)==Some(&b'}'){self.at+=1;return Ok(());}
+                    if self.bytes.get(self.at)!=Some(&b'"'){return Err("Expected '}'".into());}
+                    loop{
+                        self.string()?;self.space();if self.bytes.get(self.at)!=Some(&b':'){return Err("Expected ':' before value in object property definition".into());}self.at+=1;self.value()?;self.space();
+                        match self.bytes.get(self.at){Some(b'}')=>{self.at+=1;return Ok(());},Some(b',')=>{self.at+=1;self.space();if self.bytes.get(self.at)!=Some(&b'"'){return Err("Property name must be a string literal".into());}},_=>return Err("Expected '}'".into())}
+                    }
+                },
+                b'['=>{
+                    self.at+=1;self.space();if self.bytes.get(self.at)==Some(&b']'){self.at+=1;return Ok(());}
+                    loop{self.value()?;self.space();match self.bytes.get(self.at){Some(b']')=>{self.at+=1;return Ok(());},Some(b',')=>{self.at+=1;self.space();if self.bytes.get(self.at)==Some(&b']'){return Err("Unexpected comma at the end of array expression".into());}},_=>return Err("Expected ']'".into())}}
+                },
+                b'-'|b'0'..=b'9'=>{
+                    if byte==b'-'{self.at+=1;}
+                    match self.bytes.get(self.at){Some(b'0')=>self.at+=1,Some(b'1'..=b'9')=>{while self.bytes.get(self.at).is_some_and(u8::is_ascii_digit){self.at+=1;}},_=>return Err("Invalid number".into())}
+                    if self.bytes.get(self.at)==Some(&b'.'){self.at+=1;if !self.bytes.get(self.at).is_some_and(u8::is_ascii_digit){return Err("Invalid digits after decimal point".into());}while self.bytes.get(self.at).is_some_and(u8::is_ascii_digit){self.at+=1;}}
+                    if self.bytes.get(self.at).is_some_and(|byte|matches!(byte,b'e'|b'E')){
+                        self.at+=1;
+                        if self.bytes.get(self.at).is_some_and(|byte|matches!(byte,b'+'|b'-')){self.at+=1;}
+                        if !self.bytes.get(self.at).is_some_and(u8::is_ascii_digit){return Err("Unable to parse JSON string".into());}
+                        while self.bytes.get(self.at).is_some_and(u8::is_ascii_digit){self.at+=1;}
+                    }
+                    Ok(())
+                },
+                byte if byte.is_ascii_alphabetic()=>{
+                    for literal in [b"true".as_slice(),b"false",b"null"]{if self.bytes[self.at..].starts_with(literal){self.at+=literal.len();return Ok(());}}
+                    let start=self.at;while self.bytes.get(self.at).is_some_and(|byte|byte.is_ascii_alphanumeric()||*byte==b'_'){self.at+=1;}
+                    Err(format!("Unexpected identifier \"{}\"",String::from_utf8_lossy(&self.bytes[start..self.at])))
+                },b'}'|b']'|b','|b':'=>Err(format!("Unexpected token '{}'",char::from(byte))),_=>Err(format!("Unrecognized token '{}'",String::from_utf8_lossy(&self.bytes[self.at..]).chars().next().unwrap_or_default()))
+            }
+        }
+    }
+    let mut parser=Parser{bytes:input.as_bytes(),at:0};
+    let result=parser.value().and_then(|()|{parser.space();if parser.at==parser.bytes.len(){Ok(())}else{Err("Unable to parse JSON string".into())}});
+    format!("JSON Parse error: {}",result.err().unwrap_or_else(||"Unable to parse JSON string".into()))
+}
+pub fn json_parse_error_code_units(input:&str)->Vec<u16>{
+    let message=json_parse_error_message(input);
+    let mut units=message.encode_utf16().collect::<Vec<_>>();
+    // JavaScriptCore names an unexpected token by its first UTF-16 code unit,
+    // including a lone high surrogate for an astral character.
+    if (message.starts_with("JSON Parse error: Unrecognized token '")||message.starts_with("JSON Parse error: Invalid escape character "))&&let Some(index)=units.iter().position(|unit|(0xd800..=0xdbff).contains(unit))&&units.get(index+1).is_some_and(|unit|(0xdc00..=0xdfff).contains(unit)){
+        units.remove(index+1);
+    }
+    units
+}
+pub fn json_parse_error_response(input:&str)->String{
+    use std::fmt::Write;
+    let mut error=String::from("Failed to parse command: ").encode_utf16().collect::<Vec<_>>();
+    error.extend(json_parse_error_code_units(input));
+    let mut response=String::from("{\"type\":\"response\",\"command\":\"parse\",\"success\":false,\"error\":\"");
+    for unit in error{let _=write!(response,"\\u{unit:04x}");}
+    response.push_str("\"}\n");response
+}
 pub async fn handle_input_line(session:&AgentSession,line:&str)->Result<Option<String>,serde_json::Error>{
     let parsed=serde_json::from_str::<serde_json::Value>(line);
-    let error=match &parsed{Err(error)=>Some(format!("Failed to parse command: {error}")),Ok(value)=>crate::rpc_input_validation::rpc_command_shape_error(value).map(str::to_owned)};
+    if parsed.is_err(){return Ok(Some(json_parse_error_response(line)));}
+    let error=match &parsed{Err(_)=>None,Ok(value)=>crate::rpc_input_validation::rpc_command_shape_error(value).map(str::to_owned)};
     if let Some(error)=error{return crate::jsonl::serialize_json_line(&RpcResponse{id:None,record_type:ResponseRecordType::Response,command:"parse".into(),session_id:None,result:RpcResponseResult::Error{error,error_code:None,error_data:None}}).map(Some);}
     let value=parsed?;
     let error=crate::rpc_input_validation::rpc_command_payload_error(&value).map(str::to_owned).or_else(||crate::rpc_input_validation::rpc_message_length_error(&value));
@@ -16,6 +102,7 @@ pub async fn handle_input_line(session:&AgentSession,line:&str)->Result<Option<S
 }
 pub async fn handle_session_command(session:&AgentSession,command:&RpcCommand)->Option<RpcResponse>{
     let (kind,result)=match &command.body{
+        RpcCommandBody::Reload=>("reload",session.reload().await.map(|result|Some(serde_json::json!({"cancelled":!result})))),
         RpcCommandBody::SetFavoriteModels{models}|RpcCommandBody::SetScopedModels{models}=>{
             #[derive(serde::Deserialize)]#[serde(rename_all="camelCase")]struct WireModel{model:maho_ai::types::Model,thinking_level:Option<maho_ai::types::ThinkingLevel>,thinking_selection:Option<maho_ai::types::ThinkingSelection>,service_tier:Option<String>}
             let parsed=models.iter().cloned().map(|value|{

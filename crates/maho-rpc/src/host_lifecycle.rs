@@ -7,6 +7,78 @@ pub const HANDOFF_GRACE_MS_ENV:&str="SENPI_RPC_HANDOFF_GRACE_MS";
 pub const DEFAULT_HANDOFF_GRACE_MS:f64=600000.;
 pub use crate::host_launch_spec::HostLifecyclePolicyInput;
 pub const INTERNAL_SUPERVISOR_FLAG:&str="--internal-rpc-host-supervisor";
+#[derive(Clone,Copy,Default)]
+pub struct HostActivity{pub connections:u64,pub active_turns:u64}
+#[derive(Default)]pub struct ObservedHostTurns{busy:HashMap<String,u64>}
+impl ObservedHostTurns{
+    pub async fn read_events(&mut self,mut input:impl tokio::io::AsyncRead+Unpin,mut changed:impl FnMut(&Self))->std::io::Result<()>{
+        use tokio::io::AsyncReadExt;
+        let mut lines=crate::jsonl::JsonlLineReader::new(crate::jsonl::MAX_RPC_LINE_CHARACTERS).expect("positive line limit");
+        let mut buffer=[0;8192];
+        loop{
+            let size=input.read(&mut buffer).await?;
+            let records=if size==0{lines.finish()}else{lines.push(&buffer[..size])};
+            for record in records{if let crate::jsonl::LineRecord::Line(line)=record&&self.observe(&line){changed(self);}}
+            if size==0{return Ok(());}
+        }
+    }
+    pub fn observe(&mut self,line:&str)->bool{
+        let Ok(event)=serde_json::from_str::<serde_json::Value>(line)else{return false;};
+        let Some(session)=event["sessionId"].as_str()else{return false;};
+        match event["type"].as_str(){
+            Some("agent_start")=>{*self.busy.entry(session.into()).or_default()+=1;true},
+            Some("agent_settled")=>{let count=self.busy.entry(session.into()).or_insert(1);*count=count.saturating_sub(1);true},
+            _=>false,
+        }
+    }
+    pub fn activity(&self,connections:u64,observer:&crate::observer_link::ObserverLink,now:f64,unknown_grace_ms:f64)->HostActivity{
+        HostActivity{connections,active_turns:crate::observer_link::active_turns_for_idle_decision(&crate::observer_link::UnknownActivityInput{healthy:observer.healthy(),unhealthy_since:observer.unhealthy_since(),now,unknown_grace_ms,observed_busy:self.busy.values().filter(|count|**count>0).count() as u64})}
+    }
+}
+pub async fn wait_for_idle_exit(idle_exit_ms:f64,mut activity:tokio::sync::watch::Receiver<HostActivity>)->Result<(),tokio::sync::watch::error::RecvError>{
+    let mut decider=IdleExitDecider::new(idle_exit_ms);
+    let started=tokio::time::Instant::now();
+    let period=std::time::Duration::from_secs_f64((idle_exit_ms/4.).clamp(20.,1000.)/1000.);
+    let mut ticker=tokio::time::interval(period);ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop{
+        let state=*activity.borrow_and_update();
+        if decider.update(state.connections,state.active_turns,started.elapsed().as_secs_f64()*1000.)==IdleExitDecision::Exit{return Ok(());}
+        tokio::select!{
+            ()=async{ticker.tick().await;}=>{},
+            changed=activity.changed()=>changed?,
+        }
+    }
+}
+pub async fn proxy_connection(mut client:tokio::net::UnixStream,internal_socket:&std::path::Path,internal_secret:Option<&[u8]>)->std::io::Result<()> {
+    let mut internal=tokio::net::UnixStream::connect(internal_socket).await?;
+    if let Some(secret)=internal_secret{crate::socket_transport::send_socket_handshake(&mut internal,secret).await?;}
+    tokio::io::copy_bidirectional(&mut client,&mut internal).await?;
+    Ok(())
+}
+pub async fn run_socket_proxy(listener:tokio::net::UnixListener,internal_socket:std::path::PathBuf,public_secret:Option<Vec<u8>>,internal_secret:Option<Vec<u8>>,mut draining:tokio::sync::watch::Receiver<bool>,connections:tokio::sync::watch::Sender<usize>)->std::io::Result<()> {
+    let mut clients=tokio::task::JoinSet::new();
+    loop{
+        if *draining.borrow(){break;}
+        tokio::select!{
+            biased;
+            changed=draining.changed()=>{if changed.is_err()||*draining.borrow(){break;}},
+            result=clients.join_next(),if !clients.is_empty()=>{let _=result;connections.send_replace(clients.len());},
+            accepted=listener.accept()=>{
+                let(mut client,_)=accepted?;
+                if *draining.borrow(){break;}
+                let path=internal_socket.clone();let public=public_secret.clone();let internal=internal_secret.clone();
+                clients.spawn(async move{
+                    if let Some(secret)=public{crate::socket_transport::authenticate_socket(&mut client,&secret).await?;}
+                    proxy_connection(client,&path,internal.as_deref()).await
+                });
+                connections.send_replace(clients.len());
+            }
+        }
+    }
+    drop(listener);
+    while clients.join_next().await.is_some(){connections.send_replace(clients.len());}
+    Ok(())
+}
 #[derive(Debug,PartialEq,Eq)]
 pub struct SupervisorLaunch{pub socket:String,pub host_args:Vec<String>,pub child_command:Option<String>,pub child_args:Option<Vec<String>>,pub agent_dir:Option<String>,pub bind_socket:Option<String>,pub replace_identity:Option<crate::socket_ownership::SocketFileIdentity>}
 pub fn find_internal_supervisor_args(argv:&[String])->Option<&[String]>{

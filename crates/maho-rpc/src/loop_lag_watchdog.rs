@@ -10,6 +10,23 @@ pub struct LoopLagWatchdog{warn_ms:f64,error_ms:f64,expected_tick_at:Option<f64>
 #[derive(Debug,Default)]pub struct LagSample{pub record:Option<serde_json::Value>,pub log:Option<String>}
 fn describe(attribution:Option<&SessionAttribution>)->String{let Some(attribution)=attribution.filter(|a|a.session_id.is_some()||a.tool.is_some())else{return "no attributed session".into();};let tool=attribution.tool.as_deref().filter(|tool|!tool.is_empty()).map(|tool|format!(" tool={tool}")).unwrap_or_default();format!("sessionId={}{tool}",attribution.session_id.as_deref().unwrap_or("unknown"))}
 impl LoopLagWatchdog{
+    pub async fn run_shared(&mut self,registry:&SessionActivityRegistry,blocked:&std::sync::Mutex<LoopBlockedTime>,mut now:impl FnMut()->f64,mut publish:impl FnMut(LagSample),mut stopped:tokio::sync::watch::Receiver<bool>){
+        self.start(now(),registry);
+        let period=std::time::Duration::from_millis(LOOP_LAG_TICK_MS as u64);
+        let mut timer=tokio::time::interval_at(tokio::time::Instant::now()+period,period);
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop{
+            if *stopped.borrow(){break;}
+            tokio::select!{
+                changed=stopped.changed()=>{if changed.is_err(){break;}},
+                _=timer.tick()=>{
+                    let sample=self.tick(now(),registry,&mut blocked.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+                    publish(sample);
+                }
+            }
+        }
+        self.stop();
+    }
     pub async fn run(&mut self,registry:&SessionActivityRegistry,blocked:&mut LoopBlockedTime,mut now:impl FnMut()->f64,mut publish:impl FnMut(LagSample)){
         self.start(now(),registry);
         loop{

@@ -1,5 +1,13 @@
 use crate::session_registry::{RpcSessionState,SessionCloseState,RpcSessionRegistryError};
 pub struct CloseClaim{pub finalizer:Option<bool>,pub mark_detached:Option<String>}
+pub fn admit_session_close(writer:&crate::session_event_writer::SessionWriterActor,session_id:&str,response:&serde_json::Value,entry:&mut SessionCloseState,detach:bool)->Result<Option<(u64,CloseClaim)>,String>{
+    let terminal=entry.state==RpcSessionState::Open&&entry.attachments<=1&&!(detach&&entry.retain_on_disconnect);
+    let Some(id)=writer.reserve_close_response(session_id,response,terminal)?else{return Ok(None);};
+    match begin_session_close(entry,detach){
+        Ok(claim)=>Ok(Some((id,claim))),
+        Err(error)=>{writer.release_close_response(id);Err(error.to_string())},
+    }
+}
 pub async fn dispose_runtime(runtime:&maho_core::agent_session_runtime::AgentSessionRuntime,scope:&maho_ai::node::provider_scope::ProviderScope)->Result<(),maho_ai::node::provider_scope::ProviderScopeError>{
     maho_ai::node::provider_scope::run_with_provider_scope_async(scope,async{
         runtime.session().abort().await;

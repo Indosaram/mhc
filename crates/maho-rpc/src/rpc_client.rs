@@ -116,4 +116,18 @@ impl RpcClientFrames{
     #[test]fn ui_reply_keeps_host_id_and_session_route_is_not_overwritten(){let mut client=RpcClientFrames{session_id:Some("s".into()),..Default::default()};let reply=client.command(json!({"type":"extension_ui_response","id":"ui"}),true,false);assert_eq!(reply["id"],"ui");assert_eq!(reply["sessionId"],"s");let command=client.command(json!({"type":"abort","sessionId":"other"}),true,true);assert_eq!(command["id"],"req_1");assert_eq!(command["sessionId"],"other");assert!(matches!(client.handle_line(r#"{"type":"response","id":"req_1","success":true}"#),ClientFrame::Response(_)));}
     #[test]fn startup_events_replay_only_for_selected_lease(){let mut client=RpcClientFrames{pending_open_session:true,..Default::default()};client.handle_line(r#"{"type":"agent_start","sessionId":"s"}"#);client.handle_line(r#"{"type":"agent_start","sessionId":"other"}"#);client.session_id=Some("s".into());assert_eq!(client.flush_pending_session_events().len(),1);assert!(client.flush_pending_session_events().is_empty());}
     #[test]fn retention_drops_oldest_at_record_budget(){let mut client=RpcClientFrames{pending_open_session:true,..Default::default()};for index in 0..513{client.handle_line(&json!({"sessionId":"s","index":index}).to_string());}client.session_id=Some("s".into());let events=client.flush_pending_session_events();assert_eq!(events.len(),512);assert_eq!(events[0]["index"],1);}
+    #[test]fn startup_retention_counts_utf8_bytes_and_releases_debt_after_replay(){
+        let mut client=RpcClientFrames{pending_open_session:true,..Default::default()};
+        let payload="\u{1f600}".repeat(MAX_PENDING_SESSION_EVENT_BYTES/8);
+        let first=json!({"sessionId":"s","index":1,"payload":payload}).to_string();
+        let second=json!({"sessionId":"s","index":2,"payload":payload}).to_string();
+        assert!(first.len()+second.len()>MAX_PENDING_SESSION_EVENT_BYTES);
+        assert!(first.chars().count()+second.chars().count()<MAX_PENDING_SESSION_EVENT_BYTES);
+        assert_eq!(client.handle_line(&first),ClientFrame::Ignored);
+        assert_eq!(client.handle_line(&second),ClientFrame::Ignored);
+        client.session_id=Some("s".into());
+        let events=client.flush_pending_session_events();
+        assert_eq!(events.len(),1);assert_eq!(events[0]["index"],2);
+        assert_eq!(client.event_bytes,0);assert!(client.events.is_empty());
+    }
 }

@@ -4,6 +4,13 @@ pub struct IdleSweep{pub evict:Vec<String>,pub exit:bool}
 impl ConnectionAttachments{
     pub fn attach(&mut self,owner:&str,session:&str){*self.owned.entry(owner.into()).or_default().entry(session.into()).or_default()+=1;}
     pub fn owns(&self,owner:Option<&str>,session:&str)->bool{owner.is_none_or(|owner|self.owned.get(owner).is_some_and(|sessions|sessions.contains_key(session)))}
+    pub fn admit_close(&mut self,route:(Option<&str>,&str),response:&serde_json::Value,entry:&mut crate::session_registry::SessionCloseState,detach:bool,writer:&crate::session_event_writer::SessionWriterActor)->Result<Option<(u64,crate::session_teardown::CloseClaim)>,String>{
+        let(owner,session)=route;
+        if !self.owns(owner,session){return Err("unknown_session".into());}
+        let claim=crate::session_teardown::admit_session_close(writer,session,response,entry,detach)?;
+        if claim.is_some()&&let Some(owner)=owner{self.release(owner,session);}
+        Ok(claim)
+    }
     pub fn release(&mut self,owner:&str,session:&str){
         let Some(sessions)=self.owned.get_mut(owner)else{return;};
         let Some(count)=sessions.get_mut(session)else{return;};
@@ -22,6 +29,23 @@ impl SharedSessionWidths{
 pub struct SessionIdlePolicy{pub idle_eviction_ms:f64,pub empty_exit_ms:f64,pub memory_pressure:bool,empty_since:Option<f64>,stopped:bool}
 impl SessionIdlePolicy{
     pub fn new(idle_eviction_ms:f64,empty_exit_ms:f64)->Self{Self{idle_eviction_ms,empty_exit_ms,memory_pressure:false,empty_since:None,stopped:false}}
+    pub async fn run(&mut self,mut sample:impl FnMut()->(f64,Vec<IdleSession>,usize,bool),mut publish:impl FnMut(IdleSweep,Vec<IdleSession>),mut stopped:tokio::sync::watch::Receiver<bool>){
+        if !self.idle_eviction_ms.is_finite()&&!self.empty_exit_ms.is_finite(){let _=stopped.wait_for(|stop|*stop).await;return;}
+        let period=std::time::Duration::from_secs_f64((self.idle_eviction_ms.min(self.empty_exit_ms)/4.).clamp(20.,5000.)/1000.);
+        let mut timer=tokio::time::interval_at(tokio::time::Instant::now()+period,period);
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop{
+            if *stopped.borrow(){return;}
+            tokio::select!{
+                changed=stopped.changed()=>{if changed.is_err(){return;}},
+                _=timer.tick()=>{
+                    let(now,mut sessions,size,can_exit)=sample();
+                    let sweep=self.sweep(now,&mut sessions,size,can_exit);let exit=sweep.exit;
+                    publish(sweep,sessions);if exit{return;}
+                }
+            }
+        }
+    }
     pub fn sweep(&mut self,now:f64,sessions:&mut[IdleSession],registry_size:usize,can_exit:bool)->IdleSweep{
         if self.stopped{return IdleSweep{evict:vec![],exit:false};}
         let mut evict=vec![];let eviction=if self.memory_pressure{self.idle_eviction_ms/2.}else{self.idle_eviction_ms};
