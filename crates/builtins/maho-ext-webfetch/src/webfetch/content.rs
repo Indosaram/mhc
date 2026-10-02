@@ -248,10 +248,14 @@ pub fn reader_clean_styles(node:&dom_query::NodeRef<'_>) {
     if matches!(node.node_name().as_deref(),Some("table"|"th"|"td"|"hr"|"pre")) {node.remove_attr("width");node.remove_attr("height");}
     for child in node.element_children() {reader_clean_styles(&child);}
 }
+fn copy_reader_subtree<'a>(source:dom_query::NodeRef<'_>,target:&'a dom_query::Tree)->dom_query::NodeRef<'a> {
+    let data=source.tree.query_node(&source.id,|node|node.data.clone()).expect("existing source node");let id=target.create_node(data);let node=target.get_unchecked(&id);
+    for child in source.children() {node.append_child(&copy_reader_subtree(child,target));}node
+}
 pub fn reader_grab_article<'a>(document:&'a dom_query::Document,title:&str,metadata_byline:Option<&str>)->Option<dom_query::NodeRef<'a>> {
-    let body=document.select("body").nodes().first().copied()?;let cache=body.inner_html();let mut attempts=Vec::new();let mut byline=metadata_byline.map(str::to_owned);
+    let body=document.select("body").nodes().first().copied()?;let cache=document.tree.clone();let mut attempts=Vec::new();let mut byline=metadata_byline.map(str::to_owned);
     for (strip,weight,clean) in [(true,true,true),(false,true,true),(false,false,true),(false,false,false)] {
-        body.set_html(cache.as_ref());let root=document.select("html").nodes()[0];let (elements,found_byline)=reader_prepare_nodes(root,title,strip,byline.as_deref());if found_byline.is_some() {byline=found_byline;}let scores=score_reader_candidates(&elements,weight);let ranked=reader_top_candidates(&scores);
+        body.remove_children();for child in cache.get_unchecked(&body.id).children() {body.append_child(&copy_reader_subtree(child,&document.tree));}let root=document.select("html").nodes()[0];let (elements,found_byline)=reader_prepare_nodes(root,title,strip,byline.as_deref());if found_byline.is_some() {byline=found_byline;}let scores=score_reader_candidates(&elements,weight);let ranked=reader_top_candidates(&scores);
         let candidate=ranked.first().map(|(id,_)|root.tree.get_unchecked(id));let synthetic=candidate.is_none_or(|node|node.node_name().as_deref()==Some("body"));
         let top=if synthetic {
             let children=body.children();body.append_html("<div></div>");let container=body.children().last().copied().expect("inserted candidate");for child in children {container.append_child(&child);}container
@@ -339,7 +343,7 @@ pub fn reader_unwrap_noscript_images(document:&dom_query::Document) {
         if !single_image(*noscript) {continue;}
         let Some(previous)=noscript.prev_element_sibling().filter(|node|single_image(*node)) else {continue;};
         let old=if previous.node_name().as_deref()==Some("img") {previous} else {dom_query::Selection::from(previous).select("img").nodes()[0]};
-        noscript.before_html("<div></div>");let temporary=noscript.prev_sibling().expect("inserted container");temporary.set_html(noscript.inner_html().as_ref());let image=dom_query::Selection::from(temporary).select("img").nodes()[0];
+        noscript.before_html("<div></div>");let temporary=noscript.prev_sibling().expect("inserted container");for child in noscript.children() {temporary.append_child(&copy_reader_subtree(child,&document.tree));}let image=dom_query::Selection::from(temporary).select("img").nodes()[0];
         for attr in old.attrs() {
             let name=attr.name.local.as_ref();if attr.value.is_empty()||(!matches!(name,"src"|"srcset")&&!IMAGE.is_match(&attr.value)) {continue;}
             if image.attr(name).is_some_and(|value|value==attr.value) {continue;}

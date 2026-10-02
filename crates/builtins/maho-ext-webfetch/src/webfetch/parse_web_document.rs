@@ -1,8 +1,58 @@
 use url::Url;
+use std::cell::RefCell;
+use html5ever::tokenizer::{Token,TokenSink,TokenSinkResult,Tokenizer,TokenizerOpts,TagKind,BufferQueue,states::RawKind};
+use html5ever::{QualName,ns};
+struct InertParser {document:dom_query::Document,stack:RefCell<Vec<dom_query::NodeId>>}
+fn is_void(name:&str)->bool {matches!(name,"area"|"base"|"basefont"|"br"|"col"|"command"|"embed"|"frame"|"hr"|"img"|"input"|"isindex"|"keygen"|"link"|"meta"|"param"|"source"|"track"|"wbr")}
+fn implies_close(open:&str,current:&str)->bool {
+    match open {
+        "tr"=>matches!(current,"tr"|"th"|"td"),"th"=>current=="th","td"=>matches!(current,"thead"|"th"|"td"),"body"=>matches!(current,"head"|"link"|"script"),"li"=>current=="li",
+        "select"|"input"|"output"|"button"|"datalist"|"textarea"=>matches!(current,"input"|"option"|"optgroup"|"select"|"button"|"datalist"|"textarea"),
+        "option"=>current=="option","optgroup"=>matches!(current,"optgroup"|"option"),"dd"|"dt"=>matches!(current,"dd"|"dt"),"rt"|"rp"=>matches!(current,"rt"|"rp"),"tbody"|"tfoot"=>matches!(current,"thead"|"tbody"),
+        "p"|"h1"|"h2"|"h3"|"h4"|"h5"|"h6"|"address"|"article"|"aside"|"blockquote"|"details"|"div"|"dl"|"fieldset"|"figcaption"|"figure"|"footer"|"form"|"header"|"hr"|"main"|"nav"|"ol"|"pre"|"section"|"table"|"ul"=>current=="p",_=>false,
+    }
+}
+impl TokenSink for InertParser {
+    type Handle=();
+    fn process_token(&self,token:Token,_line:u64)->TokenSinkResult<()> {
+        let tree=&self.document.tree;let mut stack=self.stack.borrow_mut();
+        let parent=|stack:&[dom_query::NodeId]|stack.last().map_or_else(||self.document.root(),|id|tree.get_unchecked(id));
+        match token {
+            Token::TagToken(tag) if tag.kind==TagKind::StartTag=> {
+                let name=tag.name.as_ref();while stack.last().is_some_and(|id|tree.get_unchecked(id).node_name().is_some_and(|current|implies_close(name,&current))) {stack.pop();}
+                let foreign=stack.iter().any(|id|tree.get_unchecked(id).node_name().as_deref()==Some("svg"));let namespace=if foreign||name=="svg" {ns!(svg)} else {ns!(html)};
+                let node=tree.create_node(dom_query::NodeData::Element(dom_query::Element::new(QualName::new(None,namespace,tag.name.clone()),tag.attrs,None,false)));parent(&stack).append_child(&node);
+                if !(is_void(name)||foreign&&tag.self_closing) {stack.push(node);}
+                return match name {"script"|"style"|"xmp"=>TokenSinkResult::RawData(RawKind::Rawtext),"title"|"textarea"=>TokenSinkResult::RawData(RawKind::Rcdata),_=>TokenSinkResult::Continue};
+            },
+            Token::TagToken(tag)=> {
+                if let Some(index)=stack.iter().rposition(|id|tree.get_unchecked(id).node_name().as_deref()==Some(tag.name.as_ref())) {stack.truncate(index);}
+                else if matches!(tag.name.as_ref(),"p"|"br") {let node=tree.create_node(dom_query::NodeData::Element(dom_query::Element::new(QualName::new(None,ns!(html),tag.name),vec![],None,false)));parent(&stack).append_child(&node);}
+            },
+            Token::CharacterTokens(contents)=> {
+                let parent=parent(&stack);let previous=parent.children().last().copied().filter(|node|node.is_text());
+                if matches!(parent.node_name().as_deref(),Some("script"|"style"|"xmp"))&&let Some(previous)=previous {previous.set_text(format!("{}{contents}",previous.text()));}
+                else {let node=tree.create_node(dom_query::NodeData::Text{contents});parent.append_child(&node);}
+            },
+            Token::CommentToken(contents)=> {let node=tree.create_node(dom_query::NodeData::Comment{contents});parent(&stack).append_child(&node);},
+            Token::NullCharacterToken=> {let node=tree.create_node(dom_query::NodeData::Text{contents:"\0".into()});parent(&stack).append_child(&node);},_=>{},
+        }
+        TokenSinkResult::Continue
+    }
+}
+fn parse_inert(html:&str)->dom_query::Document {
+    let input=BufferQueue::default();input.push_back(html.into());let tokenizer=Tokenizer::new(InertParser{document:dom_query::Document::default(),stack:RefCell::new(vec![])},TokenizerOpts::default());let _=tokenizer.feed(&input);tokenizer.end();tokenizer.sink.document
+}
 #[derive(Clone)]
 pub struct WebDocument { pub document:dom_query::Document,pub url:String,pub document_uri:String,pub base_uri:String }
 pub fn parse_web_document(html:&str,url:&str)->WebDocument {
-    apply_web_document_url(dom_query::Document::from(html),url)
+    let parsed=parse_inert(html);let document=if parsed.root().first_element_child().is_some_and(|node|node.node_name().as_deref()==Some("html")) {parsed} else {parse_inert(&format!("<html><head></head><body>{html}</body></html>"))};
+    let html=document.root().first_element_child().expect("HTML container");
+    let head=if let Some(head)=html.first_element_child().filter(|node|node.node_name().as_deref()==Some("head")) {head} else {let id=document.tree.create_node(dom_query::NodeData::Element(dom_query::Element::new(QualName::new(None,ns!(html),"head".into()),vec![],None,false)));html.prepend_child(&id);document.tree.get_unchecked(&id)};
+    let body=if let Some(body)=head.next_element_sibling().filter(|node|node.node_name().as_deref()==Some("body")) {body} else {let id=document.tree.create_node(dom_query::NodeData::Element(dom_query::Element::new(QualName::new(None,ns!(html),"body".into()),vec![],None,false)));let body=document.tree.get_unchecked(&id);head.insert_after(&body);body};
+    for node in html.children() {if node.id!=head.id&&node.id!=body.id {body.append_child(&node);}}
+    for element in body.element_children() {if !matches!(element.node_name().as_deref(),Some("base"|"link"|"meta"|"title"|"style"|"script"|"noscript"|"template")) {break;}head.append_child(&element);}
+    apply_web_document_url(document,url)
 }
 pub fn apply_web_document_url(document:dom_query::Document,url:&str)->WebDocument {
     let href=document.select("base[href]").attr("href");
@@ -31,6 +81,12 @@ pub fn normalize_web_url(is_anchor:bool,value:&str,base_uri:&str,document_url:&s
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn inert_stack_parser_does_not_reconstruct_misnested_formatting() {
+        let web=parse_web_document("<b>first<i>second</b>third</i>","https://example.test/");assert_eq!(web.document.select("body").inner_html().as_ref(),"<b>first<i>second</i></b>third");
+    }
+    #[test] fn inert_stack_parser_relocates_only_leading_metadata() {
+        let web=parse_web_document("<title>Leading</title><p>body</p><title>Trailing</title>","https://example.test/");assert_eq!(web.document.select("head title").text().as_ref(),"Leading");assert_eq!(web.document.select("body title").text().as_ref(),"Trailing");
+    }
     #[test] fn cloned_document_retains_reapplied_identity_and_first_base() {
         let source=parse_web_document("<base href='../assets/'><base href='https://ignored.test/'><p>Article</p>","https://example.test/posts/final");
         let clone=apply_web_document_url(source.document.clone(),&source.url);
