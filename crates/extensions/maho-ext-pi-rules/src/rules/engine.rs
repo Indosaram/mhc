@@ -48,6 +48,7 @@ impl<D:EngineDeps> Engine<D>{
             let disabled=disabled_sources_for(&self.config);
             let mut seen_targets=BTreeSet::new();let mut seen_rules=BTreeSet::new();let mut selected_roots=BTreeSet::new();
             let mut loaded:BTreeMap<String,Option<LoadedRule>>=BTreeMap::new();
+            let mut cached_diagnostics:BTreeMap<String,Vec<RuleDiagnostic>>=BTreeMap::new();
             let cache_lookups=targets.iter().collect::<BTreeSet<_>>().len()>1;
             let mut roots:BTreeMap<PathBuf,Option<String>>=BTreeMap::new();
             let mut discoveries:BTreeMap<(Option<String>,PathBuf),Vec<RuleCandidate>>=BTreeMap::new();
@@ -65,10 +66,11 @@ impl<D:EngineDeps> Engine<D>{
                     let root_single=is_root_single_file(&candidate)&&root.is_some();
                     if root_single&&selected_roots.contains(&root){continue;}
                     let mut rule=if let Some(cached)=loaded.get(&candidate.real_path){
+                        if let Some(diagnostics)=cached_diagnostics.get(&candidate.real_path){result.diagnostics.extend(diagnostics.iter().cloned().map(|mut diagnostic|{diagnostic.source=candidate.path.clone();diagnostic}));}
                         let Some(cached)=cached else{result.diagnostics.push(RuleDiagnostic{severity:Severity::Warning,source:candidate.path,message:"Unable to read rule file".into()});continue;};
                         let mut rule=cached.clone();rule.candidate=candidate;rule
                     }else{
-                        let rule=load_candidate(candidate.clone(),&mut self.deps,&mut result.diagnostics,root.as_deref());loaded.insert(candidate.real_path,rule.clone());let Some(rule)=rule else{continue;};rule
+                        let before=result.diagnostics.len();let rule=load_candidate(candidate.clone(),&mut self.deps,&mut result.diagnostics,root.as_deref());if rule.is_some(){cached_diagnostics.insert(candidate.real_path.clone(),result.diagnostics[before..].to_vec());}loaded.insert(candidate.real_path,rule.clone());let Some(rule)=rule else{continue;};rule
                     };
                     let basename=Path::new(target).file_name().unwrap_or_default().to_string_lossy();
                     let project_relative=root.as_ref().map_or_else(||basename.to_string(),|root|relative_path(Path::new(root),Path::new(target)));
