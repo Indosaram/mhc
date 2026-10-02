@@ -1,0 +1,50 @@
+use std::sync::{Arc, Mutex};
+use maho_omo_task::category_unavailable_warning::create_category_unavailable_warning_planner;
+use senpi_task::manager::types::{ChildPlanner, PlanResolutionCode, PlanResolutionError};
+use serde_json::{json, Value};
+
+fn run(config: Value, settings: Value, dead_chain: bool, repetitions: usize) -> usize {
+    let planner: ChildPlanner = Arc::new(move |_| {
+        let mut error = PlanResolutionError::new(PlanResolutionCode::ModelUnavailable, "unavailable");
+        error.category = Some("quick".into());
+        if dead_chain { error.attempted_chain = Some(vec![]); }
+        error.missing_providers = Some(vec!["faux".into()]);
+        Err(Box::new(error))
+    });
+    let messages = Arc::new(Mutex::new(Vec::new()));
+    let captured = messages.clone();
+    let planner = create_category_unavailable_warning_planner(planner, config, settings,
+        Arc::new(|| Some("session".into())), Arc::new(move |_, details| {
+            captured.lock().expect("valid test state").push(details);
+        }));
+    for _ in 0..repetitions {
+        assert!(planner(&Default::default()).is_err());
+    }
+    let result = messages.lock().expect("valid test state");
+    for message in result.iter() {
+        assert_eq!(message["category"], "quick");
+        assert_eq!(message["reason"], "no_chain_rung_available");
+        assert_eq!(message["missing_providers"], json!(["faux"]));
+    }
+    result.len()
+}
+
+#[test] fn dead_chain_warns_once_per_session_category() {
+    assert_eq!(run(json!({}), json!({}), true, 2), 1);
+}
+#[test] fn plain_model_miss_never_warns() {
+    assert_eq!(run(json!({}), json!({}), false, 1), 0);
+}
+#[test] fn global_warning_suppression() {
+    assert_eq!(run(json!({}), json!({"warnings":{"unavailable_categories":false}}), true, 1), 0);
+}
+#[test] fn category_opt_in_overrides_global_suppression() {
+    assert_eq!(run(json!({"categories":{"quick":{"warn_unavailable":true}}}),
+        json!({"warnings":{"unavailable_categories":false}}), true, 1), 1);
+}
+#[test] fn category_opt_out_overrides_default() {
+    assert_eq!(run(json!({"categories":{"quick":{"warn_unavailable":false}}}), json!({}), true, 1), 0);
+}
+#[test] fn user_model_never_warns() {
+    assert_eq!(run(json!({"categories":{"quick":{"model":"faux/custom"}}}), json!({}), true, 1), 0);
+}

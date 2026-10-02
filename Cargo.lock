@@ -1847,6 +1847,31 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-mcp"
 version = "0.0.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "fancy-regex",
+ "futures",
+ "getrandom 0.4.2",
+ "globset",
+ "maho-ai",
+ "maho-core",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "sha1",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+]
 
 [[package]]
 name = "maho-ext-model-fallback"
@@ -2278,6 +2303,19 @@ version = "0.0.0"
 [[package]]
 name = "maho-omo-task"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "maho-ext-api",
+ "maho-senpi-task",
+ "maho-team-core",
+ "maho-tui",
+ "maho-utils",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-telemetry"
@@ -3294,6 +3332,17 @@ dependencies = [
  "cfg-if",
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "sha1"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
 ]
 
 [[package]]
