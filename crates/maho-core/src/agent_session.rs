@@ -1782,6 +1782,7 @@ impl AgentSession {
         }, controller.clone());
         let _work = self.work_barrier.begin();
         let mut rejection = None;
+        let mut accepted_entry = None;
         let execution = async {
             let before = {
                 let mut runner = self.extension_runner.lock().await;
@@ -1900,10 +1901,7 @@ impl AgentSession {
                 if error == "Compaction rejected: summary-would-overflow" { rejection = Some(maho_ext_api::CompactionRejectionCause::WouldOverflow); }
                 error
             })?;
-            self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Accepted {
-                reason: compact_reason, request_id: request_id.clone(), compaction_entry: session_entry_from_value(entry),
-                from_extension, will_retry: reason != "manual",
-            })).await;
+            accepted_entry = Some((entry, from_extension));
             Ok(result)
         }.await;
         let ended_revision = self.message_revision() as i64;
@@ -1921,8 +1919,14 @@ impl AgentSession {
             Ok(result) => {
                 let value = maho_ext_api::CompactionResult { summary: result.summary.clone(), first_kept_entry_id: result.first_kept_entry_id.clone(),
                     tokens_before: result.tokens_before as u64, details: result.details.clone() };
-                self.emit(AgentSessionEvent::CompactionEnd { reason: compact_reason, request_id: Some(request_id), aborted: false,
+                self.emit(AgentSessionEvent::CompactionEnd { reason: compact_reason, request_id: Some(request_id.clone()), aborted: false,
                     result: Some(value), rejection_cause: None, error_message: None, accepted: Some(true), will_retry: reason != "manual" });
+                if let Some((entry, from_extension)) = accepted_entry {
+                    self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Accepted {
+                        reason: compact_reason, request_id, compaction_entry: session_entry_from_value(entry),
+                        from_extension, will_retry: reason != "manual",
+                    })).await;
+                }
             }
             Err(error) => {
                 let error_message = (!signal.aborted()).then(|| format!("Compaction failed: {error}"));
@@ -6004,6 +6008,45 @@ mod tests {
         assert_eq!(session.with_session_manager(|manager| manager.entries()), entries);
         assert_eq!(session.compaction_state().status(), "aborted");
         assert!(!session.is_compacting());
+    }
+
+    #[tokio::test]
+    async fn compaction_success_event_precedes_completed_extension_hook() {
+        let session = test_session();
+        session.agent.set_model(test_model());
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"keepRecentTokens":1})),
+        ])));
+        for text in ["old task", "recent task"] {
+            session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":text,"timestamp":0})));
+        }
+        session.rebuild_session_context().expect("context");
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let events = order.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if matches!(event, AgentSessionEvent::CompactionEnd { accepted: Some(true), .. }) { lock(&events).push("end"); }
+        }));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:compaction-result>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(|event, _| {
+            let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { panic!("preparation"); };
+            let result = maho_ext_api::CompactionResult { summary: "digest".to_owned(),
+                first_kept_entry_id: event.preparation.first_kept_entry_id.clone(), tokens_before: event.preparation.tokens_before, details: None };
+            Box::pin(async move { Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {
+                compaction: Some(result), ..Default::default()
+            })) })
+        })]);
+        let hooks = order.clone();
+        let captured = session.clone();
+        extension.handlers.insert(maho_ext_api::EventKind::SessionCompact, vec![Arc::new(move |event, _| {
+            assert!(matches!(event, maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Accepted { from_extension: true, .. })));
+            assert_eq!(captured.compaction_state().status(), "completed");
+            assert!(!captured.is_compacting());
+            lock(&hooks).push("hook");
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        session.compact(None).await.expect("compaction");
+        assert_eq!(*lock(&order), ["end", "hook"]);
     }
 
     #[tokio::test]
