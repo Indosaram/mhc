@@ -124,6 +124,12 @@ pub fn clear_loop_state_snapshot(reference:&LoopStoreRef) { store(reference).cle
         let mut raw=serde_json::to_value(empty_loop_state("s")).unwrap(); raw["activeDynamicId"]="missing".into();
         assert!(parse_payload(&raw,&SidecarStoreRef { base_dir:"/tmp".into(),session_id:"s".into() }).is_err());
     }
+    #[tokio::test] async fn upstream_structurally_invalid_entry_preserves_file_bytes() {
+        let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path());
+        let raw=r#"{"version":1,"sessionId":"session/one","updatedAt":0,"activeDynamicId":null,"entries":{"broken":{"kind":"dynamic"}}}"#;
+        let path=loop_state_file_path(&reference); std::fs::write(&path,raw).unwrap();
+        assert!(read_loop_state(&reference).await.is_err()); assert_eq!(std::fs::read_to_string(path).unwrap(),raw);
+    }
     #[tokio::test] async fn upstream_pending_dynamic_wakeup_roundtrips_every_field() {
         let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path());
         let mut scheduler=crate::scheduler::LoopScheduler::new(&reference.session_id,None,&BTreeMap::new());
