@@ -64,6 +64,13 @@ Do not end this turn with only narration about what you intend to do.
 pub fn build_monitor_stall_notice(count:u64)->String { build_goal_stall_notice(count,&["terminal-monitors".into()]) }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn stall_sentinels_wrap_generic_and_live_channel_notices() {
+        for sources in [vec![],vec!["terminal-monitors".into(),"senpi-task".into(),"senpi-codemode".into(),"terminal-background-sessions".into()]] {
+            let notice=build_goal_stall_notice(4,&sources); assert!(notice.starts_with("<goal_stall_check>\n")); assert!(notice.ends_with("\n</goal_stall_check>"));
+        }
+        assert_eq!(build_monitor_stall_notice(5),build_goal_stall_notice(5,&["terminal-monitors".into()]));
+        assert!(!build_truncation_recovery_prompt().contains("<untrusted_objective>"));
+    }
     #[test] fn upstream_objective_is_escaped_inside_untrusted_sentinel() {
         let goal:Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"Fix <bug> & ship","status":"active","tokensUsed":5,"timeUsedSeconds":12,"createdAt":0,"updatedAt":0})).unwrap();
         let prompt=build_continuation_prompt(&goal);
