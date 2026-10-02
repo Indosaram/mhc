@@ -58,6 +58,18 @@ async fn late_initialization_failure_settles_active_and_retires_process() {
 }
 
 #[tokio::test]
+async fn startup_failure_cannot_be_revived_by_reset() {
+    let mut settings=options();
+    settings.args=vec!["-u".into(),"-c".into(),"import sys; sys.stdin.readline(); print('{\"type\":\"ready\"}',flush=True); sys.stdin.readline(); print('{\"type\":\"init-failed\",\"error\":{\"message\":\"permanent failure\"}}',flush=True); sys.stdin.readline()".into()];
+    let kernel=SubprocessKernel::start(settings).await.unwrap();
+    let result=kernel.run_with_callbacks(KernelRunInput{cell_id:"failed".into(),code:"42".into(),timeout_ms:None},None,None).await.unwrap();
+    assert_eq!(result["ok"],false);
+    let reset=kernel.reset().await;
+    kernel.close().await.unwrap();
+    assert!(reset.is_err(),"source failClosed forbids reset from spawning a replacement");
+}
+
+#[tokio::test]
 async fn real_kernel_timeout_reaps_and_restarts() {
     let kernel = SubprocessKernel::start(options()).await.unwrap();
     let pid = kernel.pid().unwrap();

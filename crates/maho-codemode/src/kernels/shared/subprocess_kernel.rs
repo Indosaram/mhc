@@ -143,6 +143,7 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
                     if let Some(error) = &failure { runs.settle_all(error, now()); }
                     tokio::spawn(async move { if let Ok(result) = (&mut result).await { let _ = response.send(result); } });
                 }
+                Some(Command::Interrupt(_, _, response)) if failure.is_some() => { let _ = response.send(Ok(true)); }
                 Some(Command::Cancel(id, reason, response)) => { let _ = response.send(runs.remove(&id, &reason, now())); }
                 Some(Command::Interrupt(reason, id, response)) => {
                     if id.as_ref().is_some_and(|id| runs.active().is_none_or(|run| &run.input.cell_id != id)) {
@@ -158,8 +159,10 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
                         let _ = response.send(result.map(|()| false));
                     } else { runs.settle_all(&format!("Cell interrupted: {reason}"), now()); let _ = response.send(Ok(true)); }
                 }
+                Some(Command::Reply(_)) if failure.is_some() => {}
                 Some(Command::Reply(message)) => { if let Err(error) = process.send(&message).await { failure = Some(error.to_string()); } }
                 Some(Command::NextToolCall(response)) => {let _=response.send(runs.next_tool_call());}
+                Some(Command::Reset(response)) if failure.is_some() => { let _ = response.send(Err(ProcessError::Closed.to_string())); }
                 Some(Command::Reset(response)) => {
                     runs.settle_all("Kernel reset", now()); runs.clear_tool_calls(); deadline = None;
                     let result = replace_process(&options, &mut process, "TERM", Duration::from_millis(1500)).await.map_err(|error| error.to_string());
