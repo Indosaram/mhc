@@ -46,7 +46,7 @@ fn safe(value: &Value) -> bool { value.as_f64().is_some_and(is_non_negative_safe
 pub fn parse_goal_file(raw: &str, legacy: bool) -> Result<GoalFile, GoalError> {
     let parsed = json_parse(raw)?;
     let object = parsed.as_object().ok_or_else(|| GoalError::InvalidStore("goal store must be a JSON object".into()))?;
-    if object.get("version").and_then(Value::as_u64) != Some(1) { return Err(GoalError::UnsupportedStoreVersion("unsupported goal store version".into())); }
+    if object.get("version").and_then(Value::as_f64) != Some(1.0) { return Err(GoalError::UnsupportedStoreVersion("unsupported goal store version".into())); }
     let mut value = object.get("goal").cloned().ok_or_else(|| GoalError::InvalidStore("goal store contains an invalid goal".into()))?;
     if value.is_null() { return Ok(GoalFile { version: 1, goal: None }); }
     let fields = value.as_object_mut().ok_or_else(|| GoalError::InvalidStore("goal store contains an invalid goal".into()))?;
@@ -60,6 +60,9 @@ pub fn parse_goal_file(raw: &str, legacy: bool) -> Result<GoalFile, GoalError> {
     if !(strings_valid && status_valid && required_numbers && optional_numbers && blocked_valid) { return Err(GoalError::InvalidStore("goal store contains an invalid goal".into())); }
     for key in ["consecutiveContinuations", "unattendedContinuations"] { if fields.get(key).is_none_or(|v| !safe(v)) { fields.remove(key); } }
     if fields.get("lastContinuationSignature").is_none_or(|v| !v.is_string()) { fields.remove("lastContinuationSignature"); }
+    for key in ["tokensUsed","createdAt","updatedAt","tokenBudget","lastStartedAt","completedAt","blockedAt","consecutiveContinuations","unattendedContinuations"] {
+        if let Some(number)=fields.get(key).and_then(Value::as_f64) { fields.insert(key.into(),Value::from(number as u64)); }
+    }
     let goal = serde_json::from_value(value).map_err(|error| GoalError::InvalidStore(error.to_string()))?;
     Ok(GoalFile { version: 1, goal: Some(goal) })
 }
@@ -121,6 +124,17 @@ pub fn migrate_legacy_goal_file(reference: &GoalStoreRef, standalone_agent_dir: 
     use super::*;
     fn raw() -> String { serde_json::json!({"version":1,"goal":{"id":"g","threadId":"t","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":1,"updatedAt":1}}).to_string() }
     #[test] fn valid_record_roundtrips() { let input = raw(); let result = parse_goal_file(&input, false).unwrap(); assert_eq!(result.goal.unwrap().id, "g"); }
+    #[test] fn integral_floating_json_numbers_match_javascript_validation() {
+        let input=r#"{"version":1.0,"goal":{"id":"g","threadId":"t","objective":"work","status":"blocked","tokensUsed":2.0,"timeUsedSeconds":3.0,"createdAt":1.0,"updatedAt":2e0,"blockedReason":"waiting","blockedAt":2.0,"consecutiveContinuations":4.0,"unattendedContinuations":5.0,"tokenBudget":6.0}}"#;
+        let goal=parse_goal_file(input,false).unwrap().goal.unwrap();
+        assert_eq!(goal.tokens_used,2); assert_eq!(goal.blocked_at,Some(2)); assert_eq!(goal.consecutive_continuations,Some(4)); assert_eq!(goal.unattended_continuations,Some(5)); assert_eq!(goal.token_budget,Some(6));
+    }
+    #[test] fn fractional_and_unsafe_persisted_counters_are_rejected() {
+        for invalid in [1.5,-1.0,9007199254740992.0] {
+            let mut value:Value=serde_json::from_str(&raw()).unwrap(); value["goal"]["tokensUsed"]=serde_json::json!(invalid);
+            assert!(matches!(parse_goal_file(&value.to_string(),false),Err(GoalError::InvalidStore(_))));
+        }
+    }
     #[test] fn stale_closing_braces_recover() { let input = format!("{}}}\n}}\n", raw()); let result = parse_goal_file(&input, false).unwrap(); assert_eq!(result.goal.unwrap().objective, "work"); }
     #[test] fn truncated_json_is_rejected() { let input = "{\"version\":1,\"goal\":"; let result = parse_goal_file(input, false); assert!(matches!(result, Err(GoalError::Json(_)))); }
     #[test] fn arbitrary_suffix_is_rejected() { let input = format!("{}text", raw()); let result = parse_goal_file(&input, false); assert!(matches!(result, Err(GoalError::Json(_)))); }

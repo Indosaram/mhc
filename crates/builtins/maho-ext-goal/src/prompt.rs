@@ -35,7 +35,7 @@ Blocked audit - run this before deciding the goal is blocked:
 - The same blocking condition survived at least three goal turns since this goal became active or the user last spoke; update_goal rejects blocked below that floor, and automatic wake-ups spent waiting are not attempts.
 - Never block because the work is hard, slow, uncertain, or would benefit from clarification.
 - Once all three hold, call update_goal with status "blocked" and a specific reason."###;
-pub fn build_continuation_prompt(goal:&Goal)->String { let escaped=goal.objective.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;"); CONTINUATION_TEMPLATE.replace("MAHO_SECONDS_SENTINEL",&goal.time_used_seconds.to_string()).replace("MAHO_TOKENS_SENTINEL",&goal.tokens_used.to_string()).replace("MAHO_OBJECTIVE_SENTINEL",&escaped) }
+pub fn build_continuation_prompt(goal:&Goal)->String { let escaped=goal.objective.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;"); CONTINUATION_TEMPLATE.replace("MAHO_SECONDS_SENTINEL",&maho_ai::utils::js::number_to_string(goal.time_used_seconds)).replace("MAHO_TOKENS_SENTINEL",&maho_ai::utils::js::number_to_string(goal.tokens_used as f64)).replace("MAHO_OBJECTIVE_SENTINEL",&escaped) }
 pub fn build_truncation_recovery_prompt()->String { r###"Your previous response was cut off by the output-token limit before it finished.
 
 Continue exactly where it stopped: resume the interrupted sentence, tool call, or code block at the cut point.

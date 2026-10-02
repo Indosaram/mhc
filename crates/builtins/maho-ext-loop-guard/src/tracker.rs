@@ -14,7 +14,8 @@ fn stable_stringify(value: &Value) -> String {
             format!("{{{}}}", parts.join(","))
         }
         Value::Array(items) => format!("[{}]", items.iter().map(stable_stringify).collect::<Vec<_>>().join(",")),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => value.to_string(),
+        Value::Number(number) => number.as_f64().map_or_else(|| "null".into(), maho_ai::utils::js::number_to_string),
+        Value::Null | Value::Bool(_) | Value::String(_) => value.to_string(),
     }
 }
 #[derive(Default)]
@@ -36,4 +37,14 @@ impl ToolCallTracker {
     #[test] fn missing_args_default_to_object() { let result = canonicalize_args(None); assert_eq!(result, "{}"); }
     #[test] fn tracker_caps_window() { let mut tracker = ToolCallTracker::default(); for i in 0..100 { tracker.record("bash", Some(&serde_json::json!({"command":format!("cmd {i}")}))); } assert_eq!(tracker.records().len(), 64); }
     #[test] fn reset_clears_records() { let mut tracker = ToolCallTracker::default(); tracker.record("bash", None); tracker.reset(); assert!(tracker.records().is_empty()); }
+    #[test] fn canonicalization_uses_javascript_number_serialization() {
+        for (source,expected) in [("1.0","1"),("-0.0","0"),("1e-6","0.000001"),("1e-7","1e-7"),("1e20","100000000000000000000"),("1e21","1e+21"),("9007199254740993","9007199254740992")] {
+            let value:Value=serde_json::from_str(source).unwrap();
+            assert_eq!(canonicalize_args(Some(&value)),expected, "{source}");
+        }
+    }
+    #[test] fn canonicalization_orders_keys_by_utf16_and_preserves_nested_arrays() {
+        let value=serde_json::json!({"\u{e000}":1,"\u{10000}":[1.0,null,{"z":-0.0,"a":true}]});
+        assert_eq!(canonicalize_args(Some(&value)),"{\"\u{10000}\":[1,null,{\"a\":true,\"z\":0}],\"\u{e000}\":1}");
+    }
 }

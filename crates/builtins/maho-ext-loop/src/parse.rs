@@ -58,7 +58,7 @@ pub fn parse_loop_args(raw: &str) -> ParsedLoopInvocation {
         let value = amount.as_str().parse::<f64>().unwrap_or(f64::INFINITY);
         let unit = unit(suffix.as_str());
         let suffix = match unit { RequestedIntervalUnit::Seconds => "s", RequestedIntervalUnit::Minutes => "m", RequestedIntervalUnit::Hours => "h", RequestedIntervalUnit::Days => "d" };
-        return classify(RequestedInterval { value, unit, raw: format!("{value}{suffix}") }, &raw[..full.start()], raw);
+        return classify(RequestedInterval { value, unit, raw: format!("{}{suffix}",maho_ai::utils::js::number_to_string(value)) }, &raw[..full.start()], raw);
     }
     if trimmed.is_empty() { ParsedLoopInvocation::Bare { interval: None, original_args } }
     else { ParsedLoopInvocation::Dynamic { prompt: trimmed.into(), original_args } }
@@ -90,4 +90,14 @@ pub fn parse_loop_args(raw: &str) -> ParsedLoopInvocation {
     #[test] fn trailing_zero_is_invalid() { let result = parse_loop_args("x every 0 seconds"); assert!(matches!(result, ParsedLoopInvocation::Invalid { .. })); }
     #[test] fn all_unit_aliases_are_accepted() { for (aliases, unit) in [("s sec secs second seconds", RequestedIntervalUnit::Seconds), ("m min mins minute minutes", RequestedIntervalUnit::Minutes), ("h hr hrs hour hours", RequestedIntervalUnit::Hours), ("d day days", RequestedIntervalUnit::Days)] { for alias in aliases.split(' ') { fixed(&format!("task every 1{alias}"), 1.0, unit, "task"); } } }
     #[test] fn original_arguments_are_preserved() { let raw = "  status  "; let result = parse_loop_args(raw); assert!(matches!(result, ParsedLoopInvocation::Status { original_args } if original_args == raw)); }
+    #[test] fn trailing_large_intervals_use_javascript_number_labels() {
+        for (amount,expected) in [("1000000000000000000000","1e+21m"),("9007199254740993","9007199254740992m")] {
+            let ParsedLoopInvocation::Fixed { interval,.. }=parse_loop_args(&format!("work every {amount} minutes")) else { panic!("expected fixed interval"); };
+            assert_eq!(interval.raw,expected);
+        }
+    }
+    #[test] fn overflowing_interval_preserves_javascript_infinity() {
+        let ParsedLoopInvocation::Fixed { interval,.. }=parse_loop_args(&format!("work every {} seconds","9".repeat(400))) else { panic!("expected fixed interval"); };
+        assert_eq!(interval.value,f64::INFINITY); assert_eq!(interval.raw,"Infinitys");
+    }
 }

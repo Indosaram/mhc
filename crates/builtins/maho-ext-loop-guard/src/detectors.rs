@@ -92,6 +92,13 @@ pub fn detect_loop(records: &[ToolCallRecord], gate: &mut NoticeGate) -> Option<
     fn calls(names: &[&str]) -> Vec<ToolCallRecord> { let mut tracker = ToolCallTracker::default(); for name in names { tracker.record(name, None); } tracker.records().to_vec() }
     #[test] fn identical_below_threshold_is_absent() { let records = calls(&["read", "read"]); let result = detect_identical_run(&records); assert!(result.is_none()); }
     #[test] fn identical_reports_full_trailing_run() { let records = calls(&["bash", "read", "read", "read"]); let result = detect_identical_run(&records).unwrap(); assert_eq!(result.count(), 3); }
+    #[test] fn identical_run_counts_key_order_insensitive_duplicates() {
+        let mut tracker=ToolCallTracker::default();
+        for source in ["{\"path\":\"a.ts\",\"limit\":50}","{\"limit\":50,\"path\":\"a.ts\"}","{\"path\":\"a.ts\",\"limit\":50}"] {
+            let args=serde_json::from_str(source).unwrap(); tracker.record("read",Some(&args));
+        }
+        assert_eq!(detect_identical_run(tracker.records()).unwrap().count(),3);
+    }
     #[test] fn two_cycles_are_below_threshold() { let records = calls(&["a", "b", "a", "b"]); let result = detect_cycle(&records); assert!(result.is_none()); }
     #[test] fn period_two_cycle_fires() { let records = calls(&["a", "b", "a", "b", "a", "b"]); let result = detect_cycle(&records); assert!(matches!(result, Some(LoopGuardDetection::Cycle { period: 2, count: 3, .. }))); }
     #[test] fn leading_prefix_does_not_mask_cycle() { let records = calls(&["seed", "a", "b", "a", "b", "a", "b"]); let result = detect_cycle(&records); assert!(result.is_some()); }
