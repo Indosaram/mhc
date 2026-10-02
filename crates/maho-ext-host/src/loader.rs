@@ -11,6 +11,15 @@ pub struct LoadExtensionsResult {
     pub runtime: ExtensionRuntime,
     pub events: EventBus,
 }
+struct FactoryScopeGuard { runtime: ExtensionRuntime, events: EventBus, committed: bool }
+impl Drop for FactoryScopeGuard {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.runtime.invalidate_registration("Extension factory failed to load");
+            self.events.invalidate_registration();
+        }
+    }
+}
 pub fn load_extensions(factories: Vec<NativeExtensionFactory>, cwd: &std::path::Path, profile: ExtensionSessionProfile) -> LoadExtensionsResult {
     let runtime = ExtensionRuntime::default();
     let events = EventBus::default();
@@ -74,6 +83,7 @@ pub async fn load_extensions_async(factories: Vec<NativeAsyncExtensionFactory>, 
     let mut errors = Vec::new();
     for factory in factories {
         let mut api = ExtensionApi::new(LoadedExtension::new(&factory.path, cwd.to_owned(), factory.source_info), profile.clone(), events.registration_scope(), runtime.registration_scope());
+        let mut scope = FactoryScopeGuard { runtime: api.runtime.clone(), events: api.events.clone(), committed: false };
         let outcome = {
             let mut future = Box::pin(async { (factory.factory)(&mut api).await });
             std::future::poll_fn(|cx| {
@@ -91,7 +101,7 @@ pub async fn load_extensions_async(factories: Vec<NativeAsyncExtensionFactory>, 
         };
         let outcome = outcome.and_then(|()| api.runtime.commit_registration());
         match outcome {
-            Ok(()) => extensions.push(api.registered),
+            Ok(()) => { scope.committed = true; extensions.push(api.registered); }
             Err(error) => {
                 api.runtime.invalidate_registration("Extension factory failed to load");
                 api.events.invalidate_registration();

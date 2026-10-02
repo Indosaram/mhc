@@ -753,6 +753,25 @@ async fn registration_failure_preserves_typed_factory_diagnostic() {
 }
 
 #[tokio::test]
+async fn cancelling_pending_factory_invalidates_retained_capabilities() {
+    use maho_ext_host::loader::*;
+    let (started, received) = tokio::sync::oneshot::channel();
+    let started = Arc::new(Mutex::new(Some(started)));
+    let factory = NativeAsyncExtensionFactory {
+        path: "pending".into(), source_info: SourceInfo::default(),
+        factory: Arc::new(move |api| {
+            assert!(started.lock().unwrap().take().unwrap().send(api.runtime.clone()).is_ok());
+            Box::pin(std::future::pending())
+        }),
+    };
+    let loading = tokio::spawn(async move { load_extensions_async(vec![factory], Path::new("/tmp"), ExtensionSessionProfile::default()).await });
+    let retained = received.await.unwrap();
+    loading.abort();
+    assert!(matches!(loading.await, Err(error) if error.is_cancelled()));
+    assert!(retained.assert_active().is_err());
+}
+
+#[tokio::test]
 async fn inline_factory_names_and_hidden_identities_preserve_load_order() {
     use maho_ext_host::loader::*;
     let factory: AsyncExtensionFactory = Arc::new(|_| Box::pin(async { Ok(()) }));
