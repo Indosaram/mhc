@@ -1989,6 +1989,7 @@ dependencies = [
  "chrono",
  "maho-ext-api",
  "maho-memory-core",
+ "maho-omo-config-core",
  "maho-senpi-task",
  "serde",
  "serde_json",

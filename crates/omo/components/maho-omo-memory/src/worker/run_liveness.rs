@@ -26,9 +26,24 @@ pub fn classify_run_process(pid: Option<u32>, recorded_start: Option<Option<&str
     classify_run_process_with(pid, recorded_start, get_pid_liveness, get_process_start_identity)
 }
 
+pub async fn wait_until(deadline_at: f64, now: impl FnOnce() -> f64) {
+    let delay = (deadline_at - now()).max(0.0);
+    if delay == 0.0 { return; }
+    tokio::time::sleep(std::time::Duration::from_secs_f64(delay / 1000.0)).await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test(start_paused = true)]
+    async fn deadline_wait_uses_exact_remaining_budget() {
+        let start = tokio::time::Instant::now();
+        wait_until(1500.0, || 500.0).await;
+        assert_eq!(start.elapsed(), std::time::Duration::from_millis(1000));
+        let start = tokio::time::Instant::now();
+        wait_until(500.0, || 1500.0).await;
+        assert_eq!(start.elapsed(), std::time::Duration::ZERO);
+    }
     #[test]
     fn absent_and_legacy_never_probe() {
         assert_eq!(classify_run_process_with(None, None, |_| panic!("probe"), |_| panic!("identity")), RunProcessVerdict::Absent);
