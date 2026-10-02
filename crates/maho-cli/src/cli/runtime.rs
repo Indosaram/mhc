@@ -37,7 +37,8 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
         cwd: Some(cwd_text.to_string()), agent_dir: Some(agent_dir.clone()), model_runtime: Some(models),
         settings_manager: Some(settings), session_manager: Some(manager), model: options.options.model,
         tools: options.options.tools, exclude_tools: options.options.exclude_tools, no_tools: options.options.no_tools,
-        thinking_selection: options.options.thinking_selection, ..Default::default()
+        thinking_selection: options.options.thinking_selection,
+        scoped_models: startup::session_model_entries(options.options.scoped_models)?, ..Default::default()
     }).await?;
     let session = Arc::new(created.session);
     if parsed.no_skills || parsed.no_prompt_templates || !parsed.skills.is_empty() || !parsed.prompt_templates.is_empty() {

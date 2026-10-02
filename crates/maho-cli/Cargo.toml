@@ -13,6 +13,7 @@ maho-tui = { path = "../maho-tui" }
 maho-tools = { path = "../maho-tools" }
 maho-interactive = { path = "../maho-interactive" }
 maho-rpc = { path = "../maho-rpc" }
+maho-ext-api = { path = "../maho-ext-api" }
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }
 regex.workspace = true

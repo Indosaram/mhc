@@ -1752,6 +1752,7 @@ dependencies = [
  "maho-agent",
  "maho-ai",
  "maho-core",
+ "maho-ext-api",
  "maho-interactive",
  "maho-rpc",
  "maho-tools",

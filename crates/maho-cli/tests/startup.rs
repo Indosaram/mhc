@@ -37,12 +37,27 @@ fn scoped_startup_model_and_tool_suppression_preserve_explicit_thinking_off() {
     let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions { models_path: Some(dir.path().join("models.json")), auth_path: Some(dir.path().join("auth.json")), ..Default::default() });
     let model = runtime.get_models(None).remove(0);
     let settings = maho_core::settings_manager::SettingsManager::create(&cwd, &dir.path().join("agent").to_string_lossy(), &cwd, false);
-    let scoped = [maho_core::model_resolver::ScopedModel { model: model.clone(), thinking_level: Some(ModelThinkingLevel::High), thinking_selection: None, service_tier: None }];
+    let scoped = [maho_core::model_resolver::ScopedModel { model: model.clone(), thinking_level: Some(ModelThinkingLevel::High), thinking_selection: None, service_tier: Some("priority".to_owned()) }];
     let parsed = Args { thinking: Some("off".to_owned()), no_builtin_tools: true, tools: Some(vec!["read".to_owned()]), ..Default::default() };
     let built = build_session_options(&parsed, &scoped, false, &runtime, &settings);
     assert_eq!(built.options.model.unwrap().id, model.id); assert_eq!(built.options.thinking_level, Some(ModelThinkingLevel::Off));
     assert!(matches!(built.options.no_tools, Some(maho_core::sdk::NoToolsMode::Builtin))); assert_eq!(built.options.tools.unwrap(), ["read"]);
     assert!(build_session_options(&parsed, &scoped, true, &runtime, &settings).options.model.is_none());
+    let entries = session_model_entries(scoped.to_vec()).unwrap();
+    assert_eq!(entries[0].model.id, model.id);
+    assert_eq!(entries[0].thinking_level, Some(maho_ai::types::ThinkingLevel::High));
+    assert_eq!(entries[0].service_tier, Some(maho_ext_api::ServiceTier::Priority));
+    let selection = maho_ai::types::ThinkingSelection {
+        level: ModelThinkingLevel::Off,
+        source: maho_ai::types::ThinkingSelectionSource::Explicit,
+        legacy_variant_id: None,
+    };
+    let off = session_model_entries(vec![maho_core::model_resolver::ScopedModel {
+        model, thinking_level: Some(ModelThinkingLevel::Off),
+        thinking_selection: Some(selection.clone()), service_tier: None,
+    }]).unwrap();
+    assert_eq!(off[0].thinking_level, None);
+    assert_eq!(off[0].thinking_selection, Some(selection));
 }
 
 #[test]

@@ -39,6 +39,21 @@ pub struct SessionOptions {
     pub exclude_tools: Option<Vec<String>>,
 }
 pub struct BuiltSessionOptions { pub options: SessionOptions, pub cli_thinking_from_model: bool, pub diagnostics: Vec<super::args::Diagnostic> }
+pub fn session_model_entries(scoped: Vec<maho_core::model_resolver::ScopedModel>) -> Result<Vec<maho_core::agent_session::SessionModelEntry>, String> {
+    use maho_ai::types::{ModelThinkingLevel as M, ThinkingLevel as T};
+    scoped.into_iter().map(|entry| {
+        let thinking_level = entry.thinking_level.and_then(|level| match level {
+            M::Off => None, M::Minimal => Some(T::Minimal), M::Low => Some(T::Low), M::Medium => Some(T::Medium),
+            M::High => Some(T::High), M::Xhigh => Some(T::Xhigh), M::Max => Some(T::Max),
+        });
+        let service_tier = match entry.service_tier.as_deref() {
+            None => None, Some("auto") => Some(maho_ext_api::ServiceTier::Auto),
+            Some("flex") => Some(maho_ext_api::ServiceTier::Flex), Some("priority") => Some(maho_ext_api::ServiceTier::Priority),
+            Some(tier) => return Err(format!("Unsupported scoped service tier: {tier}")),
+        };
+        Ok(maho_core::agent_session::SessionModelEntry { model: entry.model, thinking_level, thinking_selection: entry.thinking_selection, service_tier })
+    }).collect()
+}
 pub fn build_session_options(parsed: &Args, scoped: &[maho_core::model_resolver::ScopedModel], has_existing_session: bool, runtime: &maho_core::model_runtime::ModelRuntime, settings: &maho_core::settings_manager::SettingsManager) -> BuiltSessionOptions {
     use maho_ai::types::{ModelThinkingLevel, ThinkingSelection, ThinkingSelectionSource};
     let mut options = SessionOptions { model: None, initial_model_provenance: None, thinking_level: None, thinking_selection: None, scoped_models: scoped.to_vec(), no_tools: None, tools: parsed.tools.clone(), exclude_tools: parsed.exclude_tools.clone() };
