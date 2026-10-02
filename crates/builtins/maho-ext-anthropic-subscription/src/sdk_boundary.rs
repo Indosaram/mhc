@@ -158,12 +158,21 @@ impl SdkQueryHandle {
             if let Err(error) = result { let _ = events.send(Err(error)); }
         });
         let mut handle = Self {commands, messages, task: Some(task), initialization: Value::Null};
-        let mut initialize = json!({"subtype":"initialize","hooks":{}});
+        let mut initialize = json!({"subtype":"initialize","hooks":{},"systemPrompt":[""]});
         if let Some(name) = server_name { initialize["sdkMcpServers"] = json!([name]); }
         if let Some(prompt) = options.get("systemPrompt") {
             if prompt.is_string() { initialize["systemPrompt"] = json!([prompt]); }
-            else if prompt["type"] == "preset" { if let Some(append) = prompt.get("append") { initialize["appendSystemPrompt"] = append.clone(); } }
-            else { initialize["systemPrompt"] = prompt.clone(); }
+            else if prompt["type"] == "preset" {
+                initialize.as_object_mut().expect("initialize object").remove("systemPrompt");
+                if let Some(append) = prompt.get("append") { initialize["appendSystemPrompt"] = append.clone(); }
+                for (source,target) in [("snapshot","systemPromptSnapshot"),("excludeDynamicSections","excludeDynamicSections")] {
+                    if let Some(value)=prompt.get(source) {initialize[target]=value.clone();}
+                }
+            }
+            else if prompt["type"]=="custom" {
+                initialize["systemPrompt"]=if prompt["prompt"].is_string() {json!([prompt["prompt"]])}else {prompt["prompt"].clone()};
+                if let Some(snapshot)=prompt.get("snapshot") {initialize["systemPromptSnapshot"]=snapshot.clone();}
+            } else { initialize["systemPrompt"] = prompt.clone(); }
         }
         match handle.request(initialize).await {
             Ok(response) => handle.initialization = response,
@@ -586,6 +595,10 @@ mod tests {
         let query=tokio::time::timeout(std::time::Duration::from_secs(5),SdkQueryHandle::spawn(&script,&json!({"systemPrompt":{"type":"preset","preset":"claude_code","append":"exact append"}}),&BTreeMap::new())).await.expect("bounded initialize").expect("spawn");
         assert_eq!(query.initialization["appendSystemPrompt"],"exact append");assert!(query.initialization.get("systemPrompt").is_none());
         query.close().await.expect("reaped");
+        let snapshot=json!({"prefix":"stable"});
+        let query=tokio::time::timeout(std::time::Duration::from_secs(5),SdkQueryHandle::spawn(&script,&json!({"systemPrompt":{"type":"custom","prompt":["first","second"],"snapshot":snapshot}}),&BTreeMap::new())).await.expect("bounded custom initialize").expect("spawn");
+        assert_eq!(query.initialization["systemPrompt"],json!(["first","second"]));assert_eq!(query.initialization["systemPromptSnapshot"],snapshot);
+        query.close().await.expect("reaped custom query");
     }
     #[test]
     fn native_spawn_arguments_preserve_empty_tools_and_lineage() {
