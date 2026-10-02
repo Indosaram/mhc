@@ -1,0 +1,3 @@
+use maho_rpc::host_handoff::*;
+#[tokio::test]async fn windows_refuses_before_creating_state(){let temp=tempfile::tempdir().unwrap();let result=prepare_handoff("missing",temp.path(),"win32").await.unwrap();assert_eq!(result.err().unwrap().reason,"upgrade_unsupported");assert!(!temp.path().join("rpc-host-daemon").exists());}
+#[tokio::test]async fn absent_host_preflight_preserves_typed_refusal(){let temp=tempfile::tempdir().unwrap();let socket=temp.path().join("missing");let result=prepare_handoff(socket.to_str().unwrap(),temp.path(),"linux").await.unwrap();assert_eq!(result.err().unwrap(),HandoffRefusal{reason:"no_host",upgradeable:false});}

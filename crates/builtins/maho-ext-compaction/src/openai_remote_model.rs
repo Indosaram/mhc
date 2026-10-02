@@ -55,3 +55,7 @@ pub fn create_openai_remote_compaction_headers(model:&Model,api_key:Option<&str>
     }
     Some(headers)
 }
+pub fn create_live_openai_remote_compaction_headers(model: &Model, api_key: Option<&str>, additional: &BTreeMap<String, Option<String>>, session_id: Option<&str>) -> std::io::Result<Option<BTreeMap<String, String>>> {
+    let release = std::fs::read_to_string("/proc/sys/kernel/osrelease")?;
+    Ok(create_openai_remote_compaction_headers(model, api_key, additional, session_id, release.trim_end()))
+}

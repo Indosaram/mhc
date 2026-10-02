@@ -14,28 +14,38 @@ pub struct ExtensionModelRuntimeActions(pub std::sync::Mutex<crate::model_runtim
 impl maho_ext_api::ExtensionProviderActions for ExtensionModelRuntimeActions {
     fn register_provider(&self, registration: maho_ext_api::ProviderRegistration, _: &str) -> Result<(), maho_ext_api::ExtensionFailure> {
         let mut runtime = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        match registration {
-            maho_ext_api::ProviderRegistration::Native(provider) => { runtime.register_native_provider(provider); Ok(()) }
-            maho_ext_api::ProviderRegistration::Config { name, config } => {
-                let models = config.models.map(|models| models.into_iter().map(extension_provider_model).collect());
-                let refresh_models = config.refresh_models.map(|refresh| -> crate::provider_composer::ExtensionRefresh {
-                    std::sync::Arc::new(move |context| {
-                        let future = refresh(context);
-                        Box::pin(async move { future.await.map(|models| models.into_iter().map(extension_provider_model).collect()).map_err(|error| error.message) })
-                    })
-                });
-                let input = crate::provider_composer::ProviderConfigInput {
-                    config: crate::model_config_schema::ModelsJsonProvider {
-                        name: config.name, base_url: config.base_url, api_key: config.api_key, api: config.api,
-                        headers: config.headers, extra_body: config.extra_body.and_then(|value| value.as_object().cloned()),
-                        auth_header: config.auth_header, models, ..Default::default()
-                    },
-                    stream_simple: config.stream_simple, oauth: config.oauth, fallback_eligible: config.fallback_eligible,
-                    refresh_models, retry_policy: None,
-                };
-                runtime.register_provider(&name, input).map_err(maho_ext_api::ExtensionFailure::new)
-            }
-        }
+        let (name, config, model_options, retry_policy) = match registration {
+            maho_ext_api::ProviderRegistration::Native(provider) => { runtime.register_native_provider(provider); return Ok(()); }
+            maho_ext_api::ProviderRegistration::Config { name, config } => (name, config, std::collections::BTreeMap::new(), None),
+            maho_ext_api::ProviderRegistration::ConfigOptions { name, options } => (name, Box::new(options.config), options.model_options, options.retry_policy),
+        };
+        let apply_options = move |model: maho_ext_api::ProviderModelConfig| {
+            let options = model_options.get(&model.id).cloned().unwrap_or_default();
+            let mut model = extension_provider_model(model);
+            model.service_tier = options.service_tier;
+            model.prompt_preset = options.prompt_preset;
+            model.sampling_params = options.sampling_params.map(|params| params.into_iter().collect());
+            model.cache_retention = options.cache_retention;
+            model
+        };
+        let models = config.models.map(|models| models.into_iter().map(&apply_options).collect());
+        let refresh_models = config.refresh_models.map(|refresh| -> crate::provider_composer::ExtensionRefresh {
+            std::sync::Arc::new(move |context| {
+                let future = refresh(context);
+                let apply_options = apply_options.clone();
+                Box::pin(async move { future.await.map(|models| models.into_iter().map(apply_options).collect()).map_err(|error| error.message) })
+            })
+        });
+        let input = crate::provider_composer::ProviderConfigInput {
+            config: crate::model_config_schema::ModelsJsonProvider {
+                name: config.name, base_url: config.base_url, api_key: config.api_key, api: config.api,
+                headers: config.headers, extra_body: config.extra_body.and_then(|value| value.as_object().cloned()),
+                auth_header: config.auth_header, models, ..Default::default()
+            },
+            stream_simple: config.stream_simple, oauth: config.oauth, fallback_eligible: config.fallback_eligible,
+            refresh_models, retry_policy,
+        };
+        runtime.register_provider(&name, input).map_err(maho_ext_api::ExtensionFailure::new)
     }
     fn unregister_provider(&self, name: &str, _: &str) -> Result<(), maho_ext_api::ExtensionFailure> {
         self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).unregister_provider(name); Ok(())
@@ -199,11 +209,26 @@ mod tests {
             reasoning: false, recover_text_tool_calls: None, thinking_level_map: None, input: vec![maho_ai::types::InputModality::Text],
             cost: Default::default(), context_window: 4096, max_tokens: 512, headers: None, extra_body: None, compat: None,
         };
-        api.register_provider("fixture", ProviderConfig { base_url: Some("https://example.test/v1".into()), api: Some("openai-completions".into()), models: Some(vec![model]), ..Default::default() }).unwrap();
+        api.register_provider_with_options("fixture", ProviderConfigOptions {
+            config: ProviderConfig { base_url: Some("https://example.test/v1".into()), api: Some("openai-completions".into()), models: Some(vec![model]), ..Default::default() },
+            model_options: std::collections::BTreeMap::from([("fixture-model".into(), ProviderModelOptions {
+                service_tier: Some(maho_ai::types::ServiceTierPreference::Flex), prompt_preset: Some("fixture-prompt".into()),
+                sampling_params: Some(serde_json::from_value(serde_json::json!({"temperature": 0.2})).unwrap()),
+                cache_retention: Some(maho_ai::types::CacheRetention::Long),
+            })]),
+            retry_policy: Some(maho_ai::utils::retry_profile::profiles::SENPI_DEFAULT_RETRY_PROFILE.clone()),
+        }).unwrap();
         assert!(runtime.get_model("fixture", "fixture-model").is_none());
         extension_runtime.bind_providers(actions).unwrap();
         let model = runtime.get_model("fixture", "fixture-model").unwrap();
         assert_eq!(model.context_window, 4096); assert_eq!(model.base_url, "https://example.test/v1");
+        assert_eq!(model.cache_retention, Some(maho_ai::types::CacheRetention::Long));
+        assert_eq!(model.sampling_params.as_ref().unwrap()["temperature"], serde_json::json!(0.2));
+        let config = runtime.get_registered_provider_config("fixture").unwrap();
+        assert_eq!(config.retry_policy.as_ref().unwrap().id, "senpi-default");
+        let definition = &config.models.as_ref().unwrap()[0];
+        assert_eq!(definition.service_tier, Some(maho_ai::types::ServiceTierPreference::Flex));
+        assert_eq!(definition.prompt_preset.as_deref(), Some("fixture-prompt"));
         api.unregister_provider("fixture").unwrap();
         assert!(runtime.get_model("fixture", "fixture-model").is_none());
     }

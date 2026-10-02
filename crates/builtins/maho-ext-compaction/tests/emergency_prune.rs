@@ -10,3 +10,25 @@ fn history()->Vec<Value> {vec![json!({"role":"user","content":"initial request",
 #[test] fn latch_stays_engaged_while_history_is_large() {let input=history();let mut latch=EmergencyPruneLatch::default();hard_limit_emergency_prune(&input,5000,Some(&mut latch));let output=hard_limit_emergency_prune(&input,5000,Some(&mut latch));assert!(latch.engaged);assert_ne!(output.messages,input);}
 #[test] fn under_threshold_preserves_oversized_result() {let input=history();let output=hard_limit_emergency_prune(&input,128000,None);assert_eq!(output.messages,input);assert!(!output.needs_aggressive_compaction);}
 #[test] fn over_threshold_truncates_and_requests_aggressive_compaction() {let input=vec![json!({"role":"user","content":"latest","timestamp":1}),history()[2].clone()];let output=hard_limit_emergency_prune(&input,2,None);assert!(output.needs_aggressive_compaction);assert!(output.messages[1]["content"][0]["text"].as_str().expect("text").contains("<truncated:"));}
+
+#[test]
+fn representative_overflow_drops_atomic_pairs_before_old_prose() {
+    let mut input = history();
+    input.insert(3, json!({"role":"assistant","content":[{"type":"text","text":"old explanation"}]}));
+    input.insert(4, json!({"role":"user","content":"older follow-up","timestamp":4}));
+    let expected = vec![input[3].clone(), input[4].clone(), input[5].clone()];
+    let window = (estimate_total_tokens(&expected) as f64 / 0.95).ceil() as u64;
+    let result = hard_limit_emergency_prune(&input, window, None);
+    assert!(result.needs_aggressive_compaction);
+    assert_eq!(result.messages, expected);
+}
+
+#[test]
+fn many_old_messages_trim_to_the_real_estimator_budget() {
+    let input: Vec<_> = (0..300).map(|index| json!({"role":"user","content":format!("old-{index:03}"),"timestamp":index})).collect();
+    let expected = &input[270..];
+    let window = (estimate_total_tokens(expected) as f64 / 0.95).ceil() as u64;
+    let result = hard_limit_emergency_prune(&input, window, None);
+    assert!(result.needs_aggressive_compaction);
+    assert_eq!(result.messages, expected);
+}
