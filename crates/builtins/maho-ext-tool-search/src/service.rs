@@ -92,7 +92,7 @@ impl ToolSearchService {
 }
 fn extension_document(tool:ToolInfo)->Option<ToolSearchDocument> {
     if tool.name.is_empty() { return None; }
-    let file=Path::new(&tool.source_info.path).file_name()?.to_string_lossy();
+    let file=Path::new(&tool.source_info.path).file_name().unwrap_or_else(||std::ffi::OsStr::new("")).to_string_lossy();
     let owner=Path::new(file.as_ref()).file_stem().unwrap_or_else(||std::ffi::OsStr::new(file.as_ref())).to_string_lossy().into_owned();
     Some(ToolSearchDocument{registration_id:derive_extension_registration_id(&tool.source_info.path,None,&tool.name),name:tool.name,label:tool.label,aliases:vec![],description:Some(tool.description),search_text:tool.search_text,keywords:tool.search_keywords,source:ToolSearchSource::Extension,group:tool.search_group.unwrap_or_else(||owner.clone()),owner_label:owner})
 }
@@ -114,6 +114,10 @@ mod tests {
         assert_eq!(service.hidden_tool_hints("write bash write"),vec![HiddenToolHint{name:"write".into(),hint:"use patch".into()},HiddenToolHint{name:"bash".into(),hint:"use eval".into()}]);
     }
     #[test] fn missing_parameters_are_absent() { assert_eq!(service().get_tool_parameters("unknown").unwrap(),None); }
+    #[test] fn empty_source_path_keeps_named_extension_document() {
+        let doc=extension_document(ToolInfo{name:"read".into(),label:"Read".into(),description:String::new(),parameters:Value::Null,prompt_guidelines:None,source_info:SourceInfo::default(),exposure:ToolExposure::Search,search_text:None,search_keywords:vec![],search_group:None,allow_lazy_activation:true}).unwrap();
+        assert_eq!(doc.owner_label,""); assert_eq!(doc.group,""); assert_eq!(doc.registration_id,"\0read");
+    }
     #[test] fn empty_catalog_search_has_no_matches() { assert!(service().search("files",10,&Bm25SearchOptions::default()).unwrap().is_empty()); }
     #[test] fn native_executor_returns_machine_details_for_empty_catalog() {
         let tool=crate::tool::create_tool_search_tool(Arc::new(std::sync::Mutex::new(service())));
