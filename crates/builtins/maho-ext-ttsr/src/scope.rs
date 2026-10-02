@@ -36,16 +36,32 @@ fn matches_path(pattern:&str,path:&str)->bool {
         let matched=matches_path(remaining,path);
         return if bangs%2==0 { matched } else { !matched };
     }
-    if extglob(pattern).is_some() {
+    if extglob(pattern).is_some() || pattern.contains("..") || pattern.contains("[:") {
         let Some(fragment)=glob_fragment(pattern) else { return false; };
         let pattern=format!("^{fragment}$");
         let Ok(matcher)=regress::Regex::new(&pattern) else { return false; };
         return matcher.find(path).is_some();
     }
     let Ok(glob)=globset::GlobBuilder::new(pattern).literal_separator(true).empty_alternates(true).allow_unclosed_class(true).build() else { return false; }; let matcher=glob.compile_matcher();
-    matcher.is_match(path)
+    if path=="."||path==".." { return false; }
+    matcher.is_match(path) || pattern.contains('*')&&path.strip_suffix('/').is_some_and(|path|matcher.is_match(path))
 }
 fn glob_fragment(pattern:&str)->Option<String> {
+    if let Some(start)=pattern.find('{') && let Some(offset)=pattern[start+1..].find('}') {
+        let end=start+1+offset; let body=&pattern[start+1..end];
+        if body.contains("..")&&!body.contains(',') {
+            let mut parts=body.split("..").collect::<Vec<_>>(); parts.sort_unstable();
+            let range=format!("[{}]",parts.join("-"));
+            let expanded=if regress::Regex::new(&range).is_ok() { range } else { parts.into_iter().map(regex::escape).collect::<Vec<_>>().join("..") };
+            return Some(format!("{}{expanded}{}",glob_fragment(&pattern[..start])?,glob_fragment(&pattern[end+1..])?));
+        }
+    }
+    for (name,source) in [("alnum","a-zA-Z0-9"),("alpha","a-zA-Z"),("ascii",r"\x00-\x7F"),("blank",r" \t"),("cntrl",r"\x00-\x1F\x7F"),("digit","0-9"),("graph",r"\x21-\x7E"),("lower","a-z"),("print",r"\x20-\x7E "),("space",r" \t\r\n\v\f"),("upper","A-Z"),("word","A-Za-z0-9_"),("xdigit","A-Fa-f0-9")] {
+        let token=format!("[[:{name}:]]");
+        if let Some(start)=pattern.find(&token) {
+            return Some(format!("{}[{source}]{}",glob_fragment(&pattern[..start])?,glob_fragment(&pattern[start+token.len()..])?));
+        }
+    }
     if let Some((start,operator,end))=extglob(pattern) {
         let body=&pattern[start+2..end]; let suffix=&pattern[end+1..];
         let mut alternatives=Vec::new(); let mut depth=0; let mut part=0; let mut escaped=false;
@@ -92,6 +108,11 @@ pub fn matches_scope(scope:&TtsrScope,source:TtsrStreamSource,tool_name:Option<&
 pub fn matches_path_globs(globs:&[String],paths:Option<&[String]>)->bool { globs.is_empty() || globs.iter().any(|glob|matches_any_path(glob,paths)) }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn picomatch_range_posix_and_separator_matrix() {
+        for (pattern,path,expected) in [("{1..3}.rs","2.rs",true),("{a..c}.rs","b.rs",true),("[[:digit:]].rs","2.rs",true),("*.rs","a.rs/",true),("*",".",false),("*","..",false),("**/*.rs","a/../b.rs",true),("**/*.rs","src/.hidden.rs",true)] {
+            assert_eq!(matches_path_globs(&[pattern.into()],Some(&[path.into()])),expected,"{pattern}: {path}");
+        }
+    }
     #[test] fn picomatch_literal_extglob_and_negated_path_matrix() {
         for (pattern,path,expected) in [("@(a|b).rs","a.rs",true),("@(a|b).rs","c.rs",false),("+(a|b).rs","aba.rs",true),("?(a|b).rs",".rs",true),("*(a|b).rs","aba.rs",true),("!(a|b).rs","aa.rs",false),("!(a|b).rs","c.rs",true),("!*.rs","a.rs",false),("!*.rs","src/a.rs",true),("!!*.rs","src/a.rs",true),("@(a*|b?).rs","abc.rs",true),("a@(b|c)*.rs","abzz.rs",true),("[abc","[abc",true)] {
             assert_eq!(matches_path_globs(&[pattern.into()],Some(&[path.into()])),expected,"{pattern}: {path}");
