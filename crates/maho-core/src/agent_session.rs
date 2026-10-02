@@ -1958,8 +1958,13 @@ impl AgentSession {
             result.estimated_tokens_after = Some(self.with_session_manager(|manager| manager.build_context(manager.leaf_id()))
                 .messages.iter().map(crate::compaction::compaction::estimate_tokens).sum::<u64>() as i64);
             let mut messages = self.messages();
-            for diagnostic in diagnostic_messages {
-                if !messages.contains(&diagnostic) { messages.push(diagnostic); }
+            if !diagnostic_messages.is_empty() {
+                messages.retain(|message| {
+                    let AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(custom)) = message else { return true; };
+                    !(custom.custom_type == "senpi.hook" && custom.details.as_ref().is_some_and(|details|
+                        details["event"] == "PreCompact" && details["compactionRequestId"] == request_id))
+                });
+                messages.extend(diagnostic_messages);
             }
             self.agent.set_messages(messages);
             accepted_entry = Some((entry, from_extension));
@@ -3867,12 +3872,48 @@ impl AgentSession {
         let _admission = self.prompt_admission.lock().await;
         let _work = self.work_barrier.begin();
         self.state().user_aborted = false;
+        let settings = self.with_settings_manager(|manager| manager.get_value("retry").cloned()).unwrap_or(Value::Null);
+        let policy = crate::retry_fallback::settings::resolve_retry_fallback_settings(Some(&settings)).revert_policy;
+        if let Some(controller) = self.retry_fallback.lock().await.as_mut() { controller.maybe_restore_primary(policy).await?; }
+        self.revalidate_scheduled_continuation_admission().await?;
         self.agent.continue_with_queued_messages(Default::default()).await;
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
         drop(_work);
         drop(_admission);
         self.emit_agent_settled().await;
+        Ok(())
+    }
+
+    async fn revalidate_scheduled_continuation_admission(&self) -> Result<(), String> {
+        let model = self.model();
+        let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
+        let settings = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
+            .transpose().map_err(|error| error.to_string())?;
+        let resolved = crate::compaction_settings_resolver::resolve_compaction_settings(settings.as_ref(), Some(
+            crate::compaction_settings_access::CompactionModelSelector { provider: &model.provider, id: &model.id },
+        ))?;
+        if !resolved.enabled || self.is_compaction_delegated() { return Ok(()); }
+        let messages = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()).messages);
+        let messages = crate::messages::filter_context_excluded_messages(messages);
+        let estimate = crate::compaction::estimate_context_tokens(&messages);
+        let compacted = self.with_session_manager(|manager|
+            crate::session_manager::get_latest_compaction_entry(&manager.branch(manager.leaf_id())).is_some());
+        let tokens = if compacted { messages.iter().map(crate::compaction::estimate_tokens).sum() } else { estimate.tokens };
+        let reserve = if resolved.reserve_scaling_enabled {
+            crate::compaction::compaction::resolve_reserve_tokens(model.context_window as f64, resolved.reserve_tokens as f64) as u64
+        } else { resolved.reserve_tokens as u64 };
+        let at_hard_limit = tokens > model.context_window.saturating_sub(reserve);
+        let ratio = match model.context_window {
+            0 => 0.5, 1..=16_000 => 0.45, 16_001..=32_000 => 0.5, 32_001..=64_000 => 0.55,
+            64_001..=128_000 => 0.6, 128_001..=512_000 => 0.7, _ => 0.8,
+        };
+        let over_proactive_threshold = model.context_window > 0 && tokens as f64 >= model.context_window as f64 * ratio;
+        if !at_hard_limit && !over_proactive_threshold { return Ok(()); }
+        let result = self.compact_for_model(None, &model, "pre-prompt").await;
+        if result.is_err() && at_hard_limit && !self.is_compaction_delegated() {
+            return Err("Compaction required before provider request".to_owned());
+        }
         Ok(())
     }
 
@@ -6314,6 +6355,38 @@ mod tests {
         let cleared = session.clear_queue(false);
         assert_eq!(cleared.steering, ["late steering ".repeat(200)]);
         assert_eq!(cleared.follow_up, ["late followup"]);
+    }
+
+    #[tokio::test]
+    async fn continuation_admission_only_hard_failure_blocks() {
+        for (hard_limit, reject) in [(false, false), (false, true), (true, true)] {
+            let session = test_session();
+            let mut model = test_model();
+            model.context_window = 128;
+            session.agent.set_model(model);
+            session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+                ("compaction".to_owned(), serde_json::json!({"reserveTokens":0,"reserveScalingEnabled":false,"keepRecentTokens":1})),
+            ])));
+            for text in ["old task", "recent task"] {
+                let text = text.repeat(if hard_limit { 800 } else { 13 });
+                session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":text,"timestamp":0})));
+            }
+            session.rebuild_session_context().expect("context");
+            let mut extension = maho_ext_api::LoadedExtension::new("<inline:continuation-admission>", session.cwd().into(), Default::default());
+            extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(move |event, _| {
+                let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { panic!("preparation"); };
+                assert_eq!(event.reason, maho_ext_api::CompactionReason::PrePrompt);
+                let result = maho_ext_api::CompactionResult { summary: "digest".to_owned(),
+                    first_kept_entry_id: event.preparation.first_kept_entry_id.clone(), tokens_before: event.preparation.tokens_before, details: None };
+                Box::pin(async move { Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {
+                    cancel: reject.then_some(true), compaction: (!reject).then_some(result), ..Default::default()
+                })) })
+            })]);
+            session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+            let result = session.revalidate_scheduled_continuation_admission().await;
+            assert_eq!(result.is_err(), hard_limit && reject);
+            assert_eq!(session.compaction_state().generation(), 1);
+        }
     }
 
     #[tokio::test]
