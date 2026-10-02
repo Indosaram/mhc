@@ -1674,6 +1674,8 @@ dependencies = [
  "maho-ai",
  "maho-tools",
  "maho-tui",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1858,7 +1860,11 @@ dependencies = [
 name = "maho-ext-host"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
+ "maho-ai",
  "maho-ext-api",
+ "nix",
  "tokio",
 ]
 
