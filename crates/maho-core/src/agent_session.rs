@@ -401,6 +401,7 @@ struct AgentSessionState {
     compaction_abort_controller: Option<maho_ai::utils::abort::AbortController>,
     prompt_templates: Vec<crate::prompt_templates::PromptTemplate>,
     extension_commands: Vec<maho_ext_api::SlashCommandInfo>,
+    extension_event_sender: Option<tokio::sync::mpsc::UnboundedSender<maho_ext_api::ExtensionEvent>>,
     extension_tool_context: Option<(maho_ext_api::ExtensionRuntime, maho_ext_host::wrapper::ToolContextFactory)>,
     skills: Vec<crate::skills::Skill>,
     bash_abort_signals: BTreeMap<String, maho_ext_api::AbortSignal>,
@@ -707,7 +708,10 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
         Ok(())
     }
     fn append_entry(&self, custom_type: &str, data: Option<Value>) -> Result<(), maho_ext_api::ExtensionFailure> {
-        self.session()?.with_session_manager_mut(|manager| manager.append_custom(custom_type, data)); Ok(())
+        let session = self.session()?;
+        let entry = session.with_session_manager_mut(|manager| manager.append_custom(custom_type, data));
+        session.emit(AgentSessionEvent::EntryAppended { entry: session_entry_from_value(entry) });
+        Ok(())
     }
     fn get_all_tools(&self) -> Result<Vec<maho_ext_api::ToolInfo>, maho_ext_api::ExtensionFailure> {
         Ok(self.session()?.get_all_tools().into_iter().map(|tool| maho_ext_api::ToolInfo {
@@ -1024,6 +1028,7 @@ impl AgentSession {
             compaction_abort_controller: None,
             prompt_templates: Vec::new(),
             extension_commands: Vec::new(),
+            extension_event_sender: None,
             extension_tool_context: None,
             skills: Vec::new(),
             bash_abort_signals: BTreeMap::new(),
@@ -1207,6 +1212,10 @@ impl AgentSession {
         }
         if matches!(event, AgentEvent::TurnEnd { .. }) {
             self.state().turn_index += 1;
+            let pending = std::mem::take(&mut self.state().pending_custom_messages);
+            for message in pending {
+                if let Err(error_message) = self.append_extension_custom_message(message) { self.emit(AgentSessionEvent::ContinuationError { error_message }); }
+            }
         }
         self.emit(AgentSessionEvent::Agent(event.clone()));
         if let AgentEvent::MessageEnd { message } = &event {
@@ -1588,8 +1597,6 @@ impl AgentSession {
     }
 
     async fn finish_provider_turn(&self) -> Result<(), String> {
-        let pending = std::mem::take(&mut self.state().pending_custom_messages);
-        for message in pending { self.append_extension_custom_message(message)?; }
         use crate::retry_fallback::controller::FallbackReason;
         use maho_ai::utils::retry_hint::parse_retry_after_ms_marker;
         let mut overflow_compacted = false;
@@ -2779,6 +2786,7 @@ impl AgentSession {
         }
         if let Ok(context) = runner.create_context() {
             let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+            self.state().extension_event_sender = Some(events.clone());
             let weak = Arc::downgrade(&self.inner);
             let ui = maho_ext_host::ui::LifecycleUi::new(context.ui, runner.runtime.clone(), Arc::new(move |event| { let _ = events.send(event); }));
             if let Err(error) = runner.bind_ui(Arc::new(ui)) { self.emit(AgentSessionEvent::ContinuationError { error_message: error.message }); }
@@ -3024,7 +3032,7 @@ impl AgentSession {
 
     pub fn pending_message_count(&self) -> usize {
         let state = self.state();
-        state.steering_messages.len() + state.follow_up_messages.len() + state.pending_next_turn_messages.len() + state.pending_custom_messages.len()
+        state.steering_messages.len() + state.follow_up_messages.len()
     }
 
     fn flush_pending_next_turn_messages(&self) -> Result<(), String> {
@@ -3148,6 +3156,10 @@ impl AgentSession {
             manager.append_session_info(Some(name));
         });
         self.emit(AgentSessionEvent::SessionInfoChanged { name: self.session_name() });
+        let sender = self.state().extension_event_sender.clone();
+        if let Some(sender) = sender {
+            let _ = sender.send(maho_ext_api::ExtensionEvent::SessionInfoChanged { name: self.session_name() });
+        }
     }
 
     /// User messages available for forking, in session order.
@@ -3945,12 +3957,37 @@ mod tests {
             custom_type: "notice".into(), content: vec![maho_ext_api::ToolContent::text("later")], display: true, details: None,
         }, maho_ext_api::SendMessageOptions { trigger_turn: false, deliver_as: Some(maho_ext_api::DeliverAs::NextTurn) }).unwrap();
         assert!(session.messages().is_empty());
-        assert_eq!(session.pending_message_count(), 1);
+        assert_eq!(session.state().pending_next_turn_messages.len(), 1);
+        assert_eq!(session.pending_message_count(), 0);
         session.flush_pending_next_turn_messages().unwrap();
         assert_eq!(session.messages()[0].role(), "custom");
         assert_eq!(session.pending_message_count(), 0);
         assert_eq!(session.with_session_manager(|manager| manager.entries())[0]["type"], "custom_message");
         assert!(matches!(&lock(&events)[0], AgentSessionEvent::EntryAppended { .. }));
+    }
+
+    #[test]
+    fn extension_append_entry_publishes_saved_entry_without_changing_messages() {
+        use maho_ext_api::ExtensionActions;
+        let session = test_session();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| lock(&captured).push(event.clone())));
+        SessionExtensionActions(Arc::downgrade(&session.inner)).append_entry("state", Some(serde_json::json!({"value":1}))).unwrap();
+        assert!(session.messages().is_empty());
+        let events = lock(&events);
+        let AgentSessionEvent::EntryAppended { entry } = &events[0] else { panic!("saved entry event") };
+        assert_eq!(entry.kind, "custom");
+        assert_eq!(entry.data["data"]["value"], 1);
+    }
+
+    #[test]
+    fn session_name_change_queues_extension_metadata_event() {
+        let session = test_session();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        session.state().extension_event_sender = Some(sender);
+        session.set_session_name("renamed");
+        assert!(matches!(receiver.try_recv().unwrap(), maho_ext_api::ExtensionEvent::SessionInfoChanged { name: Some(name) } if name == "renamed"));
     }
 
     #[tokio::test]
@@ -4470,6 +4507,22 @@ mod tests {
         assert_eq!(entries[0]["content"], "payload");
         assert_eq!(entries[0]["details"]["origin"], "extension");
         assert_eq!(session.message_revision(), 1);
+    }
+
+    #[tokio::test]
+    async fn nontriggering_custom_messages_flush_at_turn_end() {
+        let session = test_session();
+        session.state().pending_custom_messages.push(maho_agent::harness::messages::CustomMessage {
+            role: "custom".into(), custom_type: "aside".into(),
+            content: maho_agent::harness::messages::CustomMessageContent::Text("after turn".into()),
+            display: true, details: None, timestamp: 0,
+        });
+        session.process_agent_event(maho_agent::types::AgentEvent::TurnEnd {
+            message: make_user_message("turn", None), tool_results: Vec::new(),
+        }, maho_ai::utils::abort::AbortController::new().signal()).await;
+        assert!(session.state().pending_custom_messages.is_empty());
+        assert_eq!(session.messages()[0].role(), "custom");
+        assert_eq!(session.with_session_manager(|manager| manager.entries()).len(), 1);
     }
 
     #[tokio::test]
