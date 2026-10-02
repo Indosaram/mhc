@@ -10,11 +10,17 @@ impl TtsrManager {
     pub fn add_rule(&mut self,rule:TtsrRule)->bool {
         if !self.settings.enabled || self.settings.disabled_rules.contains(&rule.name) || self.rules.iter().any(|entry|entry.rule.name==rule.name) { return false; }
         let mut conditions=Vec::new();
-        for pattern in &rule.condition { if let Some(regex)=(self.compile_condition)(pattern) { conditions.push(regex); self.max_condition_length=self.max_condition_length.max(pattern.encode_utf16().count()); } }
-        if conditions.is_empty() || !has_reachable_scope(&rule.scope) { return false; }
-        let matching_globs=rule.globs.as_deref().unwrap_or(&[]).iter().filter(|glob|globset::GlobBuilder::new(glob).literal_separator(true).build().is_ok()).cloned().collect();
+        for pattern in &rule.condition {
+            if let Some(regex)=(self.compile_condition)(pattern) { conditions.push(regex); self.max_condition_length=self.max_condition_length.max(pattern.encode_utf16().count()); }
+            else { eprintln!("TTSR condition has invalid regex pattern, skipping condition {{ ruleName: {:?}, pattern: {:?} }}",rule.name,pattern); }
+        }
+        if conditions.is_empty() { eprintln!("TTSR rule has no valid condition, skipping rule {{ ruleName: {:?} }}",rule.name); return false; }
+        if !has_reachable_scope(&rule.scope) { eprintln!("TTSR scope excludes all streams, skipping rule {{ ruleName: {:?} }}",rule.name); return false; }
+        let matching_globs=rule.globs.as_deref().unwrap_or(&[]).iter().filter(|glob|match globset::GlobBuilder::new(glob).literal_separator(true).build() { Ok(_)=>true,Err(error)=>{ eprintln!("TTSR glob pattern is invalid, skipping glob {{ ruleName: {:?}, pattern: {:?}, error: {:?} }}",rule.name,glob,error.to_string()); false } }).cloned().collect();
         let mut matching_scope=rule.scope.clone();
-        for tool in &mut matching_scope.tool_scopes { if tool.path_glob.as_ref().is_some_and(|glob|globset::GlobBuilder::new(glob).literal_separator(true).build().is_err()) { tool.path_glob=None; } }
+        for tool in &mut matching_scope.tool_scopes {
+            if let Some(glob)=tool.path_glob.as_ref() && let Err(error)=globset::GlobBuilder::new(glob).literal_separator(true).build() { eprintln!("TTSR glob pattern is invalid, skipping glob {{ ruleName: {:?}, pattern: {:?}, error: {:?} }}",rule.name,glob,error.to_string()); tool.path_glob=None; }
+        }
         self.can_match_text|=rule.scope.allow_text; self.can_match_thinking|=rule.scope.allow_thinking;
         self.rules.push(Entry { rule,conditions,matching_globs,matching_scope }); true
     }
