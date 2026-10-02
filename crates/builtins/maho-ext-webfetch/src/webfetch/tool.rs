@@ -49,9 +49,9 @@ pub fn create_webfetch_tool()->maho_tools::definition::ToolDefinition {
         };
         let fetched=super::fetcher::fetch_url(super::fetcher::FetchOptions{url,format,timeout_seconds:Some(timeout as f64),signal:Some(&call.signal),on_progress:Some(&on_progress)}).await.map_err(|error|ToolError::Message(error.to_string()))?;
         emit("converting",Some(fetched.bytes),downloaded.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner))?;
-        if requires_html_conversion(&fetched.content_type,format) { return Err(ToolError::Message("HTML conversion requires source-equivalent DOM, Readability and Turndown bindings".into())); }
-        let raw=String::from_utf8_lossy(&fetched.body); let raw=raw.strip_prefix('\u{feff}').unwrap_or(&raw); let capped=cap_webfetch_output(raw);
-        let details=json!({"url":url,"finalUrl":fetched.url,"format":format_name,"status":fetched.status,"statusText":fetched.status_text,"contentType":fetched.content_type,"bytes":fetched.bytes,"timeoutSeconds":timeout,"converted":false,"truncated":fetched.truncated,"outputTruncated":capped.truncated,"outputBytes":capped.output_bytes,"outputTotalBytes":capped.total_bytes});
+        let raw=String::from_utf8_lossy(&fetched.body); let raw=raw.strip_prefix('\u{feff}').unwrap_or(&raw);let converted=requires_html_conversion(&fetched.content_type,format);
+        let text=if converted {match format {WebfetchFormat::Markdown=>super::content::html_to_markdown(raw,&fetched.url),WebfetchFormat::Text=>super::content::html_to_text(raw,&fetched.url),WebfetchFormat::Html=>unreachable!("raw HTML does not require conversion")}} else {raw.to_owned()};let capped=cap_webfetch_output(&text);
+        let details=json!({"url":url,"finalUrl":fetched.url,"format":format_name,"status":fetched.status,"statusText":fetched.status_text,"contentType":fetched.content_type,"bytes":fetched.bytes,"timeoutSeconds":timeout,"converted":converted,"truncated":fetched.truncated,"outputTruncated":capped.truncated,"outputBytes":capped.output_bytes,"outputTotalBytes":capped.total_bytes});
         let mut content=vec![ToolContent::text(if capped.notice.is_some() { format!("{}\n",capped.text) } else { capped.text })];
         if let Some(notice)=capped.notice { content.push(ToolContent::Text{text:notice,audience:Some("model".into())}); }
         Ok(ToolResult{content,details:Some(details)})
@@ -61,6 +61,16 @@ pub fn create_webfetch_tool()->maho_tools::definition::ToolDefinition {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn native_executor_converts_html_after_redirect_using_final_url() {
+        use tokio::io::{AsyncReadExt,AsyncWriteExt};
+        for format in ["markdown","text","html"] {
+            let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let origin=format!("http://{}",listener.local_addr().unwrap());let body="<title>Article</title><div class='entry-content'><p>A sufficiently long explicit article paragraph for the native fetch test.</p><a href='child'>Link</a></div>";
+            let server=async {for redirect in [true,false] {let (mut socket,_)=listener.accept().await.unwrap();let mut request=[0;4096];assert!(socket.read(&mut request).await.unwrap()>0);if redirect {socket.write_all(b"HTTP/1.1 302 Found\r\nLocation: /posts/final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();} else {socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();}}};
+            let client=async {(create_webfetch_tool().execute)(maho_tools::definition::ToolCall{id:"html",params:serde_json::json!({"url":format!("{origin}/start"),"format":format}),signal:Default::default(),context:None,on_update:None}).await.unwrap()};
+            let (_,result)=tokio::time::timeout(std::time::Duration::from_secs(5),async {tokio::join!(server,client)}).await.unwrap();let maho_tools::definition::ToolContent::Text{text,..}=&result.content[0] else {panic!("expected text")};assert_eq!(result.details.as_ref().unwrap()["converted"],format!="html");assert_eq!(result.details.as_ref().unwrap()["finalUrl"],format!("{origin}/posts/final"));
+            match format {"markdown"=>assert!(text.contains(&format!("[Link]({origin}/posts/child)"))),"text"=>{assert!(text.starts_with("Article\n\n"));assert!(!text.contains("<p>"));},_=>assert_eq!(text,body)}
+        }
+    }
     #[tokio::test] async fn native_output_caps_match_upstream_single_line_multiline_and_small_cases() {
         use tokio::io::{AsyncReadExt,AsyncWriteExt};
         let bodies=[format!("{{\"data\":\"{}\"}}","x".repeat(2*1024*1024)),(0..5000).map(|index|format!("line-{index}-{}\n","y".repeat(40))).collect::<String>(),"hello world\nsecond line\n".into()];

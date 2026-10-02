@@ -249,9 +249,9 @@ pub fn reader_clean_styles(node:&dom_query::NodeRef<'_>) {
     for child in node.element_children() {reader_clean_styles(&child);}
 }
 pub fn reader_grab_article<'a>(document:&'a dom_query::Document,title:&str,metadata_byline:Option<&str>)->Option<dom_query::NodeRef<'a>> {
-    let body=document.select("body").nodes().first().copied()?;let cache=body.inner_html();let mut attempts=Vec::new();
+    let body=document.select("body").nodes().first().copied()?;let cache=body.inner_html();let mut attempts=Vec::new();let mut byline=metadata_byline.map(str::to_owned);
     for (strip,weight,clean) in [(true,true,true),(false,true,true),(false,false,true),(false,false,false)] {
-        body.set_html(cache.as_ref());let root=document.select("html").nodes()[0];let (elements,_)=reader_prepare_nodes(root,title,strip,metadata_byline);let scores=score_reader_candidates(&elements,weight);let ranked=reader_top_candidates(&scores);
+        body.set_html(cache.as_ref());let root=document.select("html").nodes()[0];let (elements,found_byline)=reader_prepare_nodes(root,title,strip,byline.as_deref());if found_byline.is_some() {byline=found_byline;}let scores=score_reader_candidates(&elements,weight);let ranked=reader_top_candidates(&scores);
         let candidate=ranked.first().map(|(id,_)|root.tree.get_unchecked(id));let synthetic=candidate.is_none_or(|node|node.node_name().as_deref()==Some("body"));
         let top=if synthetic {
             let children=body.children();body.append_html("<div></div>");let container=body.children().last().copied().expect("inserted candidate");for child in children {container.append_child(&child);}container
@@ -723,6 +723,9 @@ mod tests {
     }
     #[test] fn reader_grab_assembles_article_and_retries_short_unlikely_content() {
         let document=dom_query::Document::from("<div class='sidebar'><p>A short fallback sentence.</p></div>");reader_prepare_document(&document);let article=reader_grab_article(&document,"",None).unwrap();assert_eq!(reader_inner_text(&article,true),"A short fallback sentence.");assert_eq!(dom_query::Selection::from(article).select("#readability-page-1").length(),1);
+    }
+    #[test] fn reader_retry_keeps_source_byline_state_after_body_restore() {
+        let document=dom_query::Document::from("<title>Short</title><div class='author'>Writer</div><p>Short content.</p>");reader_prepare_document(&document);let article=reader_grab_article(&document,"Short",None).unwrap();assert!(reader_inner_text(&article,true).contains("Writer"));
     }
     #[test] fn reader_article_preparation_preserves_video_and_top_share_candidate() {
         let document=dom_query::Document::from("<main><section class='share'><p>Article</p><span class='share'>share buttons</span><iframe src='https://youtube.com/embed/x'></iframe><iframe src='https://invalid.test/x'></iframe><footer>footer</footer><h1 class='sidebar'>bad title</h1><h1>Good title</h1><img data-src='real.png'></section></main>");reader_prepare_article(&document.select("main").nodes()[0],true,true);assert_eq!(document.select(".share").length(),1);assert_eq!(document.select("iframe").length(),1);assert!(document.select("footer,h1").is_empty());assert_eq!(document.select("h2").text().as_ref(),"Good title");assert_eq!(document.select("img").attr("src").as_deref(),Some("real.png"));
