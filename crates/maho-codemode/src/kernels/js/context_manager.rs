@@ -103,7 +103,7 @@ impl JavaScriptKernel {
 }
 
 fn route(message:Value,runs:&mut JavaScriptRunQueue,calls:&mut SubprocessRunQueue)->bool {
-    if message["type"]=="status" && message["event"]["op"]==crate::bridge::reserved::INTERRUPT_ACK_OP {return false;}
+    if message["type"]=="status" && matches!(message["event"]["op"].as_str(),Some(crate::bridge::reserved::INTERRUPT_ACK_OP|crate::bridge::reserved::CHILD_LIFECYCLE_OP)) {return false;}
     if let Some(run)=runs.active() && let Some(callback)=&run.on_message {callback(&message);}
     if message["type"]=="tool-call" {calls.push_tool_call(message);return false;}
     if message["type"]!="result" || runs.active().is_none_or(|run|message["cellId"]!=run.input.cell_id) {return false;}
@@ -220,6 +220,18 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn internal_child_status_does_not_reach_cell_output() {
+        let output=Arc::new(Mutex::new(Vec::new()));
+        let observed=output.clone();
+        let mut runs=JavaScriptRunQueue::default();
+        let _result=runs.enqueue(KernelRunInput {cell_id:"child".into(),code:String::new(),timeout_ms:None},None,Some(Arc::new(move |message|observed.lock().expect("output lock").push(message.clone()))));
+        runs.start_next(0.0);
+        let mut calls=SubprocessRunQueue::default();
+        route(json!({"type":"status","event":{"op":"child","pid":123,"state":"spawned"}}),&mut runs,&mut calls);
+        assert!(output.lock().expect("output lock").is_empty());
+    }
 
     #[tokio::test]
     async fn host_pump_does_not_own_actor_admission_lifetime() {
