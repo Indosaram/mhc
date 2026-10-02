@@ -727,11 +727,11 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
         let (text, images) = match content {
             maho_ext_api::UserMessageContent::Text(text) => (text, Vec::new()),
             maho_ext_api::UserMessageContent::Blocks(blocks) => {
-                let mut text = String::new(); let mut images = Vec::new();
+                let mut text = Vec::new(); let mut images = Vec::new();
                 for block in blocks { match block {
-                    maho_ext_api::ToolContent::Text { text: part, .. } => text.push_str(&part),
+                    maho_ext_api::ToolContent::Text { text: part, .. } => text.push(part),
                     maho_ext_api::ToolContent::Image { data, mime_type } => images.push(ImageContent { data, mime_type }),
-                }} (text, images)
+                }} (text.join("\n"), images)
             }
         };
         tokio::spawn(async move { session.prompt(&text, PromptOptions { images: Some(images), source: Some(InputSource::Extension),
@@ -782,7 +782,7 @@ impl maho_ext_api::ExtensionSessionActions for SessionExtensionActions {
             let source = registered.source_info.clone();
             let tool = maho_ext_host::wrapper::wrap_registered_tool(registered, runtime, factory);
             let mut active = session.get_active_tool_names();
-            if !active.contains(&definition.name) { active.push(definition.name.clone()); }
+            if normalize_tool_exposure(&definition, source.clone()).exposure != ToolExposure::Search && !active.contains(&definition.name) { active.push(definition.name.clone()); }
             session.register_tool_definition(definition, source, tool);
             session.set_active_tools_by_name(active);
         }
@@ -2882,7 +2882,7 @@ impl AgentSession {
             let definition = registered.definition.clone();
             let source = registered.source_info.clone();
             let tool = maho_ext_host::wrapper::wrap_registered_tool(registered, runner.runtime.clone(), context_factory.clone());
-            if !active.contains(&definition.name) { active.push(definition.name.clone()); }
+            if normalize_tool_exposure(&definition, source.clone()).exposure != ToolExposure::Search && !active.contains(&definition.name) { active.push(definition.name.clone()); }
             self.register_tool_definition(definition, source, tool);
         }
         self.set_active_tools_by_name(active);
@@ -4044,6 +4044,23 @@ mod tests {
         assert!(matches!(&lock(&events)[0], AgentSessionEvent::EntryAppended { .. }));
     }
 
+    #[tokio::test]
+    async fn extension_user_message_text_blocks_are_separated_by_newlines() {
+        use maho_ext_api::ExtensionActions;
+        let session = test_session();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::Agent(maho_agent::types::AgentEvent::MessageStart { message }) = event
+                && message.role() == "user" { let _ = sender.send(user_message_text(message)); }
+        }));
+        SessionExtensionActions(Arc::downgrade(&session.inner)).send_user_message(
+            maho_ext_api::UserMessageContent::Blocks(vec![maho_ext_api::ToolContent::text("first"), maho_ext_api::ToolContent::text("second")]),
+            Default::default(),
+        ).unwrap();
+        let text = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await.unwrap().unwrap();
+        assert_eq!(text, "first\nsecond");
+    }
+
     #[test]
     fn extension_append_entry_publishes_saved_entry_without_changing_messages() {
         use maho_ext_api::ExtensionActions;
@@ -4570,6 +4587,21 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].label, "Read files");
         assert_eq!(tools[0].search_keywords, ["files"]);
+    }
+
+    #[test]
+    fn late_search_tool_registration_does_not_expose_it_as_direct() {
+        use maho_ext_api::ExtensionSessionActions;
+        let session = test_session();
+        session.state().extension_tool_context = Some((maho_ext_api::ExtensionRuntime::default(), Arc::new(|| Err("unused context".into()))));
+        let mut definition = test_definition("lookup");
+        definition.exposure = Some(ToolExposure::Search);
+        SessionExtensionActions(Arc::downgrade(&session.inner)).install_registered_tool(maho_ext_api::RegisteredTool {
+            definition, source_info: empty_source_info(),
+        }).unwrap();
+        assert!(session.get_active_tool_names().is_empty());
+        assert_eq!(session.get_all_tools()[0].exposure, ToolExposure::Search);
+        assert!(session.get_registered_tool("lookup").is_some());
     }
 
     #[test]
