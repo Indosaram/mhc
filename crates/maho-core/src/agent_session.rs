@@ -2371,8 +2371,19 @@ impl AgentSession {
     pub fn rebuild_system_prompt(&self) {
         let skills = self.state().skills.clone();
         let active = self.get_active_tool_names();
+        let (snippets, guidelines) = {
+            let state = self.state();
+            let mut contributors = active.clone();
+            for name in &state.withheld_eval_only_tool_names {
+                if state.tool_registry.contains_key(name) && !contributors.contains(name) { contributors.push(name.clone()); }
+            }
+            let snippets = contributors.iter().filter_map(|name| state.tool_prompt_snippets.get(name).map(|snippet| (name.clone(), snippet.clone()))).collect();
+            let guidelines = contributors.iter().filter_map(|name| state.tool_prompt_guidelines.get(name)).flatten().cloned().collect();
+            (snippets, guidelines)
+        };
         let base = crate::system_prompt::build_system_prompt(&crate::system_prompt::BuildSystemPromptOptions {
             cwd: self.cwd(), selected_tools: Some(active), skills: Some(skills),
+            tool_snippets: Some(snippets), prompt_guidelines: Some(guidelines),
             context_files: Some(crate::resource_loader::load_project_context_files(&self.cwd(), &self.agent_dir())), ..Default::default()
         });
         self.state().base_system_prompt = base.clone();
@@ -2883,6 +2894,16 @@ impl AgentSession {
     /// custom tools.
     pub fn register_tool_definition(&self, definition: ToolDefinition, source_info: SourceInfo, tool: AgentTool) {
         let mut state = self.state();
+        if let Some(snippet) = definition.prompt_snippet.as_deref().map(|snippet| snippet.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|snippet| !snippet.is_empty()) { state.tool_prompt_snippets.insert(definition.name.clone(), snippet); }
+        if let Some(guidelines) = &definition.prompt_guidelines {
+            let mut normalized = Vec::new();
+            for guideline in guidelines {
+                let guideline = guideline.trim().to_owned();
+                if !guideline.is_empty() && !normalized.contains(&guideline) { normalized.push(guideline); }
+            }
+            state.tool_prompt_guidelines.insert(definition.name.clone(), normalized);
+        }
         state.tool_registry.insert(definition.name.clone(), tool);
         state.base_tool_definitions.insert(definition.name.clone(), definition.clone());
         state.tool_definitions.insert(definition.name.clone(), ToolDefinitionEntry { definition, source_info });
