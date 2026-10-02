@@ -8,8 +8,15 @@ pub struct InvalidTimeValue;
 fn format_expiry(expires_at:Option<f64>)->Result<String,InvalidTimeValue> {
     let Some(at)=expires_at else { return Ok("after 7 days".into()); };
     if !at.is_finite() || at.abs()>8_640_000_000_000_000.0 { return Err(InvalidTimeValue); }
-    let date=chrono::DateTime::from_timestamp_millis(at.trunc() as i64).ok_or(InvalidTimeValue)?;
-    Ok(date.to_rfc3339_opts(chrono::SecondsFormat::Millis,true))
+    let millis=at.trunc() as i64; let days=millis.div_euclid(86400000)+719468;
+    let era=days.div_euclid(146097); let day=days-era*146097;
+    let year_of_era=(day-day/1460+day/36524-day/146096)/365;
+    let day_of_year=day-(365*year_of_era+year_of_era/4-year_of_era/100);
+    let month_prime=(5*day_of_year+2)/153; let date=day_of_year-(153*month_prime+2)/5+1;
+    let month=month_prime+if month_prime<10 { 3 } else { -9 }; let year=year_of_era+era*400+i64::from(month<=2);
+    let year=if (0..=9999).contains(&year) { format!("{year:04}") } else if year<0 { format!("-{:06}",-year) } else { format!("+{year:06}") };
+    let time=millis.rem_euclid(86400000);
+    Ok(format!("{year}-{month:02}-{date:02}T{:02}:{:02}:{:02}.{:03}Z",time/3600000,time/60000%60,time/1000%60,time%1000))
 }
 pub fn format_fixed_loop_confirmation(outcome:&crate::index::LoopCreateOk,requested_raw:&str)->Result<String,InvalidTimeValue> {
     let cadence=outcome.effective_cadence.as_deref().unwrap_or("on schedule");
@@ -73,6 +80,10 @@ pub fn resolve_command_target(target:&LoopTarget,state:&LoopState)->TargetResolu
     #[test] fn unmatched_completion_is_absent() { assert_eq!(complete_loop_arguments("other"),None); }
     #[test] fn invalid_expiry_is_rejected() { assert!(format_expiry(Some(f64::NAN)).is_err()); }
     #[test] fn expiry_uses_millisecond_precision() { assert_eq!(format_expiry(Some(1234.9)).unwrap(),"1970-01-01T00:00:01.234Z"); }
+    #[test] fn expiry_covers_javascript_timeclip_and_extended_negative_years() {
+        for (at,expected) in [(-1.0,"1969-12-31T23:59:59.999Z"),(253402300800000.0,"+010000-01-01T00:00:00.000Z"),(8640000000000000.0,"+275760-09-13T00:00:00.000Z"),(-8640000000000000.0,"-271821-04-20T00:00:00.000Z")] { assert_eq!(format_expiry(Some(at)).unwrap(),expected); }
+        assert!(format_expiry(Some(8640000000000001.0)).is_err());
+    }
     #[test] fn implicit_target_on_empty_state_applies_nothing() { let state=crate::store::empty_loop_state("s"); assert_eq!(resolve_command_target(&LoopTarget::Implicit,&state),TargetResolution::None); }
     #[test] fn explicit_target_is_not_changed_by_missing_entry() { let state=crate::store::empty_loop_state("s"); assert_eq!(resolve_command_target(&LoopTarget::Id("missing".into()),&state),TargetResolution::Apply(LoopTarget::Id("missing".into()))); }
 }
