@@ -3,6 +3,7 @@ use serde_json::Value;
 use crate::{shared_connection::SharedMcpConnection,connection::ServerConnectionState,errors::{McpError,McpErrorKind}};
 pub struct SharedMcpLease {pub owner:u64,pub key:String,pub shared:Arc<SharedMcpConnection>,released:AtomicBool,local_generation:AtomicU64,refresh_catalog:AtomicBool}
 impl SharedMcpLease {
+    pub fn base_connection(&self)->Arc<crate::connection::ServerConnection> {self.shared.connection.clone()}
     pub(crate) fn new(shared:Arc<SharedMcpConnection>,owner:u64,key:String)->Arc<Self> {Arc::new(Self {owner,key,shared,released:AtomicBool::new(false),local_generation:AtomicU64::new(0),refresh_catalog:AtomicBool::new(false)})}
     fn assert_attached(&self)->Result<(),McpError> {if self.released.load(Ordering::Acquire) || !self.shared.owner_attached(self.owner){Err(McpError::new(McpErrorKind::Connect,"MCP connection owner detached"))}else{Ok(())}}
     pub fn state(&self)->ServerConnectionState {if self.assert_attached().is_err(){ServerConnectionState::Disabled}else{self.shared.connection.state()}}

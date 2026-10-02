@@ -1,9 +1,10 @@
 use std::{collections::BTreeMap,path::{Path,PathBuf},sync::Arc};
-use crate::{config_schema::{LoadMcpConfigOptions,ResolvedMcpConfig,McpServerState},config::{load_mcp_config,McpConfigValidationError},host_registry::HostMcpRegistry,service_connection::{McpSessionConnection,SessionConnectionOptions,create_mcp_session_connection,dispose_entry_connection},service_types::McpServerSnapshot};
+use crate::{config_schema::{LoadMcpConfigOptions,ResolvedMcpConfig,McpServerState},config::{load_mcp_config,McpConfigValidationError},host_registry::HostMcpRegistry,service_connection::{McpSessionConnection,SessionConnectionOptions,create_shared_mcp_session_connection,dispose_entry_connection},service_types::McpServerSnapshot};
 #[derive(Debug,thiserror::Error)]
 pub enum McpServiceError {
     #[error(transparent)] Config(#[from] McpConfigValidationError),
     #[error(transparent)] Logger(#[from] regex::Error),
+    #[error(transparent)] SessionConnection(#[from] crate::service_connection::SessionConnectionError),
     #[error(transparent)] Detach(#[from] crate::host_registry::RegistryDetachError),
     #[error(transparent)] Connection(#[from] crate::errors::McpError),
     #[error(transparent)] OAuth(#[from] crate::auth::oauth::OAuthRequestError),
@@ -18,22 +19,26 @@ impl McpService {
         let existing=self.connections.keys().cloned().collect::<Vec<_>>();
         for name in existing {
             let entry=self.connections[&name].entry.lock().await;
-            let retain=config.servers.get(&name).is_some_and(|server|server.state==McpServerState::Enabled && server.config_hash.as_deref()==Some(&entry.config_hash)) && self.agent_dir.as_deref()==Some(agent_dir);drop(entry);
+            let retain=config.servers.get(&name).is_some_and(|server|server.state==McpServerState::Enabled && server.config_hash.as_deref()==Some(&entry.config_hash) && server.config.as_ref().is_some_and(|server_config|entry.key==crate::sharing_policy::shared_mcp_key(&name,server_config,Some(env),&agent_dir.to_string_lossy(),&cwd.to_string_lossy()))) && self.agent_dir.as_deref()==Some(agent_dir);drop(entry);
             if !retain && let Some(connection)=self.connections.remove(&name){dispose_entry_connection(&connection,&self.registry,self.owner).await?;}
         }
         for (name,server) in &config.servers {
             if server.state!=McpServerState::Enabled || self.connections.contains_key(name){continue;}
             let (Some(server_config),Some(hash))=(&server.config,&server.config_hash) else{continue;};
-            let key=format!("{name}:{hash}");
-            let connection=create_mcp_session_connection(SessionConnectionOptions {registry:&self.registry,owner:self.owner,key:&key,name,config_hash:hash,config:server_config.clone(),agent_dir,env:Some(env.clone())})?;
+            let key=crate::sharing_policy::shared_mcp_key(name,server_config,Some(env),&agent_dir.to_string_lossy(),&cwd.to_string_lossy());
+            let connection=create_shared_mcp_session_connection(SessionConnectionOptions {registry:&self.registry,owner:self.owner,key:&key,name,config_hash:hash,config:server_config.clone(),agent_dir,env:Some(env.clone())},&cwd.to_string_lossy())?;
             connection.entry.lock().await.connection.set_elicitation_ui(self.elicitation_ui.clone());
             let cache=crate::catalog_cache::read_mcp_catalog_cache(agent_dir);
             if let Some(cached)=crate::catalog_cache::get_valid_cached_server(&cache,name,hash,chrono::Utc::now().timestamp_millis() as f64){connection.entry.lock().await.cached_catalog=Some(cached.clone());}
             if crate::startup_race::should_race_mcp_startup(server_config.lifecycle.unwrap_or(crate::config_schema::Lifecycle::Lazy)) {
-                let entry=connection.entry.clone();let server_config=server_config.clone();
+                let entry=connection.entry.clone();let server_config=server_config.clone();let shared=connection.shared.clone();
                 let timeout=crate::startup_race::resolve_mcp_startup_timeout_ms(server_config.startup_timeout_ms,env.get(crate::startup_race::MCP_STARTUP_TIMEOUT_ENV).map(String::as_str));
                 let (sender,mut settled)=tokio::sync::watch::channel(false);
-                self.deferred.track(async move {let mut entry=entry.lock().await;crate::startup_race::connect_and_refresh_mcp_catalog(&mut entry,&server_config).await;sender.send_replace(true);});
+                self.deferred.track(async move {let mut entry=entry.lock().await;
+                    if let Some(shared)=shared {if let Ok(catalog)=shared.catalog().await{entry.cached_catalog=Some(catalog);entry.cache_refreshed_after_connect=true;}}
+                    else{crate::startup_race::connect_and_refresh_mcp_catalog(&mut entry,&server_config).await;}
+                    sender.send_replace(true);
+                });
                 let _=tokio::time::timeout(std::time::Duration::from_secs_f64(timeout/1000.0),async {while !*settled.borrow(){if settled.changed().await.is_err(){break;}}}).await;
             }
             self.connections.insert(name.clone(),connection);
@@ -44,12 +49,17 @@ impl McpService {
         if !self.connections.contains_key(name){return Err(crate::errors::McpError::new(crate::errors::McpErrorKind::Connect,format!("Unknown MCP server: {name}")).into());}
         if let (Some(connection),Some(config))=(self.connections.get(name),self.config.as_ref().and_then(|config|config.servers.get(name)).and_then(|server|server.config.as_ref())) {
             let mut entry=connection.entry.lock().await;
+            if let Some(shared)=&connection.shared {entry.cached_catalog=Some(shared.catalog().await?);entry.cache_refreshed_after_connect=true;return Ok(());}
             crate::startup_race::connect_and_refresh_mcp_catalog(&mut entry,config).await;
             if let Some(error)=entry.connection.last_error(){return Err(error.into());}
         }
         Ok(())
     }
-    pub async fn reconnect_server(&self,name:&str)->Result<(),McpServiceError> {let connection=self.connections.get(name).ok_or_else(||crate::errors::McpError::new(crate::errors::McpErrorKind::Connect,format!("Unknown MCP server: {name}")))?;connection.reconnect.reconnect_now().await?;Ok(())}
+    pub async fn reconnect_server(&self,name:&str)->Result<(),McpServiceError> {
+        let connection=self.connections.get(name).ok_or_else(||crate::errors::McpError::new(crate::errors::McpErrorKind::Connect,format!("Unknown MCP server: {name}")))?;
+        if let Some(shared)=&connection.shared {shared.renew().await?;}else if let Some(reconnect)=&connection.reconnect {reconnect.reconnect_now().await?;}
+        Ok(())
+    }
     fn auth_provider(&self,name:&str)->Result<crate::auth::oauth_provider::McpOAuthProvider,McpServiceError> {
         let config=self.config.as_ref().and_then(|config|config.servers.get(name)).and_then(|server|server.config.as_ref()).ok_or_else(||crate::errors::McpError::new(crate::errors::McpErrorKind::Auth,format!("Unknown MCP server: {name}")))?;
         let agent_dir=self.agent_dir.as_ref().ok_or_else(||crate::errors::McpError::new(crate::errors::McpErrorKind::Auth,"MCP session is not attached"))?;

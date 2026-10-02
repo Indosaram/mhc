@@ -49,5 +49,5 @@ impl HostMcpRegistry {
         let connections=entries.into_values().flatten().map(|entry|entry.connection).collect::<Vec<_>>();
         futures::future::try_join_all(connections.iter().map(|connection|connection.dispose())).await?;Ok(())
     }
-    pub fn size(&self)->usize {self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).values().map(Vec::len).sum()}
+    pub fn size(&self)->usize {self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner).values().filter(|connection|!connection.is_disposed()).count()+self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).values().map(Vec::len).sum::<usize>()}
 }

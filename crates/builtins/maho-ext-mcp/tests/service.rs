@@ -11,11 +11,12 @@ async fn repeated_attach_retains_connections_and_disabled_config_detaches_them()
     let (_,tools)=service.test_server("fixture").await.unwrap();assert!(tools>0);assert_eq!(service.server_snapshots().await[0].counters.call_count,1);
     let wire=service.wire_status_snapshot().await;assert_eq!(wire.servers.len(),1);assert_eq!(wire.servers[0].name,"fixture");assert!(!wire.servers[0].tools.is_empty());assert!(wire.servers[0].server_info.is_some());
     service.attach_session(cwd.path(),root.path(),&BTreeMap::new(),true,std::slice::from_ref(&declaration)).await.unwrap();assert!(Arc::ptr_eq(&physical,&service.connections["fixture"].entry.lock().await.connection));
-    let mut disabled=declaration;disabled.config.enabled=Some(false);service.attach_session(cwd.path(),root.path(),&BTreeMap::new(),true,&[disabled]).await.unwrap();assert_eq!(registry.size(),0);assert!(service.connections.is_empty());
+    let mut disabled=declaration;disabled.config.enabled=Some(false);service.attach_session(cwd.path(),root.path(),&BTreeMap::new(),true,&[disabled]).await.unwrap();assert_eq!(registry.size(),1);assert!(service.connections.is_empty());
+    registry.dispose().await.unwrap();assert_eq!(registry.size(),0);
     service.dispose().await.unwrap();
     let eager=maho_ext_api::RegisteredMcpServerDeclaration {name:"eager".into(),config:maho_ext_api::McpServerDeclaration {transport:Some(maho_ext_api::McpTransport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into()]),lifecycle:Some(maho_ext_api::McpLifecycle::Eager),startup_timeout_ms:Some(0.0),..Default::default()},extension_path:"fixture-extension".into(),registration_cwd:cwd.path().into()};
     service.attach_session(cwd.path(),root.path(),&BTreeMap::new(),true,&[eager]).await.unwrap();
-    assert_eq!(service.wait_for_deferred_attach(std::time::Duration::from_secs(15)).await,maho_ext_mcp::startup_race::McpStartupRaceResult::Settled);assert!(service.connections["eager"].entry.lock().await.cached_catalog.is_some());service.dispose().await.unwrap();
+    assert_eq!(service.wait_for_deferred_attach(std::time::Duration::from_secs(15)).await,maho_ext_mcp::startup_race::McpStartupRaceResult::Settled);assert!(service.connections["eager"].entry.lock().await.cached_catalog.is_some());service.dispose().await.unwrap();registry.dispose().await.unwrap();
 }
 #[tokio::test]
 async fn session_instructions_prefer_live_values_and_fall_back_only_when_disconnected() {
@@ -26,5 +27,17 @@ async fn session_instructions_prefer_live_values_and_fall_back_only_when_disconn
     *client.instructions.write().await=Some("live".into());
     let live=maho_ext_mcp::instructions::refresh_mcp_instructions_for_session(&service).await;assert!(live.contains("live"));assert!(!live.contains("cached"));
     *client.instructions.write().await=None;assert!(maho_ext_mcp::instructions::refresh_mcp_instructions_for_session(&service).await.is_empty());
-    connection.bump_generation().await.unwrap();assert!(maho_ext_mcp::instructions::refresh_mcp_instructions_for_session(&service).await.contains("cached"));service.dispose().await.unwrap();
+    connection.bump_generation().await.unwrap();assert!(maho_ext_mcp::instructions::refresh_mcp_instructions_for_session(&service).await.contains("cached"));service.dispose().await.unwrap();service.registry.dispose().await.unwrap();
+}
+#[tokio::test]
+async fn two_services_share_the_transport_and_detach_independently() {
+    let root=tempfile::tempdir().unwrap();let cwd=tempfile::tempdir().unwrap();let registry=Arc::new(HostMcpRegistry::default());
+    let mut first=McpService::new(registry.clone(),1);let mut second=McpService::new(registry.clone(),2);
+    let declaration=maho_ext_api::RegisteredMcpServerDeclaration {name:"shared".into(),config:maho_ext_api::McpServerDeclaration {transport:Some(maho_ext_api::McpTransport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into()]),..Default::default()},extension_path:"fixture".into(),registration_cwd:cwd.path().into()};
+    first.attach_session(cwd.path(),root.path(),&BTreeMap::new(),true,std::slice::from_ref(&declaration)).await.unwrap();second.attach_session(cwd.path(),root.path(),&BTreeMap::new(),true,std::slice::from_ref(&declaration)).await.unwrap();
+    let first_connection=first.connections["shared"].entry.lock().await.connection.clone();let second_connection=second.connections["shared"].entry.lock().await.connection.clone();assert!(Arc::ptr_eq(&first_connection,&second_connection));
+    first.connect_server("shared").await.unwrap();let pid=first_connection.get_root_pid().unwrap();first.dispose().await.unwrap();assert!(maho_ext_mcp::process_tree::is_process_alive(pid).await);
+    second.connect_server("shared").await.unwrap();assert_eq!(second_connection.get_root_pid(),Some(pid));
+    let env=BTreeMap::from([("MCP_TEST_OWNER".into(),"changed".into())]);second.attach_session(cwd.path(),root.path(),&env,true,&[declaration]).await.unwrap();assert!(!Arc::ptr_eq(&second_connection,&second.connections["shared"].entry.lock().await.connection));
+    second.dispose().await.unwrap();registry.dispose().await.unwrap();assert!(!maho_ext_mcp::process_tree::is_process_alive(pid).await);
 }
