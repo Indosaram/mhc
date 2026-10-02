@@ -12,7 +12,7 @@ enum Command {
 pub struct SdkQueryHandle {
     commands: mpsc::UnboundedSender<Command>,
     messages: mpsc::UnboundedReceiver<anyhow::Result<Value>>,
-    task: tokio::task::JoinHandle<()>,
+    task: Option<tokio::task::JoinHandle<()>>,
     pub initialization: Value,
 }
 
@@ -117,14 +117,17 @@ impl SdkQueryHandle {
             for (_, reply) in pending { let _ = reply.send(Err(anyhow::anyhow!("Query closed before response received"))); }
             if let Err(error) = result { let _ = events.send(Err(error)); }
         });
-        let mut handle = Self {commands, messages, task, initialization: Value::Null};
+        let mut handle = Self {commands, messages, task: Some(task), initialization: Value::Null};
         let mut initialize = json!({"subtype":"initialize","hooks":{}});
         if let Some(prompt) = options.get("systemPrompt") {
             if prompt.is_string() { initialize["systemPrompt"] = json!([prompt]); }
             else if prompt["type"] == "preset" { if let Some(append) = prompt.get("append") { initialize["appendSystemPrompt"] = json!([append]); } }
             else { initialize["systemPrompt"] = prompt.clone(); }
         }
-        handle.initialization = handle.request(initialize).await?;
+        match handle.request(initialize).await {
+            Ok(response) => handle.initialization = response,
+            Err(error) => { handle.close().await?; return Err(error); },
+        }
         Ok(handle)
     }
     pub async fn send(&self, message: Value) -> anyhow::Result<()> {
@@ -138,9 +141,13 @@ impl SdkQueryHandle {
     pub async fn interrupt(&self) -> anyhow::Result<Value> { self.request(json!({"subtype":"interrupt"})).await }
     pub async fn set_model(&self, model: &str) -> anyhow::Result<()> { self.request(json!({"subtype":"set_model","model":model})).await?; Ok(()) }
     pub async fn next(&mut self) -> Option<anyhow::Result<Value>> { self.messages.recv().await }
-    pub async fn close(self) -> anyhow::Result<()> {
-        let _ = self.commands.send(Command::Close); self.task.await?; Ok(())
+    pub async fn close(mut self) -> anyhow::Result<()> {
+        let _ = self.commands.send(Command::Close);
+        if let Some(task) = self.task.take() { task.await?; } Ok(())
     }
+}
+impl Drop for SdkQueryHandle {
+    fn drop(&mut self) { let _ = self.commands.send(Command::Close); }
 }
 
 #[cfg(test)]
@@ -178,5 +185,16 @@ mod tests {
         let failure = tokio::time::timeout(std::time::Duration::from_secs(5), query.next()).await.expect("bounded exit").expect("failure").expect_err("abnormal exit");
         assert!(failure.to_string().contains('7')); assert!(directory.path().join("settled").is_file());
         query.close().await.expect("join");
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropped_query_signals_owned_worker_to_reap_child() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().expect("dir"); let script = directory.path().join("claude");
+        std::fs::write(&script, "#!/usr/bin/python3\nimport sys,json\nf=json.loads(sys.stdin.readline())\nprint(json.dumps({'type':'control_response','response':{'subtype':'success','request_id':f['request_id'],'response':{}}}),flush=True)\nfor line in sys.stdin: pass\n").expect("script");
+        std::fs::set_permissions(&script,std::fs::Permissions::from_mode(0o700)).expect("permissions");
+        let mut query = SdkQueryHandle::spawn(&script,&json!({}),&BTreeMap::new()).await.expect("query");
+        let worker = query.task.take().expect("worker"); drop(query);
+        tokio::time::timeout(std::time::Duration::from_secs(5),worker).await.expect("bounded cleanup").expect("reaped worker");
     }
 }
