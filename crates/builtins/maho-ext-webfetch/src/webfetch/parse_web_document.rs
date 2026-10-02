@@ -23,7 +23,7 @@ impl TokenSink for InertParser {
                 let foreign=stack.iter().any(|id|tree.get_unchecked(id).node_name().as_deref()==Some("svg"));let namespace=if foreign||name=="svg" {ns!(svg)} else {ns!(html)};
                 let node=tree.create_node(dom_query::NodeData::Element(dom_query::Element::new(QualName::new(None,namespace,tag.name.clone()),tag.attrs,None,false)));parent(&stack).append_child(&node);
                 if !(is_void(name)||foreign&&tag.self_closing) {stack.push(node);}
-                return match name {"script"|"style"|"xmp"=>TokenSinkResult::RawData(RawKind::Rawtext),"title"|"textarea"=>TokenSinkResult::RawData(RawKind::Rcdata),_=>TokenSinkResult::Continue};
+                return match name {"script"|"style"|"xmp"|"textarea"=>TokenSinkResult::RawData(RawKind::Rawtext),"title"=>TokenSinkResult::RawData(RawKind::Rcdata),_=>TokenSinkResult::Continue};
             },
             Token::TagToken(tag)=> {
                 if let Some(index)=stack.iter().rposition(|id|tree.get_unchecked(id).node_name().as_deref()==Some(tag.name.as_ref())) {stack.truncate(index);}
@@ -31,7 +31,7 @@ impl TokenSink for InertParser {
             },
             Token::CharacterTokens(contents)=> {
                 let parent=parent(&stack);let previous=parent.children().last().copied().filter(|node|node.is_text());
-                if matches!(parent.node_name().as_deref(),Some("script"|"style"|"xmp"))&&let Some(previous)=previous {previous.set_text(format!("{}{contents}",previous.text()));}
+                if matches!(parent.node_name().as_deref(),Some("script"|"style"|"xmp"|"textarea"))&&let Some(previous)=previous {previous.set_text(format!("{}{contents}",previous.text()));}
                 else {let node=tree.create_node(dom_query::NodeData::Text{contents});parent.append_child(&node);}
             },
             Token::CommentToken(contents)=> {let node=tree.create_node(dom_query::NodeData::Comment{contents});parent(&stack).append_child(&node);},
@@ -81,6 +81,9 @@ pub fn normalize_web_url(is_anchor:bool,value:&str,base_uri:&str,document_url:&s
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn inert_textarea_keeps_literal_entity_text() {
+        let web=parse_web_document("<textarea>&amp;<b>raw</b></textarea>","https://example.test/");assert_eq!(web.document.select("textarea").text().as_ref(),"&amp;<b>raw</b>");
+    }
     #[test] fn inert_stack_parser_does_not_reconstruct_misnested_formatting() {
         let web=parse_web_document("<b>first<i>second</b>third</i>","https://example.test/");assert_eq!(web.document.select("body").inner_html().as_ref(),"<b>first<i>second</i></b>third");
     }
