@@ -80,6 +80,9 @@ impl GoalRuntime {
                         monitor.record_toolless_continuation_turn(&goal.id,used_tools);
                     }
                 }
+                if route==crate::agent_end_continuation::GoalAgentEndRoute::ProviderFailure {
+                    self.monitor.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?.after_provider_failure(context,goal.as_ref(),&ended);
+                }
                 if route==crate::agent_end_continuation::GoalAgentEndRoute::PolicyBlock {
                     goal=Some(crate::store::update_goal(&reference,&GoalUpdate { status:Some(GoalStatus::Blocked),reason:Some("provider policy rejection ended the turn".into()),..Default::default() },GoalUpdateSource::Model,seconds).await.map_err(failure)?);
                     state.accounting.clear();
@@ -139,6 +142,21 @@ impl GoalRuntime {
 fn failure(error:crate::errors::GoalError)->ExtensionFailure { ExtensionFailure::new(error.to_string()) }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn provider_failure_stages_runtime_recovery_only_without_core_retry() {
+        for will_retry in [false,true] {
+            let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+            let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap();
+            let runtime=GoalRuntime::new(Arc::new(move |_|stored.clone()),Arc::new(||2000.0)); let context=crate::test_context::context();
+            let mut assistant=maho_ai::providers::faux::faux_assistant_message("",Default::default());
+            assistant.stop_reason=maho_ai::types::StopReason::Error; assistant.error_message=Some("provider transport unavailable".into());
+            let message=maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(assistant)));
+            runtime.event(&ExtensionEvent::AgentEnd { messages:vec![message],aborted:Some(false),abort_source:None,will_retry:Some(will_retry) },&context).await.unwrap();
+            let mut monitor=runtime.monitor.lock().unwrap(); let pending=monitor.take_settled_recovery();
+            assert_eq!(pending.is_some(),!will_retry);
+            if let Some((path,pending))=pending { assert_eq!(path,crate::continuation::GoalContinuationPath::ProviderRecovery); assert_eq!(pending.goal.id,goal.id); }
+            assert!(monitor.take_settled_recovery().is_none()); assert!(monitor.recent_normalized_output_hashes.is_empty()); assert_eq!(monitor.toolless_continuation_streak,u64::from(will_retry));
+        }
+    }
     #[tokio::test] async fn agent_end_clean_stop_clears_runtime_length_recovery() {
         let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
         let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap();
