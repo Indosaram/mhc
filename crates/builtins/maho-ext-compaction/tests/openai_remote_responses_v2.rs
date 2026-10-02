@@ -53,3 +53,20 @@ async fn v2_stream_runner_receives_trigger_and_extracts_native_checkpoint() {
     assert_eq!(details["transport"], "responses-v2");
     assert_eq!(result.first_kept_entry_id, "anchor");
 }
+
+#[tokio::test(start_paused = true)]
+async fn v2_timeout_emits_both_upstream_fallback_events() {
+    let model = serde_json::from_value(json!({"id":"m","name":"m","provider":"openai","api":"openai-responses","baseUrl":"https://api.openai.com/v1","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":10000,"maxTokens":8000})).unwrap();
+    let request = maho_ext_compaction::openai_remote::OpenAiRemoteCompactionRequest { body: json!({"input":[]}), input_item_count: 0, tokens_before: 123 };
+    let runner: maho_ext_compaction::openai_remote_dependencies::OpenAiResponsesStreamRunner = std::sync::Arc::new(|_, _, _| maho_ai::utils::event_stream::create_assistant_message_event_stream());
+    let controller = maho_ai::utils::abort::AbortController::new();
+    let events = std::sync::Mutex::new(Vec::new());
+    let result = attempt_openai_responses_v2_compaction(ResponsesV2Options { model: &model, request: &request, first_kept_entry_id: "anchor", origin: json!({}), system_prompt: String::new(), session_id: "session".into(), api_key: None, headers: BTreeMap::new(), extra_body: None, signal: controller.signal(), runner: &runner }, "request", std::time::Duration::from_secs(1), &|event| events.lock().unwrap().push(event)).await.unwrap();
+    assert!(result.is_none());
+    let events = events.lock().unwrap();
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0]["action"], "remote_started");
+    assert_eq!(events[1]["reason"], "remote-compaction-timeout");
+    assert_eq!(events[2]["reason"], "responses-v2-missing-compaction-output");
+    assert!(!controller.signal().aborted());
+}

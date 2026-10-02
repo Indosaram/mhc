@@ -102,3 +102,46 @@ pub async fn run_openai_responses_v2_compaction(options: ResponsesV2Options<'_>)
     let response = stream.result().await?;
     Ok(responses_v2_result(options.model, &response, options.first_kept_entry_id, options.request, options.origin))
 }
+
+pub async fn attempt_openai_responses_v2_compaction(
+    mut options: ResponsesV2Options<'_>,
+    request_id: &str,
+    timeout: std::time::Duration,
+    emit: &dyn Fn(Value),
+) -> Result<Option<maho_ext_api::CompactionResult>, maho_ai::utils::event_stream::StreamError> {
+    let signal = options.signal.clone();
+    let model_id = options.model.id.clone();
+    let event = |action: &str, fields: Value| {
+        let mut event = serde_json::json!({"version":1,"action":action,"route":"builtin.compaction.openai_remote","requestId":request_id,"modelId":model_id,"transport":"responses-v2"});
+        if let Some(fields) = fields.as_object() {
+            for (key, value) in fields { event[key] = value.clone(); }
+        }
+        emit(event);
+    };
+    event("remote_started", serde_json::json!({"inputItemCount":options.request.input_item_count}));
+    let result = crate::openai_remote_timeout::run_with_remote_timeout(
+        &signal,
+        timeout,
+        |linked| {
+            options.signal = linked;
+            run_openai_responses_v2_compaction(options)
+        },
+        || event("remote_fallback", serde_json::json!({"reason":"remote-compaction-timeout"})),
+        || maho_ai::utils::event_stream::StreamError::new("aborted"),
+    ).await;
+    match result {
+        Ok(Some(Some(result))) => {
+            event("remote_completed", serde_json::json!({"responseId":result.details.as_ref().map(|details| &details["responseId"]),"retainedInputItemCount":result.details.as_ref().map(|details| &details["retainedInputItemCount"])}));
+            Ok(Some(result))
+        }
+        Ok(_) => {
+            event("remote_fallback", serde_json::json!({"reason":"responses-v2-missing-compaction-output"}));
+            Ok(None)
+        }
+        Err(error) if signal.aborted() => Err(error),
+        Err(_) => {
+            event("remote_fallback", serde_json::json!({"reason":"responses-v2-error"}));
+            Ok(None)
+        }
+    }
+}
