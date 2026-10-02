@@ -124,3 +124,35 @@ async fn live_name_sources_refresh_before_every_cell_and_recovery() {
     kernel.close().await.unwrap();
     for result in results {assert_eq!(result["ok"],false,"{result}");assert!(result["error"]["message"].as_str().unwrap().contains("collides"));}
 }
+
+#[tokio::test]
+async fn scoped_kernel_tool_denies_host_call_without_leaking_scope() {
+    use maho_codemode::kernels::js::kernel_tools_types::*;
+    let kernel=JavaScriptKernel::start(Path::new(env!("CARGO_MANIFEST_DIR")),"bun-scope",4,None).await.unwrap();
+    let defined=kernel.run(KernelRunInput {cell_id:"define-scope".into(),code:"tool(async function scoped_writer() { return await tool.write({value:42}); })".into(),timeout_ms:Some(5000)},|_|{}).await.unwrap();
+    let described=kernel.describe_kernel_tools(&["scoped_writer".into()]).await.unwrap();
+    let descriptor=&described["results"][0]["descriptor"];
+    let request=KernelToolsInvokeRequest {name:"scoped_writer".into(),kernel_generation:descriptor["kernel_generation"].as_u64().unwrap(),definition_revision:descriptor["definition_revision"].as_u64().unwrap(),args:serde_json::json!({}),call_id:"scope-denied".into()};
+    let parked=kernel.run_with_callbacks(KernelRunInput {cell_id:"scope-parent".into(),code:"await tool.parent({})".into(),timeout_ms:Some(5000)},None,None);
+    let nested=async {
+        let parent=kernel.next_tool_call().await.unwrap();
+        let denied=tokio::time::timeout(std::time::Duration::from_secs(3),kernel.invoke_kernel_tool(request.clone(),KernelToolsInvokeOptions {signal:None,scope:Some(KernelToolsInvokeScope {allow:None,deny:Some(vec!["write".into()])})})).await;
+        let invoke=kernel.invoke_kernel_tool(KernelToolsInvokeRequest {call_id:"scope-free".into(),..request},KernelToolsInvokeOptions {signal:None,scope:None});
+        let reply=async {
+            let call=kernel.next_tool_call().await.unwrap();
+            kernel.deliver_tool_reply(serde_json::json!({"type":"tool-reply","callId":call["callId"],"ok":true,"value":42})).unwrap();
+            call
+        };
+        let allowed=tokio::time::timeout(std::time::Duration::from_secs(3),async {tokio::join!(invoke,reply)}).await;
+        kernel.deliver_tool_reply(serde_json::json!({"type":"tool-reply","callId":parent["callId"],"ok":true,"value":null})).unwrap();
+        (denied,allowed)
+    };
+    let (parent,(denied,allowed))=tokio::join!(parked,nested);
+    kernel.close().await.unwrap();
+    assert_eq!(parent.unwrap()["ok"],true);
+    let (allowed,call)=allowed.unwrap();
+    assert_eq!(defined["ok"],true);
+    assert_eq!(denied.unwrap().unwrap_err().code,KernelToolErrorCode::KernelToolHostDenied);
+    assert_eq!(call["toolName"],"write","denied invoke must not enqueue a host call");
+    assert_eq!(allowed.unwrap(),42);
+}
