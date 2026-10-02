@@ -16,7 +16,8 @@ fn scan_directory(path:&Path, depth:usize, max_depth:usize, excluded:&[&str], vi
     if !visited.insert(real) {return;}
     let Ok(entries)=std::fs::read_dir(path) else {return;};
     let Ok(mut entries)=entries.collect::<Result<Vec<_>,_>>() else {return;};
-    entries.sort_by_key(|entry| entry.file_name());
+    let collator=icu_collator::Collator::try_new(Default::default(),Default::default()).unwrap_or_else(|error|unreachable!("compiled default collation data: {error}"));
+    entries.sort_by(|left,right|collator.compare(&left.file_name().to_string_lossy(),&right.file_name().to_string_lossy()));
     for entry in entries {
         let path=entry.path(); let name=entry.file_name(); let name=name.to_string_lossy();
         let Ok(kind)=entry.file_type() else {continue;};

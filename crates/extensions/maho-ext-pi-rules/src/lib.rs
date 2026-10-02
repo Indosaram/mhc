@@ -2,6 +2,9 @@
 pub mod config;
 pub mod commands;
 pub mod index;
+pub mod ui {
+    pub mod dynamic_border;
+}
 pub mod rules {
     pub mod cache;
     pub mod constants;

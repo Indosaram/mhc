@@ -4,6 +4,7 @@ fn write(root:&Path,name:&str)->PathBuf {let p=root.join(name); let parent=p.par
 fn scan(root:&Path)->Vec<ScannedFile>{scan_rule_files(ScanOptions{root_dir:root,excluded_dirs:None,max_depth:None})}
 fn file(p:&Path)->ScannedFile{ScannedFile{path:p.into(),real_path:p.into()}}
 #[test] fn empty_directory(){let d=tempfile::tempdir().unwrap();let r=scan(d.path());assert!(r.is_empty());}
+#[test] fn locale_order_keeps_case_and_accent_secondary(){let d=tempfile::tempdir().unwrap();for name in ["z.md","Z.md","a.md","A.md","ä.md","_.md","10.md","2.md"]{write(d.path(),name);}let names=scan(d.path()).into_iter().map(|file|file.path.file_name().expect("name").to_string_lossy().into_owned()).collect::<Vec<_>>();assert_eq!(names,["_.md","10.md","2.md","a.md","A.md","ä.md","z.md","Z.md"]);}
 #[test] fn one_markdown(){let d=tempfile::tempdir().unwrap();let p=write(d.path(),"rule.md");let r=scan(d.path());assert_eq!(r,[file(&p)]);}
 #[test] fn accepted_extensions(){let d=tempfile::tempdir().unwrap();let a=write(d.path(),"a.md");let b=write(d.path(),"b.mdc");let r=scan(d.path());assert_eq!(r,[file(&a),file(&b)]);}
 #[test] fn unrelated_extensions(){let d=tempfile::tempdir().unwrap();for n in ["note.txt","script.ts","markdown.md.tmp"]{write(d.path(),n);}let r=scan(d.path());assert!(r.is_empty());}
