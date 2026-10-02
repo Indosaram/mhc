@@ -2,6 +2,7 @@ use maho_core::{agent_session::AgentSession, sdk::{CreateAgentSessionOptions, cr
 use serde_json::{Value, json};
 use std::{collections::{BTreeMap, BTreeSet}, future::Future, pin::Pin, sync::Arc};
 use tokio::sync::Mutex;
+use indexmap::IndexMap;
 
 pub type SessionFactory = Arc<dyn Fn(CreateAgentSessionOptions) -> Pin<Box<dyn Future<Output = Result<AgentSession, String>> + Send>> + Send + Sync>;
 
@@ -24,7 +25,7 @@ impl ThreadEntry {
 }
 
 pub struct ThreadRegistry {
-    entries: Mutex<BTreeMap<String, Arc<Mutex<ThreadEntry>>>>,
+    entries: Mutex<IndexMap<String, Arc<Mutex<ThreadEntry>>>>,
     deleted: Mutex<BTreeSet<String>>,
     pub agent_dir: String,
     pub session_dir: Option<String>,
@@ -32,7 +33,7 @@ pub struct ThreadRegistry {
 }
 impl ThreadRegistry {
     pub fn new(agent_dir: String, session_dir: Option<String>, factory: Option<SessionFactory>) -> Self {
-        Self { entries: Mutex::new(BTreeMap::new()), deleted: Mutex::new(BTreeSet::new()), agent_dir, session_dir, factory: factory.unwrap_or_else(|| Arc::new(|options| Box::pin(async move { Ok(create_agent_session(options).await?.session) }))) }
+        Self { entries: Mutex::new(IndexMap::new()), deleted: Mutex::new(BTreeSet::new()), agent_dir, session_dir, factory: factory.unwrap_or_else(|| Arc::new(|options| Box::pin(async move { Ok(create_agent_session(options).await?.session) }))) }
     }
     pub async fn register_session(&self, session: AgentSession, cwd: String, timestamps: Option<(String, String)>) -> Arc<Mutex<ThreadEntry>> {
         let id = session.session_id();
@@ -107,11 +108,11 @@ impl ThreadRegistry {
         }
     }
     pub async fn unload_thread(&self, id: &str) -> bool {
-        let entry = self.entries.lock().await.remove(id);
+        let entry = self.entries.lock().await.shift_remove(id);
         if let Some(entry) = entry { entry.lock().await.session.dispose().await; true } else { false }
     }
     pub async fn delete_thread(&self,id: &str) -> std::io::Result<bool> {
-        let loaded = self.entries.lock().await.remove(id);
+        let loaded = self.entries.lock().await.shift_remove(id);
         let path = if let Some(entry) = loaded {
             let entry = entry.lock().await;
             entry.session.dispose().await;

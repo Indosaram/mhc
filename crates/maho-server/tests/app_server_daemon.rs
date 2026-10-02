@@ -204,3 +204,19 @@ async fn compaction_rejects_unloaded_threads_and_defers_native_work_until_acknow
     runtime.core.write().await.remove_connection("qa");
     runtime.dispose().await;
 }
+
+#[tokio::test]
+async fn loaded_threads_preserve_registration_order_and_survivor_order_after_unload() {
+    use maho_core::session_manager::{SessionManager,NewSessionOptions};
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = AppServerRuntime::new(directory.path().display().to_string(),directory.path().display().to_string(),"1".into(),None,Some(factory())).await;
+    for id in ["z-first","a-second","m-third"] {
+        let session = factory()(maho_core::sdk::CreateAgentSessionOptions {cwd:Some(directory.path().display().to_string()),session_manager:Some(SessionManager::in_memory(&directory.path().display().to_string(),Some(NewSessionOptions {id:Some(id.into()),parent_session:None}),None)),..Default::default()}).await.unwrap();
+        runtime.threads.register_session(session,directory.path().display().to_string(),None).await;
+    }
+    let ids = |threads: Vec<Value>|threads.into_iter().map(|thread|thread["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+    assert_eq!(ids(runtime.threads.list_loaded().await),["z-first","a-second","m-third"]);
+    runtime.threads.unload_thread("a-second").await;
+    assert_eq!(ids(runtime.threads.list_loaded().await),["z-first","m-third"]);
+    runtime.dispose().await;
+}

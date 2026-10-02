@@ -2457,6 +2457,7 @@ dependencies = [
  "futures-util",
  "httparse",
  "ignore",
+ "indexmap",
  "maho-agent",
  "maho-ai",
  "maho-core",
