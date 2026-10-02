@@ -123,10 +123,15 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: options.exclude_tools,
         base_tools_override: Some(base_tools), session_start_event: None, auto_title_sessions: Some(false),
     }).map_err(|error| error.to_string())?;
-    let templates = crate::prompt_templates::load_prompt_templates(&crate::prompt_templates::LoadPromptTemplatesOptions {
-        cwd: cwd.clone(), agent_dir: agent_dir.clone(), include_defaults: true, ..Default::default()
+    let (prompt_paths, skill_paths) = session.with_settings_manager(|manager| {
+        let paths = |key| manager.get_value(key).and_then(serde_json::Value::as_array).map(|values|
+            values.iter().filter_map(serde_json::Value::as_str).map(str::to_owned).collect::<Vec<_>>()).unwrap_or_default();
+        (paths("prompts"), paths("skills"))
     });
-    let skills = crate::skills::load_skills(&crate::skills::LoadSkillsOptions { cwd, agent_dir, include_defaults: true, ..Default::default() });
+    let templates = crate::prompt_templates::load_prompt_templates(&crate::prompt_templates::LoadPromptTemplatesOptions {
+        cwd: cwd.clone(), agent_dir: agent_dir.clone(), prompt_paths, include_defaults: true,
+    });
+    let skills = crate::skills::load_skills(&crate::skills::LoadSkillsOptions { cwd, agent_dir, skill_paths, include_defaults: true });
     session.set_prompt_resources(templates, skills.skills);
     session.rebuild_system_prompt();
     Ok(CreateAgentSessionResult { session, model_fallback_message: None })

@@ -148,6 +148,48 @@ impl AgentSessionRuntime {
         self.before_session_invalidate = callback;
     }
 
+    pub async fn switch_session(&mut self, session_path: &str) -> Result<bool, String> {
+        let manager = crate::session_manager::SessionManager::open(session_path, None, None, None);
+        assert_session_cwd_exists(&manager, &self.services.cwd).map_err(|error| error.to_string())?;
+        let cwd = manager.cwd().to_owned();
+        self.replace_session(manager, cwd, maho_ext_api::SessionReason::Resume).await
+    }
+
+    pub async fn new_session(&mut self, cwd: Option<&str>, parent_session: Option<String>) -> Result<bool, String> {
+        let cwd = cwd.unwrap_or(&self.services.cwd).to_owned();
+        let manager = crate::session_manager::SessionManager::create(&cwd, None,
+            Some(crate::session_manager::NewSessionOptions { id: None, parent_session }));
+        assert_session_cwd_exists(&manager, &cwd).map_err(|error| error.to_string())?;
+        self.replace_session(manager, cwd, maho_ext_api::SessionReason::New).await
+    }
+
+    async fn replace_session(&mut self, manager: crate::session_manager::SessionManager, cwd: String,
+        reason: maho_ext_api::SessionReason) -> Result<bool, String>
+    {
+        if self.session.runtime_before_switch(reason, manager.session_file().map(str::to_owned)).await? { return Ok(false); }
+        let settings = crate::settings_manager::SettingsManager::create(&cwd, &self.services.agent_dir,
+            &std::env::var("HOME").unwrap_or_default(), self.services.settings_manager.is_project_trusted());
+        let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()), agent_dir: Some(self.services.agent_dir.clone()),
+            model_runtime: Some(self.services.model_runtime().clone()), model_registry: Some(self.services.model_registry.clone()),
+            model: Some(self.session.model()), thinking_selection: self.session.thinking_selection(),
+            scoped_models: self.session.scoped_models(), favorite_models: self.session.favorite_models(),
+            session_manager: Some(manager), settings_manager: Some(settings), tools: Some(self.session.get_active_tool_names()),
+            session_start_event: Some(maho_ext_api::SessionStartEvent { reason, initial_model_provenance: None,
+                previous_session_file: self.session.session_file() }), ..Default::default()
+        }).await?;
+        self.session.runtime_shutdown(reason).await;
+        if let Some(before) = &self.before_session_invalidate { before(); }
+        self.session.dispose().await;
+        self.session = created.session;
+        self.services.cwd = cwd;
+        self.services.settings_manager = crate::settings_manager::SettingsManager::create(&self.services.cwd, &self.services.agent_dir,
+            &std::env::var("HOME").unwrap_or_default(), self.services.settings_manager.is_project_trusted());
+        self.model_fallback_message = created.model_fallback_message;
+        if let Some(rebind) = &self.rebind_session { rebind(&self.session); }
+        Ok(true)
+    }
+
     pub async fn dispose(&self) {
         self.session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;
         if let Some(callback) = &self.before_session_invalidate {

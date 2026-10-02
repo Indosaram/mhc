@@ -628,6 +628,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         Some(signal)
     }
     fn update_compaction(&self, options: maho_ext_api::UpdateCompactionOptions) { if let Ok(session) = self.session() {
+        if !session.is_compacting() || options.signal.as_ref().is_some_and(maho_ext_api::AbortSignal::is_aborted) { return; }
         session.emit(AgentSessionEvent::CompactionProgress { reason: options.reason, delta: options.delta, text: options.text });
     } }
     fn end_compaction(&self, options: maho_ext_api::EndCompactionOptions) { if let Ok(session) = self.session() {
@@ -641,8 +642,21 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         Box::pin(async move { let session = self.session()?;
             if options.expected_revision.is_some_and(|revision| revision != session.message_revision()) { return Ok(maho_ext_api::ApplyCompactionResult::Stale); }
             if options.signal.as_ref().is_some_and(maho_ext_api::AbortSignal::is_aborted) { return Ok(maho_ext_api::ApplyCompactionResult::Rejected); }
+            if let Some(anchor) = options.expected_warm_anchor {
+                let snapshot = crate::compaction::warm_anchor::WarmAnchorSnapshot {
+                    first_kept_entry_id: anchor.first_kept_entry_id, prefix_entry_ids: anchor.prefix_entry_ids,
+                    latest_compaction_entry_id: anchor.latest_compaction_entry_id,
+                };
+                if !session.with_session_manager(|manager| crate::compaction::warm_anchor::is_warm_summary_anchor_valid(&snapshot, &manager.branch(None))) {
+                    return Ok(maho_ext_api::ApplyCompactionResult::Stale);
+                }
+            }
+            let Ok(_admission) = session.prompt_admission.try_lock() else { return Ok(maho_ext_api::ApplyCompactionResult::Rejected); };
+            if session.is_streaming() { return Ok(maho_ext_api::ApplyCompactionResult::Rejected); }
             session.apply_compaction(&crate::compaction::compaction::CompactionResult { summary: result.summary, first_kept_entry_id: result.first_kept_entry_id,
                 tokens_before: result.tokens_before as i64, estimated_tokens_after: None, usage: None, details: result.details }).map_err(maho_ext_api::ExtensionFailure::new)?;
+            session.state().compaction_abort_controller = None;
+            session.state().compaction_extension_signal = None;
             Ok(maho_ext_api::ApplyCompactionResult::Applied)
         })
     }
@@ -1473,6 +1487,7 @@ impl AgentSession {
         self.agent.abort(None);
         self.abort_retry();
         self.agent.wait_for_idle().await;
+        let _admission = self.prompt_admission.lock().await;
         self.compact_for_model(instructions, &self.model(), "manual").await
     }
 
@@ -1580,9 +1595,29 @@ impl AgentSession {
     }
 
     pub fn apply_compaction(&self, result: &crate::compaction::compaction::CompactionResult) -> Result<Value, String> {
-        let branch = self.with_session_manager(|manager| manager.branch(None));
+        let mut branch = self.with_session_manager(|manager| manager.branch(None));
         if !branch.iter().any(|entry| entry.get("id").and_then(Value::as_str) == Some(result.first_kept_entry_id.as_str())) {
             return Err("Compaction first kept entry is not on the current branch".to_owned());
+        }
+        let model = self.model();
+        let parent = branch.last().and_then(|entry| entry.get("id")).cloned().unwrap_or(Value::Null);
+        let simulated_id = format!("simulated-{}", uuid::Uuid::new_v4());
+        branch.push(serde_json::json!({"type":"compaction","id":simulated_id,"parentId":parent,
+            "timestamp":"1970-01-01T00:00:00.000Z","summary":result.summary,
+            "firstKeptEntryId":result.first_kept_entry_id,"tokensBefore":result.tokens_before,"details":result.details}));
+        let context = crate::session_manager::build_session_context(&branch, Some(&simulated_id));
+        let tokens = context.messages.iter().map(crate::compaction::compaction::estimate_tokens).sum::<u64>() as i64;
+        let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
+        let settings = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
+            .transpose().map_err(|error| error.to_string())?;
+        let settings = crate::compaction_settings_resolver::resolve_compaction_settings(settings.as_ref(), Some(
+            crate::compaction_settings_access::CompactionModelSelector { provider: &model.provider, id: &model.id },
+        ))?;
+        let reserve = if settings.reserve_scaling_enabled {
+            crate::compaction::compaction::resolve_reserve_tokens(model.context_window as f64, settings.reserve_tokens as f64) as i64
+        } else { settings.reserve_tokens };
+        if tokens > (model.context_window as i64).saturating_sub(reserve) {
+            return Err("Compaction rejected: summary-would-overflow".to_owned());
         }
         let usage = result.usage.as_ref().map(serde_json::to_value).transpose().map_err(|error| error.to_string())?;
         let entry = self.with_session_manager_mut(|manager| manager.append_compaction(
@@ -2055,6 +2090,12 @@ impl AgentSession {
         }
     }
 
+    pub(crate) async fn runtime_before_switch(&self, reason: maho_ext_api::SessionReason, path: Option<String>) -> Result<bool, String> {
+        Ok(self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeSwitch { reason, target_session_file: path }).await?.cancel == Some(true))
+    }
+
+    pub(crate) async fn runtime_shutdown(&self, reason: maho_ext_api::SessionReason) { self.emit_session_shutdown(reason).await; }
+
     fn rebuild_session_context(&self) -> Result<(), String> {
         let context = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
         let messages = context.messages.into_iter().map(session_message_from_value).collect::<Result<_, _>>()
@@ -2327,7 +2368,8 @@ impl AgentSession {
         let skills = self.state().skills.clone();
         let active = self.get_active_tool_names();
         let base = crate::system_prompt::build_system_prompt(&crate::system_prompt::BuildSystemPromptOptions {
-            cwd: self.cwd(), selected_tools: Some(active), skills: Some(skills), ..Default::default()
+            cwd: self.cwd(), selected_tools: Some(active), skills: Some(skills),
+            context_files: Some(crate::resource_loader::load_project_context_files(&self.cwd(), &self.agent_dir())), ..Default::default()
         });
         self.state().base_system_prompt = base.clone();
         self.agent.set_system_prompt(base);
@@ -2338,11 +2380,16 @@ impl AgentSession {
         self.abort().await;
         self.emit_session_shutdown(maho_ext_api::SessionReason::Reload).await;
         self.with_settings_manager_mut(|manager| manager.reload());
+        let (prompt_paths, skill_paths) = self.with_settings_manager(|manager| {
+            let paths = |key| manager.get_value(key).and_then(Value::as_array).map(|values|
+                values.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>()).unwrap_or_default();
+            (paths("prompts"), paths("skills"))
+        });
         let templates = crate::prompt_templates::load_prompt_templates(&crate::prompt_templates::LoadPromptTemplatesOptions {
-            cwd: self.cwd(), agent_dir: self.agent_dir(), include_defaults: true, ..Default::default()
+            cwd: self.cwd(), agent_dir: self.agent_dir(), prompt_paths, include_defaults: true,
         });
         let skills = crate::skills::load_skills(&crate::skills::LoadSkillsOptions {
-            cwd: self.cwd(), agent_dir: self.agent_dir(), include_defaults: true, ..Default::default()
+            cwd: self.cwd(), agent_dir: self.agent_dir(), skill_paths, include_defaults: true,
         });
         self.set_prompt_resources(templates, skills.skills);
         self.rebuild_system_prompt();
@@ -4708,6 +4755,7 @@ mod tests {
     #[test]
     fn compaction_application_rebuilds_only_summary_and_retained_suffix() {
         let session = test_session();
+        session.agent.set_model(test_model());
         session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"old","timestamp":0})));
         let retained = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"recent","timestamp":1})));
         session.apply_compaction(&crate::compaction::compaction::CompactionResult {
@@ -4717,6 +4765,21 @@ mod tests {
         assert_eq!(session.messages().len(), 2);
         assert_eq!(user_message_text(&session.messages()[1]), "recent");
         assert_eq!(session.with_session_manager(|manager| manager.entries().last().expect("entry")["type"].clone()), "compaction");
+    }
+
+    #[test]
+    fn oversized_compaction_is_rejected_without_mutating_history() {
+        let session = test_session();
+        session.agent.set_model(test_model());
+        let retained = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"recent","timestamp":1})));
+        let revision = session.message_revision();
+        let error = session.apply_compaction(&crate::compaction::compaction::CompactionResult {
+            summary: "x".repeat(600_000), first_kept_entry_id: retained["id"].as_str().expect("id").to_owned(),
+            tokens_before: 100, estimated_tokens_after: None, usage: None, details: None,
+        }).expect_err("overflow rejected");
+        assert_eq!(error, "Compaction rejected: summary-would-overflow");
+        assert_eq!(session.message_revision(), revision);
+        assert_eq!(session.with_session_manager(|manager| manager.entries().len()), 1);
     }
 
     #[test]
