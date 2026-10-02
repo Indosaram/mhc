@@ -4,6 +4,32 @@ static WHITESPACE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"[\t\x0c\x0b \u{00
 static BEFORE_NEWLINE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"[ \t]+\n").expect("literal pattern"));
 static AFTER_NEWLINE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\n[ \t]+").expect("literal pattern"));
 static NEWLINES:LazyLock<Regex>=LazyLock::new(||Regex::new(r"\n{3,}").expect("literal pattern"));
+pub fn reader_inner_text(node:&dom_query::NodeRef<'_>,normalize_spaces:bool)->String {
+    let text=node.text();let text=text.trim_matches(js_whitespace);if !normalize_spaces {return text.into();}
+    let mut output=String::new();let mut whitespace=String::new();
+    for character in text.chars() {if js_whitespace(character) {whitespace.push(character);} else {if whitespace.chars().count()>=2 {output.push(' ');} else {output.push_str(&whitespace);}whitespace.clear();output.push(character);}}
+    output.push_str(&whitespace);output
+}
+pub fn reader_link_density(node:&dom_query::NodeRef<'_>)->f64 {
+    let length=reader_inner_text(node,true).encode_utf16().count();if length==0 {return 0.;}
+    let links=dom_query::Selection::from(*node).select("a");let mut linked=0.;
+    for link in links.nodes() {let coefficient=if link.attr("href").is_some_and(|href|href.starts_with('#')&&href.len()>1) {0.3} else {1.};linked+=reader_inner_text(link,true).encode_utf16().count() as f64*coefficient;}
+    linked/length as f64
+}
+pub fn reader_initial_score(node:&dom_query::NodeRef<'_>,weight_classes:bool)->i32 {
+    static POSITIVE:LazyLock<Regex>=LazyLock::new(||Regex::new("(?i)article|body|content|entry|hentry|h-entry|main|page|pagination|post|text|blog|story").expect("literal pattern"));
+    static NEGATIVE:LazyLock<Regex>=LazyLock::new(||Regex::new("(?i)-ad-|hidden|^hid$| hid$| hid |^hid |banner|combx|comment|com-|contact|footer|gdpr|masthead|media|meta|outbrain|promo|related|scroll|share|shoutbox|sidebar|skyscraper|sponsor|shopping|tags|widget").expect("literal pattern"));
+    let name=node.node_name();let mut score=match name.as_deref() {Some("div")=>5,Some("pre"|"td"|"blockquote")=>3,Some("address"|"ol"|"ul"|"dl"|"dd"|"dt"|"li"|"form")=>-3,Some("h1"|"h2"|"h3"|"h4"|"h5"|"h6"|"th")=>-5,_=>0};
+    if weight_classes {
+        for attribute in ["class","id"] {
+            if let Some(value)=node.attr(attribute) {
+                if NEGATIVE.is_match(&value) {score-=25;}
+                if POSITIVE.is_match(&value) {score+=25;}
+            }
+        }
+    }
+    score
+}
 fn markdown_block(name:&str)->bool {matches!(name,"address"|"article"|"aside"|"audio"|"blockquote"|"body"|"canvas"|"center"|"dd"|"dir"|"div"|"dl"|"dt"|"fieldset"|"figcaption"|"figure"|"footer"|"form"|"frameset"|"h1"|"h2"|"h3"|"h4"|"h5"|"h6"|"header"|"hgroup"|"hr"|"html"|"isindex"|"li"|"main"|"menu"|"nav"|"noframes"|"noscript"|"ol"|"output"|"p"|"pre"|"section"|"table"|"tbody"|"td"|"tfoot"|"th"|"thead"|"tr"|"ul")}
 fn markdown_void(name:&str)->bool {matches!(name,"area"|"base"|"br"|"col"|"command"|"embed"|"hr"|"img"|"input"|"keygen"|"link"|"meta"|"param"|"source"|"track"|"wbr")}
 fn markdown_meaningful(name:&str)->bool {matches!(name,"a"|"table"|"thead"|"tbody"|"tfoot"|"th"|"td"|"iframe"|"script"|"audio"|"video")}
@@ -191,6 +217,15 @@ fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reader_inner_text_collapses_runs_but_preserves_single_whitespace() {
+        let document=dom_query::Document::from("<p> one\ttwo\nthree  four\u{00a0}\u{00a0}five </p>");let node=document.select("p");assert_eq!(reader_inner_text(&node.nodes()[0],true),"one\ttwo\nthree four five");assert_eq!(reader_inner_text(&node.nodes()[0],false),"one\ttwo\nthree  four\u{00a0}\u{00a0}five");
+    }
+    #[test] fn reader_density_weights_hash_links_and_utf16_lengths() {
+        let document=dom_query::Document::from("<p>😀<a href='#local'>😀</a><a href='#'>xx</a></p>");assert!((reader_link_density(&document.select("p").nodes()[0])-2.6/6.).abs()<1e-12);let empty=dom_query::Document::from("<p></p>");assert_eq!(reader_link_density(&empty.select("p").nodes()[0]),0.);
+    }
+    #[test] fn reader_initial_scores_apply_class_and_id_independently() {
+        let document=dom_query::Document::from("<div id='main' class='article comment'></div><h2 id='sidebar'></h2>");assert_eq!(reader_initial_score(&document.select("div").nodes()[0],true),30);assert_eq!(reader_initial_score(&document.select("h2").nodes()[0],true),-30);assert_eq!(reader_initial_score(&document.select("div").nodes()[0],false),5);
+    }
     #[test] fn ordered_start_uses_javascript_number_coercion() {
         for (start,prefix) in [(" ","0.  "),("0x10","16.  "),("0b11","3.  "),("Infinity","Infinity.  "),("inf","NaN.  ")] {
             let document=dom_query::Document::from(format!("<ol start='{start}'><li>x</li></ol>"));assert!(html_fragment_to_markdown(&document.select("body").nodes()[0]).starts_with(prefix));
