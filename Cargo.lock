@@ -1762,6 +1762,9 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-pi-websearch"
 version = "0.0.0"
+dependencies = [
+ "url",
+]
 
 [[package]]
 name = "maho-ext-prompt-preset"
