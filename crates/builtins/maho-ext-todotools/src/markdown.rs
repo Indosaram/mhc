@@ -34,7 +34,7 @@ pub fn markdown_to_phases(markdown:&str)->TodoApplyResult {
     for (i,line) in markdown.split('\n').enumerate() {
         let trimmed=line.trim_matches(js_whitespace); if trimmed.is_empty() { continue; }
         if let Some(c)=HEADING.captures(trimmed) { phases.push(TodoPhase{name:c[1].trim_matches(js_whitespace).into(),tasks:vec![]}); continue; }
-        if let Some(c)=TASK.captures(trimmed) {
+        if let Some(c)=TASK.captures(trimmed).filter(|c|c[1].encode_utf16().count()<=1) {
             if phases.is_empty() { phases.push(TodoPhase{name:DEFAULT_INIT_PHASE.into(),tasks:vec![]}); }
             let status=match &c[1] { " "|""=>TodoStatus::Pending,"x"|"X"=>TodoStatus::Completed,"/"|">"=>TodoStatus::InProgress,"-"|"~"=>TodoStatus::Abandoned,_=>{ errors.push(format!("Line {}: unknown status marker \"[{}]\" (use [ ], [x], [/], [-])",i+1,&c[1])); continue; } };
             let p=phases.len()-1; phases[p].tasks.push(TodoItem{content:c[2].trim_matches(js_whitespace).into(),status}); continue;
@@ -47,6 +47,7 @@ pub fn markdown_to_phases(markdown:&str)->TodoApplyResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn astral_status_marker_is_not_a_single_javascript_code_unit() { let result=markdown_to_phases("- [\u{1f600}] task"); assert!(result.phases.is_empty()); assert_eq!(result.errors.len(),1); }
     #[test] fn javascript_regex_whitespace_accepts_bom_but_not_next_line() { let accepted=markdown_to_phases("#\u{feff}Tasks\n-\u{feff}[ ]\u{feff}one"); assert!(accepted.errors.is_empty()); assert_eq!(accepted.phases[0].tasks[0].content,"one"); assert_eq!(markdown_to_phases("#\u{0085}Tasks").errors.len(),1); }
     #[test] fn relative_cwd_resolves_against_process_cwd() { assert_eq!(resolve_todo_markdown_path("TODO.md",Path::new("relative")),std::env::current_dir().unwrap().join("relative/TODO.md")); }
     #[test] fn absolute_user_paths_preserve_dot_segments() { assert_eq!(resolve_todo_markdown_path("/tmp/../TODO.md",Path::new("/other")),PathBuf::from("/tmp/../TODO.md")); }
