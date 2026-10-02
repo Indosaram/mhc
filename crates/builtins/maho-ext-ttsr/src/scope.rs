@@ -36,7 +36,7 @@ fn matches_path(pattern:&str,path:&str)->bool {
         let matched=matches_path(remaining,path);
         return if bangs%2==0 { matched } else { !matched };
     }
-    if extglob(pattern).is_some() || pattern.contains("..") || pattern.contains('[') || pattern.contains('{') {
+    if pattern.contains('(') || pattern.contains("..") || pattern.contains('[') || pattern.contains('{') {
         let Some(fragment)=glob_fragment(pattern) else { return false; };
         let pattern=format!("^{fragment}$");
         let Ok(matcher)=regress::Regex::new(&pattern) else { return false; };
@@ -93,6 +93,21 @@ fn glob_fragment(pattern:&str)->Option<String> {
         };
         return Some(format!("{}{group}{}",glob_fragment(&pattern[..start])?,glob_fragment(suffix)?));
     }
+    if let Some(start)=pattern.find('(') {
+        let mut depth=1; let mut end=None;
+        for (offset,value) in pattern[start+1..].char_indices() {
+            match value { '('=>depth+=1,')'=>{ depth-=1; if depth==0 { end=Some(start+1+offset); break; } },_=>() }
+        }
+        if let Some(end)=end {
+            let body=&pattern[start+1..end]; let mut depth=0; let mut part=0; let mut alternatives=Vec::new();
+            for (index,value) in body.char_indices() {
+                match value { '('=>depth+=1,')'=>depth-=1,'|' if depth==0=>{ alternatives.push(glob_fragment(&body[part..index])?); part=index+1; },_=>() }
+            }
+            alternatives.push(glob_fragment(&body[part..])?);
+            let suffix=&pattern[end+1..]; let (quantifier,suffix)=if suffix.starts_with('+')||suffix.starts_with('?') { (&suffix[..1],&suffix[1..]) } else { ("",suffix) };
+            return Some(format!("{}(?:{}){quantifier}{}",glob_fragment(&pattern[..start])?,alternatives.join("|"),glob_fragment(suffix)?));
+        }
+    }
     let glob=globset::GlobBuilder::new(pattern).literal_separator(true).empty_alternates(true).allow_unclosed_class(true).build().ok()?;
     Some(glob.regex().strip_prefix("(?-u)^")?.strip_suffix('$')?.into())
 }
@@ -119,6 +134,11 @@ pub fn matches_scope(scope:&TtsrScope,source:TtsrStreamSource,tool_name:Option<&
 pub fn matches_path_globs(globs:&[String],paths:Option<&[String]>)->bool { globs.is_empty() || globs.iter().any(|glob|matches_any_path(glob,paths)) }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn picomatch_plain_group_matrix() {
+        for (pattern,path,expected) in [("(a|b).rs","a.rs",true),("(a|b).rs","b.rs",true),("(a|b).rs","c.rs",false),("(a).rs","a.rs",true),("a(b|c).rs","ac.rs",true),("(a|b)*.rs","banana.rs",true)] {
+            assert_eq!(matches_path_globs(&[pattern.into()],Some(&[path.into()])),expected,"{pattern}: {path}");
+        }
+    }
     #[test] fn picomatch_bracket_literal_and_negation_matrix() {
         for (pattern,path,expected) in [("[abc].rs","[abc].rs",true),("[abc].rs","a.rs",true),("[!a].rs","b.rs",false),("[!a].rs","!.rs",true),("[^a].rs","b.rs",true),("{abc}.rs","abc.rs",false),("{abc}.rs","{abc}.rs",true)] {
             assert_eq!(matches_path_globs(&[pattern.into()],Some(&[path.into()])),expected,"{pattern}: {path}");
