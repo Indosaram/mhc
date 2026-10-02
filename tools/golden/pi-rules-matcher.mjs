@@ -37,6 +37,8 @@ patterns.push('+(*(@(a))|b)', '*(*(@(a))*(b))', '+(*(@(ab))|c)', '+(@(a)|aa)', '
 paths.push('aaaa', 'bbbb', 'ababa', 'cc');
 patterns.push('@(a|b)[a||b]', '@(a|b)[a~~b]', '+( *(a) | b )', '+(a | aa)', '+("a"|b)');
 paths.push('a|', 'a[a~~b]', 'a b', 'aa ');
+patterns.push('?', '??', 'a?', 'a??');
+paths.push('\ud83d\ude00', 'a\ud83d\ude00', '\n', 'a\n', '\r', '\u2028', '\u2029');
 for (const pattern of patterns) if (!paths.includes(pattern)) paths.push(pattern);
 const cases = patterns.flatMap(pattern => { const matches = picomatch(pattern, { bash: true, dot: true }); return paths.map(path => ({ pattern, path, matched: matches(path) })); });
 const output = `${JSON.stringify(cases, null, 2)}\n`;

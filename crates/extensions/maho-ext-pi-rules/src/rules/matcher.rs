@@ -11,7 +11,18 @@ pub struct MatcherCacheStats {pub entries:usize,pub compiled_patterns:usize}
 struct PatternSet {key:String,positive:Vec<(String,PathMatcher)>,negative:Vec<(String,PathMatcher)>}
 enum PathMatcher{Glob(globset::GlobMatcher),Expression(fancy_regex::Regex),Never}
 impl PathMatcher{
-    fn is_match(&self,path:&str)->Result<bool,MatcherError>{match self{Self::Glob(matcher)=>Ok(matcher.is_match(path)),Self::Expression(matcher)=>matcher.is_match(path).map_err(|error|MatcherError::Expression(Box::new(error))),Self::Never=>Ok(false)}}
+    fn is_match(&self,path:&str)->Result<bool,MatcherError>{match self{Self::Glob(matcher)=>Ok(matcher.is_match(path)),Self::Expression(matcher)=>matcher.is_match(&js_regex_units(path)).map_err(|error|MatcherError::Expression(Box::new(error))),Self::Never=>Ok(false)}}
+}
+// JavaScript's non-Unicode regexes consume UTF-16 units, not scalar values.
+// Surrogate units occupy a disjoint scalar range; actual supplementary input
+// is split into units too, so it cannot collide with these mapped values.
+fn js_regex_units(value:&str)->String{value.encode_utf16().filter_map(|unit|char::from_u32(if (0xd800..=0xdfff).contains(&unit){0x10000+u32::from(unit)}else{u32::from(unit)})).collect()}
+fn js_regex_expression(value:&str)->String{
+    let mut result=String::new();let mut escaped=false;let mut class=false;
+    for ch in js_regex_units(value).chars(){
+        if escaped{result.push(ch);escaped=false;continue;}
+        match ch{'\\'=>{escaped=true;result.push(ch);},'['=>{class=true;result.push(ch);},']'=>{class=false;result.push(ch);},'.' if !class=>result.push_str("[^\\n\\r\\u{2028}\\u{2029}]"),_=>result.push(ch)}
+    }result
 }
 #[derive(Debug)]
 pub enum MatcherError{Glob(globset::Error),Expression(Box<fancy_regex::Error>)}
@@ -59,7 +70,7 @@ impl Matcher {
                 let negated=pattern.starts_with('!');
                 let value=pattern.strip_prefix('!').unwrap_or(&pattern);
                 let normalized=normalize_literal_braces(value.strip_prefix("./").unwrap_or(value));
-                let compiled=if value.contains(['(',')','"','[','*','?','+']){match fancy_regex::Regex::new(&format!("^(?:{})$",compile_expression(&normalized))){Ok(expression)=>PathMatcher::Expression(expression),Err(_)=>PathMatcher::Never}}else{PathMatcher::Glob(GlobBuilder::new(&normalized).literal_separator(false).backslash_escape(false).allow_unclosed_class(true).empty_alternates(true).build()?.compile_matcher())};
+                let compiled=if value.contains(['(',')','"','[','*','?','+']){match fancy_regex::Regex::new(&format!("^(?:{})$",js_regex_expression(&compile_expression(&normalized)))){Ok(expression)=>PathMatcher::Expression(expression),Err(_)=>PathMatcher::Never}}else{PathMatcher::Glob(GlobBuilder::new(&normalized).literal_separator(false).backslash_escape(false).allow_unclosed_class(true).empty_alternates(true).build()?.compile_matcher())};
                 if negated{set.negative.push((value.into(),compiled));}else{set.positive.push((pattern,compiled));}
             }
             if self.sets.len()>=256{self.sets.pop_front();}
