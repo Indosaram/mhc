@@ -12,6 +12,7 @@ maho-tui = { path = "../maho-tui" }
 maho-tools = { path = "../maho-tools" }
 maho-interactive = { path = "../maho-interactive" }
 serde_json.workspace = true
+serde = { workspace = true, features = ["derive"] }
 regex.workspace = true
 sha2.workspace = true
 url.workspace = true

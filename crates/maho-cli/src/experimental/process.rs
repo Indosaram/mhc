@@ -8,3 +8,15 @@ pub fn parse_internal_process_role(value: Option<&str>) -> Result<Option<Interna
 pub fn encode_control_line(message: &serde_json::Value) -> Result<String, String> {
     let line = format!("{}\n", serde_json::to_string(message).map_err(|e| e.to_string())?); if line.len() > MAX_CONTROL_LINE_BYTES { return Err("Internal control message is too large".to_owned()); } Ok(line)
 }
+pub fn normalize_agent_dir_lane(env: &mut std::collections::BTreeMap<String, String>) {
+    if env.contains_key("PI_CODING_AGENT_DIR") { env.retain(|key, _| key == "PI_CODING_AGENT_DIR" || !key.ends_with("_CODING_AGENT_DIR")); }
+}
+pub fn consume_internal_process_role(env: &mut std::collections::BTreeMap<String, String>) -> Result<Option<InternalProcessRole>, String> {
+    let role = parse_internal_process_role(env.get(INTERNAL_PROCESS_ENV).map(String::as_str))?;
+    env.remove(INTERNAL_PROCESS_ENV);
+    Ok(role)
+}
+pub async fn terminate_internal_process(child: &mut tokio::process::Child) -> std::io::Result<()> {
+    if child.try_wait()?.is_none() { child.start_kill()?; child.wait().await?; }
+    Ok(())
+}
