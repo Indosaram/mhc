@@ -467,6 +467,7 @@ pub struct SettingsManager {
     errors: Vec<SettingsError>,
     settings_paths: HashMap<SettingsScope, String>,
     selected_sources: HashMap<SettingsScope, SettingsSourceSelection>,
+    overrides: Settings,
 }
 
 impl SettingsManager {
@@ -513,6 +514,7 @@ impl SettingsManager {
             errors,
             settings_paths,
             selected_sources,
+            overrides: Settings::new(),
         }
     }
 
@@ -602,6 +604,11 @@ impl SettingsManager {
         self.settings.get(key).and_then(Value::as_f64)
     }
 
+    pub fn apply_overrides(&mut self, overrides: &Settings) {
+        self.overrides = deep_merge_settings(&self.overrides, overrides);
+        self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
+    }
+
     pub fn resolve_retry_profile(
         &self,
         provider: Option<&dyn maho_ai::models::Provider>,
@@ -671,11 +678,11 @@ impl SettingsManager {
         match scope {
             SettingsScope::Global => {
                 self.global_settings = values_into(&self.global_settings, &values);
-                self.settings = deep_merge_settings(&self.global_settings, &self.project_settings);
+                self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
             }
             SettingsScope::Project => {
                 self.project_settings = values_into(&self.project_settings, &values);
-                self.settings = deep_merge_settings(&self.global_settings, &self.project_settings);
+                self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
             }
         }
         Ok(())
@@ -688,7 +695,7 @@ impl SettingsManager {
         self.project_settings = project_load.0;
         self.global_settings_load_error = global_load.1;
         self.project_settings_load_error = project_load.1;
-        self.settings = deep_merge_settings(&self.global_settings, &self.project_settings);
+        self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
     }
 }
 
@@ -880,6 +887,16 @@ mod tests {
         assert_eq!(storage.content(SettingsScope::Global).as_deref(), Some("{\"a\":1}\n"));
         assert_eq!(storage.content(SettingsScope::Project), None);
         reset_self_write_tracker_for_tests();
+    }
+
+    #[test]
+    fn session_overrides_survive_reload_without_writing_storage() {
+        let mut manager = SettingsManager::from_storage(Box::new(InMemorySettingsStorage::default()), true);
+        manager.apply_overrides(&settings(r#"{"retry":{"modelFallback":false},"askUser":{"enabled":false}}"#));
+        manager.reload();
+        assert_eq!(manager.get_value("retry").and_then(|value| value.get("modelFallback")), Some(&Value::Bool(false)));
+        assert_eq!(manager.get_value("askUser").and_then(|value| value.get("enabled")), Some(&Value::Bool(false)));
+        assert!(!manager.global_settings.contains_key("retry"));
     }
 
     #[test]

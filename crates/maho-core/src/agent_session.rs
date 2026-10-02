@@ -1015,7 +1015,13 @@ impl AgentSession {
     /// `no-ask-user` flags, fallback-chain validation logging, the retry-fallback controller and
     /// probe scheduler, the agent subscription and tool hooks, and `_buildRuntime` (tool registry
     /// and system prompt). Each lands with the slice that owns it.
-    pub fn new(config: AgentSessionConfig) -> Result<Self, MissingModelAccessError> {
+    pub fn new(mut config: AgentSessionConfig) -> Result<Self, MissingModelAccessError> {
+        if config.flag_values.get("no-model-fallback").is_some_and(|value| matches!(value, FlagValue::Boolean(true)))
+            || std::env::var("NO_FALLBACK").as_deref() == Ok("1")
+        { config.settings_manager.apply_overrides(&Map::from_iter([("retry".to_owned(), serde_json::json!({"modelFallback":false}))])); }
+        if config.flag_values.get("no-ask-user").is_some_and(|value| matches!(value, FlagValue::Boolean(true))) {
+            config.settings_manager.apply_overrides(&Map::from_iter([("askUser".to_owned(), serde_json::json!({"enabled":false}))]));
+        }
         let model_registry = match (config.model_runtime, config.model_registry) {
             (Some(runtime), _) => ModelRegistry::new(runtime),
             (None, Some(registry)) => registry,
