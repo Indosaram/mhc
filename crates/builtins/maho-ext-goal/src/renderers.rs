@@ -1,5 +1,21 @@
 use crate::{format::GoalToolRenderDetails,types::{GoalStatus,GoalToolSnapshot}};
 use serde_json::Value;
+pub fn native_goal_tool_renderers(tool_name:&'static str)->maho_ext_api::ToolRenderers<(),Value> {
+    use std::sync::Arc;
+    use maho_tui::components::text::Text;
+    maho_ext_api::ToolRenderers {
+        render_call:Some(Arc::new(move |args,theme,_| {
+            let text=render_goal_tool_call(tool_name,args,|role,text|format!("{}{text}\x1b[39m",theme.colors.get(role).map_or("\x1b[39m",String::as_str)),|text|format!("\x1b[1m{text}\x1b[22m"));
+            Box::new(Text::with_padding(text,0,0))
+        })),
+        render_result:Some(Arc::new(|result,options,theme,_| {
+            let content=result.content.iter().filter_map(|content|match content { maho_ai::types::ContentBlock::Text(text)=>Some(maho_ext_api::ToolContent::text(&text.text)),_=>None }).collect();
+            let result=maho_ext_api::ToolResult { content,details:Some(result.details.clone()) };
+            let text=match render_goal_tool_result(&result,options.expanded,|role,text|format!("{}{text}\x1b[39m",theme.colors.get(role).map_or("\x1b[39m",String::as_str)),|text|format!("\x1b[1m{text}\x1b[22m")) { Ok(text)=>text,Err(error)=>std::panic::panic_any(error) };
+            Box::new(Text::with_padding(text,0,0))
+        })),
+    }
+}
 pub fn status_glyph(status:GoalStatus)->&'static str { match status { GoalStatus::Active=>"●",GoalStatus::Paused=>"◌",GoalStatus::Blocked=>"■",GoalStatus::Complete=>"✓" } }
 pub fn status_color(status:GoalStatus)->&'static str { match status { GoalStatus::Active=>"accent",GoalStatus::Paused=>"muted",GoalStatus::Blocked=>"error",GoalStatus::Complete=>"success" } }
 pub fn iso_timestamp(epoch_seconds:f64)->Result<String,maho_ext_api::ExtensionFailure> {
@@ -80,6 +96,17 @@ pub fn render_goal_tool_result(result:&maho_ext_api::ToolResult,expanded:bool,fg
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn native_renderers_use_unpadded_text_and_preserve_theme_ansi() {
+        let renderers=native_goal_tool_renderers("create_goal");
+        let mut context=maho_ext_api::ToolRenderContext { args:serde_json::json!({"objective":"work"}),tool_call_id:"create".into(),invalidate:std::rc::Rc::new(||{}),last_component:None,state:(),cwd:"/tmp".into(),execution_started:true,args_complete:true,is_partial:false,expanded:false,show_images:false,image_protocol:None,is_error:false,has_result:None,spinner_frame:None };
+        let mut theme=maho_ext_api::Theme::default(); theme.colors.insert("toolTitle".into(),"\x1b[31m".into());
+        let args=context.args.clone();
+        let mut call=renderers.render_call.as_ref().unwrap()(&args,&theme,&mut context);
+        let lines=call.render(80); assert_eq!(lines.len(),1); assert!(lines[0].starts_with("\x1b[31m\x1b[1m"));
+        let mut result=maho_ext_api::AgentToolResult::text("fallback"); result.details=serde_json::json!({"goal":null});
+        let mut output=renderers.render_result.as_ref().unwrap()(&result,Default::default(),&theme,&mut context);
+        assert_eq!(output.render(80).len(),1);
+    }
     #[test] fn renderer_entrypoints_preserve_theme_roles_and_fallback_selection() {
         let roles=std::cell::RefCell::new(Vec::new());
         let fg=|style:&str,text:&str| { roles.borrow_mut().push(style.to_owned()); text.to_owned() };

@@ -8,6 +8,29 @@ impl GoalExtension {
 impl Extension for GoalExtension {
     fn register(&self,api:&mut ExtensionApi) {
         let runtime=Arc::new(GoalRuntime::new(self.reference.clone(),self.now.clone()));
+        for (name,label,description,schema) in [
+            ("create_goal","Create Goal","Register a goal for work that outlives this turn: it waits on external state, or the user's requested outcome needs more than one verify-and-fix round before it is true. A single answer, lookup, or one-shot edit needs no goal.\nObjectives are limited to 4,000 characters. For longer instructions, put the full objective in a file and refer to that file.\nReplaces the current goal when it is complete and archives it; fails if an unfinished goal exists.",crate::tool_registration::create_goal_schema()),
+            ("get_goal","Get Goal","Get the current goal for this thread, including status, token and elapsed-time usage.",crate::tool_registration::get_goal_schema()),
+        ] {
+            let mut definition=maho_ext_api::ToolDefinition::new(name,description,schema,Arc::new(|_|Box::pin(async { Err(maho_ext_api::ToolError::Message("Goal tool requires an extension context".into())) })));
+            definition.label=label.into();
+            let runtime=runtime.clone();
+            let execute:maho_ext_api::ExtensionToolExecutor=Arc::new(move |_,params,_,_,context| {
+                let runtime=runtime.clone();
+                Box::pin(async move {
+                    let result=match name {
+                        "create_goal"=>runtime.create(context,params["objective"].as_str().ok_or_else(||maho_ext_api::ExtensionFailure::new("objective must be a string"))?).await,
+                        "get_goal"=>runtime.get(context).await,
+                        _=>unreachable!(),
+                    }.map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                    Ok(maho_ext_api::AgentToolResult {
+                        content:result.content.into_iter().map(|content|match content { maho_ext_api::ToolContent::Text { text,.. }=>maho_ext_api::ContentBlock::text(text),maho_ext_api::ToolContent::Image { data,mime_type }=>maho_ext_api::ContentBlock::Image(maho_ai::types::ImageContent { data,mime_type }) }).collect(),
+                        details:result.details.unwrap_or(serde_json::Value::Null),usage:None,added_tool_names:None,terminate:None,is_error:None,
+                    })
+                })
+            });
+            if let Err(error)=api.register_tool_with_extension_context(definition,execute) { std::panic::panic_any(error); }
+        }
         for kind in [EventKind::SessionStart,EventKind::AgentStart,EventKind::MessageStart,EventKind::MessageEnd,EventKind::AgentEnd,EventKind::Input,EventKind::InputDisposition,EventKind::SessionAbort,EventKind::SessionShutdown] {
             let runtime=runtime.clone();
             api.on(kind,Arc::new(move |event,context| { let runtime=runtime.clone(); Box::pin(async move { runtime.event(event,context).await?; Ok(EventResult::None) }) }));
@@ -16,6 +39,25 @@ impl Extension for GoalExtension {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn factory_context_tools_create_and_read_the_same_store() {
+        use maho_ext_api::*;
+        let dir=tempfile::tempdir().unwrap(); let reference=crate::types::GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+        let extension=GoalExtension { reference:Arc::new(move |_|stored.clone()),now:Arc::new(||0.0) };
+        let mut api=ExtensionApi::new(LoadedExtension::new("goal","/tmp".into(),Default::default()),Default::default(),Default::default(),Default::default()); extension.register(&mut api);
+        let context=crate::test_context::context();
+        let create=api.runtime.extension_tool_executor("goal","create_goal").unwrap();
+        let get=api.runtime.extension_tool_executor("goal","get_goal").unwrap();
+        assert!(get("get",serde_json::json!({}),None,None,&context).await.unwrap().details["goal"].is_null());
+        let result=create("create",serde_json::json!({"objective":"work"}),None,None,&context).await.unwrap();
+        assert_eq!(result.details["goal"]["objective"],"work");
+        assert!(create("replace",serde_json::json!({"objective":"other"}),None,None,&context).await.is_err());
+        let read=get("get",serde_json::json!({}),None,None,&context).await.unwrap();
+        let persisted=crate::store::read_goal(&reference).unwrap().unwrap();
+        assert_eq!(read.details,serde_json::to_value(crate::format::goal_tool_response(Some(&persisted))).unwrap());
+        assert_eq!(read.details["goal"]["objective"],result.details["goal"]["objective"]);
+        let mut shutdown=ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason:SessionReason::Quit,target_session_file:None,signal:None });
+        api.registered.handlers[&EventKind::SessionShutdown][0](&mut shutdown,&context).await.unwrap();
+    }
     #[tokio::test] async fn registered_factory_hooks_share_accounting_and_persist_user_abort() {
         use maho_ext_api::*;
         let dir=tempfile::tempdir().unwrap(); let reference=crate::types::GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();

@@ -53,7 +53,7 @@ impl GoalRuntime {
             ExtensionEvent::SessionStart(_)=>{
                 state.accounting.clear(); state.input.reset();
                 self.monitor.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?.dispose();
-                crate::persistence::migrate_legacy_goal_file(&reference,&context.agent_dir).map_err(failure)?;
+                crate::persistence::migrate_legacy_goal_file_default(&reference).map_err(failure)?;
                 goal=crate::store::read_goal(&reference).map_err(failure)?;
                 state.context=Some(context.clone());
                 if let Some(goal)=goal.as_ref().filter(|goal|goal.status==GoalStatus::Active) { state.accounting.begin(goal,now); }
@@ -69,7 +69,18 @@ impl GoalRuntime {
             ExtensionEvent::AgentEnd { messages,aborted,abort_source,will_retry }=>{
                 goal=state.accounting.agent_end(&reference,messages,*aborted==Some(true)&&*abort_source==Some(maho_ext_api::AbortSource::User),now,seconds).await.map_err(failure)?;
                 let ended=maho_core::agent_abort_provenance::AgentEndEvent { messages:messages.clone(),aborted:aborted.unwrap_or(false),abort_source:*abort_source,will_retry:will_retry.unwrap_or(false) };
-                if crate::agent_end_continuation::goal_agent_end_route(goal.as_ref(),&ended)==crate::agent_end_continuation::GoalAgentEndRoute::PolicyBlock {
+                let route=crate::agent_end_continuation::goal_agent_end_route(goal.as_ref(),&ended);
+                if route==crate::agent_end_continuation::GoalAgentEndRoute::AgentEnd {
+                    let mut monitor=self.monitor.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?;
+                    monitor.sync_goal(goal.as_ref());
+                    monitor.reset_length_recovery_after_clean_stop(goal.as_ref(),messages);
+                    if let Some(goal)=goal.as_ref().filter(|goal|goal.status==GoalStatus::Active) {
+                        let used_tools=crate::continuation::continuation_turn_used_tools(messages);
+                        monitor.record_assistant_output(&crate::lifecycle_helpers::last_assistant_text(messages),used_tools);
+                        monitor.record_toolless_continuation_turn(&goal.id,used_tools);
+                    }
+                }
+                if route==crate::agent_end_continuation::GoalAgentEndRoute::PolicyBlock {
                     goal=Some(crate::store::update_goal(&reference,&GoalUpdate { status:Some(GoalStatus::Blocked),reason:Some("provider policy rejection ended the turn".into()),..Default::default() },GoalUpdateSource::Model,seconds).await.map_err(failure)?);
                     state.accounting.clear();
                 }
@@ -128,6 +139,19 @@ impl GoalRuntime {
 fn failure(error:crate::errors::GoalError)->ExtensionFailure { ExtensionFailure::new(error.to_string()) }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn agent_end_clean_stop_clears_runtime_length_recovery() {
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+        let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap();
+        let runtime=GoalRuntime::new(Arc::new(move |_|stored.clone()),Arc::new(||2000.0));
+        let context=crate::test_context::context();
+        { let mut monitor=runtime.monitor.lock().unwrap(); monitor.sync_goal(Some(&goal)); monitor.consecutive_length_recoveries.insert(goal.id.clone(),1); }
+        let message=maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(maho_ai::providers::faux::faux_assistant_message("done",Default::default()))));
+        runtime.event(&ExtensionEvent::AgentEnd { messages:vec![message],aborted:Some(false),abort_source:None,will_retry:Some(false) },&context).await.unwrap();
+        let monitor=runtime.monitor.lock().unwrap();
+        assert!(!monitor.consecutive_length_recoveries.contains_key(&goal.id));
+        assert_eq!(monitor.recent_normalized_output_hashes,vec![crate::continuation::hash_assistant_text("done")]);
+        assert_eq!(monitor.toolless_continuation_streak,1);
+    }
     #[tokio::test] async fn registered_replacement_confirmation_cancels_without_accounting_or_delivery() {
         use maho_ext_api::*;
         for accepted in [false,true] {

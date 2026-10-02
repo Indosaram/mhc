@@ -46,6 +46,17 @@ pub fn publish_monitor_resume(api:&maho_ext_api::ExtensionApi,due:&DueGoalContin
     api.events.emit(GOAL_CONTINUATION_RESUMED_EVENT,&data); data["phase"]="resumed".into(); api.append_entry(crate::cache_warm::GOAL_CACHE_WARMUP_ENTRY_TYPE,Some(data))
 }
 impl MonitorAwareGoalContinuation {
+    pub fn build_continuation_content(&self,api:&maho_ext_api::ExtensionApi,context:&maho_ext_api::ExtensionContext,goal:&crate::types::Goal,verdict:crate::monitor_continuation_types::ContinuingGoalContinuationVerdict)->String {
+        let content=match verdict.prompt { crate::continuation::ContinuationPrompt::Minimal=>crate::prompt::build_truncation_recovery_prompt(),crate::continuation::ContinuationPrompt::Full=>crate::prompt::build_continuation_prompt(goal) };
+        if !verdict.stall_notice { return content; }
+        let live_sources=self.wake_sources.iter().filter(|(_,count)|**count>0.0).map(|(source,_)|source.clone()).collect::<Vec<_>>();
+        api.events.emit(GOAL_MONITOR_STALL_EVENT,&serde_json::json!({"goalId":goal.id,"consecutiveContinuations":self.toolless_continuation_streak,"toolless":true}));
+        if context.has_ui {
+            let detail=if live_sources.is_empty() { "without tool use".into() } else { format!("while {} channels stayed active",live_sources.join(", ")) };
+            context.ui.notify(&format!("Goal continuation repeated {} toolless turns {detail} - injected a stall check.",self.toolless_continuation_streak),maho_ext_api::NotificationType::Info);
+        }
+        format!("{}\n\n{content}",crate::prompt::build_goal_stall_notice(self.toolless_continuation_streak,&live_sources))
+    }
     pub fn after_provider_failure(&mut self,context:&maho_ext_api::ExtensionContext,goal:Option<&crate::types::Goal>,event:&maho_core::agent_abort_provenance::AgentEndEvent) {
         self.note_continuation_started(); self.pending_provider_recovery=None; self.sync_goal(goal);
         if let Some(goal)=goal.filter(|goal|goal.status==crate::types::GoalStatus::Active)&&!event.will_retry { self.pending_provider_recovery=Some(PendingGoalRecovery { context:context.clone(),goal:goal.clone(),event:event.clone() }); }
@@ -54,7 +65,11 @@ impl MonitorAwareGoalContinuation {
         self.note_continuation_started(); self.pending_system_recovery=None; self.sync_goal(goal);
         let goal=goal.filter(|goal|goal.status==crate::types::GoalStatus::Active)?;
         if event.will_retry { return None; }
-        if self.has_active_wake_sources() { return self.rearm_monitor_backstop(goal,None,now,backstop_seconds,question_idle_ms,None); }
+        if self.has_active_wake_sources() {
+            let usage=crate::turn_usage::collect_assistant_usage(&event.messages);
+            let cache=crate::cache_warm::estimate_cache_warm_metrics(context.model.as_ref(),&std::env::vars().collect(),Some((usage.cache_read as f64,usage.cache_write as f64)));
+            return self.rearm_monitor_backstop(goal,None,now,backstop_seconds,question_idle_ms,cache);
+        }
         if crate::last_assistant_message::last_assistant_message(&event.messages).is_some_and(|message|message.stop_reason==maho_ai::types::StopReason::Error) { self.pending_system_recovery=Some(PendingGoalRecovery { context:context.clone(),goal:goal.clone(),event:event.clone() }); }
         None
     }
@@ -115,6 +130,9 @@ impl MonitorAwareGoalContinuation {
         self.recent_normalized_output_hashes.push(crate::continuation::hash_assistant_text(text));
         if self.recent_normalized_output_hashes.len()>3 { self.recent_normalized_output_hashes.remove(0); }
     }
+    pub fn reset_length_recovery_after_clean_stop(&mut self,goal:Option<&crate::types::Goal>,messages:&[maho_agent::types::AgentMessage]) {
+        if let Some(goal)=goal && crate::last_assistant_message::last_assistant_message(messages).is_some_and(|message|message.stop_reason==maho_ai::types::StopReason::Stop) { self.consecutive_length_recoveries.remove(&goal.id); }
+    }
     pub fn record_toolless_continuation_turn(&mut self,goal_id:&str,turn_used_tools:bool) {
         if self.toolless_streak_goal_id.as_deref()!=Some(goal_id) { self.toolless_streak_goal_id=Some(goal_id.into()); self.toolless_continuation_streak=0; }
         if self.ended_turn_was_user_initiated { return; }
@@ -137,7 +155,7 @@ impl MonitorAwareGoalContinuation {
         self.wake_sources.insert(source.into(),count);
         if previous>0.0 && self.wake_sources.values().sum::<f64>()==0.0 {
             let kind=self.armed_timer.map(|timer|timer.kind).or_else(||self.held_timer.map(|timer|timer.kind));
-            if kind==Some(GoalWaitKind::Monitor) { self.arm_timer(GoalWaitKind::Monitor,1000.0,1000.0,true,now); }
+            if kind==Some(GoalWaitKind::Monitor) { self.arm_timer(GoalWaitKind::Monitor,1000.0,1000.0,true,now); } else { self.cache_warm_iteration=0.0; }
             self.toolless_continuation_streak=0; self.toolless_streak_goal_id=None;
             return WakeSourceChange::Drained;
         }
@@ -147,6 +165,30 @@ impl MonitorAwareGoalContinuation {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn clean_stop_resets_only_the_matching_goal_length_recovery() {
+        let goal:crate::types::Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap();
+        let mut monitor=MonitorAwareGoalContinuation { consecutive_length_recoveries:BTreeMap::from([("g".into(),2),("other".into(),1)]),..Default::default() };
+        let message=maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(maho_ai::providers::faux::faux_assistant_message("done",Default::default()))));
+        monitor.reset_length_recovery_after_clean_stop(None,std::slice::from_ref(&message)); assert_eq!(monitor.consecutive_length_recoveries["g"],2);
+        monitor.reset_length_recovery_after_clean_stop(Some(&goal),&[]); assert_eq!(monitor.consecutive_length_recoveries["g"],2);
+        monitor.reset_length_recovery_after_clean_stop(Some(&goal),&[message]); assert!(!monitor.consecutive_length_recoveries.contains_key("g")); assert_eq!(monitor.consecutive_length_recoveries["other"],1);
+    }
+    #[test] fn stall_content_emits_machine_event_and_wraps_selected_prompt() {
+        let goal:crate::types::Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap();
+        let api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("goal","/tmp".into(),Default::default()),Default::default(),Default::default(),Default::default());
+        let seen=std::sync::Arc::new(std::sync::Mutex::new(Vec::new())); let captured=seen.clone(); let _subscription=api.events.on(GOAL_MONITOR_STALL_EVENT,std::sync::Arc::new(move |data|captured.lock().unwrap().push(data.clone())));
+        let monitor=MonitorAwareGoalContinuation { toolless_continuation_streak:3,..Default::default() };
+        let verdict=crate::monitor_continuation_types::ContinuingGoalContinuationVerdict { prompt:crate::continuation::ContinuationPrompt::Minimal,stall_notice:false };
+        assert_eq!(monitor.build_continuation_content(&api,&crate::test_context::context(),&goal,verdict),crate::prompt::build_truncation_recovery_prompt()); assert!(seen.lock().unwrap().is_empty());
+        let content=monitor.build_continuation_content(&api,&crate::test_context::context(),&goal,crate::monitor_continuation_types::ContinuingGoalContinuationVerdict { stall_notice:true,..verdict });
+        assert!(content.starts_with("<goal_stall_check>")); assert!(content.ends_with(&crate::prompt::build_truncation_recovery_prompt())); assert_eq!(*seen.lock().unwrap(),vec![serde_json::json!({"goalId":"g","consecutiveContinuations":3,"toolless":true})]);
+    }
+    #[test] fn source_drain_without_monitor_wait_resets_cache_iteration() {
+        let mut monitor=MonitorAwareGoalContinuation { cache_warm_iteration:4.0,..Default::default() };
+        monitor.set_wake_source_count("task",1.0,&[],0.0,1000.0);
+        assert_eq!(monitor.set_wake_source_count("task",0.0,&[],0.0,1000.0),WakeSourceChange::Drained);
+        assert_eq!(monitor.cache_warm_iteration,0.0);
+    }
     #[test] fn provider_recovery_is_staged_until_settlement_and_consumed_once() {
         let goal:crate::types::Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap(); let context=crate::test_context::context();
         for (will_retry,source,expected) in [(true,None,false),(false,Some(maho_ext_api::AbortSource::User),false),(false,None,true)] {
@@ -154,13 +196,20 @@ impl MonitorAwareGoalContinuation {
             let recovery=monitor.take_settled_recovery(); assert_eq!(recovery.is_some(),expected); if let Some((path,pending))=recovery { assert_eq!(path,crate::continuation::GoalContinuationPath::ProviderRecovery); assert_eq!(pending.goal,goal); assert_eq!(pending.event,event); } assert!(monitor.take_settled_recovery().is_none());
         }
     }
+    #[test] fn system_settlement_takes_precedence_and_consumes_both_staged_routes() {
+        let goal:crate::types::Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap();
+        let event=maho_core::agent_abort_provenance::AgentEndEvent { messages:Vec::new(),will_retry:false,aborted:true,abort_source:Some(maho_ext_api::AbortSource::System) };
+        let pending=PendingGoalRecovery { context:crate::test_context::context(),goal,event };
+        let mut monitor=MonitorAwareGoalContinuation { pending_system_recovery:Some(pending.clone()),pending_provider_recovery:Some(pending),..Default::default() };
+        assert_eq!(monitor.take_settled_recovery().unwrap().0,crate::continuation::GoalContinuationPath::SystemRecovery); assert!(monitor.take_settled_recovery().is_none());
+    }
     #[test] fn system_recovery_requires_error_and_reset_discards_staged_recovery() {
         let goal:crate::types::Goal=serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap(); let context=crate::test_context::context();
-        let mut assistant=maho_ai::providers::faux::faux_assistant_message("",Default::default()); assistant.stop_reason=maho_ai::types::StopReason::Error;
+        let mut assistant=maho_ai::providers::faux::faux_assistant_message("",Default::default()); assistant.stop_reason=maho_ai::types::StopReason::Error; assistant.usage.cache_read=120; assistant.usage.cache_write=30;
         let event=maho_core::agent_abort_provenance::AgentEndEvent { messages:vec![maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(assistant)))],will_retry:false,aborted:true,abort_source:Some(maho_ext_api::AbortSource::System) };
         let mut monitor=MonitorAwareGoalContinuation::default(); assert!(monitor.after_system_abort(&context,Some(&goal),&event,0.0,270.0,1000.0).is_none()); assert_eq!(monitor.take_settled_recovery().unwrap().0,crate::continuation::GoalContinuationPath::SystemRecovery);
         monitor.after_provider_failure(&context,Some(&goal),&event); monitor.reset_continuation_state(); assert!(monitor.take_settled_recovery().is_none());
-        monitor.set_wake_source_count("task",1.0,&[],0.0,1000.0); assert!(monitor.after_system_abort(&context,Some(&goal),&event,0.0,270.0,1000.0).is_some()); assert!(monitor.take_settled_recovery().is_none());
+        monitor.set_wake_source_count("task",1.0,&[],0.0,1000.0); let schedule=monitor.after_system_abort(&context,Some(&goal),&event,0.0,270.0,1000.0).unwrap(); assert_eq!(schedule.cache.unwrap().cached_tokens,150.0); assert!(monitor.take_settled_recovery().is_none());
     }
     #[test] fn restored_schedule_publishes_event_without_duplicate_card() {
         use maho_ext_api::*;

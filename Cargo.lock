@@ -1769,6 +1769,7 @@ name = "maho-ext-goal"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "dirs",
  "icu_collator",
  "maho-agent",
  "maho-ai",
@@ -1776,6 +1777,7 @@ dependencies = [
  "maho-ext-api",
  "maho-ext-host",
  "maho-test-support",
+ "maho-tui",
  "regex",
  "serde",
  "serde_json",
@@ -1896,6 +1898,7 @@ dependencies = [
  "maho-ext-api",
  "maho-ext-host",
  "maho-test-support",
+ "maho-tui",
  "regex",
  "serde",
  "serde_json",

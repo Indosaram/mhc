@@ -130,9 +130,13 @@ pub async fn reset_continuation_streak(reference: &GoalStoreRef, unattended: boo
         let dir=tempfile::tempdir().unwrap(); let reference=reference(&dir); let first=create_goal(&reference,"Finish",None,1).await.unwrap();
         let completed=update_goal(&reference,&GoalUpdate { status:Some(GoalStatus::Complete),..Default::default() },GoalUpdateSource::Model,2).await.unwrap();
         assert_eq!(completed.completed_at,Some(2));
+        assert!(completed.last_started_at.is_none());
+        record_continuation_delivered(&reference,"completed",Some(&first.id),true).await.unwrap();
         assert!(update_goal(&reference,&GoalUpdate { status:Some(GoalStatus::Paused),..Default::default() },GoalUpdateSource::User,3).await.is_err());
         let resumed=update_goal(&reference,&GoalUpdate { status:Some(GoalStatus::Active),..Default::default() },GoalUpdateSource::User,3).await.unwrap();
         assert_eq!(resumed.id,first.id); assert_eq!(resumed.status,GoalStatus::Active); assert!(resumed.completed_at.is_none());
+        assert_eq!(resumed.objective,first.objective); assert_eq!(resumed.consecutive_continuations,Some(0)); assert!(resumed.last_continuation_signature.is_none());
+        assert!(resumed.last_started_at.unwrap()>completed.updated_at); assert_eq!(read_goal(&reference).unwrap(),Some(resumed));
     }
     #[tokio::test] async fn upstream_matching_objective_resumes_same_nonterminal_identity() {
         let dir=tempfile::tempdir().unwrap(); let reference=reference(&dir); let first=create_goal(&reference,"Same",None,1).await.unwrap();

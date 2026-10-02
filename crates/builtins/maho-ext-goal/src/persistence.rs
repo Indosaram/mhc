@@ -100,6 +100,10 @@ fn read_legacy_candidate(path: &Path) -> Result<Option<Goal>, GoalError> {
 pub fn migrate_legacy_goal_file(reference: &GoalStoreRef, standalone_agent_dir: &Path) -> Result<Option<Goal>, GoalError> {
     migrate_legacy_goal_file_with_publish(reference,standalone_agent_dir,|path,text|write_private(path,text,true))
 }
+pub fn migrate_legacy_goal_file_default(reference:&GoalStoreRef)->Result<Option<Goal>,GoalError> {
+    let standalone=std::env::var_os("PI_CODING_AGENT_DIR").map(PathBuf::from).or_else(||dirs::home_dir().map(|home|home.join(".pi/agent"))).ok_or_else(||GoalError::Io("operating-system home directory unavailable".into()))?;
+    migrate_legacy_goal_file(reference,&standalone)
+}
 fn migrate_legacy_goal_file_with_publish(reference:&GoalStoreRef,standalone_agent_dir:&Path,publish:impl FnOnce(&Path,&str)->std::io::Result<()>)->Result<Option<Goal>,GoalError> {
     match fs::read_to_string(goal_file_path(reference)) { Ok(_) => return Ok(None), Err(error) if error.kind() == std::io::ErrorKind::NotFound => (), Err(error) => return Err(GoalError::Io(error.to_string())) }
     let base = reference.base_dir.to_string_lossy();
@@ -129,6 +133,14 @@ fn migrate_legacy_goal_file_with_publish(reference:&GoalStoreRef,standalone_agen
 #[cfg(test)] mod tests {
     use super::*;
     fn raw() -> String { serde_json::json!({"version":1,"goal":{"id":"g","threadId":"t","objective":"work","status":"active","tokensUsed":0,"timeUsedSeconds":0,"createdAt":1,"updatedAt":1}}).to_string() }
+    #[test] fn default_migration_honors_distinct_standalone_root() {
+        if let Some(root)=std::env::var_os("MAHO_GOAL_MIGRATION_TEST_ROOT") {
+            let reference=GoalStoreRef { base_dir:PathBuf::from(root).join("extensions/goal/no-session/key"),thread_id:"new".into() }; assert_eq!(migrate_legacy_goal_file_default(&reference).unwrap().unwrap().id,"g"); return;
+        }
+        let dir=tempfile::tempdir().unwrap(); let standalone=tempfile::tempdir().unwrap(); let legacy=standalone.path().join("extensions/pi-goal/no-session/key"); fs::create_dir_all(&legacy).unwrap(); fs::write(legacy.join("old.json"),raw()).unwrap();
+        let result=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","persistence::tests::default_migration_honors_distinct_standalone_root","--nocapture"]).env("MAHO_GOAL_MIGRATION_TEST_ROOT",dir.path()).env("PI_CODING_AGENT_DIR",standalone.path()).output().unwrap();
+        assert!(result.status.success(),"{}",String::from_utf8_lossy(&result.stderr)); assert!(legacy.join("old.json.migrated").exists()); assert!(dir.path().join("extensions/goal/no-session/key/new.json").exists());
+    }
     #[test] fn legacy_retirement_failure_does_not_fail_live_publication() {
         let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().join("extensions/goal"),thread_id:"t".into() }; let legacy=dir.path().join("extensions/pi-goal"); fs::create_dir_all(&legacy).unwrap(); fs::write(legacy.join("t.json"),raw()).unwrap(); fs::create_dir(legacy.join("t.json.migrated")).unwrap();
         let imported=migrate_legacy_goal_file(&reference,dir.path()).unwrap().unwrap(); assert_eq!(read_goal_file(&reference).unwrap(),Some(imported)); assert!(legacy.join("t.json").exists()); assert!(migrate_legacy_goal_file(&reference,dir.path()).unwrap().is_none());
