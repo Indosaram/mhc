@@ -324,6 +324,21 @@ fn context_print_mode_and_tool_context_contract() { let ctx = context(); assert_
 fn invalidated_runner_rejects_new_context() { let runner = runner(vec![]); runner.invalidate("stale"); assert_eq!(runner.create_context().err().unwrap().message, "stale"); }
 
 #[tokio::test]
+async fn idle_wait_rejects_context_invalidated_during_host_wait() {
+    let mut runner = runner(vec![]);
+    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) })).unwrap();
+    let mut ctx = runner.create_context().unwrap();
+    let runtime = runner.runtime.clone();
+    ctx.wait_for_idle_fn = Arc::new(move || {
+        let runtime = runtime.clone();
+        Box::pin(async move { runtime.invalidate("replaced during idle wait"); })
+    });
+    let result = tokio::spawn(async move { ctx.wait_for_idle().await; }).await;
+    let panic = result.unwrap_err().into_panic();
+    assert_eq!(panic.downcast_ref::<ExtensionFailure>().unwrap().message, "replaced during idle wait");
+}
+
+#[tokio::test]
 async fn shutdown_budget_is_resolved_only_when_handlers_exist() {
     let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed = reads.clone();

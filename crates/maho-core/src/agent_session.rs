@@ -2817,6 +2817,14 @@ impl AgentSession {
         }));
         if let Ok(mut context) = runner.create_context() {
             context.model_registry = Arc::new(ExtensionModelRegistryView(self.model_registry().clone()));
+            let weak = Arc::downgrade(&self.inner);
+            context.wait_for_idle_fn = Arc::new(move || {
+                let weak = weak.clone();
+                Box::pin(async move {
+                    let inner = weak.upgrade().unwrap_or_else(|| std::panic::panic_any(maho_ext_api::ExtensionFailure::new("Agent session has been disposed")));
+                    AgentSession { inner }.wait_for_idle().await;
+                })
+            });
             context.session_manager = Arc::new(ExtensionSessionManagerView {
                 session: Arc::downgrade(&self.inner), id: self.session_id(), file: self.session_file().map(Into::into),
             });
