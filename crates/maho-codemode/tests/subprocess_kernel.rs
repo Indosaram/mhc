@@ -65,8 +65,10 @@ async fn startup_failure_cannot_be_revived_by_reset() {
     let result=kernel.run_with_callbacks(KernelRunInput{cell_id:"failed".into(),code:"42".into(),timeout_ms:None},None,None).await.unwrap();
     assert_eq!(result["ok"],false);
     let reset=kernel.reset().await;
+    let run=kernel.run_with_callbacks(KernelRunInput{cell_id:"after-failure".into(),code:"42".into(),timeout_ms:None},None,None).await;
     kernel.close().await.unwrap();
     assert!(reset.is_err(),"source failClosed forbids reset from spawning a replacement");
+    assert!(matches!(run,Err(maho_codemode::kernels::shared::subprocess_process::ProcessError::Closed)),"closed API must reject run admission rather than creating another failure result");
 }
 
 #[tokio::test]

@@ -143,9 +143,9 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
         }
         tokio::select! {
             command = commands.recv() => match command {
+                Some(Command::Run(_, _, _, response)) if failure.is_some() => { drop(response); }
                 Some(Command::Run(input, on_message, on_started, response)) => {
                     let mut result = runs.enqueue(input, on_message, on_started);
-                    if let Some(error) = &failure { runs.settle_all(error, now()); }
                     tokio::spawn(async move { if let Ok(result) = (&mut result).await { let _ = response.send(result); } });
                 }
                 Some(Command::Interrupt(_, _, response)) if failure.is_some() => { let _ = response.send(Ok(true)); }
