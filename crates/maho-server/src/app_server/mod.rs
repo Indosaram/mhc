@@ -18,6 +18,7 @@ pub mod history;
 pub mod approval_types;
 pub mod approval_bridge;
 pub mod user_input_types;
+pub mod model_list;
 pub mod errors;
 pub mod daemon_probe;
 pub mod cli_args;

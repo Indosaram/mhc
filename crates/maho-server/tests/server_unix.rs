@@ -178,6 +178,20 @@ async fn wrong_server_does_not_invoke_service() {
     drop(stream);
     listener.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn wrong_protocol_version_receives_source_error_and_socket_is_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = get_unix_socket_path(ID, dir.path()).unwrap();
+    let mut listener = UnixServer::start(Server::new(Arc::new(Host), ID.into(), Some(MAX), None).unwrap(), path.clone()).await.unwrap();
+    let mut stream = UnixStream::connect(&path).await.unwrap();
+    write(&mut stream, json!({"type":"hello","version":7})).await;
+    let response = read(&mut stream, &mut MessageDecoder::server()).await;
+    assert_eq!(response, json!({"type":"hello_error","error":{"code":"version","message":"Unsupported protocol version 7; expected 8"}}));
+    drop(stream);
+    listener.close().await.unwrap();
+    assert!(!path.exists());
+}
 #[tokio::test]
 async fn preserves_replacement_socket_on_shutdown() {
     let dir = tempfile::tempdir().unwrap();
