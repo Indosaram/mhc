@@ -2641,19 +2641,34 @@ impl AgentSession {
     }
 
     pub async fn edit_assistant_message(&self, entry_id: &str, text: &str, options: TreeNavigationOptions) -> Result<AssistantEditResult, String> {
+        if self.is_streaming() { return Err(crate::edited_assistant_message::SessionStreamingError.to_string()); }
+        self.with_session_manager(|manager| crate::edited_assistant_message::assert_expected_leaf(
+            options.expected_leaf_id.as_deref(), manager.leaf_id())).map_err(|error| error.to_string())?;
         let entry = self.with_session_manager(|manager| manager.entry(entry_id)).ok_or_else(|| format!("Entry {entry_id} not found"))?;
+        if entry["type"] != "message" || entry["message"]["role"] != "assistant" {
+            return Err(format!("Entry {entry_id} is not an assistant message"));
+        }
         let message: maho_ai::types::AssistantMessage = serde_json::from_value(entry["message"].clone()).map_err(|error| error.to_string())?;
         let replacement = crate::edited_assistant_message::build_edited_assistant_message(&message, text).map_err(|error| error.to_string())?;
-        if entry["message"] == serde_json::to_value(&replacement).map_err(|error| error.to_string())? {
+        if crate::edited_assistant_message::assistant_text_equals(&message, text) {
             return Ok(AssistantEditResult { unchanged: Some(true), ..Default::default() });
         }
         self.navigate_tree_internal(entry_id, options, Some(AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(replacement))))).await
     }
 
     pub async fn edit_user_message(&self, entry_id: &str, text: &str, options: TreeNavigationOptions) -> Result<UserEditResult, String> {
+        if self.is_streaming() { return Err(crate::edited_assistant_message::SessionStreamingError.to_string()); }
+        self.with_session_manager(|manager| crate::edited_user_message::assert_expected_user_leaf(
+            options.expected_leaf_id.as_deref(), manager.leaf_id())).map_err(|error| error.to_string())?;
         let entry = self.with_session_manager(|manager| manager.entry(entry_id)).ok_or_else(|| format!("Entry {entry_id} not found"))?;
+        if entry["type"] != "message" || entry["message"]["role"] != "user" {
+            return Err(format!("Entry {entry_id} is not a user message"));
+        }
         let message: maho_ai::types::UserMessage = serde_json::from_value(entry["message"].clone()).map_err(|error| error.to_string())?;
         let replacement = crate::edited_user_message::build_edited_user_message(&message, text).map_err(|error| error.to_string())?;
+        if crate::edited_user_message::user_text_equals(&message, text) {
+            return Ok(UserEditResult { unchanged: Some(true), ..Default::default() });
+        }
         self.navigate_tree_internal(entry_id, options, Some(AgentMessage::Llm(maho_ai::types::Message::User(replacement)))).await
     }
 
@@ -5855,6 +5870,23 @@ mod tests {
         assert_eq!(user_message_text(&session.messages()[0]), "changed");
         session.navigate_tree(id, TreeNavigationOptions { intent: Some(TreeNavigationIntent::Resume), ..Default::default() }).await.expect("resume");
         assert_eq!(user_message_text(&session.messages()[0]), "old");
+    }
+
+    #[tokio::test]
+    async fn unchanged_message_edits_reject_stale_leaf_and_append_nothing() {
+        let session = test_session();
+        let user = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"same","timestamp":0})));
+        let assistant = maho_ai::providers::faux::faux_assistant_message("reply", Default::default());
+        let reply = session.with_session_manager_mut(|manager| manager.append_message(serde_json::to_value(&assistant).expect("message")));
+        let user_id = user["id"].as_str().expect("id");
+        let reply_id = reply["id"].as_str().expect("id");
+        let stale = TreeNavigationOptions { expected_leaf_id: Some("stale".to_owned()), ..Default::default() };
+        assert!(session.edit_assistant_message(reply_id, "reply", stale.clone()).await.is_err());
+        assert!(session.edit_user_message(user_id, "same", stale).await.is_err());
+        assert_eq!(session.edit_assistant_message(reply_id, "reply", Default::default()).await.expect("unchanged").unchanged, Some(true));
+        assert_eq!(session.edit_user_message(user_id, "same", Default::default()).await.expect("unchanged").unchanged, Some(true));
+        assert_eq!(session.with_session_manager(|manager| manager.entries().len()), 2);
+        assert_eq!(session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)), Some(reply_id.to_owned()));
     }
 
     #[tokio::test]
