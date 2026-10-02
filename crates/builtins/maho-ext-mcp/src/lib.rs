@@ -42,4 +42,5 @@ pub mod needs_auth;
 pub mod control_inventory;
 pub mod commands;
 pub mod service;
+pub mod service_register;
 pub mod index;
