@@ -9,6 +9,63 @@ fn rule(pattern: &str, action: Action) -> Rule {
 }
 
 #[tokio::test]
+async fn empty_patterns_settle_without_pending_and_emit_allow() {
+    let emitter = PermissionEventEmitter::default();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let captured = events.clone();
+    let _asked = emitter.on_asked(move |event| captured.lock().expect("events").push(serde_json::to_value(event).expect("asked")));
+    let captured = events.clone();
+    let _replied = emitter.on_replied(move |event| captured.lock().expect("events").push(serde_json::to_value(event).expect("replied")));
+    let mut service = PermissionService::new(vec![], vec![], emitter);
+    let mut empty = request("empty");
+    empty.patterns.clear();
+    service.ask(empty).await.expect("nothing to check");
+    assert!(service.list().is_empty());
+    assert_eq!(*events.lock().expect("events"), vec![serde_json::json!({"requestID":"empty","sessionID":"session","reply":"allow"})]);
+}
+
+#[tokio::test]
+async fn directory_approval_and_session_override_preserve_scope() {
+    let directory = Rule { permission: "edit".into(), pattern: "/tmp/project/*".into(), action: Action::Allow };
+    let mut service = PermissionService::new(vec![directory], vec![], PermissionEventEmitter::default());
+    let mut edit = request("directory");
+    edit.permission = "edit".into();
+    edit.patterns = vec!["/tmp/project/file.ts".into()];
+    service.ask(edit).await.expect("directory allowed");
+    let mut service = PermissionService::new(vec![rule("*", Action::Allow)], vec![rule("rm *", Action::Deny)], PermissionEventEmitter::default());
+    let mut denied = request("override");
+    denied.patterns = vec!["rm -rf tmp".into()];
+    assert!(matches!(service.ask(denied).await, Err(PermissionError::Denied(patterns)) if patterns == ["rm -rf tmp"]));
+    let mut allowed = request("outside-override");
+    allowed.patterns = vec!["ls -la".into()];
+    service.ask(allowed).await.expect("base allow outside override");
+    assert!(service.list().is_empty());
+}
+
+#[tokio::test]
+async fn once_requires_new_reply_but_always_allows_next_matching_request() {
+    for reply in [Reply::Once, Reply::Always] {
+        let mut service = PermissionService::new(vec![], vec![], PermissionEventEmitter::default());
+        let first = service.ask(request("first"));
+        service.reply(ReplyInput { request_id: "first".into(), reply, message: None });
+        first.await.expect("first approval");
+        let second = service.ask(request("second"));
+        let pending = service.list();
+        if reply == Reply::Once {
+            service.reply(ReplyInput { request_id: "second".into(), reply: Reply::Reject, message: None });
+            assert!(matches!(second.await, Err(PermissionError::Rejected)));
+            assert_eq!(serde_json::to_value(pending).expect("pending"), serde_json::to_value(vec![request("second")]).expect("request"));
+            assert!(service.get_approved().is_empty());
+        } else {
+            second.await.expect("persistent approval");
+            assert!(pending.is_empty());
+            assert_eq!(service.get_approved(), vec![rule("git *", Action::Allow)]);
+        }
+        assert!(service.list().is_empty());
+    }
+}
+
+#[tokio::test]
 async fn auto_allow_emits_complete_reply_without_pending() {
     for approved in [false, true] {
         // Given a listener subscribed before static or persisted admission.
