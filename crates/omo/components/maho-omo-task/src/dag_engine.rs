@@ -4,6 +4,7 @@ use crate::engine::TaskEngine;
 pub struct TaskDagEngine {
     pub manager: DagManager,
     pub store: Arc<DagFileStore>,
+    settings: senpi_task::dag::types::DagSettings,
     schedulers: Arc<Mutex<BTreeMap<String, Arc<DagSchedulerContext>>>>,
     rpc: Mutex<Option<Arc<crate::dag_rpc_bridge::DagRpcBridge>>>,
 }
@@ -21,13 +22,13 @@ impl TaskDagEngine {
         let store = Arc::new(senpi_task::dag::store::create_dag_file_store(&senpi_task::dag::store::DagStoreConfig { project_dir:engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).cwd().into(), task:Some(senpi_task::dag::store::DagStoreTaskConfig { state_dir:Some(engine.store.state_dir().into()), dag:Some(senpi_task::dag::store::DagSettingsOverrides { max_nodes_per_run:Some(settings.max_nodes_per_run), max_runs_per_session:Some(settings.max_runs_per_session), subscriber_ring:Some(settings.subscriber_ring), heartbeat_ms:Some(settings.heartbeat_ms), history_default_limit:Some(settings.history_default_limit), history_max_limit:Some(settings.history_max_limit), retention_days:Some(settings.retention_days), max_prompt_bytes:Some(settings.max_prompt_bytes) }) }) }, Default::default())?);
         let schedulers = Arc::new(Mutex::new(BTreeMap::<String, Arc<DagSchedulerContext>>::new()));
         let options = DagManagerOptions { store:store.clone(), new_run_id:None, now:None, materialize_skills:materialize, settings:Some(settings) };
-        Ok(Self { manager:create_dag_manager(options), store, schedulers, rpc:Mutex::new(None) })
+        Ok(Self { manager:create_dag_manager(options), store, settings, schedulers, rpc:Mutex::new(None) })
     }
     pub fn scheduler(&self, engine: &TaskEngine, run: &str, session: &str) -> Result<Arc<DagSchedulerContext>, senpi_task::dag::manager::DagManagerError> {
         let mut schedulers = self.schedulers.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(scheduler) = schedulers.get(run) { return Ok(scheduler.clone()); }
         let initial_record = self.manager.record(&run.to_owned(), session)?;
-        let scheduler = create_dag_scheduler(DagSchedulerOptions { store:self.store.clone(), task_manager:engine.manager.clone(), initial_record, execution_mode_agents:Some(Arc::new(engine.agents.clone())), execution_mode_config:engine.config["task"]["default_execution_mode"].as_str().and_then(senpi_task::manager::execution_mode::ExecutionMode::parse), ancestry_depth:None, subscriber_ring:None, now:None }).map_err(senpi_task::dag::manager::DagManagerError::from)?;
+        let scheduler = create_dag_scheduler(DagSchedulerOptions { store:self.store.clone(), task_manager:engine.manager.clone(), initial_record, execution_mode_agents:Some(Arc::new(engine.agents.clone())), execution_mode_config:engine.config["task"]["default_execution_mode"].as_str().and_then(senpi_task::manager::execution_mode::ExecutionMode::parse), ancestry_depth:None, subscriber_ring:Some(self.settings.subscriber_ring), now:None }).map_err(senpi_task::dag::manager::DagManagerError::from)?;
         schedulers.insert(run.into(), scheduler.clone()); Ok(scheduler)
     }
     pub fn register_rpc(self: &Arc<Self>, api: &mut maho_ext_api::ExtensionApi, component: &crate::component::TaskComponent) {
@@ -56,7 +57,7 @@ impl TaskDagEngine {
             })),
             parent_session_id: session,
             emit: Arc::new(move |name, data| events.emit("senpi:extension-rpc-event", &serde_json::json!({"name":name,"data":data}))),
-            timers: Arc::new(crate::timers::HostTimers::default()), now: Arc::new(|| chrono::Utc::now().timestamp_millis()), heartbeat_ms:None, activity_coalesce_ms:None, snapshot_debounce_ms:None,
+            timers: Arc::new(crate::timers::HostTimers::default()), now: Arc::new(|| chrono::Utc::now().timestamp_millis()), heartbeat_ms:Some(self.settings.heartbeat_ms), activity_coalesce_ms:None, snapshot_debounce_ms:None,
         });
         *self.rpc.lock().unwrap_or_else(PoisonError::into_inner) = Some(bridge.clone());
         for kind in [maho_ext_api::EventKind::SessionStart, maho_ext_api::EventKind::SessionBeforeSwitch, maho_ext_api::EventKind::SessionShutdown] {

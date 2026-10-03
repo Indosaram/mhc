@@ -39,9 +39,12 @@ impl ManagedRunner for Runner {
         *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(child.clone()); Ok(child)
     }
 }
-struct ImmediateRunner;
+struct ImmediateRunner(Mutex<Option<mpsc::Receiver<()>>>);
 impl ManagedRunner for ImmediateRunner {
     fn start(&self,spec:&ManagedStartSpec)->ManagedRunnerResult {
+        if let Some(first_event) = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            first_event.recv_timeout(Duration::from_secs(10)).map_err(|error| senpi_task::manager::types::ManagedRunnerError::Other(error.to_string()))?;
+        }
         Ok(Arc::new(Child { id:spec.task_id.clone(), outcome:Mutex::new(Some(RunnerOutcome::completed("dag native result"))), ready:Condvar::new(), listeners:Arc::default() }))
     }
 }
@@ -146,9 +149,43 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     drop(cleanup);
     assert!(child.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty());
     drop(subscription); drop(api); drop(component); drop(child);
-    let runner = Arc::new(ImmediateRunner);
-    let dag_task_engine = compose_task_engine(ComposeTaskEngineDeps { cwd:root.path().into(), config:json!({}), runners:ManagedRunners { in_process:runner.clone(), process:runner }, actions:Arc::new(Actions(mpsc::channel().0)), coordinator:None, resolve_registry:Arc::new(|| None) });
+    let (entered, first_event) = mpsc::channel();
+    let runner = Arc::new(ImmediateRunner(Mutex::new(Some(first_event))));
+    let dag_task_engine = compose_task_engine(ComposeTaskEngineDeps { cwd:root.path().into(), config:json!({"task":{"dag":{"subscriber_ring":1}}}), runners:ManagedRunners { in_process:runner.clone(), process:runner }, actions:Arc::new(Actions(mpsc::channel().0)), coordinator:None, resolve_registry:Arc::new(|| None) });
     let dag = Arc::new(maho_omo_task::dag_engine::TaskDagEngine::compose(&dag_task_engine, None)?);
+    let started = dag.manager.start(senpi_task::dag::manager::DagStartParams {
+        definition: senpi_task::dag::graph::DagDefinition { key:"configured-ring".into(), name:"configured ring".into(), nodes:vec![senpi_task::dag::graph::DagNodeInput {
+            id:"one".into(), prompt:"one".into(), target:senpi_task::dag::types::DagNodeTarget::SubagentType { subagent_type:"explore".into(), model:Some("faux/native".into()) },
+            label:None, depends_on:None, task_summary:None, description:None, load_skills:None,
+        }] }, parent_session_id:"s".into(), root_session_id:"s".into(),
+    })?;
+    let configured = dag.scheduler(&dag_task_engine, &started.snapshot.run_id, "s")?;
+    let (release, released) = mpsc::channel();
+    let released = Mutex::new(released);
+    let overflow = Arc::new(Mutex::new(Vec::new()));
+    let captured = overflow.clone();
+    let subscription = configured.subscribe(Arc::new(move |event| {
+        if matches!(event.payload, senpi_task::dag::types::DagRunEventPayload::RunStarted { .. }) {
+            if let Err(error) = entered.send(()) { eprintln!("ring proof entry failed: {error}"); }
+            if let Err(error) = released.lock().unwrap_or_else(std::sync::PoisonError::into_inner).recv_timeout(Duration::from_secs(10)) { panic!("ring proof release failed: {error}"); }
+        }
+        if matches!(event.payload, senpi_task::dag::types::DagRunEventPayload::StreamOverflow { .. }) { captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event.clone()); }
+    }));
+    let running = configured.clone();
+    let worker = std::thread::spawn(move || running.run());
+    let completion = worker.join().map_err(|_| "configured scheduler panicked")??;
+    release.send(())?;
+    configured.when_idle();
+    subscription();
+    assert_eq!(completion.status, senpi_task::dag::types::DagRunStatus::Completed);
+    {
+        let overflow = overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!overflow.is_empty(), "configured subscriber ring did not overflow during gated burst");
+        let durable = dag.store.read_events(&started.snapshot.run_id, 0, &senpi_task::dag::store::DagEventReadOptions { limit:1000, ..Default::default() })?;
+        assert!(overflow.iter().all(|event| durable.events.contains(event)));
+    }
+    drop(configured);
+    println!("PASS configured assembled scheduler ring overflow persisted and subscriber drained");
     let mut api = support::api();
     let component = TaskComponent::register(&mut api, dag_task_engine, Default::default(), senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps { state_dir:senpi_task::store::StateDirConfig { project_dir:root.path().into(), task_state_dir:None }, team_bounds:senpi_task::team::runtime_config::TeamTaskBounds { max_members:4, max_parallel_members:2, max_wall_clock_minutes:10 }, load_runtime_state:None }, false)?.ok_or("dag component disabled")?;
     let cleanup = Cleanup(component.clone());
