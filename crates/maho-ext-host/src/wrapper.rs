@@ -89,7 +89,9 @@ pub fn wrap_registered_tool_with_invocation(registered: RegisteredTool, runtime:
                 let added: Vec<_> = active_after.into_iter().filter(|name| !active_before.contains(name)).collect();
                 if !added.is_empty() {
                     let names = result.added_tool_names.get_or_insert_with(Vec::new);
-                    for name in added { if !names.contains(&name) { names.push(name); } }
+                    names.extend(added);
+                    let mut seen = std::collections::HashSet::new();
+                    names.retain(|name| seen.insert(name.clone()));
                 }
             }
             result
