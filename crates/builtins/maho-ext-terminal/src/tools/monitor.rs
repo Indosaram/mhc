@@ -6,9 +6,9 @@ pub const DEFAULT_MONITOR_TIMEOUT_MS:u64=300_000;
 pub const MAX_MONITOR_TIMEOUT_MS:u64=3_600_000;
 pub fn monitor_schema()->Value {json!({"type":"object","properties":{"action":{"type":"string","enum":["create","rearm"]},"description":{"type":"string","minLength":1,"maxLength":200},"command":{"type":"string"},"path":{"type":"string","minLength":1},"event":{"type":"string","enum":["create","modify"]},"filter":{"type":"string"},"timeout_ms":{"type":"number","minimum":1,"maximum":MAX_MONITOR_TIMEOUT_MS},"persistent":{"type":"boolean"},"bash_id":{"type":"string"}}})}
 pub fn execute_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistry,input:&Value,cwd:&std::path::Path)->TerminalToolResult {
-    execute_configured_monitor(manager,registry,input,cwd,None)
+    execute_configured_monitor(manager,registry,input,cwd,None,&crate::settings::TERMINAL_SETTINGS_DEFAULTS)
 }
-pub fn execute_configured_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistry,input:&Value,cwd:&std::path::Path,shell:Option<&str>)->TerminalToolResult {
+pub fn execute_configured_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistry,input:&Value,cwd:&std::path::Path,shell:Option<&str>,settings:&crate::settings::ResolvedTerminalSettings)->TerminalToolResult {
     if input.get("action").and_then(Value::as_str)==Some("rearm") {
         let id=input.get("bash_id").and_then(Value::as_str).filter(|id|!id.is_empty());
         if let Some(id)=id {
@@ -44,6 +44,7 @@ pub fn execute_configured_monitor(manager:&mut TerminalManager,registry:&mut Mon
     let timeout=input.get("timeout_ms").and_then(Value::as_f64).unwrap_or(DEFAULT_MONITOR_TIMEOUT_MS as f64).trunc().clamp(1.0,MAX_MONITOR_TIMEOUT_MS as f64) as u64;
     let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("epoch").as_secs_f64()*1000.0;
     let mut options=match super::spawn::command_options(command,Some(cwd),shell) {Ok(options)=>options,Err(error)=>return error_result(error.to_string())};
+    options=options.size(settings.default_cols as u16,settings.default_rows as u16);
     if !persistent {options=options.timeout(std::time::Duration::from_millis(timeout));}
     let monitor_id=match allocate_monitor_id() {Ok(id)=>id,Err(error)=>return error_result(error.to_string())};
     let id=match manager.create(command,options) {Ok(id)=>id,Err(error)=>return error_result(error.to_string())};
@@ -74,6 +75,13 @@ pub async fn execute_monitor_recorded(manager:&mut TerminalManager,registry:&mut
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn configured_monitor_geometry_reaches_real_shell() {
+        let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let mut registry=MonitorRegistry::new(move |event| {sender.send(event).unwrap();});let mut manager=TerminalManager::default();
+        let mut settings=crate::settings::TERMINAL_SETTINGS_DEFAULTS;settings.default_cols=91.0;settings.default_rows=33.0;
+        let result=execute_configured_monitor(&mut manager,&mut registry,&json!({"description":"geometry","command":"stty size","filter":"^33 91$"}),std::path::Path::new("/tmp"),Some("/bin/bash"),&settings);assert!(result.is_error.is_none());
+        tokio::time::timeout(std::time::Duration::from_secs(5),async {assert!(matches!(events.recv().await,Some(crate::monitor_registry::MonitorEvent::Line {line,..}) if line=="33 91"));assert!(matches!(events.recv().await,Some(crate::monitor_registry::MonitorEvent::Summary {..})));}).await.unwrap();registry.dispose();manager.teardown().unwrap();
+    }
     #[tokio::test]
     async fn durable_admission_rejects_before_file_registration() {
         let dir=tempfile::tempdir().unwrap();let mut manager=TerminalManager::default();let mut registry=MonitorRegistry::new(|_|{});let mut writer=crate::terminal_manifest::TerminalManifestWriter::new(dir.path(),"s");

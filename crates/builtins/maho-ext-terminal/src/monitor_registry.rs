@@ -84,16 +84,16 @@ impl CommandMonitor {
 }
 
 pub struct MonitorRegistry {
-    records:std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String,CommandMonitor>>>,
+    records:std::sync::Arc<std::sync::Mutex<indexmap::IndexMap<String,CommandMonitor>>>,
     tasks:Vec<tokio::task::JoinHandle<()>>,
     emit:std::sync::Arc<dyn Fn(MonitorEvent)+Send+Sync>,
-    files:std::collections::BTreeMap<String,(std::sync::Arc<std::sync::Mutex<crate::file_monitor::FileMonitor>>,tokio::task::JoinHandle<()>)>,
-    file_snapshots:std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String,MonitorSnapshotEntry>>>,
+    files:indexmap::IndexMap<String,(std::sync::Arc<std::sync::Mutex<crate::file_monitor::FileMonitor>>,tokio::task::JoinHandle<()>)>,
+    file_snapshots:std::sync::Arc<std::sync::Mutex<indexmap::IndexMap<String,MonitorSnapshotEntry>>>,
     next_file_id:usize,
     transitions:tokio::sync::watch::Sender<Vec<MonitorSnapshotEntry>>,
     parked:tokio::sync::watch::Sender<bool>,
 }
-fn publish_snapshot(records:&std::sync::Mutex<std::collections::BTreeMap<String,CommandMonitor>>,files:&std::sync::Mutex<std::collections::BTreeMap<String,MonitorSnapshotEntry>>,sender:&tokio::sync::watch::Sender<Vec<MonitorSnapshotEntry>>) {
+fn publish_snapshot(records:&std::sync::Mutex<indexmap::IndexMap<String,CommandMonitor>>,files:&std::sync::Mutex<indexmap::IndexMap<String,MonitorSnapshotEntry>>,sender:&tokio::sync::watch::Sender<Vec<MonitorSnapshotEntry>>) {
     let mut snapshot=records.lock().expect("monitor records").values().map(|record|record.snapshot.clone()).collect::<Vec<_>>();snapshot.extend(files.lock().expect("file snapshots").values().cloned());
     sender.send_if_modified(|current| {if *current==snapshot {false} else {*current=snapshot;true}});
 }
@@ -149,7 +149,7 @@ impl MonitorRegistry {
                     changed=parked.changed()=>{if changed.is_err() {return;}let resumed=!*parked.borrow_and_update();if resumed {timer.reset_immediately();}else {timer.reset();}continue;}
                 };
                 let (events,settled)={let mut file=checker.lock().expect("file monitor");let events=if timed_out {file.stop(if persistent {"watcher expired"} else {"watcher timed_out"}).into_iter().collect()} else {match file.check() {Ok(events)=>events,Err(error)=>file.stop(&format!("watcher error: {error}")).into_iter().collect()}};(events,file.settled)};
-                if settled {snapshots.lock().expect("file snapshots").remove(&runtime_id);}
+                if settled {snapshots.lock().expect("file snapshots").shift_remove(&runtime_id);}
                 publish_snapshot(&records,&snapshots,&transitions);
                 for event in events {emit(event);}
                 if settled {return;}
@@ -160,7 +160,7 @@ impl MonitorRegistry {
     }
     #[cfg(unix)]
     pub fn stop_file(&mut self,id:&str)->bool {
-        let Some((file,watch))=self.files.remove(id) else {return false;};watch.abort();self.file_snapshots.lock().expect("file snapshots").remove(id);
+        let Some((file,watch))=self.files.shift_remove(id) else {return false;};watch.abort();self.file_snapshots.lock().expect("file snapshots").shift_remove(id);
         let event=file.lock().expect("file monitor").stop("watcher killed");self.publish_state();if let Some(event)=event {(self.emit)(event);}true
     }
     pub fn file_checkpoint(&self,id:&str)->Option<crate::terminal_manifest_model::TerminalManifestCheckpoint> {
@@ -196,7 +196,7 @@ impl MonitorRegistry {
             if let Some((file,_))=self.files.get(&id) {
                 let (events,settled)={let mut file=file.lock().expect("file monitor");if !file.paused||file.settled {continue;}file.paused=false;let events=file.check().unwrap_or_else(|error|file.stop(&format!("watcher error: {error}")).into_iter().collect());(events,file.settled)};
                 let mut snapshots=self.file_snapshots.lock().expect("file snapshots");
-                if settled {snapshots.remove(&id);} else if let Some(snapshot)=snapshots.get_mut(&id) {snapshot.paused=false;if let Some(window)=&mut snapshot.fire_window {window.count=0;}}
+                if settled {snapshots.shift_remove(&id);} else if let Some(snapshot)=snapshots.get_mut(&id) {snapshot.paused=false;if let Some(window)=&mut snapshot.fire_window {window.count=0;}}
                 resumed.push((id,0));pending_events.extend(events);
             }
         }
@@ -220,7 +220,7 @@ impl MonitorRegistry {
             loop {
                 let settled=exit.borrow().clone();
                 if let Some(result)=settled {
-                    let Some(mut record)=records.lock().expect("monitor records").remove(&id) else {return;};
+                    let Some(mut record)=records.lock().expect("monitor records").shift_remove(&id) else {return;};
                     publish_snapshot(&records,&files,&transitions);
                     while let Ok(chunk)=output.try_recv() {for event in record.consume(&chunk,now_ms()) {emit(event);}}
                     let summary=match result {Ok(result)=>format!("watcher {}{}",crate::tools::spawn::describe_exit(Some(&result)).unwrap_or_else(||"exited".to_owned()),result.exit_code.map_or(String::new(),|code|format!(" (exit code {code})"))),Err(error)=>format!("watcher error: {error}")};
@@ -242,6 +242,13 @@ impl Drop for MonitorRegistry {fn drop(&mut self) {self.dispose();}}
 #[cfg(test)]
 mod registry_tests {
     use super::*;
+    #[tokio::test]
+    async fn snapshot_preserves_registration_order_beyond_nine_file_ids() {
+        let dir=tempfile::tempdir().unwrap();let mut registry=MonitorRegistry::new(|_|{});let mut ids=vec![];
+        for index in 0..12 {let (id,_)=registry.register_persistent_file(&format!("watch {index}"),&dir.path().join(format!("file{index}")),crate::terminal_manifest_model::FileEvent::Create).unwrap();ids.push(id);}
+        assert_eq!(registry.snapshot().iter().map(|entry|entry.id.clone()).collect::<Vec<_>>(),ids);
+        registry.stop_file(&ids[3]);ids.remove(3);assert_eq!(registry.snapshot().iter().map(|entry|entry.id.clone()).collect::<Vec<_>>(),ids);registry.dispose();
+    }
     #[tokio::test]
     async fn file_disposal_emits_summary_once_after_releasing_capacity() {
         let dir=tempfile::tempdir().unwrap();let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let mut registry=MonitorRegistry::new(move |event| {sender.send(event).unwrap();});let mut manager=crate::manager::TerminalManager::default();

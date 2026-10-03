@@ -175,8 +175,8 @@ impl Extension for TerminalExtension {
                 let mut manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
                 let mut monitors=monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?;
                 let cwd=call.context.map(|context|context.cwd().to_path_buf()).unwrap_or(std::env::current_dir()?);
-                let shell=configuration.lock().map_err(|_|ToolError::Message("terminal configuration state poisoned".to_owned()))?.1.clone();
-                let result=crate::tools::monitor::execute_configured_monitor(&mut manager,&mut monitors,&call.params,&cwd,shell.as_deref());
+                let (settings,shell)=configuration.lock().map_err(|_|ToolError::Message("terminal configuration state poisoned".to_owned()))?.clone();
+                let result=crate::tools::monitor::execute_configured_monitor(&mut manager,&mut monitors,&call.params,&cwd,shell.as_deref(),&settings);
                 if call.params.get("action").and_then(Value::as_str)==Some("rearm") && let Some(notifier)=notifier.lock().map_err(|_|ToolError::Message("monitor notifier state poisoned".to_owned()))?.as_ref() {
                     notifier.resume(monitors.snapshot().iter().filter(|record|!record.paused).map(|record|record.id.clone()).collect()).map_err(ToolError::Message)?;
                 }
