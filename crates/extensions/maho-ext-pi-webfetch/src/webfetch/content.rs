@@ -1,4 +1,40 @@
 pub struct ReadableArticle{pub title:String,pub content:String,pub has_heading:bool}
+pub fn extract_readable_article(html: &str, url: &str) -> Option<ReadableArticle> {
+    if url::Url::parse(url).is_err() { return None; }
+    if let Some(article) = extract_explicit_article(html) { return Some(article); }
+    let config = dom_smoothie::Config { char_threshold: 80, keep_classes: false, ..Default::default() };
+    let mut reader = dom_smoothie::Readability::new(html, Some(url), Some(config)).ok()?;
+    let article = reader.parse().ok()?;
+    if article.content.is_empty() || article.text_content.is_empty() { return None; }
+    let mut title = String::new();
+    for selector in [".tit_post", ".entry-title", ".post-title", ".article-title", "h1"] {
+        title = normalize_plain_text(&reader.doc.select(selector).first().text());
+        if !title.is_empty() { break; }
+    }
+    if title.is_empty() { title = normalize_plain_text(&article.title); }
+    let content = article.content.to_string();
+    let document = dom_query::Document::fragment(content.as_str());
+    let has_heading = !document.select("h1,h2,h3,h4,h5,h6").is_empty();
+    Some(ReadableArticle { title, content, has_heading })
+}
+pub fn html_to_markdown(html: &str, url: &str) -> String {
+    let Some(article) = extract_readable_article(html, url) else {
+        return normalize_markdown(&html_fragment_to_markdown(html));
+    };
+    let markdown = normalize_markdown(&html_fragment_to_markdown(&article.content));
+    if article.title.is_empty() || article.has_heading || markdown.starts_with(&format!("# {}", article.title)) {
+        markdown
+    } else { format!("# {}\n\n{markdown}", article.title).trim().to_owned() }
+}
+pub fn html_to_text(html: &str, url: &str) -> String {
+    let Some(article) = extract_readable_article(html, url) else {
+        return html_fragment_to_plain_text(html);
+    };
+    let body = html_fragment_to_plain_text(&article.content);
+    if article.title.is_empty() || article.has_heading || body.starts_with(&article.title) {
+        body
+    } else { format!("{}\n\n{body}", article.title).trim().to_owned() }
+}
 pub fn html_fragment_to_markdown(html:&str)->String{
     let document=dom_query::Document::fragment(html);let root=document.html_root();
     collapse_markdown_whitespace(root);
