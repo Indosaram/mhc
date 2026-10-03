@@ -56,7 +56,10 @@ pub fn validate_websearch_config_value(value:&Value)->Result<WebsearchConfig,(Co
         for provider in providers{
             let entry=provider.as_object().ok_or_else(||(ConfigLoadFailureReason::InvalidConfig,"Invalid provider config.".into()))?;
             if optional_enum::<SearchProvider>(entry.get("provider")).is_none(){return Err((ConfigLoadFailureReason::InvalidConfig,format!("Unsupported provider: {}",entry.get("provider").and_then(Value::as_str).unwrap_or("undefined"))));}
-            let parsed=provider_entry(entry).ok_or_else(||(ConfigLoadFailureReason::InvalidConfig,"Invalid provider config.".into()))?;
+            let mut parsed=provider_entry(entry).ok_or_else(||(ConfigLoadFailureReason::InvalidConfig,"Invalid provider config.".into()))?;
+            // Direct validation compares explicit null to zero; file loading omits it.
+            if entry.get("weight").is_some_and(Value::is_null){parsed.weight=Some(0.0);}
+            if entry.get("timeoutMs").is_some_and(Value::is_null){parsed.config.timeout_ms=Some(0.0);}
             if let ProviderValidationResult::Failure{reason,message}=validate_provider_config(parsed){return Err((match reason{ProviderValidationFailureReason::InvalidConfig=>ConfigLoadFailureReason::InvalidConfig,ProviderValidationFailureReason::MissingApiKey=>ConfigLoadFailureReason::MissingApiKey},message));}
         }
     }
