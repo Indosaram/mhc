@@ -1019,7 +1019,19 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         }
     }
     fn get_loaded_hook_sources(&self) -> maho_ext_api::LoadedHookSources {
-        if let Some(sources) = self.session().ok().and_then(|session| session.state().loaded_hook_sources.clone()) { return sources; }
+        if let Some(session) = self.session().ok() {
+            let cwd = session.cwd();
+            let state = session.state();
+            if let Some(mut sources) = state.loaded_hook_sources.clone() {
+                sources.cwd = cwd.into();
+                sources.project_hooks_path = sources.cwd.join(crate::config::config_dir_name()).join("hooks.json");
+                for entry in &state.discovered_resources.hook_paths {
+                    let path = std::path::PathBuf::from(&entry.path);
+                    if !sources.runtime_hook_source_paths.contains(&path) { sources.runtime_hook_source_paths.push(path); }
+                }
+                return sources;
+            }
+        }
         let session = self.session().ok(); let cwd = session.as_ref().map_or_else(std::path::PathBuf::new, |session| session.cwd().into());
         let dir = session.as_ref().map_or_else(std::path::PathBuf::new, |session| session.agent_dir().into());
         let (global_settings_hooks, project_settings_hooks) = session.as_ref().map_or((None, None), |session|
