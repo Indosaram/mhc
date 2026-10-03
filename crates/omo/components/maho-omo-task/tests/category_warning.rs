@@ -26,7 +26,12 @@ pub mod support;
     let engine=compose_task_engine(ComposeTaskEngineDeps { cwd:root.path().into(),config:json!({}),runners:ManagedRunners { in_process:runner.clone(),process:runner },actions:actions.clone(),coordinator:None,resolve_registry:Arc::new(|| Some(Arc::new(EmptyRegistry))) });
     let mut api=support::api(); api.runtime.bind(actions.clone());
     let component=TaskComponent::register(&mut api,engine,Default::default(),senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps { state_dir:senpi_task::store::StateDirConfig { project_dir:root.path().into(),task_state_dir:None },team_bounds:senpi_task::team::runtime_config::TeamTaskBounds { max_members:4,max_parallel_members:2,max_wall_clock_minutes:10 },load_runtime_state:None },false).expect("register").expect("enabled");
+    assert!(api.registered.handlers.contains_key(&EventKind::ModelSelect),"assembled task component must capture model-select context and sync status");
     let mut context=support::context(); context.cwd=root.path().into();
+    let model:Model=serde_json::from_value(json!({"id":"native","name":"native","api":"openai-completions","provider":"task44","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":128000,"maxTokens":4096})).expect("model");
+    let mut selected=ExtensionEvent::ModelSelect(ModelSelectEvent { model,previous_model:None,source:ModelSelectSource::Set,system_prompt:String::new(),system_prompt_options:Default::default() });
+    for handler in &api.registered.handlers[&EventKind::ModelSelect] { handler(&mut selected,&context).await.expect("model selection"); }
+    { let runtime=component.engine.runtime.lock().expect("runtime"); assert_eq!(runtime.cwd(),root.path()); assert_eq!(runtime.session_id(),Some("session")); assert!(runtime.model_registry().is_some()); assert!(runtime.ui().is_some()); }
     let mut event=ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::New,initial_model_provenance:None,previous_session_file:None });
     for handler in &api.registered.handlers[&EventKind::SessionStart] { handler(&mut event,&context).await.expect("session start"); }
     let spec=senpi_task::manager::types::ManagerStartSpec { prompt:"work".into(),category:Some("quick".into()),parent_session_id:"session".into(),..Default::default() };

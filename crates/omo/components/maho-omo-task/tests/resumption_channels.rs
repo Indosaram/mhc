@@ -5,6 +5,24 @@ use maho_omo_task::resumption_channel_emitter::{ResumptionChannelEmitter, Resump
 use senpi_task::state::{create_task_record, TaskRecord, TaskRecordInput, TaskStatus};
 
 struct Manager(Mutex<Vec<TaskRecord>>);
+#[test] fn background_and_terminal_records_skip_ownership_and_empty_event_bus_is_safe() {
+    use std::sync::atomic::{AtomicUsize,Ordering};
+    struct CountingManager { records:Vec<TaskRecord>,lookups:Arc<AtomicUsize> }
+    impl ResumptionChannelManager for CountingManager {
+        fn list(&self,_:&str)->Vec<TaskRecord> { self.records.clone() }
+        fn was_background(&self,id:&str)->bool { id=="background" }
+        fn is_owned_team_member(&self,_:&TaskRecord,_:&str)->bool { self.lookups.fetch_add(1,Ordering::SeqCst); false }
+    }
+    let mut background=create_task_record(TaskRecordInput::default(),Some(1)).expect("record"); background.task_id="background".into();
+    let mut terminal=background.clone(); terminal.task_id="terminal".into(); terminal.status=TaskStatus::Completed;
+    let mut foreground=background.clone(); foreground.task_id="foreground".into();
+    let lookups=Arc::new(AtomicUsize::new(0));
+    let mut emitter=ResumptionChannelEmitter::new(EventBus::default(),Arc::new(CountingManager { records:vec![background,terminal,foreground],lookups:lookups.clone() }),Arc::new(|| Some("session".into())));
+    emitter.emit_if_changed(); assert_eq!(lookups.load(Ordering::SeqCst),0);
+    emitter.emit_session_start(); assert_eq!(lookups.load(Ordering::SeqCst),1);
+    emitter.emit_if_changed(); assert_eq!(lookups.load(Ordering::SeqCst),2);
+    emitter.emit_shutdown(); emitter.emit_if_changed(); assert_eq!(lookups.load(Ordering::SeqCst),2);
+}
 #[test] fn production_manager_resolves_owned_members_from_real_runtime() {
     use maho_omo_task::resumption_channel_emitter::TaskResumptionChannelManager;
     use senpi_task::{manager::{create_task_manager,types::{ManagedRunner,ManagedRunnerResult,ManagedStartSpec,ManagedRunners,TaskManagerOptions,ResolvedChildPlan}},store::{StateDirConfig,TaskRecordStore},team::{liveness_ownership::TeamMemberOwnershipDeps,runtime_config::{TeamTaskBounds,to_team_core_config},storage::team_storage_base_dir,normalize::normalize_senpi_team_spec}};

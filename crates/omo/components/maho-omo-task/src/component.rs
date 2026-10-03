@@ -46,7 +46,7 @@ impl TaskComponent {
         crate::reload_guard::wire_reload_guard(api, component.engine.manager.clone());
         let usage = api.get_flag("omo-task-usage-hint") != Some(FlagValue::Boolean(false));
         crate::event_bridge::wire_task_usage_guidance(api, Arc::new(move || usage));
-        for kind in [EventKind::SessionStart, EventKind::SessionBeforeSwitch, EventKind::SessionBeforeCompact, EventKind::SessionCompact, EventKind::SessionShutdown, EventKind::AgentEnd, EventKind::ToolResult] {
+        for kind in [EventKind::SessionStart, EventKind::SessionBeforeSwitch, EventKind::SessionBeforeCompact, EventKind::SessionCompact, EventKind::SessionShutdown, EventKind::ModelSelect, EventKind::AgentEnd, EventKind::ToolResult] {
             let component = component.clone();
             api.on(kind, Arc::new(move |event, context| { let component = component.clone(); Box::pin(async move {
                 component.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).capture_from(context);
