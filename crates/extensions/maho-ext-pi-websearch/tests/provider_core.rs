@@ -1,6 +1,33 @@
 use maho_ext_pi_websearch::websearch::{types::*,providers::{shared::*,exa::ExaProvider,tavily::TavilyProvider}};
 fn config(provider:SearchProvider)->SearchProviderConfig{serde_json::from_value(serde_json::json!({"provider":provider})).unwrap_or_else(|e|panic!("provider fixture: {e}"))}
 fn request(query:&str,max:f64)->SearchRequest{SearchRequest{query:query.into(),max_results:max,allowed_domains:None,blocked_domains:None}}
+#[test]fn zai_only_uses_first_allowed_domain_and_chat_response_wins(){
+    use maho_ext_pi_websearch::websearch::providers::z_ai::ZAiProvider;
+    for model in [None,Some("chat-model".to_owned())]{
+        let mut provider=config(SearchProvider::Zai);provider.model=model;
+        let search=request("query",10.0);
+        let context=BuildContext{config:&provider,request:&search,max_results:10.0,allowed_domains:Some(vec![String::new(),"second.test".into()]),blocked_domains:None};
+        let built=ZAiProvider.build_request(&context);let body=built.body.expect("body");
+        let fields=if provider.model.is_some(){body["tools"][0]["web_search"].as_object().expect("search tool")}else{&body};
+        assert!(!fields.contains_key("search_domain_filter"));
+    }
+    let data=serde_json::json!({"web_search":[{"title":"Chat","link":"https://chat.test","content":"","media":""}],"search_result":[{"title":"Other","link":"https://other.test"}]});
+    let results=ZAiProvider.normalize_response(data.as_object().expect("object"));assert_eq!(results.len(),1);assert_eq!(results[0].url,"https://chat.test");assert_eq!(results[0].snippet,None);assert_eq!(results[0].source,None);
+}
+#[test]
+fn perplexity_empty_date_blocks_last_updated_fallback(){
+    use maho_ext_pi_websearch::websearch::providers::perplexity::PerplexityProvider;
+    let data=serde_json::json!({"search_results":[{"title":"A","url":"https://a.test","date":"","last_updated":"later"},{"title":"B","url":"https://b.test","date":null,"last_updated":"later"}],"results":[{"title":"Fallback","url":"https://fallback.test"}]});
+    let results=PerplexityProvider.normalize_response(data.as_object().expect("object"));
+    assert_eq!(results.len(),2);assert_eq!(results[0].published_at,None);assert_eq!(results[1].published_at.as_deref(),Some("later"));
+}
+#[test]
+fn responses_empty_text_is_preserved_on_source_results(){
+    use maho_ext_pi_websearch::websearch::providers::openai_responses::normalize_responses_payload;
+    let data=serde_json::json!({"output":[{"type":"web_search_call","action":{"sources":[{"url":"https://source.test"}]}},{"type":"message","content":[{"type":"output_text","text":""}]}]});
+    let results=normalize_responses_payload(data.as_object().expect("object"),false);
+    assert_eq!(results.len(),1);assert_eq!(results[0].snippet.as_deref(),Some(""));
+}
 #[test]
 fn duckduckgo_decodes_redirect_and_strips_snippet_tags(){
     use maho_ext_pi_websearch::websearch::providers::duckduckgo_html::DuckDuckGoHtmlProvider;
