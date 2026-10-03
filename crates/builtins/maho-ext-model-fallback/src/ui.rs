@@ -7,9 +7,9 @@ pub fn render_fallback_state(settings:&RetryFallbackSettings,status:Option<maho_
     format!("{chains}\nModel fallback: {}\nRevert policy: {}\nLive retry state: {live}",if settings.model_fallback{"enabled"}else{"disabled"},if settings.revert_policy==FallbackRevertPolicy::Never{"never"}else{"cooldown-expiry"})
 }
 async fn select(ctx:&ExtensionContext,title:&str,items:Vec<String>)->Option<String>{ctx.ui.select(title,&items,ExtensionUiDialogOptions::default()).await}
-pub async fn run_fallback_menu(ctx:&ExtensionContext)->Result<(),ExtensionFailure>{
+pub async fn run_fallback_menu(ctx:&ExtensionContext,is_using_oauth:&(dyn Fn(&maho_ext_api::Model)->bool+Send+Sync))->Result<(),ExtensionFailure>{
     if !ctx.has_ui{ctx.ui.notify("Fallback menu requires interactive UI. Use /fallback <target> <fallback...>.",NotificationType::Error);return Ok(());}
-    let session=ctx.session_settings()?;let settings=load_fallback_settings(session,ctx.model_registry.as_ref());
+    let session=ctx.session_settings()?;let settings=load_fallback_settings(session,ctx.model_registry.as_ref(),is_using_oauth);
     let Some(choice)=select(ctx,"Model fallback",["Show chains & live state","Add/edit chain","Remove chain","Toggle model fallback","Revert policy"].map(str::to_owned).to_vec()).await else{return Ok(())};
     match choice.as_str(){
         "Show chains & live state"=>ctx.ui.notify(&render_fallback_state(&settings,session.get_fallback_status()),NotificationType::Info),
