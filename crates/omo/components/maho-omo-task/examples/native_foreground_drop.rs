@@ -37,7 +37,10 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
     let admission=create_rpc_model_admission(RpcModelAdmissionOptions { build_spawn:Some(Arc::new(move |_| catalog.clone())),..Default::default() });
     let descriptor=RpcSpawnDescriptor { command:executable,args:["--mode","rpc","--offline","--no-session","--no-tools","--no-skills","--no-prompt-templates","--model","task44/native"].map(str::to_owned).into(),cwd:home.clone(),env };
     let processes=Arc::new(Mutex::new(Vec::new())); let captured=processes.clone();
-    let options=RpcProcessRunnerOptions { build_spawn:Some(Arc::new(move |_| descriptor.clone())),model_admission:Some(admission),spawn_child:Some(Arc::new(move |descriptor| { let child=Arc::new(RpcChildProcess::spawn(descriptor)); captured.lock().expect("processes").push(child.clone()); child })),..Default::default() };
+    let options=RpcProcessRunnerOptions { build_spawn:Some(Arc::new(move |_| descriptor.clone())),model_admission:Some(admission),spawn_child:Some(Arc::new(move |descriptor| {
+        println!("NATIVE_SPAWN {}",serde_json::json!({"command":descriptor.command,"args":descriptor.args,"cwd":descriptor.cwd}));
+        let child=Arc::new(RpcChildProcess::spawn(descriptor)); captured.lock().expect("processes").push(child.clone()); child
+    })),..Default::default() };
     let process=build_process_runner(options.clone()); let actions=Arc::new(Actions);
     let engine=compose_task_engine_with_rpc_respawn(ComposeTaskEngineDeps { cwd:home.clone().into(),config:serde_json::json!({"task":{"default_execution_mode":"process"},"background_task":{"defaultConcurrency":1},"agents":{"native-proof":{"execution_mode":"process","model":"task44/native"}}}),runners:ManagedRunners { in_process:process.clone(),process },actions:actions.clone(),coordinator:None,resolve_registry:Arc::new(|| None) },Some(build_rpc_respawn_runner(options)));
     let mut api=support::api(); api.runtime.bind(actions);

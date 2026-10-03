@@ -59,7 +59,10 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
     let processes=Arc::new(Mutex::new(Vec::new())); let captured=processes.clone(); let cleanup=Processes(processes.clone());
     let options=RpcProcessRunnerOptions {
         build_spawn:Some(Arc::new(move |_| descriptor.clone())),model_admission:Some(admission),
-        spawn_child:Some(Arc::new(move |descriptor| { let child=Arc::new(RpcChildProcess::spawn(descriptor)); captured.lock().expect("processes").push(child.clone()); child })),..Default::default()
+        spawn_child:Some(Arc::new(move |descriptor| {
+            println!("NATIVE_SPAWN {}",serde_json::json!({"command":descriptor.command,"args":descriptor.args,"cwd":descriptor.cwd}));
+            let child=Arc::new(RpcChildProcess::spawn(descriptor)); captured.lock().expect("processes").push(child.clone()); child
+        })),..Default::default()
     };
     let runner=maho_omo_task::engine_runners::build_process_runner(options.clone());
     let engine=maho_omo_task::engine::compose_task_engine_with_rpc_respawn(maho_omo_task::engine::ComposeTaskEngineDeps {
