@@ -66,6 +66,14 @@ pub struct MountedAgentSessionServices {
     pub diagnostics: Vec<AgentSessionRuntimeDiagnostic>,
 }
 
+impl From<AgentSessionServices> for MountedAgentSessionServices {
+    fn from(services: AgentSessionServices) -> Self {
+        Self { cwd: services.cwd, agent_dir: services.agent_dir, auth_storage: services.auth_storage,
+            model_registry: services.model_registry, settings_manager: Arc::new(std::sync::Mutex::new(services.settings_manager)),
+            diagnostics: services.diagnostics }
+    }
+}
+
 pub struct CreateAgentSessionFromServicesResult {
     pub session: crate::agent_session::AgentSession,
     pub services: MountedAgentSessionServices,

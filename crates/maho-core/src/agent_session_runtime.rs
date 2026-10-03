@@ -2,7 +2,7 @@
 //!
 
 use crate::agent_session::AgentSession;
-use crate::agent_session_services::{AgentSessionRuntimeDiagnostic, AgentSessionServices};
+use crate::agent_session_services::{AgentSessionRuntimeDiagnostic, MountedAgentSessionServices};
 use crate::session_cwd::assert_session_cwd_exists;
 
 pub struct ExtensionModelRuntimeActions(pub std::sync::Mutex<crate::model_runtime::ModelRuntime>);
@@ -83,7 +83,7 @@ pub struct AgentSessionLaunchProfile {
 /// Result returned by runtime creation.
 pub struct CreateAgentSessionRuntimeResult {
     pub session: AgentSession,
-    pub services: AgentSessionServices,
+    pub services: MountedAgentSessionServices,
     pub diagnostics: Vec<AgentSessionRuntimeDiagnostic>,
     pub model_fallback_message: Option<String>,
 }
@@ -96,7 +96,7 @@ pub struct AgentSessionRuntime {
     rebind_session: Option<RebindSession>,
     before_session_invalidate: Option<SessionInvalidateHook>,
     session: AgentSession,
-    services: AgentSessionServices,
+    services: MountedAgentSessionServices,
     diagnostics: Vec<AgentSessionRuntimeDiagnostic>,
     model_fallback_message: Option<String>,
     launch_profile: Option<AgentSessionLaunchProfile>,
@@ -105,11 +105,13 @@ pub struct AgentSessionRuntime {
 impl AgentSessionRuntime {
     pub fn new(
         session: AgentSession,
-        services: AgentSessionServices,
+        services: impl Into<MountedAgentSessionServices>,
         diagnostics: Vec<AgentSessionRuntimeDiagnostic>,
         model_fallback_message: Option<String>,
         launch_profile: Option<AgentSessionLaunchProfile>,
     ) -> Self {
+        let mut services = services.into();
+        services.settings_manager = session.shared_settings_manager();
         Self {
             rebind_session: None,
             before_session_invalidate: None,
@@ -121,7 +123,7 @@ impl AgentSessionRuntime {
         }
     }
 
-    pub fn services(&self) -> &AgentSessionServices {
+    pub fn services(&self) -> &MountedAgentSessionServices {
         &self.services
     }
 
@@ -287,7 +289,7 @@ impl AgentSessionRuntime {
         reason: maho_ext_api::SessionReason) -> Result<(), String>
     {
         let settings = crate::settings_manager::SettingsManager::create(&cwd, &self.services.agent_dir,
-            &std::env::var("HOME").unwrap_or_default(), self.services.settings_manager.is_project_trusted());
+            &std::env::var("HOME").unwrap_or_default(), self.services.settings_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_project_trusted());
         let (system_prompt, append_system_prompt) = self.session.system_prompt_sources();
         let target_session_file = manager.session_file().map(str::to_owned);
         let context = manager.build_context(manager.leaf_id());
@@ -322,8 +324,7 @@ impl AgentSessionRuntime {
         let created = crate::sdk::create_agent_session(options).await?;
         self.session = created.session;
         self.services.cwd = cwd;
-        self.services.settings_manager = crate::settings_manager::SettingsManager::create(&self.services.cwd, &self.services.agent_dir,
-            &std::env::var("HOME").unwrap_or_default(), self.services.settings_manager.is_project_trusted());
+        self.services.settings_manager = self.session.shared_settings_manager();
         self.model_fallback_message = created.model_fallback_message;
         if let Some(rebind) = &self.rebind_session { rebind(&self.session); }
         Ok(())
