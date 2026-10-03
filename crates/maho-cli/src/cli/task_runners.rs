@@ -45,15 +45,15 @@ impl senpi_task::runners::in_process::shared_tool_filter::ChildTool for NativePa
     fn name(&self) -> &str { &self.name }
     fn description(&self) -> &str { &self.description }
 
-    fn execute(&self, tool_call_id: &str, input: &serde_json::Value) -> Result<serde_json::Value, senpi_task::host::HostError> {
+    fn execute(&self, _tool_call_id: &str, input: &serde_json::Value) -> Result<serde_json::Value, senpi_task::host::HostError> {
         let failure = |message: String| senpi_task::host::HostError { message };
         if tokio::runtime::Handle::try_current().is_ok() {
             return Err(failure("Synchronous child tools must execute on the task worker, not the host executor".into()));
         }
         let parent = self.parent.upgrade().ok_or_else(|| failure("Parent session retired".into()))?;
-        let tool = parent.get_registered_tool(&self.name)
-            .ok_or_else(|| failure(format!("Parent tool {} is no longer registered", self.name)))?;
-        let result = self.executor.block_on((tool.execute)(tool_call_id.into(), input.clone(), None, None));
+        let result = self.executor.block_on(parent.execute_tool(&self.name, input.clone(),
+            maho_core::agent_session::ExecuteToolOptions { signal: None, activate_inactive_tool: None }))
+            .map_err(|error| failure(error.to_string()))?;
         if result.is_error == Some(true) {
             let message = result.content.iter().filter_map(|part| match part {
                 maho_ai::types::ContentBlock::Text(text) => Some(text.text.as_str()),

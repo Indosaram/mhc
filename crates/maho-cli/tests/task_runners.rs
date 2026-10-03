@@ -113,3 +113,57 @@ async fn child_registry_retains_native_credentials_and_retires_with_parent() {
     assert_eq!(*child_model, model);
     assert!(resolve().is_none());
 }
+
+#[tokio::test]
+async fn shared_parent_tool_obeys_registered_admission_hooks() {
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    let dir = tempfile::tempdir().expect("isolated tool parent");
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+        maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() });
+    runtime.register_native_provider(provider.provider.clone());
+    let executions = Arc::new(AtomicUsize::new(0));
+    let executed = executions.clone();
+    let factory = maho_ext_host::loader::NativeAsyncExtensionFactory {
+        path: "task-admission".into(), source_info: Default::default(),
+        factory: Arc::new(move |api| {
+            let executed = executed.clone();
+            api.register_tool(maho_ext_api::ToolDefinition::new("guarded", "guarded fixture",
+                serde_json::json!({"type":"object","properties":{}}), Arc::new(move |_| {
+                    executed.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(async { Ok(maho_ext_api::ToolResult::text("executed")) })
+                })));
+            api.on(maho_ext_api::EventKind::ToolCall, Arc::new(|_, _| Box::pin(async {
+                Ok(maho_ext_api::EventResult::ToolCall(maho_ext_api::ToolCallEventResult {
+                    block: Some(true), reason: Some("fixture admission denied".into()), ..Default::default()
+                }))
+            })));
+            Box::pin(async { Ok(()) })
+        }),
+    };
+    let created = tokio::time::timeout(std::time::Duration::from_secs(5),
+        maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+            model: Some(provider.get_model(Some("faux-1")).expect("model")), model_runtime: Some(runtime),
+            session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
+            tools: Some(vec!["guarded".into()]), extension_factories: vec![factory], ..Default::default()
+        })).await.expect("bounded construction").expect("native parent");
+    let session = Arc::new(created.session);
+    let resolve = maho_cli::cli::task_runners::live_parent_tools(Arc::downgrade(&session), tokio::runtime::Handle::current());
+    let tool = resolve().into_iter().find(|tool| tool.name() == "guarded").expect("live tool");
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+
+    let worker = std::thread::spawn(move || {
+        let result = tool.execute("child-call", &serde_json::json!({}));
+        let _ = sender.send(result);
+    });
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), receiver).await;
+    session.dispose().await;
+
+    tokio::time::timeout(std::time::Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || worker.join()))
+        .await.expect("bounded worker cleanup").expect("join task").expect("tool worker");
+    assert!(result.expect("bounded tool admission").expect("worker result").is_err());
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+}
