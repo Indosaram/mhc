@@ -2105,7 +2105,9 @@ dependencies = [
 name = "maho-ext-cache-keepalive"
 version = "0.0.0"
 dependencies = [
+ "maho-agent",
  "maho-ai",
+ "serde_json",
 ]
 
 [[package]]

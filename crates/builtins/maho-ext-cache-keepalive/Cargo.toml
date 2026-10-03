@@ -7,6 +7,10 @@ license = "MIT"
 
 [dependencies]
 maho-ai = { path = "../../maho-ai" }
+maho-agent = { path = "../../maho-agent" }
+
+[dev-dependencies]
+serde_json = "=1.0.149"
 
 [lints]
 workspace = true

@@ -8,4 +8,10 @@ pub fn projected_ping_cost(model:&Model,usage:Option<&Usage>)->f64{
 }
 pub fn actual_ping_cost(model:&Model,usage:&Usage)->f64{(usage.cache_read as f64*model.cost.cache_read+usage.cache_write as f64*model.cost.cache_write+usage.input as f64*model.cost.input)/1_000_000.0}
 pub fn next_delay_ms(last_completed_at_ms:f64,safe_wait_seconds:f64,margin_seconds:f64,now_ms:f64)->f64{(last_completed_at_ms+(safe_wait_seconds-margin_seconds.max(0.0)).max(0.0)*1000.0-now_ms).max(0.0)}
+pub fn last_assistant_usage(messages:&[maho_agent::types::AgentMessage])->Option<(&Usage,maho_ai::types::StopReason)>{
+    messages.iter().rev().find_map(|message|message.as_assistant().map(|message|(&message.usage,message.stop_reason)))
+}
+pub fn last_assistant_timestamp(messages:&[maho_agent::types::AgentMessage])->Option<i64>{
+    messages.iter().rev().find_map(|message|message.as_assistant().map(|message|message.timestamp))
+}
 
