@@ -2,10 +2,14 @@ use crate::{manager::TerminalManager,monitor_registry::{CommandMonitor,MonitorSn
 use std::path::Path;
 
 pub fn restore_command(monitor:&ManifestMonitor,manager:&mut TerminalManager,mut register:impl FnMut(&str,&crate::runtime_session::TerminalRuntimeSession,CommandMonitor)->Result<(),crate::runtime_session::RuntimeError>)->RestoreOutcome {
+    restore_configured_command(monitor,manager,None,&crate::settings::TERMINAL_SETTINGS_DEFAULTS,&mut register)
+}
+pub fn restore_configured_command(monitor:&ManifestMonitor,manager:&mut TerminalManager,shell:Option<&str>,settings:&crate::settings::ResolvedTerminalSettings,mut register:impl FnMut(&str,&crate::runtime_session::TerminalRuntimeSession,CommandMonitor)->Result<(),crate::runtime_session::RuntimeError>)->RestoreOutcome {
     if monitor.runtime_kind!=MonitorRuntimeKind::Command||!monitor.persistent {return RestoreOutcome::Lost;}
     let Some(command)=monitor.command.as_deref().filter(|command|!command.is_empty()) else {return RestoreOutcome::Lost;};
     let Some(cwd)=monitor.cwd.as_deref().filter(|cwd|Path::new(cwd).is_absolute()&&Path::new(cwd).is_dir()) else {return RestoreOutcome::Lost;};
-    let Ok(options)=crate::tools::spawn::command_options(command,Some(Path::new(cwd)),None)else {return RestoreOutcome::Lost;};
+    let Ok(options)=crate::tools::spawn::command_options(command,Some(Path::new(cwd)),shell)else {return RestoreOutcome::Lost;};
+    let options=options.size(settings.default_cols as u16,settings.default_rows as u16);
     let Ok(id)=manager.create(command,options) else {return RestoreOutcome::Lost;};
     let mut record=CommandMonitor::new(MonitorSnapshotEntry {id:id.clone(),monitor_id:Some(monitor.monitor_id.clone()),description:monitor.description.clone(),command:monitor.command.clone(),filter:monitor.filter.clone(),persistent:Some(true),deadline_ms:None,expires_at:monitor.expires_at,fire_window:Some(MonitorFireWindow {start_ms:monitor.fire_window.start_ms,count:monitor.fire_window.count as usize}),..Default::default()},monitor.filter.as_deref().and_then(crate::shared::safe_reg_exp));
     if monitor.delivery_paused {record.pause();}
@@ -19,6 +23,12 @@ mod tests {
     use super::*;
     use serde_json::json;
     fn monitor()->ManifestMonitor {crate::restore::parse_terminal_manifest(&json!({"monitors":[{"monitorId":"mon_saved","sessionId":"s","description":"watch","runtimeKind":"command","durabilityClass":"restartable-command","command":"stty -echo; printf 'restored\\n'","cwd":"/tmp","createdAt":1,"expiresAt":null,"persistent":true,"suspended":false,"lastCheckpoint":null,"deliveryPaused":true,"fireWindow":{"startMs":1,"count":0}}],"backgroundSessions":[],"updatedAt":1}),"s").unwrap().monitors.remove(0)}
+    #[test]
+    fn configured_restore_preserves_shell_and_geometry() {
+        let mut saved=monitor();saved.command=Some("stty size; printf 'shell:%s' \"${BASH_VERSION:+bash}\"".to_owned());let mut manager=TerminalManager::default();let mut settings=crate::settings::TERMINAL_SETTINGS_DEFAULTS;settings.default_rows=33.0;settings.default_cols=91.0;
+        assert_eq!(restore_configured_command(&saved,&mut manager,Some("/bin/bash"),&settings,|_,_,_|Ok(())),RestoreOutcome::Muted);
+        let runtime=manager.get("bash_1").unwrap();runtime.wait(std::time::Duration::from_secs(5)).unwrap();assert_eq!(runtime.full_output().unwrap(),"33 91\r\nshell:bash");manager.teardown().unwrap();
+    }
     #[test]
     fn restores_once_with_stable_identity_and_fresh_muted_runtime() {
         let saved=monitor();let mut manager=TerminalManager::default();let mut calls=0;

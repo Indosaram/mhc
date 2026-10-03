@@ -76,6 +76,15 @@ pub async fn execute_monitor_recorded(manager:&mut TerminalManager,registry:&mut
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn live_command_snapshot_records_registration_epoch() {
+        let mut manager=TerminalManager::default();let mut registry=MonitorRegistry::new(|_|{});
+        let before=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64()*1000.0;
+        let result=execute_monitor(&mut manager,&mut registry,&json!({"description":"live","command":"read value"}),std::path::Path::new("/tmp"));assert!(result.is_error.is_none());
+        let after=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64()*1000.0;
+        let snapshot=registry.snapshot();assert_eq!(snapshot.len(),1);assert!(snapshot[0].started_at_ms>=before&&snapshot[0].started_at_ms<=after);let deadline=snapshot[0].deadline_ms.unwrap();assert!(deadline>=before+DEFAULT_MONITOR_TIMEOUT_MS as f64&&deadline<=after+DEFAULT_MONITOR_TIMEOUT_MS as f64);
+        registry.dispose();manager.teardown().unwrap();
+    }
+    #[tokio::test]
     async fn configured_monitor_geometry_reaches_real_shell() {
         let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let mut registry=MonitorRegistry::new(move |event| {sender.send(event).unwrap();});let mut manager=TerminalManager::default();
         let mut settings=crate::settings::TERMINAL_SETTINGS_DEFAULTS;settings.default_cols=91.0;settings.default_rows=33.0;
