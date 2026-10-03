@@ -39,7 +39,14 @@ impl DagSurfaces {
                     if let Some(bridge) = bridge.upgrade() { bridge.publish_activity(crate::dag_runtime::dag_activity_payload(&run, &node, &task, &at, &details)); }
                     if let Some(status) = status.upgrade() { status.on_activity(&run, &node, details.current_tool.as_deref().or(details.last_assistant_line.as_deref()).unwrap_or(&details.progress.activity)); }
                 }));
-                self.activity.lock().unwrap_or_else(PoisonError::into_inner).insert(task_id.to_owned(), (run_id.to_owned(), node_id.to_owned(), unsubscribe));
+                let duplicate = {
+                    let mut activity = self.activity.lock().unwrap_or_else(PoisonError::into_inner);
+                    match activity.entry(task_id.to_owned()) {
+                        std::collections::btree_map::Entry::Vacant(entry) => { entry.insert((run_id.to_owned(), node_id.to_owned(), unsubscribe)); None }
+                        std::collections::btree_map::Entry::Occupied(_) => Some(unsubscribe),
+                    }
+                };
+                if let Some(unsubscribe) = duplicate { unsubscribe(); }
     }
     fn reconcile_activity(self: &Arc<Self>, manager: &DagManager, session: Option<&str>, tasks: &senpi_task::manager::TaskManager, bridge: &Arc<crate::dag_rpc_bridge::DagRpcBridge>) -> Result<(), senpi_task::dag::manager::DagManagerError> {
         let mut wanted = BTreeMap::new();
