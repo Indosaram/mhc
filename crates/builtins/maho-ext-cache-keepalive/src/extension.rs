@@ -107,12 +107,11 @@ impl Extension for CacheKeepalive{
     fn register(&self,api:&mut ExtensionApi){
         let state=Arc::new(Mutex::new(State{ctx:None,parked:false,active:false,generation:0,attempts:0,cost:0.0,last:None,messages:vec![],usage:None,work:None,retired:vec![],entries:vec![]}));
         let sender=Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));
-        api.register_entry_renderer(CACHE_KEEPALIVE_ENTRY_TYPE,Arc::new(|entry,options,_|{
+        api.register_entry_renderer(CACHE_KEEPALIVE_ENTRY_TYPE,maho_ext_host::notice::notice_entry_renderer(|entry|{
             let data=&entry.data["data"];if data["phase"]!="ping"{return None;}
             let tokens=data["cacheRead"].as_u64().unwrap_or(0)+data["cacheWrite"].as_u64().unwrap_or(0);
-            let mut text=format!("Warm ping #{} - {tokens} tokens refreshed - ${:.3}",data["iteration"],data["estimatedCostUsd"].as_f64().unwrap_or(0.0));
-            if options.expanded{text.push_str(&format!("\ncache read {} - cache write {} - session total ${:.3}",data["cacheRead"],data["cacheWrite"],data["cumulativeEstimatedUsd"].as_f64().unwrap_or(0.0)));}
-            Some(Box::new(maho_tui::components::text::Text::new(text)))
+            let refreshed=if tokens>=1_000_000{format!("{}M",format!("{:.1}",tokens as f64/1_000_000.0).trim_end_matches(".0"))}else if tokens>=1000{format!("{}K",format!("{:.1}",tokens as f64/1000.0).trim_end_matches(".0"))}else{tokens.to_string()};
+            Some(maho_ext_host::notice::NoticeSpec{title:format!("⚡ Warm ping #{} · ~{refreshed} tokens refreshed · ${:.3}",data["iteration"],data["estimatedCostUsd"].as_f64().unwrap_or(0.0)),tone:None,why:"Refreshed the active Anthropic prompt cache while the session was idle.".into(),extra:vec![],expanded_line:Some(format!("cache read {} · cache write {} · session total ${:.3}",data["cacheRead"],data["cacheWrite"],data["cumulativeEstimatedUsd"].as_f64().unwrap_or(0.0)))})
         }),Default::default());
         for kind in [EventKind::SessionStart,EventKind::AgentEnd,EventKind::ModelSelect,EventKind::SessionParked,EventKind::SessionResumed,EventKind::AgentStart,EventKind::Input,EventKind::SessionShutdown]{
             let state=state.clone();let sender=sender.clone();let warm=self.warm.clone();
