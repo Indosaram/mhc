@@ -16,6 +16,7 @@ async fn main() {
         Some("remote-http") => run_native_variant(false,false,"remote-http").await,
         Some("remote-sse") => run_native_variant(false,false,"remote-sse").await,
         Some("remote-cancel") => run_native_variant(false,false,"remote-cancel").await,
+        Some("session-abort") => run_native_variant(false,false,"session-abort").await,
         Some("remote-auth") => run_native_variant(false,false,"remote-auth").await,
         Some("remote-network") => run_native_variant(false,false,"remote-network").await,
         _ => panic!("expected policy, threshold, or cancellation"),

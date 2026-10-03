@@ -193,11 +193,11 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     let provider = register_faux_provider(RegisterFauxProviderOptions { api: Some("compaction-registration-faux".into()), tokens_per_second: Some(0.), ..Default::default() });
     let mut model = provider.get_model(None).expect("native compaction scenario invariant");
     let (remote_started,mut remote_started_rx)=tokio::sync::mpsc::channel(1);
-    let remote_cancel=variant=="remote-cancel";
+    let remote_cancel=matches!(variant,"remote-cancel"|"session-abort");
     let remote_failure=matches!(variant,"remote-auth"|"remote-network");
     let remote_auth=variant=="remote-auth";
     let remote_network=variant=="remote-network";
-    let remote_server = if matches!(variant,"remote-http"|"remote-sse"|"remote-cancel"|"remote-auth"|"remote-network") {
+    let remote_server = if matches!(variant,"remote-http"|"remote-sse"|"remote-cancel"|"session-abort"|"remote-auth"|"remote-network") {
         use tokio::io::{AsyncReadExt,AsyncWriteExt};
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("local remote listener");
         model.api="openai-responses".into();model.provider="openai".into();model.base_url=format!("http://{}/v1",listener.local_addr().expect("listener address"));
@@ -309,16 +309,28 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     }
     if cancel || remote_cancel {
         let operation=session.compact(None);tokio::pin!(operation);
-        tokio::time::timeout(std::time::Duration::from_secs(10),async {
+        let outcome=tokio::time::timeout(std::time::Duration::from_secs(10),async {
             let request_started=async {if remote_cancel {remote_started_rx.recv().await} else {started_rx.recv().await}};
-            tokio::select! { result=&mut operation=>panic!("completed before request subscription: {result:?}"), started=request_started=>assert_eq!(started,Some(())) }
-            observed_signal.lock().expect("native compaction scenario invariant").as_ref().expect("native compaction scenario invariant").abort();
-            assert!(operation.await.is_err());
-        }).await.expect("native compaction scenario invariant");
-        assert!(!session.with_session_manager(|manager|manager.entries()).iter().any(|entry|entry["type"]=="compaction"));
-        assert_eq!(provider.get_call_log().len(),if remote_cancel {0} else {1});
-        if let Some(server)=remote_server {tokio::time::timeout(std::time::Duration::from_secs(10),server).await.expect("remote cancellation cleanup bound").expect("remote disconnect assertions");}
-        session.dispose().await;provider.unregister();
+            tokio::select! { result=&mut operation=>return Err(format!("completed before request subscription: {result:?}")), started=request_started=>if started!=Some(()) {return Err("request event closed".into());} }
+            if variant=="session-abort" {session.abort().await;} else {observed_signal.lock().expect("native compaction scenario invariant").as_ref().expect("native compaction scenario invariant").abort();}
+            Ok(operation.await.is_err())
+        }).await;
+        let persisted=session.with_session_manager(|manager|manager.entries());
+        let calls=provider.get_call_log().len();
+        let compacting=session.is_compacting();
+        let server_result=if let Some(mut server)=remote_server {
+            let result=tokio::time::timeout(std::time::Duration::from_secs(10),&mut server).await;
+            if result.is_err() {server.abort();let _=server.await;}
+            Some(result)
+        } else {None};
+        let disposed=tokio::time::timeout(std::time::Duration::from_secs(10),session.dispose()).await;provider.unregister();
+        assert!(disposed.is_ok(),"bounded negative cleanup");
+        assert!(matches!(outcome,Ok(Ok(true))),"cancellation outcome: {outcome:?}");
+        assert!(!compacting,"settled cancellation must clear active request");
+        assert!(!persisted.iter().any(|entry|entry["type"]=="compaction"));
+        assert_eq!(session.with_session_manager(|manager|manager.entries()),persisted,"no late apply after disposal");
+        assert_eq!(calls,if remote_cancel {0} else {1});
+        if let Some(result)=server_result {assert!(matches!(result,Ok(Ok(()))),"remote disconnect cleanup: {result:?}");}
         println!("PASS cancellation: one subscribed request, no persisted compaction; cleanup: disposed session, unregistered faux, tempdir dropped");
         return;
     }
@@ -380,6 +392,9 @@ async fn native_registered_remote_sse_falls_back_to_compact_endpoint() {run_nati
 
 #[tokio::test]
 async fn native_registered_remote_abort_disconnects_without_local_summary() {run_native_variant(false,false,"remote-cancel").await;}
+
+#[tokio::test]
+async fn native_session_abort_cancels_registered_remote_without_late_apply() {run_native_variant(false,false,"session-abort").await;}
 
 struct CancellationObserver(Arc<std::sync::Mutex<Option<AbortSignal>>>);
 struct LiveFractionalObserver;

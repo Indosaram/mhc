@@ -419,6 +419,7 @@ struct AgentSessionState {
     cumulative_hinted_wait_ms: f64,
     pending_model_switch: Option<PendingModelSwitch>,
     compaction_abort_controller: Option<maho_ai::utils::abort::AbortController>,
+    compaction_extension_signal: Option<maho_ext_api::AbortSignal>,
     prompt_templates: Vec<crate::prompt_templates::PromptTemplate>,
     extension_commands: Vec<maho_ext_api::SlashCommandInfo>,
     extension_command_catalog: Option<Arc<dyn Fn() -> Vec<maho_ext_api::SlashCommandInfo> + Send + Sync>>,
@@ -1079,6 +1080,7 @@ impl AgentSession {
             cumulative_hinted_wait_ms: 0.0,
             pending_model_switch: None,
             compaction_abort_controller: None,
+            compaction_extension_signal: None,
             prompt_templates: Vec::new(),
             extension_commands: Vec::new(),
             extension_command_catalog: None,
@@ -1479,6 +1481,7 @@ impl AgentSession {
 
     pub fn abort_compaction(&self) {
         if let Some(controller) = self.state().compaction_abort_controller.as_ref() { controller.abort(None); }
+        if let Some(signal) = self.state().compaction_extension_signal.as_ref() { signal.abort(); }
     }
 
     pub async fn compact(&self, instructions: Option<&str>) -> Result<crate::compaction::compaction::CompactionResult, String> {
@@ -1508,6 +1511,7 @@ impl AgentSession {
         let signal = controller.signal();
         let extension_signal = maho_ext_api::AbortSignal::default();
         self.state().compaction_abort_controller = Some(controller);
+        self.state().compaction_extension_signal = Some(extension_signal.clone());
         let compact_reason = if reason == "manual" { maho_ext_api::CompactionReason::Manual }
             else if reason == "overflow" { maho_ext_api::CompactionReason::Overflow }
             else if reason == "pre-prompt" { maho_ext_api::CompactionReason::PrePrompt }
@@ -1590,6 +1594,7 @@ impl AgentSession {
             Ok(result)
         }.await;
         self.state().compaction_abort_controller = None;
+        self.state().compaction_extension_signal = None;
         match &execution {
             Ok(result) => {
                 let value = maho_ext_api::CompactionResult { summary: result.summary.clone(), first_kept_entry_id: result.first_kept_entry_id.clone(),
