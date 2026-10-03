@@ -14,6 +14,13 @@ fn registered_parser_replaces_fallback() {
     assert_eq!(registry.parse("custom_tool", &json!({}), (Path::new("/workspace/project"),Path::new("/home/user"))), expected);
 }
 #[test]
+fn every_source_builtin_has_permission_requests() {
+    let registry = create_builtin_parser_registry();
+    for tool in ["bash", "edit", "write", "apply_patch", "multiedit", "read", "grep", "find", "ls"] {
+        assert!(!registry.parse(tool, &json!({}), (Path::new("/workspace/project"), Path::new("/home/user"))).is_empty(), "{tool}");
+    }
+}
+#[test]
 fn upstream_direct_parser_cases() {
     let registry = create_builtin_parser_registry();
     let cases = [

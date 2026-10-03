@@ -12,9 +12,14 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-core = { path = "../../maho-core" }
+maho-ext-gpt-apply-patch = { path = "../maho-ext-gpt-apply-patch" }
 
 [dev-dependencies]
 tempfile.workspace = true
+maho-ext-host = { path = "../../maho-ext-host" }
+maho-ai = { path = "../../maho-ai" }
+maho-agent = { path = "../../maho-agent" }
+maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
 tokio = { workspace = true, features = ["sync", "macros", "rt"] }
 
 [lints]
