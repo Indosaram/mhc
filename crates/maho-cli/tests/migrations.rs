@@ -23,3 +23,19 @@ fn fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf, std:
     let root = tempfile::tempdir().expect("tempdir"); let old = root.path().join("old"); let new = root.path().join("new"); fs::create_dir_all(old.join("cache")).expect("mkdir"); fs::write(old.join("models.json"), "{}").expect("write");
     let result = maho_cli::brand_dir_migration::migrate_engine_state_to_brand_dir(&old, &new).expect("migrate"); assert!(result.migrated); assert!(old.join("models.json").exists()); assert!(new.join("models.json").exists()); assert!(!new.join("cache").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn brand_copy_preserves_symbolic_links_instead_of_dereferencing() {
+    let root = tempfile::tempdir_in(".").expect("isolated relative tree");
+    let old = root.path().join("old");
+    let new = root.path().join("new");
+    fs::create_dir(&old).expect("legacy directory");
+    fs::write(root.path().join("external"), "external fixture").expect("external fixture");
+    std::os::unix::fs::symlink("../external", old.join("linked")).expect("relative link");
+    maho_cli::brand_dir_migration::migrate_engine_state_to_brand_dir(&old, &new).expect("migration");
+    assert!(fs::symlink_metadata(new.join("linked")).expect("destination metadata").file_type().is_symlink());
+    assert!(fs::read_link(new.join("linked")).expect("link target").is_absolute());
+    assert_eq!(fs::canonicalize(new.join("linked")).expect("target"), fs::canonicalize(root.path().join("external")).expect("source path"));
+    assert_eq!(fs::read_to_string(root.path().join("external")).expect("source"), "external fixture");
+}
