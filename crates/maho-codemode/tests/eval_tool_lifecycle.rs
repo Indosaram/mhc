@@ -30,6 +30,68 @@ impl maho_codemode::bridges::output_bridge::OutputExecuteTool for Executor {
     }
 }
 
+struct CapacityKernel {
+    admitted: tokio::sync::mpsc::UnboundedSender<String>,
+    pending: Mutex<HashMap<String,tokio::sync::oneshot::Sender<serde_json::Value>>>,
+}
+impl EvalKernel for CapacityKernel {
+    fn run(&self,input:EvalKernelRunInput)->EvalKernelFuture<'_,serde_json::Value> {
+        Box::pin(async move {
+            let (sender,receiver)=tokio::sync::oneshot::channel();
+            self.pending.lock().map_err(|error|error.to_string())?.insert(input.cell_id.clone(),sender);
+            if let Some(started)=input.on_started {started();}
+            self.admitted.send(input.cell_id).map_err(|error|error.to_string())?;
+            receiver.await.map_err(|error|error.to_string())
+        })
+    }
+    fn cancel_queued<'a>(&'a self,_:&'a str,_:&'a str)->EvalKernelFuture<'a,bool> {Box::pin(async {Ok(false)})}
+    fn interrupt<'a>(&'a self,_:&'a str,id:Option<&'a str>)->EvalKernelFuture<'a,KernelInterruptHandle> {
+        Box::pin(async move {
+            if let Some(id)=id && let Some(sender)=self.pending.lock().map_err(|error|error.to_string())?.remove(id) {let _=sender.send(json!({"type":"result","cellId":id,"ok":false,"error":{"message":"interrupted"},"durationMs":0}));}
+            Ok(KernelInterruptHandle {state_retained:Box::pin(async {Ok(true)}),note:None})
+        })
+    }
+    fn queue_snapshot(&self)->(Option<String>,Vec<String>) {(None,vec![])}
+    fn deliver_tool_reply(&self,_:serde_json::Value)->Result<(),String> {panic!("capacity fixture has no host calls")}
+    fn reset(&self)->EvalKernelFuture<'_,()> {Box::pin(async {Ok(())})}
+    fn close(&self)->EvalKernelFuture<'_,()> {Box::pin(async {Ok(())})}
+}
+struct CapacityManager(Arc<CapacityKernel>);
+impl EvalKernelManager for CapacityManager {
+    fn get_kernel(&self,_:EvalLanguage)->EvalKernelFuture<'_,Arc<dyn EvalKernel>> {Box::pin(async {Ok(self.0.clone() as Arc<dyn EvalKernel>)})}
+}
+
+#[tokio::test(start_paused = true)]
+async fn resolved_file_and_environment_capacity_is_enforced_by_callable() {
+    use maho_codemode::{config::settings::*,tool::detached_cell_manager::DetachedCellManagerOptions};
+    for (file,environment,capacity) in [(json!({}),None,15),(json!({"maxDetachedCells":4}),None,4),(json!({"maxDetachedCells":4}),Some("2"),2),(json!({"maxDetachedCells":4}),Some("0"),4),(json!({"maxDetachedCells":4}),Some("bad"),4)] {
+        let root=tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join(".maho")).unwrap();
+        std::fs::write(root.path().join(".maho/codemode.json"),file.to_string()).unwrap();
+        let mut loaded=load_codemode_settings(root.path(),root.path()).await.unwrap();
+        assert!(loaded.warnings.is_empty());
+        let environment=environment.map(|value|Environment::from([("SENPI_CODEMODE_MAX_DETACHED_CELLS".into(),value.into())])).unwrap_or_default();
+        loaded.settings.max_detached_cells=resolve_max_detached_cells(&loaded.settings,&environment);
+        loaded.settings.foreground_window_seconds=1.0;
+        let cells=Arc::new(Mutex::new(EvalDetachedCellManager::new(DetachedCellManagerOptions {max_detached_cells:loaded.settings.max_detached_cells.ceil() as usize,..Default::default()})));
+        let (sender,mut admitted)=tokio::sync::mpsc::unbounded_channel();
+        let kernel=Arc::new(CapacityKernel {admitted:sender,pending:Mutex::new(HashMap::new())});
+        let (host,_unused)=tokio::sync::mpsc::unbounded_channel();
+        let tool=create_eval_tool(Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(CapacityManager(kernel)),executor:Arc::new(Executor(host)),list_tools:None,complete:None,settings:loaded.settings,artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:cells.clone(),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"tui".into()})).unwrap();
+        for index in 0..=capacity {
+            let execute=tool.execute.clone();
+            let call=tokio::spawn(async move {execute(ToolCall {id:&format!("capacity-{index}"),params:json!({"language":"js","code":"fixture","summary":"capacity"}),signal:AbortSignal::default(),on_update:None,context:None}).await});
+            assert_eq!(admitted.recv().await.unwrap(),format!("capacity-{index}"));
+            tokio::time::advance(Duration::from_secs(1)).await;
+            let result=call.await.unwrap().unwrap();
+            if index<capacity {assert_eq!(result.details.as_ref().unwrap()["cells"][0]["status"],"detached");} else {assert_eq!(result.details.as_ref().unwrap()["isError"],true);}
+        }
+        assert_eq!(cells.lock().unwrap().list().0.len(),capacity);
+        EvalDetachedCellManager::dispose(&cells).await.unwrap();
+        assert!(cells.lock().unwrap().list().0.is_empty());
+    }
+}
+
 #[tokio::test]
 async fn callable_eval_is_cancelled_by_session_replacement_before_worker_retirement() {
     let kernel=Arc::new(JavaScriptKernel::start(std::path::Path::new(env!("CARGO_MANIFEST_DIR")), "callable-lifecycle", 4, None).await.unwrap());

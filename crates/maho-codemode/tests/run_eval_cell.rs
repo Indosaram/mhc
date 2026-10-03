@@ -28,6 +28,35 @@ impl maho_codemode::bridges::output_bridge::OutputExecuteTool for Executor {
     fn execute_tool<'a>(&'a self,_:&'a str,_:serde_json::Value,_:maho_ext_api::ExecuteToolOptions)->maho_ext_api::ExecuteToolFuture<'a> {Box::pin(async {panic!("text-only eval must not call host tools")})}
 }
 struct TranscriptExecutor(Mutex<Vec<(String,serde_json::Value)>>);
+struct SchemaExecutor(std::sync::atomic::AtomicUsize);
+impl maho_codemode::bridges::output_bridge::OutputExecuteTool for SchemaExecutor {
+    fn execute_tool<'a>(&'a self,name:&'a str,_:serde_json::Value,_:maho_ext_api::ExecuteToolOptions)->maho_ext_api::ExecuteToolFuture<'a> {
+        self.0.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {Err(maho_ext_api::ExecuteToolError {code:maho_ext_api::ExecuteToolErrorCode::InvalidParams,tool_name:name.into(),message:"invalid params".into(),active_tools:vec![]})})
+    }
+}
+
+#[tokio::test]
+async fn real_js_callable_schema_lookup_and_failure_enrichment() {
+    let kernel=Arc::new(maho_codemode::kernels::js::context_manager::JavaScriptKernel::start(std::path::Path::new(env!("CARGO_MANIFEST_DIR")),"schema-callable",4,None).await.unwrap());
+    let executor=Arc::new(SchemaExecutor(std::sync::atomic::AtomicUsize::new(0)));
+    let schema=json!({"type":"object","required":["path"],"properties":{"path":{"type":"string"}}});
+    let catalog_schema=schema.clone();
+    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(JsManager(kernel.clone())),executor:executor.clone(),list_tools:Some(Arc::new(move ||Ok(vec![maho_codemode::bridges::schema_bridge::EvalSchemaToolInfo {name:"fixture_read".into(),description:None,parameters:Some(catalog_schema.clone())}]))),complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+    let tool=maho_codemode::tool::eval_tool::create_eval_tool(options).unwrap();
+    let lookup=(tool.execute)(maho_tools::definition::ToolCall {id:"schema-lookup",params:json!({"language":"js","code":"var expected = await tool_schema('fixture_read'); expected.parameters.required[0]","summary":"schema lookup"}),signal:Default::default(),on_update:None,context:None}).await;
+    let lookup_calls=executor.0.load(std::sync::atomic::Ordering::SeqCst);
+    let enrichment=(tool.execute)(maho_tools::definition::ToolCall {id:"schema-enrichment",params:json!({"language":"js","code":"try { await tool.fixture_read({}); } catch (error) { console.log(error.message.includes('Expected parameters:') && error.message.includes('path: string')); }","summary":"schema failure"}),signal:Default::default(),on_update:None,context:None}).await;
+    kernel.close().await.unwrap();
+    assert!(kernel.pid().is_none());eprintln!("cleanup: schema callable worker closed; pid None");
+    assert_eq!(lookup_calls,0,"tool_schema cannot invoke the host executor");
+    let lookup=lookup.unwrap();
+    assert!(lookup.content.iter().any(|part|matches!(part,maho_tools::definition::ToolContent::Text {text,..} if text.contains("path"))));
+    let enrichment=enrichment.unwrap();
+    assert!(enrichment.content.iter().any(|part|matches!(part,maho_tools::definition::ToolContent::Text {text,..} if text.contains("true"))));
+    assert_eq!(executor.0.load(std::sync::atomic::Ordering::SeqCst),1);
+}
+
 impl maho_codemode::bridges::output_bridge::OutputExecuteTool for TranscriptExecutor {
     fn is_tool_available(&self,name:&str)->Option<bool> {Some(name=="named_output")}
     fn execute_tool<'a>(&'a self,name:&'a str,args:serde_json::Value,_:maho_ext_api::ExecuteToolOptions)->maho_ext_api::ExecuteToolFuture<'a> {
