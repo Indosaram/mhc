@@ -95,6 +95,45 @@ pub fn native_child_settings(
     settings
 }
 
+pub fn native_shared_parent_tool_definition(
+    name: &str,
+    parent: std::sync::Weak<maho_core::agent_session::AgentSession>,
+) -> Result<maho_ext_api::ToolDefinition, senpi_task::host::HostError> {
+    let session = parent.upgrade().ok_or_else(|| senpi_task::host::HostError { message: "Parent session retired".into() })?;
+    let mut definition = session.get_tool_definition(name).ok_or_else(|| senpi_task::host::HostError {
+        message: format!("Shared parent tool {name} has no native definition"),
+    })?;
+    let mut tool = session.get_registered_tool(name).ok_or_else(|| senpi_task::host::HostError {
+        message: format!("Shared parent tool {name} is not executable"),
+    })?;
+    let name = name.to_owned();
+    tool.execute = Arc::new(move |id, params, signal, _updates| {
+        let parent = parent.clone();
+        let name = name.clone();
+        Box::pin(async move {
+            let result = match parent.upgrade() {
+                Some(parent) => parent.execute_tool_with_call_id(&id, &name, params,
+                    maho_core::agent_session::ExecuteToolOptions { signal, activate_inactive_tool: None }).await,
+                None => {
+                    let mut result = maho_agent::AgentToolResult::text("Parent session retired");
+                    result.is_error = Some(true);
+                    return result;
+                }
+            };
+            match result {
+                Ok(result) => result,
+                Err(error) => {
+                    let mut result = maho_agent::AgentToolResult::text(error.to_string());
+                    result.is_error = Some(true);
+                    result
+                }
+            }
+        })
+    });
+    definition.execute = maho_tools::tool_definition_wrapper::create_tool_definition_from_agent_tool(tool).execute;
+    Ok(definition)
+}
+
 impl senpi_task::runners::in_process::shared_tool_filter::ChildTool for NativeParentTool {
     fn name(&self) -> &str { &self.name }
     fn description(&self) -> &str { &self.description }

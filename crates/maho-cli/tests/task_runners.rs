@@ -288,6 +288,14 @@ async fn shared_parent_tool_obeys_registered_admission_hooks() {
     let session = Arc::new(created.session);
     let resolve = maho_cli::cli::task_runners::live_parent_tools(Arc::downgrade(&session), tokio::runtime::Handle::current());
     let tool = resolve().into_iter().find(|tool| tool.name() == "guarded").expect("live tool");
+    let definition = maho_cli::cli::task_runners::native_shared_parent_tool_definition("guarded", Arc::downgrade(&session))
+        .expect("native shared definition");
+    assert_eq!(definition.parameters, session.get_tool_definition("guarded").expect("parent definition").parameters);
+    let async_result = (definition.execute)(maho_tools::definition::ToolCall {
+        id: "async-child-call", params: serde_json::json!({}), signal: Default::default(), on_update: None, context: None,
+    }).await;
+    assert!(async_result.is_err());
+    assert_eq!(admitted_id.lock().expect("observed call ID").as_deref(), Some("async-child-call"));
     let (sender, receiver) = tokio::sync::oneshot::channel();
 
     let worker = std::thread::spawn(move || {
