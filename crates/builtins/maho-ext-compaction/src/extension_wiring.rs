@@ -18,24 +18,23 @@ pub fn resolved_settings(
         settings.ideal.reserve_scaling_enabled = Some(false);
         return Ok(settings);
     };
-    let integer = |value: f64| value.to_string().parse::<i64>().map_err(|error| maho_ext_api::ExtensionFailure::new(format!("resolved compaction integer {value}: {error}")));
     settings.enabled = resolved.enabled;
     settings.reserve_tokens = i64::try_from(resolved.reserve_tokens).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
     settings.keep_recent_tokens = i64::try_from(resolved.keep_recent_tokens).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
     settings.speculative_enabled = Some(resolved.speculative_enabled);
     settings.speculative_fraction = Some(resolved.speculative_fraction);
-    settings.speculative_cooldown_ms = Some(integer(resolved.speculative_cooldown_ms)?);
+    settings.speculative_cooldown_ms = Some(resolved.speculative_cooldown_ms);
     settings.restoration_enabled = Some(resolved.restoration_enabled);
-    settings.restoration_max_items = Some(integer(resolved.restoration_max_items)?);
-    settings.restoration_max_tokens_per_item = Some(integer(resolved.restoration_max_tokens_per_item)?);
-    settings.restoration_max_total_tokens = Some(integer(resolved.restoration_max_total_tokens)?);
+    settings.restoration_max_items = Some(resolved.restoration_max_items);
+    settings.restoration_max_tokens_per_item = Some(resolved.restoration_max_tokens_per_item);
+    settings.restoration_max_total_tokens = Some(resolved.restoration_max_total_tokens);
     settings.restoration_context_ratio = Some(resolved.restoration_context_ratio);
     settings.idle_compaction_enabled = Some(resolved.idle_compaction_enabled);
     settings.summarization_max_duration_ms = resolved.summarization_max_duration_ms;
     settings.ideal = maho_core::compaction::ideal_settings::IdealCompactionSettings {
         grace_band_enabled: Some(resolved.grace_band_enabled), tool_admission_enabled: Some(resolved.tool_admission_enabled),
         reminder_enabled: Some(resolved.reminder_enabled), reserve_scaling_enabled: Some(resolved.reserve_scaling_enabled),
-        speculative_lead_tokens: resolved.speculative_lead_tokens.map(integer).transpose()?,
+        speculative_lead_tokens: resolved.speculative_lead_tokens,
     };
     Ok(settings)
 }
@@ -153,8 +152,8 @@ pub fn prepare_accepted_restoration(
     let usage = context.get_context_usage()?;
     let window = usage.as_ref().map_or_else(||context.model.as_ref().map_or(200000,|model|model.context_window),|usage|usage.context_window) as f64;
     let restoration = crate::restoration_tracker::RestorationSettings {
-        max_items: settings.restoration_max_items.map(|value|value as f64), max_tokens_per_item: settings.restoration_max_tokens_per_item.map(|value|value as f64),
-        max_total_tokens: settings.restoration_max_total_tokens.map(|value|value as f64), context_ratio: settings.restoration_context_ratio,
+        max_items: settings.restoration_max_items, max_tokens_per_item: settings.restoration_max_tokens_per_item,
+        max_total_tokens: settings.restoration_max_total_tokens, context_ratio: settings.restoration_context_ratio,
     };
     let reason = match reason { maho_ext_api::CompactionReason::Manual => "manual", maho_ext_api::CompactionReason::Threshold => "threshold", maho_ext_api::CompactionReason::Overflow => "overflow", maho_ext_api::CompactionReason::Branch => "branch", maho_ext_api::CompactionReason::PrePrompt => "pre-prompt", maho_ext_api::CompactionReason::Extension => "extension" };
     crate::restoration_tracker::prepare_pending_payload(state, &crate::restoration_tracker::PreparePendingPayloadOptions {
@@ -173,6 +172,42 @@ pub async fn generate_core_route_compaction(
     use maho_ext_api::{EventResult, SessionBeforeEventResult};
     if event.signal.is_aborted() { return Ok(EventResult::None); }
     let Some(model) = context.model.clone() else { return Ok(EventResult::None); };
+    if event.reason != maho_ext_api::CompactionReason::Branch && crate::openai_remote_model::is_openai_remote_compaction_model(Some(&model)) {
+        let key = context.model_registry.get_api_key_for_provider(&model.provider).await?;
+        let branch = crate::speculative::branch_values(context);
+        let messages = maho_core::session_manager::build_session_context(&branch, None).messages;
+        let messages = messages.into_iter().map(serde_json::from_value).collect::<Result<Vec<maho_ext_api::AgentMessage>,_>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+        let prepared = context.prepare_provider_request(messages).await?;
+        let raw = prepared.messages.iter().map(serde_json::to_value).collect::<Result<Vec<_>,_>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+        let session_id = context.session_manager.session_id();
+        let system_prompt = context.get_system_prompt();
+        if let Some(request) = crate::openai_remote::create_openai_remote_compaction_request(Some(&model),&system_prompt,&branch,Some(&raw),event.preparation.tokens_before,Some(session_id),None) {
+            let configured = model.headers.clone().unwrap_or_default().into_iter().map(|(key,value)|(key,Some(value))).collect();
+            let transformed = (prepared.transform_headers)(configured).await?;
+            if let Some(headers) = crate::openai_remote_model::create_live_openai_remote_compaction_headers(&model,key.as_deref(),&transformed,Some(session_id)).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?
+                && let Some(origin) = crate::openai_remote_model::openai_remote_compaction_origin(&model,&headers) {
+                let controller = maho_ai::utils::abort::AbortController::new();
+                let signal = controller.signal();
+                let runner:crate::openai_remote_dependencies::OpenAiResponsesStreamRunner = std::sync::Arc::new(|model,context,options|maho_ai::compat::stream_simple(model,context,Some(options.clone())));
+                let client = reqwest::Client::new();
+                let emit = |data|api.events.emit(crate::openai_remote::SENPI_COMPACTION_EVENT,&data);
+                let remote = tokio::select! {
+                    () = event.signal.cancelled() => {controller.abort(None);return Ok(EventResult::None);}
+                    result = crate::openai_remote::run_remote_compaction(crate::openai_remote::RemoteCompactionOptions {
+                        model:&model,request:&request,request_id:&event.request_id,first_kept_entry_id:&event.preparation.first_kept_entry_id,
+                        system_prompt:&system_prompt,session_id,api_key:key,headers,extra_body:None,origin:serde_json::json!({"endpoint":origin.endpoint,"trustDomain":origin.trust_domain,"authTenantFingerprint":origin.auth_tenant_fingerprint}),
+                        signal:&signal,timeout:std::time::Duration::from_secs(15),now_ms:chrono::Utc::now().timestamp_millis() as u64,client:&client,runner:&runner,provider_request:Some(&prepared),
+                    },&emit) => result,
+                };
+                if event.signal.is_aborted() {return Ok(EventResult::None);}
+                match remote {
+                    Ok(Some(compaction)) => return Ok(EventResult::SessionBefore(SessionBeforeEventResult {compaction:Some(compaction),..Default::default()})),
+                    Ok(None) => {},
+                    Err(error) => return Err(maho_ext_api::ExtensionFailure::new(error)),
+                }
+            }
+        }
+    }
     let convert = |messages: &[maho_ext_api::AgentMessage]|messages.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()));
     let messages = convert(&event.preparation.messages_to_summarize)?;
     let prefix = convert(&event.preparation.turn_prefix_messages)?;

@@ -584,6 +584,11 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn get_context_usage(&self) -> Option<maho_ext_api::ContextUsage> { self.session().ok()?.get_context_usage().map(|usage|
         maho_ext_api::ContextUsage { tokens: usage.tokens, context_window: usage.context_window, percent: usage.percent }) }
     fn get_compaction_settings(&self) -> maho_ext_api::CompactionSettings {
+        let resolved = self.get_resolved_compaction_settings().expect("live compaction settings");
+        maho_ext_api::CompactionSettings { enabled: resolved.enabled, reserve_tokens: resolved.reserve_tokens,
+            keep_recent_tokens: resolved.keep_recent_tokens }
+    }
+    fn get_resolved_compaction_settings(&self) -> Option<maho_ext_api::ResolvedCompactionSettings> {
         let session = self.session().unwrap_or_else(|error| std::panic::panic_any(error));
         let model = session.model();
         let raw = session.with_settings_manager(|manager| manager.get_value("compaction").cloned());
@@ -592,8 +597,28 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         let resolved = crate::compaction_settings_resolver::resolve_compaction_settings(settings.as_ref(), Some(
             crate::compaction_settings_access::CompactionModelSelector { provider: &model.provider, id: &model.id },
         )).unwrap_or_else(|error| std::panic::panic_any(maho_ext_api::ExtensionFailure::new(error)));
-        maho_ext_api::CompactionSettings { enabled: resolved.enabled, reserve_tokens: resolved.reserve_tokens as u64,
-            keep_recent_tokens: resolved.keep_recent_tokens as u64 }
+        Some(maho_ext_api::ResolvedCompactionSettings {
+            enabled: session.auto_compaction_enabled(),
+            reserve_tokens: u64::try_from(resolved.reserve_tokens).unwrap_or_else(|error|
+                std::panic::panic_any(maho_ext_api::ExtensionFailure::new(error.to_string()))),
+            keep_recent_tokens: u64::try_from(resolved.keep_recent_tokens).unwrap_or_else(|error|
+                std::panic::panic_any(maho_ext_api::ExtensionFailure::new(error.to_string()))),
+            speculative_enabled: resolved.speculative_enabled,
+            speculative_fraction: resolved.speculative_fraction,
+            speculative_cooldown_ms: resolved.speculative_cooldown_ms,
+            restoration_enabled: resolved.restoration_enabled,
+            restoration_max_items: resolved.restoration_max_items,
+            restoration_max_tokens_per_item: resolved.restoration_max_tokens_per_item,
+            restoration_max_total_tokens: resolved.restoration_max_total_tokens,
+            restoration_context_ratio: resolved.restoration_context_ratio,
+            idle_compaction_enabled: resolved.idle_compaction_enabled,
+            grace_band_enabled: resolved.grace_band_enabled,
+            tool_admission_enabled: resolved.tool_admission_enabled,
+            reminder_enabled: resolved.reminder_enabled,
+            reserve_scaling_enabled: resolved.reserve_scaling_enabled,
+            speculative_lead_tokens: resolved.speculative_lead_tokens,
+            summarization_max_duration_ms: resolved.summarization_max_duration_ms,
+        })
     }
     fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { self.session().ok()?.with_settings_manager(|manager| manager.get_number("promptCacheSafeWaitSeconds")) }
     fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64 {

@@ -28,11 +28,11 @@ fn supplied_policy_controls_geometry_and_automatic_consumers() {
     assert_eq!(settings.keep_recent_tokens, 456);
     assert_eq!(settings.speculative_enabled, Some(false));
     assert_eq!(settings.speculative_fraction, Some(0.42));
-    assert_eq!(settings.speculative_cooldown_ms, Some(321));
+    assert_eq!(settings.speculative_cooldown_ms, Some(321.));
     assert_eq!(settings.restoration_enabled, Some(false));
-    assert_eq!(settings.restoration_max_items, Some(2));
-    assert_eq!(settings.restoration_max_tokens_per_item, Some(11));
-    assert_eq!(settings.restoration_max_total_tokens, Some(22));
+    assert_eq!(settings.restoration_max_items, Some(2.));
+    assert_eq!(settings.restoration_max_tokens_per_item, Some(11.));
+    assert_eq!(settings.restoration_max_total_tokens, Some(22.));
     assert_eq!(settings.restoration_context_ratio, Some(0.03));
     assert_eq!(settings.idle_compaction_enabled, Some(false));
     assert_eq!(settings.ideal.grace_band_enabled, Some(false));
@@ -56,4 +56,26 @@ fn legacy_host_does_not_fabricate_optional_policy() {
     assert_eq!(settings.ideal.reminder_enabled, Some(false));
     assert_eq!(settings.ideal.tool_admission_enabled, Some(false));
     assert_eq!(settings.ideal.reserve_scaling_enabled, Some(false));
+}
+
+#[test]
+fn valid_fractional_policy_is_not_rejected_or_rounded_at_resolution() {
+    let legacy = CompactionSettings { enabled: true, reserve_tokens: 123, keep_recent_tokens: 456 };
+    for field in 0..5 {
+        let mut supplied = nondefault();
+        match field {
+            0 => supplied.speculative_cooldown_ms = 321.5,
+            1 => supplied.restoration_max_items = 2.5,
+            2 => supplied.restoration_max_tokens_per_item = 11.5,
+            3 => supplied.restoration_max_total_tokens = 22.5,
+            4 => supplied.speculative_lead_tokens = Some(12000.5),
+            _ => unreachable!(),
+        }
+        let settings = resolved_settings(&legacy, Some(&supplied)).expect("valid finite fractional host policy");
+        assert_eq!(settings.speculative_cooldown_ms, Some(supplied.speculative_cooldown_ms));
+        assert_eq!(settings.restoration_max_items, Some(supplied.restoration_max_items));
+        assert_eq!(settings.restoration_max_tokens_per_item, Some(supplied.restoration_max_tokens_per_item));
+        assert_eq!(settings.restoration_max_total_tokens, Some(supplied.restoration_max_total_tokens));
+        assert_eq!(resolve_compaction_geometry(100_000., &settings, None).lead_tokens, supplied.speculative_lead_tokens.expect("configured lead"));
+    }
 }

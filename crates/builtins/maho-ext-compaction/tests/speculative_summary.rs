@@ -149,3 +149,26 @@ async fn blocking_generation_retries_transient_failure_but_warm_generation_does_
     assert!(maho_ext_compaction::speculative::run_extension_compaction(&snapshot, Some("faux".into()), None, None, Some(&runner), &|_| {}).await.is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test(start_paused = true)]
+async fn overflow_budget_stops_paid_requests_before_total_duration_expires() {
+    use maho_core::compaction::{compaction::prepare_compaction,settings::default_compaction_settings};
+    use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+    let model:Model=serde_json::from_value(json!({"id":"m","name":"m","provider":"faux","api":"faux","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":1000})).expect("model");
+    let entries=[json!({"type":"message","id":"old","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(30000),"timestamp":0}}),json!({"type":"message","id":"keep","parentId":"old","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"next","timestamp":0}})];
+    let mut settings=default_compaction_settings();settings.keep_recent_tokens=1;settings.summarization_max_duration_ms=Some(500000.);
+    let snapshot=maho_ext_compaction::speculative::SpeculativeCompactionSnapshot {generation:1,expected_revision:1,model,context_window:100000,preparation:prepare_compaction(&entries,&settings,true,false).expect("preparation"),branch_entries:entries.to_vec(),prompt_variant:maho_ext_compaction::prompts::PromptVariant::Default,custom_instructions:None,system_prompt:None,tools:Vec::new(),origin:Some("core-route".into())};
+    let calls=Arc::new(AtomicUsize::new(0));let observed=Arc::clone(&calls);
+    let runner:SummaryStreamRunner=Arc::new(move |model,_,_| {
+        observed.fetch_add(1,Ordering::SeqCst);
+        let stream=maho_ai::utils::event_stream::create_assistant_message_event_stream();let output=stream.clone();let model=model.clone();
+        tokio::spawn(async move {
+            tokio::time::advance(std::time::Duration::from_millis(240001)).await;
+            output.push(maho_ai::types::AssistantMessageEvent::Error {reason:maho_ai::types::ErrorReason::Error,error:maho_ai::utils::lazy::setup_error_message(&model,"maximum context length exceeded")});
+        });
+        stream
+    });
+    let result=maho_ext_compaction::speculative::run_extension_compaction(&snapshot,Some("faux".into()),None,None,Some(&runner),&|_|{}).await;
+    assert!(matches!(result,Err(maho_ext_compaction::speculative::SummaryGenerationError::Overflow(_))));
+    assert_eq!(calls.load(Ordering::SeqCst),1,"expired overflow budget must not pay another request");
+}

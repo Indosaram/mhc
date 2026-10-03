@@ -192,6 +192,63 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     let cwd = temp.path().to_string_lossy().into_owned();
     let provider = register_faux_provider(RegisterFauxProviderOptions { api: Some("compaction-registration-faux".into()), tokens_per_second: Some(0.), ..Default::default() });
     let mut model = provider.get_model(None).expect("native compaction scenario invariant");
+    let (remote_started,mut remote_started_rx)=tokio::sync::mpsc::channel(1);
+    let remote_cancel=variant=="remote-cancel";
+    let remote_failure=matches!(variant,"remote-auth"|"remote-network");
+    let remote_auth=variant=="remote-auth";
+    let remote_network=variant=="remote-network";
+    let remote_server = if matches!(variant,"remote-http"|"remote-sse"|"remote-cancel"|"remote-auth"|"remote-network") {
+        use tokio::io::{AsyncReadExt,AsyncWriteExt};
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("local remote listener");
+        model.api="openai-responses".into();model.provider="openai".into();model.base_url=format!("http://{}/v1",listener.local_addr().expect("listener address"));
+        let sse=variant=="remote-sse";
+        if sse || remote_failure {
+            maho_ai::api_registry::register_builtin_api_provider("openai-responses",Arc::new(NativeResponsesStreams));
+        }
+        if sse {
+            model.compat=Some(maho_ai::types::ModelCompat(serde_json::Map::from_iter([("supportsRemoteCompactionV2".into(),serde_json::json!(true)),("supportsWebSocket".into(),serde_json::json!(false))])));
+        }
+        Some(tokio::spawn(async move {
+            for attempt in 0..if sse || remote_failure {2} else {1} {
+            let (mut socket,_)=listener.accept().await.expect("registered remote connection");
+            let mut bytes=Vec::new();let mut buffer=[0;4096];
+            let body=loop {
+                let count=socket.read(&mut buffer).await.expect("read remote request");assert!(count>0);bytes.extend_from_slice(&buffer[..count]);
+                if let Some(boundary)=bytes.windows(4).position(|window|window==b"\r\n\r\n") {
+                    let headers=String::from_utf8_lossy(&bytes[..boundary]);
+                    let length:usize=headers.lines().find_map(|line|line.to_ascii_lowercase().strip_prefix("content-length: ").map(str::to_owned)).expect("request length").parse().expect("numeric length");
+                    if bytes.len()>=boundary+4+length {assert!(headers.starts_with(if (sse && attempt==0) || (remote_failure && attempt==1) {"POST /v1/responses HTTP/1.1"} else {"POST /v1/responses/compact HTTP/1.1"}),"captured request line: {:?}",headers.lines().next());assert!(headers.contains("authorization: Bearer faux"));break serde_json::from_slice::<serde_json::Value>(&bytes[boundary+4..boundary+4+length]).expect("captured remote JSON");}
+                }
+            };
+            assert!(body["input"].as_array().is_some_and(|input|!input.is_empty()));
+            if !remote_failure || attempt==0 {assert!(body["prompt_cache_key"].is_string());}
+            if remote_network && attempt==0 {continue;}
+            if remote_auth && attempt==0 {
+                socket.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.expect("auth failure response");
+                continue;
+            }
+            if remote_failure && attempt==1 {
+                assert_eq!(body["stream"],true);
+                let response="data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"summary-message\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[]}}\n\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"<summary>native checkpoint</summary>\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"local-summary\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"<summary>native checkpoint</summary>\"}]}]}}\n\n";
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).as_bytes()).await.expect("local summary SSE response");
+                continue;
+            }
+            if remote_cancel {
+                remote_started.send(()).await.expect("published remote request event");
+                assert_eq!(socket.read(&mut buffer).await.expect("remote cancellation disconnect"),0);
+                break;
+            }
+            if sse && attempt==0 {
+                assert_eq!(body["stream"],true);
+                let response="data: {\"type\":\"response.completed\",\"response\":{\"id\":\"sse\",\"status\":\"completed\",\"output\":[]}}\n\n";
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).as_bytes()).await.expect("native SSE response");
+                continue;
+            }
+            let response=serde_json::json!({"id":"remote","object":"response.compaction","created_at":0,"output":[{"type":"compaction","encrypted_content":"opaque"}]}).to_string();
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).as_bytes()).await.expect("remote response");
+            }
+        }))
+    } else {None};
     if threshold {model.context_window=40000;}
     let (started, mut started_rx) = tokio::sync::mpsc::channel(1);
     provider.set_responses(if cancel { vec![maho_ai::providers::faux::FauxResponseStep::Factory(Arc::new(move |_,options,_,_| {
@@ -212,8 +269,12 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
         models_path: Some(temp.path().join("models.json")), credentials: Some(Arc::new(credentials)), providers: Some(vec![native.provider]), ..Default::default()
     });
     let mut manager = maho_core::session_manager::SessionManager::in_memory(&cwd,None,None);
-    manager.append_message(serde_json::json!({"role":"user","content":"old ".repeat(30000),"timestamp":0}));
+    manager.append_message(serde_json::json!({"role":"user","content":"old ".repeat(if variant=="overflow" {2000} else {30000}),"timestamp":0}));
     manager.append_message(serde_json::json!({"role":"assistant","content":[{"type":"text","text":"reply"}],"api":model.api,"provider":model.provider,"model":model.id,"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0}));
+    if variant=="overflow" {
+        manager.append_message(serde_json::json!({"role":"user","content":"middle ".repeat(1000),"timestamp":0}));
+        manager.append_message(serde_json::json!({"role":"assistant","content":[{"type":"text","text":"middle reply"}],"api":model.api,"provider":model.provider,"model":model.id,"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0}));
+    }
     manager.append_message(serde_json::json!({"role":"user","content":"continue","timestamp":0}));
     if threshold {
         manager.append_message(serde_json::json!({"role":"assistant","content":[{"type":"text","text":"ready"}],"api":model.api,"provider":model.provider,"model":model.id,"usage":{"input":30000,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":30000,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0}));
@@ -222,7 +283,7 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     if threshold {agent.set_messages(manager.build_context(manager.leaf_id()).messages.into_iter().map(|value|serde_json::from_value(value).expect("seeded native message")).collect());}
     let storage = maho_core::settings_manager::InMemorySettingsStorage::default();
     maho_core::settings_manager::SettingsStorage::with_lock(&storage, maho_core::settings_manager::SettingsScope::Global,
-        &mut |_|Some(serde_json::json!({"compaction":{"keepRecentTokens":1}}).to_string())).expect("native compaction scenario invariant");
+        &mut |_|Some(if variant=="fractional" {serde_json::json!({"compaction":{"keepRecentTokens":1,"reserveTokens":100,"speculativeEnabled":false,"speculativeFraction":0.42,"speculativeCooldownMs":321.5,"restorationEnabled":false,"restorationMaxItems":2.5,"restorationMaxTokensPerItem":11.5,"restorationMaxTotalTokens":22.5,"restorationContextRatio":0.03,"idleCompactionEnabled":false,"graceBandEnabled":false,"toolAdmissionEnabled":false,"reminderEnabled":false,"reserveScalingEnabled":false,"speculativeLeadTokens":12000.5,"summarizationMaxDurationMs":90000.5}})} else {serde_json::json!({"compaction":{"keepRecentTokens":1}})}.to_string())).expect("native compaction scenario invariant");
     let session = AgentSession::new(AgentSessionConfig {
         agent, session_manager: manager,
         settings_manager: maho_core::settings_manager::SettingsManager::from_storage(Box::new(storage),false),
@@ -232,15 +293,20 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     }).expect("native compaction scenario invariant");
     let observed_signal=Arc::new(std::sync::Mutex::new(None));
     session.set_extension_runner(maho_ext_host::ExtensionRunner::from_static(vec![Box::new(CancellationObserver(Arc::clone(&observed_signal))),Box::new(maho_ext_compaction::CompactionExtension)],context())).await;
-    if cancel {
+    if variant=="fractional" {
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::from_static(vec![Box::new(LiveFractionalObserver),Box::new(maho_ext_compaction::CompactionExtension)],context())).await;
+    }
+    if cancel || remote_cancel {
         let operation=session.compact(None);tokio::pin!(operation);
         tokio::time::timeout(std::time::Duration::from_secs(10),async {
-            tokio::select! { result=&mut operation=>panic!("completed before request subscription: {result:?}"), started=started_rx.recv()=>assert_eq!(started,Some(())) }
+            let request_started=async {if remote_cancel {remote_started_rx.recv().await} else {started_rx.recv().await}};
+            tokio::select! { result=&mut operation=>panic!("completed before request subscription: {result:?}"), started=request_started=>assert_eq!(started,Some(())) }
             observed_signal.lock().expect("native compaction scenario invariant").as_ref().expect("native compaction scenario invariant").abort();
             assert!(operation.await.is_err());
         }).await.expect("native compaction scenario invariant");
         assert!(!session.with_session_manager(|manager|manager.entries()).iter().any(|entry|entry["type"]=="compaction"));
-        assert_eq!(provider.get_call_log().len(),1);
+        assert_eq!(provider.get_call_log().len(),if remote_cancel {0} else {1});
+        if let Some(server)=remote_server {tokio::time::timeout(std::time::Duration::from_secs(10),server).await.expect("remote cancellation cleanup bound").expect("remote disconnect assertions");}
         session.dispose().await;provider.unregister();
         println!("PASS cancellation: one subscribed request, no persisted compaction; cleanup: disposed session, unregistered faux, tempdir dropped");
         return;
@@ -253,12 +319,25 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
         assert!(compactions.iter().any(|entry|entry["details"]["origin"]==origin),"compactions: {compactions:?}");
     } else {
         let result = tokio::time::timeout(std::time::Duration::from_secs(10),session.compact(None)).await.expect("native compaction scenario invariant").expect("native compaction scenario invariant");
-        assert_eq!(result.details.as_ref().expect("native compaction scenario invariant")["origin"],if variant=="fallback" {"required-compaction-recovery"} else {"core-route"});
+        if matches!(variant,"remote-http"|"remote-sse") {
+            assert_eq!(result.details.as_ref().expect("remote details")["transport"],"compact-endpoint");
+        } else {assert_eq!(result.details.as_ref().expect("native compaction scenario invariant")["origin"],if variant=="fallback" {"required-compaction-recovery"} else {"core-route"},"details={:?}, calls={:?}",result.details,provider.get_call_log());}
+        if remote_failure {assert_eq!(provider.get_call_log().len(),0,"fallback uses actual native Responses transport");}
+        if variant=="fallback" {
+            tokio::time::timeout(std::time::Duration::from_secs(10),session.prompt("continue after recovery",Default::default())).await.expect("bounded postfallback continuation").expect("postfallback prompt succeeds");
+            assert!(session.with_session_manager(|manager|manager.entries()).iter().any(|entry|entry["message"]["role"]=="assistant" && entry["message"]["content"].as_array().is_some_and(|blocks|blocks.iter().any(|block|block["text"]=="continued"))));
+        }
     }
     let entries = session.with_session_manager(|manager|manager.entries());
     assert!(entries.iter().any(|entry|entry["customType"] == "compaction.agent-checkpoint"));
     assert!(entries.iter().any(|entry|entry["customType"] == "compaction.todo-snapshot"));
-    assert_eq!(provider.get_call_log().len(),if variant=="overflow" {3} else if threshold {2} else {1});
+    assert_eq!(provider.get_call_log().len(),if matches!(variant,"remote-http"|"remote-sse") || remote_failure {0} else if variant=="overflow" {3} else if threshold || variant=="fallback" {2} else {1});
+    if variant=="overflow" {
+        let calls=provider.get_call_log();
+        let tokens=|index:usize|calls[index].context.messages.iter().map(|message|maho_core::compaction::compaction::estimate_tokens(&serde_json::to_value(message).expect("request message"))).sum::<u64>();
+        assert!(tokens(1)<tokens(0),"overflow retry must shrink actual billed summary input: first={} retry={}",tokens(0),tokens(1));
+    }
+    if let Some(server)=remote_server {tokio::time::timeout(std::time::Duration::from_secs(10),server).await.expect("remote server cleanup bound").expect("remote capture assertions");}
     session.dispose().await;
     provider.unregister();
     println!("PASS {variant}: registered generation accepted, checkpoint and todos persisted; cleanup: disposed session, unregistered faux, tempdir dropped");
@@ -276,7 +355,52 @@ async fn native_overflow_shrinks_summary_request_before_continuation() {run_nati
 #[tokio::test]
 async fn native_empty_summary_uses_required_deterministic_fallback() {run_native_variant(false,false,"fallback").await;}
 
+#[tokio::test]
+async fn native_registered_remote_compaction_posts_real_http() {run_native_variant(false,false,"remote-http").await;}
+
+#[tokio::test]
+async fn native_remote_auth_failure_falls_back_once() {run_native_variant(false,false,"remote-auth").await;}
+
+#[tokio::test]
+async fn native_remote_network_failure_falls_back_once() {run_native_variant(false,false,"remote-network").await;}
+
+#[tokio::test]
+async fn native_registered_remote_sse_falls_back_to_compact_endpoint() {run_native_variant(false,false,"remote-sse").await;}
+
+#[tokio::test]
+async fn native_registered_remote_abort_disconnects_without_local_summary() {run_native_variant(false,false,"remote-cancel").await;}
+
 struct CancellationObserver(Arc<std::sync::Mutex<Option<AbortSignal>>>);
+struct LiveFractionalObserver;
+impl Extension for LiveFractionalObserver {
+    fn register(&self,api:&mut ExtensionApi) {
+        api.on(EventKind::SessionBeforeCompact,Arc::new(|_,ctx| {
+            let actual=ctx.get_resolved_compaction_settings().expect("bound settings").expect("real core companion");
+            let mut expected=policy_settings();
+            expected.keep_recent_tokens=1;expected.speculative_cooldown_ms=321.5;
+            expected.restoration_max_items=2.5;expected.restoration_max_tokens_per_item=11.5;expected.restoration_max_total_tokens=22.5;
+            expected.restoration_context_ratio=0.03;expected.speculative_lead_tokens=Some(12000.5);expected.summarization_max_duration_ms=Some(90000.5);
+            assert_eq!(actual,expected,"real session must project all supplied fields");
+            let mapped=maho_ext_compaction::extension_wiring::resolved_settings(&ctx.get_compaction_settings().expect("legacy settings"),Some(&actual)).expect("fractional builtin consumption");
+            assert_eq!(mapped.speculative_cooldown_ms,Some(321.5));
+            assert_eq!(mapped.ideal.speculative_lead_tokens,Some(12000.5));
+            Box::pin(async {Ok(EventResult::None)})
+        }));
+    }
+}
+
+#[tokio::test]
+async fn native_real_session_consumes_all_nondefault_fractional_settings() {run_native_variant(false,false,"fractional").await;}
+
+struct NativeResponsesStreams;
+impl maho_ai::types::ProviderStreams for NativeResponsesStreams {
+    fn stream(&self,model:&Model,context:&maho_ai::types::Context,options:Option<maho_ai::types::StreamOptions>)->maho_ai::types::AssistantMessageEventStream {
+        maho_ai::api::openai_responses::stream(model,context,options)
+    }
+    fn stream_simple(&self,model:&Model,context:&maho_ai::types::Context,options:Option<maho_ai::types::SimpleStreamOptions>)->maho_ai::types::AssistantMessageEventStream {
+        maho_ai::api::openai_responses::stream_simple(model,context,options)
+    }
+}
 impl Extension for CancellationObserver {
     fn register(&self,api:&mut ExtensionApi) {
         let observed=Arc::clone(&self.0);
