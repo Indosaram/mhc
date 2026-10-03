@@ -26,7 +26,7 @@ pub async fn run_fallback_menu(ctx:&ExtensionContext)->Result<(),ExtensionFailur
         }
         "Remove chain"=>{if let Some(target)=select(ctx,"Remove fallback chain",settings.chains.keys().cloned().collect()).await{session.remove_fallback_chain(&target).await?;ctx.ui.notify(&format!("Removed fallback chain for {target}."),NotificationType::Info);}}
         "Toggle model fallback"=>{session.set_model_fallback_enabled(!settings.model_fallback).await?;ctx.ui.notify(&format!("Model fallback {}.",if settings.model_fallback{"disabled"}else{"enabled"}),NotificationType::Info);}
-        _=>{if let Some(policy)=select(ctx,"Fallback revert policy",vec!["cooldown-expiry".into(),"never".into()]).await{let policy=match policy.as_str(){"cooldown-expiry"=>FallbackRevertPolicy::CooldownExpiry,"never"=>FallbackRevertPolicy::Never,_=>return Ok(())};session.set_fallback_revert_policy(policy).await?;}}
+        _=>{if let Some(policy)=select(ctx,"Fallback revert policy",vec!["cooldown-expiry".into(),"never".into()]).await{let chosen=policy.clone();let policy=match policy.as_str(){"cooldown-expiry"=>FallbackRevertPolicy::CooldownExpiry,"never"=>FallbackRevertPolicy::Never,_=>return Ok(())};session.set_fallback_revert_policy(policy).await?;ctx.ui.notify(&format!("Fallback revert policy set to {chosen}."),NotificationType::Info);}}
     }
     Ok(())
 }
