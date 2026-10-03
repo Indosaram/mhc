@@ -10,6 +10,7 @@ maho-ext-api = { path = "../../maho-ext-api" }
 maho-ext-builtin-loose = { path = "../maho-ext-builtin-loose" }
 
 [dev-dependencies]
+maho-ai = { path = "../../maho-ai" }
 maho-core = { path = "../../maho-core" }
 maho-ext-host = { path = "../../maho-ext-host" }
 serde_json = "=1.0.149"
