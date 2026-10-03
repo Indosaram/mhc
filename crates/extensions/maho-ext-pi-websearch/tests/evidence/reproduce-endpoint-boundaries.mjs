@@ -1,0 +1,11 @@
+const pin='ddf5f5d21de57ee3e80f1a6f96aff21a9dd34662';
+const response=await fetch(`https://raw.githubusercontent.com/code-yeongyu/pi-websearch/${pin}/src/websearch/provider-endpoints.ts`);
+if(!response.ok)throw new Error(`Source ${response.status}`);
+const text=await response.text();
+const fixture=JSON.parse(await Bun.file(new URL('../fixtures/pinned-endpoint-boundaries.json',import.meta.url)).text());
+const source=new Bun.Transpiler({loader:'ts'}).transformSync(text).replace(/^import .*?from .*?;\s*$/gm,'');
+const script=source+'\nconsole.log(JSON.stringify('+JSON.stringify(fixture.map(x=>x.input))+'.map(input=>({input,allowed:isAllowedProviderBaseUrl(input)}))));';
+const child=Bun.spawn(['node','--input-type=module','-e',script],{stdout:'pipe',stderr:'inherit'});
+const output=await new Response(child.stdout).text();const exit=await child.exited;
+if(exit!==0||JSON.stringify(JSON.parse(output))!==JSON.stringify(fixture))throw new Error('Endpoint corpus mismatch');
+console.log(JSON.stringify({pin,source_sha256:new Bun.CryptoHasher('sha256').update(text).digest('hex'),cases:fixture.length,exit}));
