@@ -54,13 +54,37 @@ fn compact_request_and_result_preserve_machine_consumed_checkpoint_fields() {
     let request = create_openai_remote_compaction_request(Some(&model), "system", &[], Some(&messages), 999, Some("cache"), Some("priority")).unwrap();
     assert_eq!(request.body["prompt_cache_key"], "cache");
     assert_eq!(request.body["instructions"], "system");
-    let response = parse_openai_compacted_response(&json!({"id":"r","object":"response.compaction","created_at":5,"output":[{"type":"compaction","encrypted_content":"opaque"},{"type":"function_call","call_id":"discard"}]}), &model, "request", 0).unwrap();
+    let response = parse_openai_compacted_response(&json!({"id":"r","object":"response.compaction","created_at":5,"output":[{"type":"compaction","encrypted_content":"opaque","extension":{"unknown":true}},{"type":"function_call","call_id":"discard"}],"usage":{"input_tokens":12,"output_tokens":3,"input_tokens_details":{"cached_tokens":4}}}), &model, "request", 0).unwrap();
     let result = build_openai_remote_compaction_result(&model, "anchor", &request, &response, None).unwrap();
     let details = result.details.unwrap();
     assert_eq!(details["retainedInputItemCount"], 1);
     assert_eq!(details["responseId"], "r");
+    assert_eq!(details["replacementInput"],json!([{"type":"compaction","encrypted_content":"opaque","extension":{"unknown":true}}]));
+    assert_eq!(details["usage"],json!({"input_tokens":12,"output_tokens":3,"input_tokens_details":{"cached_tokens":4}}));
     assert_eq!(result.first_kept_entry_id, "anchor");
     assert_eq!(result.tokens_before, 999);
+}
+
+#[test]
+fn stream_payload_preserves_native_input_and_replacement_billing_fields() {
+    let model:Model=serde_json::from_value(json!({"id":"live","name":"live","provider":"openai","api":"openai-responses","baseUrl":"https://api.openai.com/v1","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":10000,"maxTokens":8000})).expect("model");
+    let user=json!({"role":"user","content":[{"type":"input_text","text":"task"},{"type":"input_image","image_url":"data:image/png;base64,AA=="}]});
+    let call=json!({"type":"function_call","call_id":"call","name":"tool","arguments":"{}"});
+    let request=OpenAiRemoteCompactionRequest {body:json!({"model":"live","input":[user.clone(),call],"prompt_cache_key":"session","service_tier":"priority"}),input_item_count:2,tokens_before:999};
+    let system=json!({"role":"system","content":"instructions"});let developer=json!({"role":"developer","content":"policy"});
+    let payload=create_openai_responses_stream_compaction_payload(&json!({"model":"stale","input":[system.clone(),developer.clone(),{"role":"user","content":"discard"}],"stream":true,"store":false,"metadata":{"id":"preserved"}}),&request).expect("stream payload");
+    assert_eq!(payload,json!({"model":"live","input":[system,developer,user.clone(),request.body["input"][1].clone(),{"type":"context_compaction"}],"prompt_cache_key":"session","service_tier":"priority","stream":true,"store":false,"metadata":{"id":"preserved"}}));
+    let mut response=maho_ai::utils::lazy::setup_error_message(&model,"");response.stop_reason=maho_ai::types::StopReason::Stop;response.timestamp=5000;response.response_id=Some("response".into());
+    response.usage.input=12;response.usage.output=3;response.usage.cache_read=4;response.usage.cache_write=5;response.usage.total_tokens=24;
+    let opaque=json!({"type":"context_compaction","encrypted_content":"sealed","id":"checkpoint","extension":{"unknown":true}});
+    response.content=serde_json::from_value(json!([{"type":"providerNative","subtype":"openai_compaction","raw":opaque.clone()}])).expect("native content");
+    let origin=json!({"endpoint":"https://api.openai.com/v1/responses","trustDomain":"openai","authTenantFingerprint":"tenant"});
+    let result=build_openai_responses_stream_compaction_result(&model,"anchor",&request,&response,42,Some(origin.clone())).expect("stream result");
+    let details=result.details.expect("details");
+    assert_eq!(details["replacementInput"],json!([user,opaque]));assert_eq!(details["usage"],json!({"input":12,"output":3,"cacheRead":4,"cacheWrite":5,"totalTokens":24}));
+    assert_eq!(details["origin"],origin);assert_eq!(details["responseId"],"response");assert_eq!(details["createdAt"],5);
+    assert_eq!(details["requestInputItemCount"],2);assert_eq!(details["retainedInputItemCount"],2);
+    assert_eq!(result.first_kept_entry_id,"anchor");assert_eq!(result.tokens_before,999);
 }
 
 #[tokio::test]
