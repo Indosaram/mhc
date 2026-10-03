@@ -138,7 +138,7 @@ impl Extension for CacheKeepalive{
                             state.usage=last_assistant_usage(&state.messages).map(|(usage,_)|usage.clone());state.last=last_assistant_timestamp(&state.messages);
                         }
                         ExtensionEvent::AgentEnd{messages,..}=>{state.ctx=Some(ctx.clone());if last_assistant_usage(messages).is_some_and(|(_,reason)|reason==maho_ai::types::StopReason::Error){rearm=false;stop(&mut state,"provider-error",false);}else{state.messages=messages.clone();state.usage=last_assistant_usage(messages).map(|(usage,_)|usage.clone());state.last=Some(maho_ai::utils::diagnostics::now_ms());}}
-                        ExtensionEvent::ModelSelect(_)=>{state.ctx=Some(ctx.clone());stop(&mut state,"model-changed",false);}
+                        ExtensionEvent::ModelSelect(event)=>{let mut selected=ctx.clone();selected.model=Some(event.model.clone());state.ctx=Some(selected);stop(&mut state,"model-changed",false);}
                         ExtensionEvent::SessionParked=>{state.parked=true;stop(&mut state,"session-parked",false);}
                         ExtensionEvent::SessionResumed=>{state.parked=false;state.ctx=Some(ctx.clone());}
                         ExtensionEvent::AgentStart=>{stop(&mut state,"agent-busy",false);}

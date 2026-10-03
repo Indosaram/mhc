@@ -38,8 +38,16 @@ impl Extension for Btw{
                 if let Some(unsubscribe)=unsubscribe{unsubscribe();}
             }
             let outcome=async{
-                let auth=ctx.model_registry.get_api_key_and_headers(&model).await?;
-                let mut options=maho_ai::types::SimpleStreamOptions::default();options.stream.request.api_key=auth.auth.api_key;options.stream.request.headers=auth.auth.headers;options.stream.request.env=auth.env;options.stream.request.signal=Some(signal.clone());options.stream.request.affinity_session_id=Some(format!("{}:btw:{id}",ctx.session_manager.session_id()));options.stream.extra=auth.extra_body.unwrap_or_default();options.reasoning=Some(runtime.session_actions()?.get_thinking_level()?);
+                let auth=match ctx.model_registry.get_api_key_and_headers(&model).await{
+                    Ok(auth)=>auth,
+                    Err(error)=>{
+                        let current=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_ref().is_some_and(|active|active.id==id);
+                        if current{dismiss(&state,ctx,true);ctx.ui.notify(&format!("/btw: {}",error.message),NotificationType::Error);}
+                        return Err(error);
+                    }
+                };
+                if signal.aborted(){return Err(ExtensionFailure::new("Side query cancelled"));}
+                let mut options=maho_ai::types::SimpleStreamOptions::default();options.stream.request.api_key=auth.auth.api_key;options.stream.request.headers=auth.auth.headers;options.stream.request.env=auth.env;options.stream.request.signal=Some(signal.clone());options.stream.request.affinity_session_id=Some(format!("{}:btw:{id}",ctx.session_manager.session_id()));options.stream.extra_body=auth.extra_body;options.reasoning=Some(runtime.session_actions()?.get_thinking_level()?);
                 let stream=ctx.model_registry.stream_simple(&model,&context,Some(options))?;
                 let owner=ctx.clone();let mut reply=String::new();
                 let collected=side_query::collect_reply(&stream,side_query::DEFAULT_ESTABLISHMENT_TIMEOUT_MS,|delta|{reply.push_str(delta);let current=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_ref().is_some_and(|active|active.id==id);if current&&owner.mode==ExtensionMode::Tui&&owner.has_ui{owner.ui.set_widget("btw",Some(panel::widget(question,&reply,false)),Default::default());}});
