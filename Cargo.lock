@@ -2510,6 +2510,7 @@ dependencies = [
  "fancy-regex",
  "globset",
  "icu_collator",
+ "icu_locale_core",
  "maho-ext-api",
  "maho-ext-host",
  "maho-interactive",
