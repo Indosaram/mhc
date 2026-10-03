@@ -109,6 +109,11 @@ impl Extension for CacheKeepalive{
         for kind in [EventKind::SessionStart,EventKind::AgentEnd,EventKind::ModelSelect,EventKind::SessionParked,EventKind::SessionResumed,EventKind::AgentStart,EventKind::Input,EventKind::SessionShutdown]{
             let state=state.clone();let sender=sender.clone();let warm=self.warm.clone();
             api.on(kind,Arc::new(move|event,ctx|{let state=state.clone();let sender=sender.clone();let warm=warm.clone();Box::pin(async move{
+                let restored=if kind==EventKind::SessionStart{
+                    let entries=ctx.session_manager.get_entries().into_iter().map(|entry|entry.data).collect::<Vec<_>>();
+                    let snapshot=maho_core::session_manager::build_session_context(&entries,ctx.session_manager.get_leaf_id().as_deref());
+                    Some(snapshot.messages.into_iter().map(|value|serde_json::from_value::<AgentMessage>(value).map_err(|error|ExtensionFailure::new(error.to_string()))).collect::<Result<Vec<_>,_>>())
+                }else{None};
                 let retirement;
                 let mut rearm=matches!(kind,EventKind::SessionStart|EventKind::AgentEnd|EventKind::ModelSelect|EventKind::SessionResumed);
                 let transition;
@@ -118,9 +123,7 @@ impl Extension for CacheKeepalive{
                     match event{
                         ExtensionEvent::SessionStart(_)=>{
                             stop(&mut state,"session-restart",false);state.ctx=Some(ctx.clone());state.attempts=0;state.cost=0.0;
-                            let entries=ctx.session_manager.get_entries().into_iter().map(|entry|entry.data).collect::<Vec<_>>();
-                            let snapshot=maho_core::session_manager::build_session_context(&entries,ctx.session_manager.get_leaf_id().as_deref());
-                            state.messages=snapshot.messages.into_iter().map(|value|serde_json::from_value(value).map_err(|error|ExtensionFailure::new(error.to_string()))).collect::<Result<Vec<_>,_>>()?;
+                            state.messages=restored.expect("session-start restoration")?;
                             state.usage=last_assistant_usage(&state.messages).map(|(usage,_)|usage.clone());state.last=last_assistant_timestamp(&state.messages);
                         }
                         ExtensionEvent::AgentEnd{messages,..}=>{state.ctx=Some(ctx.clone());if last_assistant_usage(messages).is_some_and(|(_,reason)|reason==maho_ai::types::StopReason::Error){rearm=false;stop(&mut state,"provider-error",false);}else{state.messages=messages.clone();state.usage=last_assistant_usage(messages).map(|(usage,_)|usage.clone());state.last=Some(maho_ai::utils::diagnostics::now_ms());}}
