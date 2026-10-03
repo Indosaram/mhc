@@ -10,7 +10,8 @@ fn unavailable(request: &QuestionRequest) -> QuestionResponse {
     QuestionResponse { status: QuestionStatus::Unavailable, answers: Default::default(), comment: None, unanswered: request.questions.iter().map(|question| question.id.clone()).collect(), auto_resolved_after_ms: None }
 }
 fn result(variant: AskUserVariant, request: &QuestionRequest, response: &QuestionResponse) -> AgentToolResult {
-    AgentToolResult { content: vec![ContentBlock::Text(TextContent { text: format_result_text(response, &request.questions), audience: None, text_signature: None })], details: format_result_details(variant, response, &request.questions), usage: None, added_tool_names: None, terminate: None, is_error: None }
+    let text=if response.status==QuestionStatus::Cancelled{response.comment.clone().unwrap_or_else(||format_result_text(response,&request.questions))}else{format_result_text(response,&request.questions)};
+    AgentToolResult { content: vec![ContentBlock::Text(TextContent { text, audience: None, text_signature: None })], details: format_result_details(variant, response, &request.questions), usage: None, added_tool_names: None, terminate: None, is_error: None }
 }
 fn emit_wake(bus:&EventBus,session:&str){
     let entries=get_pending_questions(session).into_iter().filter(|entry|!entry.request.wait_for_answer).collect::<Vec<_>>();
@@ -34,6 +35,7 @@ pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc
     let params = match variant { AskUserVariant::Codex => codex_params(), AskUserVariant::Claude => claude_params() };
     let mut definition = ToolDefinition::new(tool_name(variant), "Ask a material question; choose explicitly whether to wait or receive the answer later.", params, Arc::new(|_| Box::pin(async { Err(ToolError::Message("Extension context required".into())) })));
     definition.label = "Ask user".into();
+    definition.prompt_snippet=Some("Ask a material question, explicitly choosing whether to wait or receive the answer later.".into());
     definition.allow_lazy_activation = Some(false);
     api.registered.tool_renderers.insert(tool_name(variant).into(),Arc::new(crate::render::renderers()));
     definition.prepare_arguments = Some(Arc::new(move |args| { to_canonical(variant, &args, String::new(), None).map_err(ToolError::Message)?; Ok(args) }));
@@ -42,7 +44,10 @@ pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc
         Box::pin(async move {
             let settings = ctx.get_ask_user_settings()?;
             let timeout = (settings.timeout_minutes * 60_000.0) as u64;
-            let request = to_canonical(variant, &args, id.into(), Some(timeout)).map_err(ExtensionFailure::new)?;
+            let request = match to_canonical(variant, &args, id.into(), Some(timeout)){
+                Ok(request)=>request,
+                Err(message)=>return Ok(AgentToolResult{content:vec![ContentBlock::Text(TextContent{text:message,audience:None,text_signature:None})],details:json!({"status":"unavailable"}),usage:None,added_tool_names:None,terminate:None,is_error:None}),
+            };
             let (timed_out, unavailable_now) = {
                 let current=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 (current.timed_out,current.unavailable||!settings.enabled||sender.get_flag("no-ask-user")==Some(FlagValue::Boolean(true))||matches!(ctx.mode,ExtensionMode::Print|ExtensionMode::Json))
