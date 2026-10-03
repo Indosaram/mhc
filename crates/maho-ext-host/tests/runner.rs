@@ -375,7 +375,7 @@ async fn removal_notification_runs_after_invalidation_without_reviving_context()
         Box::pin(async { Ok(EventResult::None) })
     });
     let mut runner = runner(vec![extension("removed", EventKind::SessionExtensionsRemoved, handler)]);
-    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) });
+    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None), monitor: Mutex::new(None) });
     runner.bind_context_actions(actions).unwrap();
     runner.invalidate("replaced");
     runner.emit_removed_extensions(SessionReason::Reload, vec![ExtensionIdentity { path: "removed".into(), resolved_path: "removed".into() }]).await;
@@ -453,7 +453,7 @@ async fn invalidated_empty_dispatch_and_handled_input_reject_stale_results() {
 #[tokio::test]
 async fn idle_wait_rejects_context_invalidated_during_host_wait() {
     let mut runner = runner(vec![]);
-    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) })).unwrap();
+    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None), monitor: Mutex::new(None) })).unwrap();
     let mut ctx = runner.create_context().unwrap();
     let runtime = runner.runtime.clone();
     ctx.wait_for_idle_fn = Arc::new(move || {
@@ -483,7 +483,7 @@ async fn shutdown_budget_is_resolved_only_when_handlers_exist() {
 #[test]
 fn retained_tool_context_getters_reject_invalidated_runtime() {
     let mut runner = runner(vec![]);
-    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) })).unwrap();
+    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None), monitor: Mutex::new(None) })).unwrap();
     let context = runner.create_context().unwrap();
     runner.invalidate("replaced");
     let tool: &dyn ToolContext = &context;
@@ -501,7 +501,7 @@ fn retained_tool_context_getters_reject_invalidated_runtime() {
 #[test]
 fn retained_context_actions_cannot_bypass_runtime_invalidation() {
     let mut runner = runner(vec![]);
-    let host = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) });
+    let host = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None), monitor: Mutex::new(None) });
     runner.bind_context_actions(host.clone()).unwrap();
     let context = runner.create_context().unwrap();
     let actions = context.actions().unwrap();
@@ -1113,7 +1113,8 @@ async fn invocation_disposes_when_pending_execution_is_dropped() {
     assert!(observed.load(std::sync::atomic::Ordering::SeqCst));
 }
 
-struct ContextActions { revision: std::sync::atomic::AtomicU64, aborted: Mutex<Option<AbortSource>> }
+type PrivateMonitorFixture = (String, JsonValue, Option<std::path::PathBuf>);
+struct ContextActions { revision: std::sync::atomic::AtomicU64, aborted: Mutex<Option<AbortSource>>, monitor: Mutex<Option<PrivateMonitorFixture>> }
 impl ExtensionSessionSettings for ContextActions {
     fn get_retry_fallback_settings(&self) -> RetryFallbackSettings { RetryFallbackSettings { model_fallback: false, chains: BTreeMap::new(), revert_policy: FallbackRevertPolicy::Never } }
     fn set_fallback_chain<'a>(&'a self, _: &'a str, _: &'a [String]) -> ExtensionFuture<'a, ()> { Box::pin(async { Ok(()) }) }
@@ -1124,6 +1125,19 @@ impl ExtensionSessionSettings for ContextActions {
     fn get_fallback_status(&self) -> Option<RetryFallbackStatus> { None }
 }
 impl ExtensionContextActions for ContextActions {
+    fn set_approved_monitor_parent(&self, id: &str, input: &JsonValue, parent: &std::path::Path) -> Result<(), ExtensionFailure> {
+        let mut guard = self.monitor.lock().expect("private monitor fixture");
+        let Some((expected_id, expected_input, candidate)) = guard.as_mut() else { return Err("unsupported fixture".into()); };
+        if id != expected_id || input != expected_input { return Err("invocation mismatch".into()); }
+        *candidate = Some(parent.to_path_buf());
+        Ok(())
+    }
+    fn take_approved_monitor_parent(&self, id: &str, input: &JsonValue) -> Result<Option<std::path::PathBuf>, ExtensionFailure> {
+        let mut guard = self.monitor.lock().expect("private monitor fixture");
+        let Some((expected_id, expected_input, _)) = guard.as_ref() else { return Err("unsupported fixture".into()); };
+        if id != expected_id || input != expected_input { return Err("invocation mismatch".into()); }
+        Ok(guard.take().expect("checked private invocation").2)
+    }
     fn get_model(&self) -> Option<Model> { None }
     fn get_service_tier(&self) -> Option<ServiceTier> { Some(ServiceTier::Flex) }
     fn get_scoped_models(&self) -> Vec<ScopedModel> { vec![] }
@@ -1183,7 +1197,7 @@ impl ExtensionContextActions for ContextActions {
 }
 #[tokio::test]
 async fn context_binding_reads_live_host_state_and_rejects_after_invalidation() {
-    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(1), aborted: Mutex::new(None) });
+    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(1), aborted: Mutex::new(None), monitor: Mutex::new(None) });
     let mut runner = runner(vec![]); runner.bind_context_actions(actions.clone()).unwrap();
     let ctx = runner.create_context().unwrap();
     assert_eq!(ctx.agent_dir, std::path::PathBuf::from("/fixture/agent")); assert_eq!(ctx.effective_service_tier, Some(ServiceTier::Flex));
@@ -1211,7 +1225,7 @@ async fn context_binding_reads_live_host_state_and_rejects_after_invalidation() 
 
 #[tokio::test]
 async fn before_agent_start_keeps_prompt_chaining_with_bound_live_context() {
-    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(1), aborted: Mutex::new(None) });
+    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(1), aborted: Mutex::new(None), monitor: Mutex::new(None) });
     let mut runner = runner(vec![extension("first", EventKind::BeforeAgentStart, prompt("1")), extension("second", EventKind::BeforeAgentStart, prompt("2"))]);
     runner.bind_context_actions(actions).unwrap();
     assert_eq!(runner.emit_before_agent_start(before()).await.unwrap().unwrap().system_prompt.as_deref(), Some("base12"));
@@ -1219,7 +1233,7 @@ async fn before_agent_start_keeps_prompt_chaining_with_bound_live_context() {
 
 #[test]
 fn compaction_signal_is_inherited_within_one_context_not_across_invocations() {
-    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) });
+    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None), monitor: Mutex::new(None) });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(actions.clone()).unwrap();
     let first = runner.create_context().unwrap();
@@ -1237,7 +1251,7 @@ struct KernelCapabilities(bool);
 async fn retained_kernel_capabilities_reject_stale_describe_and_invoke() {
     use maho_ext_host::kernel_tools_context::with_kernel_tools;
     let mut runner = runner(vec![]);
-    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) })).unwrap();
+    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None), monitor: Mutex::new(None) })).unwrap();
     with_kernel_tools(Arc::new(KernelCapabilities(true)), async {
         let context = runner.create_context().unwrap();
         let tools = context.kernel_tools().unwrap().unwrap();
@@ -1254,7 +1268,7 @@ impl ExtensionKernelTools for KernelCapabilities {
 
 #[tokio::test]
 async fn concurrent_context_reload_requests_share_one_host_operation() {
-    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) });
+    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None), monitor: Mutex::new(None) });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(actions.clone()).unwrap();
     let first = runner.create_context().unwrap();
@@ -1270,7 +1284,7 @@ async fn concurrent_context_reload_requests_share_one_host_operation() {
 #[tokio::test]
 async fn nested_kernel_invocations_restore_outer_capability_scope() {
     use maho_ext_host::kernel_tools_context::*;
-    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) });
+    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None), monitor: Mutex::new(None) });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(actions).unwrap();
     let retained = runner.create_context().unwrap();
@@ -1339,7 +1353,7 @@ async fn handler_provider_preparation_excludes_its_owner_without_reentering_sess
     let mut owner = extension("owner", EventKind::AgentStart, outer);
     owner.handlers.insert(EventKind::BeforeProviderRequest, vec![owner_payload]);
     let mut runner = runner(vec![owner, extension("other", EventKind::BeforeProviderRequest, other_payload)]);
-    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) })).unwrap();
+    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None), monitor: Mutex::new(None) })).unwrap();
     runner.emit(ExtensionEvent::AgentStart).await.unwrap();
 }
 
@@ -1504,7 +1518,7 @@ fn retained_context_observes_live_mcp_declarations() {
     let mut api = ExtensionApi::new(LoadedExtension::new("mcp", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), scope.clone());
     scope.commit_registration().unwrap();
     runner.extensions.push(api.registered.clone());
-    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) })).unwrap();
+    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None), monitor: Mutex::new(None) })).unwrap();
     let retained = runner.create_context().unwrap();
     api.register_mcp_server("live", McpServerDeclaration { command: Some("first".into()), ..Default::default() });
     assert_eq!(retained.get_registered_mcp_servers()[0].config.command.as_deref(), Some("first"));
@@ -1516,7 +1530,7 @@ fn retained_context_observes_live_mcp_declarations() {
 
 #[test]
 fn retained_context_forwards_complete_resolved_settings_without_snapshotting() {
-    let host = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(23), aborted: Mutex::new(None) });
+    let host = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(23), aborted: Mutex::new(None), monitor: Mutex::new(None) });
     let mut runner = runner(vec![]);
     runner.bind_context_actions(host.clone()).unwrap();
     let retained = runner.create_context().unwrap();
@@ -1558,4 +1572,39 @@ async fn question_without_ui_returns_unavailable_and_preserves_unanswered_ids() 
     let response = ctx.ui.question(QuestionRequest { request_id: "request".into(), questions: vec![Question { id: "choice".into(), header: "Choice".into(), question: "Select".into(), options: vec![], multi_select: false }], wait_for_answer: false, timeout_ms: 1000 }, QuestionOptions::default()).await.unwrap();
     assert_eq!(response.status, QuestionStatus::Unavailable); assert_eq!(response.unanswered, ["choice"]);
     assert!(ctx.ui.editor("Edit", None).await.is_err()); assert!(ctx.ui.set_working_visible(false).is_err());
+}
+
+#[test]
+fn monitor_forwarding_keeps_private_host_state_and_rejects_mismatched_calls() {
+    let input = serde_json::json!({"path":"watched", "approvedParent":"/forged"});
+    let host = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None),
+        monitor: Mutex::new(Some(("call".into(), input.clone(), None))) });
+    let mut runner = runner(vec![]);
+    runner.bind_context_actions(host.clone()).unwrap();
+    let first = runner.create_context().unwrap();
+    let second = runner.create_context().unwrap();
+    assert!(first.set_approved_monitor_parent("different", &input, std::path::Path::new("/trusted")).is_err());
+    first.set_approved_monitor_parent("call", &input, std::path::Path::new("/trusted")).unwrap();
+    assert_eq!(host.monitor.lock().unwrap().as_ref().unwrap().2.as_deref(), Some(std::path::Path::new("/trusted")));
+    assert!(second.take_approved_monitor_parent("call", &JsonValue::Null).is_err());
+    assert_eq!(second.take_approved_monitor_parent("call", &input).unwrap().as_deref(), Some(std::path::Path::new("/trusted")));
+    assert!(host.monitor.lock().unwrap().is_none());
+    assert!(first.take_approved_monitor_parent("call", &input).is_err());
+}
+
+#[test]
+fn forged_monitor_json_never_supplies_private_parent_and_stale_context_cannot_mutate() {
+    let input = serde_json::json!({"path":"watched", "approvedParent":"/forged"});
+    let host = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None),
+        monitor: Mutex::new(Some(("call".into(), input.clone(), None))) });
+    let mut runner = runner(vec![]);
+    runner.bind_context_actions(host.clone()).unwrap();
+    let ctx = runner.create_context().unwrap();
+    assert_eq!(ctx.take_approved_monitor_parent("call", &input).unwrap(), None);
+    *host.monitor.lock().unwrap() = Some(("call".into(), input.clone(), None));
+    let retained = ctx.actions().unwrap();
+    runner.invalidate("retired");
+    assert!(retained.set_approved_monitor_parent("call", &input, std::path::Path::new("/trusted")).is_err());
+    assert!(retained.take_approved_monitor_parent("call", &input).is_err());
+    assert!(host.monitor.lock().unwrap().as_ref().unwrap().2.is_none());
 }

@@ -109,6 +109,17 @@ impl SessionManager for ContextSessionManager {
 }
 impl ExtensionContextActions for ContextSessionManager {
     fn assert_active(&self) -> Result<(), ExtensionFailure> { self.runtime.assert_active() }
+    fn set_approved_monitor_parent(&self, tool_call_id: &str, input: &JsonValue, parent: &std::path::Path) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        self.actions.set_approved_monitor_parent(tool_call_id, input, parent)?;
+        self.runtime.assert_active()
+    }
+    fn take_approved_monitor_parent(&self, tool_call_id: &str, input: &JsonValue) -> Result<Option<std::path::PathBuf>, ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let parent = self.actions.take_approved_monitor_parent(tool_call_id, input)?;
+        self.runtime.assert_active()?;
+        Ok(parent)
+    }
     fn get_model(&self) -> Option<Model> { self.active(); self.actions.get_model() }
     fn get_service_tier(&self) -> Option<ServiceTier> { self.active(); self.actions.get_service_tier() }
     fn get_effective_service_tier(&self) -> Option<ServiceTier> { self.active(); self.actions.get_effective_service_tier() }

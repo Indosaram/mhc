@@ -402,6 +402,12 @@ pub trait ExtensionKernelTools: Send + Sync {
 }
 pub trait ExtensionContextActions: Send + Sync {
     fn assert_active(&self) -> Result<(), ExtensionFailure> { Ok(()) }
+    fn set_approved_monitor_parent(&self, _tool_call_id: &str, _input: &JsonValue, _parent: &Path) -> Result<(), ExtensionFailure> {
+        Err(ExtensionFailure::new("Monitor admission attachment is not supported by this extension context"))
+    }
+    fn take_approved_monitor_parent(&self, _tool_call_id: &str, _input: &JsonValue) -> Result<Option<PathBuf>, ExtensionFailure> {
+        Err(ExtensionFailure::new("Monitor admission identity is not supported by this extension context"))
+    }
     fn get_model(&self) -> Option<Model>;
     fn get_service_tier(&self) -> Option<ServiceTier>;
     fn get_effective_service_tier(&self) -> Option<ServiceTier> { self.get_service_tier() }
@@ -649,6 +655,12 @@ impl ExtensionContext {
     }
     pub fn get_loaded_hook_sources(&self) -> Result<LoadedHookSources, ExtensionFailure> { Ok(self.actions()?.get_loaded_hook_sources()) }
     pub fn kernel_tools(&self) -> Result<Option<&dyn ExtensionKernelTools>, ExtensionFailure> { Ok(self.actions()?.kernel_tools()) }
+    pub fn set_approved_monitor_parent(&self, tool_call_id: &str, input: &JsonValue, parent: &Path) -> Result<(), ExtensionFailure> {
+        self.actions()?.set_approved_monitor_parent(tool_call_id, input, parent)
+    }
+    pub fn take_approved_monitor_parent(&self, tool_call_id: &str, input: &JsonValue) -> Result<Option<PathBuf>, ExtensionFailure> {
+        self.actions()?.take_approved_monitor_parent(tool_call_id, input)
+    }
     pub fn is_idle(&self) -> bool { self.assert_active_or_panic(); self.session_manager.extension_context_actions().map_or_else(|| (self.is_idle_fn)(), ExtensionContextActions::is_idle) }
     pub async fn wait_for_idle(&self) { self.assert_active_or_panic(); (self.wait_for_idle_fn)().await; self.assert_active_or_panic(); }
     pub fn is_project_trusted(&self) -> bool { self.assert_active_or_panic(); self.session_manager.extension_context_actions().map_or_else(|| (self.is_project_trusted_fn)(), ExtensionContextActions::is_project_trusted) }
