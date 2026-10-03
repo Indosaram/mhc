@@ -97,7 +97,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     }));
     let registry = options.model_registry.take().unwrap_or_else(|| ModelRegistry::new(runtime.clone()));
     let settings = options.settings_manager.take().unwrap_or_else(|| SettingsManager::create(&cwd, &agent_dir, &crate::config::home_dir(), false));
-    let manager = options.session_manager.take().unwrap_or_else(|| SessionManager::create(&cwd, None, None));
+    let mut manager = options.session_manager.take().unwrap_or_else(|| SessionManager::create(&cwd, None, None));
     crate::session_cwd::assert_session_cwd_exists(&manager, &cwd).map_err(|error| error.to_string())?;
     let context = manager.build_context(manager.leaf_id());
     let model = options.model.take().or_else(|| context.model.as_ref().and_then(|(provider, id)| registry.find(provider, id)))
@@ -156,6 +156,13 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     let active_tools = selected.iter().filter_map(|name| base_tools.get(name).cloned()).collect();
     let runtime_for_stream = runtime.clone();
     let runtime_for_auth = runtime.clone();
+    if context.messages.is_empty() {
+        manager.append_model_change(&model.provider, &model.id, None, None);
+    }
+    if context.messages.is_empty() || !has_thinking_entry {
+        manager.append_thinking_level_change(thinking_level.as_str(),
+            thinking_selection.as_ref().map(|selection| serde_json::to_value(selection).expect("thinking selection serializes")));
+    }
     let messages = context.messages.into_iter().map(crate::agent_session::session_message_from_value)
         .collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
     let agent = maho_agent::agent::Agent::new(maho_agent::agent::AgentOptions {
