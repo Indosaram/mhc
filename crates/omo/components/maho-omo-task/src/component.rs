@@ -4,6 +4,7 @@ use senpi_task::{completion::{CompletionRequest, ReconcileUnnotifiedNotification
 use crate::{engine::TaskEngine, resumption_channel_emitter::{ResumptionChannelEmitter, TaskResumptionChannelManager}, session_transition_bridge::SessionTransitionBridge, status_ui::TaskStatusUi, timers::HostTimers, tools::TaskToolsDeps};
 
 struct CompletionWaiter { signal: AbortSignal, thread: JoinHandle<()> }
+struct TeamRuntime { service:Arc<crate::team_service::TeamService>, pollers:Arc<crate::lead_poller_lifecycle::LeadPollerLifecycle>, liveness:Arc<crate::member_liveness::TeamMemberLivenessNotifier> }
 pub struct TaskComponent {
     pub engine: TaskEngine,
     pub status: Arc<TaskStatusUi>,
@@ -14,6 +15,7 @@ pub struct TaskComponent {
     terminal: Mutex<Option<crate::completion_bridge::TerminalObserver>>,
     delivery: Mutex<()>,
     terminal_epochs: Mutex<std::collections::BTreeSet<(String, i64)>>,
+    team: Mutex<Option<Arc<TeamRuntime>>>,
 }
 impl TaskComponent {
     pub fn register_with_process_sweep(api: &mut ExtensionApi, engine: TaskEngine, spawn: senpi_task::tools::task::execute_spec::TaskToolDeps, ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps, member_process: bool, sweep: crate::process_sweep::SessionStartProcessSweepOptions) -> Result<Option<Arc<Self>>, maho_ext_api::ExtensionFailure> {
@@ -22,15 +24,18 @@ impl TaskComponent {
         Self::register(api, engine, spawn, ownership, false)
     }
     pub fn register(api: &mut ExtensionApi, engine: TaskEngine, spawn: senpi_task::tools::task::execute_spec::TaskToolDeps, ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps, member_process: bool) -> Result<Option<Arc<Self>>, maho_ext_api::ExtensionFailure> {
+        Self::register_with_status_timers(api, engine, spawn, ownership, member_process, Arc::new(HostTimers::default()))
+    }
+    pub fn register_with_status_timers(api: &mut ExtensionApi, engine: TaskEngine, spawn: senpi_task::tools::task::execute_spec::TaskToolDeps, ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps, member_process: bool, timers: Arc<dyn crate::status_ui::StatusUiTimers>) -> Result<Option<Arc<Self>>, maho_ext_api::ExtensionFailure> {
         if member_process { return Ok(None); }
         crate::registration::register_task_flags(api);
         if api.get_flag("omo-task") == Some(FlagValue::Boolean(false)) { return Ok(None); }
         let state = engine.runtime.clone();
         let session = Arc::new(move || state.lock().unwrap_or_else(PoisonError::into_inner).session_id().map(str::to_owned));
         let channels = ResumptionChannelEmitter::new(api.events.clone(), Arc::new(TaskResumptionChannelManager { manager: engine.manager.clone(), ownership }), session);
-        let status = TaskStatusUi::new(engine.manager.clone(), engine.runtime.clone(), Arc::new(HostTimers::default()), Arc::new(|| chrono::Utc::now().timestamp_millis()), Arc::new(|| None));
+        let status = TaskStatusUi::new(engine.manager.clone(), engine.runtime.clone(), timers, Arc::new(|| chrono::Utc::now().timestamp_millis()), Arc::new(|| None));
         let transitions = SessionTransitionBridge::new(engine.runtime.clone(), engine.notifier.clone());
-        let component = Arc::new(Self { engine, status, channels: Mutex::new(channels), transitions: Mutex::new(transitions), waiters: Mutex::new(BTreeMap::new()), rpc: Mutex::new(None), terminal: Mutex::new(None), delivery: Mutex::new(()), terminal_epochs: Mutex::new(std::collections::BTreeSet::new()) });
+        let component = Arc::new(Self { engine, status, channels: Mutex::new(channels), transitions: Mutex::new(transitions), waiters: Mutex::new(BTreeMap::new()), rpc: Mutex::new(None), terminal: Mutex::new(None), delivery: Mutex::new(()), terminal_epochs: Mutex::new(std::collections::BTreeSet::new()), team:Mutex::new(None) });
         let state = component.engine.runtime.clone();
         let events = api.events.clone();
         let rpc = crate::task_rpc_bridge::wire_task_rpc_bridge(api, component.engine.manager.clone(), Arc::new(move || state.lock().unwrap_or_else(PoisonError::into_inner).session_id().map(str::to_owned)), component.engine.store.state_dir().to_string_lossy().into_owned(), Arc::new(move |name, value| events.emit("senpi:extension-rpc-event", &serde_json::json!({"name":name,"data":value}))))?;
@@ -54,13 +59,22 @@ impl TaskComponent {
                 match event {
                     ExtensionEvent::SessionStart(_) => {
                         component.transitions.lock().unwrap_or_else(PoisonError::into_inner).resolve(Some(session)).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
-                        component.engine.lifecycle.reconcile_on_session_start(Some(session)).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
-                        component.engine.lifecycle.cleanup_expired_records().map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                        let reconciliation=component.engine.lifecycle.reconcile_on_session_start(Some(session)).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                        let mut records=Vec::<senpi_task::state::TaskRecord>::new();
+                        for outcome in reconciliation.outcomes { if let Some(record)=component.engine.manager.get(&outcome.task_id) { records.push(record); } }
+                        for entry in component.engine.manager.list(&ListScope::ParentSession(session.into())) {
+                            if let Some(record)=records.iter_mut().find(|record| record.task_id==entry.record.task_id) { *record=entry.record; } else { records.push(entry.record); }
+                        }
+                        for record in &records { component.notify_owned_terminal(record); }
+                        component.channels.lock().unwrap_or_else(PoisonError::into_inner).emit_session_start();
+                        let team=component.team.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                        if let Some(team)=&team { team.service.reconcile_mailbox(); }
                         let parent_state = component.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).parent_state();
                         let delivery = component.delivery.lock().unwrap_or_else(PoisonError::into_inner);
                         component.engine.notifier.reconcile_unnotified_notifications(ReconcileUnnotifiedNotificationsInput { session_id: session, parent_state }).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                         drop(delivery);
-                        component.channels.lock().unwrap_or_else(PoisonError::into_inner).emit_session_start();
+                        component.engine.lifecycle.cleanup_expired_records().map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                        if let Some(team)=team && let Err(error)=team.pollers.tick() { eprintln!("task session-start lead poll failed: {error}"); }
                         if let Some(rpc) = &*component.rpc.lock().unwrap_or_else(PoisonError::into_inner) { rpc.attach(); }
                         component.sync();
                     }
@@ -72,6 +86,11 @@ impl TaskComponent {
                         component.dispose();
                         component.engine.lifecycle.suspend_on_session_shutdown(&senpi_task::lifecycle::SuspendInput { parent_session_id: session.into(), reason: match shutdown.reason { maho_ext_api::SessionReason::Startup => "startup", maho_ext_api::SessionReason::Reload => "reload", maho_ext_api::SessionReason::New => "new", maho_ext_api::SessionReason::Resume => "resume", maho_ext_api::SessionReason::Fork => "fork", maho_ext_api::SessionReason::Quit => "quit" }.into() }).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                         component.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).clear_ui();
+                    }
+                    ExtensionEvent::AgentEnd { .. } => {
+                        let team=component.team.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                        if let Some(team)=team { let runtime=component.engine.runtime.clone(); team.liveness.acknowledge_persisted(Arc::new(move || runtime.lock().unwrap_or_else(PoisonError::into_inner).session_file().map(ToOwned::to_owned))); }
+                        component.sync();
                     }
                     _ => component.sync(),
                 }
@@ -133,21 +152,7 @@ impl TaskComponent {
         crate::tools::register_lead_team_tools(api, service.clone());
         let runtime = self.engine.runtime.clone();
         *self.terminal.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(crate::owned_member_liveness::create_owned_member_liveness_notifier(ownership, Arc::new(move || runtime.lock().unwrap_or_else(PoisonError::into_inner).session_id().map(str::to_owned)), liveness.clone())));
-        for kind in [EventKind::SessionStart, EventKind::AgentEnd, EventKind::SessionShutdown] {
-            let service = service.clone(); let pollers = pollers.clone(); let liveness = liveness.clone(); let runtime = self.engine.runtime.clone();
-            api.on(kind, Arc::new(move |event, _| {
-                let service = service.clone(); let pollers = pollers.clone(); let liveness = liveness.clone(); let runtime = runtime.clone();
-                Box::pin(async move {
-                    match event {
-                        ExtensionEvent::SessionStart(_) => { service.reconcile_mailbox(); pollers.tick().map_err(maho_ext_api::ExtensionFailure::new)?; }
-                        ExtensionEvent::AgentEnd { .. } => liveness.acknowledge_persisted(Arc::new(move || runtime.lock().unwrap_or_else(PoisonError::into_inner).session_file().map(ToOwned::to_owned))),
-                        ExtensionEvent::SessionShutdown(_) => pollers.shutdown(),
-                        _ => {}
-                    }
-                    Ok(EventResult::None)
-                })
-            }));
-        }
+        *self.team.lock().unwrap_or_else(PoisonError::into_inner)=Some(Arc::new(TeamRuntime { service,pollers,liveness }));
     }
     pub fn dispose(&self) {
         let waiters = std::mem::take(&mut *self.waiters.lock().unwrap_or_else(PoisonError::into_inner));
@@ -155,6 +160,7 @@ impl TaskComponent {
         for waiter in waiters.into_values() { if waiter.thread.join().is_err() { eprintln!("task completion waiter panicked"); } }
         self.status.dispose();
         if let Some(rpc) = self.rpc.lock().unwrap_or_else(PoisonError::into_inner).take() { rpc.dispose(); }
+        if let Some(team)=self.team.lock().unwrap_or_else(PoisonError::into_inner).clone() { team.pollers.shutdown(); }
         self.channels.lock().unwrap_or_else(PoisonError::into_inner).emit_shutdown();
     }
 }

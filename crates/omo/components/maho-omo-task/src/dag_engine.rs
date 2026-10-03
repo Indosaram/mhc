@@ -19,10 +19,7 @@ impl DagSurfaces {
         let subscriptions = std::mem::take(&mut *self.activity.lock().unwrap_or_else(PoisonError::into_inner));
         for (_, _, unsubscribe) in subscriptions.into_values() { unsubscribe(); }
     }
-    fn on_event(self: &Arc<Self>, event: &senpi_task::dag::types::DagRunEvent, tasks: &senpi_task::manager::TaskManager, bridge: &Arc<crate::dag_rpc_bridge::DagRpcBridge>) {
-        use senpi_task::dag::types::DagRunEventPayload;
-        match &event.payload {
-            DagRunEventPayload::NodeTaskAttached { node_id, task_id, .. } => {
+    fn bind_activity(self: &Arc<Self>, run_id: &str, node_id: &str, task_id: &str, tasks: &senpi_task::manager::TaskManager, bridge: &Arc<crate::dag_rpc_bridge::DagRpcBridge>) {
                 if self.activity.lock().unwrap_or_else(PoisonError::into_inner).contains_key(task_id) { return; }
                 let Some(record) = tasks.get(task_id) else { return; };
                 let started_at = chrono::DateTime::parse_from_rfc3339(&record.created_at).map_or(0, |date| date.timestamp_millis().max(0) as u64);
@@ -31,7 +28,7 @@ impl DagSurfaces {
                     agent_type:record.agent_type, resolved_model:record.resolved_model, model:Some(record.model),
                 }, started_at, || chrono::Utc::now().timestamp_millis().max(0) as u64));
                 let status = Arc::downgrade(&self.status); let bridge = Arc::downgrade(bridge);
-                let run = event.run_id.clone(); let node = node_id.clone(); let task = task_id.clone();
+                let run = run_id.to_owned(); let node = node_id.to_owned(); let task = task_id.to_owned();
                 let unsubscribe = tasks.subscribe_child(task_id, Arc::new(move |event| {
                     let details = {
                         let mut progress = progress.lock().unwrap_or_else(PoisonError::into_inner);
@@ -42,8 +39,32 @@ impl DagSurfaces {
                     if let Some(bridge) = bridge.upgrade() { bridge.publish_activity(crate::dag_runtime::dag_activity_payload(&run, &node, &task, &at, &details)); }
                     if let Some(status) = status.upgrade() { status.on_activity(&run, &node, details.current_tool.as_deref().or(details.last_assistant_line.as_deref()).unwrap_or(&details.progress.activity)); }
                 }));
-                self.activity.lock().unwrap_or_else(PoisonError::into_inner).insert(task_id.clone(), (event.run_id.clone(), node_id.clone(), unsubscribe));
+                self.activity.lock().unwrap_or_else(PoisonError::into_inner).insert(task_id.to_owned(), (run_id.to_owned(), node_id.to_owned(), unsubscribe));
+    }
+    fn reconcile_activity(self: &Arc<Self>, manager: &DagManager, session: Option<&str>, tasks: &senpi_task::manager::TaskManager, bridge: &Arc<crate::dag_rpc_bridge::DagRpcBridge>) -> Result<(), senpi_task::dag::manager::DagManagerError> {
+        let mut wanted = BTreeMap::new();
+        if let Some(session) = session {
+            for run in manager.list(session, None)? {
+                if run.status.is_terminal() { continue; }
+                for node in manager.record(&run.run_id, session)?.nodes {
+                    if matches!(node.state, senpi_task::dag::types::DagNodeState::Completed | senpi_task::dag::types::DagNodeState::Failed | senpi_task::dag::types::DagNodeState::Cancelled | senpi_task::dag::types::DagNodeState::Skipped) { continue; }
+                    if let Some(task) = node.task_id { wanted.insert(task, (run.run_id.clone(), node.id)); }
+                }
             }
+        }
+        let stale = {
+            let mut activity = self.activity.lock().unwrap_or_else(PoisonError::into_inner);
+            let stale: Vec<_> = activity.iter().filter(|(task, (run, node, _))| wanted.get(*task).is_none_or(|owner| &owner.0 != run || &owner.1 != node)).map(|(task, _)| task.clone()).collect();
+            stale.into_iter().filter_map(|task| activity.remove(&task)).collect::<Vec<_>>()
+        };
+        for (_, _, unsubscribe) in stale { unsubscribe(); }
+        for (task, (run, node)) in wanted { self.bind_activity(&run, &node, &task, tasks, bridge); }
+        Ok(())
+    }
+    fn on_event(self: &Arc<Self>, event: &senpi_task::dag::types::DagRunEvent, tasks: &senpi_task::manager::TaskManager, bridge: &Arc<crate::dag_rpc_bridge::DagRpcBridge>) {
+        use senpi_task::dag::types::DagRunEventPayload;
+        match &event.payload {
+            DagRunEventPayload::NodeTaskAttached { node_id, task_id, .. } => self.bind_activity(&event.run_id, node_id, task_id, tasks, bridge),
             DagRunEventPayload::NodeTransitioned { node_id, to: senpi_task::dag::types::DagNodeState::Completed | senpi_task::dag::types::DagNodeState::Failed | senpi_task::dag::types::DagNodeState::Cancelled | senpi_task::dag::types::DagNodeState::Skipped, .. } => {
                 let stale = {
                     let mut subscriptions = self.activity.lock().unwrap_or_else(PoisonError::into_inner);
@@ -101,6 +122,9 @@ impl TaskDagEngine {
         self.register_rpc_with_status_timers(api, component, Arc::new(crate::timers::HostTimers::default()));
     }
     pub fn register_rpc_with_status_timers(self: &Arc<Self>, api: &mut maho_ext_api::ExtensionApi, component: &crate::component::TaskComponent, timers: Arc<dyn crate::status_ui::StatusUiTimers>) {
+        self.register_rpc_with_timers(api, component, timers, Arc::new(crate::timers::HostTimers::default()));
+    }
+    pub fn register_rpc_with_timers(self: &Arc<Self>, api: &mut maho_ext_api::ExtensionApi, component: &crate::component::TaskComponent, timers: Arc<dyn crate::status_ui::StatusUiTimers>, rpc_timers: Arc<dyn crate::status_ui::StatusUiTimers>) {
         let runtime = component.engine.runtime.clone();
         let status = crate::dag_status_ui::DagStatusUi::new(Arc::new(self.manager.clone()), runtime.clone(), timers);
         let session: Arc<dyn Fn() -> Option<String> + Send + Sync> = Arc::new(move || runtime.lock().unwrap_or_else(PoisonError::into_inner).session_id().map(str::to_owned));
@@ -110,6 +134,7 @@ impl TaskDagEngine {
         let snapshots = Arc::downgrade(self); let snapshot_session = session.clone();
         let events = api.events.clone();
         let tasks = component.engine.manager.clone();
+        let lifecycle_tasks = tasks.clone();
         let bridge = crate::dag_rpc_bridge::create_dag_rpc_bridge(crate::dag_rpc_bridge_contract::DagRpcBridgeDeps {
             live_runs: Arc::new(move || {
                 let (Some(dag), Some(session)) = (live.upgrade(), live_session()) else { return vec![]; };
@@ -137,17 +162,18 @@ impl TaskDagEngine {
                     Err(error) => { eprintln!("DAG snapshot list failed: {error}"); vec![] }
                 }
             })),
-            parent_session_id: session,
+            parent_session_id: session.clone(),
             emit: Arc::new(move |name, data| events.emit("senpi:extension-rpc-event", &serde_json::json!({"name":name,"data":data}))),
-            timers: Arc::new(crate::timers::HostTimers::default()), now: Arc::new(|| chrono::Utc::now().timestamp_millis()), heartbeat_ms:Some(self.settings.heartbeat_ms), activity_coalesce_ms:None, snapshot_debounce_ms:None,
+            timers: rpc_timers, now: Arc::new(|| chrono::Utc::now().timestamp_millis()), heartbeat_ms:Some(self.settings.heartbeat_ms), activity_coalesce_ms:None, snapshot_debounce_ms:None,
         });
         *self.rpc.lock().unwrap_or_else(PoisonError::into_inner) = Some(bridge.clone());
         for kind in [maho_ext_api::EventKind::SessionStart, maho_ext_api::EventKind::SessionBeforeSwitch, maho_ext_api::EventKind::SessionShutdown] {
             let bridge = bridge.clone();
             let surfaces = surfaces.clone();
-            api.on(kind, Arc::new(move |event, _| { let bridge = bridge.clone(); let surfaces = surfaces.clone(); Box::pin(async move {
+            let manager = self.manager.clone(); let tasks = lifecycle_tasks.clone(); let session = session.clone();
+            api.on(kind, Arc::new(move |event, _| { let bridge = bridge.clone(); let surfaces = surfaces.clone(); let manager = manager.clone(); let tasks = tasks.clone(); let session = session.clone(); Box::pin(async move {
                 match event {
-                    maho_ext_api::ExtensionEvent::SessionStart(_) => { bridge.attach(); surfaces.status.sync_now(); },
+                    maho_ext_api::ExtensionEvent::SessionStart(_) => { bridge.attach(); surfaces.reconcile_activity(&manager, session().as_deref(), &tasks, &bridge).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?; surfaces.status.sync_now(); },
                     maho_ext_api::ExtensionEvent::SessionBeforeSwitch { .. } => { bridge.detach(); surfaces.clear_activity(); surfaces.status.dispose(); },
                     maho_ext_api::ExtensionEvent::SessionShutdown(_) => { bridge.dispose(); surfaces.clear_activity(); surfaces.status.dispose(); surfaces.wake.emit_shutdown(); },
                     _ => {}
@@ -156,6 +182,7 @@ impl TaskDagEngine {
             }) }));
         }
         bridge.attach();
+        if let Err(error) = surfaces.reconcile_activity(&self.manager, session().as_deref(), &lifecycle_tasks, &bridge) { eprintln!("DAG activity reconciliation failed: {error}"); }
         surfaces.status.sync_now();
     }
     pub fn register_tool(self: &Arc<Self>, api: &mut maho_ext_api::ExtensionApi, component: Arc<crate::component::TaskComponent>) {
