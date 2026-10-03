@@ -8,6 +8,7 @@ pub struct PendingQuestionEntry {
     pub cancel: Arc<dyn Fn(QuestionStatus) + Send + Sync>,
     pub owner: watch::Sender<Option<QuestionOwner>>,
     pub publication: Arc<Mutex<watch::Sender<bool>>>,
+    pub deadline_at_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
 #[derive(Clone)]
 pub struct QuestionOwner {

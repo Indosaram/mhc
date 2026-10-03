@@ -12,11 +12,17 @@ fn unavailable(request: &QuestionRequest) -> QuestionResponse {
 fn result(variant: AskUserVariant, request: &QuestionRequest, response: &QuestionResponse) -> AgentToolResult {
     AgentToolResult { content: vec![ContentBlock::Text(TextContent { text: format_result_text(response, &request.questions), audience: None, text_signature: None })], details: format_result_details(variant, response, &request.questions), usage: None, added_tool_names: None, terminate: None, is_error: None }
 }
-fn publish(owner: QuestionOwner, request: &QuestionRequest, response: &QuestionResponse, variant: AskUserVariant) {
+fn emit_wake(bus:&EventBus,session:&str){
+    let entries=get_pending_questions(session).into_iter().filter(|entry|!entry.request.wait_for_answer).collect::<Vec<_>>();
+    bus.emit("wake_source_state",&json!({"source":"ask-user","activeCount":entries.len(),"items":entries.iter().map(|entry|json!({"id":entry.request.request_id,"deadlineAtMs":(entry.deadline_at_ms)(),"description":entry.request.questions.iter().map(|question|question.header.as_str()).collect::<Vec<_>>().join(", ")})).collect::<Vec<_>>()}));
+}
+fn publish(owner: QuestionOwner, request: &QuestionRequest, response: &QuestionResponse, variant: AskUserVariant, resuming: bool) {
     if response.status == QuestionStatus::TimedOut { owner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).timed_out = true; }
     owner.sender.events.emit("herdr:blocked", &json!({"active":false,"id":request.request_id}));
     if !request.wait_for_answer {
         if let Err(error) = owner.sender.append_entry(ASK_USER_SETTLEMENT_ENTRY, Some(json!({"requestId":request.request_id,"status":crate::format::status_name(response.status)}))) { owner.context.ui.notify(&error.message, NotificationType::Error); }
+    }
+    if !request.wait_for_answer || resuming {
         if response.status != QuestionStatus::Cancelled
             && let Err(error) = owner.sender.send_user_message(UserMessageContent::Text(format_user_message(response, &request.request_id, &request.questions)), SendUserMessageOptions { deliver_as: Some(if owner.context.is_idle() { StreamingBehavior::FollowUp } else { StreamingBehavior::Steer }), expand_prompt_templates: false }) {
             owner.context.ui.notify(&error.message, NotificationType::Error);
@@ -36,6 +42,14 @@ pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc
             let settings = ctx.get_ask_user_settings()?;
             let timeout = (settings.timeout_minutes * 60_000.0) as u64;
             let request = to_canonical(variant, &args, id.into(), Some(timeout)).map_err(ExtensionFailure::new)?;
+            start_question(sender, ctx.clone(), request, signal, state, variant, false).await
+        })
+    })) { std::panic::panic_any(error); }
+}
+
+pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionContext, request: QuestionRequest, signal: Option<AbortSignal>, state: Arc<Mutex<AskUserState>>, variant: AskUserVariant, resuming: bool) -> Result<AgentToolResult, ExtensionFailure> {
+            let id = request.request_id.clone();
+            let settings = ctx.get_ask_user_settings()?;
             let unavailable_now = {
                 let current = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 current.timed_out || current.unavailable || !settings.enabled || sender.get_flag("no-ask-user") == Some(FlagValue::Boolean(true)) || matches!(ctx.mode, ExtensionMode::Print | ExtensionMode::Json)
@@ -59,8 +73,10 @@ pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc
             let callback = terminal.clone();
             let timer = Arc::new(PendingTimer::new(request.clone(), Arc::new(move |response| { callback.send_if_modified(|value| { if value.is_some() { false } else { *value = Some(response); true } }); })));
             let cancelled = terminal.clone(); let pending = timer.clone(); let cancel = cancel_signal.clone();
-            register_pending_question(&session, Arc::new(PendingQuestionEntry { request: request.clone(), completion: completion.clone(), owner, publication: publication.clone(), cancel: Arc::new(move |reason| { let response = pending.cancel(reason); cancelled.send_if_modified(|value| { if value.is_some() { false } else { *value = Some(response); true } }); cancel.abort(); }) }));
-            emit_asked(&sender.events, ctx, &request, variant);
+            let deadline=timer.clone();let created=maho_ai::utils::diagnostics::now_ms().max(0) as u64;
+            register_pending_question(&session, Arc::new(PendingQuestionEntry { request: request.clone(), completion: completion.clone(), owner, publication: publication.clone(), deadline_at_ms:Arc::new(move||created.saturating_add(deadline.deadline_at_ms())), cancel: Arc::new(move |reason| { let response = pending.cancel(reason); cancelled.send_if_modified(|value| { if value.is_some() { false } else { *value = Some(response); true } }); cancel.abort(); }) }));
+            if !request.wait_for_answer{emit_wake(&sender.events,&session);}
+            emit_asked(&sender.events, &ctx, &request, variant);
             sender.events.emit("herdr:blocked", &json!({"active":true,"id":id,"label":request.questions.first().map(|q|format!("{} — {}",q.header,q.question)).unwrap_or_default()}));
             let owner_request = request.clone();
             let work_completion = terminal_response;
@@ -69,13 +85,14 @@ pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc
                 let response = loop {
                     let current = owners.borrow_and_update().clone();
                     let progress = timer.clone();
+                    let progress_request=owner_request.clone();
                     let remaining_ms = timer.remaining_ms();
                     let attachment_signal = AbortSignal::default();
                     let ui_signal = attachment_signal.clone();
                     let request = owner_request.clone();
                     let question = async move {
                         match current {
-                            Some(owner) => owner.context.ui.question(request.clone(), QuestionOptions { dialog: ExtensionUiDialogOptions { signal: Some(ui_signal), timeout_ms: Some(remaining_ms) }, on_progress: Some(Arc::new(move |draft| progress.touch(Some((draft.answers.unwrap_or_default(), draft.comment))))) }).await,
+                            Some(owner) => {let bus=owner.sender.events.clone();let session=owner.context.session_manager.session_id().to_owned();owner.context.ui.question(request.clone(), QuestionOptions { dialog: ExtensionUiDialogOptions { signal: Some(ui_signal), timeout_ms: Some(remaining_ms) }, on_progress: Some(Arc::new(move |draft| {progress.progress(draft);if !progress_request.wait_for_answer{emit_wake(&bus,&session);}})) }).await},
                             None => std::future::pending().await,
                         }
                     };
@@ -96,19 +113,18 @@ pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc
                 cancel_signal.abort();
                 let owner = select_publication(&owners, &publication, || {
                     let request = owner_request.clone(); let outcome = response.clone();
-                    queue_outcome(&session, Box::new(move |owner| publish(owner, &request, &outcome, variant)));
+                    queue_outcome(&session, Box::new(move |owner| publish(owner, &request, &outcome, variant, resuming)));
                 });
-                if let Some(owner) = owner { publish(owner, &owner_request, &response, variant); }
+                if let Some(owner) = owner { publish(owner, &owner_request, &response, variant, resuming); }
                 publication.lock().unwrap_or_else(std::sync::PoisonError::into_inner).send_replace(false);
                 unregister_pending_question(&session, &owner_request.request_id);
+                if !owner_request.wait_for_answer{let owner=owners.borrow().clone();if let Some(owner)=owner{emit_wake(&owner.sender.events,&session);}}
                 settled.send_replace(Some(response));
             });
-            if !request.wait_for_answer { return Ok(AgentToolResult { content: vec![ContentBlock::Text(TextContent { text:"Question accepted; the answer will arrive as a user message.".into(), audience:None, text_signature:None })], details:json!({"accepted":true,"requestId":id,"status":"pending"}), usage:None,added_tool_names:None,terminate:None,is_error:None }); }
+            if resuming || !request.wait_for_answer { return Ok(AgentToolResult { content: vec![ContentBlock::Text(TextContent { text:"Question accepted; the answer will arrive as a user message.".into(), audience:None, text_signature:None })], details:json!({"accepted":true,"requestId":id,"status":"pending"}), usage:None,added_tool_names:None,terminate:None,is_error:None }); }
             loop {
                 let response = completion.borrow().clone();
                 if let Some(response) = response { task.await.map_err(|error|ExtensionFailure::new(error.to_string()))?; return Ok(result(variant, &request, &response)); }
                 completion.changed().await.map_err(|_|ExtensionFailure::new("Question owner disappeared"))?;
             }
-        })
-    })) { std::panic::panic_any(error); }
 }

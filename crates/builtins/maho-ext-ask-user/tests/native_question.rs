@@ -23,6 +23,9 @@ async fn scenario(cancel: bool, fail_append: bool, abort: bool, timeout: bool, r
     scenario_order(cancel, fail_append, abort, timeout, reload, false).await
 }
 async fn scenario_order(cancel: bool, fail_append: bool, abort: bool, timeout: bool, reload: bool, late_rebind: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    scenario_recovery(cancel, fail_append, abort, timeout, reload, late_rebind, false).await
+}
+async fn scenario_recovery(cancel: bool, fail_append: bool, abort: bool, timeout: bool, reload: bool, late_rebind: bool, recovering: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let root = tempfile::tempdir()?;
     let project = root.path();
     let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
@@ -33,18 +36,22 @@ async fn scenario_order(cancel: bool, fail_append: bool, abort: bool, timeout: b
         providers: Some(vec![provider.provider.clone()]), ..Default::default()
     });
     let cwd = project.to_string_lossy().into_owned();
+    let mut session_manager = maho_core::session_manager::SessionManager::in_memory(&cwd, None, None);
+    if recovering {
+        session_manager.append_message(json!({"role":"assistant","content":[{"type":"toolCall","id":"recovered-question","name":"ask_user_question","arguments":{"waitForAnswer":true,"questions":[{"header":"Choice","question":"Pick?","multiSelect":false,"options":[{"label":"A","description":"First"},{"label":"B","description":"Second"}]}]}}],"api":"faux","provider":"faux","model":"faux-1","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":0}));
+    }
     let session = AgentSession::new(AgentSessionConfig {
         agent: maho_agent::Agent::new(maho_agent::AgentOptions {
             initial_state: Some(maho_agent::agent::PartialAgentState { model: Some(model), ..Default::default() }),
             stream_fn: Some(Arc::new(move |model, context, options| streams.stream_simple(model, context, options.map(|options| options.simple)))), ..Default::default()
         }),
-        session_manager: maho_core::session_manager::SessionManager::in_memory(&cwd, None, None),
+        session_manager,
         settings_manager: maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()), true),
         cwd: cwd.clone(), agent_dir: Some(cwd), fallback_now: Some(Arc::new(|| 0.0)), retry_random: Some(Arc::new(|| 0.5)),
         scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: Default::default(), custom_tools: Vec::new(),
         model_runtime: Some(runtime), model_registry: None, uses_default_stream_function: Some(false),
         initial_active_tool_names: None, default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None,
-        excluded_tool_names: None, base_tools_override: None, session_start_event: None, auto_title_sessions: Some(false),
+        excluded_tool_names: None, base_tools_override: None, session_start_event: recovering.then_some(SessionStartEvent {reason:SessionReason::Resume,initial_model_provenance:None,previous_session_file:None}), auto_title_sessions: Some(false),
     })?;
     let loaded = load_extensions(vec![NativeExtensionFactory { path: "<ask-user-native>".into(), source_info: SourceInfo::default(), extension: Box::new(AskUser) }], project, ExtensionSessionProfile::default());
     let extension_runtime = loaded.runtime.clone();
@@ -92,11 +99,20 @@ async fn scenario_order(cancel: bool, fail_append: bool, abort: bool, timeout: b
         }
         return Ok(());
     }
-    let result = session.execute_tool(&tool, args, ExecuteToolOptions { signal: Some(signal.clone()), ..Default::default() }).await?;
-    if result.details["accepted"] != true { return Err(format!("Question not accepted: {result:?}").into()); }
+    if !recovering {
+        let result = session.execute_tool(&tool, args, ExecuteToolOptions { signal: Some(signal.clone()), ..Default::default() }).await?;
+        if result.details["accepted"] != true { return Err(format!("Question not accepted: {result:?}").into()); }
+    }
     let request = tokio::time::timeout(std::time::Duration::from_secs(5), opened_rx.recv()).await?.ok_or("UI did not open")?;
     let pending = get_pending_questions(&session.session_id());
     if pending.len() != 1 { return Err(format!("Expected one pending question, got {}", pending.len()).into()); }
+    if recovering {
+        session.bind_extensions(ExtensionBindings {ui_context:Some(ui.clone() as Arc<dyn ExtensionUi>),mode:Some(ExtensionMode::Tui),..Default::default()}).await;
+        let entries = session.with_session_manager(|manager|manager.entries());
+        if request.request_id != "recovered-question" || entries.iter().filter(|entry|entry["customType"]=="ask-user:resumed" && entry["data"]["toolCallId"]=="recovered-question").count()!=1 {
+            return Err("Recovery did not mark original call exactly once".into());
+        }
+    }
     let initial_owner = pending[0].owner.borrow().clone().ok_or("Missing owner")?;
     {
         let events = asked.lock().expect("asked");
@@ -235,6 +251,9 @@ async fn detached_timeout_queues_outcome_once_on_new_registered_runner() { scena
 
 #[tokio::test]
 async fn detached_owner_rebinds_before_late_registered_publication() { scenario_order(false, false, false, false, true, true).await.expect("registered late rebind"); }
+
+#[tokio::test]
+async fn resumed_waiting_call_opens_original_request_without_duplicate_recovery() { scenario_recovery(false,false,false,false,false,false,true).await.expect("registered resume recovery"); }
 
 struct FailingPersistence;
 impl ExtensionActions for FailingPersistence {

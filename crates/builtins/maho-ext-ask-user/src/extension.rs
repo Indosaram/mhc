@@ -26,6 +26,9 @@ impl Extension for AskUser {
                             entry.owner.send_replace(Some(owner.clone()));
                         }
                         deliver_outcomes(ctx.session_manager.session_id(), owner);
+                        if matches!(event, ExtensionEvent::SessionStart(event) if matches!(event.reason, SessionReason::Resume | SessionReason::Reload)) {
+                            crate::resume::resume_dangling_questions(sender.clone(),ctx).await?;
+                        }
                     }
                     let actions = sender.runtime.session_actions()?;
                     let mut active = actions.get_active_tools()?.into_iter().filter(|name| !TOOL_NAMES.contains(&name.as_str())).collect::<Vec<_>>();

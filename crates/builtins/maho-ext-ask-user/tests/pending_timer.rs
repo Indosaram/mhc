@@ -32,3 +32,18 @@ async fn cancellation_disarms_callback_before_deadline() {
     assert!(received.changed().await.is_err());
     assert!(received.borrow().is_none());
 }
+
+#[tokio::test(start_paused = true)]
+async fn comment_progress_without_answers_preserves_selected_draft(){
+    let (outcome,mut received)=tokio::sync::watch::channel(None);
+    let timer=PendingTimer::new(request(),Arc::new(move|response|{outcome.send_replace(Some(response));}));
+    let answers=BTreeMap::from([("q1".into(),QuestionAnswer{selected:vec!["A".into()],text:None})]);
+    timer.progress(maho_ext_api::QuestionDraft{answers:Some(answers.clone()),comment:None});
+    timer.progress(maho_ext_api::QuestionDraft{answers:None,comment:Some("draft".into())});
+    tokio::time::advance(Duration::from_millis(100)).await;
+    received.changed().await.expect("timeout event");
+    let response=received.borrow().clone().expect("response");
+    assert_eq!(response.answers,answers);
+    assert_eq!(response.comment.as_deref(),Some("draft"));
+    assert_eq!(response.status,QuestionStatus::TimedOut);
+}

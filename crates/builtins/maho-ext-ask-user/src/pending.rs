@@ -81,6 +81,14 @@ impl PendingTimer {
         self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).touch(now, draft);
         self.changed.send_modify(|generation| *generation = generation.wrapping_add(1));
     }
+    pub fn progress(&self,draft:maho_ext_api::QuestionDraft){
+        let now=u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let mut pending=self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let answers=draft.answers.unwrap_or_else(||pending.draft_answers.clone());
+        pending.touch(now,Some((answers,draft.comment)));
+        drop(pending);
+        self.changed.send_modify(|generation|*generation=generation.wrapping_add(1));
+    }
     pub fn submit(&self, answers: BTreeMap<String, QuestionAnswer>, comment: Option<String>) -> Option<QuestionResponse> {
         let response = self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).submit(answers, comment);
         if response.is_some() { self.task.abort(); }
