@@ -53,9 +53,14 @@ async fn shutdown(api:&ExtensionApi,ctx:&ExtensionContext,reason:SessionReason) 
 async fn reload_preserves_live_pty_and_monitor_ids_until_new_owner_quits() {
     let dir=tempfile::tempdir().unwrap();let ctx=context(dir.path());let old=api(dir.path());
     let result=(old.registered.tools[5].definition.execute)(ToolCall {id:"watch",params:json!({"description":"live","command":"stty -echo; read value; printf '%s\\n' \"$value\"","persistent":true}),signal:Default::default(),on_update:None,context:None}).await.unwrap();let id=result.details.unwrap()["monitor_id"].as_str().unwrap().to_owned();
+    let background=(old.registered.tools[0].definition.execute)(ToolCall {id:"background",params:json!({"command":"stty -echo; read value; printf 'background:%s\\n' \"$value\"","run_in_background":true}),signal:Default::default(),on_update:None,context:None}).await.unwrap();let background_id=background.details.unwrap()["bash_id"].as_str().unwrap().to_owned();
     shutdown(&old,&ctx,SessionReason::Reload).await;let new=api(dir.path());
     let mut event=ExtensionEvent::SessionStart(SessionStartEvent {reason:SessionReason::Reload,initial_model_provenance:None,previous_session_file:None});
     for handler in new.registered.handlers[&EventKind::SessionStart].iter().take(2) {handler(&mut event,&ctx).await.unwrap();}
+    let (sender,mut states)=tokio::sync::mpsc::unbounded_channel();let _subscription=new.events.on("wake_source_state",Arc::new(move |state| {if state["source"]=="terminal-background-sessions" {sender.send(state.clone()).expect("background state");}}));
+    new.registered.handlers[&EventKind::SessionStart].last().unwrap()(&mut event,&ctx).await.unwrap();assert_eq!(states.recv().await.unwrap()["activeCount"],1);
+    (new.registered.tools[2].definition.execute)(ToolCall {id:"complete",params:json!({"bash_id":background_id,"input":"restored"}),signal:Default::default(),on_update:None,context:None}).await.unwrap();
+    let completed=tokio::time::timeout(std::time::Duration::from_secs(5),states.recv()).await.unwrap().unwrap();assert_eq!(completed["activeCount"],0);
     let output=(new.registered.tools[1].definition.execute)(ToolCall {id:"peek",params:json!({"bash_id":id}),signal:Default::default(),on_update:None,context:None}).await.unwrap();assert!(output.content.iter().any(|part|matches!(part,maho_tools::definition::ToolContent::Text {text,..} if text.contains("status: running"))));
     let sent=(new.registered.tools[2].definition.execute)(ToolCall {id:"input",params:json!({"bash_id":id,"input":"restored"}),signal:Default::default(),on_update:None,context:None}).await.unwrap();assert!(!sent.content.is_empty());
     shutdown(&new,&ctx,SessionReason::Quit).await;
