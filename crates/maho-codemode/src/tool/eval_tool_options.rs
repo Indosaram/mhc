@@ -34,6 +34,7 @@ pub struct CreateEvalToolOptions {
     pub mode: String,
 }
 pub struct EvalCellInvocation {
+    pub steering_signal: Option<maho_ext_api::AbortSignal>,
     pub cell_id: String,
     pub input: EvalToolInput,
     pub signal: AbortSignal,

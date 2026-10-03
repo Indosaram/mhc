@@ -110,7 +110,7 @@ async fn fixture_with_messages(on_message:Option<maho_codemode::kernels::shared:
     (kernel,options)
 }
 fn invocation(id:&str,code:&str)->EvalCellInvocation {
-    EvalCellInvocation {cell_id:id.into(),input:EvalToolInput {language:EvalLanguage::Py,code:code.into(),summary:"compute a value".into(),action:None,timeout:None,on_timeout:Some(TimeoutBehavior::Error),reset:None},signal:maho_ai::utils::abort::AbortController::new().signal(),on_update:None,mode:"print".into(),model:None,context:None}
+    EvalCellInvocation {steering_signal:None,cell_id:id.into(),input:EvalToolInput {language:EvalLanguage::Py,code:code.into(),summary:"compute a value".into(),action:None,timeout:None,on_timeout:Some(TimeoutBehavior::Error),reset:None},signal:maho_ai::utils::abort::AbortController::new().signal(),on_update:None,mode:"print".into(),model:None,context:None}
 }
 
 #[tokio::test]
@@ -139,6 +139,22 @@ async fn real_python_deadline_reports_preserved_state_and_cleans_worker() {
 }
 
 struct FinalFrameKernel;
+
+#[tokio::test]
+async fn interactive_steering_detaches_real_started_cell() {
+    let (kernel,mut options)=fixture().await;
+    Arc::get_mut(&mut options).unwrap().settings.cell_timeout_seconds=30.0;
+    let (started,mut events)=tokio::sync::mpsc::unbounded_channel();
+    Arc::get_mut(&mut options).unwrap().kernel_manager=Arc::new(StartedPythonManager(Arc::new(StartedPython(kernel.clone(),started))));
+    let steering=maho_ext_api::AbortSignal::default();
+    let mut call=invocation("steering","while True: pass");call.mode="interactive".into();call.input.on_timeout=Some(TimeoutBehavior::Detach);call.steering_signal=Some(steering.clone());
+    let trigger=async {events.recv().await.unwrap();steering.abort();};
+    let (result,())=tokio::join!(run_eval_cell(options.clone(),call),trigger);
+    let stopped=EvalDetachedCellManager::stop(&options.cell_manager,"steering","test cleanup").await;
+    kernel.close().await.unwrap();
+    assert_eq!(result.unwrap().details["cells"][0]["status"],"detached");
+    assert!(stopped.is_ok());
+}
 
 #[tokio::test]
 async fn real_js_deadline_reports_restarted_state_and_recovery() {

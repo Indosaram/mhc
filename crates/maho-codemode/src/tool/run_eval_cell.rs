@@ -115,6 +115,7 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
     let event_cell_id=invocation.cell_id.clone();
     let event_language=invocation.input.language;
     let kernel_tools=if event_language==super::types::EvalLanguage::Js {kernel.clone().kernel_tools()} else {None};
+    let steering_active=active.clone();
     let run_bound=async move {
         let _context_guard=context_guard;
         let operation=kernel.run(run_input);
@@ -246,12 +247,18 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
             None=>run_bound.await,
         }
     });
-    tokio::select! {
-        result=&mut result_rx=>result.map_err(|_|"Eval execution task ended without a result".to_string())?,
+    let steering=invocation.steering_signal.as_ref().filter(|_|detaches && !matches!(invocation.mode.as_str(),"print"|"json"));
+    let mut steering_observed=false;
+    loop {tokio::select! {
+        result=&mut result_rx=>break result.map_err(|_|"Eval execution task ended without a result".to_string())?,
         changed=detached.wait_for(|detached|*detached)=>{
             changed.map_err(|_|"Eval detach signal closed".to_string())?;
             let manager=manager.lock().expect("cell manager lock");
-            Ok(result_after_detach(&manager.peek(&invocation.cell_id)?,&invocation.input,manager.live_cells(None,Some(&invocation.cell_id)).len()))
+            break Ok(result_after_detach(&manager.peek(&invocation.cell_id)?,&invocation.input,manager.live_cells(None,Some(&invocation.cell_id)).len()));
         }
-    }
+        ()=async {match steering {Some(signal)=>signal.cancelled().await,None=>std::future::pending().await}},if !steering_observed=>{
+            steering_observed=true;
+            if !invocation.signal.aborted() && steering_active.load(std::sync::atomic::Ordering::SeqCst) && manager.lock().expect("cell manager lock").detach(&cell) {execution.detach();}
+        }
+    }}
 }
