@@ -101,7 +101,7 @@ pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionCont
                         update = owners.changed() => { attachment_signal.abort(); if update.is_err() { Some(timer.cancel(QuestionStatus::Cancelled)) } else { None } },
                         () = async { if let Some(signal) = &signal { signal.cancelled().await; } else { std::future::pending::<()>().await; } } => Some(timer.cancel(QuestionStatus::Cancelled)),
                         () = async { loop { if completed.borrow().is_some() || completed.changed().await.is_err() { break; } } } => Some(completed.borrow().clone().unwrap_or_else(|| timer.cancel(QuestionStatus::Cancelled))),
-                        response = question => Some(match response { Ok(response) => response, Err(error) => { if let Some(owner) = owners.borrow().as_ref() { owner.context.ui.notify(&format!("Question UI failed: {error}"), NotificationType::Error); } timer.cancel(QuestionStatus::Cancelled) } }),
+                        response = question => Some(match response { Ok(response) => response, Err(error) => { let owner=owners.borrow().clone();if let Some(owner) = owner { owner.context.ui.notify(&format!("Question UI failed: {error}"), NotificationType::Error); } timer.cancel(QuestionStatus::Cancelled) } }),
                     };
                     attachment_signal.abort();
                     if let Some(response) = response { break response; }
