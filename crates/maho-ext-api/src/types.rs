@@ -2,7 +2,7 @@
 //! Session, resource, registry and theme ports live here to keep the dependency graph acyclic.
 use std::{collections::BTreeMap, fmt, future::Future, path::{Path, PathBuf}, pin::Pin, sync::{Arc, Mutex}};
 pub use maho_agent::types::{AgentEvent, AgentMessage};
-pub use maho_agent::types::{AgentTool, AgentToolResult};
+pub use maho_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
 pub use maho_tools::tool_definition_wrapper::wrap_tool_definition;
 pub use maho_ai::{model::Model, types::{JsonValue, ThinkingLevel, Usage, ImageContent}};
 pub use maho_ai::types::{Message, UserMessage, UserContent, AssistantMessage, ContentBlock};
@@ -395,6 +395,7 @@ pub trait ExtensionContextActions: Send + Sync {
     fn shutdown(&self);
     fn get_context_usage(&self) -> Option<ContextUsage>;
     fn get_compaction_settings(&self) -> CompactionSettings;
+    fn get_resolved_compaction_settings(&self) -> Option<ResolvedCompactionSettings> { None }
     fn get_compaction_preparation(&self) -> Option<CompactionPreparationDetails> { None }
     fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64>;
     fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64;
@@ -413,6 +414,7 @@ pub trait ExtensionContextActions: Send + Sync {
     fn get_system_prompt(&self) -> String;
     fn get_system_prompt_options(&self) -> BuildSystemPromptOptions;
     fn get_loaded_hook_sources(&self) -> LoadedHookSources;
+    fn get_registered_mcp_servers(&self) -> Option<Vec<RegisteredMcpServerDeclaration>> { None }
     fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools>;
 }
 
@@ -596,6 +598,7 @@ impl ExtensionContext {
     pub fn shutdown(&self) -> Result<(), ExtensionFailure> { self.actions()?.shutdown(); Ok(()) }
     pub fn get_context_usage(&self) -> Result<Option<ContextUsage>, ExtensionFailure> { Ok(self.actions()?.get_context_usage()) }
     pub fn get_compaction_settings(&self) -> Result<CompactionSettings, ExtensionFailure> { Ok(self.actions()?.get_compaction_settings()) }
+    pub fn get_resolved_compaction_settings(&self) -> Result<Option<ResolvedCompactionSettings>, ExtensionFailure> { Ok(self.actions()?.get_resolved_compaction_settings()) }
     pub fn get_compaction_preparation(&self) -> Result<Option<CompactionPreparationDetails>, ExtensionFailure> { Ok(self.actions()?.get_compaction_preparation()) }
     pub fn get_prompt_cache_safe_wait_seconds(&self) -> Result<Option<f64>, ExtensionFailure> { Ok(self.actions()?.get_prompt_cache_safe_wait_seconds()) }
     pub fn get_prompt_cache_goal_backstop_max_seconds(&self) -> Result<f64, ExtensionFailure> { Ok(self.actions()?.get_prompt_cache_goal_backstop_max_seconds()) }
@@ -627,7 +630,10 @@ impl ExtensionContext {
     pub fn is_compacting(&self) -> bool { self.assert_active_or_panic(); self.session_manager.extension_context_actions().map_or_else(|| (self.is_compacting_fn)(), ExtensionContextActions::is_compacting) }
     pub fn get_system_prompt(&self) -> String { self.assert_active_or_panic(); (self.get_system_prompt_fn)() }
     pub fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { self.assert_active_or_panic(); (self.get_system_prompt_options_fn)() }
-    pub fn get_registered_mcp_servers(&self) -> &[RegisteredMcpServerDeclaration] { self.assert_active_or_panic(); &self.registered_mcp_servers }
+    pub fn get_registered_mcp_servers(&self) -> Vec<RegisteredMcpServerDeclaration> {
+        self.assert_active_or_panic();
+        self.session_manager.extension_context_actions().and_then(ExtensionContextActions::get_registered_mcp_servers).unwrap_or_else(|| self.registered_mcp_servers.clone())
+    }
 }
 impl ToolContext for ExtensionContext {
     fn cwd(&self) -> &Path { self.assert_active_or_panic(); &self.cwd }
@@ -704,6 +710,27 @@ pub struct CompactionPreparationDetails {
 pub struct CompactionFileOperations { pub read: Vec<String>, pub written: Vec<String>, pub edited: Vec<String> }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompactionSettings { pub enabled: bool, pub reserve_tokens: u64, pub keep_recent_tokens: u64 }
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedCompactionSettings {
+    pub enabled: bool,
+    pub reserve_tokens: u64,
+    pub keep_recent_tokens: u64,
+    pub speculative_enabled: bool,
+    pub speculative_fraction: f64,
+    pub speculative_cooldown_ms: f64,
+    pub restoration_enabled: bool,
+    pub restoration_max_items: f64,
+    pub restoration_max_tokens_per_item: f64,
+    pub restoration_max_total_tokens: f64,
+    pub restoration_context_ratio: f64,
+    pub idle_compaction_enabled: bool,
+    pub grace_band_enabled: bool,
+    pub tool_admission_enabled: bool,
+    pub reminder_enabled: bool,
+    pub reserve_scaling_enabled: bool,
+    pub speculative_lead_tokens: Option<f64>,
+    pub summarization_max_duration_ms: Option<f64>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionReason { Startup, Reload, New, Resume, Fork, Quit }
 #[derive(Clone, Debug)]
