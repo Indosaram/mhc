@@ -29,12 +29,12 @@ const server = Bun.serve({
       start(controller) {
         controller.enqueue(chunk({ role: "assistant", content: cancel ? "task44-cancellation-held" : content }, null));
         if (cancel) {
-          const receipt = text.includes("task44-drop") ? "TASK44_PROVIDER_HELD" : "TASK44_PROVIDER_CANCEL_HELD";
-          for (const observer of observers) observer.write(`${receipt}\n`);
           request.signal.addEventListener("abort", () => {
             console.log(JSON.stringify({ receipt: "provider_abort", text }));
             controller.close();
           }, { once: true });
+          const receipt = text.includes("task44-drop") ? "TASK44_PROVIDER_HELD" : "TASK44_PROVIDER_CANCEL_HELD";
+          for (const observer of observers) observer.write(`${receipt}\n`);
           return;
         }
         controller.enqueue(chunk({}, "stop"));
