@@ -9,6 +9,41 @@ fn api() -> ExtensionApi {
     ExtensionApi::new(LoadedExtension::new("pi-websearch", "/fixture".into(), Default::default()), Default::default(), Default::default(), Default::default())
 }
 
+struct ScopedRegistry { calls:Mutex<Vec<Model>>, fail:bool }
+fn scoped_model()->Model{serde_json::from_value(json!({"id":"gpt-4.1-fixture","name":"fixture","api":"openai-responses","provider":"openai","baseUrl":"https://fixture.invalid","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":1000,"maxTokens":100})).expect("model")}
+impl ModelRegistry for ScopedRegistry {
+    fn get_all(&self)->Vec<Model>{vec![scoped_model()]}
+    fn get_available(&self)->Vec<Model>{Vec::new()}
+    fn find(&self,provider:&str,id:&str)->Option<Model>{let model=scoped_model();(model.provider==provider&&model.id==id).then_some(model)}
+    fn has_configured_auth(&self,_:&Model)->bool{true}
+    fn get_api_key_for_provider<'a>(&'a self,_:&'a str)->ExtensionFuture<'a,Option<String>>{panic!("provider-only auth must not be used")}
+    fn get_api_key_and_headers<'a>(&'a self,model:&'a Model)->ExtensionFuture<'a,ResolvedRequestAuth>{Box::pin(async move{
+        self.calls.lock().expect("calls").push(model.clone());
+        if self.fail{return Err(ExtensionFailure::new("fixture model failure"));}
+        Ok(ResolvedRequestAuth{auth:maho_ai::models::ProviderAuthResult{api_key:Some("fixture scoped key".into()),headers:Some([("keep".into(),Some("fixture".into())),("delete".into(),None)].into()),base_url:None},extra_body:None,upstream_model_id:None,service_tier:None,env:None})
+    })}
+}
+#[tokio::test]
+async fn registered_context_registry_preserves_scoped_auth_failure_and_header_projection(){
+    use maho_ext_pi_websearch::websearch::native::{ContextModelRegistry,NativeModelRegistry,NativeModelInfo,NativeAuthResult};
+    let registry=Arc::new(ScopedRegistry{calls:Mutex::new(Vec::new()),fail:false});
+    let adapter=ContextModelRegistry(registry.clone());let model=scoped_model();
+    let native=NativeModelInfo{provider:model.provider.clone(),id:model.id.clone(),base_url:model.base_url.clone()};
+    let auth=adapter.get_api_key_and_headers(&native).await.expect("projection");
+    let NativeAuthResult::Success{api_key,headers}=auth else{panic!("success")};
+    assert_eq!(api_key.as_deref(),Some("fixture scoped key"));assert_eq!(headers.expect("headers"),[("keep".into(),"fixture".into())].into());
+    assert_eq!(registry.calls.lock().expect("calls").as_slice(),std::slice::from_ref(&model));
+    let registry=Arc::new(ScopedRegistry{calls:Mutex::new(Vec::new()),fail:true});
+    let mut context=support::context();context.model=Some(model.clone());context.model_registry=registry.clone();
+    let mut api=api();let config=WebsearchConfig{strategy:RoutingStrategy::Priority,fallback:true,auto:true,providers:Vec::new()};
+    register_search_tool(&mut api,Arc::new(Mutex::new(ConfigLoadResult::Success{config,source:"fixture".into()})),None).expect("register");
+    let execute=api.runtime.extension_tool_executor("pi-websearch","web_search").expect("executor");
+    let output=tokio::time::timeout(std::time::Duration::from_secs(5),execute("fixture",json!({"query":"scoped auth"}),None,None,&context)).await.expect("deadline").expect("source failure route");
+    assert_eq!(registry.calls.lock().expect("calls").as_slice(),&[model]);
+    assert_eq!(output.details["results"],json!([]));
+    assert!(matches!(ContextModelRegistry(registry).get_api_key_and_headers(&native).await.expect("failure"),NativeAuthResult::Failure{error} if error=="fixture model failure"));
+}
+
 #[tokio::test]
 async fn registered_search_keeps_routing_progress_and_result_contract() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("listener");

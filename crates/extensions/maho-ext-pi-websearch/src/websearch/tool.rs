@@ -38,7 +38,7 @@ pub fn register_search_tool(api: &mut maho_ext_api::ExtensionApi,
         let tool = std::sync::Arc::clone(&tool);
         let loaded = config.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         let client = client.clone();
-        let registry = registry.clone();
+        let registry = registry.clone().unwrap_or_else(||std::sync::Arc::new(super::native::ContextModelRegistry(std::sync::Arc::clone(&context.model_registry))));
         Box::pin(async move {
             let params: RegisteredParams = serde_json::from_value(params).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
             let model = context.model.as_ref().map(|model| NativeModelInfo { provider: model.provider.clone(), id: model.id.clone(), base_url: model.base_url.clone() });
@@ -54,7 +54,7 @@ pub fn register_search_tool(api: &mut maho_ext_api::ExtensionApi,
                 result = async {
                     tool.lock().await.execute(&client, loaded,
                         SearchParams { query: params.query, allowed_domains: params.allowed_domains, blocked_domains: params.blocked_domains },
-                        Some(WebSearchToolContext { model: model.as_ref(), model_registry: registry.as_deref() }), None, Some(&mut update)).await
+                        Some(WebSearchToolContext { model: model.as_ref(), model_registry: Some(registry.as_ref()) }), None, Some(&mut update)).await
                 } => result.map_err(maho_ext_api::ExtensionFailure::new)?,
                 () = cancelled => return Err(maho_ext_api::ExtensionFailure::new(signal.as_ref().and_then(maho_ai::utils::abort::AbortSignal::reason).map_or_else(|| "The operation was aborted.".into(), |reason| reason.message))),
             };
