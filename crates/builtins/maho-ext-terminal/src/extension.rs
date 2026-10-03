@@ -151,7 +151,8 @@ impl Extension for TerminalExtension {
                 let mut manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
                 let mut monitors=monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?;
                 let cwd=call.context.map(|context|context.cwd().to_path_buf()).unwrap_or(std::env::current_dir()?);
-                let result=crate::tools::monitor::execute_monitor(&mut manager,&mut monitors,&call.params,&cwd);
+                let approved_parent=crate::tools::monitor::approved_parent_for(&call)?;
+                let result=crate::tools::monitor::execute_monitor(&mut manager,&mut monitors,&call.params,&cwd,approved_parent.as_deref());
                 if call.params.get("action").and_then(Value::as_str)==Some("rearm") && let Some(notifier)=notifier.lock().map_err(|_|ToolError::Message("monitor notifier state poisoned".to_owned()))?.as_ref() {
                     notifier.resume(monitors.snapshot().iter().filter(|record|!record.paused).map(|record|record.id.clone()).collect()).map_err(ToolError::Message)?;
                 }
@@ -179,12 +180,31 @@ impl Extension for TerminalExtension {
 mod tests {
     use super::*;use maho_ext_api::types::*;
     #[tokio::test]
+    async fn registered_file_monitor_accessor_error_creates_no_registration()->Result<(),ToolError> {
+        // Given a real registered ingress and an accessor that fails admission.
+        let dir=tempfile::tempdir()?;let mut api=ExtensionApi::new(LoadedExtension::new("terminal",dir.path().to_owned(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());TerminalExtension.register(&mut api);
+        let context=crate::tools::monitor::tests::stub(Err("admission unavailable".into()));
+        let monitor=&api.registered.tools[5].definition;
+        // When the registered tool is invoked, the carrier error must escape.
+        let error=(monitor.execute)(maho_tools::definition::ToolCall {id:"rejected",params:json!({"description":"watch","path":dir.path().join("file"),"persistent":true}),signal:Default::default(),on_update:None,context:Some(&context)}).await.expect_err("accessor error must escape registered ingress");
+        assert!(error.to_string().contains("admission unavailable"));
+        // Then kill-all observes zero registrations, and the first admitted file keeps watch_1.
+        let empty=(api.registered.tools[4].definition.execute)(maho_tools::definition::ToolCall {id:"empty",params:json!({"all":true}),signal:Default::default(),on_update:None,context:None}).await?;
+        assert!(matches!(&empty.content[0],ToolContent::Text {text,..} if text=="Killed 0 session(s)."));
+        let context=crate::tools::monitor::tests::stub(Ok(None));
+        let admitted=(monitor.execute)(maho_tools::definition::ToolCall {id:"admitted",params:json!({"description":"watch","path":dir.path().join("file"),"persistent":true}),signal:Default::default(),on_update:None,context:Some(&context)}).await?;
+        assert_eq!(admitted.details.as_ref().unwrap()["bash_id"],"watch_1");
+        (api.registered.tools[4].definition.execute)(maho_tools::definition::ToolCall {id:"cleanup",params:json!({"all":true}),signal:Default::default(),on_update:None,context:None}).await?;Ok(())
+    }
+
+    #[tokio::test]
     async fn registered_file_monitor_stable_id_kill_releases_shared_capacity()->Result<(),ToolError> {
         let dir=tempfile::tempdir()?;let mut api=ExtensionApi::new(LoadedExtension::new("terminal",dir.path().to_owned(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());TerminalExtension.register(&mut api);
-        let result=(api.registered.tools[5].definition.execute)(maho_tools::definition::ToolCall {id:"file",params:json!({"description":"watch","path":dir.path().join("file"),"persistent":true}),signal:Default::default(),on_update:None,context:None}).await?;
+        let context=crate::tools::monitor::tests::stub(Ok(None));
+        let result=(api.registered.tools[5].definition.execute)(maho_tools::definition::ToolCall {id:"file",params:json!({"description":"watch","path":dir.path().join("file"),"persistent":true}),signal:Default::default(),on_update:None,context:Some(&context)}).await?;
         let id=result.details.as_ref().unwrap()["monitor_id"].as_str().unwrap();assert!(id.starts_with("mon_"));
         let result=(api.registered.tools[4].definition.execute)(maho_tools::definition::ToolCall {id:"kill",params:json!({"bash_id":id}),signal:Default::default(),on_update:None,context:None}).await?;assert!(matches!(&result.content[0],ToolContent::Text {text,..} if text==&format!("Killed {id}.")));
-        let result=(api.registered.tools[5].definition.execute)(maho_tools::definition::ToolCall {id:"next",params:json!({"description":"next","path":dir.path().join("next"),"persistent":true}),signal:Default::default(),on_update:None,context:None}).await?;assert!(result.details.as_ref().unwrap()["monitor_id"].as_str().unwrap().starts_with("mon_"));
+        let result=(api.registered.tools[5].definition.execute)(maho_tools::definition::ToolCall {id:"next",params:json!({"description":"next","path":dir.path().join("next"),"persistent":true}),signal:Default::default(),on_update:None,context:Some(&context)}).await?;assert!(result.details.as_ref().unwrap()["monitor_id"].as_str().unwrap().starts_with("mon_"));
         (api.registered.tools[4].definition.execute)(maho_tools::definition::ToolCall {id:"all",params:json!({"all":true}),signal:Default::default(),on_update:None,context:None}).await?;Ok(())
     }
     #[tokio::test]

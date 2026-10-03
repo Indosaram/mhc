@@ -112,7 +112,11 @@ impl MonitorRegistry {
     }
     #[cfg(unix)]
     pub fn register_persistent_file(&mut self,description:&str,path:&std::path::Path,event:crate::terminal_manifest_model::FileEvent)->std::io::Result<(String,String)> {
-        self.register_file_lifetime(description,path,event,(crate::shared::DURABLE_MONITOR_EXPIRY_MS,true),None,None)
+        self.register_persistent_file_with_identity(description,path,event,None)
+    }
+    #[cfg(unix)]
+    pub fn register_persistent_file_with_identity(&mut self,description:&str,path:&std::path::Path,event:crate::terminal_manifest_model::FileEvent,approved_parent:Option<&std::path::Path>)->std::io::Result<(String,String)> {
+        self.register_file_lifetime(description,path,event,(crate::shared::DURABLE_MONITOR_EXPIRY_MS,true),None,approved_parent)
     }
     #[cfg(unix)]
     pub fn restore_persistent_file(&mut self,monitor:&crate::terminal_manifest_model::ManifestMonitor,path:&std::path::Path,now:f64)->std::io::Result<(String,String)> {
