@@ -16,6 +16,9 @@ base64 = "=0.22.1"
 
 [dev-dependencies]
 tempfile.workspace = true
+maho-core = { path = "../../maho-core" }
+maho-agent = { path = "../../maho-agent" }
+maho-ext-host = { path = "../../maho-ext-host" }
 
 [lints]
 workspace = true

@@ -2573,8 +2573,11 @@ name = "maho-ext-video-in"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "maho-agent",
  "maho-ai",
+ "maho-core",
  "maho-ext-api",
+ "maho-ext-host",
  "maho-tools",
  "serde",
  "serde_json",
