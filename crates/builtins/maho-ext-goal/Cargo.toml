@@ -15,6 +15,7 @@ uuid = { version = "=1.20.0", features = ["v4"] }
 maho-core = { path = "../../maho-core" }
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-ext-host = { path = "../../maho-ext-host" }
+maho-ext-todotools = { path = "../maho-ext-todotools" }
 maho-tui = { path = "../../maho-tui" }
 maho-agent = { path = "../../maho-agent" }
 maho-ai = { path = "../../maho-ai" }
