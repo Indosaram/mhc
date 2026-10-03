@@ -6,6 +6,12 @@ fn flat_brand_startup_copies_engine_state_once() {
     let legacy = home.path().join(".senpi/agent");
     fs::create_dir_all(&legacy).expect("legacy directory");
     fs::write(legacy.join("models.json"), "{\"providers\":{}}\n").expect("models fixture");
+    #[cfg(unix)]
+    {
+        fs::write(home.path().join("external-fixture"), "link source").expect("external fixture");
+        std::os::unix::fs::symlink("../../external-fixture", legacy.join("linked-fixture")).expect("file link");
+        std::os::unix::fs::symlink(".", legacy.join("cycle-fixture")).expect("directory cycle");
+    }
     let target = home.path().join(".qa");
     for iteration in 0..2 {
         let mut child = Command::new(env!("CARGO_BIN_EXE_mhc"))
@@ -25,6 +31,13 @@ fn flat_brand_startup_copies_engine_state_once() {
         assert_eq!(response["success"], true);
         assert_eq!(fs::read_to_string(target.join("models.json")).expect("copied models"), "{\"providers\":{}}\n");
         assert!(target.join(".migrated-from-senpi").exists());
+        #[cfg(unix)]
+        {
+            assert!(fs::symlink_metadata(target.join("linked-fixture")).expect("file metadata").file_type().is_symlink());
+            assert!(fs::symlink_metadata(target.join("cycle-fixture")).expect("directory metadata").file_type().is_symlink());
+            assert_eq!(fs::canonicalize(target.join("linked-fixture")).expect("file target"), home.path().join("external-fixture"));
+            assert_eq!(fs::canonicalize(target.join("cycle-fixture")).expect("cycle target"), legacy);
+        }
         assert_eq!(fs::read_to_string(legacy.join("models.json")).expect("original models"),
             if iteration == 0 { "{\"providers\":{}}\n" } else { "changed source" });
         if iteration == 0 { fs::write(legacy.join("models.json"), "changed source").expect("change source"); }
