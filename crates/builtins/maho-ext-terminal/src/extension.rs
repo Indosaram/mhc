@@ -170,7 +170,7 @@ impl Extension for TerminalExtension {
             if name=="bash_output" {api.register_tool_with_renderers(tool,crate::tools::render::output_renderers()).expect("valid builtin bash_output registration");} else {api.register_tool(tool);}
         }
         let tool_manager=manager.clone();let tool_monitors=monitors.clone();let tool_notifier=notifier.clone();let tool_configuration=configuration.clone();
-        api.register_tool(ToolDefinition::new("monitor","Subscribe to command output or file changes instead of polling.",crate::tools::monitor::monitor_schema(),Arc::new(move |call| {
+        api.register_tool_with_renderers(ToolDefinition::new("monitor","Subscribe to command output or file changes instead of polling.",crate::tools::monitor::monitor_schema(),Arc::new(move |call| {
             let manager=tool_manager.clone();let monitors=tool_monitors.clone();let notifier=tool_notifier.clone();let configuration=tool_configuration.clone();Box::pin(async move {
                 let mut manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
                 let mut monitors=monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?;
@@ -182,7 +182,7 @@ impl Extension for TerminalExtension {
                 }
                 tool_result(result)
             })
-        })));
+        })),crate::tools::render::monitor_renderers()).expect("valid builtin monitor registration");
         let activity=notifier.clone();
         let input_monitors=monitors.clone();
         api.on(EventKind::Input,Arc::new(move |event,_| {let notifier=activity.clone();let monitors=input_monitors.clone();Box::pin(async move {
