@@ -10,10 +10,63 @@ pub trait ResumptionChannelManager: Send + Sync {
     fn list(&self, session_id: &str) -> Vec<TaskRecord>;
     fn was_background(&self, task_id: &str) -> bool;
     fn is_owned_team_member(&self, record: &TaskRecord, session_id: &str) -> bool;
+    fn resolve_owned_team_member<'a>(&'a self, record: &'a TaskRecord, session_id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        Box::pin(async move { self.is_owned_team_member(record, session_id) })
+    }
 }
 pub struct TaskResumptionChannelManager {
     pub manager: Arc<senpi_task::manager::TaskManager>,
     pub ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps,
+}
+
+#[derive(Clone, Copy)]
+enum Emission { Start, Changed, Shutdown }
+struct QueuedState { last_count: usize, tail: Option<tokio::sync::oneshot::Receiver<()>> }
+pub struct QueuedResumptionChannelEmitter {
+    events: EventBus,
+    manager: Arc<dyn ResumptionChannelManager>,
+    session_id: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    active: std::sync::atomic::AtomicBool,
+    state: std::sync::Mutex<QueuedState>,
+}
+struct Completion(Option<tokio::sync::oneshot::Sender<()>>);
+impl Drop for Completion { fn drop(&mut self) { if let Some(sender) = self.0.take() { let _ = sender.send(()); } } }
+impl QueuedResumptionChannelEmitter {
+    pub fn new(events: EventBus, manager: Arc<dyn ResumptionChannelManager>, session_id: Arc<dyn Fn() -> Option<String> + Send + Sync>) -> Arc<Self> {
+        Arc::new(Self { events, manager, session_id, active: std::sync::atomic::AtomicBool::new(false), state: std::sync::Mutex::new(QueuedState { last_count: 0, tail: None }) })
+    }
+    pub fn emit_session_start(self: &Arc<Self>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        self.active.store(true, std::sync::atomic::Ordering::SeqCst); self.enqueue(Emission::Start)
+    }
+    pub fn emit_if_changed(self: &Arc<Self>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> { self.enqueue(Emission::Changed) }
+    pub fn emit_shutdown(self: &Arc<Self>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        self.active.store(false, std::sync::atomic::Ordering::SeqCst); self.enqueue(Emission::Shutdown)
+    }
+    fn enqueue(self: &Arc<Self>, emission: Emission) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let previous = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tail.replace(receiver);
+        let completion = Completion(Some(sender)); let emitter = self.clone();
+        Box::pin(async move {
+            let _completion = completion;
+            if let Some(previous) = previous { let _ = previous.await; }
+            if matches!(emission, Emission::Changed) && !emitter.active.load(std::sync::atomic::Ordering::SeqCst) { return; }
+            let mut channels = Vec::new();
+            if !matches!(emission, Emission::Shutdown) && let Some(session) = (emitter.session_id)() {
+                for record in emitter.manager.list(&session) {
+                    if record.status.is_terminal() { continue; }
+                    if !emitter.manager.was_background(&record.task_id) && !emitter.manager.resolve_owned_team_member(&record, &session).await { continue; }
+                    let started = chrono::DateTime::parse_from_rfc3339(&record.created_at).map_or(Value::Null, |date| json!(date.timestamp_millis()));
+                    channels.push(json!({"id":record.task_id,"description":task_status_description(&record),"startedAtMs":started}));
+                }
+            }
+            {
+                let mut state = emitter.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if matches!(emission, Emission::Changed) && channels.len() == state.last_count { return; }
+                state.last_count = channels.len();
+            }
+            emitter.events.emit(RESUMPTION_CHANNEL_STATE_EVENT, &json!({"source":"senpi-task","activeCount":channels.len(),"channels":channels}));
+        })
+    }
 }
 impl ResumptionChannelManager for TaskResumptionChannelManager {
     fn list(&self,session:&str)->Vec<TaskRecord> {
