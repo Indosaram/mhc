@@ -292,6 +292,19 @@ pub struct ScopedModel { pub model: Model, pub thinking_level: Option<ThinkingLe
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServiceTier { Auto, Flex, Priority }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialAccountSource { Login, Import, Env }
+impl CredentialAccountSource {
+    pub const fn as_str(self) -> &'static str {
+        match self { Self::Login => "login", Self::Import => "import", Self::Env => "env" }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CredentialAccountSummary {
+    pub name: String, pub display_name: Option<String>, pub source: CredentialAccountSource,
+    pub blocked: bool, pub pinned: bool,
+}
+
 /// Host implementations adapt their owning registry, without an ext-api -> core edge.
 pub trait ModelRegistry: Send + Sync {
     fn get_all(&self) -> Vec<Model>;
@@ -299,6 +312,18 @@ pub trait ModelRegistry: Send + Sync {
     fn find(&self, provider: &str, id: &str) -> Option<Model>;
     fn has_configured_auth(&self, model: &Model) -> bool;
     fn get_api_key_for_provider<'a>(&'a self, provider: &'a str) -> ExtensionFuture<'a, Option<String>>;
+    fn get_credential_accounts<'a>(&'a self, _provider: &'a str) -> ExtensionFuture<'a, Vec<CredentialAccountSummary>> {
+        Box::pin(async { Err(ExtensionFailure::new("Credential account listing is not supported by this model registry")) })
+    }
+    fn pin_credential_account<'a>(&'a self, _provider: &'a str, _name: Option<&'a str>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async { Err(ExtensionFailure::new("Credential account pinning is not supported by this model registry")) })
+    }
+    fn remove_credential_account<'a>(&'a self, _provider: &'a str, _name: &'a str) -> ExtensionFuture<'a, ()> {
+        Box::pin(async { Err(ExtensionFailure::new("Credential account removal is not supported by this model registry")) })
+    }
+    fn rename_credential_account<'a>(&'a self, _provider: &'a str, _name: &'a str, _display_name: Option<&'a str>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async { Err(ExtensionFailure::new("Credential account renaming is not supported by this model registry")) })
+    }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionEntry { pub id: String, pub parent_id: Option<String>, pub timestamp: String, pub kind: String, pub data: JsonValue }
