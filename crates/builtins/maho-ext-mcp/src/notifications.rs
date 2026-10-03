@@ -5,7 +5,9 @@ use tokio::{task::JoinHandle,time::Instant};
 pub struct McpCatalogDiff {pub added:Vec<String>,pub removed:Vec<String>,pub unchanged:Vec<String>}
 pub fn diff_mcp_tool_names(previous:&[String],next:&[String])->McpCatalogDiff {
     let previous:BTreeSet<_>=previous.iter().cloned().collect();let next:BTreeSet<_>=next.iter().cloned().collect();
-    McpCatalogDiff {added:next.difference(&previous).cloned().collect(),removed:previous.difference(&next).cloned().collect(),unchanged:next.intersection(&previous).cloned().collect()}
+    let mut diff=McpCatalogDiff {added:next.difference(&previous).cloned().collect(),removed:previous.difference(&next).cloned().collect(),unchanged:next.intersection(&previous).cloned().collect()};
+    for names in [&mut diff.added,&mut diff.removed,&mut diff.unchanged] {names.sort_by_cached_key(|name|name.encode_utf16().collect::<Vec<_>>());}
+    diff
 }
 pub fn format_mcp_list_changed_delta(diff:&McpCatalogDiff)->String {
     let mut parts=Vec::new();

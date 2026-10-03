@@ -21,6 +21,14 @@ fn catalog_diff_is_sorted_and_deduplicated() {
     let diff=diff_mcp_tool_names(&strings(&["a","b","c"]),&strings(&["b","d","e","e"]));assert_eq!(diff,McpCatalogDiff {added:strings(&["d","e"]),removed:strings(&["a","c"]),unchanged:strings(&["b"])});
 }
 #[test]
+fn catalog_diff_uses_javascript_utf16_order() {
+    let names=vec!["\u{e000}".into(),"\u{10000}".into()];
+    let expected=vec!["\u{10000}".to_owned(),"\u{e000}".to_owned()];
+    assert_eq!(diff_mcp_tool_names(&[],&names).added,expected);
+    assert_eq!(diff_mcp_tool_names(&names,&[]).removed,expected);
+    assert_eq!(diff_mcp_tool_names(&names,&names).unchanged,expected);
+}
+#[test]
 fn delta_reports_additions_as_inactive() {
     assert_eq!(format_mcp_list_changed_delta(&McpCatalogDiff {added:vec!["a".into()],removed:vec!["b".into()],unchanged:vec![]}),"1 added (inactive), 1 removed");assert_eq!(format_mcp_list_changed_delta(&McpCatalogDiff {added:vec![],removed:vec![],unchanged:vec![]}),"no change");
 }

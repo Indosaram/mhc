@@ -52,5 +52,6 @@ pub fn skill_activation_targets(declarations:&SkillMcpDeclarations,skill:&str,re
         let Some(globs)=declaration.include_tools_by_skill.get(skill) else{continue;};
         for tool in registered {if &tool.server==server && match_include_tools(globs,&tool.tool_name){targets.insert(tool.name.clone());}}
     }
-    targets.into_iter().collect()
+    let mut targets=targets.into_iter().collect::<Vec<_>>();
+    targets.sort_by_cached_key(|name|name.encode_utf16().collect::<Vec<_>>());targets
 }
