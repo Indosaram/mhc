@@ -1,5 +1,5 @@
 use maho_ext_pi_goal::goal::{continuation::*,types::*};
-fn goal(status:GoalStatus)->Goal{Goal{id:"goal-1".into(),thread_id:"thread-1".into(),objective:"Keep going until complete".into(),status,token_budget:None,tokens_used:0,time_used_seconds:0,created_at:1777766400,updated_at:1777766400,last_started_at:None,blocked_reason:None,blocked_at:None,completed_at:None}}
+fn goal(status:GoalStatus)->Goal{Goal{id:"goal-1".into(),thread_id:"thread-1".into(),objective:"Keep going until complete".into(),status,token_budget:None,tokens_used:0.0,time_used_seconds:0.0,created_at:1777766400,updated_at:1777766400,last_started_at:None,blocked_reason:None,blocked_at:None,completed_at:None}}
 #[test]fn continues_active(){assert!(should_queue_goal_continuation_after_agent_end(Some(&goal(GoalStatus::Active)),false));}
 #[test]fn pending_stops_continuation(){assert!(!should_queue_goal_continuation_after_agent_end(Some(&goal(GoalStatus::Active)),true));}
 #[test]fn only_active_continues(){assert!(!should_queue_goal_continuation_after_agent_end(None,false));for status in [GoalStatus::Paused,GoalStatus::Blocked,GoalStatus::Complete]{assert!(!should_queue_goal_continuation_after_agent_end(Some(&goal(status)),false));}}

@@ -34,7 +34,7 @@ pub fn create_goal_at(reference:&GoalStoreRef,objective:&str,now:u64,id:String)-
     if current.as_ref().is_some_and(|goal|goal.status!=GoalStatus::Complete){return Err(GoalStoreError::GoalAlreadyExists("cannot create a new goal because this thread already has a goal".into()));}
     if validated.truncated{write_full(reference,objective)?;}
     if let Some(current)=current{archive_goal(reference,&current)?;}
-    let goal=Goal{id,thread_id:reference.thread_id.clone(),objective:validated.objective,status:GoalStatus::Active,token_budget:None,tokens_used:0,time_used_seconds:0,created_at:now,updated_at:now,last_started_at:Some(now),blocked_reason:None,blocked_at:None,completed_at:None};write_goal(reference,Some(&goal))?;Ok(goal)
+    let goal=Goal{id,thread_id:reference.thread_id.clone(),objective:validated.objective,status:GoalStatus::Active,token_budget:None,tokens_used:0.0,time_used_seconds:0.0,created_at:now,updated_at:now,last_started_at:Some(now),blocked_reason:None,blocked_at:None,completed_at:None};write_goal(reference,Some(&goal))?;Ok(goal)
 }
 pub fn update_goal(reference:&GoalStoreRef,update:&GoalUpdate,source:GoalUpdateSource)->Result<Goal,GoalStoreError>{update_goal_at(reference,update,source,now_seconds(),uuid::Uuid::new_v4().to_string())}
 pub fn account_goal_usage(reference:&GoalStoreRef,usage:&TokenUsageSnapshot,elapsed:f64,mode:GoalAccountingMode,expected_id:Option<&str>)->Result<Option<Goal>,GoalStoreError>{account_goal_usage_at(reference,usage,elapsed,mode,expected_id,now_seconds())}
@@ -42,14 +42,14 @@ pub fn account_goal_usage_at(reference:&GoalStoreRef,usage:&TokenUsageSnapshot,e
     let Some(mut goal)=read_goal(reference)?else{return Ok(None);};
     let allowed=match mode{GoalAccountingMode::Active=>goal.status==GoalStatus::Active,GoalAccountingMode::ActiveOrBlocked=>matches!(goal.status,GoalStatus::Active|GoalStatus::Blocked),GoalAccountingMode::ActiveOrComplete=>matches!(goal.status,GoalStatus::Active|GoalStatus::Complete)};
     if expected_id.is_some_and(|id|goal.id!=id)||!allowed{return Ok(Some(goal));}
-    let tokens=usage.input.max(0.0)+usage.output.max(0.0);
-    goal.tokens_used+=format!("{tokens:.0}").parse::<u64>().map_err(|e|e.to_string())?;
-    goal.time_used_seconds+=format!("{:.0}",elapsed.trunc().max(0.0)).parse::<u64>().map_err(|e|e.to_string())?;
+    let nonnegative=|value:f64|if value.is_nan(){value}else{value.max(0.0)};let tokens=nonnegative(usage.input)+nonnegative(usage.output);
+    goal.tokens_used+=tokens;
+    goal.time_used_seconds+=nonnegative(elapsed.trunc());
     goal.updated_at=now.max(goal.updated_at+1);write_goal(reference,Some(&goal))?;Ok(Some(goal))
 }
 pub fn update_goal_at(reference:&GoalStoreRef,update:&GoalUpdate,source:GoalUpdateSource,now:u64,id:String)->Result<Goal,GoalStoreError>{
     let current=read_goal(reference)?.ok_or_else(||GoalStoreError::GoalNotFound("cannot update goal: no goal exists".into()))?;let validated=update.objective.as_ref().map(|objective|validate_objective(objective,&objective_full_text_file_name(reference))).transpose()?;
     let objective=validated.as_ref().map_or(&current.objective,|v|&v.objective).clone();let token_budget=resolve_token_budget(current.token_budget,update.token_budget)?;let now=now.max(current.updated_at+1);let requested=update.status.or(update.objective.as_ref().map(|_|GoalStatus::Active));
-    let next=if update.objective.is_some()&&(objective!=current.objective||current.status==GoalStatus::Complete){let status=requested.unwrap_or(GoalStatus::Active);if status==GoalStatus::Blocked{return Err(GoalStoreError::InvalidArgument("objective replacement cannot create a blocked goal".into()));}Goal{id,thread_id:reference.thread_id.clone(),objective,status,token_budget,tokens_used:0,time_used_seconds:0,created_at:now,updated_at:now,last_started_at:(status==GoalStatus::Active).then_some(now),blocked_reason:None,blocked_at:None,completed_at:(status==GoalStatus::Complete).then_some(now)}}else{let mut next=transition_goal_status(&Goal{objective,..current.clone()},requested.unwrap_or(current.status),source,update.reason.as_deref(),now)?;next.token_budget=token_budget;next};
+    let next=if update.objective.is_some()&&(objective!=current.objective||current.status==GoalStatus::Complete){let status=requested.unwrap_or(GoalStatus::Active);if status==GoalStatus::Blocked{return Err(GoalStoreError::InvalidArgument("objective replacement cannot create a blocked goal".into()));}Goal{id,thread_id:reference.thread_id.clone(),objective,status,token_budget,tokens_used:0.0,time_used_seconds:0.0,created_at:now,updated_at:now,last_started_at:(status==GoalStatus::Active).then_some(now),blocked_reason:None,blocked_at:None,completed_at:(status==GoalStatus::Complete).then_some(now)}}else{let mut next=transition_goal_status(&Goal{objective,..current.clone()},requested.unwrap_or(current.status),source,update.reason.as_deref(),now)?;next.token_budget=token_budget;next};
     if validated.is_some_and(|v|v.truncated){write_full(reference,update.objective.as_deref().unwrap_or(""))?;}write_goal(reference,Some(&next))?;Ok(next)
 }

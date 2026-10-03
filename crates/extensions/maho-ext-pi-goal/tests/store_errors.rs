@@ -1,6 +1,33 @@
 use maho_ext_pi_goal::goal::{errors::GoalStoreError, store::{parse_goal_file, read_goal}, types::GoalStoreRef};
 
 #[test]
+fn fractional_usage_is_written_without_rounding_then_rejected_at_read_boundary() {
+    use maho_ext_pi_goal::goal::{store::*,types::*};
+    let root=tempfile::tempdir().expect("fixture");
+    let reference=GoalStoreRef{base_dir:root.path().into(),thread_id:"fraction".into()};
+    create_goal_at(&reference,"numeric fixture",10,"id".into()).expect("create");
+    account_goal_usage_at(&reference,&TokenUsageSnapshot{input:0.25,output:0.5,..Default::default()},1.9,GoalAccountingMode::Active,None,11).expect("account");
+    let raw:serde_json::Value=serde_json::from_slice(&std::fs::read(goal_file_path(&reference)).expect("file")).expect("JSON");
+    assert_eq!(raw["goal"]["tokensUsed"],serde_json::json!(0.75));
+    assert_eq!(raw["goal"]["timeUsedSeconds"].as_f64(),Some(1.0));
+    assert!(matches!(read_goal(&reference),Err(GoalStoreError::InvalidGoalStore(_))));
+}
+
+#[test]
+fn nonfinite_usage_persists_null_fields_then_fails_source_read_validation() {
+    use maho_ext_pi_goal::goal::{store::*,types::*};
+    let root=tempfile::tempdir().expect("fixture");
+    for (name,value) in [("nan",f64::NAN),("infinity",f64::INFINITY)] {
+        let reference=GoalStoreRef{base_dir:root.path().into(),thread_id:name.into()};
+        create_goal_at(&reference,"numeric fixture",10,"id".into()).expect("create");
+        account_goal_usage_at(&reference,&TokenUsageSnapshot{input:value,..Default::default()},value,GoalAccountingMode::Active,None,11).expect("account");
+        let raw:serde_json::Value=serde_json::from_slice(&std::fs::read(goal_file_path(&reference)).expect("file")).expect("JSON");
+        assert!(raw["goal"]["tokensUsed"].is_null());assert!(raw["goal"]["timeUsedSeconds"].is_null());
+        assert!(matches!(read_goal(&reference),Err(GoalStoreError::InvalidGoalStore(_))));
+    }
+}
+
+#[test]
 fn parse_errors_preserve_source_identities() {
     assert!(matches!(parse_goal_file("false"), Err(GoalStoreError::InvalidGoalStore(_))));
     assert!(matches!(parse_goal_file(r#"{"version":2,"goal":null}"#), Err(GoalStoreError::UnsupportedGoalStoreVersion(_))));

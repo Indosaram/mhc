@@ -1,0 +1,11 @@
+Pinned source: 6937ce1d9ae2f9c3da11041cdf953ebe01303668 src/goal/store.ts
+Command: timeout 20 bun --eval <createGoal/accountGoalUsage/readGoal machine-field probe>
+Root: /home/indo/.omo/agent/git/github.com/code-yeongyu/pi-goal
+fraction input=0.25 output=0.5 elapsed=1.9: returned/persisted tokensUsed=0.75 timeUsedSeconds=1; readGoal rejects InvalidGoalStoreError.
+negative input=-2 output=3.25 elapsed=-1.9: returned/persisted tokensUsed=3.25 timeUsedSeconds=0; readGoal rejects InvalidGoalStoreError.
+NaN input, elapsed: returned NaN counters serialize null; readGoal rejects InvalidGoalStoreError.
+Infinity input, elapsed: returned Infinity counters serialize null; readGoal rejects InvalidGoalStoreError.
+Exit: 0. Temporary source probe directory removed in finally; no servers/tasks/sleeps.
+Earlier Node --import tsx attempt failed before execution because tsx is not installed; direct Bun source execution succeeded.
+Native pre-fix fractional reproduction failed persisted tokensUsed 1 versus expected 0.75 (fractional-reproduction.log).
+Minimal change: counters only become f64, preserve source Math.max NaN semantics; timestamps and tokenBudget remain integer validated fields.
