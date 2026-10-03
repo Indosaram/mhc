@@ -2008,6 +2008,15 @@ dependencies = [
 [[package]]
 name = "maho-ext-account"
 version = "0.0.0"
+dependencies = [
+ "maho-core",
+ "maho-ext-api",
+ "maho-ext-builtin-loose",
+ "maho-ext-host",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-anthropic-bash"
