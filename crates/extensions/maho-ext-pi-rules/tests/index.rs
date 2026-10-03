@@ -40,6 +40,22 @@ fn registers_four_injection_hooks_and_presence_flags(){
     assert_eq!(api.registered.commands.len(),2);assert!(api.registered.commands.iter().any(|command|command.name=="rules"));assert!(api.registered.commands.iter().any(|command|command.name=="reload-rules"));
 }
 #[tokio::test]
+async fn registered_rules_command_completes_source_prefixes() {
+    let root = tempfile::tempdir().expect("isolated root");
+    let mut api = ExtensionApi::new(LoadedExtension::new("pi-rules", root.path().into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+    register_fixture(&mut api, root.path());
+    let runner = maho_ext_host::runner::ExtensionRunner::new(
+        vec![api.registered], api.runtime, api.events, context(root.path()));
+    for (prefix, expected) in [("", vec!["list", "show", "paths", "status"]), ("s", vec!["show", "status"]), ("paths", vec!["paths"])] {
+        let items = runner.get_command_argument_completions("rules", prefix).await.expect("completion result").expect("matching items");
+        assert_eq!(items.iter().map(|item| item.value.as_str()).collect::<Vec<_>>(), expected);
+        assert!(items.iter().all(|item| item.label == item.value && item.description.is_none()));
+    }
+    assert!(runner.get_command_argument_completions("rules", "missing").await.expect("unmatched prefix").is_none());
+    assert!(runner.get_command_argument_completions("reload-rules", "").await.expect("reload command").is_none());
+}
+#[tokio::test]
 async fn static_hook_is_immutable_deduplicated_and_session_resettable(){
     let temp=tempfile::tempdir().expect("temp");std::fs::create_dir(temp.path().join(".git")).expect("project marker");std::fs::write(temp.path().join("AGENTS.md"),"fixture rule").expect("rule");let ctx=context(temp.path());let mut api=ExtensionApi::new(LoadedExtension::new("pi-rules",temp.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());register_fixture(&mut api,temp.path());
     let mut event=ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent{prompt:"test".into(),images:None,system_prompt:"original".into(),system_prompt_options:BuildSystemPromptOptions::default()});let hook=&api.registered.handlers[&EventKind::BeforeAgentStart][0];let result=hook(&mut event,&ctx).await.expect("first");let EventResult::BeforeAgentStart(result)=result else{panic!("injection")};assert!(result.system_prompt.expect("prompt").starts_with("original"));let ExtensionEvent::BeforeAgentStart(original)=&event else{panic!("event")};assert_eq!(original.system_prompt,"original");assert!(matches!(hook(&mut event,&ctx).await.expect("dedup"),EventResult::None));

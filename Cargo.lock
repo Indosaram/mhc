@@ -2426,6 +2426,7 @@ dependencies = [
  "globset",
  "icu_collator",
  "maho-ext-api",
+ "maho-ext-host",
  "maho-interactive",
  "maho-tui",
  "serde_json",
