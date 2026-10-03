@@ -249,14 +249,14 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
             }
         }))
     } else {None};
-    if threshold {model.context_window=40000;}
+    if threshold || variant=="reminder" {model.context_window=40000;}
     let (started, mut started_rx) = tokio::sync::mpsc::channel(1);
     provider.set_responses(if cancel { vec![maho_ai::providers::faux::FauxResponseStep::Factory(Arc::new(move |_,options,_,_| {
         let started=started.clone();
         let signal=options.and_then(|options|options.stream.request.signal.clone()).expect("native compaction scenario invariant");
         Box::pin(async move {started.send(()).await.expect("native compaction scenario invariant");signal.cancelled().await;faux_assistant_message(Vec::<ContentBlock>::new(),FauxAssistantMessageOptions {stop_reason:Some(maho_ai::types::StopReason::Aborted),..Default::default()})})
     }))] } else {vec![faux_assistant_message(vec![ContentBlock::text("<summary>native checkpoint</summary>")], FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into()]});
-    if threshold {provider.append_responses(vec![faux_assistant_message(vec![ContentBlock::text("continued")],Default::default()).into()]);}
+    if threshold || variant=="reminder" {provider.append_responses(vec![faux_assistant_message(vec![ContentBlock::text("continued")],Default::default()).into()]);}
     if variant=="overflow" {
         provider.set_responses(vec![maho_ai::utils::lazy::setup_error_message(&model,"maximum context length exceeded").into(),faux_assistant_message(vec![ContentBlock::text("summary after shrink")],Default::default()).into(),faux_assistant_message(vec![ContentBlock::text("continued")],Default::default()).into()]);
     } else if variant=="fallback" {
@@ -276,11 +276,12 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
         manager.append_message(serde_json::json!({"role":"assistant","content":[{"type":"text","text":"middle reply"}],"api":model.api,"provider":model.provider,"model":model.id,"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0}));
     }
     manager.append_message(serde_json::json!({"role":"user","content":"continue","timestamp":0}));
-    if threshold {
-        manager.append_message(serde_json::json!({"role":"assistant","content":[{"type":"text","text":"ready"}],"api":model.api,"provider":model.provider,"model":model.id,"usage":{"input":30000,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":30000,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0}));
+    if threshold || variant=="reminder" {
+        let input=if variant=="reminder" {20000} else {30000};
+        manager.append_message(serde_json::json!({"role":"assistant","content":[{"type":"text","text":"ready"}],"api":model.api,"provider":model.provider,"model":model.id,"usage":{"input":input,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":input,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0}));
     }
     let agent=maho_agent_for_test(model);
-    if threshold {agent.set_messages(manager.build_context(manager.leaf_id()).messages.into_iter().map(|value|serde_json::from_value(value).expect("seeded native message")).collect());}
+    if threshold || variant=="reminder" {agent.set_messages(manager.build_context(manager.leaf_id()).messages.into_iter().map(|value|serde_json::from_value(value).expect("seeded native message")).collect());}
     let storage = maho_core::settings_manager::InMemorySettingsStorage::default();
     maho_core::settings_manager::SettingsStorage::with_lock(&storage, maho_core::settings_manager::SettingsScope::Global,
         &mut |_|Some(if variant=="fractional" {serde_json::json!({"compaction":{"keepRecentTokens":1,"reserveTokens":100,"speculativeEnabled":false,"speculativeFraction":0.42,"speculativeCooldownMs":321.5,"restorationEnabled":false,"restorationMaxItems":2.5,"restorationMaxTokensPerItem":11.5,"restorationMaxTotalTokens":22.5,"restorationContextRatio":0.03,"idleCompactionEnabled":false,"graceBandEnabled":false,"toolAdmissionEnabled":false,"reminderEnabled":false,"reserveScalingEnabled":false,"speculativeLeadTokens":12000.5,"summarizationMaxDurationMs":90000.5}})} else {serde_json::json!({"compaction":{"keepRecentTokens":1}})}.to_string())).expect("native compaction scenario invariant");
@@ -292,9 +293,19 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
         uses_default_stream_function: Some(false), initial_active_tool_names: None, default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: None, base_tools_override: None, session_start_event: None, auto_title_sessions: Some(false),
     }).expect("native compaction scenario invariant");
     let observed_signal=Arc::new(std::sync::Mutex::new(None));
+    if variant=="reminder" {
+        session.with_settings_manager_mut(|manager|manager.set(maho_core::settings_manager::SettingsScope::Global,&serde_json::Map::from_iter([("compaction".into(),serde_json::json!({"keepRecentTokens":1,"reserveTokens":100,"speculativeEnabled":false,"idleCompactionEnabled":false,"reminderEnabled":true}))]))).expect("reminder policy");
+    }
     session.set_extension_runner(maho_ext_host::ExtensionRunner::from_static(vec![Box::new(CancellationObserver(Arc::clone(&observed_signal))),Box::new(maho_ext_compaction::CompactionExtension)],context())).await;
     if variant=="fractional" {
         session.set_extension_runner(maho_ext_host::ExtensionRunner::from_static(vec![Box::new(LiveFractionalObserver),Box::new(maho_ext_compaction::CompactionExtension)],context())).await;
+    }
+    if variant=="reminder" {
+        for prompt in ["first","second"] {tokio::time::timeout(std::time::Duration::from_secs(10),session.prompt(prompt,Default::default())).await.expect("bounded reminder prompt").expect("reminder prompt");}
+        let calls=provider.get_call_log();assert_eq!(calls.len(),2);
+        assert_ne!(calls[0].context.system_prompt,calls[1].context.system_prompt,"reminder lease must not repeat on the next request");
+        assert!(!session.with_session_manager(|manager|manager.entries()).iter().any(|entry|entry["type"]=="compaction"));
+        session.dispose().await;provider.unregister();println!("PASS reminder: real repeated provider requests consume one epoch lease; cleanup: disposed session, unregistered faux, tempdir dropped");return;
     }
     if cancel || remote_cancel {
         let operation=session.compact(None);tokio::pin!(operation);
@@ -391,6 +402,9 @@ impl Extension for LiveFractionalObserver {
 
 #[tokio::test]
 async fn native_real_session_consumes_all_nondefault_fractional_settings() {run_native_variant(false,false,"fractional").await;}
+
+#[tokio::test]
+async fn native_repeated_requests_do_not_repeat_reminder_lease() {run_native_variant(false,false,"reminder").await;}
 
 struct NativeResponsesStreams;
 impl maho_ai::types::ProviderStreams for NativeResponsesStreams {

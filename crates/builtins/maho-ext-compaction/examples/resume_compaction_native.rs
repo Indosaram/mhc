@@ -8,6 +8,7 @@ async fn main() {
             println!("PASS policy: registered context consumes disabled then live enabled admission gate; cleanup: no background resources");
         }
         Some("fractional") => run_native_variant(false,false,"fractional").await,
+        Some("reminder") => run_native_variant(false,false,"reminder").await,
         Some("threshold") => run_native_scenario(false,true).await,
         Some("cancellation") => run_native_scenario(true,false).await,
         Some("overflow") => run_native_variant(false,true,"overflow").await,
