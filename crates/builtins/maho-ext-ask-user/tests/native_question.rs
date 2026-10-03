@@ -26,6 +26,9 @@ async fn scenario_order(cancel: bool, fail_append: bool, abort: bool, timeout: b
     scenario_recovery(cancel, fail_append, abort, timeout, reload, late_rebind, false).await
 }
 async fn scenario_recovery(cancel: bool, fail_append: bool, abort: bool, timeout: bool, reload: bool, late_rebind: bool, recovering: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    scenario_ui_failure(cancel,fail_append,abort,timeout,reload,late_rebind,recovering,false).await
+}
+async fn scenario_ui_failure(cancel: bool, fail_append: bool, abort: bool, timeout: bool, reload: bool, late_rebind: bool, recovering: bool, fail_ui:bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let root = tempfile::tempdir()?;
     let project = root.path();
     let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
@@ -58,6 +61,7 @@ async fn scenario_recovery(cancel: bool, fail_append: bool, abort: bool, timeout
     if !loaded.errors.is_empty() { return Err(format!("Factory errors: {:?}", loaded.errors).into()); }
     let (opened, mut opened_rx) = tokio::sync::mpsc::unbounded_channel();
     let (responses, response_rx) = tokio::sync::watch::channel(None);
+    let mut responses=Some(responses);
     let ui = Arc::new(context::DecisionUi { opened, responses: response_rx });
     let mut event_context = context::create(&session, ui.clone());
     event_context.mode = ExtensionMode::Tui;
@@ -138,13 +142,15 @@ async fn scenario_recovery(cancel: bool, fail_append: bool, abort: bool, timeout
     let mut completion = pending[0].completion.clone();
     if reload {
         if !late_rebind {
-            responses.send_replace(Some(QuestionResponse {status:QuestionStatus::Answered,answers:[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into(),comment:None,unanswered:vec![],auto_resolved_after_ms:None}));
+            responses.as_ref().expect("response sender").send_replace(Some(QuestionResponse {status:QuestionStatus::Answered,answers:[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into(),comment:None,unanswered:vec![],auto_resolved_after_ms:None}));
         }
         session.emit_session_shutdown(SessionReason::Reload).await;
         if pending[0].owner.borrow().is_some() { return Err("Reload did not detach owner".into()); }
         extension_runtime.invalidate("old question runner invalidated");
     }
-    if timeout {
+    if fail_ui {
+        drop(responses.take());
+    } else if timeout {
         tokio::time::advance(std::time::Duration::from_secs(30 * 60)).await;
     } else if abort {
         controller.abort(None);
@@ -152,7 +158,7 @@ async fn scenario_recovery(cancel: bool, fail_append: bool, abort: bool, timeout
         session.emit_session_shutdown(SessionReason::Quit).await;
         if !get_pending_questions(&session.session_id()).is_empty() { return Err("Shutdown left pending question".into()); }
     } else if !late_rebind {
-        responses.send_replace(Some(QuestionResponse {status:QuestionStatus::Answered, answers:[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into(),comment:None,unanswered:vec![],auto_resolved_after_ms:None}));
+        responses.as_ref().expect("response sender").send_replace(Some(QuestionResponse {status:QuestionStatus::Answered, answers:[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into(),comment:None,unanswered:vec![],auto_resolved_after_ms:None}));
     }
     if !late_rebind { tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop { if completion.borrow().is_some() { break; } completion.changed().await?; }
@@ -174,7 +180,7 @@ async fn scenario_recovery(cancel: bool, fail_append: bool, abort: bool, timeout
             if reopened != request || pending[0].owner.borrow().is_none() || completion.borrow().is_some() || !settlements.lock().expect("settlements").is_empty() {
                 return Err("Late publication barrier did not preserve pending reattached request".into());
             }
-            responses.send_replace(Some(QuestionResponse {status:QuestionStatus::Answered, answers:[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into(),comment:None,unanswered:vec![],auto_resolved_after_ms:None}));
+            responses.as_ref().expect("response sender").send_replace(Some(QuestionResponse {status:QuestionStatus::Answered, answers:[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into(),comment:None,unanswered:vec![],auto_resolved_after_ms:None}));
             tokio::time::timeout(std::time::Duration::from_secs(5), async {
                 loop { if completion.borrow().is_some() { break; } completion.changed().await?; }
                 Ok::<(), tokio::sync::watch::error::RecvError>(())
@@ -210,7 +216,8 @@ async fn scenario_recovery(cancel: bool, fail_append: bool, abort: bool, timeout
         let persisted = entries.iter().filter(|entry| entry["type"] == "custom" && entry["customType"] == "ask-user:settlement" && entry["data"]["requestId"] == request.request_id).count();
         if persisted != 1 { return Err(format!("Reload settlement persistence: expected one, got {persisted}").into()); }
     }
-    if status != Some(if timeout {QuestionStatus::TimedOut} else if cancel || abort {QuestionStatus::Cancelled} else {QuestionStatus::Answered}) || !get_pending_questions(&session.session_id()).is_empty() || notification_count != usize::from(!cancel && !abort) || request.request_id != pending[0].request.request_id {
+    if fail_ui && !completion.borrow().as_ref().and_then(|response|response.comment.as_ref()).is_some_and(|comment|comment.contains("UI response channel closed")){return Err("Recovered UI failure lost error comment".into());}
+    if status != Some(if fail_ui {QuestionStatus::OrphanedAfterRestart} else if timeout {QuestionStatus::TimedOut} else if cancel || abort {QuestionStatus::Cancelled} else {QuestionStatus::Answered}) || !get_pending_questions(&session.session_id()).is_empty() || notification_count != usize::from(!cancel && !abort) || request.request_id != pending[0].request.request_id {
         return Err(format!("Settlement receipt: status={status:?}, notifications={notification_count}").into());
     }
     Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
@@ -254,6 +261,9 @@ async fn detached_owner_rebinds_before_late_registered_publication() { scenario_
 
 #[tokio::test]
 async fn resumed_waiting_call_opens_original_request_without_duplicate_recovery() { scenario_recovery(false,false,false,false,false,false,true).await.expect("registered resume recovery"); }
+
+#[tokio::test]
+async fn recovered_ui_failure_settles_orphaned_with_comment_and_tears_down(){scenario_ui_failure(false,false,false,false,false,false,true,true).await.expect("recovered failure");}
 
 struct FailingPersistence;
 impl ExtensionActions for FailingPersistence {
