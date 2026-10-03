@@ -18,6 +18,13 @@ fn platform_candidate_order() {
     assert_eq!(candidates_for(EvalLanguage::Py, true), ["python", "py -3", "python3"]);
     assert_eq!(candidates_for(EvalLanguage::Py, false), ["python3", "python"]);
 }
+
+#[test]
+fn version_spacing_matches_ecmascript_whitespace() {
+    assert_eq!(parse_version("Python\u{feff}3.12"),Some("3.12".into()));
+    assert!(parse_version("Python\u{0085}3.12").is_none());
+    assert_eq!(parse_version("julia\u{2028}version\u{00a0}1.12"),Some("1.12".into()));
+}
 #[tokio::test]
 async fn caches_real_python_detection() {
     let mut detector = InterpreterDetector::new("24.1.0".into(), false);
