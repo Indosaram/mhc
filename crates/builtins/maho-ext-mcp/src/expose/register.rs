@@ -24,12 +24,17 @@ pub fn build_mcp_tool_definitions(entries:&[McpToolCatalogEntry],agent_dir:PathB
                 call.signal.check()?;
                 let params=if call.params.is_object(){call.params}else{json!({})};
                 let operation=||async {
-                if let Some(ensure_connected)=&entry.ensure_connected {ensure_connected().await?;}
-                if let Some(ensure_fresh)=&entry.ensure_fresh {ensure_fresh().await?;}
+                if let Some(ensure_fresh)=&entry.ensure_fresh && let Err(error)=ensure_fresh().await {
+                    return Err(entry.runtime.as_ref().and_then(|runtime|crate::health::mark_mcp_connection_needs_auth(&runtime.connection,&error)).unwrap_or(error));
+                }
                 let client=if let Some(runtime)=&entry.runtime {
                     runtime.health.ensure_connection(&runtime.connection).await?;
+                    if let Some(ensure_connected)=&entry.ensure_connected {ensure_connected().await?;}
                     runtime.connection.client()?
-                }else{entry.client.clone().ok_or_else(||crate::errors::McpError::new(crate::errors::McpErrorKind::Connect,"MCP catalog entry has no connection"))?};
+                }else{
+                    if let Some(ensure_connected)=&entry.ensure_connected {ensure_connected().await?;}
+                    entry.client.clone().ok_or_else(||crate::errors::McpError::new(crate::errors::McpErrorKind::Connect,"MCP catalog entry has no connection"))?
+                };
                 let token=format!("native:{}:{}:{}:{}",entry.server,entry.tool,call.id,NEXT_PROGRESS_TOKEN.fetch_add(1,Ordering::Relaxed));
                 let mut notifications=client.notifications.subscribe();
                 let mut notifications_open=true;

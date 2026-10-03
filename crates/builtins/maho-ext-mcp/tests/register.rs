@@ -88,3 +88,20 @@ async fn cached_native_tool_connects_only_on_execute_and_uses_entry_artifacts() 
     assert!(matches!(&result.content[0],ToolContent::Text {text,..} if text.contains("Full output saved to:")));assert!(artifact_root.path().join("tmp/mcp-out").exists());assert!(!root.path().join("tmp/mcp-out").exists());
     lifecycle.dispose();connection.dispose().await.unwrap();artifacts.cleanup().unwrap();
 }
+#[tokio::test]
+async fn terminal_auth_refresh_blocks_cached_connect_and_marks_needs_auth() {
+    use maho_ext_mcp::{connection::*,errors::*};
+    let root=tempfile::tempdir().unwrap();
+    let config=McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some("/missing/never-spawn".into()),..Default::default()};
+    let connection=ServerConnection::new("auth",config.clone(),None,Arc::new(Mutex::new(McpLogger::new("auth",root.path(),None).unwrap())));
+    let lifecycle=maho_ext_mcp::idle::McpConnectionLifecycle::configure(connection.clone(),config);
+    let cached=maho_ext_mcp::catalog_cache::McpCachedServerCatalog {config_hash:"hash".into(),fetched_at:0.0,tools:vec![json!({"name":"tool","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None};
+    let runtime=Arc::new(maho_ext_mcp::catalog::McpCatalogRuntime {connection:connection.clone(),lifecycle:lifecycle.clone(),health:Default::default()});
+    let connected=Arc::new(std::sync::atomic::AtomicBool::new(false));let observed=connected.clone();
+    let mut entries=maho_ext_mcp::catalog::cached_mcp_catalog_entries("auth",&cached,runtime,Duration::from_secs(2),Arc::new(move ||{observed.store(true,std::sync::atomic::Ordering::SeqCst);Box::pin(async {Ok(())})}));
+    entries[0].ensure_fresh=Some(Arc::new(||Box::pin(async {Err(McpError::new(McpErrorKind::Auth,"fixture refresh requires auth"))})));
+    let artifacts=Arc::new(McpOutputArtifacts::default());let tools=build_mcp_tool_definitions(&entries,root.path().into(),artifacts.clone(),None);
+    let result=(tools[0].execute)(ToolCall {id:"auth",params:json!({}),signal:Default::default(),on_update:None,context:None}).await;
+    let state=connection.state();lifecycle.dispose();connection.dispose().await.unwrap();artifacts.cleanup().unwrap();
+    assert!(result.is_err());assert!(!connected.load(std::sync::atomic::Ordering::SeqCst));assert_eq!(state,ServerConnectionState::NeedsAuth);
+}
