@@ -63,7 +63,7 @@ pub fn read_run_text_tail(path: &Path, max_bytes: usize) -> Result<String, Artif
     let size = file.metadata()?.len();
     let limit = u64::try_from(max_bytes).map_err(|_| ArtifactError::InvalidOutputLimit)?;
     file.seek(SeekFrom::Start(size.saturating_sub(limit)))?;
-    let mut buffer = Vec::new(); file.read_to_end(&mut buffer)?;
+    let mut buffer = Vec::new(); file.take(size.min(limit)).read_to_end(&mut buffer)?;
     let text = String::from_utf8_lossy(&buffer);
     Ok(if size > limit { format!("[truncated to last {max_bytes} bytes]\n{text}") } else { text.into_owned() })
 }

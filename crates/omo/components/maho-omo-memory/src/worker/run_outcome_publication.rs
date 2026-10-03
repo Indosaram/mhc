@@ -12,8 +12,9 @@ pub fn publish_run_outcome(run_dir: &Path, manifest: &RunLaunchManifest, outcome
         if run_dir.join("final.json").exists() || run_dir.join("abandoned.json").exists() { return Ok(()); }
         let claim=read_run_terminal_claim(run_dir).map_err(|error|error.to_string())?;
         if !run_terminal_claim_matches(&claim,&manifest.run_id,attempt,Some(RunTerminalClaimKind::Publish)) { return Ok(()); }
-        let stdout=std::fs::read_to_string(&manifest.stdout_path).map_err(|error|error.to_string())?;
-        let stderr=std::fs::read_to_string(&manifest.stderr_path).map_err(|error|error.to_string())?;
+        let stdout=std::fs::read(&manifest.stdout_path).map_err(|error|error.to_string())?;
+        let stderr=std::fs::read(&manifest.stderr_path).map_err(|error|error.to_string())?;
+        let stdout=String::from_utf8_lossy(&stdout);let stderr=String::from_utf8_lossy(&stderr);
         let retrying=is_retryable_model_miss(&ModelMissResult {code:outcome.child_exit.code,stdout:&stdout,stderr:&stderr,timed_out:outcome.timed_out});
         if retrying && let Some(next)=&manifest.next_attempt {
             let ledger=run_dir.join("ledger.json");
@@ -36,6 +37,12 @@ pub fn publish_run_outcome(run_dir: &Path, manifest: &RunLaunchManifest, outcome
 mod tests {
     use super::*;
     use super::super::run_artifacts::{RunKind,RunAttempt,ChildExit,read_run_json};
+    #[test] fn non_utf8_child_logs_do_not_prevent_durable_outcome() {
+        let root=tempfile::tempdir().unwrap();let (manifest,outcome)=fixture(root.path());
+        std::fs::write(&manifest.stdout_path,[0xff]).unwrap();std::fs::write(&manifest.stderr_path,[0xfe]).unwrap();
+        publish_run_outcome(root.path(),&manifest,&outcome,|operation|operation()).unwrap();
+        let published:RunOutcome=read_run_json(&root.path().join("outcome.json")).unwrap();assert_eq!(published.child_exit.code,Some(0));
+    }
     fn fixture(root:&Path)->(RunLaunchManifest,RunOutcome) {
         let stdout=root.join("stdout"); let stderr=root.join("stderr"); std::fs::write(&stdout,"").unwrap(); std::fs::write(&stderr,"").unwrap();
         write_run_json_atomic(&root.join("ledger.json"),&serde_json::json!({"attempt":1,"model":"old","thinking":"high","pid":42,"processStart":"start","childPid":43,"childProcessStart":"child"}),0o600).unwrap();
