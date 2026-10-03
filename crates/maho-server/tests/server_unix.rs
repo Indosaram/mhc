@@ -16,6 +16,20 @@ use tokio::{
 const ID: &str = "00000000-0000-4000-8000-000000000001";
 const MAX: u32 = 1024 * 1024;
 #[tokio::test]
+async fn listener_creates_owner_only_parent_without_changing_existing_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory=tempfile::tempdir().unwrap();
+    let parent=directory.path().join("private");
+    let path=parent.join("server.sock");
+    let mut listener=UnixServer::start(Server::new(Arc::new(Host),ID.into(),Some(MAX),None).unwrap(),path.clone()).await.unwrap();
+    assert_eq!(std::fs::metadata(&parent).unwrap().permissions().mode()&0o777,0o700);
+    listener.close().await.unwrap();
+    std::fs::set_permissions(&parent,std::fs::Permissions::from_mode(0o750)).unwrap();
+    let mut listener=UnixServer::start(Server::new(Arc::new(Host),ID.into(),Some(MAX),None).unwrap(),path).await.unwrap();
+    assert_eq!(std::fs::metadata(&parent).unwrap().permissions().mode()&0o777,0o750);
+    listener.close().await.unwrap();
+}
+#[tokio::test]
 async fn listener_options_validate_before_publication_and_apply_mode() {
     use maho_server::server::unix::UnixListenerOptions;
     use std::os::unix::fs::PermissionsExt;

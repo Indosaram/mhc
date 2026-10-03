@@ -157,7 +157,7 @@ impl UnixServer {
         let parent = path
             .parent()
             .ok_or_else(|| ServerError::new("invalid_request", "Socket path has no parent"))?;
-        tokio::fs::create_dir_all(parent).await?;
+        tokio::fs::DirBuilder::new().recursive(true).mode(0o700).create(parent).await?;
         remove_stale_socket(&path).await?;
         let hash = format!("{:x}", Sha256::digest(path.to_string_lossy().as_bytes()));
         let owned = parent.join(format!("bind-{}", &hash[..8]));
