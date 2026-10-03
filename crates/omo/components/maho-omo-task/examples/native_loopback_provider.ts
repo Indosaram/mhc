@@ -38,6 +38,7 @@ const server = Bun.serve({
         controller.enqueue(chunk({ role: "assistant", content: cancel ? "task44-cancellation-held" : content }, null));
         if (cancel) {
           request.signal.addEventListener("abort", () => {
+            if (transportClosed) return;
             console.log(JSON.stringify({ receipt: "provider_abort", text }));
             observeTransportClose();
             controller.close();

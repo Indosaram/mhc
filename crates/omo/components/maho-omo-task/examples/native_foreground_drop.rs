@@ -56,7 +56,9 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
     let cleanup=Cleanup { component:component.clone(),processes:processes.clone() };
     let mut context=support::context(); context.cwd=home.into();
     let mut start=ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::New,initial_model_provenance:None,previous_session_file:None });
-    for handler in &api.registered.handlers[&EventKind::SessionStart] { handler(&mut start,&context).await?; }
+    for handler in &api.registered.handlers[&EventKind::SessionStart] {
+        tokio::time::timeout(Duration::from_secs(15),handler(&mut start,&context)).await??;
+    }
     let task=api.registered.tools.iter().find(|tool| tool.definition.name=="task").ok_or("task missing")?;
     let (ready,received)=tokio::sync::oneshot::channel();
     let (closed,closure)=std::sync::mpsc::channel();
