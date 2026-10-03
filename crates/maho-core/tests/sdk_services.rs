@@ -32,8 +32,16 @@ async fn services_mount_preserves_settings_and_consumes_loaded_factory_once() {
     created.services.settings_manager.lock().expect("shared settings").apply_overrides(
         &serde_json::Map::from_iter([("fixtureSetting".into(), 9.into())]));
     let live_value = created.session.with_settings_manager(|manager| manager.get_value("fixtureSetting").cloned());
-    created.session.dispose().await;
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let initial_calls = calls.load(Ordering::SeqCst);
+    let shared_auth = created.services.auth_storage.clone();
+    let mut host = maho_core::agent_session_runtime::AgentSessionRuntime::new(created.session, created.services, Vec::new(), None, None);
+    let replacement = tokio::time::timeout(std::time::Duration::from_secs(5), host.new_session(None, None)).await;
+    let same_auth = Arc::ptr_eq(&shared_auth, &host.session().model_runtime().credentials);
+    host.session().dispose().await;
+    assert_eq!(initial_calls, 1);
+    replacement.expect("bounded host replacement").expect("host replacement");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert!(same_auth);
     assert_eq!(mounted_value, Some(7.into()));
     assert_eq!(live_value, Some(9.into()));
 }
