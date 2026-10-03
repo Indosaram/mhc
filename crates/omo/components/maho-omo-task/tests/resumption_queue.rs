@@ -2,6 +2,38 @@ use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 use maho_ext_api::EventBus;
 use maho_omo_task::resumption_channel_emitter::{QueuedResumptionChannelEmitter, ResumptionChannelManager, RESUMPTION_CHANNEL_STATE_EVENT};
 use senpi_task::state::{TaskRecord, TaskRecordInput, create_task_record};
+#[tokio::test]
+async fn owned_worker_delivers_changed_count_and_suppresses_unchanged_snapshot() {
+    use maho_omo_task::resumption_channel_emitter::OwnedResumptionChannels;
+    struct Records(Mutex<Vec<TaskRecord>>);
+    impl ResumptionChannelManager for Records {
+        fn list(&self, _: &str) -> Vec<TaskRecord> { self.0.lock().expect("records").clone() }
+        fn was_background(&self, _: &str) -> bool { true }
+        fn is_owned_team_member(&self, _: &TaskRecord, _: &str) -> bool { panic!("background must short-circuit ownership") }
+    }
+    let record=create_task_record(TaskRecordInput::default(),Some(1)).expect("record");
+    let manager=Arc::new(Records(Mutex::new(vec![record.clone()])));
+    let events=EventBus::default(); let (emitted,received)=std::sync::mpsc::channel();
+    let subscription=events.on(RESUMPTION_CHANNEL_STATE_EVENT,Arc::new(move |event| { emitted.send(event.clone()).expect("event receiver"); }));
+    let owner=OwnedResumptionChannels::new(events,manager.clone(),Arc::new(|| Some("session".into()))).expect("owner");
+    owner.emit_session_start().await.expect("startup");
+    let first=received.recv_timeout(std::time::Duration::from_secs(5)).expect("startup event");
+    assert_eq!(first["activeCount"],1); assert_eq!(first["channels"][0]["id"],record.task_id);
+    owner.emit_if_changed();
+    // The awaited startup queues behind the synchronous change callback, serving
+    // as an exact completion barrier rather than a scheduler delay.
+    owner.emit_session_start().await.expect("unchanged barrier");
+    assert_eq!(received.recv_timeout(std::time::Duration::from_secs(5)).expect("barrier event")["activeCount"],1);
+    assert!(matches!(received.try_recv(),Err(std::sync::mpsc::TryRecvError::Empty)),"unchanged callback must not publish");
+    manager.0.lock().expect("records")[0].status=senpi_task::state::TaskStatus::Completed;
+    owner.emit_if_changed(); owner.emit_session_start().await.expect("terminal barrier");
+    for _ in 0..2 { assert_eq!(received.recv_timeout(std::time::Duration::from_secs(5)).expect("terminal event")["activeCount"],0); }
+    assert!(matches!(received.try_recv(),Err(std::sync::mpsc::TryRecvError::Empty)));
+    owner.dispose();
+    assert_eq!(received.recv_timeout(std::time::Duration::from_secs(5)).expect("disposal clear")["activeCount"],0);
+    assert!(matches!(received.try_recv(),Err(std::sync::mpsc::TryRecvError::Empty)));
+    drop(subscription);
+}
 struct Manager {
     record: TaskRecord,
     entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
