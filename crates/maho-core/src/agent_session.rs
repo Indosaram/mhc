@@ -2189,6 +2189,11 @@ impl AgentSession {
         let _admission = self.prompt_admission.lock().await;
     }
 
+    fn is_subscription_same_model_remint_error(&self, message: &maho_ai::types::AssistantMessage) -> bool {
+        self.model().provider == "anthropic-subscription" && message.error_message.as_deref().is_some_and(|error|
+            error.contains("Lock file is already being held") || error == "invalid_request")
+    }
+
     async fn will_retry(&self, message: Option<&maho_ai::types::AssistantMessage>) -> bool {
         let Some(message) = message else { return false; };
         if !self.resolve_retry_profile().turn.enabled { return false; }
@@ -2201,6 +2206,7 @@ impl AgentSession {
             || maho_ai::utils::retry::is_provider_timeout_error(message)
             || maho_ai::utils::overflow::is_cursor_zero_token_resource_exhausted(
                 &maho_ai::utils::overflow::CursorExhaustionProbe::from_message(message))
+            || self.is_subscription_same_model_remint_error(message)
             || maho_ai::utils::stop_details::is_classifier_refusal(message) { return true; }
         message.stop_reason == StopReason::Error
             && !message.content.iter().any(|content| matches!(content, maho_ai::types::ContentBlock::ToolCall(_)))
@@ -2330,7 +2336,8 @@ impl AgentSession {
                 ));
             let refusal = maho_ai::utils::stop_details::is_classifier_refusal(&message);
             let same_model_remint = maho_ai::utils::overflow::is_cursor_zero_token_resource_exhausted(
-                &maho_ai::utils::overflow::CursorExhaustionProbe::from_message(&message));
+                &maho_ai::utils::overflow::CursorExhaustionProbe::from_message(&message))
+                || self.is_subscription_same_model_remint_error(&message);
             let transient = maho_ai::utils::retry::is_retryable_assistant_error(&message)
                 || maho_ai::utils::retry::is_provider_timeout_error(&message);
             let attempt = self.state().retry_attempt.saturating_add(1);
@@ -7169,6 +7176,24 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), idle_rx).await.expect("bounded idle").expect("idle");
         assert_eq!(session.messages().len(), 4);
         assert_eq!(session.get_last_assistant_text().as_deref(), Some("second"));
+    }
+
+    #[tokio::test]
+    async fn subscription_session_errors_admit_same_model_recovery_only_on_subscription() {
+        let session = retry_session(Vec::new(), 1);
+        for error in ["Lock file is already being held", "invalid_request"] {
+            let failed = maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+                stop_reason: Some(StopReason::Error), error_message: Some(error.to_owned()), ..Default::default()
+            });
+            let mut model = test_model();
+            model.provider = "anthropic-subscription".to_owned();
+            session.agent.set_model(model);
+            assert!(session.will_retry(Some(&failed)).await, "subscription recovery: {error}");
+            assert!(session.is_subscription_same_model_remint_error(&failed));
+            session.agent.set_model(test_model());
+            assert!(!session.is_subscription_same_model_remint_error(&failed), "provider-scoped recovery: {error}");
+            assert_eq!(session.will_retry(Some(&failed)).await, maho_ai::utils::retry::is_retryable_assistant_error(&failed));
+        }
     }
 
     #[tokio::test]
