@@ -12,6 +12,7 @@ impl Extension for GoalExtension {
 }
 impl GoalExtension {
     pub fn register_with_runtime(&self,api:&mut ExtensionApi)->Arc<GoalRuntime> {
+        api.register_entry_renderer(crate::cache_warm::GOAL_CACHE_WARMUP_ENTRY_TYPE,crate::cache_warm_renderer::render_goal_cache_warmup_entry(),maho_ext_api::EntryRendererOptions { replaces:Some(crate::cache_warm_renderer::cache_warm_entry_replaces()) });
         let mut runtime=GoalRuntime::new(self.reference.clone(),self.now.clone()); runtime.events=api.events.clone();
         let runtime=Arc::new(runtime);
         for (name,label,description,schema) in [

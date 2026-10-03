@@ -43,6 +43,18 @@ pub fn format_warm_token_count(tokens:f64)->String {
     if tokens>=1_000_000.0 { compact(tokens/1_000_000.0,"M") } else if tokens>=1000.0 { compact(tokens/1000.0,"K") } else { maho_ai::utils::js::number_to_string(if tokens.is_nan() { tokens } else { tokens.trunc().max(0.0) }) }
 }
 pub fn format_saved_usd(value: f64) -> String { if value < 0.0005 { "<$0.001".into() } else if value < 1.0 { format!("${}",crate::format::fixed_decimal(value,3)) } else { format!("${}",crate::format::fixed_decimal(value,2)) } }
+pub fn format_wake_timestamp(ms:f64)->Option<String> {
+    if !ms.is_finite()||ms.abs()>8_640_000_000_000_000.0 { return None; }
+    if let Ok(timestamp)=jiff::Timestamp::from_millisecond(ms.trunc() as i64) {
+        let zoned=timestamp.to_zoned(jiff::tz::TimeZone::system());
+        let offset=zoned.offset().seconds(); let abbreviation=zoned.strftime("%Z").to_string();
+        let zone=if abbreviation=="UTC"||offset<0&&["EST","EDT","CST","CDT","MST","MDT","PST","PDT"].contains(&abbreviation.as_str()) { abbreviation }
+            else if offset==0 { "GMT".into() }
+            else { let seconds=offset.abs(); let sign=if offset<0 { "-" } else { "+" }; let hours=seconds/3600; let minutes=seconds%3600/60; if minutes==0 { format!("GMT{sign}{hours}") } else { format!("GMT{sign}{hours}:{minutes:02}") } };
+        return Some(format!("{} {zone}",zoned.strftime("%Y-%m-%d %H:%M")));
+    }
+    crate::renderers::iso_timestamp(ms/1000.0).ok().map(|timestamp|format!("{} UTC",timestamp.chars().take(16).collect::<String>().replace('T'," ")))
+}
 #[cfg(test)] mod tests {
     use super::*;
     fn model() -> Model { serde_json::from_value(serde_json::json!({"id":"claude-cache-test","name":"Claude Cache Test","api":"anthropic-messages","provider":"anthropic","baseUrl":"https://gateway.example.invalid/v1","reasoning":false,"input":["text"],"cost":{"input":3,"output":15,"cacheRead":0.3,"cacheWrite":3.75},"contextWindow":200000,"maxTokens":8192})).unwrap() }

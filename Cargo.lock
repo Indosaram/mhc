@@ -2042,6 +2042,7 @@ dependencies = [
  "chrono",
  "dirs",
  "icu_collator",
+ "jiff",
  "maho-agent",
  "maho-ai",
  "maho-core",
