@@ -8,6 +8,49 @@ pub struct LockedHostEnsure{
 }
 pub struct StartedHost{pub child:tokio::process::Child,pub protocol:crate::host_protocol_info::HostProtocolInfo,pub instance_id:String}
 pub struct HostStartOptions{pub env:HashMap<String,String>,pub settings:crate::host_daemon_state::HostDaemonSettings,pub launch_profile_id:String,pub timeout:std::time::Duration}
+pub enum EnsuredHost{Reused{pid:u32},Started(StartedHost),HandedOff(crate::host_successor::RunningSuccessor),Refused(&'static str)}
+pub async fn ensure_prepared_host(mut prepared:LockedHostEnsure,socket:&str,agent_dir:&std::path::Path,launch:&crate::host_launch::HostLaunch,mut start:HostStartOptions,handoff:crate::host_handoff::HandoffOptions)->std::io::Result<EnsuredHost>{
+    use crate::host_decision::{HostDecision,RefuseReason};
+    let socket=normalize_socket_path(socket);
+    let attached_pid=prepared.registration.as_ref().filter(|owner|owner.socket.as_deref().is_none_or(|registered|registered==socket)).map_or(0,|owner|owner.pid);
+    match prepared.decision{
+        HostDecision::Reuse{..}=>return Ok(EnsuredHost::Reused{pid:attached_pid}),
+        HostDecision::Refuse{reason,..}=>return Ok(EnsuredHost::Refused(match reason{RefuseReason::Protocol=>"protocol",RefuseReason::Capability=>"capability"})),
+        HostDecision::Handoff{..}=>{
+            prepared.lock.release().map_err(std::io::Error::other)?;
+            return match crate::host_handoff::handoff_host(socket,agent_dir,handoff).await?{Ok(successor)=>Ok(EnsuredHost::HandedOff(successor)),Err(_)=>Ok(EnsuredHost::Reused{pid:attached_pid})};
+        },
+        HostDecision::Start{..}=>{},
+        HostDecision::Fallback{..}=>return Ok(EnsuredHost::Reused{pid:attached_pid}),
+    }
+    if let Some(reason)=start_refusal(&prepared,socket).await?{return Ok(EnsuredHost::Refused(reason));}
+    let owner=crate::host_daemon_registration::proven_owner(prepared.registration.as_ref(),socket);
+    let stranded=owner.is_some_and(|owner|!crate::host_daemon_registration::written_by_this_process(owner.writer.as_ref()));
+    if let Some(owner)=owner&&!stranded{stop_managed_host(owner,std::time::Duration::from_secs(5)).await?;}
+    if stranded{
+        start.settings.generation=owner.map_or(0.,|owner|owner.generation+1.);
+        start.env.insert(crate::protocol_identity::HOST_GENERATION_ENV.into(),start.settings.generation.to_string());
+    }else if prepared.registration.as_ref().is_some_and(|owner|owner.socket.as_deref().is_none_or(|registered|registered==socket)){
+        crate::host_daemon_registration::clear_host_registration(&prepared.paths)?;
+    }
+    let started=start_host(&prepared,socket,launch,start).await?;
+    prepared.lock.release().map_err(std::io::Error::other)?;
+    Ok(EnsuredHost::Started(started))
+}
+pub async fn stop_managed_host(owner:&crate::host_daemon_registration::RegisteredHost,timeout:std::time::Duration)->std::io::Result<()>{
+    for signal in [rustix::process::Signal::TERM,rustix::process::Signal::KILL]{
+        let owned=owner.process_start_time.as_ref().is_some_and(|recorded|crate::host_reservations::read_process_start_time(owner.pid).as_ref()==Some(recorded));
+        if !owned{return if crate::host_reservations::process_is_live(owner.pid){Err(std::io::Error::other("host process identity is unknown"))}else{Ok(())};}
+        crate::host_stop::signal_generation(owner.pid,signal).map_err(std::io::Error::from)?;
+        let deadline=tokio::time::Instant::now()+if signal==rustix::process::Signal::TERM{timeout}else{std::time::Duration::from_secs(2)};
+        loop{
+            if !crate::host_reservations::process_is_live(owner.pid)||owner.process_start_time.as_ref().is_some_and(|recorded|crate::host_reservations::read_process_start_time(owner.pid).as_ref().is_some_and(|current|current!=recorded)){return Ok(());}
+            if tokio::time::Instant::now()>=deadline{break;}
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+    Err(std::io::Error::other("host remained alive after SIGKILL"))
+}
 pub async fn start_host(prepared:&LockedHostEnsure,socket:&str,launch:&crate::host_launch::HostLaunch,options:HostStartOptions)->std::io::Result<StartedHost>{
     let HostStartOptions{env,settings,launch_profile_id,timeout}=options;
     use std::os::unix::fs::OpenOptionsExt;

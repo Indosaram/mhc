@@ -18,5 +18,7 @@ async fn print_runner_drives_real_session_and_drains_native_json_events(){
     assert_eq!(records[0]["type"],"session");
     assert!(records.iter().any(|record|record["type"]=="message_end"&&record["message"]["content"][0]["text"]=="native json"));
     assert!(records.iter().any(|record|record["type"]=="agent_idle"));
-    session.dispose().await;
+    let models=session.model_registry().clone();let services=maho_core::agent_session_services::AgentSessionServices{cwd:cwd.clone(),agent_dir:cwd,auth_storage:std::sync::Arc::clone(&models.auth_storage),model_registry:models,settings_manager:SettingsManager::from_storage(Box::new(InMemorySettingsStorage::default()),false),diagnostics:vec![]};
+    let runtime=maho_core::agent_session_runtime::AgentSessionRuntime::new(session,services,vec![],None,None);let scope=maho_ai::node::provider_scope::ProviderScope::new();
+    let mut output=Vec::new();let mut errors=Vec::new();assert_eq!(maho_rpc::print_mode::run_print_runtime(&runtime,&scope,false,None,&[],&mut output,&mut errors).await.unwrap(),0);assert_eq!(output,b"native json\n");assert!(errors.is_empty());assert_eq!(scope.state(),maho_ai::node::provider_scope::ScopeState::Closed);
 }

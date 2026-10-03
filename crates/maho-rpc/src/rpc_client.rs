@@ -5,6 +5,12 @@ pub const MAX_PENDING_SESSION_EVENT_BYTES:usize=1024*1024;
 pub struct RpcSocketClient{stream:tokio::net::UnixStream,pub frames:RpcClientFrames,reader:crate::jsonl::JsonlLineReader,lines:VecDeque<crate::jsonl::LineRecord>}
 impl RpcSocketClient{
     pub async fn connect(path:&std::path::Path)->std::io::Result<Self>{Ok(Self::from_stream(tokio::net::UnixStream::connect(path).await?))}
+    pub async fn connect_authenticated(path:&std::path::Path,secret_path:&std::path::Path)->std::io::Result<Self>{
+        let secret=crate::socket_transport::read_socket_secret(secret_path)?;
+        let mut stream=tokio::net::UnixStream::connect(path).await?;
+        crate::socket_transport::send_socket_handshake(&mut stream,&secret).await?;
+        Ok(Self::from_stream(stream))
+    }
     pub fn from_stream(stream:tokio::net::UnixStream)->Self{Self{stream,frames:RpcClientFrames::default(),reader:crate::jsonl::JsonlLineReader::default(),lines:VecDeque::new()}}
     pub async fn prompt(&mut self,message:&str,options:Value,on_event:impl FnMut(Value),mut disposition:impl FnMut(&str),mut preflight:impl FnMut(bool))->std::io::Result<()>{
         let mut command=options;

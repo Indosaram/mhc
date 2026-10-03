@@ -5,6 +5,21 @@ use crate::provider_native_rendering::{format_provider_native_body,format_provid
 
 #[derive(Default,Debug,PartialEq)]
 pub struct PrintOutput { pub stdout:String,pub stderr:String,pub exit_code:i32 }
+pub async fn run_print_runtime(
+    runtime:&maho_core::agent_session_runtime::AgentSessionRuntime,
+    scope:&maho_ai::node::provider_scope::ProviderScope,
+    json_mode:bool,
+    initial:Option<(String,Vec<maho_ai::types::ImageContent>)>,
+    messages:&[String],
+    output:impl tokio::io::AsyncWrite+Unpin,
+    diagnostics:impl tokio::io::AsyncWrite+Unpin,
+)->std::io::Result<i32>{
+    let result=maho_ai::node::provider_scope::run_with_provider_scope_async(scope,run_print_session(runtime.session(),json_mode,initial,messages,output,diagnostics)).await.map_err(std::io::Error::other);
+    let disposed=crate::session_teardown::dispose_runtime(runtime,scope).await.map_err(std::io::Error::other);
+    let result=result?;
+    disposed?;
+    result
+}
 pub async fn run_print_session(
     session:&maho_core::agent_session::AgentSession,
     json_mode:bool,
