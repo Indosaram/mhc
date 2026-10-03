@@ -35,6 +35,7 @@ pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc
     let mut definition = ToolDefinition::new(tool_name(variant), "Ask a material question; choose explicitly whether to wait or receive the answer later.", params, Arc::new(|_| Box::pin(async { Err(ToolError::Message("Extension context required".into())) })));
     definition.label = "Ask user".into();
     definition.allow_lazy_activation = Some(false);
+    api.registered.tool_renderers.insert(tool_name(variant).into(),Arc::new(crate::render::renderers()));
     definition.prepare_arguments = Some(Arc::new(move |args| { to_canonical(variant, &args, String::new(), None).map_err(ToolError::Message)?; Ok(args) }));
     if let Err(error) = api.register_tool_with_extension_context(definition, Arc::new(move |id, args, signal, _, ctx| {
         let state = state.clone(); let sender = sender.clone();
