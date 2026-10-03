@@ -3,22 +3,22 @@
     "name": "malformed-table",
     "html": "<table><tr><td>one<td>two</tr><div>outside</div></table><p>end",
     "url": "https://example.org/page",
-    "markdown": "outside\n\none\n\ntwo\n\nend",
-    "text": "outside\n\none\ntwo\n\nend"
+    "markdown": "one\n\ntwo\n\noutside\n\nend",
+    "text": "one\ntwo\n\noutside\n\nend"
   },
   {
     "name": "misnested-format",
     "html": "<p>first <b>bold <i>both</b> italic</i><p>second",
     "url": "https://example.org/page",
-    "markdown": "first **bold *both*** *italic*\n\nsecond",
+    "markdown": "first **bold *both*** italic\n\nsecond",
     "text": "first bold both italic\n\nsecond"
   },
   {
     "name": "template-noscript",
     "html": "<p>visible</p><template>hidden template</template><noscript>hidden fallback</noscript><p>last</p>",
     "url": "https://example.org/page",
-    "markdown": "visible\n\nlast",
-    "text": "visible\n\nlast"
+    "markdown": "visible\n\nhidden template\n\nlast",
+    "text": "visible\nhidden template\nlast"
   },
   {
     "name": "unicode-explicit-threshold",
@@ -31,8 +31,8 @@
     "name": "foster-parenting",
     "html": "<table>loose text<tr><td>cell</td></tr>more text</table>",
     "url": "https://example.org/page",
-    "markdown": "cell\n\nloose textmore text",
-    "text": "cell\nloose textmore text"
+    "markdown": "loose text\n\ncell\n\nmore text",
+    "text": "loose text\ncell\n\nmore text"
   },
   {
     "name": "unterminated-script",

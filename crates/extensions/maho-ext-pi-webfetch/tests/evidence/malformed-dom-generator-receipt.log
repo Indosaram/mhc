@@ -1,0 +1,13 @@
+REJECTED ORACLE HISTORY: these JSDOM results are not required fe8c564b LinkeDOM parity. Retained only as failure provenance. Current generator is corrected; old implementation lives in rejected-standalone-jsdom-generator.mjs.
+Historical command: cd /home/indo/T9-Mac/maho-code-lanes/resume-webfetch && timeout 30 bun crates/extensions/maho-ext-pi-webfetch/tests/evidence/generate-malformed-dom.mjs
+Source: https://raw.githubusercontent.com/code-yeongyu/pi-webfetch/8a4743da6a1f32a6a53f4ddae9484c32c78adcd5/src/webfetch/content.ts
+Toolchain: Bun 1.4.0 Transpiler loader=ts; /usr/bin/node --input-type=module -e <transpiled source plus exact input-only fixture map>
+Runtime dependency root: /home/indo/.omo/agent/git/github.com/code-yeongyu/pi-webfetch (JSDOM/Readability/Turndown imports)
+Generator compares output with existing six-case fixture parsed JSON; does not update/accept expected values.
+PASS pin=8a4743da6a1f32a6a53f4ddae9484c32c78adcd5; exact six-case fixture reproduced; child exited=0
+Command exit=0; no server/task resources created; node child exit awaited.
+Initial local git-show attempt found pin unavailable in retained clone; immutable raw URL retrieval used instead, matching original fixture generation source.
+
+Targeted follow-up command: timeout 30 bun crates/extensions/maho-ext-pi-webfetch/tests/evidence/generate-malformed-dom.mjs pinned-foster-review-delta.json
+PASS pin=8a4743da6a1f32a6a53f4ddae9484c32c78adcd5; fixture=pinned-foster-review-delta.json; cases=3; exact fixture reproduced; child exited=0
+Exit=0. Multiple/nested tables and adjacent text/siblings are source-generated; no production parser refactor accompanies this test-only follow-up.

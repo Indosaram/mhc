@@ -1,46 +1,61 @@
 pub struct ReadableArticle{pub title:String,pub content:String,pub has_heading:bool}
-// JSDOM inserts foster-parented text after its table; element nodes retain the
-// ordinary before-table insertion. Preserve that distinction during parsing.
-struct JsdomSink(dom_query::Document);
-impl html5ever::tree_builder::TreeSink for JsdomSink {
-    type Handle=dom_query::NodeId;
-    type Output=dom_query::Document;
-    type ElemName<'a>=<dom_query::Document as html5ever::tree_builder::TreeSink>::ElemName<'a>;
-    fn finish(self)->Self::Output{self.0}
-    fn parse_error(&self,msg:std::borrow::Cow<'static,str>){self.0.parse_error(msg);}
-    fn get_document(&self)->Self::Handle{self.0.get_document()}
-    fn elem_name<'a>(&'a self,target:&'a Self::Handle)->Self::ElemName<'a>{self.0.elem_name(target)}
-    fn create_element(&self,name:html5ever::QualName,attrs:Vec<html5ever::Attribute>,flags:html5ever::tree_builder::ElementFlags)->Self::Handle{self.0.create_element(name,attrs,flags)}
-    fn create_comment(&self,text:html5ever::tendril::StrTendril)->Self::Handle{self.0.create_comment(text)}
-    fn create_pi(&self,target:html5ever::tendril::StrTendril,data:html5ever::tendril::StrTendril)->Self::Handle{self.0.create_pi(target,data)}
-    fn append(&self,parent:&Self::Handle,child:html5ever::tree_builder::NodeOrText<Self::Handle>){self.0.append(parent,child);}
-    fn append_based_on_parent_node(&self,element:&Self::Handle,previous:&Self::Handle,child:html5ever::tree_builder::NodeOrText<Self::Handle>){
-        if let html5ever::tree_builder::NodeOrText::AppendText(text)=&child
-            && let Some(parent)=self.0.tree.get(element).and_then(|node|node.parent()) {
-            self.0.append(&parent.id,html5ever::tree_builder::NodeOrText::AppendText(text.clone()));
-        }else{self.0.append_based_on_parent_node(element,previous,child);}
+// LinkeDOM uses htmlparser2's stack, not the HTML5 tree builder's foster
+// parenting, adoption agency, or template fragment construction.
+struct WebDocumentSink{document:dom_query::Document,stack:std::cell::RefCell<Vec<(String,dom_query::NodeId)>>}
+fn implies_close(open:&str,current:&str)->bool{
+    match open{
+        "tr"=>matches!(current,"tr"|"th"|"td"),"th"=>current=="th","td"=>matches!(current,"thead"|"th"|"td"),
+        "body"=>matches!(current,"head"|"link"|"script"),"li"=>current=="li","option"=>current=="option","optgroup"=>matches!(current,"optgroup"|"option"),
+        "dd"|"dt"=>matches!(current,"dd"|"dt"),"rt"|"rp"=>matches!(current,"rt"|"rp"),"tbody"|"tfoot"=>matches!(current,"thead"|"tbody"),
+        "select"|"input"|"output"|"button"|"datalist"|"textarea"=>matches!(current,"input"|"option"|"optgroup"|"select"|"button"|"datalist"|"textarea"),
+        "p"|"h1"|"h2"|"h3"|"h4"|"h5"|"h6"|"address"|"article"|"aside"|"blockquote"|"details"|"div"|"dl"|"fieldset"|"figcaption"|"figure"|"footer"|"form"|"header"|"hr"|"main"|"nav"|"ol"|"pre"|"section"|"table"|"ul"=>current=="p",
+        _=>false,
     }
-    fn append_doctype_to_document(&self,name:html5ever::tendril::StrTendril,public:html5ever::tendril::StrTendril,system:html5ever::tendril::StrTendril){self.0.append_doctype_to_document(name,public,system);}
-    fn get_template_contents(&self,target:&Self::Handle)->Self::Handle{self.0.get_template_contents(target)}
-    fn same_node(&self,left:&Self::Handle,right:&Self::Handle)->bool{self.0.same_node(left,right)}
-    fn set_quirks_mode(&self,mode:html5ever::tree_builder::QuirksMode){self.0.set_quirks_mode(mode);}
-    fn append_before_sibling(&self,sibling:&Self::Handle,child:html5ever::tree_builder::NodeOrText<Self::Handle>){self.0.append_before_sibling(sibling,child);}
-    fn add_attrs_if_missing(&self,target:&Self::Handle,attrs:Vec<html5ever::Attribute>){self.0.add_attrs_if_missing(target,attrs);}
-    fn remove_from_parent(&self,target:&Self::Handle){self.0.remove_from_parent(target);}
-    fn reparent_children(&self,node:&Self::Handle,parent:&Self::Handle){self.0.reparent_children(node,parent);}
-    fn is_mathml_annotation_xml_integration_point(&self,node:&Self::Handle)->bool{self.0.is_mathml_annotation_xml_integration_point(node)}
 }
-fn parse_jsdom_document(html:&str)->dom_query::Document{
-    use html5ever::tendril::TendrilSink;
-    html5ever::parse_document(JsdomSink(dom_query::Document::default()),html5ever::ParseOpts{
-        tree_builder:html5ever::tree_builder::TreeBuilderOpts{scripting_enabled:false,..Default::default()},..Default::default()
-    }).one(html)
+impl html5ever::tokenizer::TokenSink for WebDocumentSink{
+    type Handle=dom_query::NodeId;
+    fn process_token(&self,token:html5ever::tokenizer::Token,_:u64)->html5ever::tokenizer::TokenSinkResult<Self::Handle>{
+        use html5ever::{tokenizer::{Token,TagKind,TokenSinkResult,states::RawKind},tree_builder::{TreeSink,NodeOrText,ElementFlags}};
+        let mut stack=self.stack.borrow_mut();
+        match token{
+            Token::TagToken(tag) if tag.kind==TagKind::StartTag=>{
+                let name=tag.name.to_string();while stack.last().is_some_and(|(current,_)|implies_close(&name,current)){stack.pop();}
+                let node=self.document.create_element(html5ever::QualName::new(None,html5ever::ns!(html),tag.name),tag.attrs,ElementFlags::default());
+                self.document.append(&stack.last().map_or_else(||self.document.get_document(),|(_,id)|*id),NodeOrText::AppendNode(node));
+                if !["area","base","basefont","br","col","command","embed","frame","hr","img","input","isindex","keygen","link","meta","param","source","track","wbr"].contains(&name.as_str()){
+                    stack.push((name.clone(),node));
+                    match name.as_str(){"script"=>return TokenSinkResult::RawData(RawKind::ScriptData),"style"|"xmp"=>return TokenSinkResult::RawData(RawKind::Rawtext),"title"|"textarea"=>return TokenSinkResult::RawData(RawKind::Rcdata),_=>{}}
+                }
+            }
+            Token::TagToken(tag)=>{if let Some(index)=stack.iter().rposition(|(name,_)|name.as_str()==tag.name.as_ref()){stack.truncate(index);}}
+            Token::CharacterTokens(text)=>self.document.append(&stack.last().map_or_else(||self.document.get_document(),|(_,id)|*id),NodeOrText::AppendText(text)),
+            Token::CommentToken(text)=>{let node=self.document.create_comment(text);self.document.append(&stack.last().map_or_else(||self.document.get_document(),|(_,id)|*id),NodeOrText::AppendNode(node));}
+            _=>{}
+        }TokenSinkResult::Continue
+    }
+}
+fn parse_web_document(html:&str)->dom_query::Document{
+    use html5ever::{tokenizer::{Tokenizer,TokenizerOpts,BufferQueue},tree_builder::{TreeSink,NodeOrText,ElementFlags}};
+    fn parse(html:&str)->dom_query::Document{
+        let tokenizer=Tokenizer::new(WebDocumentSink{document:dom_query::Document::default(),stack:Default::default()},TokenizerOpts::default());
+        let input=BufferQueue::default();input.push_back(html.into());let _=tokenizer.feed(&input);tokenizer.end();tokenizer.sink.document
+    }
+    let mut document=parse(html);
+    if document.root().element_children().first().is_none_or(|node|node.node_name().is_none_or(|name|name.as_ref()!="html")){document=parse(&format!("<html><head></head><body>{html}</body></html>"));}
+    let root=document.select("html").first();
+    for name in ["head","body"]{if root.children().filter(name).is_empty(){let id=document.create_element(html5ever::QualName::new(None,html5ever::ns!(html),name.into()),Vec::new(),ElementFlags::default());document.append(&root.nodes()[0].id,NodeOrText::AppendNode(id));}}
+    let body=document.select("body").first();let head=document.select("head").first();
+    for node in root.nodes()[0].children(){if node.id!=body.nodes()[0].id&&node.id!=head.nodes()[0].id{body.nodes()[0].append_child(&node);}}
+    for node in body.nodes()[0].element_children(){if node.node_name().is_some_and(|name|["base","link","meta","title","style","script","noscript","template"].contains(&name.as_ref())){head.nodes()[0].append_child(&node);}else{break;}}
+    document
 }
 pub fn extract_readable_article(html: &str, url: &str) -> Option<ReadableArticle> {
     if url::Url::parse(url).is_err() { return None; }
     if let Some(article) = extract_explicit_article(html) { return Some(article); }
     let config = dom_smoothie::Config { char_threshold: 80, keep_classes: false, ..Default::default() };
-    let mut reader = dom_smoothie::Readability::with_document(parse_jsdom_document(html), Some(url), Some(config)).ok()?;
+    let document=parse_web_document(html);
+    for node in document.select("xmp").nodes(){for text in node.children().into_iter().filter(dom_query::NodeRef::is_text){text.set_text(text.text().replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;").replace('\u{00a0}',"&#160;"));}}
+    let mut reader = dom_smoothie::Readability::with_document(document, Some(url), Some(config)).ok()?;
     let article = reader.parse().ok()?;
     if article.content.is_empty() || article.text_content.is_empty() { return None; }
     let mut title = String::new();
@@ -73,7 +88,7 @@ pub fn html_to_text(html: &str, url: &str) -> String {
     } else { format!("{}\n\n{body}", article.title).trim().to_owned() }
 }
 pub fn html_fragment_to_markdown(html:&str)->String{
-    let document=dom_query::Document::fragment(html);let root=document.html_root();
+    let document=parse_web_document(html);let root=document.select("body").nodes()[0];
     collapse_markdown_whitespace(root);
     markdown_children(root,false).trim_start_matches(['\t','\r','\n']).trim_end_matches(js_whitespace).to_owned()
 }
@@ -187,11 +202,11 @@ pub fn escape_markdown(text:&str)->String{
     escaped
 }
 pub fn extract_explicit_article(html:&str)->Option<ReadableArticle>{
-    let document=parse_jsdom_document(html);
+    let document=parse_web_document(html);
     for selector in [".article_view",".tt_article_useless_p_margin",".entry-content",".contents_style",".post-content",".article-content",".content-article","#content .contents_style"]{
         let candidate=document.select(selector).first();if candidate.is_empty(){continue;}
-        let cloned=dom_query::Document::fragment(candidate.html().as_ref());
-        let root=cloned.select("html > *").first();
+        let cloned=parse_web_document(candidate.html().as_ref());
+        let root=cloned.select("body > *").first();
         root.select("script, style, noscript, iframe, object, embed, meta, link, nav, aside, footer, .another_category, .area_related, .related, .revenue_unit_wrap, .adsbygoogle, .container_postbtn, .postbtn_like, .comments, .comment, .tagTrail, .sidebar").remove();
         if normalize_plain_text(&root.text()).encode_utf16().count()<30{continue;}
         let mut title=String::new();for selector in [".tit_post",".entry-title",".post-title",".article-title","h1"]{title=normalize_plain_text(&document.select(selector).first().text());if !title.is_empty(){break;}}
@@ -201,7 +216,7 @@ pub fn extract_explicit_article(html:&str)->Option<ReadableArticle>{
     }None
 }
 pub fn html_fragment_to_plain_text(html:&str)->String{
-    let document=parse_jsdom_document(&format!("<body>{html}</body>"));
+    let document=parse_web_document(html);
     document.select("script, style, noscript, iframe, object, embed, meta, link").remove();
     document.select("br").replace_with_html("\n");
     document.select("td, th").after_html("\n");

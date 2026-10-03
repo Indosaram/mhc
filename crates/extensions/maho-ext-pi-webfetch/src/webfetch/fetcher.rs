@@ -91,11 +91,17 @@ fn network_error(error: reqwest::Error, url: &str) -> WebfetchError {
             let detail = match parser.to_string().as_str() {
                 "invalid HTTP version parsed" if parser.is_parse() => Some("Expected HTTP/, RTSP/ or ICE/"),
                 "invalid HTTP header parsed" if parser.is_parse() => Some("Invalid header token"),
+                "invalid HTTP status-code parsed" if parser.is_parse() => Some("Invalid status code"),
                 _ => None,
             };
             if let Some(detail) = detail {
                 return WebfetchError::NetworkMessage { name: "HTTPParserError", message: format!("Response does not match the HTTP/1.1 protocol ({detail})"), cause: error };
             }
+        }
+        if let Some(io)=source.downcast_ref::<std::io::Error>()
+            && io.kind()==std::io::ErrorKind::InvalidInput
+            && io.to_string()=="Invalid chunk size line: missing size digit" {
+            return WebfetchError::NetworkMessage{name:"HTTPParserError",message:"Response does not match the HTTP/1.1 protocol (Invalid character in chunk size)".into(),cause:error};
         }
         if let Some(io) = source.downcast_ref::<std::io::Error>()
             && io.kind() == std::io::ErrorKind::ConnectionRefused

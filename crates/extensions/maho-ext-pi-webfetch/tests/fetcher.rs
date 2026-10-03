@@ -6,6 +6,8 @@ async fn malformed_transport_errors_preserve_pinned_undici_taxonomy() {
         ("NOTHTTP\r\n\r\n", "HTTPParserError", "Response does not match the HTTP/1.1 protocol (Expected HTTP/, RTSP/ or ICE/)"),
         ("HTTP/1.1 200 OK\r\nBad Header: x\r\nContent-Length: 0\r\n\r\n", "HTTPParserError", "Response does not match the HTTP/1.1 protocol (Invalid header token)"),
         ("HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nabc", "ResponseContentLengthMismatchError", "Response body length does not match content-length header"),
+        ("HTTP/1.1 XYZ Nope\r\nContent-Length: 0\r\n\r\n", "HTTPParserError", "Response does not match the HTTP/1.1 protocol (Invalid status code)"),
+        ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nZ\r\nabc\r\n0\r\n\r\n", "HTTPParserError", "Response does not match the HTTP/1.1 protocol (Invalid character in chunk size)"),
     ] {
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("listener");let address=listener.local_addr().expect("address");
         let mut server=tokio::spawn(async move {let(mut socket,_)=listener.accept().await.expect("accept");let mut request=Vec::new();loop{let mut buffer=[0;4096];let count=socket.read(&mut buffer).await.expect("request");assert_ne!(count,0);request.extend_from_slice(&buffer[..count]);if request.windows(4).any(|bytes|bytes==b"\r\n\r\n"){break;}}socket.write_all(response.as_bytes()).await.expect("response");socket.shutdown().await.expect("shutdown");});
