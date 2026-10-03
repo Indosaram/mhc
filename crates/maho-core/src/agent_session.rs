@@ -2211,6 +2211,8 @@ impl AgentSession {
             || self.is_subscription_same_model_remint_error(message)
             || maho_ai::utils::stop_details::is_classifier_refusal(message) { return true; }
         message.stop_reason == StopReason::Error
+            && !(self.model().provider == "anthropic-subscription"
+                && message.error_message.as_deref() == Some(maho_ai::auth::resolve::provider_not_configured_message("anthropic-subscription").as_str()))
             && !message.content.iter().any(|content| matches!(content, maho_ai::types::ContentBlock::ToolCall(_)))
             && self.retry_fallback.lock().await.as_mut().is_some_and(|controller| controller.can_try_fallback())
     }
@@ -7200,6 +7202,35 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), idle_rx).await.expect("bounded idle").expect("idle");
         assert_eq!(session.messages().len(), 4);
         assert_eq!(session.get_last_assistant_text().as_deref(), Some("second"));
+    }
+
+    #[tokio::test]
+    async fn subscription_auth_miss_does_not_admit_configured_provider_fallback() {
+        let session = retry_session(Vec::new(), 1);
+        let provider = maho_ai::providers::faux::faux_provider(Default::default());
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
+        let subscription = maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
+            provider: Some("anthropic-subscription".to_owned()), ..Default::default()
+        });
+        runtime.register_native_provider(subscription.provider.clone());
+        runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
+            config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".to_owned()), ..Default::default() },
+            ..Default::default()
+        }).expect("fallback provider");
+        let mut model = test_model();
+        model.provider = "anthropic-subscription".to_owned();
+        session.agent.set_model(model);
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("retry".to_owned(), serde_json::json!({"enabled":true,"modelFallback":true,"fallbackChains":{
+                "anthropic-subscription/faux-1":["faux/faux-1"]
+            }})),
+        ])));
+        assert!(session.retry_fallback.lock().await.as_mut().expect("controller").can_try_fallback());
+        let failed = maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+            stop_reason: Some(StopReason::Error), error_message: Some(maho_ai::auth::resolve::provider_not_configured_message("anthropic-subscription")), ..Default::default()
+        });
+        assert!(!session.will_retry(Some(&failed)).await);
     }
 
     #[tokio::test]
