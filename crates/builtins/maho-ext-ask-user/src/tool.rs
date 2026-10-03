@@ -94,17 +94,11 @@ pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc
                     other => { timer.cancel(other); },
                 }
                 cancel_signal.abort();
-                let owner = {
-                    let publishing = publication.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let owner = owners.borrow().clone();
-                    publishing.send_replace(true);
-                    owner
-                };
-                if let Some(owner) = owner { publish(owner, &owner_request, &response, variant); }
-                else {
+                let owner = select_publication(&owners, &publication, || {
                     let request = owner_request.clone(); let outcome = response.clone();
                     queue_outcome(&session, Box::new(move |owner| publish(owner, &request, &outcome, variant)));
-                }
+                });
+                if let Some(owner) = owner { publish(owner, &owner_request, &response, variant); }
                 publication.lock().unwrap_or_else(std::sync::PoisonError::into_inner).send_replace(false);
                 unregister_pending_question(&session, &owner_request.request_id);
                 settled.send_replace(Some(response));

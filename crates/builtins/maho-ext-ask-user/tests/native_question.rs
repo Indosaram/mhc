@@ -110,6 +110,11 @@ async fn scenario(cancel: bool, fail_append: bool, abort: bool, timeout: bool, r
     } else { None };
     let status = completion.borrow().as_ref().map(|response|response.status);
     let notification_count = settlements.lock().expect("settlements").len();
+    if reload {
+        let entries = session.with_session_manager(|manager| manager.entries());
+        let persisted = entries.iter().filter(|entry| entry["type"] == "custom" && entry["customType"] == "ask-user:settlement" && entry["data"]["requestId"] == request.request_id).count();
+        if persisted != 1 { return Err(format!("Reload settlement persistence: expected one, got {persisted}").into()); }
+    }
     if status != Some(if timeout {QuestionStatus::TimedOut} else if cancel || abort {QuestionStatus::Cancelled} else {QuestionStatus::Answered}) || !get_pending_questions(&session.session_id()).is_empty() || notification_count != usize::from(!cancel && !abort) || request.request_id != pending[0].request.request_id {
         return Err(format!("Settlement receipt: status={status:?}, notifications={notification_count}").into());
     }

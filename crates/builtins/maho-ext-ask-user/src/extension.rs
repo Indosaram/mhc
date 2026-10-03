@@ -21,7 +21,10 @@ impl Extension for AskUser {
                     if kind == EventKind::SessionStart {
                         *state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = AskUserState::default();
                         let owner = QuestionOwner { sender: sender.clone(), context: ctx.clone(), state: state.clone() };
-                        for entry in get_pending_questions(ctx.session_manager.session_id()) { entry.owner.send_replace(Some(owner.clone())); }
+                        for entry in get_pending_questions(ctx.session_manager.session_id()) {
+                            let _publication = entry.publication.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                            entry.owner.send_replace(Some(owner.clone()));
+                        }
                         deliver_outcomes(ctx.session_manager.session_id(), owner);
                     }
                     let actions = sender.runtime.session_actions()?;
