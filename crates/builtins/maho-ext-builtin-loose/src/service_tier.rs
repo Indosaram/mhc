@@ -33,6 +33,26 @@ fn sibling(ctx:&ExtensionContext,host:&dyn ServiceTierHost,model:&Model,fast:boo
 }
 fn memory_model(ctx:&ExtensionContext,host:&dyn ServiceTierHost,model:&Model)->Model{sibling(ctx,host,model,false).unwrap_or_else(||model.clone())}
 fn key(model:&Model)->String{format!("{}/{}",model.provider,model.id)}
+pub struct FastModeResult{pub enabled:bool,pub applied:bool,pub recorded_tier:ServiceTier}
+pub async fn apply_fast_mode(sender:&ExtensionApi,ctx:&ExtensionContext,host:&dyn ServiceTierHost,enabled:bool)->Result<FastModeResult,ExtensionFailure>{
+    let Some(model)=ctx.model.as_ref().filter(|model|model.api==CODEX_RESPONSES_API)else{
+        ctx.ui.notify("Fast mode is only available for ChatGPT Subscription models.",NotificationType::Warning);
+        return Ok(FastModeResult{enabled:false,applied:false,recorded_tier:ServiceTier::Auto});
+    };
+    if !enabled&&ctx.service_tier==Some(ServiceTier::Priority)&&host.catalog_tier(model)!=Some(ServiceTier::Priority){
+        ctx.ui.notify("Fast mode is fixed by the active model selection's priority tier.",NotificationType::Info);
+        return Ok(FastModeResult{enabled:true,applied:false,recorded_tier:ServiceTier::Priority});
+    }
+    let memory=memory_model(ctx,host,model);let tier=if enabled{ServiceTier::Priority}else{ServiceTier::Auto};host.persist(ctx,&memory,tier).await?;
+    let base=sibling(ctx,host,model,false);let target=if enabled{sibling(ctx,host,model,true)}else{base.clone()};
+    if let Some(target)=&target{if !sender.set_session_model(target.clone()).await?{
+        ctx.ui.notify(&format!("Could not switch to {}.",key(target)),NotificationType::Error);
+        return Ok(FastModeResult{enabled:base.is_none(),applied:false,recorded_tier:ServiceTier::Auto});
+    }}
+    sender.set_session_fast_mode(enabled)?;
+    ctx.ui.notify(&format!("Fast mode {}: {}",if enabled{"enabled"}else{"disabled"},target.as_ref().unwrap_or(model).id),NotificationType::Info);
+    Ok(FastModeResult{enabled,applied:true,recorded_tier:tier})
+}
 #[derive(Default)]
 struct State{fast:bool,global:Option<ServiceTier>,memory:Option<ServiceTier>,key:Option<String>}
 pub struct ServiceTierExtension{pub host:Arc<dyn ServiceTierHost>}
@@ -68,14 +88,10 @@ impl Extension for ServiceTierExtension{
         api.register_command_with_completions("fast",Some("Turn ChatGPT Subscription fast mode on or off for the current model".into()),Some("[on|off]".into()),Arc::new(move|args,ctx|{let host=host.clone();let sender=sender.clone();let state=state.clone();Box::pin(async move{
             let argument=args.trim().to_ascii_lowercase();if !matches!(argument.as_str(),""|"on"|"off"){ctx.ui.notify("Usage: /fast [on|off]",NotificationType::Error);return Ok(());}
             let active=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fast||ctx.service_tier==Some(ServiceTier::Priority);let enabled=if argument.is_empty(){!active}else{argument=="on"};
-            let Some(model)=ctx.model.as_ref().filter(|model|model.api==CODEX_RESPONSES_API)else{state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fast=false;ctx.ui.notify("Fast mode is only available for ChatGPT Subscription models.",NotificationType::Warning);return Ok(());};
-            if !enabled&&ctx.service_tier==Some(ServiceTier::Priority)&&host.catalog_tier(model)!=Some(ServiceTier::Priority){state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fast=true;ctx.ui.notify("Fast mode is fixed by the active model selection's priority tier.",NotificationType::Info);return Ok(());}
-            let memory=memory_model(ctx,host.as_ref(),model);let tier=if enabled{ServiceTier::Priority}else{ServiceTier::Auto};host.persist(ctx,&memory,tier).await?;
-            let base=sibling(ctx,host.as_ref(),model,false);let target=if enabled{sibling(ctx,host.as_ref(),model,true)}else{base.clone()};
-            if let Some(target)=&target{if !sender.set_session_model(target.clone()).await?{state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fast=base.is_none();ctx.ui.notify(&format!("Could not switch to {}.",key(target)),NotificationType::Error);return Ok(());}}
-            sender.set_session_fast_mode(enabled)?;
-            {let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);state.fast=enabled;state.memory=Some(tier);state.key=Some(key(&memory));}
-            ctx.ui.notify(&format!("Fast mode {}: {}",if enabled{"enabled"}else{"disabled"},target.as_ref().unwrap_or(model).id),NotificationType::Info);Ok(())
+            let result=apply_fast_mode(&sender,ctx,host.as_ref(),enabled).await?;
+            let memory=if result.applied{ctx.model.as_ref().map(|model|memory_model(ctx,host.as_ref(),model))}else{None};
+            {let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);state.fast=result.enabled;if let Some(memory)=memory{state.memory=Some(result.recorded_tier);state.key=Some(key(&memory));}}
+            Ok(())
         })}),Arc::new(|prefix|Box::pin(async move{let items=["on","off"].into_iter().filter(|value|value.starts_with(prefix.trim())).map(|value|AutocompleteItem{value:value.into(),label:value.into(),description:None}).collect::<Vec<_>>();Ok((!items.is_empty()).then_some(items))})));
     }
 }
