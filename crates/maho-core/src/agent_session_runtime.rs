@@ -322,6 +322,14 @@ impl AgentSessionRuntime {
         if let Some(before) = &self.before_session_invalidate { before(); }
         self.session.dispose().await;
         let created = crate::sdk::create_agent_session(options).await?;
+        let replacement = match self.session.replacement_extension_runner(&created.session).await {
+            Ok(replacement) => replacement,
+            Err(error) => { created.session.dispose().await; return Err(error); }
+        };
+        if let Some(runner) = replacement {
+            created.session.set_extension_runner(runner).await;
+            created.session.bind_extensions(Default::default()).await;
+        }
         self.session = created.session;
         self.services.cwd = cwd;
         self.services.settings_manager = self.session.shared_settings_manager();

@@ -3682,6 +3682,15 @@ impl AgentSession {
         runner.emit_user_bash(command.to_owned(), exclude_from_context, self.cwd().into()).await.map_err(|error| error.message)
     }
 
+    pub(crate) async fn replacement_extension_runner(&self, target: &AgentSession) -> Result<Option<maho_ext_host::runner::ExtensionRunner>, String> {
+        let runner = self.extension_runner.lock().await.clone();
+        match runner {
+            Some(runner) => runner.recreate_with_context(crate::sdk::extension_context::create(target)).await
+                .map(Some).map_err(|error| error.message),
+            None => Ok(None),
+        }
+    }
+
     pub async fn execute_user_bash(&self, command: &str, on_chunk: Option<maho_tools::bash_executor::BashChunkCallback>,
         exclude_from_context: bool, id: Option<String>) -> Result<maho_tools::bash_executor::BashResult, String> {
         match self.user_bash_hook(command, exclude_from_context).await? {

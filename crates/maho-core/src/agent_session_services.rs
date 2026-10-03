@@ -74,6 +74,10 @@ impl From<AgentSessionServices> for MountedAgentSessionServices {
     }
 }
 
+impl MountedAgentSessionServices {
+    pub fn model_runtime(&self) -> &ModelRuntime { &self.model_registry.model_runtime }
+}
+
 pub struct CreateAgentSessionFromServicesResult {
     pub session: crate::agent_session::AgentSession,
     pub services: MountedAgentSessionServices,
