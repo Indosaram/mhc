@@ -48,12 +48,19 @@ impl ExtensionActions for Actions {
     fn append_entry(&self,_:&str,_:Option<JsonValue>)->Result<(),ExtensionFailure> { Ok(()) }
     fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure> { Ok(vec![]) }
 }
-async fn dispatch(api:&ExtensionApi,kind:EventKind,event:&mut ExtensionEvent,ctx:&ExtensionContext) { for handler in &api.registered.handlers[&kind] { handler(event,ctx).await.expect("registered lifecycle"); } }
+async fn dispatch(api:&ExtensionApi,kind:EventKind,event:&mut ExtensionEvent,ctx:&ExtensionContext) {
+    for handler in &api.registered.handlers[&kind] {
+        tokio::time::timeout(Duration::from_secs(5), handler(event,ctx))
+            .await.expect("registered lifecycle deadline").expect("registered lifecycle");
+    }
+}
 fn start_event()->ExtensionEvent { ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::Resume,initial_model_provenance:None,previous_session_file:None }) }
 async fn reload_veto(api:&ExtensionApi,ctx:&ExtensionContext)->bool {
     let mut event=ExtensionEvent::SessionBeforeReload;
     for handler in &api.registered.handlers[&EventKind::SessionBeforeReload] {
-        if matches!(handler(&mut event,ctx).await.expect("reload handler"),EventResult::SessionBefore(SessionBeforeEventResult { cancel:Some(true),.. })) { return true; }
+        let result = tokio::time::timeout(Duration::from_secs(5), handler(&mut event,ctx))
+            .await.expect("reload handler deadline").expect("reload handler");
+        if matches!(result,EventResult::SessionBefore(SessionBeforeEventResult { cancel:Some(true),.. })) { return true; }
     }
     false
 }
