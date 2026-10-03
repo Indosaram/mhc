@@ -50,6 +50,18 @@ struct NativeParentTool {
     executor: tokio::runtime::Handle,
 }
 
+pub fn native_child_settings(
+    retry: &senpi_task::runners::in_process::runtime_fallback_settings::RetryFallbackSettings,
+) -> maho_core::settings_manager::SettingsManager {
+    let mut settings = maho_core::settings_manager::SettingsManager::from_storage(
+        Box::<maho_core::settings_manager::InMemorySettingsStorage>::default(), false,
+    );
+    settings.apply_overrides(&serde_json::Map::from_iter([("retry".into(), serde_json::json!({
+        "modelFallback": retry.model_fallback, "fallbackChains": retry.chains,
+    }))]));
+    settings
+}
+
 impl senpi_task::runners::in_process::shared_tool_filter::ChildTool for NativeParentTool {
     fn name(&self) -> &str { &self.name }
     fn description(&self) -> &str { &self.description }

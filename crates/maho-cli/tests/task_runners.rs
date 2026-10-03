@@ -34,6 +34,26 @@ fn native_child_transcript_preserves_exact_locator_on_create_and_resume() {
 }
 
 #[test]
+fn native_child_settings_forward_retry_policy_without_disk_settings() {
+    use senpi_task::runners::in_process::runtime_fallback_settings::RetryFallbackSettings;
+    let retry = RetryFallbackSettings {
+        model_fallback: true,
+        chains: BTreeMap::from([("provider/selected".into(), vec!["provider/fallback:low".into()])]),
+    };
+
+    let settings = maho_cli::cli::task_runners::native_child_settings(&retry);
+    let resolved = maho_core::retry_fallback::settings::resolve_retry_fallback_settings(settings.get_value("retry"));
+    let disabled = maho_cli::cli::task_runners::native_child_settings(&RetryFallbackSettings::default());
+
+    assert!(resolved.model_fallback);
+    assert_eq!(resolved.chains["provider/selected"], ["provider/fallback:low"]);
+    assert_eq!(settings.get().len(), 1);
+    assert!(settings.settings_path(maho_core::settings_manager::SettingsScope::Global).is_none());
+    assert!(settings.settings_path(maho_core::settings_manager::SettingsScope::Project).is_none());
+    assert!(!maho_core::retry_fallback::settings::resolve_retry_fallback_settings(disabled.get_value("retry")).model_fallback);
+}
+
+#[test]
 fn native_rpc_spawn_preserves_isolation_and_explicit_member_profile() {
     let dir = tempfile::tempdir().expect("isolated task state");
     let executable = dir.path().join("mhc");
