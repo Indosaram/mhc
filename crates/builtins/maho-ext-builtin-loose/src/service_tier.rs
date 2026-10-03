@@ -22,12 +22,14 @@ pub trait ServiceTierHost:Send+Sync{
     fn remembered(&self,ctx:&ExtensionContext,model:&Model)->Result<Option<ServiceTier>,ExtensionFailure>;
     fn global_tier(&self,ctx:&ExtensionContext)->Result<Option<ServiceTier>,ExtensionFailure>;
     fn persist<'a>(&'a self,ctx:&'a ExtensionContext,model:&'a Model,tier:ServiceTier)->ExtensionFuture<'a,()>;
+    fn thinking_level(&self,ctx:&ExtensionContext)->Result<Option<maho_ai::types::ModelThinkingLevel>,ExtensionFailure>;
+    fn restore_thinking_level(&self,ctx:&ExtensionContext,level:maho_ai::types::ModelThinkingLevel)->Result<(),ExtensionFailure>;
 }
 fn sibling(ctx:&ExtensionContext,host:&dyn ServiceTierHost,model:&Model,fast:bool)->Option<Model>{
     let id=if fast{if model.id.ends_with("-fast"){return None;}format!("{}-fast",model.id)}else{model.id.strip_suffix("-fast")?.into()};
     let sibling=ctx.model_registry.find(&model.provider,&id)?;
     let priority=if fast{&sibling}else{model};
-    (sibling.api==model.api&&host.catalog_tier(priority)==Some(ServiceTier::Priority)&&host.upstream_id(&sibling)==host.upstream_id(model)).then_some(sibling)
+    (sibling.provider==model.provider&&sibling.api==model.api&&host.catalog_tier(priority)==Some(ServiceTier::Priority)&&host.upstream_id(&sibling)==host.upstream_id(model)).then_some(sibling)
 }
 fn memory_model(ctx:&ExtensionContext,host:&dyn ServiceTierHost,model:&Model)->Model{sibling(ctx,host,model,false).unwrap_or_else(||model.clone())}
 fn key(model:&Model)->String{format!("{}/{}",model.provider,model.id)}
@@ -49,14 +51,15 @@ impl Extension for ServiceTierExtension{
                 let global=host.global_tier(ctx)?;
                 let mut fast=false;
                 if let Some(model)=model.filter(|model|model.api==CODEX_RESPONSES_API){
-                    let base=sibling(ctx,host.as_ref(),model,false);let requested=sender.get_thinking_level()?;
-                    if let Some(base)=&base{sender.set_session_model(base.clone()).await?;sender.set_session_thinking_level(requested)?;}
+                    let base=sibling(ctx,host.as_ref(),model,false);let requested=host.thinking_level(ctx)?;
+                    if let Some(base)=&base{sender.set_session_model(base.clone()).await?;if let Some(requested)=requested{host.restore_thinking_level(ctx,requested)?;}}
                     fast=base.is_some()||remembered==Some(ServiceTier::Priority)||(remembered.is_none()&&ctx.service_tier==Some(ServiceTier::Priority));
                 }
                 {let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);state.global=global;state.fast=fast;state.memory=remembered;state.key=memory.as_ref().map(key);}
                 sender.set_session_fast_mode(fast)?;
             }else{
-                let clear={let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);state.memory=remembered;state.key=memory.as_ref().map(key);if state.fast&&model.is_none_or(|model|model.api!=CODEX_RESPONSES_API){state.fast=false;true}else{!state.fast&&remembered==Some(ServiceTier::Auto)&&model.is_some_and(|model|model.api==CODEX_RESPONSES_API&&host.catalog_tier(model)==Some(ServiceTier::Priority))}};
+                let catalog_priority=model.is_some_and(|model|model.api==CODEX_RESPONSES_API&&host.catalog_tier(model)==Some(ServiceTier::Priority));
+                let clear={let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);state.memory=remembered;state.key=memory.as_ref().map(key);if state.fast&&model.is_none_or(|model|model.api!=CODEX_RESPONSES_API){state.fast=false;true}else{!state.fast&&remembered==Some(ServiceTier::Auto)&&catalog_priority}};
                 if clear{sender.set_session_fast_mode(false)?;}
             }
             Ok(EventResult::None)
