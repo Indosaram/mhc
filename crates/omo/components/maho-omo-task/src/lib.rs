@@ -45,3 +45,4 @@ pub mod lifecycle_adapters;
 pub mod engine;
 pub mod component;
 pub mod dag_engine;
+mod worker;

@@ -66,12 +66,10 @@ pub fn register_task_tools_with_sync(api: &mut ExtensionApi, deps: TaskToolsDeps
                 let result = execute.execute(&id, &params, Some(&signal), on_update, &ctx);
                 let _ = sender.send(result);
             });
-            tokio::pin!(receiver);
-            let result = tokio::select! {
-                result = &mut receiver => result.map_err(|error| ToolError::Message(error.to_string()))?,
-                () = call.signal.cancelled() => { abort.abort(); receiver.await.map_err(|error| ToolError::Message(error.to_string()))? }
-            };
-            worker.join().map_err(|_| ToolError::Message("task executor panicked".into()))?;
+            let result = crate::worker::settle(receiver, worker, &call.signal, || {
+                abort.abort();
+                Ok(())
+            }, "task executor panicked").await?;
             if let Some(error) = update_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() { return Err(error); }
             let result = result.map_err(|error| ToolError::Message(error.to_string()))?;
             native_result(result)

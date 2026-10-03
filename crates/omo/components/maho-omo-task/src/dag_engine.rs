@@ -99,15 +99,9 @@ impl TaskDagEngine {
                         let run_id = run.to_owned();
                         let (sender, receiver) = tokio::sync::oneshot::channel();
                         let worker = std::thread::spawn(move || { let _ = sender.send(scheduler.run()); });
-                        tokio::pin!(receiver);
-                        let record = tokio::select! {
-                            result = &mut receiver => result,
-                            () = signal.cancelled() => {
-                                cancellation.cancel(&run_id, Some("tool aborted")).map_err(maho_ext_api::ToolError::Message)?;
-                                receiver.await
-                            }
-                        }.map_err(|error| maho_ext_api::ToolError::Message(error.to_string()))?;
-                        worker.join().map_err(|_| maho_ext_api::ToolError::Message("DAG scheduler panicked".into()))?;
+                        let record = crate::worker::settle(receiver, worker, &signal, || {
+                            cancellation.cancel(&run_id, Some("tool aborted")).map_err(maho_ext_api::ToolError::Message)
+                        }, "DAG scheduler panicked").await?;
                         let record = record.map_err(|error| maho_ext_api::ToolError::Message(error.to_string()))?;
                         component.sync();
                         if let Some(bridge) = dag.rpc.lock().unwrap_or_else(PoisonError::into_inner).clone() { bridge.sync(); }

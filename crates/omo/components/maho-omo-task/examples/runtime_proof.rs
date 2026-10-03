@@ -117,6 +117,21 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     assert_eq!((api.registered.rpc_handlers["omo.task.output"])(json!({"task_id":child.id})).await?["kind"], "unavailable");
     dispatch(&api, EventKind::SessionStart, &mut ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::Resume, initial_model_provenance:None, previous_session_file:None }), &context).await?;
     assert!(delivered.try_recv().is_err(), "terminal completion replayed twice");
+    let (progress, started) = tokio::sync::oneshot::channel();
+    let progress = Mutex::new(Some(progress));
+    let mut invocation = (task.definition.execute)(ToolCall { id:"dropped-foreground", params:json!({"prompt":"drop foreground invocation","subagent_type":"explore","model":"faux/native","run_in_background":false}), signal:Default::default(), on_update:Some(Arc::new(move |_| {
+        if let Some(progress) = progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() { let _ = progress.send(()); }
+        Ok(())
+    })), context:Some(&context) });
+    tokio::select! {
+        result = &mut invocation => panic!("foreground invocation settled before drop: {result:?}"),
+        result = started => result?,
+    }
+    drop(invocation);
+    let dropped = child_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().ok_or("dropped child missing")?;
+    component.engine.manager.cancel_task(&dropped.id, Some("registered lifecycle cleanup"), Default::default())?;
+    component.engine.manager.forget(&dropped.id);
+    println!("PASS dropped registered foreground invocation settles owned executor before lifecycle cleanup");
     let running = (task.definition.execute)(ToolCall { id:"shutdown-launch", params:json!({"prompt":"suspend without dropping notification obligation","subagent_type":"explore","model":"faux/native","run_in_background":true}), signal:Default::default(), on_update:None, context:Some(&context) }).await?;
     let running_id = running.details.as_ref().and_then(|details| details["task_id"].as_str()).ok_or("shutdown child missing")?;
     dispatch(&api, EventKind::SessionShutdown, &mut ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason:SessionReason::Quit, target_session_file:None, signal:None }), &context).await?;
