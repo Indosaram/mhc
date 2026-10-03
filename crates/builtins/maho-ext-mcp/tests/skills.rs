@@ -1,6 +1,11 @@
 use maho_ext_mcp::{skills::*,auth::context::*,config_schema::*};
 use serde_json::json;
 #[test]
+fn skill_wildcards_exclude_javascript_line_terminators() {
+    for name in ["a\nb","a\rb","a\u{2028}b","a\u{2029}b"] {assert!(!match_include_tools(&["a*b".into()],name));}
+    assert!(match_include_tools(&["a*b".into()],"a/b"));
+}
+#[test]
 fn sidecar_wins_over_frontmatter() {
     let root=tempfile::tempdir().unwrap();
     let path=root.path().join("SKILL.md");std::fs::write(&path,"---\nmcp:\n  loser:\n    command: node\n---\nBody").unwrap();

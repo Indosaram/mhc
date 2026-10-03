@@ -41,7 +41,7 @@ fn normalize_globs(value:Option<&Value>)->Vec<String> {
 }
 pub fn match_include_tools(globs:&[String],tool:&str)->bool {
     globs.iter().any(|glob| {
-        let pattern=format!("^{}$",glob.split('*').map(regex::escape).collect::<Vec<_>>().join(".*"));
+        let pattern=format!("^{}$",glob.split('*').map(regex::escape).collect::<Vec<_>>().join(r"[^\n\r\x{2028}\x{2029}]*"));
         regex::Regex::new(&pattern).is_ok_and(|r|r.is_match(tool))
     })
 }
