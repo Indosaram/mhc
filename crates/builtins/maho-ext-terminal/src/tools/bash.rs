@@ -35,7 +35,8 @@ pub async fn execute_configured_bash(manager:Arc<Mutex<TerminalManager>>,call:To
     let window=super::foreground_window::resolve_foreground_window_seconds(foreground_window);
     let window=if sleep_wait.is_some() {window.min(super::foreground_window::SLEEP_WAIT_WINDOW_SECONDS)} else {window};
     let detach_delay=if settings.timeout_action==crate::settings::TimeoutAction::Kill||call.params.get("timeout").and_then(Value::as_f64).is_some_and(|timeout|timeout<=window) {Duration::MAX} else {Duration::from_secs_f64(window)};
-    let outcome=super::foreground_detach::foreground_outcome(exit,&call.signal,detach_delay);tokio::pin!(outcome);
+    let timeout_grace=call.params.get("timeout").and_then(Value::as_f64).filter(|timeout|timeout.is_finite()&&*timeout>=0.0).map(|timeout|Duration::from_secs_f64(timeout)+Duration::from_millis(crate::shared::KILLED_SESSION_EXIT_GRACE_MS));
+    let outcome=super::foreground_detach::foreground_outcome(exit,&call.signal,detach_delay,timeout_grace);tokio::pin!(outcome);
     let mut updates=if call.on_update.is_some() {Some(manager.lock().map_err(|_|"terminal manager state poisoned")?.get(&id).ok_or("terminal session missing")?.subscribe_output().map_err(|error|error.to_string())?.1)}else {None};
     let started_at=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error|error.to_string())?.as_secs_f64()*1000.0;
     let activity=format!("running {}",String::from_utf16_lossy(&command.encode_utf16().take(80).collect::<Vec<_>>()));
@@ -56,14 +57,21 @@ pub async fn execute_configured_bash(manager:Arc<Mutex<TerminalManager>>,call:To
         _=async {tokio::time::sleep_until(trailing.expect("pending progress")).await},if trailing.is_some()=>{emit()?;last_emission=Some(tokio::time::Instant::now());trailing=None;}
     }};
     if trailing.is_some() {emit()?;}
-    let outcome=match settled {
-        super::foreground_detach::ForegroundOutcome::Exit(exit)=>Some(exit),
-        super::foreground_detach::ForegroundOutcome::Aborted=>{manager.lock().map_err(|_|"terminal manager state poisoned")?.stop(&id).map_err(|error|error.to_string())?;None},
-        super::foreground_detach::ForegroundOutcome::Detached=>None,
+    let (outcome,sweep,timed_out_grace)=match settled {
+        super::foreground_detach::ForegroundOutcome::Exit(exit)=>(Some(exit),false,false),
+        super::foreground_detach::ForegroundOutcome::Aborted=>(None,true,false),
+        super::foreground_detach::ForegroundOutcome::TimedOut=>(None,true,true),
+        super::foreground_detach::ForegroundOutcome::Detached=>(None,false,false),
     };
+    if sweep {
+        if let Ok(mut state)=manager.lock() {if let Some(runtime)=state.get(&id) {let _=runtime.kill();}}
+        let sweeping=manager.clone();let sweep_id=id.clone();
+        tokio::spawn(async move {if let Ok(mut state)=sweeping.lock() {let _=state.stop(&sweep_id);}});
+    }
     let mut manager=manager.lock().map_err(|_|"terminal manager state poisoned")?;let runtime=manager.get(&id).ok_or("terminal session missing")?;
     let formatted=format_terminal_tool_output(&runtime.full_output().map_err(|error|error.to_string())?);
     if call.signal.is_aborted() {return Ok(error_result(format!("{}Command aborted",if formatted.text.is_empty() {String::new()} else {format!("{}\n\n",formatted.text)})));}
+    if timed_out_grace {return Ok(error_result(format!("{}\n\nCommand timed out after {} seconds",formatted.text,call.params.get("timeout").unwrap_or(&Value::Null))));}
     if let Some(exit)=outcome {
         if exit.timed_out {return Ok(error_result(format!("{}\n\nCommand timed out after {} seconds",formatted.text,call.params.get("timeout").unwrap_or(&Value::Null))));}
         if let Some(code)=exit.exit_code && code!=0 {return Ok(error_result(format!("{}\n\nCommand exited with code {code}",formatted.text)));}
@@ -100,6 +108,17 @@ mod tests {
         let result=execute_bash(manager.clone(),ToolCall {id:"huge",params:json!({"command":"printf '%0204800d' 0","timeout":5}),signal:Default::default(),on_update:None,context:None}).await.unwrap();
         assert!(result.content.iter().map(|part|part.text.len()).sum::<usize>()<crate::output_format::TERMINAL_TOOL_MAX_BYTES*2);
         let marker=result.content.last().unwrap();assert_eq!(marker.audience,Some(maho_ai::types::TextAudience::Model));assert!(marker.text.contains("earlier output dropped"));assert!(!result.content.iter().filter(|part|part.audience.is_none()).any(|part|part.text.contains("earlier output dropped")));manager.lock().unwrap().teardown().unwrap();
+    }
+    #[tokio::test]
+    async fn pre_aborted_foreground_does_not_spawn() {
+        let manager=Arc::new(Mutex::new(TerminalManager::default()));let signal=maho_tools::definition::AbortSignal::default();signal.abort();
+        let result=execute_bash(manager.clone(),ToolCall {id:"pre-aborted",params:json!({"command":"echo never-runs"}),signal,on_update:None,context:None}).await.unwrap();assert_eq!(result.is_error,Some(true));assert!(result.content[0].text.contains("Command aborted"));assert_eq!(manager.lock().unwrap().size(),0);
+    }
+    #[tokio::test]
+    async fn abort_kills_a_shell_that_ignores_sigterm_after_ready_signal() {
+        let manager=Arc::new(Mutex::new(TerminalManager::default()));let running=manager.clone();let signal=maho_tools::definition::AbortSignal::default();let cancel=signal.clone();let (sender,mut ready)=tokio::sync::mpsc::unbounded_channel();
+        let task=tokio::spawn(async move {execute_bash(running,ToolCall {id:"abort",params:json!({"command":"stty -echo; trap '' TERM; printf 'trap-ready\\n'; while :; do :; done","timeout":10}),signal,on_update:Some(Arc::new(move |update| {sender.send(update).unwrap();Ok(())})),context:None}).await});
+        tokio::time::timeout(Duration::from_secs(5),async {while let Some(update)=ready.recv().await {if update.content.iter().any(|part|matches!(part,maho_tools::definition::ToolContent::Text {text,..} if text.contains("trap-ready"))) {break;}}cancel.abort();let result=task.await.unwrap().unwrap();assert_eq!(result.is_error,Some(true));assert!(result.content.iter().any(|part|part.text.contains("Command aborted")));}).await.unwrap();manager.lock().unwrap().teardown().unwrap();
     }
     #[tokio::test]
     async fn subscribed_progress_reports_output_before_child_is_released() {

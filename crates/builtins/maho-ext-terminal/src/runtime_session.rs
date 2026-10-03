@@ -23,6 +23,11 @@ pub struct DeltaRead {pub text:String,pub dropped_chars:usize}
 #[derive(Default)]
 struct OutputState {buffer:Vec<u16>,pending_utf8:Vec<u8>,dropped_chars:usize,consumed:usize}
 
+pub struct OutputObserverGuard {observers:Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,sender:tokio::sync::mpsc::UnboundedSender<String>}
+impl OutputObserverGuard {
+    pub fn dispose(self)->bool {let Ok(mut observers)=self.observers.lock() else {return false;};let before=observers.len();observers.retain(|candidate|!candidate.same_channel(&self.sender));observers.len()!=before}
+}
+
 impl OutputState {
     fn ingest(&mut self,chunk:&[u8])->String {
         self.pending_utf8.extend_from_slice(chunk);
@@ -73,6 +78,7 @@ pub struct TerminalRuntimeSession {
     exit_signal:tokio::sync::watch::Receiver<Option<Result<PtyExit,String>>>,
     observers:Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>,
     screen:Arc<Mutex<vt100::Parser>>,
+    scrollback:usize,
 }
 
 impl TerminalRuntimeSession {
@@ -103,7 +109,7 @@ impl TerminalRuntimeSession {
             if let Ok(mut state)=lock.lock() {*state=Some(result.clone());signal.notify_all();}
             exit_sender.send_replace(Some(result));
         });
-        Ok(Self {command:command.to_owned(),session,output,exit,exit_thread:Some(exit_thread),exit_signal,observers,screen})
+        Ok(Self {command:command.to_owned(),session,output,exit,exit_thread:Some(exit_thread),exit_signal,observers,screen,scrollback})
     }
 
     pub fn backend(&self)->&'static str {"native"}
@@ -113,6 +119,12 @@ impl TerminalRuntimeSession {
         let (sender,receiver)=tokio::sync::mpsc::unbounded_channel();
         self.observers.lock().map_err(|_|RuntimeError::Poisoned)?.push(sender);
         Ok((String::from_utf16_lossy(&state.buffer),receiver))
+    }
+    pub fn subscribe_output_guarded(&self)->Result<(String,tokio::sync::mpsc::UnboundedReceiver<String>,OutputObserverGuard),RuntimeError> {
+        let state=self.output.lock().map_err(|_|RuntimeError::Poisoned)?;
+        let (sender,receiver)=tokio::sync::mpsc::unbounded_channel();
+        self.observers.lock().map_err(|_|RuntimeError::Poisoned)?.push(sender.clone());
+        Ok((String::from_utf16_lossy(&state.buffer),receiver,OutputObserverGuard {observers:self.observers.clone(),sender}))
     }
     pub fn exited(&self)->Result<bool,RuntimeError> {Ok(self.exit.0.lock().map_err(|_|RuntimeError::Poisoned)?.is_some())}
     pub fn exit_result(&self)->Result<Option<PtyExit>,RuntimeError> {
@@ -139,8 +151,11 @@ impl TerminalRuntimeSession {
     }
     pub fn resize(&self,cols:u16,rows:u16)->Result<(),RuntimeError> {
         self.session.resize(cols,rows)?;
+        let retained=String::from_utf16_lossy(&self.output.lock().map_err(|_|RuntimeError::Poisoned)?.buffer);
         let mut screen=self.screen.lock().map_err(|_|RuntimeError::Poisoned)?;
-        screen.screen_mut().set_size(rows,cols);Ok(())
+        let mut rebuilt=vt100::Parser::new(rows,cols,self.scrollback);
+        rebuilt.process(retained.as_bytes());
+        *screen=rebuilt;Ok(())
     }
     pub fn kill(&mut self)->Result<(),RuntimeError> {self.session.kill()?;Ok(())}
     pub fn dispose(mut self)->Result<(),RuntimeError> {
@@ -178,6 +193,25 @@ mod tests {
     }
 
     #[test]
+    fn resize_updates_geometry_and_retains_prior_screen_content()->Result<(),RuntimeError> {
+        let runtime=TerminalRuntimeSession::start("screen",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'one\r\ntwo\r\nthree'").size(20,2))?;
+        runtime.wait(Duration::from_secs(5))?;
+        runtime.resize(40,6)?;let after=runtime.snapshot()?;
+        assert_eq!((after.cols,after.rows),(40,6));assert!(after.visible_grid.iter().any(|line|line.contains("three")));assert!(runtime.full_output()?.contains("one"));
+        runtime.dispose()
+    }
+
+    #[test]
+    fn resize_replays_retained_history_at_the_new_geometry()->Result<(),RuntimeError> {
+        let runtime=TerminalRuntimeSession::start("wrap",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'").size(20,10))?;
+        runtime.wait(Duration::from_secs(5))?;
+        let before=runtime.snapshot()?;assert_eq!(before.cols,20);assert!(before.visible_grid.iter().filter(|line|line.contains('A')).count()>=3);
+        runtime.resize(60,10)?;let after=runtime.snapshot()?;
+        assert_eq!(after.cols,60);assert!(after.visible_grid.iter().any(|line|line.trim_end().len()>=50&&line.contains('A')),"replayed rows: {after:?}");
+        runtime.dispose()
+    }
+
+    #[test]
     fn split_utf8_and_delta_cursor() {
         let mut state=OutputState::default();state.ingest(&[0xe2,0x82]);assert!(state.read_delta().text.is_empty());
         state.ingest(&[0xac,b'\n']);assert_eq!(state.read_delta(),DeltaRead {text:"\u{20ac}\n".to_owned(),dropped_chars:0});assert!(state.read_delta().text.is_empty());
@@ -206,5 +240,16 @@ mod tests {
         runtime.wait(Duration::from_secs(5))?;
         assert_eq!(output,"ready\r\nnext\r\n");assert_eq!(runtime.read_delta()?.text,output);
         runtime.dispose()
+    }
+
+    #[tokio::test]
+    async fn disposed_output_observer_stops_receiving_after_history_drain()->Result<(),RuntimeError> {
+        let mut runtime=TerminalRuntimeSession::start("read input",PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'ready\\n'; read value; printf '%s\\n' \"$value\"").timeout(Duration::from_secs(5)))?;
+        let (mut output,mut receiver,guard)=runtime.subscribe_output_guarded()?;
+        tokio::time::timeout(Duration::from_secs(5),async {while !output.contains("ready\r\n") {output.push_str(&receiver.recv().await.expect("output sender"));}}).await.map_err(|_|RuntimeError::WaitTimeout)?;
+        while receiver.try_recv().is_ok() {}
+        assert!(guard.dispose());
+        runtime.write(b"next\n")?;runtime.wait(Duration::from_secs(5))?;
+        assert!(receiver.try_recv().is_err());runtime.dispose()
     }
 }

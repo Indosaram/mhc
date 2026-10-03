@@ -24,4 +24,5 @@ pub mod terminal_manifest;
 pub mod monitor_permission;
 pub mod prompt;
 pub mod session_bundle;
+pub mod terminal_state;
 pub use extension::TerminalExtension;

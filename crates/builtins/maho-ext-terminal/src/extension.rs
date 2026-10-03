@@ -5,10 +5,6 @@ use serde_json::{Value,json};
 use crate::manager::TerminalManager;
 use crate::tools::{bash_input::{execute_bash_input,BashInputInput},bash_output::execute_bash_output_view,bash_resize::execute_bash_resize,kill_bash::execute_kill_bash,context::TerminalToolResult};
 pub struct TerminalExtension;
-struct ParkedTerminal {manager:TerminalManager,monitors:crate::monitor_registry::MonitorRegistry,backgrounds:indexmap::IndexMap<String,crate::session_bundle::BackgroundSession>}
-fn parked_terminals()->&'static Mutex<std::collections::BTreeMap<String,ParkedTerminal>> {
-    static PARKED:std::sync::OnceLock<Mutex<std::collections::BTreeMap<String,ParkedTerminal>>>=std::sync::OnceLock::new();PARKED.get_or_init(Mutex::default)
-}
 type Backgrounds=Arc<Mutex<indexmap::IndexMap<String,crate::session_bundle::BackgroundSession>>>;
 fn publish_backgrounds(backgrounds:&Backgrounds,sender:&ExtensionApi) {
     let items=backgrounds.lock().expect("terminal backgrounds").values().map(|entry|json!({"id":entry.id,"description":entry.description,"startedAtMs":entry.started_at_ms})).collect::<Vec<_>>();sender.events.emit("wake_source_state",&json!({"source":"terminal-background-sessions","activeCount":items.len(),"items":items}));
@@ -35,6 +31,9 @@ pub fn monitor_state_payload(snapshot:&[crate::monitor_registry::MonitorSnapshot
         value
     }).collect::<Vec<_>>();json!({"activeCount":snapshot.len(),"monitors":monitors})
 }
+fn monitor_ended_payload(event:&crate::monitor_registry::MonitorEndedEvent)->Value {
+    json!({"id":event.id,"description":event.description,"startedAtMs":event.started_at_ms,"endedAtMs":event.ended_at_ms,"reason":event.reason.as_str(),"exitCode":event.exit_code,"fireCount":event.fire_count})
+}
 fn bind_monitor_events(mut state:tokio::sync::watch::Receiver<Vec<crate::monitor_registry::MonitorSnapshotEntry>>,sender:Arc<ExtensionApi>)->tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -48,6 +47,35 @@ fn bind_monitor_events(mut state:tokio::sync::watch::Receiver<Vec<crate::monitor
 fn tool_result(result:TerminalToolResult)->Result<ToolResult,ToolError> {
     if result.is_error==Some(true) {return Err(ToolError::Message(result.content.into_iter().map(|part|part.text).collect::<Vec<_>>().join("\n")));}
     Ok(ToolResult {content:result.content.into_iter().map(|part|ToolContent::Text {text:part.text,audience:part.audience.map(|_|"model".to_owned())}).collect(),details:result.details.map(Value::Object)})
+}
+#[cfg(unix)]
+fn terminal_now_ms()->f64 {std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0,|elapsed|elapsed.as_secs_f64()*1000.0)}
+/// Upstream `terminalStateDir`: `(sessionDir, join(sessionDir, "extensions/terminal"))`, or `None`
+/// when the host exposes no durable session dir. The lease lives in the terminal dir; the
+/// manifest writer derives its own `extensions/terminal` base from the session dir.
+#[cfg(unix)]
+fn terminal_state_dir(ctx:&maho_ext_api::types::ExtensionContext)->Option<(std::path::PathBuf,std::path::PathBuf)> {
+    let session_dir=ctx.session_manager.get_session_dir()?;
+    if session_dir.as_os_str().is_empty()||!session_dir.is_absolute() {return None;}
+    Some((session_dir.clone(),session_dir.join("extensions/terminal")))
+}
+/// Upstream `restoreDigestSentence`: ONE coalesced sentence with empty clauses omitted.
+#[cfg(unix)]
+fn restore_digest_sentence(digest:&crate::restore::RestoreDigest)->Option<String> {
+    let mut clauses=Vec::new();
+    for (label,count) in [("restored",digest.restored),("lost",digest.lost)] {if count>0 {clauses.push(format!("{label} {count}"));}}
+    if digest.expired>0 {clauses.push(format!("expired {}",digest.expired));}
+    if digest.muted>0 {clauses.push(format!("muted {}",digest.muted));}
+    if digest.attached_elsewhere>0 {clauses.push(format!("attached elsewhere {}",digest.attached_elsewhere));}
+    if digest.store_error {clauses.push("the terminal manifest could not be read".to_owned());}
+    (!clauses.is_empty()).then(||format!("Terminal state after restart: {}.",clauses.join("; ")))
+}
+/// Upstream `sendTerminalReminder`: a `<system-reminder>` through the terminal notification delivery.
+#[cfg(unix)]
+fn send_terminal_reminder(sender:&ExtensionApi,delivery:Option<crate::notify::NotificationDelivery>,sentence:&str) {
+    use maho_ext_api::types::{CustomMessage,SendMessageOptions,DeliverAs};
+    let Some(delivery)=delivery else {return;};
+    if let Err(error)=sender.send_message(CustomMessage {custom_type:crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE.to_owned(),content:vec![ToolContent::text(format!("<system-reminder>{sentence}</system-reminder>"))],display:false,details:None},SendMessageOptions {trigger_turn:true,deliver_as:Some(if delivery==crate::notify::NotificationDelivery::Steer {DeliverAs::Steer}else {DeliverAs::FollowUp})}) {eprintln!("terminal reminder failed: {error}");}
 }
 impl Extension for TerminalExtension {
     fn register(&self,api:&mut ExtensionApi) {
@@ -63,18 +91,22 @@ impl Extension for TerminalExtension {
         let terminal_notifier=Arc::new(Mutex::new(crate::notify::TerminalNotifier::default()));
         let notifier:Arc<Mutex<Option<crate::monitor_notify::MonitorNotifier>>>=Arc::new(Mutex::new(None));
         let event_notifier=notifier.clone();
-        let monitors=Arc::new(Mutex::new(crate::monitor_registry::MonitorRegistry::new(move |event| {
+        let ended_bus=api.events.clone();
+        let monitors=Arc::new(Mutex::new(crate::monitor_registry::MonitorRegistry::new_with_ended(move |event| {
             if let Some(notifier)=event_notifier.lock().expect("monitor notifier").as_ref() && let Err(error)=notifier.notify_event(event) {eprintln!("monitor delivery failed: {error}");}
+        },move |event| {
+            let payload=monitor_ended_payload(&event);
+            ended_bus.emit(crate::shared::TERMINAL_MONITOR_ENDED_EVENT,&payload);
+            ended_bus.emit("senpi:extension-rpc-event",&json!({"name":crate::shared::TERMINAL_MONITOR_ENDED_EVENT,"data":payload}));
         })));
-        let reload_manager=manager.clone();let reload_monitors=monitors.clone();let reload_configuration=configuration.clone();let reload_backgrounds=backgrounds.clone();
-        api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let manager=reload_manager.clone();let monitors=reload_monitors.clone();let configuration=reload_configuration.clone();let backgrounds=reload_backgrounds.clone();Box::pin(async move {
-            let previous=parked_terminals().lock().map_err(|_|ExtensionFailure::new("parked terminal state poisoned"))?.remove(ctx.session_manager.session_id());
+        let bundle=Arc::new(Mutex::new(crate::session_bundle::TerminalSessionBundle::from_parts(manager.clone(),monitors.clone(),backgrounds.clone())));
+        let reload_bundle=bundle.clone();let reload_configuration=configuration.clone();
+        api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let bundle=reload_bundle.clone();let configuration=reload_configuration.clone();Box::pin(async move {
+            let previous=crate::session_bundle::claim_parked_bundle(ctx.session_manager.session_id());
             if let Some(mut previous)=previous {
                 if matches!(event,maho_ext_api::types::ExtensionEvent::SessionStart(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {
-                    let mut manager=manager.lock().map_err(|_|ExtensionFailure::new("terminal manager state poisoned"))?;manager.teardown().map_err(|error|ExtensionFailure::new(error.to_string()))?;*manager=previous.manager;manager.configure(&configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?.0);
-                    let mut monitors=monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?;monitors.dispose();*monitors=previous.monitors;
-                    *backgrounds.lock().map_err(|_|ExtensionFailure::new("terminal backgrounds poisoned"))?=previous.backgrounds;
-                }else {previous.monitors.dispose();previous.manager.teardown().map_err(|error|ExtensionFailure::new(error.to_string()))?;}
+                    let live=bundle.lock().map_err(|_|ExtensionFailure::new("terminal bundle state poisoned"))?;live.adopt(&previous);live.manager.lock().map_err(|_|ExtensionFailure::new("terminal manager state poisoned"))?.configure(&configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?.0);
+                }else {previous.teardown().map_err(|error|ExtensionFailure::new(error.to_string()))?;}
             }
             Ok(EventResult::None)
         })}));
@@ -86,15 +118,15 @@ impl Extension for TerminalExtension {
                 if kind==EventKind::SessionParked {monitors.park();}else {monitors.unpark();}
                 let mut status=status.lock().map_err(|_|ExtensionFailure::new("monitor status state poisoned"))?;
                 if let Some(task)=status.take() {task.abort();}
-                if kind==EventKind::SessionResumed {let ui=ctx.ui.clone();*status=Some(crate::monitor_status_ticker::bind_monitor_status(monitors.subscribe_state(),move |text|ui.set_status(crate::monitor_status::MONITOR_STATUS_KEY,text.as_deref())));}
+                if kind==EventKind::SessionResumed {let ui=ctx.ui.clone();let tui=matches!(ctx.mode,maho_ext_api::types::ExtensionMode::Tui);*status=Some(crate::monitor_status_ticker::bind_monitor_status(monitors.subscribe_state(),move |text|ui.set_status(crate::monitor_status::MONITOR_STATUS_KEY,crate::monitor_status::render_monitor_status(if tui {"tui"} else {"plain"},&ui.theme(),text.as_deref()).as_deref())));}
                 Ok(EventResult::None)
             })}));
         }
         let status_monitors=monitors.clone();let start_status=status_task.clone();
         api.on(EventKind::SessionStart,Arc::new(move |_,ctx| {let monitors=status_monitors.clone();let status=start_status.clone();Box::pin(async move {
             let mut status=status.lock().map_err(|_|ExtensionFailure::new("monitor status state poisoned"))?;if let Some(task)=status.take() {task.abort();}
-            let receiver=monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?.subscribe_state();let ui=ctx.ui.clone();
-            *status=Some(crate::monitor_status_ticker::bind_monitor_status(receiver,move |text|ui.set_status(crate::monitor_status::MONITOR_STATUS_KEY,text.as_deref())));
+            let receiver=monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?.subscribe_state();let ui=ctx.ui.clone();let tui=matches!(ctx.mode,maho_ext_api::types::ExtensionMode::Tui);
+            *status=Some(crate::monitor_status_ticker::bind_monitor_status(receiver,move |text|ui.set_status(crate::monitor_status::MONITOR_STATUS_KEY,crate::monitor_status::render_monitor_status(if tui {"tui"} else {"plain"},&ui.theme(),text.as_deref()).as_deref())));
             Ok(EventResult::None)
         })}));
         let sender=Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));
@@ -129,6 +161,65 @@ impl Extension for TerminalExtension {
             let maho_ext_api::types::ExtensionEvent::BeforeAgentStart(event)=event else {return Ok(EventResult::None);};
             let eval_only=sender.get_all_tools()?.iter().any(|tool|tool.name=="eval");
             Ok(EventResult::BeforeAgentStart(maho_ext_api::types::BeforeAgentStartEventResult {system_prompt:Some(format!("{}\n{}",event.system_prompt,crate::prompt::build_terminal_prompt_section(eval_only))),..Default::default()}))
+        })}));
+        // Terminal persistence lifecycle: upstream `adoptPersistedTerminalState` on a non-reload
+        // start (acquire the lease, restore the manifest, report ONE coalesced digest) and
+        // `suspendAndFlushManifest` + lease release on shutdown. The lease and the manifest both
+        // live under the session dir the host exposes through `SessionManager::get_session_dir`;
+        // a context without one keeps no durable terminal state, like upstream's SDK/in-memory
+        // sessions. A reload generation keeps the lease: the same pid still owns it.
+        let state_lifecycle:Arc<Mutex<Option<crate::terminal_state::TerminalStateLifecycle>>>=Arc::new(Mutex::new(None));
+        let start_lifecycle=state_lifecycle.clone();let lifecycle_manager=manager.clone();let lifecycle_monitors=monitors.clone();let lifecycle_settings=configuration.clone();let lifecycle_sender=sender.clone();
+        api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let state=start_lifecycle.clone();let manager=lifecycle_manager.clone();let monitors=lifecycle_monitors.clone();let configuration=lifecycle_settings.clone();let sender=lifecycle_sender.clone();Box::pin(async move {
+            #[cfg(unix)]
+            {
+                let Some((session_dir,terminal_dir))=terminal_state_dir(ctx) else {return Ok(EventResult::None);};
+                let session_id=ctx.session_manager.session_id().to_owned();
+                let encoded=maho_core::session_sidecar_store::encoded_session_id(&session_id);
+                let reload=matches!(event,maho_ext_api::types::ExtensionEvent::SessionStart(event) if event.reason==maho_ext_api::types::SessionReason::Reload);
+                let now=terminal_now_ms();
+                // A reload generation inherits the lease (same pid) and only rebinds the recorder so
+                // manifest coverage continues; a fresh generation acquires the lease and restores.
+                let mut lifecycle=crate::terminal_state::TerminalStateLifecycle::new(&session_dir,&session_id);
+                if reload {
+                    *state.lock().map_err(|_|ExtensionFailure::new("terminal state lifecycle poisoned"))?=Some(lifecycle);
+                } else {
+                    let (settings,shell)=configuration.lock().map_err(|_|ExtensionFailure::new("terminal configuration state poisoned"))?.clone();
+                    let delivery=crate::notify::get_terminal_notification_delivery(settings.notify,Some(match ctx.mode {maho_ext_api::types::ExtensionMode::Print=>"print",maho_ext_api::types::ExtensionMode::Json=>"json",_=>"interactive"}),ctx.model.is_some(),false);
+                    match lifecycle.acquire(&terminal_dir,&encoded,f64::from(std::process::id()),now) {
+                        Ok(crate::terminal_state::TerminalStateAdoption::Acquired)=>{
+                            let digest={let mut manager=manager.lock().map_err(|_|ExtensionFailure::new("terminal manager state poisoned"))?;let mut monitors=monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?;lifecycle.restore_configured(&mut manager,&mut monitors,now,shell.as_deref(),&settings).await};
+                            if let Some(sentence)=restore_digest_sentence(&digest) {send_terminal_reminder(&sender,delivery,&sentence);}
+                            *state.lock().map_err(|_|ExtensionFailure::new("terminal state lifecycle poisoned"))?=Some(lifecycle);
+                        }
+                        Ok(crate::terminal_state::TerminalStateAdoption::AttachedElsewhere {pid})=>send_terminal_reminder(&sender,delivery,&format!("Terminal monitors for this session are attached in another live process (pid {pid}); nothing was restored here.")),
+                        Err(error)=>send_terminal_reminder(&sender,delivery,&format!("Terminal state after restart: the session lease could not be acquired ({error}); nothing was restored.")),
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {let _=(event,ctx,manager,monitors,configuration,sender);}
+            Ok(EventResult::None)
+        })}));
+        let shutdown_lifecycle=state_lifecycle.clone();
+        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let state=shutdown_lifecycle.clone();Box::pin(async move {
+            #[cfg(unix)]
+            {
+                if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {return Ok(EventResult::None);}
+                let Some(mut lifecycle)=state.lock().map_err(|_|ExtensionFailure::new("terminal state lifecycle poisoned"))?.take() else {return Ok(EventResult::None);};
+                lifecycle.record_shutdown(terminal_now_ms()).await;
+                if lifecycle.is_owner() {
+                    if let Err(error)=lifecycle.release() {eprintln!("terminal lease release failed: {error}");}
+                } else if let Some((_session_dir,terminal_dir))=terminal_state_dir(ctx) {
+                    // A reload generation inherited the lease instead of acquiring it, so it releases
+                    // by (path, own pid) - which removes exactly that file and no foreign holder's.
+                    let encoded=maho_core::session_sidecar_store::encoded_session_id(ctx.session_manager.session_id());
+                    if let Err(error)=crate::terminal_state::release_lease_at(&terminal_dir,&encoded,f64::from(std::process::id())) {eprintln!("terminal lease release failed: {error}");}
+                }
+            }
+            #[cfg(not(unix))]
+            {let _=(event,ctx);}
+            Ok(EventResult::None)
         })}));
         let bash_sender=sender.clone();let lifecycle_delivery=completion_delivery.clone();
         let lifecycle_notifier=notifier.clone();let lifecycle_monitors=monitors.clone();let lifecycle_configuration=configuration.clone();
@@ -193,12 +284,12 @@ impl Extension for TerminalExtension {
                         return tool_result(crate::tools::context::text_result(format!("Killed {count} session(s).")));
                     }
                     if let Some(id)=id {
-                        let resolved=manager.resolve_id(id).unwrap_or_else(||id.to_owned());
+                        let resolved=crate::tools::context::resolve_terminal_id(&manager,id);
                         if monitors.stop_file(&resolved) {return tool_result(crate::tools::context::text_result(format!("Killed {id}.")));}
                     }
                     return tool_result(execute_kill_bash(&mut manager,id,all));
                 }
-                let id=id.ok_or_else(||ToolError::Message("bash_id must be a string".to_owned()))?;let resolved=manager.resolve_id(id).unwrap_or_else(||id.to_owned());let runtime=manager.get(&resolved);
+                let id=id.ok_or_else(||ToolError::Message("bash_id must be a string".to_owned()))?;let resolved=crate::tools::context::resolve_terminal_id(&manager,id);let runtime=manager.get(&resolved);
                 match name {
                     "bash_output"=>{let mut result=execute_bash_output_view(runtime.as_deref(),id,call.params.get("filter").and_then(Value::as_str),call.params.get("view").and_then(Value::as_str)==Some("screen")).map_err(|error|ToolError::Message(error.to_string()))?;let registry=monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?;if runtime.is_some()&&let Some(entry)=registry.snapshot().iter().find(|entry|entry.id==resolved) {result=crate::tools::bash_output::with_monitor_state(result,id,entry.paused,registry.muted_dropped(&resolved));}tool_result(result)},
                     "bash_input"=>{let keys=call.params.get("keys").and_then(Value::as_array).map(|keys|keys.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>()).unwrap_or_default();tool_result(execute_bash_input(runtime,BashInputInput {bash_id:id,input:call.params.get("input").and_then(Value::as_str),keys:&keys,submit:call.params.get("submit").and_then(Value::as_bool)}))},
@@ -213,8 +304,9 @@ impl Extension for TerminalExtension {
                 let mut manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
                 let mut monitors=monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?;
                 let cwd=call.context.map(|context|context.cwd().to_path_buf()).unwrap_or(std::env::current_dir()?);
+                let approved_parent=crate::tools::monitor::approved_parent_for(&call)?;
                 let (settings,shell)=configuration.lock().map_err(|_|ToolError::Message("terminal configuration state poisoned".to_owned()))?.clone();
-                let result=crate::tools::monitor::execute_configured_monitor(&mut manager,&mut monitors,&call.params,&cwd,shell.as_deref(),&settings);
+                let result=crate::tools::monitor::execute_configured_monitor(&mut manager,&mut monitors,&call.params,&cwd,approved_parent.as_deref(),shell.as_deref(),&settings);
                 if call.params.get("action").and_then(Value::as_str)==Some("rearm") && let Some(notifier)=notifier.lock().map_err(|_|ToolError::Message("monitor notifier state poisoned".to_owned()))?.as_ref() {
                     notifier.resume(monitors.snapshot().iter().filter(|record|!record.paused).map(|record|record.id.clone()).collect()).map_err(ToolError::Message)?;
                 }
@@ -231,16 +323,20 @@ impl Extension for TerminalExtension {
         })}));
         let activity=notifier.clone();
         api.on(EventKind::ToolCall,Arc::new(move |_,_| {let notifier=activity.clone();Box::pin(async move {if let Some(notifier)=notifier.lock().map_err(|_|ExtensionFailure::new("monitor notifier state poisoned"))?.as_ref() {notifier.note_activity().map_err(ExtensionFailure::new)?;}Ok(EventResult::None)})}));
-        let cleanup=Arc::clone(&manager);
+        let shutdown_bundle=bundle.clone();
         api.on(EventKind::SessionShutdown,Arc::new(move |_,_| {let tasks=completion_tasks.clone();let notifier=cleanup_terminal_notifier.clone();Box::pin(async move {for task in tasks.lock().map_err(|_|ExtensionFailure::new("terminal completion tasks poisoned"))?.drain(..) {task.abort();}*notifier.lock().map_err(|_|ExtensionFailure::new("terminal notifier state poisoned"))?=crate::notify::TerminalNotifier::default();Ok(EventResult::None)})}));
         api.on(EventKind::SessionShutdown,Arc::new(move |_,_| {let task=telemetry_task.clone();Box::pin(async move {if let Some(task)=task.lock().map_err(|_|ExtensionFailure::new("monitor telemetry state poisoned"))?.take() {task.abort();}Ok(EventResult::None)})}));
         api.on(EventKind::SessionShutdown,Arc::new(move |_,ctx| {let status=status_task.clone();Box::pin(async move {if let Some(task)=status.lock().map_err(|_|ExtensionFailure::new("monitor status state poisoned"))?.take() {task.abort();}ctx.ui.set_status(crate::monitor_status::MONITOR_STATUS_KEY,None);Ok(EventResult::None)})}));
-        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let manager=Arc::clone(&cleanup);let monitors=monitors.clone();let notifier=notifier.clone();let backgrounds=backgrounds.clone();Box::pin(async move {
-            notifier.lock().map_err(|_|ExtensionFailure::new("monitor notifier state poisoned"))?.take();let mut monitors=monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?;let mut manager=manager.lock().map_err(|_|ExtensionFailure::new("terminal manager state poisoned"))?;
+        api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let bundle=shutdown_bundle.clone();let notifier=notifier.clone();Box::pin(async move {
+            notifier.lock().map_err(|_|ExtensionFailure::new("monitor notifier state poisoned"))?.take();
+            let session_id=ctx.session_manager.session_id().to_owned();
             if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {
-                monitors.detach_delivery();let parked=ParkedTerminal {manager:std::mem::take(&mut *manager),monitors:std::mem::replace(&mut *monitors,crate::monitor_registry::MonitorRegistry::new(|_|{})),backgrounds:std::mem::take(&mut *backgrounds.lock().map_err(|_|ExtensionFailure::new("terminal backgrounds poisoned"))?)};
-                let previous=parked_terminals().lock().map_err(|_|ExtensionFailure::new("parked terminal state poisoned"))?.insert(ctx.session_manager.session_id().to_owned(),parked);if let Some(mut previous)=previous {previous.monitors.dispose();previous.manager.teardown().map_err(|error|ExtensionFailure::new(error.to_string()))?;}
-            }else {monitors.dispose();manager.teardown().map_err(|error|ExtensionFailure::new(error.to_string()))?;backgrounds.lock().map_err(|_|ExtensionFailure::new("terminal backgrounds poisoned"))?.clear();if let Some(mut previous)=parked_terminals().lock().map_err(|_|ExtensionFailure::new("parked terminal state poisoned"))?.remove(ctx.session_manager.session_id()) {previous.monitors.dispose();previous.manager.teardown().map_err(|error|ExtensionFailure::new(error.to_string()))?;}}
+                bundle.lock().map_err(|_|ExtensionFailure::new("terminal bundle state poisoned"))?.monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?.detach_delivery();
+                crate::session_bundle::park_bundle(&session_id,bundle.lock().map_err(|_|ExtensionFailure::new("terminal bundle state poisoned"))?.clone()).map_err(|error|ExtensionFailure::new(error.to_string()))?;
+            }else {
+                bundle.lock().map_err(|_|ExtensionFailure::new("terminal bundle state poisoned"))?.teardown().map_err(|error|ExtensionFailure::new(error.to_string()))?;
+                crate::session_bundle::teardown_parked_bundle(&session_id).map_err(|error|ExtensionFailure::new(error.to_string()))?;
+            }
             Ok(EventResult::None)
         })}));
     }
@@ -249,12 +345,30 @@ impl Extension for TerminalExtension {
 mod tests {
     use super::*;use maho_ext_api::types::*;
     #[tokio::test]
+    async fn registered_file_monitor_accessor_error_creates_no_registration()->Result<(),ToolError> {
+        // Given a real registered ingress and an accessor that fails admission.
+        let dir=tempfile::tempdir()?;let mut api=ExtensionApi::new(LoadedExtension::new("terminal",dir.path().to_owned(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());TerminalExtension.register(&mut api);
+        let context=crate::tools::monitor::tests::stub(Err("admission unavailable".into()));
+        let monitor=&api.registered.tools[5].definition;
+        // When the registered tool is invoked, the carrier error must escape.
+        let error=(monitor.execute)(maho_tools::definition::ToolCall {id:"rejected",params:json!({"description":"watch","path":dir.path().join("file"),"persistent":true}),signal:Default::default(),on_update:None,context:Some(&context)}).await.expect_err("accessor error must escape registered ingress");
+        assert!(error.to_string().contains("admission unavailable"));
+        // Then kill-all observes zero registrations, and the first admitted file keeps watch_1.
+        let empty=(api.registered.tools[4].definition.execute)(maho_tools::definition::ToolCall {id:"empty",params:json!({"all":true}),signal:Default::default(),on_update:None,context:None}).await?;
+        assert!(matches!(&empty.content[0],ToolContent::Text {text,..} if text=="Killed 0 session(s)."));
+        let context=crate::tools::monitor::tests::stub(Ok(None));
+        let admitted=(monitor.execute)(maho_tools::definition::ToolCall {id:"admitted",params:json!({"description":"watch","path":dir.path().join("file"),"persistent":true}),signal:Default::default(),on_update:None,context:Some(&context)}).await?;
+        assert_eq!(admitted.details.as_ref().unwrap()["bash_id"],"watch_1");
+        (api.registered.tools[4].definition.execute)(maho_tools::definition::ToolCall {id:"cleanup",params:json!({"all":true}),signal:Default::default(),on_update:None,context:None}).await?;Ok(())
+    }
+    #[tokio::test]
     async fn registered_file_monitor_stable_id_kill_releases_shared_capacity()->Result<(),ToolError> {
         let dir=tempfile::tempdir()?;let mut api=ExtensionApi::new(LoadedExtension::new("terminal",dir.path().to_owned(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());TerminalExtension.register(&mut api);
-        let result=(api.registered.tools[5].definition.execute)(maho_tools::definition::ToolCall {id:"file",params:json!({"description":"watch","path":dir.path().join("file"),"persistent":true}),signal:Default::default(),on_update:None,context:None}).await?;
+        let context=crate::tools::monitor::tests::stub(Ok(None));
+        let result=(api.registered.tools[5].definition.execute)(maho_tools::definition::ToolCall {id:"file",params:json!({"description":"watch","path":dir.path().join("file"),"persistent":true}),signal:Default::default(),on_update:None,context:Some(&context)}).await?;
         let id=result.details.as_ref().unwrap()["monitor_id"].as_str().unwrap();assert!(id.starts_with("mon_"));
         let result=(api.registered.tools[4].definition.execute)(maho_tools::definition::ToolCall {id:"kill",params:json!({"bash_id":id}),signal:Default::default(),on_update:None,context:None}).await?;assert!(matches!(&result.content[0],ToolContent::Text {text,..} if text==&format!("Killed {id}.")));
-        let result=(api.registered.tools[5].definition.execute)(maho_tools::definition::ToolCall {id:"next",params:json!({"description":"next","path":dir.path().join("next"),"persistent":true}),signal:Default::default(),on_update:None,context:None}).await?;assert!(result.details.as_ref().unwrap()["monitor_id"].as_str().unwrap().starts_with("mon_"));
+        let result=(api.registered.tools[5].definition.execute)(maho_tools::definition::ToolCall {id:"next",params:json!({"description":"next","path":dir.path().join("next"),"persistent":true}),signal:Default::default(),on_update:None,context:Some(&context)}).await?;assert!(result.details.as_ref().unwrap()["monitor_id"].as_str().unwrap().starts_with("mon_"));
         (api.registered.tools[4].definition.execute)(maho_tools::definition::ToolCall {id:"all",params:json!({"all":true}),signal:Default::default(),on_update:None,context:None}).await?;Ok(())
     }
     #[tokio::test]
@@ -277,5 +391,17 @@ mod tests {
         assert!(matches!(&result.content[0],ToolContent::Text {text,..} if text.contains("status: completed exit_code: 0")));
         (api.registered.tools[4].definition.execute)(maho_tools::definition::ToolCall {id:"c3",params:json!({"all":true}),signal:Default::default(),on_update:None,context:None}).await?;Ok(())
     }
-    #[test] fn native_companions_register_flat_schemas_and_shutdown() {let mut api=ExtensionApi::new(LoadedExtension::new("terminal","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());TerminalExtension.register(&mut api);assert_eq!(api.registered.tools.iter().map(|tool|tool.definition.name.as_str()).collect::<Vec<_>>(),vec!["bash","bash_output","bash_input","bash_resize","kill_bash","monitor"]);for tool in &api.registered.tools {assert_eq!(tool.definition.parameters["type"],"object");assert!(tool.definition.parameters.get("properties").is_some());}assert_eq!(api.registered.handlers[&EventKind::SessionShutdown].len(),4);}
+    #[test] fn native_companions_register_flat_schemas_and_shutdown() {let mut api=ExtensionApi::new(LoadedExtension::new("terminal","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());TerminalExtension.register(&mut api);assert_eq!(api.registered.tools.iter().map(|tool|tool.definition.name.as_str()).collect::<Vec<_>>(),vec!["bash","bash_output","bash_input","bash_resize","kill_bash","monitor"]);for tool in &api.registered.tools {assert_eq!(tool.definition.parameters["type"],"object");assert!(tool.definition.parameters.get("properties").is_some());}assert_eq!(api.registered.handlers[&EventKind::SessionShutdown].len(),5);}
+    #[tokio::test]
+    async fn monitor_ending_reaches_native_event_bus_and_rpc() {
+        let dir=tempfile::tempdir().unwrap();let bus=EventBus::default();let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let ended_sender=sender.clone();let rpc_sender=sender;
+        let _ended=bus.on(crate::shared::TERMINAL_MONITOR_ENDED_EVENT,Arc::new(move |data| {ended_sender.send(("ended",data.clone())).unwrap();}));let _rpc=bus.on("senpi:extension-rpc-event",Arc::new(move |data| {rpc_sender.send(("rpc",data.clone())).unwrap();}));
+        let mut api=ExtensionApi::new(LoadedExtension::new("terminal",dir.path().to_owned(),SourceInfo::default()),ExtensionSessionProfile::default(),bus,ExtensionRuntime::default());TerminalExtension.register(&mut api);
+        let result=(api.registered.tools[5].definition.execute)(maho_tools::definition::ToolCall {id:"monitor",params:json!({"description":"ready","command":"stty -echo; printf 'ready\\n'"}),signal:Default::default(),on_update:None,context:None}).await.unwrap();assert!(result.details.as_ref().unwrap()["monitor_id"].as_str().is_some_and(|id|id.starts_with("mon_")));
+        tokio::time::timeout(std::time::Duration::from_secs(5),async {
+            let mut seen_ended=false;let mut seen_rpc=false;
+            while !(seen_ended&&seen_rpc) {let (kind,data)=events.recv().await.unwrap();if kind=="ended" {assert_eq!(data["reason"],"exit");assert_eq!(data["exitCode"].as_i64(),Some(0));seen_ended=true;}else if kind=="rpc"&&data["name"]==crate::shared::TERMINAL_MONITOR_ENDED_EVENT {assert_eq!(data["data"]["reason"],"exit");seen_rpc=true;}}
+        }).await.unwrap();
+        (api.registered.tools[4].definition.execute)(maho_tools::definition::ToolCall {id:"cleanup",params:json!({"all":true}),signal:Default::default(),on_update:None,context:None}).await.unwrap();
+    }
 }
