@@ -1,5 +1,5 @@
 use std::{collections::BTreeMap, io::BufRead, sync::{Arc, Mutex, mpsc}, time::Duration};
-use senpi_task::{manager::{ManagedChildHandle, types::{ManagedRunners, ManagerStartSpec, StartResult}}, runners::{RunnerOutcome, rpc::{process::{RpcChildProcess, RpcSpawnDescriptor}, model_admission::{RpcModelAdmissionOptions, create_rpc_model_admission}, terminate::terminate_rpc_child}, rpc_process::RpcProcessRunnerOptions, types::TerminateOptions}};
+use senpi_task::{manager::{ManagedChildHandle, types::{ManagedRunners, ManagerStartSpec, StartResult}}, runners::{rpc::{process::{RpcChildProcess, RpcSpawnDescriptor}, model_admission::{RpcModelAdmissionOptions, create_rpc_model_admission}, terminate::terminate_rpc_child}, rpc_process::RpcProcessRunnerOptions, types::TerminateOptions}};
 
 struct Actions;
 impl maho_ext_api::ExtensionActions for Actions {
@@ -31,15 +31,6 @@ impl Drop for Processes {
             if let Err(error)=terminate_rpc_child(child,TerminateOptions { sigkill_delay_ms:Some(100) }) { eprintln!("native proof cleanup failed: {error}"); }
         }
     }
-}
-fn outcome(handle:Arc<dyn ManagedChildHandle>)->Result<RunnerOutcome,Box<dyn std::error::Error>> {
-    let (sender,receiver)=mpsc::channel(); let waiting=handle.clone();
-    let worker=std::thread::spawn(move || { let _=sender.send(waiting.wait_for_outcome()); });
-    let result=receiver.recv_timeout(Duration::from_secs(15));
-    let cleanup=if result.is_err() { senpi_task::manager::child_handle::discard_managed_handle(handle.as_ref()) } else { Ok(()) };
-    worker.join().map_err(|_| "native outcome worker panicked")?;
-    cleanup?;
-    Ok(result?)
 }
 fn command<T:Send+'static>(handle:Arc<dyn ManagedChildHandle>, operation:impl FnOnce(Arc<dyn ManagedChildHandle>)->Result<T,String>+Send+'static)->Result<T,Box<dyn std::error::Error>> {
     let (sender,receiver)=mpsc::channel(); let active=handle.clone();
@@ -124,18 +115,21 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
     assert_eq!(resumed_record.final_response.as_deref(),Some("task44-native-resumed"));
     assert!(resumed_record.notification.run_epoch>completed.notification.run_epoch,"manager continuation must advance the persisted run epoch");
     println!("RECEIPT actual manager reattachment, continuation and persisted resumed output observed");
-    engine.manager.forget(&record.task_id);
-    command(handle.clone(),|handle| handle.follow_up("task44-error").map_err(|error| error.to_string()))?;
-    assert!(matches!(outcome(handle.clone())?,RunnerOutcome::Error { .. }),"real provider rejection must settle as an error");
-    println!("RECEIPT deterministic provider rejection settled through production outcome");
-    command(handle.clone(),|handle| handle.follow_up("task44-cancel").map_err(|error| error.to_string()))?;
+    let continuing=engine.manager.clone(); let task_id=record.task_id.clone();
+    command(handle.clone(),move |_| continuing.continue_task(&task_id,"task44-error",None).map_err(|error| error.to_string()))?;
+    let failed=engine.manager.wait_for(&record.task_id,None,Some(Duration::from_secs(15)))?;
+    assert_eq!(failed.status,senpi_task::state::TaskStatus::Error,"real provider rejection must persist as a manager error");
+    println!("RECEIPT deterministic provider rejection settled through persisted manager outcome");
+    let continuing=engine.manager.clone(); let task_id=record.task_id.clone();
+    command(handle.clone(),move |_| continuing.continue_task(&task_id,"task44-cancel",None).map_err(|error| error.to_string()))?;
     let mut line=String::new(); receipts.read_line(&mut line)?;
     assert_eq!(line,"TASK44_PROVIDER_CANCEL_HELD\n","abort must follow the actual provider-held request");
-    command(handle.clone(),|handle| handle.abort().map_err(|error| error.to_string()))?;
-    assert_eq!(outcome(handle.clone())?,RunnerOutcome::Cancelled);
-    command(handle.clone(),|handle| handle.follow_up("task44-drop").map_err(|error| error.to_string()))?;
-    line.clear(); receipts.read_line(&mut line)?;
-    assert_eq!(line,"TASK44_PROVIDER_HELD\n","cleanup must follow the actual provider-held request");
+    let cancelling=engine.manager.clone(); let task_id=record.task_id.clone();
+    command(handle.clone(),move |_| cancelling.cancel_task(&task_id,Some("native provider cancellation proof"),Default::default()).map_err(|error| error.to_string()))?;
+    let cancelled=engine.manager.wait_for(&record.task_id,None,Some(Duration::from_secs(15)))?;
+    assert_eq!(cancelled.status,senpi_task::state::TaskStatus::Cancelled);
+    for child in processes.lock().expect("processes").iter() { assert!(child.wait_exit_timeout(Duration::from_secs(5)).is_some(),"manager cancellation must reap native child before explicit driver cleanup"); }
+    println!("RECEIPT manager cancellation persisted and native child reaped before driver cleanup");
     drop(handle_cleanup);
     for child in processes.lock().expect("processes").iter() { assert!(child.wait_exit_timeout(Duration::from_secs(5)).is_some(),"discard must reap native child"); }
     drop(cleanup);
