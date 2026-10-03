@@ -54,7 +54,8 @@ fn user_text(content:&Value)->String{
 fn display(ctx:&ExtensionContext,sender:&ExtensionApi,kind:PromptKind,url:&str,metadata:Option<&Value>)->Result<(),ExtensionFailure>{
     let title=metadata.and_then(|metadata|metadata["title"].as_str()).map(str::trim).filter(|title|!title.is_empty());
     let author=format_author(metadata.and_then(|metadata|metadata.get("author")));
-    ctx.ui.set_widget("prompt-url",Some(WidgetContent::Lines(vec![title.unwrap_or(url).into(),author.unwrap_or_else(||"Prompt URL detected.".into()),url.into()])),Default::default());
+    let spec=maho_ext_host::notice::NoticeSpec{title:title.unwrap_or(url).into(),tone:Some(maho_ext_host::notice::NoticeTone::Accent),why:author.unwrap_or_else(||"Prompt URL detected.".into()),extra:vec![maho_ext_host::notice::NoticeLine{text:url.into(),tone:Some(maho_ext_host::notice::NoticeTone::Dim)}],expanded_line:None};
+    ctx.ui.set_widget("prompt-url",Some(WidgetContent::Component(Arc::new(move|theme|maho_ext_host::notice::build_notice_box(spec.clone(),false,theme)))),Default::default());
     if let Some(name)=desired_session_name(&PromptMatch{kind,url},title,sender.get_session_name()?.as_deref()){sender.set_session_name(&name)?;}
     Ok(())
 }
