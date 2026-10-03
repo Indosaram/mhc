@@ -1,7 +1,20 @@
 use std::{collections::BTreeMap, sync::{Arc, Mutex}};
 use maho_ext_api::*;
 
+/// The extension-facing theme. `maho_ext_api::Theme::colors`/`backgrounds` hold ANSI SGR prefixes
+/// that consumers apply directly (see `crates/maho-ext-host/tests/notice.rs`), so every entry is the
+/// theme's own `get_fg_ansi`/`get_bg_ansi` output rather than a hex value.
+pub fn extension_theme(theme: &crate::theme::Theme) -> maho_ext_api::Theme {
+    maho_ext_api::Theme {
+        name: Some(theme.name.clone()),
+        colors: crate::theme::ThemeColor::ALL.iter().map(|color| (color.key().to_owned(), theme.get_fg_ansi(*color))).collect(),
+        backgrounds: crate::theme::ThemeBg::ALL.iter().map(|background| (background.key().to_owned(), theme.get_bg_ansi(*background))).collect(),
+        vars: BTreeMap::new(),
+    }
+}
+
 pub enum UiRequest {
+    WidgetFrame,
     Select { title: String, options: Vec<String>, reply: tokio::sync::oneshot::Sender<Option<String>> },
     Input { title: String, reply: tokio::sync::oneshot::Sender<Option<String>> },
     Notify(String, NotificationType),
@@ -160,7 +173,7 @@ impl ExtensionUiActions for InteractiveExtensionUi {
     fn get_theme(&self, name: &str) -> Option<Theme> {
         let directory = self.theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         crate::theme::registry::ThemeRegistry::new(directory, name, crate::theme::ColorMode::Truecolor).ok()
-            .map(|registry| Theme { name:Some(registry.current.name.clone()), colors:registry.current.resolved_colors(), ..Default::default() })
+            .map(|registry| extension_theme(&registry.current))
     }
     fn set_theme(&self, theme: ThemeSelection) -> SetThemeResult {
         let name = match theme { ThemeSelection::Name(name) => name, ThemeSelection::Theme(theme) => theme.name.unwrap_or_default() };
@@ -170,4 +183,33 @@ impl ExtensionUiActions for InteractiveExtensionUi {
     }
     fn get_tools_expanded(&self) -> bool { self.tools_expanded.load(std::sync::atomic::Ordering::Relaxed) }
     fn set_tools_expanded(&self, expanded: bool) { self.tools_expanded.store(expanded, std::sync::atomic::Ordering::Relaxed); self.send(UiRequest::ToolsExpanded(expanded)); }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extension_theme_emits_the_ansi_prefixes_consumers_apply() {
+        let theme = crate::theme::Theme::builtin("dark", crate::theme::ColorMode::Truecolor).expect("dark theme");
+        let exported = extension_theme(&theme);
+        assert_eq!(exported.name.as_deref(), Some("dark"));
+        for key in ["accent", "dim", "warning", "success", "error", "text"] {
+            let value = exported.colors.get(key).unwrap_or_else(|| panic!("missing {key}"));
+            assert!(value.starts_with('\u{1b}'), "{key} must be an ANSI prefix: {value:?}");
+            assert!(!value.contains('#'), "{key} must not carry a hex value: {value:?}");
+        }
+        let background = exported.backgrounds.get("customMessageBg").expect("customMessageBg");
+        assert!(background.starts_with('\u{1b}'), "background must be an ANSI prefix: {background:?}");
+        assert_eq!(exported.colors.len(), crate::theme::ThemeColor::ALL.len());
+        assert_eq!(exported.backgrounds.len(), crate::theme::ThemeBg::ALL.len());
+    }
+
+    #[test]
+    fn extension_theme_matches_the_color_mode_of_its_theme() {
+        let truecolor = extension_theme(&crate::theme::Theme::builtin("dark", crate::theme::ColorMode::Truecolor).expect("dark theme"));
+        let color256 = extension_theme(&crate::theme::Theme::builtin("dark", crate::theme::ColorMode::Color256).expect("dark theme"));
+        assert!(truecolor.colors["accent"].contains(";2;"), "truecolor uses RGB: {:?}", truecolor.colors["accent"]);
+        assert!(color256.colors["accent"].contains(";5;"), "color256 uses an index: {:?}", color256.colors["accent"]);
+    }
 }

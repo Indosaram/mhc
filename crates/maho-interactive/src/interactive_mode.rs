@@ -7,14 +7,101 @@ use maho_tui::tui::{Component, Container};
 use crate::{components::{assistant_message::AssistantMessageComponent, user_message::UserMessageComponent, markdown_transform::get_markdown_theme}, theme::Theme};
 use crate::components::{tool_execution::{ToolExecutionComponent, ToolExecutionOptions, ToolExecutionPresentation}, tool_execution_types::ToolExecutionResult};
 use crate::components::{custom_editor::{CustomEditor, CustomEditorOptions}, extension_editor::editor_theme};
+use crate::grok::chrome::InteractiveChrome;
 
 type ImageSubmissions = std::collections::VecDeque<(String, Vec<maho_ai::types::ImageContent>)>;
 type CustomUiBuild = std::pin::Pin<Box<dyn std::future::Future<Output=Result<Box<dyn Component>, maho_ext_api::ExtensionFailure>>>>;
+type QuestionActions = Rc<RefCell<std::collections::VecDeque<QuestionAction>>>;
+/// A header slot in the document header container (senpi's `Component` children).
+type HeaderSlot = Rc<RefCell<dyn Component>>;
+
+/// Work the collapsed question widget's mouse callbacks hand back to the mode, which owns the
+/// registry and cannot be reached from a `Box<dyn FnMut>`.
+enum QuestionAction {
+    Expand,
+    Next,
+    ClickOption(usize),
+    OwnAnswer,
+    Expire(String),
+}
+
+/// senpi `ExpandableText` (`interactive-mode.ts:339`): a `Text` whose body follows the collapsed or
+/// expanded render closure, toggled through `setExpanded` (senpi's `Expandable` probe).
+pub struct ExpandableText {
+    get_collapsed: Box<dyn Fn() -> String>,
+    get_expanded: Box<dyn Fn() -> String>,
+    text: String,
+    padding_x: usize,
+    padding_y: usize,
+    expanded: bool,
+}
+
+impl ExpandableText {
+    pub fn new(get_collapsed: Box<dyn Fn() -> String>, get_expanded: Box<dyn Fn() -> String>, expanded: bool, padding_x: usize, padding_y: usize) -> Self {
+        let text = if expanded { get_expanded() } else { get_collapsed() };
+        Self { get_collapsed, get_expanded, text, padding_x, padding_y, expanded }
+    }
+
+    /// senpi `setExpanded`.
+    pub fn set_expanded(&mut self, expanded: bool) {
+        self.expanded = expanded;
+        self.text = if expanded { (self.get_expanded)() } else { (self.get_collapsed)() };
+    }
+
+    pub fn is_expanded(&self) -> bool { self.expanded }
+}
+
+impl Component for ExpandableText {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        maho_tui::components::text::Text::with_padding(self.text.as_str(), self.padding_x, self.padding_y).render(width)
+    }
+}
+
+/// The `InteractiveModeOptions` fields the header port consumes (senpi `interactive-mode.ts:793`).
+#[derive(Default)]
+pub struct InteractiveModeOptions {
+    /// senpi `verbose`: force verbose startup, overriding `quietStartup`.
+    pub verbose: bool,
+    /// senpi `chrome`: select an experimental interactive chrome (`GrokChrome`).
+    pub chrome: Option<crate::grok::chrome::GrokChrome>,
+}
 
 pub struct InteractiveMode {
     session: Arc<AgentSession>,
     events: tokio::sync::mpsc::UnboundedReceiver<maho_ext_api::AgentSessionEvent>,
     _subscription: AgentSessionSubscription,
+    /// The shared-host runtime when the mode joined one; replacement commands route through it.
+    session_host: Option<Arc<dyn crate::interactive_session::InteractiveSession>>,
+    /// Kept alive so dropping it (replacement or dispose) tears down the remote event bridge.
+    session_host_subscription: Option<crate::interactive_host_runtime::SessionSubscription>,
+    /// Sender into the mode's event channel, so the remote bridge can feed decoded session events.
+    events_sender: tokio::sync::mpsc::UnboundedSender<maho_ext_api::AgentSessionEvent>,
+    /// The authoritative remote history fetched from the host, published before a synchronous
+    /// rebuild. `None` means no fetch has completed; the local session is never used as a fallback
+    /// while a host is mounted.
+    remote_history: Option<Vec<maho_agent::types::AgentMessage>>,
+    remote_history_generation: u64,
+    remote_history_tx: tokio::sync::mpsc::UnboundedSender<(u64, Result<Vec<serde_json::Value>, String>)>,
+    remote_history_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, Result<Vec<serde_json::Value>, String>)>,
+    /// The remote available-model catalog fetched from the host, so the model selectors read the
+    /// remote catalog. `None` until a fetch completes; the local registry is never used while a host
+    /// is mounted.
+    remote_models: Option<Vec<maho_ai::model::Model>>,
+    remote_models_generation: u64,
+    remote_models_tx: tokio::sync::mpsc::UnboundedSender<(u64, Result<Vec<serde_json::Value>, String>)>,
+    remote_models_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, Result<Vec<serde_json::Value>, String>)>,
+    /// The remote session stats fetched from the host, so the sync footer and `/session` read them.
+    remote_stats: Option<maho_core::agent_session::SessionStats>,
+    remote_stats_generation: u64,
+    remote_stats_tx: tokio::sync::mpsc::UnboundedSender<(u64, Result<serde_json::Value, String>)>,
+    remote_stats_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, Result<serde_json::Value, String>)>,
+    /// `true` once a shared host is mounted, so the local session's events are dropped instead of
+    /// contaminating the remote view.
+    remote_active: Arc<std::sync::atomic::AtomicBool>,
+    /// Per-tool erased renderer snapshots resolved from the session's live runner and refreshed at
+    /// async ingress, so the synchronous card path can consume registered renderers.
+    tool_renderer_snapshots: std::collections::HashMap<String, Rc<RefCell<dyn crate::tools::renderers::ToolRenderers>>>,
+    native_tool_renderer_snapshots: std::collections::HashMap<String, Rc<RefCell<dyn crate::tools::renderers::ToolRenderers>>>,
     chat: Container,
     streaming: Option<Rc<RefCell<AssistantMessageComponent>>>,
     assistant_segments: BTreeMap<usize, Rc<RefCell<AssistantMessageComponent>>>,
@@ -23,6 +110,12 @@ pub struct InteractiveMode {
     pub editor: CustomEditor,
     submissions: Rc<RefCell<std::collections::VecDeque<String>>>,
     tree_copies: Rc<RefCell<std::collections::VecDeque<Option<String>>>>,
+    /// senpi `editAssistantMessageFromTree`: the (entryId, editedText, expectedLeafId) captured when
+    /// the tree edit editor opened (the leaf is the token the edit is checked against).
+    pending_tree_edit: Rc<RefCell<Option<(String, String, Option<String>)>>>,
+    /// senpi `runTreeNavigation`: the (entryId, summarize, customInstructions) chosen by the branch
+    /// summary prompt, consumed by `/tree-navigate`.
+    pending_tree_nav: Rc<RefCell<Option<(String, bool, Option<String>)>>>,
     rename_input: Option<crate::components::extension_input::ExtensionInputComponent>,
     rename_result: Rc<RefCell<Option<Option<String>>>>,
     shortcut_overlay: bool,
@@ -33,7 +126,19 @@ pub struct InteractiveMode {
     ui_requests: tokio::sync::mpsc::UnboundedReceiver<crate::interactive_extension_ui::UiRequest>,
     ui_dialog: Option<Box<dyn Component>>,
     ui_reply: Rc<RefCell<Option<tokio::sync::oneshot::Sender<Option<String>>>>>,
-    header: Option<Box<dyn Component>>,
+    /// senpi `headerContainer`: the document header slot holding the built-in header (with its tip
+    /// sibling) or an extension header.
+    header_container: Container,
+    /// senpi `builtInHeader`.
+    built_in_header: Option<HeaderSlot>,
+    /// The built-in header when it is an `ExpandableText` (senpi's `isExpandable` probe).
+    built_in_expandable: Option<Rc<RefCell<ExpandableText>>>,
+    /// senpi `customHeader`: the extension `setHeader` override.
+    custom_header: Option<HeaderSlot>,
+    /// senpi `options.verbose`.
+    verbose: bool,
+    /// senpi `this.chrome`.
+    chrome: Option<crate::grok::chrome::GrokChrome>,
     footer: Option<Box<dyn Component>>,
     footer_data: Arc<maho_core::footer_data_provider::FooterDataProvider>,
     widgets: Vec<(String, Box<dyn Component>, maho_ext_api::WidgetPlacement)>,
@@ -57,9 +162,12 @@ pub struct InteractiveMode {
     history_expansion: Vec<Box<dyn FnMut(bool)>>,
     question: Option<crate::components::ask_user_question::AskUserQuestionComponent>,
     async_question_widget: Option<crate::components::ask_user_async_widget::AskUserAsyncWidget>,
-    expanded_question_widget: Option<crate::components::ask_user_async_widget::AskUserAsyncWidget>,
     queued_questions: std::collections::VecDeque<crate::interactive_extension_ui::UiRequest>,
     question_reply: Rc<RefCell<Option<tokio::sync::oneshot::Sender<maho_ext_api::QuestionResponse>>>>,
+    questions: crate::question_registry::QuestionRegistry,
+    question_actions: QuestionActions,
+    question_result: Rc<RefCell<Option<maho_ext_api::QuestionResponse>>>,
+    blocking_question: bool,
     pending_images: Rc<RefCell<BTreeMap<u64, maho_ai::types::ImageContent>>>,
     submission_images: Rc<RefCell<ImageSubmissions>>,
     working_indicator: Option<maho_ext_api::WorkingIndicatorOptions>,
@@ -70,12 +178,225 @@ pub struct InteractiveMode {
     mounted_renderer: Option<std::rc::Weak<RefCell<crate::tui_renderer::InteractiveTui>>>,
     terminal_dimensions: Rc<std::cell::Cell<(u16,u16)>>,
     custom_overlay: Option<maho_tui::tui::OverlayHandle>,
+    debug_log_path: Option<String>,
+    changelog_markdown: Option<String>,
+    startup_notices_shown: bool,
 }
 
 impl InteractiveMode {
     pub(crate) fn tick_now(&mut self) { self.tick(self.clock.elapsed().as_secs_f64()*1000.0); }
+    pub fn install_native_tool_renderers<S: Default + 'static>(&mut self, name: String, renderers: Arc<maho_ext_api::ToolRenderers<S, serde_json::Value>>) {
+        self.native_tool_renderer_snapshots.insert(name, Rc::new(RefCell::new(crate::tools::renderers::native::NativeToolRenderers::new(renderers))));
+    }
+    pub fn clear_native_tool_renderers(&mut self) { self.native_tool_renderer_snapshots.clear(); }
+    pub fn install_native_tool_renderer_snapshot<S: Default + 'static>(&mut self, snapshot: impl IntoIterator<Item = (String, Arc<maho_ext_api::ToolRenderers<S, serde_json::Value>>)>) {
+        self.clear_native_tool_renderers();
+        for (name, renderers) in snapshot { self.install_native_tool_renderers(name, renderers); }
+    }
     pub(crate) fn set_terminal_dimensions(&self, columns:usize, rows:usize) { self.terminal_dimensions.set((u16::try_from(columns).unwrap_or(u16::MAX),u16::try_from(rows).unwrap_or(u16::MAX))); }
     pub(crate) fn set_mounted_renderer(&mut self, renderer: Rc<RefCell<crate::tui_renderer::InteractiveTui>>) { self.mounted_renderer = Some(Rc::downgrade(&renderer)); }
+    /// senpi `/debug` writes the agent directory's global debug log; the override lets a caller redirect it.
+    pub fn set_debug_log_path(&mut self, path: Option<String>) { self.debug_log_path = path; }
+    /// The pending startup changelog markdown (senpi `changelogMarkdown`), once loaded.
+    pub fn changelog_markdown(&self) -> Option<&str> { self.changelog_markdown.as_deref() }
+    /// senpi `getTipsHistory`: the recorded `tipId -> timestamp` map (the tip persistence seam).
+    pub fn tips_history(&self) -> std::collections::HashMap<String, u64> { self.session.with_settings_manager(|settings| tips_history(settings)) }
+    /// senpi's `getTipsHistory`: the recorded `tipId -> timestamp` map.
+    pub fn tips_history(&self) -> std::collections::HashMap<String, u64> { self.session.with_settings_manager(|settings| tips_history(settings)) }
+
+    /// senpi's `getChangelogSeen(source)`: the per-source record, or the legacy engine key.
+    pub fn changelog_seen(&self, source_id: &str) -> Option<String> {
+        self.session.with_settings_manager(|settings| {
+            settings.get_value("changelogSeen").and_then(|value| value.get(source_id)).and_then(serde_json::Value::as_str).map(str::to_owned)
+                .or_else(|| if source_id == "engine" { settings.get_string("lastChangelogVersion") } else { None })
+        })
+    }
+
+    /// senpi's `setChangelogSeen(source, version)`: merge the version into the global record.
+    fn set_changelog_seen(&mut self, source_id: &str, version: &str) {
+        let mut seen = self.session.with_settings_manager(|settings| settings.get_value("changelogSeen").and_then(serde_json::Value::as_object).cloned().unwrap_or_default());
+        seen.insert(source_id.to_owned(), serde_json::Value::String(version.to_owned()));
+        let values: maho_core::settings_manager::Settings = [("changelogSeen".to_owned(), serde_json::Value::Object(seen))].into_iter().collect();
+        let _ = self.session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values));
+    }
+
+    /// senpi's `getChangelogForDisplay`; the production entry reads the resolved source.
+    pub fn load_startup_changelog(&mut self) {
+        self.load_startup_changelog_from(&maho_core::changelog_source::resolve_changelog_source());
+    }
+
+    /// senpi's `getChangelogForDisplay` plus its `setChangelogSeen` side effect. `source` is a seam
+    /// (senpi reads `resolveChangelogSource()` inline) so a caller can point at a specific
+    /// changelog. senpi's `reportInstallTelemetry` belongs to the telemetry port and is not
+    /// invoked here.
+    pub fn load_startup_changelog_from(&mut self, source: &maho_core::changelog_source::ChangelogSource) {
+        let has_messages = !self.host_messages().is_empty();
+        let last_version = self.changelog_seen(&source.id);
+        let entries = crate::interactive_changelog::entries(&source.path);
+        let display = crate::interactive_changelog::changelog_for_display(has_messages, source, last_version.as_deref(), &entries);
+        if let Some(version) = display.record_version { self.set_changelog_seen(&source.id, &version); }
+        self.changelog_markdown = display.markdown;
+    }
+
+    /// senpi's `showStartupNoticesIfNeeded`: render the pending changelog into the chat once.
+    pub fn show_startup_notices_if_needed(&mut self) {
+        if self.startup_notices_shown { return; }
+        self.startup_notices_shown = true;
+        let Some(markdown) = self.changelog_markdown.clone() else { return; };
+        if !self.chat.children.is_empty() { self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))); }
+        self.chat.add_child(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone()))));
+        let collapse = self.session.with_settings_manager(|settings| settings.get_bool("collapseChangelog").unwrap_or(false));
+        if collapse {
+            let latest = crate::interactive_changelog::latest_version_in_markdown(&markdown).unwrap_or_else(|| maho_core::config::display_version(maho_core::engine_build_identity::ENGINE_VERSION));
+            let condensed = format!("Updated to v{latest}. Use {} to view full changelog.", self.theme.bold("/changelog"));
+            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(condensed, 1, 0))));
+        } else {
+            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.bold(&self.theme.fg(crate::theme::ThemeColor::Accent, "What's New")), 1, 0))));
+            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+            self.chat.add_child(Rc::new(RefCell::new(crate::components::markdown_transform::MarkdownComponent(maho_tui::components::markdown::Markdown::new(markdown.trim(), 1, 0, get_markdown_theme(&self.theme), None, Default::default())))));
+            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        }
+        self.chat.add_child(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone()))));
+    }
+    // ---- senpi's built-in welcome header (`interactive-mode.ts:1598-1673`, `showStartupNoticesIfNeeded`)
+
+    /// senpi's `getStartupExpansionState`: the constructor's `verbose` or the tool-output toggle.
+    pub fn get_startup_expansion_state(&self) -> bool { self.verbose || self.tools_expanded }
+
+    /// senpi's `recordShownTip`: merge `tipId -> now` into the global `tipsHistory` record.
+    fn set_tip_shown(&mut self, tip_id: &str, now_ms: u64) {
+        let history = self.session.with_settings_manager(|settings| tips_history(settings));
+        let next = crate::tips::history_writer::record_tip_shown(&history, tip_id, now_ms);
+        let values: maho_core::settings_manager::Settings = [("tipsHistory".to_owned(), serde_json::to_value(next).unwrap_or_else(|_| serde_json::json!({})))].into_iter().collect();
+        let _ = self.session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values));
+    }
+
+    /// senpi's `resolveStartupTipLine` inputs. `has_command` stays `None` until the session exposes
+    /// its extension command registry (senpi `hasRegisteredCommand`, a runtime API).
+    fn resolve_startup_tip(&self, now_ms: u64) -> Option<crate::tips::startup_tip::StartupTipLine> {
+        let (tips_enabled, quiet, history) = self.session.with_settings_manager(|settings| (settings.get_bool("tips").unwrap_or(true), settings.get_bool("quietStartup").unwrap_or(false), tips_history(settings)));
+        crate::tips::startup_tip::resolve_startup_tip_line(crate::tips::startup_tip::StartupTipOptions {
+            tips_enabled,
+            quiet_startup: quiet,
+            history: &history,
+            now: now_ms,
+            definitions: crate::tips::registry::TIP_DEFINITIONS.as_slice(),
+            keys: &crate::components::keybinding_hints::key_text,
+            has_command: None,
+            exclude: None,
+        })
+    }
+
+    /// senpi's startup header phase: load the changelog, then mount the welcome header and its tip
+    /// sibling. Call once after construction (senpi does this inside `initialize`).
+    pub fn initialize_startup_header(&mut self) {
+        self.load_startup_changelog();
+        self.mount_startup_header();
+    }
+
+    /// Production `mount_startup_header`, using the wall clock for the tip schedule (senpi `Date.now()`).
+    pub fn mount_startup_header(&mut self) {
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+        self.mount_startup_header_at(now_ms);
+    }
+
+    /// senpi's header block: the chrome welcome card, the standard `ExpandableText` welcome content
+    /// with its tip sibling, or the minimal quiet header.
+    pub fn mount_startup_header_at(&mut self, now_ms: u64) {
+        let app = maho_core::config::app_name();
+        let version = maho_core::config::display_version(maho_core::engine_build_identity::ENGINE_VERSION);
+        if let Some(chrome) = &self.chrome {
+            let component = chrome.create_welcome_content(&app, &version);
+            let header: HeaderSlot = Rc::new(RefCell::new(crate::interactive_ui_host::BoxedComponent(component)));
+            self.header_container.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+            self.header_container.add_child(header.clone());
+            self.header_container.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+            self.built_in_header = Some(header);
+            return;
+        }
+        let quiet = self.session.with_settings_manager(|settings| settings.get_bool("quietStartup").unwrap_or(false));
+        if !self.verbose && quiet {
+            let header: HeaderSlot = Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding("", 0, 0)));
+            self.header_container.add_child(header.clone());
+            self.built_in_header = Some(header);
+            return;
+        }
+        let tip = self.resolve_startup_tip(now_ms);
+        let tip_line = match &tip {
+            Some(tip) => { self.set_tip_shown(&tip.tip_id, now_ms); Some(self.theme.fg(crate::theme::ThemeColor::Dim, &tip.line)) }
+            None => None,
+        };
+        let theme = self.theme.clone();
+        let key = crate::components::keybinding_hints::key_text;
+        let hint = |keybinding: &str, description: &str| crate::components::keybinding_hints::key_hint(keybinding, description, &theme);
+        let raw = |key: &str, description: &str| crate::components::keybinding_hints::raw_key_hint(key, description, &theme);
+        let logo = format!("{}{}", theme.bold(&theme.fg(crate::theme::ThemeColor::Accent, &app)), theme.fg(crate::theme::ThemeColor::Dim, &format!(" {}", crate::version_label::format_display_version(&version))));
+        let expanded_instructions = [
+            hint("app.interrupt", "to interrupt"),
+            hint("app.clear", "to clear"),
+            raw(&format!("{} twice", key("app.clear")), "to exit"),
+            hint("app.exit", "to exit (empty)"),
+            hint("app.suspend", "to suspend"),
+            hint("tui.editor.deleteToLineEnd", "to delete to end"),
+            hint("app.thinking.cycle", "to cycle thinking level"),
+            raw(&format!("{}/{}", key("app.model.cycleForward"), key("app.model.cycleBackward")), "to cycle models"),
+            hint("app.model.select", "to select model"),
+            hint("app.tools.expand", "to expand tools"),
+            hint("app.thinking.toggle", "to expand thinking"),
+            hint("app.editor.external", "for external editor"),
+            raw("/", "for commands"),
+            raw("!", "to run bash"),
+            raw("!!", "to run bash (no context)"),
+            hint("app.message.followUp", "to queue follow-up"),
+            hint("app.message.dequeue", "to edit all queued messages"),
+            hint("app.clipboard.pasteImage", "to paste image (with text fallback)"),
+            raw("drop files", "to attach"),
+        ].join("\n");
+        let compact_instructions = [
+            hint("app.interrupt", "interrupt"),
+            raw(&format!("{}/{}", key("app.clear"), key("app.exit")), "clear/exit"),
+            raw("/", "commands"),
+            raw("!", "bash"),
+            hint("app.tools.expand", "more"),
+        ].join(theme.fg(crate::theme::ThemeColor::Muted, " · ").as_str());
+        let compact_onboarding = theme.fg(crate::theme::ThemeColor::Dim, &format!("Press {} to show full startup help and loaded resources.", key("app.tools.expand")));
+        let onboarding = theme.fg(crate::theme::ThemeColor::Dim, &format!("{app} can explain its own features and look up its docs. Ask it how to use or extend {app}."));
+        let collapsed_text = format!("{logo}\n{compact_instructions}\n{compact_onboarding}\n\n{onboarding}");
+        let expanded_text = format!("{logo}\n{expanded_instructions}\n\n{onboarding}");
+        let expandable = Rc::new(RefCell::new(ExpandableText::new(
+            Box::new(move || collapsed_text.clone()),
+            Box::new(move || expanded_text.clone()),
+            self.get_startup_expansion_state(),
+            1,
+            0,
+        )));
+        let header: HeaderSlot = expandable.clone();
+        crate::tips::startup_header::append_startup_header(&mut self.header_container, header.clone(), tip_line.as_deref());
+        self.built_in_header = Some(header);
+        self.built_in_expandable = Some(expandable);
+    }
+
+    /// senpi's `setExtensionHeader`: swap the active header slot, keeping the tip/spacer siblings.
+    fn set_extension_header(&mut self, factory: Option<HeaderSlot>) {
+        let Some(built_in) = self.built_in_header.clone() else { return; };
+        let index = {
+            let target = self.custom_header.clone().unwrap_or_else(|| built_in.clone());
+            self.header_container.children.iter().position(|child| Rc::ptr_eq(child, &target))
+        };
+        if let Some(factory) = factory {
+            self.custom_header = Some(factory.clone());
+            // senpi probes `isExpandable(this.customHeader)`, but an extension factory returns
+            // `Box<dyn Component>`, which cannot downcast to the private `ExpandableText`; extension
+            // headers are therefore never expanded here.
+            if let Some(index) = index { self.header_container.children[index] = factory; }
+            else { self.header_container.children.insert(0, factory); }
+        } else {
+            self.custom_header = None;
+            if let Some(expandable) = &self.built_in_expandable { expandable.borrow_mut().set_expanded(self.tools_expanded); }
+            if let Some(index) = index { self.header_container.children[index] = built_in; }
+        }
+    }
+
     pub(crate) fn terminal_settings(&self) -> (bool, bool, bool) {
         self.session.with_settings_manager(|settings| (settings.get_bool("showHardwareCursor").unwrap_or(false), settings.get_bool("clearOnShrink").unwrap_or(false), settings.get_bool("showTerminalProgress").unwrap_or(true)))
     }
@@ -84,8 +405,18 @@ impl InteractiveMode {
     }
     fn output_pad(&self) -> usize { self.session.with_settings_manager(|settings| settings.get_number("outputPad").unwrap_or(1.0) as usize) }
     pub fn new(session: Arc<AgentSession>, theme: Theme, host: Rc<dyn maho_tui::components::editor::EditorTuiHost>) -> Self {
+        Self::new_with_options(session, theme, host, InteractiveModeOptions::default())
+    }
+
+    pub fn new_with_options(session: Arc<AgentSession>, theme: Theme, host: Rc<dyn maho_tui::components::editor::EditorTuiHost>, options: InteractiveModeOptions) -> Self {
         let (sender, events) = tokio::sync::mpsc::unbounded_channel();
-        let subscription = session.subscribe(Arc::new(move |event| { drop(sender.send(event.clone())); }));
+        let events_sender = sender.clone();
+        let remote_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let local_gate = remote_active.clone();
+        let subscription = session.subscribe(Arc::new(move |event| { if !local_gate.load(std::sync::atomic::Ordering::SeqCst) { drop(sender.send(event.clone())); } }));
+        let (remote_history_tx, remote_history_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (remote_models_tx, remote_models_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (remote_stats_tx, remote_stats_rx) = tokio::sync::mpsc::unbounded_channel();
         let submissions = Rc::new(RefCell::new(std::collections::VecDeque::new()));
         let captured = submissions.clone();
         let keys = Arc::new(maho_core::keybindings::KeybindingsManager::create(Some(&session.agent_dir())).inner().clone());
@@ -110,6 +441,8 @@ impl InteractiveMode {
         }));
         let images = pending_images.clone();
         let queued_images = submission_images.clone();
+        let paste_submissions = submissions.clone();
+        editor.on_paste_image = Some(Box::new(move || paste_submissions.borrow_mut().push_back("/paste-clipboard".into())));
         editor.editor.on_submit = Some(Box::new(move |text| {
             if !text.trim().is_empty() {
                 let mut payloads = std::mem::take(&mut *images.borrow_mut());
@@ -120,10 +453,322 @@ impl InteractiveMode {
                 captured.borrow_mut().push_back(text.trim().into());
             }
         }));
-        let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(maho_ext_api::Theme { name: Some(theme.name.clone()), colors: theme.resolved_colors(), ..Default::default() });
+        let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(crate::interactive_extension_ui::extension_theme(&theme));
         *extension_ui.theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = std::path::Path::new(&session.agent_dir()).join("themes");
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), expanded_question_widget:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)) }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false }
+    }
+
+    /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
+    /// commands (`/new`, `/resume`, `/clone`, `/fork`, `/import-confirm`) route through it; the
+    /// concrete `AgentSession` still answers the synchronous reads senpi's proxy mirrors.
+    pub fn set_session_host(&mut self, host: Arc<dyn crate::interactive_session::InteractiveSession>) {
+        let sender = self.events_sender.clone();
+        self.session_host_subscription = host.subscribe_session_events(Arc::new(move |event| { let _ = sender.send(event.clone()); }));
+        self.session_host = Some(host);
+        self.remote_active.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.request_remote_history();
+        self.request_remote_models();
+        self.request_remote_stats();
+    }
+
+    /// Ask the mounted host for its session stats, generation-tagged like the other fetches.
+    fn request_remote_stats(&mut self) {
+        let Some(host) = self.session_host.clone() else { return; };
+        self.remote_stats_generation = self.remote_stats_generation.wrapping_add(1);
+        host.request_remote_stats(self.remote_stats_generation, self.remote_stats_tx.clone());
+    }
+
+    /// Publish a completed stats fetch whose generation is still current.
+    fn drain_remote_stats(&mut self) {
+        while let Ok((generation, result)) = self.remote_stats_rx.try_recv() {
+            if generation != self.remote_stats_generation { continue; }
+            if let Ok(value) = result {
+                self.remote_stats = Some(session_stats_from_wire(&value));
+            }
+        }
+    }
+
+    /// The session stats the footer and `/session` read: the cached remote stats while a host is
+    /// mounted (default until the fetch completes), else the local session's.
+    fn host_session_stats(&self) -> maho_core::agent_session::SessionStats {
+        match self.remote_stats.clone() {
+            Some(stats) => stats,
+            None => if self.session_host.is_some() { maho_core::agent_session::SessionStats::default() } else { self.session.get_session_stats() },
+        }
+    }
+
+    /// Ask the mounted host for its available-model catalog, generation-tagged like the history fetch.
+    fn request_remote_models(&mut self) {
+        let Some(host) = self.session_host.clone() else { return; };
+        self.remote_models_generation = self.remote_models_generation.wrapping_add(1);
+        host.request_remote_models(self.remote_models_generation, self.remote_models_tx.clone());
+    }
+
+    /// Publish a completed model-catalog fetch whose generation is still current.
+    fn drain_remote_models(&mut self) {
+        while let Ok((generation, result)) = self.remote_models_rx.try_recv() {
+            if generation != self.remote_models_generation { continue; }
+            if let Ok(models) = result {
+                self.remote_models = Some(models.iter().filter_map(|model| serde_json::from_value(model.clone()).ok()).collect());
+            }
+        }
+    }
+
+    /// Ask the mounted host for its authoritative history, tagged with a fresh generation so a
+    /// stale completion (superseded by a newer request or a replacement) is discarded.
+    fn request_remote_history(&mut self) {
+        let Some(host) = self.session_host.clone() else { return; };
+        self.remote_history_generation = self.remote_history_generation.wrapping_add(1);
+        host.request_remote_history(self.remote_history_generation, self.remote_history_tx.clone());
+    }
+
+    /// Publish any completed history fetch whose generation is still current, then rebuild the
+    /// transcript synchronously from the snapshot. A failure reports a status; it never falls back
+    /// to the unrelated local session.
+    fn drain_remote_history(&mut self) {
+        while let Ok((generation, result)) = self.remote_history_rx.try_recv() {
+            if generation != self.remote_history_generation { continue; }
+            match result {
+                Ok(messages) => {
+                    self.remote_history = Some(messages.iter().filter_map(|message| serde_json::from_value(message.clone()).ok()).collect());
+                    self.rebuild_history();
+                }
+                Err(error) => self.show_status(format!("Failed to load remote session history: {error}")),
+            }
+        }
+    }
+
+    /// The mounted host's mirrored `RpcSessionState`, when a shared host is active.
+    pub fn remote_state_snapshot(&self) -> Option<crate::interactive_host_runtime::RemoteSessionState> {
+        self.session_host.as_ref().and_then(|host| host.remote_state())
+    }
+
+    /// `false` once a shared host is mounted: the local session's events are dropped so they cannot
+    /// contaminate the remote view.
+    pub fn local_events_enabled(&self) -> bool {
+        !self.remote_active.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Remote-authoritative synchronous reads. When a shared host is mounted these come from the
+    /// mirrored `RpcSessionState`; otherwise from the local session. A mounted host never reads the
+    /// stale local value, so the view follows the remote.
+    fn host_cwd(&self) -> String {
+        self.remote_state_snapshot().and_then(|state| state.cwd).unwrap_or_else(|| self.session.cwd())
+    }
+
+    fn host_model(&self) -> maho_ai::model::Model {
+        self.remote_state_snapshot().and_then(|state| state.model).and_then(|value| serde_json::from_value(value).ok()).unwrap_or_else(|| self.session.model())
+    }
+
+    fn host_thinking_level(&self) -> maho_ai::types::ThinkingLevel {
+        match self.remote_state_snapshot() {
+            Some(state) => state.thinking_level.as_deref().and_then(maho_ai::types::ThinkingLevel::parse).unwrap_or(maho_ai::types::ThinkingLevel::Off),
+            None => self.session.thinking_level(),
+        }
+    }
+
+    fn host_session_name(&self) -> Option<String> {
+        match self.remote_state_snapshot() { Some(state) => state.session_name, None => self.session.session_name() }
+    }
+
+    fn host_session_file(&self) -> Option<String> {
+        match self.remote_state_snapshot() { Some(state) => state.session_file, None => self.session.session_file() }
+    }
+
+    fn host_is_streaming(&self) -> bool {
+        match self.remote_state_snapshot() { Some(state) => state.is_streaming, None => self.session.is_streaming() }
+    }
+
+    fn host_is_compacting(&self) -> bool {
+        match self.remote_state_snapshot() { Some(state) => state.is_compacting, None => self.session.is_compacting() }
+    }
+
+    fn host_auto_compaction_enabled(&self) -> bool {
+        match self.remote_state_snapshot() { Some(state) => state.auto_compaction_enabled, None => self.session.auto_compaction_enabled() }
+    }
+
+    fn host_favorite_models(&self) -> Vec<maho_core::agent_session::SessionModelEntry> {
+        match self.remote_state_snapshot() { Some(state) => session_model_entries(&state.favorite_models), None => self.session.favorite_models() }
+    }
+
+    fn host_scoped_models(&self) -> Vec<maho_core::agent_session::SessionModelEntry> {
+        match self.remote_state_snapshot() { Some(state) => session_model_entries(&state.scoped_models), None => self.session.scoped_models() }
+    }
+
+    fn host_context_usage(&self) -> Option<maho_core::agent_session::ContextUsage> {
+        match self.remote_state_snapshot() { Some(state) => state.context_usage.as_ref().and_then(context_usage_from_wire), None => self.session.get_context_usage() }
+    }
+
+    /// The model catalog the selectors read: the fetched remote catalog while a host is mounted
+    /// (empty until the fetch completes), else the local registry.
+    fn host_available_models(&self) -> Vec<maho_ai::model::Model> {
+        if self.session_host.is_some() { self.remote_models.clone().unwrap_or_default() } else { self.session.model_registry().get_available() }
+    }
+
+    /// The transcript messages the mode reads: the fetched remote history while a host is mounted,
+    /// else the local session's messages.
+    fn host_messages(&self) -> Vec<maho_agent::types::AgentMessage> {
+        if self.session_host.is_some() { self.remote_history.clone().unwrap_or_default() } else { self.session.messages() }
+    }
+
+    // ---- turn/session mutations routed through the mounted host ------------------------------
+
+    async fn host_prompt(&self, text: &str, options: PromptOptions) -> Result<(), String> {
+        match self.session_host.clone() { Some(host) => host.prompt(text.to_owned(), options).await, None => self.session.prompt(text, options).await.map(|_| ()) }
+    }
+
+    async fn host_abort(&self) -> Result<(), String> {
+        match self.session_host.clone() { Some(host) => host.abort().await, None => { self.session.abort().await; Ok(()) } }
+    }
+
+    async fn host_steer(&self, text: &str) -> Result<(), String> {
+        match self.session_host.clone() { Some(host) => host.steer(text.to_owned()).await, None => self.session.steer(text, None, Default::default()).await }
+    }
+
+    async fn host_follow_up(&self, text: &str) -> Result<(), String> {
+        match self.session_host.clone() { Some(host) => host.follow_up(text.to_owned()).await, None => self.session.follow_up(text, None, Default::default()).await }
+    }
+
+    async fn host_compact(&self, instructions: Option<String>) -> Result<(), String> {
+        match self.session_host.clone() { Some(host) => host.compact(instructions).await, None => self.session.compact(instructions.as_deref()).await.map(|_| ()) }
+    }
+
+    async fn host_navigate_tree(&mut self, entry_id: &str, options: maho_core::agent_session::TreeNavigationOptions) -> Result<maho_core::agent_session::AssistantEditResult, String> {
+        match self.session_host.clone() {
+            Some(host) => { let result = host.navigate_tree(entry_id.to_owned(), options).await?; self.request_remote_history(); Ok(result) }
+            None => self.session.navigate_tree(entry_id, options).await,
+        }
+    }
+
+    async fn host_edit_assistant_message(&mut self, entry_id: &str, text: &str, options: maho_core::agent_session::TreeNavigationOptions) -> Result<maho_core::agent_session::AssistantEditResult, String> {
+        match self.session_host.clone() {
+            Some(host) => { let result = host.edit_assistant_message(entry_id.to_owned(), text.to_owned(), options).await?; self.request_remote_history(); Ok(result) }
+            None => self.session.edit_assistant_message(entry_id, text, options).await,
+        }
+    }
+
+    async fn host_reload(&self) -> Result<bool, String> {
+        match self.session_host.clone() { Some(host) => host.reload().await, None => self.session.reload().await }
+    }
+
+    fn host_clear_queue(&self, abort_will_follow: bool) -> Vec<maho_core::agent_session::QueuedInput> {
+        match self.session_host.clone() {
+            Some(host) => { host.fire_clear_queue(abort_will_follow); ordered_inputs_from_remote_state(self.remote_state_snapshot().as_ref()) }
+            None => self.session.clear_queue(abort_will_follow).ordered,
+        }
+    }
+
+    async fn host_execute_bash(&self, command: &str, exclude_from_context: bool) -> Result<serde_json::Value, String> {
+        match self.session_host.clone() { Some(host) => host.execute_bash(command.to_owned(), exclude_from_context).await, None => self.session.execute_bash(command, None, exclude_from_context, None, None).await.map(|result| serde_json::to_value(result).unwrap_or(serde_json::Value::Null)) }
+    }
+
+    async fn host_set_model(&self, provider: &str, id: &str) -> Result<(), String> {
+        match self.session_host.clone() { Some(host) => host.set_model(provider.to_owned(), id.to_owned()).await, None => { let model = self.session.model_registry().find(provider, id).ok_or_else(|| format!("Model not found: {provider}/{id}"))?; self.session.set_model(model).await.map(|_| ()) } }
+    }
+
+    async fn host_set_session_name(&self, name: &str) -> Result<(), String> {
+        match self.session_host.clone() { Some(host) => host.set_session_name(name.to_owned()).await, None => { self.session.set_session_name(name); Ok(()) } }
+    }
+
+    async fn host_set_session_thinking_level(&self, level: &str) -> Result<(), String> {
+        match self.session_host.clone() { Some(host) => host.set_session_thinking_level(level.to_owned()).await, None => { self.session.set_session_thinking_level(maho_ai::types::ModelThinkingLevel::parse(level).unwrap_or(maho_ai::types::ModelThinkingLevel::Off)); Ok(()) } }
+    }
+
+    async fn host_cycle_thinking_level(&self) -> Result<Option<String>, String> {
+        match self.session_host.clone() { Some(host) => host.cycle_thinking_level().await, None => Ok(self.session.cycle_thinking_level().map(|level| level.as_str().to_owned())) }
+    }
+
+    async fn host_cycle_model(&self, forward: bool) -> Result<Option<String>, String> {
+        match self.session_host.clone() { Some(host) => host.cycle_model(forward).await, None => Ok(self.session.cycle_model(forward).await?.map(|result| result.model.name)) }
+    }
+
+    async fn host_export_jsonl(&self, output_path: Option<&str>) -> Result<Option<String>, String> {
+        match self.session_host.clone() { Some(host) => host.export_jsonl(output_path.map(str::to_owned)).await, None => self.session.export_to_jsonl(output_path).map(Some).map_err(|error| error.to_string()) }
+    }
+
+    /// Fire-and-forget session-name set for the synchronous command/keybinding paths (senpi's proxy
+    /// setters do not await either).
+    fn fire_set_session_name(&self, name: &str) {
+        match self.session_host.clone() {
+            Some(host) => { let name = name.to_owned(); tokio::spawn(async move { let _ = host.set_session_name(name).await; }); }
+            None => self.session.set_session_name(name),
+        }
+    }
+
+    /// Fire-and-forget session thinking-level set for the synchronous paths.
+    fn fire_set_session_thinking_level(&self, level: &str) {
+        match self.session_host.clone() {
+            Some(host) => { let level = level.to_owned(); tokio::spawn(async move { let _ = host.set_session_thinking_level(level).await; }); }
+            None => self.session.set_session_thinking_level(maho_ai::types::ModelThinkingLevel::parse(level).unwrap_or(maho_ai::types::ModelThinkingLevel::Off)),
+        }
+    }
+
+    fn host_find_model(&self, provider: &str, id: &str) -> Option<maho_ai::model::Model> {
+        if self.session_host.is_some() {
+            self.remote_models.as_ref().and_then(|models| models.iter().find(|model| model.provider == provider && model.id == id).cloned())
+        } else {
+            self.session.model_registry().find(provider, id)
+        }
+    }
+
+    /// Thinking levels for the active model: derived from the mirrored remote model while a host is
+    /// mounted, else the local session's.
+    fn host_available_thinking_levels(&self) -> Vec<maho_ai::types::ThinkingLevel> {
+        match self.remote_state_snapshot() {
+            Some(state) => state.model.and_then(|value| serde_json::from_value::<maho_ai::model::Model>(value).ok()).map(|model| maho_core::thinking_levels::get_supported_thinking_levels(&model)).unwrap_or_default(),
+            None => self.session.get_available_thinking_levels(),
+        }
+    }
+
+    /// The session name the UI shows: the remote-authoritative name when a host is mounted, else the
+    /// local session's.
+    fn session_display_name(&self) -> Option<String> {
+        self.host_session_name()
+    }
+
+    pub fn new_with_host(
+        session: Arc<AgentSession>,
+        host: Arc<dyn crate::interactive_session::InteractiveSession>,
+        theme: Theme,
+        editor_host: Rc<dyn maho_tui::components::editor::EditorTuiHost>,
+    ) -> Self {
+        let mut mode = Self::new(session, theme, editor_host);
+        mode.set_session_host(host);
+        mode
+    }
+
+    async fn host_new_session(&mut self, parent_session: Option<String>) -> Result<bool, String> {
+        match self.session_host.clone() {
+            Some(host) => match host.new_session(parent_session).await? {
+                crate::interactive_session::ReplacementOutcome::Replaced => { self.refresh_tool_renderer_snapshots().await; self.request_remote_history(); self.request_remote_models(); self.request_remote_stats(); Ok(true) }
+                crate::interactive_session::ReplacementOutcome::Cancelled => Ok(false),
+                crate::interactive_session::ReplacementOutcome::LocalHandoff => self.session.new_session(None).await,
+            },
+            None => self.session.new_session(None).await,
+        }
+    }
+
+    async fn host_switch_session(&mut self, path: String) -> Result<bool, String> {
+        match self.session_host.clone() {
+            Some(host) => match host.switch_session(path.clone()).await? {
+                crate::interactive_session::ReplacementOutcome::Replaced => { self.refresh_tool_renderer_snapshots().await; self.request_remote_history(); self.request_remote_models(); self.request_remote_stats(); Ok(true) }
+                crate::interactive_session::ReplacementOutcome::Cancelled => Ok(false),
+                crate::interactive_session::ReplacementOutcome::LocalHandoff => self.session.switch_session(&path).await,
+            },
+            None => self.session.switch_session(&path).await,
+        }
+    }
+
+    async fn host_fork(&mut self, entry_id: String, include_entry: bool) -> Result<maho_core::agent_session::AssistantEditResult, String> {
+        match self.session_host.clone() {
+            Some(host) => match host.fork(entry_id.clone(), include_entry).await? {
+                crate::interactive_session::ForkOutcome { outcome: crate::interactive_session::ReplacementOutcome::Replaced, editor_text } => { self.refresh_tool_renderer_snapshots().await; self.request_remote_history(); self.request_remote_models(); self.request_remote_stats(); Ok(maho_core::agent_session::AssistantEditResult { editor_text, ..Default::default() }) }
+                crate::interactive_session::ForkOutcome { outcome: crate::interactive_session::ReplacementOutcome::Cancelled, .. } => Ok(maho_core::agent_session::AssistantEditResult { cancelled: true, ..Default::default() }),
+                crate::interactive_session::ForkOutcome { outcome: crate::interactive_session::ReplacementOutcome::LocalHandoff, .. } => self.session.fork(&entry_id, include_entry).await,
+            },
+            None => self.session.fork(&entry_id, include_entry).await,
+        }
     }
 
     pub fn use_registered_markdown_transformers(&mut self, extensions: &[maho_ext_api::LoadedExtension]) {
@@ -148,7 +793,15 @@ impl InteractiveMode {
         self.tool_partial_json.clear(); self.tool_args_reveal.stop(); self.tool_reveal.stop(); self.reveal.stop();
         self.assistant_cards.clear(); self.tool_cards.clear(); self.last_status = None;
         self.history_expansion.clear();
-        for message in self.session.messages() { self.add_history_message(&message); }
+        // A mounted shared host is authoritative: rebuild from the fetched remote snapshot, never
+        // the unrelated local session. Without a host, the local session is the source.
+        if self.session_host.is_some() {
+            if let Some(messages) = self.remote_history.clone() {
+                for message in &messages { self.add_history_message(message); }
+            }
+        } else {
+            for message in self.session.messages() { self.add_history_message(&message); }
+        }
     }
 
     pub fn add_history_message(&mut self, message: &maho_agent::types::AgentMessage) {
@@ -201,6 +854,7 @@ impl InteractiveMode {
         tokio::pin!(binding);
         loop { tokio::select! { () = &mut binding => break, Some(request) = self.ui_requests.recv() => self.handle_ui_request(request) } }
         self.drain_ui_requests();
+        self.refresh_tool_renderer_snapshots().await;
     }
 
     pub fn handle_input_at(&mut self, data: &str, now_ms: u64) {
@@ -222,13 +876,27 @@ impl InteractiveMode {
     fn handle_filtered_input_at(&mut self, data: &str, now_ms: u64) {
         if self.async_question_widget.is_some() {
             let keys = self.keybindings();
-            if self.ui_dialog.is_none() && self.rename_input.is_none() && crate::components::ask_user_answer_key::matches_ask_user_answer_key(data, &maho_core::keybindings::host_platform(), &keys) { self.expanded_question_widget = self.async_question_widget.take(); return; }
+            if self.ui_dialog.is_none() && self.rename_input.is_none() && crate::components::ask_user_answer_key::matches_ask_user_answer_key(data, &maho_core::keybindings::host_platform(), &keys) { self.expand_shown_question(None); return; }
+            if keys.matches(data, "app.question.next") && self.questions.cycle() { self.refresh_async_question_widget(); return; }
+            if let Some(digit) = single_digit(data) {
+                let option = usize::try_from(digit).unwrap_or(1) - 1;
+                if let Some(index) = self.shown_unanswered_index() && self.shown_question_has_option(index, option) {
+                    self.expand_shown_question(Some(index));
+                    if let Some(question) = &mut self.question { question.handle_input(data); }
+                    self.settle_questions();
+                    return;
+                }
+            }
+            if data.chars().count() == 1 && data.chars().next().is_some_and(|character| !character.is_control() && !matches!(character, '/' | '!')) {
+                let shown = self.questions.shown_id().map(str::to_owned);
+                self.questions.set_composer_reply(shown.as_deref());
+            }
         }
-        if self.expanded_question_widget.is_some() && let Some(question) = &self.question
+        if self.questions.surface == crate::question_registry::QuestionSurface::Expanded && let Some(question) = &self.question
             && ((self.keybindings().matches(data,"tui.select.cancel") && question.state.focus != crate::components::ask_user_question_state::QuestionFocus::OwnAnswer) || maho_tui::keys::matches_key(data,"ctrl+c")) {
-            self.async_question_widget = self.expanded_question_widget.take(); return;
+            self.collapse_shown_question(); return;
         }
-        if self.async_question_widget.is_none() && let Some(question) = &mut self.question { question.handle_input(data); if self.question_reply.borrow().is_none() { self.question = None; } return; }
+        if self.async_question_widget.is_none() && let Some(question) = &mut self.question { question.handle_input(data); self.settle_questions(); return; }
         if self.ui_dialog.is_some() || self.rename_input.is_some() { self.handle_editor_input(data); return; }
         if self.shortcut_overlay { self.shortcut_overlay = false; return; }
         let keys = self.keybindings();
@@ -244,7 +912,10 @@ impl InteractiveMode {
         }
         if keys.matches(data, "app.exit") && self.editor.editor.get_text().is_empty() { self.shutdown_requested = true; return; }
         if keys.matches(data, "app.thinking.cycle") {
-            if self.session.cycle_thinking_level().is_none() { self.show_status("Current model does not support thinking".into()); }
+            match self.session_host.clone() {
+                Some(host) => { tokio::spawn(async move { let _ = host.cycle_thinking_level().await; }); }
+                None => { if self.session.cycle_thinking_level().is_none() { self.show_status("Current model does not support thinking".into()); } }
+            }
             return;
         }
         if keys.matches(data, "app.message.dequeue") { self.restore_queued_messages(false); return; }
@@ -290,13 +961,44 @@ impl InteractiveMode {
         self.pending_images.borrow_mut().insert(id, image);
     }
 
+    /// senpi's `handleClipboardPaste`: attach a clipboard bitmap behind an atomic marker, else fall
+    /// through to the plain-text clipboard path.
+    pub async fn handle_clipboard_paste(&mut self) {
+        if let Some((bytes, mime_type)) = crate::interactive_clipboard::read_image().await
+            && self.attach_clipboard_image(bytes, mime_type)
+        {
+            return;
+        }
+        if let Some(text) = crate::interactive_clipboard::read_text().await {
+            self.editor.editor.insert_text_at_cursor(&text);
+        }
+    }
+
+    /// senpi's `attachClipboardImage`: the `blockImages` gate, the compaction drop, and the marker
+    /// pair. senpi's `processImage` resize/conversion is skipped - the Rust port has no image codec
+    /// (see `components/tool_execution_images.rs`) - so only an already-supported format reaches here.
+    fn attach_clipboard_image(&mut self, bytes: Vec<u8>, mime_type: String) -> bool {
+        if self.session.with_settings_manager(|settings| settings.get_bool("blockImages").unwrap_or(false)) {
+            self.show_status("Image paste blocked by the images.blockImages setting".into());
+            return false;
+        }
+        if self.host_is_compacting() {
+            self.show_status("Image paste dropped: messages sent during compaction cannot carry images - paste again after compaction finishes".into());
+            return true;
+        }
+        let data = { use base64::Engine as _; base64::engine::general_purpose::STANDARD.encode(&bytes) };
+        self.attach_image(maho_ai::types::ImageContent { data, mime_type });
+        self.show_status("Attached image from clipboard".into());
+        true
+    }
+
     pub async fn handle_runtime_input(&mut self, data: &str, now_ms: u64) -> Result<(), String> {
         let Some(data) = self.filter_terminal_input(data) else { return Ok(()); };
         let data = data.as_str();
         if self.ui_dialog.is_some() || self.rename_input.is_some() || (self.question.is_some() && self.async_question_widget.is_none()) { self.handle_filtered_input_at(data, now_ms); return Ok(()); }
         let keys = self.keybindings();
         if keys.matches(data, "app.model.cycleForward") || keys.matches(data, "app.model.cycleBackward") {
-            if let Some(result) = self.session.cycle_model(keys.matches(data, "app.model.cycleForward")).await? { self.show_status(format!("Switched to {}", result.model.name)); }
+            if let Some(name) = self.host_cycle_model(keys.matches(data, "app.model.cycleForward")).await? { self.show_status(format!("Switched to {name}")); }
             else { self.show_status("No other models available for cycling".into()); }
             return Ok(());
         }
@@ -316,6 +1018,8 @@ impl InteractiveMode {
         self.extension_ui.tools_expanded.store(expanded, std::sync::atomic::Ordering::Relaxed);
         if self.tools_expanded == expanded { return; }
         self.tools_expanded = expanded;
+        // senpi `setToolsExpanded`: the active header follows the expansion.
+        if self.custom_header.is_none() && let Some(expandable) = &self.built_in_expandable { expandable.borrow_mut().set_expanded(expanded); }
         for component in &self.tool_cards { component.borrow_mut().set_expanded(expanded); }
         for component in &self.assistant_cards { component.borrow_mut().set_expanded(expanded); }
         for update in &mut self.history_expansion { update(expanded); }
@@ -323,6 +1027,15 @@ impl InteractiveMode {
     }
 
     pub async fn submit(&mut self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
+        self.refresh_tool_renderer_snapshots().await;
+        if !text.trim_start().starts_with('/') && !text.trim_start().starts_with('!') && let Some(request_id) = self.questions.composer_request_id().map(str::to_owned) {
+            let response = self.questions.get(&request_id).map(|entry| to_extension_response(crate::components::ask_user_async_widget::build_comment_response(&entry.request, &entry.draft, text.trim())));
+            if let Some(response) = response {
+                self.finish_question(&request_id, response);
+                self.editor.editor.set_text("");
+                return Ok(PromptDisposition::Handled);
+            }
+        }
         if text.trim() == "/copy" {
             if let Some(text) = self.session.get_last_assistant_text().filter(|text|!text.is_empty()) {
                 match crate::interactive_clipboard::copy(&text).await {
@@ -335,10 +1048,60 @@ impl InteractiveMode {
             } else { return Err("No agent messages to copy yet.".into()); }
             return Ok(PromptDisposition::Handled);
         }
+        if text.trim() == "/keybindings" {
+            let config_path = std::path::Path::new(&self.session.agent_dir()).join("keybindings.json");
+            let env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+            let Some(editor_command) = crate::keybindings_command::resolve_editor_command(&env) else {
+                return Err(format!("Set $EDITOR or $VISUAL to edit {}.", config_path.display()));
+            };
+            use crate::keybindings_command::KeybindingsEditOutcome;
+            let mut keybindings = maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir()));
+            match crate::keybindings_command::run_keybindings_edit(&config_path, &editor_command, &mut keybindings).await {
+                KeybindingsEditOutcome::Reloaded => {
+                    self.editor.set_keybindings(Arc::new(maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir())).inner().clone()));
+                    self.show_status("Keybindings reloaded".into());
+                }
+                KeybindingsEditOutcome::LaunchFailed { seeded } => {
+                    if seeded { let _ = std::fs::remove_file(&config_path); }
+                    self.show_status(format!("Could not open {} with \"{editor_command}\".", config_path.display()));
+                }
+                KeybindingsEditOutcome::Exited { code } => self.show_status(format!("\"{editor_command}\" exited with code {code}; keybindings were not reloaded.")),
+                KeybindingsEditOutcome::Invalid { message } => self.show_status(format!("Keybindings not reloaded - {} is not valid JSON: {message}", config_path.display())),
+                KeybindingsEditOutcome::IoError { message } => self.show_status(format!("Could not open {} with \"{editor_command}\": {message}", config_path.display())),
+            }
+            return Ok(PromptDisposition::Handled);
+        }
+        if text.trim().starts_with("/import-confirm ") {
+            let path = get_path_command_argument(text.trim(), "/import-confirm").ok_or("Usage: /import <path.jsonl>")?;
+            let resolved = std::path::PathBuf::from(&path);
+            if !resolved.exists() {
+                return Err(maho_core::agent_session_runtime::SessionImportFileNotFoundError { file_path: resolved.to_string_lossy().into_owned() }.to_string());
+            }
+            let session_dir = self.session.with_session_manager(|manager| manager.session_dir().to_owned());
+            std::fs::create_dir_all(&session_dir).map_err(|error| format!("Failed to import session: {error}"))?;
+            let destination = prepare_import_destination(&resolved, std::path::Path::new(&session_dir)).map_err(|error| format!("Failed to import session: {error}"))?;
+            if destination != resolved {
+                std::fs::copy(&resolved, &destination).map_err(|error| format!("Failed to import session: {error}"))?;
+            }
+            if self.host_switch_session(destination.to_string_lossy().into_owned()).await? {
+                self.rebuild_history(); self.editor.editor.set_text("");
+                self.show_status(format!("Session imported from: {path}"));
+            } else { self.show_status("Import cancelled".into()); }
+            return Ok(PromptDisposition::Handled);
+        }
         if let Some(command) = text.strip_prefix('!') {
             let (command, excluded) = command.strip_prefix('!').map_or((command, false), |command| (command, true));
             let component = Rc::new(RefCell::new(crate::components::bash_execution::BashExecutionComponent::new(command, excluded, self.theme.clone())));
             component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(component.clone());
+            if let Some(host) = self.session_host.clone() {
+                let result = match host.execute_bash(command.to_owned(), excluded).await { Ok(result) => result, Err(error) => { component.borrow_mut().append_output(&error); component.borrow_mut().set_complete(Some(1), false, None, None); return Err(error); } };
+                let exit_code = result.get("exitCode").and_then(serde_json::Value::as_i64).map(|code| code as i32);
+                let cancelled = result.get("cancelled").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                let full_output_path = result.get("fullOutputPath").and_then(serde_json::Value::as_str).map(str::to_owned);
+                component.borrow_mut().set_complete(exit_code, cancelled, None, full_output_path);
+                self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
+                return Ok(PromptDisposition::Handled);
+            }
             let session = self.session.clone();
             let execution = session.execute_bash(command, None, excluded, None, None); tokio::pin!(execution);
             let result = loop { tokio::select! {
@@ -352,15 +1115,29 @@ impl InteractiveMode {
             self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
             return Ok(PromptDisposition::Handled);
         }
+        if text.trim() == "/paste-clipboard" {
+            self.handle_clipboard_paste().await;
+            return Ok(PromptDisposition::Handled);
+        }
         if text.trim() == "/reload" {
-            if self.session.reload().await? {
+            if self.host_reload().await? {
                 let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
                 self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible as usize);
-                Self::setup_autocomplete(&self.session, &mut self.editor); self.rebuild_history(); self.show_status("Reloaded session resources".into());
+                Self::setup_autocomplete(&self.session, &mut self.editor); self.rebuild_history(); self.refresh_tool_renderer_snapshots().await; self.show_status("Reloaded session resources".into());
             }
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/compact" || text.trim().starts_with("/compact ") {
+            // senpi `handleCompactCommand`: fewer than two message entries is "no messages yet" - a
+            // warning with no core call, not the core "session too small" error.
+            let message_count = self.session.with_session_manager(|manager| manager.entries().iter().filter(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("message")).count());
+            if message_count < 2 { self.show_status("Nothing to compact (no messages yet)".into()); return Ok(PromptDisposition::Handled); }
+            if self.session_host.is_some() {
+                self.host_compact(text.trim().strip_prefix("/compact ").map(str::to_owned)).await?;
+                self.rebuild_history();
+                self.show_status("Compacted context".into());
+                return Ok(PromptDisposition::Handled);
+            }
             let session = self.session.clone();
             let compact = session.compact(text.trim().strip_prefix("/compact "));
             tokio::pin!(compact);
@@ -374,68 +1151,103 @@ impl InteractiveMode {
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/new" {
-            if self.session.new_session(None).await? { self.rebuild_history(); self.show_status("Started new session".into()); }
+            if self.host_new_session(None).await? { self.rebuild_history(); self.show_status("Started new session".into()); }
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/clone" {
             let leaf = self.session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned));
             if let Some(leaf) = leaf {
-                let result = self.session.fork(&leaf, true).await?;
+                let result = self.host_fork(leaf, true).await?;
                 if !result.cancelled { self.rebuild_history(); self.editor.editor.set_text(""); self.show_status("Cloned to new session".into()); }
             } else { self.show_status("Nothing to clone yet".into()); }
             return Ok(PromptDisposition::Handled);
         }
         if text.trim().starts_with("/resume ") {
             let path = get_path_command_argument(text.trim(), "/resume").ok_or("Missing session path")?;
-            if self.session.switch_session(&path).await? { self.rebuild_history(); self.editor.editor.set_text(""); self.show_status("Resumed session".into()); }
+            if self.host_switch_session(path).await? { self.rebuild_history(); self.editor.editor.set_text(""); self.show_status("Resumed session".into()); }
             return Ok(PromptDisposition::Handled);
         }
         if let Some(id) = text.trim().strip_prefix("/fork ") {
-            let result = self.session.fork(id.trim(), false).await?;
+            let result = self.host_fork(id.trim().to_owned(), false).await?;
             if !result.cancelled { self.rebuild_history(); self.editor.editor.set_text(result.editor_text.as_deref().unwrap_or("")); self.show_status("Forked to new session".into()); }
             return Ok(PromptDisposition::Handled);
         }
+        if text.trim().starts_with("/tree-edit ") {
+            let id = text.trim().strip_prefix("/tree-edit ").unwrap_or_default().trim().to_owned();
+            self.open_tree_edit(&id);
+            return Ok(PromptDisposition::Handled);
+        }
+        if text.trim() == "/tree-edit-apply" {
+            self.apply_tree_edit().await?;
+            return Ok(PromptDisposition::Handled);
+        }
         if let Some(id) = text.trim().strip_prefix("/tree ") {
-            if self.session.with_session_manager(|manager| manager.leaf_id().is_some_and(|leaf| leaf == id.trim())) {
+            let id = id.trim().to_owned();
+            if self.session.with_session_manager(|manager| manager.leaf_id().is_some_and(|leaf| leaf == id.as_str())) {
                 self.show_status("Already at this point".into()); return Ok(PromptDisposition::Handled);
             }
-            if self.session.is_streaming() { self.restore_queued_messages(false); self.session.abort().await; }
-            if self.session.is_compacting() { return Err("Wait for the current compaction or tree navigation to finish before navigating the session tree.".into()); }
-            let result = self.session.navigate_tree(id.trim(), Default::default()).await?;
-            if !result.cancelled && result.aborted != Some(true) { self.rebuild_history(); if let Some(text) = result.editor_text { self.editor.editor.set_text(&text); } self.show_status("Navigated to selected point".into()); }
+            // senpi `runTreeNavigation(entryId, { promptForSummary: true, ... })`.
+            if self.tree_summary_skip_prompt() { self.run_tree_navigation(&id, false, None).await?; }
+            else { self.prompt_branch_summary_choice(&id); }
+            return Ok(PromptDisposition::Handled);
+        }
+        if let Some(id) = text.trim().strip_prefix("/tree-summary ") {
+            self.prompt_branch_summary_choice(id.trim());
+            return Ok(PromptDisposition::Handled);
+        }
+        if let Some(id) = text.trim().strip_prefix("/tree-summary-custom ") {
+            self.open_branch_summary_custom_prompt(id.trim());
+            return Ok(PromptDisposition::Handled);
+        }
+        if text.trim() == "/tree-navigate" {
+            self.apply_tree_navigation().await?;
             return Ok(PromptDisposition::Handled);
         }
         if let Some(reference) = text.trim().strip_prefix("/model ") {
             let (provider, id) = reference.trim().split_once('/').ok_or("Model reference requires provider/model")?;
-            let model = self.session.model_registry().find(provider, id).ok_or_else(|| format!("Model not found: {reference}"))?;
+            let model = self.host_find_model(provider, id).ok_or_else(|| format!("Model not found: {reference}"))?;
             let requested = model.clone();
-            self.session.set_model(model).await?;
-            if maho_ai::models::models_are_equal(Some(&self.session.model()), Some(&requested)) { self.show_status(format!("Switched to {}", self.session.model().name)); }
+            self.host_set_model(provider, id).await?;
+            if maho_ai::models::models_are_equal(Some(&self.host_model()), Some(&requested)) { self.show_status(format!("Switched to {}", self.host_model().name)); }
             else { self.show_status(format!("Model switch pending: {reference}")); }
             return Ok(PromptDisposition::Handled);
         }
         if self.dispatch_command(text)? { return Ok(PromptDisposition::Handled); }
-        let session = self.session.clone();
-        let prompt = session.prompt(text, options);
-        tokio::pin!(prompt);
-        let result = loop {
-            tokio::select! {
-                result = &mut prompt => break result,
-                Some(event) = self.events.recv() => {
-                    self.handle_session_event(&event);
+        let result = match self.session_host.clone() {
+            Some(host) => {
+                let prompt = host.prompt(text.to_owned(), options);
+                tokio::pin!(prompt);
+                let result = loop {
+                    tokio::select! {
+                        result = &mut prompt => break result,
+                        Some(event) = self.events.recv() => { self.handle_session_event(&event); }
+                        Some(request) = self.ui_requests.recv() => self.handle_ui_request(request),
+                    }
+                };
+                result.map(|_| PromptDisposition::Started)
+            }
+            None => {
+                let session = self.session.clone();
+                let prompt = session.prompt(text, options);
+                tokio::pin!(prompt);
+                loop {
+                    tokio::select! {
+                        result = &mut prompt => break result,
+                        Some(event) = self.events.recv() => { self.handle_session_event(&event); }
+                        Some(request) = self.ui_requests.recv() => self.handle_ui_request(request),
+                    }
                 }
-                Some(request) = self.ui_requests.recv() => self.handle_ui_request(request),
             }
         };
         self.drain_events();
         result
     }
 
-    pub async fn abort(&self) { self.session.abort().await; }
+    pub async fn abort(&self) { let _ = self.host_abort().await; }
 
     pub fn restore_queued_messages(&mut self, abort_will_follow: bool) -> usize {
-        let cleared = self.session.clear_queue(abort_will_follow);
-        let queued = cleared.ordered.iter().map(|message| message.text.as_str()).collect::<Vec<_>>();
+        let cleared = self.host_clear_queue(abort_will_follow);
+        let queued = cleared.iter().map(|message| message.text.as_str()).collect::<Vec<_>>();
         let count = queued.len();
         if count > 0 {
             let current = self.editor.editor.get_text();
@@ -447,8 +1259,8 @@ impl InteractiveMode {
     }
 
     pub async fn abort_and_restore_queue(&mut self) -> usize {
-        let queued = self.session.clear_queue(true).ordered;
-        self.session.abort().await;
+        let queued = self.host_clear_queue(true);
+        let _ = self.host_abort().await;
         if !queued.is_empty() {
             let text = queued.iter().map(|message| message.text.as_str()).collect::<Vec<_>>().join("\n\n");
             let current = self.editor.editor.get_text();
@@ -457,9 +1269,117 @@ impl InteractiveMode {
         queued.len()
     }
 
-    pub async fn steer(&self, text: &str) -> Result<(), String> { self.session.steer(text, None, Default::default()).await }
+    pub async fn steer(&self, text: &str) -> Result<(), String> { self.host_steer(text).await }
 
-    pub async fn follow_up(&self, text: &str) -> Result<(), String> { self.session.follow_up(text, None, Default::default()).await }
+    pub async fn follow_up(&self, text: &str) -> Result<(), String> { self.host_follow_up(text).await }
+
+    // ---- senpi `editAssistantMessageFromTree` (`interactive-mode.ts:8122`) ------------------
+
+    /// The prefill (assistant content text) and tool-call flag for the tree edit editor, or `None`
+    /// when the entry is not an assistant message.
+    fn tree_edit_prefill(&self, entry_id: &str) -> Option<(String, bool)> {
+        let entry = self.session.with_session_manager(|manager| manager.entry(entry_id))?;
+        if entry.get("type").and_then(serde_json::Value::as_str) != Some("message") { return None; }
+        let message: maho_ai::types::AssistantMessage = serde_json::from_value(entry.get("message")?.clone()).ok()?;
+        let drops_tool_calls = message.content.iter().any(|block| matches!(block, maho_ai::types::ContentBlock::ToolCall(_)));
+        Some((maho_ai::utils::text::content_text(&message.content, ""), drops_tool_calls))
+    }
+
+    /// senpi's `editAssistantMessageFromTree` head: verify the entry, open the extension editor
+    /// prefilled with the assistant text, and capture the leaf the edit is checked against.
+    fn open_tree_edit(&mut self, entry_id: &str) {
+        let Some((content, drops_tool_calls)) = self.tree_edit_prefill(entry_id) else {
+            self.show_status("Only assistant responses can be edited here".into());
+            return;
+        };
+        let title = if drops_tool_calls { "Edit assistant response (its tool calls will be dropped)" } else { "Edit assistant response" };
+        let expected_leaf = self.session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned));
+        let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+        let pending = self.pending_tree_edit.clone();
+        let submit_submissions = self.submissions.clone(); let submit_closed = self.ui_reply.clone();
+        let cancel_submissions = self.submissions.clone(); let cancel_closed = self.ui_reply.clone();
+        let entry = entry_id.to_owned();
+        self.ui_dialog = Some(Box::new(crate::components::extension_editor::ExtensionEditorComponent::new(&self.theme, self.editor_host.clone(),
+            Arc::new(self.keybindings()), title, Some(&content),
+            Box::new(move |text| { *pending.borrow_mut() = Some((entry.clone(), text.to_owned(), expected_leaf.clone())); submit_submissions.borrow_mut().push_back("/tree-edit-apply".into()); submit_closed.borrow_mut().take(); }),
+            Box::new(move || { cancel_submissions.borrow_mut().push_back("/tree".into()); cancel_closed.borrow_mut().take(); }), Default::default(), None, None)));
+    }
+
+    /// senpi's `editAssistantMessageFromTree` tail: empty re-opens the tree, an unchanged edit
+    /// reports without navigating, and a real edit replaces the assistant message under the leaf
+    /// token captured when the editor opened.
+    async fn apply_tree_edit(&mut self) -> Result<(), String> {
+        let Some((entry_id, edited, expected_leaf)) = self.pending_tree_edit.borrow_mut().take() else { return Ok(()); };
+        if edited.trim().is_empty() {
+            self.show_status("Assistant response cannot be empty".into());
+            self.submissions.borrow_mut().push_back(format!("/tree-edit {entry_id}"));
+            return Ok(());
+        }
+        let options = maho_core::agent_session::TreeNavigationOptions { expected_leaf_id: expected_leaf, ..Default::default() };
+        let result = self.host_edit_assistant_message(&entry_id, &edited, options).await?;
+        if result.unchanged == Some(true) { self.show_status("Assistant response unchanged".into()); return Ok(()); }
+        if result.cancelled { self.show_status("Navigation cancelled".into()); return Ok(()); }
+        if result.aborted == Some(true) { self.show_status("Branch summarization cancelled".into()); self.submissions.borrow_mut().push_back(format!("/tree-edit {entry_id}")); return Ok(()); }
+        self.rebuild_history();
+        self.show_status("Replaced assistant response with your edit".into());
+        Ok(())
+    }
+
+    /// senpi `getBranchSummarySkipPrompt`: `branchSummary.skipPrompt`.
+    fn tree_summary_skip_prompt(&self) -> bool {
+        self.session.with_settings_manager(|settings| settings.get_value("branchSummary").and_then(|value| value.get("skipPrompt")).and_then(serde_json::Value::as_bool).unwrap_or(false))
+    }
+
+    /// senpi `promptBranchSummaryChoice`: the "Summarize branch?" selector. A custom prompt opens the
+    /// instructions editor; cancelling either dialog re-shows the previous step.
+    fn prompt_branch_summary_choice(&mut self, entry_id: &str) {
+        let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+        let pending = self.pending_tree_nav.clone();
+        let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone();
+        let select_submissions = self.submissions.clone(); let cancel_submissions = self.submissions.clone();
+        let entry = entry_id.to_owned(); let select_entry = entry.clone(); let custom_entry = entry.clone();
+        let component = crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), "Summarize branch?", vec!["No summary".into(), "Summarize".into(), "Summarize with custom prompt".into()],
+            Box::new(move |choice| {
+                selected.borrow_mut().take();
+                if choice == "Summarize with custom prompt" { select_submissions.borrow_mut().push_back(format!("/tree-summary-custom {custom_entry}")); }
+                else { *pending.borrow_mut() = Some((select_entry.clone(), choice == "Summarize", None)); select_submissions.borrow_mut().push_back("/tree-navigate".into()); }
+            }),
+            Box::new(move || { cancelled.borrow_mut().take(); cancel_submissions.borrow_mut().push_back(format!("/tree {entry}")); }), Default::default());
+        self.ui_dialog = Some(Box::new(component));
+    }
+
+    /// senpi `promptBranchSummaryChoice`'s custom-instructions editor; cancel loops back to the selector.
+    fn open_branch_summary_custom_prompt(&mut self, entry_id: &str) {
+        let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+        let pending = self.pending_tree_nav.clone();
+        let submit_submissions = self.submissions.clone(); let submit_closed = self.ui_reply.clone();
+        let cancel_submissions = self.submissions.clone(); let cancel_closed = self.ui_reply.clone();
+        let entry = entry_id.to_owned(); let submit_entry = entry.clone(); let cancel_entry = entry.clone();
+        self.ui_dialog = Some(Box::new(crate::components::extension_editor::ExtensionEditorComponent::new(&self.theme, self.editor_host.clone(),
+            Arc::new(self.keybindings()), "Custom summarization instructions", None,
+            Box::new(move |text| { *pending.borrow_mut() = Some((submit_entry.clone(), true, Some(text.to_owned()))); submit_submissions.borrow_mut().push_back("/tree-navigate".into()); submit_closed.borrow_mut().take(); }),
+            Box::new(move || { cancel_submissions.borrow_mut().push_back(format!("/tree-summary {cancel_entry}")); cancel_closed.borrow_mut().take(); }), Default::default(), None, None)));
+    }
+
+    /// senpi `runTreeNavigation`'s committed tail: consume the chosen summary and navigate.
+    async fn apply_tree_navigation(&mut self) -> Result<(), String> {
+        let Some((entry_id, summarize, custom_instructions)) = self.pending_tree_nav.borrow_mut().take() else { return Ok(()); };
+        self.run_tree_navigation(&entry_id, summarize, custom_instructions).await
+    }
+
+    /// senpi `runTreeNavigation`: stop any active response, then navigate with the summary choice.
+    async fn run_tree_navigation(&mut self, entry_id: &str, summarize: bool, custom_instructions: Option<String>) -> Result<(), String> {
+        if self.host_is_streaming() { self.restore_queued_messages(false); let _ = self.host_abort().await; }
+        if self.host_is_compacting() { return Err("Wait for the current compaction or tree navigation to finish before navigating the session tree.".into()); }
+        let options = maho_core::agent_session::TreeNavigationOptions { summarize: Some(summarize), custom_instructions, ..Default::default() };
+        let result = self.host_navigate_tree(entry_id, options).await?;
+        if result.aborted == Some(true) { self.show_status("Branch summarization cancelled".into()); self.submissions.borrow_mut().push_back(format!("/tree {entry_id}")); return Ok(()); }
+        if result.cancelled { self.show_status("Navigation cancelled".into()); return Ok(()); }
+        self.rebuild_history();
+        if let Some(text) = result.editor_text { self.editor.editor.set_text(&text); }
+        self.show_status("Navigated to selected point".into());
+        Ok(())
+    }
 
     fn show_status(&mut self, text: String) {
         let text = self.theme.fg(crate::theme::ThemeColor::Dim, &text);
@@ -504,14 +1424,14 @@ impl InteractiveMode {
                 Box::new(move |path| { submissions.borrow_mut().push_back(format!("/resume \"{path}\"")); selected.borrow_mut().take(); }),
                 Box::new(move || { cancelled.borrow_mut().take(); }), Box::new(move || { exit_submissions.borrow_mut().push_back("/quit".into()); exited.borrow_mut().take(); }),
                 Box::new(move || host.request_render()), Some(Box::new(|path, name| { let mut manager = maho_core::session_manager::SessionManager::open(path, None, None, None); manager.append_session_info(name); })), Some(true),
-                self.session.session_file().as_deref(), std::env::var("HOME").ok())));
+                self.host_session_file().as_deref(), std::env::var("HOME").ok())));
             return Ok(true);
         }
         if text == "/settings" {
             use crate::components::settings_selector::{SettingsSelectorComponent, SettingsConfig, SettingsCallbacks, ThinkingLevel};
-            let mut config = SettingsConfig { auto_compact:self.session.auto_compaction_enabled(),
-                thinking_level:ThinkingLevel::from_name(self.session.thinking_level().as_str()).expect("session thinking level"),
-                available_thinking_levels:self.session.get_available_thinking_levels().into_iter().filter_map(|level| ThinkingLevel::from_name(level.as_str())).collect(), ..Default::default() };
+            let mut config = SettingsConfig { auto_compact:self.host_auto_compaction_enabled(),
+                thinking_level:ThinkingLevel::from_name(self.host_thinking_level().as_str()).expect("session thinking level"),
+                available_thinking_levels:self.host_available_thinking_levels().into_iter().filter_map(|level| ThinkingLevel::from_name(level.as_str())).collect(), ..Default::default() };
             let theme_registry = crate::theme::registry::ThemeRegistry::new(std::path::Path::new(&self.session.agent_dir()).join("themes"), &self.theme.name, self.theme.get_color_mode()).map_err(|error| error.to_string())?;
             config.current_theme = self.theme.name.clone(); config.available_themes = theme_registry.get_available_themes_with_paths().into_iter().map(|theme| theme.name).collect();
             self.session.with_settings_manager(|settings| {
@@ -563,12 +1483,12 @@ impl InteractiveMode {
             persist_enum!(on_fullscreen_exit_output_change, "fullscreenExitOutput", FullscreenExitOutput, |value: FullscreenExitOutput| serde_json::json!(value.as_str()));
             persist_enum!(on_default_project_trust_change, "defaultProjectTrust", DefaultProjectTrust, |value: DefaultProjectTrust| serde_json::json!(match value { DefaultProjectTrust::Ask => "ask", DefaultProjectTrust::Always => "always", DefaultProjectTrust::Never => "never" }));
             persist_enum!(on_warnings_change, "warnings", WarningSettings, |value: WarningSettings| serde_json::json!({"anthropicExtraUsage":value.anthropic_extra_usage}));
-            self.ui_dialog = Some(Box::new(SettingsSelectorComponent::new(&self.theme, config, callbacks, self.session.model().input.contains(&maho_ai::types::InputModality::Image))));
+            self.ui_dialog = Some(Box::new(SettingsSelectorComponent::new(&self.theme, config, callbacks, self.host_model().input.contains(&maho_ai::types::InputModality::Image))));
             return Ok(true);
         }
         if text == "/trust" {
             use crate::components::trust_selector::{TrustSelectorComponent, TrustSelectorOptions};
-            let cwd = self.session.cwd();
+            let cwd = self.host_cwd();
             let store = maho_core::trust_manager::ProjectTrustStore::new(&self.session.agent_dir());
             let saved_decision = store.get_entry(&cwd)?;
             let project_trusted = self.session.with_settings_manager(|settings| settings.is_project_trusted());
@@ -587,7 +1507,7 @@ impl InteractiveMode {
         }
         if matches!(text, "/scoped-models" | "/favorite-models") {
             let favorites = text == "/favorite-models";
-            let models = self.session.model_registry().get_available();
+            let models = self.host_available_models();
             if favorites && models.is_empty() { self.show_status("No models available".into()); return Ok(true); }
             let key = if favorites { "favoriteModels" } else { "enabledModels" };
             let configured: Option<Vec<String>> = self.session.with_settings_manager(|settings| settings.get_value(key).filter(|value| !value.is_null()).cloned()).map(serde_json::from_value).transpose().map_err(|error| error.to_string())?;
@@ -595,7 +1515,7 @@ impl InteractiveMode {
             let catalog = self.session.model_registry().get_all();
             let resolution = maho_core::model_resolver::resolve_model_scope_from_models(&stored, &catalog);
             let candidate_ids: Vec<_> = models.iter().map(|model| format!("{}/{}", model.provider, model.id)).collect();
-            let entries = if favorites { self.session.favorite_models() } else { self.session.scoped_models() };
+            let entries = if favorites { self.host_favorite_models() } else { self.host_scoped_models() };
             let enabled = if !entries.is_empty() { Some(entries.iter().map(|entry| format!("{}/{}", entry.model.provider, entry.model.id)).collect()) }
                 else if stored.is_empty() { if favorites || configured.is_some() { Some(Vec::new()) } else { None } }
                 else { Some(resolution.pattern_resolutions.iter().flat_map(|item| if item.unresolved { vec![item.pattern.clone()] } else { item.owned_ids.clone() }).collect()) };
@@ -623,7 +1543,7 @@ impl InteractiveMode {
             let keys = Arc::new(self.keybindings());
             if favorites {
                 use crate::components::favorite_models_selector::{FavoriteModelsSelectorComponent, FavoriteModelsConfig, FavoriteModelsCallbacks};
-                let selected = self.ui_reply.clone(); let submissions = self.submissions.clone(); let current = self.session.model();
+                let selected = self.ui_reply.clone(); let submissions = self.submissions.clone(); let current = self.host_model();
                 self.ui_dialog = Some(Box::new(FavoriteModelsSelectorComponent::new(&self.theme, keys,
                     FavoriteModelsConfig { all_models:models.into_iter().map(|model| crate::components::model_selector::ModelEntry { provider:model.provider, id:model.id, name:model.name }).collect(), favorite_model_ids:enabled, current_model:Some(crate::components::model_selector::ModelEntry { provider:current.provider, id:current.id, name:current.name }) },
                     FavoriteModelsCallbacks { on_change, on_persist, on_select:Box::new(move |model| { submissions.borrow_mut().push_back(format!("/model {}/{}", model.provider, model.id)); selected.borrow_mut().take(); }), on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }) })));
@@ -653,6 +1573,9 @@ impl InteractiveMode {
                 Some(Box::new(move |id, label| session.with_session_manager_mut(|manager| { manager.append_label(id, label); }))), None, Some(filter), std::env::var("HOME").ok());
             let copies=self.tree_copies.clone();
             selector.on_copy=Some(Box::new(move |text|copies.borrow_mut().push_back(text.map(str::to_owned))));
+            // senpi `selector.onEditMessage`: close the selector, then open the edit flow.
+            let edit_submissions=self.submissions.clone(); let edit_closed=self.ui_reply.clone();
+            selector.on_edit_message=Some(Box::new(move |id| { edit_submissions.borrow_mut().push_back(format!("/tree-edit {id}")); edit_closed.borrow_mut().take(); }));
             self.ui_dialog=Some(Box::new(selector));
             return Ok(true);
         }
@@ -676,15 +1599,15 @@ impl InteractiveMode {
         }
         if text == "/model" {
             use crate::components::model_selector::{ModelSelectorComponent, ModelEntry, ModelSelectorFavoriteOptions};
-            let current = self.session.model();
+            let current = self.host_model();
             let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
             let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone();
-            let models = self.session.model_registry().get_available().into_iter().map(|model| ModelEntry { provider:model.provider, id:model.id, name:model.name }).collect::<Vec<_>>();
+            let models = self.host_available_models().into_iter().map(|model| ModelEntry { provider:model.provider, id:model.id, name:model.name }).collect::<Vec<_>>();
             let stored: Vec<String> = self.session.with_settings_manager(|settings| settings.get_value("favoriteModels").cloned()).map(serde_json::from_value).transpose().map_err(|error| error.to_string())?.unwrap_or_default();
             let catalog = self.session.model_registry().get_all();
             let resolutions = maho_core::model_resolver::resolve_model_scope_from_models(&stored, &catalog).pattern_resolutions;
             let candidate_ids = models.iter().map(ModelEntry::full_id).collect::<Vec<_>>();
-            let session_favorites = self.session.favorite_models().into_iter().map(|entry| format!("{}/{}", entry.model.provider, entry.model.id)).filter(|id| candidate_ids.contains(id)).collect::<Vec<_>>();
+            let session_favorites = self.host_favorite_models().into_iter().map(|entry| format!("{}/{}", entry.model.provider, entry.model.id)).filter(|id| candidate_ids.contains(id)).collect::<Vec<_>>();
             let favorite_ids = Some(if session_favorites.is_empty() { resolutions.iter().flat_map(|resolution| resolution.owned_ids.clone()).filter(|id| candidate_ids.contains(id)).collect() } else { session_favorites });
             let session = self.session.clone(); let ui = self.extension_ui.clone();
             let favorite_callback = Box::new(move |ids: crate::components::favorite_model_ids::FavoriteModelIds, candidates: &[ModelEntry], _: &ModelEntry| {
@@ -696,7 +1619,7 @@ impl InteractiveMode {
                 let resolved = maho_core::model_resolver::resolve_model_scope_from_models(&patterns, &catalog);
                 session.set_favorite_models(resolved.scoped_models.into_iter().map(|entry| maho_core::agent_session::SessionModelEntry { model:entry.model, thinking_level:entry.thinking_level.and_then(|level| serde_json::from_value(serde_json::json!(level.as_str())).ok()), thinking_selection:entry.thinking_selection, service_tier:entry.service_tier.map(|tier| match tier.as_str() { "auto" => maho_ext_api::ServiceTier::Auto, "flex" => maho_ext_api::ServiceTier::Flex, "priority" => maho_ext_api::ServiceTier::Priority, _ => unreachable!("resolved service tier") }) }).collect());
             });
-            let scoped = self.session.scoped_models().into_iter().map(|entry| crate::components::model_selector::ScopedModelItem { model:ModelEntry { provider:entry.model.provider, id:entry.model.id, name:entry.model.name }, thinking_level:entry.thinking_level.map(|level| serde_json::to_value(level).expect("thinking level").as_str().expect("string level").to_owned()) }).collect();
+            let scoped = self.host_scoped_models().into_iter().map(|entry| crate::components::model_selector::ScopedModelItem { model:ModelEntry { provider:entry.model.provider, id:entry.model.id, name:entry.model.name }, thinking_level:entry.thinking_level.map(|level| serde_json::to_value(level).expect("thinking level").as_str().expect("string level").to_owned()) }).collect();
             let mut selector = ModelSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), 0, &models,
                 Some(ModelEntry { provider:current.provider, id:current.id, name:current.name }),
                 scoped,
@@ -720,7 +1643,7 @@ impl InteractiveMode {
             let default_session = self.session.clone(); let ui = self.extension_ui.clone();
             self.ui_dialog = Some(Box::new(crate::components::thinking_selector::ThinkingSelectorComponent::new(&self.theme,
                 Arc::new(self.keybindings()),
-                crate::components::thinking_selector::ThinkingSelectorOptions { current:self.session.thinking_level(), available:self.session.get_available_thinking_levels(), default,
+                crate::components::thinking_selector::ThinkingSelectorOptions { current:self.host_thinking_level(), available:self.host_available_thinking_levels(), default,
                     on_select:Box::new(move |level| { session.set_session_thinking_level(level); selected.borrow_mut().take(); }), on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }), on_select_as_default:Some(Box::new(move |level| {
                         let values = [("defaultThinkingLevel".into(), serde_json::json!(level.as_str()))].into_iter().collect();
                         match default_session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) {
@@ -732,16 +1655,16 @@ impl InteractiveMode {
         }
         if matches!(text, "/quit" | "/exit") { self.shutdown_requested = true; return Ok(true); }
         if text == "/session" {
-            let stats = self.session.get_session_stats();
+            let stats = self.host_session_stats();
             let entries = self.session.with_session_manager(|manager| manager.entries());
-            let prices = |provider: &str, model: &str| self.session.model_registry().find(provider, model).map(|model| model.cost.cache_read);
+            let prices = |provider: &str, model: &str| self.host_find_model(provider, model).map(|model| model.cost.cache_read);
             let waste = maho_core::cache_stats::compute_cache_waste(&entries, &prices).map_err(|error| error.to_string())?;
             let breakdown = maho_core::usage_totals::get_usage_cost_breakdown(&entries);
             let theme = &self.theme;
             let label = |text: &str| theme.fg(crate::theme::ThemeColor::Dim, text);
             let count = crate::components::compaction_summary_message::format_count;
             let mut info = format!("{}\n\n", theme.bold("Session Info"));
-            if let Some(name) = self.session.session_name() { info += &format!("{} {name}\n", label("Name:")); }
+            if let Some(name) = self.session_display_name() { info += &format!("{} {name}\n", label("Name:")); }
             info += &format!("{} {}\n{} {}\n\n{}\n{} {}\n{} {}\n{} {}\n{} {} calls, {} results\n\n{}\n", label("File:"), stats.session_file.as_deref().unwrap_or("In-memory"), label("ID:"), stats.session_id, theme.bold("Messages"), label("Total:"), stats.total_messages, label("User:"), stats.user_messages, label("Assistant:"), stats.assistant_messages, label("Tools:"), stats.tool_calls, stats.tool_results, theme.bold("Tokens"));
             let tokens = stats.tokens;
             let prompt = tokens.input + tokens.cache_read + tokens.cache_write;
@@ -760,7 +1683,7 @@ impl InteractiveMode {
         if text.starts_with("/export ") {
             let path = get_path_command_argument(text, "/export").ok_or("Missing export path")?;
             if path.ends_with(".jsonl") {
-                let exported = self.session.export_to_jsonl(Some(&path)).map_err(|error| format!("Failed to export session: {error}"))?;
+                let exported = self.host_export_jsonl(Some(&path)).await?.unwrap_or_else(|| path.clone());
                 self.show_status(format!("Session exported to: {exported}"));
                 return Ok(true);
             }
@@ -768,20 +1691,20 @@ impl InteractiveMode {
         if matches!(text, "/rename" | "/name") {
             let accepted = self.rename_result.clone();
             let cancelled = self.rename_result.clone();
-            self.rename_input = Some(crate::components::extension_input::ExtensionInputComponent::new(&self.theme, "Rename session", Box::new(move |text| *accepted.borrow_mut() = Some(Some(text.into()))), Box::new(move || *cancelled.borrow_mut() = Some(None)), crate::components::extension_input::ExtensionInputOptions { initial_value: self.session.session_name(), ..Default::default() }));
+            self.rename_input = Some(crate::components::extension_input::ExtensionInputComponent::new(&self.theme, "Rename session", Box::new(move |text| *accepted.borrow_mut() = Some(Some(text.into()))), Box::new(move || *cancelled.borrow_mut() = Some(None)), crate::components::extension_input::ExtensionInputOptions { initial_value: self.host_session_name(), ..Default::default() }));
             return Ok(true);
         }
         if let Some(name) = text.strip_prefix("/rename ").or_else(|| text.strip_prefix("/name ")) {
             let name = name.trim();
             if name.is_empty() { return Err("Session name cannot be empty".into()); }
-            self.session.set_session_name(name);
-            self.show_status(format!("Session name set: {}", self.session.session_name().unwrap_or_else(|| name.into())));
+            self.fire_set_session_name(name);
+            self.show_status(format!("Session name set: {}", self.host_session_name().unwrap_or_else(|| name.into())));
             return Ok(true);
         }
         if let Some(value) = text.strip_prefix("/thinking ") {
             let level = maho_ai::types::ModelThinkingLevel::parse(value.trim()).ok_or_else(|| format!("Invalid thinking level: {}", value.trim()))?;
-            if !self.session.get_available_thinking_levels().contains(&level) { return Err(format!("Thinking level {} is not supported by the current model", value.trim())); }
-            self.session.set_session_thinking_level(level);
+            if !self.host_available_thinking_levels().contains(&level) { return Err(format!("Thinking level {} is not supported by the current model", value.trim())); }
+            self.fire_set_session_thinking_level(level.as_str());
             self.show_status(format!("Thinking level: {}", level.as_str()));
             return Ok(true);
         }
@@ -885,6 +1808,24 @@ impl InteractiveMode {
             self.chat.add_child(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone()))));
             return Ok(true);
         }
+        if text == "/debug" { self.handle_debug_command(); return Ok(true); }
+        if text == "/answer" || text.starts_with("/answer ") {
+            let argument = text.strip_prefix("/answer").map(str::trim).unwrap_or_default();
+            self.answer_command(argument);
+            return Ok(true);
+        }
+        if text == "/import" || text.starts_with("/import ") {
+            let path = get_path_command_argument(text, "/import").ok_or("Usage: /import <path.jsonl>")?;
+            let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+            let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone();
+            let confirm_path = path.clone();
+            let title = format!("Import session\nReplace current session with {path}?");
+            let component = crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), &title, vec!["Yes".into(), "No".into()],
+                Box::new(move |choice| { if choice == "Yes" { submissions.borrow_mut().push_back(format!("/import-confirm \"{confirm_path}\"")); } selected.borrow_mut().take(); }),
+                Box::new(move || { cancelled.borrow_mut().take(); }), Default::default());
+            self.ui_dialog = Some(Box::new(component));
+            return Ok(true);
+        }
         if let Some(name) = text.split_whitespace().next().and_then(|word| word.strip_prefix('/'))
             && maho_core::slash_commands::builtin_slash_commands().iter().any(|command| command.name == name)
         {
@@ -893,8 +1834,28 @@ impl InteractiveMode {
         Ok(false)
     }
 
+    /// senpi `handleDebugCommand`: dump the current render, visible widths and the
+    /// session messages to the debug log so a broken frame can be inspected.
+    fn handle_debug_command(&mut self) {
+        let (columns, rows) = self.terminal_dimensions.get();
+        let width = usize::from(columns);
+        let lines = self.render(width);
+        let messages = self.host_messages().iter().map(|message| serde_json::to_string(message).unwrap_or_default()).collect::<Vec<_>>();
+        let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let path = self.debug_log_path.clone().unwrap_or_else(maho_core::config::get_debug_log_path);
+        let data = format_debug_log(&timestamp, width, usize::from(rows), &lines, &messages);
+        if let Some(parent) = std::path::Path::new(&path).parent() { let _ = std::fs::create_dir_all(parent); }
+        match std::fs::write(&path, data) {
+            Ok(()) => self.show_status(format!("✓ Debug log written: {path}")),
+            Err(error) => self.show_status(format!("Failed to write debug log: {error}")),
+        }
+    }
+
     pub fn drain_events(&mut self) {
         self.drain_ui_requests();
+        self.drain_remote_history();
+        self.drain_remote_models();
+        self.drain_remote_stats();
         while let Ok(event) = self.events.try_recv() {
             self.handle_session_event(&event);
         }
@@ -917,15 +1878,37 @@ impl InteractiveMode {
         }
     }
 
-    fn drain_ui_requests(&mut self) {
-        while let Ok(request) = self.ui_requests.try_recv() { self.handle_ui_request(request); }
-        if self.question_reply.borrow().is_none() {
-            self.question = None; self.async_question_widget = None; self.expanded_question_widget = None;
-            while let Some(request) = self.queued_questions.pop_front() {
-                self.handle_ui_request(request);
-                if self.question_reply.borrow().is_some() { break; }
+    fn settle_questions(&mut self) {
+        self.handle_question_actions();
+        let expanded_result = self.question_result.borrow_mut().take().filter(|_| self.questions.surface == crate::question_registry::QuestionSurface::Expanded);
+        if let Some(response) = expanded_result {
+            match self.questions.shown_id().map(str::to_owned) {
+                Some(id) if response.status != maho_ext_api::QuestionStatus::Cancelled => self.finish_question(&id, response),
+                _ => self.collapse_shown_question(),
             }
         }
+        let sent = self.question_reply.borrow().is_none();
+        let closed = self.question_reply.borrow().as_ref().is_some_and(tokio::sync::oneshot::Sender::is_closed);
+        if closed || (self.blocking_question && sent) {
+            self.question_reply.borrow_mut().take();
+            if self.blocking_question { self.blocking_question = false; self.question = None; }
+        }
+        let abandoned: Vec<String> = self.questions.order().iter().filter(|id| self.questions.get(id).is_some_and(|entry| !entry.replies.is_empty() && entry.replies.iter().all(tokio::sync::oneshot::Sender::is_closed))).cloned().collect();
+        for id in abandoned {
+            let response = self.cancelled_question_response(&id);
+            self.finish_question(&id, response);
+        }
+        if self.questions.is_empty() && self.question_reply.borrow().is_none() && !self.queued_questions.is_empty() {
+            while let Some(request) = self.queued_questions.pop_front() {
+                self.handle_ui_request(request);
+                if self.question_reply.borrow().is_some() || !self.questions.is_empty() { break; }
+            }
+        }
+    }
+
+    fn drain_ui_requests(&mut self) {
+        while let Ok(request) = self.ui_requests.try_recv() { self.handle_ui_request(request); }
+        self.settle_questions();
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
         let mut index = 0;
         while index < self.custom_ui_builds.len() {
@@ -943,8 +1926,6 @@ impl InteractiveMode {
                 }
             }
         }
-        let closed = self.question_reply.borrow().as_ref().is_some_and(tokio::sync::oneshot::Sender::is_closed);
-        if closed { self.question_reply.borrow_mut().take(); self.question = None; self.async_question_widget = None; self.expanded_question_widget = None; }
         let closed = self.ui_reply.borrow().as_ref().is_some_and(tokio::sync::oneshot::Sender::is_closed);
         if closed { self.ui_reply.borrow_mut().take(); if let Some(mut dialog) = self.ui_dialog.take() { dialog.dispose(); } }
         let result = self.custom_ui_result.borrow_mut().take();
@@ -959,6 +1940,7 @@ impl InteractiveMode {
     fn handle_ui_request(&mut self, request: crate::interactive_extension_ui::UiRequest) {
         use crate::interactive_extension_ui::UiRequest;
         match request {
+            UiRequest::WidgetFrame => self.editor_host.request_render(),
             UiRequest::WidgetFactory(key, factory, options) => {
                 let host = crate::interactive_ui_host::InteractiveUiHost(self.editor_host.clone(),self.terminal_dimensions.clone());
                 let theme = maho_ext_api::ExtensionUi::theme(self.extension_ui.as_ref());
@@ -968,11 +1950,12 @@ impl InteractiveMode {
             }
             UiRequest::HeaderFactory(factory) => {
                 let host = crate::interactive_ui_host::InteractiveUiHost(self.editor_host.clone(),self.terminal_dimensions.clone());
-                self.header = factory.map(|factory| factory(&host, &maho_ext_api::ExtensionUi::theme(self.extension_ui.as_ref())));
+                let header = factory.map(|factory| -> HeaderSlot { let component: Box<dyn Component> = factory(&host, &maho_ext_api::ExtensionUi::theme(self.extension_ui.as_ref())); Rc::new(RefCell::new(crate::interactive_ui_host::BoxedComponent(component))) });
+                self.set_extension_header(header);
             }
             UiRequest::FooterFactory(factory) => {
                 let host = crate::interactive_ui_host::InteractiveUiHost(self.editor_host.clone(),self.terminal_dimensions.clone());
-                self.footer_data.set_available_provider_count(self.session.model_registry().get_available().iter().map(|model|&model.provider).collect::<std::collections::BTreeSet<_>>().len());
+                self.footer_data.set_available_provider_count(self.host_available_models().iter().map(|model|&model.provider).collect::<std::collections::BTreeSet<_>>().len());
                 let data = crate::interactive_ui_host::InteractiveFooterData { provider:self.footer_data.clone(), ui:self.extension_ui.clone() };
                 self.footer = factory.map(|factory| factory(&host,&maho_ext_api::ExtensionUi::theme(self.extension_ui.as_ref()),&data));
             }
@@ -999,7 +1982,7 @@ impl InteractiveMode {
             UiRequest::WorkingIndicator(options) => self.working_indicator = options,
             UiRequest::Autocomplete(factory) => {
                 let commands = maho_core::slash_commands::builtin_slash_commands().into_iter().map(|command| maho_tui::autocomplete::CommandSpec::command(command.name)).collect();
-                let provider = factory(Box::new(maho_tui::autocomplete::CombinedAutocompleteProvider::new(commands, &self.session.cwd(), None)));
+                let provider = factory(Box::new(maho_tui::autocomplete::CombinedAutocompleteProvider::new(commands, &self.host_cwd(), None)));
                 maho_tui::editor_component::EditorComponent::set_autocomplete_provider(&mut self.editor, provider);
             }
             UiRequest::EditorFactory(factory) => {
@@ -1028,7 +2011,7 @@ impl InteractiveMode {
                         let terminal_theme = if self.theme.name == "light" { crate::theme::TerminalTheme::Light } else { crate::theme::TerminalTheme::Dark };
                         let name = crate::theme::resolve_theme_setting(Some(setting), terminal_theme).unwrap_or("dark");
                         match crate::theme::registry::ThemeRegistry::new(std::path::Path::new(&self.session.agent_dir()).join("themes"), name, self.theme.get_color_mode()).and_then(|registry| registry.load_theme(name)) {
-                            Ok(theme) => { self.theme = theme; self.editor.editor.border_color = editor_theme(&self.theme).border_color; *self.extension_ui.theme.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = maho_ext_api::Theme { name:Some(self.theme.name.clone()), colors:self.theme.resolved_colors(), ..Default::default() }; self.rebuild_history(); },
+                            Ok(theme) => { self.theme = theme; self.editor.editor.border_color = editor_theme(&self.theme).border_color; *self.extension_ui.theme.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = crate::interactive_extension_ui::extension_theme(&self.theme); self.rebuild_history(); },
                             Err(error) => self.show_status(error.to_string()),
                         }
                     }
@@ -1039,23 +2022,20 @@ impl InteractiveMode {
             }
             UiRequest::Question { request, options, reply } => {
                 if reply.is_closed() { return; }
+                use crate::components::ask_user_question_state as state;
+                let convert = |request: maho_ext_api::QuestionRequest| state::QuestionRequest { request_id:request.request_id, wait_for_answer:request.wait_for_answer, timeout_ms:request.timeout_ms,
+                    questions:request.questions.into_iter().map(|q| state::Question { id:q.id, header:q.header, question:q.question, multi_select:q.multi_select, options:q.options.into_iter().map(|o| state::QuestionOption { label:o.label, description:o.description }).collect() }).collect() };
+                if !request.wait_for_answer {
+                    let request = convert(request);
+                    self.show_async_question(request, options, reply);
+                    return;
+                }
                 if self.question_reply.borrow().is_some() {
                     self.queued_questions.push_back(UiRequest::Question { request, options, reply }); return;
                 }
-                use crate::components::ask_user_question_state as state;
-                let request = state::QuestionRequest { request_id:request.request_id, wait_for_answer:request.wait_for_answer, timeout_ms:request.timeout_ms,
-                    questions:request.questions.into_iter().map(|q| state::Question { id:q.id, header:q.header, question:q.question, multi_select:q.multi_select, options:q.options.into_iter().map(|o| state::QuestionOption { label:o.label, description:o.description }).collect() }).collect() };
+                let request = convert(request);
                 *self.question_reply.borrow_mut() = Some(reply); let answer = self.question_reply.clone();
-                self.async_question_widget = None;
-                if !request.wait_for_answer {
-                    let reply = self.question_reply.clone(); let unanswered = request.questions.iter().map(|question| question.id.clone()).collect::<Vec<_>>();
-                    self.async_question_widget = Some(crate::components::ask_user_async_widget::AskUserAsyncWidget::new(crate::components::ask_user_async_widget::AskUserAsyncWidgetOptions {
-                        request:request.clone(), draft:Default::default(), timeout_ms:options.dialog.timeout_ms.unwrap_or(request.timeout_ms), now_ms:self.clock.elapsed().as_millis() as u64,
-                        get_deadline_at_ms:None, pending_count:1, theme:self.theme.clone(), env:std::env::vars().collect(), mouse_capture_active:false,
-                        on_option_click:None, on_own_answer_click:None, on_expand_click:None, on_next_question:None,
-                        on_expire:Box::new(move || { if let Some(reply) = reply.borrow_mut().take() { drop(reply.send(maho_ext_api::QuestionResponse { status:maho_ext_api::QuestionStatus::TimedOut, answers:Default::default(), comment:None, unanswered:unanswered.clone(), auto_resolved_after_ms:None })); } }),
-                    }));
-                }
+                self.blocking_question = true;
                 let mut component_options = crate::components::ask_user_question::AskUserQuestionOptions::new(self.theme.clone());
                 component_options.now_ms = self.clock.elapsed().as_millis() as u64;
                 component_options.timeout_ms = options.dialog.timeout_ms;
@@ -1083,7 +2063,10 @@ impl InteractiveMode {
             UiRequest::Title(title) => self.terminal_title = Some(title),
             UiRequest::EditorText(text) => self.editor.editor.set_text(&text),
             UiRequest::Paste(text) => self.editor.editor.insert_text_at_cursor(&text),
-            UiRequest::Header(factory) => self.header = factory.map(|factory| factory(&maho_ext_api::ExtensionUi::theme(self.extension_ui.as_ref()))),
+            UiRequest::Header(factory) => {
+                let header = factory.map(|factory| -> HeaderSlot { let component: Box<dyn Component> = factory(&maho_ext_api::ExtensionUi::theme(self.extension_ui.as_ref())); Rc::new(RefCell::new(crate::interactive_ui_host::BoxedComponent(component))) });
+                self.set_extension_header(header);
+            },
             UiRequest::Footer(factory) => self.footer = factory.map(|factory| factory(&maho_ext_api::ExtensionUi::theme(self.extension_ui.as_ref()))),
             UiRequest::Widget(key, content, options) => {
                 let index = self.widgets.iter().position(|(name, _, _)| name == &key);
@@ -1120,17 +2103,192 @@ impl InteractiveMode {
         *self.extension_ui.editor_text.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = self.editor.editor.get_text();
     }
 
+    /// senpi's `showAsyncQuestion`: every async request stays pending at once, and a duplicate
+    /// request id shares the existing question's completion instead of showing a second card.
+    fn show_async_question(&mut self, request: crate::components::ask_user_question_state::QuestionRequest, options: maho_ext_api::QuestionOptions, reply: tokio::sync::oneshot::Sender<maho_ext_api::QuestionResponse>) {
+        use crate::components::ask_user_question_state as state;
+        let request_id = request.request_id.clone();
+        let timeout_ms = options.dialog.timeout_ms;
+        let on_progress = options.on_progress.map(|callback| std::rc::Rc::new(std::cell::RefCell::new(Box::new(move |draft: &state::QuestionDraft| callback(maho_ext_api::QuestionDraft { comment: draft.comment.clone(), answers: Some(draft.answers.iter().map(|(id, answer)| (id.clone(), maho_ext_api::QuestionAnswer { selected: answer.selected.clone(), text: answer.text.clone() })).collect()) })) as Box<dyn FnMut(&state::QuestionDraft)>)));
+        let entry = crate::question_registry::PendingQuestion {
+            timeout_ms: timeout_ms.unwrap_or(request.timeout_ms),
+            asked_at_ms: self.clock.elapsed().as_millis() as u64,
+            get_deadline_at_ms: None,
+            on_progress,
+            request,
+            draft: state::QuestionDraft::default(),
+            replies: Vec::new(),
+        };
+        self.questions.show(entry);
+        if let Some(existing) = self.questions.get_mut(&request_id) { existing.replies.push(reply); }
+        self.refresh_async_question_widget();
+    }
+
+    /// senpi's `refreshAsyncWidget`: the collapsed widget shows the shown question, and nothing
+    /// while the expanded component owns the surface.
+    fn refresh_async_question_widget(&mut self) {
+        if self.questions.surface == crate::question_registry::QuestionSurface::Expanded { self.async_question_widget = None; return; }
+        let pending = self.questions.shown().map(|shown| (shown.request.clone(), shown.draft.clone(), shown.timeout_ms));
+        let Some((request, draft, timeout_ms)) = pending else { self.async_question_widget = None; return; };
+        let actions = self.question_actions.clone();
+        let next_actions = actions.clone(); let expand_actions = actions.clone(); let own_answer_actions = actions.clone(); let expire_actions = actions.clone();
+        let expire_id = request.request_id.clone();
+        let pending_count = self.questions.len();
+        self.async_question_widget = Some(crate::components::ask_user_async_widget::AskUserAsyncWidget::new(crate::components::ask_user_async_widget::AskUserAsyncWidgetOptions {
+            request, draft, timeout_ms, now_ms: self.clock.elapsed().as_millis() as u64,
+            get_deadline_at_ms: None, pending_count, theme: self.theme.clone(), env: std::env::vars().collect(), mouse_capture_active: false,
+            on_option_click: Some(Box::new(move |index| actions.borrow_mut().push_back(QuestionAction::ClickOption(index)))),
+            on_own_answer_click: Some(Box::new(move || own_answer_actions.borrow_mut().push_back(QuestionAction::OwnAnswer))),
+            on_expand_click: Some(Box::new(move || expand_actions.borrow_mut().push_back(QuestionAction::Expand))),
+            on_next_question: Some(Box::new(move || next_actions.borrow_mut().push_back(QuestionAction::Next))),
+            on_expire: Box::new(move || expire_actions.borrow_mut().push_back(QuestionAction::Expire(expire_id))),
+        }));
+    }
+
+    fn cycle_question(&mut self) { if self.questions.cycle() { self.refresh_async_question_widget(); } }
+
+    /// senpi's `expandPendingQuestion`: mount the full component for the shown request. Esc collapses
+    /// back to the widget and keeps the question pending; any other response settles it.
+    fn expand_shown_question(&mut self, initial_question_index: Option<usize>) {
+        if self.questions.surface == crate::question_registry::QuestionSurface::Expanded { return; }
+        let pending = self.questions.shown().map(|shown| (shown.request.clone(), shown.draft.clone(), shown.timeout_ms));
+        let Some((request, draft, timeout_ms)) = pending else { return; };
+        let result = self.question_result.clone();
+        let progress = self.questions.shown().and_then(|shown| shown.on_progress.clone());
+        let mut options = crate::components::ask_user_question::AskUserQuestionOptions::new(self.theme.clone());
+        options.now_ms = self.clock.elapsed().as_millis() as u64;
+        options.timeout_ms = Some(timeout_ms);
+        options.initial_draft = Some(draft);
+        options.initial_question_index = initial_question_index;
+        if let Some(progress) = progress {
+            use crate::components::ask_user_question_state as state;
+            options.on_progress = Some(Box::new(move |draft: &state::QuestionDraft| { let mut callback = progress.borrow_mut(); (&mut **callback)(draft); }));
+        }
+        self.questions.surface = crate::question_registry::QuestionSurface::Expanded;
+        self.blocking_question = false;
+        self.async_question_widget = None;
+        self.question = Some(crate::components::ask_user_question::AskUserQuestionComponent::new(request, Box::new(move |response| { *result.borrow_mut() = Some(to_extension_response(response)); }), options));
+    }
+
+    /// senpi's `hideQuestionOverlay`.
+    fn collapse_shown_question(&mut self) {
+        self.question = None;
+        self.question_result.borrow_mut().take();
+        self.questions.surface = crate::question_registry::QuestionSurface::Collapsed;
+        self.refresh_async_question_widget();
+    }
+
+    /// senpi's `AsyncQuestionState.finish`: resolve every completion and hand the surface on.
+    fn finish_question(&mut self, request_id: &str, response: maho_ext_api::QuestionResponse) {
+        if let Some(mut entry) = self.questions.finish(request_id) {
+            for reply in entry.replies.drain(..) { let _ = reply.send(response.clone()); }
+        }
+        self.question = None;
+        self.blocking_question = false;
+        self.refresh_async_question_widget();
+    }
+
+    fn handle_question_actions(&mut self) {
+        loop {
+            let action = self.question_actions.borrow_mut().pop_front();
+            let Some(action) = action else { break; };
+            match action {
+                QuestionAction::Expand => self.expand_shown_question(None),
+                QuestionAction::Next => self.cycle_question(),
+                QuestionAction::ClickOption(index) => self.click_shown_question_option(index),
+                QuestionAction::OwnAnswer => { self.expand_shown_question(None); if let Some(question) = &mut self.question { question.open_own_answer(None); } }
+                QuestionAction::Expire(request_id) => { let response = self.timed_out_question_response(&request_id); self.finish_question(&request_id, response); }
+            }
+        }
+    }
+
+    fn shown_unanswered_index(&self) -> Option<usize> {
+        let shown = self.questions.shown()?;
+        let unanswered = shown.unanswered();
+        shown.request.questions.iter().position(|question| unanswered.first() == Some(&question.id))
+    }
+
+    fn shown_question_has_option(&self, question_index: usize, option_index: usize) -> bool {
+        self.questions.shown().and_then(|shown| shown.request.questions.get(question_index)).is_some_and(|question| question.options.get(option_index).is_some())
+    }
+
+    fn click_shown_question_option(&mut self, option: usize) {
+        let index = self.shown_unanswered_index();
+        self.expand_shown_question(index);
+        if let Some(question) = &mut self.question { question.click_option(option, true); }
+    }
+
+    fn cancelled_question_response(&self, request_id: &str) -> maho_ext_api::QuestionResponse {
+        self.questions.get(request_id).map_or_else(question_empty_response, |entry| to_extension_response(crate::components::ask_user_async_widget::build_cancelled_response(&entry.request, &entry.draft)))
+    }
+
+    fn timed_out_question_response(&self, request_id: &str) -> maho_ext_api::QuestionResponse {
+        let elapsed = self.clock.elapsed().as_millis() as u64;
+        self.questions.get(request_id).map_or_else(|| maho_ext_api::QuestionResponse { status: maho_ext_api::QuestionStatus::TimedOut, answers: Default::default(), comment: None, unanswered: Vec::new(), auto_resolved_after_ms: None }, |entry| to_extension_response(crate::components::ask_user_async_widget::build_timed_out_response(&entry.request, &entry.draft, elapsed.saturating_sub(entry.asked_at_ms))))
+    }
+
+    fn question_frame(&self, request_id: &str, response: &maho_ext_api::QuestionResponse) -> Option<String> {
+        let entry = self.questions.get(request_id)?;
+        let questions: Vec<maho_ext_api::Question> = entry.request.questions.iter().map(|question| maho_ext_api::Question { id: question.id.clone(), header: question.header.clone(), question: question.question.clone(), multi_select: question.multi_select, options: question.options.iter().map(|option| maho_ext_api::QuestionOption { label: option.label.clone(), description: option.description.clone() }).collect() }).collect();
+        Some(maho_ext_ask_user::format::format_user_message(response, request_id, &questions))
+    }
+
+    /// senpi's `handleAnswerCommand`.
+    fn answer_command(&mut self, argument: &str) {
+        let Some(shown) = self.questions.shown() else { self.show_status("No question is pending.".into()); return; };
+        let request_id = shown.request.request_id.clone();
+        if argument == "skip" {
+            let response = self.cancelled_question_response(&request_id);
+            let frame = self.question_frame(&request_id, &response);
+            self.finish_question(&request_id, response);
+            self.show_status("The user dismissed the question.".into());
+            if let Some(frame) = frame {
+                let streaming = self.host_is_streaming();
+                let session = self.session.clone();
+                tokio::spawn(async move {
+                    let options = PromptOptions { streaming_behavior: Some(if streaming { maho_ext_api::StreamingBehavior::Steer } else { maho_ext_api::StreamingBehavior::FollowUp }), ..Default::default() };
+                    let _ = session.prompt(&frame, options).await;
+                });
+            }
+            return;
+        }
+        if !argument.is_empty() {
+            let id = argument.trim().parse::<usize>().ok().filter(|number| *number >= 1).and_then(|number| self.questions.by_number(number)).map(str::to_owned);
+            match id {
+                Some(id) => { self.questions.set_shown(&id); self.expand_shown_question(None); }
+                None => self.show_status("Choose a pending question number or /answer skip.".into()),
+            }
+            return;
+        }
+        if self.questions.len() == 1 { self.expand_shown_question(None); return; }
+        self.show_answer_list();
+    }
+
+    /// senpi's `/answer` SelectList over `pendingOrder`.
+    fn show_answer_list(&mut self) {
+        let now = self.clock.elapsed().as_millis() as u64;
+        let labels: Vec<String> = self.questions.order().iter().enumerate().filter_map(|(index, id)| self.questions.get(id).map(|entry| format!("{}. {}", index + 1, crate::question_registry::answer_list_label(entry, now)))).collect();
+        if labels.is_empty() { self.show_status("No question is pending.".into()); return; }
+        self.questions.surface = crate::question_registry::QuestionSurface::List;
+        let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+        let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone(); let submissions = self.submissions.clone();
+        let component = crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), "Pending questions", labels,
+            Box::new(move |choice| { if let Some(number) = choice.split('.').next().and_then(|prefix| prefix.trim().parse::<usize>().ok()) { submissions.borrow_mut().push_back(format!("/answer {number}")); } selected.borrow_mut().take(); }),
+            Box::new(move || { cancelled.borrow_mut().take(); }), Default::default());
+        self.ui_dialog = Some(Box::new(component));
+    }
+
     pub fn footer_snapshot(&self) -> crate::components::footer::FooterSnapshot {
-        let stats = self.session.get_session_stats();
-        let model = self.session.model();
-        let usage = self.session.get_context_usage();
+        let stats = self.host_session_stats();
+        let model = self.host_model();
+        let usage = self.host_context_usage();
         crate::components::footer::FooterSnapshot {
-            cwd: self.session.cwd(), home: std::env::var("HOME").ok(), session_name: self.session.session_name(),
+            cwd: self.host_cwd(), home: std::env::var("HOME").ok(), session_name: self.host_session_name(),
             cache_read: stats.tokens.cache_read as f64, cache_write: stats.tokens.cache_write as f64, cost: stats.cost,
             context_window: model.context_window as f64, context_percent: usage.and_then(|usage| usage.percent),
             context_tokens: usage.and_then(|usage| usage.tokens).map(|tokens| tokens as f64),
             model_id: Some(model.id), provider: Some(model.provider), reasoning: model.reasoning,
-            thinking_level: Some(self.session.thinking_level().as_str().into()), ..Default::default()
+            thinking_level: Some(self.host_thinking_level().as_str().into()), ..Default::default()
         }
     }
 
@@ -1245,14 +2403,13 @@ impl InteractiveMode {
     }
 
     pub fn tick(&mut self, now_ms: f64) {
-        self.footer_data.set_cwd(&self.session.cwd());
-        self.footer_data.set_available_provider_count(self.session.model_registry().get_available().iter().map(|model|&model.provider).collect::<std::collections::BTreeSet<_>>().len());
+        self.footer_data.set_cwd(&self.host_cwd());
+        self.footer_data.set_available_provider_count(self.host_available_models().iter().map(|model|&model.provider).collect::<std::collections::BTreeSet<_>>().len());
         self.footer_data.refresh_branch();
         for (id, value) in self.tool_args_reveal.tick(now_ms) { if let Some(component) = self.pending_tools.get(&id) { component.borrow_mut().update_args(value); } }
         if let Some(widget) = &mut self.async_question_widget { widget.tick(now_ms.max(0.0) as u64); }
         else if let Some(question) = &mut self.question { question.tick(now_ms.max(0.0) as u64); }
-        if let Some(widget) = &mut self.expanded_question_widget { widget.tick(now_ms.max(0.0) as u64); }
-        if self.question_reply.borrow().is_none() { self.question = None; self.async_question_widget = None; self.expanded_question_widget = None; }
+        self.settle_questions();
         for component in &self.tool_cards { let mut component = component.borrow_mut(); component.set_now_ms(now_ms); component.tick(now_ms.max(0.0) as u64); }
         if let Some(value) = self.reveal.tick(now_ms) && let Some(component) = &self.streaming { component.borrow_mut().update_content(&value, Some(true)); }
         for (id, value) in self.tool_reveal.tick(now_ms) { if let Some(component) = self.pending_tools.get(&id) { component.borrow_mut().update_result(Self::tool_result(&value, false), true); } }
@@ -1275,14 +2432,46 @@ impl InteractiveMode {
 
     fn tool_component(&mut self, name: &str, id: &str, args: serde_json::Value) -> Rc<RefCell<ToolExecutionComponent>> {
         let name = self.session.resolve_tool_call_name(name);
+        let renderers = self.tool_renderers(&name);
         let options = self.session.with_settings_manager(|settings| ToolExecutionOptions { show_images:settings.get_bool("showImages"), image_width_cells:settings.get_number("imageWidthCells").map(|width| width as u32) });
         self.pending_tools.entry(id.into()).or_insert_with(|| {
-            let component = Rc::new(RefCell::new(ToolExecutionComponent::new(&name, id, args, options, None, &self.session.cwd(), ToolExecutionPresentation::Classic, None, self.theme.clone())));
+            let component = Rc::new(RefCell::new(ToolExecutionComponent::new(&name, id, args, options, renderers, &self.host_cwd(), ToolExecutionPresentation::Classic, None, self.theme.clone())));
             self.chat.add_child(component.clone());
             component.borrow_mut().set_expanded(self.tools_expanded);
             self.tool_cards.push(component.clone());
             component
         }).clone()
+    }
+
+    /// senpi's `getRegisteredToolDefinition`: the session's registered definition for the resolved
+    /// tool name, else the ask-user pair, else the built-in renderers.
+    fn tool_renderers(&self, tool_name: &str) -> Option<Rc<RefCell<dyn crate::tools::renderers::ToolRenderers>>> {
+        let tool_name = self.session.resolve_tool_call_name(tool_name);
+        self.native_tool_renderer_snapshots.get(&tool_name).cloned()
+            .or_else(|| self.tool_renderer_snapshots.get(&tool_name).cloned())
+            .or_else(|| crate::tools::renderers::card_renderers(&tool_name))
+    }
+
+    /// Refresh the per-tool registered-renderer snapshots from the session's live runner. Run at async
+    /// ingress (extension binding, submission, replacement) because the synchronous card path cannot
+    /// await the session accessor; rebuilding the map drops a removed registration.
+    /// Refresh the per-tool registered-renderer snapshots from the session's live runner. Uses the
+    /// session's full registered-tool snapshot (`tool_renderers_snapshot`, over `get_all_registered_tools`
+    /// with the runner's live registration/replacement precedence), not the active set, so a tool that
+    /// is registered but currently inactive still resolves its registered renderers on replay, and a
+    /// removed or replaced registration is dropped by rebuilding the map. Run at async ingress
+    /// (extension binding, submission, reload, host replacement) because the synchronous card path
+    /// cannot await the accessor.
+    pub async fn refresh_tool_renderer_snapshots(&mut self) {
+        self.tool_renderer_snapshots = self
+            .session
+            .tool_renderers_snapshot()
+            .await
+            .into_iter()
+            .map(|(name, renderers)| {
+                (name, Rc::new(RefCell::new(crate::tools::renderers::registered::RegisteredToolRenderers::new(renderers))) as Rc<RefCell<dyn crate::tools::renderers::ToolRenderers>>)
+            })
+            .collect();
     }
 
     fn tool_result(value: &serde_json::Value, is_error: bool) -> ToolExecutionResult {
@@ -1301,10 +2490,84 @@ impl crate::replay_assistant_tools::ReplayToolHost for InteractiveMode {
     fn add_child(&mut self, component: Rc<RefCell<ToolExecutionComponent>>) { self.chat.add_child(component.clone()); self.tool_cards.push(component); }
     fn create_tool(&mut self, name: &str, id: &str, args: &serde_json::Map<String, serde_json::Value>) -> ToolExecutionComponent {
         let name = self.session.resolve_tool_call_name(name);
+        let renderers = self.tool_renderers(&name);
         let options = self.session.with_settings_manager(|settings| ToolExecutionOptions { show_images:settings.get_bool("showImages"), image_width_cells:settings.get_number("imageWidthCells").map(|width| width as u32) });
-        ToolExecutionComponent::new(&name, id, serde_json::Value::Object(args.clone()), options, None, &self.session.cwd(), ToolExecutionPresentation::Classic, None, self.theme.clone())
+        ToolExecutionComponent::new(&name, id, serde_json::Value::Object(args.clone()), options, renderers, &self.host_cwd(), ToolExecutionPresentation::Classic, None, self.theme.clone())
     }
     fn add_pending(&mut self, id: &str, component: Rc<RefCell<ToolExecutionComponent>>) { self.pending_tools.insert(id.into(), component); }
+}
+
+/// senpi `getTipsHistory`: the global `tipsHistory` object as a `tipId -> timestamp` map.
+fn tips_history(settings: &maho_core::settings_manager::SettingsManager) -> std::collections::HashMap<String, u64> {
+    settings.get_value("tipsHistory").and_then(serde_json::Value::as_object).map(|map| map.iter().filter_map(|(key, value)| value.as_u64().map(|value| (key.clone(), value))).collect()).unwrap_or_default()
+}
+
+/// Parse the wire `RpcSessionModelEntry[]` (lane 36's `session_model_entry_json`) into typed
+/// session model entries. Used only when a shared host is mounted.
+fn session_model_entries(value: &serde_json::Value) -> Vec<maho_core::agent_session::SessionModelEntry> {
+    value
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    Some(maho_core::agent_session::SessionModelEntry {
+                        model: serde_json::from_value(entry.get("model")?.clone()).ok()?,
+                        thinking_level: entry.get("thinkingLevel").and_then(|level| serde_json::from_value(level.clone()).ok()),
+                        thinking_selection: entry.get("thinkingSelection").and_then(|selection| serde_json::from_value(selection.clone()).ok()),
+                        service_tier: entry.get("serviceTier").and_then(serde_json::Value::as_str).and_then(service_tier_from_wire),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn service_tier_from_wire(value: &str) -> Option<maho_ext_api::ServiceTier> {
+    Some(match value {
+        "auto" => maho_ext_api::ServiceTier::Auto,
+        "flex" => maho_ext_api::ServiceTier::Flex,
+        "priority" => maho_ext_api::ServiceTier::Priority,
+        _ => return None,
+    })
+}
+
+/// Parse the wire `ContextUsage` (`{tokens, contextWindow, percent}`) into the typed record.
+fn context_usage_from_wire(value: &serde_json::Value) -> Option<maho_core::agent_session::ContextUsage> {
+    Some(maho_core::agent_session::ContextUsage {
+        tokens: value.get("tokens").and_then(serde_json::Value::as_u64),
+        context_window: value.get("contextWindow").and_then(serde_json::Value::as_u64)?,
+        percent: value.get("percent").and_then(serde_json::Value::as_f64),
+    })
+}
+
+fn ordered_inputs_from_remote_state(state: Option<&crate::interactive_host_runtime::RemoteSessionState>) -> Vec<maho_core::agent_session::QueuedInput> {
+    state
+        .map(|state| {
+            state.ordered.iter().filter_map(|entry| {
+                let mode = match entry.get("mode")?.as_str()? { "steer" => maho_ext_api::StreamingBehavior::Steer, "followUp" => maho_ext_api::StreamingBehavior::FollowUp, _ => return None };
+                Some(maho_core::agent_session::QueuedInput { text: entry.get("text")?.as_str()?.to_owned(), mode, enqueue_order: entry.get("enqueueOrder")?.as_u64()? })
+            }).collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Parse the wire `get_session_stats` record (lane 36's `get_session_stats`) into the typed stats.
+fn session_stats_from_wire(value: &serde_json::Value) -> maho_core::agent_session::SessionStats {
+    let count = |key: &str| value.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0) as usize;
+    let tokens = |key: &str| value.get("tokens").and_then(|tokens| tokens.get(key)).and_then(serde_json::Value::as_u64).unwrap_or(0);
+    maho_core::agent_session::SessionStats {
+        session_file: value.get("sessionFile").and_then(serde_json::Value::as_str).map(str::to_owned),
+        session_id: value.get("sessionId").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned(),
+        user_messages: count("userMessages"),
+        assistant_messages: count("assistantMessages"),
+        tool_calls: count("toolCalls"),
+        tool_results: count("toolResults"),
+        total_messages: count("totalMessages"),
+        tokens: maho_core::agent_session::SessionStatsTokens { input: tokens("input"), output: tokens("output"), cache_read: tokens("cacheRead"), cache_write: tokens("cacheWrite"), total: tokens("total") },
+        cost: value.get("cost").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
+        context_usage: value.get("contextUsage").and_then(context_usage_from_wire),
+    }
 }
 
 pub fn get_path_command_argument(text: &str, command: &str) -> Option<String> {
@@ -1315,6 +2578,24 @@ pub fn get_path_command_argument(text: &str, command: &str) -> Option<String> {
     if path == "~" { std::env::var("HOME").ok() }
     else if let Some(relative) = path.strip_prefix("~/") { std::env::var("HOME").ok().map(|home| format!("{home}/{relative}")) }
     else { Some(path.into()) }
+}
+
+/// A single `1`-`9` keystroke, which senpi's question chords treat as an option choice.
+fn single_digit(data: &str) -> Option<u32> {
+    let mut characters = data.chars();
+    let digit = characters.next()?.to_digit(10)?;
+    (characters.next().is_none() && (1..=9).contains(&digit)).then_some(digit)
+}
+
+fn question_empty_response() -> maho_ext_api::QuestionResponse {
+    maho_ext_api::QuestionResponse { status: maho_ext_api::QuestionStatus::Cancelled, answers: Default::default(), comment: None, unanswered: Vec::new(), auto_resolved_after_ms: None }
+}
+
+fn to_extension_response(response: crate::components::ask_user_question_state::QuestionResponse) -> maho_ext_api::QuestionResponse {
+    use crate::components::ask_user_question_state as state;
+    let status = match response.status { state::QuestionStatus::Answered => maho_ext_api::QuestionStatus::Answered, state::QuestionStatus::CommentSubmitted => maho_ext_api::QuestionStatus::CommentSubmitted, state::QuestionStatus::Cancelled => maho_ext_api::QuestionStatus::Cancelled, state::QuestionStatus::TimedOut => maho_ext_api::QuestionStatus::TimedOut };
+    maho_ext_api::QuestionResponse { status, comment: response.comment, unanswered: response.unanswered, auto_resolved_after_ms: response.auto_resolved_after_ms,
+        answers: response.answers.into_iter().map(|(id, value)| (id, maho_ext_api::QuestionAnswer { selected: value.selected, text: value.text })).collect() }
 }
 
 impl Component for InteractiveMode {
@@ -1333,12 +2614,20 @@ impl Component for InteractiveMode {
     fn focusable_get(&self) -> Option<bool> { Some(maho_tui::tui::Focusable::focused(&self.editor)) }
     fn focusable_set(&mut self, focused: bool) { maho_tui::tui::Focusable::set_focused(&mut self.editor, focused); }
     fn invalidate(&mut self) { self.chat.invalidate(); self.editor.invalidate(); }
+    fn dispose(&mut self) {
+        for (_, widget, _) in &mut self.widgets { widget.dispose(); }
+        self.widgets.clear();
+        self.chat.dispose();
+        self.native_tool_renderer_snapshots.clear();
+        self.tool_renderer_snapshots.clear();
+        self.session_host_subscription = None;
+    }
 }
 
 impl InteractiveMode {
     pub(crate) fn render_document(&mut self,width:usize)->Vec<String> {
-        let mut lines = self.chat.render(width);
-        if let Some(header) = &mut self.header { let mut top = header.render(width); top.extend(lines); lines = top; }
+        let mut lines = self.header_container.render(width);
+        lines.extend(self.chat.render(width));
         lines
     }
     pub(crate) fn render_dock(&mut self,width:usize)->Vec<String> {
@@ -1351,7 +2640,7 @@ impl InteractiveMode {
         lines.extend(if self.async_question_widget.is_none() && let Some(question) = &mut self.question { question.render(width) } else if let Some(dialog) = &mut self.ui_dialog { dialog.render(width) } else if let Some(input) = &mut self.rename_input { input.render(width) } else if let Some(editor) = &mut self.custom_editor { editor.render(width) } else { self.editor.render(width) });
         for (_, widget, placement) in &mut self.widgets { if *placement == maho_ext_api::WidgetPlacement::BelowEditor { lines.extend(widget.render(width)); } }
         let mut footer = crate::components::footer::FooterComponent::new(self.footer_snapshot());
-        footer.set_auto_compact_enabled(self.session.auto_compaction_enabled());
+        footer.set_auto_compact_enabled(self.host_auto_compaction_enabled());
         footer.snapshot.extension_statuses = self.extension_ui.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         lines.extend(if let Some(custom) = &mut self.footer { custom.render(width) } else { footer.render(width, &self.theme).expect("footer layout") });
         lines
@@ -1374,7 +2663,7 @@ impl InteractiveMode {
                 if let Some(name) = result {
                     let name = name.trim();
                     if name.is_empty() { self.show_status("Session name cannot be empty".into()); }
-                    else { self.session.set_session_name(name); self.show_status(format!("Session name set: {}", self.session.session_name().unwrap_or_else(|| name.into()))); }
+                    else { self.fire_set_session_name(name); self.show_status(format!("Session name set: {}", self.host_session_name().unwrap_or_else(|| name.into()))); }
                 }
             }
         } else if let Some(editor) = &mut self.custom_editor {
@@ -1385,5 +2674,99 @@ impl InteractiveMode {
         } else { self.editor.handle_input(data); }
         let text = self.custom_editor.as_ref().map_or_else(|| self.editor.editor.get_text(), |editor| editor.get_text());
         *self.extension_ui.editor_text.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = text;
+    }
+}
+
+/// senpi `handleDebugCommand`'s report body: the terminal size, every rendered
+/// line with its visible width, then the session messages as JSONL.
+pub(crate) fn format_debug_log(timestamp: &str, width: usize, height: usize, lines: &[String], messages: &[String]) -> String {
+    let mut data = String::new();
+    data.push_str(&format!("Debug output at {timestamp}\nTerminal: {width}x{height}\nTotal lines: {}\n\n", lines.len()));
+    data.push_str("=== All rendered lines with visible widths ===\n");
+    for (index, line) in lines.iter().enumerate() {
+        data.push_str(&format!("[{index}] (w={}) {}\n", maho_tui::utils::visible_width(line), serde_json::to_string(line).unwrap_or_default()));
+    }
+    data.push_str("\n=== Agent messages (JSONL) ===\n");
+    for message in messages { data.push_str(message); data.push('\n'); }
+    data.push('\n');
+    data
+}
+
+/// senpi `importFromJsonl` destination planning: imports are stored beside the
+/// current session, reusing the source path when it already lives there and
+/// otherwise taking the first free `<stem>[-N].<ext>` name so nothing is clobbered.
+pub fn prepare_import_destination(resolved: &std::path::Path, session_dir: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    let file_name = resolved.file_name().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{} is not a file path", resolved.display())))?;
+    let destination = session_dir.join(file_name);
+    let already_stored = match (std::fs::canonicalize(&destination), std::fs::canonicalize(resolved)) {
+        (Ok(stored), Ok(source)) => stored == source,
+        _ => destination == resolved,
+    };
+    if already_stored { return Ok(destination); }
+    let stem = destination.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+    let extension = destination.extension().map(|extension| extension.to_string_lossy().into_owned());
+    let mut candidate = destination;
+    let mut suffix = 1u32;
+    while candidate.exists() {
+        let name = match &extension { Some(extension) => format!("{stem}-{suffix}.{extension}"), None => format!("{stem}-{suffix}") };
+        candidate = session_dir.join(name);
+        suffix += 1;
+    }
+    Ok(candidate)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expandable_text_follows_its_render_closures() {
+        let mut expandable = ExpandableText::new(Box::new(|| "collapsed".into()), Box::new(|| "expanded".into()), false, 0, 0);
+        assert!(!expandable.is_expanded());
+        assert_eq!(expandable.render(80).join("\n"), "collapsed");
+        expandable.set_expanded(true);
+        assert!(expandable.is_expanded());
+        assert_eq!(expandable.render(80).join("\n"), "expanded");
+        expandable.set_expanded(false);
+        assert_eq!(expandable.render(80).join("\n"), "collapsed");
+    }
+
+    #[test]
+    fn expandable_text_starts_expanded_when_asked() {
+        let expandable = ExpandableText::new(Box::new(|| "collapsed".into()), Box::new(|| "expanded".into()), true, 1, 0);
+        assert!(expandable.is_expanded());
+        assert_eq!(expandable.render(80).join("\n"), "expanded");
+    }
+
+    #[test]
+    fn debug_log_reports_terminal_size_lines_and_messages() {
+        let data = format_debug_log("2026-10-03T00:00:00.000Z", 80, 24, &["hi".into(), "wide".into()], &[r#"{"role":"user"}"#.into()]);
+        assert!(data.starts_with("Debug output at 2026-10-03T00:00:00.000Z\nTerminal: 80x24\nTotal lines: 2\n\n"));
+        assert!(data.contains("[0] (w=2) \"hi\""));
+        assert!(data.contains("[1] (w=4) \"wide\""));
+        assert!(data.contains("=== Agent messages (JSONL) ===\n{\"role\":\"user\"}\n"));
+    }
+
+    #[test]
+    fn debug_log_measures_visible_width_and_escapes_ansi() {
+        let data = format_debug_log("t", 10, 10, &["\u{1b}[31mred\u{1b}[0m".into()], &[]);
+        assert!(data.contains("(w=3)"));
+        assert!(data.contains("\\u001b[31mred"));
+    }
+
+    #[test]
+    fn import_destination_reuses_the_stored_path_and_uniquifies_collisions() {
+        let directory = tempfile::tempdir().expect("directory");
+        let session_dir = directory.path().join("sessions");
+        std::fs::create_dir_all(&session_dir).expect("session dir");
+        let stored = session_dir.join("session.jsonl");
+        std::fs::write(&stored, "stored").expect("stored session");
+        assert_eq!(prepare_import_destination(&stored, &session_dir).expect("stored destination"), stored);
+        let source = directory.path().join("session.jsonl");
+        std::fs::write(&source, "source").expect("source session");
+        assert_eq!(prepare_import_destination(&source, &session_dir).expect("collision destination"), session_dir.join("session-1.jsonl"));
+        let free = directory.path().join("other.jsonl");
+        std::fs::write(&free, "free").expect("free session");
+        assert_eq!(prepare_import_destination(&free, &session_dir).expect("free destination"), session_dir.join("other.jsonl"));
     }
 }
