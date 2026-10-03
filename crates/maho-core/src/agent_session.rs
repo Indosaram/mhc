@@ -4528,6 +4528,11 @@ impl AgentSession {
         options: ExecuteToolOptions,
         on_update: Option<maho_agent::types::AgentToolUpdateCallback>,
     ) -> Result<AgentToolResult, ExecuteToolError> {
+        let disposed = self.state().disposed;
+        if disposed {
+            return Err(ExecuteToolError { code: "blocked".into(), tool_name: tool_name.into(),
+                message: "Shared tool parent session retired".into(), active_tools: self.get_active_tool_names() });
+        }
         self.execute_tool_with_updates(tool_name, params, options, on_update, Some(tool_call_id), true).await
     }
 

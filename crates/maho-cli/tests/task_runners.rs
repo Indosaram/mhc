@@ -394,6 +394,12 @@ async fn native_shared_definition_forwards_parent_tool_updates() {
 
     assert_eq!(result.expect("shared result"), maho_ext_api::ToolResult::text("settled"));
     assert_eq!(*updates.lock().expect("updates"), vec![maho_ext_api::ToolResult::text("updating-child-call")]);
+    let retired = (definition.execute)(maho_tools::definition::ToolCall {
+        id: "retired-child-call", params: serde_json::json!({}), signal: Default::default(), context: None,
+        on_update: None,
+    }).await;
+    assert!(retired.is_err());
+    assert_eq!(updates.lock().expect("retained updates").len(), 1);
 }
 
 #[tokio::test]
