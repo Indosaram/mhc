@@ -97,7 +97,7 @@ impl GoalLifecycle{
     }
     pub fn clear_agent_goal_accounting(&mut self){self.agent_goal_accounting=None;self.blocked_this_turn_goal_id=None;self.completed_this_turn_goal_id=None;}
     pub fn account_current_agent_turn(&mut self,reference:&GoalStoreRef,mode:GoalAccountingMode,messages:Option<&[serde_json::Value]>,now_ms:u64)->Result<Option<Goal>,String>{
-        let Some((id,measured))=self.agent_goal_accounting.clone()else{return read_goal(reference);};
+        let Some((id,measured))=self.agent_goal_accounting.clone()else{return read_goal(reference).map_err(String::from);};
         let usage=match messages{Some(messages)=>self.turn_usage.take_remaining(messages),None=>self.turn_usage.take_pending()};
         let elapsed=now_ms.saturating_sub(measured).saturating_add(500)/1000;
         let goal=account_goal_usage_at(reference,&usage,elapsed.to_string().parse().unwrap_or_else(|_|unreachable!("u64 fits f64")),mode,Some(&id),now_ms/1000)?;

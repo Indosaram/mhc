@@ -1,17 +1,18 @@
 use std::{io::Write,path::PathBuf};
 use super::{types::*,validation::{validate_objective,resolve_token_budget,js_whitespace},transitions::transition_goal_status};
+use super::errors::GoalStoreError;
 fn encoded_thread_id(reference:&GoalStoreRef)->String{let mut result=String::new();for byte in reference.thread_id.bytes(){if byte.is_ascii_alphanumeric()||b"-_.!~*'()".contains(&byte){result.push(char::from(byte));}else{result.push_str(&format!("%{byte:02X}"));}}result}
 pub fn goal_file_path(reference:&GoalStoreRef)->PathBuf{reference.base_dir.join(format!("{}.json",encoded_thread_id(reference)))}
 pub fn goal_history_file_path(reference:&GoalStoreRef)->PathBuf{reference.base_dir.join(format!("{}.history.jsonl",encoded_thread_id(reference)))}
 pub fn objective_full_text_file_name(reference:&GoalStoreRef)->String{format!("{}.objective-full.txt",encoded_thread_id(reference))}
 pub fn objective_full_text_file_path(reference:&GoalStoreRef)->PathBuf{reference.base_dir.join(objective_full_text_file_name(reference))}
-pub fn read_goal(reference:&GoalStoreRef)->Result<Option<Goal>,String>{match std::fs::read(goal_file_path(reference)){Ok(raw)=>parse_goal_file(&String::from_utf8_lossy(&raw)),Err(error)if error.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(error)=>Err(error.to_string())}}
+pub fn read_goal(reference:&GoalStoreRef)->Result<Option<Goal>,GoalStoreError>{match std::fs::read(goal_file_path(reference)){Ok(raw)=>parse_goal_file(&String::from_utf8_lossy(&raw)),Err(error)if error.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(error)=>Err(GoalStoreError::Io(error.to_string()))}}
 pub fn write_goal(reference:&GoalStoreRef,goal:Option<&Goal>)->Result<(),String>{std::fs::create_dir_all(&reference.base_dir).map_err(|e|e.to_string())?;let text=serde_json::to_string_pretty(&serde_json::json!({"version":1,"goal":goal})).map_err(|e|e.to_string())?;std::fs::write(goal_file_path(reference),format!("{text}\n")).map_err(|e|e.to_string())}
-pub fn parse_goal_file(raw:&str)->Result<Option<Goal>,String>{
-    let value:serde_json::Value=serde_json::from_str(raw).map_err(|e|e.to_string())?;
-    let object=value.as_object().ok_or("goal store must be a JSON object")?;
-    if object.get("version").and_then(serde_json::Value::as_f64)!=Some(1.0){return Err("unsupported goal store version".into());}
-    let invalid=||"goal store contains an invalid goal".to_owned();let goal=object.get("goal").ok_or_else(invalid)?;
+pub fn parse_goal_file(raw:&str)->Result<Option<Goal>,GoalStoreError>{
+    let value:serde_json::Value=serde_json::from_str(raw).map_err(|e|GoalStoreError::Syntax(e.to_string()))?;
+    let object=value.as_object().ok_or_else(||GoalStoreError::InvalidGoalStore("goal store must be a JSON object".into()))?;
+    if object.get("version").and_then(serde_json::Value::as_f64)!=Some(1.0){return Err(GoalStoreError::UnsupportedGoalStoreVersion("unsupported goal store version".into()));}
+    let invalid=||GoalStoreError::InvalidGoalStore("goal store contains an invalid goal".into());let goal=object.get("goal").ok_or_else(invalid)?;
     if goal.is_null(){return Ok(None);}
     let map=goal.as_object().ok_or_else(invalid)?;
     let safe=|value:&serde_json::Value|value.as_f64().is_some_and(|number|number.is_finite()&&(0.0..=9_007_199_254_740_991.0).contains(&number)&&number.fract()==0.0);
