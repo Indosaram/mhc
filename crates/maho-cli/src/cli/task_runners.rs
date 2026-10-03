@@ -107,13 +107,13 @@ pub fn native_shared_parent_tool_definition(
         message: format!("Shared parent tool {name} is not executable"),
     })?;
     let name = name.to_owned();
-    tool.execute = Arc::new(move |id, params, signal, _updates| {
+    tool.execute = Arc::new(move |id, params, signal, updates| {
         let parent = parent.clone();
         let name = name.clone();
         Box::pin(async move {
             let result = match parent.upgrade() {
-                Some(parent) => parent.execute_tool_with_call_id(&id, &name, params,
-                    maho_core::agent_session::ExecuteToolOptions { signal, activate_inactive_tool: None }).await,
+                Some(parent) => parent.execute_tool_with_call_id_and_updates(&id, &name, params,
+                    maho_core::agent_session::ExecuteToolOptions { signal, activate_inactive_tool: None }, updates).await,
                 None => {
                     let mut result = maho_agent::AgentToolResult::text("Parent session retired");
                     result.is_error = Some(true);

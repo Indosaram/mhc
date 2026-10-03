@@ -352,3 +352,37 @@ async fn native_shared_definition_cancels_an_entered_parent_tool() {
 
     assert!(outcome.expect("bounded shared cancellation").0.is_err());
 }
+
+#[tokio::test]
+async fn native_shared_definition_forwards_parent_tool_updates() {
+    use std::sync::{Arc, Mutex};
+    let dir = tempfile::tempdir().expect("shared updates");
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let tool = maho_ext_api::ToolDefinition::new("updating_child_tool", "update fixture",
+        serde_json::json!({"type":"object","properties":{}}), Arc::new(|call| Box::pin(async move {
+            if let Some(update) = call.on_update { update(maho_ext_api::ToolResult::text(call.id))?; }
+            Ok(maho_ext_api::ToolResult::text("settled"))
+        })));
+    let created = maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
+        cwd: Some(cwd.clone()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+        model: Some(provider.get_model(Some("faux-1")).expect("model")),
+        session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
+        tools: Some(vec!["updating_child_tool".into()]), custom_tools: vec![tool], minimal_resources: true,
+        ..Default::default()
+    }).await.expect("native parent");
+    let session = Arc::new(created.session);
+    let definition = maho_cli::cli::task_runners::native_shared_parent_tool_definition(
+        "updating_child_tool", Arc::downgrade(&session)).expect("shared definition");
+    let updates = Arc::new(Mutex::new(Vec::new()));
+    let observed = updates.clone();
+
+    let result = (definition.execute)(maho_tools::definition::ToolCall {
+        id: "updating-child-call", params: serde_json::json!({}), signal: Default::default(), context: None,
+        on_update: Some(Arc::new(move |result| { observed.lock().expect("updates").push(result); Ok(()) })),
+    }).await;
+    session.dispose().await;
+
+    assert_eq!(result.expect("shared result"), maho_ext_api::ToolResult::text("settled"));
+    assert_eq!(*updates.lock().expect("updates"), vec![maho_ext_api::ToolResult::text("updating-child-call")]);
+}

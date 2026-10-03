@@ -4507,6 +4507,17 @@ impl AgentSession {
         self.execute_tool_with_updates(tool_name, params, options, None, Some(tool_call_id)).await
     }
 
+    pub async fn execute_tool_with_call_id_and_updates(
+        &self,
+        tool_call_id: &str,
+        tool_name: &str,
+        params: Value,
+        options: ExecuteToolOptions,
+        on_update: Option<maho_agent::types::AgentToolUpdateCallback>,
+    ) -> Result<AgentToolResult, ExecuteToolError> {
+        self.execute_tool_with_updates(tool_name, params, options, on_update, Some(tool_call_id)).await
+    }
+
     async fn execute_tool_with_updates(
         &self,
         tool_name: &str,
