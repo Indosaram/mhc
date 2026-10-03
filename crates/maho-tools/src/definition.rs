@@ -30,6 +30,11 @@ pub trait ToolContext: Send + Sync {
     fn thinking_level(&self) -> Option<ThinkingLevel>;
     fn session_manager(&self) -> &dyn ToolSessionManager;
     fn goal_store_file(&self) -> Option<&Path>;
+    fn take_approved_monitor_parent(
+        &self, _tool_call_id: &str, _input: &Value,
+    ) -> Result<Option<std::path::PathBuf>, ToolError> {
+        Err(ToolError::Message("Approved monitor parent is unavailable".into()))
+    }
 }
 
 /// Cloneable abort subscription; receivers observe cancellation even when registered afterwards.

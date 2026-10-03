@@ -40,8 +40,8 @@ pub fn resolve_compaction_settings(
     let enabled = settings.and_then(|settings| settings.enabled).unwrap_or(true);
     let speculative_lead_tokens = settings
         .and_then(|settings| settings.speculative_lead_tokens)
-        .filter(|value| (*value as f64).is_finite())
-        .map(|value| (value as f64).max(0.0));
+        .filter(|value| value.is_finite())
+        .map(|value| value.max(0.0));
     let summarization_max_duration_ms = settings
         .and_then(|settings| settings.summarization_max_duration_ms)
         .filter(|value| value.is_finite() && *value > 0.0);
@@ -51,11 +51,11 @@ pub fn resolve_compaction_settings(
         keep_recent_tokens: compaction_keep_recent_tokens(settings, for_model)?,
         speculative_enabled: settings.and_then(|settings| settings.speculative_enabled).unwrap_or(true),
         speculative_fraction: finite_number(settings.and_then(|settings| settings.speculative_fraction), 0.75),
-        speculative_cooldown_ms: finite_number(settings.and_then(|settings| settings.speculative_cooldown_ms).map(|v| v as f64), 30000.0),
+        speculative_cooldown_ms: finite_number(settings.and_then(|settings| settings.speculative_cooldown_ms), 30000.0),
         restoration_enabled: settings.and_then(|settings| settings.restoration_enabled).unwrap_or(true),
-        restoration_max_items: finite_number(settings.and_then(|settings| settings.restoration_max_items).map(|v| v as f64), 10.0),
-        restoration_max_tokens_per_item: finite_number(settings.and_then(|settings| settings.restoration_max_tokens_per_item).map(|v| v as f64), 5000.0),
-        restoration_max_total_tokens: finite_number(settings.and_then(|settings| settings.restoration_max_total_tokens).map(|v| v as f64), 50000.0),
+        restoration_max_items: finite_number(settings.and_then(|settings| settings.restoration_max_items), 10.0),
+        restoration_max_tokens_per_item: finite_number(settings.and_then(|settings| settings.restoration_max_tokens_per_item), 5000.0),
+        restoration_max_total_tokens: finite_number(settings.and_then(|settings| settings.restoration_max_total_tokens), 50000.0),
         restoration_context_ratio: finite_number(settings.and_then(|settings| settings.restoration_context_ratio), 0.15),
         idle_compaction_enabled: settings.and_then(|settings| settings.idle_compaction_enabled).unwrap_or(true),
         grace_band_enabled: settings.and_then(|settings| settings.grace_band_enabled).unwrap_or(true),
@@ -91,7 +91,7 @@ mod tests {
         let settings = CompactionSettings {
             enabled: Some(false),
             speculative_fraction: Some(f64::NAN),
-            restoration_max_items: Some(3),
+            restoration_max_items: Some(3.0),
             summarization_max_duration_ms: Some(120000.0),
             ..Default::default()
         };
@@ -106,5 +106,23 @@ mod tests {
     fn an_invalid_token_budget_surfaces_as_an_error() {
         let settings = CompactionSettings { reserve_tokens: Some(-1), ..Default::default() };
         assert!(resolve_compaction_settings(Some(&settings), None).is_err());
+    }
+
+    #[test]
+    fn configured_fractional_policy_survives_deserialization_and_resolution() {
+        let settings: CompactionSettings = serde_json::from_value(serde_json::json!({
+            "speculativeCooldownMs": 321.5,
+            "restorationMaxItems": 2.5,
+            "restorationMaxTokensPerItem": 11.5,
+            "restorationMaxTotalTokens": 22.5,
+            "speculativeLeadTokens": 12000.5
+        })).expect("valid fractional compaction policy");
+        let resolved = resolve_compaction_settings(Some(&settings), None).expect("resolved policy");
+        assert_eq!(resolved.speculative_cooldown_ms, 321.5);
+        assert_eq!(resolved.restoration_max_items, 2.5);
+        assert_eq!(resolved.restoration_max_tokens_per_item, 11.5);
+        assert_eq!(resolved.restoration_max_total_tokens, 22.5);
+        assert_eq!(resolved.speculative_lead_tokens, Some(12000.5));
+        assert_eq!(settings.ideal().speculative_lead_tokens, Some(12000.5));
     }
 }

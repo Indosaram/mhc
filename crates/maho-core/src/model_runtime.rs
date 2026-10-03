@@ -20,7 +20,6 @@ struct RuntimeAuth {
     config: Arc<RwLock<ModelConfig>>,
     extensions: Arc<RwLock<IndexMap<String, ProviderConfigInput>>>,
     credentials: Arc<crate::auth_storage::AuthStorage>,
-    refreshed:Arc<tokio::sync::Mutex<IndexMap<String,serde_json::Value>>>,
     auth_path:Option<PathBuf>,
 }
 
@@ -29,8 +28,8 @@ impl ModelsAuth for RuntimeAuth {
         Box::pin(async move {
             let config = self.config.read().unwrap_or_else(|p| p.into_inner()).get_provider(provider.id()).cloned();
             let extension = self.extensions.read().unwrap_or_else(|p| p.into_inner()).get(provider.id()).cloned();
-            let mut refreshed=self.refreshed.lock().await;
-            let stored = refreshed.get(provider.id()).cloned().or_else(||self.auth_path.as_ref().and_then(|path|crate::auth_storage::read_stored_credential(provider.id(),&path.to_string_lossy()))).or_else(||self.credentials.get(provider.id()));
+            let mutation=self.credentials.account_mutation.lock().await;
+            let stored = self.auth_path.as_ref().and_then(|path|crate::auth_storage::read_stored_credential(provider.id(),&path.to_string_lossy())).or_else(||self.credentials.get(provider.id()));
             if overrides.api_key.is_none()&&let Some(stored)=&stored&&crate::auth_storage::credential_kind(stored)==Some(crate::auth_storage::CredentialKind::Oauth) {
                 let Some(oauth)=extension.as_ref().and_then(|e|e.oauth.clone()).or_else(||builtin_oauth(provider.id())) else{return Ok(None);};
                 let mut credential:maho_ai::auth::types::OAuthCredential=serde_json::from_value(stored.clone()).map_err(|e|ModelsError::new(ModelsErrorCode::OAuth,e.to_string()))?;
@@ -39,14 +38,7 @@ impl ModelsAuth for RuntimeAuth {
                     let signal=maho_ai::utils::abort::operation_signal(overrides.signal.clone());
                     credential=oauth.refresh(&credential,&signal).await.map_err(|e|ModelsError::new(ModelsErrorCode::OAuth,e.to_string()))?;
                     let value=serde_json::to_value(maho_ai::auth::types::Credential::OAuth(credential.clone())).map_err(|e|ModelsError::new(ModelsErrorCode::OAuth,e.to_string()))?;
-                    if let Some(path)=&self.auth_path {
-                        let backend=crate::auth_storage::FileAuthStorageBackend::new(&path.to_string_lossy());
-                        backend.with_lock_async(async |current| {
-                            let mut data=crate::auth_storage::parse_auth_json(current.unwrap_or("{}"))?;
-                            data.insert(provider.id().to_owned(),value.clone());Ok(((),Some(crate::auth_storage::serialize_auth_data(&data))))
-                        }).await.map_err(|e|ModelsError::new(ModelsErrorCode::OAuth,e))?;
-                    }
-                    refreshed.insert(provider.id().to_owned(),value);
+                    self.credentials.set(provider.id(),Some(value)).map_err(|e|ModelsError::new(ModelsErrorCode::OAuth,e))?;
                 }
                 let auth=oauth.to_auth(&credential).await.map_err(|e|ModelsError::new(ModelsErrorCode::OAuth,e.to_string()))?;
                 let raw_headers=crate::provider_api_key_auth::configured_headers(config.as_ref(),extension.as_ref().map(|e|&e.config));
@@ -55,7 +47,7 @@ impl ModelsAuth for RuntimeAuth {
                 let auth=crate::provider_api_key_auth::with_configured_auth(maho_ai::models::ProviderAuthResult{api_key:auth.api_key,headers:auth.headers,base_url:auth.base_url},headers,auth_header).map_err(|e|ModelsError::new(ModelsErrorCode::Auth,e))?;
                 return Ok(Some(AuthResolution{auth,env:overrides.env.clone()}));
             }
-            drop(refreshed);
+            drop(mutation);
             let key = overrides.api_key.as_deref().or_else(|| stored.as_ref().and_then(crate::auth_storage::credential_key));
             let env = overrides.env.as_ref().map(|v| v.iter().map(|(k,v)|(k.clone(),v.clone())).collect());
             let auth = crate::provider_api_key_auth::resolve_configured_auth(provider.id(),config.as_ref(),extension.as_ref().map(|e|&e.config),key,env.as_ref()).await
@@ -104,7 +96,7 @@ impl ModelRuntime {
         let credentials = options.credentials.unwrap_or_else(|| Arc::new(options.auth_path.as_ref().map_or_else(||crate::auth_storage::AuthStorage::in_memory(Default::default()),|path|crate::auth_storage::AuthStorage::create(&path.to_string_lossy()))));
         let config = Arc::new(RwLock::new(ModelConfig::load_sync(options.models_path.as_deref())));
         let extensions = Arc::new(RwLock::new(IndexMap::new()));
-        let auth = RuntimeAuth {config:config.clone(),extensions:extensions.clone(),credentials:credentials.clone(),refreshed:Arc::new(tokio::sync::Mutex::new(IndexMap::new())),auth_path:options.auth_path};
+        let auth = RuntimeAuth {config:config.clone(),extensions:extensions.clone(),credentials:credentials.clone(),auth_path:options.auth_path};
         let mut runtime = Self {
             models:create_models(Some(CreateModelsOptions {auth:Some(Arc::new(auth)),..Default::default()})),
             config, builtins: options.providers.unwrap_or_else(maho_ai::providers::all::builtin_providers).into_iter().map(|p| (p.id().to_owned(),p)).collect(),

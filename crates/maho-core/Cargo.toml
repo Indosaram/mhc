@@ -30,6 +30,8 @@ anyhow = "=1.0.104"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+maho-ext-recommended-models = { path = "../builtins/maho-ext-recommended-models" }
+maho-ext-permission-system = { path = "../builtins/maho-ext-permission-system" }
 
 [lints]
 workspace = true

@@ -292,17 +292,64 @@ pub struct ScopedModel { pub model: Model, pub thinking_level: Option<ThinkingLe
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServiceTier { Auto, Flex, Priority }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialAccountSource { Login, Import, Env }
+impl CredentialAccountSource {
+    pub const fn as_str(self) -> &'static str {
+        match self { Self::Login => "login", Self::Import => "import", Self::Env => "env" }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CredentialAccountSummary {
+    pub name: String, pub display_name: Option<String>, pub source: CredentialAccountSource,
+    pub blocked: bool, pub pinned: bool,
+}
+
 /// Host implementations adapt their owning registry, without an ext-api -> core edge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedRequestAuth {
+    pub auth: maho_ai::models::ProviderAuthResult,
+    pub extra_body: Option<serde_json::Map<String, JsonValue>>,
+    pub upstream_model_id: Option<String>,
+    pub service_tier: Option<maho_ai::types::ServiceTierPreference>,
+    pub env: Option<maho_ai::types::ProviderEnv>,
+}
+
 pub trait ModelRegistry: Send + Sync {
     fn get_all(&self) -> Vec<Model>;
     fn get_available(&self) -> Vec<Model>;
     fn find(&self, provider: &str, id: &str) -> Option<Model>;
     fn has_configured_auth(&self, model: &Model) -> bool;
     fn get_api_key_for_provider<'a>(&'a self, provider: &'a str) -> ExtensionFuture<'a, Option<String>>;
+    fn get_provider_auth<'a>(&'a self, _provider: &'a str) -> ExtensionFuture<'a, Option<maho_ai::models::AuthResolution>> {
+        Box::pin(async { Err(ExtensionFailure::new("Provider auth is not supported by this model registry")) })
+    }
+    fn get_stored_credential_type(&self, _provider: &str) -> Result<Option<maho_ai::auth::types::CredentialType>, ExtensionFailure> {
+        Err(ExtensionFailure::new("Stored credential metadata is not supported by this model registry"))
+    }
+    fn stream_simple(&self, _model: &Model, _context: &maho_ai::types::Context, _options: Option<maho_ai::types::SimpleStreamOptions>) -> Result<maho_ai::utils::event_stream::AssistantMessageEventStream, ExtensionFailure> {
+        Err(ExtensionFailure::new("Configured streaming is not supported by this model registry"))
+    }
+    fn get_api_key_and_headers<'a>(&'a self, _model: &'a Model) -> ExtensionFuture<'a, ResolvedRequestAuth> {
+        Box::pin(async { Err(ExtensionFailure::new("Model request auth is not supported by this model registry")) })
+    }
+    fn get_credential_accounts<'a>(&'a self, _provider: &'a str) -> ExtensionFuture<'a, Vec<CredentialAccountSummary>> {
+        Box::pin(async { Err(ExtensionFailure::new("Credential account listing is not supported by this model registry")) })
+    }
+    fn pin_credential_account<'a>(&'a self, _provider: &'a str, _name: Option<&'a str>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async { Err(ExtensionFailure::new("Credential account pinning is not supported by this model registry")) })
+    }
+    fn remove_credential_account<'a>(&'a self, _provider: &'a str, _name: &'a str) -> ExtensionFuture<'a, ()> {
+        Box::pin(async { Err(ExtensionFailure::new("Credential account removal is not supported by this model registry")) })
+    }
+    fn rename_credential_account<'a>(&'a self, _provider: &'a str, _name: &'a str, _display_name: Option<&'a str>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async { Err(ExtensionFailure::new("Credential account renaming is not supported by this model registry")) })
+    }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionEntry { pub id: String, pub parent_id: Option<String>, pub timestamp: String, pub kind: String, pub data: JsonValue }
 pub trait SessionManager: ToolSessionManager {
+    fn get_session_dir(&self) -> Option<PathBuf> { None }
     fn get_entries(&self) -> Vec<SessionEntry>;
     fn get_branch(&self) -> Vec<SessionEntry>;
     fn get_leaf_id(&self) -> Option<String>;
@@ -377,6 +424,12 @@ pub trait ExtensionKernelTools: Send + Sync {
 }
 pub trait ExtensionContextActions: Send + Sync {
     fn assert_active(&self) -> Result<(), ExtensionFailure> { Ok(()) }
+    fn set_approved_monitor_parent(&self, _tool_call_id: &str, _input: &JsonValue, _parent: &Path) -> Result<(), ExtensionFailure> {
+        Err(ExtensionFailure::new("Monitor admission attachment is not supported by this extension context"))
+    }
+    fn take_approved_monitor_parent(&self, _tool_call_id: &str, _input: &JsonValue) -> Result<Option<PathBuf>, ExtensionFailure> {
+        Err(ExtensionFailure::new("Monitor admission identity is not supported by this extension context"))
+    }
     fn get_model(&self) -> Option<Model>;
     fn get_service_tier(&self) -> Option<ServiceTier>;
     fn get_effective_service_tier(&self) -> Option<ServiceTier> { self.get_service_tier() }
@@ -395,6 +448,7 @@ pub trait ExtensionContextActions: Send + Sync {
     fn shutdown(&self);
     fn get_context_usage(&self) -> Option<ContextUsage>;
     fn get_compaction_settings(&self) -> CompactionSettings;
+    fn get_resolved_compaction_settings(&self) -> Option<ResolvedCompactionSettings> { None }
     fn get_compaction_preparation(&self) -> Option<CompactionPreparationDetails> { None }
     fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64>;
     fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64;
@@ -596,6 +650,7 @@ impl ExtensionContext {
     pub fn shutdown(&self) -> Result<(), ExtensionFailure> { self.actions()?.shutdown(); Ok(()) }
     pub fn get_context_usage(&self) -> Result<Option<ContextUsage>, ExtensionFailure> { Ok(self.actions()?.get_context_usage()) }
     pub fn get_compaction_settings(&self) -> Result<CompactionSettings, ExtensionFailure> { Ok(self.actions()?.get_compaction_settings()) }
+    pub fn get_resolved_compaction_settings(&self) -> Result<Option<ResolvedCompactionSettings>, ExtensionFailure> { Ok(self.actions()?.get_resolved_compaction_settings()) }
     pub fn get_compaction_preparation(&self) -> Result<Option<CompactionPreparationDetails>, ExtensionFailure> { Ok(self.actions()?.get_compaction_preparation()) }
     pub fn get_prompt_cache_safe_wait_seconds(&self) -> Result<Option<f64>, ExtensionFailure> { Ok(self.actions()?.get_prompt_cache_safe_wait_seconds()) }
     pub fn get_prompt_cache_goal_backstop_max_seconds(&self) -> Result<f64, ExtensionFailure> { Ok(self.actions()?.get_prompt_cache_goal_backstop_max_seconds()) }
@@ -621,6 +676,12 @@ impl ExtensionContext {
     }
     pub fn get_loaded_hook_sources(&self) -> Result<LoadedHookSources, ExtensionFailure> { Ok(self.actions()?.get_loaded_hook_sources()) }
     pub fn kernel_tools(&self) -> Result<Option<&dyn ExtensionKernelTools>, ExtensionFailure> { Ok(self.actions()?.kernel_tools()) }
+    pub fn set_approved_monitor_parent(&self, tool_call_id: &str, input: &JsonValue, parent: &Path) -> Result<(), ExtensionFailure> {
+        self.actions()?.set_approved_monitor_parent(tool_call_id, input, parent)
+    }
+    pub fn take_approved_monitor_parent(&self, tool_call_id: &str, input: &JsonValue) -> Result<Option<PathBuf>, ExtensionFailure> {
+        self.actions()?.take_approved_monitor_parent(tool_call_id, input)
+    }
     pub fn is_idle(&self) -> bool { self.assert_active_or_panic(); self.session_manager.extension_context_actions().map_or_else(|| (self.is_idle_fn)(), ExtensionContextActions::is_idle) }
     pub async fn wait_for_idle(&self) { self.assert_active_or_panic(); (self.wait_for_idle_fn)().await; self.assert_active_or_panic(); }
     pub fn is_project_trusted(&self) -> bool { self.assert_active_or_panic(); self.session_manager.extension_context_actions().map_or_else(|| (self.is_project_trusted_fn)(), ExtensionContextActions::is_project_trusted) }
@@ -635,6 +696,12 @@ impl ToolContext for ExtensionContext {
     fn thinking_level(&self) -> Option<ThinkingLevel> { self.assert_active_or_panic(); self.thinking_level }
     fn session_manager(&self) -> &dyn ToolSessionManager { self.assert_active_or_panic(); self.session_manager.as_ref() }
     fn goal_store_file(&self) -> Option<&Path> { self.assert_active_or_panic(); self.goal_store_file.as_deref() }
+    fn take_approved_monitor_parent(
+        &self, tool_call_id: &str, input: &JsonValue,
+    ) -> Result<Option<PathBuf>, maho_tools::definition::ToolError> {
+        ExtensionContext::take_approved_monitor_parent(self, tool_call_id, input)
+            .map_err(|error| maho_tools::definition::ToolError::Message(error.message))
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -704,6 +771,27 @@ pub struct CompactionPreparationDetails {
 pub struct CompactionFileOperations { pub read: Vec<String>, pub written: Vec<String>, pub edited: Vec<String> }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompactionSettings { pub enabled: bool, pub reserve_tokens: u64, pub keep_recent_tokens: u64 }
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedCompactionSettings {
+    pub enabled: bool,
+    pub reserve_tokens: u64,
+    pub keep_recent_tokens: u64,
+    pub speculative_enabled: bool,
+    pub speculative_fraction: f64,
+    pub speculative_cooldown_ms: f64,
+    pub restoration_enabled: bool,
+    pub restoration_max_items: f64,
+    pub restoration_max_tokens_per_item: f64,
+    pub restoration_max_total_tokens: f64,
+    pub restoration_context_ratio: f64,
+    pub idle_compaction_enabled: bool,
+    pub grace_band_enabled: bool,
+    pub tool_admission_enabled: bool,
+    pub reminder_enabled: bool,
+    pub reserve_scaling_enabled: bool,
+    pub speculative_lead_tokens: Option<f64>,
+    pub summarization_max_duration_ms: Option<f64>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionReason { Startup, Reload, New, Resume, Fork, Quit }
 #[derive(Clone, Debug)]

@@ -311,7 +311,7 @@ pub const BASE64_CHAR_WEIGHT: usize = 4;
 
 /// senpi weightedChars: long base64-ish runs count four times over.
 pub fn weighted_chars(text: &str) -> usize {
-    let mut chars = text.chars().count();
+    let mut chars = text.encode_utf16().count();
     for found in BASE64_RUN_RE.find_iter(text) {
         chars += found.as_str().chars().count() * (BASE64_CHAR_WEIGHT - 1);
     }
@@ -343,15 +343,15 @@ pub fn estimate_tokens(message: &Value) -> u64 {
                 for block in blocks {
                     match block.get("type").and_then(Value::as_str) {
                         Some("text") => {
-                            chars += block.get("text").and_then(Value::as_str).map(|text| text.chars().count()).unwrap_or(0);
+                            chars += block.get("text").and_then(Value::as_str).map(|text| text.encode_utf16().count()).unwrap_or(0);
                         }
                         Some("thinking") => {
-                            chars += block.get("thinking").and_then(Value::as_str).map(|text| text.chars().count()).unwrap_or(0);
+                            chars += block.get("thinking").and_then(Value::as_str).map(|text| text.encode_utf16().count()).unwrap_or(0);
                         }
                         Some("toolCall") => {
                             let name = block.get("name").and_then(Value::as_str).unwrap_or_default();
                             let arguments = block.get("arguments").map(|arguments| serde_json::to_string(arguments).unwrap_or_default()).unwrap_or_default();
-                            chars += name.chars().count() + weighted_chars(&arguments);
+                            chars += name.encode_utf16().count() + weighted_chars(&arguments);
                         }
                         _ => {}
                     }
@@ -365,10 +365,10 @@ pub fn estimate_tokens(message: &Value) -> u64 {
         Some("bashExecution") => {
             let command = message.get("command").and_then(Value::as_str).unwrap_or_default();
             let output = message.get("output").and_then(Value::as_str).unwrap_or_default();
-            command.chars().count() + weighted_chars(output)
+            command.encode_utf16().count() + weighted_chars(output)
         }
         Some("branchSummary") | Some("compactionSummary") => {
-            message.get("summary").and_then(Value::as_str).map(|summary| summary.chars().count()).unwrap_or(0)
+            message.get("summary").and_then(Value::as_str).map(|summary| summary.encode_utf16().count()).unwrap_or(0)
         }
         _ => 0,
     };
@@ -884,6 +884,26 @@ mod tests {
     fn an_image_block_estimates_at_a_fixed_cost() {
         let message = json!({ "role": "user", "content": [{ "type": "image", "data": "x", "mimeType": "image/png" }] });
         assert_eq!(estimate_tokens(&message), (ESTIMATED_IMAGE_CHARS as u64).div_ceil(4));
+    }
+
+    #[test]
+    fn supplementary_text_counts_utf16_units_in_all_message_shapes() {
+        let text = "\u{1f600}".repeat(5);
+        for message in [
+            user(&text), assistant_text(&text),
+            json!({ "role": "assistant", "content": [{ "type": "thinking", "thinking": text }] }),
+            json!({ "role": "toolResult", "content": [{ "type": "text", "text": text }] }),
+            json!({ "role": "custom", "content": text }),
+            json!({ "role": "bashExecution", "command": text, "output": "" }),
+            json!({ "role": "branchSummary", "summary": text }),
+            json!({ "role": "compactionSummary", "summary": text }),
+        ] {
+            assert_eq!(estimate_tokens(&message), 3, "{message}");
+        }
+        assert_eq!(weighted_chars(&format!("{} {text}", "A".repeat(600))), 2411);
+        assert_eq!(estimate_tokens(&json!({ "role": "assistant", "content": [
+            { "type": "toolCall", "name": text, "arguments": {} }
+        ] })), 3);
     }
 
     #[test]

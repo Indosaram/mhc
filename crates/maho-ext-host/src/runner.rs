@@ -101,6 +101,7 @@ impl ToolSessionManager for ContextSessionManager {
     fn session_file(&self) -> Option<&std::path::Path> { self.active(); self.session.session_file() }
 }
 impl SessionManager for ContextSessionManager {
+    fn get_session_dir(&self) -> Option<std::path::PathBuf> { self.active(); self.session.get_session_dir() }
     fn get_entries(&self) -> Vec<SessionEntry> { self.active(); self.session.get_entries() }
     fn get_branch(&self) -> Vec<SessionEntry> { self.active(); self.session.get_branch() }
     fn get_leaf_id(&self) -> Option<String> { self.active(); self.session.get_leaf_id() }
@@ -109,6 +110,17 @@ impl SessionManager for ContextSessionManager {
 }
 impl ExtensionContextActions for ContextSessionManager {
     fn assert_active(&self) -> Result<(), ExtensionFailure> { self.runtime.assert_active() }
+    fn set_approved_monitor_parent(&self, tool_call_id: &str, input: &JsonValue, parent: &std::path::Path) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        self.actions.set_approved_monitor_parent(tool_call_id, input, parent)?;
+        self.runtime.assert_active()
+    }
+    fn take_approved_monitor_parent(&self, tool_call_id: &str, input: &JsonValue) -> Result<Option<std::path::PathBuf>, ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let parent = self.actions.take_approved_monitor_parent(tool_call_id, input)?;
+        self.runtime.assert_active()?;
+        Ok(parent)
+    }
     fn get_model(&self) -> Option<Model> { self.active(); self.actions.get_model() }
     fn get_service_tier(&self) -> Option<ServiceTier> { self.active(); self.actions.get_service_tier() }
     fn get_effective_service_tier(&self) -> Option<ServiceTier> { self.active(); self.actions.get_effective_service_tier() }
@@ -136,6 +148,7 @@ impl ExtensionContextActions for ContextSessionManager {
     fn shutdown(&self) { self.active(); self.actions.shutdown(); }
     fn get_context_usage(&self) -> Option<ContextUsage> { self.active(); self.actions.get_context_usage() }
     fn get_compaction_settings(&self) -> CompactionSettings { self.active(); self.actions.get_compaction_settings() }
+    fn get_resolved_compaction_settings(&self) -> Option<ResolvedCompactionSettings> { self.active(); self.actions.get_resolved_compaction_settings() }
     fn get_compaction_preparation(&self) -> Option<CompactionPreparationDetails> { self.active(); self.actions.get_compaction_preparation() }
     fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { self.active(); self.actions.get_prompt_cache_safe_wait_seconds() }
     fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64 { self.active(); self.actions.get_prompt_cache_goal_backstop_max_seconds() }
@@ -264,8 +277,11 @@ impl ExtensionRunner {
         })
     }
     pub async fn recreate(&self) -> Result<Self, ExtensionFailure> {
+        self.recreate_with_context(self.factory_context.clone()).await
+    }
+    pub async fn recreate_with_context(&self, context: ExtensionContext) -> Result<Self, ExtensionFailure> {
         let factory = self.runtime_factory.as_ref().ok_or_else(|| ExtensionFailure::new("Extension runtime factory is not bound"))?;
-        let mut runner = factory(self.factory_context.clone()).await?;
+        let mut runner = factory(context).await?;
         runner.runtime_factory = self.runtime_factory.clone();
         runner.error_listeners = self.error_listeners.clone();
         runner.warning_listener = self.warning_listener.clone();
@@ -459,6 +475,11 @@ impl ExtensionRunner {
         }
         let selected = selected?;
         self.runtime.live_tool_renderer(&selected.identity.path, name).unwrap_or_else(|| selected.tool_renderers.get(name).cloned())?.downcast::<ToolRenderers<TState, TArgs>>().ok()
+    }
+    pub fn native_tool_renderers_snapshot<TState: 'static, TArgs: 'static>(&self) -> BTreeMap<String, Arc<ToolRenderers<TState, TArgs>>> {
+        self.get_all_registered_tools().into_iter().filter_map(|tool| {
+            self.get_tool_renderers(&tool.definition.name).map(|renderers| (tool.definition.name, renderers))
+        }).collect()
     }
     pub fn get_registered_commands(&self) -> Vec<ResolvedCommand> {
         let commands: Vec<_> = self.extensions.iter().flat_map(|e| self.runtime.live_commands(&e.identity.path).map_or_else(|| e.commands.clone(), |(commands, _)| commands)).collect();

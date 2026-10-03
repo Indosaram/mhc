@@ -135,7 +135,7 @@ fn is_anthropic_subscription(provider: &str) -> bool {
 pub async fn summarize_credential_accounts(
     provider: &str,
     stored: Option<&Value>,
-    env: &dyn Fn(&str) -> Option<String>,
+    env: &(dyn Fn(&str) -> Option<String> + Sync),
     repository: &CredentialSlotRepository,
     now: u64,
 ) -> Result<Vec<CredentialAccountSummary>, String> {
@@ -188,7 +188,7 @@ pub async fn summarize_credential_accounts(
 pub async fn get_credential_accounts(
     storage: &AuthStorage,
     provider: &str,
-    env: &dyn Fn(&str) -> Option<String>,
+    env: &(dyn Fn(&str) -> Option<String> + Sync),
     repository: &CredentialSlotRepository,
     now: u64,
 ) -> Result<Vec<CredentialAccountSummary>, String> {
@@ -197,7 +197,7 @@ pub async fn get_credential_accounts(
 
 /// Atomically rename/clear stored metadata without changing identity, health or environment state.
 pub async fn rename_credential_account(
-    storage: &mut AuthStorage,
+    storage: &AuthStorage,
     provider: &str,
     name: &str,
     display_name: Option<&str>,
@@ -269,12 +269,20 @@ pub fn rename_slot_display_name(credential: &Value, name: &str, display_name: Op
 
 /// Pins one slot, or clears the pin when the name is absent.
 pub async fn pin_credential_account(
-    storage: &mut AuthStorage,
+    storage: &AuthStorage,
     provider: &str,
     name: Option<&str>,
-    env: &dyn Fn(&str) -> Option<String>,
+    env: &(dyn Fn(&str) -> Option<String> + Sync),
     repository: &CredentialSlotRepository,
     now: u64,
+) -> Result<String, String> {
+    pin_credential_account_guarded(storage, provider, name, env, repository, now, &|| Ok(())).await
+}
+
+pub(crate) async fn pin_credential_account_guarded(
+    storage: &AuthStorage, provider: &str, name: Option<&str>,
+    env: &(dyn Fn(&str) -> Option<String> + Sync), repository: &CredentialSlotRepository,
+    now: u64, admit: &(dyn Fn() -> Result<(), String> + Send + Sync),
 ) -> Result<String, String> {
     if let Some(name) = name {
         assert_valid_account_name(name)?;
@@ -283,6 +291,7 @@ pub async fn pin_credential_account(
             return Err(format!("Provider account not found: {name}"));
         }
     }
+    admit()?;
     match storage.get(provider) {
         None => {
             if !is_anthropic_subscription(provider) || name.is_none() {
@@ -319,12 +328,20 @@ pub async fn pin_credential_account(
 
 /// Removes one stored slot. Env-backed accounts are refused: the environment still defines them.
 pub async fn remove_credential_account(
-    storage: &mut AuthStorage,
+    storage: &AuthStorage,
     provider: &str,
     name: &str,
-    env: &dyn Fn(&str) -> Option<String>,
+    env: &(dyn Fn(&str) -> Option<String> + Sync),
     repository: &CredentialSlotRepository,
     now: u64,
+) -> Result<String, String> {
+    remove_credential_account_guarded(storage, provider, name, env, repository, now, &|| Ok(())).await
+}
+
+pub(crate) async fn remove_credential_account_guarded(
+    storage: &AuthStorage, provider: &str, name: &str,
+    env: &(dyn Fn(&str) -> Option<String> + Sync), repository: &CredentialSlotRepository,
+    now: u64, admit: &(dyn Fn() -> Result<(), String> + Send + Sync),
 ) -> Result<String, String> {
     let accounts = get_credential_accounts(storage, provider, env, repository, now).await?;
     let Some(account) = accounts.iter().find(|account| account.name == name) else {
@@ -333,6 +350,7 @@ pub async fn remove_credential_account(
     if account.source == CredentialAccountSource::Env {
         return Err(format!("Environment provider account cannot be removed: {name}"));
     }
+    admit()?;
     let Some(current) = storage.get(provider) else {
         return Err(format!("No stored credential for provider: {provider}"));
     };
@@ -403,6 +421,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retired_admission_after_account_resolution_does_not_mutate_storage() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut store = storage(&tmp);
+        seed_pool(&mut store, "fixture");
+        let before = store.get("fixture");
+        let repo = repository(&tmp);
+        let reject = || Err("retired fixture".to_owned());
+        let pinned = pin_credential_account_guarded(&store, "fixture", Some("work"), &env_none(), &repo,
+            NOW_FAR_FUTURE, &reject).await;
+        let removed = remove_credential_account_guarded(&store, "fixture", "work", &env_none(), &repo,
+            NOW_FAR_FUTURE, &reject).await;
+        assert_eq!(pinned, Err("retired fixture".into()));
+        assert_eq!(removed, Err("retired fixture".into()));
+        assert_eq!(store.get("fixture"), before);
+    }
+
+    #[tokio::test]
     async fn lists_accounts_for_any_provider_not_just_the_claude_lane() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut store = storage(&tmp);
@@ -466,11 +501,11 @@ mod tests {
         let mut store = storage(&tmp);
         let repo = repository(&tmp);
         seed_pool(&mut store, "openai");
-        pin_credential_account(&mut store, "openai", Some("work"), &env_none(), &repo, 0).await.expect("pin");
+        pin_credential_account(&store, "openai", Some("work"), &env_none(), &repo, 0).await.expect("pin");
         let accounts = get_credential_accounts(&store, "openai", &env_none(), &repo, 0).await.expect("accounts");
         assert_eq!(accounts.iter().filter(|account| account.pinned).count(), 1);
         assert!(accounts[1].pinned);
-        pin_credential_account(&mut store, "openai", None, &env_none(), &repo, 0).await.expect("unpin");
+        pin_credential_account(&store, "openai", None, &env_none(), &repo, 0).await.expect("unpin");
         let accounts = get_credential_accounts(&store, "openai", &env_none(), &repo, 0).await.expect("accounts");
         assert_eq!(accounts.iter().filter(|account| account.pinned).count(), 0);
     }
@@ -481,9 +516,9 @@ mod tests {
         let mut store = storage(&tmp);
         let repo = repository(&tmp);
         seed_pool(&mut store, "openai");
-        let error = pin_credential_account(&mut store, "openai", Some("nope"), &env_none(), &repo, 0).await.expect_err("error");
+        let error = pin_credential_account(&store, "openai", Some("nope"), &env_none(), &repo, 0).await.expect_err("error");
         assert_eq!(error, "Provider account not found: nope");
-        let error = pin_credential_account(&mut store, "openai", Some("bad name"), &env_none(), &repo, 0).await.expect_err("error");
+        let error = pin_credential_account(&store, "openai", Some("bad name"), &env_none(), &repo, 0).await.expect_err("error");
         assert!(error.starts_with("Invalid account name 'bad name'"));
     }
 
@@ -506,7 +541,7 @@ mod tests {
         })
         .await
         .expect("mutate");
-        remove_credential_account(&mut store, "openai", "work", &env_none(), &repo, 0).await.expect("remove");
+        remove_credential_account(&store, "openai", "work", &env_none(), &repo, 0).await.expect("remove");
         let accounts = get_credential_accounts(&store, "openai", &env_none(), &repo, 0).await.expect("accounts");
         assert_eq!(accounts.iter().map(|account| account.name.as_str()).collect::<Vec<_>>(), vec!["default"]);
         assert!(repo.list_slots("openai", "stored").await.expect("slots").is_empty());
@@ -515,7 +550,7 @@ mod tests {
     #[tokio::test]
     async fn removing_the_final_stored_account_deletes_the_provider_credential() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let mut store = storage(&tmp);
+        let store = storage(&tmp);
         let repo = repository(&tmp);
         store
             .set(
@@ -523,7 +558,7 @@ mod tests {
                 Some(json!({ "type": "api_key", "key": "only", "accounts": [{ "name": "only", "key": "only" }] })),
             )
             .expect("seed");
-        remove_credential_account(&mut store, "openai", "only", &env_none(), &repo, 0).await.expect("remove");
+        remove_credential_account(&store, "openai", "only", &env_none(), &repo, 0).await.expect("remove");
         assert!(store.get("openai").is_none());
         let persisted = std::fs::read_to_string(tmp.path().join("auth.json")).expect("read");
         assert!(!persisted.contains("openai"));
@@ -532,13 +567,13 @@ mod tests {
     #[tokio::test]
     async fn env_backed_accounts_are_listed_when_nothing_is_stored_and_refuse_removal() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let mut store = storage(&tmp);
+        let store = storage(&tmp);
         let repo = repository(&tmp);
         let env = |name: &str| (name == "ANTHROPIC_API_KEY").then(|| "env-key".to_owned());
         let accounts = get_credential_accounts(&store, "anthropic", &env, &repo, 0).await.expect("accounts");
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].source, CredentialAccountSource::Env);
-        let error = remove_credential_account(&mut store, "anthropic", "env", &env, &repo, 0).await.expect_err("error");
+        let error = remove_credential_account(&store, "anthropic", "env", &env, &repo, 0).await.expect_err("error");
         assert_eq!(error, "Environment provider account cannot be removed: env");
     }
 
@@ -557,7 +592,7 @@ mod tests {
     #[tokio::test]
     async fn a_legacy_provider_id_is_read_through_its_canonical_key() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let mut store = storage(&tmp);
+        let store = storage(&tmp);
         let repo = repository(&tmp);
         store
             .set(
@@ -590,7 +625,7 @@ mod tests {
     #[tokio::test]
     async fn renaming_refuses_a_managed_sentinel_without_accounts() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let mut store = storage(&tmp);
+        let store = storage(&tmp);
         store
             .set(
                 "anthropic-subscription",
@@ -602,7 +637,7 @@ mod tests {
                 })),
             )
             .expect("seed");
-        let error = rename_credential_account(&mut store, "anthropic-subscription", "login-1", Some("x"))
+        let error = rename_credential_account(&store, "anthropic-subscription", "login-1", Some("x"))
             .await
             .expect_err("error");
         assert_eq!(error, "Stored provider account not found: login-1");
@@ -611,11 +646,11 @@ mod tests {
     #[tokio::test]
     async fn pinning_without_a_stored_credential_only_works_for_the_subscription_lane() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let mut store = storage(&tmp);
+        let store = storage(&tmp);
         let repo = repository(&tmp);
-        let error = pin_credential_account(&mut store, "openai", Some("work"), &env_none(), &repo, 0).await.expect_err("error");
+        let error = pin_credential_account(&store, "openai", Some("work"), &env_none(), &repo, 0).await.expect_err("error");
         assert_eq!(error, "Provider account not found: work");
-        pin_credential_account(&mut store, "anthropic-subscription", Some("work"), &env_none(), &repo, 0)
+        pin_credential_account(&store, "anthropic-subscription", Some("work"), &env_none(), &repo, 0)
             .await
             .expect_err("error");
     }

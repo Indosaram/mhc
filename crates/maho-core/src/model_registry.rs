@@ -29,9 +29,13 @@ impl ModelRegistry {
     pub fn get_upstream_model_id(&self,model:&Model)->Option<String>{self.model_runtime.get_compatibility_request_config(model).upstream_model_id}
     pub fn get_service_tier(&self,model:&Model)->Option<maho_ai::types::ServiceTierPreference>{self.model_runtime.get_compatibility_request_config(model).service_tier}
     pub async fn get_api_key_and_headers(&self,model:&Model)->ResolvedRequestAuth {
-        let compatibility=self.model_runtime.get_compatibility_request_config(model);
+        let mut compatibility=self.model_runtime.get_compatibility_request_config(model);
         let resolution=match self.model_runtime.get_auth(&model.provider).await{Ok(auth)=>auth,Err(error)=>return ResolvedRequestAuth::Failed{error:error.message}};
         if resolution.is_none()&&compatibility.auth_header{return ResolvedRequestAuth::Failed{error:format!("No API key found for \"{}\"",model.provider)};}
+        if resolution.is_none() {
+            compatibility.upstream_model_id = None;
+            compatibility.service_tier = None;
+        }
         let mut auth=resolution.as_ref().map(|r|r.auth.clone()).unwrap_or_default();
         let env=resolution.as_ref().and_then(|r|r.env.clone());let header_env=env.as_ref().map(|v|v.iter().map(|(k,v)|(k.clone(),v.clone())).collect());
         match self.model_runtime.get_compatibility_request_headers(model,header_env.as_ref()).await {
@@ -40,6 +44,50 @@ impl ModelRegistry {
         ResolvedRequestAuth::Resolved{auth,compatibility,env}
     }
     pub async fn get_api_key_for_provider(&self,id:&str)->Option<String>{self.model_runtime.get_auth(id).await.ok().flatten().and_then(|r|r.auth.api_key)}
+    pub async fn get_credential_accounts(&self,provider:&str,agent_dir:&str)->Result<Vec<maho_ext_api::CredentialAccountSummary>,String>{
+        let repository=crate::credential_pool::state_store::CredentialSlotRepository::new(
+            &crate::credential_pool::state_store::credential_pool_state_path(agent_dir));
+        let accounts=crate::credential_accounts::get_credential_accounts(&self.auth_storage,provider,
+            &|key|std::env::var(key).ok(),&repository,maho_ai::utils::diagnostics::now_ms().max(0) as u64).await?;
+        Ok(accounts.into_iter().map(|account|maho_ext_api::CredentialAccountSummary {
+            name:account.name,display_name:account.display_name,blocked:account.blocked,pinned:account.pinned,
+            source:match account.source {
+                crate::credential_accounts::CredentialAccountSource::Login=>maho_ext_api::CredentialAccountSource::Login,
+                crate::credential_accounts::CredentialAccountSource::Import=>maho_ext_api::CredentialAccountSource::Import,
+                crate::credential_accounts::CredentialAccountSource::Env=>maho_ext_api::CredentialAccountSource::Env,
+            },
+        }).collect())
+    }
+    pub async fn pin_credential_account(&self,provider:&str,name:Option<&str>,agent_dir:&str)->Result<(),String>{
+        self.pin_credential_account_guarded(provider,name,agent_dir,&||Ok(())).await
+    }
+    pub(crate) async fn pin_credential_account_guarded(&self,provider:&str,name:Option<&str>,agent_dir:&str,admit:&(dyn Fn()->Result<(),String>+Send+Sync))->Result<(),String>{
+        let _mutation=self.auth_storage.account_mutation.lock().await;
+        admit()?;
+        let repository=crate::credential_pool::state_store::CredentialSlotRepository::new(
+            &crate::credential_pool::state_store::credential_pool_state_path(agent_dir));
+        crate::credential_accounts::pin_credential_account_guarded(&self.auth_storage,provider,name,
+            &|key|std::env::var(key).ok(),&repository,maho_ai::utils::diagnostics::now_ms().max(0) as u64,admit).await.map(|_|())
+    }
+    pub async fn remove_credential_account(&self,provider:&str,name:&str,agent_dir:&str)->Result<(),String>{
+        self.remove_credential_account_guarded(provider,name,agent_dir,&||Ok(())).await
+    }
+    pub(crate) async fn remove_credential_account_guarded(&self,provider:&str,name:&str,agent_dir:&str,admit:&(dyn Fn()->Result<(),String>+Send+Sync))->Result<(),String>{
+        let _mutation=self.auth_storage.account_mutation.lock().await;
+        admit()?;
+        let repository=crate::credential_pool::state_store::CredentialSlotRepository::new(
+            &crate::credential_pool::state_store::credential_pool_state_path(agent_dir));
+        crate::credential_accounts::remove_credential_account_guarded(&self.auth_storage,provider,name,
+            &|key|std::env::var(key).ok(),&repository,maho_ai::utils::diagnostics::now_ms().max(0) as u64,admit).await.map(|_|())
+    }
+    pub async fn rename_credential_account(&self,provider:&str,name:&str,display_name:Option<&str>)->Result<(),String>{
+        self.rename_credential_account_guarded(provider,name,display_name,&||Ok(())).await
+    }
+    pub(crate) async fn rename_credential_account_guarded(&self,provider:&str,name:&str,display_name:Option<&str>,admit:&(dyn Fn()->Result<(),String>+Send+Sync))->Result<(),String>{
+        let _mutation=self.auth_storage.account_mutation.lock().await;
+        admit()?;
+        crate::credential_accounts::rename_credential_account(&self.auth_storage,provider,name,display_name).await.map(|_|())
+    }
     pub fn stream(&self,model:&Model,context:&maho_ai::types::Context,options:Option<maho_ai::types::StreamOptions>)->maho_ai::types::AssistantMessageEventStream{self.model_runtime.stream(model,context,options)}
     pub fn stream_simple(&self,model:&Model,context:&maho_ai::types::Context,options:Option<maho_ai::types::SimpleStreamOptions>)->maho_ai::types::AssistantMessageEventStream{self.model_runtime.stream_simple(model,context,options)}
     pub async fn complete(&self,model:&Model,context:&maho_ai::types::Context,options:Option<maho_ai::types::StreamOptions>)->Result<maho_ai::types::AssistantMessage,maho_ai::utils::event_stream::StreamError>{self.model_runtime.complete(model,context,options).await}

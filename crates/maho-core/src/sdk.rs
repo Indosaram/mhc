@@ -16,6 +16,8 @@ use crate::model_runtime::ModelRuntime;
 use crate::session_manager::SessionManager;
 use crate::settings_manager::SettingsManager;
 
+pub(crate) mod extension_context;
+
 #[derive(Default)]
 pub struct CreateAgentSessionOptions {
     pub cwd: Option<String>,
@@ -40,6 +42,9 @@ pub struct CreateAgentSessionOptions {
     pub auto_title_sessions: Option<bool>,
     pub system_prompt: Option<String>,
     pub append_system_prompt: Vec<String>,
+    pub extension_factories: Vec<maho_ext_host::loader::NativeAsyncExtensionFactory>,
+    pub hook_resources: Vec<crate::package_manager::ResolvedResource>,
+    pub additional_hook_paths: Vec<String>,
 }
 
 /// `noTools` suppression mode.
@@ -55,11 +60,27 @@ pub struct CreateAgentSessionResult {
     pub model_fallback_message: Option<String>,
 }
 
+#[derive(Clone)]
+pub struct HostRuntimeFactory {
+    pub model_runtime: ModelRuntime,
+    pub model_registry: ModelRegistry,
+    pub extension_factories: Vec<maho_ext_host::loader::NativeAsyncExtensionFactory>,
+}
+
+impl HostRuntimeFactory {
+    pub async fn create(&self, mut options: CreateAgentSessionOptions) -> Result<CreateAgentSessionResult, String> {
+        options.model_runtime = Some(self.model_runtime.clone());
+        options.model_registry = Some(self.model_registry.clone());
+        options.extension_factories = self.extension_factories.clone();
+        create_agent_session(options).await
+    }
+}
+
 pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Result<CreateAgentSessionResult, String> {
     use std::{collections::BTreeMap, sync::Arc};
     let cwd = options.cwd.take().unwrap_or_else(|| std::env::current_dir().map(|path| path.to_string_lossy().into_owned()).unwrap_or_default());
     let agent_dir = options.agent_dir.take().unwrap_or_else(crate::config::get_agent_dir);
-    let runtime = options.model_runtime.take().unwrap_or_else(|| ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
+    let runtime = options.model_runtime.take().or_else(|| options.model_registry.as_ref().map(|registry| registry.model_runtime.clone())).unwrap_or_else(|| ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
         credentials: options.auth_storage.take(), models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
         auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")), providers: None,
     }));
@@ -98,35 +119,29 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     let mut definitions = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&cwd), Default::default());
     for definition in &options.custom_tools { definitions.insert(definition.name.clone(), definition.clone()); }
     let registered_definitions = definitions.clone();
+    let session_accessor = Arc::new(std::sync::OnceLock::<Arc<dyn Fn() -> Option<crate::agent_session::AgentSession> + Send + Sync>>::new());
+    let context_accessor = session_accessor.clone();
+    let context_factory: maho_tools::tool_definition_wrapper::ContextFactory = Arc::new(move || {
+        let session = context_accessor.get().expect("SDK session initialized before tool execution")()
+            .expect("SDK session retained during tool execution");
+        Arc::new(extension_context::create(&session))
+    });
     let mut base_tools = BTreeMap::new();
     for (name, definition) in definitions {
-        let executor = definition.execute.clone();
-        let parameters = serde_json::from_value(definition.parameters.clone()).map_err(|error| error.to_string())?;
-        let tool = maho_agent::types::AgentTool {
-            label: definition.label, prepare_arguments: None, replay: None, execution_mode: None,
-            tool: maho_ai::types::Tool { name: name.clone(), description: definition.description, parameters, freeform: None, constrained_sampling: None },
-            execute: Arc::new(move |id, params, agent_signal, _on_update| {
-                let executor = executor.clone(); Box::pin(async move {
-                    let signal = maho_tools::definition::AbortSignal::default();
-                    let execution = executor(maho_tools::definition::ToolCall { id: &id, params, signal: signal.clone(), on_update: None, context: None });
-                    tokio::pin!(execution);
-                    let result = if let Some(agent_signal) = agent_signal {
-                        tokio::select! { result = &mut execution => result, _ = agent_signal.cancelled() => { signal.abort(); execution.await } }
-                    } else { execution.await };
-                    match result {
-                        Ok(result) => match serde_json::from_value(serde_json::to_value(result.content).unwrap_or(serde_json::Value::Null)) {
-                            Ok(content) => maho_agent::types::AgentToolResult { content, details: result.details.unwrap_or(serde_json::Value::Null),
-                                usage: None, added_tool_names: None, terminate: None, is_error: None },
-                            Err(error) => { let mut result = maho_agent::types::AgentToolResult::text(error.to_string()); result.is_error = Some(true); result }
-                        },
-                        Err(error) => { let mut result = maho_agent::types::AgentToolResult::text(error.to_string()); result.is_error = Some(true); result }
-                    }
-                })
-            }),
-        };
+        let tool = maho_tools::tool_definition_wrapper::wrap_tool_definition(definition, Some(context_factory.clone()));
         base_tools.insert(name, tool);
     }
-    let selected = if options.no_tools.is_some() { Vec::new() } else { options.tools.clone().unwrap_or_else(|| vec!["read".to_owned(),"bash".to_owned(),"edit".to_owned(),"write".to_owned()]) };
+    let configured_defaults: Option<Vec<String>> = settings.get_value("defaultTools").and_then(serde_json::Value::as_array)
+        .map(|names| names.iter().filter_map(serde_json::Value::as_str).map(str::to_owned).collect());
+    let mut selected = options.tools.clone().unwrap_or_else(|| if options.no_tools.is_some() { Vec::new() }
+        else { configured_defaults.clone().unwrap_or_else(|| vec!["read".to_owned(),"bash".to_owned(),"edit".to_owned(),"write".to_owned(),"grep".to_owned()]) });
+    if options.tools.is_none() && options.no_tools != Some(NoToolsMode::All) {
+        for tool in &options.custom_tools {
+            if matches!(tool.exposure.unwrap_or(maho_ext_api::ToolExposure::Direct), maho_ext_api::ToolExposure::Direct | maho_ext_api::ToolExposure::Eval)
+                && !selected.contains(&tool.name) { selected.push(tool.name.clone()); }
+        }
+    }
+    if let Some(excluded) = &options.exclude_tools { selected.retain(|name| !excluded.contains(name)); }
     let active_tools = selected.iter().filter_map(|name| base_tools.get(name).cloned()).collect();
     let runtime_for_stream = runtime.clone();
     let runtime_for_auth = runtime.clone();
@@ -150,6 +165,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         base_tools_override: Some(base_tools.clone()), session_start_event: options.session_start_event,
         auto_title_sessions: options.auto_title_sessions,
     }).map_err(|error| error.to_string())?;
+    assert!(session_accessor.set(session.weak_accessor()).is_ok(), "SDK context initialized once");
     for (name, definition) in registered_definitions {
         if let Some(tool) = base_tools.get(&name) {
             session.register_tool_definition(definition, maho_ext_api::SourceInfo {
@@ -167,7 +183,15 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     });
     let skills = crate::skills::load_skills(&crate::skills::LoadSkillsOptions { cwd, agent_dir, skill_paths, include_defaults: true });
     session.set_prompt_resources(templates, skills.skills);
+    session.set_hook_source_paths(options.hook_resources, options.additional_hook_paths);
     session.set_system_prompt_sources(options.system_prompt, options.append_system_prompt);
+    if !options.extension_factories.is_empty() {
+        let context = extension_context::create(&session);
+        let runner = maho_ext_host::runner::ExtensionRunner::from_async_factories(
+            options.extension_factories, context, Default::default()).await.map_err(|error| error.to_string())?;
+        session.set_extension_runner(runner).await;
+        session.bind_extensions(Default::default()).await;
+    }
     Ok(CreateAgentSessionResult { session, model_fallback_message: None })
 }
 

@@ -14,6 +14,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+#[path = "monitor_invocation.rs"]
+mod monitor_invocation;
 
 tokio::task_local! {
     static EXTENSION_EVENT_SIGNAL: maho_ext_api::AbortSignal;
@@ -245,6 +247,14 @@ pub struct PromptOptions {
     pub thinking_level: Option<ThinkingLevel>,
     pub source: Option<InputSource>,
     pub signal: Option<maho_ai::utils::abort::AbortSignal>,
+    pub prompt_admitted: Option<Arc<dyn Fn(PromptDisposition) + Send + Sync>>,
+    pub session_title_prompt: Option<SessionTitlePrompt>,
+}
+
+#[derive(Clone)]
+pub enum SessionTitlePrompt {
+    Text(String),
+    Disabled,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -395,6 +405,7 @@ struct AgentSessionState {
     base_system_prompt: String,
     custom_system_prompt_source: Option<String>,
     append_system_prompt_sources: Vec<String>,
+    context_files_enabled: bool,
     system_prompt_override: Option<String>,
     wake_sources: WakeSourceTracker,
     shown_high_reasoning_warning_keys: BTreeSet<String>,
@@ -403,12 +414,18 @@ struct AgentSessionState {
     extension_abort_handler: Option<Arc<dyn Fn() + Send + Sync>>,
     extension_error_listener: Option<ExtensionErrorListener>,
     message_revision: u64,
+    assistant_generation: u64,
+    last_persisted_assistant: Option<(String, u64)>,
+    post_compaction_assistant_generation: Option<u64>,
+    post_compaction_usage_exempt_entries: BTreeSet<String>,
+    messages_awaiting_persistence: Vec<(uuid::Uuid, AgentMessage)>,
     steering_messages: Vec<String>,
     follow_up_messages: Vec<String>,
     queued_input_order: Vec<QueuedInput>,
     next_queued_input_order: u64,
     post_compaction_deferred_steering_messages: Vec<AgentMessage>,
     post_compaction_deferred_follow_up_messages: Vec<AgentMessage>,
+    prompt_start_pending: bool,
     had_cleared_queued_messages: bool,
     auto_compaction_session_override: Option<bool>,
     turn_index: u64,
@@ -423,7 +440,7 @@ struct AgentSessionState {
     cumulative_hinted_wait_ms: f64,
     pending_model_switch: Option<PendingModelSwitch>,
     compaction_abort_controller: Option<crate::compaction::lifecycle::CompactionAbortController>,
-    pending_compaction_admission: Option<crate::compaction::lifecycle::CompactionAbortController>,
+    pending_compaction_admission: Option<Arc<PendingCompactionAdmission>>,
     compaction_lifecycle: crate::compaction::lifecycle::CompactionLifecycleCoordinator,
     delegated_compaction_key: Option<(String, String)>,
     prompt_templates: Vec<crate::prompt_templates::PromptTemplate>,
@@ -436,6 +453,10 @@ struct AgentSessionState {
     extension_hint_backups: BTreeMap<String, Option<String>>,
     skills: Vec<crate::skills::Skill>,
     discovered_resources: maho_ext_api::DiscoveredResources,
+    global_hook_source_paths: Vec<std::path::PathBuf>,
+    project_hook_source_paths: Vec<std::path::PathBuf>,
+    pre_session_hook_source_paths: Vec<std::path::PathBuf>,
+    loaded_hook_sources: Option<maho_ext_api::LoadedHookSources>,
     bash_abort_signals: BTreeMap<String, maho_ext_api::AbortSignal>,
     pending_bash_messages: Vec<maho_agent::harness::messages::BashExecutionMessage>,
     pending_next_turn_messages: Vec<AgentMessage>,
@@ -479,6 +500,7 @@ pub struct AgentSessionInner {
     settings_source_subscription: Mutex<Option<crate::settings_manager::SettingsSourceSubscription>>,
     settled_delivery: Mutex<crate::agent_settled_delivery::AgentSettledDelivery>,
     user_abort_generation: AtomicU64,
+    monitor_generation: AtomicU64,
     settlement_epoch: AtomicU64,
     probe_scheduler: Mutex<crate::retry_fallback::probe_scheduler::ProbeBackScheduler>,
     probe_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -493,14 +515,94 @@ struct ExtensionSessionManagerView {
     id: String,
     file: Option<std::path::PathBuf>,
 }
-struct ExtensionModelRegistryView(crate::model_registry::ModelRegistry);
+pub(crate) struct ExtensionModelRegistryView {
+    registry: crate::model_registry::ModelRegistry,
+    agent_dir: String,
+    events: maho_ext_api::EventBus,
+    session: std::sync::Weak<AgentSessionInner>,
+    generation: u64,
+}
+impl ExtensionModelRegistryView {
+    pub(crate) fn new(session: &AgentSession, events: maho_ext_api::EventBus) -> Self {
+        Self { registry: session.model_registry().clone(), agent_dir: session.agent_dir().to_owned(), events,
+            session: Arc::downgrade(&session.inner), generation: session.monitor_generation.load(Ordering::SeqCst) }
+    }
+    fn assert_account_active(&self) -> Result<(), maho_ext_api::ExtensionFailure> {
+        let inner = self.session.upgrade().ok_or_else(|| maho_ext_api::ExtensionFailure::new("Agent session has been disposed"))?;
+        if lock(&inner.state).disposed || inner.monitor_generation.load(Ordering::SeqCst) != self.generation {
+            return Err(maho_ext_api::ExtensionFailure::new("Account registry context is stale"));
+        }
+        Ok(())
+    }
+    fn accounts_changed(&self, provider: &str) {
+        self.events.emit("provider-accounts-changed", &serde_json::json!({"type":"accounts_changed","provider":provider}));
+    }
+}
 impl maho_ext_api::ModelRegistry for ExtensionModelRegistryView {
-    fn get_all(&self) -> Vec<Model> { self.0.get_all() }
-    fn get_available(&self) -> Vec<Model> { self.0.get_available() }
-    fn find(&self, provider: &str, id: &str) -> Option<Model> { self.0.find(provider, id) }
-    fn has_configured_auth(&self, model: &Model) -> bool { self.0.has_configured_auth(model) }
+    fn get_all(&self) -> Vec<Model> { self.registry.get_all() }
+    fn get_available(&self) -> Vec<Model> { self.registry.get_available() }
+    fn find(&self, provider: &str, id: &str) -> Option<Model> { self.registry.find(provider, id) }
+    fn has_configured_auth(&self, model: &Model) -> bool { self.registry.has_configured_auth(model) }
     fn get_api_key_for_provider<'a>(&'a self, provider: &'a str) -> maho_ext_api::ExtensionFuture<'a, Option<String>> {
-        Box::pin(async move { Ok(self.0.get_api_key_for_provider(provider).await) })
+        Box::pin(async move { Ok(self.registry.get_api_key_for_provider(provider).await) })
+    }
+    fn get_provider_auth<'a>(&'a self, provider: &'a str) -> maho_ext_api::ExtensionFuture<'a, Option<maho_ai::models::AuthResolution>> {
+        Box::pin(async move { self.registry.model_runtime.get_auth(provider).await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.message)) })
+    }
+    fn get_stored_credential_type(&self, provider: &str) -> Result<Option<maho_ai::auth::types::CredentialType>, maho_ext_api::ExtensionFailure> {
+        Ok(self.registry.auth_storage.get(provider).as_ref().and_then(crate::auth_storage::credential_kind).map(|kind| match kind {
+            crate::auth_storage::CredentialKind::ApiKey => maho_ai::auth::types::CredentialType::ApiKey,
+            crate::auth_storage::CredentialKind::Oauth => maho_ai::auth::types::CredentialType::OAuth,
+        }))
+    }
+    fn stream_simple(&self, model: &Model, context: &maho_ai::types::Context, options: Option<maho_ai::types::SimpleStreamOptions>) -> Result<maho_ai::utils::event_stream::AssistantMessageEventStream, maho_ext_api::ExtensionFailure> {
+        Ok(self.registry.stream_simple(model, context, options))
+    }
+    fn get_api_key_and_headers<'a>(&'a self, model: &'a Model) -> maho_ext_api::ExtensionFuture<'a, maho_ext_api::ResolvedRequestAuth> {
+        Box::pin(async move {
+            match self.registry.get_api_key_and_headers(model).await {
+                crate::model_registry::ResolvedRequestAuth::Resolved { auth, compatibility, env } => Ok(maho_ext_api::ResolvedRequestAuth {
+                    auth, extra_body: compatibility.extra_body, upstream_model_id: compatibility.upstream_model_id,
+                    service_tier: compatibility.service_tier, env,
+                }),
+                crate::model_registry::ResolvedRequestAuth::Failed { error } => Err(maho_ext_api::ExtensionFailure::new(error)),
+            }
+        })
+    }
+    fn get_credential_accounts<'a>(&'a self, provider: &'a str) -> maho_ext_api::ExtensionFuture<'a, Vec<maho_ext_api::CredentialAccountSummary>> {
+        Box::pin(async move {
+            self.assert_account_active()?;
+            let accounts = self.registry.get_credential_accounts(provider, &self.agent_dir).await.map_err(maho_ext_api::ExtensionFailure::new)?;
+            self.assert_account_active()?;
+            Ok(accounts)
+        })
+    }
+    fn pin_credential_account<'a>(&'a self, provider: &'a str, name: Option<&'a str>) -> maho_ext_api::ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            self.assert_account_active()?;
+            self.registry.pin_credential_account_guarded(provider, name, &self.agent_dir,
+                &|| self.assert_account_active().map_err(|error| error.message)).await.map_err(maho_ext_api::ExtensionFailure::new)?;
+            self.assert_account_active()?;
+            self.accounts_changed(provider); Ok(())
+        })
+    }
+    fn remove_credential_account<'a>(&'a self, provider: &'a str, name: &'a str) -> maho_ext_api::ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            self.assert_account_active()?;
+            self.registry.remove_credential_account_guarded(provider, name, &self.agent_dir,
+                &|| self.assert_account_active().map_err(|error| error.message)).await.map_err(maho_ext_api::ExtensionFailure::new)?;
+            self.assert_account_active()?;
+            self.accounts_changed(provider); Ok(())
+        })
+    }
+    fn rename_credential_account<'a>(&'a self, provider: &'a str, name: &'a str, display_name: Option<&'a str>) -> maho_ext_api::ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            self.assert_account_active()?;
+            self.registry.rename_credential_account_guarded(provider, name, display_name,
+                &|| self.assert_account_active().map_err(|error| error.message)).await.map_err(maho_ext_api::ExtensionFailure::new)?;
+            self.assert_account_active()?;
+            self.accounts_changed(provider); Ok(())
+        })
     }
 }
 impl maho_ext_api::ToolSessionManager for ExtensionSessionManagerView {
@@ -508,6 +610,9 @@ impl maho_ext_api::ToolSessionManager for ExtensionSessionManagerView {
     fn session_file(&self) -> Option<&std::path::Path> { self.file.as_deref() }
 }
 impl maho_ext_api::SessionManager for ExtensionSessionManagerView {
+    fn get_session_dir(&self) -> Option<std::path::PathBuf> {
+        self.session.upgrade().map(|inner| AgentSession { inner }.with_session_manager(|manager| manager.session_dir().into()))
+    }
     fn get_entries(&self) -> Vec<maho_ext_api::SessionEntry> {
         self.session.upgrade().map_or_else(Vec::new, |inner| AgentSession { inner }.with_session_manager(|manager|
             manager.entries().into_iter().map(session_entry_from_value).collect()))
@@ -544,6 +649,28 @@ impl Drop for AbortSignalBridge {
     fn drop(&mut self) { self.0.abort(); }
 }
 
+struct PendingCompactionAdmission {
+    controller: crate::compaction::lifecycle::CompactionAbortController,
+    completed: std::sync::atomic::AtomicBool,
+}
+
+struct PromptStartGuard<'a>(&'a AgentSession);
+
+struct MessagePersistenceGuard<'a> {
+    session: &'a AgentSession,
+    id: uuid::Uuid,
+}
+
+impl Drop for MessagePersistenceGuard<'_> {
+    fn drop(&mut self) {
+        self.session.state().messages_awaiting_persistence.retain(|(id, _)| *id != self.id);
+    }
+}
+
+impl Drop for PromptStartGuard<'_> {
+    fn drop(&mut self) { self.0.state().prompt_start_pending = false; }
+}
+
 struct PendingCompactionAdmissionGuard<'a> {
     session: &'a AgentSession,
     controller: crate::compaction::lifecycle::CompactionAbortController,
@@ -552,7 +679,7 @@ struct PendingCompactionAdmissionGuard<'a> {
 impl Drop for PendingCompactionAdmissionGuard<'_> {
     fn drop(&mut self) {
         let mut state = self.session.state();
-        if state.pending_compaction_admission.as_ref().is_some_and(|current| current.same(&self.controller)) {
+        if state.pending_compaction_admission.as_ref().is_some_and(|current| current.controller.same(&self.controller)) {
             self.controller.abort();
             state.pending_compaction_admission = None;
         }
@@ -610,6 +737,28 @@ impl maho_ext_api::ExtensionSessionSettings for SessionExtensionActions {
 
 impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn assert_active(&self) -> Result<(), maho_ext_api::ExtensionFailure> { self.session().map(|_| ()) }
+    fn set_approved_monitor_parent(&self, id: &str, input: &Value, parent: &std::path::Path) -> Result<(), maho_ext_api::ExtensionFailure> {
+        let session = self.session()?;
+        monitor_invocation::CURRENT.try_with(|invocation| {
+            if invocation.session_identity != Arc::as_ptr(&session.inner) as usize
+                || invocation.generation != session.monitor_generation.load(Ordering::SeqCst) || session.state().disposed {
+                return Err("Monitor invocation belongs to another session".to_owned());
+            }
+            invocation.attach(id, input, std::path::Path::new(&session.cwd()), parent.to_path_buf())
+        }).map_err(|_| maho_ext_api::ExtensionFailure::new("No active monitor invocation"))?
+            .map_err(maho_ext_api::ExtensionFailure::new)
+    }
+    fn take_approved_monitor_parent(&self, id: &str, input: &Value) -> Result<Option<std::path::PathBuf>, maho_ext_api::ExtensionFailure> {
+        let session = self.session()?;
+        monitor_invocation::CURRENT.try_with(|invocation| {
+            if invocation.session_identity != Arc::as_ptr(&session.inner) as usize
+                || invocation.generation != session.monitor_generation.load(Ordering::SeqCst) || session.state().disposed {
+                return Err("Monitor invocation belongs to another session".to_owned());
+            }
+            invocation.take(id, input, std::path::Path::new(&session.cwd()))
+        }).map_err(|_| maho_ext_api::ExtensionFailure::new("No active monitor invocation"))?
+            .map_err(maho_ext_api::ExtensionFailure::new)
+    }
     fn get_model(&self) -> Option<Model> { self.session().ok().map(|session| session.model()) }
     fn get_service_tier(&self) -> Option<ServiceTier> { self.session().ok().and_then(|session| session.service_tier()) }
     fn get_effective_service_tier(&self) -> Option<ServiceTier> { self.session().ok().and_then(|session| session.effective_service_tier()) }
@@ -643,6 +792,11 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn get_context_usage(&self) -> Option<maho_ext_api::ContextUsage> { self.session().ok()?.get_context_usage().map(|usage|
         maho_ext_api::ContextUsage { tokens: usage.tokens, context_window: usage.context_window, percent: usage.percent }) }
     fn get_compaction_settings(&self) -> maho_ext_api::CompactionSettings {
+        let resolved = self.get_resolved_compaction_settings().expect("live compaction settings");
+        maho_ext_api::CompactionSettings { enabled: resolved.enabled, reserve_tokens: resolved.reserve_tokens,
+            keep_recent_tokens: resolved.keep_recent_tokens }
+    }
+    fn get_resolved_compaction_settings(&self) -> Option<maho_ext_api::ResolvedCompactionSettings> {
         let session = self.session().unwrap_or_else(|error| std::panic::panic_any(error));
         let model = session.model();
         let raw = session.with_settings_manager(|manager| manager.get_value("compaction").cloned());
@@ -651,8 +805,28 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         let resolved = crate::compaction_settings_resolver::resolve_compaction_settings(settings.as_ref(), Some(
             crate::compaction_settings_access::CompactionModelSelector { provider: &model.provider, id: &model.id },
         )).unwrap_or_else(|error| std::panic::panic_any(maho_ext_api::ExtensionFailure::new(error)));
-        maho_ext_api::CompactionSettings { enabled: session.auto_compaction_enabled(), reserve_tokens: resolved.reserve_tokens as u64,
-            keep_recent_tokens: resolved.keep_recent_tokens as u64 }
+        Some(maho_ext_api::ResolvedCompactionSettings {
+            enabled: session.auto_compaction_enabled(),
+            reserve_tokens: u64::try_from(resolved.reserve_tokens).unwrap_or_else(|error|
+                std::panic::panic_any(maho_ext_api::ExtensionFailure::new(error.to_string()))),
+            keep_recent_tokens: u64::try_from(resolved.keep_recent_tokens).unwrap_or_else(|error|
+                std::panic::panic_any(maho_ext_api::ExtensionFailure::new(error.to_string()))),
+            speculative_enabled: resolved.speculative_enabled,
+            speculative_fraction: resolved.speculative_fraction,
+            speculative_cooldown_ms: resolved.speculative_cooldown_ms,
+            restoration_enabled: resolved.restoration_enabled,
+            restoration_max_items: resolved.restoration_max_items,
+            restoration_max_tokens_per_item: resolved.restoration_max_tokens_per_item,
+            restoration_max_total_tokens: resolved.restoration_max_total_tokens,
+            restoration_context_ratio: resolved.restoration_context_ratio,
+            idle_compaction_enabled: resolved.idle_compaction_enabled,
+            grace_band_enabled: resolved.grace_band_enabled,
+            tool_admission_enabled: resolved.tool_admission_enabled,
+            reminder_enabled: resolved.reminder_enabled,
+            reserve_scaling_enabled: resolved.reserve_scaling_enabled,
+            speculative_lead_tokens: resolved.speculative_lead_tokens,
+            summarization_max_duration_ms: resolved.summarization_max_duration_ms,
+        })
     }
     fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> {
         let session = self.session().ok()?;
@@ -840,16 +1014,23 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         maho_ext_api::BuildSystemPromptOptions { cwd: session.cwd().into(), tools: session.get_active_tool_names(), skills,
             custom_prompt: crate::resource_loader::resolve_prompt_input(custom.as_deref(), "system prompt"),
             append_system_prompt: (!append.is_empty()).then(|| append.join("\n\n")),
-            context_files: crate::resource_loader::load_project_context_files(&session.cwd(), &session.agent_dir()).into_iter()
+            context_files: session.project_context_files().into_iter()
                 .map(|file| maho_ext_api::ContextFile { path: file.path, content: file.content }).collect(),
         }
     }
     fn get_loaded_hook_sources(&self) -> maho_ext_api::LoadedHookSources {
+        if let Some(sources) = self.session().ok().and_then(|session| session.state().loaded_hook_sources.clone()) { return sources; }
         let session = self.session().ok(); let cwd = session.as_ref().map_or_else(std::path::PathBuf::new, |session| session.cwd().into());
         let dir = session.as_ref().map_or_else(std::path::PathBuf::new, |session| session.agent_dir().into());
+        let (global_settings_hooks, project_settings_hooks) = session.as_ref().map_or((None, None), |session|
+            session.with_settings_manager(|manager| (manager.get_global().get("hooks").cloned(),
+                manager.is_project_trusted().then(|| manager.get_project().get("hooks").cloned()).flatten())));
         maho_ext_api::LoadedHookSources { global_hooks_path: dir.join("hooks.json"), project_hooks_path: cwd.join(crate::config::config_dir_name()).join("hooks.json"), cwd, agent_dir: dir,
-            global_settings_hooks: None, project_settings_hooks: None, global_hook_source_paths: Vec::new(), project_hook_source_paths: Vec::new(),
-            pre_session_hook_source_paths: Vec::new(), runtime_hook_source_paths: session.as_ref().map(|session|
+            global_settings_hooks, project_settings_hooks,
+            global_hook_source_paths: session.as_ref().map(|session| session.state().global_hook_source_paths.clone()).unwrap_or_default(),
+            project_hook_source_paths: session.as_ref().map(|session| session.state().project_hook_source_paths.clone()).unwrap_or_default(),
+            pre_session_hook_source_paths: session.as_ref().map(|session| session.state().pre_session_hook_source_paths.clone()).unwrap_or_default(),
+            runtime_hook_source_paths: session.as_ref().map(|session|
                 session.state().discovered_resources.hook_paths.iter().map(|entry| std::path::PathBuf::from(&entry.path)).collect()).unwrap_or_default() }
     }
     fn kernel_tools(&self) -> Option<&dyn maho_ext_api::ExtensionKernelTools> { None }
@@ -864,10 +1045,17 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
         let deferred_session = session.clone();
         let deferred_message = message.clone();
         let deferred_options = options.clone();
+        let deferred_generation = session.monitor_generation.load(Ordering::SeqCst);
+        let deferred_abort_generation = session.user_abort_generation.load(Ordering::SeqCst);
         let deferred = if options.trigger_turn {
             lock(&session.settled_delivery).defer_trigger_turn(move |claim| {
                 let guard = deferred_session.work_barrier.begin();
                 tokio::spawn(async move {
+                    if deferred_session.state().disposed || deferred_session.monitor_generation.load(Ordering::SeqCst) != deferred_generation
+                        || deferred_session.user_abort_generation.load(Ordering::SeqCst) != deferred_abort_generation {
+                        claim.resolve(crate::agent_settled_delivery::DeferredTurnDisposition::FinishedWithoutStart);
+                        return;
+                    }
                     claim.resolve(crate::agent_settled_delivery::DeferredTurnDisposition::Delegated);
                     if let Err(error) = maho_ext_api::ExtensionActions::send_message(
                         &SessionExtensionActions(Arc::downgrade(&deferred_session.inner)), deferred_message, deferred_options,
@@ -877,6 +1065,8 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
             })
         } else {
             lock(&session.settled_delivery).defer(Box::new(move || {
+                if deferred_session.state().disposed || deferred_session.monitor_generation.load(Ordering::SeqCst) != deferred_generation
+                    || deferred_session.user_abort_generation.load(Ordering::SeqCst) != deferred_abort_generation { return; }
                 if let Err(error) = maho_ext_api::ExtensionActions::send_message(
                     &SessionExtensionActions(Arc::downgrade(&deferred_session.inner)), deferred_message, deferred_options,
                 ) { deferred_session.emit(AgentSessionEvent::ContinuationError { error_message: error.message }); }
@@ -901,7 +1091,12 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
             if options.trigger_turn {
                 let guard = session.work_barrier.begin();
                 let generation = session.user_abort_generation.load(Ordering::SeqCst);
+                let runtime_generation = session.monitor_generation.load(Ordering::SeqCst);
                 tokio::spawn(async move {
+                    if session.state().disposed || session.monitor_generation.load(Ordering::SeqCst) != runtime_generation {
+                        drop(guard);
+                        return;
+                    }
                     if let Err(error) = session.continue_session_internal(Some(generation)).await { session.emit(AgentSessionEvent::ContinuationError { error_message: error }); }
                     drop(guard);
                 });
@@ -914,9 +1109,16 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
         let deferred_session = session.clone();
         let deferred_content = content.clone();
         let deferred_options = options.clone();
+        let deferred_generation = session.monitor_generation.load(Ordering::SeqCst);
+        let deferred_abort_generation = session.user_abort_generation.load(Ordering::SeqCst);
         if lock(&session.settled_delivery).defer_trigger_turn(move |claim| {
             let guard = deferred_session.work_barrier.begin();
             tokio::spawn(async move {
+                if deferred_session.state().disposed || deferred_session.monitor_generation.load(Ordering::SeqCst) != deferred_generation
+                    || deferred_session.user_abort_generation.load(Ordering::SeqCst) != deferred_abort_generation {
+                    claim.resolve(crate::agent_settled_delivery::DeferredTurnDisposition::FinishedWithoutStart);
+                    return;
+                }
                 claim.resolve(crate::agent_settled_delivery::DeferredTurnDisposition::Delegated);
                 if let Err(error) = maho_ext_api::ExtensionActions::send_user_message(
                     &SessionExtensionActions(Arc::downgrade(&deferred_session.inner)), deferred_content, deferred_options,
@@ -941,9 +1143,25 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
         };
         let guard = session.work_barrier.begin();
         tokio::spawn(async move {
-            if let Err(error) = session.prompt_with_readiness(&text, PromptOptions { images: Some(images), source: Some(InputSource::Extension),
-                streaming_behavior: options.deliver_as, expand_prompt_templates: Some(options.expand_prompt_templates), ..Default::default() }, readiness).await
-            { session.emit(AgentSessionEvent::ContinuationError { error_message: error }); }
+            let mut readiness = readiness;
+            if session.state().disposed || session.monitor_generation.load(Ordering::SeqCst) != deferred_generation
+                || session.user_abort_generation.load(Ordering::SeqCst) != deferred_abort_generation {
+                drop(readiness);
+                drop(guard);
+                return;
+            }
+            let mut disposition_reported = false;
+            if let Err(error) = session.prompt_with_readiness(&text, PromptOptions { images: Some(images.clone()), source: Some(InputSource::Extension),
+                streaming_behavior: options.deliver_as, expand_prompt_templates: Some(options.expand_prompt_templates), ..Default::default() }, &mut readiness, &mut disposition_reported).await {
+                if !disposition_reported && !session.state().disposed
+                    && session.monitor_generation.load(Ordering::SeqCst) == deferred_generation
+                    && session.user_abort_generation.load(Ordering::SeqCst) == deferred_abort_generation {
+                    let mode = options.deliver_as.unwrap_or(StreamingBehavior::FollowUp);
+                    session.queue_expanded_input(text, Some(images), mode, None);
+                }
+                session.emit(AgentSessionEvent::ContinuationError { error_message: error });
+            }
+            drop(readiness);
             drop(guard);
         });
         Ok(())
@@ -1269,6 +1487,7 @@ impl AgentSession {
             base_system_prompt: String::new(),
             custom_system_prompt_source: None,
             append_system_prompt_sources: Vec::new(),
+            context_files_enabled: true,
             system_prompt_override: None,
             wake_sources: WakeSourceTracker::default(),
             shown_high_reasoning_warning_keys: BTreeSet::new(),
@@ -1277,12 +1496,18 @@ impl AgentSession {
             extension_abort_handler: None,
             extension_error_listener: None,
             message_revision: 0,
+            assistant_generation: 0,
+            last_persisted_assistant: None,
+            post_compaction_assistant_generation: None,
+            post_compaction_usage_exempt_entries: BTreeSet::new(),
+            messages_awaiting_persistence: Vec::new(),
             steering_messages: Vec::new(),
             follow_up_messages: Vec::new(),
             queued_input_order: Vec::new(),
             next_queued_input_order: 0,
             post_compaction_deferred_steering_messages: Vec::new(),
             post_compaction_deferred_follow_up_messages: Vec::new(),
+            prompt_start_pending: false,
             had_cleared_queued_messages: false,
             auto_compaction_session_override: None,
             turn_index: 0,
@@ -1310,6 +1535,8 @@ impl AgentSession {
             extension_hint_backups: BTreeMap::new(),
             skills: Vec::new(),
             discovered_resources: maho_ext_api::DiscoveredResources::default(),
+            global_hook_source_paths: Vec::new(), project_hook_source_paths: Vec::new(), pre_session_hook_source_paths: Vec::new(),
+            loaded_hook_sources: None,
             bash_abort_signals: BTreeMap::new(),
             pending_bash_messages: Vec::new(),
             pending_next_turn_messages: Vec::new(),
@@ -1344,6 +1571,7 @@ impl AgentSession {
             settings_source_subscription: Mutex::new(None),
             settled_delivery: Mutex::new(crate::agent_settled_delivery::AgentSettledDelivery::new()),
             user_abort_generation: AtomicU64::new(0),
+            monitor_generation: AtomicU64::new(0),
             settlement_epoch: AtomicU64::new(0),
             probe_scheduler: Mutex::new(crate::retry_fallback::probe_scheduler::ProbeBackScheduler::default()),
             probe_task: Mutex::new(None),
@@ -1410,6 +1638,11 @@ impl AgentSession {
 
     async fn process_agent_event_inner(&self, mut event: maho_agent::types::AgentEvent) {
         use maho_agent::types::AgentEvent;
+        let _persistence = if let AgentEvent::MessageEnd { message } = &event {
+            let id = uuid::Uuid::new_v4();
+            self.state().messages_awaiting_persistence.push((id, message.clone()));
+            Some(MessagePersistenceGuard { session: self, id })
+        } else { None };
         {
             let mut state = self.state();
             match &mut event {
@@ -1431,7 +1664,10 @@ impl AgentSession {
                         }
                     }
                 }
-                AgentEvent::TurnStart | AgentEvent::MessageStart { .. } |
+                AgentEvent::MessageStart { message } => {
+                    if message.as_assistant().is_some() { state.assistant_generation += 1; }
+                }
+                AgentEvent::TurnStart |
                 AgentEvent::MessageUpdate { .. } | AgentEvent::MessageEnd { .. } |
                 AgentEvent::ToolExecutionStart { .. } | AgentEvent::ToolExecutionUpdate { .. } |
                 AgentEvent::ToolExecutionEnd { .. } => {}
@@ -1513,6 +1749,9 @@ impl AgentSession {
             };
             match replacement {
                 Ok(Some(replacement)) => {
+                    if let Some(guard) = &_persistence
+                        && let Some((_, pending)) = self.state().messages_awaiting_persistence.iter_mut().find(|(id, _)| *id == guard.id)
+                    { *pending = replacement.clone(); }
                     self.state().message_replacements.push((message.clone(), replacement.clone()));
                     let mut messages = self.messages();
                     if let Some(original) = messages.iter_mut().rev().find(|original| *original == message) {
@@ -1560,6 +1799,10 @@ impl AgentSession {
                 Ok(message) => {
                     let entry = self.with_session_manager_mut(|manager| manager.append_message(message));
                     if let Some(id) = entry.get("id").and_then(Value::as_str) {
+                        if entry["message"]["role"] == "assistant" {
+                            let mut state = self.state();
+                            state.last_persisted_assistant = Some((id.to_owned(), state.assistant_generation));
+                        }
                         self.emit_entry_appended(id);
                     }
                     self.state().message_revision += 1;
@@ -1587,12 +1830,10 @@ impl AgentSession {
     }
 
     async fn dispatch_extension_event(&self, event: maho_ext_api::ExtensionEvent) {
-        let result = {
-            let mut guard = self.extension_runner.lock().await;
-            match guard.as_mut() {
-                Some(runner) => runner.emit(event).await.map(|_| ()),
-                None => Ok(()),
-            }
+        let runner = self.extension_runner.lock().await.clone();
+        let result = match runner {
+            Some(mut runner) => runner.emit(event).await.map(|_| ()),
+            None => Ok(()),
         };
         if let Err(error) = result {
             self.emit(AgentSessionEvent::ContinuationError { error_message: error.to_string() });
@@ -1601,15 +1842,39 @@ impl AgentSession {
 
     /// Start a prompt, or explicitly queue input when a provider turn is active.
     pub async fn prompt(&self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
-        self.prompt_with_readiness(text, options, None).await
+        let admitted = options.prompt_admitted.clone();
+        let mut reported = false;
+        let result = Box::pin(self.prompt_with_readiness(text, options, &mut None, &mut reported)).await;
+        if !reported && let Ok(disposition) = &result && let Some(admitted) = admitted {
+            admitted(*disposition);
+        }
+        result
     }
 
-    async fn prompt_with_readiness(&self, text: &str, options: PromptOptions, readiness: Option<tokio::sync::oneshot::Sender<()>>) -> Result<PromptDisposition, String> {
+    async fn prompt_with_readiness(&self, text: &str, options: PromptOptions, readiness: &mut Option<tokio::sync::oneshot::Sender<()>>, disposition_reported: &mut bool) -> Result<PromptDisposition, String> {
         if options.signal.as_ref().is_some_and(|signal| signal.aborted()) {
             return Err("Prompt cancelled".to_owned());
         }
         if text.starts_with('/') && self.try_execute_extension_command(text).await? { return Ok(PromptDisposition::Handled); }
-        if self.is_streaming() || self.is_compacting() {
+        let (pending_compaction, compaction_generation) = if options.source == Some(InputSource::Extension) {
+            let state = self.state();
+            (state.pending_compaction_admission.clone(),
+                (state.compaction_lifecycle.state().status() == "running"
+                    && state.compaction_lifecycle.state().operation().is_some_and(|operation|
+                        operation.stage == crate::compaction::lifecycle::CompactionStage::Execution && operation.reason == "manual"))
+                    .then(|| state.compaction_lifecycle.state().generation()))
+        } else { (None, None) };
+        let waits_for_manual_compaction = pending_compaction.is_some() || compaction_generation.is_some();
+        let streaming = self.is_streaming();
+        let _prompt_start = {
+            let mut state = self.state();
+            if !streaming && !state.prompt_start_pending && options.streaming_behavior.is_none() {
+                state.prompt_start_pending = true;
+                Some(PromptStartGuard(self))
+            } else { None }
+        };
+        let queues_behind_pending_prompt = self.state().prompt_start_pending && options.streaming_behavior.is_some();
+        if !waits_for_manual_compaction && (self.is_streaming() || self.is_compacting() || queues_behind_pending_prompt) {
             if options.thinking_level.is_some() { return Err("Cannot set thinkingLevel on a queued prompt; set it after the current turn completes.".to_owned()); }
             let mode = options.streaming_behavior.ok_or_else(||
                 "Agent is already processing a prompt. Use steer() or followUp() to queue messages, or wait for completion.".to_owned())?;
@@ -1634,6 +1899,24 @@ impl AgentSession {
             return Ok(PromptDisposition::Handled);
         };
         let text = self.expand_input(&text, options.expand_prompt_templates.unwrap_or(true))?;
+        let compaction_failed = {
+            let state = self.state();
+            let lifecycle = state.compaction_lifecycle.state();
+            pending_compaction.as_ref().is_some_and(|pending| !pending.completed.load(Ordering::SeqCst))
+                || (compaction_generation.is_some_and(|generation| generation == lifecycle.generation())
+                    && matches!(lifecycle.status(), "failed" | "aborted"))
+        };
+        if compaction_failed {
+            let mode = options.streaming_behavior.unwrap_or(StreamingBehavior::Steer);
+            self.queue_expanded_input(text, images, mode, None);
+            self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
+                input_id, disposition: maho_ext_api::InputDisposition::Queued,
+            }).await;
+            *disposition_reported = true;
+            drop(readiness.take());
+            if let Some(admitted) = &options.prompt_admitted { admitted(PromptDisposition::Queued); }
+            return Ok(PromptDisposition::Queued);
+        }
         if self.auto_compaction_enabled() && !self.is_compaction_delegated() && self.pending_model_switch().is_none() {
             let model = self.model();
             let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
@@ -1713,11 +1996,18 @@ impl AgentSession {
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
             input_id, disposition: maho_ext_api::InputDisposition::Started,
         }).await;
-        drop(readiness);
+        *disposition_reported = true;
+        drop(readiness.take());
+        if let Some(admitted) = &options.prompt_admitted { admitted(PromptDisposition::Started); }
         self.agent.prompt(maho_agent::agent::AgentPromptInput::Messages(messages)).await;
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
-        if self.state().auto_title_sessions {
+        let title_prompt = match options.session_title_prompt {
+            Some(SessionTitlePrompt::Disabled) => None,
+            Some(SessionTitlePrompt::Text(prompt)) => Some(prompt),
+            None => Some(text),
+        };
+        if self.state().auto_title_sessions && let Some(text) = title_prompt {
             let session = self.clone();
             tokio::spawn(async move { session.generate_session_title_if_needed(&text).await; });
         }
@@ -1747,13 +2037,7 @@ impl AgentSession {
         } else { resolved.reserve_tokens as u64 };
         let oversized = || -> Result<bool, String> {
             let messages = self.messages().into_iter().chain(additions.iter().cloned()).chain(pending_queued_messages())
-                .map(|message| match message {
-                    AgentMessage::Llm(message) => serde_json::to_value(message),
-                    AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(message)) => serde_json::to_value(message),
-                    AgentMessage::Custom(maho_agent::types::CustomAgentMessage::BashExecution(message)) => serde_json::to_value(message),
-                    AgentMessage::Custom(maho_agent::types::CustomAgentMessage::BranchSummary(message)) => serde_json::to_value(message),
-                    AgentMessage::Custom(maho_agent::types::CustomAgentMessage::CompactionSummary(message)) => serde_json::to_value(message),
-                }).collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
+                .map(|message| session_message_to_value(&message)).collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
             let messages = crate::messages::filter_context_excluded_messages(messages);
             let estimate = crate::compaction::estimate_context_tokens(&messages);
             let compacted = self.with_session_manager(|manager|
@@ -1809,23 +2093,33 @@ impl AgentSession {
             return Ok(());
         };
         let text = self.expand_input(&text, true)?;
-        self.record_queued_input(&text, mode, options.enqueue_order);
-        let message = make_user_message(&text, images);
-        match mode {
-            StreamingBehavior::Steer => {
-                self.state().steering_messages.push(text);
-                self.agent.steer(message);
-            }
-            StreamingBehavior::FollowUp => {
-                self.state().follow_up_messages.push(text);
-                self.agent.follow_up(message);
-            }
-        }
-        self.emit_queue_update();
+        self.queue_expanded_input(text, images, mode, options.enqueue_order);
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
             input_id, disposition: maho_ext_api::InputDisposition::Queued,
         }).await;
         Ok(())
+    }
+
+    fn queue_expanded_input(&self, text: String, images: Option<Vec<ImageContent>>, mode: StreamingBehavior, enqueue_order: Option<u64>) {
+        self.record_queued_input(&text, mode, enqueue_order);
+        let message = make_user_message(&text, images);
+        let defer = {
+            let state = self.state();
+            state.prompt_start_pending && state.post_compaction_assistant_generation.is_some()
+        };
+        match mode {
+            StreamingBehavior::Steer => {
+                self.state().steering_messages.push(text);
+                if defer { self.state().post_compaction_deferred_steering_messages.push(message); }
+                else { self.agent.steer(message); }
+            }
+            StreamingBehavior::FollowUp => {
+                self.state().follow_up_messages.push(text);
+                if defer { self.state().post_compaction_deferred_follow_up_messages.push(message); }
+                else { self.agent.follow_up(message); }
+            }
+        }
+        self.emit_queue_update();
     }
 
     pub async fn steer(&self, text: &str, images: Option<Vec<ImageContent>>, options: QueuedInputOptions) -> Result<(), String> {
@@ -1885,17 +2179,20 @@ impl AgentSession {
     }
 
     pub fn abort_compaction(&self) {
-        if let Some(controller) = self.state().pending_compaction_admission.as_ref() { controller.abort(); }
+        if let Some(pending) = self.state().pending_compaction_admission.as_ref() { pending.controller.abort(); }
         if let Some(controller) = self.state().compaction_abort_controller.as_ref() { controller.abort(); }
         if let Some(signal) = self.state().compaction_extension_signal.as_ref() { signal.abort(); }
     }
 
     pub async fn compact(&self, instructions: Option<&str>) -> Result<crate::compaction::compaction::CompactionResult, String> {
         let pending = crate::compaction::lifecycle::CompactionAbortController::new();
+        let pending_outcome = Arc::new(PendingCompactionAdmission {
+            controller: pending.clone(), completed: std::sync::atomic::AtomicBool::new(false),
+        });
         let _work = self.work_barrier.begin();
         {
             let mut state = self.state();
-            if let Some(prior) = state.pending_compaction_admission.replace(pending.clone()) { prior.abort(); }
+            if let Some(prior) = state.pending_compaction_admission.replace(pending_outcome.clone()) { prior.controller.abort(); }
             if let Some(prior) = &state.compaction_abort_controller { prior.abort(); }
             if let Some(signal) = &state.compaction_extension_signal { signal.abort(); }
         }
@@ -1913,7 +2210,7 @@ impl AgentSession {
         };
         {
             let mut state = self.state();
-            if state.pending_compaction_admission.as_ref().is_some_and(|current| current.same(&pending)) {
+            if state.pending_compaction_admission.as_ref().is_some_and(|current| current.controller.same(&pending)) {
                 state.pending_compaction_admission = None;
             }
         }
@@ -1921,6 +2218,7 @@ impl AgentSession {
         let _admission = admission;
         let result = if pending.aborted() { Err("Compaction cancelled".to_owned()) }
             else { self.compact_for_model(instructions, &self.model(), "manual").await };
+        pending_outcome.completed.store(result.is_ok(), Ordering::SeqCst);
         if result.is_ok() && self.agent.has_queued_messages() {
             let session = self.clone();
             let guard = self.work_barrier.begin();
@@ -2018,9 +2316,9 @@ impl AgentSession {
                         preparation: maho_ext_api::CompactionPreparation {
                             settings: maho_ext_api::CompactionSettings { enabled: resolved.enabled, reserve_tokens: resolved.reserve_tokens as u64,
                                 keep_recent_tokens: resolved.keep_recent_tokens as u64 },
-                            messages_to_summarize: preparation.messages_to_summarize.iter().cloned().map(serde_json::from_value)
+                            messages_to_summarize: preparation.messages_to_summarize.iter().cloned().map(session_message_from_value)
                                 .collect::<Result<_, _>>().map_err(|error| error.to_string())?,
-                            turn_prefix_messages: preparation.turn_prefix_messages.iter().cloned().map(serde_json::from_value)
+                            turn_prefix_messages: preparation.turn_prefix_messages.iter().cloned().map(session_message_from_value)
                                 .collect::<Result<_, _>>().map_err(|error| error.to_string())?,
                             tokens_before: preparation.tokens_before as u64, first_kept_entry_id: preparation.first_kept_entry_id.clone(),
                             previous_summary: preparation.previous_summary.clone(),
@@ -2029,9 +2327,9 @@ impl AgentSession {
                     };
                     let details = maho_ext_api::CompactionPreparationDetails {
                         preparation: event.preparation.clone(),
-                        source_messages: Some(preparation.source_messages.iter().cloned().map(serde_json::from_value)
+                        source_messages: Some(preparation.source_messages.iter().cloned().map(session_message_from_value)
                             .collect::<Result<_, _>>().map_err(|error| error.to_string())?),
-                        turn_prefix_source_messages: Some(preparation.turn_prefix_source_messages.iter().cloned().map(serde_json::from_value)
+                        turn_prefix_source_messages: Some(preparation.turn_prefix_source_messages.iter().cloned().map(session_message_from_value)
                             .collect::<Result<_, _>>().map_err(|error| error.to_string())?),
                         is_split_turn: preparation.is_split_turn,
                         file_ops: maho_ext_api::CompactionFileOperations {
@@ -2093,7 +2391,7 @@ impl AgentSession {
                     let mut summary = "No prior history.".to_owned();
                     let mut summary_usage = None;
                     if !split || !messages.is_empty() {
-                    let response = self.model_runtime().complete(&auth.model, &context, Some(maho_ai::types::StreamOptions {
+                    let response = self.complete_summary_stream(&auth.model, &context, Some(maho_ai::types::StreamOptions {
                         request: maho_ai::types::ProviderRequestOptions { signal: Some(signal.clone()), api_key: auth.api_key.clone(),
                             headers: auth.headers.clone().map(|headers| headers.into_iter().map(|(key, value)| (key, Some(value))).collect()), env: auth.env.clone(),
                             ..Default::default() },
@@ -2113,7 +2411,7 @@ impl AgentSession {
                         let prompt = format!("<conversation>\n{}\n</conversation>\n\nThis is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.\n\nSummarize the prefix to provide context for the retained suffix:\n\n## Original Request\n[What did the user ask for in this turn?]\n\n## Early Progress\n- [Key decisions and work done in the prefix]\n\n## Context for Suffix\n- [Information needed to understand the retained recent work]\n\nBe concise. Focus on what's needed to understand the kept suffix.",
                             crate::compaction::utils::serialize_conversation(&preparation.turn_prefix_messages));
                         let AgentMessage::Llm(user) = make_user_message(&prompt, None) else { return Err("Invalid summary prompt".to_owned()); };
-                        let response = self.model_runtime().complete(&auth.model, &maho_ai::types::Context {
+                        let response = self.complete_summary_stream(&auth.model, &maho_ai::types::Context {
                             system_prompt: Some(crate::compaction::utils::SUMMARIZATION_SYSTEM_PROMPT.to_owned()), messages: vec![user], tools: None,
                         }, Some(maho_ai::types::StreamOptions {
                             request: maho_ai::types::ProviderRequestOptions { signal: Some(signal.clone()), api_key: auth.api_key,
@@ -2270,10 +2568,13 @@ impl AgentSession {
             &result.summary, &result.first_kept_entry_id, result.tokens_before, result.details.clone(), usage, from_hook,
         ));
         let context = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
-        self.agent.set_messages(context.messages.into_iter().map(session_message_from_value).collect::<Result<_, _>>()
-            .map_err(|error| error.to_string())?);
+        let mut messages = context.messages.into_iter().map(session_message_from_value).collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        messages.extend(self.state().messages_awaiting_persistence.iter().map(|(_, message)| message.clone()));
+        self.agent.set_messages(messages);
         let mut state = self.state();
         state.message_revision += 1;
+        state.post_compaction_assistant_generation = Some(state.assistant_generation);
         Ok(entry)
     }
 
@@ -2358,6 +2659,35 @@ impl AgentSession {
         Ok(())
     }
 
+    fn flush_post_compaction_deferred_messages(&self) -> bool {
+        let (steering, follow_up) = {
+            let mut state = self.state();
+            (std::mem::take(&mut state.post_compaction_deferred_steering_messages),
+                std::mem::take(&mut state.post_compaction_deferred_follow_up_messages))
+        };
+        let has_deferred = !steering.is_empty() || !follow_up.is_empty();
+        for message in steering { self.agent.steer(message); }
+        for message in follow_up { self.agent.follow_up(message); }
+        has_deferred
+    }
+
+    fn consume_post_compaction_usage_exemption(&self) -> bool {
+        let latest_entry = self.with_session_manager(|manager| manager.branch(manager.leaf_id()).iter().rev()
+            .find(|entry| entry["type"] == "message" && entry["message"]["role"] == "assistant")
+            .and_then(|entry| entry["id"].as_str()).map(str::to_owned));
+        let mut state = self.state();
+        latest_entry.is_some_and(|id| {
+            if state.post_compaction_usage_exempt_entries.contains(&id) { return true; }
+            let is_new = state.last_persisted_assistant.as_ref().is_some_and(|(entry, generation)|
+                entry == &id && state.post_compaction_assistant_generation.is_some_and(|boundary| *generation > boundary));
+            if is_new {
+                state.post_compaction_assistant_generation = None;
+                state.post_compaction_usage_exempt_entries.insert(id);
+            }
+            is_new
+        })
+    }
+
     async fn finish_provider_turn(&self) -> Result<(), String> {
         use crate::retry_fallback::controller::FallbackReason;
         use maho_ai::utils::retry_hint::parse_retry_after_ms_marker;
@@ -2367,6 +2697,42 @@ impl AgentSession {
         loop {
             self.agent.wait_for_idle().await;
             let Some(message) = self.messages().iter().rev().find_map(AgentMessage::as_assistant).cloned() else { return Ok(()); };
+            let assistant_pending_persistence = {
+                let state = self.state();
+                state.assistant_generation > state.last_persisted_assistant.as_ref().map_or(0, |(_, generation)| *generation)
+            };
+            let assistant_before_compaction = !assistant_pending_persistence && self.with_session_manager(|manager| {
+                let branch = manager.branch(manager.leaf_id());
+                let assistant = branch.iter().rposition(|entry| entry["type"] == "message" && entry["message"]["role"] == "assistant");
+                let compaction = branch.iter().rposition(|entry| entry["type"] == "compaction");
+                matches!((assistant, compaction), (Some(assistant), Some(compaction)) if assistant < compaction)
+            });
+            if assistant_before_compaction {
+                let model = self.model();
+                let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
+                let configured = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
+                    .transpose().map_err(|error| error.to_string())?;
+                let settings = crate::compaction_settings_resolver::resolve_compaction_settings(configured.as_ref(), Some(
+                    crate::compaction_settings_access::CompactionModelSelector { provider: &model.provider, id: &model.id },
+                ))?;
+                let reserve = crate::compaction::compaction::resolve_effective_reserve_tokens(
+                    model.context_window as f64, settings.reserve_tokens as f64, Some(settings.reserve_scaling_enabled));
+                let content_tokens: u64 = self.messages().iter().map(|message|
+                    session_message_to_value(message).map(|value| crate::compaction::estimate_tokens(&value)))
+                    .sum::<Result<u64, _>>().map_err(|error| error.to_string())?;
+                if !settings.enabled || content_tokens as f64 <= model.context_window as f64 - reserve { return Ok(()); }
+            }
+            if message.stop_reason == StopReason::Stop && !overflow_compacted {
+                let exempt = self.consume_post_compaction_usage_exemption();
+                if exempt {
+                    let has_deferred = self.flush_post_compaction_deferred_messages();
+                    if has_deferred && !self.state().user_aborted {
+                        self.agent.continue_with_queued_messages(Default::default()).await;
+                        continue;
+                    }
+                    return Ok(());
+                }
+            }
             let model = self.model();
             let upstream_model_id = self.model_runtime().get_compatibility_request_config(&model).upstream_model_id;
             let same_overflow_source = message.provider == model.provider
@@ -2388,6 +2754,7 @@ impl AgentSession {
                 && (same_overflow_source || current_context_needs_compaction)
                 && maho_ai::utils::overflow::is_context_overflow(&message, Some(self.model().context_window))
             {
+                self.flush_post_compaction_deferred_messages();
                 overflow_compacted = true;
                 let will_retry = message.stop_reason != StopReason::Stop;
                 let execution = self.compact_for_model_with_retry(None, &self.model(), "overflow", will_retry).await;
@@ -2406,6 +2773,17 @@ impl AgentSession {
                 continue;
             }
             if !self.will_retry(Some(&message)).await {
+                if self.auto_compaction_enabled() && !self.state().user_aborted && !overflow_compacted
+                    && message.stop_reason != StopReason::Aborted
+                    && !maho_ai::utils::overflow::is_context_overflow(&message, Some(self.model().context_window))
+                    && self.consume_post_compaction_usage_exemption()
+                {
+                    if self.flush_post_compaction_deferred_messages() {
+                        self.agent.continue_with_queued_messages(Default::default()).await;
+                        continue;
+                    }
+                    return Ok(());
+                }
                 if self.auto_compaction_enabled() && !self.is_compaction_delegated() && !self.state().user_aborted
                     && !matches!(message.stop_reason, StopReason::Error | StopReason::Aborted)
                 {
@@ -3017,6 +3395,10 @@ impl AgentSession {
     }
 
     pub async fn switch_session(&self, path: &str) -> Result<bool, String> {
+        self.switch_session_with_cwd(path, None).await
+    }
+
+    pub async fn switch_session_with_cwd(&self, path: &str, cwd_override: Option<&str>) -> Result<bool, String> {
         let entries = crate::session_manager::load_entries_from_file(path);
         if entries.first().and_then(|entry| entry.get("type")).and_then(Value::as_str) != Some("session") {
             return Err(format!("Invalid session file: {path}"));
@@ -3029,7 +3411,14 @@ impl AgentSession {
         let previous = self.session_file();
         self.emit_session_shutdown(maho_ext_api::SessionReason::Resume).await;
         self.invalidate_extension_runtime().await;
-        self.with_session_manager_mut(|manager| manager.set_session_file(path, None));
+        self.with_session_manager_mut(|manager| {
+            if cwd_override.is_some() {
+                *manager = crate::session_manager::SessionManager::open(path, None, cwd_override, None);
+            } else {
+                manager.set_session_file(path, None);
+            }
+        });
+        self.state().cwd = self.with_session_manager(|manager| manager.cwd().to_owned());
         self.finish_session_replacement(maho_ext_api::SessionReason::Resume, previous).await?;
         Ok(true)
     }
@@ -3204,7 +3593,7 @@ impl AgentSession {
         let prompt = format!("<conversation>\n{transcript}\n</conversation>\n\n{instructions}");
         let auth = self.get_summarization_request_auth(&model).await?;
         let AgentMessage::Llm(message) = make_user_message(&prompt, None) else { return Err("Invalid branch summary prompt".to_owned()); };
-        let response = self.model_runtime().complete(&auth.model, &maho_ai::types::Context {
+        let response = self.complete_summary_stream(&auth.model, &maho_ai::types::Context {
             system_prompt: Some(utils::SUMMARIZATION_SYSTEM_PROMPT.to_owned()), messages: vec![message], tools: None,
         }, Some(maho_ai::types::StreamOptions {
             request: maho_ai::types::ProviderRequestOptions { api_key: auth.api_key, env: auth.env,
@@ -3284,6 +3673,28 @@ impl AgentSession {
         }
     }
 
+    pub async fn native_tool_renderers_snapshot<TState: 'static, TArgs: 'static>(&self) -> BTreeMap<String, Arc<maho_ext_api::ToolRenderers<TState, TArgs>>> {
+        self.extension_runner.lock().await.as_ref().map(|runner| runner.native_tool_renderers_snapshot()).unwrap_or_default()
+    }
+
+    pub async fn user_bash_hook(&self, command: &str, exclude_from_context: bool) -> Result<maho_ext_api::EventResult, String> {
+        let Some(mut runner) = self.extension_runner.lock().await.clone() else { return Ok(maho_ext_api::EventResult::None); };
+        runner.emit_user_bash(command.to_owned(), exclude_from_context, self.cwd().into()).await.map_err(|error| error.message)
+    }
+
+    pub async fn execute_user_bash(&self, command: &str, on_chunk: Option<maho_tools::bash_executor::BashChunkCallback>,
+        exclude_from_context: bool, id: Option<String>) -> Result<maho_tools::bash_executor::BashResult, String> {
+        match self.user_bash_hook(command, exclude_from_context).await? {
+            maho_ext_api::EventResult::UserBash { result: Some(result), .. } => {
+                self.record_bash_result(command, &result, exclude_from_context);
+                Ok(result)
+            }
+            maho_ext_api::EventResult::UserBash { operations, result: None } =>
+                self.execute_bash(command, on_chunk, exclude_from_context, id, operations).await,
+            _ => self.execute_bash(command, on_chunk, exclude_from_context, id, None).await,
+        }
+    }
+
     pub async fn execute_bash(&self, command: &str, on_chunk: Option<maho_tools::bash_executor::BashChunkCallback>,
         exclude_from_context: bool, id: Option<String>, operations: Option<Arc<dyn maho_tools::bash::BashOperations>>)
         -> Result<maho_tools::bash_executor::BashResult, String>
@@ -3360,7 +3771,7 @@ impl AgentSession {
             custom_prompt, append_system_prompt: (!append.is_empty()).then(|| append.join("\n\n")),
             cwd: self.cwd(), selected_tools: Some(active), skills: Some(skills),
             tool_snippets: Some(snippets), prompt_guidelines: Some(guidelines),
-            context_files: Some(crate::resource_loader::load_project_context_files(&self.cwd(), &self.agent_dir())),
+            context_files: Some(self.project_context_files()),
         });
         self.state().base_system_prompt = base.clone();
         let prompt = self.state().system_prompt_override.clone().unwrap_or(base);
@@ -3373,7 +3784,7 @@ impl AgentSession {
         maho_ext_api::BuildSystemPromptOptions {
             custom_prompt: crate::resource_loader::resolve_prompt_input(custom.as_deref(), "system prompt"),
             append_system_prompt: (!append.is_empty()).then(|| append.join("\n\n")),
-            context_files: crate::resource_loader::load_project_context_files(&self.cwd(), &self.agent_dir()).into_iter()
+            context_files: self.project_context_files().into_iter()
                 .map(|file| maho_ext_api::ContextFile { path: file.path, content: file.content }).collect(),
             cwd: self.cwd().into(), tools: self.get_active_tool_names(),
             skills: self.state().skills.iter().map(|skill| maho_ext_api::Skill {
@@ -3551,6 +3962,54 @@ impl AgentSession {
         Err(crate::auth_guidance::format_no_api_key_found_message(&model.provider))
     }
 
+    async fn complete_summary_stream(&self, model: &Model, context: &maho_ai::types::Context,
+        options: Option<maho_ai::types::StreamOptions>) -> Result<maho_ai::types::AssistantMessage, maho_ai::utils::event_stream::StreamError> {
+        use crate::compaction::stream_watchdog;
+        let mut options = options.unwrap_or_default();
+        let override_ms = self.with_settings_manager(|settings| settings.get_value("compaction")
+            .and_then(|value| value.get("summarizationMaxDurationMs")).and_then(Value::as_f64));
+        let tokens = maho_ai::utils::estimate::estimate_context_tokens(context).tokens;
+        let duration = std::time::Duration::from_secs_f64(stream_watchdog::summarization_max_duration_ms(tokens as f64, override_ms) / 1000.0);
+        let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+        let caller = options.request.signal.clone();
+        options.request.affinity_session_id = options.request.affinity_session_id.clone().or_else(|| options.session_id.clone());
+        options.session_id = Some(uuid::Uuid::new_v4().to_string());
+        options.cache_retention.get_or_insert(maho_ai::types::CacheRetention::None);
+        let retry = self.with_settings_manager(|manager| manager.get_value("retry").cloned());
+        let policy = maho_ai::utils::retry::RetryPolicy {
+            enabled: retry.as_ref().and_then(|settings| settings.get("enabled")).and_then(Value::as_bool).unwrap_or(true),
+            max_retries: retry.as_ref().and_then(|settings| settings.get("maxRetries")).and_then(Value::as_u64).unwrap_or(3) as u32,
+            base_delay_ms: retry.as_ref().and_then(|settings| settings.get("baseDelayMs")).and_then(Value::as_u64).unwrap_or(2_000),
+            max_agent_delay_ms: retry.as_ref().and_then(|settings| settings.get("maxAgentDelayMs")).and_then(Value::as_u64),
+            random: Some(self.retry_random.clone()),
+        };
+        maho_ai::utils::retry::retry_transient_call(|| {
+            let mut options = options.clone();
+            let caller = caller.clone();
+            async move {
+                let controller = maho_ai::utils::abort::AbortController::new();
+                let listener = caller.as_ref().map(|signal| {
+                    let request = controller.clone();
+                    let listener = signal.add_abort_listener(move |reason| request.abort(Some(reason.clone())));
+                    if signal.aborted() { controller.abort(signal.reason()); }
+                    listener
+                });
+                options.request.signal = Some(controller.signal());
+                let stream = self.model_runtime().stream(model, context, Some(options));
+                let result = stream_watchdog::consume_stream_with_idle_timeout(&stream,
+                    u64::try_from(stream_watchdog::DEFAULT_SUMMARIZATION_IDLE_TIMEOUT_MS).unwrap_or_default(),
+                    Some(duration_ms), caller.as_ref(), || controller.abort(None)).await;
+                if let (Some(signal), Some(listener)) = (caller, listener) { signal.remove_abort_listener(listener); }
+                let response = result.map_err(|error| error.to_string())?;
+                if response.stop_reason == maho_ai::types::StopReason::Error {
+                    return Err(response.error_message.clone().unwrap_or_else(|| "Summarization failed".into()));
+                }
+                Ok(response)
+            }
+        }, |error: &String| maho_ai::utils::retry::is_retryable_error_message(error),
+            Some(&policy), caller.as_ref(), None).await.map_err(maho_ai::utils::event_stream::StreamError::new)
+    }
+
     /// Resolve optional auth for a summarization stream.
     ///
     /// Adaptations: senpi's ambient-credential refinement reads `agent.getApiKey` and
@@ -3705,6 +4164,19 @@ impl AgentSession {
         state.append_system_prompt_sources = append;
         drop(state);
         self.rebuild_system_prompt();
+    }
+
+    pub fn set_context_files_enabled(&self, enabled: bool) {
+        self.state().context_files_enabled = enabled;
+        self.rebuild_system_prompt();
+    }
+
+    fn project_context_files(&self) -> Vec<crate::system_prompt::ContextFile> {
+        if self.state().context_files_enabled {
+            crate::resource_loader::load_project_context_files(&self.cwd(), &self.agent_dir())
+        } else {
+            Vec::new()
+        }
     }
 
     pub(crate) fn system_prompt_sources(&self) -> (Option<String>, Vec<String>) {
@@ -4044,11 +4516,24 @@ impl AgentSession {
         let mut input = maho_ai::utils::validation::validate_tool_arguments(&tool.tool, &prepared)
             .map_err(|error| ExecuteToolError { code: "invalid_params".to_owned(), tool_name: tool_name.to_owned(),
                 message: error.to_string(), active_tools: active_tools.clone() })?;
+        let invocation = monitor_invocation::Invocation::new(Arc::as_ptr(&self.inner) as usize,
+            self.monitor_generation.load(Ordering::SeqCst), prepared.id.clone(), prepared.name.clone(), input.clone(), self.cwd().into());
+        let retirement = monitor_invocation::Retirement(invocation.clone());
+        monitor_invocation::CURRENT.scope(invocation.clone(), async move {
+        let _retirement = retirement;
         let hook_result = {
-            let mut guard = self.extension_runner.lock().await;
+            let mut guard = self.extension_runner.lock().await.clone();
             if let Some(runner) = guard.as_mut() {
                 let mut event = ToolCallEvent { tool_call_id: prepared.id.clone(), tool_name: prepared.name.clone(), input };
-                let result = runner.emit_tool_call(&mut event).await.map_err(|error| ExecuteToolError {
+                let hook = runner.emit_tool_call(&mut event);
+                let result = if let Some(signal) = &options.signal {
+                    tokio::select! {
+                        biased;
+                        () = signal.cancelled() => return Err(ExecuteToolError { code: "blocked".into(), tool_name: tool_name.into(),
+                            message: "Tool execution cancelled".into(), active_tools }),
+                        result = hook => result,
+                    }
+                } else { hook.await }.map_err(|error| ExecuteToolError {
                     code: "blocked".to_owned(), tool_name: tool_name.to_owned(), message: error.to_string(), active_tools: active_tools.clone(),
                 })?;
                 input = event.input;
@@ -4065,14 +4550,29 @@ impl AgentSession {
                 active_tools,
             });
         }
-        let mut result = (tool.execute)(
+        invocation.admit(&prepared.name, &input).map_err(|message| ExecuteToolError {
+            code: "blocked".into(), tool_name: tool_name.into(), message, active_tools: active_tools.clone(),
+        })?;
+        if options.signal.as_ref().is_some_and(|signal| signal.aborted()) {
+            return Err(ExecuteToolError { code: "blocked".into(), tool_name: tool_name.into(),
+                message: "Tool execution cancelled".into(), active_tools });
+        }
+        let execution_signal = options.signal.clone();
+        let execution = (tool.execute)(
             prepared.id.clone(),
             input.clone(),
             options.signal,
             on_update,
-        )
-        .await;
-        let mut guard = self.extension_runner.lock().await;
+        );
+        let mut result = if let Some(signal) = execution_signal {
+            tokio::select! {
+                biased;
+                () = signal.cancelled() => return Err(ExecuteToolError { code: "blocked".into(), tool_name: tool_name.into(),
+                    message: "Tool execution cancelled".into(), active_tools }),
+                result = execution => result,
+            }
+        } else { execution.await };
+        let mut guard = self.extension_runner.lock().await.clone();
         if let Some(runner) = guard.as_mut()
             && runner.has_handlers(maho_ext_api::EventKind::ToolResult)
         {
@@ -4097,6 +4597,7 @@ impl AgentSession {
             hook.map_err(|message| ExecuteToolError { code: "blocked".to_owned(), tool_name: tool_name.to_owned(), message, active_tools })?;
         }
         Ok(result)
+        }).await
     }
 
     /// `preflightToolCall`: run the `tool_call` extension hook. The Rust agent exposes no
@@ -4141,7 +4642,7 @@ impl AgentSession {
     async fn renew_extension_runtime(&self, reason: maho_ext_api::SessionReason) -> Result<(), String> {
         let old = self.extension_runner.lock().await.clone();
         let Some(mut old) = old else { return Ok(()); };
-        let next = old.recreate().await.map_err(|error| error.message)?;
+        let next = old.recreate_with_context(crate::sdk::extension_context::create(self)).await.map_err(|error| error.message)?;
         let paths: BTreeSet<_> = next.extensions.iter().map(|extension| extension.identity.resolved_path.clone()).collect();
         let removed: Vec<_> = old.extensions.iter().filter(|extension| !paths.contains(&extension.identity.resolved_path))
             .map(|extension| extension.identity.clone()).collect();
@@ -4184,6 +4685,8 @@ impl AgentSession {
     }
 
     async fn invalidate_extension_runtime(&self) {
+        self.monitor_generation.fetch_add(1, Ordering::SeqCst);
+        lock(&self.settled_delivery).cancel();
         if let Some(runner) = self.extension_runner.lock().await.as_ref() {
             runner.invalidate("This extension ctx is stale after session replacement or reload.");
         }
@@ -4212,7 +4715,7 @@ impl AgentSession {
             context.cwd = self.cwd().into();
             context.agent_dir = self.agent_dir().into();
             context.model = Some(self.model());
-            context.model_registry = Arc::new(ExtensionModelRegistryView(self.model_registry().clone()));
+            context.model_registry = Arc::new(ExtensionModelRegistryView::new(self, runner.events.clone()));
             let weak = Arc::downgrade(&self.inner);
             context.wait_for_idle_fn = Arc::new(move || {
                 let weak = weak.clone();
@@ -4286,7 +4789,7 @@ impl AgentSession {
                     let mut options = options.unwrap_or_default();
                     let headers = options.simple.stream.request.headers.take().unwrap_or_default();
                     let transformed = {
-                        let mut runner = session.extension_runner.lock().await;
+                        let mut runner = session.extension_runner.lock().await.clone();
                         match runner.as_mut() {
                             Some(runner) => runner.emit_before_provider_headers(headers).await,
                             None => Ok(headers),
@@ -4296,6 +4799,43 @@ impl AgentSession {
                         Ok(headers) => options.simple.stream.request.headers = Some(headers),
                         Err(error) => { output.fail(maho_ai::utils::event_stream::StreamError::new(error.message)); return; }
                     }
+                    let previous_payload = options.simple.stream.request.async_on_payload.take();
+                    let payload_session = Arc::downgrade(&session.inner);
+                    options.simple.stream.request.async_on_payload = Some(Arc::new(move |payload, model, metadata| {
+                        let previous = previous_payload.clone();
+                        let weak = payload_session.clone();
+                        Box::pin(async move {
+                            let payload = match previous {
+                                Some(previous) => previous(payload.clone(), model, metadata.clone()).await?.unwrap_or(payload),
+                                None => payload,
+                            };
+                            let inner = weak.upgrade().ok_or("Session disposed")?;
+                            let runner = AgentSession { inner }.extension_runner.lock().await.clone();
+                            match runner {
+                                Some(mut runner) => runner.emit_before_provider_request_with_metadata(payload,
+                                    metadata.as_ref().map(|request| request.model.clone()),
+                                    metadata.map(|request| request.headers), None).await.map(Some).map_err(|error| error.message),
+                                None => Ok(Some(payload)),
+                            }
+                        })
+                    }));
+                    let previous_response = options.simple.stream.request.async_on_response.take();
+                    let response_session = Arc::downgrade(&session.inner);
+                    options.simple.stream.request.async_on_response = Some(Arc::new(move |response, model| {
+                        let previous = previous_response.clone();
+                        let weak = response_session.clone();
+                        Box::pin(async move {
+                            if let Some(previous) = previous { previous(response.clone(), model).await?; }
+                            let inner = weak.upgrade().ok_or("Session disposed")?;
+                            let runner = AgentSession { inner }.extension_runner.lock().await.clone();
+                            if let Some(mut runner) = runner {
+                                runner.emit(maho_ext_api::ExtensionEvent::AfterProviderResponse {
+                                    status: response.status, headers: response.headers,
+                                }).await.map_err(|error| error.message)?;
+                            }
+                            Ok(())
+                        })
+                    }));
                     let upstream = session.model_runtime().stream_simple(&model, &context, Some(options.simple));
                     loop {
                         match upstream.next().await {
@@ -4432,6 +4972,12 @@ impl AgentSession {
 
     async fn revalidate_continuation_admission(&self, proactive: bool) -> Result<(), String> {
         let model = self.model();
+        let latest_assistant_entry = self.with_session_manager(|manager| manager.branch(manager.leaf_id()).iter().rev()
+            .find(|entry| entry["type"] == "message" && entry["message"]["role"] == "assistant")
+            .and_then(|entry| entry["id"].as_str()).map(str::to_owned));
+        if latest_assistant_entry.is_some_and(|id| self.state().post_compaction_usage_exempt_entries.contains(&id)) {
+            return Ok(());
+        }
         let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
         let settings = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
             .transpose().map_err(|error| error.to_string())?;
@@ -4469,6 +5015,7 @@ impl AgentSession {
 
     async fn emit_agent_settled(&self) {
         let generation = self.user_abort_generation.load(Ordering::SeqCst);
+        let runtime_generation = self.monitor_generation.load(Ordering::SeqCst);
         let epoch = self.settlement_epoch.fetch_add(1, Ordering::SeqCst) + 1;
         lock(&self.settled_delivery).begin(generation);
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::AgentSettled).await;
@@ -4483,7 +5030,8 @@ impl AgentSession {
                 if claim.disposition().await == Some(crate::agent_settled_delivery::DeferredTurnDisposition::Started) { return; }
             }
             session.wait_for_idle().await;
-            if session.settlement_epoch.load(Ordering::SeqCst) == epoch && !session.is_streaming()
+            if !session.state().disposed && session.monitor_generation.load(Ordering::SeqCst) == runtime_generation
+                && session.settlement_epoch.load(Ordering::SeqCst) == epoch && !session.is_streaming()
                 && !session.work_barrier.has_active_work()
             { session.emit(AgentSessionEvent::AgentIdle); }
         });
@@ -4534,7 +5082,7 @@ impl AgentSession {
 
     async fn extend_resources_from_extensions(&self, reason: maho_ext_api::SessionReason) {
         let discovered = {
-            let mut guard = self.extension_runner.lock().await;
+            let mut guard = self.extension_runner.lock().await.clone();
             let Some(runner) = guard.as_mut() else { return; };
             if !runner.has_handlers(maho_ext_api::EventKind::ResourcesDiscover) { return; }
             let resources = runner.emit_resources_discover(self.cwd().into(), reason).await;
@@ -4556,6 +5104,40 @@ impl AgentSession {
             Ok(resources) => self.extend_discovered_resources(resources),
             Err(error) => self.emit(AgentSessionEvent::ContinuationError { error_message: error.message }),
         }
+    }
+
+    pub fn set_hook_source_paths(&self, resources: Vec<crate::package_manager::ResolvedResource>, additional: Vec<String>) {
+        let cwd = self.cwd();
+        let mut state = self.state();
+        state.global_hook_source_paths.clear();
+        state.project_hook_source_paths.clear();
+        for resource in resources.into_iter().filter(|resource| resource.enabled) {
+            let path = std::path::PathBuf::from(crate::paths::resolve_path(&resource.path,
+                resource.metadata.base_dir.as_deref().unwrap_or(&cwd), &Default::default()));
+            let paths = if resource.metadata.scope == crate::source_info::SourceScope::Project {
+                &mut state.project_hook_source_paths
+            } else { &mut state.global_hook_source_paths };
+            if !paths.contains(&path) { paths.push(path); }
+        }
+        state.pre_session_hook_source_paths.clear();
+        for path in additional {
+            let path = std::path::PathBuf::from(crate::paths::resolve_path(&path, &cwd, &Default::default()));
+            if !state.pre_session_hook_source_paths.contains(&path) { state.pre_session_hook_source_paths.push(path); }
+        }
+    }
+
+    pub fn set_hook_sources(&self, sources: Option<maho_ext_api::LoadedHookSources>) {
+        self.state().loaded_hook_sources = sources;
+    }
+
+    pub fn extension_actions(&self) -> Arc<dyn maho_ext_api::ExtensionActions> {
+        Arc::new(SessionExtensionActions(Arc::downgrade(&self.inner)))
+    }
+
+    pub fn extension_context(&self, ui: Arc<dyn maho_ext_api::ExtensionUi>) -> maho_ext_api::ExtensionContext {
+        let mut context = crate::sdk::extension_context::create(self);
+        context.ui = ui;
+        context
     }
 
     fn extend_discovered_resources(&self, mut resources: maho_ext_api::DiscoveredResources) {
@@ -4705,7 +5287,9 @@ impl AgentSession {
     /// contexts, disconnecting the agent subscription and the wake-source unsubscribe, and the
     /// session manager's own dispose; each lands with the slice that owns it.
     pub async fn dispose(&self) {
+        self.monitor_generation.fetch_add(1, Ordering::SeqCst);
         self.state().disposed = true;
+        lock(&self.settled_delivery).cancel();
         if let Some(controller) = self.state().session_title_abort_controller.take() { controller.abort(None); }
         self.cancel_probe_back();
         self.abort_retry();
@@ -5407,6 +5991,17 @@ fn user_message_text(message: &AgentMessage) -> String {
     }
 }
 
+fn session_message_to_value(message: &AgentMessage) -> Result<Value, serde_json::Error> {
+    use maho_agent::types::CustomAgentMessage;
+    match message {
+        AgentMessage::Llm(message) => serde_json::to_value(message),
+        AgentMessage::Custom(CustomAgentMessage::Custom(message)) => serde_json::to_value(message),
+        AgentMessage::Custom(CustomAgentMessage::BashExecution(message)) => serde_json::to_value(message),
+        AgentMessage::Custom(CustomAgentMessage::BranchSummary(message)) => serde_json::to_value(message),
+        AgentMessage::Custom(CustomAgentMessage::CompactionSummary(message)) => serde_json::to_value(message),
+    }
+}
+
 pub(crate) fn session_message_from_value(mut message: Value) -> Result<AgentMessage, serde_json::Error> {
     if let Some(timestamp) = message.get("timestamp").and_then(Value::as_str) {
         let millis = chrono::DateTime::parse_from_rfc3339(timestamp).map(|time| time.timestamp_millis()).unwrap_or(0);
@@ -5567,6 +6162,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prompt_admission_receipt_precedes_provider_completion() {
+        use std::{future::Future, task::Poll};
+        let session = retry_session(Vec::new(), 0);
+        session.agent.set_stream_function(Arc::new(|_, _, _|
+            maho_ai::utils::event_stream::create_assistant_message_event_stream()));
+        let receipts = Arc::new(Mutex::new(Vec::new()));
+        let observed = receipts.clone();
+        let mut prompt = Box::pin(session.prompt("input", PromptOptions {
+            prompt_admitted: Some(Arc::new(move |disposition| lock(&observed).push(disposition))),
+            session_title_prompt: Some(SessionTitlePrompt::Disabled), ..Default::default()
+        }));
+        let pending = std::future::poll_fn(|cx| Poll::Ready(prompt.as_mut().poll(cx).is_pending())).await;
+        let admitted = lock(&receipts).clone();
+        drop(prompt);
+        session.dispose().await;
+        assert!(pending, "provider response remains pending");
+        assert_eq!(admitted, [PromptDisposition::Started]);
+    }
+
+    #[tokio::test]
+    async fn queued_prompt_admission_receipt_settles_once_without_provider_completion() {
+        let session = retry_session(Vec::new(), 0);
+        session.state().prompt_start_pending = true;
+        let receipts = Arc::new(Mutex::new(Vec::new()));
+        let observed = receipts.clone();
+        let result = session.prompt("queued", PromptOptions {
+            streaming_behavior: Some(StreamingBehavior::FollowUp),
+            prompt_admitted: Some(Arc::new(move |disposition| lock(&observed).push(disposition))),
+            ..Default::default()
+        }).await;
+        session.state().prompt_start_pending = false;
+        session.dispose().await;
+        assert_eq!(result, Ok(PromptDisposition::Queued));
+        assert_eq!(*lock(&receipts), [PromptDisposition::Queued]);
+    }
+
+    #[tokio::test]
+    async fn handled_prompt_admission_receipt_settles_once_after_input_handler() {
+        let session = retry_session(Vec::new(), 0);
+        let receipts = Arc::new(Mutex::new(Vec::new()));
+        let handler_receipts = receipts.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:handled>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::Input, vec![Arc::new(move |_, _| {
+            assert!(lock(&handler_receipts).is_empty());
+            Box::pin(async { Ok(maho_ext_api::EventResult::Input(maho_ext_api::InputEventResult::Handled)) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let observed = receipts.clone();
+        let result = session.prompt("handled", PromptOptions {
+            prompt_admitted: Some(Arc::new(move |disposition| lock(&observed).push(disposition))), ..Default::default()
+        }).await;
+        session.dispose().await;
+        assert_eq!(result, Ok(PromptDisposition::Handled));
+        assert_eq!(*lock(&receipts), [PromptDisposition::Handled]);
+    }
+
+    #[tokio::test]
+    async fn rejected_and_cancelled_prompt_never_publish_success_admission() {
+        let session = retry_session(Vec::new(), 0);
+        let receipts = Arc::new(Mutex::new(Vec::new()));
+        let mut model = session.model();
+        model.context_window = 128;
+        session.agent.set_model(model);
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"reserveTokens":0,"reserveScalingEnabled":false})),
+        ])));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:reject>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::BeforeAgentStart, vec![Arc::new(|_, _|
+            Box::pin(async { Ok(maho_ext_api::EventResult::BeforeAgentStart(maho_ext_api::BeforeAgentStartEventResult {
+                message: Some(maho_ext_api::CustomMessage { custom_type: "admission-fixture".into(),
+                    content: vec![maho_tools::definition::ToolContent::text("large input ".repeat(200))],
+                    display: true, details: None }), system_prompt: None,
+            })) }))]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let observed = receipts.clone();
+        let rejected = session.prompt("rejected", PromptOptions {
+            prompt_admitted: Some(Arc::new(move |disposition| lock(&observed).push(disposition))), ..Default::default()
+        }).await;
+        let controller = maho_ai::utils::abort::AbortController::new();
+        controller.abort(None);
+        let observed = receipts.clone();
+        let cancelled = session.prompt("cancelled", PromptOptions {
+            signal: Some(controller.signal()),
+            prompt_admitted: Some(Arc::new(move |disposition| lock(&observed).push(disposition))), ..Default::default()
+        }).await;
+        session.dispose().await;
+        assert_eq!(rejected, Err("Compaction required before provider request".into()));
+        assert_eq!(cancelled, Err("Prompt cancelled".into()));
+        assert!(lock(&receipts).is_empty());
+    }
+
+    #[tokio::test]
     async fn failed_provider_tool_preflight_blocks_executor() {
         let mut assistant = maho_ai::providers::faux::faux_assistant_message("", Default::default());
         assistant.stop_reason = StopReason::ToolUse;
@@ -5595,6 +6282,194 @@ mod tests {
         }).expect("blocked tool result");
         assert!(result.is_error);
         assert!(maho_ai::utils::text::content_text(&result.content, "").contains("hook refused"));
+    }
+
+    #[tokio::test]
+    async fn registered_direct_tool_consumes_private_monitor_approval_once() {
+        let session = retry_session(Vec::new(), 0);
+        let observed = Arc::new(Mutex::new(None));
+        let captured = observed.clone();
+        let actions = session.extension_context_actions();
+        let mut tool = test_tool("monitor_fixture");
+        tool.execute = Arc::new(move |id, input, _, _| {
+            let actions = actions.clone();
+            let captured = captured.clone();
+            Box::pin(async move {
+                let parent = actions.take_approved_monitor_parent(&id, &input).expect("execution take");
+                assert_eq!(actions.take_approved_monitor_parent(&id, &input).expect("second take"), None);
+                *lock(&captured) = parent;
+                AgentToolResult::text("registered execution")
+            })
+        });
+        session.register_tool_definition(test_definition("monitor_fixture"), empty_source_info(), tool);
+        session.set_active_tools_by_name(vec!["monitor_fixture".into()]);
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:monitor-admission>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::ToolCall, vec![Arc::new(|event, context| {
+            let maho_ext_api::ExtensionEvent::ToolCall(event) = event else { panic!("tool call"); };
+            context.set_approved_monitor_parent(&event.tool_call_id, &event.input, std::path::Path::new("/approved")).expect("preflight attachment");
+            assert!(context.take_approved_monitor_parent(&event.tool_call_id, &event.input).is_err());
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let result = session.execute_tool("monitor_fixture", serde_json::json!({}), Default::default()).await;
+        session.dispose().await;
+        assert!(result.is_ok());
+        assert_eq!(*lock(&observed), Some(std::path::PathBuf::from("/approved")));
+        assert!(session.extension_context_actions().take_approved_monitor_parent("any", &serde_json::json!({})).is_err());
+    }
+
+    #[tokio::test]
+    async fn registered_non_monitor_tool_receives_valid_input_rewritten_by_hook() {
+        let session = retry_session(Vec::new(), 0);
+        let observed = Arc::new(Mutex::new(None));
+        let captured = observed.clone();
+        let actions = session.extension_context_actions();
+        let mut tool = test_tool("rewrite_fixture");
+        tool.tool.parameters = serde_json::json!({"type":"object","properties":{"value":{"type":"string"}},"required":["value"]});
+        tool.execute = Arc::new(move |id, input, _, _| {
+            assert!(actions.take_approved_monitor_parent(&id, &input).is_err());
+            *lock(&captured) = Some(input);
+            Box::pin(async { AgentToolResult::text("rewritten execution") })
+        });
+        session.register_tool_definition(test_definition("rewrite_fixture"), empty_source_info(), tool);
+        session.set_active_tools_by_name(vec!["rewrite_fixture".into()]);
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:rewrite>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::ToolCall, vec![Arc::new(|event, _| {
+            let maho_ext_api::ExtensionEvent::ToolCall(event) = event else { panic!("tool call"); };
+            event.input["value"] = "changed".into();
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let result = session.execute_tool("rewrite_fixture", serde_json::json!({"value":"original"}), Default::default()).await;
+        assert!(session.extension_context_actions().take_approved_monitor_parent("no-scope", &serde_json::json!({})).is_err());
+        session.dispose().await;
+        assert!(result.is_ok(), "unrelated tool rewriting must not require monitor identity: {result:?}");
+        assert_eq!(*lock(&observed), Some(serde_json::json!({"value":"changed"})));
+    }
+
+    #[tokio::test]
+    async fn monitor_approval_retires_on_same_cwd_runtime_invalidation() {
+        let session = retry_session(Vec::new(), 0);
+        let actions = session.extension_context_actions();
+        let input = serde_json::json!({});
+        let invocation = monitor_invocation::Invocation::new(Arc::as_ptr(&session.inner) as usize,
+            session.monitor_generation.load(Ordering::SeqCst), "id".into(), "monitor".into(), input.clone(), session.cwd().into());
+        let retirement = monitor_invocation::Retirement(invocation.clone());
+        monitor_invocation::CURRENT.scope(invocation.clone(), async {
+            actions.set_approved_monitor_parent("id", &input, std::path::Path::new("/approved")).expect("attachment");
+            invocation.admit("monitor", &input).expect("admission");
+            session.invalidate_extension_runtime().await;
+            assert!(actions.take_approved_monitor_parent("id", &input).is_err());
+            assert!(actions.set_approved_monitor_parent("id", &input, std::path::Path::new("/late")).is_err());
+        }).await;
+        drop(retirement);
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_monitor_preflight_prevents_executor_admission() {
+        let session = retry_session(Vec::new(), 0);
+        let calls = Arc::new(AtomicU64::new(0));
+        let executed = calls.clone();
+        let mut tool = test_tool("monitor_fixture");
+        tool.execute = Arc::new(move |_, _, _, _| {
+            executed.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { AgentToolResult::text("unexpected") })
+        });
+        session.register_tool_definition(test_definition("monitor_fixture"), empty_source_info(), tool);
+        session.set_active_tools_by_name(vec!["monitor_fixture".into()]);
+        let (entered, entry) = tokio::sync::oneshot::channel();
+        let entered = Arc::new(Mutex::new(Some(entered)));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:cancel-preflight>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::ToolCall, vec![Arc::new(move |event, context| {
+            let maho_ext_api::ExtensionEvent::ToolCall(event) = event else { panic!("tool call"); };
+            context.set_approved_monitor_parent(&event.tool_call_id, &event.input, std::path::Path::new("/approved")).expect("attachment");
+            let entered = entered.clone();
+            Box::pin(async move {
+                lock(&entered).take().expect("one hook").send(()).expect("entry observer");
+                std::future::pending::<Result<maho_ext_api::EventResult, maho_ext_api::ExtensionFailure>>().await
+            })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(session.execute_tool("monitor_fixture", serde_json::json!({}), ExecuteToolOptions {
+                signal: Some(controller.signal()), ..Default::default()
+            }), async { entry.await.expect("hook entered"); controller.abort(None); }).0
+        }).await;
+        session.dispose().await;
+        assert!(result.expect("bounded preflight cancellation").is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn direct_monitor_cancellation_drops_pending_execution_and_retires_scope() {
+        let session = retry_session(Vec::new(), 0);
+        let (entered, entry) = tokio::sync::oneshot::channel();
+        let entered = Arc::new(Mutex::new(Some(entered)));
+        let retained = Arc::new(Mutex::new(None));
+        let captured = retained.clone();
+        let mut tool = test_tool("monitor_fixture");
+        tool.execute = Arc::new(move |id, input, _, _| {
+            let entered = entered.clone();
+            let captured = captured.clone();
+            Box::pin(async move {
+                *lock(&captured) = Some((monitor_invocation::CURRENT.with(Arc::clone), id, input));
+                lock(&entered).take().expect("one execution").send(()).expect("entry observer");
+                std::future::pending::<AgentToolResult>().await
+            })
+        });
+        session.register_tool_definition(test_definition("monitor_fixture"), empty_source_info(), tool);
+        session.set_active_tools_by_name(vec!["monitor_fixture".into()]);
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(session.execute_tool("monitor_fixture", serde_json::json!({}), ExecuteToolOptions {
+                signal: Some(controller.signal()), ..Default::default()
+            }), async { entry.await.expect("execution entered"); controller.abort(None); }).0
+        }).await;
+        session.dispose().await;
+        assert!(result.expect("bounded cancelled execution").is_err());
+        let (invocation, id, input) = lock(&retained).take().expect("retained scope");
+        assert!(invocation.take(&id, &input, std::path::Path::new(&session.cwd())).is_err());
+    }
+
+    #[tokio::test]
+    async fn registered_monitor_attachment_does_not_survive_later_block_or_cancel() {
+        for cancelled in [false, true] {
+            let session = retry_session(Vec::new(), 0);
+            let calls = Arc::new(AtomicU64::new(0));
+            let executed = calls.clone();
+            let mut tool = test_tool("monitor_fixture");
+            tool.execute = Arc::new(move |_, _, _, _| {
+                executed.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { AgentToolResult::text("unexpected") })
+            });
+            session.register_tool_definition(test_definition("monitor_fixture"), empty_source_info(), tool);
+            session.set_active_tools_by_name(vec!["monitor_fixture".into()]);
+            let controller = maho_ai::utils::abort::AbortController::new();
+            let abort = controller.clone();
+            let retained = Arc::new(Mutex::new(None));
+            let captured = retained.clone();
+            let mut extension = maho_ext_api::LoadedExtension::new("<inline:monitor-block>", session.cwd().into(), Default::default());
+            extension.handlers.insert(maho_ext_api::EventKind::ToolCall, vec![Arc::new(move |event, context| {
+                let maho_ext_api::ExtensionEvent::ToolCall(event) = event else { panic!("tool call"); };
+                context.set_approved_monitor_parent(&event.tool_call_id, &event.input, std::path::Path::new("/approved")).expect("attachment");
+                *lock(&captured) = Some((monitor_invocation::CURRENT.with(Arc::clone), event.tool_call_id.clone(), event.input.clone()));
+                if cancelled { abort.abort(None); }
+                Box::pin(async move { Ok(maho_ext_api::EventResult::ToolCall(maho_ext_api::ToolCallEventResult {
+                    block: Some(!cancelled), reason: Some("later admission refused".into()), terminate: None,
+                })) })
+            })]);
+            session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+            let result = session.execute_tool("monitor_fixture", serde_json::json!({}), ExecuteToolOptions {
+                signal: Some(controller.signal()), ..Default::default()
+            }).await;
+            let (invocation, id, input) = lock(&retained).take().expect("captured private scope");
+            session.dispose().await;
+            assert!(result.is_err());
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert!(invocation.take(&id, &input, std::path::Path::new(&session.cwd())).is_err());
+        }
     }
 
     #[tokio::test]
@@ -5857,6 +6732,49 @@ mod tests {
         assert!(error.contains("No API key found for faux"), "{error}");
     }
 
+    #[test]
+    fn extension_resolved_settings_project_all_fields_and_follow_live_model_and_override() {
+        use maho_ext_api::ExtensionContextActions;
+        let session = test_session();
+        session.agent.set_model(test_model());
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".into(), serde_json::json!({
+                "reserveTokens":101,"keepRecentTokens":202,
+                "speculativeEnabled":false,"speculativeFraction":0.31,"speculativeCooldownMs":321.5,
+                "restorationEnabled":false,"restorationMaxItems":2.5,"restorationMaxTokensPerItem":11.5,
+                "restorationMaxTotalTokens":22.5,"restorationContextRatio":0.21,
+                "idleCompactionEnabled":false,"graceBandEnabled":false,"toolAdmissionEnabled":false,
+                "reminderEnabled":false,"reserveScalingEnabled":false,"speculativeLeadTokens":12000.5,
+                "summarizationMaxDurationMs":45678.5,
+                "modelOverrides":{"faux/faux-1":{"reserveTokens":303,"keepRecentTokens":404}}
+            })),
+        ])));
+        let projected = actions.get_resolved_compaction_settings().expect("resolved settings");
+        assert_eq!(projected, maho_ext_api::ResolvedCompactionSettings {
+            enabled: true, reserve_tokens: 303, keep_recent_tokens: 404,
+            speculative_enabled: false, speculative_fraction: 0.31, speculative_cooldown_ms: 321.5,
+            restoration_enabled: false, restoration_max_items: 2.5, restoration_max_tokens_per_item: 11.5,
+            restoration_max_total_tokens: 22.5, restoration_context_ratio: 0.21,
+            idle_compaction_enabled: false, grace_band_enabled: false, tool_admission_enabled: false,
+            reminder_enabled: false, reserve_scaling_enabled: false, speculative_lead_tokens: Some(12000.5),
+            summarization_max_duration_ms: Some(45678.5),
+        });
+        let mut model = test_model();
+        model.id = "other".into();
+        session.agent.set_model(model);
+        let changed = actions.get_resolved_compaction_settings().expect("live model settings");
+        assert_eq!((changed.reserve_tokens, changed.keep_recent_tokens), (101, 202));
+        session.set_auto_compaction_enabled(false);
+        assert!(!actions.get_resolved_compaction_settings().expect("live enabled override").enabled);
+        assert!(!actions.get_compaction_settings().enabled);
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".into(), serde_json::json!({"reserveTokens":505,"keepRecentTokens":606})),
+        ])));
+        let revised = actions.get_resolved_compaction_settings().expect("live config revision");
+        assert_eq!((revised.reserve_tokens, revised.keep_recent_tokens), (505, 606));
+    }
+
     #[tokio::test]
     async fn extension_fallback_chain_updates_roundtrip_through_real_settings() {
         use maho_ext_api::ExtensionSessionSettings;
@@ -5875,10 +6793,35 @@ mod tests {
         let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
         assert!(!actions.set_model(test_model()).await.unwrap());
         assert!(!actions.set_session_model(test_model()).await.unwrap());
-        let registry = ExtensionModelRegistryView(session.model_registry().clone());
+        let registry = ExtensionModelRegistryView::new(&session, Default::default());
         assert_eq!(maho_ext_api::ModelRegistry::get_all(&registry), session.model_registry().get_all());
         assert_eq!(maho_ext_api::ModelRegistry::find(&registry, "faux", "faux-1"), session.model_registry().find("faux", "faux-1"));
         assert!(maho_ext_api::ModelRegistry::get_api_key_for_provider(&registry, "faux").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn extension_registry_services_use_configured_runtime_and_shared_credential_kind() {
+        use maho_ext_api::ModelRegistry as _;
+        let session = test_session();
+        let provider = maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
+            tokens_per_second: Some(0.0), ..Default::default()
+        });
+        provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("configured stream", Default::default()).into()]);
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
+        session.model_registry().auth_storage.set("faux", Some(serde_json::json!({"type":"api_key","key":"fixture-stored"}))).expect("stored auth");
+        let registry = ExtensionModelRegistryView::new(&session, Default::default());
+        let auth = registry.get_provider_auth("faux").await.expect("configured auth").expect("auth resolution");
+        let kind = registry.get_stored_credential_type("faux").expect("metadata");
+        let absent = registry.get_stored_credential_type("absent-fixture").expect("absent metadata");
+        let model = provider.get_model(Some("faux-1")).expect("model");
+        let stream = registry.stream_simple(&model, &maho_ai::types::Context::default(), None).expect("configured stream creation");
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), stream.result()).await;
+        session.dispose().await;
+        assert_eq!(auth.auth.api_key.as_deref(), Some("fixture-stored"));
+        assert_eq!(kind, Some(maho_ai::auth::types::CredentialType::ApiKey));
+        assert_eq!(absent, None);
+        assert_eq!(maho_ai::utils::text::content_text(&response.expect("bounded stream").expect("stream response").content, ""), "configured stream");
     }
 
     #[tokio::test]
@@ -5897,6 +6840,111 @@ mod tests {
         let missing = actions.exec("/definitely/missing", &[], std::path::Path::new("/tmp"), Default::default()).await.unwrap();
         assert_eq!(missing.code, 1);
         assert!(!missing.stderr.is_empty());
+    }
+
+    #[tokio::test]
+    async fn queued_account_mutation_rechecks_generation_after_storage_admission() {
+        use maho_ext_api::ModelRegistry as _;
+        let session = test_session();
+        let storage = session.model_registry().auth_storage.clone();
+        storage.set("fixture-account", Some(serde_json::json!({"type":"api_key","key":"fixture-key",
+            "accounts":[{"name":"default","key":"fixture-key"}]}))).expect("seed");
+        let before = storage.get("fixture-account");
+        let registry = ExtensionModelRegistryView::new(&session, Default::default());
+        let permit = storage.account_mutation.lock().await;
+        let mut mutation = Box::pin(registry.rename_credential_account("fixture-account", "default", Some("Late")));
+        assert!(std::future::poll_fn(|cx| std::task::Poll::Ready(std::future::Future::poll(mutation.as_mut(), cx).is_pending())).await);
+        session.invalidate_extension_runtime().await;
+        drop(permit);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), mutation).await;
+        session.dispose().await;
+        assert!(result.expect("bounded queued admission").is_err());
+        assert_eq!(storage.get("fixture-account"), before);
+    }
+
+    #[tokio::test]
+    async fn returned_deferred_batch_cannot_start_after_runtime_replacement() {
+        use maho_ext_api::ExtensionActions as _;
+        for cancelled in [false, true] {
+        let session = test_session();
+        lock(&session.settled_delivery).begin(session.user_abort_generation.load(Ordering::SeqCst));
+        SessionExtensionActions(Arc::downgrade(&session.inner)).send_user_message(
+            maho_ext_api::UserMessageContent::Text("retired deferred fixture".into()), Default::default()).expect("defer");
+        let batch = lock(&session.settled_delivery).finish(session.user_abort_generation.load(Ordering::SeqCst));
+        assert_eq!(batch.turn_claims.len(), 1);
+        if cancelled { session.abort().await; } else { session.invalidate_extension_runtime().await; }
+        let before = session.messages();
+        for action in batch.actions { action(); }
+        let disposition = tokio::time::timeout(std::time::Duration::from_secs(5), batch.turn_claims[0].disposition()).await;
+        session.wait_for_idle().await;
+        let after = session.messages();
+        session.dispose().await;
+        assert_eq!(disposition.expect("bounded retired action"), Some(crate::agent_settled_delivery::DeferredTurnDisposition::FinishedWithoutStart));
+        assert_eq!(after, before);
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_retirement_discards_pending_settled_delivery_before_execution() {
+        for disposed in [false, true] {
+            let session = test_session();
+            let ran = Arc::new(AtomicU64::new(0));
+            let counter = ran.clone();
+            {
+                let mut delivery = lock(&session.settled_delivery);
+                delivery.begin(session.user_abort_generation.load(Ordering::SeqCst));
+                assert!(delivery.defer_trigger_turn(move |_| { counter.fetch_add(1, Ordering::SeqCst); }));
+            }
+            if disposed { session.dispose().await; } else { session.invalidate_extension_runtime().await; }
+            let batch = lock(&session.settled_delivery).finish(session.user_abort_generation.load(Ordering::SeqCst));
+            session.dispose().await;
+            assert!(batch.actions.is_empty());
+            assert!(batch.turn_claims.is_empty());
+            assert_eq!(ran.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn extension_account_facade_mutates_shared_store_and_emits_only_success() {
+        use maho_ext_api::ModelRegistry as _;
+        let session = test_session();
+        let dir = tempfile::tempdir().expect("account sidecar");
+        let events = maho_ext_api::EventBus::default();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        let _subscription = events.on("provider-accounts-changed", Arc::new(move |value| lock(&captured).push(value.clone())));
+        session.model_registry().auth_storage.set("fixture-account", Some(serde_json::json!({
+            "type":"api_key","key":"fixture-flat-secret",
+            "accounts":[{"name":"default","key":"fixture-first-secret","source":"login"},
+                {"name":"work","key":"fixture-second-secret","source":"import"}]
+        }))).expect("seed shared storage");
+        let mut registry = ExtensionModelRegistryView::new(&session, events);
+        registry.agent_dir = dir.path().to_string_lossy().into_owned();
+        let exercise = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let before = registry.get_credential_accounts("fixture-account").await?;
+            registry.pin_credential_account("fixture-account", Some("work")).await?;
+            registry.rename_credential_account("fixture-account", "work", Some("Work account")).await?;
+            let changed = registry.get_credential_accounts("fixture-account").await?;
+            registry.pin_credential_account("fixture-account", None).await?;
+            let error = registry.remove_credential_account("fixture-account", "missing").await;
+            registry.remove_credential_account("fixture-account", "work").await?;
+            let after = registry.get_credential_accounts("fixture-account").await?;
+            Ok::<_, maho_ext_api::ExtensionFailure>((before, changed, after, error))
+        }).await;
+        let shared = session.model_runtime().credentials.get("fixture-account");
+        session.dispose().await;
+        let (before, changed, after, error) = exercise.expect("bounded account operations").expect("account facade");
+        assert_eq!(before.len(), 2);
+        assert_eq!(before[1].source, maho_ext_api::CredentialAccountSource::Import);
+        assert!(changed[1].pinned);
+        assert_eq!(changed[1].display_name.as_deref(), Some("Work account"));
+        assert!(error.is_err());
+        assert_eq!(after.len(), 1);
+        assert!(!after[0].pinned);
+        assert_eq!(shared.expect("same runtime store")["accounts"].as_array().expect("accounts").len(), 1);
+        assert_eq!(lock(&observed).len(), 4);
+        assert!(lock(&observed).iter().all(|value| value == &serde_json::json!({"type":"accounts_changed","provider":"fixture-account"})));
+        assert!(!format!("{before:?}{changed:?}{after:?}").contains("secret"));
     }
 
     #[tokio::test]
@@ -5933,7 +6981,7 @@ mod tests {
         maho_ext_api::ExtensionContext {
             ui: Arc::new(ReplacementTestUi), mode: ExtensionMode::Print, has_ui: false, cwd: session.cwd().into(), agent_dir: session.agent_dir().into(),
             session_manager: Arc::new(ExtensionSessionManagerView { session: Arc::downgrade(&session.inner), id: session.session_id(), file: None }),
-            model_registry: Arc::new(ExtensionModelRegistryView(session.model_registry().clone())), model: None, thinking_level: None,
+            model_registry: Arc::new(ExtensionModelRegistryView::new(session, Default::default())), model: None, thinking_level: None,
             service_tier: None, effective_service_tier: None, scoped_models: Vec::new(), goal_store_file: None,
             loaded_extension_paths: Vec::new(), signal: None, steering_signal: None, is_idle_fn: Arc::new(|| true),
             wait_for_idle_fn: Arc::new(|| Box::pin(async {})), is_project_trusted_fn: Arc::new(|| true), is_compacting_fn: Arc::new(|| false),
@@ -6141,6 +7189,38 @@ mod tests {
             reason: maho_ext_api::CompactionReason::Extension, signal: Some(signal), aborted: Some(true), error_message: None,
         });
         assert!(!session.is_compacting());
+    }
+
+    #[tokio::test]
+    async fn repeated_compaction_hook_receives_previous_summary() {
+        let session = retry_session(Vec::new(), 0);
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".into(), serde_json::json!({"keepRecentTokens":1,"reserveTokens":0})),
+        ])));
+        for text in ["old task".repeat(200), "recent task".repeat(200)] {
+            session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":text,"timestamp":0})));
+        }
+        session.rebuild_session_context().expect("history");
+        let summaries = Arc::new(Mutex::new(Vec::new()));
+        let captured = summaries.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:repeat-compaction>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(move |event, _| {
+            let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { panic!("preparation"); };
+            let has_summary = EXTENSION_COMPACTION_PREPARATION.with(|details| details.source_messages.as_ref()
+                .expect("source messages").iter().any(|message| message.role() == "compactionSummary"));
+            lock(&captured).push(has_summary);
+            Box::pin(async move { Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {
+                compaction: Some(maho_ext_api::CompactionResult { summary: "digest".into(),
+                    first_kept_entry_id: event.preparation.first_kept_entry_id.clone(),
+                    tokens_before: event.preparation.tokens_before, details: None }), ..Default::default()
+            })) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        session.compact(None).await.expect("first compaction");
+        session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"next task".repeat(200),"timestamp":0})));
+        session.rebuild_session_context().expect("new entry");
+        session.compact(None).await.expect("second compaction");
+        assert_eq!(*lock(&summaries), [false, true]);
     }
 
     #[tokio::test]
@@ -6827,6 +7907,14 @@ mod tests {
         }));
         let captured = session.clone();
         let mut extension = maho_ext_api::LoadedExtension::new("<inline:startup-rejected>", session.cwd().into(), Default::default());
+        let input_calls = Arc::new(AtomicU64::new(0));
+        let calls = input_calls.clone();
+        extension.handlers.insert(maho_ext_api::EventKind::Input, vec![Arc::new(move |_, _| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(maho_ext_api::EventResult::Input(maho_ext_api::InputEventResult::Transform {
+                text: "must not transform retained input".into(), images: None,
+            })) })
+        })]);
         extension.handlers.insert(maho_ext_api::EventKind::SessionStart, vec![Arc::new(move |_, _| {
             maho_ext_api::ExtensionActions::send_user_message(&SessionExtensionActions(Arc::downgrade(&captured.inner)),
                 maho_ext_api::UserMessageContent::Text("no queue mode".into()), Default::default()).expect("dispatch startup");
@@ -6834,13 +7922,282 @@ mod tests {
         })]);
         session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), session.bind_extensions(Default::default())).await;
+        let retained = session.get_follow_up_messages();
+        session.clear_queue(false);
         actions.end_compaction(maho_ext_api::EndCompactionOptions {
             reason: maho_ext_api::CompactionReason::Manual, signal: Some(signal), aborted: Some(false), error_message: None,
         });
         result.expect("rejected input releases binding");
+        assert_eq!(retained, ["no queue mode"]);
+        assert_eq!(input_calls.load(Ordering::SeqCst), 0);
         assert_eq!(lock(&errors).len(), 1);
         assert!(lock(&session.binding_readiness).is_none());
         assert!(!session.work_barrier.has_active_work());
+    }
+
+    #[tokio::test]
+    async fn rejected_startup_images_survive_one_later_provider_turn() {
+        use maho_ext_api::ExtensionContextActions;
+        let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("delivered", Default::default())], 0);
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        let signal = actions.begin_compaction(maho_ext_api::BeginCompactionOptions {
+            reason: maho_ext_api::CompactionReason::Manual,
+        }).expect("compaction");
+        let captured = session.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:retained-images>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionStart, vec![Arc::new(move |_, _| {
+            maho_ext_api::ExtensionActions::send_user_message(&SessionExtensionActions(Arc::downgrade(&captured.inner)),
+                maho_ext_api::UserMessageContent::Blocks(vec![
+                    maho_ext_api::ToolContent::text("first"),
+                    maho_ext_api::ToolContent::Image { data: "aW1hZ2Ux".into(), mime_type: "image/png".into() },
+                    maho_ext_api::ToolContent::text("second"),
+                    maho_ext_api::ToolContent::Image { data: "aW1hZ2Uy".into(), mime_type: "image/jpeg".into() },
+                ]), Default::default()).expect("startup message");
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.bind_extensions(Default::default())).await.expect("binding");
+        assert_eq!(session.get_follow_up_messages(), ["first\nsecond"]);
+        actions.end_compaction(maho_ext_api::EndCompactionOptions {
+            reason: maho_ext_api::CompactionReason::Manual, signal: Some(signal), aborted: Some(false), error_message: None,
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.continue_session()).await.expect("bounded delivery").expect("delivery");
+        let users: Vec<_> = session.messages().into_iter().filter(|message| message.role() == "user").collect();
+        assert_eq!(users.len(), 1);
+        let value = serde_json::to_value(&users[0]).expect("user payload");
+        assert_eq!(value["content"][0]["text"], "first\nsecond");
+        assert_eq!(value["content"][1]["data"], "aW1hZ2Ux");
+        assert_eq!(value["content"][2]["data"], "aW1hZ2Uy");
+        assert_eq!(value["content"][1]["mimeType"], "image/png");
+        assert_eq!(value["content"][2]["mimeType"], "image/jpeg");
+        assert!(!session.agent.has_queued_messages());
+        assert_eq!(session.get_last_assistant_text().as_deref(), Some("delivered"));
+    }
+
+    #[tokio::test]
+    async fn pre_admission_settings_error_preserves_requested_steering() {
+        let session = test_session();
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"enabled":true,"reserveTokens":"invalid"})),
+        ])));
+        let captured = session.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:admission-rejected>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionStart, vec![Arc::new(move |_, _| {
+            maho_ext_api::ExtensionActions::send_user_message(&SessionExtensionActions(Arc::downgrade(&captured.inner)),
+                maho_ext_api::UserMessageContent::Text("retained steering".into()), maho_ext_api::SendUserMessageOptions {
+                    deliver_as: Some(maho_ext_api::StreamingBehavior::Steer), ..Default::default()
+                }).expect("dispatch");
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.bind_extensions(Default::default())).await.expect("bounded admission");
+        let retained = session.get_steering_messages();
+        let follow_up = session.get_follow_up_messages();
+        session.clear_queue(false);
+        assert_eq!(retained, ["retained steering"]);
+        assert!(follow_up.is_empty());
+        assert!(session.messages().is_empty());
+        assert!(!session.work_barrier.has_active_work());
+    }
+
+    #[tokio::test]
+    async fn started_extension_failure_does_not_requeue_user_input() {
+        let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("accepted", Default::default())], 0);
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let captured_errors = errors.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::ContinuationError { error_message } = event {
+                lock(&captured_errors).push(error_message.clone());
+            }
+        }));
+        let post_admission = session.clone();
+        let captured = session.clone();
+        let started = Arc::new(AtomicU64::new(0));
+        let observed = started.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:started-error>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionStart, vec![Arc::new(move |_, _| {
+            maho_ext_api::ExtensionActions::send_user_message(&SessionExtensionActions(Arc::downgrade(&captured.inner)),
+                maho_ext_api::UserMessageContent::Text("once".into()), Default::default()).expect("dispatch");
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        extension.handlers.insert(maho_ext_api::EventKind::InputDisposition, vec![Arc::new(move |event, _| {
+            if matches!(event, maho_ext_api::ExtensionEvent::InputDisposition { disposition: maho_ext_api::InputDisposition::Started, .. }) {
+                observed.fetch_add(1, Ordering::SeqCst);
+                post_admission.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+                    ("compaction".to_owned(), serde_json::json!({"enabled":true,"reserveTokens":"invalid"})),
+                ])));
+            }
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            session.bind_extensions(Default::default()).await;
+            session.wait_for_idle().await;
+        }).await.expect("bounded failed turn");
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        assert_eq!(session.messages().iter().filter(|message| message.role() == "user").count(), 1);
+        assert_eq!(session.pending_message_count(), 0);
+        assert!(!session.agent.has_queued_messages());
+        assert_eq!(lock(&errors).len(), 1, "completion must reach the adapter error branch");
+        assert_eq!(session.get_last_assistant_text().as_deref(), Some("accepted"));
+    }
+
+    #[tokio::test]
+    async fn extension_prompt_waits_for_pending_manual_compaction() {
+        use std::{future::Future, task::Poll};
+        let session = test_session();
+        let admission = session.prompt_admission.lock().await;
+        let mut compact = Box::pin(session.compact(None));
+        std::future::poll_fn(|cx| {
+            assert!(compact.as_mut().poll(cx).is_pending(), "compaction waits for admission");
+            Poll::Ready(())
+        }).await;
+        assert!(session.state().pending_compaction_admission.is_some());
+        let mut prompt = Box::pin(session.prompt("extension input", PromptOptions {
+            source: Some(InputSource::Extension), ..Default::default()
+        }));
+        let pending = std::future::poll_fn(|cx| Poll::Ready(prompt.as_mut().poll(cx).is_pending())).await;
+        drop(prompt);
+        drop(compact);
+        drop(admission);
+        assert!(!session.work_barrier.has_active_work());
+        assert!(session.state().pending_compaction_admission.is_none());
+        assert!(pending, "extension prompt must wait rather than reject during manual compaction");
+    }
+
+    #[tokio::test]
+    async fn extension_prompt_stays_queued_after_pending_compaction_is_cancelled() {
+        use std::{future::Future, task::Poll};
+        let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("after compaction", Default::default())], 0);
+        let admission = session.prompt_admission.lock().await;
+        let mut compact = Box::pin(session.compact(None));
+        std::future::poll_fn(|cx| {
+            assert!(compact.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        }).await;
+        let mut prompt = Box::pin(session.prompt("waiting extension", PromptOptions {
+            source: Some(InputSource::Extension), ..Default::default()
+        }));
+        std::future::poll_fn(|cx| {
+            assert!(prompt.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        }).await;
+        session.abort_compaction();
+        drop(admission);
+        let (compacted, prompted) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(compact, prompt)
+        }).await.expect("released admission");
+        assert_eq!(compacted.expect_err("cancelled compaction"), "Compaction cancelled");
+        assert_eq!(prompted.expect("extension retained"), PromptDisposition::Queued);
+        assert!(session.get_last_assistant_text().is_none());
+        assert!(session.messages().is_empty());
+        assert_eq!(session.get_steering_messages(), ["waiting extension"]);
+        assert!(session.agent.has_queued_messages());
+        session.clear_queue(false);
+        assert!(!session.work_barrier.has_active_work());
+        assert!(!session.is_compacting());
+    }
+
+    #[tokio::test]
+    async fn extension_prompt_stays_queued_after_pending_compaction_fails() {
+        use std::{future::Future, task::Poll};
+        let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("must not run", Default::default())], 0);
+        let admission = session.prompt_admission.lock().await;
+        let mut compact = Box::pin(session.compact(None));
+        std::future::poll_fn(|cx| {
+            assert!(compact.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        }).await;
+        let mut prompt = Box::pin(session.prompt("after failed compaction", PromptOptions {
+            source: Some(InputSource::Extension), ..Default::default()
+        }));
+        std::future::poll_fn(|cx| {
+            assert!(prompt.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        }).await;
+        drop(admission);
+        let (compacted, prompted) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(compact, prompt)
+        }).await.expect("released admission");
+        assert!(compacted.is_err());
+        let queued = session.get_steering_messages();
+        session.clear_queue(false);
+        assert_eq!(prompted.expect("retained prompt"), PromptDisposition::Queued);
+        assert_eq!(queued, ["after failed compaction"]);
+        assert!(session.messages().is_empty());
+        assert!(!session.work_barrier.has_active_work());
+    }
+
+    #[tokio::test]
+    async fn extension_prompt_runs_after_pending_compaction_succeeds() {
+        use std::{future::Future, task::Poll};
+        let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("after digest", Default::default())], 0);
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".into(), serde_json::json!({"reserveTokens":0,"reserveScalingEnabled":false,"keepRecentTokens":1})),
+        ])));
+        for text in ["old task".repeat(200), "recent task".repeat(200)] {
+            session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":text,"timestamp":0})));
+        }
+        session.rebuild_session_context().expect("history");
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:accepted-compaction>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(|event, _| {
+            let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { panic!("preparation"); };
+            Box::pin(async move { Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {
+                compaction: Some(maho_ext_api::CompactionResult {
+                    summary: "digest".into(), first_kept_entry_id: event.preparation.first_kept_entry_id.clone(),
+                    tokens_before: event.preparation.tokens_before, details: None,
+                }), ..Default::default()
+            })) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let admission = session.prompt_admission.lock().await;
+        let mut compact = Box::pin(session.compact(None));
+        std::future::poll_fn(|cx| { assert!(compact.as_mut().poll(cx).is_pending()); Poll::Ready(()) }).await;
+        let mut prompt = Box::pin(session.prompt("after successful compaction", PromptOptions {
+            source: Some(InputSource::Extension), ..Default::default()
+        }));
+        std::future::poll_fn(|cx| { assert!(prompt.as_mut().poll(cx).is_pending()); Poll::Ready(()) }).await;
+        drop(admission);
+        let (compacted, prompted) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(compact, prompt)
+        }).await.expect("successful release");
+        assert_eq!(compacted.expect("compaction").summary, "digest");
+        assert_eq!(prompted.expect("provider turn"), PromptDisposition::Started);
+        assert_eq!(session.get_last_assistant_text().as_deref(), Some("after digest"));
+        assert!(session.with_session_manager(|manager| manager.entries()).iter().any(|entry| entry["type"] == "compaction"));
+        assert_eq!(session.pending_message_count(), 0);
+        assert!(!session.agent.has_queued_messages());
+        assert!(!session.work_barrier.has_active_work());
+    }
+
+    #[tokio::test]
+    async fn extension_prompt_cancels_without_releasing_pending_compaction() {
+        use std::{future::Future, task::Poll};
+        let session = test_session();
+        let admission = session.prompt_admission.lock().await;
+        let mut compact = Box::pin(session.compact(None));
+        std::future::poll_fn(|cx| {
+            assert!(compact.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        }).await;
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let mut prompt = Box::pin(session.prompt("cancelled extension", PromptOptions {
+            source: Some(InputSource::Extension), signal: Some(controller.signal()), ..Default::default()
+        }));
+        std::future::poll_fn(|cx| {
+            assert!(prompt.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        }).await;
+        controller.abort(None);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), &mut prompt).await.expect("cancelled admission");
+        assert_eq!(result, Err("Prompt cancelled".into()));
+        assert!(session.state().pending_compaction_admission.is_some());
+        assert!(session.messages().is_empty());
+        drop(prompt);
+        drop(compact);
+        drop(admission);
+        assert!(!session.work_barrier.has_active_work());
+        assert!(session.state().pending_compaction_admission.is_none());
     }
 
     #[tokio::test]
@@ -7235,6 +8592,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stalled_branch_summary_aborts_request_without_changing_session() {
+        struct StalledStreams(std::sync::Mutex<Option<maho_ai::utils::abort::AbortSignal>>);
+        impl maho_ai::types::ProviderStreams for StalledStreams {
+            fn stream(&self, _: &Model, _: &maho_ai::types::Context, options: Option<maho_ai::types::StreamOptions>) -> maho_ai::types::AssistantMessageEventStream {
+                *self.0.lock().expect("signal") = options.and_then(|options| options.request.signal);
+                maho_ai::types::AssistantMessageEventStream::assistant()
+            }
+            fn stream_simple(&self, _: &Model, _: &maho_ai::types::Context, _: Option<maho_ai::types::SimpleStreamOptions>) -> maho_ai::types::AssistantMessageEventStream {
+                panic!("summary uses full options")
+            }
+        }
+        let streams = Arc::new(StalledStreams(std::sync::Mutex::new(None)));
+        let session = test_session_with_stream_function(false);
+        let mut model = test_model();
+        model.provider = "stalled-summary".to_owned();
+        session.agent.set_model(model.clone());
+        let provider = maho_ai::models::create_provider(maho_ai::models::CreateProviderOptions {
+            id: model.provider.clone(), name: None, base_url: None, headers: None,
+            models: vec![model], fetch_models: None, restore_models: None, filter_models: None,
+            api: maho_ai::models::ProviderApi::Single(streams.clone()),
+        });
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider);
+        runtime.register_provider("stalled-summary", crate::provider_composer::ProviderConfigInput {
+            config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("stalled-fixture".to_owned()), ..Default::default() },
+            ..Default::default()
+        }).expect("fixture auth");
+        session.with_settings_manager_mut(|settings| settings.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"summarizationMaxDurationMs":1})),
+        ])));
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), session.generate_branch_summary_with_signal(
+            &[serde_json::json!({"type":"message","id":"fixture","message":{"role":"user","content":"summarize","timestamp":0}})],
+            None, false, controller.signal())).await.expect("summary deadline");
+        let error = result.expect_err("stalled provider");
+        assert!(error.contains("wall-clock budget"), "{error}");
+        assert!(streams.0.lock().expect("signal").as_ref().expect("request signal").aborted());
+        assert!(!controller.signal().aborted());
+        assert!(session.with_session_manager(|manager| manager.entries().is_empty()));
+        session.dispose().await;
+    }
+
+    #[tokio::test]
     async fn aborted_branch_summary_does_not_request_or_change_context() {
         let session = test_session_with_stream_function(false);
         let controller = maho_ai::utils::abort::AbortController::new();
@@ -7354,15 +8754,178 @@ mod tests {
             })
         })]);
         session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
-        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            tokio::join!(session.compact(None), async { entered.await.expect("hook started"); session.abort_compaction(); })
+        let (result, prompted) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(session.compact(None), async {
+                use std::{future::Future, task::Poll};
+                entered.await.expect("hook started");
+                let mut prompt = Box::pin(session.prompt("retained after running compaction", PromptOptions {
+                    source: Some(InputSource::Extension), streaming_behavior: Some(StreamingBehavior::FollowUp), ..Default::default()
+                }));
+                std::future::poll_fn(|cx| {
+                    assert!(prompt.as_mut().poll(cx).is_pending());
+                    Poll::Ready(())
+                }).await;
+                session.abort_compaction();
+                prompt.await
+            })
         }).await.expect("bounded compaction cancellation");
         assert!(result.is_err());
+        assert_eq!(prompted.expect("retained extension prompt"), PromptDisposition::Queued);
+        assert_eq!(session.get_follow_up_messages(), ["retained after running compaction"]);
+        session.clear_queue(false);
         assert!(provider.get_call_log().is_empty());
         assert_eq!(session.messages(), messages);
         assert_eq!(session.with_session_manager(|manager| manager.entries()), entries);
         assert_eq!(session.compaction_state().status(), "aborted");
         assert!(!session.is_compacting());
+    }
+
+    #[tokio::test]
+    async fn summary_retry_preserves_affinity_and_isolates_request_identity() {
+        use maho_ai::providers::faux::{faux_provider, faux_assistant_message, FauxAssistantMessageOptions,
+            FauxResponseStep, RegisterFauxProviderOptions};
+        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
+        let options_seen = Arc::new(Mutex::new(Vec::new()));
+        let make_response = |failure: bool| {
+            let options_seen = options_seen.clone();
+            FauxResponseStep::Factory(Arc::new(move |_, options, _, _| {
+                lock(&options_seen).push(options.expect("summary options").stream.clone());
+                Box::pin(async move { faux_assistant_message(if failure { "" } else { "summary" }, FauxAssistantMessageOptions {
+                    stop_reason: failure.then_some(maho_ai::types::StopReason::Error),
+                    error_message: failure.then(|| "socket hang up".to_owned()), ..Default::default()
+                }) })
+            }))
+        };
+        provider.set_responses(vec![make_response(true), make_response(false)]);
+        let session = test_session();
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
+        runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
+            config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".to_owned()), ..Default::default() },
+            ..Default::default()
+        }).expect("auth");
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("retry".into(), serde_json::json!({"enabled":true,"maxRetries":1,"baseDelayMs":0})),
+        ])));
+        let model = provider.get_model(Some("faux-1")).expect("model");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), session.complete_summary_stream(&model,
+            &maho_ai::types::Context::default(), Some(maho_ai::types::StreamOptions {
+                session_id: Some("caller-affinity".into()), ..Default::default()
+            }))).await;
+        session.dispose().await;
+        let response = result.expect("bounded retries").expect("retried summary");
+        assert_eq!(maho_ai::utils::text::content_text(&response.content, ""), "summary");
+        let seen = lock(&options_seen);
+        assert_eq!(seen.len(), 2);
+        assert_ne!(seen[0].session_id.as_deref(), Some("caller-affinity"));
+        assert_eq!(seen[0].session_id, seen[1].session_id);
+        assert_eq!(seen[0].request.affinity_session_id.as_deref(), Some("caller-affinity"));
+        assert_eq!(seen[1].request.affinity_session_id.as_deref(), Some("caller-affinity"));
+        assert_eq!(seen[0].cache_retention, Some(maho_ai::types::CacheRetention::None));
+        assert_eq!(seen[1].cache_retention, Some(maho_ai::types::CacheRetention::None));
+    }
+
+    #[tokio::test]
+    async fn deterministic_summary_failure_preserves_explicit_retention_without_retry() {
+        use maho_ai::providers::faux::{faux_provider, faux_assistant_message, FauxAssistantMessageOptions,
+            FauxResponseStep, RegisterFauxProviderOptions};
+        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let captured = seen.clone();
+        provider.set_responses(vec![FauxResponseStep::Factory(Arc::new(move |_, options, _, _| {
+            lock(&captured).push(options.expect("summary options").stream.clone());
+            Box::pin(async { faux_assistant_message("", FauxAssistantMessageOptions {
+                stop_reason: Some(maho_ai::types::StopReason::Error),
+                error_message: Some("invalid request fixture".into()), ..Default::default()
+            }) })
+        }))]);
+        let session = test_session();
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
+        runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
+            config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".into()), ..Default::default() },
+            ..Default::default()
+        }).expect("auth");
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("retry".into(), serde_json::json!({"enabled":true,"maxRetries":3,"baseDelayMs":0})),
+        ])));
+        let model = provider.get_model(Some("faux-1")).expect("model");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), session.complete_summary_stream(&model,
+            &maho_ai::types::Context::default(), Some(maho_ai::types::StreamOptions {
+                cache_retention: Some(maho_ai::types::CacheRetention::Short),
+                session_id: Some("caller".into()), request: maho_ai::types::ProviderRequestOptions {
+                    affinity_session_id: Some("explicit-affinity".into()), ..Default::default()
+                }, ..Default::default()
+            }))).await;
+        session.dispose().await;
+        assert_eq!(result.expect("bounded deterministic error").expect_err("failure").to_string(), "invalid request fixture");
+        let seen = lock(&seen);
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].cache_retention, Some(maho_ai::types::CacheRetention::Short));
+        assert_eq!(seen[0].request.affinity_session_id.as_deref(), Some("explicit-affinity"));
+        assert_ne!(seen[0].session_id.as_deref(), Some("caller"));
+    }
+
+    #[tokio::test]
+    async fn session_abort_cancels_started_summary_without_late_apply() {
+        use maho_ai::providers::faux::{faux_provider, FauxResponseStep, RegisterFauxProviderOptions};
+        let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let started = Arc::new(Mutex::new(Some(started)));
+        let (cancelled, observed) = tokio::sync::oneshot::channel();
+        let cancelled = Arc::new(Mutex::new(Some(cancelled)));
+        provider.set_responses(vec![FauxResponseStep::Factory(Arc::new(move |_, options, _, _| {
+            let signal = options.expect("summary options").stream.request.signal.clone().expect("request signal");
+            let started = started.clone();
+            let cancelled = cancelled.clone();
+            Box::pin(async move {
+                lock(&started).take().expect("single summary request").send(()).expect("request observer");
+                signal.cancelled().await;
+                lock(&cancelled).take().expect("single cancellation").send(()).expect("cancellation observer");
+                maho_ai::providers::faux::faux_assistant_message("late summary", Default::default())
+            })
+        }))]);
+        let session = test_session_with_stream_function(false);
+        session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
+        runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
+            config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".to_owned()), ..Default::default() },
+            ..Default::default()
+        }).expect("auth");
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"keepRecentTokens":1})),
+        ])));
+        for (index, text) in ["old task", "recent task"].into_iter().enumerate() {
+            session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":text,"timestamp":index})));
+        }
+        session.rebuild_session_context().expect("context");
+        let messages = session.messages();
+        let entries = session.with_session_manager(|manager| manager.entries());
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (result, ()) = tokio::join!(session.compact(None), async {
+                entered.await.expect("actual summary started");
+                session.abort().await;
+                observed.await.expect("request cancelled");
+            });
+            result
+        }).await;
+        let after_messages = session.messages();
+        let after_entries = session.with_session_manager(|manager| manager.entries());
+        let status = session.compaction_state().status().to_owned();
+        let compacting = session.is_compacting();
+        let calls = provider.get_call_log().len();
+        let cleanup = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            if result.is_err() { session.abort().await; }
+            session.dispose().await;
+        }).await;
+        cleanup.expect("bounded session cleanup");
+        assert!(result.expect("bounded request cancellation").is_err());
+        assert_eq!(calls, 1);
+        assert_eq!(after_messages, messages);
+        assert_eq!(after_entries, entries);
+        assert_eq!(status, "aborted");
+        assert!(!compacting);
     }
 
     #[tokio::test]
@@ -8393,6 +9956,35 @@ mod tests {
         assert_eq!(session.get_last_assistant_text().as_deref(), Some("completed answer"));
         assert_eq!(*lock(&retries), vec![false]);
         assert_eq!(session.compaction_state().status(), "completed");
+        session.finish_provider_turn().await.expect("old assistant resampled");
+        assert_eq!(*lock(&retries), vec![false], "pre-compaction usage cannot retrigger compaction");
+        let prior_messages = session.messages();
+        let original_model = session.model();
+        let mut small_model = original_model.clone();
+        small_model.context_window = 128;
+        session.agent.set_model(small_model);
+        let mut oversized_messages = prior_messages.clone();
+        oversized_messages.push(session_message_from_value(serde_json::json!({
+            "role":"custom", "customType":"fresh-content", "content":"large input ".repeat(1000),
+            "display":true, "timestamp":0,
+        })).expect("custom content"));
+        session.agent.set_messages(oversized_messages);
+        session.finish_provider_turn().await.expect_err("fresh oversized content still requires compaction");
+        session.agent.set_model(original_model);
+        session.agent.set_messages(prior_messages.clone());
+        let mut pending_assistant = maho_ai::providers::faux::faux_assistant_message("pending new answer", Default::default());
+        pending_assistant.usage.input = 200_000;
+        pending_assistant.usage.total_tokens = 200_000;
+        pending_assistant.stop_reason = StopReason::Error;
+        pending_assistant.error_message = Some("prompt is too long".into());
+        let pending_assistant = AgentMessage::from(maho_ai::types::Message::Assistant(Box::new(pending_assistant)));
+        session.process_agent_event(maho_agent::types::AgentEvent::MessageStart { message: pending_assistant.clone() },
+            maho_ai::utils::abort::AbortController::new().signal()).await;
+        let mut pending_messages = prior_messages.clone();
+        pending_messages.push(pending_assistant);
+        session.agent.set_messages(pending_messages);
+        let pending_result = session.finish_provider_turn().await;
+        assert!(pending_result.is_err() || lock(&retries).len() > 1, "unpersisted assistant is not the old branch assistant");
     }
 
     #[tokio::test]
@@ -8409,6 +10001,263 @@ mod tests {
         session.finish_provider_turn().await.expect("stale overflow ignored");
         assert_eq!(session.compaction_state().generation(), 0);
         assert_eq!(session.with_session_manager(|manager| manager.entries()).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn compaction_preserves_assistant_waiting_for_message_end_persistence() {
+        let mut assistant = maho_ai::providers::faux::faux_assistant_message("delayed assistant payload", Default::default());
+        assistant.timestamp = 7;
+        let session = retry_session(vec![assistant], 0);
+        let first = session.with_session_manager_mut(|manager| manager.append_message(
+            serde_json::json!({"role":"user","content":"seed history","timestamp":0})));
+        session.rebuild_session_context().expect("seed history");
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let entered = Arc::new(Mutex::new(Some(entered_tx)));
+        let release = Arc::new(Mutex::new(Some(release_rx)));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:delay-persistence>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::MessageEnd, vec![Arc::new(move |event, _| {
+            let is_assistant = matches!(event, maho_ext_api::ExtensionEvent::MessageEnd { message } if message.as_assistant().is_some());
+            let signals = if is_assistant { lock(&entered).take().zip(lock(&release).take()) } else { None };
+            Box::pin(async move {
+                if let Some((entered, release)) = signals {
+                    entered.send(()).expect("hook observer");
+                    release.await.expect("release hook");
+                }
+                Ok(maho_ext_api::EventResult::None)
+            })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let (prompted, (applied, reapplied, retained)) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(session.prompt("produce delayed assistant", Default::default()), async {
+                entered_rx.await.expect("message end entered");
+                let applied = session.apply_compaction(&crate::compaction::compaction::CompactionResult {
+                    summary: "digest".into(), first_kept_entry_id: first["id"].as_str().expect("entry").into(),
+                    tokens_before: 42, estimated_tokens_after: None, usage: None, details: None,
+                });
+                let reapplied = session.apply_compaction(&crate::compaction::compaction::CompactionResult {
+                    summary: "second digest".into(), first_kept_entry_id: first["id"].as_str().expect("entry").into(),
+                    tokens_before: 42, estimated_tokens_after: None, usage: None, details: None,
+                });
+                let retained = session.messages().iter().filter(|message| message.as_assistant().is_some()).count();
+                release_tx.send(()).expect("release pending persistence");
+                (applied, reapplied, retained)
+            })
+        }).await.expect("bounded persistence");
+        applied.expect("compaction");
+        reapplied.expect("repeated compaction");
+        prompted.expect("prompt completion");
+        assert_eq!(retained, 1, "pending assistant remains in runtime context");
+        let branch = session.with_session_manager(|manager| manager.branch(manager.leaf_id()));
+        let compacted = branch.iter().rposition(|entry| entry["type"] == "compaction").expect("compaction entry");
+        let assistants: Vec<_> = branch.iter().enumerate().filter(|(_, entry)| entry["message"]["role"] == "assistant").collect();
+        assert_eq!(assistants.len(), 1);
+        assert!(assistants[0].0 > compacted);
+        assert_eq!(assistants[0].1["message"]["timestamp"], 7);
+        assert_eq!(session.get_last_assistant_text().as_deref(), Some("delayed assistant payload"));
+        assert!(session.state().messages_awaiting_persistence.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dropped_message_end_releases_pending_persistence_owner() {
+        use std::{future::Future, task::Poll};
+        let session = retry_session(Vec::new(), 0);
+        let first = session.with_session_manager_mut(|manager| manager.append_message(
+            serde_json::json!({"role":"user","content":"seed history","timestamp":0})));
+        session.rebuild_session_context().expect("history");
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:cancel-persistence>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::MessageEnd, vec![Arc::new(|_, _| {
+            Box::pin(std::future::pending())
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let assistant = maho_ai::providers::faux::faux_assistant_message("abandoned payload", Default::default());
+        let mut event = Box::pin(session.process_agent_event(maho_agent::types::AgentEvent::MessageEnd {
+            message: AgentMessage::from(maho_ai::types::Message::Assistant(Box::new(assistant))),
+        }, maho_ai::utils::abort::AbortController::new().signal()));
+        std::future::poll_fn(|cx| { assert!(event.as_mut().poll(cx).is_pending()); Poll::Ready(()) }).await;
+        assert_eq!(session.state().messages_awaiting_persistence.len(), 1);
+        drop(event);
+        assert!(session.state().messages_awaiting_persistence.is_empty());
+        session.apply_compaction(&crate::compaction::compaction::CompactionResult {
+            summary: "digest".into(), first_kept_entry_id: first["id"].as_str().expect("entry").into(),
+            tokens_before: 42, estimated_tokens_after: None, usage: None, details: None,
+        }).expect("later compaction");
+        assert!(session.messages().iter().all(|message| message.as_assistant().is_none()));
+        assert!(session.with_session_manager(|manager| manager.entries()).iter().all(|entry| entry["message"]["role"] != "assistant"));
+    }
+
+    #[tokio::test]
+    async fn first_successful_assistant_after_compaction_is_usage_exempt() {
+        let mut completed = maho_ai::providers::faux::faux_assistant_message("completed after digest", Default::default());
+        completed.usage.input = 200_000;
+        completed.usage.total_tokens = 200_000;
+        let session = retry_session(Vec::new(), 0);
+        session.agent.set_stream_function(Arc::new(move |_, _, _| {
+            let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
+            stream.push(maho_ai::types::AssistantMessageEvent::Start { partial: completed.clone() });
+            stream.push(maho_ai::types::AssistantMessageEvent::Done {
+                reason: maho_ai::types::DoneReason::Stop, message: completed.clone(),
+            });
+            stream
+        }));
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".into(), serde_json::json!({"keepRecentTokens":1,"reserveTokens":0,"reserveScalingEnabled":false})),
+        ])));
+        for text in ["old task".repeat(200), "recent task".repeat(200)] {
+            session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":text,"timestamp":0})));
+        }
+        session.rebuild_session_context().expect("history");
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let captured = calls.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:usage-exemption>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(move |event, _| {
+            captured.fetch_add(1, Ordering::SeqCst);
+            let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { panic!("preparation"); };
+            Box::pin(async move { Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {
+                compaction: Some(maho_ext_api::CompactionResult { summary: "digest".into(),
+                    first_kept_entry_id: event.preparation.first_kept_entry_id.clone(),
+                    tokens_before: event.preparation.tokens_before, details: None }), ..Default::default()
+            })) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        session.compact(None).await.expect("manual compaction");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("next task", Default::default()))
+            .await.expect("bounded provider turn").expect("successful turn");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "first new successful assistant is exempt");
+        assert_eq!(session.get_last_assistant_text().as_deref(), Some("completed after digest"));
+        assert_eq!(session.messages().iter().rev().find_map(AgentMessage::as_assistant).expect("delivered assistant").usage.input, 200_000);
+        assert!(!session.agent.has_queued_messages());
+        session.finish_provider_turn().await.expect("same assistant resampled");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        session.revalidate_scheduled_continuation_admission().await.expect("exempt continuation admission");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "admission preserves the consumed exemption");
+        let identical = session.messages().iter().rev().find_map(AgentMessage::as_assistant).cloned().expect("assistant");
+        session.agent.set_stream_function(Arc::new(|_, _, _| {
+            let response = maho_ai::providers::faux::faux_assistant_message("zero usage followup", Default::default());
+            let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
+            stream.push(maho_ai::types::AssistantMessageEvent::Start { partial: response.clone() });
+            stream.push(maho_ai::types::AssistantMessageEvent::Done {
+                reason: maho_ai::types::DoneReason::Stop, message: response,
+            });
+            stream
+        }));
+        session.follow_up("zero usage task", None, Default::default()).await.expect("followup");
+        session.agent.continue_with_queued_messages(Default::default()).await;
+        session.finish_provider_turn().await.expect("zero usage continuation");
+        assert_eq!(session.get_last_assistant_text().as_deref(), Some("zero usage followup"));
+        assert_eq!(session.messages().iter().rev().find_map(AgentMessage::as_assistant).expect("zero usage assistant").usage.total_tokens, 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "actual pinned stream recompacts after zero usage");
+        session.with_session_manager_mut(|manager| manager.append_message(serde_json::to_value(identical).expect("identical contents")));
+        session.rebuild_session_context().expect("distinct persisted assistant");
+        session.finish_provider_turn().await.expect("distinct assistant checked");
+        assert_eq!(calls.load(Ordering::SeqCst), 3, "equal contents do not share the exemption");
+    }
+
+    #[tokio::test]
+    async fn pending_post_compaction_prompt_defers_agent_queue_ownership() {
+        use std::{future::Future, task::Poll};
+        let session = retry_session(Vec::new(), 0);
+        let first = session.with_session_manager_mut(|manager| manager.append_message(
+            serde_json::json!({"role":"user","content":"old task","timestamp":0})));
+        session.with_session_manager_mut(|manager| manager.append_message(
+            serde_json::json!({"role":"user","content":"recent task","timestamp":0})));
+        session.rebuild_session_context().expect("history");
+        session.apply_compaction(&crate::compaction::compaction::CompactionResult {
+            summary: "digest".into(), first_kept_entry_id: first["id"].as_str().expect("entry").into(),
+            tokens_before: 10, estimated_tokens_after: None, usage: None, details: None,
+        }).expect("compaction");
+        let admission = session.prompt_admission.lock().await;
+        let mut prompt = Box::pin(session.prompt("pending turn", Default::default()));
+        std::future::poll_fn(|cx| { assert!(prompt.as_mut().poll(cx).is_pending()); Poll::Ready(()) }).await;
+        session.steer("later steering", None, Default::default()).await.expect("steering");
+        session.follow_up("later followup", None, Default::default()).await.expect("followup");
+        assert_eq!(session.get_steering_messages(), ["later steering"]);
+        assert_eq!(session.get_follow_up_messages(), ["later followup"]);
+        let mut queued_prompt = Box::pin(session.prompt("explicit followup", PromptOptions {
+            streaming_behavior: Some(StreamingBehavior::FollowUp), ..Default::default()
+        }));
+        let queued = std::future::poll_fn(|cx| Poll::Ready(queued_prompt.as_mut().poll(cx))).await;
+        drop(queued_prompt);
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:reject-pending-input>", session.cwd().into(), Default::default());
+        let input_calls = Arc::new(AtomicU64::new(0));
+        let observed_calls = input_calls.clone();
+        extension.handlers.insert(maho_ext_api::EventKind::Input, vec![Arc::new(move |event, _| {
+            observed_calls.fetch_add(1, Ordering::SeqCst);
+            *event = maho_ext_api::ExtensionEvent::AgentStart;
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let (sent, received) = tokio::sync::oneshot::channel();
+        let sent = Arc::new(Mutex::new(Some(sent)));
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if matches!(event, AgentSessionEvent::ContinuationError { .. })
+                && let Some(sent) = lock(&sent).take() { sent.send(()).expect("error observer"); }
+        }));
+        maho_ext_api::ExtensionActions::send_user_message(&SessionExtensionActions(Arc::downgrade(&session.inner)),
+            maho_ext_api::UserMessageContent::Text("raw rejected input".into()), maho_ext_api::SendUserMessageOptions {
+                deliver_as: Some(StreamingBehavior::FollowUp), ..Default::default()
+            }).expect("extension input");
+        tokio::time::timeout(std::time::Duration::from_secs(5), received).await.expect("bounded rejection").expect("rejection event");
+        assert_eq!(session.get_follow_up_messages(), ["later followup", "explicit followup", "raw rejected input"]);
+        assert_eq!(input_calls.load(Ordering::SeqCst), 1, "fallback retains raw input without re-running hooks");
+        let agent_owned = session.agent.has_queued_messages();
+        drop(prompt);
+        drop(admission);
+        session.clear_queue(false);
+        assert!(matches!(queued, Poll::Ready(Ok(PromptDisposition::Queued))), "explicit queue mode must not wait for pending prompt");
+        assert!(!agent_owned, "pending post-compaction inputs belong to the session until checked");
+        assert!(!session.state().prompt_start_pending);
+        assert!(!session.work_barrier.has_active_work());
+        assert!(!session.agent.has_queued_messages());
+    }
+
+    #[tokio::test]
+    async fn deferred_post_compaction_inputs_deliver_once_after_first_response() {
+        use std::{future::Future, task::Poll};
+        for (clear_before_release, failed_first) in [(false, false), (true, false), (false, true)] {
+        let mut responses: Vec<_> = ["initial response", "steering response", "followup response"].into_iter()
+            .map(|text| maho_ai::providers::faux::faux_assistant_message(text, Default::default())).collect();
+        if failed_first {
+            responses[0].stop_reason = StopReason::Error;
+            responses[0].error_message = Some("invalid fixture request".into());
+        }
+        let session = retry_session(responses, 0);
+        let first = session.with_session_manager_mut(|manager| manager.append_message(
+            serde_json::json!({"role":"user","content":"old task","timestamp":0})));
+        session.with_session_manager_mut(|manager| manager.append_message(
+            serde_json::json!({"role":"user","content":"recent task","timestamp":0})));
+        session.rebuild_session_context().expect("history");
+        session.apply_compaction(&crate::compaction::compaction::CompactionResult {
+            summary: "digest".into(), first_kept_entry_id: first["id"].as_str().expect("entry").into(),
+            tokens_before: 10, estimated_tokens_after: None, usage: None, details: None,
+        }).expect("compaction");
+        let admission = session.prompt_admission.lock().await;
+        let mut prompt = Box::pin(session.prompt("pending turn", Default::default()));
+        std::future::poll_fn(|cx| { assert!(prompt.as_mut().poll(cx).is_pending()); Poll::Ready(()) }).await;
+        session.steer("later steering", None, Default::default()).await.expect("steering");
+        session.follow_up("later followup", None, Default::default()).await.expect("followup");
+        assert!(!session.agent.has_queued_messages());
+        if clear_before_release {
+            let cleared = session.clear_queue(false);
+            assert_eq!(cleared.steering, ["later steering"]);
+            assert_eq!(cleared.follow_up, ["later followup"]);
+        }
+        drop(admission);
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), prompt).await
+            .expect("bounded delivery").expect("prompt"), PromptDisposition::Started);
+        assert_eq!(session.get_last_assistant_text().as_deref(), Some(if clear_before_release { "initial response" } else { "followup response" }));
+        let persisted = session.with_session_manager(|manager| manager.entries());
+        for text in ["pending turn", "later steering", "later followup"] {
+            assert_eq!(persisted.iter().filter(|entry| entry["message"]["role"] == "user"
+                && entry["message"]["content"][0]["text"] == text).count(),
+                usize::from(!clear_before_release || text == "pending turn"), "{text}");
+        }
+        assert_eq!(session.pending_message_count(), 0);
+        assert!(!session.agent.has_queued_messages());
+        assert!(!session.state().prompt_start_pending);
+        assert!(!session.work_barrier.has_active_work());
+        }
     }
 
     #[tokio::test]
@@ -8436,6 +10285,53 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("current task", Default::default())).await.expect("bounded recovery").expect("prompt");
         assert_eq!(session.messages().last().and_then(AgentMessage::as_assistant).expect("assistant").stop_reason, StopReason::Stop);
         assert_eq!(session.compaction_state().status(), "completed");
+    }
+
+    #[tokio::test]
+    async fn rejected_overflow_recovery_retains_deferred_followup_in_agent_queue() {
+        use std::{future::Future, task::Poll};
+        let failed = maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+            stop_reason: Some(StopReason::Error), error_message: Some("prompt is too long".into()), ..Default::default()
+        });
+        let session = retry_session(vec![failed], 0);
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("compaction".into(), serde_json::json!({"keepRecentTokens":1,"reserveTokens":0})),
+        ])));
+        let first = session.with_session_manager_mut(|manager| manager.append_message(
+            serde_json::json!({"role":"user","content":"old task","timestamp":0})));
+        session.with_session_manager_mut(|manager| manager.append_message(
+            serde_json::json!({"role":"user","content":"recent task","timestamp":0})));
+        session.rebuild_session_context().expect("history");
+        session.apply_compaction(&crate::compaction::compaction::CompactionResult {
+            summary: "digest".into(), first_kept_entry_id: first["id"].as_str().expect("entry").into(),
+            tokens_before: 10, estimated_tokens_after: None, usage: None, details: None,
+        }).expect("compaction");
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        let weak = Arc::downgrade(&session.inner);
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:reject-deferred-overflow>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(move |_, _| {
+            let session = AgentSession { inner: weak.upgrade().expect("session") };
+            lock(&captured).push(session.agent.has_queued_messages());
+            Box::pin(async { Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {
+                cancel: Some(true), ..Default::default()
+            })) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let admission = session.prompt_admission.lock().await;
+        let mut prompt = Box::pin(session.prompt("current task", Default::default()));
+        std::future::poll_fn(|cx| { assert!(prompt.as_mut().poll(cx).is_pending()); Poll::Ready(()) }).await;
+        session.follow_up("retained input", None, Default::default()).await.expect("followup");
+        assert!(!session.agent.has_queued_messages());
+        drop(admission);
+        tokio::time::timeout(std::time::Duration::from_secs(5), prompt).await.expect("bounded rejection").expect_err("rejected compaction");
+        let queued = session.get_follow_up_messages();
+        let agent_owned = session.agent.has_queued_messages();
+        session.clear_queue(false);
+        assert_eq!(*lock(&observed), [true], "overflow transfers queue before recovery hook");
+        assert_eq!(queued, ["retained input"]);
+        assert!(agent_owned);
+        assert!(!session.state().prompt_start_pending);
     }
 
     #[tokio::test]
@@ -8774,6 +10670,28 @@ mod tests {
     }
 
     #[test]
+    fn enabled_hook_sources_preserve_scope_order_and_session_directory() {
+        let session = test_session();
+        let resource = |name: &str, scope, enabled| crate::package_manager::ResolvedResource {
+            path: name.into(), enabled, metadata: crate::package_manager::PathMetadata {
+                scope, base_dir: Some(session.cwd().to_owned()), ..Default::default()
+            }
+        };
+        session.set_hook_source_paths(vec![
+            resource("global.json", crate::source_info::SourceScope::User, true),
+            resource("project.json", crate::source_info::SourceScope::Project, true),
+            resource("ignored.json", crate::source_info::SourceScope::User, false),
+            resource("global.json", crate::source_info::SourceScope::User, true),
+        ], vec!["extra.json".into(), "extra.json".into()]);
+        let context = crate::sdk::extension_context::create(&session);
+        let sources = context.get_loaded_hook_sources();
+        assert_eq!(sources.global_hook_source_paths.len(), 1);
+        assert_eq!(sources.project_hook_source_paths.len(), 1);
+        assert_eq!(sources.pre_session_hook_source_paths.len(), 1);
+        assert_eq!(context.session_manager.get_session_dir(), Some(session.with_session_manager(|manager| manager.session_dir().into())));
+    }
+
+    #[test]
     fn prompt_expansion_uses_template_arguments_and_can_be_disabled() {
         let session = test_session();
         session.set_prompt_resources(vec![crate::prompt_templates::PromptTemplate {
@@ -8876,6 +10794,26 @@ mod tests {
         });
         assert_eq!(session.system_prompt(), "active turn prompt");
         assert_eq!(session.message_revision(), revision);
+    }
+
+    #[tokio::test]
+    async fn native_user_bash_hook_result_is_recorded_without_host_command_execution() {
+        let session = test_session();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:user-bash>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::UserBash, vec![Arc::new(|_, _| Box::pin(async {
+            Ok(maho_ext_api::EventResult::UserBash { operations: None, result: Some(maho_tools::bash_executor::BashResult {
+                output: "hook result".into(), exit_code: Some(0), cancelled: false, truncated: false, full_output_path: None,
+            }) })
+        }))]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let result = session.execute_user_bash("exit 99", None, true, None).await;
+        let messages = session.messages();
+        session.dispose().await;
+        let result = result.expect("hook result");
+        assert_eq!(result.output, "hook result");
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role(), "bashExecution");
     }
 
     #[tokio::test]
