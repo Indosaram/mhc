@@ -80,16 +80,18 @@ impl FactsExtractorRunner{
         let now=(self.now)();let instant=chrono::DateTime::from_timestamp_millis(now).ok_or("Invalid facts clock")?.to_rfc3339_opts(chrono::SecondsFormat::Millis,true);
         let selected=memory_core::facts::select_launchable(&pending,Some(&failures),&instant).selected;if selected.is_empty(){return Ok(FactsLaunchResult::Empty);}
         let resolution=(input.resolve_model)()?;
-        if let ReflectionModelResolution::CategoryUnavailable{cause,..}=&resolution{let mut io=FactsIo{queue:&self.queue,instant:&instant,warn};let terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};terminal.preflight_fail(&crate::facts_failure_recording::queue_entry_targets(&selected),&crate::facts_failure_recording::preflight_failure_id(None),memory_core::facts::FactsFailureReason::QuickCategoryUnavailable,cause).map_err(|error|error.to_string())?;return Ok(FactsLaunchResult::Skipped);}
+        if let ReflectionModelResolution::CategoryUnavailable{cause,..}=&resolution{warn(&format!("facts extractor quick category unavailable: {cause}"));let mut io=FactsIo{queue:&self.queue,instant:&instant,warn};let terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};terminal.preflight_fail(&crate::facts_failure_recording::queue_entry_targets(&selected),&crate::facts_failure_recording::preflight_failure_id(None),memory_core::facts::FactsFailureReason::QuickCategoryUnavailable,cause).map_err(|error|error.to_string())?;return Ok(FactsLaunchResult::Skipped);}
         crate::engine_session::prepare_memory_engine_session(&self.identity.id,&self.identity.paths,Default::default()).map_err(|error|error.to_string())?;
         let people=crate::facts_people_payload::read_facts_people_payload(&self.identity.paths.repo);
         let envelope=memory_core::facts::FactsPayloadEnvelope{version:1,identity:self.identity.id.clone(),today:instant[..10].into(),known_people:people.known_people,primary_human:people.primary_human};
         let capped=memory_core::facts::select_capped_facts_batch(&memory_core::facts::CappedFactsBatchInput{entries:selected.clone(),envelope:envelope.clone(),now:instant.clone(),max_bytes:None,starvation_ms:None});
-        {
+        let mut diagnostics=vec![];let refused={
             let mut io=FactsIo{queue:&self.queue,instant:&instant,warn};let mut terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};
-            if crate::facts_oversize::classify_oversize_payload(&mut terminal,&crate::facts_oversize::OversizeClassificationInput{envelope:&envelope,oversized:&capped.oversized,pending:&selected,envelope_oversized:capped.envelope_oversized,create_failure_id:None,max_bytes:None},&mut |_,_|{}).map_err(|error|error.to_string())?{return Ok(FactsLaunchResult::Skipped);}
-        }
-        if capped.selected.is_empty(){return Ok(FactsLaunchResult::Empty);}
+            crate::facts_oversize::classify_oversize_payload(&mut terminal,&crate::facts_oversize::OversizeClassificationInput{envelope:&envelope,oversized:&capped.oversized,pending:&selected,envelope_oversized:capped.envelope_oversized,create_failure_id:None,max_bytes:None},&mut |message,fields|diagnostics.push(format!("{message}: {fields}")))
+        };
+        for diagnostic in diagnostics{warn(&diagnostic);}
+        if refused.map_err(|error|error.to_string())?{return Ok(FactsLaunchResult::Skipped);}
+        if capped.selected.is_empty(){warn(&format!("facts batch selection carried nothing within the payload cap: pending={}, oversized={}",selected.len(),capped.oversized.len()));return Ok(FactsLaunchResult::Empty);}
         let batch=memory_core::support::random::random_uuid();let launched_at=(self.now)();
         if aborted(){return Ok(FactsLaunchResult::Skipped);}
         let dir=crate::facts_run_storage::reserve_facts_run_dir(&crate::facts_run_storage::ReserveFactsRunDirOptions{facts_dir:&self.identity.paths.facts,locks_dir:&self.identity.paths.locks,entries:&capped.selected,batch_id:&batch,launched_at,deadline_ms:Some(input.deadline_ms),termination_grace_ms:Some(input.termination_grace_ms),lock_wait_ms:None}).map_err(|error|error.to_string())?;
@@ -200,16 +202,17 @@ pub fn sweep_runner_artifacts(facts:&Path,warn:&mut dyn FnMut(&str)){crate::fact
         use memory_core::journal::entries::{TranscriptEntry,TextTranscriptEntry};
         let root=tempfile::tempdir().unwrap();let runner=Arc::new(runner(root.path()));
         let resolutions=Arc::new(std::sync::atomic::AtomicUsize::new(0));let calls=resolutions.clone();
+        let warnings=Arc::new(std::sync::atomic::AtomicUsize::new(0));let observed=warnings.clone();
         let mut port=runner.clone().native_extractor(NativeFactsAttemptOptions{
             resolve_model:Arc::new(move||{calls.fetch_add(1,Ordering::SeqCst);Ok(ReflectionModelResolution::CategoryUnavailable{category:"quick".into(),cause:"no_registry",attempted_chain:None,missing_providers:None})}),
-            env:Default::default(),config_sources:vec![],launch:crate::worker::model_preflight::Launcher{command:"missing-child-must-not-run".into(),prefix_args:vec![]},supervisor_command:"missing-supervisor-must-not-run".into(),supervisor_args:vec![],deadline_ms:900000,termination_grace_ms:5000,max_output_bytes:1024,people:memory_core::facts::person_routing::FactsPeopleRouting{enabled:true,max_entries:40,max_entry_chars:200},sandbox:None,warn:Arc::new(|error|panic!("{error}")),
+            env:Default::default(),config_sources:vec![],launch:crate::worker::model_preflight::Launcher{command:"missing-child-must-not-run".into(),prefix_args:vec![]},supervisor_command:"missing-supervisor-must-not-run".into(),supervisor_args:vec![],deadline_ms:900000,termination_grace_ms:5000,max_output_bytes:1024,people:memory_core::facts::person_routing::FactsPeopleRouting{enabled:true,max_entries:40,max_entry_chars:200},sandbox:None,warn:Arc::new(move|_|{observed.fetch_add(1,Ordering::SeqCst);}),
         });
         port.launch_pending(None).await.unwrap();assert!(!runner.identity.paths.repo.exists());assert_eq!(resolutions.load(Ordering::SeqCst),0);
         runner.queue.enqueue(memory_core::facts::queue::FactsEnqueueRequest{identity:"agent".into(),session_id:"session".into(),conversation_id:"conversation".into(),signal:None,entries:vec![TranscriptEntry::Text(TextTranscriptEntry::new("user","Question","1970-01-01T00:00:00.000Z","m:user","m")),TranscriptEntry::Text(TextTranscriptEntry::new("assistant","Answer","1970-01-01T00:00:00.000Z","m:assistant","m"))]}).unwrap();
         port.launch_pending(None).await.unwrap();assert_eq!(runner.queue.list_pending().unwrap().len(),1);
         assert!(!runner.identity.paths.repo.exists());assert!(!runner.identity.paths.facts.join("runs").exists());
         let failures=runner.failures.read_failures().unwrap();assert_eq!(failures.entries.len(),1);assert_eq!(resolutions.load(Ordering::SeqCst),1);
-        port.launch_pending(None).await.unwrap();assert_eq!(resolutions.load(Ordering::SeqCst),1);
+        port.launch_pending(None).await.unwrap();assert_eq!(resolutions.load(Ordering::SeqCst),1);assert_eq!(warnings.load(Ordering::SeqCst),1);
     }
     #[test]fn abandoned_sentinel_replays_without_outcome_or_payload(){
         let root=tempfile::tempdir().unwrap();let runner=runner(root.path());
