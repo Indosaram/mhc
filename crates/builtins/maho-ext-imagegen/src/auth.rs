@@ -17,6 +17,23 @@ pub enum ImageGenAuthResolution {
 }
 const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const SETUP_REASON: &str = "Image generation is not configured. Store an OpenAI API key for provider \"openai\", configure an OpenAI-compatible gateway in models.json and optionally pin it with PI_IMAGE_GEN_PROVIDER, or set OPENAI_API_KEY.";
+pub async fn resolve_context_image_gen_auth(ctx: &maho_ext_api::ExtensionContext) -> Result<ImageGenAuthResolution, maho_ext_api::ExtensionFailure> {
+    let registry = if let Some(registry)=crate::state::image_gen_registry_override(){registry}else{
+        std::sync::Arc::new(ContextAuthRegistry {stored_api_key:ctx.model_registry.get_stored_credential_type("openai")?==Some(maho_ai::auth::types::CredentialType::ApiKey),registry:ctx.model_registry.clone()}) as std::sync::Arc<dyn ImageGenAuthRegistry>
+    };
+    Ok(resolve_image_gen_auth(registry.as_ref(), &std::env::vars().collect()).await)
+}
+struct ContextAuthRegistry {stored_api_key:bool,registry:std::sync::Arc<dyn maho_ext_api::ModelRegistry>}
+impl ImageGenAuthRegistry for ContextAuthRegistry {
+    fn stored_openai_is_api_key(&self)->bool{self.stored_api_key}
+    fn get_all(&self)->Vec<Model>{self.registry.get_all()}
+    fn get_provider_auth(&self,provider:&str)->AuthFuture<'_>{
+        let provider=provider.to_owned();Box::pin(async move{self.registry.get_provider_auth(&provider).await.map(|auth|auth.map(|auth|Credentials{api_key:auth.auth.api_key,headers:auth.auth.headers.unwrap_or_default()})).map_err(|error|error.message)})
+    }
+    fn get_api_key_and_headers<'a>(&'a self,model:&'a Model)->AuthFuture<'a>{
+        Box::pin(async move{self.registry.get_api_key_and_headers(model).await.map(|auth|Some(Credentials{api_key:auth.auth.api_key,headers:auth.auth.headers.unwrap_or_default()})).map_err(|error|error.message)})
+    }
+}
 fn non_empty(value: Option<&str>) -> Option<&str> { value.map(str::trim).filter(|value| !value.is_empty()) }
 fn credentials(value: Option<Credentials>) -> Option<(String, BTreeMap<String,String>)> {
     let value = value?;

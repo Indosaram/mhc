@@ -8,8 +8,10 @@ license = "MIT"
 [dependencies]
 serde_json.workspace = true
 maho-ai = { path = "../../maho-ai" }
+maho-ext-api = { path = "../../maho-ext-api" }
 base64 = "=0.22.1"
 libc = "=0.2.186"
+tokio = { workspace = true, features = ["macros"] }
 
 [dev-dependencies]
 tempfile.workspace = true
