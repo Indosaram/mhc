@@ -92,7 +92,46 @@ fn invocation(id:&str,code:&str)->EvalCellInvocation {
     EvalCellInvocation {cell_id:id.into(),input:EvalToolInput {language:EvalLanguage::Py,code:code.into(),summary:"compute a value".into(),action:None,timeout:None,on_timeout:Some(TimeoutBehavior::Error),reset:None},signal:maho_ai::utils::abort::AbortController::new().signal(),on_update:None,mode:"print".into(),model:None,context:None}
 }
 
+#[tokio::test]
+async fn real_python_deadline_reports_preserved_state_and_cleans_worker() {
+    let (kernel,options)=fixture().await;
+    let initialized=run_eval_cell(options.clone(),invocation("timeout-init","retained_timeout_value = 41")).await;
+    let mut call=invocation("timeout-state","print('TIMEOUT_READY',flush=True)\nwhile True: pass");
+    call.input.timeout=Some(0.2);
+    let timed=tokio::time::timeout(std::time::Duration::from_secs(8),run_eval_cell(options.clone(),call)).await;
+    let retained=run_eval_cell(options.clone(),invocation("timeout-after","retained_timeout_value + 1")).await;
+    kernel.close().await.unwrap();
+    eprintln!("cleanup: timeout-state Python worker closed");
+    initialized.unwrap();
+    let timed=timed.unwrap().unwrap();
+    assert_eq!(timed.details["isError"],true);
+    let text=timed.content.iter().filter_map(|part|match part {maho_ext_api::ContentBlock::Text(text)=>Some(text.text.as_str()),_=>None}).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("variables are preserved"),"{text}");
+    assert_eq!(retained.unwrap().details["isError"],serde_json::Value::Null);
+    let snapshot=options.cell_manager.lock().unwrap().peek("timeout-state").unwrap();
+    assert_eq!(snapshot.state_retained,Some(true));
+}
+
 struct FinalFrameKernel;
+
+#[tokio::test]
+async fn real_js_deadline_reports_restarted_state_and_recovery() {
+    let kernel=Arc::new(maho_codemode::kernels::js::context_manager::JavaScriptKernel::start(std::path::Path::new(env!("CARGO_MANIFEST_DIR")),"timeout-js",4,None).await.unwrap());
+    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(JsManager(kernel.clone())),executor:Arc::new(Executor),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+    let mut call=invocation("timeout-js-state","globalThis.timeoutMarker=41; while(true) {}");
+    call.input.language=EvalLanguage::Js;call.input.timeout=Some(0.2);
+    let timed=tokio::time::timeout(std::time::Duration::from_secs(8),run_eval_cell(options.clone(),call)).await;
+    let mut next=invocation("timeout-js-after","typeof timeoutMarker");next.input.language=EvalLanguage::Js;
+    let recovered=run_eval_cell(options.clone(),next).await;
+    kernel.close().await.unwrap();assert!(kernel.pid().is_none());
+    eprintln!("cleanup: timeout-state JS worker closed; pid None");
+    let timed=timed.unwrap().unwrap();
+    let text=timed.content.iter().filter_map(|part|match part {maho_ext_api::ContentBlock::Text(text)=>Some(text.text.as_str()),_=>None}).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("variables from earlier cells are lost"),"{text}");
+    let recovered=recovered.unwrap();
+    assert!(recovered.content.iter().any(|part|matches!(part,maho_ext_api::ContentBlock::Text(text) if text.text.contains("undefined"))));
+    assert_eq!(options.cell_manager.lock().unwrap().peek("timeout-js-state").unwrap().state_retained,Some(false));
+}
 impl EvalKernel for FinalFrameKernel {
     fn run(&self,input:EvalKernelRunInput)->EvalKernelFuture<'_,serde_json::Value> {Box::pin(async move {
         if let Some(started)=input.on_started {started();}

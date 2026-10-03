@@ -207,6 +207,21 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
             if active.load(std::sync::atomic::Ordering::SeqCst) && message["type"]=="status" && let Err(error)=handler.handle(&message).await {result=Err(error);}
         }
         if !active.load(std::sync::atomic::Ordering::SeqCst) {handler.builder.state.active=false;}
+        if work_execution.timed_out() && let Err(error)=&mut result {
+            let mut outcome=None;
+            let pending=async {
+                let Some(handle)=work_execution.wait_interrupt_handle().await else {return std::future::pending().await;};
+                let Ok(retained)=handle.state_retained.await else {return std::future::pending().await;};
+                outcome=Some((retained,handle.note.clone()));
+                (retained,handle.note)
+            };
+            *error=super::interrupt_note::describe_timeout_state(error,Some(pending)).await;
+            if let Some((retained,note))=outcome {
+                let mut cell=work_cell.lock().expect("managed cell lock");
+                cell.source.state_retained=Some(retained);
+                cell.source.interrupt_note=note;
+            }
+        }
         let final_result=match result {Ok(result)=>handler.builder.finalize(&result).await,Err(error)=>handler.builder.finalize_cancellation(&error).await};
         handler.builder.state.active=false;
         active.store(false,std::sync::atomic::Ordering::SeqCst);
