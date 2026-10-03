@@ -1,5 +1,16 @@
 use maho_ext_pi_goal::goal::{lifecycle::GoalLifecycle,store::*,types::*};
 #[test]
+fn extension_wires_tools_command_and_hooks_together(){
+    use maho_ext_api::*;
+    use std::sync::Arc;
+    let temp=tempfile::tempdir().expect("fixture");let path=temp.path().to_owned();
+    let mut api=ExtensionApi::new(LoadedExtension::new("pi-goal",path.clone(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
+    maho_ext_pi_goal::index::register_goal_extension(&mut api,Arc::new(move|ctx|GoalStoreRef{base_dir:path.clone(),thread_id:ctx.session_manager.session_id().into()}),Arc::new(|_|Ok(()))).expect("extension registration");
+    assert_eq!(api.registered.tools.iter().map(|tool|tool.definition.name.as_str()).collect::<Vec<_>>(),["create_goal","update_goal","get_goal"]);
+    assert_eq!(api.registered.handlers.len(),6);
+    assert_eq!(api.registered.commands.len(),1);
+}
+#[test]
 fn native_lifecycle_registers_all_six_event_handlers(){
     use maho_ext_api::*;
     use std::sync::Arc;
