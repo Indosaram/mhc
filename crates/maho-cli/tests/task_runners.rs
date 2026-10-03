@@ -73,3 +73,43 @@ fn retired_parent_rejects_admission_before_catalog_probe() {
         senpi_task::runners::RunnerFailureKind::ModelUnavailable);
     assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
 }
+
+#[tokio::test]
+async fn child_registry_retains_native_credentials_and_retires_with_parent() {
+    let dir = tempfile::tempdir().expect("isolated native parent");
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let credentials = std::sync::Arc::new(maho_core::auth_storage::AuthStorage::in_memory(Default::default()));
+    let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+        maho_core::model_runtime::CreateModelRuntimeOptions {
+            credentials: Some(credentials.clone()), providers: Some(Vec::new()), ..Default::default()
+        });
+    runtime.register_provider("task-fixture", maho_core::provider_composer::ProviderConfigInput {
+        config: maho_core::model_config_schema::ModelsJsonProvider {
+            api: Some("openai-completions".into()), api_key: Some("fixture-key".into()),
+            base_url: Some("http://127.0.0.1:1/v1".into()),
+            models: Some(vec![maho_core::model_config_schema::ModelsJsonModel { id: "selected".into(), ..Default::default() }]),
+            ..Default::default()
+        }, ..Default::default()
+    }).expect("configured native provider");
+    let model = runtime.get_model("task-fixture", "selected").expect("fixture model");
+    let created = tokio::time::timeout(std::time::Duration::from_secs(5),
+        maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+            model: Some(model.clone()), model_runtime: Some(runtime), tools: Some(Vec::new()),
+            session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
+            ..Default::default()
+        })).await.expect("bounded native construction").expect("native SDK parent");
+    let session = std::sync::Arc::new(created.session);
+
+    let resolve = maho_cli::cli::task_runners::live_parent_registry(std::sync::Arc::downgrade(&session));
+    let registry = resolve().expect("live parent registry");
+    let child_credentials = registry.auth_storage().downcast::<maho_core::auth_storage::AuthStorage>().expect("native credential type");
+    let child_model = registry.find("task-fixture", "selected").expect("resolved model")
+        .downcast::<maho_ai::types::Model>().expect("native model type");
+    session.dispose().await;
+    drop(session);
+
+    assert!(std::sync::Arc::ptr_eq(&credentials, &child_credentials));
+    assert_eq!(*child_model, model);
+    assert!(resolve().is_none());
+}
