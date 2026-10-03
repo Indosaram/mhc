@@ -316,14 +316,21 @@ async fn shared_parent_tool_obeys_registered_admission_hooks() {
 #[tokio::test]
 async fn native_shared_definition_cancels_an_entered_parent_tool() {
     use std::sync::Arc;
+    struct ExecutionLifetime(tokio::sync::mpsc::UnboundedSender<()>);
+    impl Drop for ExecutionLifetime {
+        fn drop(&mut self) { let _ = self.0.send(()); }
+    }
     let dir = tempfile::tempdir().expect("isolated shared cancellation");
     let cwd = dir.path().to_string_lossy().into_owned();
     let provider = maho_ai::providers::faux::faux_provider(Default::default());
     let (entered, mut entries) = tokio::sync::mpsc::unbounded_channel();
+    let (dropped, mut drops) = tokio::sync::mpsc::unbounded_channel();
     let tool = maho_ext_api::ToolDefinition::new("pending_child_tool", "pending child fixture",
         serde_json::json!({"type":"object","properties":{}}), Arc::new(move |_| {
             let entered = entered.clone();
+            let lifetime = ExecutionLifetime(dropped.clone());
             Box::pin(async move {
+                let _lifetime = lifetime;
                 entered.send(()).expect("entry observer");
                 std::future::pending().await
             })
@@ -348,9 +355,11 @@ async fn native_shared_definition_cancels_an_entered_parent_tool() {
             signal.abort();
         })
     }).await;
+    let dropped = tokio::time::timeout(std::time::Duration::from_secs(5), drops.recv()).await;
     session.dispose().await;
 
     assert!(outcome.expect("bounded shared cancellation").0.is_err());
+    dropped.expect("bounded parent executor drop").expect("executor lifetime ended");
 }
 
 #[tokio::test]
