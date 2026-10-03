@@ -1,3 +1,13 @@
+import { createServer, type Socket } from "node:net";
+import { unlinkSync } from "node:fs";
+const receiptPath = process.argv[2];
+const observers = new Set<Socket>();
+const receipts = receiptPath ? createServer(socket => {
+  observers.add(socket);
+  socket.on("close", () => observers.delete(socket));
+  socket.on("error", () => observers.delete(socket));
+}) : undefined;
+if (receiptPath) receipts?.listen(receiptPath, () => console.log(JSON.stringify({ receipt: "provider_receipt_ready", path: receiptPath })));
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
@@ -18,6 +28,7 @@ const server = Bun.serve({
       start(controller) {
         controller.enqueue(chunk({ role: "assistant", content: cancel ? "task44-cancellation-held" : content }, null));
         if (cancel) {
+          if (text.includes("task44-drop")) for (const observer of observers) observer.write("TASK44_PROVIDER_HELD\n");
           request.signal.addEventListener("abort", () => {
             console.log(JSON.stringify({ receipt: "provider_abort", text }));
             controller.close();
@@ -34,5 +45,12 @@ const server = Bun.serve({
   },
 });
 console.log(JSON.stringify({ receipt: "provider_ready", url: `${server.url}v1` }));
-process.on("SIGTERM", () => { server.stop(true); process.exit(0); });
-process.on("SIGINT", () => { server.stop(true); process.exit(0); });
+function stop() {
+  server.stop(true);
+  for (const observer of observers) observer.destroy();
+  receipts?.close();
+  if (receiptPath) unlinkSync(receiptPath);
+  process.exit(0);
+}
+process.on("SIGTERM", stop);
+process.on("SIGINT", stop);

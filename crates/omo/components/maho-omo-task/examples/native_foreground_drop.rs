@@ -1,6 +1,6 @@
 #[path = "../tests/support/mod.rs"]
 mod support;
-use std::{collections::BTreeMap, sync::{Arc, Mutex}, time::Duration};
+use std::{collections::BTreeMap, io::BufRead, sync::{Arc, Mutex}, time::Duration};
 use maho_ext_api::*;
 use maho_omo_task::{component::TaskComponent, engine::{compose_task_engine_with_rpc_respawn, ComposeTaskEngineDeps}, engine_runners::{build_process_runner, build_rpc_respawn_runner}};
 use senpi_task::{manager::types::{ManagedRunners, ListScope}, runners::{rpc::{process::{RpcSpawnDescriptor, RpcChildProcess}, model_admission::{RpcModelAdmissionOptions, create_rpc_model_admission}, terminate::terminate_rpc_child}, rpc_process::RpcProcessRunnerOptions, types::TerminateOptions}};
@@ -26,6 +26,9 @@ impl Drop for Cleanup {
 async fn main()->Result<(),Box<dyn std::error::Error>> {
     let mut args=std::env::args().skip(1);
     let executable=args.next().ok_or("native mhc required")?; let home=args.next().ok_or("isolated HOME required")?;
+    let receipt_socket=args.next().ok_or("provider receipt Unix socket required")?;
+    let receipt=std::os::unix::net::UnixStream::connect(receipt_socket)?;
+    receipt.set_read_timeout(Some(Duration::from_secs(15)))?;
     let env=BTreeMap::from([("HOME".into(),home.clone()),("MAHO_CODING_AGENT_DIR".into(),std::path::Path::new(&home).join("agent").to_string_lossy().into_owned()),("PATH".into(),"/usr/bin:/bin".into())]);
     let catalog=RpcSpawnDescriptor { command:executable.clone(),args:["--offline","--no-session","--no-tools","--no-skills","--no-prompt-templates","--list-models","task44"].map(str::to_owned).into(),cwd:home.clone(),env:env.clone() };
     let admission=create_rpc_model_admission(RpcModelAdmissionOptions { build_spawn:Some(Arc::new(move |_| catalog.clone())),..Default::default() });
@@ -41,19 +44,22 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
     let mut start=ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::New,initial_model_provenance:None,previous_session_file:None });
     for handler in &api.registered.handlers[&EventKind::SessionStart] { handler(&mut start,&context).await?; }
     let task=api.registered.tools.iter().find(|tool| tool.definition.name=="task").ok_or("task missing")?;
-    let (ready,received)=tokio::sync::oneshot::channel(); let ready=Mutex::new(Some(ready));
-    let mut invocation=(task.definition.execute)(ToolCall { id:"native-foreground-drop",params:serde_json::json!({"prompt":"task44-drop","subagent_type":"native-proof","model":"task44/native","run_in_background":false}),signal:Default::default(),on_update:Some(Arc::new(move |partial| {
-        if partial.details.as_ref().and_then(|details| details.get("lastAssistantLine")).and_then(JsonValue::as_str)==Some("task44-cancellation-held") && let Some(ready)=ready.lock().expect("ready").take() { let _=ready.send(()); }
-        Ok(())
-    })),context:Some(&context) });
+    let (ready,received)=tokio::sync::oneshot::channel();
+    let provider_receipt=std::thread::spawn(move || {
+        let line=std::io::BufReader::new(receipt).lines().next().transpose();
+        let accepted=matches!(&line,Ok(Some(line)) if line=="TASK44_PROVIDER_HELD");
+        let _=ready.send(accepted);
+    });
+    let mut invocation=(task.definition.execute)(ToolCall { id:"native-foreground-drop",params:serde_json::json!({"prompt":"task44-drop","subagent_type":"native-proof","model":"task44/native","run_in_background":false}),signal:Default::default(),on_update:None,context:Some(&context) });
     let (stop,stopped)=std::sync::mpsc::channel(); let (timeout,deadline)=tokio::sync::oneshot::channel();
     let watchdog=std::thread::spawn(move || { if matches!(stopped.recv_timeout(Duration::from_secs(15)),Err(std::sync::mpsc::RecvTimeoutError::Timeout)) { let _=timeout.send(()); } });
     let observation=tokio::select! {
         result=&mut invocation=>Err(format!("foreground settled before provider-held signal: {result:?}")),
-        result=received=>result.map_err(|error| error.to_string()),
+        result=received=>result.map_err(|error| error.to_string()).and_then(|held| if held { Ok(()) } else { Err("missing exact provider-held receipt".into()) }),
         _=deadline=>Err("native foreground provider-held progress deadline exceeded".into()),
     };
     let _=stop.send(()); watchdog.join().map_err(|_| "progress watchdog panicked")?;
+    provider_receipt.join().map_err(|_| "provider receipt reader panicked")?;
     observation.map_err(std::io::Error::other)?;
     let pending=component.engine.manager.start(&senpi_task::manager::types::ManagerStartSpec {
         prompt:"task44-launch".into(),subagent_type:Some("native-proof".into()),model:Some("task44/native".into()),
