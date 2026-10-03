@@ -1,4 +1,5 @@
 use maho_ext_pi_rules::rules::{matcher::*,types::*};
+#[test]fn pinned_range_and_punctuation_boundaries(){let cases:serde_json::Value=serde_json::from_str(include_str!("fixtures/pinned-range-punct.json")).expect("pinned corpus");for case in cases.as_array().expect("cases"){let pattern=case["pattern"].as_str().expect("pattern");let path=case["path"].as_str().expect("path");let f=RuleFrontmatter{globs:Some(PatternList::Single(pattern.into())),..Default::default()};let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:path,scope_relative:None,basename:path}).expect("matcher");assert_eq!(result.matched,case["matched"].as_bool().expect("matched"),"{pattern}: {path}");}}
 #[test]
 fn pinned_nested_brace_and_class_boundaries_match(){
     let cases:serde_json::Value=serde_json::from_str(include_str!("fixtures/pinned-matcher-boundary-delta.json")).expect("pinned source corpus");

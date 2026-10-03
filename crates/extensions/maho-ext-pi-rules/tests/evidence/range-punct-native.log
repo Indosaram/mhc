@@ -1,0 +1,11 @@
+status: completed exit_code: 0
+    Checking maho-ext-pi-rules v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-rules)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.57s
+
+LANE39_MATCHER_NATIVE_CLIPPY_EXIT=0
+   Compiling maho-ext-pi-rules v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-rules)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.57s
+     Running `/home/indo/T9-Mac/.cargo-target/maho-code/lane-39/debug/examples/matcher_qa`
+PASS pinned matcher corpus: 55 cases; no tasks, sockets or temporary stores
+
+LANE39_MATCHER_NATIVE_EXIT=0

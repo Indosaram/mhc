@@ -1,0 +1,12 @@
+import { readFile } from 'node:fs/promises';
+const pin='12ad906f0b29e949ebbd1f89d8f85789578aa6e6';
+const response=await fetch(`https://raw.githubusercontent.com/code-yeongyu/pi-rules/${pin}/src/rules/matcher.ts`);
+if(!response.ok)throw new Error(`Source ${response.status}`);
+const source=new Bun.Transpiler({loader:'ts'}).transformSync(await response.text());
+const cases=JSON.parse(await readFile(new URL('../fixtures/pinned-range-punct.json',import.meta.url),'utf8'));
+const inputs=cases.map(({pattern,path})=>({pattern,path}));
+const script=source+`\nconst inputs=${JSON.stringify(inputs)};console.log(JSON.stringify(inputs.map(({pattern,path})=>({pattern,path,...matchRule({frontmatter:{globs:pattern},isSingleFile:false,pathBases:{projectRelative:path,basename:path}})}))));`;
+const child=Bun.spawn(['node','--input-type=module','-e',script],{cwd:process.env.PI_RULES_SRC??'/home/indo/.omo/agent/git/github.com/code-yeongyu/pi-rules',stdout:'pipe',stderr:'inherit'});
+const output=await new Response(child.stdout).text();const exit=await child.exited;
+if(exit!==0||JSON.stringify(JSON.parse(output))!==JSON.stringify(cases))throw new Error('Source corpus mismatch');
+console.log(`PASS pin=${pin} cases=${cases.length} child_exit=${exit}`);

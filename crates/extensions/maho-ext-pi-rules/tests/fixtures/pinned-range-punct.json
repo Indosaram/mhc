@@ -1,0 +1,446 @@
+[
+  {
+    "pattern": "{10..12}",
+    "path": "10",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{10..12}",
+    "path": "11",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{10..12}",
+    "path": "12",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{10..12}",
+    "path": "01",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{10..12}",
+    "path": "02",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{10..12}",
+    "path": "03",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{10..12}",
+    "path": "b",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{10..12}",
+    "path": "d",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{10..12}",
+    "path": "!",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{10..12}",
+    "path": "[",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{10..12}",
+    "path": "a/x/b",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{01..03}",
+    "path": "10",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{01..03}",
+    "path": "11",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{01..03}",
+    "path": "12",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{01..03}",
+    "path": "01",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{01..03}",
+    "path": "02",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{01..03}",
+    "path": "03",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{01..03}",
+    "path": "b",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{01..03}",
+    "path": "d",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{01..03}",
+    "path": "!",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{01..03}",
+    "path": "[",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{01..03}",
+    "path": "a/x/b",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{a..f..2}",
+    "path": "10",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{a..f..2}",
+    "path": "11",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{a..f..2}",
+    "path": "12",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{a..f..2}",
+    "path": "01",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{a..f..2}",
+    "path": "02",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{a..f..2}",
+    "path": "03",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{a..f..2}",
+    "path": "b",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{a..f..2}",
+    "path": "d",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{a..f..2}",
+    "path": "!",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "{a..f..2}",
+    "path": "[",
+    "matched": true,
+    "reason": {
+      "kind": "glob",
+      "pattern": "{a..f..2}"
+    }
+  },
+  {
+    "pattern": "{a..f..2}",
+    "path": "a/x/b",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "[[:punct:]]",
+    "path": "10",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "[[:punct:]]",
+    "path": "11",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "[[:punct:]]",
+    "path": "12",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "[[:punct:]]",
+    "path": "01",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "[[:punct:]]",
+    "path": "02",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "[[:punct:]]",
+    "path": "03",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "[[:punct:]]",
+    "path": "b",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "[[:punct:]]",
+    "path": "d",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "[[:punct:]]",
+    "path": "!",
+    "matched": true,
+    "reason": {
+      "kind": "glob",
+      "pattern": "[[:punct:]]"
+    }
+  },
+  {
+    "pattern": "[[:punct:]]",
+    "path": "[",
+    "matched": true,
+    "reason": {
+      "kind": "glob",
+      "pattern": "[[:punct:]]"
+    }
+  },
+  {
+    "pattern": "[[:punct:]]",
+    "path": "a/x/b",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "10",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "11",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "12",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "01",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "02",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "03",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "b",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "d",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "!",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "[",
+    "matched": false,
+    "reason": {
+      "kind": "no-match"
+    }
+  },
+  {
+    "pattern": "a/**/b",
+    "path": "a/x/b",
+    "matched": true,
+    "reason": {
+      "kind": "glob",
+      "pattern": "a/**/b"
+    }
+  }
+]
