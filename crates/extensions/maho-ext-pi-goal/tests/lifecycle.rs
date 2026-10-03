@@ -1,5 +1,24 @@
 use maho_ext_pi_goal::goal::{lifecycle::GoalLifecycle,store::*,types::*};
 #[test]
+fn distinct_thread_rebind_discards_pending_usage_and_old_turn_markers(){
+    let temp=tempfile::tempdir().expect("stores");
+    let first=GoalStoreRef{base_dir:temp.path().into(),thread_id:"first-thread".into()};
+    let fork=GoalStoreRef{base_dir:temp.path().into(),thread_id:"fork-thread".into()};
+    let a=create_goal_at(&first,"first",10,"first-goal".into()).expect("first");
+    let b=create_goal_at(&fork,"fork",10,"fork-goal".into()).expect("fork");
+    let mut lifecycle=GoalLifecycle{agent_turn_in_progress:true,..Default::default()};
+    lifecycle.begin_agent_goal_accounting(&a,10_000);lifecycle.mark_goal_blocked_this_turn(&a);
+    lifecycle.turn_usage.note_message_end(&serde_json::json!({"role":"assistant","usage":{"input":12,"output":3}}));
+    let untouched=lifecycle.account_current_agent_turn(&fork,GoalAccountingMode::Active,None,11_000).expect("rebound").expect("goal");
+    assert_eq!(untouched,b);assert!(lifecycle.agent_goal_accounting.is_none());assert!(lifecycle.blocked_this_turn_goal_id.is_none());
+    lifecycle.begin_agent_goal_accounting(&b,11_000);
+    lifecycle.turn_usage.note_message_end(&serde_json::json!({"role":"assistant","usage":{"input":2,"output":1}}));
+    let accounted=lifecycle.account_current_agent_turn(&fork,GoalAccountingMode::Active,None,12_000).expect("account").expect("goal");
+    assert_eq!(accounted.tokens_used,3.0);assert_eq!(accounted.time_used_seconds,1.0);
+    assert_eq!(read_goal(&first).expect("first remains"),Some(a));
+    assert_ne!(goal_file_path(&first),goal_file_path(&fork));
+}
+#[test]
 fn extension_wires_tools_command_and_hooks_together(){
     use maho_ext_api::*;
     use std::sync::Arc;
