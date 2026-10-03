@@ -15,12 +15,20 @@ impl ExtensionUi for Ui{
 }
 fn context(cwd:&Path)->ExtensionContext{ExtensionContext{ui:Arc::new(Ui),mode:ExtensionMode::Print,has_ui:false,cwd:cwd.into(),agent_dir:cwd.join("agent"),session_manager:Arc::new(Session),model_registry:Arc::new(Registry),model:None,thinking_level:None,service_tier:None,effective_service_tier:None,scoped_models:Vec::new(),goal_store_file:None,loaded_extension_paths:Vec::new(),signal:None,steering_signal:None,is_idle_fn:Arc::new(||true),wait_for_idle_fn:Arc::new(||Box::pin(async{})),is_project_trusted_fn:Arc::new(||true),is_compacting_fn:Arc::new(||false),get_system_prompt_fn:Arc::new(String::new),get_system_prompt_options_fn:Arc::new(BuildSystemPromptOptions::default),registered_mcp_servers:Vec::new(),update_tool_hook_status:None}}
 struct FixtureFilesystem{home:std::path::PathBuf}
+#[derive(Default)]
+struct ScanActions(std::sync::Mutex<Vec<(String,Option<JsonValue>)>>);
+impl ExtensionActions for ScanActions {
+    fn send_message(&self,_:CustomMessage,_:SendMessageOptions)->Result<(),ExtensionFailure>{Ok(())}
+    fn send_user_message(&self,_:UserMessageContent,_:SendUserMessageOptions)->Result<(),ExtensionFailure>{Ok(())}
+    fn append_entry(&self,kind:&str,data:Option<JsonValue>)->Result<(),ExtensionFailure>{self.0.lock().expect("entries").push((kind.into(),data));Ok(())}
+    fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure>{Ok(Vec::new())}
+}
 impl maho_ext_pi_rules::rules::engine::EngineDeps for FixtureFilesystem{
     fn find_candidates(&mut self,options:maho_ext_pi_rules::rules::finder::FinderOptions<'_>)->Vec<maho_ext_pi_rules::rules::types::RuleCandidate>{maho_ext_pi_rules::rules::finder::find_rule_candidates(maho_ext_pi_rules::rules::finder::FinderOptions{project_root:options.project_root,target_file:options.target_file,home_dir:Some(&self.home),disabled_sources:options.disabled_sources,skip_user_home:options.skip_user_home,cache:options.cache})}
     fn read_file(&mut self,path:&str)->Option<String>{std::fs::read_to_string(path).ok()}
     fn find_project_root(&mut self,path:&str)->Option<String>{maho_ext_pi_rules::rules::project_root::find_project_root(Path::new(path),None).map(|path|path.to_string_lossy().into_owned())}
 }
-fn register_fixture(api:&mut ExtensionApi,root:&Path){maho_ext_pi_rules::index::register_rule_injection_hooks_with_engine(api,maho_ext_pi_rules::rules::engine::Engine::new(maho_ext_pi_rules::config::config_from_values(|_|None),FixtureFilesystem{home:root.join("fixture-home")}));}
+fn register_fixture(api:&mut ExtensionApi,root:&Path){api.runtime.bind(Arc::new(ScanActions::default()));maho_ext_pi_rules::index::register_rule_injection_hooks_with_engine(api,maho_ext_pi_rules::rules::engine::Engine::new(maho_ext_pi_rules::config::config_from_values(|_|None),FixtureFilesystem{home:root.join("fixture-home")}));}
 #[tokio::test]
 async fn hook_discovers_only_its_injected_home_rules(){
     let first=tempfile::tempdir().expect("first");let second=tempfile::tempdir().expect("second");
@@ -30,6 +38,26 @@ async fn hook_discovers_only_its_injected_home_rules(){
         let mut event=ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent{prompt:"test".into(),images:None,system_prompt:String::new(),system_prompt_options:BuildSystemPromptOptions::default()});
         let result=api.registered.handlers[&EventKind::BeforeAgentStart][0](&mut event,&ctx).await.expect("hook");let EventResult::BeforeAgentStart(result)=result else{panic!("injection")};let prompt=result.system_prompt.expect("prompt");assert!(prompt.contains(expected));assert!(!prompt.contains(excluded));
     }
+}
+#[tokio::test]
+async fn session_scan_entries_follow_current_runtime_binding_and_disabled_start() {
+    let root=tempfile::tempdir().expect("fixture");let ctx=context(root.path());
+    let mut api=ExtensionApi::new(LoadedExtension::new("pi-rules",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
+    register_fixture(&mut api,root.path());
+    let first=Arc::new(ScanActions::default());api.runtime.bind(first.clone());
+    let mut event=ExtensionEvent::SessionStart(SessionStartEvent{reason:SessionReason::New,initial_model_provenance:None,previous_session_file:None});
+    let hook=&api.registered.handlers[&EventKind::SessionStart][0];hook(&mut event,&ctx).await.expect("start");
+    assert_eq!(*first.0.lock().expect("entries"),vec![("pi-rules.scan".into(),Some(serde_json::json!({"cwd":root.path(),"reason":"new"})))]);
+    let second=Arc::new(ScanActions::default());api.runtime.bind(second.clone());
+    event=ExtensionEvent::SessionStart(SessionStartEvent{reason:SessionReason::Fork,initial_model_provenance:None,previous_session_file:None});
+    hook(&mut event,&ctx).await.expect("fork");
+    assert_eq!(first.0.lock().expect("entries").len(),1);
+    assert_eq!(second.0.lock().expect("entries")[0].1,Some(serde_json::json!({"cwd":root.path(),"reason":"fork"})));
+    api.set_flag("pi-rules-disabled",FlagValue::Boolean(true));hook(&mut event,&ctx).await.expect("disabled start");
+    assert_eq!(second.0.lock().expect("entries").len(),1);
+    let mut compact=ExtensionEvent::SessionCompact(SessionCompactEvent::Rejected{reason:CompactionReason::Manual,request_id:"fixture".into(),rejection_cause:CompactionRejectionCause::CancelledByExtension});
+    api.registered.handlers[&EventKind::SessionCompact][0](&mut compact,&ctx).await.expect("compact");
+    assert_eq!(second.0.lock().expect("entries")[1].1,Some(serde_json::json!({"cwd":root.path(),"reason":"compact"})));
 }
 #[test]
 fn registers_four_injection_hooks_and_presence_flags(){

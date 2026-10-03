@@ -1,0 +1,10 @@
+status: completed exit_code: 0
+    Checking maho-tools v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-tools)
+    Checking maho-ext-api v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-ext-api)
+    Checking maho-ext-host v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-ext-host)
+    Checking maho-core v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-core)
+    Checking maho-interactive v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-interactive)
+    Checking maho-ext-pi-rules v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-rules)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 14.74s
+
+LANE39_RULES_SCAN_CLIPPY_EXIT=0
