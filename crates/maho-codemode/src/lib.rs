@@ -143,6 +143,11 @@ fn install_eval(api:&mut ExtensionApi,host:&Arc<Mutex<ExtensionApi>>,state:&Arc<
 }
 
 async fn complete_with_signal(complete:&ContextCompletion,request:completion::handler::CompletionRequest,mut context:ExtensionContext,signal:maho_ai::utils::abort::AbortSignal) -> Result<serde_json::Value,completion::handler::CompletionError> {
+    let request=completion::handler::normalize_request(request);
+    let tier=completion::handler::resolve_completion_tier(request.model.as_deref())?;
+    if tier!=completion::handler::CompletionTier::Default {
+        context.model=Some(completion::handler::resolve_requested_model(tier,context.model.as_ref(),&context.model_registry.get_available())?);
+    }
     let cancellation=maho_ext_api::AbortSignal::default();
     context.signal=Some(cancellation.clone());
     if signal.aborted() {cancellation.abort();}

@@ -73,6 +73,41 @@ impl SessionManager for Session {fn get_entries(&self)->Vec<SessionEntry> {vec![
 struct Registry;
 
 #[tokio::test]
+async fn registered_callable_enforces_configured_detached_capacity() {
+    let root=tempfile::tempdir().unwrap();std::fs::create_dir(root.path().join(".maho")).unwrap();
+    std::fs::write(root.path().join(".maho/codemode.json"),r#"{"languages":{"py":false,"js":true,"rb":false,"jl":false},"maxDetachedCells":1,"cellTimeoutSeconds":0.01}"#).unwrap();
+    let host=Arc::new(Host::default());let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
+    let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
+    maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(|_,_|Box::pin(async {panic!("capacity does not use completion")})),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None}}).unwrap();
+    let ctx=context(root.path());let mut start=ExtensionEvent::SessionStart(SessionStartEvent {reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None});
+    (api.registered.handlers[&EventKind::SessionStart][0])(&mut start,&ctx).await.unwrap();
+    let execute=host.tools.lock().unwrap().last().unwrap().definition.execute.clone();
+    let run=|id|execute(maho_tools::definition::ToolCall {id,params:serde_json::json!({"language":"js","code":"await new Promise(() => {})","summary":"capacity","on_timeout":"detach"}),signal:Default::default(),on_update:None,context:Some(&ctx)});
+    let first=tokio::time::timeout(std::time::Duration::from_secs(5),run("capacity-first")).await;
+    let second=tokio::time::timeout(std::time::Duration::from_secs(5),run("capacity-second")).await;
+    let mut shutdown=ExtensionEvent::SessionShutdown(SessionShutdownEvent {reason:SessionReason::Quit,target_session_file:None,signal:None});
+    (api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown,&ctx).await.unwrap();
+    assert_eq!(first.unwrap().unwrap().details["cells"][0]["status"],"detached");
+    assert_eq!(second.unwrap().unwrap().details["code"],"eval_background_capacity_reached");
+}
+
+#[tokio::test]
+async fn registered_callable_schema_uses_resolved_language_settings() {
+    let root=tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join(".maho")).unwrap();
+    std::fs::write(root.path().join(".maho/codemode.json"),r#"{"languages":{"py":true,"js":false,"rb":false,"jl":false},"maxDetachedCells":3}"#).unwrap();
+    let host=Arc::new(Host::default());let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
+    let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
+    maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(|_,_|Box::pin(async {panic!("capacity does not use completion")})),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None}}).unwrap();
+    let ctx=context(root.path());let mut start=ExtensionEvent::SessionStart(SessionStartEvent {reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None});
+    (api.registered.handlers[&EventKind::SessionStart][0])(&mut start,&ctx).await.unwrap();
+    let schema=host.tools.lock().unwrap().last().unwrap().definition.parameters.clone();
+    let mut shutdown=ExtensionEvent::SessionShutdown(SessionShutdownEvent {reason:SessionReason::Quit,target_session_file:None,signal:None});
+    (api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown,&ctx).await.unwrap();
+    assert_eq!(schema["properties"]["language"]["anyOf"],serde_json::json!([{"const":"py","type":"string"}]));
+}
+
+#[tokio::test]
 async fn concurrent_completion_keeps_each_invocations_context() {
     let root=tempfile::tempdir().unwrap();
     std::fs::create_dir(root.path().join(".maho")).unwrap();

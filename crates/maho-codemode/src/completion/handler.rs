@@ -35,6 +35,19 @@ pub fn resolve_completion_tier(requested: Option<&str>) -> Result<CompletionTier
     }
 }
 
+pub fn resolve_requested_model(tier: CompletionTier, current: Option<&maho_ai::model::Model>, available: &[maho_ai::model::Model]) -> Result<maho_ai::model::Model, CompletionError> {
+    if tier==CompletionTier::Default {return current.cloned().ok_or_else(||CompletionError("completion() has no model/credentials".into()));}
+    let mut selected=None::<&maho_ai::model::Model>;
+    for model in available {
+        if selected.is_none_or(|previous| {
+            let cost=model.cost.input+model.cost.output;
+            let previous=previous.cost.input+previous.cost.output;
+            if tier==CompletionTier::Smol {cost<previous} else {cost>previous}
+        }) {selected=Some(model);}
+    }
+    selected.cloned().ok_or_else(||CompletionError(format!("completion() could not resolve the \"{}\" model tier: no configured models are available.",if tier==CompletionTier::Smol {"smol"} else {"slow"})))
+}
+
 pub fn format_completion(message: &AssistantMessage, provider: &str, model_id: &str, structured: bool) -> Result<Value, CompletionError> {
     if message.stop_reason == StopReason::Error { return Err(CompletionError(message.error_message.clone().unwrap_or_else(|| "completion() request failed.".into()))); }
     if message.stop_reason == StopReason::Aborted { return Err(CompletionError("completion() request aborted.".into())); }
