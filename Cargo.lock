@@ -2050,6 +2050,7 @@ version = "0.0.0"
 dependencies = [
  "maho-ext-api",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

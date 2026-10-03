@@ -35,3 +35,66 @@ impl PendingQuestion{
     }
     pub fn remaining_ms(&self,now:u64)->u64{self.deadline_at_ms.saturating_sub(now)}
 }
+
+/// The question owner drives the authoritative idle deadline independently of UI countdowns.
+pub struct PendingTimer {
+    pending: std::sync::Arc<std::sync::Mutex<PendingQuestion>>,
+    changed: tokio::sync::watch::Sender<u64>,
+    started: tokio::time::Instant,
+    task: tokio::task::JoinHandle<()>,
+}
+impl PendingTimer {
+    pub fn new(request: QuestionRequest, on_timeout: std::sync::Arc<dyn Fn(QuestionResponse) + Send + Sync>) -> Self {
+        let timeout = request.timeout_ms;
+        let pending = std::sync::Arc::new(std::sync::Mutex::new(PendingQuestion::new(request, 0, timeout, None)));
+        let (changed, mut updates) = tokio::sync::watch::channel(0);
+        let started = tokio::time::Instant::now();
+        let state = pending.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let deadline = {
+                    let question = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if question.result.is_some() { return; }
+                    question.deadline_at_ms
+                };
+                tokio::select! {
+                    biased;
+                    update = updates.changed() => if update.is_err() { return; },
+                    () = tokio::time::sleep_until(started + std::time::Duration::from_millis(deadline)) => {
+                        let response = {
+                            let mut question = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                            if question.result.is_some() { return; }
+                            let now = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                            if now < question.deadline_at_ms { continue; }
+                            question.timeout(now)
+                        };
+                        on_timeout(response);
+                        return;
+                    }
+                }
+            }
+        });
+        Self { pending, changed, started, task }
+    }
+    pub fn touch(&self, draft: Option<(BTreeMap<String, QuestionAnswer>, Option<String>)>) {
+        let now = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).touch(now, draft);
+        self.changed.send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+    pub fn submit(&self, answers: BTreeMap<String, QuestionAnswer>, comment: Option<String>) -> Option<QuestionResponse> {
+        let response = self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).submit(answers, comment);
+        if response.is_some() { self.task.abort(); }
+        response
+    }
+    pub fn cancel(&self, reason: QuestionStatus) -> QuestionResponse {
+        let response = self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel(reason);
+        self.task.abort();
+        response
+    }
+    pub fn deadline_at_ms(&self) -> u64 {
+        self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).deadline_at_ms
+    }
+}
+impl Drop for PendingTimer {
+    fn drop(&mut self) { self.task.abort(); }
+}
