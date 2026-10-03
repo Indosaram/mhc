@@ -43,6 +43,7 @@ pub struct CreateAgentSessionOptions {
     pub system_prompt: Option<String>,
     pub append_system_prompt: Vec<String>,
     pub extension_factories: Vec<maho_ext_host::loader::NativeAsyncExtensionFactory>,
+    pub loaded_extensions: Option<maho_ext_host::loader::LoadExtensionsResult>,
     pub hook_resources: Vec<crate::package_manager::ResolvedResource>,
     pub additional_hook_paths: Vec<String>,
 }
@@ -185,10 +186,12 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     session.set_prompt_resources(templates, skills.skills);
     session.set_hook_source_paths(options.hook_resources, options.additional_hook_paths);
     session.set_system_prompt_sources(options.system_prompt, options.append_system_prompt);
-    if !options.extension_factories.is_empty() {
+    if options.loaded_extensions.is_some() || !options.extension_factories.is_empty() {
         let context = extension_context::create(&session);
-        let runner = maho_ext_host::runner::ExtensionRunner::from_async_factories(
-            options.extension_factories, context, Default::default()).await.map_err(|error| error.to_string())?;
+        let runner = if let Some(loaded) = options.loaded_extensions {
+            maho_ext_host::runner::ExtensionRunner::from_loaded_extensions(loaded, options.extension_factories, context, Default::default())
+        } else { maho_ext_host::runner::ExtensionRunner::from_async_factories(
+            options.extension_factories, context, Default::default()).await.map_err(|error| error.to_string())? };
         session.set_extension_runner(runner).await;
         session.bind_extensions(Default::default()).await;
     }

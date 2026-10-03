@@ -50,9 +50,45 @@ pub struct CreateAgentSessionFromServicesOptions {
     pub favorite_models: Vec<crate::agent_session::SessionModelEntry>,
     pub tools: Option<Vec<String>>,
     pub exclude_tools: Option<Vec<String>>,
-    pub no_tools: Option<bool>,
+    pub no_tools: Option<crate::sdk::NoToolsMode>,
     pub custom_tools: Vec<maho_ext_api::ToolDefinition>,
     pub auto_title_sessions: Option<bool>,
+    pub extension_factories: Vec<maho_ext_host::loader::NativeAsyncExtensionFactory>,
+    pub loaded_extensions: Option<maho_ext_host::loader::LoadExtensionsResult>,
+}
+
+pub struct MountedAgentSessionServices {
+    pub cwd: String,
+    pub agent_dir: String,
+    pub auth_storage: Arc<AuthStorage>,
+    pub model_registry: ModelRegistry,
+    pub settings_manager: Arc<std::sync::Mutex<SettingsManager>>,
+    pub diagnostics: Vec<AgentSessionRuntimeDiagnostic>,
+}
+
+pub struct CreateAgentSessionFromServicesResult {
+    pub session: crate::agent_session::AgentSession,
+    pub services: MountedAgentSessionServices,
+    pub model_fallback_message: Option<String>,
+}
+
+pub async fn create_agent_session_from_services(services: AgentSessionServices, options: CreateAgentSessionFromServicesOptions)
+    -> Result<CreateAgentSessionFromServicesResult, String> {
+    let AgentSessionServices { cwd, agent_dir, auth_storage, model_registry, settings_manager, diagnostics } = services;
+    let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
+        cwd: Some(cwd.clone()), agent_dir: Some(agent_dir.clone()), auth_storage: Some(auth_storage.clone()),
+        model_registry: Some(model_registry.clone()), settings_manager: Some(settings_manager),
+        session_manager: options.session_manager, session_start_event: options.session_start_event,
+        model: options.model, thinking_level: options.thinking_level, thinking_selection: options.thinking_selection,
+        scoped_models: options.scoped_models, favorite_models: options.favorite_models, tools: options.tools,
+        exclude_tools: options.exclude_tools, no_tools: options.no_tools, custom_tools: options.custom_tools,
+        auto_title_sessions: options.auto_title_sessions, extension_factories: options.extension_factories,
+        loaded_extensions: options.loaded_extensions, ..Default::default()
+    }).await?;
+    let settings_manager = created.session.shared_settings_manager();
+    Ok(CreateAgentSessionFromServicesResult { services: MountedAgentSessionServices {
+        cwd, agent_dir, auth_storage, model_registry, settings_manager, diagnostics },
+        session: created.session, model_fallback_message: created.model_fallback_message })
 }
 
 /// Coherent cwd-bound runtime services for one effective session cwd.

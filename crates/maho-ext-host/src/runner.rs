@@ -276,6 +276,13 @@ impl ExtensionRunner {
             Ok(runner)
         })
     }
+    pub fn from_loaded_extensions(loaded: crate::loader::LoadExtensionsResult, factories: Vec<crate::loader::NativeAsyncExtensionFactory>,
+        context: ExtensionContext, profile: ExtensionSessionProfile) -> Self {
+        let mut runner = Self::new(loaded.extensions, loaded.runtime, loaded.events, context);
+        runner.set_runtime_factory(Arc::new(move |context| Self::from_async_factories(factories.clone(), context, profile.clone())));
+        for error in loaded.errors { runner.emit_error(error); }
+        runner
+    }
     pub async fn recreate(&self) -> Result<Self, ExtensionFailure> {
         self.recreate_with_context(self.factory_context.clone()).await
     }

@@ -481,7 +481,7 @@ pub struct AgentSession {
 pub struct AgentSessionInner {
     agent: Agent,
     session_manager: Mutex<SessionManager>,
-    settings_manager: Mutex<SettingsManager>,
+    settings_manager: Arc<Mutex<SettingsManager>>,
     model_registry: ModelRegistry,
     state: Mutex<AgentSessionState>,
     extension_runner: tokio::sync::Mutex<Option<ExtensionRunner>>,
@@ -1550,7 +1550,7 @@ impl AgentSession {
         let session = Self { inner: Arc::new(AgentSessionInner {
             agent,
             session_manager: Mutex::new(config.session_manager),
-            settings_manager: Mutex::new(config.settings_manager),
+            settings_manager: Arc::new(Mutex::new(config.settings_manager)),
             model_registry,
             state: Mutex::new(state),
             extension_runner: tokio::sync::Mutex::new(None),
@@ -4080,6 +4080,8 @@ impl AgentSession {
     pub fn with_settings_manager<T>(&self, f: impl FnOnce(&SettingsManager) -> T) -> T {
         f(&lock(&self.settings_manager))
     }
+
+    pub(crate) fn shared_settings_manager(&self) -> Arc<Mutex<SettingsManager>> { self.settings_manager.clone() }
 
     pub fn with_settings_manager_mut<T>(&self, f: impl FnOnce(&mut SettingsManager) -> T) -> T {
         f(&mut lock(&self.settings_manager))
