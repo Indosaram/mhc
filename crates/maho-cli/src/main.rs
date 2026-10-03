@@ -36,7 +36,7 @@ fn run() -> Result<(), String> {
             match arg.as_str() {
                 "--from" => from = PathBuf::from(args.next().ok_or("--from requires a directory")?),
                 "--force" => force = true,
-                "--help" | "-h" => { println!("Usage: mhc import-omo [--from <directory>] [--force]"); return Ok(()); }
+                "--help" | "-h" => { println!("Usage: mhc import-omo [--from <directory>]\nExisting destination entries are never overwritten."); return Ok(()); }
                 _ => return Err(format!("Unknown import option: {arg}")),
             }
         }
@@ -66,7 +66,30 @@ fn run() -> Result<(), String> {
             if code != 0 { std::process::exit(code); }
             return Ok(());
         }
-        Some("app-server") => return Err("App-server execution blocked by unmerged todo 37 (maho-server)".to_owned()),
+        Some("app-server") => {
+            let grok = maho_cli::cli::grok_neo_gate::is_grok_neo_enabled(&maho_core::config::current_env());
+            let parsed = maho_cli::cli::args::parse_args(&argv[1..], grok)?;
+            let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+            let agent_dir = maho_core::config::get_agent_dir();
+            let config = maho_cli::cli::host_runtime::CliRuntimeConfiguration::from_parsed(
+                &parsed,
+                &cwd.to_string_lossy(),
+                &agent_dir,
+                maho_core::project_trust::AppMode::AppServer,
+            );
+            let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+            let code = runtime.block_on(maho_cli::cli::app_server::run_app_server_with_signals(
+                &argv,
+                config,
+                env!("CARGO_PKG_VERSION"),
+                parsed.session_dir.clone(),
+                &executable,
+                &[],
+            ))?;
+            if code != 0 { std::process::exit(code); }
+            return Ok(());
+        }
         Some("config") => {
             if maho_cli::package_manager_cli::parse_config_command(&argv)?.is_some_and(|options| options.help) { return output(maho_cli::package_manager_cli::config_command_help()); }
             return Err("Config TUI execution blocked by unmerged todo 35 and DefaultPackageManager API request (todo 19)".to_owned());
@@ -91,7 +114,7 @@ fn run() -> Result<(), String> {
         return output(&format!("{}\n", maho_cli::cli::list_models::list_models(&runtime, Some(search))));
     }
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
-    runtime.block_on(maho_cli::cli::runtime::run(parsed))
+    runtime.block_on(maho_cli::cli::runtime::run(parsed, &argv))
 }
 #[cfg(unix)]
 fn run_coordinator_entry(argv: &[String]) -> Result<(), String> {

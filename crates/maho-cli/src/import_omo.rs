@@ -3,21 +3,23 @@ use std::io;
 use std::path::{Path, PathBuf};
 const ENTRIES: [&str; 5] = ["settings.json", "models.json", "keybindings.json", "auth.json", "sessions"];
 
-pub fn import_omo(from: &Path, to: &Path, force: bool) -> io::Result<Vec<String>> {
+pub fn import_omo(from: &Path, to: &Path, _force: bool) -> io::Result<Vec<String>> {
     if !from.is_dir() { return Err(io::Error::new(io::ErrorKind::NotFound, "omo agent directory does not exist")); }
     let source = fs::canonicalize(from)?;
     let target = absolute_target(to)?;
     if target.starts_with(&source) || source.starts_with(&target) { return Err(io::Error::new(io::ErrorKind::InvalidInput, "source and destination must be separate directories")); }
     let mut files = Vec::new();
     for entry in ENTRIES { let path = from.join(entry); if path.exists() { collect_files(&path, &to.join(entry), &mut files)?; } }
-    if !force {
-        for entry in ENTRIES { if from.join(entry).exists() && to.join(entry).exists() { return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("destination already contains {entry}; use --force to overwrite"))); } }
-    }
+    for entry in ENTRIES { if from.join(entry).exists() && to.join(entry).exists() { return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("destination already contains {entry}; import never overwrites existing state"))); } }
     for (source, destination) in &files {
         if let Some(parent) = destination.parent() { fs::create_dir_all(parent)?; }
-        fs::copy(source, destination)?;
+        let mut input = fs::File::open(source)?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
         #[cfg(unix)]
-        { use std::os::unix::fs::PermissionsExt; fs::set_permissions(destination, fs::Permissions::from_mode(0o600))?; }
+        { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
+        let mut output = options.open(destination)?;
+        io::copy(&mut input, &mut output)?;
     }
     for entry in ENTRIES { if from.join(entry).is_dir() { fs::create_dir_all(to.join(entry))?; } }
     Ok(ENTRIES.into_iter().filter(|entry| from.join(entry).exists()).map(str::to_owned).collect())
@@ -54,10 +56,25 @@ mod tests {
         let error = import_omo(&from, &to, false).expect_err("conflict");
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists); assert_eq!(fs::read(to.join("settings.json")).expect("read"), b"old"); assert!(!to.join("models.json").exists());
     }
-    #[test] fn overwrites_requested_files_when_force_is_set() {
+    #[test] fn refuses_overwrite_even_when_force_is_set() {
         let tmp = tempfile::tempdir().expect("tempdir"); let from = tmp.path().join("omo"); let to = tmp.path().join("maho");
         fs::create_dir(&from).expect("mkdir"); fs::create_dir(&to).expect("mkdir"); fs::write(from.join("settings.json"), b"new").expect("write"); fs::write(to.join("settings.json"), b"old").expect("write");
-        import_omo(&from, &to, true).expect("import"); assert_eq!(fs::read(to.join("settings.json")).expect("read"), b"new");
+        assert_eq!(import_omo(&from, &to, true).expect_err("conflict").kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(to.join("settings.json")).expect("read"), b"old");
+    }
+    #[test] fn repeat_import_preserves_all_destination_hashes() {
+        use sha2::{Digest, Sha256};
+        let tmp = tempfile::tempdir().expect("tempdir"); let from = tmp.path().join("omo"); let to = tmp.path().join("maho");
+        fs::create_dir_all(from.join("sessions/project")).expect("mkdir");
+        fs::write(from.join("settings.json"), b"settings").expect("write");
+        fs::write(from.join("sessions/project/a.jsonl"), b"session\n").expect("write");
+        import_omo(&from, &to, false).expect("first import");
+        let paths = [to.join("settings.json"), to.join("sessions/project/a.jsonl")];
+        let before: Vec<_> = paths.iter().map(|path| Sha256::digest(fs::read(path).expect("read"))).collect();
+        fs::write(from.join("settings.json"), b"changed source").expect("write");
+        assert_eq!(import_omo(&from, &to, false).expect_err("repeat refused").kind(), io::ErrorKind::AlreadyExists);
+        let after: Vec<_> = paths.iter().map(|path| Sha256::digest(fs::read(path).expect("read"))).collect();
+        assert_eq!(before, after);
     }
     #[test] fn rejects_overlapping_directories_before_copying() {
         let tmp = tempfile::tempdir().expect("tempdir"); fs::create_dir(tmp.path().join("sessions")).expect("mkdir");
