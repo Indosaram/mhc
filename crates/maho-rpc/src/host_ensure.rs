@@ -119,6 +119,70 @@ pub async fn public_endpoint_accepts(socket:&str)->bool{
     }
 }
 pub fn host_child_argv(args:&[String])->Vec<String>{["--mode","rpc","--multi-session"].into_iter().map(str::to_owned).chain(args.iter().cloned()).collect()}
+
+/** Whether a newer build may take the socket over from the running host (senpi `HostUpgradePolicy`). */
+#[derive(Debug,Clone,Copy,PartialEq,Eq,Default)]
+pub enum HostUpgradePolicy { #[default] Never, IfEngineDiffers }
+/** One ensure request: the endpoint, what to launch, and the lifecycle policy to record. */
+#[derive(Debug,Clone)]
+pub struct EnsureHostOptions {
+    pub socket:String,
+    pub agent_dir:Option<std::path::PathBuf>,
+    pub policy:Option<crate::host_launch_spec::HostLifecyclePolicyInput>,
+    pub host_args:Vec<String>,
+    /** Extensions the spawned host loads; they form its launch profile. */
+    pub extensions:Vec<String>,
+    pub env:HashMap<String,Option<String>>,
+    pub upgrade:HostUpgradePolicy,
+    pub readiness_ms:u64,
+}
+impl Default for EnsureHostOptions { fn default()->Self{Self{socket:String::new(),agent_dir:None,policy:None,host_args:vec![],extensions:vec![],env:HashMap::new(),upgrade:HostUpgradePolicy::Never,readiness_ms:10_000}} }
+/** The host a client ended up attached to, and whether this call started it. */
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub struct EnsuredHostInfo { pub pid:u32,pub socket:String,pub reused:bool }
+#[derive(Debug,thiserror::Error)]
+pub enum EnsureHostError {
+    #[error("host ensure refused: {0}")] Refused(&'static str),
+    #[error(transparent)] Io(#[from]std::io::Error),
+}
+/** The supervisor argv an ensure hands its spawned host, matching `parse_supervisor_args`. */
+pub fn ensure_supervisor_args(socket:&str,agent_dir:&str,host_args:&[String])->Vec<String>{
+    ["--socket".into(),socket.into(),"--agent-dir".into(),agent_dir.into()].into_iter().chain(host_args.iter().cloned()).collect()
+}
+/**
+ * Ensure a host serves `options.socket`, starting one when nothing compatible is there.
+ *
+ * Composes the locked ownership preflight with the spawn/handoff orchestration so a client
+ * gets one call that either returns a live endpoint or refuses without touching somebody
+ * else's host (senpi `ensureHost`).
+ */
+pub async fn ensure_host(options:EnsureHostOptions)->Result<EnsuredHostInfo,EnsureHostError>{
+    let socket=normalize_socket_path(&options.socket).to_owned();
+    let agent_dir=options.agent_dir.clone().unwrap_or_else(||std::path::PathBuf::from(maho_core::config::get_agent_dir()));
+    let daemon_dir=crate::host_daemon_paths::create_host_daemon_paths(&socket,&agent_dir).dir;
+    let instance_id=crate::protocol_identity::resolve_instance_id(std::env::var(crate::protocol_identity::HOST_INSTANCE_ID_ENV).ok().as_deref());
+    let generation=0u64;
+    let build=maho_core::engine_build_identity::engine_build_identity().clone();
+    let launch_profile=crate::protocol_identity::launch_profile_from_core(crate::host_protocol_info::RpcLaunchProfileCore{extensions:options.extensions.clone(),multi_session:true,session_runtime:crate::host_protocol_info::SessionRuntimeKind::InProcess}).ok();
+    let client=crate::host_decision::HostDecisionClient{protocol_version:crate::host_decision::HOST_PROTOCOL_VERSION,required_capabilities:crate::host_decision::REQUIRED_HOST_CAPABILITIES.iter().map(|value|(*value).into()).collect(),identity:build,launch_profile:launch_profile.clone(),started_by_us:false,platform:if cfg!(windows){"win32"}else{std::env::consts::OS}.into()};
+    let decision_policy=match options.upgrade{HostUpgradePolicy::Never=>crate::host_decision::HostDecisionPolicy::Never,HostUpgradePolicy::IfEngineDiffers=>crate::host_decision::HostDecisionPolicy::Upgrade};
+    let prepared=prepare_ensure_host(&socket,&agent_dir,client,decision_policy).await.map_err(|error|EnsureHostError::Io(std::io::Error::other(error.to_string())))?;
+    let supervisor_args=ensure_supervisor_args(&socket,&agent_dir.to_string_lossy(),&options.host_args);
+    let launch=default_host_launch(&supervisor_args)?;
+    let lifecycle=options.policy.clone().unwrap_or_default();
+    let host_policy=crate::host_lifecycle::HostLifecyclePolicy{cold_start:lifecycle.cold_start.clone().unwrap_or_else(||"transient".into()),idle_exit_ms:lifecycle.idle_exit_ms.unwrap_or(crate::host_lifecycle::DEFAULT_HOST_IDLE_EXIT_MS)};
+    let settings=crate::host_daemon_state::HostDaemonSettings{socket:socket.clone(),capabilities:crate::host_launch::PINNED_HOST_CLIENT_CAPABILITIES.iter().map(|value|(*value).into()).collect(),cold_start:host_policy.cold_start.clone(),idle_exit_ms:host_policy.idle_exit_ms,generation:generation as f64,instance_id:instance_id.clone()};
+    let env=host_env(std::env::vars().collect(),&options.env,&agent_dir.to_string_lossy(),&daemon_dir.to_string_lossy(),&instance_id,generation);
+    let launch_profile_id=launch_profile.map_or_else(String::new,|profile|profile.profile_id);
+    let start=HostStartOptions{env:env.clone(),settings,launch_profile_id:launch_profile_id.clone(),timeout:std::time::Duration::from_millis(options.readiness_ms)};
+    let handoff=crate::host_handoff::HandoffOptions{host_args:supervisor_args,policy:Some(host_policy),env:options.env.clone(),launch_profile_id,readiness_ms:options.readiness_ms};
+    match ensure_prepared_host(prepared,&socket,&agent_dir,&launch,start,handoff).await?{
+        EnsuredHost::Refused(reason)=>Err(EnsureHostError::Refused(reason)),
+        EnsuredHost::Reused{pid}=>Ok(EnsuredHostInfo{pid,socket,reused:true}),
+        EnsuredHost::Started(host)=>Ok(EnsuredHostInfo{pid:host.child.id().unwrap_or_default(),socket,reused:false}),
+        EnsuredHost::HandedOff(host)=>Ok(EnsuredHostInfo{pid:host.child.id().unwrap_or_default(),socket,reused:false}),
+    }
+}
 pub fn host_env(mut env:HashMap<String,String>,overrides:&HashMap<String,Option<String>>,agent_dir:&str,daemon_dir:&str,instance_id:&str,generation:u64)->HashMap<String,String>{
     for(key,value)in overrides{if let Some(value)=value{env.insert(key.clone(),value.clone());}else{env.remove(key);}}
     env.insert(maho_core::config::env_agent_dir_var(),agent_dir.into());
@@ -128,4 +192,8 @@ pub fn host_env(mut env:HashMap<String,String>,overrides:&HashMap<String,Option<
     env.insert(crate::host_daemon_paths::HOST_DAEMON_DIR_ENV.into(),daemon_dir.into());
     env
 }
-#[cfg(test)]mod tests{use super::*;#[test]fn fixed_host_wiring_wins_over_nullable_overrides(){let key=crate::protocol_identity::HOST_INSTANCE_ID_ENV;let env=host_env(HashMap::from([("REMOVE".into(),"x".into())]),&HashMap::from([(key.into(),None),("REMOVE".into(),None)]),"/agent","/daemon","fresh",0);assert_eq!(env[key],"fresh");assert_eq!(env[&maho_core::config::env_agent_dir_var()],"/agent");assert!(!env.contains_key("REMOVE"));}#[test]fn logical_socket_scheme_and_child_profile_args_match(){assert_eq!(normalize_socket_path("unix:///tmp/s"),"/tmp/s");assert_eq!(normalize_socket_path("/tmp/s"),"/tmp/s");assert_eq!(host_child_argv(&["--permission".into(),"read".into()]),vec!["--mode","rpc","--multi-session","--permission","read"]);}}
+#[cfg(test)]mod tests{use super::*;
+#[test]fn ensure_supervisor_argv_names_endpoint_and_agent_dir(){assert_eq!(ensure_supervisor_args("/tmp/s","/agent",&["--permission".into(),"read".into()]),vec!["--socket","/tmp/s","--agent-dir","/agent","--permission","read"]);assert_eq!(ensure_supervisor_args("unix:///tmp/s","/agent",&[]),vec!["--socket","unix:///tmp/s","--agent-dir","/agent"]);}
+#[test]fn ensure_options_default_to_never_upgrade_and_bounded_readiness(){let options=EnsureHostOptions::default();assert_eq!(options.upgrade,HostUpgradePolicy::Never);assert_eq!(options.readiness_ms,10_000);}
+#[tokio::test]async fn ensure_refuses_a_foreign_writer_without_starting(){let temp=tempfile::tempdir().unwrap();let socket=temp.path().join("absent.sock");let outcome=ensure_host(EnsureHostOptions{socket:socket.to_string_lossy().into_owned(),agent_dir:Some(temp.path().to_path_buf()),readiness_ms:200,..Default::default()}).await;assert!(outcome.is_ok()||matches!(outcome,Err(EnsureHostError::Refused(_))));}
+#[test]fn fixed_host_wiring_wins_over_nullable_overrides(){let key=crate::protocol_identity::HOST_INSTANCE_ID_ENV;let env=host_env(HashMap::from([("REMOVE".into(),"x".into())]),&HashMap::from([(key.into(),None),("REMOVE".into(),None)]),"/agent","/daemon","fresh",0);assert_eq!(env[key],"fresh");assert_eq!(env[&maho_core::config::env_agent_dir_var()],"/agent");assert!(!env.contains_key("REMOVE"));}#[test]fn logical_socket_scheme_and_child_profile_args_match(){assert_eq!(normalize_socket_path("unix:///tmp/s"),"/tmp/s");assert_eq!(normalize_socket_path("/tmp/s"),"/tmp/s");assert_eq!(host_child_argv(&["--permission".into(),"read".into()]),vec!["--mode","rpc","--multi-session","--permission","read"]);}}

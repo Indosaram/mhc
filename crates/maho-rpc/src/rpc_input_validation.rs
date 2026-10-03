@@ -4,6 +4,10 @@ pub const MAX_RPC_MESSAGE_CHARACTERS: usize = 1_000_000;
 pub const SESSION_CONTEXT_KEYS: usize = 32;
 pub const SESSION_CONTEXT_VALUE_BYTES: usize = 16 * 1024;
 pub const SESSION_CONTEXT_TOTAL_BYTES: usize = 32 * 1024;
+/// Grouped caps for a session `context` map (rpc-input-validation.ts `SESSION_CONTEXT_LIMITS`).
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct SessionContextLimits{pub keys:usize,pub value_bytes:usize,pub total_bytes:usize}
+pub const SESSION_CONTEXT_LIMITS:SessionContextLimits=SessionContextLimits{keys:SESSION_CONTEXT_KEYS,value_bytes:SESSION_CONTEXT_VALUE_BYTES,total_bytes:SESSION_CONTEXT_TOTAL_BYTES};
 
 fn string(value: &Value, key: &str) -> bool { value.get(key).is_some_and(Value::is_string) }
 fn valid_content(content: &Value) -> bool {
@@ -71,6 +75,7 @@ pub fn session_auto_title_error(value: Option<&Value>) -> Option<&'static str> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test] fn context_limits_struct_matches_the_constants() { assert_eq!(SESSION_CONTEXT_LIMITS,SessionContextLimits{keys:32,value_bytes:16*1024,total_bytes:32*1024}); assert_eq!(SESSION_CONTEXT_LIMITS.keys,SESSION_CONTEXT_KEYS); }
     #[test] fn rejects_nonobject_input() { for input in [Value::Null,json!([]),json!(42),json!("str"),json!(true)] { assert!(rpc_command_shape_error(&input).is_some()); } }
     #[test] fn accepts_object_input() { assert_eq!(rpc_command_shape_error(&json!({"type":"get_commands"})),None); }
     #[test] fn rejects_oversized_prompt_text() { for kind in ["prompt","steer","follow_up"] { assert_eq!(rpc_message_length_error(&json!({"type":kind,"message":"x".repeat(MAX_RPC_MESSAGE_CHARACTERS+1)})),Some(format!("RPC {kind} message exceeds {MAX_RPC_MESSAGE_CHARACTERS} characters."))); } }

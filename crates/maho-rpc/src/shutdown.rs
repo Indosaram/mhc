@@ -3,6 +3,9 @@ use tokio::sync::OnceCell;
 
 #[derive(Default)]
 pub struct RpcShutdown { code:AtomicI32,disposed:OnceCell<()> }
+/// Builds the process shutdown entry shared by EOF, signals and transport failures
+/// (senpi `createRpcShutdown`).
+pub fn create_rpc_shutdown()->RpcShutdown{RpcShutdown::default()}
 impl RpcShutdown {
     /// Every caller joins disposal; the first nonzero code survives a later EOF.
     pub async fn shutdown<F,Fut>(&self,exit_code:i32,dispose:F) -> i32

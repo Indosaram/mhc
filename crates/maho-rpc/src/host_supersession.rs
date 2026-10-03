@@ -1,4 +1,14 @@
 use crate::socket_ownership::EndpointOwnership;
+/// Handle for the supersession watcher task; dropping or stopping it ends the watch.
+pub struct SupersessionWatch{task:tokio::task::JoinHandle<()>}
+impl SupersessionWatch{pub fn stop(self){self.task.abort();}}
+/// Runs `on_lost` once this endpoint stops being served by the entry this generation bound
+/// (senpi `watchForSupersession`). Without an identity, supersession can never be proven and is
+/// never claimed, so the watch is inert.
+pub fn watch_for_supersession(path:String,identity:Option<crate::socket_ownership::SocketFileIdentity>,settled:impl Fn()->bool+Send+Sync+'static,on_lost:impl FnOnce(EndpointLoss)+Send+'static)->SupersessionWatch{
+    let task=tokio::spawn(async move{if let Some(loss)=wait_for_supersession(&path,identity,settled).await{on_lost(loss);}});
+    SupersessionWatch{task}
+}
 pub const SUPERSESSION_POLL_MS:u64=1000;
 pub const ABSENT_CONFIRMATIONS:u32=3;
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
@@ -38,6 +48,7 @@ impl SupersessionWatcher{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[tokio::test]async fn watch_reports_a_replaced_endpoint_once(){let temp=tempfile::tempdir().unwrap();let path=temp.path().join("socket");let original=std::os::unix::net::UnixListener::bind(&path).unwrap();let identity=crate::socket_ownership::stat_socket_identity(&path).unwrap();let replacement=temp.path().join("new");let newer=std::os::unix::net::UnixListener::bind(&replacement).unwrap();std::fs::rename(replacement,&path).unwrap();let(lost_tx,lost_rx)=tokio::sync::oneshot::channel();let watch=watch_for_supersession(path.to_string_lossy().into_owned(),identity,||false,move|loss|{let _=lost_tx.send(loss);});let loss=tokio::time::timeout(std::time::Duration::from_secs(2),lost_rx).await.unwrap().unwrap();assert_eq!(loss,EndpointLoss::Replaced);watch.stop();drop((original,newer));}
     #[test] fn unknown_resets_consecutive_absence_and_loss_latches(){let mut watcher=SupersessionWatcher::default();assert_eq!(watcher.observe(EndpointOwnership::Absent,false),None);watcher.observe(EndpointOwnership::Unknown,false);for _ in 0..2{assert_eq!(watcher.observe(EndpointOwnership::Absent,false),None);}assert_eq!(watcher.observe(EndpointOwnership::Absent,false),Some(EndpointLoss::Absent));assert_eq!(watcher.observe(EndpointOwnership::Replaced,false),None);}
     #[test] fn settled_observation_is_ignored(){let mut watcher=SupersessionWatcher::default();assert_eq!(watcher.observe(EndpointOwnership::Replaced,true),None);assert_eq!(watcher.observe(EndpointOwnership::Replaced,false),Some(EndpointLoss::Replaced));}
 }

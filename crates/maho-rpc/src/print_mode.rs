@@ -94,6 +94,15 @@ pub fn format_print_result(message: Option<&AssistantMessage>) -> Result<PrintOu
     }
     Ok(output)
 }
+/// Options for print mode (senpi `PrintModeOptions`).
+#[derive(Debug,Clone,Default)]
+pub struct PrintModeOptions{pub json_mode:bool,pub messages:Vec<String>,pub initial_message:Option<String>,pub initial_images:Vec<maho_ai::types::ImageContent>}
+/// Run print (single-shot) mode: send the prompts, output the result, return the exit code
+/// (senpi `runPrintMode`).
+pub async fn run_print_mode(runtime:&maho_core::agent_session_runtime::AgentSessionRuntime,scope:&maho_ai::node::provider_scope::ProviderScope,options:PrintModeOptions,output:impl tokio::io::AsyncWrite+Unpin,diagnostics:impl tokio::io::AsyncWrite+Unpin)->std::io::Result<i32>{
+    let initial=options.initial_message.map(|text|(text,options.initial_images.clone()));
+    run_print_runtime(runtime,scope,options.json_mode,initial,&options.messages,output,diagnostics).await
+}
 #[cfg(test)]
 mod tests {
     use super::*;

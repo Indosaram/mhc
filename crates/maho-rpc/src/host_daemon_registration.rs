@@ -44,6 +44,20 @@ pub fn release_generation(paths:&HostDaemonPaths,instance_id:&str,pid:u32)->std:
     match std::fs::remove_dir_all(&generation.dir){Err(error)if error.kind()==std::io::ErrorKind::NotFound=>Ok(()),result=>result}
 }
 fn remove_file(path:&std::path::Path)->std::io::Result<()>{match std::fs::remove_file(path){Err(error)if error.kind()==std::io::ErrorKind::NotFound=>Ok(()),result=>result}}
+static SELF_START_TIME:std::sync::OnceLock<Option<String>>=std::sync::OnceLock::new();
+/// The process-start stamp of THIS process, read once (senpi `thisProcessStartTime`).
+pub fn this_process_start_time()->Option<String>{SELF_START_TIME.get_or_init(||read_process_start_time(std::process::id())).clone()}
+/// A registration written before the generation layout existed, or nothing (senpi
+/// `readLegacyHostRecord`). It carries `pid`/`processStartTime`, so it can authorize a signal.
+pub fn read_legacy_host_record(paths:&HostDaemonPaths)->Option<Value>{read_file_or_undefined(&paths.legacy_pid_file).ok().flatten().and_then(|text|parse_json(Some(&text))).map(Value::Object)}
+/// Whether the legacy record names a live process whose start time still matches
+/// (senpi `legacyHostIsLive`).
+pub fn legacy_host_is_live(paths:&HostDaemonPaths)->bool{
+    let Some(record)=read_legacy_host_record(paths)else{return false;};
+    let Some(pid)=record.get("pid").and_then(Value::as_u64).and_then(|pid|u32::try_from(pid).ok())else{return false;};
+    let recorded=record.get("processStartTime").and_then(Value::as_str);
+    crate::host_reservations::process_is_live(pid)&&recorded.is_none_or(|recorded|crate::host_reservations::read_process_start_time(pid).as_deref()==Some(recorded))
+}
 pub fn clear_host_registration(paths:&HostDaemonPaths)->std::io::Result<()>{
     let pointer=read_file_or_undefined(&paths.pointer_file)?;
     if let Some(instance_id)=parse_json(pointer.as_deref()).as_ref().and_then(|pointer|pointer.get("instance_id")).and_then(Value::as_str){
@@ -53,6 +67,7 @@ pub fn clear_host_registration(paths:&HostDaemonPaths)->std::io::Result<()>{
 }
 #[cfg(test)]mod tests{
     use super::*;
+    #[test]fn legacy_record_is_read_and_liveness_requires_the_recorded_start_time(){let temp=tempfile::tempdir().unwrap();let paths=crate::host_daemon_paths::create_host_daemon_paths("socket",temp.path());crate::host_daemon_paths::create_daemon_directories(&paths).unwrap();assert!(read_legacy_host_record(&paths).is_none());assert!(!legacy_host_is_live(&paths));let pid=std::process::id();std::fs::write(&paths.legacy_pid_file,serde_json::json!({"pid":pid,"processStartTime":read_process_start_time(pid)}).to_string()).unwrap();assert!(legacy_host_is_live(&paths));std::fs::write(&paths.legacy_pid_file,serde_json::json!({"pid":pid,"processStartTime":"other"}).to_string()).unwrap();assert!(!legacy_host_is_live(&paths));assert_eq!(this_process_start_time(),read_process_start_time(pid));}
     #[test]fn registration_requires_guard_shape_and_owner_matches_live_process(){let temp=tempfile::tempdir().unwrap();let paths=crate::host_daemon_paths::create_host_daemon_paths("socket",temp.path());crate::host_daemon_paths::create_daemon_directories(&paths).unwrap();let generation=generation_paths(&paths,"one");crate::host_daemon_paths::create_generation_directory(&generation).unwrap();std::fs::write(&paths.pointer_file,r#"{"instance_id":"one"}"#).unwrap();assert!(read_host_registration(&paths).unwrap().is_none());let pid=std::process::id();let record=serde_json::json!({"pid":pid,"processStartTime":read_process_start_time(pid),"socket":"socket","generation":3});std::fs::write(&generation.pid_file,record.to_string()).unwrap();let registered=read_host_registration(&paths).unwrap().unwrap();assert_eq!(registered.generation,3.);assert!(proven_owner(Some(&registered),"socket").is_some());assert!(proven_owner(Some(&registered),"other").is_none());let mut stale=registered;stale.process_start_time=Some("stale".into());assert!(proven_owner(Some(&stale),"socket").is_none());std::fs::write(&generation.pid_file,serde_json::json!({"pid":pid,"processStartTime":null}).to_string()).unwrap();let unguarded=read_host_registration(&paths).unwrap().unwrap();assert!(proven_owner(Some(&unguarded),"socket").is_none());}
     #[test]fn predecessor_release_preserves_successor_pointer_and_settings(){let temp=tempfile::tempdir().unwrap();let paths=crate::host_daemon_paths::create_host_daemon_paths("socket",temp.path());crate::host_daemon_paths::create_daemon_directories(&paths).unwrap();let generation=generation_paths(&paths,"old");crate::host_daemon_paths::create_generation_directory(&generation).unwrap();std::fs::write(&generation.pid_file,r#"{"pid":1}"#).unwrap();std::fs::write(&paths.pointer_file,r#"{"instance_id":"new"}"#).unwrap();std::fs::write(&paths.settings_file,"{}").unwrap();release_generation(&paths,"old",2).unwrap();assert!(generation.dir.exists());release_generation(&paths,"old",1).unwrap();assert!(!generation.dir.exists());assert!(paths.pointer_file.exists());assert!(paths.settings_file.exists());}
     #[test]fn writer_requires_current_process_start_guard(){let pid=std::process::id();assert!(!written_by_this_process(Some(&serde_json::json!({"pid":pid,"startTime":null}))));assert!(written_by_this_process(Some(&serde_json::json!({"pid":pid,"startTime":read_process_start_time(pid)}))));}

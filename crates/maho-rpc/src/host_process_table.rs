@@ -22,9 +22,16 @@ pub fn parse_kernel_process_table(table:&[u8],row_count:usize,self_pid:u32,self_
     }
     self_seen.then_some(rows)
 }
+/// A process-table reader for the given platform, or nothing on a platform whose reader has
+/// no native equivalent (senpi `loadProcessTableReader`).
+pub type ProcessTableReader = fn() -> Option<Vec<ProcessTableRow>>;
+pub fn load_process_table_reader(platform:&str) -> Option<ProcessTableReader> {
+    (platform == "linux").then_some(linux_reader as ProcessTableReader)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn only_linux_has_a_reader_and_it_sees_this_process(){assert!(load_process_table_reader("darwin").is_none());assert!(load_process_table_reader("win32").is_none());assert_eq!(load_process_table_reader("linux"),Some(linux_reader as ProcessTableReader));assert!(load_process_table_reader("linux").unwrap()().unwrap().iter().any(|row|row.pid==std::process::id()));}
     #[test] fn linux_parent_and_rss_after_complex_name(){let mut fields=vec!["0";22];fields[0]="Z";fields[1]="17";fields[21]="1024";let row=parse_linux_stat(42,&format!("42 (name (complex)) {}",fields.join(" "))).unwrap();assert_eq!(row.ppid,17);assert_eq!(row.rss_kb,4096.);assert_eq!(row.state,"Z");}
     #[test] fn darwin_self_check_fails_closed(){let mut table=vec![0u8;648];table[40..44].copy_from_slice(&42u32.to_le_bytes());table[560..564].copy_from_slice(&17u32.to_le_bytes());assert!(parse_kernel_process_table(&table,1,42,17,|_|100.).is_some());assert!(parse_kernel_process_table(&table,1,42,18,|_|100.).is_none());table[36]=5;assert!(parse_kernel_process_table(&table,1,42,17,|_|100.).is_none());assert!(parse_kernel_process_table(&table[..50],1,42,17,|_|100.).is_none());}
     #[test] fn actual_kernel_reader_sees_current_process(){assert!(linux_reader().unwrap().iter().any(|row|row.pid==std::process::id()));}

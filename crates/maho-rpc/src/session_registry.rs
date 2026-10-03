@@ -1,4 +1,5 @@
 use std::{collections::BTreeMap,path::{Path,PathBuf},sync::Arc};
+#[derive(Clone,Debug,PartialEq)]
 pub struct RpcSessionLaunchProfile{pub runtime:maho_core::agent_session_runtime::AgentSessionLaunchProfile,pub session_path:Option<String>,pub durable_session_id:Option<String>,pub session_kind:Option<maho_ext_api::SessionKind>,pub session_context:Option<BTreeMap<String,String>>}
 pub struct SessionIdentity{pub kind:maho_ext_api::SessionKind,pub context:Arc<BTreeMap<String,String>>}
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]pub enum RpcSessionState{Opening,Open,Closing,Quarantined,Closed}
@@ -99,12 +100,16 @@ pub fn check_durable_session_collision(requested_id:Option<&str>,session_path:Op
     Ok(())
 }
 pub fn session_identity(profile:&RpcSessionLaunchProfile)->SessionIdentity{SessionIdentity{kind:profile.session_kind.unwrap_or_default(),context:Arc::new(profile.session_context.clone().unwrap_or_default())}}
+/// The launch inputs an open froze (senpi `frozenProfile`). Rust's ownership already replaces
+/// `Object.freeze`; the value is cloned so the entry and the runtime share no aliasing.
+pub fn frozen_profile(profile:&RpcSessionLaunchProfile)->RpcSessionLaunchProfile{profile.clone()}
 pub fn canonical_path(path:&Path)->std::io::Result<PathBuf>{if path.exists(){path.canonicalize()}else{let parent=path.parent().unwrap_or(Path::new("."));Ok(parent.canonicalize()?.join(path.file_name().unwrap_or_default()))}}
 #[derive(Debug,thiserror::Error,PartialEq,Eq)]#[error("{code}{suffix}")]
 pub struct RpcSessionRegistryError{pub code:String,pub detail:Option<serde_json::Value>,suffix:String}
 impl RpcSessionRegistryError{pub fn new(code:&str,reason:Option<&str>,detail:Option<serde_json::Value>)->Self{Self{code:code.into(),detail,suffix:if code=="open_failed"{reason.filter(|reason|!reason.is_empty()).map_or(String::new(),|reason|format!(": {reason}"))}else{String::new()}}}}
 #[cfg(test)]mod tests{
     use super::*;
+    #[test]fn frozen_profile_isolates_the_caller_copy(){let mut profile=RpcSessionLaunchProfile{runtime:Default::default(),session_path:None,durable_session_id:None,session_kind:None,session_context:Some(BTreeMap::from([("owner".into(),"a".into())]))};let frozen=frozen_profile(&profile);profile.session_context.as_mut().unwrap().insert("owner".into(),"b".into());assert_eq!(frozen.session_context.unwrap()["owner"],"a");}
     #[test]fn launch_paths_must_be_absolute_before_creation(){let mut profile=RpcSessionLaunchProfile{runtime:Default::default(),session_path:None,durable_session_id:None,session_kind:None,session_context:None};profile.runtime.cwd="relative".into();assert_eq!(validate_profile_paths(&profile).unwrap_err().code,"invalid_path");profile.runtime.cwd="/absolute".into();assert!(validate_profile_paths(&profile).is_ok());profile.session_path=Some("relative".into());assert!(validate_profile_paths(&profile).is_err());profile.session_path=Some("/session".into());assert!(validate_profile_paths(&profile).is_ok());}
     #[test]fn durable_collision_is_live_only_and_same_reserved_path_may_attach(){let entries=[DurableSessionIdentity{state:RpcSessionState::Opening,durable_session_id:Some("durable".into()),reservation_key:Some("/same".into())}];assert!(check_durable_session_collision(Some("durable"),Some("/same"),&entries).is_ok());assert_eq!(check_durable_session_collision(Some("durable"),Some("/other"),&entries).unwrap_err().code,"session_id_in_use");assert!(check_durable_session_collision(None,None,&entries).is_ok());let entries=[DurableSessionIdentity{state:RpcSessionState::Closed,durable_session_id:Some("durable".into()),reservation_key:None}];assert!(check_durable_session_collision(Some("durable"),None,&entries).is_ok());}
     #[test]fn identity_defaults_and_context_do_not_alias_client_inputs(){let mut profile=RpcSessionLaunchProfile{runtime:Default::default(),session_path:None,durable_session_id:None,session_kind:None,session_context:Some(BTreeMap::from([("owner".into(),"a".into())]))};let identity=session_identity(&profile);profile.session_context.as_mut().unwrap().insert("owner".into(),"b".into());assert_eq!(identity.kind,maho_ext_api::SessionKind::Interactive);assert_eq!(identity.context["owner"],"a");}
