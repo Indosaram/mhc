@@ -7215,6 +7215,23 @@ mod tests {
             incomplete: None, error_message: None, namespace: None,
         }));
         assert!(session.will_retry(Some(&failed)).await);
+        session.with_session_manager_mut(|manager| {
+            manager.append_message(serde_json::json!({"role":"user","content":[{"type":"text","text":"task"}],"timestamp":0}));
+            manager.append_message(serde_json::to_value(&failed).expect("quota failure"));
+        });
+        session.rebuild_session_context().expect("context");
+        session.follow_up("retained quota input", None, Default::default()).await.expect("queue");
+        let retries = Arc::new(Mutex::new(0));
+        let captured = retries.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if matches!(event, AgentSessionEvent::AutoRetryStart { .. }) { *lock(&captured) += 1; }
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.finish_provider_turn()).await.expect("bounded quota recovery").expect("quota recovery");
+        assert_eq!(*lock(&retries), 0);
+        assert_eq!(session.get_follow_up_messages(), vec!["retained quota input"]);
+        assert!(session.agent.has_queued_messages());
+        assert_eq!(session.messages().len(), 1);
+        assert_eq!(session.with_session_manager(|manager| manager.entries()).iter().filter(|entry| entry["type"] == "message").count(), 2);
     }
 
     #[tokio::test]
