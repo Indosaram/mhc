@@ -15,7 +15,7 @@ fn fields(metadata:&str)->Map<String,Value> {
     }).collect::<Vec<_>>().join("\n");
     if let Ok(value)=serde_yaml::from_str::<Value>(&normalized) { return value.as_object().cloned().unwrap_or_default(); }
     let mut fields=Map::new();
-    for line in metadata.split('\n') { let Some((key,raw))=line.split_once(':') else { continue; }; if key.is_empty() || !key.chars().all(|c|c.is_ascii_alphanumeric() || matches!(c,'_'|'-')) { continue; } let raw=maho_ai::utils::js::trim(raw); let parsed=serde_yaml::from_str::<Value>(raw).ok().filter(|value|!value.is_object()).unwrap_or_else(||Value::String(raw.into())); fields.insert(key.into(),if raw.is_empty() { Value::String(String::new()) } else { parsed }); }
+    for line in normalized.split('\n') { let Some((key,raw))=line.split_once(':') else { continue; }; if key.is_empty() || !key.chars().all(|c|c.is_ascii_alphanumeric() || matches!(c,'_'|'-')) { continue; } let raw=maho_ai::utils::js::trim(raw); let parsed=serde_yaml::from_str::<Value>(raw).ok().filter(|value|!value.is_object()).unwrap_or_else(||Value::String(raw.into())); fields.insert(key.into(),if raw.is_empty() { Value::String(String::new()) } else { parsed }); }
     fields
 }
 fn string_list(value:Option<&Value>)->Vec<String> {
@@ -49,6 +49,9 @@ pub fn parse_rule_file(markdown:&str,meta:RuleFileMeta)->Result<TtsrRule,Skipped
 #[cfg(test)] mod tests {
     use super::*;
     fn meta()->RuleFileMeta { RuleFileMeta { name:"test".into(),path:None,source:RuleSource::Project } }
+    #[test] fn malformed_yaml_fallback_keeps_decimal_scalar_admission() {
+        assert!(parse_rule_file("---\ncondition: 012\nbroken: [\n---\nbody",meta()).is_err());
+    }
     #[test] fn yaml12_scalar_condition_admission_matches_upstream() {
         for value in ["yes","on","2020-01-01","1_000","1:20"] {
             let parsed=parse_rule_file(&format!("---\ncondition: {value}\n---\nbody"),meta()).unwrap(); assert_eq!(parsed.condition,[value]);
