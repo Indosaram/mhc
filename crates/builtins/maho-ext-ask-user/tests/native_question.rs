@@ -29,6 +29,9 @@ async fn scenario_recovery(cancel: bool, fail_append: bool, abort: bool, timeout
     scenario_ui_failure(cancel,fail_append,abort,timeout,reload,late_rebind,recovering,false).await
 }
 async fn scenario_ui_failure(cancel: bool, fail_append: bool, abort: bool, timeout: bool, reload: bool, late_rebind: bool, recovering: bool, fail_ui:bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    scenario_empty_submission(cancel,fail_append,abort,timeout,reload,late_rebind,recovering,fail_ui,false).await
+}
+async fn scenario_empty_submission(cancel: bool, fail_append: bool, abort: bool, timeout: bool, reload: bool, late_rebind: bool, recovering: bool, fail_ui:bool, empty_submission:bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let root = tempfile::tempdir()?;
     let project = root.path();
     let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
@@ -158,7 +161,7 @@ async fn scenario_ui_failure(cancel: bool, fail_append: bool, abort: bool, timeo
         session.emit_session_shutdown(SessionReason::Quit).await;
         if !get_pending_questions(&session.session_id()).is_empty() { return Err("Shutdown left pending question".into()); }
     } else if !late_rebind {
-        responses.as_ref().expect("response sender").send_replace(Some(QuestionResponse {status:QuestionStatus::Answered, answers:[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into(),comment:None,unanswered:vec![],auto_resolved_after_ms:None}));
+        responses.as_ref().expect("response sender").send_replace(Some(QuestionResponse {status:QuestionStatus::Answered, answers:if empty_submission{Default::default()}else{[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into()},comment:None,unanswered:if empty_submission{vec![request.questions[0].id.clone()]}else{vec![]},auto_resolved_after_ms:None}));
     }
     if !late_rebind { tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop { if completion.borrow().is_some() { break; } completion.changed().await?; }
@@ -216,9 +219,20 @@ async fn scenario_ui_failure(cancel: bool, fail_append: bool, abort: bool, timeo
         let persisted = entries.iter().filter(|entry| entry["type"] == "custom" && entry["customType"] == "ask-user:settlement" && entry["data"]["requestId"] == request.request_id).count();
         if persisted != 1 { return Err(format!("Reload settlement persistence: expected one, got {persisted}").into()); }
     }
-    if fail_ui && !completion.borrow().as_ref().and_then(|response|response.comment.as_ref()).is_some_and(|comment|comment.contains("UI response channel closed")){return Err("Recovered UI failure lost error comment".into());}
-    if status != Some(if fail_ui {QuestionStatus::OrphanedAfterRestart} else if timeout {QuestionStatus::TimedOut} else if cancel || abort {QuestionStatus::Cancelled} else {QuestionStatus::Answered}) || !get_pending_questions(&session.session_id()).is_empty() || notification_count != usize::from(!cancel && !abort) || request.request_id != pending[0].request.request_id {
+    if fail_ui && !completion.borrow().as_ref().and_then(|response|response.comment.as_ref()).is_some_and(|comment|comment.contains("UI response channel closed")){return Err("UI failure lost error comment".into());}
+    let orphaned=fail_ui&&(recovering||reload);
+    let silent=cancel||abort||(fail_ui&&!orphaned);
+    if status != Some(if orphaned {QuestionStatus::OrphanedAfterRestart} else if silent {QuestionStatus::Cancelled} else if timeout {QuestionStatus::TimedOut} else {QuestionStatus::Answered}) || !get_pending_questions(&session.session_id()).is_empty() || notification_count != usize::from(!silent) || request.request_id != pending[0].request.request_id {
         return Err(format!("Settlement receipt: status={status:?}, notifications={notification_count}").into());
+    }
+    if silent {
+        let entries=session.with_session_manager(|manager|manager.entries());
+        let injected=entries.iter().filter(|entry|entry["type"]=="message"&&entry["message"]["role"]=="user").any(|entry|{
+            let content=&entry["message"]["content"];
+            let contains_frame=|text:&str|crate::maho_frame_matches(text,&request.request_id);
+            content.as_str().is_some_and(contains_frame)||content.as_array().is_some_and(|parts|parts.iter().filter(|part|part["type"]=="text").filter_map(|part|part["text"].as_str()).any(contains_frame))
+        });
+        if injected{return Err("Cancelled question injected an answer frame".into());}
     }
     if timeout && !reload {
         let asked_before=asked.lock().expect("asked").len();
@@ -252,6 +266,10 @@ async fn scenario_ui_failure(cancel: bool, fail_append: bool, abort: bool, timeo
 #[tokio::test]
 async fn registered_async_question_delivers_one_settlement() { scenario(false, false, false, false, false).await.expect("registered answer"); }
 #[tokio::test]
+async fn registered_ui_empty_submission_preserves_response_and_retires_timer() {
+    scenario_empty_submission(false,false,false,false,false,false,false,false,true).await.expect("UI-owned empty submission");
+}
+#[tokio::test]
 async fn registered_shutdown_settles_and_unregisters_before_returning() { scenario(true, false, false, false, false).await.expect("registered shutdown"); }
 
 #[tokio::test]
@@ -272,6 +290,9 @@ async fn resumed_waiting_call_opens_original_request_without_duplicate_recovery(
 #[tokio::test]
 async fn recovered_ui_failure_settles_orphaned_with_comment_and_tears_down(){scenario_ui_failure(false,false,false,false,false,false,true,true).await.expect("recovered failure");}
 
+#[tokio::test]
+async fn initial_ui_failure_cancels_without_model_injection_and_tears_down(){scenario_ui_failure(false,false,false,false,false,false,false,true).await.expect("initial UI failure");}
+
 struct FailingPersistence;
 impl ExtensionActions for FailingPersistence {
     fn send_message(&self, _: CustomMessage, _: SendMessageOptions) -> Result<(), ExtensionFailure> { panic!("failed setup must not deliver") }
@@ -281,3 +302,7 @@ impl ExtensionActions for FailingPersistence {
 }
 #[tokio::test]
 async fn failed_persistence_leaves_no_pending_owner_or_notification() { scenario(false, true, false, false, false).await.expect("failed setup cleanup"); }
+
+fn maho_frame_matches(text:&str,id:&str)->bool{
+    maho_ext_ask_user::format::parse_ask_user_answer_frame(text).is_some_and(|(request,_)|request==id)
+}

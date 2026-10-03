@@ -37,6 +37,14 @@ impl ExtensionUi for DecisionUi {
     fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
     fn question(&self, request: QuestionRequest, options: QuestionOptions) -> ExtensionFuture<'_, QuestionResponse> {
         Box::pin(async move {
+            assert_eq!(options.deliver, if request.wait_for_answer { QuestionDelivery::ToolResult } else { QuestionDelivery::UserMessage });
+            let deadline = options.get_deadline_at_ms.as_ref().expect("authoritative live deadline")();
+            let hard = options.hard_deadline_at_ms.expect("original hard cap");
+            assert!(deadline <= hard);
+            assert_eq!(hard - deadline, 7_200_000 - request.timeout_ms);
+            let draft = options.initial_draft.as_ref().expect("attachment draft");
+            assert!(draft.answers.as_ref().expect("retained answers").is_empty());
+            assert!(draft.comment.is_none());
             self.opened.send(request.clone()).map_err(|error| ExtensionFailure::new(error.to_string()))?;
             let mut responses = self.responses.clone();
             loop {

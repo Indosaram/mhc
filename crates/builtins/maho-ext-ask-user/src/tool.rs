@@ -10,7 +10,8 @@ fn unavailable(request: &QuestionRequest) -> QuestionResponse {
     QuestionResponse { status: QuestionStatus::Unavailable, answers: Default::default(), comment: None, unanswered: request.questions.iter().map(|question| question.id.clone()).collect(), auto_resolved_after_ms: None }
 }
 fn result(variant: AskUserVariant, request: &QuestionRequest, response: &QuestionResponse) -> AgentToolResult {
-    AgentToolResult { content: vec![ContentBlock::Text(TextContent { text: format_result_text(response, &request.questions), audience: None, text_signature: None })], details: format_result_details(variant, response, &request.questions), usage: None, added_tool_names: None, terminate: None, is_error: None }
+    let text=if response.status==QuestionStatus::Cancelled{response.comment.clone().unwrap_or_else(||format_result_text(response,&request.questions))}else{format_result_text(response,&request.questions)};
+    AgentToolResult { content: vec![ContentBlock::Text(TextContent { text, audience: None, text_signature: None })], details: format_result_details(variant, response, &request.questions), usage: None, added_tool_names: None, terminate: None, is_error: None }
 }
 fn emit_wake(bus:&EventBus,session:&str){
     let entries=get_pending_questions(session).into_iter().filter(|entry|!entry.request.wait_for_answer).collect::<Vec<_>>();
@@ -34,15 +35,18 @@ pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc
     let params = match variant { AskUserVariant::Codex => codex_params(), AskUserVariant::Claude => claude_params() };
     let mut definition = ToolDefinition::new(tool_name(variant), "Ask a material question; choose explicitly whether to wait or receive the answer later.", params, Arc::new(|_| Box::pin(async { Err(ToolError::Message("Extension context required".into())) })));
     definition.label = "Ask user".into();
+    definition.prompt_snippet=Some("Ask a material question, explicitly choosing whether to wait or receive the answer later.".into());
     definition.allow_lazy_activation = Some(false);
-    api.registered.tool_renderers.insert(tool_name(variant).into(),Arc::new(crate::render::renderers()));
     definition.prepare_arguments = Some(Arc::new(move |args| { to_canonical(variant, &args, String::new(), None).map_err(ToolError::Message)?; Ok(args) }));
     if let Err(error) = api.register_tool_with_extension_context(definition, Arc::new(move |id, args, signal, _, ctx| {
         let state = state.clone(); let sender = sender.clone();
         Box::pin(async move {
             let settings = ctx.get_ask_user_settings()?;
             let timeout = (settings.timeout_minutes * 60_000.0) as u64;
-            let request = to_canonical(variant, &args, id.into(), Some(timeout)).map_err(ExtensionFailure::new)?;
+            let request = match to_canonical(variant, &args, id.into(), Some(timeout)){
+                Ok(request)=>request,
+                Err(message)=>return Ok(AgentToolResult{content:vec![ContentBlock::Text(TextContent{text:message,audience:None,text_signature:None})],details:json!({"status":"unavailable"}),usage:None,added_tool_names:None,terminate:None,is_error:None}),
+            };
             let (timed_out, unavailable_now) = {
                 let current=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 (current.timed_out,current.unavailable||!settings.enabled||sender.get_flag("no-ask-user")==Some(FlagValue::Boolean(true))||matches!(ctx.mode,ExtensionMode::Print|ExtensionMode::Json))
@@ -61,6 +65,7 @@ pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc
             start_question(sender, ctx.clone(), request, signal, state, variant, false).await
         })
     })) { std::panic::panic_any(error); }
+    api.registered.tool_renderers.insert(tool_name(variant).into(),Arc::new(crate::render::renderers()));
 }
 
 pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionContext, request: QuestionRequest, signal: Option<maho_ai::utils::abort::AbortSignal>, state: Arc<Mutex<AskUserState>>, variant: AskUserVariant, resuming: bool) -> Result<AgentToolResult, ExtensionFailure> {
@@ -83,8 +88,8 @@ pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionCont
             let callback = terminal.clone();
             let timer = Arc::new(PendingTimer::new(request.clone(), Arc::new(move |response| { callback.send_if_modified(|value| { if value.is_some() { false } else { *value = Some(response); true } }); })));
             let cancelled = terminal.clone(); let pending = timer.clone(); let cancel = cancel_signal.clone();
-            let deadline=timer.clone();let created=maho_ai::utils::diagnostics::now_ms().max(0) as u64;
-            register_pending_question(&session, Arc::new(PendingQuestionEntry { request: request.clone(), completion: completion.clone(), owner, publication: publication.clone(), deadline_at_ms:Arc::new(move||created.saturating_add(deadline.deadline_at_ms())), cancel: Arc::new(move |reason| { let response = pending.cancel(reason); cancelled.send_if_modified(|value| { if value.is_some() { false } else { *value = Some(response); true } }); cancel.abort(); }) }));
+            let deadline=timer.clone();
+            register_pending_question(&session, Arc::new(PendingQuestionEntry { request: request.clone(), completion: completion.clone(), owner, publication: publication.clone(), deadline_at_ms:Arc::new(move||deadline.absolute_deadline_at_ms()), cancel: Arc::new(move |reason| { let response = pending.cancel(reason); cancelled.send_if_modified(|value| { if value.is_some() { false } else { *value = Some(response); true } }); cancel.abort(); }) }));
             if !request.wait_for_answer{emit_wake(&sender.events,&session);}
             emit_asked(&sender.events, &ctx, &request, variant);
             sender.events.emit("herdr:blocked", &json!({"active":true,"id":id,"label":request.questions.first().map(|q|format!("{} — {}",q.header,q.question)).unwrap_or_default()}));
@@ -102,9 +107,18 @@ pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionCont
                     let attachment_signal = AbortSignal::default();
                     let ui_signal = attachment_signal.clone();
                     let request = owner_request.clone();
+                    let deadline = timer.clone();
+                    let initial_draft = timer.initial_draft();
+                    let hard_deadline_at_ms = timer.absolute_hard_deadline_at_ms();
                     let question = async move {
                         match current {
-                            Some(owner) => {let bus=owner.sender.events.clone();let session=owner.context.session_manager.session_id().to_owned();owner.context.ui.question(request.clone(), QuestionOptions { dialog: ExtensionUiDialogOptions { signal: Some(ui_signal), timeout_ms: Some(remaining_ms) }, on_progress: Some(Arc::new(move |draft| {progress.progress(draft);if !progress_request.wait_for_answer{emit_wake(&bus,&session);}})) }).await},
+                            Some(owner) => {
+                                let bus=owner.sender.events.clone();let session=owner.context.session_manager.session_id().to_owned();let progress_signal=ui_signal.clone();
+                                owner.context.ui.question(request.clone(), QuestionOptions { dialog: ExtensionUiDialogOptions { signal: Some(ui_signal), timeout_ms: Some(remaining_ms) }, on_progress: Some(Arc::new(move |draft| {
+                                    if progress_signal.is_aborted(){return;}
+                                    progress.progress(draft);if !progress_request.wait_for_answer{emit_wake(&bus,&session);}
+                                })), deliver: if request.wait_for_answer { QuestionDelivery::ToolResult } else { QuestionDelivery::UserMessage }, hard_deadline_at_ms: Some(hard_deadline_at_ms), get_deadline_at_ms: Some(Arc::new(move || deadline.absolute_deadline_at_ms())), initial_draft: Some(initial_draft) }).await
+                            },
                             None => std::future::pending().await,
                         }
                     };
@@ -125,7 +139,10 @@ pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionCont
                     if let Some(response) = response { break response; }
                 };
                 match response.status {
-                    QuestionStatus::Answered | QuestionStatus::CommentSubmitted => { timer.submit(response.answers.clone(), response.comment.clone()); },
+                    QuestionStatus::Answered | QuestionStatus::CommentSubmitted => {
+                        timer.submit(response.answers.clone(), response.comment.clone());
+                        timer.cancel(QuestionStatus::Cancelled);
+                    },
                     other => { timer.cancel(other); },
                 }
                 timer.settle().await;
