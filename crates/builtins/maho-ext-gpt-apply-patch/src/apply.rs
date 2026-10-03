@@ -33,7 +33,11 @@ async fn apply_single_hunk(cwd:&Path,hunk:&ParsedPatch)->Result<(String,String,u
     let file=match hunk { ParsedPatch::Add{file_path,..}|ParsedPatch::Delete{file_path}|ParsedPatch::Update{file_path,..}=>file_path };
     let path=resolve_patch_path(cwd,Path::new(file));
     let move_path=if let ParsedPatch::Update{move_path:Some(destination),..}=hunk { if destination.is_empty() { None } else { Some(resolve_patch_path(cwd,Path::new(destination))) } } else { None };
-    let mut paths=vec![path.clone()]; if let Some(destination)=&move_path { paths.push(destination.clone()); } paths.sort(); paths.dedup();
+    let mut paths=vec![path.clone()]; if let Some(destination)=&move_path { paths.push(destination.clone()); }
+    let collator=icu_collator::Collator::try_new(Default::default(),Default::default()).unwrap_or_else(|error|std::panic::panic_any(error));
+    // localeCompare can equate distinct spellings; break only those ties to keep
+    // opposite-direction moves on the same global acquisition order.
+    paths.sort_by(|left,right|collator.compare(&left.to_string_lossy(),&right.to_string_lossy()).then_with(||left.cmp(right))); paths.dedup();
     let mut guards=Vec::new(); for path in paths { guards.push(maho_tools::file_mutation_queue::lock_file_mutation(&path).await.map_err(|error|MutationError::from(error.to_string()))?); }
     let source=read_patch_file_snapshot(&path).await?;
     match hunk {

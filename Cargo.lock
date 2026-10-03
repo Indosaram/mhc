@@ -2136,6 +2136,7 @@ version = "0.0.0"
 name = "maho-ext-gpt-apply-patch"
 version = "0.0.0"
 dependencies = [
+ "icu_collator",
  "maho-ai",
  "maho-ext-api",
  "maho-ext-host",
