@@ -36,7 +36,7 @@ fn run() -> Result<(), String> {
             match arg.as_str() {
                 "--from" => from = PathBuf::from(args.next().ok_or("--from requires a directory")?),
                 "--force" => force = true,
-                "--help" | "-h" => { println!("Usage: mhc import-omo [--from <directory>]\nExisting destination entries are never overwritten."); return Ok(()); }
+                "--help" | "-h" => { println!("Usage: mhc import-omo [--from <directory>] [--force]\nUse --force to overwrite existing destination entries."); return Ok(()); }
                 _ => return Err(format!("Unknown import option: {arg}")),
             }
         }

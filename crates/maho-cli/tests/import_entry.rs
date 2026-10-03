@@ -19,4 +19,11 @@ fn repeat_real_import_never_clobbers_destination_bytes() {
     assert_eq!(run().status.code(), Some(1));
     let after: Vec<_> = paths.iter().map(|path| Sha256::digest(std::fs::read(path).expect("destination bytes"))).collect();
     assert_eq!(before, after);
+    let forced = std::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
+        .current_dir(home.path()).env("HOME", home.path()).env_remove("__PI_INTERNAL_SPAWN")
+        .args(["import-omo", "--from", source.to_str().expect("source path"), "--force"])
+        .output().expect("forced import command");
+    assert!(forced.status.success(), "{}", String::from_utf8_lossy(&forced.stderr));
+    assert_eq!(std::fs::read(target.join("settings.json")).expect("updated settings"), b"{\"fixture\":2}");
+    assert_eq!(std::fs::read(target.join("sessions/project/a.jsonl")).expect("session"), b"session fixture\n");
 }
