@@ -50,6 +50,39 @@ struct NativeParentTool {
     executor: tokio::runtime::Handle,
 }
 
+pub fn native_child_sdk_options(
+    child: &senpi_task::runners::in_process::child_options::ChildSessionOptions,
+    custom_tools: Vec<maho_ext_api::ToolDefinition>,
+) -> Result<maho_core::sdk::CreateAgentSessionOptions, senpi_task::host::HostError> {
+    let failure = |message: String| senpi_task::host::HostError { message };
+    if custom_tools.len() != child.custom_tools.len()
+        || custom_tools.iter().zip(&child.custom_tools).any(|(native, child)| native.name != child.name()) {
+        return Err(failure("Native child definitions must preserve the imported custom tool inventory and order".into()));
+    }
+    let auth_storage = child.auth_storage.clone().map(|handle| handle.downcast::<maho_core::auth_storage::AuthStorage>()
+        .map_err(|_| failure("Child auth storage is not native AuthStorage".into()))).transpose()?;
+    let model_runtime = child.model_runtime.as_ref().map(|handle| handle.downcast_ref::<maho_core::model_runtime::ModelRuntime>()
+        .cloned().ok_or_else(|| failure("Child model runtime is not native ModelRuntime".into()))).transpose()?;
+    let model_registry = child.model_registry.as_ref().map(|handle| handle.downcast_ref::<NativeChildModelRegistry>()
+        .map(|registry| registry.0.clone()).ok_or_else(|| failure("Child model registry is not the native parent facade".into()))).transpose()?;
+    let model = child.model.as_ref().map(|handle| handle.downcast_ref::<maho_ai::types::Model>()
+        .cloned().ok_or_else(|| failure("Child model is not native Model".into()))).transpose()?;
+    let thinking_selection = child.thinking_level.as_deref().map(|level| {
+        maho_ai::types::ModelThinkingLevel::parse(level).map(|level| maho_ai::types::ThinkingSelection {
+            level, source: maho_ai::types::ThinkingSelectionSource::Explicit, legacy_variant_id: None,
+        }).ok_or_else(|| failure(format!("Invalid child thinking level: {level}")))
+    }).transpose()?;
+    let minimal_resources = match child.resource_loader {
+        senpi_task::runners::in_process::child_options::ChildResourceLoader::Minimal => true,
+    };
+    Ok(maho_core::sdk::CreateAgentSessionOptions {
+        cwd: Some(child.cwd.clone()), agent_dir: child.agent_dir.clone(), auth_storage, model_runtime,
+        model_registry, model, thinking_selection, custom_tools, minimal_resources,
+        session_manager: Some(native_child_session_manager(child)), settings_manager: Some(native_child_settings(&child.settings)),
+        tools: child.tools.clone(), exclude_tools: child.exclude_tools.clone(), ..Default::default()
+    })
+}
+
 pub fn native_child_settings(
     retry: &senpi_task::runners::in_process::runtime_fallback_settings::RetryFallbackSettings,
 ) -> maho_core::settings_manager::SettingsManager {

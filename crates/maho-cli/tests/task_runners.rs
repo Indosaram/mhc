@@ -54,6 +54,43 @@ fn native_child_settings_forward_retry_policy_without_disk_settings() {
 }
 
 #[test]
+fn native_child_options_preserve_parent_handles_and_isolated_policy() {
+    use std::sync::Arc;
+    use senpi_task::runners::in_process::{child_options::{build_child_session_options, HostHandle},
+        runner::ChildSpec, session_manager::ChildSessionManager};
+    let dir = tempfile::tempdir().expect("child options");
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let credentials = Arc::new(maho_core::auth_storage::AuthStorage::in_memory(Default::default()));
+    let runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+        maho_core::model_runtime::CreateModelRuntimeOptions {
+            credentials: Some(credentials.clone()), providers: Some(Vec::new()), ..Default::default()
+        });
+    let model = maho_ai::providers::faux::faux_provider(Default::default()).get_model(Some("faux-1")).expect("model");
+    let spec = ChildSpec {
+        cwd: cwd.clone(), agent_dir: Some("child-agent".into()),
+        auth_storage: Some(credentials.clone()), model_runtime: Some(Arc::new(runtime.clone())),
+        model_registry: Some(Arc::new(maho_cli::cli::task_runners::NativeChildModelRegistry(
+            maho_core::model_registry::ModelRegistry::new(runtime)))), model: Some(Arc::new(model.clone())),
+        thinking_level: Some("off".into()), tool_allowlist: Some(vec!["read".into()]),
+        tool_denylist: Some(vec!["bash".into()]), ..Default::default()
+    };
+    let mut child = build_child_session_options(&spec, ChildSessionManager::create(&cwd, &cwd).expect("locator"), &[], &[]);
+
+    let options = maho_cli::cli::task_runners::native_child_sdk_options(&child, Vec::new()).expect("native options");
+
+    assert!(options.minimal_resources);
+    assert!(Arc::ptr_eq(options.auth_storage.as_ref().expect("credentials"), &credentials));
+    assert!(Arc::ptr_eq(&options.model_registry.as_ref().expect("registry").auth_storage, &credentials));
+    assert_eq!(options.model, Some(model));
+    assert_eq!(options.thinking_selection.expect("off selection").level, maho_ai::types::ModelThinkingLevel::Off);
+    assert_eq!(options.tools, spec.tool_allowlist);
+    assert_eq!(options.exclude_tools, spec.tool_denylist);
+    assert_eq!(options.agent_dir, spec.agent_dir);
+    child.model = Some(Arc::new("foreign-model".to_owned()) as HostHandle);
+    assert!(maho_cli::cli::task_runners::native_child_sdk_options(&child, Vec::new()).is_err());
+}
+
+#[test]
 fn native_rpc_spawn_preserves_isolation_and_explicit_member_profile() {
     let dir = tempfile::tempdir().expect("isolated task state");
     let executable = dir.path().join("mhc");
