@@ -1465,6 +1465,68 @@ async fn command_invocation_uses_command_capable_context_without_changing_legacy
     assert_eq!(ctx.navigate_tree("old leaf", ExtensionTreeNavigationOptions::default()).await.unwrap_err().message, "replaced command context");
     assert_eq!(*actions.0.lock().unwrap(), ["leaf", "reload"]);
 }
+#[test]
+fn public_catalog_getters_observe_retained_api_replacements() {
+    let runtime = ExtensionRuntime::default();
+    let scope = runtime.registration_scope();
+    let mut api = ExtensionApi::new(LoadedExtension::new("catalog", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), scope.clone());
+    let tool = |description: &str| ToolDefinition::new("live", description, JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { Ok(ToolResult::text("ok")) })));
+    api.register_tool(tool("original"));
+    scope.commit_registration().unwrap();
+    let runner = ExtensionRunner::new(vec![api.registered.clone()], runtime, EventBus::default(), context());
+    api.register_tool(tool("replacement"));
+    assert_eq!(runner.get_tool_definition("live").unwrap().description, "replacement");
+    let message: MessageRenderer = Arc::new(|_, _, _| None);
+    api.register_message_renderer("live", message.clone());
+    assert!(Arc::ptr_eq(&runner.get_message_renderer("live").unwrap(), &message));
+    let entry: EntryRenderer = Arc::new(|_, _, _| None);
+    api.register_entry_renderer("live", entry.clone(), EntryRendererOptions { replaces: Some(Arc::new(|_, _| true)) });
+    assert!(Arc::ptr_eq(&runner.get_entry_renderer("live").unwrap(), &entry));
+    assert!(runner.get_entry_renderer_options("live").unwrap().replaces.is_some());
+    api.register_entry_renderer_optional("live", entry, None);
+    assert!(runner.get_entry_renderer_options("live").is_none());
+}
+
+#[test]
+fn retained_context_observes_live_mcp_declarations() {
+    let mut runner = runner(vec![]);
+    let scope = runner.runtime.registration_scope();
+    let mut api = ExtensionApi::new(LoadedExtension::new("mcp", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), scope.clone());
+    scope.commit_registration().unwrap();
+    runner.extensions.push(api.registered.clone());
+    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None) })).unwrap();
+    let retained = runner.create_context().unwrap();
+    api.register_mcp_server("live", McpServerDeclaration { command: Some("first".into()), ..Default::default() });
+    assert_eq!(retained.get_registered_mcp_servers()[0].config.command.as_deref(), Some("first"));
+    api.register_mcp_server("live", McpServerDeclaration { command: Some("replacement".into()), ..Default::default() });
+    assert_eq!(retained.get_registered_mcp_servers()[0].config.command.as_deref(), Some("replacement"));
+    runner.invalidate("retired mcp context");
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| retained.get_registered_mcp_servers())).is_err());
+}
+
+#[tokio::test]
+async fn command_invocation_rejects_completion_after_invalidation() {
+    let runtime = ExtensionRuntime::default();
+    let (started, received) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let started = Arc::new(Mutex::new(Some(started)));
+    let released = Arc::new(Mutex::new(Some(released)));
+    let mut api = ExtensionApi::new(LoadedExtension::new("command", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), runtime.clone());
+    api.register_command("pending", None, None, Arc::new(move |_, _| {
+        let started = started.lock().unwrap().take().unwrap();
+        let released = released.lock().unwrap().take().unwrap();
+        Box::pin(async move { started.send(()).unwrap(); released.await.unwrap(); Ok(()) })
+    }));
+    let runner = ExtensionRunner::new(vec![api.registered], runtime, EventBus::default(), context());
+    let command_context = runner.create_command_context(Arc::new(CommandActions(Mutex::new(vec![])))).unwrap();
+    let invocation_runner = runner.clone();
+    let invocation = tokio::spawn(async move { invocation_runner.invoke_command("pending", "", &command_context).await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), received).await.unwrap().unwrap();
+    runner.invalidate("replaced during command");
+    release.send(()).unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), invocation).await.unwrap().unwrap();
+    assert_eq!(result.unwrap_err().message, "replaced during command");
+}
 #[tokio::test]
 async fn question_without_ui_returns_unavailable_and_preserves_unanswered_ids() {
     let ctx = context();

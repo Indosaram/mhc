@@ -2,7 +2,7 @@
 //! Session, resource, registry and theme ports live here to keep the dependency graph acyclic.
 use std::{collections::BTreeMap, fmt, future::Future, path::{Path, PathBuf}, pin::Pin, sync::{Arc, Mutex}};
 pub use maho_agent::types::{AgentEvent, AgentMessage};
-pub use maho_agent::types::{AgentTool, AgentToolResult};
+pub use maho_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
 pub use maho_tools::tool_definition_wrapper::wrap_tool_definition;
 pub use maho_ai::{model::Model, types::{JsonValue, ThinkingLevel, Usage, ImageContent}};
 pub use maho_ai::types::{Message, UserMessage, UserContent, AssistantMessage, ContentBlock};
@@ -413,6 +413,7 @@ pub trait ExtensionContextActions: Send + Sync {
     fn get_system_prompt(&self) -> String;
     fn get_system_prompt_options(&self) -> BuildSystemPromptOptions;
     fn get_loaded_hook_sources(&self) -> LoadedHookSources;
+    fn get_registered_mcp_servers(&self) -> Option<Vec<RegisteredMcpServerDeclaration>> { None }
     fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools>;
 }
 
@@ -627,7 +628,10 @@ impl ExtensionContext {
     pub fn is_compacting(&self) -> bool { self.assert_active_or_panic(); self.session_manager.extension_context_actions().map_or_else(|| (self.is_compacting_fn)(), ExtensionContextActions::is_compacting) }
     pub fn get_system_prompt(&self) -> String { self.assert_active_or_panic(); (self.get_system_prompt_fn)() }
     pub fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { self.assert_active_or_panic(); (self.get_system_prompt_options_fn)() }
-    pub fn get_registered_mcp_servers(&self) -> &[RegisteredMcpServerDeclaration] { self.assert_active_or_panic(); &self.registered_mcp_servers }
+    pub fn get_registered_mcp_servers(&self) -> Vec<RegisteredMcpServerDeclaration> {
+        self.assert_active_or_panic();
+        self.session_manager.extension_context_actions().and_then(ExtensionContextActions::get_registered_mcp_servers).unwrap_or_else(|| self.registered_mcp_servers.clone())
+    }
 }
 impl ToolContext for ExtensionContext {
     fn cwd(&self) -> &Path { self.assert_active_or_panic(); &self.cwd }
