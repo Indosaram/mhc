@@ -23,6 +23,23 @@ pub fn resolve_search_root_windows(current:&str,default:&str)->String{
 use maho_ext_api::*;
 use std::sync::Arc;
 pub type HistorySelection=Arc<dyn Fn(ExtensionContext,Vec<types::HistoryEntry>)->ExtensionFuture<'static,Option<types::HistoryEntry>>+Send+Sync>;
+pub struct HistoryUiBindings{
+    pub render:Arc<dyn Fn(&dyn ExtensionTuiHost)->std::rc::Rc<dyn Fn()>+Send+Sync>,
+    pub theme:Arc<dyn Fn(&Theme)->Result<maho_interactive::theme::Theme,ExtensionFailure>+Send+Sync>,
+}
+pub fn native_selection(bindings:HistoryUiBindings)->HistorySelection{
+    let bindings=Arc::new(bindings);
+    Arc::new(move|ctx,entries|{let bindings=bindings.clone();Box::pin(async move{
+        let selection=ctx.ui.custom_factory(Arc::new(move|host,theme,_,done|{
+            let render=(bindings.render)(host);let theme=(bindings.theme)(theme);let entries=entries.clone();
+            let done=std::rc::Rc::new(move|entry:Option<types::HistoryEntry>|done(entry.map_or(JsonValue::Null,|entry|serde_json::json!(entry))));
+            Box::pin(async move{Ok(Box::new(overlay::HistorySearchOverlay::new(entries,theme?,render,done)) as Box<dyn Component>)})
+        }),CustomUiFactoryOptions{overlay:true,overlay_options:Some(ExtensionOverlayOptions::Static(Arc::new(||maho_tui::tui::OverlayOptions{
+            width:Some(maho_tui::tui::SizeValue::Percent(90.0)),min_width:Some(60),max_height:Some(maho_tui::tui::SizeValue::Percent(80.0)),margin:Some(maho_tui::tui::OverlayMargin{top:Some(2),right:Some(2),bottom:Some(2),left:Some(2)}),..Default::default()
+        }))),..Default::default()}).await?;
+        if selection.is_null(){Ok(None)}else{serde_json::from_value(selection).map(Some).map_err(|error|ExtensionFailure::new(error.to_string()))}
+    })})
+}
 pub struct HistorySearch{
     pub session_dir:Arc<dyn Fn(&ExtensionContext)->Result<PathBuf,ExtensionFailure>+Send+Sync>,
     pub default_sessions_root:Arc<dyn Fn()->PathBuf+Send+Sync>,
