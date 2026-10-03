@@ -58,9 +58,9 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
     let began=std::time::Instant::now(); drop(invocation);
     assert!(began.elapsed()<Duration::from_secs(5),"actual registered foreground Drop must settle its executor within bound");
     let records=component.engine.manager.list(&ListScope::All); assert_eq!(records.len(),1);
-    assert!(!records[0].record.status.is_terminal(),"foreground waiter Drop alone must not be mislabeled as child cancellation");
-    assert!(processes.lock().expect("processes").iter().all(|child| !child.has_exited()),"capture child state before explicit lifecycle teardown");
-    println!("RECEIPT registered foreground Drop settled executor; native provider child remains resident before teardown");
+    assert_eq!(records[0].record.status,senpi_task::state::TaskStatus::Cancelled,"run_spawn must propagate the owned executor abort to manager cancellation");
+    for child in processes.lock().expect("processes").iter() { assert!(child.wait_exit_timeout(Duration::from_secs(5)).is_some(),"actual foreground Drop must reap child before later explicit cleanup"); }
+    println!("RECEIPT registered foreground Drop settled executor and cancelled/reaped native child before explicit teardown");
     drop(cleanup);
     for child in processes.lock().expect("processes").iter() { assert!(child.wait_exit_timeout(Duration::from_secs(5)).is_some()); }
     println!("RECEIPT explicit lifecycle teardown terminated and reaped native child after Drop observation");
