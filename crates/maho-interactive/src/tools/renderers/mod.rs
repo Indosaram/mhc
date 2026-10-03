@@ -2,6 +2,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use maho_tools::definition::{RenderShell, ToolResult};
 use maho_tui::tui::Component;
@@ -9,7 +10,6 @@ use serde_json::Value;
 
 use crate::theme::Theme;
 
-pub mod ask_user;
 pub mod bash;
 pub mod edit;
 pub mod find;
@@ -109,7 +109,9 @@ pub fn with_built_in_renderers(
 /// senpi's `askUserRenderers(toolName)`: the question pair covers the two ask-user tool names,
 /// which have no built-in renderer, so a card streamed while the registry is unbound still draws.
 pub fn ask_user_renderers(tool_name: &str) -> Option<Rc<RefCell<dyn ToolRenderers>>> {
-    maho_ext_ask_user::render::supports_tool(tool_name).then(|| Rc::new(RefCell::new(ask_user::AskUserRenderers)) as Rc<RefCell<dyn ToolRenderers>>)
+    maho_ext_ask_user::render::supports_tool(tool_name).then(|| {
+        Rc::new(RefCell::new(native::NativeToolRenderers::<()>::new(Arc::new(maho_ext_ask_user::render::renderers())))) as Rc<RefCell<dyn ToolRenderers>>
+    })
 }
 
 /// senpi's `getRegisteredToolDefinition` resolution order for a card: the registered definition,

@@ -155,3 +155,24 @@ fn native_missing_result_half_retains_plain_card_fallback() {
     let lines = component.render(80).join("\n");
     assert!(lines.contains("native call")); assert!(lines.contains("fallback result"));
 }
+
+#[test]
+fn ask_card_fallback_reuses_the_ask_user_renderers() {
+    use maho_interactive::tools::renderers::{ask_user_renderers, ToolRenderContext, ToolRenderResultOptions};
+    use maho_tools::definition::ToolResult;
+    let renderers = ask_user_renderers("ask_user_question").expect("the ask-user pair is covered");
+    assert!(ask_user_renderers("read").is_none(), "a non ask-user tool takes no ask-user fallback");
+    let args = serde_json::json!({"questions": [{"header": "Pick one"}, {"header": "Then this"}], "waitForAnswer": true});
+    let context = ToolRenderContext { args: &args, tool_call_id: "ask", cwd: "/tmp", execution_started: true,
+        args_complete: true, is_partial: false, expanded: false, show_images: false, is_error: false,
+        has_result: false, spinner_frame: None, now_ms: 0.0, invalidate: Rc::new(|| {}) };
+    let call = renderers.borrow_mut().render_call(&theme(), &context).expect("call half");
+    let line = call.borrow_mut().render(80).join("\n");
+    assert!(line.contains("[Pick one] [Then this]"), "headers: {line}");
+    assert!(line.contains("wait for answer"), "wait mode: {line}");
+    let result = ToolResult { content: vec![ToolContent::text("The user responded")], details: Some(serde_json::json!({"status": "answered", "answers": {"a": "x"}, "unanswered": ["b"]})) };
+    let result_child = renderers.borrow_mut().render_result(&result, ToolRenderResultOptions::default(), &theme(), &context).expect("result half");
+    let line = result_child.borrow_mut().render(80).join("\n");
+    assert!(line.contains("answered; 1 answered; 1 unanswered"), "summary: {line}");
+    assert!(line.contains("The user responded"), "content: {line}");
+}

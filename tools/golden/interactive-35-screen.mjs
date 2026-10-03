@@ -23,7 +23,7 @@ const { initTheme } = await load("packages/coding-agent/src/modes/interactive/th
 initTheme("dark",false);
 const settingsManager = SettingsManager.inMemory({ enabledBuiltinExtensions:[],quietStartup:true,tipsEnabled:false,tuiMode:"fullscreen",smoothStreaming:false,autoTitleSessions:false,showHardwareCursor:false });
 const services = await createAgentSessionServices({ cwd:"/tmp",agentDir,settingsManager,resourceLoaderOptions:{ extensionFactories:[faux.fauxExtension],noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true,systemPrompt:"" } });
-const result = await createAgentSessionFromServices({ services,sessionManager:SessionManager.inMemory("/tmp"),model:faux.model,autoTitleSessions:false });
+const result = await createAgentSessionFromServices({ services,sessionManager:SessionManager.inMemory("/tmp",{id:"lane35-screen"}),model:faux.model,autoTitleSessions:false });
 // Match native_mode's injected faux stream: no SDK system prompt, tools or session cache.
 const { streamSimple } = await load("packages/ai/src/compat.ts");
 result.session.agent.streamFunction=(model,context,options)=>streamSimple(model,{...context,systemPrompt:"",tools:[]},{...options,sessionId:undefined});
