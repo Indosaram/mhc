@@ -4,6 +4,42 @@ use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
 struct Host(Arc<AtomicUsize>);
 #[tokio::test]
+async fn removal_during_attachment_acquisition_rejects_stale_reopened_handle() {
+    use maho_server::server::testing::host::OpenGate;
+    struct GatedHost {gate:OpenGate,opens:AtomicUsize,releases:Arc<AtomicUsize>}
+    struct GatedHandle {gate:Option<OpenGate>,releases:Arc<AtomicUsize>}
+    impl ServerHost for GatedHost {
+        fn server_services(&self)->&dyn RoutedServerServiceHost {self}
+        fn resolve_session<'a>(&'a self,id:&'a str)->ServerFuture<'a,Value> {Box::pin(async move {Ok(json!({"id":id}))})}
+        fn open_session(&self,_:Value)->ServerFuture<'_,Arc<dyn RoutedSessionHandle>> {Box::pin(async move {
+            let gate=(self.opens.fetch_add(1,Ordering::SeqCst)==0).then(||self.gate.clone());
+            Ok(Arc::new(GatedHandle {gate,releases:self.releases.clone()}) as Arc<dyn RoutedSessionHandle>)
+        })}
+    }
+    impl RoutedServerServiceHost for GatedHost {
+        fn attach_client(&self,_:Arc<dyn RoutedServerPresentation>)->ServerFuture<'_,Arc<dyn RoutedServerServiceAttachment>> {Box::pin(async {Err(ServerError::new("internal_error","Unused"))})}
+    }
+    impl RoutedSessionHandle for GatedHandle {
+        fn attach_client(&self)->ServerFuture<'_,Arc<dyn RoutedSessionAttachment>> {Box::pin(async move {
+            if let Some(gate)=&self.gate {gate.entered.resolve(());gate.release.wait().await;}
+            Ok(Arc::new(Lease(self.releases.clone())) as Arc<dyn RoutedSessionAttachment>)
+        })}
+        fn close(&self)->ServerFuture<'_,()> {Box::pin(async {Ok(())})}
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(2),async {
+        let gate=OpenGate::default();let releases=Arc::new(AtomicUsize::new(0));
+        let router=Arc::new(SessionRouter::new(Arc::new(GatedHost {gate:gate.clone(),opens:AtomicUsize::new(0),releases:releases.clone()}),"00000000-0000-4000-8000-000000000001".into()));
+        let first={let router=router.clone();tokio::spawn(async move {router.attach("same").await})};
+        gate.entered.wait().await;
+        router.remove("same").await.unwrap();
+        let replacement=router.attach("same").await.unwrap();
+        gate.release.resolve(());
+        assert!(matches!(first.await.unwrap(),Err(error) if error.code=="server_draining"));
+        assert_eq!(releases.load(Ordering::SeqCst),1);
+        replacement.release().await.unwrap();router.close().await.unwrap();
+    }).await.unwrap();
+}
+#[tokio::test]
 async fn attachment_release_repeats_failure_without_releasing_twice() {
     struct FailingHost(Arc<AtomicUsize>);
     struct FailingLease(Arc<AtomicUsize>);

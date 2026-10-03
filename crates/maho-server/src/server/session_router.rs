@@ -105,7 +105,7 @@ impl SessionRouter {
             release_result: tokio::sync::OnceCell::new(),
         });
         let mut attachments = self.attachments.lock().await;
-        if self.closing.load(Ordering::SeqCst) || !self.hosted.lock().await.contains_key(session_id) {
+        if self.closing.load(Ordering::SeqCst) || !self.hosted.lock().await.get(session_id).is_some_and(|current|Arc::ptr_eq(current,&handle)) {
             attachment.release().await?;
             return Err(ServerError::draining());
         }
