@@ -1,6 +1,24 @@
 use maho_server::app_server::protocol::{collaboration_mode::*,fuzzy_search::*};
 use serde_json::json;
 #[test]
+fn optional_nonnull_facade_fields_reject_null_but_allow_omission() {
+    use maho_server::app_server::protocol::{base::{InitializeCapabilities,UserInput},catalogs::{SkillInterface,SkillToolDependency,SkillsListParams},config::ConfigReadParams};
+    fn reject_null<T:serde::de::DeserializeOwned>(base:serde_json::Value,keys:&[&str]) {
+        assert!(serde_json::from_value::<T>(base.clone()).is_ok());
+        for key in keys {let mut value=base.clone();value[*key]=serde_json::Value::Null;assert!(serde_json::from_value::<T>(value).is_err(),"null {key}");}
+    }
+    reject_null::<InitializeCapabilities>(json!({"experimentalApi":false,"requestAttestation":false}),&["mcpServerOpenaiFormElicitation"]);
+    reject_null::<UserInput>(json!({"type":"text","text":"hello"}),&["text_elements"]);
+    reject_null::<UserInput>(json!({"type":"image","url":"image"}),&["detail"]);
+    reject_null::<SkillInterface>(json!({}),&["displayName","shortDescription","iconSmall","iconLarge","brandColor","defaultPrompt"]);
+    reject_null::<SkillToolDependency>(json!({"type":"tool","value":"native"}),&["description","transport","command","url"]);
+    reject_null::<SkillsListParams>(json!({}),&["cwds","forceReload"]);
+    reject_null::<ConfigReadParams>(json!({}),&["includeLayers"]);
+    let nullable:ConfigReadParams=serde_json::from_value(json!({"cwd":null})).unwrap();
+    assert_eq!(nullable.cwd,Some(None));
+}
+
+#[test]
 fn remaining_facade_nullable_keys_reject_omission_and_roundtrip_null() {
     use maho_server::app_server::protocol::{base::GitInfo,turn::Turn,account::RateLimitWindow,models::ModelUpgradeInfo,terminal::TurnError};
     fn check<T:serde::de::DeserializeOwned+serde::Serialize>(value:serde_json::Value,keys:&[&str]) {

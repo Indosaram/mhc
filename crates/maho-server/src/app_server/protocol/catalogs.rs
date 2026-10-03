@@ -27,20 +27,20 @@ pub enum SkillScope {User,Repo,System,Admin}
 #[derive(Clone,Debug,Default,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct SkillInterface {
-    #[serde(default,skip_serializing_if="Option::is_none")]pub display_name:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub short_description:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub icon_small:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub icon_large:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub brand_color:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub default_prompt:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub display_name:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub short_description:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub icon_small:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub icon_large:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub brand_color:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub default_prompt:Option<String>,
 }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 pub struct SkillToolDependency {
     #[serde(rename="type")]pub kind:String,pub value:String,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub description:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub transport:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub command:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub url:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub description:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub transport:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub command:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub url:Option<String>,
 }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 pub struct SkillDependencies {pub tools:Vec<SkillToolDependency>}
@@ -48,9 +48,9 @@ pub struct SkillDependencies {pub tools:Vec<SkillToolDependency>}
 #[serde(rename_all="camelCase")]
 pub struct SkillMetadata {
     pub name:String,pub description:String,pub path:String,pub scope:SkillScope,pub enabled:bool,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub short_description:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub interface:Option<SkillInterface>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub dependencies:Option<SkillDependencies>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub short_description:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub interface:Option<SkillInterface>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub dependencies:Option<SkillDependencies>,
 }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 pub struct SkillErrorInfo {pub path:String,pub message:String}
@@ -59,8 +59,8 @@ pub struct SkillsListEntry {pub cwd:String,pub skills:Vec<SkillMetadata>,pub err
 #[derive(Clone,Debug,Default,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct SkillsListParams {
-    #[serde(default,skip_serializing_if="Option::is_none")]pub cwds:Option<Vec<String>>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub force_reload:Option<bool>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub cwds:Option<Vec<String>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub force_reload:Option<bool>,
 }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 pub struct SkillsListResponse {pub data:Vec<SkillsListEntry>}
@@ -77,11 +77,11 @@ pub struct McpServerInfo {pub name:String,#[serde(deserialize_with="super::nulla
 #[serde(rename_all="camelCase")]
 pub struct Tool {
     pub name:String,pub input_schema:JsonValue,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub title:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub description:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub title:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub description:Option<String>,
     #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub output_schema:Option<JsonValue>,
     #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub annotations:Option<JsonValue>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub icons:Option<Vec<JsonValue>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub icons:Option<Vec<JsonValue>>,
     #[serde(default,skip_serializing_if="Option::is_none",rename="_meta",deserialize_with="super::nullable::deserialize_present")]pub meta:Option<JsonValue>,
 }
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
@@ -89,11 +89,11 @@ pub struct Tool {
 pub struct Resource {
     pub name:String,pub uri:String,
     #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub annotations:Option<JsonValue>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub description:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub mime_type:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub size:Option<f64>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub title:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub icons:Option<Vec<JsonValue>>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub description:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub mime_type:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub size:Option<f64>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub title:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub icons:Option<Vec<JsonValue>>,
     #[serde(default,skip_serializing_if="Option::is_none",rename="_meta",deserialize_with="super::nullable::deserialize_present")]pub meta:Option<JsonValue>,
 }
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
@@ -101,9 +101,9 @@ pub struct Resource {
 pub struct ResourceTemplate {
     pub uri_template:String,pub name:String,
     #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub annotations:Option<JsonValue>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub title:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub description:Option<String>,
-    #[serde(default,skip_serializing_if="Option::is_none")]pub mime_type:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub title:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub description:Option<String>,
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub mime_type:Option<String>,
 }
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]

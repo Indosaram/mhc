@@ -20,7 +20,7 @@ pub struct ClientInfo {pub name:String,#[serde(deserialize_with="super::nullable
 #[serde(rename_all="camelCase")]
 pub struct InitializeCapabilities {
     pub experimental_api:bool,pub request_attestation:bool,
-    #[serde(default,skip_serializing_if="Option::is_none")]
+    #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]
     pub mcp_server_openai_form_elicitation:Option<bool>,
     #[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize")]
     pub opt_out_notification_methods:Option<Option<Vec<String>>>,
@@ -88,9 +88,9 @@ pub struct AdditionalContextEntry {pub value:String,pub kind:String}
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(tag="type",rename_all="camelCase")]
 pub enum UserInput {
-    Text {text:String,#[serde(default,skip_serializing_if="Option::is_none")]text_elements:Option<Vec<JsonValue>>},
-    Image {#[serde(default,skip_serializing_if="Option::is_none")]detail:Option<String>,url:String},
-    LocalImage {#[serde(default,skip_serializing_if="Option::is_none")]detail:Option<String>,path:String},
+    Text {text:String,#[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]text_elements:Option<Vec<JsonValue>>},
+    Image {#[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]detail:Option<String>,url:String},
+    LocalImage {#[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]detail:Option<String>,path:String},
     Skill {name:String,path:String},Mention {name:String,path:String},
 }
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
