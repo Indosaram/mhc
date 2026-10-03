@@ -5,7 +5,7 @@ use maho_ext_api::*;
 use maho_omo_task::{component::TaskComponent, engine::{ComposeTaskEngineDeps, compose_task_engine}};
 use senpi_task::{host::HostError, manager::{ManagedChildHandle, ManagedChildListener, Unsubscribe, types::{ManagedRunner, ManagedRunnerResult, ManagedStartSpec, ManagedRunners}}, runners::RunnerOutcome};
 use serde_json::{Value, json};
-struct Child { id: String, outcome: Mutex<Option<RunnerOutcome>>, ready: Condvar, listeners: Arc<Mutex<BTreeMap<u64, ManagedChildListener>>> }
+struct Child { id: String, outcome: Mutex<Option<RunnerOutcome>>, ready: Condvar, listeners: Arc<Mutex<BTreeMap<u64, ManagedChildListener>>>, activity_on_subscribe: bool }
 impl Child {
     fn finish(&self) { *self.outcome.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(RunnerOutcome::completed("native result")); self.ready.notify_all(); }
 }
@@ -20,6 +20,11 @@ impl ManagedChildHandle for Child {
         let mut listeners = self.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let id = listeners.keys().next_back().copied().unwrap_or(0) + 1;
         listeners.insert(id, listener);
+        let activity = self.activity_on_subscribe.then(|| listeners.values().cloned().collect::<Vec<_>>());
+        drop(listeners);
+        if let Some(listeners) = activity {
+            for listener in listeners { listener(&senpi_task::shared::ManagedChildEvent { event_type:"tool_execution_start".into(), tool_name:Some("read".into()), args:Some(json!({"path":"task44-activity"})), ..Default::default() }); }
+        }
         let listeners = self.listeners.clone();
         Box::new(move || { listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id); })
     }
@@ -35,7 +40,7 @@ impl ManagedChildHandle for Child {
 struct Runner(Arc<Mutex<Option<Arc<Child>>>>);
 impl ManagedRunner for Runner {
     fn start(&self,spec:&ManagedStartSpec)->ManagedRunnerResult {
-        let child = Arc::new(Child { id:spec.task_id.clone(), outcome:Mutex::new(None), ready:Condvar::new(), listeners:Arc::default() });
+        let child = Arc::new(Child { id:spec.task_id.clone(), outcome:Mutex::new(None), ready:Condvar::new(), listeners:Arc::default(), activity_on_subscribe:false });
         *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(child.clone()); Ok(child)
     }
 }
@@ -45,10 +50,26 @@ impl ManagedRunner for ImmediateRunner {
         if let Some(first_event) = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
             first_event.recv_timeout(Duration::from_secs(10)).map_err(|error| senpi_task::manager::types::ManagedRunnerError::Other(error.to_string()))?;
         }
-        Ok(Arc::new(Child { id:spec.task_id.clone(), outcome:Mutex::new(Some(RunnerOutcome::completed("dag native result"))), ready:Condvar::new(), listeners:Arc::default() }))
+        Ok(Arc::new(Child { id:spec.task_id.clone(), outcome:Mutex::new(Some(RunnerOutcome::completed("dag native result"))), ready:Condvar::new(), listeners:Arc::default(), activity_on_subscribe:true }))
     }
 }
 struct Actions(mpsc::Sender<CustomMessage>);
+#[derive(Default)]
+struct SurfaceTimers { callbacks: Mutex<BTreeMap<u64, Box<dyn FnOnce() + Send>>>, next: Mutex<u64> }
+impl maho_omo_task::status_ui::StatusUiTimers for SurfaceTimers {
+    fn set(&self, callback: Box<dyn FnOnce() + Send>, _: u64) -> u64 {
+        let mut next = self.next.lock().unwrap_or_else(std::sync::PoisonError::into_inner); *next += 1;
+        self.callbacks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(*next, callback); *next
+    }
+    fn clear(&self, handle: u64) { self.callbacks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&handle); }
+}
+impl SurfaceTimers {
+    fn count(&self) -> usize { self.callbacks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len() }
+    fn fire(&self) {
+        let callbacks = std::mem::take(&mut *self.callbacks.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        for callback in callbacks.into_values() { callback(); }
+    }
+}
 struct Cleanup(Arc<TaskComponent>);
 impl Drop for Cleanup {
     fn drop(&mut self) {
@@ -164,8 +185,9 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     let released = Mutex::new(released);
     let overflow = Arc::new(Mutex::new(Vec::new()));
     let captured = overflow.clone();
+    let entered = Mutex::new(Some(entered));
     let subscription = configured.subscribe(Arc::new(move |event| {
-        if matches!(event.payload, senpi_task::dag::types::DagRunEventPayload::RunStarted { .. }) {
+        if let Some(entered) = entered.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
             if let Err(error) = entered.send(()) { eprintln!("ring proof entry failed: {error}"); }
             if let Err(error) = released.lock().unwrap_or_else(std::sync::PoisonError::into_inner).recv_timeout(Duration::from_secs(10)) { panic!("ring proof release failed: {error}"); }
         }
@@ -194,16 +216,35 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     context.mode = ExtensionMode::Tui;
     dispatch(&api, EventKind::SessionStart, &mut ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::New, initial_model_provenance:None, previous_session_file:None }), &context).await?;
     dag.register_queries(&mut api, &component)?;
-    dag.register_rpc(&mut api, &component);
+    let status_timers = Arc::new(SurfaceTimers::default());
+    dag.register_rpc_with_status_timers(&mut api, &component, status_timers.clone());
+    let pending = dag.manager.start(senpi_task::dag::manager::DagStartParams {
+        definition: senpi_task::dag::graph::DagDefinition { key:"lifecycle".into(), name:"lifecycle".into(), nodes:vec![senpi_task::dag::graph::DagNodeInput {
+            id:"pending".into(), prompt:"pending".into(), target:senpi_task::dag::types::DagNodeTarget::SubagentType { subagent_type:"explore".into(), model:Some("faux/native".into()) },
+            label:None, depends_on:None, task_summary:None, description:None, load_skills:None,
+        }] }, parent_session_id:context.session_manager.session_id().into(), root_session_id:context.session_manager.session_id().into(),
+    })?;
+    dispatch(&api, EventKind::SessionStart, &mut ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::Resume, initial_model_provenance:None, previous_session_file:None }), &context).await?;
+    assert_eq!(status_timers.count(), 1, "live registered DAG requires one refresh timer");
+    dispatch(&api, EventKind::SessionBeforeSwitch, &mut ExtensionEvent::SessionBeforeSwitch { reason:SessionReason::Resume, target_session_file:None }, &context).await?;
+    assert_eq!(status_timers.count(), 0, "before-switch must cancel registered status timers");
+    let paints = dag_ui.widgets.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len();
+    status_timers.fire();
+    assert_eq!(dag_ui.widgets.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(), paints);
+    dispatch(&api, EventKind::SessionStart, &mut ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::Resume, initial_model_provenance:None, previous_session_file:None }), &context).await?;
+    assert_eq!(status_timers.count(), 1, "rebind must restore exactly one refresh timer");
+    assert!(dag.manager.snapshot(&pending.snapshot.run_id, context.session_manager.session_id()).is_ok());
     let dag_channels = Arc::new(Mutex::new(Vec::<Value>::new()));
     let captured_channels = dag_channels.clone();
     let wake_subscription = api.events.on("wake_source_state", Arc::new(move |event| {
         if event["source"] == "omo-dag" { captured_channels.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event.clone()); }
     }));
     let (terminal, settled) = mpsc::channel();
+    let (activity, observed_activity) = mpsc::channel();
     let ledger = Arc::new(Mutex::new(Vec::<u64>::new()));
     let entries = ledger.clone();
     let dag_subscription = api.events.on("senpi:extension-rpc-event", Arc::new(move |event| {
+        if event["name"] == "omo.dag.activity" && let Err(error) = activity.send(event["data"].clone()) { eprintln!("DAG activity delivery failed: {error}"); }
         if event["name"] == "omo.dag.event" {
             if let Some(seq) = event["data"]["seq"].as_u64() { entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(seq); }
             if event["data"]["type"] == "dag.run.completed" && let Err(error) = terminal.send(event["data"].clone()) { eprintln!("DAG proof terminal delivery failed: {error}"); }
@@ -216,11 +257,22 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     let scheduler = dag.scheduler(&component.engine, run, "s")?;
     let record = scheduler.snapshot();
     let terminal = settled.recv_timeout(Duration::from_secs(10))?;
+    let activity = observed_activity.recv_timeout(Duration::from_secs(10))?;
+    assert_eq!(activity["runId"], run);
+    assert_eq!(activity["schemaVersion"], 1);
+    assert!(activity["currentTool"].as_str().is_some_and(|tool| tool.contains("task44-activity")));
+    assert!(activity.get("seq").is_none(), "activity must stay off the durable sequence ledger");
+    println!("PASS registered DAG child progress reaches unsequenced RPC activity");
     // register_tool awaits the scheduler.run() oneshot and joins its worker before
     // returning; run_waves commits RunCompleted/RunFailed before returning.
     // This snapshot is causally after terminal commit, not a timing assumption.
     drop(cleanup);
     dispatch(&api, EventKind::SessionShutdown, &mut ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason:SessionReason::Quit, target_session_file:None, signal:None }), &context).await?;
+    assert_eq!(status_timers.count(), 0, "shutdown must cancel registered status timers");
+    let paints = dag_ui.widgets.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len();
+    status_timers.fire();
+    assert_eq!(dag_ui.widgets.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(), paints);
+    println!("PASS registered DAG before-switch cancellation, rebind and shutdown timer cleanup");
     assert_eq!(terminal["runId"], run);
     let sequences = ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
