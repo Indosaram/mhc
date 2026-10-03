@@ -41,12 +41,13 @@ impl ExtensionContextActions for Session{
 }
 struct Registry;
 impl ModelRegistry for Registry{fn get_all(&self)->Vec<Model>{Vec::new()}fn get_available(&self)->Vec<Model>{Vec::new()}fn find(&self,_:&str,_:&str)->Option<Model>{None}fn has_configured_auth(&self,_:&Model)->bool{false}fn get_api_key_for_provider<'a>(&'a self,_:&'a str)->ExtensionFuture<'a,Option<String>>{Box::pin(async{Ok(None)})}}
-struct Ui;
+#[derive(Default)]
+struct Ui { confirmation: bool, statuses: Mutex<Vec<Option<String>>> }
 impl ExtensionUi for Ui{
-    fn select<'a>(&'a self,_:&'a str,_:&'a [String],_:ExtensionUiDialogOptions)->UiFuture<'a,Option<String>>{Box::pin(async{None})}
-    fn confirm<'a>(&'a self,_:&'a str,_:&'a str,_:ExtensionUiDialogOptions)->UiFuture<'a,bool>{Box::pin(async{false})}
+    fn select<'a>(&'a self,_:&'a str,options:&'a [String],_:ExtensionUiDialogOptions)->UiFuture<'a,Option<String>>{Box::pin(async move {if self.confirmation { options.first().cloned() } else { None }})}
+    fn confirm<'a>(&'a self,_:&'a str,_:&'a str,_:ExtensionUiDialogOptions)->UiFuture<'a,bool>{Box::pin(async move {self.confirmation})}
     fn input<'a>(&'a self,_:&'a str,_:Option<&'a str>,_:ExtensionUiDialogOptions)->UiFuture<'a,Option<String>>{Box::pin(async{None})}
-    fn notify(&self,_:&str,_:NotificationType){}fn set_status(&self,_:&str,_:Option<&str>){}fn set_widget(&self,_:&str,_:Option<WidgetContent>,_:ExtensionWidgetOptions){}fn set_header(&self,_:Option<ComponentFactory>){}fn set_footer(&self,_:Option<ComponentFactory>){}fn set_title(&self,_:&str){}fn paste_to_editor(&self,_:&str){}fn set_editor_text(&self,_:&str){}fn get_editor_text(&self)->String{String::new()}
+    fn notify(&self,_:&str,_:NotificationType){}fn set_status(&self,_:&str,text:Option<&str>){self.statuses.lock().expect("status receipt").push(text.map(str::to_owned));}fn set_widget(&self,_:&str,_:Option<WidgetContent>,_:ExtensionWidgetOptions){}fn set_header(&self,_:Option<ComponentFactory>){}fn set_footer(&self,_:Option<ComponentFactory>){}fn set_title(&self,_:&str){}fn paste_to_editor(&self,_:&str){}fn set_editor_text(&self,_:&str){}fn get_editor_text(&self)->String{String::new()}
     fn custom(&self,_:ComponentFactory,_:CustomUiOptions)->ExtensionFuture<'_,JsonValue>{Box::pin(async{Err("headless fixture".into())})}fn theme(&self)->Theme{Theme::default()}
 }
 #[tokio::test]
@@ -70,7 +71,39 @@ async fn registered_command_persists_pause_resume_replace_and_clear(){
     command("clear",&ctx).await.expect("clear");assert_eq!(read_goal(&reference).expect("store"),None);
     command("clear",&ctx).await.expect("clear empty");
 }
-fn context(cwd:&Path)->ExtensionContext{ExtensionContext{ui:Arc::new(Ui),mode:ExtensionMode::Print,has_ui:false,cwd:cwd.into(),agent_dir:cwd.join("agent"),session_manager:Arc::new(Session),model_registry:Arc::new(Registry),model:None,thinking_level:None,service_tier:None,effective_service_tier:None,scoped_models:Vec::new(),goal_store_file:None,loaded_extension_paths:Vec::new(),signal:None,steering_signal:None,is_idle_fn:Arc::new(||true),wait_for_idle_fn:Arc::new(||Box::pin(async{})),is_project_trusted_fn:Arc::new(||true),is_compacting_fn:Arc::new(||false),get_system_prompt_fn:Arc::new(String::new),get_system_prompt_options_fn:Arc::new(BuildSystemPromptOptions::default),registered_mcp_servers:Vec::new(),update_tool_hook_status:None}}
+fn context(cwd:&Path)->ExtensionContext{ExtensionContext{ui:Arc::new(Ui::default()),mode:ExtensionMode::Print,has_ui:false,cwd:cwd.into(),agent_dir:cwd.join("agent"),session_manager:Arc::new(Session),model_registry:Arc::new(Registry),model:None,thinking_level:None,service_tier:None,effective_service_tier:None,scoped_models:Vec::new(),goal_store_file:None,loaded_extension_paths:Vec::new(),signal:None,steering_signal:None,is_idle_fn:Arc::new(||true),wait_for_idle_fn:Arc::new(||Box::pin(async{})),is_project_trusted_fn:Arc::new(||true),is_compacting_fn:Arc::new(||false),get_system_prompt_fn:Arc::new(String::new),get_system_prompt_options_fn:Arc::new(BuildSystemPromptOptions::default),registered_mcp_servers:Vec::new(),update_tool_hook_status:None}}
+
+#[tokio::test]
+async fn registered_goal_confirmation_cancellation_and_ui_are_session_isolated() {
+    let temp = tempfile::tempdir().expect("fixture");
+    let resolve: maho_ext_pi_goal::goal::lifecycle::GoalStoreResolver = Arc::new(|ctx| GoalStoreRef { base_dir: ctx.cwd.join("goals"), thread_id: "fixture".into() });
+    let mut api = ExtensionApi::new(LoadedExtension::new("pi-goal", temp.path().into(), Default::default()), Default::default(), Default::default(), Default::default());
+    maho_ext_pi_goal::index::register_goal_extension(&mut api, Arc::clone(&resolve), Arc::new(|_| Ok(()))).expect("register");
+    let command = &api.registered.commands[0].handler;
+    let cancelled_ui = Arc::new(Ui::default());
+    let confirmed_ui = Arc::new(Ui { confirmation: true, ..Default::default() });
+    let mut first = context(&temp.path().join("first"));
+    first.has_ui = true;
+    first.ui = cancelled_ui.clone();
+    let mut second = context(&temp.path().join("second"));
+    second.has_ui = true;
+    second.ui = confirmed_ui.clone();
+    command("first objective", &first).await.expect("first goal");
+    command("second objective", &second).await.expect("second goal");
+    let original = read_goal(&resolve(&first)).expect("read").expect("first");
+    command("replacement cancelled", &first).await.expect("cancelled replacement");
+    command("replacement confirmed", &second).await.expect("confirmed replacement");
+    assert_eq!(read_goal(&resolve(&first)).expect("read").expect("first"), original);
+    assert_eq!(read_goal(&resolve(&second)).expect("read").expect("second").objective, "replacement confirmed");
+    assert_eq!(cancelled_ui.statuses.lock().expect("statuses").len(), 1);
+    command("pause", &second).await.expect("pause");
+    command("resume", &second).await.expect("resume");
+    command("clear", &second).await.expect("clear");
+    assert!(read_goal(&resolve(&second)).expect("read").is_none());
+    let statuses = confirmed_ui.statuses.lock().expect("statuses");
+    assert!(statuses.iter().any(Option::is_some));
+    assert_eq!(statuses.last(), Some(&None));
+}
 struct Deps{path:PathBuf,events:Mutex<Vec<&'static str>>}
 impl GoalToolRegistrationDeps for Deps{
     fn goal_store_ref(&self,_:&ExtensionContext)->GoalStoreRef{GoalStoreRef{base_dir:self.path.clone(),thread_id:"fixture".into()}}
