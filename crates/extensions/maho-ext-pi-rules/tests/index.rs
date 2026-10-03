@@ -67,3 +67,29 @@ async fn dynamic_hook_preserves_content_and_deduplicates_target_fingerprint(){
     let temp=tempfile::tempdir().expect("temp");std::fs::create_dir(temp.path().join(".git")).expect("project marker");std::fs::create_dir_all(temp.path().join(".omo/rules")).expect("rule directory");std::fs::write(temp.path().join(".omo/rules/dynamic.md"),"---\nglobs: \"**/*.rs\"\n---\nfixture dynamic rule").expect("rule");std::fs::write(temp.path().join("sample.rs"),"fn main() {}").expect("target");let ctx=context(temp.path());let mut api=ExtensionApi::new(LoadedExtension::new("pi-rules",temp.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());register_fixture(&mut api,temp.path());
     let original=vec![ToolContent::text("original")];let mut event=ExtensionEvent::ToolResult(ToolResultEvent{tool_call_id:"read-fixture".into(),tool_name:"read".into(),input:serde_json::json!({"path":"sample.rs"}),content:original.clone(),details:None,is_error:false,usage:None});let hook=&api.registered.handlers[&EventKind::ToolResult][0];let result=hook(&mut event,&ctx).await.expect("injection");let EventResult::ToolResult(result)=result else{panic!("tool result")};let content=result.content.expect("content");assert_eq!(&content[..original.len()],original.as_slice());assert_eq!(content.len(),original.len()+1);let ExtensionEvent::ToolResult(event_original)=&event else{panic!("event")};assert_eq!(event_original.content,original);assert!(matches!(hook(&mut event,&ctx).await.expect("dedup"),EventResult::None));
 }
+
+#[tokio::test]
+async fn dynamic_hook_reinjects_changed_rule_without_cross_session_state() {
+    let root = tempfile::tempdir().expect("fixture");
+    std::fs::create_dir(root.path().join(".git")).expect("marker");
+    std::fs::create_dir_all(root.path().join(".omo/rules")).expect("rules");
+    let rule = root.path().join(".omo/rules/dynamic.md");
+    std::fs::write(&rule, "---\nglobs: '**/*.rs'\n---\nfirst body").expect("rule");
+    std::fs::write(root.path().join("sample.rs"), "fn main() {}").expect("target");
+    let ctx = context(root.path());
+    let mut api = ExtensionApi::new(LoadedExtension::new("pi-rules", root.path().into(), Default::default()), Default::default(), Default::default(), Default::default());
+    register_fixture(&mut api, root.path());
+    let mut event = ExtensionEvent::ToolResult(ToolResultEvent { tool_call_id: "qa".into(), tool_name: "read".into(), input: serde_json::json!({"path":"sample.rs"}), content: Vec::new(), details: None, is_error: false, usage: None });
+    let hook = &api.registered.handlers[&EventKind::ToolResult][0];
+    assert!(matches!(hook(&mut event, &ctx).await.expect("initial"), EventResult::ToolResult(_)));
+    assert!(matches!(hook(&mut event, &ctx).await.expect("unchanged"), EventResult::None));
+    std::fs::write(&rule, "---\nglobs: '**/*.rs'\n---\nchanged body with different length").expect("changed rule");
+    std::fs::write(root.path().join("sample.rs"), "fn main() { println!(\"changed\"); }").expect("changed target");
+    let EventResult::ToolResult(result) = hook(&mut event, &ctx).await.expect("changed injection") else { panic!("reinjection"); };
+    let text = result.content.expect("content").into_iter().find_map(|content| match content { ToolContent::Text { text, .. } => Some(text), _ => None }).expect("text");
+    assert!(text.contains("changed body with different length"));
+    assert!(!text.contains("first body"));
+    let mut reset = ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::New, initial_model_provenance: None, previous_session_file: None });
+    api.registered.handlers[&EventKind::SessionStart][0](&mut reset, &ctx).await.expect("session reset");
+    assert!(matches!(hook(&mut event, &ctx).await.expect("new session"), EventResult::ToolResult(_)));
+}
