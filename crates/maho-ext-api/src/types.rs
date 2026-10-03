@@ -395,6 +395,7 @@ pub trait ExtensionContextActions: Send + Sync {
     fn shutdown(&self);
     fn get_context_usage(&self) -> Option<ContextUsage>;
     fn get_compaction_settings(&self) -> CompactionSettings;
+    fn get_resolved_compaction_settings(&self) -> Option<ResolvedCompactionSettings> { None }
     fn get_compaction_preparation(&self) -> Option<CompactionPreparationDetails> { None }
     fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64>;
     fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64;
@@ -597,6 +598,7 @@ impl ExtensionContext {
     pub fn shutdown(&self) -> Result<(), ExtensionFailure> { self.actions()?.shutdown(); Ok(()) }
     pub fn get_context_usage(&self) -> Result<Option<ContextUsage>, ExtensionFailure> { Ok(self.actions()?.get_context_usage()) }
     pub fn get_compaction_settings(&self) -> Result<CompactionSettings, ExtensionFailure> { Ok(self.actions()?.get_compaction_settings()) }
+    pub fn get_resolved_compaction_settings(&self) -> Result<Option<ResolvedCompactionSettings>, ExtensionFailure> { Ok(self.actions()?.get_resolved_compaction_settings()) }
     pub fn get_compaction_preparation(&self) -> Result<Option<CompactionPreparationDetails>, ExtensionFailure> { Ok(self.actions()?.get_compaction_preparation()) }
     pub fn get_prompt_cache_safe_wait_seconds(&self) -> Result<Option<f64>, ExtensionFailure> { Ok(self.actions()?.get_prompt_cache_safe_wait_seconds()) }
     pub fn get_prompt_cache_goal_backstop_max_seconds(&self) -> Result<f64, ExtensionFailure> { Ok(self.actions()?.get_prompt_cache_goal_backstop_max_seconds()) }
@@ -708,6 +710,27 @@ pub struct CompactionPreparationDetails {
 pub struct CompactionFileOperations { pub read: Vec<String>, pub written: Vec<String>, pub edited: Vec<String> }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompactionSettings { pub enabled: bool, pub reserve_tokens: u64, pub keep_recent_tokens: u64 }
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedCompactionSettings {
+    pub enabled: bool,
+    pub reserve_tokens: u64,
+    pub keep_recent_tokens: u64,
+    pub speculative_enabled: bool,
+    pub speculative_fraction: f64,
+    pub speculative_cooldown_ms: f64,
+    pub restoration_enabled: bool,
+    pub restoration_max_items: f64,
+    pub restoration_max_tokens_per_item: f64,
+    pub restoration_max_total_tokens: f64,
+    pub restoration_context_ratio: f64,
+    pub idle_compaction_enabled: bool,
+    pub grace_band_enabled: bool,
+    pub tool_admission_enabled: bool,
+    pub reminder_enabled: bool,
+    pub reserve_scaling_enabled: bool,
+    pub speculative_lead_tokens: Option<f64>,
+    pub summarization_max_duration_ms: Option<f64>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionReason { Startup, Reload, New, Resume, Fork, Quit }
 #[derive(Clone, Debug)]

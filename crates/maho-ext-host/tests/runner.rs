@@ -1144,6 +1144,16 @@ impl ExtensionContextActions for ContextActions {
     fn shutdown(&self) {}
     fn get_context_usage(&self) -> Option<ContextUsage> { Some(ContextUsage { tokens: Some(100), context_window: 1000, percent: Some(10.0) }) }
     fn get_compaction_settings(&self) -> CompactionSettings { CompactionSettings { enabled: true, reserve_tokens: 100, keep_recent_tokens: 200 } }
+    fn get_resolved_compaction_settings(&self) -> Option<ResolvedCompactionSettings> {
+        Some(ResolvedCompactionSettings {
+            enabled: false, reserve_tokens: self.revision.load(std::sync::atomic::Ordering::SeqCst), keep_recent_tokens: 321,
+            speculative_enabled: false, speculative_fraction: 0.42, speculative_cooldown_ms: 123.0,
+            restoration_enabled: false, restoration_max_items: 4.0, restoration_max_tokens_per_item: 55.0,
+            restoration_max_total_tokens: 66.0, restoration_context_ratio: 0.21, idle_compaction_enabled: false,
+            grace_band_enabled: false, tool_admission_enabled: false, reminder_enabled: false,
+            reserve_scaling_enabled: false, speculative_lead_tokens: Some(77.0), summarization_max_duration_ms: Some(888.0),
+        })
+    }
     fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { Some(30.0) }
     fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64 { 60.0 }
     fn get_prompt_cache_keep_alive_settings(&self) -> PromptCacheKeepAliveSettings { PromptCacheKeepAliveSettings { enabled: false, max_requests_per_session: 1, max_cost_usd_per_session: 0.1, margin_seconds: 5.0 } }
@@ -1502,6 +1512,21 @@ fn retained_context_observes_live_mcp_declarations() {
     assert_eq!(retained.get_registered_mcp_servers()[0].config.command.as_deref(), Some("replacement"));
     runner.invalidate("retired mcp context");
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| retained.get_registered_mcp_servers())).is_err());
+}
+
+#[test]
+fn retained_context_forwards_complete_resolved_settings_without_snapshotting() {
+    let host = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(23), aborted: Mutex::new(None) });
+    let mut runner = runner(vec![]);
+    runner.bind_context_actions(host.clone()).unwrap();
+    let retained = runner.create_context().unwrap();
+    assert_eq!(retained.get_resolved_compaction_settings().unwrap(), host.get_resolved_compaction_settings());
+    host.revision.store(45, std::sync::atomic::Ordering::SeqCst);
+    let settings = retained.get_resolved_compaction_settings().unwrap().unwrap();
+    assert_eq!(settings.reserve_tokens, 45);
+    assert_eq!(Some(settings), host.get_resolved_compaction_settings());
+    runner.invalidate("settings generation retired");
+    assert_eq!(retained.get_resolved_compaction_settings().unwrap_err().message, "settings generation retired");
 }
 
 #[tokio::test]
