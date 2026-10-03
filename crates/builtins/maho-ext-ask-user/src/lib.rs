@@ -10,4 +10,5 @@ pub mod registry;
 pub mod tool;
 pub mod extension;
 pub use extension::AskUser;
+pub use notify::{AskUserAskedEvent, AskUserSettledEvent};
 
