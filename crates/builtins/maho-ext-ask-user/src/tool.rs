@@ -37,7 +37,6 @@ pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc
     definition.label = "Ask user".into();
     definition.prompt_snippet=Some("Ask a material question, explicitly choosing whether to wait or receive the answer later.".into());
     definition.allow_lazy_activation = Some(false);
-    api.registered.tool_renderers.insert(tool_name(variant).into(),Arc::new(crate::render::renderers()));
     definition.prepare_arguments = Some(Arc::new(move |args| { to_canonical(variant, &args, String::new(), None).map_err(ToolError::Message)?; Ok(args) }));
     if let Err(error) = api.register_tool_with_extension_context(definition, Arc::new(move |id, args, signal, _, ctx| {
         let state = state.clone(); let sender = sender.clone();
@@ -66,6 +65,7 @@ pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc
             start_question(sender, ctx.clone(), request, signal, state, variant, false).await
         })
     })) { std::panic::panic_any(error); }
+    api.registered.tool_renderers.insert(tool_name(variant).into(),Arc::new(crate::render::renderers()));
 }
 
 pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionContext, request: QuestionRequest, signal: Option<maho_ai::utils::abort::AbortSignal>, state: Arc<Mutex<AskUserState>>, variant: AskUserVariant, resuming: bool) -> Result<AgentToolResult, ExtensionFailure> {
