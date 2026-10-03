@@ -70,3 +70,25 @@ fn static_deny_rejects_without_cli_override() {
 
     assert_eq!(result.reply, Reply::Reject);
 }
+
+#[test]
+fn all_cli_and_static_action_combinations_preserve_admission_events() {
+    for cli in [Action::Ask, Action::Allow, Action::Deny] {
+        for configured in [Action::Ask, Action::Allow, Action::Deny] {
+            let emitter = PermissionEventEmitter::default();
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let captured = events.clone();
+            let _asked = emitter.bus.on("permission_asked",Arc::new(move|value|captured.lock().expect("events").push(("asked",value.clone()))));
+            let captured = events.clone();
+            let _replied = emitter.bus.on("permission_replied",Arc::new(move|value|captured.lock().expect("events").push(("replied",value.clone()))));
+            let request = request("bash","git commit");
+            let outcome = handle_no_ui(&request,(&[rule("bash","*",configured)],&[rule("bash","*",cli)]),&emitter).expect("events");
+            let effective = if cli == Action::Ask {configured} else {cli};
+            assert_eq!(outcome.is_none(),effective==Action::Allow,"{cli:?} {configured:?}");
+            if let Some(reply) = outcome { assert_eq!(reply.request_id,request.id); assert_eq!(reply.reply,Reply::Reject); }
+            let mut expected = vec![("asked",serde_json::to_value(&request).expect("request"))];
+            if effective==Action::Allow {expected.push(("replied",serde_json::json!({"requestID":request.id,"sessionID":request.session_id,"reply":"allow"})));}
+            assert_eq!(*events.lock().expect("events"),expected);
+        }
+    }
+}
