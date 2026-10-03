@@ -31,7 +31,7 @@ impl Extension for Diff{
             let tasks=Arc::new(Mutex::new(Vec::<tokio::task::JoinHandle<()>>::new()));let pending=tasks.clone();let owner=ctx.clone();let runtime=tokio::runtime::Handle::current();
             let result=ctx.ui.custom_factory(Arc::new(move|host,theme,_,done|{
                 let render=render_binding(host);let owner=owner.clone();let sender=sender.clone();let pending=pending.clone();let selected=files.clone();let runtime=runtime.clone();
-                let items=files.iter().enumerate().map(|(index,file)|maho_tui::components::select_list::SelectItem{value:index.to_string(),label:format!("{} {}",file.status_label,file.file),description:None}).collect();
+                let items=files.iter().enumerate().map(|(index,file)|{let color=match file.status.as_str(){"M"=>"warning","A"=>"success","D"=>"error","?"=>"muted",_=>"dim"};maho_tui::components::select_list::SelectItem{value:index.to_string(),label:format!("{}{}\x1b[39m {}",theme.colors.get(color).map_or("\x1b[39m",String::as_str),file.status_label,file.file),description:None}}).collect();
                 let open=Arc::new(move|index:usize|{if let Some(file)=selected.get(index){let file=file.clone();let sender=sender.clone();let owner=owner.clone();pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(runtime.spawn(async move{
                     let result=async{
                         if file.status!="?"{
