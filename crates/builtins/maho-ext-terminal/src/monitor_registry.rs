@@ -92,14 +92,26 @@ pub struct MonitorRegistry {
     next_file_id:usize,
     transitions:tokio::sync::watch::Sender<Vec<MonitorSnapshotEntry>>,
     parked:tokio::sync::watch::Sender<bool>,
+    delivery:std::sync::Arc<std::sync::Mutex<MonitorRouting>>,
 }
+type MonitorSink=std::sync::Arc<dyn Fn(MonitorEvent)+Send+Sync>;
+#[derive(Default)]
+struct MonitorRouting {sink:Option<MonitorSink>,pending:std::collections::VecDeque<MonitorEvent>}
 fn publish_snapshot(records:&std::sync::Mutex<indexmap::IndexMap<String,CommandMonitor>>,files:&std::sync::Mutex<indexmap::IndexMap<String,MonitorSnapshotEntry>>,sender:&tokio::sync::watch::Sender<Vec<MonitorSnapshotEntry>>) {
     let mut snapshot=records.lock().expect("monitor records").values().map(|record|record.snapshot.clone()).collect::<Vec<_>>();snapshot.extend(files.lock().expect("file snapshots").values().cloned());
     sender.send_if_modified(|current| {if *current==snapshot {false} else {*current=snapshot;true}});
 }
 fn now_ms()->f64 {std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("epoch").as_secs_f64()*1000.0}
 impl MonitorRegistry {
-    pub fn new(emit:impl Fn(MonitorEvent)+Send+Sync+'static)->Self {Self {records:Default::default(),tasks:vec![],emit:std::sync::Arc::new(emit),files:Default::default(),file_snapshots:Default::default(),next_file_id:0,transitions:tokio::sync::watch::channel(vec![]).0,parked:tokio::sync::watch::channel(false).0}}
+    pub fn new(emit:impl Fn(MonitorEvent)+Send+Sync+'static)->Self {
+        let delivery=std::sync::Arc::new(std::sync::Mutex::new(MonitorRouting {sink:Some(std::sync::Arc::new(emit)),..Default::default()}));let routing=delivery.clone();
+        let emit=std::sync::Arc::new(move |event:MonitorEvent| {let sink={let mut routing=routing.lock().expect("monitor routing");if let Some(sink)=&routing.sink {Some(sink.clone())}else {routing.pending.push_back(event.clone());if routing.pending.len()>100 {routing.pending.pop_front();}None}};if let Some(sink)=sink {sink(event);}});
+        Self {records:Default::default(),tasks:vec![],emit,files:Default::default(),file_snapshots:Default::default(),next_file_id:0,transitions:tokio::sync::watch::channel(vec![]).0,parked:tokio::sync::watch::channel(false).0,delivery}
+    }
+    pub fn detach_delivery(&self) {self.delivery.lock().expect("monitor routing").sink=None;}
+    pub fn bind_delivery(&self,emit:impl Fn(MonitorEvent)+Send+Sync+'static) {
+        let sink:MonitorSink=std::sync::Arc::new(emit);let pending={let mut routing=self.delivery.lock().expect("monitor routing");routing.sink=Some(sink.clone());std::mem::take(&mut routing.pending)};for event in pending {sink(event);}
+    }
     pub fn park(&self) {self.parked.send_replace(true);}
     pub fn unpark(&self) {self.parked.send_replace(false);}
     pub fn subscribe_state(&self)->tokio::sync::watch::Receiver<Vec<MonitorSnapshotEntry>> {self.transitions.subscribe()}
@@ -242,6 +254,13 @@ impl Drop for MonitorRegistry {fn drop(&mut self) {self.dispose();}}
 #[cfg(test)]
 mod registry_tests {
     use super::*;
+    #[test]
+    fn detached_delivery_bounds_and_rebinds_events_in_order() {
+        let registry=MonitorRegistry::new(|_|panic!("old owner received parked event"));registry.detach_delivery();
+        for index in 0..105 {(registry.emit)(MonitorEvent::Line {id:"bash_1".to_owned(),description:"watch".to_owned(),line:index.to_string()});}
+        let (sender,receiver)=std::sync::mpsc::channel();registry.bind_delivery(move |event| {sender.send(event).unwrap();});
+        let events=receiver.try_iter().collect::<Vec<_>>();assert_eq!(events.len(),100);assert!(matches!(&events[0],MonitorEvent::Line {line,..} if line=="5"));assert!(matches!(&events[99],MonitorEvent::Line {line,..} if line=="104"));
+    }
     #[tokio::test]
     async fn snapshot_preserves_registration_order_beyond_nine_file_ids() {
         let dir=tempfile::tempdir().unwrap();let mut registry=MonitorRegistry::new(|_|{});let mut ids=vec![];

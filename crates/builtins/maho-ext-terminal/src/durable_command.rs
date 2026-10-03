@@ -25,9 +25,9 @@ mod tests {
     fn monitor()->ManifestMonitor {crate::restore::parse_terminal_manifest(&json!({"monitors":[{"monitorId":"mon_saved","sessionId":"s","description":"watch","runtimeKind":"command","durabilityClass":"restartable-command","command":"stty -echo; printf 'restored\\n'","cwd":"/tmp","createdAt":1,"expiresAt":null,"persistent":true,"suspended":false,"lastCheckpoint":null,"deliveryPaused":true,"fireWindow":{"startMs":1,"count":0}}],"backgroundSessions":[],"updatedAt":1}),"s").unwrap().monitors.remove(0)}
     #[test]
     fn configured_restore_preserves_shell_and_geometry() {
-        let mut saved=monitor();saved.command=Some("stty size; printf 'shell:%s' \"${BASH_VERSION:+bash}\"".to_owned());let mut manager=TerminalManager::default();let mut settings=crate::settings::TERMINAL_SETTINGS_DEFAULTS;settings.default_rows=33.0;settings.default_cols=91.0;
+        let mut saved=monitor();saved.command=Some("stty -echo; stty size; printf 'shell:%s\\n' \"${BASH_VERSION:+bash}\"".to_owned());let mut manager=TerminalManager::default();let mut settings=crate::settings::TERMINAL_SETTINGS_DEFAULTS;settings.default_rows=33.0;settings.default_cols=91.0;
         assert_eq!(restore_configured_command(&saved,&mut manager,Some("/bin/bash"),&settings,|_,_,_|Ok(())),RestoreOutcome::Muted);
-        let runtime=manager.get("bash_1").unwrap();runtime.wait(std::time::Duration::from_secs(5)).unwrap();assert_eq!(runtime.full_output().unwrap(),"33 91\r\nshell:bash");manager.teardown().unwrap();
+        let runtime=manager.get("bash_1").unwrap();runtime.wait(std::time::Duration::from_secs(5)).unwrap();assert_eq!(runtime.full_output().unwrap(),"33 91\r\nshell:bash\r\n");manager.teardown().unwrap();
     }
     #[test]
     fn restores_once_with_stable_identity_and_fresh_muted_runtime() {
