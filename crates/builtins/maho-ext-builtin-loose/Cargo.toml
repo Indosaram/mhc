@@ -17,6 +17,8 @@ async-trait = "=0.1.92"
 regex = "=1.12.3"
 base64 = "=0.22.1"
 tokio = { workspace = true, features = ["rt"] }
+reqwest = { workspace = true, features = ["rustls-tls", "json"] }
+percent-encoding.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

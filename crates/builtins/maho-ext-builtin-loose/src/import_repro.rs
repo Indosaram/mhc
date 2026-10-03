@@ -79,3 +79,84 @@ pub fn rewrite_session_cwd(raw:&str,source:&str,target:&str)->String {
     }
     rewritten
 }
+
+use maho_ext_api::*;
+use std::sync::Arc;
+pub type FetchText=Arc<dyn Fn(String)->ExtensionFuture<'static,String>+Send+Sync>;
+pub struct ImportRepro{
+    pub session_dir:Arc<dyn Fn(&ExtensionContext)->Result<PathBuf,ExtensionFailure>+Send+Sync>,
+    pub fetch:FetchText,
+}
+pub fn github_fetch()->FetchText{
+    let client=reqwest::Client::new();
+    Arc::new(move|url|{let client=client.clone();Box::pin(async move{
+        let response=client.get(&url).header("Accept","application/vnd.github+json").header("X-GitHub-Api-Version","2022-11-28").send().await.map_err(|error|ExtensionFailure::new(error.to_string()))?;
+        if !response.status().is_success(){return Err(ExtensionFailure::new(format!("failed to fetch {url}: HTTP {}",response.status().as_u16())));}
+        response.text().await.map_err(|error|ExtensionFailure::new(error.to_string()))
+    })})
+}
+async fn read_gist_file(file:&Value,fetch:&FetchText)->Result<String,ExtensionFailure>{
+    if file["truncated"]!=true&&let Some(content)=file["content"].as_str().filter(|content|!content.is_empty()){return Ok(content.into());}
+    let url=file["raw_url"].as_str().ok_or_else(||ExtensionFailure::new(format!("gist file {} has no raw URL",file["filename"].as_str().unwrap_or("<unknown>"))))?;
+    fetch(url.into()).await
+}
+async fn gist_session(id:&str,fetch:&FetchText)->Result<(Value,String),ExtensionFailure>{
+    let gist:Value=serde_json::from_str(&fetch(format!("https://api.github.com/gists/{id}")).await?).map_err(|error|ExtensionFailure::new(error.to_string()))?;
+    let files=gist["files"].as_object();
+    for extension in [".jsonl",".html"]{
+        if let Some(file)=files.and_then(|files|files.values().find(|file|file["filename"].as_str().is_some_and(|name|name.ends_with(extension)))){
+            let raw=read_gist_file(file,fetch).await?;
+            return if extension==".html"{decode_exported_html(&raw).map_err(ExtensionFailure::new)}else{Ok((parse_session_jsonl(&raw).map_err(ExtensionFailure::new)?,raw))};
+        }
+    }
+    Err(ExtensionFailure::new(format!("gist {id} has no .jsonl or .html session file")))
+}
+async fn issue_gist(owner:&str,repo:&str,issue:&str,fetch:&FetchText)->Result<String,ExtensionFailure>{
+    let encode=|value:&str|percent_encoding::utf8_percent_encode(value,percent_encoding::NON_ALPHANUMERIC).to_string();
+    let pattern=regex::Regex::new(r"https://gist\.github\.com/(?:[^/\s]+/)?([0-9a-fA-F]{20,})\b").expect("gist link");
+    let mut last=None;let mut page=1;
+    loop{
+        let comments:Vec<Value>=serde_json::from_str(&fetch(format!("https://api.github.com/repos/{}/{}/issues/{}/comments?per_page=100&page={page}",encode(owner),encode(repo),encode(issue))).await?).map_err(|error|ExtensionFailure::new(error.to_string()))?;
+        for comment in &comments{if comment["user"]["login"]=="github-actions[bot]"{for matched in pattern.captures_iter(comment["body"].as_str().unwrap_or("")){last=Some(matched[1].to_owned());}}}
+        if comments.len()<100{break;}page+=1;
+    }
+    last.ok_or_else(||ExtensionFailure::new(format!("no github-actions gist link found in comments on {owner}/{repo}#{issue}")))
+}
+impl Extension for ImportRepro{
+    fn register(&self,api:&mut ExtensionApi){
+        let session_dir=self.session_dir.clone();let fetch=self.fetch.clone();
+        api.register_command_with_context("ir",Some("Import a CI issue-analysis session from a gist ID, share URL, or issue URL and switch to it".into()),None,Arc::new(move|args,ctx|{let session_dir=session_dir.clone();let fetch=fetch.clone();Box::pin(async move{
+            if !ctx.is_idle()||ctx.is_compacting(){ctx.ui.notify("/ir is unavailable while the agent is working",NotificationType::Warning);return Ok(());}
+            let reference=args.trim();if reference.is_empty(){ctx.ui.notify("Usage: /ir <gist-id | gist-url | pi.dev/session URL | issue URL>",NotificationType::Error);return Ok(());}
+            let outcome=async{
+                let directory=session_dir(ctx)?;let parsed=parse_ref(reference,&ctx.cwd).map_err(ExtensionFailure::new)?;
+                ctx.ui.notify(&format!("Importing repro session from {reference}..."),NotificationType::Info);
+                let (header,raw,filename)=match parsed{
+                    SessionReference::Gist{id}=>{let (header,raw)=gist_session(&id,&fetch).await?;(header,raw,format!("{id}.jsonl"))}
+                    SessionReference::Issue{owner,repo,issue}=>{let id=issue_gist(&owner,&repo,&issue,&fetch).await?;let (header,raw)=gist_session(&id,&fetch).await?;(header,raw,format!("{id}.jsonl"))}
+                    SessionReference::File{path}=>{
+                        let raw=std::fs::read_to_string(&path).map_err(|error|ExtensionFailure::new(error.to_string()))?;
+                        let (header,raw)=if path.extension().is_some_and(|extension|extension=="html"){decode_exported_html(&raw).map_err(ExtensionFailure::new)?}else{(parse_session_jsonl(&raw).map_err(ExtensionFailure::new)?,raw)};
+                        let filename=path.file_name().expect("session filename").to_string_lossy().into_owned();let filename=filename.strip_suffix(".html").map_or_else(||filename.clone(),|name|format!("{name}.jsonl"));
+                        (header,raw,filename)
+                    }
+                };
+                let source=header["cwd"].as_str().expect("validated header").to_owned();let target=ctx.cwd.to_string_lossy().into_owned();
+                let destination=directory.join(filename);
+                if destination.exists()&&!ctx.ui.confirm("Session already imported",&format!("Overwrite {}? Local changes to that session will be lost.",destination.display()),Default::default()).await{ctx.ui.notify("Import cancelled",NotificationType::Warning);return Ok(());}
+                std::fs::write(&destination,rewrite_session_cwd(&raw,&source,&target)).map_err(|error|ExtensionFailure::new(error.to_string()))?;
+                ctx.ui.notify(&format!("Imported session {} (cwd {source} -> {target})",header["id"].as_str().expect("validated id")),NotificationType::Info);
+                let platform=detect_session_platform(&source);let local=if cfg!(windows){SessionPlatform::Windows}else{SessionPlatform::Unix};
+                let with_session:WithSession=Arc::new(move|next|{let source=source.clone();let target=target.clone();Box::pin(async move{
+                    if platform!=SessionPlatform::Unknown&&platform!=local{
+                        let text=if local==SessionPlatform::Windows{"This session was continued on a Windows machine; paths are now Windows style."}else{"This session was continued on a non-Windows machine; paths are now Unix style."};
+                        next.send_message(CustomMessage{custom_type:"import-repro".into(),content:vec![ToolContent::text(text)],display:true,details:Some(serde_json::json!({"sourceCwd":source,"targetCwd":target}))},SendMessageOptions::default()).await?;
+                    }Ok(())
+                })});
+                ctx.switch_session(&destination.to_string_lossy(),SwitchSessionOptions{with_session:Some(with_session)}).await?;
+                Ok::<(),ExtensionFailure>(())
+            }.await;
+            if let Err(error)=outcome{ctx.ui.notify(&format!("ir: {}",error.message),NotificationType::Error);}Ok(())
+        })}));
+    }
+}
