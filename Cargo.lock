@@ -1932,6 +1932,29 @@ dependencies = [
 [[package]]
 name = "maho-codemode"
 version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "getrandom 0.4.2",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "maho-ai",
+ "maho-ext-api",
+ "maho-tools",
+ "maho-tui",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tree-sitter",
+ "tree-sitter-typescript",
+ "url",
+ "uuid",
+]
 
 [[package]]
 name = "maho-comment-checker-core"
