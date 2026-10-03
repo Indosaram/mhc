@@ -686,6 +686,102 @@ async fn answer_list_numbering_and_unknown_numbers_reject_cleanly() {
     drop(first); drop(second);
 }
 
+fn retained_question(id: &str, wait_for_answer: bool) -> maho_ext_api::QuestionRequest {
+    maho_ext_api::QuestionRequest { request_id: id.into(), questions: vec![maho_ext_api::Question { id: "item".into(), header: id.into(), question: "Choose".into(), options: vec![maho_ext_api::QuestionOption { label: "A".into(), description: None }, maho_ext_api::QuestionOption { label: "B".into(), description: None }], multi_select: true }], wait_for_answer, timeout_ms: 60_000 }
+}
+
+fn retained_options() -> maho_ext_api::QuestionOptions {
+    maho_ext_api::QuestionOptions { initial_draft: Some(maho_ext_api::QuestionDraft { answers: Some([("item".into(), maho_ext_api::QuestionAnswer { selected: vec!["A".into()], text: None })].into()), comment: Some("retained-comment".into()) }), ..Default::default() }
+}
+
+#[tokio::test]
+async fn blocking_question_seeds_the_producer_draft() {
+    use maho_ext_api::ExtensionUi; use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode(); let ui = mode.extension_ui.clone();
+    let answer = ui.question(retained_question("blocking-retained", true), retained_options());
+    mode.render(80);
+    mode.handle_input_at("\x1b[13;5u", 1);
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), answer).await.expect("bounded answer").expect("answer");
+    assert_eq!(response.answers["item"].selected, ["A"]);
+    assert_eq!(response.comment.as_deref(), Some("retained-comment"));
+}
+
+#[tokio::test]
+async fn async_question_reexpansion_retains_progress_and_initial_comment() {
+    use maho_ext_api::ExtensionUi; use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode(); let ui = mode.extension_ui.clone();
+    let answer = ui.question(retained_question("async-retained", false), retained_options());
+    mode.render(80); mode.submit("/answer", Default::default()).await.expect("expand");
+    mode.handle_input_at("2", 1); mode.handle_input_at("\x1b", 2);
+    mode.submit("/answer", Default::default()).await.expect("reexpand");
+    mode.handle_input_at("\x1b[13;5u", 3);
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), answer).await.expect("bounded answer").expect("answer");
+    assert_eq!(response.answers["item"].selected, ["A", "B"]);
+    assert_eq!(response.comment.as_deref(), Some("retained-comment"));
+}
+
+#[tokio::test]
+async fn answer_list_selection_expands_the_selected_request() {
+    use maho_ext_api::ExtensionUi; use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode(); let ui = mode.extension_ui.clone();
+    let first = ui.question(retained_question("first-list", false), retained_options());
+    let second = ui.question(retained_question("second-list", false), retained_options());
+    mode.render(80); mode.submit("/answer", Default::default()).await.expect("list");
+    mode.handle_input_at("\x1b[B", 1); mode.handle_input_at("\r", 2); mode.render(80);
+    mode.handle_input_at("\x1b[13;5u", 3);
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), second).await.expect("bounded selection").expect("selected answer");
+    assert_eq!(response.status, maho_ext_api::QuestionStatus::Answered);
+    assert_eq!(response.answers["item"].selected, ["A"]);
+    drop(first);
+}
+
+#[tokio::test(start_paused = true)]
+async fn live_deadline_does_not_use_the_fixed_attachment_timeout() {
+    use maho_ext_api::ExtensionUi;
+    let theme = maho_interactive::theme::Theme::builtin("dark", maho_interactive::theme::ColorMode::Truecolor).expect("theme");
+    let (ui, mut requests) = maho_interactive::interactive_extension_ui::InteractiveExtensionUi::channel(theme);
+    let signal = maho_ext_api::AbortSignal::default();
+    let answer = ui.question(retained_question("live", false), maho_ext_api::QuestionOptions { dialog: maho_ext_api::ExtensionUiDialogOptions { signal: Some(signal.clone()), timeout_ms: Some(1) }, get_deadline_at_ms: Some(std::sync::Arc::new(|| 100_000)), ..Default::default() });
+    let mut answer = Box::pin(answer);
+    let maho_interactive::interactive_extension_ui::UiRequest::Question { reply, .. } = requests.recv().await.expect("question request") else { panic!("question request"); };
+    assert!(std::future::poll_fn(|cx| std::task::Poll::Ready(answer.as_mut().poll(cx))).await.is_pending());
+    tokio::time::advance(std::time::Duration::from_millis(2)).await;
+    assert!(std::future::poll_fn(|cx| std::task::Poll::Ready(answer.as_mut().poll(cx))).await.is_pending());
+    signal.abort();
+    assert_eq!(answer.await.expect("abort").status, maho_ext_api::QuestionStatus::Cancelled);
+    drop(reply);
+}
+
+#[tokio::test]
+async fn collapsed_and_expanded_countdowns_read_the_live_capped_deadline() {
+    use maho_ext_api::ExtensionUi; use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode(); let ui = mode.extension_ui.clone();
+    let live = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)); let source = live.clone();
+    let signal = maho_ext_api::AbortSignal::default();
+    let answer = ui.question(retained_question("display-live", false), maho_ext_api::QuestionOptions { dialog: maho_ext_api::ExtensionUiDialogOptions { signal: Some(signal.clone()), timeout_ms: Some(1) }, hard_deadline_at_ms: Some(1), get_deadline_at_ms: Some(std::sync::Arc::new(move || source.load(std::sync::atomic::Ordering::Relaxed))), ..retained_options() });
+    assert!(mode.render(80).join("\n").contains("00:00"));
+    mode.submit("/answer", Default::default()).await.expect("expand");
+    assert!(mode.render(80).join("\n").contains("00:00"));
+    mode.handle_input_at("\x1b", 1); mode.render(80);
+    signal.abort(); assert_eq!(answer.await.expect("producer abort").status, maho_ext_api::QuestionStatus::Cancelled);
+}
+
+#[tokio::test]
+async fn reattached_question_replaces_stale_draft_without_changing_number() {
+    use maho_ext_api::ExtensionUi; use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode(); let ui = mode.extension_ui.clone();
+    let old = ui.question(retained_question("reattach", false), Default::default());
+    let other = ui.question(retained_question("other", false), Default::default());
+    mode.render(80); drop(old);
+    let replacement = ui.question(retained_question("reattach", false), retained_options());
+    mode.render(80); mode.submit("/answer 1", Default::default()).await.expect("first position");
+    mode.handle_input_at("\x1b[13;5u", 1);
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), replacement).await.expect("bounded replacement").expect("replacement");
+    assert_eq!(response.answers["item"].selected, ["A"]);
+    assert_eq!(response.comment.as_deref(), Some("retained-comment"));
+    drop(other);
+}
+
 #[tokio::test]
 async fn ask_user_tool_card_uses_the_question_renderer_not_a_raw_argument_dump() {
     use maho_tui::tui::Component;

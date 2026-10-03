@@ -29,9 +29,31 @@ pub struct PendingQuestion {
     pub draft: QuestionDraft,
     pub timeout_ms: u64,
     pub asked_at_ms: u64,
-    pub get_deadline_at_ms: Option<Box<dyn Fn() -> u64>>,
+    pub get_deadline_at_ms: Option<std::rc::Rc<dyn Fn() -> u64>>,
     pub on_progress: Option<std::rc::Rc<std::cell::RefCell<Box<dyn FnMut(&QuestionDraft)>>>>,
     pub replies: Vec<tokio::sync::oneshot::Sender<maho_ext_api::QuestionResponse>>,
+}
+
+/// Translate producer wall-clock deadlines into the terminal's monotonic clock once at attach.
+/// The producer remains the expiry owner; the callback is only a live display source.
+pub(crate) fn question_deadline(options: &maho_ext_api::QuestionOptions, now_ms: u64) -> Option<std::rc::Rc<dyn Fn() -> u64>> {
+    let wall_now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+    question_deadline_at(options, now_ms, wall_now)
+}
+
+fn question_deadline_at(options: &maho_ext_api::QuestionOptions, now_ms: u64, wall_now: u64) -> Option<std::rc::Rc<dyn Fn() -> u64>> {
+    let deadline = options.get_deadline_at_ms.clone()?;
+    let hard = options.hard_deadline_at_ms;
+    Some(std::rc::Rc::new(move || {
+        let absolute = deadline();
+        let absolute = hard.map_or(absolute, |hard| absolute.min(hard));
+        if absolute >= wall_now { now_ms.saturating_add(absolute - wall_now) }
+        else { now_ms.saturating_sub(wall_now - absolute) }
+    }))
+}
+
+pub(crate) fn question_draft(draft: maho_ext_api::QuestionDraft) -> QuestionDraft {
+    QuestionDraft { comment: draft.comment, answers: draft.answers.unwrap_or_default().into_iter().map(|(id, answer)| (id, crate::components::ask_user_question_state::QuestionAnswer { selected: answer.selected, text: answer.text })).collect() }
 }
 
 impl PendingQuestion {
@@ -284,5 +306,28 @@ mod tests {
         assert!(question.unanswered().is_empty());
         let label = answer_list_label(&question, 11_000);
         assert!(label.starts_with("Header q1 · 00:10 ago · 00:50 remaining"), "label: {label}");
+    }
+
+    #[test]
+    fn live_deadline_tracks_idle_updates_without_moving_the_hard_cap() {
+        let live = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(11_000));
+        let source = live.clone();
+        let options = maho_ext_api::QuestionOptions { get_deadline_at_ms: Some(std::sync::Arc::new(move || source.load(std::sync::atomic::Ordering::Relaxed))), hard_deadline_at_ms: Some(15_000), ..Default::default() };
+        let deadline = question_deadline_at(&options, 500, 10_000).expect("live deadline");
+        assert_eq!(deadline(), 1_500);
+        live.store(13_000, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(deadline(), 3_500);
+        live.store(20_000, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(deadline(), 5_500);
+        let reattached = question_deadline_at(&options, 2_500, 12_000).expect("reattached deadline");
+        assert_eq!(reattached(), deadline());
+    }
+
+    #[test]
+    fn retained_draft_conversion_preserves_answers_and_comment() {
+        let draft = question_draft(maho_ext_api::QuestionDraft { answers: Some([("item".into(), maho_ext_api::QuestionAnswer { selected: vec!["A".into()], text: Some("retained".into()) })].into()), comment: Some("comment".into()) });
+        assert_eq!(draft.answers["item"].selected, ["A"]);
+        assert_eq!(draft.answers["item"].text.as_deref(), Some("retained"));
+        assert_eq!(draft.comment.as_deref(), Some("comment"));
     }
 }

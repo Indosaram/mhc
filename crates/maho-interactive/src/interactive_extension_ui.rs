@@ -73,7 +73,8 @@ impl ExtensionUi for InteractiveExtensionUi {
     fn factories(&self) -> Option<&dyn ExtensionUiFactories> { Some(self) }
     fn question(&self, request: QuestionRequest, options: QuestionOptions) -> ExtensionFuture<'_, QuestionResponse> {
         let (reply, receiver) = tokio::sync::oneshot::channel();
-        let dialog = options.dialog.clone();
+        let mut dialog = options.dialog.clone();
+        if options.get_deadline_at_ms.is_some() { dialog.timeout_ms = None; }
         let unanswered = request.questions.iter().map(|question| question.id.clone()).collect();
         self.send(UiRequest::Question { request:request.clone(), options, reply });
         Box::pin(async move {

@@ -23,6 +23,9 @@ enum QuestionAction {
     ClickOption(usize),
     OwnAnswer,
     Expire(String),
+    Progress(String, crate::components::ask_user_question_state::QuestionDraft),
+    ExpandRequest(String),
+    CloseList,
 }
 
 /// senpi `ExpandableText` (`interactive-mode.ts:339`): a `Text` whose body follows the collapsed or
@@ -783,6 +786,7 @@ impl InteractiveMode {
 
     fn setup_autocomplete(session: &AgentSession, editor: &mut CustomEditor) {
         let mut commands: Vec<_> = maho_core::slash_commands::builtin_slash_commands().into_iter().map(|command| maho_tui::autocomplete::CommandSpec::Command { name:command.name.into(), description:Some(command.description.into()), argument_hint:command.argument_hint.map(str::to_owned), get_argument_completions:None }).collect();
+        commands.push(maho_tui::autocomplete::CommandSpec::command("answer"));
         commands.extend(session.prompt_templates().into_iter().map(|template| maho_tui::autocomplete::CommandSpec::Command { name:template.name, description:Some(template.description), argument_hint:template.argument_hint, get_argument_completions:None }));
         editor.editor.cancel_autocomplete();
         editor.editor.set_autocomplete_provider(Rc::new(RefCell::new(maho_tui::autocomplete::CombinedAutocompleteProvider::new(commands, &session.cwd(), None))));
@@ -1981,7 +1985,8 @@ impl InteractiveMode {
             }
             UiRequest::WorkingIndicator(options) => self.working_indicator = options,
             UiRequest::Autocomplete(factory) => {
-                let commands = maho_core::slash_commands::builtin_slash_commands().into_iter().map(|command| maho_tui::autocomplete::CommandSpec::command(command.name)).collect();
+                let mut commands: Vec<_> = maho_core::slash_commands::builtin_slash_commands().into_iter().map(|command| maho_tui::autocomplete::CommandSpec::command(command.name)).collect();
+                commands.push(maho_tui::autocomplete::CommandSpec::command("answer"));
                 let provider = factory(Box::new(maho_tui::autocomplete::CombinedAutocompleteProvider::new(commands, &self.host_cwd(), None)));
                 maho_tui::editor_component::EditorComponent::set_autocomplete_provider(&mut self.editor, provider);
             }
@@ -2025,7 +2030,7 @@ impl InteractiveMode {
                 use crate::components::ask_user_question_state as state;
                 let convert = |request: maho_ext_api::QuestionRequest| state::QuestionRequest { request_id:request.request_id, wait_for_answer:request.wait_for_answer, timeout_ms:request.timeout_ms,
                     questions:request.questions.into_iter().map(|q| state::Question { id:q.id, header:q.header, question:q.question, multi_select:q.multi_select, options:q.options.into_iter().map(|o| state::QuestionOption { label:o.label, description:o.description }).collect() }).collect() };
-                if !request.wait_for_answer {
+                if options.deliver == maho_ext_api::QuestionDelivery::UserMessage || !request.wait_for_answer {
                     let request = convert(request);
                     self.show_async_question(request, options, reply);
                     return;
@@ -2039,6 +2044,8 @@ impl InteractiveMode {
                 let mut component_options = crate::components::ask_user_question::AskUserQuestionOptions::new(self.theme.clone());
                 component_options.now_ms = self.clock.elapsed().as_millis() as u64;
                 component_options.timeout_ms = options.dialog.timeout_ms;
+                component_options.get_deadline_at_ms = crate::question_registry::question_deadline(&options, component_options.now_ms).map(|deadline| Box::new(move || deadline()) as Box<dyn Fn() -> u64>);
+                component_options.initial_draft = options.initial_draft.clone().map(crate::question_registry::question_draft);
                 component_options.on_progress = options.on_progress.map(|callback| Box::new(move |draft: &state::QuestionDraft| callback(maho_ext_api::QuestionDraft { comment:draft.comment.clone(), answers:Some(draft.answers.iter().map(|(id, answer)| (id.clone(), maho_ext_api::QuestionAnswer { selected:answer.selected.clone(), text:answer.text.clone() })).collect()) })) as crate::components::ask_user_question::ProgressCallback);
                 self.question = Some(crate::components::ask_user_question::AskUserQuestionComponent::new(request, Box::new(move |response| {
                     let status = match response.status { state::QuestionStatus::Answered => maho_ext_api::QuestionStatus::Answered, state::QuestionStatus::CommentSubmitted => maho_ext_api::QuestionStatus::CommentSubmitted, state::QuestionStatus::Cancelled => maho_ext_api::QuestionStatus::Cancelled, state::QuestionStatus::TimedOut => maho_ext_api::QuestionStatus::TimedOut };
@@ -2109,17 +2116,24 @@ impl InteractiveMode {
         use crate::components::ask_user_question_state as state;
         let request_id = request.request_id.clone();
         let timeout_ms = options.dialog.timeout_ms;
+        let now_ms = self.clock.elapsed().as_millis() as u64;
+        let get_deadline_at_ms = crate::question_registry::question_deadline(&options, now_ms);
+        let draft = options.initial_draft.clone().map(crate::question_registry::question_draft).unwrap_or_default();
         let on_progress = options.on_progress.map(|callback| std::rc::Rc::new(std::cell::RefCell::new(Box::new(move |draft: &state::QuestionDraft| callback(maho_ext_api::QuestionDraft { comment: draft.comment.clone(), answers: Some(draft.answers.iter().map(|(id, answer)| (id.clone(), maho_ext_api::QuestionAnswer { selected: answer.selected.clone(), text: answer.text.clone() })).collect()) })) as Box<dyn FnMut(&state::QuestionDraft)>)));
         let entry = crate::question_registry::PendingQuestion {
             timeout_ms: timeout_ms.unwrap_or(request.timeout_ms),
-            asked_at_ms: self.clock.elapsed().as_millis() as u64,
-            get_deadline_at_ms: None,
+            asked_at_ms: now_ms,
+            get_deadline_at_ms,
             on_progress,
             request,
-            draft: state::QuestionDraft::default(),
+            draft,
             replies: Vec::new(),
         };
-        self.questions.show(entry);
+        let reattaching = self.questions.get(&request_id).is_some_and(|existing| existing.replies.iter().all(tokio::sync::oneshot::Sender::is_closed));
+        if reattaching && self.questions.shown_id() == Some(request_id.as_str()) && self.questions.surface == crate::question_registry::QuestionSurface::Expanded { self.collapse_shown_question(); }
+        if let Some(existing) = self.questions.get_mut(&request_id) {
+            if reattaching { *existing = entry; }
+        } else { self.questions.show(entry); }
         if let Some(existing) = self.questions.get_mut(&request_id) { existing.replies.push(reply); }
         self.refresh_async_question_widget();
     }
@@ -2128,15 +2142,16 @@ impl InteractiveMode {
     /// while the expanded component owns the surface.
     fn refresh_async_question_widget(&mut self) {
         if self.questions.surface == crate::question_registry::QuestionSurface::Expanded { self.async_question_widget = None; return; }
-        let pending = self.questions.shown().map(|shown| (shown.request.clone(), shown.draft.clone(), shown.timeout_ms));
-        let Some((request, draft, timeout_ms)) = pending else { self.async_question_widget = None; return; };
+        let now_ms = self.clock.elapsed().as_millis() as u64;
+        let pending = self.questions.shown().map(|shown| (shown.request.clone(), shown.draft.clone(), if shown.timeout_ms == 0 { 0 } else { shown.deadline_at_ms().saturating_sub(now_ms).max(1) }, shown.get_deadline_at_ms.clone()));
+        let Some((request, draft, timeout_ms, deadline)) = pending else { self.async_question_widget = None; return; };
         let actions = self.question_actions.clone();
         let next_actions = actions.clone(); let expand_actions = actions.clone(); let own_answer_actions = actions.clone(); let expire_actions = actions.clone();
         let expire_id = request.request_id.clone();
         let pending_count = self.questions.len();
         self.async_question_widget = Some(crate::components::ask_user_async_widget::AskUserAsyncWidget::new(crate::components::ask_user_async_widget::AskUserAsyncWidgetOptions {
-            request, draft, timeout_ms, now_ms: self.clock.elapsed().as_millis() as u64,
-            get_deadline_at_ms: None, pending_count, theme: self.theme.clone(), env: std::env::vars().collect(), mouse_capture_active: false,
+            request, draft, timeout_ms, now_ms,
+            get_deadline_at_ms: deadline.map(|deadline| Box::new(move || deadline()) as Box<dyn Fn() -> u64>), pending_count, theme: self.theme.clone(), env: std::env::vars().collect(), mouse_capture_active: false,
             on_option_click: Some(Box::new(move |index| actions.borrow_mut().push_back(QuestionAction::ClickOption(index)))),
             on_own_answer_click: Some(Box::new(move || own_answer_actions.borrow_mut().push_back(QuestionAction::OwnAnswer))),
             on_expand_click: Some(Box::new(move || expand_actions.borrow_mut().push_back(QuestionAction::Expand))),
@@ -2151,19 +2166,23 @@ impl InteractiveMode {
     /// back to the widget and keeps the question pending; any other response settles it.
     fn expand_shown_question(&mut self, initial_question_index: Option<usize>) {
         if self.questions.surface == crate::question_registry::QuestionSurface::Expanded { return; }
-        let pending = self.questions.shown().map(|shown| (shown.request.clone(), shown.draft.clone(), shown.timeout_ms));
-        let Some((request, draft, timeout_ms)) = pending else { return; };
+        let now_ms = self.clock.elapsed().as_millis() as u64;
+        let pending = self.questions.shown().map(|shown| (shown.request.clone(), shown.draft.clone(), if shown.timeout_ms == 0 { 0 } else { shown.deadline_at_ms().saturating_sub(now_ms).max(1) }, shown.get_deadline_at_ms.clone()));
+        let Some((request, draft, timeout_ms, deadline)) = pending else { return; };
         let result = self.question_result.clone();
         let progress = self.questions.shown().and_then(|shown| shown.on_progress.clone());
         let mut options = crate::components::ask_user_question::AskUserQuestionOptions::new(self.theme.clone());
-        options.now_ms = self.clock.elapsed().as_millis() as u64;
+        options.now_ms = now_ms;
         options.timeout_ms = Some(timeout_ms);
+        options.get_deadline_at_ms = deadline.map(|deadline| Box::new(move || deadline()) as Box<dyn Fn() -> u64>);
         options.initial_draft = Some(draft);
         options.initial_question_index = initial_question_index;
-        if let Some(progress) = progress {
-            use crate::components::ask_user_question_state as state;
-            options.on_progress = Some(Box::new(move |draft: &state::QuestionDraft| { let mut callback = progress.borrow_mut(); (&mut **callback)(draft); }));
-        }
+        let actions = self.question_actions.clone();
+        let request_id = request.request_id.clone();
+        options.on_progress = Some(Box::new(move |draft| {
+            actions.borrow_mut().push_back(QuestionAction::Progress(request_id.clone(), draft.clone()));
+            if let Some(progress) = &progress { let mut callback = progress.borrow_mut(); (&mut **callback)(draft); }
+        }));
         self.questions.surface = crate::question_registry::QuestionSurface::Expanded;
         self.blocking_question = false;
         self.async_question_widget = None;
@@ -2172,6 +2191,7 @@ impl InteractiveMode {
 
     /// senpi's `hideQuestionOverlay`.
     fn collapse_shown_question(&mut self) {
+        self.handle_question_actions();
         self.question = None;
         self.question_result.borrow_mut().take();
         self.questions.surface = crate::question_registry::QuestionSurface::Collapsed;
@@ -2180,11 +2200,11 @@ impl InteractiveMode {
 
     /// senpi's `AsyncQuestionState.finish`: resolve every completion and hand the surface on.
     fn finish_question(&mut self, request_id: &str, response: maho_ext_api::QuestionResponse) {
+        let was_shown = self.questions.shown_id() == Some(request_id);
         if let Some(mut entry) = self.questions.finish(request_id) {
             for reply in entry.replies.drain(..) { let _ = reply.send(response.clone()); }
         }
-        self.question = None;
-        self.blocking_question = false;
+        if was_shown { self.question = None; self.blocking_question = false; }
         self.refresh_async_question_widget();
     }
 
@@ -2193,6 +2213,9 @@ impl InteractiveMode {
             let action = self.question_actions.borrow_mut().pop_front();
             let Some(action) = action else { break; };
             match action {
+                QuestionAction::Progress(request_id, draft) => { if let Some(entry) = self.questions.get_mut(&request_id) { entry.draft = draft; } }
+                QuestionAction::ExpandRequest(request_id) => { self.ui_dialog = None; self.local_dialog_reply = None; self.questions.surface = crate::question_registry::QuestionSurface::Collapsed; if self.questions.set_shown(&request_id) { self.expand_shown_question(None); } }
+                QuestionAction::CloseList => { self.questions.surface = crate::question_registry::QuestionSurface::Collapsed; }
                 QuestionAction::Expand => self.expand_shown_question(None),
                 QuestionAction::Next => self.cycle_question(),
                 QuestionAction::ClickOption(index) => self.click_shown_question_option(index),
@@ -2253,9 +2276,9 @@ impl InteractiveMode {
             return;
         }
         if !argument.is_empty() {
-            let id = argument.trim().parse::<usize>().ok().filter(|number| *number >= 1).and_then(|number| self.questions.by_number(number)).map(str::to_owned);
+            let id = argument.bytes().next().filter(|first| matches!(first, b'1'..=b'9')).filter(|_| argument.bytes().all(|byte| byte.is_ascii_digit())).and_then(|_| argument.parse::<usize>().ok()).and_then(|number| self.questions.by_number(number)).map(str::to_owned);
             match id {
-                Some(id) => { self.questions.set_shown(&id); self.expand_shown_question(None); }
+                Some(id) => { if self.questions.surface == crate::question_registry::QuestionSurface::Expanded { self.collapse_shown_question(); } self.questions.set_shown(&id); self.expand_shown_question(None); }
                 None => self.show_status("Choose a pending question number or /answer skip.".into()),
             }
             return;
@@ -2266,15 +2289,17 @@ impl InteractiveMode {
 
     /// senpi's `/answer` SelectList over `pendingOrder`.
     fn show_answer_list(&mut self) {
+        if self.questions.surface == crate::question_registry::QuestionSurface::Expanded { self.collapse_shown_question(); }
         let now = self.clock.elapsed().as_millis() as u64;
         let labels: Vec<String> = self.questions.order().iter().enumerate().filter_map(|(index, id)| self.questions.get(id).map(|entry| format!("{}. {}", index + 1, crate::question_registry::answer_list_label(entry, now)))).collect();
         if labels.is_empty() { self.show_status("No question is pending.".into()); return; }
         self.questions.surface = crate::question_registry::QuestionSurface::List;
         let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
-        let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone(); let submissions = self.submissions.clone();
+        let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone(); let actions = self.question_actions.clone(); let ids = self.questions.order().to_vec();
+        let cancel_actions = actions.clone();
         let component = crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), "Pending questions", labels,
-            Box::new(move |choice| { if let Some(number) = choice.split('.').next().and_then(|prefix| prefix.trim().parse::<usize>().ok()) { submissions.borrow_mut().push_back(format!("/answer {number}")); } selected.borrow_mut().take(); }),
-            Box::new(move || { cancelled.borrow_mut().take(); }), Default::default());
+            Box::new(move |choice| { if let Some(id) = choice.split('.').next().and_then(|prefix| prefix.trim().parse::<usize>().ok()).and_then(|number| number.checked_sub(1)).and_then(|index| ids.get(index)) { actions.borrow_mut().push_back(QuestionAction::ExpandRequest(id.clone())); } selected.borrow_mut().take(); }),
+            Box::new(move || { cancelled.borrow_mut().take(); cancel_actions.borrow_mut().push_back(QuestionAction::CloseList); }), Default::default());
         self.ui_dialog = Some(Box::new(component));
     }
 
