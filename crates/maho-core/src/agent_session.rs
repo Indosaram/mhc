@@ -4618,7 +4618,7 @@ impl AgentSession {
         tool_call: &maho_agent::types::AgentToolCall,
         input: Value,
     ) -> Option<maho_ext_api::ToolCallEventResult> {
-        let mut guard = self.extension_runner.lock().await;
+        let mut guard = self.extension_runner.lock().await.clone();
         let runner = guard.as_mut()?;
         if !runner.has_handlers(maho_ext_api::EventKind::ToolCall) {
             return None;
