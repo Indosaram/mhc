@@ -140,6 +140,8 @@ impl SessionManagerProxy {
 }
 
 impl crate::tool::eval_tool_options::EvalKernelManager for SessionManagerProxy {
+    fn execution_tracker(&self) -> Option<&Self> { Some(self) }
+
     fn get_kernel(&self, language: crate::tool::types::EvalLanguage) -> crate::tool::types::EvalKernelFuture<'_, Arc<dyn crate::tool::types::EvalKernel>> {
         Box::pin(async move {
             let current = self.current().map_err(|error| error.to_string())?;

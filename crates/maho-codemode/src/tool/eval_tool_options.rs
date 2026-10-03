@@ -6,6 +6,7 @@ use super::{types::{EvalKernel,EvalKernelFuture,EvalLanguage,EvalRuntimeInfo,Eva
 
 pub trait EvalKernelManager: Send + Sync {
     fn get_kernel(&self,language:EvalLanguage) -> EvalKernelFuture<'_,Arc<dyn EvalKernel>>;
+    fn execution_tracker(&self) -> Option<&crate::extension::session_manager_proxy::SessionManagerProxy> { None }
 }
 pub type CellUpdateCallback=Arc<dyn Fn(AgentToolResult)+Send+Sync>;
 pub type CellSettledCallback=Arc<dyn Fn(serde_json::Value)+Send+Sync>;
