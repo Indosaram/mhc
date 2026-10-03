@@ -90,8 +90,9 @@ impl FactsExtractorRunner{
             if crate::facts_oversize::classify_oversize_payload(&mut terminal,&crate::facts_oversize::OversizeClassificationInput{envelope:&envelope,oversized:&capped.oversized,pending:&selected,envelope_oversized:capped.envelope_oversized,create_failure_id:None,max_bytes:None},&mut |_,_|{}).map_err(|error|error.to_string())?{return Ok(FactsLaunchResult::Skipped);}
         }
         if capped.selected.is_empty(){return Ok(FactsLaunchResult::Empty);}
-        if aborted(){return Ok(FactsLaunchResult::Skipped);}let batch=memory_core::support::random::random_uuid();
-        let dir=crate::facts_run_storage::reserve_facts_run_dir(&crate::facts_run_storage::ReserveFactsRunDirOptions{facts_dir:&self.identity.paths.facts,locks_dir:&self.identity.paths.locks,entries:&capped.selected,batch_id:&batch,launched_at:now,deadline_ms:Some(input.deadline_ms),termination_grace_ms:Some(input.termination_grace_ms),lock_wait_ms:None}).map_err(|error|error.to_string())?;
+        let batch=memory_core::support::random::random_uuid();let launched_at=(self.now)();
+        if aborted(){return Ok(FactsLaunchResult::Skipped);}
+        let dir=crate::facts_run_storage::reserve_facts_run_dir(&crate::facts_run_storage::ReserveFactsRunDirOptions{facts_dir:&self.identity.paths.facts,locks_dir:&self.identity.paths.locks,entries:&capped.selected,batch_id:&batch,launched_at,deadline_ms:Some(input.deadline_ms),termination_grace_ms:Some(input.termination_grace_ms),lock_wait_ms:None}).map_err(|error|error.to_string())?;
         let Some(dir)=dir else{return Ok(FactsLaunchResult::Active);};if aborted(){return Ok(FactsLaunchResult::Skipped);}
         let run_id=dir.file_name().ok_or("Facts run directory has no name")?.to_string_lossy().into_owned();
         let targets=crate::facts_failure_recording::queue_entry_targets(&capped.selected);
@@ -172,6 +173,18 @@ impl crate::facts_terminal_writes::FactsTerminalIo for FactsIo<'_>{fn now(&self)
 pub fn sweep_runner_artifacts(facts:&Path,warn:&mut dyn FnMut(&str)){crate::facts_run_cleanup::sweep_terminal_facts_runs(facts,&mut crate::facts_run_cleanup::remove_run_artifact,&mut |message,path,error|warn(&format!("{message}: {}: {error}",path.display())));}
 #[cfg(test)]mod tests{
     use super::*;
+    #[tokio::test]async fn reservation_clock_is_sampled_after_model_resolution(){
+        use memory_core::journal::entries::{TranscriptEntry,TextTranscriptEntry};
+        let root=tempfile::tempdir().unwrap();let clock=Arc::new(std::sync::atomic::AtomicI64::new(0));let sampled=clock.clone();
+        let mut runner=runner(root.path());runner.now=Arc::new(move||sampled.load(Ordering::SeqCst));
+        runner.queue.enqueue(memory_core::facts::queue::FactsEnqueueRequest{identity:"agent".into(),session_id:"session".into(),conversation_id:"conversation".into(),signal:None,entries:vec![TranscriptEntry::Text(TextTranscriptEntry::new("user","Question","1970-01-01T00:00:00.000Z","m:user","m")),TranscriptEntry::Text(TextTranscriptEntry::new("assistant","Answer","1970-01-01T00:00:00.000Z","m:assistant","m"))]}).unwrap();
+        let resolve=||{clock.store(42_000,Ordering::SeqCst);Ok(ReflectionModelResolution::Resolved{category:"quick".into(),model:"p/m".into(),thinking:None,source:None,fallbacks:vec![]})};
+        runner.launch_pending_once(FactsAttemptInput{resolve_model:&resolve,deadline_ms:900000,termination_grace_ms:5000},None,||Ok(false),|dir,_,_,_|async move{
+            let ledger:crate::facts_runner_types::FactsRunLedger=crate::worker::run_artifacts::read_run_json(&dir.join("ledger.json")).unwrap();
+            assert_eq!(ledger.started_at,"1970-01-01T00:00:42.000Z");assert_eq!(ledger.hard_deadline_at,942_000.0);assert_eq!(ledger.deadline_at,947_000.0);
+            Ok(FactsLaunchResult::Empty)
+        },&mut |message|panic!("{message}")).await.unwrap();
+    }
     #[tokio::test]async fn native_extractor_adapter_preserves_shared_active_latch_and_cancellation(){
         use crate::facts_wiring::FactsExtractorPort;
         let root=tempfile::tempdir().unwrap();let runner=Arc::new(runner(root.path()));
