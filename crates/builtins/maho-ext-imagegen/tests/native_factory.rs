@@ -5,7 +5,7 @@ use maho_ext_imagegen::ImageGen;
 fn client_factory_registers_real_context_tool_and_discovery_hooks() {
     let mut api=ExtensionApi::new(LoadedExtension::new("imagegen","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
     ImageGen::default().register(&mut api);
-    let tool=&api.registered.tools["generate_image"].definition;
+    let tool=&api.registered.tools.iter().find(|tool|tool.definition.name=="generate_image").expect("image tool").definition;
     assert_eq!(tool.exposure,Some(ToolExposure::Search));
     assert_eq!(tool.parameters["required"],serde_json::json!(["prompt"]));
     assert_eq!(api.registered.handlers[&EventKind::ResourcesDiscover].len(),1);
