@@ -175,6 +175,8 @@ pub fn build_base_options(
         env: stream.and_then(|stream| stream.request.env.clone()),
         on_payload: stream.and_then(|stream| stream.request.on_payload.clone()),
         on_response: stream.and_then(|stream| stream.request.on_response.clone()),
+        async_on_payload: stream.and_then(|stream| stream.request.async_on_payload.clone()),
+        async_on_response: stream.and_then(|stream| stream.request.async_on_response.clone()),
         headers: stream.and_then(|stream| stream.request.headers.clone()),
         timeout_ms: stream.and_then(|stream| stream.request.timeout_ms),
         max_retries: stream.and_then(|stream| stream.request.max_retries),

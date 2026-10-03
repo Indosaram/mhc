@@ -719,8 +719,13 @@ impl FauxCore {
         let context = context.clone();
         let outer_for_task = outer.clone();
         tokio::spawn(async move {
-            if let Some(on_response) = options.request.on_response.clone() {
-                on_response(&crate::types::ProviderResponse { status: 200, headers: Default::default() }, &model);
+            if let Err(error) = options.request.apply_response_hook(
+                &crate::types::ProviderResponse { status: 200, headers: Default::default() }, &model,
+            ).await {
+                let message = create_error_message(&error, &core.api, &core.provider, &model.id);
+                outer_for_task.push(AssistantMessageEvent::Error { reason: ErrorReason::Error, error: message.clone() });
+                outer_for_task.end(Some(message));
+                return;
             }
             let Some(step) = step else {
                 let message = create_error_message("No more faux responses queued", &core.api, &core.provider, &model.id);
@@ -820,8 +825,13 @@ impl FauxCore {
         let outer_for_task = outer.clone();
         tokio::spawn(async move {
             let options = options.unwrap_or_default();
-            if let Some(on_response) = options.request.on_response.clone() {
-                on_response(&crate::types::ProviderResponse { status: 200, headers: Default::default() }, &model);
+            if let Err(error) = options.request.apply_response_hook(
+                &crate::types::ProviderResponse { status: 200, headers: Default::default() }, &model,
+            ).await {
+                let message = create_error_message(&error, &core.api, &core.provider, &model.id);
+                outer_for_task.push(AssistantMessageEvent::Error { reason: ErrorReason::Error, error: message.clone() });
+                outer_for_task.end(Some(message));
+                return;
             }
             let pending: Result<(DeferredHandle, Option<FauxResponseStep>), String> = {
                 let mut inner = core.lock();
@@ -919,6 +929,18 @@ impl FauxCore {
         if let Some(entry) = inner.deferred_responses.get_mut(&handle.id) {
             entry.cancelled = true;
         }
+    }
+
+    pub async fn cancel_deferred_with_options(
+        &self,
+        model: &Model,
+        handle: &DeferredHandle,
+        options: Option<crate::types::DeferredCancelOptions>,
+    ) -> Result<(), String> {
+        self.cancel_deferred(handle);
+        options.unwrap_or_default().apply_response_hook(
+            &crate::types::ProviderResponse { status: 200, headers: Default::default() }, model,
+        ).await
     }
 }
 

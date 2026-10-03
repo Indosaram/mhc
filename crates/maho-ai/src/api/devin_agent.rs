@@ -169,12 +169,10 @@ async fn drive(
     }
     .map_err(|error| error.to_string())?;
 
-    if let Some(on_response) = options.request.on_response.as_ref() {
-        on_response(
+    options.request.apply_response_hook(
             &ProviderResponse { status: response.status().as_u16(), headers: headers_to_record(response.headers()) },
             model,
-        );
-    }
+        ).await?;
 
     let status = response.status();
     if !status.is_success() {

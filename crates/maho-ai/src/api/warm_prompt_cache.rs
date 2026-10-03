@@ -42,15 +42,14 @@ pub async fn warm_prompt_cache(
     let options = options.unwrap_or_default();
     let headers = provider_headers_to_record(options.request.headers.as_ref());
     let mut params = build_params(model, context, &options)?;
-    if let Some(on_payload) = &options.request.on_payload
-        && let Some(transformed) = on_payload(
+    if let Some(transformed) = options.request.apply_payload_hook(
             &params,
             model,
             Some(&crate::types::ProviderRequestMetadata {
                 model: model.clone(),
                 headers: options.request.headers.clone().unwrap_or_default(),
             }),
-    ) {
+    ).await? {
         params = transformed;
     }
 

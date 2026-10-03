@@ -1026,8 +1026,8 @@ async fn drive(
     if let Some(object) = command_input.as_object_mut() {
         apply_extra_body(object, options.extra_body.as_ref(), &BEDROCK_RESERVED_BODY_KEYS);
     }
-    if let Some(on_payload) = &options.request.on_payload
-        && let Some(next) = on_payload(&command_input, model, None)
+    if let Some(next) = options.request.apply_payload_hook(&command_input, model, None)
+        .await.map_err(failure_from)?
     {
         command_input = next;
     }
@@ -1104,15 +1104,13 @@ async fn drive(
         .get("x-amzn-requestid")
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
-    if let Some(on_response) = &options.request.on_response {
-        on_response(
+    options.request.apply_response_hook(
             &crate::types::ProviderResponse {
                 status,
                 headers: crate::utils::headers::headers_to_record(response.headers()),
             },
             model,
-        );
-    }
+        ).await.map_err(failure_from)?;
 
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();

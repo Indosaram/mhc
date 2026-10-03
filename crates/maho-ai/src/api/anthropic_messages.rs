@@ -1986,7 +1986,7 @@ struct PreparedRequest {
     sent_model: String,
 }
 
-fn build_prepared_request(
+async fn build_prepared_request(
     model: &Model,
     context: &Context,
     is_oauth_token: bool,
@@ -1995,8 +1995,8 @@ fn build_prepared_request(
 ) -> Result<PreparedRequest, AnthropicStreamError> {
     let mut params = build_params(model, context, is_oauth_token, options, unsigned_thinking_replay)
         .map_err(AnthropicStreamError::Message)?;
-    if let Some(on_payload) = &options.request.on_payload
-        && let Some(next) = on_payload(&Value::Object(params.clone()), model, None)
+    if let Some(next) = options.request.apply_payload_hook(&Value::Object(params.clone()), model, None)
+        .await.map_err(AnthropicStreamError::Message)?
         && let Some(next) = next.as_object()
     {
         params = next.clone();
@@ -2511,7 +2511,7 @@ async fn attempt_request(
     unsigned_thinking_replay: &Mutex<&'static str>,
     fallback_key: Option<&str>,
 ) -> Result<(PreparedRequest, reqwest::Response), AnthropicStreamError> {
-    let prepared = build_prepared_request(model, context, client.is_oauth_token, options, replay_mode(unsigned_thinking_replay))?;
+    let prepared = build_prepared_request(model, context, client.is_oauth_token, options, replay_mode(unsigned_thinking_replay)).await?;
     let forced_tool_choice = is_forced_anthropic_tool_choice(prepared.params.get("tool_choice"));
     let response = match send_request(model, client, options, api_key, &prepared).await {
         Ok(response) if response.status().is_success() => return Ok((prepared, response)),
@@ -2543,7 +2543,7 @@ async fn attempt_request(
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .insert(key.to_owned());
         }
-        let prepared = build_prepared_request(model, context, client.is_oauth_token, options, replay_mode(unsigned_thinking_replay))?;
+        let prepared = build_prepared_request(model, context, client.is_oauth_token, options, replay_mode(unsigned_thinking_replay)).await?;
         return match send_request(model, client, options, api_key, &prepared).await {
             Ok(response) if response.status().is_success() => Ok((prepared, response)),
             Ok(response) => Err(classify_response_failure(response).await),
@@ -2620,16 +2620,22 @@ async fn drive(
 
     let (prepared, response) = match request_outcome {
         Ok(outcome) => outcome,
-        Err(error) => return Err(map_retry_error(error)),
+        Err(error) => {
+            let error = map_retry_error(error);
+            if let Some(status) = error.status() {
+                options.request.apply_response_hook(
+                    &crate::types::ProviderResponse { status, headers: Default::default() }, model,
+                ).await.map_err(AnthropicStreamError::Message)?;
+            }
+            return Err(error);
+        }
     };
     sent_model.clone_from(&prepared.sent_model);
 
-    if let Some(on_response) = &options.request.on_response {
-        on_response(
+    options.request.apply_response_hook(
             &crate::types::ProviderResponse { status: response.status().as_u16(), headers: headers_to_record(response.headers()) },
             model,
-        );
-    }
+        ).await.map_err(AnthropicStreamError::Message)?;
     sink.push(AssistantMessageEvent::Start { partial: state.output.clone() });
 
     let mut decoder = SseDecoder::default();

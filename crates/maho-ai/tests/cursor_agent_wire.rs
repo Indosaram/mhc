@@ -569,6 +569,85 @@ async fn fails_fast_without_an_access_token() {
 }
 
 #[tokio::test]
+async fn awaits_payload_hook_before_actual_run_frame_and_ignores_replacement_as_source_does() {
+    let (wire_tx, mut wire_rx) = tokio::sync::mpsc::unbounded_channel();
+    let base_url = start_server(move |mut server| async move {
+        let request = server.reader.wait_for(|message| match &message.message {
+            Some(agent_client_message::Message::RunRequest(request)) => Some(request.clone()),
+            _ => None,
+        }).await;
+        wire_tx.send(request).expect("wire run request");
+        server.send(turn_ended_frame()).await;
+        server.end();
+    }).await;
+    let (hook_tx, mut hook_rx) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let mut base = options_with_key("test-token");
+    base.request.async_on_payload = Some(Arc::new({
+        let release = release.clone();
+        move |payload, _, _| {
+            let tx = hook_tx.clone();
+            let release = release.clone();
+            Box::pin(async move {
+                assert!(payload.get("conversationId").is_some());
+                tx.send(()).expect("hook entered");
+                release.acquire().await.expect("permit").forget();
+                Ok(Some(serde_json::json!({"conversationId":"replacement-must-not-be-used"})))
+            })
+        }
+    }));
+    let stream = stream_with_options(&build_model(&base_url), &hello_context(),
+        Some(CursorAgentOptions { base, ..Default::default() }));
+    assert_eq!(tokio::time::timeout(Duration::from_secs(10), hook_rx.recv()).await.expect("hook timeout"), Some(()));
+    assert!(matches!(wire_rx.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+    release.add_permits(1);
+    let request = tokio::time::timeout(Duration::from_secs(10), wire_rx.recv()).await.expect("wire timeout").expect("run request");
+    assert_ne!(request.conversation_id.as_deref(), Some("replacement-must-not-be-used"));
+    assert_eq!(tokio::time::timeout(Duration::from_secs(10), stream.result()).await.expect("result timeout").expect("result").stop_reason, StopReason::Stop);
+}
+
+#[tokio::test]
+async fn payload_hook_error_and_pending_cancellation_prevent_cursor_connection() {
+    for cancel in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let url = format!("http://{}", listener.local_addr().expect("address"));
+        let (wire_tx, mut wire_rx) = tokio::sync::mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            let socket = listener.accept().await.expect("accept");
+            wire_tx.send(()).expect("connection receiver");
+            drop(socket);
+        });
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let (hook_tx, mut hook_rx) = tokio::sync::mpsc::unbounded_channel();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut base = options_with_key("test-token");
+        base.request.signal = Some(controller.signal());
+        base.request.async_on_payload = Some(Arc::new({
+            let release = release.clone();
+            move |_, _, _| {
+                let tx = hook_tx.clone();
+                let release = release.clone();
+                Box::pin(async move {
+                    tx.send(()).expect("hook entered");
+                    release.acquire().await.expect("permit").forget();
+                    Err("cursor-payload-exact-error".into())
+                })
+            }
+        }));
+        let stream = stream_with_options(&build_model(&url), &hello_context(),
+            Some(CursorAgentOptions { base, ..Default::default() }));
+        assert_eq!(tokio::time::timeout(Duration::from_secs(10), hook_rx.recv()).await.expect("hook timeout"), Some(()));
+        if cancel { controller.abort(None); } else { release.add_permits(1); }
+        let result = tokio::time::timeout(Duration::from_secs(10), stream.result()).await.expect("result timeout").expect("result");
+        assert!(result.content.is_empty());
+        if !cancel { assert_eq!(result.error_message.as_deref(), Some("cursor-payload-exact-error")); }
+        assert!(matches!(wire_rx.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+        server.abort();
+        assert!(server.await.expect_err("server aborted").is_cancelled());
+    }
+}
+
+#[tokio::test]
 async fn aborts_cleanly_when_the_caller_cancels_mid_stream() {
     let base_url = start_server(|mut stream| async move {
                 stream.send(text_delta_frame("started")).await;

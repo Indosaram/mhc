@@ -37,14 +37,19 @@ pub fn normalize_bai_responses_payload(payload: Value) -> Value {
 }
 
 fn with_bai_responses_payload(options: StreamOptions) -> StreamOptions {
-    let upstream = options.request.on_payload.clone();
-    let hook: crate::types::OnPayload = Arc::new(
-        move |payload: &Value, model: &Model, request: Option<&ProviderRequestMetadata>| {
-            let transformed = upstream.as_ref().and_then(|upstream| upstream(payload, model, request));
-            Some(normalize_bai_responses_payload(transformed.unwrap_or_else(|| payload.clone())))
+    let upstream = options.request.clone();
+    let hook: crate::types::AsyncOnPayload = Arc::new(
+        move |payload: Value, model: Model, request: Option<ProviderRequestMetadata>| {
+            let upstream = upstream.clone();
+            Box::pin(async move {
+                let transformed = upstream.apply_payload_hook(&payload, &model, request.as_ref()).await?;
+                Ok(Some(normalize_bai_responses_payload(transformed.unwrap_or(payload))))
+            })
         },
     );
-    StreamOptions { request: crate::types::ProviderRequestOptions { on_payload: Some(hook), ..options.request }, ..options }
+    StreamOptions { request: crate::types::ProviderRequestOptions {
+        on_payload: None, async_on_payload: Some(hook), ..options.request
+    }, ..options }
 }
 
 struct BaiResponsesStreams {

@@ -930,8 +930,8 @@ async fn drive(
         .flatten();
     let mut body = build_request_body(model, context, codex_options, cache_session_id.as_deref(), &grammar_tool_input_properties, options.extra_body.as_ref())
         .map_err(CodexError::Other)?;
-    if let Some(on_payload) = options.request.on_payload.as_ref()
-        && let Some(next) = on_payload(&Value::Object(body.clone()), model, None)
+    if let Some(next) = options.request.apply_payload_hook(&Value::Object(body.clone()), model, None)
+        .await.map_err(CodexError::Other)?
     {
         body = next.as_object().cloned().unwrap_or_default();
     }
@@ -1032,12 +1032,10 @@ async fn drive(
             }
         };
 
-        if let Some(on_response) = options.request.on_response.as_ref() {
-            on_response(
+        options.request.apply_response_hook(
                 &ProviderResponse { status: response_value.status().as_u16(), headers: headers_to_record(response_value.headers()) },
                 model,
-            );
-        }
+            ).await.map_err(CodexError::Other)?;
 
         if response_value.status().is_success() {
             response = Some(response_value);

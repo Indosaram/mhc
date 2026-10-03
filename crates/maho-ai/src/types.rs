@@ -248,6 +248,10 @@ pub enum StreamKind {
 pub type OnPayload =
     std::sync::Arc<dyn Fn(&Value, &Model, Option<&ProviderRequestMetadata>) -> Option<Value> + Send + Sync>;
 pub type OnResponse = std::sync::Arc<dyn Fn(&ProviderResponse, &Model) + Send + Sync>;
+pub type AsyncOnPayload = std::sync::Arc<dyn Fn(Value, Model, Option<ProviderRequestMetadata>)
+    -> BoxFuture<'static, Result<Option<Value>, String>> + Send + Sync>;
+pub type AsyncOnResponse = std::sync::Arc<dyn Fn(ProviderResponse, Model)
+    -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 
 /// `ProviderRequestOptions`. `fetch` and `telemetryContext` are host concerns of the wire lanes
 /// and are carried as the reqwest client / opaque JSON respectively.
@@ -263,10 +267,54 @@ pub struct ProviderRequestOptions {
     pub env: Option<ProviderEnv>,
     pub on_payload: Option<OnPayload>,
     pub on_response: Option<OnResponse>,
+    pub async_on_payload: Option<AsyncOnPayload>,
+    pub async_on_response: Option<AsyncOnResponse>,
     pub headers: Option<ProviderHeaders>,
     pub timeout_ms: Option<u64>,
     pub max_retries: Option<u32>,
     pub max_retry_delay_ms: Option<u64>,
+}
+
+impl ProviderRequestOptions {
+    pub async fn apply_payload_hook(&self, payload: &Value, model: &Model,
+        metadata: Option<&ProviderRequestMetadata>) -> Result<Option<Value>, String> {
+        if let Some(signal) = &self.signal { signal.throw_if_aborted().map_err(|error| error.to_string())?; }
+        let mut replacement = self.on_payload.as_ref().and_then(|hook| hook(payload, model, metadata));
+        if let Some(signal) = &self.signal { signal.throw_if_aborted().map_err(|error| error.to_string())?; }
+        if let Some(hook) = &self.async_on_payload {
+            let future = hook(replacement.as_ref().unwrap_or(payload).clone(), model.clone(), metadata.cloned());
+            let next = match &self.signal {
+                Some(signal) => tokio::select! {
+                    biased;
+                    () = signal.cancelled() => return Err(signal.reason().map_or_else(|| "Operation aborted".into(), |reason| reason.to_string())),
+                    result = future => result?,
+                },
+                None => future.await?,
+            };
+            if next.is_some() { replacement = next; }
+        }
+        if let Some(signal) = &self.signal { signal.throw_if_aborted().map_err(|error| error.to_string())?; }
+        Ok(replacement)
+    }
+
+    pub async fn apply_response_hook(&self, response: &ProviderResponse, model: &Model) -> Result<(), String> {
+        if let Some(signal) = &self.signal { signal.throw_if_aborted().map_err(|error| error.to_string())?; }
+        if let Some(hook) = &self.on_response { hook(response, model); }
+        if let Some(signal) = &self.signal { signal.throw_if_aborted().map_err(|error| error.to_string())?; }
+        if let Some(hook) = &self.async_on_response {
+            let future = hook(response.clone(), model.clone());
+            match &self.signal {
+                Some(signal) => tokio::select! {
+                    biased;
+                    () = signal.cancelled() => return Err(signal.reason().map_or_else(|| "Operation aborted".into(), |reason| reason.to_string())),
+                    result = future => result?,
+                },
+                None => future.await?,
+            }
+        }
+        if let Some(signal) = &self.signal { signal.throw_if_aborted().map_err(|error| error.to_string())?; }
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for ProviderRequestOptions {

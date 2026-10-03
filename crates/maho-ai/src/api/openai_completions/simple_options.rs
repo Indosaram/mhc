@@ -87,6 +87,8 @@ pub fn build_base_options(
     request.headers = options.and_then(|options| options.stream.request.headers.clone());
     request.on_payload = options.and_then(|options| options.stream.request.on_payload.clone());
     request.on_response = options.and_then(|options| options.stream.request.on_response.clone());
+    request.async_on_payload = options.and_then(|options| options.stream.request.async_on_payload.clone());
+    request.async_on_response = options.and_then(|options| options.stream.request.async_on_response.clone());
     request.timeout_ms = options.and_then(|options| options.stream.request.timeout_ms);
     request.max_retries = options.and_then(|options| options.stream.request.max_retries);
     request.max_retry_delay_ms = options.and_then(|options| options.stream.request.max_retry_delay_ms);

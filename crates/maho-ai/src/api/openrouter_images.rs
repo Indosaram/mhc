@@ -134,8 +134,8 @@ async fn run_generate(
 
     let payload_model = crate::api::openai_images::model_as_payload_model(model);
     let mut params = Value::Object(build_params(model, context));
-    if let Some(on_payload) = options.and_then(|options| options.request.on_payload.as_ref())
-        && let Some(next) = on_payload(&params, &payload_model, None)
+    if let Some(options) = options
+        && let Some(next) = options.request.apply_payload_hook(&params, &payload_model, None).await?
     {
         params = next;
     }
@@ -217,10 +217,6 @@ async fn run_generate(
             ProviderRetryError::RetryDelay { message, .. } => message,
             ProviderRetryError::Aborted => "Request aborted".to_owned(),
         })?;
-
-    if let Some(on_response) = options.and_then(|options| options.request.on_response.as_ref()) {
-        on_response(&crate::types::ProviderResponse { status: raw_status, headers: raw_headers }, &payload_model);
-    }
 
     output.response_id = body.get("id").and_then(Value::as_str).map(str::to_owned);
     if let Some(usage) = body.get("usage") {
@@ -343,3 +339,9 @@ mod tests {
         assert_eq!(usage.cache_write, 0);
     }
 }
+    if let Some(options) = options {
+        options.request.apply_response_hook(
+            &crate::types::ProviderResponse { status: raw_status, headers: raw_headers }, &payload_model,
+        ).await?;
+    }
+

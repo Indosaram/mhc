@@ -757,8 +757,8 @@ async fn drive(
 
     let mut params = build_params(model, context, options, &compat, &grammar_tool_input_properties)
         .map_err(ResponsesApiError::Message)?;
-    if let Some(on_payload) = options.request.on_payload.as_ref()
-        && let Some(next) = on_payload(&Value::Object(params.clone()), model, None)
+    if let Some(next) = options.request.apply_payload_hook(&Value::Object(params.clone()), model, None)
+        .await.map_err(ResponsesApiError::Message)?
     {
         params = next.as_object().cloned().unwrap_or_default();
     }
@@ -825,12 +825,10 @@ async fn drive(
         Err(ProviderRetryError::Aborted) => return Err(ResponsesApiError::Message(String::from("Request was aborted"))),
     };
 
-    if let Some(on_response) = options.request.on_response.as_ref() {
-        on_response(
+    options.request.apply_response_hook(
             &ProviderResponse { status: response.status().as_u16(), headers: headers_to_record(response.headers()) },
             model,
-        );
-    }
+        ).await.map_err(ResponsesApiError::Message)?;
     sink.push(AssistantMessageEvent::Start { partial: output.clone() });
 
     let service_tier = option_str(options, "serviceTier");

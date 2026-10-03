@@ -494,8 +494,8 @@ async fn drive(
 
     let client = create_client(model, Some(&api_key), provider_headers_to_record(options.request.headers.as_ref()).as_ref());
     let mut params = build_params(model, context, options)?;
-    if let Some(on_payload) = &options.request.on_payload
-        && let Some(next_params) = on_payload(&params, model, None)
+    if let Some(next_params) = options.request.apply_payload_hook(&params, model, None)
+        .await.map_err(GoogleRequestError::Message)?
     {
         params = next_params;
     }

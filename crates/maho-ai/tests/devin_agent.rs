@@ -814,6 +814,57 @@ async fn mints_a_user_jwt_first_then_streams_the_chat_with_the_released_cli_head
 }
 
 #[tokio::test]
+async fn awaits_response_hook_before_devin_frames_and_stops_on_hook_error_or_cancellation() {
+    for cancel in [false, true] {
+        let chat: ChatHandler = Arc::new(|_, _| ChatReply {
+            status: 200, content_type: "application/connect+proto",
+            body: frame(GetChatMessageResponse { delta_text: "must not consume".into(), ..Default::default() }),
+            keep_open: false, abort: None,
+        });
+        let mut edge = serve_edge(EdgeOptions::default(), chat).await;
+        let controller = AbortController::new();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut options = StreamOptions::default();
+        options.request.api_key = Some("session-async-hook".into());
+        options.request.fetch = Some(reqwest::Client::new());
+        options.request.signal = Some(controller.signal());
+        options.request.async_on_payload = Some(Arc::new(|_, _, _| Box::pin(async {
+            panic!("Devin source has no payload hook")
+        })));
+        options.request.async_on_response = Some(Arc::new({
+            let release = release.clone();
+            move |response, _| {
+                assert_eq!(response.status, 200);
+                let tx = tx.clone();
+                let release = release.clone();
+                Box::pin(async move {
+                    tx.send(()).expect("response entered");
+                    release.acquire().await.expect("permit").forget();
+                    Err("devin-response-exact-error".into())
+                })
+            }
+        }));
+        let stream = maho_ai::api::devin_agent::stream(&model(&edge.base_url), &context(), Some(options));
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await.expect("response timeout"), Some(()));
+        let before_hook_release = stream.queue();
+        assert_eq!(before_hook_release.len(), 1);
+        assert!(matches!(before_hook_release[0], AssistantMessageEvent::Start { .. }));
+        if cancel { controller.abort(None); } else { release.add_permits(1); }
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), stream.result()).await.expect("result timeout").expect("result");
+        assert!(result.content.is_empty());
+        if !cancel { assert_eq!(result.error_message.as_deref(), Some("devin-response-exact-error")); }
+        let events = stream.collect().await.expect("events");
+        assert!(events.iter().all(|event| matches!(event, AssistantMessageEvent::Start { .. } | AssistantMessageEvent::Error { .. })));
+        let paths: Vec<String> = edge.seen.seen.lock().expect("seen").iter().map(|(path, _, _)| path.clone()).collect();
+        assert_eq!(paths, [DEVIN_USER_JWT_PATH, DEVIN_CHAT_MESSAGE_PATH]);
+        edge.shutdown.abort();
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(10), &mut edge.shutdown)
+            .await.expect("cleanup timeout").expect_err("server aborted").is_cancelled());
+    }
+}
+
+#[tokio::test]
 async fn follows_the_account_host_get_user_jwt_hands_back_instead_of_the_seeded_base() {
     let tenant_chat: ChatHandler = Arc::new(|_headers, _body| ChatReply {
         status: 200,
