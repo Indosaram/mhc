@@ -104,7 +104,8 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
     let work_options=options.clone();
     let event_cell_id=invocation.cell_id.clone();
     let event_language=invocation.input.language;
-    tokio::spawn(async move {
+    let kernel_tools=if event_language==super::types::EvalLanguage::Js {kernel.clone().kernel_tools()} else {None};
+    let run_bound=async move {
         let operation=kernel.run(run_input);
         let guarded=work_execution.wait(operation);
         tokio::pin!(guarded);
@@ -212,6 +213,12 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
         }
         match &final_result {Ok(result)=>{work_manager.lock().expect("cell manager lock").complete(&work_cell,result.clone());},Err(error)=>{work_manager.lock().expect("cell manager lock").fail(&work_cell,error);}}
         let _=result_tx.send(final_result);
+    };
+    tokio::spawn(async move {
+        match kernel_tools {
+            Some(tools)=>maho_ext_host::kernel_tools_context::with_kernel_tools(tools,run_bound).await,
+            None=>run_bound.await,
+        }
     });
     tokio::select! {
         result=&mut result_rx=>result.map_err(|_|"Eval execution task ended without a result".to_string())?,
