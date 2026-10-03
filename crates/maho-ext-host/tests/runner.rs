@@ -1140,6 +1140,9 @@ impl ExtensionContextActions for ContextActions {
     }
     fn get_model(&self) -> Option<Model> { None }
     fn get_service_tier(&self) -> Option<ServiceTier> { Some(ServiceTier::Flex) }
+    fn get_effective_service_tier(&self) -> Option<ServiceTier> {
+        Some(if self.revision.load(std::sync::atomic::Ordering::SeqCst) > 1 { ServiceTier::Priority } else { ServiceTier::Flex })
+    }
     fn get_scoped_models(&self) -> Vec<ScopedModel> { vec![] }
     fn get_agent_dir(&self) -> std::path::PathBuf { "/fixture/agent".into() }
     fn is_idle(&self) -> bool { false }
@@ -1221,6 +1224,83 @@ async fn context_binding_reads_live_host_state_and_rejects_after_invalidation() 
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.get_registered_mcp_servers())).is_err());
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.session_manager.get_entries())).is_err());
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.session_manager.session_id())).is_err());
+}
+
+#[test]
+fn retained_context_companions_read_live_tier_and_guard_capability_access() {
+    let host = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(1), aborted: Mutex::new(None), monitor: Mutex::new(None) });
+    let mut runner = runner(vec![]);
+    runner.bind_context_actions(host.clone()).unwrap();
+    let ctx = runner.create_context().unwrap();
+    host.revision.store(2, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(ctx.current_service_tier().unwrap(), Some(ServiceTier::Flex));
+    assert_eq!(ctx.current_effective_service_tier().unwrap(), Some(ServiceTier::Priority));
+    assert_eq!(ctx.current_model().unwrap(), None);
+    assert!(ctx.current_steering_signal().unwrap().is_some());
+    assert!(Arc::ptr_eq(&ctx.current_model_registry().unwrap(), &ctx.model_registry));
+    assert!(Arc::ptr_eq(&ctx.current_ui().unwrap(), &ctx.ui));
+    runner.invalidate("retired invocation");
+    assert!(ctx.current_model().is_err());
+    assert!(ctx.current_service_tier().is_err());
+    assert!(ctx.current_effective_service_tier().is_err());
+    assert!(ctx.current_steering_signal().is_err());
+    assert!(ctx.current_model_registry().is_err());
+    assert!(ctx.current_ui().is_err());
+}
+
+#[test]
+fn hand_built_context_effective_tier_falls_back_to_session_tier() {
+    let mut ctx = context();
+    ctx.service_tier = Some(ServiceTier::Flex);
+    assert_eq!(ctx.current_effective_service_tier().unwrap(), Some(ServiceTier::Flex));
+    ctx.effective_service_tier = Some(ServiceTier::Priority);
+    assert_eq!(ctx.current_effective_service_tier().unwrap(), Some(ServiceTier::Priority));
+}
+
+#[test]
+fn native_bus_retains_context_identity_and_registration_lifecycle() {
+    struct Payload { context: ExtensionContext, request: Arc<QuestionRequest> }
+    let runtime = ExtensionRuntime::default();
+    let mut bus = EventBus::default();
+    bus.bind_runtime(runtime.clone());
+    let scope = bus.registration_scope();
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let capture = observed.clone();
+    let payload = Payload { context: context(), request: Arc::new(QuestionRequest { request_id: "native".into(), questions: Vec::new(), wait_for_answer: false, timeout_ms: 10 }) };
+    let request = payload.request.clone();
+    let registry = payload.context.model_registry.clone();
+    let subscription = scope.on_native("ask-user:asked", Arc::new(move |event: &Payload| {
+        assert!(Arc::ptr_eq(&event.request, &request));
+        assert!(Arc::ptr_eq(&event.context.model_registry, &registry));
+        capture.lock().unwrap().push(event.request.request_id.clone());
+    }));
+    bus.emit_native("ask-user:asked", &payload);
+    bus.emit_native("ask-user:asked", &JsonValue::Null);
+    assert_eq!(observed.lock().unwrap().as_slice(), ["native"]);
+    scope.invalidate_registration();
+    bus.emit_native("ask-user:asked", &payload);
+    assert_eq!(observed.lock().unwrap().len(), 1);
+    drop(subscription);
+    let checkpoint = bus.registration_checkpoint();
+    let capture = observed.clone();
+    let subscription = bus.on_native("ask-user:asked", Arc::new(move |_: &Payload| { capture.lock().unwrap().push("later".into()); }));
+    bus.rollback_registration(checkpoint);
+    bus.emit_native("ask-user:asked", &payload);
+    assert_eq!(observed.lock().unwrap().len(), 1);
+    drop(subscription);
+    let capture = observed.clone();
+    let subscription = bus.on_native("ask-user:asked", Arc::new(move |_: &Payload| { capture.lock().unwrap().push("drop".into()); }));
+    drop(subscription);
+    bus.emit_native("ask-user:asked", &payload);
+    assert_eq!(observed.lock().unwrap().len(), 1);
+    let capture = observed.clone();
+    let subscription = bus.on_native("ask-user:asked", Arc::new(move |_: &Payload| { capture.lock().unwrap().push("clear".into()); }));
+    bus.clear();
+    bus.emit_native("ask-user:asked", &payload);
+    assert_eq!(observed.lock().unwrap().len(), 1);
+    drop(subscription);
+    runtime.invalidate("retired native bus");
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| bus.emit_native("ask-user:asked", &payload))).is_err());
 }
 
 #[tokio::test]
