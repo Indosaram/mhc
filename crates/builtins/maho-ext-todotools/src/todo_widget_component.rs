@@ -30,9 +30,9 @@ pub fn format_task(task:&crate::todo_types::TodoItem,theme:&maho_interactive::th
     }
 }
 pub struct TodoWidgetComponent {model:TodoWidgetModel,theme:maho_interactive::theme::Theme,completion_keys:BTreeSet<String>,frame:Option<i64>,text:maho_tui::components::text::Text}
-pub fn widget_content(phases:&[crate::todo_types::TodoPhase],completed:&[TodoCompletionTransition])->Option<maho_ext_api::WidgetContent> {
+pub fn widget_content(phases:&[crate::todo_types::TodoPhase],completed:&[TodoCompletionTransition],sender:tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>)->Option<maho_ext_api::WidgetContent> {
     let model=crate::todo_widget::get_todo_widget_model(phases)?;let completed=completed.to_vec();
-    Some(maho_ext_api::WidgetContent::Component(std::sync::Arc::new(move |theme|Box::new(TodoWidgetComponent::new(theme,model.clone(),&completed)))))
+    Some(maho_interactive::widget_clock::widget_content(std::sync::Arc::new(move |theme|TodoWidgetComponent::new(theme,model.clone(),&completed)),TodoWidgetComponent::tick,sender))
 }
 impl TodoWidgetComponent {
     pub fn new(theme:&maho_ext_api::Theme,model:TodoWidgetModel,completed:&[TodoCompletionTransition])->Self {
