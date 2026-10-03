@@ -268,6 +268,9 @@ impl InteractiveMode {
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/compact" || text.trim().starts_with("/compact ") {
+            // senpi handleCompactCommand: fewer than two message entries is "no messages yet".
+            let message_count = self.session.with_session_manager(|manager| manager.entries().iter().filter(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("message")).count());
+            if message_count < 2 { self.show_status("Nothing to compact (no messages yet)".into()); return Ok(PromptDisposition::Handled); }
             let session = self.session.clone();
             let compact = session.compact(text.trim().strip_prefix("/compact "));
             tokio::pin!(compact);

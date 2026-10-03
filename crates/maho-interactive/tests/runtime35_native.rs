@@ -435,11 +435,12 @@ fn extension_terminal_input_transforms_consumes_and_unsubscribes() {
 
 #[tokio::test]
 async fn unintegrated_builtin_does_not_silently_become_provider_input() {
+    use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
-    for command in ["/compact", "/export session.html"] {
-        assert!(mode.submit(command, Default::default()).await.is_err());
-    }
-    assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0));
+    assert_eq!(mode.submit("/compact", Default::default()).await.expect("compact is handled with the pinned warning"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(mode.render(80).join("\n").contains("Nothing to compact (no messages yet)"));
+    assert!(mode.submit("/export session.html", Default::default()).await.is_err(), "an unintegrated command errors instead of reaching the provider");
+    assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0), "no command became a provider turn");
 }
 
 #[test]
@@ -474,9 +475,11 @@ async fn new_command_replaces_native_session_and_clears_transcript() {
 }
 
 #[tokio::test]
-async fn empty_compact_returns_native_nothing_to_compact_without_prompt() {
+async fn empty_compact_shows_the_pinned_no_messages_warning() {
+    use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
-    assert_eq!(mode.submit("/compact", Default::default()).await.expect_err("empty"), "Nothing to compact");
+    assert_eq!(mode.submit("/compact", Default::default()).await.expect("handled"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(mode.render(80).join("\n").contains("Nothing to compact (no messages yet)"), "the pinned interactive warning replaces the core error");
     assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0));
 }
 
