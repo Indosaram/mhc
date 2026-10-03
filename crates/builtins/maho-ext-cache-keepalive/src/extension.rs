@@ -170,4 +170,22 @@ mod tests{
         tokio::time::timeout(std::time::Duration::from_secs(5),retire(vec![task])).await.expect("retirement");
         assert!(finished.await.is_ok());
     }
+    #[tokio::test]
+    async fn stop_invalidates_generation_and_retirement_owns_cancelled_task(){
+        let (entered,started)=tokio::sync::oneshot::channel();
+        let (dropped,finished)=tokio::sync::oneshot::channel();
+        let task=tokio::spawn(async move{let _owned=Dropped(dropped);let _result=entered.send(());std::future::pending::<()>().await;});
+        tokio::time::timeout(std::time::Duration::from_secs(5),started).await.expect("entered").expect("signal");
+        let mut state=State{ctx:None,parked:false,active:true,generation:9,attempts:2,cost:0.25,last:None,messages:vec![],usage:None,work:Some(task),retired:vec![],entries:vec![]};
+        stop(&mut state,"session-dispose",false);
+        assert_eq!(state.generation,10);
+        assert!(!state.active);
+        assert!(state.work.is_none());
+        assert_eq!(state.entries[0]["stopReason"],"session-dispose");
+        assert_eq!(state.entries[0]["iterations"],2);
+        tokio::time::timeout(std::time::Duration::from_secs(5),retire(std::mem::take(&mut state.retired))).await.expect("retired");
+        assert!(finished.await.is_ok());
+        stop(&mut state,"session-dispose",false);
+        assert_eq!(state.entries.len(),1);
+    }
 }
