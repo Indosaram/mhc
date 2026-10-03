@@ -4703,7 +4703,7 @@ impl AgentSession {
             "timestamp": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             "cwd": self.with_session_manager(|manager| manager.cwd().to_owned()),
         });
-        let branch = self.with_session_manager(|manager| manager.branch(None));
+        let branch = self.with_session_manager(|manager| manager.branch(manager.leaf_id().or(Some(""))));
         let mut lines = vec![header.to_string()];
         let mut previous: Option<String> = None;
         for entry in branch {
@@ -5734,6 +5734,25 @@ mod tests {
         let usage = session.get_context_usage().expect("usage");
         assert_eq!(usage.context_window, 128_000);
         assert!(usage.tokens.is_some());
+    }
+
+    #[test]
+    fn exporting_uses_selected_leaf_and_empty_selection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session = test_session();
+        let selected = session.with_session_manager_mut(|manager| {
+            let selected = manager.append_message(serde_json::json!({"role":"user","content":"selected","timestamp":0}));
+            manager.append_message(serde_json::json!({"role":"user","content":"abandoned","timestamp":1}));
+            selected["id"].as_str().expect("id").to_owned()
+        });
+        for leaf in [Some(selected.as_str()), None] {
+            session.with_session_manager_mut(|manager| manager.set_leaf(leaf));
+            let path = dir.path().join("selected.jsonl");
+            session.export_to_jsonl(Some(path.to_str().expect("path"))).expect("export");
+            let entries = crate::session_manager::load_entries_from_file(path.to_str().expect("path"));
+            assert_eq!(entries.len(), if leaf.is_some() { 2 } else { 1 });
+            if leaf.is_some() { assert_eq!(entries[1]["id"], selected); }
+        }
     }
 
     #[test]
