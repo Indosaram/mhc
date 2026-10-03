@@ -62,13 +62,13 @@ async fn execute_mode(project: &Path, allow: bool, tool: &str, input: Value, per
     let active_tools = session.get_active_tool_names();
     let result = session.execute_tool(tool, input, ExecuteToolOptions::default()).await;
     let execution = match result {
-        Ok(result) => json!({"result":serde_json::to_value(result)?,"blocked":false}),
-        Err(error) => json!({"blocked":true,"code":error.code,"message":error.message}),
+        Ok(result) => serde_json::to_value(result).map(|result|json!({"result":result,"blocked":false})),
+        Err(error) => Ok(json!({"blocked":true,"code":error.code,"message":error.message})),
     };
     session.emit_session_shutdown(SessionReason::Quit).await;
     session.dispose().await;
     let asked = telemetry.lock().expect("telemetry").clone();
-    Ok(json!({"execution":execution,"asked":asked,"activeTools":active_tools}))
+    Ok(json!({"execution":execution?,"asked":asked,"activeTools":active_tools}))
 }
 
 pub async fn mode_matrix() -> Result<(), Failure> {
@@ -77,12 +77,16 @@ pub async fn mode_matrix() -> Result<(), Failure> {
         for mode in [ExtensionMode::Print, ExtensionMode::Json, ExtensionMode::Rpc, ExtensionMode::AppServer] {
             for (rule, admitted) in [("",false),("edit:mode.txt=allow",true),("edit:mode.txt=deny",false)] {
                 let project = tempfile::tempdir_in(root.path())?;
-                let result = execute_mode(project.path(),false,"apply_patch",json!({"input":"*** Begin Patch\n*** Add File: mode.txt\n+admitted\n*** End Patch"}),rule,mode).await?;
-                assert_eq!(project.path().join("mode.txt").exists(),admitted,"{mode:?} {rule}");
+                let result = execute_mode(project.path(),false,"apply_patch",json!({"input":"*** Begin Patch\n*** Add File: mode.txt\n+admitted\n*** End Patch"}),rule,mode).await;
+                let created=project.path().join("mode.txt").exists();
+                let content=std::fs::read_to_string(project.path().join("mode.txt")).ok();
+                project.close()?;
+                let result=result?;
+                assert_eq!(created,admitted,"{mode:?} {rule}");
+                assert_eq!(content.as_deref(),admitted.then_some("admitted\n"));
                 if admitted { assert_eq!(result["execution"]["blocked"],false); }
                 else { assert_eq!(result["execution"]["code"],"blocked"); }
                 assert_eq!(result["asked"].as_array().ok_or("asked")?.len(),usize::from(rule.is_empty()));
-                project.close()?;
             }
         }
         Ok::<(),Failure>(())

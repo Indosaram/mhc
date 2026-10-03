@@ -42,6 +42,21 @@ pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc
             let settings = ctx.get_ask_user_settings()?;
             let timeout = (settings.timeout_minutes * 60_000.0) as u64;
             let request = to_canonical(variant, &args, id.into(), Some(timeout)).map_err(ExtensionFailure::new)?;
+            let (timed_out, unavailable_now) = {
+                let current=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                (current.timed_out,current.unavailable||!settings.enabled||sender.get_flag("no-ask-user")==Some(FlagValue::Boolean(true))||matches!(ctx.mode,ExtensionMode::Print|ExtensionMode::Json))
+            };
+            if timed_out {
+                let mut response=result(variant,&request,&unavailable(&request));
+                response.content=vec![ContentBlock::Text(TextContent{text:"The user did not answer the previous question this turn; continue without asking again.".into(),audience:None,text_signature:None})];
+                return Ok(response);
+            }
+            if unavailable_now {
+                state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).unavailable=true;
+                let actions=sender.runtime.session_actions()?;
+                actions.set_active_tools(actions.get_active_tools()?.into_iter().filter(|name|!crate::family::TOOL_NAMES.contains(&name.as_str())).collect())?;
+                return Ok(result(variant,&request,&unavailable(&request)));
+            }
             start_question(sender, ctx.clone(), request, signal, state, variant, false).await
         })
     })) { std::panic::panic_any(error); }
@@ -49,12 +64,6 @@ pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc
 
 pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionContext, request: QuestionRequest, signal: Option<maho_ai::utils::abort::AbortSignal>, state: Arc<Mutex<AskUserState>>, variant: AskUserVariant, resuming: bool) -> Result<AgentToolResult, ExtensionFailure> {
             let id = request.request_id.clone();
-            let settings = ctx.get_ask_user_settings()?;
-            let unavailable_now = {
-                let current = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                current.timed_out || current.unavailable || !settings.enabled || sender.get_flag("no-ask-user") == Some(FlagValue::Boolean(true)) || matches!(ctx.mode, ExtensionMode::Print | ExtensionMode::Json)
-            };
-            if unavailable_now { return Ok(result(variant, &request, &unavailable(&request))); }
             let session = ctx.session_manager.session_id().to_owned();
             if let Some(existing) = get_pending_questions(&session).into_iter().find(|entry| entry.request.request_id == id) {
                 let mut completion = existing.completion.clone();

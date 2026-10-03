@@ -104,7 +104,7 @@ async fn scenario_ui_failure(cancel: bool, fail_append: bool, abort: bool, timeo
         return Ok(());
     }
     if !recovering {
-        let result = session.execute_tool(&tool, args, ExecuteToolOptions { signal: Some(signal.clone()), ..Default::default() }).await?;
+        let result = session.execute_tool(&tool, args.clone(), ExecuteToolOptions { signal: Some(signal.clone()), ..Default::default() }).await?;
         if result.details["accepted"] != true { return Err(format!("Question not accepted: {result:?}").into()); }
     }
     let request = tokio::time::timeout(std::time::Duration::from_secs(5), opened_rx.recv()).await?.ok_or("UI did not open")?;
@@ -219,6 +219,13 @@ async fn scenario_ui_failure(cancel: bool, fail_append: bool, abort: bool, timeo
     if fail_ui && !completion.borrow().as_ref().and_then(|response|response.comment.as_ref()).is_some_and(|comment|comment.contains("UI response channel closed")){return Err("Recovered UI failure lost error comment".into());}
     if status != Some(if fail_ui {QuestionStatus::OrphanedAfterRestart} else if timeout {QuestionStatus::TimedOut} else if cancel || abort {QuestionStatus::Cancelled} else {QuestionStatus::Answered}) || !get_pending_questions(&session.session_id()).is_empty() || notification_count != usize::from(!cancel && !abort) || request.request_id != pending[0].request.request_id {
         return Err(format!("Settlement receipt: status={status:?}, notifications={notification_count}").into());
+    }
+    if timeout && !reload {
+        let asked_before=asked.lock().expect("asked").len();
+        let retry=session.execute_tool(&tool,args,ExecuteToolOptions::default()).await?;
+        if retry.details["status"]!="unavailable"||retry.details["accepted"]==true||!get_pending_questions(&session.session_id()).is_empty()||asked.lock().expect("asked").len()!=asked_before||opened_rx.try_recv().is_ok(){
+            return Err("Timed-out turn opened a second question".into());
+        }
     }
     Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     }.await;
