@@ -4,7 +4,7 @@ use regex::Regex;
 
 pub fn sanitize_todo_text(text: &str) -> String {
     static ANSI: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-        r"(?:\x1b\][\s\S]*?(?:\x07|\x1b\\|\x{009c}))|[\x1b\x{009b}][\[\]()#;?]*(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]"
+        r"(?:\x1b\][\s\S]*?(?:\x07|\x1b\\|\x{009c}))|[\x1b\x{009b}][\[\]()#;?]*(?:[0-9]{1,4}(?:[;:][0-9]{0,4})*)?[0-9A-PR-TZcf-nq-uy=><~]"
     ).unwrap_or_else(|error| panic!("invalid static ANSI expression: {error}")));
     let stripped = ANSI.replace_all(text, "");
     let cleaned: String = stripped.chars().map(|c| {
