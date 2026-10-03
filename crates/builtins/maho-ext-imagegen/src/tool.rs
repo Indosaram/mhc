@@ -2,6 +2,15 @@ use std::{fs::{self,OpenOptions},io::Write,path::{Path,PathBuf}};
 
 pub const GENERATE_IMAGE_TOOL_NAME: &str = "generate_image";
 pub struct GeneratedImage { pub data: String, pub mime_type: String, pub revised_prompt: Option<String> }
+pub fn collect_images(output:&[maho_ai::types::ContentBlock])->Vec<GeneratedImage>{
+    let mut generated=Vec::new();let mut text=None;
+    for block in output{match block{
+        maho_ai::types::ContentBlock::Text(value)=>text=(!value.text.trim().is_empty()).then(||value.text.trim().to_owned()),
+        maho_ai::types::ContentBlock::Image(image)=>generated.push(GeneratedImage{data:image.data.clone(),mime_type:image.mime_type.clone(),revised_prompt:text.take()}),
+        _=>{}
+    }}
+    generated
+}
 fn decode_base64(data: &str) -> Vec<u8> {
     let mut bytes=Vec::new();let mut bits=0u32;let mut count=0;
     for byte in data.bytes() {
@@ -75,8 +84,7 @@ pub async fn execute_image(tool_call_id:&str,args:&Value,signal:Option<AbortSign
         ()=async{if let Some(signal)=signal{signal.cancelled().await}else{std::future::pending().await}}=>{controller.abort(None);return fail("Error: Image generation aborted.",FailureReason::ProviderError,&source);}
     };
     if images.stop_reason!=maho_ai::types::ImagesStopReason::Stop{return fail(&format!("Error: {}",images.error_message.as_deref().unwrap_or("Image generation failed.")),FailureReason::ProviderError,&source);}
-    let mut generated=Vec::new();let mut text=None;
-    for block in &images.output{match block{maho_ai::types::ContentBlock::Text(value)=>{text=(!value.text.trim().is_empty()).then(||value.text.trim().to_owned());},maho_ai::types::ContentBlock::Image(image)=>generated.push(GeneratedImage{data:image.data.clone(),mime_type:image.mime_type.clone(),revised_prompt:text.take()}),_=>{}}}
+    let generated=collect_images(&images.output);
     if generated.is_empty(){return fail("Error: the provider returned no images.",FailureReason::ProviderError,&source);}
     let delivered=generated.iter().map(|image|output_format_of(&image.mime_type).unwrap_or(output_format)).collect::<Vec<_>>();
     let paths=targets.iter().enumerate().map(|(index,path)|delivered.get(index).filter(|format|**format!=output_format).map_or_else(||path.clone(),|format|with_format_extension(path,*format))).collect::<Vec<_>>();
