@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let spawns = Arc::new(AtomicUsize::new(0));
     let observed = spawns.clone();
     let runner = maho_omo_task::engine_runners::build_process_runner(senpi_task::runners::rpc_process::RpcProcessRunnerOptions {
-        model_admission: Some(admission),
+        model_admission: Some(admission.clone()),
         spawn_child: Some(Arc::new(move |_| { observed.fetch_add(1, Ordering::SeqCst); panic!("unavailable model must fail before child spawn") })),
         ..Default::default()
     });
@@ -35,6 +35,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(matches!(result, Err(senpi_task::manager::types::ManagedRunnerError::Runner(failure)) if failure.kind == senpi_task::runners::RunnerFailureKind::ModelUnavailable));
     assert_eq!(spawns.load(Ordering::SeqCst), 0);
     println!("PASS production factory rejects unavailable native model before spawn");
+    let rejected_respawn = maho_omo_task::engine_runners::build_rpc_respawn_runner(senpi_task::runners::rpc_process::RpcProcessRunnerOptions {
+        model_admission: Some(admission),
+        spawn_child: Some(Arc::new(|_| panic!("unavailable model must fail before respawn"))),
+        ..Default::default()
+    }).start(&senpi_task::runners::types::RpcRunnerSpec {
+        model: Some("task44/absent".into()), resume_session_path: Some("unopened-session.jsonl".into()), ..Default::default()
+    });
+    assert!(matches!(rejected_respawn, Err(senpi_task::manager::types::ManagedRunnerError::Runner(failure)) if failure.kind == senpi_task::runners::RunnerFailureKind::ModelUnavailable));
+    println!("PASS configured native respawn preserves catalog rejection before process spawn");
     println!("OPEN provider-backed launch/resume/cancellation; no ManagedRunner fixture execution accepted");
     Ok(())
 }
