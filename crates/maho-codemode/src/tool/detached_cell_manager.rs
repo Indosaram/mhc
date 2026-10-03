@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, sync::{Arc, Mutex}};
+use std::{path::PathBuf, sync::{Arc, Mutex}};
 use maho_ext_api::AgentToolResult;
 use crate::{config::settings::{DEFAULT_HARD_LIMIT_SECONDS, DEFAULT_RUN_BUDGET_SECONDS, DEFAULT_MAX_DETACHED_CELLS}, extension::wake_source_state::WakeSourceState, timeouts::idle_timeout::TimeoutPauseHandle};
 use super::{types::{EvalToolInput, EvalLanguage}, managed_cell::{ManagedCell, create_managed_cell}, detached_cell_contract::{EvalDetachedCellSnapshot, EvalDetachedCellState, EvalDetachedCellStatusEntry}, detached_cell_snapshot::{LiveResultProvider, QueueSnapshotProvider, snapshot_detached_cell, current_detached_result, detached_error_result}, detached_cell_state::{detached_cell_is_active, allows_detached_cell_transition, active_detached_cell_reuse_error}, detached_cell_status::{detached_status_entries, detached_wake_source_state}, terminal_snapshot_store::TerminalSnapshotStore, detached_notification_queue::{DetachedNotificationQueue, DetachedNotifier, PendingDetachedNotification}};
@@ -28,8 +28,8 @@ impl Default for DetachedCellManagerOptions {
 
 pub struct EvalDetachedCellManager {
     options: DetachedCellManagerOptions,
-    cells: HashMap<String, ManagedCellHandle>,
-    detached: HashMap<String, ManagedCellHandle>,
+    cells: Vec<(String, ManagedCellHandle)>,
+    detached: Vec<(String, ManagedCellHandle)>,
     terminal_snapshots: TerminalSnapshotStore,
     notification_queue: DetachedNotificationQueue,
 }
@@ -37,22 +37,22 @@ pub struct EvalDetachedCellManager {
 impl EvalDetachedCellManager {
     pub fn new(mut options: DetachedCellManagerOptions) -> Self {
         let notification_queue = DetachedNotificationQueue::new(options.notifier.take());
-        Self { options, cells:HashMap::new(), detached:HashMap::new(), terminal_snapshots:TerminalSnapshotStore::default(), notification_queue }
+        Self { options, cells:Vec::new(), detached:Vec::new(), terminal_snapshots:TerminalSnapshotStore::default(), notification_queue }
     }
 
     pub fn max_detached_cells(&self) -> usize { self.options.max_detached_cells }
 
     pub fn create(&mut self, cell_id: String, input: EvalToolInput) -> Result<ManagedCellHandle, String> {
-        if let Some(existing) = self.cells.get(&cell_id) {
+        if let Some((_,existing)) = self.cells.iter().find(|(id,_)|id==&cell_id) {
             let existing = existing.lock().expect("managed cell poisoned");
             if detached_cell_is_active(existing.source.state) {
                 return Err(active_detached_cell_reuse_error(&cell_id, existing.source.input.language, existing.source.state, existing.source.detached));
             }
         }
-        self.cells.remove(&cell_id);
+        self.cells.retain(|(id,_)|id!=&cell_id);
         self.terminal_snapshots.delete(&cell_id);
         let cell = Arc::new(Mutex::new(create_managed_cell(cell_id.clone(), input, self.options.artifacts_dir.as_deref(), (self.options.now)(), self.options.hard_limit_seconds, self.options.run_budget_seconds)));
-        self.cells.insert(cell_id, cell.clone());
+        self.cells.push((cell_id, cell.clone()));
         Ok(cell)
     }
 
@@ -83,7 +83,7 @@ impl EvalDetachedCellManager {
         if !managed.can_detach || !detached_cell_is_active(managed.source.state) || managed.source.detached || self.detached.len() >= self.options.max_detached_cells { return false; }
         managed.source.detached = true;
         managed.was_detached = true;
-        self.detached.insert(managed.source.cell_id.clone(), cell.clone());
+        self.detached.push((managed.source.cell_id.clone(), cell.clone()));
         drop(managed);
         self.emit_status();
         true
@@ -109,11 +109,11 @@ impl EvalDetachedCellManager {
         managed.source.live_result = None;
         let snapshot = snapshot_detached_cell(&managed.source, (self.options.now)());
         managed.terminal.send_replace(Some(snapshot.clone()));
-        self.cells.remove(&managed.source.cell_id);
+        self.cells.retain(|(id,_)|id!=&managed.source.cell_id);
         self.terminal_snapshots.remember(snapshot);
         let detached = managed.was_detached;
         if detached {
-            self.detached.remove(&managed.source.cell_id);
+            self.detached.retain(|(id,_)|id!=&managed.source.cell_id);
             if !managed.notification_queued {
                 managed.notification_queued = true;
                 let cell = cell.clone();
@@ -133,14 +133,14 @@ impl EvalDetachedCellManager {
     }
 
     pub fn peek(&self, cell_id: &str) -> Result<EvalDetachedCellSnapshot, String> {
-        if let Some(cell) = self.cells.get(cell_id) { return Ok(snapshot_detached_cell(&cell.lock().expect("managed cell poisoned").source, (self.options.now)())); }
+        if let Some((_,cell)) = self.cells.iter().find(|(id,_)|id==cell_id) { return Ok(snapshot_detached_cell(&cell.lock().expect("managed cell poisoned").source, (self.options.now)())); }
         self.terminal_snapshots.get(cell_id).cloned().ok_or_else(|| format!("Unknown detached eval cell \"{cell_id}\""))
     }
 
     pub async fn stop(manager: &Arc<Mutex<Self>>, cell_id: &str, reason: &str) -> Result<EvalDetachedCellSnapshot,String> {
         let cell={
             let manager=manager.lock().expect("cell manager lock");
-            let Some(cell)=manager.cells.get(cell_id) else {return manager.peek(cell_id);};
+            let Some((_,cell))=manager.cells.iter().find(|(id,_)|id==cell_id) else {return manager.peek(cell_id);};
             cell.clone()
         };
         let (kernel,queued,detached,on_kill)={let cell=cell.lock().expect("managed cell lock");(cell.kernel.clone(),cell.source.state==EvalDetachedCellState::Queued,cell.source.detached,cell.on_kill.clone())};
@@ -172,7 +172,7 @@ impl EvalDetachedCellManager {
     }
 
     pub fn live_cells(&self, language: Option<EvalLanguage>, except: Option<&str>) -> Vec<EvalDetachedCellSnapshot> {
-        let mut live: Vec<_> = self.cells.values().filter_map(|cell| {
+        let mut live: Vec<_> = self.cells.iter().filter_map(|(_,cell)| {
             let cell = cell.lock().expect("managed cell poisoned");
             (detached_cell_is_active(cell.source.state) && language.is_none_or(|language| cell.source.input.language == language) && except != Some(cell.source.cell_id.as_str())).then(|| snapshot_detached_cell(&cell.source, (self.options.now)()))
         }).collect();
@@ -185,7 +185,7 @@ impl EvalDetachedCellManager {
     }
 
     pub fn terminal_signal(&self, cell_id: &str) -> Result<tokio::sync::watch::Receiver<Option<EvalDetachedCellSnapshot>>, String> {
-        if let Some(cell) = self.cells.get(cell_id) { return Ok(cell.lock().expect("managed cell poisoned").terminal.subscribe()); }
+        if let Some((_,cell)) = self.cells.iter().find(|(id,_)|id==cell_id) { return Ok(cell.lock().expect("managed cell poisoned").terminal.subscribe()); }
         let (_, receiver) = tokio::sync::watch::channel(Some(self.peek(cell_id)?));
         Ok(receiver)
     }
@@ -195,7 +195,7 @@ impl EvalDetachedCellManager {
     pub async fn dispose(manager: &Arc<Mutex<Self>>) -> Result<(),String> {
         let cells={
             let locked=manager.lock().expect("cell manager lock");
-            locked.detached.values().map(|cell| {
+            locked.detached.iter().map(|(_,cell)| {
                 let cell=cell.lock().expect("managed cell lock");
                 (cell.source.cell_id.clone(),cell.source.state==EvalDetachedCellState::Queued)
             }).collect::<Vec<_>>()
@@ -234,7 +234,7 @@ impl EvalDetachedCellManager {
     }
 
     fn emit_status(&self) {
-        let cells: Vec<_> = self.detached.values().map(|cell| cell.lock().expect("managed cell poisoned")).collect();
+        let cells: Vec<_> = self.detached.iter().map(|(_,cell)| cell.lock().expect("managed cell poisoned")).collect();
         let sources: Vec<_> = cells.iter().map(|cell| &cell.source).collect();
         let status = detached_status_entries(&sources);
         let wake = detached_wake_source_state(&sources);
@@ -244,7 +244,7 @@ impl EvalDetachedCellManager {
     }
 
     pub fn publish_wake_source_state(&self) {
-        let cells: Vec<_> = self.detached.values().map(|cell| cell.lock().expect("managed cell poisoned")).collect();
+        let cells: Vec<_> = self.detached.iter().map(|(_,cell)| cell.lock().expect("managed cell poisoned")).collect();
         let sources: Vec<_> = cells.iter().map(|cell| &cell.source).collect();
         let wake = detached_wake_source_state(&sources);
         drop(cells);

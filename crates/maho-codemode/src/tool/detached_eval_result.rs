@@ -58,7 +58,14 @@ pub fn create_eval_list_result(live: &[EvalDetachedCellSnapshot], recent: &[Eval
         if let Some(summary) = summary { cell["summary"] = json!(summary); }
         let code = snapshot.result.details["cells"][0]["code"].as_str().unwrap_or("");
         let code = String::from_utf16_lossy(&code.encode_utf16().take(60).collect::<Vec<_>>());
-        let preview = summary.unwrap_or(&code).split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut preview = String::new();
+        let mut in_whitespace = false;
+        for character in summary.unwrap_or(&code).chars() {
+            let whitespace = matches!(character, '\u{0009}'..='\u{000d}' | '\u{0020}' | '\u{00a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}');
+            if !whitespace { preview.push(character); }
+            else if !in_whitespace { preview.push(' '); }
+            in_whitespace = whitespace;
+        }
         let elapsed = (snapshot.result.details["durationMs"].as_f64().unwrap_or(f64::NAN) / 1000.0).floor();
         let queue_label = queued.map_or_else(String::new, |queued| format!(" queued behind {}", queued.join(", ")));
         lines.push(format!("{} {language} {state} {elapsed}s{queue_label} - {preview}", snapshot.cell_id));
