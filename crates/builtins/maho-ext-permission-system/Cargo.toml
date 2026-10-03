@@ -16,6 +16,7 @@ maho-ext-gpt-apply-patch = { path = "../maho-ext-gpt-apply-patch" }
 
 [dev-dependencies]
 tempfile.workspace = true
+maho-tools = { path = "../../maho-tools" }
 maho-ext-host = { path = "../../maho-ext-host" }
 maho-ai = { path = "../../maho-ai" }
 maho-agent = { path = "../../maho-agent" }

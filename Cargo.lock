@@ -2391,6 +2391,7 @@ dependencies = [
  "maho-ext-gpt-apply-patch",
  "maho-ext-host",
  "maho-test-support",
+ "maho-tools",
  "serde",
  "serde_json",
  "tempfile",

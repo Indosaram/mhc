@@ -3,6 +3,26 @@ use serde_json::json;
 use std::path::Path;
 
 #[test]
+fn real_tool_definitions_preserve_permission_parser_field_contracts() {
+    let tools = maho_tools::index::create_all_tool_definitions(Path::new("/workspace/project"), Default::default());
+    for (tool, fields) in [
+        ("bash", vec![("command",Some("string"))]),
+        ("edit", vec![("path",Some("string")),("edits",Some("array"))]),
+        ("write", vec![("path",Some("string")),("content",Some("string"))]),
+        ("read", vec![("path",Some("string")),("offset",None),("limit",None)]),
+        ("grep", vec![("pattern",Some("string")),("path",None)]),
+        ("find", vec![("pattern",Some("string")),("path",None),("limit",None)]),
+        ("ls", vec![("path",None),("limit",Some("number"))]),
+    ] {
+        let properties = tools[tool].parameters["properties"].as_object().expect("real tool properties");
+        for (field, kind) in fields {
+            let schema = properties.get(field).unwrap_or_else(|| panic!("{tool} lacks permission field {field}"));
+            if let Some(kind) = kind { assert_eq!(schema["type"],kind,"{tool}.{field}"); }
+        }
+    }
+}
+
+#[test]
 fn schema_shaped_inputs_produce_complete_permission_requests() {
     let registry = create_builtin_parser_registry();
     let cwd = Path::new("/workspace/project");
