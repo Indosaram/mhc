@@ -1,6 +1,7 @@
 use maho_ai::types::{ModelThinkingLevel,AssistantMessage,ContentBlock,StopReason,ThinkingLevel};
 use crate::arguments::NormalizedLookAtArgs;
 pub const LOOK_AT_TIMEOUT_MS:u64=120_000;
+pub type VisionModelRunner=std::sync::Arc<dyn for<'a> Fn(&'a crate::arguments::NormalizedLookAtArgs,&'a maho_ext_api::ExtensionContext,&'a crate::settings::LookAtStore,Option<maho_ai::utils::abort::AbortSignal>)->maho_ext_api::ExtensionFuture<'a,LookAtRunResult>+Send+Sync>;
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct LookAtRunResult { pub model:String,pub sources:Vec<String>,pub mime_types:Vec<String>,pub text:String }
 pub fn run_result(provider:&str,model_id:&str,inputs:&[crate::image_input::LoadedLookAtInput],response:&AssistantMessage,aborted:bool)->Result<LookAtRunResult,String> {

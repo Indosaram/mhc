@@ -6,12 +6,22 @@ pub fn is_result_details(details:&serde_json::Value)->bool { details.get("status
 
 fn theme(source:&maho_ext_api::Theme)->maho_interactive::theme::Theme {
     use maho_interactive::theme::{theme::ColorMode,theme_json::{ColorValue,ThemeJson}};
-    maho_interactive::theme::Theme::from_json(ThemeJson {
-        name:source.name.clone().unwrap_or_default(),
-        colors:source.colors.iter().chain(&source.backgrounds).map(|(key,value)|(key.clone(),ColorValue::Text(value.clone()))).collect(),
-        vars:source.vars.iter().map(|(key,value)|(key.clone(),ColorValue::Text(value.clone()))).collect(),
-        export_colors:Default::default(),
-    },ColorMode::Truecolor).unwrap_or_else(|error|std::panic::panic_any(error))
+    let colors=source.colors.iter().chain(&source.backgrounds).map(|(key,prefix)| {
+        let code=prefix.strip_prefix("\x1b[").and_then(|value|value.strip_suffix('m')).unwrap_or_else(||panic!("Expected exported ANSI theme prefix"));
+        let fields=code.split(';').collect::<Vec<_>>();
+        let value=match fields.as_slice() {
+            ["39"|"49"]=>ColorValue::Text(String::new()),
+            ["38"|"48","5",index]=>ColorValue::Index(index.parse().unwrap_or_else(|error|std::panic::panic_any(error))),
+            ["38"|"48","2",red,green,blue]=>{
+                let channels=[red,green,blue].map(|channel|channel.parse::<u8>().unwrap_or_else(|error|std::panic::panic_any(error)));
+                ColorValue::Text(format!("#{:02x}{:02x}{:02x}",channels[0],channels[1],channels[2]))
+            },
+            _=>panic!("Unsupported exported ANSI theme prefix"),
+        };
+        (key.clone(),value)
+    }).collect();
+    let mode=if source.colors.values().chain(source.backgrounds.values()).any(|prefix|prefix.starts_with("\x1b[38;2;")||prefix.starts_with("\x1b[48;2;")){ColorMode::Truecolor}else{ColorMode::Color256};
+    maho_interactive::theme::Theme::from_json(ThemeJson {name:source.name.clone().unwrap_or_default(),colors,vars:Default::default(),export_colors:Default::default()},mode).unwrap_or_else(|error|std::panic::panic_any(error))
 }
 fn shorten(value:&str,max:usize)->String {
     if value.encode_utf16().count()<=max {return value.into();}
@@ -69,4 +79,28 @@ mod tests {
     #[test] fn line_collection_preserves_final_empty_line() { assert_eq!(collect_lines("a\n",24),["a",""]); assert_eq!(collect_lines("",24),[""]); assert!(collect_lines("a",0).is_empty()); }
     #[test] fn preview_skips_blanks_and_stops_at_limit() { assert_eq!(collect_non_empty_trimmed_lines(" \n a \n\n b\nc",2),["a","b"]); }
     #[test] fn detail_guards_accept_only_machine_fields() { assert!(is_progress_details(&serde_json::json!({"phase":"downloading"}))); assert!(!is_progress_details(&serde_json::json!({"phase":"other"}))); assert!(is_result_details(&serde_json::json!({"status":404}))); assert!(!is_result_details(&serde_json::json!({"status":"404"}))); }
+}
+
+#[cfg(test)]
+mod exported_prefix_tests {
+    use super::*;
+    use maho_ext_api::{ToolRenderContext,ToolRendererSession,AgentToolResult};
+    use maho_interactive::theme::{Theme,ThemeColor,ThemeBg,theme::ColorMode};
+    use serde_json::json;
+    #[test]
+    fn callbacks_preserve_current_exported_prefix_bytes() {
+        for mode in [ColorMode::Color256,ColorMode::Truecolor] {
+            let native=Theme::builtin("dark",mode).unwrap();
+            let exported=maho_ext_api::Theme {name:Some(native.name.clone()),colors:ThemeColor::ALL.iter().map(|color|(color.key().into(),native.get_fg_ansi(*color))).collect(),backgrounds:ThemeBg::ALL.iter().map(|bg|(bg.key().into(),native.get_bg_ansi(*bg))).collect(),vars:Default::default()};
+            let context=ToolRenderContext {args:json!({"url":"https://example.test","format":"text"}),tool_call_id:"prefix-proof".into(),invalidate:std::rc::Rc::new(||{}),last_component:None,state:(),cwd:Default::default(),execution_started:false,args_complete:true,is_partial:false,expanded:true,show_images:false,image_protocol:None,is_error:false,has_result:None,spinner_frame:None};
+            let mut slots=ToolRendererSession {renderers:std::sync::Arc::new(renderers()),context}.into_slots();
+            let call=slots.render_call(&exported,80).unwrap().join("
+");
+            assert!(call.contains(&native.get_fg_ansi(ThemeColor::ToolTitle)));
+            let result=slots.render_result(&AgentToolResult::text("native output"),&exported,80).unwrap().join("
+");
+            for output in [&call,&result] {assert!(!output.is_empty());if mode==ColorMode::Color256 {assert!(!output.contains("\x1b[38;2;"));assert!(!output.contains("\x1b[48;2;"));}}
+            println!("CONSUMER_PREFIX_JSON={}",json!({"consumer":"maho-ext-webfetch/src/webfetch/renderers.rs","mode":format!("{mode:?}"),"call":call,"result":result}));
+        }
+    }
 }

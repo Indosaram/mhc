@@ -7,7 +7,7 @@ impl maho_ext_api::Extension for WebsearchExtension {
     fn register(&self,api:&mut maho_ext_api::ExtensionApi) {
         let state=std::sync::Arc::new(std::sync::Mutex::new(ConfigLoadResult::Err{reason:ConfigLoadFailureReason::MissingConfig,message:"Missing websearch config. Create .pi/websearch.json or ~/.pi/websearch.json before starting pi.".into(),source:None}));
         let captured=state.clone(); let get_state:std::sync::Arc<dyn Fn()->ConfigLoadResult+Send+Sync>=std::sync::Arc::new(move ||captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
-        api.register_tool(crate::websearch::tool::create_web_search_tool(get_state.clone()));
+        if let Err(error)=api.register_tool_with_renderers(crate::websearch::tool::create_web_search_tool(get_state.clone()),crate::websearch::renderers::renderers()) {std::panic::panic_any(error);}
         register_websearch_command(api,get_state);
         for event in [maho_ext_api::EventKind::SessionStart,maho_ext_api::EventKind::ModelSelect] {
             let state=state.clone();let home=self.home.clone();let bypass=self.provider_native_bypass.clone();

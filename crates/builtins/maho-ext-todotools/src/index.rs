@@ -1,5 +1,22 @@
 use serde_json::Value;
 use crate::todo_types::TodoPhase;
+pub struct NativeTodotoolsExtension {pub actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,pub copy_markdown:crate::commands::CopyTodoMarkdown}
+struct NativeTodoAccessors {phases:std::sync::Mutex<Vec<TodoPhase>>,ui:std::sync::Mutex<Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>>}
+impl crate::tools_todo::TodoAccessors for NativeTodoAccessors {
+    fn get_current_phases(&self)->Vec<TodoPhase>{self.phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()}
+    fn set_current_phases(&self,phases:Vec<TodoPhase>){*self.phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=phases;}
+    fn sync_widget(&self,_:&dyn maho_ext_api::ToolContext,completed:&[crate::todo_types::TodoCompletionTransition])->Result<(),maho_ext_api::ExtensionFailure>{
+        if let Some(ui)=self.ui.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref(){ui.set_widget("todo-sidebar",crate::todo_widget_component::widget_content(&self.phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner),completed),Default::default());}Ok(())
+    }
+}
+impl maho_ext_api::Extension for NativeTodotoolsExtension {
+    fn register(&self,api:&mut maho_ext_api::ExtensionApi){
+        let accessors=std::sync::Arc::new(NativeTodoAccessors {phases:Default::default(),ui:Default::default()});
+        for event in [maho_ext_api::EventKind::SessionStart,maho_ext_api::EventKind::SessionTree]{let captured=accessors.clone();api.on(event,std::sync::Arc::new(move |_,ctx|{let captured=captured.clone();Box::pin(async move {*captured.ui.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=ctx.has_ui.then(||ctx.ui.clone());Ok(maho_ext_api::EventResult::None)})}));}
+        TodotoolsExtension {actions:self.actions.clone(),accessors:accessors.clone(),copy_markdown:self.copy_markdown.clone()}.register(api);
+        api.on(maho_ext_api::EventKind::SessionShutdown,std::sync::Arc::new(move |_,ctx|{let accessors=accessors.clone();Box::pin(async move {if ctx.has_ui{ctx.ui.set_widget("todo-sidebar",None,Default::default());}accessors.ui.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();Ok(maho_ext_api::EventResult::None)})}));
+    }
+}
 pub struct TodotoolsExtension {
     pub actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,
     pub accessors:std::sync::Arc<dyn crate::tools_todo::TodoAccessors>,

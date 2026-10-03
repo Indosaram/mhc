@@ -2248,6 +2248,10 @@ dependencies = [
  "maho-ai",
  "maho-core",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-interactive",
+ "maho-test-support",
+ "maho-tui",
  "regex",
  "serde",
  "serde_json",
@@ -2533,7 +2537,10 @@ name = "maho-ext-todotools"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-interactive",
  "maho-tools",
+ "maho-tui",
  "regex",
  "serde",
  "serde_json",
@@ -2554,10 +2561,16 @@ dependencies = [
 name = "maho-ext-tool-search"
 version = "0.0.0"
 dependencies = [
+ "maho-ai",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-interactive",
+ "maho-test-support",
  "maho-tools",
+ "maho-tui",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -2604,7 +2617,10 @@ name = "maho-ext-websearch"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-interactive",
  "maho-tools",
+ "maho-tui",
  "regex",
  "reqwest 0.13.2",
  "serde_json",

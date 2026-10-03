@@ -12,11 +12,14 @@ regex = "=1.12.3"
 sha2.workspace = true
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-tools = { path = "../../maho-tools" }
+maho-tui = { path = "../../maho-tui" }
+maho-interactive = { path = "../../maho-interactive" }
 reqwest = { version = "=0.13.2", default-features = false, features = ["rustls"] }
 tokio = { version = "=1.52.3", features = ["time", "net", "io-util", "macros", "rt", "fs", "sync"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+maho-ext-host = { path = "../../maho-ext-host" }
 
 [lints]
 workspace = true

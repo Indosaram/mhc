@@ -19,7 +19,7 @@ fn native_callbacks_render_progress_and_results_at_terminal_widths() {
     use serde_json::json;
     let directory = tempfile::tempdir().unwrap();
     let theme = maho_ext_api::Theme {
-        colors: [("toolTitle", "#ffffff"), ("accent", "#44aaff"), ("muted", "#aaaaaa"), ("warning", "#ffaa00"), ("success", "#00ff00")].map(|(key,value)|(key.into(),value.into())).into(),
+        colors: [("toolTitle", "\x1b[38;2;255;255;255m"), ("accent", "\x1b[38;2;68;170;255m"), ("muted", "\x1b[38;2;170;170;170m"), ("warning", "\x1b[38;2;255;170;0m"), ("success", "\x1b[38;2;0;255;0m")].map(|(key,value)|(key.into(),value.into())).into(),
         ..Default::default()
     };
     for width in [40,80,120] {

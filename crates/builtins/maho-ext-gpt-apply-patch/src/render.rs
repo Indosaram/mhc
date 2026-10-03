@@ -1,20 +1,30 @@
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use maho_ext_api::{Theme as ExtensionTheme, ToolRenderers};
-use maho_interactive::{theme::{Theme, ThemeBg, ThemeColor, theme::ColorMode, theme_json::{ColorValue, ThemeJson}}, tools::diff_render::render_tool_diff};
+use maho_interactive::{theme::{Theme, ThemeBg, ThemeColor}, tools::diff_render::render_tool_diff};
 use maho_tui::{components::{box_::Box as TuiBox, text::Text}, tui::Component};
 use serde_json::Value;
 
 use crate::{preview_format::{ApplyPatchRenderState, display_path, truncate_preview}, types::{ApplyPatchPreview, ApplyPatchToolDetails}};
 
 fn theme(source: &ExtensionTheme) -> Theme {
-    let colors = source.colors.iter().chain(&source.backgrounds)
-        .map(|(key, value)| (key.clone(), ColorValue::Text(value.clone()))).collect();
-    Theme::from_json(ThemeJson {
-        name: source.name.clone().unwrap_or_default(), colors,
-        vars: source.vars.iter().map(|(key, value)| (key.clone(), ColorValue::Text(value.clone()))).collect(),
-        export_colors: Default::default(),
-    }, ColorMode::Truecolor).unwrap_or_else(|error| std::panic::panic_any(error))
+    use maho_interactive::theme::{theme::ColorMode,theme_json::{ColorValue,ThemeJson}};
+    let colors=source.colors.iter().chain(&source.backgrounds).map(|(key,prefix)| {
+        let code=prefix.strip_prefix("\x1b[").and_then(|value|value.strip_suffix('m')).unwrap_or_else(||panic!("Expected exported ANSI theme prefix"));
+        let fields=code.split(';').collect::<Vec<_>>();
+        let value=match fields.as_slice() {
+            ["39"|"49"]=>ColorValue::Text(String::new()),
+            ["38"|"48","5",index]=>ColorValue::Index(index.parse().unwrap_or_else(|error|std::panic::panic_any(error))),
+            ["38"|"48","2",red,green,blue]=>{
+                let channels=[red,green,blue].map(|channel|channel.parse::<u8>().unwrap_or_else(|error|std::panic::panic_any(error)));
+                ColorValue::Text(format!("#{:02x}{:02x}{:02x}",channels[0],channels[1],channels[2]))
+            },
+            _=>panic!("Unsupported exported ANSI theme prefix"),
+        };
+        (key.clone(),value)
+    }).collect();
+    let mode=if source.colors.values().chain(source.backgrounds.values()).any(|prefix|prefix.starts_with("\x1b[38;2;")||prefix.starts_with("\x1b[48;2;")){ColorMode::Truecolor}else{ColorMode::Color256};
+    maho_interactive::theme::Theme::from_json(ThemeJson {name:source.name.clone().unwrap_or_default(),colors,vars:Default::default(),export_colors:Default::default()},mode).unwrap_or_else(|error|std::panic::panic_any(error))
 }
 
 fn line(text: &str, theme: &Theme) -> String {
@@ -106,7 +116,7 @@ mod tests {
     use super::*;
     #[test]
     fn expanded_preview_headers_remain_unstyled_for_single_and_multiple_files() {
-        let theme=theme(&ExtensionTheme {colors:[("toolTitle".into(),"#ff0000".into()),("accent".into(),"#00ff00".into())].into(),..Default::default()});
+        let theme=theme(&ExtensionTheme {colors:[("toolTitle".into(),"\x1b[38;2;255;0;0m".into()),("accent".into(),"\x1b[38;2;0;255;0m".into())].into(),..Default::default()});
         let file=crate::types::ApplyPatchPreviewFile {file_path:"/work/a.rs".into(),move_path:None,operation:crate::types::ApplyPatchOperation::Update,binary:None,diff:String::new(),patch:None,added:1,removed:1};
         for files in [vec![file.clone()],vec![file.clone(),file]] {
             let rendered=preview(&ApplyPatchPreview {files,added:2,removed:2},"/work",&theme);
@@ -117,7 +127,7 @@ mod tests {
     #[test]
     fn expanded_preview_reuses_shared_inline_diff_and_destination_language() {
         let theme = theme(&ExtensionTheme {
-            colors: [("toolDiffAdded".into(), "#00ff00".into()), ("toolDiffRemoved".into(), "#ff0000".into())].into(),
+            colors: [("toolDiffAdded".into(), "\x1b[38;2;0;255;0m".into()), ("toolDiffRemoved".into(), "\x1b[38;2;255;0;0m".into())].into(),
             ..Default::default()
         });
         let file = crate::types::ApplyPatchPreviewFile {
