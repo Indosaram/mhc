@@ -83,6 +83,10 @@ async fn recovery(member:bool) {
         engine.store.save(&member_record).expect("save member");
     }
     let mut api = support::api();
+    let wake = Arc::new(Mutex::new(Vec::new())); let emitted = wake.clone();
+    let wake_subscription = api.events.on("wake_source_state", Arc::new(move |event| {
+        if event["source"] == "senpi-task" { emitted.lock().expect("wake").push(event.clone()); }
+    }));
     let state_dir=StateDirConfig { project_dir:root.path().into(),task_state_dir:None };
     let team_base=senpi_task::team::storage::team_storage_base_dir(&state_dir);
     let team_config=senpi_task::team::runtime_config::to_team_core_config(&TeamTaskBounds { max_members:4,max_parallel_members:2,max_wall_clock_minutes:10 },&team_base.to_string_lossy()).expect("config");
@@ -117,6 +121,7 @@ async fn recovery(member:bool) {
     if member { context.session_manager=Arc::new(PersistedSession); }
     let mut event = ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::Resume, initial_model_provenance: None, previous_session_file: None });
     for handler in &api.registered.handlers[&EventKind::SessionStart] { handler(&mut event, &context).await.expect("registered start"); }
+    assert_eq!(wake.lock().expect("wake").as_slice(), &[serde_json::json!({"source":"senpi-task","activeCount":0,"channels":[]})], "registered startup awaits its owned resumption snapshot");
     let messages = actions.0.lock().expect("messages");
     assert_eq!(messages.iter().filter(|message| message.custom_type == "senpi-task.completion").count(), 1);
     assert!(component.engine.store.load(&record.task_id).expect("load").is_none(), "expired record is cleaned only after redelivery");
@@ -128,6 +133,9 @@ async fn recovery(member:bool) {
         for handler in &api.registered.handlers[&EventKind::AgentEnd] { handler(&mut end,&context).await.expect("registered agent end"); }
         assert_eq!(component.engine.store.load(&member_record.task_id).expect("member").expect("persisted member").notification.liveness_notified_epoch,Some(0));
     }
-    component.dispose(); drop(api); drop(component); root.close().expect("cleanup");
+    component.dispose();
+    assert_eq!(wake.lock().expect("wake").last(), Some(&serde_json::json!({"source":"senpi-task","activeCount":0,"channels":[]})), "component disposal joins final clear emission");
+    assert!(wake.lock().expect("wake").len() >= 2, "disposal must publish a separate clear after startup");
+    drop(wake_subscription); drop(api); drop(component); root.close().expect("cleanup");
     assert!(timers.0.lock().expect("timers").is_empty(),"component disposal releases lead and status timers");
 }

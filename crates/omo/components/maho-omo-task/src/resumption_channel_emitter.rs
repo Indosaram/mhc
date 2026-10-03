@@ -46,7 +46,7 @@ impl OwnedResumptionChannels {
         let shutdown = emitter.clone(); let stop = Arc::new(tokio::sync::Notify::new()); let stopping = stop.clone();
         let thread = std::thread::Builder::new().name("task-resumption".into()).spawn(move || {
             for job in &receiver {
-                let completed = runtime.block_on(async { tokio::select! { () = job.future => true, () = stopping.notified() => false } });
+                let completed = runtime.block_on(async { tokio::select! { biased; () = stopping.notified() => false, () = job.future => true } });
                 if !completed { break; }
                 let _ = job.completed.send(());
             }
