@@ -33,7 +33,7 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
     let processes=Arc::new(Mutex::new(Vec::new())); let captured=processes.clone();
     let options=RpcProcessRunnerOptions { build_spawn:Some(Arc::new(move |_| descriptor.clone())),model_admission:Some(admission),spawn_child:Some(Arc::new(move |descriptor| { let child=Arc::new(RpcChildProcess::spawn(descriptor)); captured.lock().expect("processes").push(child.clone()); child })),..Default::default() };
     let process=build_process_runner(options.clone()); let actions=Arc::new(Actions);
-    let engine=compose_task_engine_with_rpc_respawn(ComposeTaskEngineDeps { cwd:home.clone().into(),config:serde_json::json!({"task":{"default_execution_mode":"process"},"agents":{"native-proof":{"execution_mode":"process","model":"task44/native"}}}),runners:ManagedRunners { in_process:process.clone(),process },actions:actions.clone(),coordinator:None,resolve_registry:Arc::new(|| None) },Some(build_rpc_respawn_runner(options)));
+    let engine=compose_task_engine_with_rpc_respawn(ComposeTaskEngineDeps { cwd:home.clone().into(),config:serde_json::json!({"task":{"default_execution_mode":"process"},"background_task":{"defaultConcurrency":1},"agents":{"native-proof":{"execution_mode":"process","model":"task44/native"}}}),runners:ManagedRunners { in_process:process.clone(),process },actions:actions.clone(),coordinator:None,resolve_registry:Arc::new(|| None) },Some(build_rpc_respawn_runner(options)));
     let mut api=support::api(); api.runtime.bind(actions);
     let component=TaskComponent::register(&mut api,engine,Default::default(),senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps { state_dir:senpi_task::store::StateDirConfig { project_dir:home.clone().into(),task_state_dir:None },team_bounds:senpi_task::team::runtime_config::TeamTaskBounds { max_members:4,max_parallel_members:2,max_wall_clock_minutes:10 },load_runtime_state:None },false)?.ok_or("component disabled")?;
     let cleanup=Cleanup { component:component.clone(),processes:processes.clone() };
@@ -43,7 +43,7 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
     let task=api.registered.tools.iter().find(|tool| tool.definition.name=="task").ok_or("task missing")?;
     let (ready,received)=tokio::sync::oneshot::channel(); let ready=Mutex::new(Some(ready));
     let mut invocation=(task.definition.execute)(ToolCall { id:"native-foreground-drop",params:serde_json::json!({"prompt":"task44-drop","subagent_type":"native-proof","model":"task44/native","run_in_background":false}),signal:Default::default(),on_update:Some(Arc::new(move |partial| {
-        if partial.details.as_ref().is_some_and(|details| details.to_string().contains("task44-cancellation-held")) && let Some(ready)=ready.lock().expect("ready").take() { let _=ready.send(()); }
+        if partial.details.as_ref().and_then(|details| details.get("lastAssistantLine")).and_then(JsonValue::as_str)==Some("task44-cancellation-held") && let Some(ready)=ready.lock().expect("ready").take() { let _=ready.send(()); }
         Ok(())
     })),context:Some(&context) });
     let (stop,stopped)=std::sync::mpsc::channel(); let (timeout,deadline)=tokio::sync::oneshot::channel();
@@ -55,12 +55,26 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
     };
     let _=stop.send(()); watchdog.join().map_err(|_| "progress watchdog panicked")?;
     observation.map_err(std::io::Error::other)?;
+    let pending=component.engine.manager.start(&senpi_task::manager::types::ManagerStartSpec {
+        prompt:"task44-launch".into(),subagent_type:Some("native-proof".into()),model:Some("task44/native".into()),
+        parent_session_id:"session".into(),root_session_id:Some("session".into()),run_in_background:true,
+        execution_mode:Some(senpi_task::manager::execution_mode::ExecutionMode::Process),..Default::default()
+    });
+    let senpi_task::manager::types::StartResult::Started(queued)=pending else { return Err("native queued task was not admitted".into()); };
+    assert_eq!(queued.status,senpi_task::state::TaskStatus::Pending,"one live foreground task must occupy the configured concurrency slot");
+    assert_eq!(processes.lock().expect("processes").len(),1,"pending task must not spawn a native process before slot release");
     let began=std::time::Instant::now(); drop(invocation);
     assert!(began.elapsed()<Duration::from_secs(5),"actual registered foreground Drop must settle its executor within bound");
-    let records=component.engine.manager.list(&ListScope::All); assert_eq!(records.len(),1);
-    assert_eq!(records[0].record.status,senpi_task::state::TaskStatus::Cancelled,"run_spawn must propagate the owned executor abort to manager cancellation");
-    for child in processes.lock().expect("processes").iter() { assert!(child.wait_exit_timeout(Duration::from_secs(5)).is_some(),"actual foreground Drop must reap child before later explicit cleanup"); }
+    let records=component.engine.manager.list(&ListScope::All); assert_eq!(records.len(),2);
+    let dropped=records.iter().find(|entry| entry.record.task_id!=queued.task_id).ok_or("dropped task missing")?;
+    assert_eq!(dropped.record.status,senpi_task::state::TaskStatus::Cancelled,"run_spawn must propagate the owned executor abort to manager cancellation");
+    assert!(processes.lock().expect("processes")[0].wait_exit_timeout(Duration::from_secs(5)).is_some(),"actual foreground Drop must reap its child before later explicit cleanup");
+    let completed=component.engine.manager.wait_for(&queued.task_id,None,Some(Duration::from_secs(15)))?;
+    assert_eq!(completed.status,senpi_task::state::TaskStatus::Completed);
+    assert_eq!(completed.final_response.as_deref(),Some("task44-native-provider"));
+    assert_eq!(processes.lock().expect("processes").len(),2,"slot release must launch exactly one queued native child");
     println!("RECEIPT registered foreground Drop settled executor and cancelled/reaped native child before explicit teardown");
+    println!("RECEIPT actual manager concurrency slot release promoted queued native task and observed provider output");
     drop(cleanup);
     for child in processes.lock().expect("processes").iter() { assert!(child.wait_exit_timeout(Duration::from_secs(5)).is_some()); }
     println!("RECEIPT explicit lifecycle teardown terminated and reaped native child after Drop observation");
