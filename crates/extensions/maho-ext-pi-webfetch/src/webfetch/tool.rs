@@ -41,14 +41,8 @@ pub async fn execute(params: Value, signal: Option<maho_ai::utils::abort::AbortS
         progress.details = json!({"phase":"fetching","url":url,"format":format_name,"timeoutSeconds":timeout});
         update(progress);
     }
-    super::fetcher::validate_url(url).map_err(|error| ExtensionFailure::new(error.to_string()))?;
-    let fetch = super::fetcher::fetch_url(url, format, params["timeout"].as_f64());
-    let fetched = if let Some(signal) = signal {
-        tokio::select! { biased;
-            () = signal.cancelled() => return Err(ExtensionFailure::new(signal.reason().map_or_else(|| "Request aborted".into(), |reason| reason.message))),
-            result = fetch => result,
-        }
-    } else { fetch.await }.map_err(|error| ExtensionFailure::new(error.to_string()))?;
+    let fetched = super::fetcher::fetch_url_with_abort(url, format, params["timeout"].as_f64(), signal.as_ref()).await
+        .map_err(|error| ExtensionFailure::new(error.to_string()))?;
     let raw = String::from_utf8_lossy(&fetched.body);
     let content_type = fetched.content_type.to_lowercase();
     let html = content_type.contains("text/html") || content_type.contains("application/xhtml+xml");

@@ -184,7 +184,7 @@ async fn registered_entity_decoding_one_layer() {
 }
 
 #[tokio::test]
-async fn registered_cancellation_after_headers() {
+async fn registered_cancellation_before_headers() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture contract");
     let address = listener.local_addr().expect("fixture contract");
     let (sent, received) = tokio::sync::oneshot::channel();
@@ -192,7 +192,6 @@ async fn registered_cancellation_after_headers() {
         let (mut socket, _) = listener.accept().await.expect("fixture contract");
         let mut bytes = [0; 4096];
         assert!(socket.read(&mut bytes).await.expect("fixture contract") > 0);
-        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n").await.expect("fixture contract");
         sent.send(()).expect("fixture contract");
         assert_eq!(socket.read(&mut bytes).await.expect("fixture contract"), 0);
     });
@@ -221,6 +220,23 @@ async fn registered_timeout_disconnects() {
     assert_eq!(text(&result), "Request timed out after 1s");
     assert_eq!(result.is_error, Some(true));
     tokio::time::timeout(std::time::Duration::from_secs(5), server).await.expect("fixture contract").expect("fixture contract");
+}
+
+#[tokio::test]
+async fn registered_body_timeout_normalizes_abort() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("address");
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept");
+        let mut bytes = [0; 4096];
+        assert!(socket.read(&mut bytes).await.expect("request") > 0);
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial").await.expect("headers");
+        assert_eq!(socket.read(&mut bytes).await.expect("disconnect"), 0);
+    });
+    let result = (support::registered_tool().execute)("qa".into(), json!({"url":format!("http://{address}"),"timeout":1}), None, None).await;
+    assert_eq!(text(&result), "Request aborted");
+    assert_eq!(result.is_error, Some(true));
+    tokio::time::timeout(std::time::Duration::from_secs(5), server).await.expect("bounded fixture").expect("server");
 }
 
 #[tokio::test]

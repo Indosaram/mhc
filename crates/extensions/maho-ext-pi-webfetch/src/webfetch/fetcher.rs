@@ -24,11 +24,28 @@ pub async fn fetch_url(value:&str,format:WebfetchFormat,timeout:Option<f64>)->Re
 pub async fn fetch_url_with_signal(value:&str,format:WebfetchFormat,timeout:Option<f64>,signal:Option<&tokio_util::sync::CancellationToken>)->Result<FetchResult,WebfetchError>{
     validate_url(value)?;
     let seconds=clamp_timeout(timeout);
-    let operation=fetch_validated_url(value,format);
+    let reading_body = std::sync::atomic::AtomicBool::new(false);
+    let operation=fetch_validated_url(value,format,&reading_body);
     let cancellation=async{match signal{Some(signal)=>signal.cancelled().await,None=>std::future::pending::<()>().await}};
     tokio::select!{biased;()=cancellation=>Err(WebfetchError::Aborted),result=tokio::time::timeout(std::time::Duration::from_secs(seconds),operation)=>result.unwrap_or(Err(WebfetchError::Timeout(seconds)))}
 }
-async fn fetch_validated_url(value:&str,format:WebfetchFormat)->Result<FetchResult,WebfetchError>{
+pub async fn fetch_url_with_abort(value: &str, format: WebfetchFormat, timeout: Option<f64>, signal: Option<&maho_ai::utils::abort::AbortSignal>) -> Result<FetchResult, WebfetchError> {
+    validate_url(value)?;
+    let seconds = clamp_timeout(timeout);
+    let reading_body = std::sync::atomic::AtomicBool::new(false);
+    let operation = fetch_validated_url(value, format, &reading_body);
+    let cancelled = async { match signal { Some(signal) => signal.cancelled().await, None => std::future::pending().await } };
+    tokio::select! { biased;
+        () = cancelled => if reading_body.load(std::sync::atomic::Ordering::Relaxed) { Err(WebfetchError::Aborted) }
+            else { Err(WebfetchError::AbortReason(signal.and_then(maho_ai::utils::abort::AbortSignal::reason).map_or_else(|| "Request aborted".into(), |reason| reason.message))) },
+        result = tokio::time::timeout(std::time::Duration::from_secs(seconds), operation) => match result {
+            Ok(result) => result,
+            Err(_) if reading_body.load(std::sync::atomic::Ordering::Relaxed) => Err(WebfetchError::Aborted),
+            Err(_) => Err(WebfetchError::Timeout(seconds)),
+        },
+    }
+}
+async fn fetch_validated_url(value:&str,format:WebfetchFormat,reading_body:&std::sync::atomic::AtomicBool)->Result<FetchResult,WebfetchError>{
     let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?;
     let mut current=value.to_owned();
     for redirects in 0..=20{
@@ -41,6 +58,7 @@ async fn fetch_validated_url(value:&str,format:WebfetchFormat)->Result<FetchResu
             current=url::Url::parse(&current).and_then(|url|url.join(&location)).map_err(|_|WebfetchError::InvalidUrl(format!("Invalid URL: {location}")))?.into();continue;
         }
         if response.content_length().is_some_and(|length|length>5*1024*1024){discard_body(response).await;return Err(WebfetchError::ResponseTooLarge);}
+        reading_body.store(true, std::sync::atomic::Ordering::Relaxed);
         let content_type=response.headers().get_all("content-type").iter().map(|value|value.as_bytes().iter().copied().map(char::from).collect::<String>()).collect::<Vec<_>>().join(", ");
         let mut body=Vec::new();
         while let Some(chunk)=response.chunk().await.map_err(|error| network_error(error, &current))?{if body.len()+chunk.len()>MAX_RESPONSE_SIZE_BYTES{return Err(WebfetchError::ResponseTooLarge);}body.extend_from_slice(&chunk);}
