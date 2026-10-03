@@ -16,17 +16,17 @@ async fn owned_worker_delivers_changed_count_and_suppresses_unchanged_snapshot()
     let events=EventBus::default(); let (emitted,received)=std::sync::mpsc::channel();
     let subscription=events.on(RESUMPTION_CHANNEL_STATE_EVENT,Arc::new(move |event| { emitted.send(event.clone()).expect("event receiver"); }));
     let owner=OwnedResumptionChannels::new(events,manager.clone(),Arc::new(|| Some("session".into()))).expect("owner");
-    owner.emit_session_start().await.expect("startup");
+    tokio::time::timeout(std::time::Duration::from_secs(5), owner.emit_session_start()).await.expect("startup deadline").expect("startup");
     let first=received.recv_timeout(std::time::Duration::from_secs(5)).expect("startup event");
     assert_eq!(first["activeCount"],1); assert_eq!(first["channels"][0]["id"],record.task_id);
     owner.emit_if_changed();
     // The awaited startup queues behind the synchronous change callback, serving
     // as an exact completion barrier rather than a scheduler delay.
-    owner.emit_session_start().await.expect("unchanged barrier");
+    tokio::time::timeout(std::time::Duration::from_secs(5), owner.emit_session_start()).await.expect("unchanged barrier deadline").expect("unchanged barrier");
     assert_eq!(received.recv_timeout(std::time::Duration::from_secs(5)).expect("barrier event")["activeCount"],1);
     assert!(matches!(received.try_recv(),Err(std::sync::mpsc::TryRecvError::Empty)),"unchanged callback must not publish");
     manager.0.lock().expect("records")[0].status=senpi_task::state::TaskStatus::Completed;
-    owner.emit_if_changed(); owner.emit_session_start().await.expect("terminal barrier");
+    owner.emit_if_changed(); tokio::time::timeout(std::time::Duration::from_secs(5), owner.emit_session_start()).await.expect("terminal barrier deadline").expect("terminal barrier");
     for _ in 0..2 { assert_eq!(received.recv_timeout(std::time::Duration::from_secs(5)).expect("terminal event")["activeCount"],0); }
     assert!(matches!(received.try_recv(),Err(std::sync::mpsc::TryRecvError::Empty)));
     owner.dispose();
