@@ -9,6 +9,12 @@ impl EvalKernelManager for Manager {
     }
 }
 struct JsManager(Arc<maho_codemode::kernels::js::context_manager::JavaScriptKernel>);
+struct AcquiringManager(tokio::sync::mpsc::UnboundedSender<()>);
+impl EvalKernelManager for AcquiringManager {
+    fn get_kernel(&self,_:EvalLanguage)->EvalKernelFuture<'_,Arc<dyn EvalKernel>> {
+        Box::pin(async {self.0.send(()).expect("acquisition event receiver");std::future::pending().await})
+    }
+}
 impl EvalKernelManager for JsManager {
     fn get_kernel(&self,language:EvalLanguage)->EvalKernelFuture<'_,Arc<dyn EvalKernel>> {Box::pin(async move {assert_eq!(language,EvalLanguage::Js);Ok(self.0.clone() as Arc<dyn EvalKernel>)})}
 }
@@ -72,6 +78,78 @@ impl maho_codemode::bridges::output_bridge::OutputExecuteTool for ParkedExecutor
     fn execute_tool<'a>(&'a self,_:&'a str,_:serde_json::Value,_:maho_ext_api::ExecuteToolOptions)->maho_ext_api::ExecuteToolFuture<'a> {Box::pin(async {self.0.send(()).expect("tool start receiver");std::future::pending().await})}
 }
 
+struct ConcurrentExecutor(tokio::sync::Notify);
+struct ProgressExecutor(tokio::sync::Notify);
+impl maho_codemode::bridges::output_bridge::OutputExecuteTool for ProgressExecutor {
+    fn execute_tool<'a>(&'a self,_:&'a str,_:serde_json::Value,options:maho_ext_api::ExecuteToolOptions)->maho_ext_api::ExecuteToolFuture<'a> {
+        Box::pin(async move {
+            if let Some(update)=options.on_update {
+                let mut result=maho_ext_api::AgentToolResult::text("progress");
+                result.details=json!({"task_id":"st_ab","status":"running","agent":"worker"});
+                update(result);
+            }
+            self.0.notified().await;
+            Ok(maho_ext_api::AgentToolResult::text("done"))
+        })
+    }
+}
+
+#[tokio::test]
+async fn real_js_agent_progress_reaches_live_cell_before_task_settles() {
+    let kernel=Arc::new(maho_codemode::kernels::js::context_manager::JavaScriptKernel::start(std::path::Path::new(env!("CARGO_MANIFEST_DIR")),"eval-progress",4,None).await.unwrap());
+    let executor=Arc::new(ProgressExecutor(tokio::sync::Notify::new()));
+    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(JsManager(kernel.clone())),executor:executor.clone(),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+    let (updates,mut events)=tokio::sync::mpsc::unbounded_channel();
+    let mut input=invocation("agent-progress","await agent('work'); 42");input.input.language=EvalLanguage::Js;
+    input.on_update=Some(Arc::new(move |result|{if result.details["statusEvents"][0]["id"]=="st_ab" {let _=updates.send(result);}}));
+    let run=tokio::spawn(run_eval_cell(options,input));
+    let progress=tokio::time::timeout(std::time::Duration::from_secs(2),events.recv()).await;
+    executor.0.notify_one();
+    let result=run.await;
+    kernel.close().await.unwrap();
+    let progress=progress.expect("agent progress must precede task completion").unwrap();
+    assert_eq!(progress.details["statusEvents"][0]["agent"],"worker");
+    assert_eq!(result.unwrap().unwrap().details["statusEvents"][0]["id"],"st_ab");
+}
+impl maho_codemode::bridges::output_bridge::OutputExecuteTool for ConcurrentExecutor {
+    fn execute_tool<'a>(&'a self,name:&'a str,_:serde_json::Value,_:maho_ext_api::ExecuteToolOptions)->maho_ext_api::ExecuteToolFuture<'a> {
+        Box::pin(async move {
+            if name=="first" {
+                tokio::time::timeout(std::time::Duration::from_secs(2),self.0.notified()).await.map_err(|_|maho_ext_api::ExecuteToolError {code:maho_ext_api::ExecuteToolErrorCode::Blocked,tool_name:name.into(),message:"second host call never admitted".into(),active_tools:vec![]})?;
+            } else {self.0.notify_one();}
+            Ok(maho_ext_api::AgentToolResult::text(name))
+        })
+    }
+}
+
+#[tokio::test]
+async fn real_js_parallel_host_calls_admit_while_first_is_pending() {
+    let kernel=Arc::new(maho_codemode::kernels::js::context_manager::JavaScriptKernel::start(std::path::Path::new(env!("CARGO_MANIFEST_DIR")),"eval-parallel-host",4,None).await.unwrap());
+    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(JsManager(kernel.clone())),executor:Arc::new(ConcurrentExecutor(tokio::sync::Notify::new())),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+    let mut input=invocation("parallel-host","await Promise.all([tool.first({}),tool.second({})]); 42");
+    input.input.language=EvalLanguage::Js;
+    let result=run_eval_cell(options,input).await;
+    kernel.close().await.unwrap();
+    let result=result.unwrap();
+    assert_ne!(result.details["isError"],true,"parallel calls must not serialize admission: {result:?}");
+    assert_eq!(result.details["toolCalls"].as_array().unwrap().len(),2);
+}
+
+#[tokio::test]
+async fn successful_final_frame_waits_for_unawaited_parallel_host_calls() {
+    let kernel=Arc::new(maho_codemode::kernels::js::context_manager::JavaScriptKernel::start(std::path::Path::new(env!("CARGO_MANIFEST_DIR")),"eval-unawaited-host",4,None).await.unwrap());
+    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(JsManager(kernel.clone())),executor:Arc::new(ConcurrentExecutor(tokio::sync::Notify::new())),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+    let mut input=invocation("unawaited-host","void tool.first({}); void tool.second({}); 42");
+    input.input.language=EvalLanguage::Js;
+    let result=run_eval_cell(options,input).await;
+    kernel.close().await.unwrap();
+    let result=result.unwrap();
+    assert_ne!(result.details["isError"],true,"unawaited calls must settle before success: {result:?}");
+    let calls=result.details["toolCalls"].as_array().unwrap();
+    assert_eq!(calls.len(),2);
+    assert!(calls.iter().all(|call|call["ok"]==true));
+}
+
 #[tokio::test]
 async fn caller_abort_settles_while_host_tool_remains_pending() {
     let (started,mut events)=tokio::sync::mpsc::unbounded_channel();
@@ -92,6 +170,37 @@ async fn invalid_final_frame_cannot_settle_as_success() {
     assert_eq!(result.details["isError"],true);
     assert_ne!(result.details["cells"][0]["status"],"complete");
     assert!(result.details["cells"][0]["output"].as_str().unwrap().contains("Unhandled kernel message"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn deadline_expiry_records_limit_metadata_before_terminal_snapshot() {
+    for (hard,budget) in [(1.0,10.0),(10.0,1.0)] {
+        let (started,mut events)=tokio::sync::mpsc::unbounded_channel();
+        let cells=Arc::new(Mutex::new(EvalDetachedCellManager::new(DetachedCellManagerOptions {hard_limit_seconds:hard,run_budget_seconds:budget,..Default::default()})));
+        let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(ParkedToolManager),executor:Arc::new(ParkedExecutor(started)),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:cells.clone(),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+        let run=tokio::spawn(run_eval_cell(options,invocation("expired","await tool.park()")));
+        events.recv().await.unwrap();
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        let result=run.await.unwrap().unwrap();
+        assert_eq!(result.details["isError"],true);
+        let snapshot=cells.lock().unwrap().peek("expired").unwrap();
+        assert_eq!(snapshot.hard_limit_seconds,(hard==1.0).then_some(hard));
+        assert_eq!(snapshot.run_budget_seconds,(budget==1.0).then_some(budget));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn acquisition_hard_deadline_settles_without_kernel_and_records_limit() {
+    let (started,mut events)=tokio::sync::mpsc::unbounded_channel();
+    let cells=Arc::new(Mutex::new(EvalDetachedCellManager::new(DetachedCellManagerOptions {hard_limit_seconds:1.0,..Default::default()})));
+    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(AcquiringManager(started)),executor:Arc::new(Executor),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:cells.clone(),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+    let run=tokio::spawn(run_eval_cell(options,invocation("boot-deadline","42")));
+    events.recv().await.unwrap();
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    assert!(run.await.unwrap().is_err());
+    let snapshot=cells.lock().unwrap().peek("boot-deadline").unwrap();
+    assert_eq!(snapshot.hard_limit_seconds,Some(1.0));
+    assert_eq!(snapshot.run_budget_seconds,None);
 }
 
 #[tokio::test]

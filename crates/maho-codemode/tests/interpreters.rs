@@ -7,10 +7,23 @@ fn parses_python_ruby_julia_versions() {
     for (input, expected) in [("Python 3.12.4", "3.12.4"), ("ruby 3.4.10", "3.4.10"), ("julia version 1.12.6", "1.12.6"), ("JULIA version v1.9.1", "1.9.1")] { assert_eq!(parse_version(input).as_deref(), Some(expected)); }
     assert!(parse_version("").is_none());
 }
+
+#[test]
+fn version_digits_follow_javascript_ascii_digit_class() {
+    assert!(parse_version("Python \u{0663}.\u{0661}\u{0662}").is_none());
+    assert_eq!(parse_version("Python 3.12"),Some("3.12".into()));
+}
 #[test]
 fn platform_candidate_order() {
     assert_eq!(candidates_for(EvalLanguage::Py, true), ["python", "py -3", "python3"]);
     assert_eq!(candidates_for(EvalLanguage::Py, false), ["python3", "python"]);
+}
+
+#[test]
+fn version_spacing_matches_ecmascript_whitespace() {
+    assert_eq!(parse_version("Python\u{feff}3.12"),Some("3.12".into()));
+    assert!(parse_version("Python\u{0085}3.12").is_none());
+    assert_eq!(parse_version("julia\u{2028}version\u{00a0}1.12"),Some("1.12".into()));
 }
 #[tokio::test]
 async fn caches_real_python_detection() {
@@ -70,6 +83,16 @@ fn injected_windows_resolution_uses_host_path_delimiter() {
     let path=std::env::join_paths([first.as_path(),root.path()]).unwrap();
     let env=std::collections::HashMap::from([("PATH".into(),path.to_string_lossy().into_owned()),("PATHEXT".into(),".EXE".into())]);
     assert_eq!(resolve_command_path("probe",&env,root.path(),true),Some(root.path().join("probe.exe")));
+}
+
+#[cfg(unix)]
+#[test]
+fn path_directory_trailing_backslash_does_not_add_separator() {
+    let root=tempfile::tempdir().unwrap();
+    let expected=root.path().join("folder\\probe.exe");
+    std::fs::write(&expected,"fixture").unwrap();
+    let env=std::collections::HashMap::from([("PATH".into(),format!("{}/folder\\",root.path().display())),("PATHEXT".into(),".EXE".into())]);
+    assert_eq!(resolve_command_path("probe",&env,root.path(),true),Some(expected));
 }
 
 #[tokio::test]

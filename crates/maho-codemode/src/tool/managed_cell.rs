@@ -16,6 +16,14 @@ pub struct ManagedCell {
     pub on_kill: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
 }
 
+impl ManagedCell {
+    pub fn record_deadline_expiry(&mut self, kind: super::cell_deadlines::CellDeadlineKind) {
+        if !super::detached_cell_state::detached_cell_is_active(self.source.state) {return;}
+        self.source.hard_limited=kind==super::cell_deadlines::CellDeadlineKind::HardLimit;
+        self.source.run_budget_exhausted=kind==super::cell_deadlines::CellDeadlineKind::RunBudget;
+    }
+}
+
 pub fn create_managed_cell(cell_id: String, input: EvalToolInput, artifacts_dir: Option<&Path>, now_ms: f64, default_hard_limit_seconds: f64, default_run_budget_seconds: f64) -> ManagedCell {
     let hard_limit_seconds = default_hard_limit_seconds.max(input.timeout.unwrap_or(0.0));
     let run_budget_seconds = input.timeout.unwrap_or(default_run_budget_seconds);
