@@ -4,6 +4,9 @@ pub const LOOK_AT_TIMEOUT_MS:u64=120_000;
 pub type VisionModelRunner=std::sync::Arc<dyn for<'a> Fn(&'a crate::arguments::NormalizedLookAtArgs,&'a maho_ext_api::ExtensionContext,&'a crate::settings::LookAtStore,Option<maho_ai::utils::abort::AbortSignal>)->maho_ext_api::ExtensionFuture<'a,LookAtRunResult>+Send+Sync>;
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct LookAtRunResult { pub model:String,pub sources:Vec<String>,pub mime_types:Vec<String>,pub text:String }
+pub async fn preflight_model_auth(registry:&dyn maho_ext_api::ModelRegistry,model:&maho_ai::model::Model)->Result<maho_ext_api::ResolvedRequestAuth,maho_ext_api::ExtensionFailure> {
+    registry.get_api_key_and_headers(model).await.map_err(|error|maho_ext_api::ExtensionFailure::new(format!("look_at cannot use {}/{}: {error}. Configure credentials with /login {} and try again.",model.provider,model.id,model.provider)))
+}
 pub fn run_result(provider:&str,model_id:&str,inputs:&[crate::image_input::LoadedLookAtInput],response:&AssistantMessage,aborted:bool)->Result<LookAtRunResult,String> {
     Ok(LookAtRunResult{model:format!("{provider}/{model_id}"),sources:inputs.iter().map(|input|input.label.clone()).collect(),mime_types:inputs.iter().map(|input|input.mime_type.clone()).collect(),text:response_text(response,aborted)?})
 }

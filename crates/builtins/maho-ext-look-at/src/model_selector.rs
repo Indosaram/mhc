@@ -15,7 +15,8 @@ fn resolve_entry(entry:&str,candidates:&[Model])->Option<ResolvedVisionModel> {
         let mut same:Vec<_>=candidates.iter().filter(|model|model.id.to_lowercase()==wanted).collect();
         if same.len()>1 {
             for provider in ["openai","google","moonshotai"] { if let Some(model)=same.iter().find(|model|model.provider==provider) { return Some(ResolvedVisionModel{model:(**model).clone(),thinking_level:normalize(thinking)}); } }
-            same.sort_by(|a,b|a.provider.cmp(&b.provider));
+            let collator=icu_collator::Collator::try_new(Default::default(),Default::default()).unwrap_or_else(|error|std::panic::panic_any(error));
+            same.sort_by(|a,b|collator.compare(&a.provider,&b.provider));
             return Some(ResolvedVisionModel{model:same[0].clone(),thinking_level:normalize(thinking)});
         }
     }
@@ -46,6 +47,7 @@ mod tests {
     #[test] fn canonical_reference_beats_ambiguity() { assert_eq!(resolve_vision_model(&chain("moonshotai/shared"),&[model("google","shared",true),model("moonshotai","shared",true)]).unwrap().model.provider,"moonshotai"); }
     #[test] fn preferred_provider_wins_ambiguous_id() { assert_eq!(resolve_vision_model(&chain("shared"),&[model("moonshotai","shared",true),model("google","shared",true),model("openai","shared",true)]).unwrap().model.provider,"openai"); }
     #[test] fn otherwise_alphabetical_provider_wins() { assert_eq!(resolve_vision_model(&chain("shared"),&[model("zebra","shared",true),model("alpha","shared",true)]).unwrap().model.provider,"alpha"); }
+    #[test] fn ambiguous_provider_case_uses_source_locale_order() { assert_eq!(resolve_vision_model(&chain("shared"),&[model("Z","shared",true),model("a","shared",true)]).unwrap().model.provider,"a"); }
     #[test] fn fuzzy_reference_uses_shared_parser() { assert_eq!(resolve_vision_model(&chain("gemini-3.5-flash"),&[model("google","gemini-3.5-flash-preview",true)]).unwrap().model.id,"gemini-3.5-flash-preview"); }
     #[test] fn first_vision_is_fallback_and_none_without_vision() { assert_eq!(resolve_vision_model(&chain("missing"),&[model("openai","first",true),model("openai","second",true)]).unwrap().model.id,"first"); assert!(resolve_vision_model(&chain("missing"),&[model("google","text",false)]).is_none()); }
 }

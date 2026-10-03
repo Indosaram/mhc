@@ -2245,6 +2245,7 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "futures",
+ "icu_collator",
  "maho-ai",
  "maho-core",
  "maho-ext-api",
@@ -2561,6 +2562,7 @@ dependencies = [
 name = "maho-ext-tool-search"
 version = "0.0.0"
 dependencies = [
+ "icu_collator",
  "maho-ai",
  "maho-ext-api",
  "maho-ext-host",
