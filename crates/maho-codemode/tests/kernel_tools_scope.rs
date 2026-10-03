@@ -30,7 +30,7 @@ fn request(described: &Value, name: &str) -> KernelToolInvokeRequest {
     KernelToolInvokeRequest { name:name.into(), kernel_generation:descriptor["kernel_generation"].as_u64().expect("descriptor generation"), definition_revision:descriptor["definition_revision"].as_u64().expect("descriptor revision"), args:json!({"value":41}), call_id:"scope-consumer".into() }
 }
 fn invocation(id: &str, code: &str) -> EvalCellInvocation {
-    EvalCellInvocation {cell_id:id.into(), input:EvalToolInput {language:EvalLanguage::Js,code:code.into(),summary:"scope proof".into(),action:None,timeout:None,on_timeout:Some(TimeoutBehavior::Error),reset:None},signal:maho_ai::utils::abort::AbortController::new().signal(),on_update:None,mode:"print".into()}
+    EvalCellInvocation {cell_id:id.into(), input:EvalToolInput {language:EvalLanguage::Js,code:code.into(),summary:"scope proof".into(),action:None,timeout:None,on_timeout:Some(TimeoutBehavior::Error),reset:None},signal:maho_ai::utils::abort::AbortController::new().signal(),on_update:None,mode:"print".into(),model:None}
 }
 async fn define(kernel: &JavaScriptKernel, code: &str) {
     let result=kernel.run(maho_codemode::kernels::shared::subprocess_contract::KernelRunInput {cell_id:"define".into(),code:code.into(),timeout_ms:Some(5000)}, |_|{}).await.expect("definition cell completes");

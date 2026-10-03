@@ -49,3 +49,17 @@ async fn local_import_rejects_encoded_traversal_and_recovers() {
     for failure in failures {assert_eq!(failure["ok"],false);}
     assert_eq!(recovered["valueRepr"],"42");
 }
+
+#[tokio::test]
+async fn escaped_static_sources_execute_in_actual_worker() {
+    use maho_codemode::kernels::{js::context_manager::JavaScriptKernel, shared::subprocess_contract::KernelRunInput};
+    let cwd=std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let kernel=JavaScriptKernel::start(cwd,"escaped-import",4,None).await.unwrap();
+    let result=kernel.run(KernelRunInput {cell_id:"escaped-import".into(),code:r"import { basename } from 'node:\x70\u0061th'; basename('/tmp/answer');".into(),timeout_ms:Some(5000)},|_|{}).await;
+    kernel.close().await.unwrap();
+    assert!(kernel.pid().is_none());
+    eprintln!("cleanup: escaped-import worker closed; pid None");
+    let result=result.unwrap();
+    assert_eq!(result["ok"],true,"{result}");
+    assert_eq!(result["valueRepr"],"\"answer\"");
+}

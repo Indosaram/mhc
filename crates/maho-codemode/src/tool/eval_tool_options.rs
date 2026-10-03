@@ -30,4 +30,5 @@ pub struct EvalCellInvocation {
     pub signal: AbortSignal,
     pub on_update: Option<CellUpdateCallback>,
     pub mode: String,
+    pub model: Option<maho_ai::model::Model>,
 }

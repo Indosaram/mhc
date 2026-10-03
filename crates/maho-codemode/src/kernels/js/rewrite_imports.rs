@@ -6,8 +6,51 @@ fn text<'a>(node: Node<'_>, code: &'a str) -> &'a str { &code[node.byte_range()]
 
 fn string_value(node: Node<'_>, code: &str) -> Option<String> {
     let raw = text(node, code);
-    if raw.starts_with('"') { return serde_json::from_str(raw).ok(); }
-    raw.strip_prefix('\'')?.strip_suffix('\'').map(|value| value.replace("\\'", "'").replace("\\\\", "\\"))
+    let quote = raw.chars().next()?;
+    let value = raw.strip_prefix(quote)?.strip_suffix(quote)?;
+    let mut chars = value.chars().peekable();
+    let mut units = Vec::new();
+    while let Some(character) = chars.next() {
+        let decoded = if character != '\\' { character } else {
+            match chars.next()? {
+                '\n' | '\u{2028}' | '\u{2029}' => continue,
+                '\r' => { if chars.peek() == Some(&'\n') { chars.next(); } continue; }
+                'b' => '\u{8}',
+                'f' => '\u{c}',
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                'v' => '\u{b}',
+                '0' => '\0',
+                escape @ ('x' | 'u') => {
+                    let mut codepoint = 0_u32;
+                    if escape == 'u' && chars.peek() == Some(&'{') {
+                        chars.next();
+                        let mut digits = 0;
+                        loop {
+                            let digit = chars.next()?;
+                            if digit == '}' { break; }
+                            codepoint = codepoint.checked_mul(16_u32)?.checked_add(digit.to_digit(16)?)?;
+                            digits += 1;
+                        }
+                        if digits == 0 { return None; }
+                    } else {
+                        for _ in 0..if escape == 'x' { 2 } else { 4 } {
+                            codepoint = codepoint * 16 + chars.next()?.to_digit(16)?;
+                        }
+                    }
+                    if codepoint <= 0xffff {
+                        units.push(u16::try_from(codepoint).ok()?);
+                        continue;
+                    }
+                    char::from_u32(codepoint)?
+                }
+                other => other,
+            }
+        };
+        units.extend_from_slice(decoded.encode_utf16(&mut [0; 2]));
+    }
+    String::from_utf16(&units).ok()
 }
 
 fn import_declaration(node: Node<'_>, code: &str) -> Option<String> {
