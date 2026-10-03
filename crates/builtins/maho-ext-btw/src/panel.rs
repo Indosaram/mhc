@@ -1,20 +1,21 @@
 use maho_ext_api::{Theme,WidgetContent};
-use maho_interactive::{components::dynamic_border::DynamicBorder,theme::ThemeColor};
+use maho_interactive::components::dynamic_border::DynamicBorder;
 use maho_tui::{components::text::Text,tui::Component};
 use std::{rc::Rc,sync::Arc};
 pub enum BtwPanelStatus{Streaming,Done,Error(String),Aborted}
 pub struct BtwPanel{border:DynamicBorder,body:Text}
 impl BtwPanel{
     pub fn new(question:&str,answer:&str,status:&BtwPanelStatus,theme:Theme)->Self{
-        let header=theme.fg(ThemeColor::Accent,&theme.bold("btw: "))+&theme.fg(ThemeColor::Text,question);
+        let fg=|color:&str,text:&str|format!("{}{text}\x1b[39m",theme.colors.get(color).map_or("\x1b[39m",String::as_str));
+        let header=fg("accent","\x1b[1mbtw: \x1b[22m")+&fg("text",question);
         let answer=if answer.is_empty(){String::new()}else{format!("\n{answer}")};
         let footer=match status{
-            BtwPanelStatus::Streaming=>theme.fg(ThemeColor::Dim,"\nanswering… (/btw or Esc to cancel)"),
-            BtwPanelStatus::Done=>theme.fg(ThemeColor::Dim,"\n(/btw or Esc to dismiss; clears on next message)"),
-            BtwPanelStatus::Error(detail)=>theme.fg(ThemeColor::Error,&format!("\nerror: {detail}")),
-            BtwPanelStatus::Aborted=>theme.fg(ThemeColor::Dim,"\n(dismissed)"),
+            BtwPanelStatus::Streaming=>fg("dim","\nanswering… (/btw or Esc to cancel)"),
+            BtwPanelStatus::Done=>fg("dim","\n(/btw or Esc to dismiss; clears on next message)"),
+            BtwPanelStatus::Error(detail)=>fg("error",&format!("\nerror: {detail}")),
+            BtwPanelStatus::Aborted=>fg("dim","\n(dismissed)"),
         };
-        Self{border:DynamicBorder::with_color(Rc::new(move|text|theme.fg(ThemeColor::Muted,text))),body:Text::with_padding(header+&answer+&footer,1,0)}
+        Self{border:DynamicBorder::with_color(Rc::new(move|text|format!("{}{text}\x1b[39m",theme.colors.get("muted").map_or("\x1b[39m",String::as_str)))),body:Text::with_padding(header+&answer+&footer,1,0)}
     }
 }
 impl Component for BtwPanel{
