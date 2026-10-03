@@ -190,8 +190,11 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         let context = extension_context::create(&session);
         let runner = if let Some(loaded) = options.loaded_extensions {
             maho_ext_host::runner::ExtensionRunner::from_loaded_extensions(loaded, options.extension_factories, context, Default::default())
-        } else { maho_ext_host::runner::ExtensionRunner::from_async_factories(
-            options.extension_factories, context, Default::default()).await.map_err(|error| error.to_string())? };
+        } else { match maho_ext_host::runner::ExtensionRunner::from_async_factories(
+            options.extension_factories, context, Default::default()).await {
+                Ok(runner) => runner,
+                Err(error) => { session.dispose().await; return Err(error.to_string()); }
+            } };
         session.set_extension_runner(runner).await;
         session.bind_extensions(Default::default()).await;
     }
