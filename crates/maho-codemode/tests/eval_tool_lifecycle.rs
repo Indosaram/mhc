@@ -39,16 +39,23 @@ async fn callable_eval_is_cancelled_by_session_replacement_before_worker_retirem
     let options=Arc::new(CreateEvalToolOptions { kernel_manager:proxy.clone(), executor:Arc::new(Executor(started)), list_tools:None, complete:None, settings:Default::default(), artifacts_dir:None, image_sdk:Arc::new(Images), cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))), on_cell_settled:None, prompt:Default::default(), runtimes:HashMap::new(), mode:"print".into() });
     let tool=create_eval_tool(options).unwrap();
     let execute=tool.execute.clone();
-    let run=tokio::spawn(async move { execute(ToolCall { id:"lifecycle-cell", params:json!({"language":"js","code":"await tool.park({}); 42", "summary":"lifecycle proof", "on_timeout":"error"}), signal:AbortSignal::default(), on_update:None, context:None }).await });
-    tokio::time::timeout(Duration::from_secs(10), events.recv()).await.unwrap().unwrap();
-    proxy.begin_replacement();
-    let result=tokio::time::timeout(Duration::from_secs(2), run).await;
-    // Cleanup is unconditional, including the pre-fix timeout path.
+    let mut run=tokio::spawn(async move { execute(ToolCall { id:"lifecycle-cell", params:json!({"language":"js","code":"await tool.park({}); 42", "summary":"lifecycle proof", "on_timeout":"error"}), signal:AbortSignal::default(), on_update:None, context:None }).await });
+    let startup=tokio::time::timeout(Duration::from_secs(10), events.recv()).await;
+    let result=if matches!(&startup, Ok(Some(()))) {
+        proxy.begin_replacement();
+        Some(tokio::time::timeout(Duration::from_secs(2), &mut run).await)
+    } else {None};
+    if !matches!(&result, Some(Ok(_))) {
+        run.abort();
+        let _=run.await;
+    }
     proxy.dispose().await;
-    kernel.close().await.unwrap();
+    let closed=kernel.close().await;
+    startup.expect("host callback must arrive before replacement").expect("host callback channel closed");
+    closed.unwrap();
     assert!(kernel.pid().is_none());
     eprintln!("cleanup: callable-lifecycle worker closed; pid None");
-    let result=result.expect("replacement must cancel the actual callable before disposal").unwrap();
+    let result=result.unwrap().expect("replacement must cancel the actual callable before disposal").unwrap();
     let result=result.unwrap();
     assert_eq!(result.details.as_ref().unwrap()["cells"][0]["status"], "error", "{result:?}");
     let listed=(tool.execute)(ToolCall {id:"list-after-dispose", params:json!({"action":"list"}), signal:AbortSignal::default(), on_update:None, context:None}).await.unwrap();
