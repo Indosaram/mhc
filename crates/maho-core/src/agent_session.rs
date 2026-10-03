@@ -7179,6 +7179,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn subscription_remint_replays_and_exhausts_without_fallback() {
+        use maho_ai::providers::faux::{faux_provider, faux_streams, RegisterFauxProviderOptions};
+        for recovered in [true, false] {
+            let provider = faux_provider(RegisterFauxProviderOptions {
+                provider: Some("anthropic-subscription".to_owned()), tokens_per_second: Some(0.0), ..Default::default()
+            });
+            let failure = || maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+                stop_reason: Some(StopReason::Error), error_message: Some("invalid_request".to_owned()), ..Default::default()
+            });
+            provider.set_responses(vec![failure().into(), if recovered {
+                maho_ai::providers::faux::faux_assistant_message("recovered", Default::default()).into()
+            } else { failure().into() }]);
+            let streams = faux_streams(provider.core.clone());
+            let session = retry_session(Vec::new(), 1);
+            session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
+            session.agent.set_stream_function(Arc::new(move |model, context, options| {
+                streams.stream_simple(model, context, options.map(|options| options.simple))
+            }));
+            tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("task", Default::default())).await.expect("bounded prompt").expect("prompt");
+            let calls = provider.get_call_log();
+            assert_eq!(calls.len(), 2);
+            assert!(calls.iter().all(|call| call.model_id == "faux-1"));
+            assert_eq!(session.model().provider, "anthropic-subscription");
+            assert!(!session.is_retrying());
+            if recovered { assert_eq!(session.get_last_assistant_text().as_deref(), Some("recovered")); }
+            else { assert_eq!(session.messages().last().and_then(AgentMessage::as_assistant).and_then(|message| message.error_message.as_deref()), Some("invalid_request")); }
+        }
+    }
+
+    #[tokio::test]
     async fn subscription_session_errors_admit_same_model_recovery_only_on_subscription() {
         let session = retry_session(Vec::new(), 1);
         for error in ["Lock file is already being held", "invalid_request"] {
