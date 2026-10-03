@@ -3,6 +3,17 @@ use maho_omo_task::skill_invocation_tracker::SkillInvocationTracker;
 use senpi_task::agents::SkillInvocationState;
 use serde_json::json;
 mod support;
+#[tokio::test] async fn registered_expanded_start_work_forbids_review_after_human_plan_request() {
+    use maho_ext_api::{EventKind,ExtensionEvent,InputEvent};
+    use senpi_task::tools::task::spawn_policy::SpawnPolicyDeps;
+    let tracker=SkillInvocationTracker::new().expect("tracker"); let mut api=support::api(); tracker.register(&mut api); let context=support::context();
+    for (id,text) in [("human-plan","ulw plan for the refactor"),("expanded-start-work","<skill name=\"start-work\" location=\"/skills/start-work/SKILL.md\"> Execute the plan.")] {
+        let mut event=ExtensionEvent::Input(InputEvent { input_id:id.into(),text:text.into(),images:None,source:InputSource::Interactive,streaming_behavior:None });
+        api.registered.handlers[&EventKind::Input][0](&mut event,&context).await.expect("registered input");
+        if id=="human-plan" { let state=tracker.state_for("session"); assert!(state.has_user_requested("ulw-plan")); assert!(!state.has_invoked("ulw-plan")); }
+    }
+    let state=tracker.state_for("session"); assert!(state.has_invoked("start-work")); assert!(state.has_user_requested("start-work")); assert!(tracker.invocation_gate_denial("momus","session").is_some()); assert!(!tracker.state_for("foreign").has_invoked("start-work"));
+}
 #[tokio::test] async fn registered_events_capture_input_tool_result_and_shutdown() {
     use maho_ext_api::{EventKind,ExtensionEvent,InputEvent,ToolResultEvent,SessionShutdownEvent,SessionReason};
     let tracker=SkillInvocationTracker::new().expect("tracker"); let mut api=support::api(); tracker.register(&mut api); let context=support::context();
