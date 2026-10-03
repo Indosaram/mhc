@@ -2206,6 +2206,8 @@ impl AgentSession {
             || maho_ai::utils::retry::is_provider_timeout_error(message)
             || maho_ai::utils::overflow::is_cursor_zero_token_resource_exhausted(
                 &maho_ai::utils::overflow::CursorExhaustionProbe::from_message(message))
+            || maho_ai::utils::overflow::is_cursor_quota_resource_exhausted(
+                &maho_ai::utils::overflow::CursorExhaustionProbe::from_message(message), self.model().context_window)
             || self.is_subscription_same_model_remint_error(message)
             || maho_ai::utils::stop_details::is_classifier_refusal(message) { return true; }
         message.stop_reason == StopReason::Error
@@ -2338,8 +2340,11 @@ impl AgentSession {
             let same_model_remint = maho_ai::utils::overflow::is_cursor_zero_token_resource_exhausted(
                 &maho_ai::utils::overflow::CursorExhaustionProbe::from_message(&message))
                 || self.is_subscription_same_model_remint_error(&message);
-            let transient = maho_ai::utils::retry::is_retryable_assistant_error(&message)
-                || maho_ai::utils::retry::is_provider_timeout_error(&message);
+            let quota_exhausted = maho_ai::utils::overflow::is_cursor_quota_resource_exhausted(
+                &maho_ai::utils::overflow::CursorExhaustionProbe::from_message(&message), model.context_window);
+            if quota_exhausted { self.retire_failed_retry_assistant(&message)?; }
+            let transient = !quota_exhausted && (maho_ai::utils::retry::is_retryable_assistant_error(&message)
+                || maho_ai::utils::retry::is_provider_timeout_error(&message));
             let attempt = self.state().retry_attempt.saturating_add(1);
             if same_model_remint && attempt > max_attempts {
                 self.state().retry_attempt = 0;
@@ -2349,7 +2354,7 @@ impl AgentSession {
                 }
                 return Ok(());
             }
-            let rate_limited = !same_model_remint && !maho_ai::utils::retry::is_provider_timeout_error(&message)
+            let rate_limited = !same_model_remint && !quota_exhausted && !maho_ai::utils::retry::is_provider_timeout_error(&message)
                 && rate_limit_pattern.is_match(&error);
             let tier_routed = rate_limited && profile.fallback.rate_limited ==
                 maho_ai::utils::retry_profile::types::FallbackRateLimited::Tiered;
@@ -7195,6 +7200,21 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), idle_rx).await.expect("bounded idle").expect("idle");
         assert_eq!(session.messages().len(), 4);
         assert_eq!(session.get_last_assistant_text().as_deref(), Some("second"));
+    }
+
+    #[tokio::test]
+    async fn quota_resource_exhaustion_admits_recovery_with_orphaned_tool_call() {
+        let session = retry_session(Vec::new(), 1);
+        session.agent.set_model(test_model());
+        let mut failed = maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
+            stop_reason: Some(StopReason::Error), error_message: Some("RESOURCE_EXHAUSTED".to_owned()), ..Default::default()
+        });
+        failed.usage.input = 1000;
+        failed.content.push(maho_ai::types::ContentBlock::ToolCall(maho_ai::types::ToolCall {
+            id: "orphan".to_owned(), name: "read".to_owned(), arguments: Map::new(), thought_signature: None,
+            incomplete: None, error_message: None, namespace: None,
+        }));
+        assert!(session.will_retry(Some(&failed)).await);
     }
 
     #[tokio::test]
