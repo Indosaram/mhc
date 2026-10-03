@@ -33,6 +33,7 @@ pub struct JavaScriptKernel {
     pid: Arc<Mutex<Option<u32>>>,
     shutdown: maho_ai::utils::abort::AbortController,
     actor: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    owner_listener: Option<(maho_ai::utils::abort::AbortSignal,maho_ai::utils::abort::ListenerId)>,
 }
 
 impl JavaScriptKernel {
@@ -46,6 +47,9 @@ impl JavaScriptKernel {
         Self::start_with_signal(cwd,session_id,parallel_pool_width,session_env,connection,names,maho_ai::utils::abort::AbortController::new()).await
     }
     pub async fn start_with_signal(cwd:&Path,session_id:&str,parallel_pool_width:u64,session_env:Option<SessionEnvironment>,connection:BridgeConnectionConfig,names:KernelToolNames,shutdown:maho_ai::utils::abort::AbortController)->Result<Self,ProcessError> {
+        let owner_signal=shutdown.signal();
+        let startup_owner=owner_signal.clone();
+        let shutdown=maho_ai::utils::abort::AbortController::new();
         let loader=LocalModuleLoader::new(&LocalModuleLoaderOptions {cwd:cwd.into(),local_roots:connection.local_roots.clone(),artifacts_dir:connection.artifacts_dir.as_ref().map(PathBuf::from)})?;
         let options=WorkerOptions {cwd:cwd.into(),session_id:session_id.into(),width:parallel_pool_width,environment:session_env,executable:std::env::current_exe()?,connection,names};
         let startup_options=options;let startup_shutdown=shutdown.clone();
@@ -56,7 +60,7 @@ impl JavaScriptKernel {
             let result={
                 let ready=async {let names=(startup_options.names)().map_err(ProcessError::Startup)?;slot.ensure_ready(startup_options.startup(&names),&signal).await};
                 tokio::pin!(ready);
-                tokio::select! {result=&mut ready=>result,()=sender.closed()=>{startup_shutdown.abort(None);ready.await}}
+                tokio::select! {result=&mut ready=>result,()=sender.closed()=>{startup_shutdown.abort(None);ready.await},()=startup_owner.cancelled()=>{startup_shutdown.abort(startup_owner.reason());ready.await}}
             };
             match result {
                 Ok(())=>{if let Err(Ok((_,mut slot)))=sender.send(Ok((startup_options,slot))) {let _=slot.retire().await;}},
@@ -70,7 +74,10 @@ impl JavaScriptKernel {
         let posts=commands.downgrade();let worker_pid=pid.clone();
         let tools=Arc::new(super::kernel_tools_host::KernelToolHostPump::new(Arc::new(move |message| {if let Some(posts)=posts.upgrade() {let _=posts.send(Command::Reply(message));}}),Arc::new(move ||worker_pid.lock().expect("JS pid lock").is_some())));
         let actor=tokio::spawn(run_actor(options,slot,receiver,snapshot.clone(),pid.clone(),tools.clone(),shutdown.signal()));
-        Ok(Self {commands,tools,loader,snapshot,pid,shutdown,actor:tokio::sync::Mutex::new(Some(actor))})
+        let child=shutdown.clone();
+        let listener=owner_signal.add_abort_listener(move |reason|child.abort(Some(reason.clone())));
+        if owner_signal.aborted() {shutdown.abort(owner_signal.reason());}
+        Ok(Self {commands,tools,loader,snapshot,pid,shutdown,actor:tokio::sync::Mutex::new(Some(actor)),owner_listener:Some((owner_signal,listener))})
     }
 
     pub async fn run(&self, input: KernelRunInput, mut on_message: impl FnMut(&Value)) -> Result<Value, ProcessError> {
@@ -123,7 +130,7 @@ impl JavaScriptKernel {
 }
 
 impl Drop for JavaScriptKernel {
-    fn drop(&mut self) {self.shutdown.abort(None);}
+    fn drop(&mut self) {if let Some((signal,listener))=self.owner_listener.take() {signal.remove_abort_listener(listener);}self.shutdown.abort(None);}
 }
 
 impl maho_ext_api::ExtensionKernelTools for JavaScriptKernel {
@@ -289,6 +296,15 @@ mod tests {
         let kernel=JavaScriptKernel::start(Path::new(env!("CARGO_MANIFEST_DIR")),"joined-close",4,None).await.unwrap();
         kernel.close().await.unwrap();
         assert!(kernel.actor.lock().await.is_none());
+        assert!(kernel.pid().is_none());
+    }
+
+    #[tokio::test]
+    async fn closing_one_kernel_does_not_cancel_session_owner() {
+        let owner=maho_ai::utils::abort::AbortController::new();
+        let kernel=JavaScriptKernel::start_with_signal(Path::new(env!("CARGO_MANIFEST_DIR")),"local-close",4,None,BridgeConnectionConfig {port:1,token:"test".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:None},Arc::new(||Ok((vec![],vec![]))),owner.clone()).await.unwrap();
+        kernel.close().await.unwrap();
+        assert!(!owner.signal().aborted());
         assert!(kernel.pid().is_none());
     }
 }

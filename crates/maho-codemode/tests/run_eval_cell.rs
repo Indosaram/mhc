@@ -163,10 +163,10 @@ async fn interactive_steering_detaches_real_started_cell() {
     let steering=maho_ext_api::AbortSignal::default();
     let mut call=invocation("steering","while True: pass");call.mode="interactive".into();call.input.on_timeout=Some(TimeoutBehavior::Detach);call.steering_signal=Some(steering.clone());
     let trigger=async {events.recv().await.unwrap();steering.abort();};
-    let (result,())=tokio::join!(run_eval_cell(options.clone(),call),trigger);
+    let result=tokio::time::timeout(std::time::Duration::from_secs(10),async {tokio::join!(run_eval_cell(options.clone(),call),trigger)}).await;
     let stopped=EvalDetachedCellManager::stop(&options.cell_manager,"steering","test cleanup").await;
     kernel.close().await.unwrap();
-    assert_eq!(result.unwrap().details["cells"][0]["status"],"detached");
+    assert_eq!(result.unwrap().0.unwrap().details["cells"][0]["status"],"detached");
     assert!(stopped.is_ok());
 }
 

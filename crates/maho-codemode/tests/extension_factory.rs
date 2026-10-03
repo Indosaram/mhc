@@ -75,7 +75,7 @@ struct Registry;
 #[tokio::test]
 async fn registered_callable_enforces_configured_detached_capacity() {
     let root=tempfile::tempdir().unwrap();std::fs::create_dir(root.path().join(".maho")).unwrap();
-    std::fs::write(root.path().join(".maho/codemode.json"),r#"{"languages":{"py":false,"js":true,"rb":false,"jl":false},"maxDetachedCells":1,"cellTimeoutSeconds":0.01}"#).unwrap();
+    std::fs::write(root.path().join(".maho/codemode.json"),r#"{"languages":{"py":false,"js":true,"rb":false,"jl":false},"maxDetachedCells":1,"cellTimeoutSeconds":0.01,"foregroundWindowSeconds":0.1}"#).unwrap();
     let host=Arc::new(Host::default());let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
     maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(|_,_|Box::pin(async {panic!("capacity does not use completion")})),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None}}).unwrap();
@@ -87,8 +87,10 @@ async fn registered_callable_enforces_configured_detached_capacity() {
     let second=tokio::time::timeout(std::time::Duration::from_secs(5),run("capacity-second")).await;
     let mut shutdown=ExtensionEvent::SessionShutdown(SessionShutdownEvent {reason:SessionReason::Quit,target_session_file:None,signal:None});
     (api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown,&ctx).await.unwrap();
-    assert_eq!(first.unwrap().unwrap().details["cells"][0]["status"],"detached");
-    assert_eq!(second.unwrap().unwrap().details["code"],"eval_background_capacity_reached");
+    assert_eq!(first.unwrap().unwrap().details.unwrap()["cells"][0]["status"],"detached");
+    let second=second.unwrap().unwrap().details.unwrap();
+    assert_eq!(second["isError"],true);
+    assert_eq!(second["cells"][0]["status"],"error");
 }
 
 #[tokio::test]
