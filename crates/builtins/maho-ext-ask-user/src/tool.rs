@@ -109,7 +109,13 @@ pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionCont
                     let request = owner_request.clone();
                     let question = async move {
                         match current {
-                            Some(owner) => {let bus=owner.sender.events.clone();let session=owner.context.session_manager.session_id().to_owned();owner.context.ui.question(request.clone(), QuestionOptions { dialog: ExtensionUiDialogOptions { signal: Some(ui_signal), timeout_ms: Some(remaining_ms) }, on_progress: Some(Arc::new(move |draft| {progress.progress(draft);if !progress_request.wait_for_answer{emit_wake(&bus,&session);}})) }).await},
+                            Some(owner) => {
+                                let bus=owner.sender.events.clone();let session=owner.context.session_manager.session_id().to_owned();let progress_signal=ui_signal.clone();
+                                owner.context.ui.question(request.clone(), QuestionOptions { dialog: ExtensionUiDialogOptions { signal: Some(ui_signal), timeout_ms: Some(remaining_ms) }, on_progress: Some(Arc::new(move |draft| {
+                                    if progress_signal.is_aborted(){return;}
+                                    progress.progress(draft);if !progress_request.wait_for_answer{emit_wake(&bus,&session);}
+                                })) }).await
+                            },
                             None => std::future::pending().await,
                         }
                     };
@@ -130,7 +136,10 @@ pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionCont
                     if let Some(response) = response { break response; }
                 };
                 match response.status {
-                    QuestionStatus::Answered | QuestionStatus::CommentSubmitted => { timer.submit(response.answers.clone(), response.comment.clone()); },
+                    QuestionStatus::Answered | QuestionStatus::CommentSubmitted => {
+                        timer.submit(response.answers.clone(), response.comment.clone());
+                        timer.cancel(QuestionStatus::Cancelled);
+                    },
                     other => { timer.cancel(other); },
                 }
                 timer.settle().await;

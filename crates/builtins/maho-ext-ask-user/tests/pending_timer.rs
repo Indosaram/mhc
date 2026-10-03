@@ -35,6 +35,18 @@ async fn cancellation_disarms_callback_before_deadline() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn ui_owned_empty_submission_retires_timer_without_timeout_delivery() {
+    let (outcome, mut received) = tokio::sync::watch::channel(None);
+    let timer = PendingTimer::new(request(), Arc::new(move |response| { outcome.send_replace(Some(response)); }));
+    let accepted = timer.submit(BTreeMap::new(), None);
+    timer.cancel(QuestionStatus::Cancelled);
+    tokio::time::timeout(Duration::from_secs(1), timer.settle()).await.expect("timer retirement");
+    assert!(accepted.is_none());
+    assert!(received.changed().await.is_err());
+    assert!(received.borrow().is_none());
+}
+
+#[tokio::test(start_paused = true)]
 async fn comment_progress_without_answers_preserves_selected_draft(){
     let (outcome,mut received)=tokio::sync::watch::channel(None);
     let timer=PendingTimer::new(request(),Arc::new(move|response|{outcome.send_replace(Some(response));}));

@@ -29,6 +29,9 @@ async fn scenario_recovery(cancel: bool, fail_append: bool, abort: bool, timeout
     scenario_ui_failure(cancel,fail_append,abort,timeout,reload,late_rebind,recovering,false).await
 }
 async fn scenario_ui_failure(cancel: bool, fail_append: bool, abort: bool, timeout: bool, reload: bool, late_rebind: bool, recovering: bool, fail_ui:bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    scenario_empty_submission(cancel,fail_append,abort,timeout,reload,late_rebind,recovering,fail_ui,false).await
+}
+async fn scenario_empty_submission(cancel: bool, fail_append: bool, abort: bool, timeout: bool, reload: bool, late_rebind: bool, recovering: bool, fail_ui:bool, empty_submission:bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let root = tempfile::tempdir()?;
     let project = root.path();
     let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
@@ -158,7 +161,7 @@ async fn scenario_ui_failure(cancel: bool, fail_append: bool, abort: bool, timeo
         session.emit_session_shutdown(SessionReason::Quit).await;
         if !get_pending_questions(&session.session_id()).is_empty() { return Err("Shutdown left pending question".into()); }
     } else if !late_rebind {
-        responses.as_ref().expect("response sender").send_replace(Some(QuestionResponse {status:QuestionStatus::Answered, answers:[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into(),comment:None,unanswered:vec![],auto_resolved_after_ms:None}));
+        responses.as_ref().expect("response sender").send_replace(Some(QuestionResponse {status:QuestionStatus::Answered, answers:if empty_submission{Default::default()}else{[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into()},comment:None,unanswered:if empty_submission{vec![request.questions[0].id.clone()]}else{vec![]},auto_resolved_after_ms:None}));
     }
     if !late_rebind { tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop { if completion.borrow().is_some() { break; } completion.changed().await?; }
@@ -251,6 +254,10 @@ async fn scenario_ui_failure(cancel: bool, fail_append: bool, abort: bool, timeo
 
 #[tokio::test]
 async fn registered_async_question_delivers_one_settlement() { scenario(false, false, false, false, false).await.expect("registered answer"); }
+#[tokio::test]
+async fn registered_ui_empty_submission_preserves_response_and_retires_timer() {
+    scenario_empty_submission(false,false,false,false,false,false,false,false,true).await.expect("UI-owned empty submission");
+}
 #[tokio::test]
 async fn registered_shutdown_settles_and_unregisters_before_returning() { scenario(true, false, false, false, false).await.expect("registered shutdown"); }
 
