@@ -5,7 +5,8 @@ use std::sync::{Arc,Mutex};
 struct Active {id:u64,controller:maho_ai::utils::abort::AbortController,settled:bool,unsubscribe:Option<UiUnsubscribe>}
 struct State {next:u64,active:Option<Active>}
 fn dismiss(state:&Mutex<State>,ctx:&ExtensionContext,abort:bool){
-    if let Some(active)=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.take(){if abort{active.controller.abort(None);}if let Some(unsubscribe)=active.unsubscribe{unsubscribe();}ctx.ui.set_widget("btw",None,Default::default());}
+    let active=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.take();
+    if let Some(active)=active{if abort{active.controller.abort(None);}if let Some(unsubscribe)=active.unsubscribe{unsubscribe();}ctx.ui.set_widget("btw",None,Default::default());}
 }
 pub struct Btw;
 impl Extension for Btw{
@@ -29,15 +30,18 @@ impl Extension for Btw{
             if ctx.mode==ExtensionMode::Tui&&ctx.has_ui{
                 ctx.ui.set_widget("btw",Some(WidgetContent::Lines(vec![format!("/btw {question}"),"Thinking...".into()])),Default::default());
                 let callback=state.clone();let owner=ctx.clone();
-                let unsubscribe=ctx.ui.on_terminal_input(Arc::new(move|data|{if !maho_tui::keys::is_key_release(data)&&maho_tui::keys::matches_key(data,"escape")&&callback.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_ref().is_some_and(|active|active.id==id){dismiss(&callback,&owner,true);}None}))?;
-                if let Some(active)=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_mut(){active.unsubscribe=Some(unsubscribe);}
+                let subscription=ctx.ui.on_terminal_input(Arc::new(move|data|{if !maho_tui::keys::is_key_release(data)&&maho_tui::keys::matches_key(data,"escape")&&callback.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_ref().is_some_and(|active|active.id==id){dismiss(&callback,&owner,true);}None}));
+                let unsubscribe=match subscription{Ok(unsubscribe)=>unsubscribe,Err(error)=>{dismiss(&state,ctx,true);return Err(error);}};
+                let mut unsubscribe=Some(unsubscribe);
+                {let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if let Some(active)=state.active.as_mut().filter(|active|active.id==id){active.unsubscribe=unsubscribe.take();}}
+                if let Some(unsubscribe)=unsubscribe{unsubscribe();}
             }
             let outcome=async{
                 let auth=ctx.model_registry.get_api_key_and_headers(&model).await?;
                 let mut options=maho_ai::types::SimpleStreamOptions::default();options.stream.request.api_key=auth.auth.api_key;options.stream.request.headers=auth.auth.headers;options.stream.request.env=auth.env;options.stream.request.signal=Some(signal.clone());options.stream.request.affinity_session_id=Some(format!("{}:btw:{id}",ctx.session_manager.session_id()));options.stream.extra=auth.extra_body.unwrap_or_default();options.reasoning=Some(runtime.session_actions()?.get_thinking_level()?);
                 let stream=ctx.model_registry.stream_simple(&model,&context,Some(options))?;
                 let owner=ctx.clone();let mut reply=String::new();
-                let collected=side_query::collect_reply(&stream,side_query::DEFAULT_ESTABLISHMENT_TIMEOUT_MS,|delta|{reply.push_str(delta);if state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_ref().is_some_and(|active|active.id==id){owner.ui.set_widget("btw",Some(WidgetContent::Lines(vec![format!("/btw {question}"),reply.clone()])),Default::default());}});
+                let collected=side_query::collect_reply(&stream,side_query::DEFAULT_ESTABLISHMENT_TIMEOUT_MS,|delta|{reply.push_str(delta);let current=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_ref().is_some_and(|active|active.id==id);if current{owner.ui.set_widget("btw",Some(WidgetContent::Lines(vec![format!("/btw {question}"),reply.clone()])),Default::default());}});
                 tokio::select!{result=collected=>result.map_err(ExtensionFailure::new),()=signal.cancelled()=>Err(ExtensionFailure::new("Side query cancelled"))}
             }.await;
             let current=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_ref().is_some_and(|active|active.id==id);
