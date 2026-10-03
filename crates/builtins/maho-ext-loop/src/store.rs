@@ -207,6 +207,17 @@ pub fn clear_loop_state_snapshot(reference:&LoopStoreRef) { store(reference).cle
     #[tokio::test] async fn malformed_json_fails_closed() { let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path()); std::fs::write(loop_state_file_path(&reference),"{").unwrap(); let result=read_loop_state(&reference).await; assert!(matches!(result,Err(LoopStoreError::Invalid(_)))); }
     #[tokio::test] async fn wrong_version_remaps_shared_error() { let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path()); std::fs::write(loop_state_file_path(&reference),r#"{"version":2,"sessionId":"session/one"}"#).unwrap(); let result=read_loop_state(&reference).await; assert!(matches!(result,Err(LoopStoreError::UnsupportedVersion(message)) if message.contains("loop store"))); }
     #[tokio::test] async fn concurrent_mutations_serialize_per_file() { let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path()); let (first,second)=tokio::join!(mutate_loop_state(&reference,|mut state|{ state.updated_at+=1.0; Ok(state) }),mutate_loop_state(&reference,|mut state|{ state.updated_at+=1.0; Ok(state) })); first.unwrap(); second.unwrap(); let result=load_loop_state(&reference).await.unwrap(); assert_eq!(result.updated_at,2.0); }
+    #[tokio::test] async fn upstream_concurrent_mutations_preserve_both_inserted_entries() {
+        let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path());
+        let mut scheduler=crate::scheduler::LoopScheduler::new(&reference.session_id,None,&BTreeMap::new());
+        scheduler.create_dynamic(crate::scheduler::CreateDynamicRequest { original_args:"check".into(),reentry_prompt:"check".into(),payload:LoopPayload::Prompt { prompt:"check".into() } },"a".into(),1000.0);
+        let first=scheduler.state.entries["a"].clone();
+        scheduler.create_dynamic(crate::scheduler::CreateDynamicRequest { original_args:"check".into(),reentry_prompt:"check".into(),payload:LoopPayload::Prompt { prompt:"check".into() } },"b".into(),1001.0);
+        let second=scheduler.state.entries["b"].clone();
+        let (a,b)=tokio::join!(mutate_loop_state(&reference,|mut state|{ state.entries.insert("a".into(),first); Ok(state) }),mutate_loop_state(&reference,|mut state|{ state.entries.insert("b".into(),second); Ok(state) }));
+        a.unwrap(); b.unwrap(); let loaded=load_loop_state(&reference).await.unwrap();
+        assert!(loaded.entries.contains_key("a")); assert!(loaded.entries.contains_key("b")); assert_eq!(loaded.entries.len(),2);
+    }
     #[tokio::test] async fn upstream_mutation_failure_does_not_poison_later_mutation() {
         let temp=tempfile::tempdir().unwrap(); let reference=reference(temp.path());
         let (failed,successful)=tokio::join!(mutate_loop_state(&reference,|_|Err(LoopStoreError::Invalid("mutation exploded".into()))),mutate_loop_state(&reference,|mut state| { state.updated_at=5.0; Ok(state) }));
