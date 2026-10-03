@@ -153,7 +153,7 @@ async fn http_post_sse_accepts_bom_and_carriage_return_delimiters() {
     let server=tokio::spawn(async move {axum::serve(listener,Router::new().route("/mcp",post(|Json(value):Json<Value>|async move {
         if value.get("id").is_none(){return axum::http::StatusCode::ACCEPTED.into_response();}
         let result=if value["method"]=="initialize" {json!({"protocolVersion":"2025-11-25","capabilities":{},"serverInfo":{"name":"cr","version":"1"}})}else{json!({"tools":[]})};
-        ([("content-type","text/event-stream")],format!("\u{feff}event: custom\rdata: not-json\r\revent: message\rdata: malformed-message\r\revent: message\rdata: {}\r\r",json!({"jsonrpc":"2.0","id":value["id"],"result":result}))).into_response()
+        ([("content-type","text/event-stream")],format!("\u{feff}event: custom\rdata: not-json\r\revent: message\rdata: malformed-message\r\revent: custom\revent\rdata: {}\r\r",json!({"jsonrpc":"2.0","id":value["id"],"result":result}))).into_response()
     }))).with_graceful_shutdown(async {let _=stopped.await;}).await.unwrap();});
     let root=tempfile::tempdir().unwrap();let client=McpClient::materialize("cr",&McpTransportSpec::Http {url:format!("http://{address}/mcp").parse().unwrap(),headers:Default::default()},Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("cr",root.path(),None).unwrap()))).await.unwrap();
     client.initialize(Duration::from_secs(2)).await.unwrap();assert_eq!(client.request("tools/list",json!({}),Duration::from_secs(2)).await.unwrap()["tools"],json!([]));

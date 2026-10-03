@@ -140,6 +140,7 @@ impl McpClient {
             while let Some(line)=take_sse_line(&mut buffer,&mut skip_lf,&mut first_line) {
                 if let Some(part)=line.strip_prefix("data:"){if !data.is_empty(){data.push('\n');}data.push_str(part.strip_prefix(' ').unwrap_or(part));}
                 if let Some(kind)=line.strip_prefix("event:"){event_type=kind.strip_prefix(' ').unwrap_or(kind).into();}
+                if line=="event" {event_type.clear();}
                 if line.is_empty() {
                     let is_message=event_type.is_empty() || event_type=="message";event_type.clear();
                     if !is_message || data.is_empty(){data.clear();continue;}
@@ -195,6 +196,7 @@ impl McpClient {
                             while let Some(line)=take_sse_line(&mut buffer,&mut skip_lf,&mut first_line) {
                                 if let Some(part)=line.strip_prefix("data:"){if !data.is_empty(){data.push('\n');}data.push_str(part.strip_prefix(' ').unwrap_or(part));}
                                 if let Some(kind)=line.strip_prefix("event:"){event_type=kind.strip_prefix(' ').unwrap_or(kind).into();}
+                                if line=="event" {event_type.clear();}
                                 if let Some(id)=line.strip_prefix("id:"){last_event_id=Some(id.trim_start_matches(' ').to_owned());}
                                 if let Some(retry)=line.strip_prefix("retry:").and_then(|retry|retry.trim().parse::<u64>().ok()){retry_ms=retry;}
                                 if line.is_empty() {
