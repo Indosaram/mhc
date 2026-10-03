@@ -17,7 +17,7 @@ async fn services_mount_preserves_settings_and_consumes_loaded_factory_once() {
             model_runtime: Some(maho_core::model_runtime::ModelRuntime::create_sync(
                 maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() })),
             ..Default::default()
-        }).await;
+        });
     services.settings_manager.apply_overrides(&serde_json::Map::from_iter([("fixtureSetting".into(), 7.into())]));
     let model = serde_json::from_value(serde_json::json!({"id":"fixture","name":"fixture","api":"faux","provider":"faux",
         "baseUrl":"","reasoning":false,"input":[],"contextWindow":128000,"maxTokens":4096,
