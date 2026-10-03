@@ -3,6 +3,43 @@ use maho_ext_api::*;
 use maho_codemode::tool::image_resize::*;
 
 struct Images;
+
+struct CompletionDrop(Option<tokio::sync::oneshot::Sender<()>>);
+impl Drop for CompletionDrop {
+    fn drop(&mut self) { if let Some(sender)=self.0.take() {let _=sender.send(());} }
+}
+
+#[tokio::test]
+async fn completion_ignoring_abort_is_dropped_before_session_shutdown_returns() {
+    let root=tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join(".maho")).unwrap();
+    std::fs::write(root.path().join(".maho/codemode.json"),r#"{"languages":{"py":true,"js":false,"rb":false,"jl":false}}"#).unwrap();
+    let host=Arc::new(Host::default());
+    let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
+    let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
+    let (started,mut started_rx)=tokio::sync::mpsc::unbounded_channel();
+    let (dropped,dropped_rx)=tokio::sync::oneshot::channel();let dropped=Arc::new(Mutex::new(Some(dropped)));
+    maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(move |_,ctx| {let guard=CompletionDrop(dropped.lock().unwrap().take());let started=started.clone();Box::pin(async move {let _guard=guard;started.send(ctx.signal.unwrap()).unwrap();std::future::pending().await})}),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None}}).unwrap();
+    let ctx=context(root.path());
+    let mut start=ExtensionEvent::SessionStart(SessionStartEvent {reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None});
+    (api.registered.handlers[&EventKind::SessionStart][0])(&mut start,&ctx).await.unwrap();
+    let execute=host.tools.lock().unwrap()[0].definition.execute.clone();
+    let signal=maho_tools::definition::AbortSignal::default();let caller_signal=signal.clone();
+    let invocation_context=ctx.clone();
+    let mut run=tokio::spawn(async move {execute(maho_tools::definition::ToolCall {id:"ignored-completion",params:serde_json::json!({"language":"py","code":"completion('park')","summary":"completion cancellation","on_timeout":"error"}),signal:caller_signal,on_update:None,context:Some(&invocation_context)}).await});
+    let started=tokio::time::timeout(std::time::Duration::from_secs(10),started_rx.recv()).await;
+    signal.abort();
+    let cancellation=tokio::time::timeout(std::time::Duration::from_secs(3),&mut run).await;
+    if cancellation.is_err() {run.abort();let _=run.await;}
+    let mut shutdown=ExtensionEvent::SessionShutdown(SessionShutdownEvent {reason:SessionReason::Quit,target_session_file:None,signal:None});
+    let shutdown=tokio::time::timeout(std::time::Duration::from_secs(3),(api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown,&ctx)).await;
+    let dropped=tokio::time::timeout(std::time::Duration::from_secs(3),dropped_rx).await;
+    assert!(started.unwrap().unwrap().is_aborted());
+    assert!(cancellation.is_ok(),"caller did not settle after abort");
+    assert!(shutdown.is_ok(),"session shutdown blocked behind completion ignoring abort");
+    shutdown.unwrap().unwrap();
+    dropped.expect("completion future must be dropped").unwrap();
+}
 impl EvalImageSdk for Images {
     fn resize_image<'a>(&'a self, _:Vec<u8>, _:&'a str, _:Option<usize>) -> ImageFuture<'a,Option<ResizedImage>> { Box::pin(async {panic!("factory setup must not resize images")}) }
     fn convert_to_png<'a>(&'a self, _:&'a str, _:&'a str) -> ImageFuture<'a,Option<EvalImageContent>> { Box::pin(async {panic!("factory setup must not convert images")}) }
@@ -34,6 +71,38 @@ struct Session(std::path::PathBuf);
 impl ToolSessionManager for Session {fn session_id(&self)->&str {"registered-session"} fn session_file(&self)->Option<&Path> {Some(&self.0)}}
 impl SessionManager for Session {fn get_entries(&self)->Vec<SessionEntry> {vec![]} fn get_branch(&self)->Vec<SessionEntry> {vec![]} fn get_leaf_id(&self)->Option<String> {None} fn get_session_name(&self)->Option<String> {None}}
 struct Registry;
+
+#[tokio::test]
+async fn concurrent_completion_keeps_each_invocations_context() {
+    let root=tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join(".maho")).unwrap();
+    std::fs::write(root.path().join(".maho/codemode.json"),r#"{"languages":{"py":false,"js":true,"rb":false,"jl":false}}"#).unwrap();
+    let host=Arc::new(Host::default());let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
+    let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
+    let (entered,mut entries)=tokio::sync::mpsc::unbounded_channel();
+    let (release,released)=tokio::sync::oneshot::channel();let released=Arc::new(Mutex::new(Some(released)));
+    let seen=Arc::new(Mutex::new(Vec::new()));let captured=seen.clone();
+    maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(move |request,ctx| {
+        let wait=if request.prompt=="A" {released.lock().unwrap().take()} else {None};let entered=entered.clone();let captured=captured.clone();
+        Box::pin(async move {entered.send(request.prompt.clone()).unwrap();if let Some(wait)=wait {wait.await.unwrap();}captured.lock().unwrap().push((request.prompt,ctx.cwd,ctx.thinking_level,ctx.goal_store_file,ctx.model.map(|model|model.name),ctx.service_tier));Ok(serde_json::json!({"text":"ok"}))})
+    }),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None}}).unwrap();
+    let ctx=context(root.path());let mut start=ExtensionEvent::SessionStart(SessionStartEvent {reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None});
+    (api.registered.handlers[&EventKind::SessionStart][0])(&mut start,&ctx).await.unwrap();
+    let execute=host.tools.lock().unwrap()[0].definition.execute.clone();
+    let mut a=ctx.clone();a.cwd=root.path().join("A");a.thinking_level=Some(ThinkingLevel::Low);a.goal_store_file=Some(root.path().join("A.goal"));
+    let mut b=ctx.clone();b.cwd=root.path().join("B");b.thinking_level=Some(ThinkingLevel::High);b.goal_store_file=Some(root.path().join("B.goal"));
+    let first=execute(maho_tools::definition::ToolCall {id:"context-A",params:serde_json::json!({"language":"js","code":"await completion('A')","summary":"A","on_timeout":"error"}),signal:Default::default(),on_update:None,context:Some(&a)});
+    let second=execute(maho_tools::definition::ToolCall {id:"context-B",params:serde_json::json!({"language":"js","code":"await completion('B')","summary":"B","on_timeout":"error"}),signal:Default::default(),on_update:None,context:Some(&b)});
+    tokio::pin!(first);tokio::pin!(second);
+    tokio::time::timeout(std::time::Duration::from_secs(10),async {tokio::select! {entry=entries.recv()=>assert_eq!(entry.as_deref(),Some("A")),result=&mut first=>panic!("A settled before barrier: {result:?}")}}).await.unwrap();
+    assert!(std::future::poll_fn(|cx|std::task::Poll::Ready(second.as_mut().poll(cx))).await.is_pending());
+    release.send(()).unwrap();
+    let results=tokio::time::timeout(std::time::Duration::from_secs(10),async {tokio::join!(&mut first,&mut second)}).await;
+    let mut shutdown=ExtensionEvent::SessionShutdown(SessionShutdownEvent {reason:SessionReason::Quit,target_session_file:None,signal:None});
+    (api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown,&ctx).await.unwrap();
+    let (first,second)=results.unwrap();first.unwrap();second.unwrap();
+    assert_eq!(*seen.lock().unwrap(),vec![("A".into(),a.cwd.clone(),a.thinking_level,a.goal_store_file.clone(),None,None),("B".into(),b.cwd.clone(),b.thinking_level,b.goal_store_file.clone(),None,None)]);
+}
 impl ModelRegistry for Registry {
     fn get_all(&self)->Vec<Model> {vec![]} fn get_available(&self)->Vec<Model> {vec![]} fn find(&self,_:&str,_:&str)->Option<Model> {None} fn has_configured_auth(&self,_:&Model)->bool {false}
     fn get_api_key_for_provider<'a>(&'a self,_:&'a str)->ExtensionFuture<'a,Option<String>> {Box::pin(async {Ok(None)})}
@@ -56,6 +125,38 @@ impl ExtensionActions for Host {
     fn send_user_message(&self,_:UserMessageContent,_:SendUserMessageOptions)->Result<(),ExtensionFailure> {Ok(())}
     fn append_entry(&self,_:&str,_:Option<JsonValue>)->Result<(),ExtensionFailure> {Ok(())}
     fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure> {Ok(self.tools.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?.iter().map(|tool|ToolInfo {name:tool.definition.name.clone(),label:tool.definition.label.clone(),description:tool.definition.description.clone(),parameters:tool.definition.parameters.clone(),prompt_guidelines:tool.definition.prompt_guidelines.clone(),source_info:tool.source_info.clone(),exposure:ToolExposure::Direct,search_text:None,search_keywords:vec![],search_group:None,allow_lazy_activation:false}).collect())}
+}
+
+#[tokio::test]
+async fn completion_context_refreshes_for_same_model_id_without_reinstalling_eval() {
+    let root=tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join(".maho")).unwrap();
+    std::fs::write(root.path().join(".maho/codemode.json"),r#"{"languages":{"py":true,"js":true,"rb":true,"jl":false}}"#).unwrap();
+    let host=Arc::new(Host::default());
+    let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
+    let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
+    let seen=Arc::new(Mutex::new(Vec::new()));let captured=seen.clone();
+    maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(move |_,ctx|{let captured=captured.clone();Box::pin(async move {captured.lock().unwrap().push((ctx.service_tier,ctx.model.as_ref().map(|model|model.name.clone())));Ok(serde_json::json!({"text":"fresh"}))})}),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None}}).unwrap();
+    let mut ctx=context(root.path());
+    let model:Model=serde_json::from_value(serde_json::json!({"id":"same","name":"same","provider":"fixture","api":"openai-responses","baseUrl":"http://localhost","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":4096,"maxTokens":100})).unwrap();
+    ctx.model=Some(model.clone());
+    let mut start=ExtensionEvent::SessionStart(SessionStartEvent {reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None});
+    (api.registered.handlers[&EventKind::SessionStart][0])(&mut start,&ctx).await.unwrap();
+    let execute=host.tools.lock().unwrap()[0].definition.execute.clone();
+    ctx.service_tier=Some(ServiceTier::Priority);
+    let mut selected=ExtensionEvent::ModelSelect(ModelSelectEvent {model,previous_model:ctx.model.clone(),source:ModelSelectSource::Set,system_prompt:String::new(),system_prompt_options:Default::default()});
+    (api.registered.handlers[&EventKind::ModelSelect][0])(&mut selected,&ctx).await.unwrap();
+    assert!(Arc::ptr_eq(&execute,&host.tools.lock().unwrap()[0].definition.execute));
+    ctx.model.as_mut().unwrap().name="invocation-local".into();
+    let mut results=Vec::new();
+    for (id,language,code) in [("fresh-js","js","await completion('context')"),("fresh-py","py","completion('context')"),("fresh-rb","rb","completion('context')")] {
+        results.push(tokio::time::timeout(std::time::Duration::from_secs(10),execute(maho_tools::definition::ToolCall {id,params:serde_json::json!({"language":language,"code":code,"summary":"context freshness","on_timeout":"error"}),signal:Default::default(),on_update:None,context:Some(&ctx)})).await);
+    }
+    let mut shutdown=ExtensionEvent::SessionShutdown(SessionShutdownEvent {reason:SessionReason::Quit,target_session_file:None,signal:None});
+    tokio::time::timeout(std::time::Duration::from_secs(10),(api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown,&ctx)).await.unwrap().unwrap();
+    for result in results {let result=result.unwrap().unwrap();assert_ne!(result.details.as_ref().unwrap()["isError"],true,"{result:?}");}
+    assert_eq!(*seen.lock().unwrap(),vec![(Some(ServiceTier::Priority),Some("invocation-local".into())),(Some(ServiceTier::Priority),Some("invocation-local".into())),(Some(ServiceTier::Priority),Some("invocation-local".into()))]);
+    eprintln!("cleanup: completion freshness JS, Python and Ruby managers disposed");
 }
 impl ExtensionSessionActions for Host {
     fn set_session_name(&self,_:&str)->Result<(),ExtensionFailure> {Ok(())} fn get_session_name(&self)->Result<Option<String>,ExtensionFailure> {Ok(None)} fn set_label(&self,_:&str,_:Option<&str>)->Result<(),ExtensionFailure> {Ok(())}

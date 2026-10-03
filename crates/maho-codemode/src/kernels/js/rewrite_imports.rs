@@ -4,7 +4,7 @@ pub const DYNAMIC_IMPORT_CALLEE: &str = "(typeof __senpi_import__ === \"function
 
 fn text<'a>(node: Node<'_>, code: &'a str) -> &'a str { &code[node.byte_range()] }
 
-fn string_value(node: Node<'_>, code: &str) -> Option<String> {
+fn string_units(node: Node<'_>, code: &str) -> Option<Vec<u16>> {
     let raw = text(node, code);
     let quote = raw.chars().next()?;
     let value = raw.strip_prefix(quote)?.strip_suffix(quote)?;
@@ -50,12 +50,31 @@ fn string_value(node: Node<'_>, code: &str) -> Option<String> {
         };
         units.extend_from_slice(decoded.encode_utf16(&mut [0; 2]));
     }
-    String::from_utf16(&units).ok()
+    Some(units)
+}
+
+fn string_value(node: Node<'_>, code: &str) -> Option<String> {
+    String::from_utf16(&string_units(node, code)?).ok()
+}
+
+fn string_literal(node: Node<'_>, code: &str) -> Option<String> {
+    let mut literal = String::from("\"");
+    for decoded in char::decode_utf16(string_units(node, code)?) {
+        match decoded {
+            Ok(character) => {
+                let encoded = serde_json::to_string(&character.to_string()).ok()?;
+                literal.push_str(&encoded[1..encoded.len()-1]);
+            }
+            Err(error) => literal.push_str(&format!("\\u{:04x}", error.unpaired_surrogate())),
+        }
+    }
+    literal.push('"');
+    Some(literal)
 }
 
 fn import_declaration(node: Node<'_>, code: &str) -> Option<String> {
     let source = node.child_by_field_name("source")?;
-    let source = serde_json::to_string(&string_value(source, code)?).ok()?;
+    let source = string_literal(source, code)?;
     let mut default_name = None;
     let mut namespace = None;
     let mut named = Vec::new();
@@ -82,8 +101,8 @@ fn import_declaration(node: Node<'_>, code: &str) -> Option<String> {
             "pair" => {
                 let key = current.child_by_field_name("key")?;
                 let value = current.child_by_field_name("value")?;
-                let key = if key.kind() == "string" { serde_json::to_string(&string_value(key, code)?).ok()? } else { text(key, code).to_owned() };
-                attributes.push(format!("{key}: {}", serde_json::to_string(&string_value(value, code)?).ok()?));
+                let key = if key.kind() == "string" { string_literal(key, code)? } else { text(key, code).to_owned() };
+                attributes.push(format!("{key}: {}", string_literal(value, code)?));
             }
             _ => {}
         }

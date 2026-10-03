@@ -28,6 +28,7 @@ from typing import Any, Callable, Union
 from urllib.parse import unquote
 
 CONNECTION: dict[str, Any] = {}
+ACTIVE_CELL_ID: str | None = None
 USER_NS: dict[str, Any] = {"__name__": "__main__", "__doc__": None, "__builtins__": __builtins__}
 LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(LOOP)
@@ -483,7 +484,7 @@ def completion(
         options["system"] = system
     if schema is not None:
         options["schema"] = schema
-    response = bridge_post("/completion", {"prompt": prompt, "opts": options})
+    response = bridge_post("/completion", {"prompt": prompt, "opts": options, "cellId": ACTIVE_CELL_ID})
     if not isinstance(response, dict):
         return response
     if "value" in response:
@@ -1021,6 +1022,8 @@ async def run_code(code: Any, want_value: bool) -> Any:
 
 
 def run_cell(cell_id: str, code: str) -> None:
+    global ACTIVE_CELL_ID
+    ACTIVE_CELL_ID = cell_id
     start = time.monotonic()
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -1056,6 +1059,7 @@ def run_cell(cell_id: str, code: str) -> None:
             }
         )
     finally:
+        ACTIVE_CELL_ID = None
         signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 

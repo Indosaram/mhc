@@ -148,4 +148,5 @@ impl crate::tool::eval_tool_options::EvalKernelManager for SessionManagerProxy {
             current.get_kernel(language).await
         })
     }
+    fn set_invocation_context(&self,cell_id:&str,context:crate::tool::eval_tool_options::EvalInvocationContext) -> Option<Box<dyn FnOnce()+Send>> {self.current().ok()?.set_invocation_context(cell_id,context)}
 }

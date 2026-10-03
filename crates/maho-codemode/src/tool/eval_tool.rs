@@ -37,7 +37,8 @@ pub fn create_eval_tool(options:Arc<CreateEvalToolOptions>) -> Result<ToolDefini
                     let controller=maho_ai::utils::abort::AbortController::new();
                     let signal=controller.signal();
                     let update=call.on_update.map(|update|Arc::new(move |result|{let _=update(tool_result(result));}) as super::eval_tool_options::CellUpdateCallback);
-                    let invocation=EvalCellInvocation {cell_id:call.id.into(),input,signal,on_update:update,mode:options.mode.clone(),model:call.context.and_then(|context|context.model()).cloned()};
+                    let context=call.context.map(|context|super::eval_tool_options::EvalInvocationContext {model:context.model().cloned(),cwd:context.cwd().into(),thinking_level:context.thinking_level(),goal_store_file:context.goal_store_file().map(std::path::PathBuf::from)});
+                    let invocation=EvalCellInvocation {cell_id:call.id.into(),input,signal,on_update:update,mode:options.mode.clone(),model:call.context.and_then(|context|context.model()).cloned(),context};
                     let lifecycle_controller=controller.clone();
                     let execution=async move {
                         let operation=run_eval_cell(options,invocation);

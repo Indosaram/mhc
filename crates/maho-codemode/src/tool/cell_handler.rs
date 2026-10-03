@@ -15,7 +15,7 @@ pub struct CellBridgeRuntime {
 }
 
 
-pub type CellCompletionHandler = Arc<dyn Fn(crate::completion::handler::CompletionRequest, maho_ai::utils::abort::AbortSignal) -> std::pin::Pin<Box<dyn std::future::Future<Output=Result<Value,crate::completion::handler::CompletionError>> + Send>> + Send + Sync>;
+pub type CellCompletionHandler = Arc<dyn Fn(crate::completion::handler::CompletionRequest, maho_ai::utils::abort::AbortSignal, Option<super::eval_tool_options::EvalInvocationContext>) -> std::pin::Pin<Box<dyn std::future::Future<Output=Result<Value,crate::completion::handler::CompletionError>> + Send>> + Send + Sync>;
 
 pub struct CellHandler {
     pub builder: CellResultBuilder,
@@ -77,7 +77,7 @@ impl CellHandler {
         let mut error_code=None;
         let reply = if name=="completion" && let Some(complete)=runtime.complete.as_ref() {
             match crate::completion::tool_bridge::to_completion_request(&message["args"]) {
-                Ok(request)=>complete(request,runtime.signal.clone()).await.map(|result| (result.get("value").or_else(||result.get("text")).cloned().unwrap_or(Value::Null),true,None,None)).map_err(|error|error.0),
+                Ok(request)=>complete(request,runtime.signal.clone(),None).await.map(|result| (result.get("value").or_else(||result.get("text")).cloned().unwrap_or(Value::Null),true,None,None)).map_err(|error|error.0),
                 Err(error)=>Err(error.0),
             }
         } else if name=="eval" {

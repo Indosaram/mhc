@@ -154,12 +154,15 @@ impl PythonKernelTransport {
         if !self.active { return self.retire().await; }
         self.active = false;
         let pid = self.child.id();
-        self.write(&json!({"type":"close"})).await?;
-        if wait_for_exit(&mut self.child, Duration::from_millis(500)).await? {
-            sweep_process_group(pid).await;
-        } else { hard_kill(&mut self.child, Duration::from_millis(500)).await?; }
+        let _ = self.write(&json!({"type":"close"})).await;
+        let result = async {
+            if wait_for_exit(&mut self.child, Duration::from_millis(500)).await? {
+                sweep_process_group(pid).await;
+            } else { hard_kill(&mut self.child, Duration::from_millis(500)).await?; }
+            Ok::<(), PythonTransportError>(())
+        }.await;
         for reader in &self.readers { reader.abort(); }
-        Ok(())
+        result
     }
 }
 

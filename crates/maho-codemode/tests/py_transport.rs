@@ -1,6 +1,23 @@
 use maho_codemode::kernels::{py::transport::*, shared::runtime_asset::CodemodeRuntimeAssetEnvironment};
 use std::path::Path;
 
+#[tokio::test]
+async fn close_reaps_python_when_close_frame_cannot_be_written() {
+    use maho_codemode::bridge::protocol::BridgeConnectionConfig;
+    use std::time::Duration;
+    let root = tempfile::tempdir().unwrap();
+    let prelude = root.path().join("closed-input.py");
+    std::fs::write(&prelude, "import os,signal\nos.close(0)\nprint('{\"type\":\"ready\"}',flush=True)\nwhile True: signal.pause()\n").unwrap();
+    let options = PythonTransportOptions { interpreter_path:"python3".into(),session_id:"closed-input".into(),cwd:root.path().into(),connection:BridgeConnectionConfig{port:1,token:"test".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:None},env:None,session_env:None,startup_timeout:Duration::from_secs(5) };
+    let mut transport = PythonKernelTransport::start(&options, &prelude, ||true).await.unwrap();
+    let pid = transport.pid().unwrap();
+    let closed = transport.close().await;
+    let reaped = !Path::new(&format!("/proc/{pid}")).exists();
+    if !reaped { transport.retire().await.unwrap(); }
+    assert!(closed.is_ok(), "close failed: {closed:?}");
+    assert!(reaped, "close left Python process {pid} alive");
+}
+
 #[test]
 fn shipped_prelude_resolves_without_interpreter_rewrite() {
     let path=resolve_python_prelude_path(PythonPreludePathOptions{local_path:None,environment:CodemodeRuntimeAssetEnvironment{bun_version:None,executable_path:Path::new("/tmp/mhc")}}).unwrap();

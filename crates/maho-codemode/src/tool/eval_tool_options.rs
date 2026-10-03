@@ -6,10 +6,19 @@ use super::{types::{EvalKernel,EvalKernelFuture,EvalLanguage,EvalRuntimeInfo,Eva
 
 pub trait EvalKernelManager: Send + Sync {
     fn get_kernel(&self,language:EvalLanguage) -> EvalKernelFuture<'_,Arc<dyn EvalKernel>>;
+    // Managers without an HTTP completion bridge need no context registration.
+    fn set_invocation_context(&self,_cell_id:&str,_context:EvalInvocationContext) -> Option<Box<dyn FnOnce()+Send>> {None}
     fn execution_tracker(&self) -> Option<&crate::extension::session_manager_proxy::SessionManagerProxy> { None }
 }
 pub type CellUpdateCallback=Arc<dyn Fn(AgentToolResult)+Send+Sync>;
 pub type CellSettledCallback=Arc<dyn Fn(serde_json::Value)+Send+Sync>;
+#[derive(Clone)]
+pub struct EvalInvocationContext {
+    pub model: Option<maho_ai::model::Model>,
+    pub cwd: PathBuf,
+    pub thinking_level: Option<maho_ai::types::ThinkingLevel>,
+    pub goal_store_file: Option<PathBuf>,
+}
 pub struct CreateEvalToolOptions {
     pub kernel_manager: Arc<dyn EvalKernelManager>,
     pub executor: Arc<dyn OutputExecuteTool>,
@@ -31,4 +40,5 @@ pub struct EvalCellInvocation {
     pub on_update: Option<CellUpdateCallback>,
     pub mode: String,
     pub model: Option<maho_ai::model::Model>,
+    pub context: Option<EvalInvocationContext>,
 }

@@ -72,12 +72,19 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
         Ok(kernel)=>kernel,
         Err(error)=>{execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);return Err(error);}
     };
+    struct InvocationContextGuard(Option<Box<dyn FnOnce()+Send>>);
+    impl Drop for InvocationContextGuard {fn drop(&mut self) {if let Some(clear)=self.0.take() {clear();}}}
+    let context_guard=InvocationContextGuard(invocation.context.as_ref().and_then(|context|options.kernel_manager.set_invocation_context(&invocation.cell_id,context.clone())));
     let queue=kernel.queue_snapshot();
     let state=CellState {input:invocation.input.clone(),runtime:options.runtimes.get(&invocation.input.language).cloned(),started_at,run_started_at:None,queued_behind:Some(queue.0.into_iter().chain(queue.1).collect()),on_update:invocation.on_update,tool_calls:vec![],tool_call_metrics:vec![],status_events:vec![],active:true,output:String::new(),phase:None,error:None,duration_ms:0.0,status:"queued".into()};
     let builder=CellResultBuilder::new(state,EvalOutputOptions {artifact_path:options.artifacts_dir.as_ref().map(|root|root.join(format!("eval-{}.log",uuid::Uuid::new_v4()))),head_bytes:options.settings.output_sink.head_bytes as usize,max_columns:options.settings.output_sink.max_columns as usize,provider:invocation.model.as_ref().map(|model|model.provider.clone()),api:invocation.model.as_ref().map(|model|model.api.clone()),image_sdk:options.image_sdk.clone()});
     let reply_kernel=kernel.clone();
     let (messages_tx,mut messages)=tokio::sync::mpsc::unbounded_channel();
-    let mut handler=CellHandler::new(builder,CellBridgeRuntime {executor:options.executor.clone(),tools:options.list_tools.clone(),settings:options.settings.clone(),signal:bridge_signal,complete:options.complete.clone(),deliver_reply:Arc::new(move |reply|{let _=reply_kernel.deliver_tool_reply(reply);})});
+    let complete=options.complete.as_ref().map(|complete| {
+        let complete=complete.clone();let context=invocation.context.clone();
+        Arc::new(move |request,signal,_|complete(request,signal,context.clone())) as super::cell_handler::CellCompletionHandler
+    });
+    let mut handler=CellHandler::new(builder,CellBridgeRuntime {executor:options.executor.clone(),tools:options.list_tools.clone(),settings:options.settings.clone(),signal:bridge_signal,complete,deliver_reply:Arc::new(move |reply|{let _=reply_kernel.deliver_tool_reply(reply);})});
     let status_tx=messages_tx.clone();
     handler.set_status_emitter(Arc::new(move |event|{let _=status_tx.send(serde_json::json!({"type":"status","event":event}));}));
     let live=Arc::new(Mutex::new(handler.builder.live_result()));
@@ -106,6 +113,7 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
     let event_language=invocation.input.language;
     let kernel_tools=if event_language==super::types::EvalLanguage::Js {kernel.clone().kernel_tools()} else {None};
     let run_bound=async move {
+        let _context_guard=context_guard;
         let operation=kernel.run(run_input);
         let guarded=work_execution.wait(operation);
         tokio::pin!(guarded);
