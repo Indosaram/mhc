@@ -17,3 +17,18 @@ fn read_distinguishes_missing_file_from_io_failure() {
     std::fs::create_dir(root.path().join("thread.json")).expect("directory at file path");
     assert!(matches!(read_goal(&reference), Err(GoalStoreError::Io(_))));
 }
+
+#[test]
+fn mutations_preserve_missing_duplicate_corrupt_and_io_identities() {
+    use maho_ext_pi_goal::goal::{store::*, types::*};
+    let root = tempfile::tempdir().expect("fixture");
+    let reference = GoalStoreRef { base_dir: root.path().join("goals"), thread_id: "thread".into() };
+    assert!(matches!(update_goal_at(&reference, &GoalUpdate::default(), GoalUpdateSource::User, 10, "unused".into()), Err(GoalStoreError::GoalNotFound(_))));
+    create_goal_at(&reference, "objective", 10, "id".into()).expect("goal");
+    assert!(matches!(create_goal_at(&reference, "replacement", 11, "new".into()), Err(GoalStoreError::GoalAlreadyExists(_))));
+    std::fs::write(goal_file_path(&reference), "{").expect("corrupt store");
+    assert!(matches!(clear_goal(&reference), Err(GoalStoreError::Syntax(_))));
+    let blocked = GoalStoreRef { base_dir: root.path().join("blocked"), thread_id: "thread".into() };
+    std::fs::write(&blocked.base_dir, "not a directory").expect("blocked directory");
+    assert!(matches!(write_goal(&blocked, None), Err(GoalStoreError::Io(_))));
+}
