@@ -4,11 +4,15 @@ use maho_ext_api::{ExtensionApi,NotificationType};
 use crate::rules::{engine::{Engine,EngineDeps},types::{LoadedRule,MatchReason,RuleDiagnostic,Severity}};
 pub fn register_slash_commands<D:EngineDeps+Send+'static>(api:&mut ExtensionApi,engine:Arc<Mutex<Engine<D>>>){
     let rules=Arc::clone(&engine);
-    api.register_command("rules",Some("Inspect loaded pi-rules.".into()),None,Arc::new(move|args,ctx|{
+    api.register_command_with_completions("rules",Some("Inspect loaded pi-rules.".into()),None,Arc::new(move|args,ctx|{
         let (message,severity)={let mut engine=rules.lock().unwrap_or_else(std::sync::PoisonError::into_inner);handle_rules(&mut engine,args,&ctx.cwd.to_string_lossy())};
         ctx.ui.notify(&message,match severity{Some(Severity::Error)=>NotificationType::Error,Some(Severity::Warning)=>NotificationType::Warning,None=>NotificationType::Info});
         Box::pin(async{Ok(())})
-    }));
+    }), Arc::new(|prefix| Box::pin(async move {
+        Ok(argument_completions(prefix).map(|items| items.into_iter().map(|(value, label)|
+            maho_tui::autocomplete::AutocompleteItem { value: value.into(), label: label.into(), description: None }
+        ).collect()))
+    })));
     api.register_command("reload-rules",Some("Reload pi-rules for the current session.".into()),None,Arc::new(move|_,ctx|{
         let message={let mut engine=engine.lock().unwrap_or_else(std::sync::PoisonError::into_inner);handle_reload(&mut engine,&ctx.cwd.to_string_lossy())};
         ctx.ui.notify(&message,NotificationType::Info);Box::pin(async{Ok(())})
