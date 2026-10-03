@@ -23,6 +23,14 @@ const server = Bun.serve({
     const cancel = text.includes("task44-cancel") || text.includes("task44-drop");
     const resumed = text.includes("task44-resumed");
     const content = resumed ? "task44-native-resumed" : "task44-native-provider";
+    let transportClosed = false;
+    const observeTransportClose = () => {
+      if (!cancel || transportClosed) return;
+      transportClosed = true;
+      console.log(JSON.stringify({ receipt: "provider_transport_closed", text }));
+      const receipt = text.includes("task44-drop") ? "TASK44_PROVIDER_DROP_CLOSED" : "TASK44_PROVIDER_CANCEL_CLOSED";
+      for (const observer of observers) observer.write(`${receipt}\n`);
+    };
     const encoder = new TextEncoder();
     const chunk = (delta: Record<string, string>, finish_reason: string | null) => encoder.encode(`data: ${JSON.stringify({ id: "task44-native-wire", object: "chat.completion.chunk", created: 1, model: "native", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
     const stream = new ReadableStream<Uint8Array>({
@@ -31,6 +39,7 @@ const server = Bun.serve({
         if (cancel) {
           request.signal.addEventListener("abort", () => {
             console.log(JSON.stringify({ receipt: "provider_abort", text }));
+            observeTransportClose();
             controller.close();
           }, { once: true });
           const receipt = text.includes("task44-drop") ? "TASK44_PROVIDER_HELD" : "TASK44_PROVIDER_CANCEL_HELD";
@@ -41,7 +50,7 @@ const server = Bun.serve({
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
       },
-      cancel() { console.log(JSON.stringify({ receipt: "provider_stream_cancel", text })); },
+      cancel() { console.log(JSON.stringify({ receipt: "provider_stream_cancel", text })); observeTransportClose(); },
     });
     return new Response(stream, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" } });
   },

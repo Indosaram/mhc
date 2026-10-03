@@ -132,6 +132,8 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
     let cancelled=engine.manager.wait_for(&record.task_id,None,Some(Duration::from_secs(15)))?;
     assert_eq!(cancelled.status,senpi_task::state::TaskStatus::Cancelled);
     for child in processes.lock().expect("processes").iter() { assert!(child.wait_exit_timeout(Duration::from_secs(5)).is_some(),"manager cancellation must reap native child before explicit driver cleanup"); }
+    line.clear(); receipts.read_line(&mut line)?;
+    assert_eq!(line,"TASK44_PROVIDER_CANCEL_CLOSED\n","manager cancellation must close the actual held provider transport");
     println!("RECEIPT manager cancellation persisted and native child reaped before driver cleanup");
     drop(handle_cleanup);
     for child in processes.lock().expect("processes").iter() { assert!(child.wait_exit_timeout(Duration::from_secs(5)).is_some(),"discard must reap native child"); }

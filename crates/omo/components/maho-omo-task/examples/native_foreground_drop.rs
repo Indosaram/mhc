@@ -5,6 +5,13 @@ use maho_ext_api::*;
 use maho_omo_task::{component::TaskComponent, engine::{compose_task_engine_with_rpc_respawn, ComposeTaskEngineDeps}, engine_runners::{build_process_runner, build_rpc_respawn_runner}};
 use senpi_task::{manager::types::{ManagedRunners, ListScope}, runners::{rpc::{process::{RpcSpawnDescriptor, RpcChildProcess}, model_admission::{RpcModelAdmissionOptions, create_rpc_model_admission}, terminate::terminate_rpc_child}, rpc_process::RpcProcessRunnerOptions, types::TerminateOptions}};
 struct Actions;
+struct ReceiptReader { socket:std::os::unix::net::UnixStream, thread:Option<std::thread::JoinHandle<()>> }
+impl Drop for ReceiptReader {
+    fn drop(&mut self) {
+        if let Err(error)=self.socket.shutdown(std::net::Shutdown::Both) { eprintln!("provider receipt shutdown failed: {error}"); }
+        if let Some(thread)=self.thread.take() && thread.join().is_err() { eprintln!("provider receipt reader panicked"); }
+    }
+}
 impl ExtensionActions for Actions {
     fn send_message(&self,message:CustomMessage,_:SendMessageOptions)->Result<(),ExtensionFailure> { println!("MESSAGE {}",serde_json::to_string(&message).map_err(|error| ExtensionFailure::new(error.to_string()))?); Ok(()) }
     fn send_user_message(&self,_:UserMessageContent,_:SendUserMessageOptions)->Result<(),ExtensionFailure> { Err(ExtensionFailure::new("unexpected user message")) }
@@ -30,6 +37,7 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
     let receipt=std::os::unix::net::UnixStream::connect(receipt_socket)?;
     receipt.set_read_timeout(Some(Duration::from_secs(15)))?;
     let mut receipt=std::io::BufReader::new(receipt);
+    let receipt_control=receipt.get_ref().try_clone()?;
     let mut ready=String::new(); receipt.read_line(&mut ready)?;
     assert_eq!(ready,"TASK44_PROVIDER_OBSERVER_READY\n","provider must register its observer before foreground launch");
     let env=BTreeMap::from([("HOME".into(),home.clone()),("MAHO_CODING_AGENT_DIR".into(),std::path::Path::new(&home).join("agent").to_string_lossy().into_owned()),("PATH".into(),"/usr/bin:/bin".into())]);
@@ -51,11 +59,15 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
     for handler in &api.registered.handlers[&EventKind::SessionStart] { handler(&mut start,&context).await?; }
     let task=api.registered.tools.iter().find(|tool| tool.definition.name=="task").ok_or("task missing")?;
     let (ready,received)=tokio::sync::oneshot::channel();
+    let (closed,closure)=std::sync::mpsc::channel();
     let provider_receipt=std::thread::spawn(move || {
-        let line=receipt.lines().next().transpose();
+        let mut lines=receipt.lines();
+        let line=lines.next().transpose();
         let accepted=matches!(&line,Ok(Some(line)) if line=="TASK44_PROVIDER_HELD");
         let _=ready.send(accepted);
+        let _=closed.send(lines.next().transpose());
     });
+    let mut provider_receipt=ReceiptReader { socket:receipt_control,thread:Some(provider_receipt) };
     let mut invocation=(task.definition.execute)(ToolCall { id:"native-foreground-drop",params:serde_json::json!({"prompt":"task44-drop","subagent_type":"native-proof","model":"task44/native","run_in_background":false}),signal:Default::default(),on_update:None,context:Some(&context) });
     let (stop,stopped)=std::sync::mpsc::channel(); let (timeout,deadline)=tokio::sync::oneshot::channel();
     let watchdog=std::thread::spawn(move || { if matches!(stopped.recv_timeout(Duration::from_secs(15)),Err(std::sync::mpsc::RecvTimeoutError::Timeout)) { let _=timeout.send(()); } });
@@ -65,7 +77,6 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
         _=deadline=>Err("native foreground provider-held progress deadline exceeded".into()),
     };
     let _=stop.send(()); watchdog.join().map_err(|_| "progress watchdog panicked")?;
-    provider_receipt.join().map_err(|_| "provider receipt reader panicked")?;
     observation.map_err(std::io::Error::other)?;
     let pending=component.engine.manager.start(&senpi_task::manager::types::ManagerStartSpec {
         prompt:"task44-launch".into(),subagent_type:Some("native-proof".into()),model:Some("task44/native".into()),
@@ -81,6 +92,9 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
     let dropped=records.iter().find(|entry| entry.record.task_id!=queued.task_id).ok_or("dropped task missing")?;
     assert_eq!(dropped.record.status,senpi_task::state::TaskStatus::Cancelled,"run_spawn must propagate the owned executor abort to manager cancellation");
     assert!(processes.lock().expect("processes")[0].wait_exit_timeout(Duration::from_secs(5)).is_some(),"actual foreground Drop must reap its child before later explicit cleanup");
+    let closed=closure.recv_timeout(Duration::from_secs(15))??;
+    assert_eq!(closed.as_deref(),Some("TASK44_PROVIDER_DROP_CLOSED"),"foreground Drop must close its actual held provider transport");
+    provider_receipt.thread.take().ok_or("provider reader missing")?.join().map_err(|_| "provider receipt reader panicked")?;
     let completed=component.engine.manager.wait_for(&queued.task_id,None,Some(Duration::from_secs(15)))?;
     assert_eq!(completed.status,senpi_task::state::TaskStatus::Completed);
     assert_eq!(completed.final_response.as_deref(),Some("task44-native-provider"));
