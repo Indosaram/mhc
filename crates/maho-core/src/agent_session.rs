@@ -1199,7 +1199,7 @@ impl maho_ext_api::ExtensionSessionActions for SessionExtensionActions {
         Box::pin(async move { let session = self.session().map_err(|error| maho_ext_api::ExecuteToolError {
             code: maho_ext_api::ExecuteToolErrorCode::Blocked, tool_name: name.to_owned(), message: error.message, active_tools: Vec::new(),
         })?;
-            session.execute_tool_with_updates(name, params, ExecuteToolOptions { signal: options.signal, activate_inactive_tool: options.activate_inactive_tool }, options.on_update, None).await
+            session.execute_tool_with_updates(name, params, ExecuteToolOptions { signal: options.signal, activate_inactive_tool: options.activate_inactive_tool }, options.on_update, None, false).await
                 .map_err(|error| maho_ext_api::ExecuteToolError { code: match error.code.as_str() {
                     "unknown_tool" => maho_ext_api::ExecuteToolErrorCode::UnknownTool, "inactive_tool" => maho_ext_api::ExecuteToolErrorCode::InactiveTool,
                     "invalid_params" => maho_ext_api::ExecuteToolErrorCode::InvalidParams, _ => maho_ext_api::ExecuteToolErrorCode::Blocked,
@@ -4492,7 +4492,7 @@ impl AgentSession {
         params: Value,
         options: ExecuteToolOptions,
     ) -> Result<AgentToolResult, ExecuteToolError> {
-        self.execute_tool_with_updates(tool_name, params, options, None, None).await
+        self.execute_tool_with_updates(tool_name, params, options, None, None, false).await
     }
 
     /// Execute a shared child tool without replacing its invocation identity.
@@ -4504,7 +4504,7 @@ impl AgentSession {
         params: Value,
         options: ExecuteToolOptions,
     ) -> Result<AgentToolResult, ExecuteToolError> {
-        self.execute_tool_with_updates(tool_name, params, options, None, Some(tool_call_id)).await
+        self.execute_tool_with_updates(tool_name, params, options, None, Some(tool_call_id), false).await
     }
 
     pub async fn execute_tool_with_call_id_and_updates(
@@ -4515,7 +4515,20 @@ impl AgentSession {
         options: ExecuteToolOptions,
         on_update: Option<maho_agent::types::AgentToolUpdateCallback>,
     ) -> Result<AgentToolResult, ExecuteToolError> {
-        self.execute_tool_with_updates(tool_name, params, options, on_update, Some(tool_call_id)).await
+        self.execute_tool_with_updates(tool_name, params, options, on_update, Some(tool_call_id), false).await
+    }
+
+    /// Shared child arguments have already passed the child's normalizer.
+    /// Parent validation and permission admission still run against those arguments.
+    pub async fn execute_prepared_shared_tool(
+        &self,
+        tool_call_id: &str,
+        tool_name: &str,
+        params: Value,
+        options: ExecuteToolOptions,
+        on_update: Option<maho_agent::types::AgentToolUpdateCallback>,
+    ) -> Result<AgentToolResult, ExecuteToolError> {
+        self.execute_tool_with_updates(tool_name, params, options, on_update, Some(tool_call_id), true).await
     }
 
     async fn execute_tool_with_updates(
@@ -4525,6 +4538,7 @@ impl AgentSession {
         options: ExecuteToolOptions,
         on_update: Option<maho_agent::types::AgentToolUpdateCallback>,
         tool_call_id: Option<&str>,
+        arguments_prepared: bool,
     ) -> Result<AgentToolResult, ExecuteToolError> {
         let mut active_tools = self.get_active_tool_names();
         let mut tool = self.agent.state().tools().iter().find(|candidate| candidate.name() == tool_name).cloned();
@@ -4559,7 +4573,8 @@ impl AgentSession {
             arguments: params.as_object().cloned().unwrap_or_default(),
             ..Default::default()
         };
-        let prepared = maho_agent::tool_arguments::prepare_agent_tool_call_arguments(&tool, &tool_call);
+        let prepared = if arguments_prepared { tool_call }
+            else { maho_agent::tool_arguments::prepare_agent_tool_call_arguments(&tool, &tool_call) };
         let mut input = maho_ai::utils::validation::validate_tool_arguments(&tool.tool, &prepared)
             .map_err(|error| ExecuteToolError { code: "invalid_params".to_owned(), tool_name: tool_name.to_owned(),
                 message: error.to_string(), active_tools: active_tools.clone() })?;

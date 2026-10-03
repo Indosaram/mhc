@@ -395,3 +395,39 @@ async fn native_shared_definition_forwards_parent_tool_updates() {
     assert_eq!(result.expect("shared result"), maho_ext_api::ToolResult::text("settled"));
     assert_eq!(*updates.lock().expect("updates"), vec![maho_ext_api::ToolResult::text("updating-child-call")]);
 }
+
+#[tokio::test]
+async fn shared_definition_normalizes_arguments_once_through_child_sdk() {
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    let dir = tempfile::tempdir().expect("shared normalization");
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let model = maho_ai::providers::faux::faux_provider(Default::default()).get_model(Some("faux-1")).expect("model");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let mut tool = maho_ext_api::ToolDefinition::new("normalizing_child_tool", "normalizing fixture",
+        serde_json::json!({"type":"object","properties":{"value":{"type":"integer"}},"required":["value"]}),
+        Arc::new(|call| Box::pin(async move { Ok(maho_ext_api::ToolResult::text(call.params["value"].to_string())) })));
+    tool.prepare_arguments = Some(Arc::new(move |mut params| {
+        observed.fetch_add(1, Ordering::SeqCst);
+        params["value"] = serde_json::json!(params["value"].as_i64().expect("integer input") + 1);
+        Ok(params)
+    }));
+    let parent = Arc::new(maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
+        cwd: Some(cwd.clone()), model: Some(model.clone()), minimal_resources: true,
+        session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
+        tools: Some(vec![tool.name.clone()]), custom_tools: vec![tool], ..Default::default()
+    }).await.expect("parent").session);
+    let shared = maho_cli::cli::task_runners::native_shared_parent_tool_definition("normalizing_child_tool", Arc::downgrade(&parent)).expect("shared definition");
+    let child = maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
+        cwd: Some(cwd.clone()), model: Some(model), minimal_resources: true,
+        session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
+        tools: Some(vec![shared.name.clone()]), custom_tools: vec![shared], ..Default::default()
+    }).await.expect("child").session;
+
+    let result = child.execute_tool("normalizing_child_tool", serde_json::json!({"value":1}), Default::default()).await;
+    child.dispose().await;
+    parent.dispose().await;
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(maho_ai::utils::text::content_text(&result.expect("shared execution").content, ""), "2");
+}

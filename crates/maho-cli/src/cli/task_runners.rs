@@ -112,7 +112,7 @@ pub fn native_shared_parent_tool_definition(
         let name = name.clone();
         Box::pin(async move {
             let result = match parent.upgrade() {
-                Some(parent) => parent.execute_tool_with_call_id_and_updates(&id, &name, params,
+                Some(parent) => parent.execute_prepared_shared_tool(&id, &name, params,
                     maho_core::agent_session::ExecuteToolOptions { signal, activate_inactive_tool: None }, updates).await,
                 None => {
                     let mut result = maho_agent::AgentToolResult::text("Parent session retired");
