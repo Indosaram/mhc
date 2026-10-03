@@ -2057,8 +2057,14 @@ dependencies = [
 name = "maho-ext-ask-user"
 version = "0.0.0"
 dependencies = [
+ "maho-agent",
+ "maho-ai",
+ "maho-core",
  "maho-ext-api",
+ "maho-ext-gpt-apply-patch",
+ "maho-ext-host",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

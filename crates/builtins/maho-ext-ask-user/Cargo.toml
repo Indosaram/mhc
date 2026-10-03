@@ -7,10 +7,16 @@ license = "MIT"
 
 [dependencies]
 maho-ext-api = { path = "../../maho-ext-api" }
+maho-ai = { path = "../../maho-ai" }
+maho-ext-gpt-apply-patch = { path = "../maho-ext-gpt-apply-patch" }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 
 [dev-dependencies]
+maho-ext-host = { path = "../../maho-ext-host" }
+maho-core = { path = "../../maho-core" }
+maho-agent = { path = "../../maho-agent" }
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [lints]

@@ -94,6 +94,10 @@ impl PendingTimer {
     pub fn deadline_at_ms(&self) -> u64 {
         self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).deadline_at_ms
     }
+    pub fn remaining_ms(&self) -> u64 {
+        let now = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remaining_ms(now)
+    }
 }
 impl Drop for PendingTimer {
     fn drop(&mut self) { self.task.abort(); }
