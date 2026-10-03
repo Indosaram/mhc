@@ -104,6 +104,28 @@ async fn refresh_from(context: RefreshModelsContext, headers: BTreeMap<String,St
     Ok(models)
 }
 pub struct ZcodeOAuth;
+async fn prepare_request(mut model: maho_ai::types::Model, options: Option<maho_ai::types::SimpleStreamOptions>, runtime: Arc<Mutex<Runtime>>, signing: Arc<crate::signing::Signing>, ticket_client: crate::offpeak::TicketClient, state: impl Fn() -> (bool,f64), fallback: impl Fn() -> String) -> (maho_ai::types::Model,maho_ai::types::SimpleStreamOptions) {
+    let mut options = options.unwrap_or_default(); let key = options.stream.request.api_key.clone().unwrap_or_default();
+    let (credential,ticket) = { let state = runtime.lock().unwrap_or_else(std::sync::PoisonError::into_inner); (state.credential.clone().filter(|(cached,_)|cached == &key),state.ticket.clone()) };
+    let enabled = state().0;
+    let ticket_id = if enabled && let Some((_,jwt)) = &credential && crate::offpeak::is_window(state().1) {
+        if let Some(ticket) = ticket.filter(|ticket|ticket.fresh(state().1,&key,jwt)) { Some(ticket.id) }
+        else { tokio::time::timeout(std::time::Duration::from_secs(60),acquire_ticket_from(runtime,ticket_client,key.clone(),jwt.clone())).await.ok().flatten() }
+    } else { None };
+    let mut request_headers = options.stream.request.headers.take().unwrap_or_default();
+    request_headers.remove("X-ZCode-Route");
+    if let (Some(id),Some((_,jwt))) = (ticket_id,credential) && crate::offpeak::is_window(state().1) && state().0 {
+        for header in crate::offpeak::SIGNATURE_HEADERS { request_headers.remove(header); }
+        options.stream.request.api_key = Some(jwt.clone());
+        for (key,value) in crate::offpeak::request_headers(&jwt,&key,&id) { request_headers.insert(key,Some(value)); }
+    } else {
+        model.base_url = fallback();
+        request_headers.insert("X-ZCode-Agent".into(),Some("glm".into())); request_headers.insert("Authorization".into(),Some(format!("Bearer {key}")));
+        for (key,value) in signing.resolve(&request_headers).await { request_headers.insert(key,Some(value)); }
+    }
+    options.stream.request.headers = Some(request_headers);
+    (model,options)
+}
 fn add_device_metadata(payload: &mut Value, provider: &str, device: Option<&str>) {
     if provider != "glm-zcode" || !payload.is_object() || payload.pointer("/metadata/user_id").is_some() { return; }
     if let Some(device) = device {
@@ -136,25 +158,7 @@ impl Extension for ZcodeOAuth {
                 let model = model.clone(); let context = context.clone(); let runtime = Arc::clone(&runtime); let headers = headers.clone(); let signing = Arc::clone(&signing);
                 let outer = maho_ai::utils::event_stream::create_assistant_message_event_stream(); let stream = outer.clone();
                 tokio::spawn(async move {
-                    let mut options = options.unwrap_or_default(); let key = options.stream.request.api_key.clone().unwrap_or_default();
-                    let (credential,ticket) = { let state = runtime.lock().unwrap_or_else(std::sync::PoisonError::into_inner); (state.credential.clone().filter(|(cached,_)|cached == &key),state.ticket.clone()) };
-                    let enabled = std::env::var("ZCODE_OFFPEAK_ENABLE").ok().as_deref() == Some("1");
-                    let ticket_id = if enabled && let Some((_,jwt)) = &credential && crate::offpeak::is_window(crate::oauth::now_ms()) {
-                        if let Some(ticket) = ticket.filter(|ticket|ticket.fresh(crate::oauth::now_ms(),&key,jwt)) { Some(ticket.id) }
-                        else { tokio::time::timeout(std::time::Duration::from_secs(60),acquire_ticket(runtime,headers,key.clone(),jwt.clone())).await.ok().flatten() }
-                    } else { None };
-                    let mut model = model; let mut request_headers = options.stream.request.headers.take().unwrap_or_default();
-                    request_headers.remove("X-ZCode-Route");
-                    if let (Some(id),Some((_,jwt))) = (ticket_id,credential) && crate::offpeak::is_window(crate::oauth::now_ms()) && std::env::var("ZCODE_OFFPEAK_ENABLE").ok().as_deref() == Some("1") {
-                        for header in crate::offpeak::SIGNATURE_HEADERS { request_headers.remove(header); }
-                        options.stream.request.api_key = Some(jwt.clone());
-                        for (key,value) in crate::offpeak::request_headers(&jwt,&key,&id) { request_headers.insert(key,Some(value)); }
-                    } else {
-                        model.base_url = crate::models::resolve_base_url();
-                        request_headers.insert("X-ZCode-Agent".into(),Some("glm".into())); request_headers.insert("Authorization".into(),Some(format!("Bearer {key}")));
-                        for (key,value) in signing.resolve(&request_headers).await { request_headers.insert(key,Some(value)); }
-                    }
-                    options.stream.request.headers = Some(request_headers);
+                    let (model,options) = prepare_request(model,options,runtime,signing,crate::offpeak::TicketClient::new(headers),|| (std::env::var("ZCODE_OFFPEAK_ENABLE").ok().as_deref() == Some("1"),crate::oauth::now_ms()),crate::models::resolve_base_url).await;
                     let inner = maho_ai::providers::anthropic::stream_simple_anthropic(&model,&context,Some(options));
                     loop { match inner.next().await { Ok(Some(event)) => stream.push(event), Ok(None) => break, Err(error) => { stream.fail(error); return; } } }
                     match inner.result().await { Ok(result) => stream.end(Some(result)), Err(error) => stream.fail(error) }
@@ -167,6 +171,57 @@ impl Extension for ZcodeOAuth {
 #[cfg(test)]
 mod tests {
     use super::*;
+#[tokio::test]
+    async fn deferred_ticket_rechecks_disabled_flag_and_closed_window() {
+        use std::io::{BufRead,Write};
+        for close_window in [false,true] {
+            let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap(); let base = format!("http://{}",listener.local_addr().unwrap());
+            let (accepted,seen) = tokio::sync::oneshot::channel(); let (release,ready) = std::sync::mpsc::channel();
+            let peer = std::thread::spawn(move || { let (mut stream,_) = listener.accept().unwrap(); stream.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap(); let mut reader = std::io::BufReader::new(stream.try_clone().unwrap()); let mut line = String::new(); loop { line.clear(); reader.read_line(&mut line).unwrap(); if line == "\r\n" { break; } } accepted.send(()).unwrap(); ready.recv_timeout(std::time::Duration::from_secs(3)).unwrap(); let body = json!({"ticket_id":"late","state":"ready"}).to_string(); write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap(); });
+            let runtime = Arc::new(Mutex::new(Runtime { credential: Some(("key".into(),"jwt".into())), ..Default::default() })); let state = Arc::new(Mutex::new((true,100.0))); let state_reader = state.clone();
+            let model = crate::models::persisted(&[crate::models::model_config("flash".into(),"Flash".into())]).remove(0); let mut options = maho_ai::types::SimpleStreamOptions::default(); options.stream.request.api_key = Some("key".into());
+            let request = tokio::spawn(async move { prepare_request(model,Some(options),runtime,Arc::new(crate::signing::Signing::default()),crate::offpeak::TicketClient { base, ..crate::offpeak::TicketClient::new(BTreeMap::new()) },|| *state_reader.lock().unwrap(),|| "http://fixture/fallback".into()).await });
+            tokio::time::timeout(std::time::Duration::from_secs(3),seen).await.unwrap().unwrap(); *state.lock().unwrap() = if close_window { (true,3_600_000.0) } else { (false,100.0) }; release.send(()).unwrap();
+            let (model,options) = request.await.unwrap(); assert_eq!(model.base_url,"http://fixture/fallback"); assert_eq!(options.stream.request.api_key.as_deref(),Some("key")); assert!(!options.stream.request.headers.unwrap().contains_key("X-Off-Peak-Ticket-ID")); peer.join().unwrap();
+        }
+    }
+#[tokio::test]
+    async fn prepared_offpeak_request_reaches_native_anthropic_wire_with_ticket_auth() {
+        use std::io::{BufRead,Read,Write};
+        maho_ai::api_registry::register_builtin_api_provider("anthropic-messages",maho_ai::api::anthropic_messages_lazy::anthropic_messages_api());
+        let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap(); let base = format!("http://{}",listener.local_addr().unwrap());
+        let peer = std::thread::spawn(move || {
+            let (mut socket,_) = listener.accept().unwrap(); socket.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap(); let mut reader = std::io::BufReader::new(socket.try_clone().unwrap()); let mut line = String::new(); reader.read_line(&mut line).unwrap(); assert!(line.starts_with("POST /v1/messages "),"{line}"); let mut length = 0; let mut headers = String::new();
+            loop { line.clear(); reader.read_line(&mut line).unwrap(); if line == "\r\n" { break; } else if let Some(value) = line.to_lowercase().strip_prefix("content-length:") { length = value.trim().parse().unwrap(); } headers.push_str(&line.to_lowercase()); }
+            let mut body = vec![0;length]; reader.read_exact(&mut body).unwrap(); assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["model"],"flash"); assert!(headers.contains("authorization: bearer jwt")); assert!(headers.contains("x-off-peak-ticket-id: ticket")); assert!(headers.contains("x-coding-plan-api-key: key")); assert!(!headers.contains("x-client-sig:"));
+            let frames = [json!({"type":"message_start","message":{"id":"fixture","usage":{"input_tokens":1,"output_tokens":0}}}),json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}),json!({"type":"content_block_stop","index":0}),json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}),json!({"type":"message_stop"})];
+            let body = frames.iter().map(|frame|format!("event: {}\ndata: {frame}\n\n",frame["type"].as_str().unwrap())).collect::<String>(); write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+        });
+        let runtime = Arc::new(Mutex::new(Runtime { credential: Some(("key".into(),"jwt".into())),ticket: Some(crate::offpeak::Ticket::new("key","jwt","ticket".into(),0.0)), ..Default::default() }));
+        let model = crate::models::persisted(&[crate::models::model_config("flash".into(),"Flash".into())]).remove(0); let mut options = maho_ai::types::SimpleStreamOptions::default(); options.stream.request.api_key = Some("key".into()); options.stream.request.max_retries = Some(0);
+        let (mut model,options) = prepare_request(model,Some(options),runtime,Arc::new(crate::signing::Signing::default()),crate::offpeak::TicketClient::new(BTreeMap::new()),|| (true,100.0),|| "invalid-fallback".into()).await;
+        model.base_url = base;
+        let stream = maho_ai::providers::anthropic::stream_simple_anthropic(&model,&maho_ai::types::Context::default(),Some(options));
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5),stream.result()).await.unwrap().unwrap(); let result = serde_json::to_value(result).unwrap(); assert!(result["content"].as_array().unwrap().iter().any(|block|block["text"] == "OK"),"{result}"); peer.join().unwrap();
+    }
+#[tokio::test]
+    async fn warm_ticket_request_selects_jwt_and_strips_signature_headers() {
+        let runtime = Arc::new(Mutex::new(Runtime { credential: Some(("key".into(),"jwt".into())),ticket: Some(crate::offpeak::Ticket::new("key","jwt","ticket".into(),0.0)), ..Default::default() }));
+        let mut model = crate::models::persisted(&[crate::models::model_config("flash".into(),"Flash".into())]).remove(0); model.base_url = crate::offpeak::OFFPEAK_BASE_URL.into();
+        let mut options = maho_ai::types::SimpleStreamOptions::default(); options.stream.request.api_key = Some("key".into()); options.stream.request.headers = Some(BTreeMap::from([("X-Client-Sig".into(),Some("stale".into())),("keep".into(),Some("value".into()))]));
+        let (model,options) = prepare_request(model,Some(options),runtime,Arc::new(crate::signing::Signing::default()),crate::offpeak::TicketClient::new(BTreeMap::new()),|| (true,100.0),|| "invalid-fallback".into()).await;
+        assert_eq!(model.base_url,crate::offpeak::OFFPEAK_BASE_URL); assert_eq!(options.stream.request.api_key.as_deref(),Some("jwt")); let headers = options.stream.request.headers.unwrap(); assert_eq!(headers["X-Off-Peak-Ticket-ID"].as_deref(),Some("ticket")); assert_eq!(headers["X-Coding-Plan-Api-Key"].as_deref(),Some("key")); assert!(!headers.contains_key("X-Client-Sig")); assert_eq!(headers["keep"].as_deref(),Some("value"));
+    }
+    #[tokio::test]
+    async fn disabled_or_foreign_credential_uses_fallback_without_ticket_auth() {
+        for (enabled,key) in [(false,"key"),(true,"other")] {
+            let runtime = Arc::new(Mutex::new(Runtime { credential: Some(("key".into(),"jwt".into())),ticket: Some(crate::offpeak::Ticket::new("key","jwt","ticket".into(),0.0)), ..Default::default() }));
+            let mut model = crate::models::persisted(&[crate::models::model_config("flash".into(),"Flash".into())]).remove(0); model.base_url = crate::offpeak::OFFPEAK_BASE_URL.into();
+            let mut options = maho_ai::types::SimpleStreamOptions::default(); options.stream.request.api_key = Some(key.into()); options.stream.request.headers = Some(BTreeMap::from([("X-ZCode-Route".into(),Some("off-peak".into()))]));
+            let (model,options) = prepare_request(model,Some(options),runtime,Arc::new(crate::signing::Signing::default()),crate::offpeak::TicketClient::new(BTreeMap::new()),|| (enabled,100.0),|| "http://fixture/fallback".into()).await;
+            assert_eq!(model.base_url,"http://fixture/fallback"); assert_eq!(options.stream.request.api_key.as_deref(),Some(key)); let headers = options.stream.request.headers.unwrap(); assert!(!headers.contains_key("X-Off-Peak-Ticket-ID")); assert!(!headers.contains_key("X-ZCode-Route")); assert_eq!(headers["Authorization"],Some(format!("Bearer {key}")));
+        }
+    }
     #[tokio::test]
     async fn offline_and_fresh_snapshots_restore_without_network_or_persistence_changes() {
         use maho_ai::models_store::ModelsStore;
@@ -223,6 +278,9 @@ struct RefreshProvider { urls: (String,String), observed: Arc<Mutex<Vec<maho_ext
         fn refresh_credential<'a>(&'a self, _: &'a dyn maho_ai::models::Provider, _: Option<&'a Value>, _: &'a AbortSignal) -> maho_ai::types::BoxFuture<'a,Result<Option<Value>,maho_ai::models::ModelsError>> { Box::pin(async { Ok(Some(json!({"type":"api_key","key":"fixture-key"}))) }) }
     }
     async fn refresh_fixture(live: Value, fallback: bool) -> (Vec<maho_ext_api::ProviderModelConfig>, Option<ModelsStoreEntry>) {
+        refresh_fixture_with_snapshot(live,fallback,None,false).await
+    }
+    async fn refresh_fixture_with_snapshot(live: Value, fallback: bool, checked_at: Option<i64>, force: bool) -> (Vec<maho_ext_api::ProviderModelConfig>, Option<ModelsStoreEntry>) {
         use maho_ai::models_store::ModelsStore;
         use std::io::{BufRead,Write};
         let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap(); let base = format!("http://{}",listener.local_addr().unwrap());
@@ -237,13 +295,16 @@ struct RefreshProvider { urls: (String,String), observed: Arc<Mutex<Vec<maho_ext
             }
         });
         let observed = Arc::new(Mutex::new(Vec::new())); let store = Arc::new(maho_ai::models_store::InMemoryModelsStore::new());
+        if let Some(checked_at) = checked_at { store.write("glm-zcode",&ModelsStoreEntry { models: crate::models::persisted(&[crate::models::model_config("old".into(),"Old".into())]),checked_at: Some(checked_at), ..Default::default() },None).await.unwrap(); }
         let models = maho_ai::models::create_models(Some(maho_ai::models::CreateModelsOptions { models_store: Some(store.clone()), auth: Some(Arc::new(KeyAuth)) }));
         models.set_provider(Arc::new(RefreshProvider { urls: (format!("{base}/live"),format!("{base}/catalog")), observed: observed.clone() }));
-        let result = models.refresh(maho_ai::models::ModelsRefreshOptions { allow_network: Some(true), ..Default::default() }).await; assert!(result.errors.is_empty(),"{:?}",result.errors); peer.join().unwrap();
+        let result = models.refresh(maho_ai::models::ModelsRefreshOptions { allow_network: Some(true), force: Some(force), ..Default::default() }).await; assert!(result.errors.is_empty(),"{:?}",result.errors); peer.join().unwrap();
         let output = observed.lock().unwrap().clone(); (output,store.read("glm-zcode",None).await.unwrap())
     }
     #[tokio::test] async fn hybrid_refresh_prefers_live_and_publishes_snapshot() { let (models,store) = refresh_fixture(json!({"data":[{"id":"live","display_name":"Live"}]}),false).await; assert_eq!(models[0].id,"live"); assert_eq!(store.unwrap().models[0].id,"live"); }
     #[tokio::test] async fn hybrid_refresh_empty_live_falls_back_to_models_dev() { let (models,store) = refresh_fixture(json!({"data":[]}),true).await; assert_eq!(models[0].id,"fallback"); assert_eq!(models[0].context_window,123); assert_eq!(store.unwrap().models[0].max_tokens,456); }
+    #[tokio::test] async fn expired_snapshot_is_replaced_by_live_models() { let (models,store) = refresh_fixture_with_snapshot(json!({"data":[{"id":"fresh"}]}),false,Some(0),false).await; assert_eq!(models[0].id,"fresh"); assert_eq!(store.unwrap().models[0].id,"fresh"); }
+    #[tokio::test] async fn force_bypasses_fresh_snapshot_ttl() { let (models,store) = refresh_fixture_with_snapshot(json!({"data":[{"id":"forced"}]}),false,Some(i64::MAX),true).await; assert_eq!(models[0].id,"forced"); assert_eq!(store.unwrap().models[0].id,"forced"); }
     #[test] fn request_metadata_preserves_existing_fields_and_uses_process_session() { let mut payload = json!({"metadata":{"custom":1}}); add_device_metadata(&mut payload,"glm-zcode",Some("fixture-device")); let metadata: Value = serde_json::from_str(payload["metadata"]["user_id"].as_str().unwrap()).unwrap(); assert_eq!(metadata,json!({"device_id":"fixture-device","account_uuid":"","session_id":crate::signing::session_id()})); assert_eq!(payload["metadata"]["custom"],1); }
     #[test] fn request_metadata_leaves_foreign_and_existing_identity_untouched() { for (provider,payload) in [("foreign",json!({})),("glm-zcode",json!({"metadata":{"user_id":null}})),("glm-zcode",json!({"metadata":{"user_id":"existing"}}))] { let mut actual = payload.clone(); add_device_metadata(&mut actual,provider,Some("fixture")); assert_eq!(actual,payload); } }
     #[test] fn source_header_names_match_wire_contract() { let headers = source_headers(); let expected = ["HTTP-Referer","User-Agent","X-Client-Language","X-Client-Timezone","X-Os-Category","X-Os-Version","X-Platform","X-Release-Channel","X-Title","X-ZCode-Agent","X-ZCode-App-Version"]; for key in expected { assert!(headers.contains_key(key),"{key}"); } assert_eq!(headers.len(),expected.len()); assert!(!headers.contains_key("X-ZCode-Version")); }

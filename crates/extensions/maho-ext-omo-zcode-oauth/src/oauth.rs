@@ -146,15 +146,18 @@ impl OAuthClient {
         let flow = match self.init_flow(&signal).await { Ok(flow) => flow, Err(error) if signal.aborted() => return Err(error), Err(_) => return self.manual(callbacks, &signal).await };
         callbacks.on_auth(OAuthAuthInfo { url: flow.url.clone(), instructions: Some("Complete the Z.AI login in your browser. This is an unofficial ZCode-based device flow and may break at any time; this session picks up the authorization code automatically, so there is nothing to paste.".into()) });
         callbacks.on_progress("Waiting for Z.AI login to complete...");
-        let (upstream, jwt) = loop {
-            if now_ms() / 1000.0 >= flow.expires { return Err(failure("GLM ZCode login flow expired before completion")); }
-            if let Some(tokens) = self.poll_once(&flow, &signal).await? { break tokens; }
-            tokio::select! { biased; _ = signal.cancelled() => return Err(failure("GLM ZCode cli poll request cancelled")), _ = tokio::time::sleep(Duration::from_secs_f64(flow.interval)) => {} }
-        };
+        let (upstream, jwt) = self.poll_flow(&flow,&signal,|seconds|tokio::time::sleep(Duration::from_secs_f64(seconds))).await?;
         callbacks.on_progress("Provisioning Z.AI API key...");
         let mut credential = self.provision(&upstream, &signal).await?;
         if let Some(jwt) = jwt { credential.extra.insert("zcodeJwtToken".into(), json!(jwt)); }
         Ok(credential)
+    }
+    async fn poll_flow<F: std::future::Future<Output=()>>(&self, flow: &DeviceFlow, signal: &AbortSignal, wait: impl Fn(f64) -> F) -> Result<(String,Option<String>),ExtensionFailure> {
+        loop {
+            if now_ms() / 1000.0 >= flow.expires { return Err(failure("GLM ZCode login flow expired before completion")); }
+            if let Some(tokens) = self.poll_once(flow,signal).await? { return Ok(tokens); }
+            tokio::select! { biased; _ = signal.cancelled() => return Err(failure("GLM ZCode cli poll request cancelled")), _ = wait(flow.interval) => {} }
+        }
     }
     pub async fn refresh(&self, credential: &OAuthCredentials, signal: &AbortSignal) -> Result<OAuthCredentials, ExtensionFailure> {
         if credential.refresh.is_empty() { return Err(failure("GLM ZCode credentials require re-login (`/login glm-zcode`); no stored upstream Z.AI token")); }
@@ -174,6 +177,16 @@ impl ExtensionOAuthConfig for OAuthClient {
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn cancellation_between_device_polls_prevents_another_request() {
+        use std::io::{BufRead,Write};
+        let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap(); let poll = format!("http://{}/poll",listener.local_addr().unwrap());
+        let peer = std::thread::spawn(move || { let (mut stream,_) = listener.accept().unwrap(); stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap(); let mut reader = std::io::BufReader::new(stream.try_clone().unwrap()); let mut line = String::new(); loop { line.clear(); reader.read_line(&mut line).unwrap(); if line == "\r\n" { break; } } let body = json!({"data":{"status":"pending"}}).to_string(); write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap(); });
+        let controller = maho_ai::utils::abort::AbortController::new(); let signal = controller.signal();
+        let client = OAuthClient { poll, ..Default::default() }; let flow = DeviceFlow { id:"fixture".into(),token:"token".into(),url:"https://example.test".into(),expires:now_ms()/1000.0+120.0,interval:2.0 };
+        let result = client.poll_flow(&flow,&signal,|seconds| { assert!((seconds-2.0).abs() < f64::EPSILON); controller.abort(None); std::future::pending::<()>() }).await;
+        assert!(result.unwrap_err().to_string().contains("request cancelled")); peer.join().unwrap();
+    }
+    #[tokio::test]
     async fn expired_init_never_polls_or_prompts() {
         use std::io::{BufRead,Write};
         let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap(); let init = format!("http://{}/init",listener.local_addr().unwrap());
@@ -189,6 +202,19 @@ mod tests {
         assert!(client.poll_once(&flow,&signal).await.unwrap_err().to_string().contains("cli poll request failed: 403")); for _ in 0..3 { assert!(client.poll_once(&flow,&signal).await.unwrap().is_none()); } peer.join().unwrap();
     }
     struct Callbacks { auth: std::sync::Mutex<Option<String>> }
+    struct CancelledCallbacks(maho_ai::utils::abort::AbortSignal);
+    impl OAuthLoginCallbacks for CancelledCallbacks {
+        fn on_auth(&self, _: OAuthAuthInfo) { panic!("cancelled login must not authorize"); }
+        fn on_device_code(&self, _: maho_ai::oauth::OAuthDeviceCodeInfo) {}
+        fn on_prompt(&self, _: OAuthPrompt) -> maho_ai::types::BoxFuture<'_,String> { Box::pin(async { panic!("cancelled login must not prompt") }) }
+        fn on_select(&self, _: maho_ai::oauth::OAuthSelectPrompt) -> maho_ai::types::BoxFuture<'_,Option<String>> { Box::pin(async { None }) }
+        fn signal(&self) -> Option<AbortSignal> { Some(self.0.clone()) }
+    }
+    #[tokio::test]
+    async fn cancelled_login_never_authorizes_or_enters_manual_fallback() {
+        let controller = maho_ai::utils::abort::AbortController::new(); controller.abort(None);
+        assert!(OAuthClient::default().login(&CancelledCallbacks(controller.signal())).await.unwrap_err().to_string().contains("request cancelled"));
+    }
     impl OAuthLoginCallbacks for Callbacks {
         fn on_auth(&self, info: OAuthAuthInfo) { *self.auth.lock().expect("capture authorization") = Some(info.url); }
         fn on_device_code(&self, _: maho_ai::oauth::OAuthDeviceCodeInfo) {}
@@ -196,11 +222,14 @@ mod tests {
         fn on_select(&self, _: maho_ai::oauth::OAuthSelectPrompt) -> maho_ai::types::BoxFuture<'_,Option<String>> { Box::pin(async { None }) }
     }
     async fn login_fixture(manual: bool, server_token: bool, jwt: bool) {
+        login_fixture_variant(manual,server_token,jwt,0).await;
+    }
+    async fn login_fixture_variant(manual: bool, server_token: bool, jwt: bool, init_variant: u8) {
         use std::io::{BufRead,Read,Write};
         let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap();
         let base = format!("http://{}",listener.local_addr().unwrap());
         let peer = std::thread::spawn(move || {
-            let init_payload = if manual { json!({"code":0,"data":{}}) } else { json!({"code":0,"data":{"flow_id":"fixture","poll_token":if server_token { "poll-token" } else { "" },"authorize_url":"https://example.test/authorize","expires_at":now_ms()/1000.0+120.0,"poll_interval_sec":1}}) };
+            let init_payload = if manual && init_variant != 1 { json!({"code":0,"data":{}}) } else { json!({"code":0,"data":{"flow_id":"fixture","poll_token":if server_token { "poll-token" } else { "" },"authorize_url":if init_variant == 1 { "http://example.test/authorize" } else { "https://example.test/authorize" },"expires_at":now_ms()/1000.0+120.0,"poll_interval_sec":1}}) };
             let mut login_payload = json!({"data":{"zai":{"access_token":"upstream"}}}); if jwt { login_payload["data"]["token"] = json!("jwt"); }
             let mut init_auth = String::new();
             for (method,path,payload) in [
@@ -221,6 +250,7 @@ mod tests {
                 if path == "/poll/fixture" { assert!(headers.contains(if server_token { "authorization: bearer poll-token" } else { &init_auth })); }
                 if path == "/broker" { let payload: Value = serde_json::from_slice(&body).unwrap(); assert_eq!(payload["code"],"fixture-code"); assert_eq!(payload["redirect_uri"],"zcode://oauth/callback"); assert!(!payload["state"].as_str().unwrap().is_empty()); }
                 if method == "POST" && path.ends_with("api_keys") { assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(),json!({"name":"zcode-api-key"})); }
+                if path == "/init" && init_variant == 2 { continue; }
                 let body = payload.to_string(); write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
             }
         });
@@ -241,6 +271,8 @@ mod tests {
     #[tokio::test] async fn device_login_persists_jwt_without_manual_prompt() { login_fixture(false,true,true).await; }
     #[tokio::test] async fn missing_server_token_uses_client_bearer_and_omits_absent_jwt() { login_fixture(false,false,false).await; }
     #[tokio::test] async fn malformed_init_falls_back_to_manual_broker_and_preserves_jwt() { login_fixture(true,false,true).await; }
+    #[tokio::test] async fn insecure_authorize_url_falls_back_to_manual_broker() { login_fixture_variant(true,false,true,1).await; }
+    #[tokio::test] async fn init_network_disconnect_falls_back_to_manual_broker() { login_fixture_variant(true,false,true,2).await; }
     #[test] fn callback_preserves_percent_encoded_code() { assert_eq!(callback_code("zcode://oauth/callback?code=a%2Bb&state=s", "s").unwrap(), "a+b"); }
     #[test] fn callback_rejects_duplicate_fields() { assert!(callback_code("zcode://oauth/callback?code=a&code=b&state=s", "s").is_err()); }
     #[test] fn callback_rejects_wrong_state() { assert!(callback_code("zcode://oauth/callback?code=a&state=wrong", "s").is_err()); }

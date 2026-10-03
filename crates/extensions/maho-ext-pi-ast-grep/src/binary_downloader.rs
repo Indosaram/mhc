@@ -30,12 +30,14 @@ pub fn extract_zip_archive(archive: &Path, destination: &Path) -> Result<(), Box
         if !canonical_parent.starts_with(&destination) {
             return Err(std::io::Error::other(format!("Out of bound path \"{}\" found while processing file {name}", canonical_parent.display())).into());
         }
-        let directory = entry.is_dir();
-        let mode = entry.unix_mode().unwrap_or(if directory { 0o755 } else { 0o644 });
+        let entry_mode = entry.unix_mode().unwrap_or(0);
+        let directory = entry.is_dir() || entry_mode & 0o170000 == 0o040000;
+        let mode = if entry_mode == 0 { if directory { 0o755 } else { 0o644 } } else { entry_mode };
         if directory {
-            std::fs::create_dir_all(&output)?;
             #[cfg(unix)]
-            { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&output, std::fs::Permissions::from_mode(mode & 0o777))?; }
+            { use std::os::unix::fs::DirBuilderExt; std::fs::DirBuilder::new().recursive(true).mode(mode & 0o777).create(&output)?; }
+            #[cfg(not(unix))]
+            std::fs::create_dir_all(&output)?;
         } else if mode & 0o170000 == 0o120000 {
             let mut target = String::new();
             std::io::Read::read_to_string(&mut entry, &mut target)?;

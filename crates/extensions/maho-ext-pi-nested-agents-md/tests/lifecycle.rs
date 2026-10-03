@@ -55,6 +55,9 @@ impl ExtensionUi for Ui {
     fn theme(&self) -> Theme { Theme::default() }
 }
 fn fixture() -> (tempfile::TempDir, ExtensionRunner) {
+    fixture_with(Vec::new())
+}
+fn fixture_with(mut extensions: Vec<Box<dyn Extension>>) -> (tempfile::TempDir, ExtensionRunner) {
     let tree = tempfile::tempdir().expect("create lifecycle fixture");
     std::fs::create_dir(tree.path().join("src")).expect("create source directory");
     std::fs::write(tree.path().join("src/AGENTS.md"), "fixture rules").expect("write rules");
@@ -66,7 +69,8 @@ fn fixture() -> (tempfile::TempDir, ExtensionRunner) {
         is_idle_fn: Arc::new(|| true), wait_for_idle_fn: Arc::new(|| Box::pin(async {})), is_project_trusted_fn: Arc::new(|| true),
         is_compacting_fn: Arc::new(|| false), get_system_prompt_fn: Arc::new(String::new),
         get_system_prompt_options_fn: Arc::new(BuildSystemPromptOptions::default), registered_mcp_servers: Vec::new(), update_tool_hook_status: None };
-    let runner = ExtensionRunner::from_static(vec![Box::new(maho_ext_pi_nested_agents_md::NestedAgentsMd)], context);
+    extensions.push(Box::new(maho_ext_pi_nested_agents_md::NestedAgentsMd));
+    let runner = ExtensionRunner::from_static(extensions, context);
     (tree, runner)
 }
 fn read_event(tree: &Path) -> ToolResultEvent {
@@ -84,6 +88,20 @@ async fn content_prefix_survives_native_hook() {
     let result = content(&mut runner, event).await.expect("injected content");
     assert_eq!(&result[..2], expected);
     assert_eq!(result.len(), 3);
+}
+
+struct PriorMiddleware;
+impl Extension for PriorMiddleware {
+    fn register(&self, api: &mut ExtensionApi) {
+        api.on(EventKind::ToolResult,Arc::new(|_,_| Box::pin(async { Ok(EventResult::ToolResult(ToolResultEventResult { content: Some(vec![ToolContent::text("modified")]), ..Default::default() })) })));
+    }
+}
+#[tokio::test]
+async fn injection_preserves_content_from_prior_native_middleware() {
+    let (tree,mut runner) = fixture_with(vec![Box::new(PriorMiddleware)]);
+    let result = content(&mut runner,read_event(tree.path())).await.unwrap();
+    assert_eq!(result[0],ToolContent::text("modified")); assert_eq!(result.len(),2);
+    assert!(serde_json::to_value(&result[1]).unwrap()["text"].as_str().unwrap().contains("fixture rules"));
 }
 #[tokio::test]
 async fn deduplicated_until_compact() {

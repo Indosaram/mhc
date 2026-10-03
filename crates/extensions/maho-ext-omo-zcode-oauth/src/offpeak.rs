@@ -39,16 +39,19 @@ impl TicketClient {
     }
     pub async fn availability(&self, jwt: &str, key: &str) -> bool { self.fetch("/availability",jwt,key,None).await.is_some_and(|payload| payload.get("data").filter(|value| value.is_object()).unwrap_or(&payload).get("can_take_number") == Some(&Value::Bool(true))) }
     pub async fn ensure(&self, jwt: &str, key: &str, task: &str) -> Option<String> {
+        self.ensure_with(jwt,key,task,crate::oauth::now_ms,|ms|tokio::time::sleep(Duration::from_secs_f64(ms/1000.0))).await
+    }
+    async fn ensure_with<F: std::future::Future<Output=()>>(&self, jwt: &str, key: &str, task: &str, now: impl Fn() -> f64, wait: impl Fn(f64) -> F) -> Option<String> {
         let payload = self.fetch("",jwt,key,Some(json!({"task_id":task}))).await?;
         let ticket = payload.get("data").filter(|value| value.is_object()).unwrap_or(&payload);
         let id = ticket.get("ticket_id").and_then(Value::as_str).filter(|value| !value.is_empty())?.to_owned();
         let mut state = ticket.get("state").and_then(Value::as_str).unwrap_or_default().to_owned();
         let mut interval = poll_interval(ticket.get("next_poll_after"));
-        let deadline = crate::oauth::now_ms() + 120_000.0;
+        let deadline = now() + 120_000.0;
         loop {
             if state == "ready" || state == "active" { return Some(id); }
-            if state != "queued" || crate::oauth::now_ms() + interval > deadline { return None; }
-            tokio::time::sleep(Duration::from_secs_f64(interval / 1000.0)).await;
+            if state != "queued" || now() + interval > deadline { return None; }
+            wait(interval).await;
             let payload = self.fetch("/status",jwt,key,Some(json!({"ticket_ids":[id]}))).await?;
             let body = payload.get("data").filter(|value| value.is_object()).unwrap_or(&payload);
             let ticket = body.get("tickets").and_then(Value::as_array)?.iter().find(|ticket| ticket.get("ticket_id").and_then(Value::as_str) == Some(&id))?;
@@ -60,6 +63,17 @@ impl TicketClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn final_permitted_ticket_poll_returns_ready_or_stops_when_queued() {
+        use std::io::{BufRead,Write};
+        for ready in [false,true] {
+            let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap(); let base = format!("http://{}",listener.local_addr().unwrap());
+            let peer = std::thread::spawn(move || { for step in 0..=4 { let (mut stream,_) = listener.accept().unwrap(); stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap(); let mut reader = std::io::BufReader::new(stream.try_clone().unwrap()); let mut line = String::new(); reader.read_line(&mut line).unwrap(); assert!(line.starts_with(if step == 0 { "POST / " } else { "POST /status " })); loop { line.clear(); reader.read_line(&mut line).unwrap(); if line == "\r\n" { break; } } let ticket = json!({"ticket_id":"fixture","state":if ready && step == 4 { "ready" } else { "queued" },"next_poll_after":30}); let payload = if step == 0 { ticket } else { json!({"tickets":[ticket]}) }; let body = payload.to_string(); write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap(); } });
+            let client = TicketClient { base, ..TicketClient::new(BTreeMap::new()) }; let clock = std::cell::Cell::new(0.0);
+            let result = client.ensure_with("jwt","key","task",||clock.get(),|ms| { assert!((ms-30_000.0).abs() < f64::EPSILON); clock.set(clock.get()+ms); std::future::ready(()) }).await;
+            assert_eq!(result.as_deref(),ready.then_some("fixture")); assert!((clock.get()-120_000.0).abs() < f64::EPSILON); peer.join().unwrap();
+        }
+    }
     #[test] fn window_boundaries_use_kst() { assert!(is_window(15.0*3_600_000.0)); assert!(is_window(0.0)); assert!(!is_window(3_600_000.0)); }
     #[test] fn poll_interval_is_clamped() { assert!((poll_interval(Some(&json!(0))) - 2000.0).abs() < f64::EPSILON); assert!((poll_interval(Some(&json!(100))) - 30_000.0).abs() < f64::EPSILON); }
     #[test] fn ticket_is_bound_to_credentials() { let ticket = Ticket::new("key","jwt","ticket".into(),0.0); assert!(ticket.fresh(100.0,"key","jwt")); assert!(!ticket.fresh(100.0,"other","jwt")); }
