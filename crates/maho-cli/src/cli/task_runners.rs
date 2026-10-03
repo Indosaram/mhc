@@ -34,6 +34,15 @@ pub fn live_parent_registry(
     }))
 }
 
+pub fn native_child_session_manager(
+    child: &senpi_task::runners::in_process::child_options::ChildSessionOptions,
+) -> maho_core::session_manager::SessionManager {
+    maho_core::session_manager::SessionManager::open(
+        &child.session_manager.session_file().to_string_lossy(),
+        Some(child.session_manager.session_dir()), Some(&child.cwd), None,
+    )
+}
+
 struct NativeParentTool {
     name: String,
     description: String,

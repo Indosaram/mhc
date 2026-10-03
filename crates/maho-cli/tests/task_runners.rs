@@ -4,6 +4,36 @@ use maho_cli::cli::task_runners::{authenticated_rpc_options, native_rpc_options}
 use senpi_task::runners::types::RpcRunnerSpec;
 
 #[test]
+fn native_child_transcript_preserves_exact_locator_on_create_and_resume() {
+    use senpi_task::runners::in_process::{child_options::build_child_session_options,
+        runner::ChildSpec, session_manager::ChildSessionManager};
+    let dir = tempfile::tempdir().expect("isolated child transcript");
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let session_dir = dir.path().join("children/child").to_string_lossy().into_owned();
+    let spec = ChildSpec { cwd: cwd.clone(), session_dir: Some(session_dir.clone()), ..Default::default() };
+    let locator = ChildSessionManager::create(&cwd, &session_dir).expect("child locator");
+    let path = locator.session_file().to_path_buf();
+    let options = build_child_session_options(&spec, locator, &[], &[]);
+
+    let mut manager = maho_cli::cli::task_runners::native_child_session_manager(&options);
+    manager.append_message(serde_json::json!({"role":"user","content":"child task","timestamp":1}));
+    manager.append_message(serde_json::json!({"role":"assistant","content":[],"stopReason":"stop","timestamp":2}));
+    let session_id = manager.session_id().to_owned();
+    let before = std::fs::read(&path).expect("native transcript persisted at child locator");
+    let resumed_options = build_child_session_options(&spec,
+        ChildSessionManager::open(&path, &session_dir, &cwd), &[], &[]);
+
+    let resumed = maho_cli::cli::task_runners::native_child_session_manager(&resumed_options);
+
+    assert_eq!(manager.session_file(), Some(path.to_string_lossy().as_ref()));
+    assert_eq!(resumed.session_file(), manager.session_file());
+    assert_eq!(resumed.session_id(), session_id);
+    assert_eq!(resumed.build_context(resumed.leaf_id()).messages.len(), 2);
+    assert_eq!(std::fs::read(&path).expect("retained transcript"), before);
+    assert_eq!(std::fs::read_dir(&session_dir).expect("child directory").count(), 1);
+}
+
+#[test]
 fn native_rpc_spawn_preserves_isolation_and_explicit_member_profile() {
     let dir = tempfile::tempdir().expect("isolated task state");
     let executable = dir.path().join("mhc");
