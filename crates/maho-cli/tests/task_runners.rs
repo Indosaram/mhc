@@ -120,6 +120,47 @@ fn native_rpc_spawn_preserves_isolation_and_explicit_member_profile() {
     assert_eq!(descriptor.args, ["--mode", "rpc", "--no-extensions", "--extension", "native-team", "--model", "provider/model"]);
 }
 
+#[tokio::test]
+async fn converted_child_options_drive_native_provider_and_restore_exact_transcript() {
+    use std::sync::Arc;
+    use senpi_task::runners::in_process::{child_options::build_child_session_options,
+        runner::ChildSpec, session_manager::ChildSessionManager};
+    let dir = tempfile::tempdir().expect("isolated native child");
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let session_dir = dir.path().join("children/child").to_string_lossy().into_owned();
+    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("native child response", Default::default()).into()]);
+    let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+        maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() });
+    runtime.register_native_provider(provider.provider.clone());
+    let registry = maho_core::model_registry::ModelRegistry::new(runtime.clone());
+    let spec = ChildSpec {
+        cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+        auth_storage: Some(registry.auth_storage.clone()),
+        model_registry: Some(Arc::new(maho_cli::cli::task_runners::NativeChildModelRegistry(registry))),
+        model_runtime: Some(Arc::new(runtime)), model: Some(Arc::new(provider.get_model(Some("faux-1")).expect("model"))),
+        tool_allowlist: Some(Vec::new()), ..Default::default()
+    };
+    let locator = ChildSessionManager::create(&cwd, &session_dir).expect("locator");
+    let path = locator.session_file().to_path_buf();
+    let child = build_child_session_options(&spec, locator, &[], &[]);
+    let options = maho_cli::cli::task_runners::native_child_sdk_options(&child, Vec::new()).expect("child SDK options");
+
+    let created = tokio::time::timeout(std::time::Duration::from_secs(5), maho_core::sdk::create_agent_session(options))
+        .await.expect("bounded native construction").expect("child session");
+    let prompt = tokio::time::timeout(std::time::Duration::from_secs(5), created.session.prompt("native child task", Default::default())).await;
+    let text = created.session.get_last_assistant_text();
+    created.session.dispose().await;
+    prompt.expect("bounded native provider turn").expect("child turn");
+    let restored_child = build_child_session_options(&spec, ChildSessionManager::open(&path, &session_dir, &cwd), &[], &[]);
+    let restored = maho_cli::cli::task_runners::native_child_session_manager(&restored_child);
+
+    assert_eq!(text.as_deref(), Some("native child response"));
+    assert_eq!(provider.get_call_log().len(), 1);
+    assert_eq!(restored.session_file(), Some(path.to_string_lossy().as_ref()));
+    assert_eq!(restored.build_context(restored.leaf_id()).messages.len(), 2);
+}
+
 #[test]
 fn native_rpc_spawn_removes_inherited_member_identity() {
     let dir = tempfile::tempdir().expect("isolated task state");
