@@ -1,0 +1,11 @@
+const pin='ddf5f5d21de57ee3e80f1a6f96aff21a9dd34662';
+const response=await fetch(`https://raw.githubusercontent.com/code-yeongyu/pi-websearch/${pin}/src/websearch/config.ts`);
+if(!response.ok)throw new Error(`Source ${response.status}`);
+const source=await response.text();
+const script=new Bun.Transpiler({loader:'ts'}).transformSync(source).replace(/^import .*?from .*?;\s*$/gm,'').replace(/export /g,'');
+const input={strategy:'priority',fallback:true,auto:true,providers:[{provider:'duckduckgo-html'},{provider:'not-a-provider'}]};
+const child=Bun.spawn(['node','--input-type=module','-e',script+`\nconsole.log(JSON.stringify(validateWebsearchConfig(${JSON.stringify(input)})));`],{stdout:'pipe',stderr:'inherit'});
+const output=await new Response(child.stdout).text();const exit=await child.exited;
+const result=JSON.parse(output);
+if(exit!==0||result.ok!==false||result.reason!=='invalid_config')throw new Error('Pinned direct validation mismatch');
+console.log(JSON.stringify({pin,input,result,exit}));

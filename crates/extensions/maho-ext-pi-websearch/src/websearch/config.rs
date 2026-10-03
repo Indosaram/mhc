@@ -52,6 +52,14 @@ pub fn validate_websearch_config_value(value:&Value)->Result<WebsearchConfig,(Co
     let raw=value.as_object().ok_or_else(||(ConfigLoadFailureReason::InvalidConfig,"Websearch config must be an object.".into()))?;
     if optional_enum::<RoutingStrategy>(raw.get("strategy")).is_none(){return Err((ConfigLoadFailureReason::InvalidConfig,format!("Unsupported routing strategy: {}",raw.get("strategy").and_then(Value::as_str).unwrap_or("undefined"))));}
     if raw.get("auto").and_then(Value::as_bool).is_none(){return Err((ConfigLoadFailureReason::InvalidConfig,"Websearch config auto must be a boolean.".into()));}
+    if let Some(providers)=raw.get("providers").and_then(Value::as_array){
+        for provider in providers{
+            let entry=provider.as_object().ok_or_else(||(ConfigLoadFailureReason::InvalidConfig,"Invalid provider config.".into()))?;
+            if optional_enum::<SearchProvider>(entry.get("provider")).is_none(){return Err((ConfigLoadFailureReason::InvalidConfig,format!("Unsupported provider: {}",entry.get("provider").and_then(Value::as_str).unwrap_or("undefined"))));}
+            let parsed=provider_entry(entry).ok_or_else(||(ConfigLoadFailureReason::InvalidConfig,"Invalid provider config.".into()))?;
+            if let ProviderValidationResult::Failure{reason,message}=validate_provider_config(parsed){return Err((match reason{ProviderValidationFailureReason::InvalidConfig=>ConfigLoadFailureReason::InvalidConfig,ProviderValidationFailureReason::MissingApiKey=>ConfigLoadFailureReason::MissingApiKey},message));}
+        }
+    }
     let config=config_from_object(raw).ok_or_else(||(ConfigLoadFailureReason::InvalidConfig,"Invalid provider config.".into()))?;
     validate_websearch_config(&config)?;Ok(config)
 }
