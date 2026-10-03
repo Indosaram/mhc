@@ -19,3 +19,5 @@ workspace = true
 
 [dev-dependencies]
 tempfile = "=3.27.0"
+maho-ext-host = { path = "../../maho-ext-host" }
+maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }

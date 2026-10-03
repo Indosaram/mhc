@@ -2138,6 +2138,8 @@ version = "0.0.0"
 dependencies = [
  "maho-ai",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
  "maho-tools",
  "regex",
  "serde",

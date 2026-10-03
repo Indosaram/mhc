@@ -35,6 +35,100 @@ pub fn sync_tool_names(mode:ApplyPatchWireMode,current:&[String],registered:&[St
     restored.extend(removed_edit_tools.iter().filter(|name|registered.contains(name)).cloned()); removed_edit_tools.clear();
     let mut unique=Vec::new(); for name in restored { if !unique.contains(&name) { unique.push(name); } } Some(unique)
 }
+
+#[derive(Default)]
+pub struct ApplyPatchExtension;
+
+impl maho_ext_api::Extension for ApplyPatchExtension {
+    fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
+        register_apply_patch_extension(api);
+    }
+}
+
+fn register_native_tool(api: &mut maho_ext_api::ExtensionApi, mode: ApplyPatchWireMode) -> Result<(), maho_ext_api::ExtensionFailure> {
+    let definition = crate::tool::create_apply_patch_tool_variant(mode);
+    let execute = definition.execute.clone();
+    api.register_tool_with_extension_context(definition, std::sync::Arc::new(move |id, params, _, update, context| {
+        let execute = execute.clone();
+        Box::pin(async move {
+            let on_update = update.map(|update| std::sync::Arc::new(move |result: maho_ext_api::ToolResult| {
+                update(maho_ext_api::AgentToolResult {
+                    content: result.content.into_iter().filter_map(|part| match part {
+                        maho_ext_api::ToolContent::Text { text, .. } => Some(maho_ext_api::ContentBlock::text(text)),
+                        maho_ext_api::ToolContent::Image { .. } => None,
+                    }).collect(),
+                    details: result.details.unwrap_or(Value::Null), ..maho_ext_api::AgentToolResult::text("")
+                });
+                Ok(())
+            }) as maho_tools::definition::ToolUpdateCallback);
+            let result = execute(maho_ext_api::ToolCall {
+                id, params, signal: context.signal.clone().unwrap_or_default(), context: Some(context), on_update,
+            }).await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+            let details = result.details.unwrap_or(Value::Null);
+            let is_error = has_apply_patch_failures(&details);
+            Ok(maho_ext_api::AgentToolResult {
+                content: result.content.into_iter().filter_map(|part| match part {
+                    maho_ext_api::ToolContent::Text { text, .. } => Some(maho_ext_api::ContentBlock::text(text)),
+                    maho_ext_api::ToolContent::Image { .. } => None,
+                }).collect(),
+                details, is_error: Some(is_error), ..maho_ext_api::AgentToolResult::text("")
+            })
+        })
+    }))
+}
+
+pub fn register_apply_patch_extension(api: &mut maho_ext_api::ExtensionApi) {
+    use maho_ext_api::{EventKind, EventResult, ExtensionApi, ExtensionEvent};
+    use std::sync::{Arc, Mutex};
+    if let Err(error) = register_native_tool(api, ApplyPatchWireMode::Freeform) { std::panic::panic_any(error); }
+    register_failure_hook(api);
+    let live = Arc::new(Mutex::new(ExtensionApi::new(
+        api.registered.clone(), api.profile.clone(), api.events.clone(), api.runtime.clone(),
+    )));
+    let state = Arc::new(Mutex::new((ApplyPatchWireMode::Freeform, ApplyPatchWireMode::None, Vec::new())));
+    let runtime = api.runtime.clone();
+    let lazy_state = state.clone();
+    api.register_lazy_tool_activator(Arc::new(move |name| {
+        if name != "apply_patch" || lazy_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).1 == ApplyPatchWireMode::None {
+            return false;
+        }
+        let Ok(actions) = runtime.session_actions() else { return false; };
+        let Ok(mut names) = actions.get_active_tools() else { return false; };
+        if names.iter().any(|name| name == "apply_patch") { return false; }
+        names.push("apply_patch".into());
+        actions.set_active_tools(names).is_ok()
+    }));
+    for kind in [EventKind::SessionStart, EventKind::ModelSelect] {
+        let live = live.clone();
+        let state = state.clone();
+        api.on(kind, Arc::new(move |event, context| {
+            let live = live.clone();
+            let state = state.clone();
+            Box::pin(async move {
+                let model = match event {
+                    ExtensionEvent::ModelSelect(event) => Some(&event.model),
+                    _ => context.model.as_ref(),
+                };
+                let mode = get_apply_patch_wire_mode(model.map(|model| (model.api.as_str(), model.id.as_str())));
+                let mut api = live.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.1 = mode;
+                let current = api.get_active_tools()?;
+                if mode != ApplyPatchWireMode::None && state.0 != mode {
+                    register_native_tool(&mut api, mode)?;
+                    state.0 = mode;
+                }
+                let registered = if mode == ApplyPatchWireMode::None && !state.2.is_empty() {
+                    api.get_all_tools()?.into_iter().map(|tool| tool.name).collect()
+                } else { Vec::new() };
+                if let Some(names) = sync_tool_names(mode, &current, &registered, &mut state.2) {
+                    api.set_active_tools(names)?;
+                }
+                Ok(EventResult::None)
+            })
+        }));
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
