@@ -171,9 +171,28 @@ pub async fn generate_core_route_compaction(
 ) -> Result<maho_ext_api::EventResult, maho_ext_api::ExtensionFailure> {
     use maho_ext_api::{EventResult, SessionBeforeEventResult};
     if event.signal.is_aborted() { return Ok(EventResult::None); }
+    let emit = |data|api.events.emit(crate::openai_remote::SENPI_COMPACTION_EVENT,&data);
+    let fallback = |model_id:Option<&str>,reason:&str| {
+        let mut data=serde_json::json!({"version":1,"action":"remote_fallback","route":"builtin.compaction.openai_remote","requestId":event.request_id,"reason":reason});
+        if let Some(id)=model_id {data["modelId"]=serde_json::json!(id);}
+        emit(data);
+    };
+    if event.reason == maho_ext_api::CompactionReason::Branch || !crate::openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref()) {
+        fallback(context.model.as_ref().map(|model|model.id.as_str()),if event.reason == maho_ext_api::CompactionReason::Branch {"branch-compaction"} else {"not-openai-responses"});
+    }
     let Some(model) = context.model.clone() else { return Ok(EventResult::None); };
-    if event.reason != maho_ext_api::CompactionReason::Branch && crate::openai_remote_model::is_openai_remote_compaction_model(Some(&model)) {
-        let key = context.model_registry.get_api_key_for_provider(&model.provider).await?;
+    if event.reason != maho_ext_api::CompactionReason::Branch && crate::openai_remote_model::is_openai_remote_compaction_model(Some(&model)) { 'remote: {
+        let auth=match context.model_registry.get_api_key_and_headers(&model).await {
+            Ok(auth)=>auth,
+            Err(error)=>{fallback(Some(&model.id),&error.message);break 'remote;}
+        };
+        if event.signal.is_aborted() {return Ok(EventResult::None);}
+        let mut request_model = model.clone();
+        if let Some(id) = auth.upstream_model_id.filter(|id|!id.is_empty()) {request_model.id=id;}
+        if let Some(base_url) = auth.auth.base_url.filter(|base_url|!base_url.is_empty()) {request_model.base_url=base_url;}
+        let service_tier = context.service_tier.map(|tier|match tier {maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority"})
+            .or_else(||auth.service_tier.map(|tier|match tier {maho_ai::types::ServiceTierPreference::Auto=>"auto",maho_ai::types::ServiceTierPreference::Flex=>"flex",maho_ai::types::ServiceTierPreference::Priority=>"priority"}));
+        let key = auth.auth.api_key;
         let branch = crate::speculative::branch_values(context);
         let messages = maho_core::session_manager::build_session_context(&branch, None).messages;
         let messages = messages.into_iter().map(serde_json::from_value).collect::<Result<Vec<maho_ext_api::AgentMessage>,_>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
@@ -181,21 +200,22 @@ pub async fn generate_core_route_compaction(
         let raw = prepared.messages.iter().map(serde_json::to_value).collect::<Result<Vec<_>,_>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
         let session_id = context.session_manager.session_id();
         let system_prompt = context.get_system_prompt();
-        if let Some(request) = crate::openai_remote::create_openai_remote_compaction_request(Some(&model),&system_prompt,&branch,Some(&raw),event.preparation.tokens_before,Some(session_id),None) {
-            let configured = model.headers.clone().unwrap_or_default().into_iter().map(|(key,value)|(key,Some(value))).collect();
+        let Some(request) = crate::openai_remote::create_openai_remote_compaction_request(Some(&request_model),&system_prompt,&branch,Some(&raw),event.preparation.tokens_before,Some(session_id),service_tier) else {fallback(Some(&model.id),"empty-compaction-input");break 'remote;};
+        {
+            let configured = auth.auth.headers.unwrap_or_default();
             let transformed = (prepared.transform_headers)(configured).await?;
-            if let Some(headers) = crate::openai_remote_model::create_live_openai_remote_compaction_headers(&model,key.as_deref(),&transformed,Some(session_id)).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?
-                && let Some(origin) = crate::openai_remote_model::openai_remote_compaction_origin(&model,&headers) {
+            let Some(headers) = crate::openai_remote_model::create_live_openai_remote_compaction_headers(&request_model,key.as_deref(),&transformed,Some(session_id)).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))? else {fallback(Some(&model.id),"missing-openai-auth");break 'remote;};
+            let Some(origin) = crate::openai_remote_model::openai_remote_compaction_origin(&request_model,&headers) else {fallback(Some(&request_model.id),"missing-remote-replay-origin-provenance");break 'remote;};
+            {
                 let controller = maho_ai::utils::abort::AbortController::new();
                 let signal = controller.signal();
                 let runner:crate::openai_remote_dependencies::OpenAiResponsesStreamRunner = std::sync::Arc::new(|model,context,options|maho_ai::compat::stream_simple(model,context,Some(options.clone())));
                 let client = reqwest::Client::new();
-                let emit = |data|api.events.emit(crate::openai_remote::SENPI_COMPACTION_EVENT,&data);
                 let remote = tokio::select! {
                     () = event.signal.cancelled() => {controller.abort(None);return Ok(EventResult::None);}
                     result = crate::openai_remote::run_remote_compaction(crate::openai_remote::RemoteCompactionOptions {
-                        model:&model,request:&request,request_id:&event.request_id,first_kept_entry_id:&event.preparation.first_kept_entry_id,
-                        system_prompt:&system_prompt,session_id,api_key:key,headers,extra_body:None,origin:serde_json::json!({"endpoint":origin.endpoint,"trustDomain":origin.trust_domain,"authTenantFingerprint":origin.auth_tenant_fingerprint}),
+                        model:&request_model,request:&request,request_id:&event.request_id,first_kept_entry_id:&event.preparation.first_kept_entry_id,
+                        system_prompt:&system_prompt,session_id,api_key:key,headers,extra_body:auth.extra_body,origin:serde_json::json!({"endpoint":origin.endpoint,"trustDomain":origin.trust_domain,"authTenantFingerprint":origin.auth_tenant_fingerprint}),
                         signal:&signal,timeout:std::time::Duration::from_secs(15),now_ms:chrono::Utc::now().timestamp_millis() as u64,client:&client,runner:&runner,provider_request:Some(&prepared),
                     },&emit) => result,
                 };
@@ -207,7 +227,7 @@ pub async fn generate_core_route_compaction(
                 }
             }
         }
-    }
+    } }
     let convert = |messages: &[maho_ext_api::AgentMessage]|messages.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()));
     let messages = convert(&event.preparation.messages_to_summarize)?;
     let prefix = convert(&event.preparation.turn_prefix_messages)?;

@@ -13,6 +13,58 @@ impl SessionManager for TestSession {
     fn get_session_name(&self) -> Option<String> { None }
 }
 struct TestRegistry;
+struct AuthRegistry { model:Model, auth:ResolvedRequestAuth }
+impl ModelRegistry for AuthRegistry {
+    fn get_all(&self)->Vec<Model> {vec![self.model.clone()]}
+    fn get_available(&self)->Vec<Model> {self.get_all()}
+    fn find(&self,_:&str,_:&str)->Option<Model> {Some(self.model.clone())}
+    fn has_configured_auth(&self,_:&Model)->bool {true}
+    fn get_api_key_for_provider<'a>(&'a self,_:&'a str)->ExtensionFuture<'a,Option<String>> {Box::pin(async {panic!("remote must use model-scoped auth")})}
+    fn get_api_key_and_headers<'a>(&'a self,model:&'a Model)->ExtensionFuture<'a,ResolvedRequestAuth> {
+        Box::pin(async move {assert_eq!(model,&self.model);Ok(self.auth.clone())})
+    }
+}
+struct AuthSession { actions:Arc<PolicyActions>, branch:Vec<SessionEntry> }
+struct FallbackRegistry(Option<ResolvedRequestAuth>);
+impl ModelRegistry for FallbackRegistry {
+    fn get_all(&self)->Vec<Model> {Vec::new()}
+    fn get_available(&self)->Vec<Model> {Vec::new()}
+    fn find(&self,_:&str,_:&str)->Option<Model> {None}
+    fn has_configured_auth(&self,_:&Model)->bool {false}
+    fn get_api_key_for_provider<'a>(&'a self,_:&'a str)->ExtensionFuture<'a,Option<String>> {Box::pin(async {Err("local fallback reached".into())})}
+    fn get_api_key_and_headers<'a>(&'a self,_:&'a Model)->ExtensionFuture<'a,ResolvedRequestAuth> {Box::pin(async {self.0.clone().ok_or_else(||ExtensionFailure::new("auth lookup failed"))})}
+}
+struct AuthCheckpointActions;
+impl ExtensionSessionActions for AuthCheckpointActions {
+    fn get_thinking_level(&self)->Result<ThinkingLevel,ExtensionFailure> {Ok(ThinkingLevel::Minimal)}
+    fn get_active_tools(&self)->Result<Vec<String>,ExtensionFailure> {Ok(Vec::new())}
+    fn set_session_name(&self,_:&str)->Result<(),ExtensionFailure> {Err("unused".into())}
+    fn get_session_name(&self)->Result<Option<String>,ExtensionFailure> {Err("unused".into())}
+    fn set_label(&self,_:&str,_:Option<&str>)->Result<(),ExtensionFailure> {Err("unused".into())}
+    fn execute_tool<'a>(&'a self,_:&'a str,_:JsonValue,_:ExecuteToolOptions)->ExecuteToolFuture<'a> {Box::pin(async {panic!("unused")})}
+    fn set_active_tools(&self,_:Vec<String>)->Result<(),ExtensionFailure> {Err("unused".into())}
+    fn refresh_tools(&self)->Result<(),ExtensionFailure> {Err("unused".into())}
+    fn register_removed_tool_hint(&self,_:&str,_:&str)->Result<(),ExtensionFailure> {Err("unused".into())}
+    fn register_lazy_tool_activator(&self,_:LazyToolActivator)->Result<(),ExtensionFailure> {Err("unused".into())}
+    fn get_commands(&self)->Result<Vec<SlashCommandInfo>,ExtensionFailure> {Err("unused".into())}
+    fn set_model(&self,_:Model)->ExtensionFuture<'_,bool> {Box::pin(async {Err("unused".into())})}
+    fn set_thinking_level(&self,_:ThinkingLevel)->Result<(),ExtensionFailure> {Err("unused".into())}
+    fn set_session_model(&self,_:Model)->ExtensionFuture<'_,bool> {Box::pin(async {Err("unused".into())})}
+    fn set_session_thinking_level(&self,_:ThinkingLevel)->Result<(),ExtensionFailure> {Err("unused".into())}
+    fn set_session_fast_mode(&self,_:bool)->Result<(),ExtensionFailure> {Err("unused".into())}
+    fn exec<'a>(&'a self,_:&'a str,_:&'a [String],_:&'a Path,_:ExecOptions)->ExtensionFuture<'a,ExecResult> {Box::pin(async {Err("unused".into())})}
+}
+impl ToolSessionManager for AuthSession {
+    fn session_id(&self)->&str {"auth-capture"}
+    fn session_file(&self)->Option<&Path> {None}
+}
+impl SessionManager for AuthSession {
+    fn get_entries(&self)->Vec<SessionEntry> {self.branch.clone()}
+    fn get_branch(&self)->Vec<SessionEntry> {self.branch.clone()}
+    fn get_leaf_id(&self)->Option<String> {Some("keep".into())}
+    fn get_session_name(&self)->Option<String> {None}
+    fn extension_context_actions(&self)->Option<&dyn ExtensionContextActions> {Some(self.actions.as_ref())}
+}
 impl ModelRegistry for TestRegistry {
     fn get_all(&self) -> Vec<Model> { Vec::new() }
     fn get_available(&self) -> Vec<Model> { Vec::new() }
@@ -428,6 +480,108 @@ async fn native_session_abort_cancels_registered_remote_without_late_apply() {ru
 
 #[tokio::test]
 async fn native_registered_compaction_matches_pinned_source_lifecycle() {run_native_variant(false,false,"lifecycle").await;}
+
+#[tokio::test]
+async fn registered_remote_model_auth_routes_only_to_refreshed_endpoint() {
+    run_model_auth_capture(false).await;
+}
+
+#[tokio::test]
+async fn registered_remote_model_auth_stream_consumes_extra_body() {
+    run_model_auth_capture(true).await;
+}
+
+#[tokio::test]
+async fn registered_remote_fallback_payloads_match_source_branches() {
+    run_fallback_event_capture().await;
+}
+
+async fn run_fallback_event_capture() {
+    for reason in ["branch-compaction","not-openai-responses","auth lookup failed","empty-compaction-input","missing-openai-auth","missing-remote-replay-origin-provenance"] {
+        let model:Model=serde_json::from_value(serde_json::json!({"id":"context-model","name":"m","api":if reason=="not-openai-responses" {"faux"} else {"openai-responses"},"provider":"openai","baseUrl":"http://127.0.0.1:1/v1","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":1000})).expect("fallback model");
+        let branch=if reason=="empty-compaction-input" {Vec::new()} else {vec![SessionEntry {id:"old".into(),parent_id:None,timestamp:String::new(),kind:"message".into(),data:serde_json::json!({"type":"message","id":"old","message":{"role":"user","content":"old","timestamp":0}})}]};
+        let mut ctx=context();ctx.model=Some(model);
+        ctx.model_registry=Arc::new(FallbackRegistry(if reason=="auth lookup failed" {None} else {Some(ResolvedRequestAuth {auth:maho_ai::models::ProviderAuthResult {api_key:if reason=="missing-openai-auth" {None} else {Some("fake".into())},headers:None,base_url:if reason=="missing-remote-replay-origin-provenance" {Some("invalid url".into())} else {None}},extra_body:None,upstream_model_id:Some("request-model".into()),service_tier:None,env:None})}));
+        ctx.session_manager=Arc::new(AuthSession {actions:Arc::new(PolicyActions {settings:std::sync::Mutex::new(policy_settings())}),branch});
+        let captured=Arc::new(std::sync::Mutex::new(Vec::new()));let events=EventBus::default();let observed=Arc::clone(&captured);
+        let _subscription=events.on(maho_ext_compaction::openai_remote::SENPI_COMPACTION_EVENT,Arc::new(move |data|observed.lock().expect("captured events").push(data.clone())));
+        let runtime=ExtensionRuntime::default();runtime.bind_session_actions(Arc::new(AuthCheckpointActions));
+        let mut api=ExtensionApi::new(LoadedExtension::new("compaction","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),events,runtime);
+        maho_ext_compaction::CompactionExtension.register(&mut api);
+        let mut event=maho_ext_compaction::extension_wiring::create_live_blocking_remote_compaction_event(&ctx,CompactionPreparation {first_kept_entry_id:"keep".into(),messages_to_summarize:Vec::new(),turn_prefix_messages:Vec::new(),tokens_before:10,previous_summary:None,settings:CompactionSettings {enabled:true,reserve_tokens:1,keep_recent_tokens:1}},String::new(),AbortSignal::default());
+        event.request_id="fallback-request".into();if reason=="branch-compaction" {event.reason=CompactionReason::Branch;}
+        let mut event=ExtensionEvent::SessionBeforeCompact(event);
+        let result=tokio::time::timeout(std::time::Duration::from_secs(10),async {for handler in &api.registered.handlers[&EventKind::SessionBeforeCompact] {handler(&mut event,&ctx).await?;}Ok::<_,ExtensionFailure>(())}).await.expect("bounded fallback handler");
+        assert_eq!(result.expect_err("source fallback reaches local generator").message,"local fallback reached");
+        assert_eq!(*captured.lock().expect("captured fallback"),vec![serde_json::json!({"version":1,"action":"remote_fallback","route":"builtin.compaction.openai_remote","requestId":"fallback-request","modelId":if reason=="missing-remote-replay-origin-provenance" {"request-model"} else {"context-model"},"reason":reason})]);
+    }
+}
+
+async fn run_model_auth_capture(sse:bool) {
+    use tokio::io::{AsyncReadExt,AsyncWriteExt};
+    let stale=std::net::TcpListener::bind("127.0.0.1:0").expect("stale listener");
+    stale.set_nonblocking(true).expect("stale nonblocking probe");
+    let live=tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("live listener");
+    let live_base=format!("http://{}/v1",live.local_addr().expect("live address"));
+    let mut model:Model=serde_json::from_value(serde_json::json!({"id":"stale-model","name":"m","api":"openai-responses","provider":"openai","baseUrl":format!("http://{}/v1",stale.local_addr().expect("stale address")),"reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":1000})).expect("auth model");
+    if sse {
+        model.compat=Some(maho_ai::types::ModelCompat(serde_json::Map::from_iter([("supportsRemoteCompactionV2".into(),serde_json::json!(true)),("supportsWebSocket".into(),serde_json::json!(false))])));
+        maho_ai::api_registry::register_builtin_api_provider("openai-responses",Arc::new(NativeResponsesStreams));
+    }
+    let server=tokio::spawn(async move {
+        let mut captures=Vec::new();
+        for attempt in 0..if sse {2} else {1} {
+        let (mut socket,_)=live.accept().await.expect("live connection");
+        let mut bytes=Vec::new();let mut chunk=[0;4096];
+        let (header,body)=loop {
+            let n=socket.read(&mut chunk).await.expect("request read");assert!(n>0);bytes.extend_from_slice(&chunk[..n]);
+            if let Some(end)=bytes.windows(4).position(|part|part==b"\r\n\r\n") {
+                let header=String::from_utf8(bytes[..end].to_vec()).expect("headers");
+                let length:usize=header.lines().find_map(|line|line.to_lowercase().strip_prefix("content-length:").map(|value|value.trim().parse().expect("length"))).expect("length header");
+                if bytes.len()>=end+4+length {break (header,serde_json::from_slice::<serde_json::Value>(&bytes[end+4..end+4+length]).expect("body"));}
+            }
+        };
+        let (content_type,response)=if sse && attempt==0 {
+            ("text/event-stream","data: {\"type\":\"response.completed\",\"response\":{\"id\":\"empty\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\ndata: [DONE]\n\n".into())
+        } else {("application/json",serde_json::json!({"id":"auth-compact","object":"response.compaction","created_at":0,"output":[{"type":"compaction","encrypted_content":"opaque"}]}).to_string())};
+        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).as_bytes()).await.expect("response");
+        captures.push((header,body));
+        }
+        captures
+    });
+    let branch=vec![SessionEntry {id:"old".into(),parent_id:None,timestamp:String::new(),kind:"message".into(),data:serde_json::json!({"type":"message","id":"old","message":{"role":"user","content":"old context","timestamp":0}})}];
+    let mut ctx=context();ctx.model=Some(model.clone());ctx.service_tier=Some(ServiceTier::Priority);
+    ctx.model_registry=Arc::new(AuthRegistry {model,auth:ResolvedRequestAuth {auth:maho_ai::models::ProviderAuthResult {api_key:Some("refreshed-key".into()),headers:Some(std::collections::BTreeMap::from([("x-refreshed".into(),Some("live".into()))])),base_url:Some(live_base.clone())},upstream_model_id:Some("live-model".into()),extra_body:Some(serde_json::Map::from_iter([("stream_extra".into(),serde_json::json!(true))])),service_tier:Some(maho_ai::types::ServiceTierPreference::Flex),env:None}});
+    ctx.session_manager=Arc::new(AuthSession {actions:Arc::new(PolicyActions {settings:std::sync::Mutex::new(policy_settings())}),branch});
+    let registered=LoadedExtension::new("compaction","/tmp".into(),SourceInfo::default());
+    let runtime=ExtensionRuntime::default();runtime.bind_session_actions(Arc::new(AuthCheckpointActions));
+    let mut api=ExtensionApi::new(registered,ExtensionSessionProfile::default(),EventBus::default(),runtime);
+    maho_ext_compaction::CompactionExtension.register(&mut api);
+    let mut event=ExtensionEvent::SessionBeforeCompact(maho_ext_compaction::extension_wiring::create_live_blocking_remote_compaction_event(&ctx,CompactionPreparation {first_kept_entry_id:"keep".into(),messages_to_summarize:Vec::new(),turn_prefix_messages:Vec::new(),tokens_before:100,previous_summary:None,settings:CompactionSettings {enabled:true,reserve_tokens:1,keep_recent_tokens:1}},String::new(),AbortSignal::default()));
+    let outcome=tokio::time::timeout(std::time::Duration::from_secs(10),async {
+        let mut result=None;
+        for handler in &api.registered.handlers[&EventKind::SessionBeforeCompact] {
+            if let EventResult::SessionBefore(before)=handler(&mut event,&ctx).await? && before.compaction.is_some() {result=before.compaction;}
+        }
+        Ok::<_,ExtensionFailure>(result)
+    }).await;
+    let mut server=server;
+    let capture=tokio::time::timeout(std::time::Duration::from_secs(10),&mut server).await;
+    if capture.is_err() {server.abort();let _=server.await;}
+    assert!(matches!(&outcome,Ok(Ok(Some(_)))),"registered outcome before capture: {outcome:?}");
+    let captures=capture.expect("bounded capture").expect("server result");
+    assert_eq!(captures.len(),if sse {2} else {1});
+    for (index,(header,body)) in captures.iter().enumerate() {
+        let stream=sse && index==0;
+        assert!(header.starts_with(if stream {"POST /v1/responses "} else {"POST /v1/responses/compact "}));assert!(header.contains("Bearer refreshed-key"));assert!(header.contains("x-refreshed: live"));
+        assert_eq!(body["model"],"live-model");
+        if stream {assert!(body.get("service_tier").is_none(),"pinned Responses v2 options do not project compact request tier");} else {assert_eq!(body["service_tier"],"priority");}
+        if stream {assert_eq!(body["stream_extra"],true);} else {assert!(body.get("stream_extra").is_none(),"source extraBody is stream-only");}
+    }
+    let result=outcome.expect("bounded registered handler").expect("handler result").expect("remote compaction");
+    assert_eq!(result.details.expect("details")["origin"]["endpoint"],live_base);
+    assert!(matches!(stale.accept(),Err(error) if error.kind()==std::io::ErrorKind::WouldBlock),"stale endpoint must receive zero requests");
+}
 
 struct CancellationObserver(Arc<std::sync::Mutex<Option<AbortSignal>>>);
 struct LiveFractionalObserver;

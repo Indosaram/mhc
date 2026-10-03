@@ -482,6 +482,17 @@ impl maho_ext_api::ModelRegistry for ExtensionModelRegistryView {
     fn get_api_key_for_provider<'a>(&'a self, provider: &'a str) -> maho_ext_api::ExtensionFuture<'a, Option<String>> {
         Box::pin(async move { Ok(self.0.get_api_key_for_provider(provider).await) })
     }
+    fn get_api_key_and_headers<'a>(&'a self, model: &'a Model) -> maho_ext_api::ExtensionFuture<'a, maho_ext_api::ResolvedRequestAuth> {
+        Box::pin(async move {
+            match self.0.get_api_key_and_headers(model).await {
+                crate::model_registry::ResolvedRequestAuth::Resolved { auth, compatibility, env } => Ok(maho_ext_api::ResolvedRequestAuth {
+                    auth, extra_body: compatibility.extra_body, upstream_model_id: compatibility.upstream_model_id,
+                    service_tier: compatibility.service_tier, env,
+                }),
+                crate::model_registry::ResolvedRequestAuth::Failed { error } => Err(maho_ext_api::ExtensionFailure::new(error)),
+            }
+        })
+    }
 }
 impl maho_ext_api::ToolSessionManager for ExtensionSessionManagerView {
     fn session_id(&self) -> &str { &self.id }
