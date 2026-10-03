@@ -6,11 +6,12 @@ pub fn build_side_query_context(system_prompt:&str,history:Vec<maho_ai::types::M
     let window=maho_ext_compaction::extension_wiring::get_prompt_context_window(model.context_window as f64,Some(model.max_tokens as f64));
     let system_tokens=maho_core::compaction::compaction::estimate_tokens(&serde_json::json!({"role":"user","content":system_prompt,"timestamp":0}));
     let mut messages=history;messages.push(serde_json::from_value(serde_json::json!({"role":"user","content":question,"timestamp":maho_ai::utils::diagnostics::now_ms()})).map_err(|error|error.to_string())?);
+    if !window.is_finite()||window<=0.0{return Ok(maho_ai::types::Context{system_prompt:Some(system_prompt),messages,tools:Some(vec![])});}
     let estimate=|messages:&[maho_ai::types::Message]|messages.iter().map(|message|maho_core::compaction::compaction::estimate_tokens(&serde_json::to_value(message).expect("message"))).sum::<u64>();
     let budget=(window-system_tokens as f64).max(0.0) as u64;
     if estimate(&messages[messages.len()-1..])>budget{return Err("/btw question does not fit this model's context window; shorten it or run /compact first.".into());}
     if estimate(&messages)>budget{
-        let reduced=maho_ext_compaction::context_reduction::reduce_context_messages(&messages,&Default::default());
+        let reduced=maho_ext_compaction::context_reduction::reduce_context_messages(&messages,&maho_ext_compaction::context_reduction::ReduceContextOptions::builtin());
         let repaired=maho_ai::utils::tool_pair_repair::repair_orphaned_tool_results(&reduced.messages);
         let raw=repaired.iter().map(|message|serde_json::to_value(message).expect("message")).collect::<Vec<_>>();
         let pruned=maho_ext_compaction::overflow_retry::prune_old_messages_to_budget(&raw,budget);
