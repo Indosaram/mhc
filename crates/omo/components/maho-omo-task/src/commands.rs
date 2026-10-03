@@ -24,6 +24,9 @@ pub fn kill_option(record: &TaskRecord) -> String {
     format!("{identity}{suffix} {}", record.status.as_str())
 }
 pub fn register_task_commands(api: &mut ExtensionApi, manager: Arc<dyn CommandManager>) {
+    register_task_commands_with_sync(api, manager, Arc::new(|| {}));
+}
+pub fn register_task_commands_with_sync(api: &mut ExtensionApi, manager: Arc<dyn CommandManager>, sync: Arc<dyn Fn() + Send + Sync>) {
     let list_manager = manager.clone();
     api.register_command("tasks", Some("List session tasks (--all for every session).".into()), None, Arc::new(move |args, ctx| {
         let manager = list_manager.clone();
@@ -31,7 +34,8 @@ pub fn register_task_commands(api: &mut ExtensionApi, manager: Arc<dyn CommandMa
     }));
     api.register_command("task-kill", Some("Cancel a session task via selector.".into()), None, Arc::new(move |_, ctx| {
         let manager = manager.clone();
-        Box::pin(async move { run_task_kill(manager.as_ref(), ctx).await })
+        let sync = sync.clone();
+        Box::pin(async move { let result = run_task_kill(manager.as_ref(), ctx).await; sync(); result })
     }));
 }
 pub async fn run_task_kill(manager: &dyn CommandManager, ctx: &ExtensionContext) -> Result<(), ExtensionFailure> {

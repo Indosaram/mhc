@@ -1,6 +1,16 @@
 use std::{collections::BTreeMap,sync::{Arc,Mutex,atomic::{AtomicUsize,Ordering}}};
 use maho_omo_task::process_sweep::{SessionStartProcessSweepOptions,SENPI_RPC_CHILD_MARKER_ENV,run_session_start_process_sweep};
 mod support;
+#[test]
+fn production_sweep_resolves_paired_daemon_override_before_running_families() {
+    let root = tempfile::tempdir().expect("root");
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let sink = logs.clone();
+    let options = maho_omo_task::process_sweep::production_process_sweep_options(BTreeMap::from([("OMO_LSP_DAEMON_VERSION".into(), "1.2.3".into())]), maho_omo_lsp::daemon_runtime::SenpiDaemonRuntime { cli_path:root.path().join("daemon"), version:"0.1.0".into() }, Arc::new(|_| {}), Arc::new(move |text| sink.lock().expect("logs").push(text.to_owned())));
+    run_session_start_process_sweep(&options);
+    assert_eq!(logs.lock().expect("logs").len(), 1);
+    assert!(!logs.lock().expect("logs")[0].is_empty());
+}
 #[tokio::test] async fn session_start_returns_before_sweep_finishes_and_reports_failure() {
     use maho_ext_api::{EventKind,ExtensionEvent,SessionStartEvent,SessionReason};
     let (started_tx,started_rx)=tokio::sync::oneshot::channel(); let started=Mutex::new(Some(started_tx));

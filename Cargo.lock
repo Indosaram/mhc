@@ -2811,6 +2811,7 @@ version = "0.0.0"
 dependencies = [
  "chrono",
  "maho-ext-api",
+ "maho-omo-lsp",
  "maho-senpi-task",
  "maho-team-core",
  "maho-tui",
