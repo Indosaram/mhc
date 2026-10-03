@@ -2546,8 +2546,10 @@ name = "maho-ext-pi-websearch"
 version = "0.0.0"
 dependencies = [
  "dirs",
+ "maho-agent",
  "maho-ai",
  "maho-ext-api",
+ "maho-ext-host",
  "maho-interactive",
  "maho-tui",
  "regex",
