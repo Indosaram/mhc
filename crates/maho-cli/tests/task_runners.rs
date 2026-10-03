@@ -312,3 +312,43 @@ async fn shared_parent_tool_obeys_registered_admission_hooks() {
     assert_eq!(executions.load(Ordering::SeqCst), 0);
     assert_eq!(admitted_id.lock().expect("observed call ID").as_deref(), Some("child-call"));
 }
+
+#[tokio::test]
+async fn native_shared_definition_cancels_an_entered_parent_tool() {
+    use std::sync::Arc;
+    let dir = tempfile::tempdir().expect("isolated shared cancellation");
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let (entered, mut entries) = tokio::sync::mpsc::unbounded_channel();
+    let tool = maho_ext_api::ToolDefinition::new("pending_child_tool", "pending child fixture",
+        serde_json::json!({"type":"object","properties":{}}), Arc::new(move |_| {
+            let entered = entered.clone();
+            Box::pin(async move {
+                entered.send(()).expect("entry observer");
+                std::future::pending().await
+            })
+        }));
+    let created = maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
+        cwd: Some(cwd.clone()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+        model: Some(provider.get_model(Some("faux-1")).expect("model")),
+        session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
+        tools: Some(vec!["pending_child_tool".into()]), custom_tools: vec![tool], minimal_resources: true,
+        ..Default::default()
+    }).await.expect("native parent");
+    let session = Arc::new(created.session);
+    let definition = maho_cli::cli::task_runners::native_shared_parent_tool_definition(
+        "pending_child_tool", Arc::downgrade(&session)).expect("shared definition");
+    let signal = maho_tools::definition::AbortSignal::default();
+
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!((definition.execute)(maho_tools::definition::ToolCall {
+            id: "cancelled-child-call", params: serde_json::json!({}), signal: signal.clone(), on_update: None, context: None,
+        }), async {
+            entries.recv().await.expect("actual parent tool entered");
+            signal.abort();
+        })
+    }).await;
+    session.dispose().await;
+
+    assert!(outcome.expect("bounded shared cancellation").0.is_err());
+}
