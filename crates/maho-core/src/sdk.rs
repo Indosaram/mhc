@@ -46,6 +46,7 @@ pub struct CreateAgentSessionOptions {
     pub loaded_extensions: Option<maho_ext_host::loader::LoadExtensionsResult>,
     pub hook_resources: Vec<crate::package_manager::ResolvedResource>,
     pub additional_hook_paths: Vec<String>,
+    pub minimal_resources: bool,
 }
 
 /// `noTools` suppression mode.
@@ -79,6 +80,15 @@ impl HostRuntimeFactory {
 
 pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Result<CreateAgentSessionResult, String> {
     use std::{collections::BTreeMap, sync::Arc};
+    if options.minimal_resources {
+        options.extension_factories.clear();
+        options.loaded_extensions = None;
+        options.hook_resources.clear();
+        options.additional_hook_paths.clear();
+        options.system_prompt = None;
+        options.append_system_prompt.clear();
+        options.context_files.clear();
+    }
     let cwd = options.cwd.take().unwrap_or_else(|| std::env::current_dir().map(|path| path.to_string_lossy().into_owned()).unwrap_or_default());
     let agent_dir = options.agent_dir.take().unwrap_or_else(crate::config::get_agent_dir);
     let runtime = options.model_runtime.take().or_else(|| options.model_registry.as_ref().map(|registry| registry.model_runtime.clone())).unwrap_or_else(|| ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
@@ -166,6 +176,9 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         base_tools_override: Some(base_tools.clone()), session_start_event: options.session_start_event,
         auto_title_sessions: options.auto_title_sessions,
     }).map_err(|error| error.to_string())?;
+    if options.minimal_resources {
+        session.set_context_files_enabled(false);
+    }
     assert!(session_accessor.set(session.weak_accessor()).is_ok(), "SDK context initialized once");
     for (name, definition) in registered_definitions {
         if let Some(tool) = base_tools.get(&name) {
@@ -174,6 +187,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
             }, tool.clone());
         }
     }
+    if !options.minimal_resources {
     let (prompt_paths, skill_paths) = session.with_settings_manager(|manager| {
         let paths = |key| manager.get_value(key).and_then(serde_json::Value::as_array).map(|values|
             values.iter().filter_map(serde_json::Value::as_str).map(str::to_owned).collect::<Vec<_>>()).unwrap_or_default();
@@ -184,6 +198,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     });
     let skills = crate::skills::load_skills(&crate::skills::LoadSkillsOptions { cwd, agent_dir, skill_paths, include_defaults: true });
     session.set_prompt_resources(templates, skills.skills);
+    }
     session.set_hook_source_paths(options.hook_resources, options.additional_hook_paths);
     session.set_system_prompt_sources(options.system_prompt, options.append_system_prompt);
     if options.loaded_extensions.is_some() || !options.extension_factories.is_empty() {
