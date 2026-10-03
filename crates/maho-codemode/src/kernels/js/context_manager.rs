@@ -102,6 +102,16 @@ impl JavaScriptKernel {
     pub async fn invoke_kernel_tool(&self,request:super::kernel_tools_types::KernelToolsInvokeRequest,options:super::kernel_tools_types::KernelToolsInvokeOptions)->Result<Value,super::kernel_tools_errors::KernelToolError> {self.tools.invoke(request,options).await}
 }
 
+impl maho_ext_api::ExtensionKernelTools for JavaScriptKernel {
+    fn invoke_scope(&self) -> bool { super::kernel_tools_types::KERNEL_TOOLS_INVOKE_SCOPE }
+    fn describe<'a>(&'a self, names: &'a [String]) -> maho_ext_api::ExtensionFuture<'a, Value> {
+        Box::pin(async move { self.describe_kernel_tools(names).await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string())) })
+    }
+    fn invoke(&self, request: maho_ext_api::KernelToolInvokeRequest, options: maho_ext_api::KernelToolInvokeOptions) -> maho_ext_api::ExtensionFuture<'_, Value> {
+        Box::pin(async move { self.invoke_kernel_tool(request, options).await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string())) })
+    }
+}
+
 fn route(message:Value,runs:&mut JavaScriptRunQueue,calls:&mut SubprocessRunQueue)->bool {
     if message["type"]=="status" && matches!(message["event"]["op"].as_str(),Some(crate::bridge::reserved::INTERRUPT_ACK_OP|crate::bridge::reserved::CHILD_LIFECYCLE_OP)) {return false;}
     if let Some(run)=runs.active() && let Some(callback)=&run.on_message {callback(&message);}
