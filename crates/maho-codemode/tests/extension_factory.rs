@@ -131,7 +131,7 @@ impl ExtensionActions for Host {
 async fn completion_context_refreshes_for_same_model_id_without_reinstalling_eval() {
     let root=tempfile::tempdir().unwrap();
     std::fs::create_dir(root.path().join(".maho")).unwrap();
-    std::fs::write(root.path().join(".maho/codemode.json"),r#"{"languages":{"py":true,"js":true,"rb":true,"jl":false}}"#).unwrap();
+    std::fs::write(root.path().join(".maho/codemode.json"),r#"{"languages":{"py":true,"js":true,"rb":true,"jl":true}}"#).unwrap();
     let host=Arc::new(Host::default());
     let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
@@ -149,14 +149,14 @@ async fn completion_context_refreshes_for_same_model_id_without_reinstalling_eva
     assert!(Arc::ptr_eq(&execute,&host.tools.lock().unwrap()[0].definition.execute));
     ctx.model.as_mut().unwrap().name="invocation-local".into();
     let mut results=Vec::new();
-    for (id,language,code) in [("fresh-js","js","await completion('context')"),("fresh-py","py","completion('context')"),("fresh-rb","rb","completion('context')")] {
+    for (id,language,code) in [("fresh-js","js","await completion('context')"),("fresh-py","py","completion('context')"),("fresh-rb","rb","completion('context')"),("fresh-jl","jl","completion(\"context\")")] {
         results.push(tokio::time::timeout(std::time::Duration::from_secs(10),execute(maho_tools::definition::ToolCall {id,params:serde_json::json!({"language":language,"code":code,"summary":"context freshness","on_timeout":"error"}),signal:Default::default(),on_update:None,context:Some(&ctx)})).await);
     }
     let mut shutdown=ExtensionEvent::SessionShutdown(SessionShutdownEvent {reason:SessionReason::Quit,target_session_file:None,signal:None});
     tokio::time::timeout(std::time::Duration::from_secs(10),(api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown,&ctx)).await.unwrap().unwrap();
     for result in results {let result=result.unwrap().unwrap();assert_ne!(result.details.as_ref().unwrap()["isError"],true,"{result:?}");}
-    assert_eq!(*seen.lock().unwrap(),vec![(Some(ServiceTier::Priority),Some("invocation-local".into())),(Some(ServiceTier::Priority),Some("invocation-local".into())),(Some(ServiceTier::Priority),Some("invocation-local".into()))]);
-    eprintln!("cleanup: completion freshness JS, Python and Ruby managers disposed");
+    assert_eq!(*seen.lock().unwrap(),vec![(Some(ServiceTier::Priority),Some("invocation-local".into())),(Some(ServiceTier::Priority),Some("invocation-local".into())),(Some(ServiceTier::Priority),Some("invocation-local".into())),(Some(ServiceTier::Priority),Some("invocation-local".into()))]);
+    eprintln!("cleanup: completion freshness JS, Python, Ruby and Julia managers disposed");
 }
 impl ExtensionSessionActions for Host {
     fn set_session_name(&self,_:&str)->Result<(),ExtensionFailure> {Ok(())} fn get_session_name(&self)->Result<Option<String>,ExtensionFailure> {Ok(None)} fn set_label(&self,_:&str,_:Option<&str>)->Result<(),ExtensionFailure> {Ok(())}
