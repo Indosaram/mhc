@@ -109,6 +109,13 @@ impl PendingTimer {
     pub fn deadline_at_ms(&self) -> u64 {
         self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).deadline_at_ms
     }
+    pub fn initial_draft(&self) -> maho_ext_api::QuestionDraft {
+        let pending=self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        maho_ext_api::QuestionDraft{answers:Some(pending.draft_answers.clone()),comment:pending.draft_comment.clone()}
+    }
+    pub fn hard_deadline_at_ms(&self) -> u64 {
+        self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).hard_deadline_at_ms
+    }
     pub fn remaining_ms(&self) -> u64 {
         let now = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
         self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remaining_ms(now)

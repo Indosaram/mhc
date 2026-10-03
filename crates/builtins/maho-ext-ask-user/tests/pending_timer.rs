@@ -47,6 +47,18 @@ async fn ui_owned_empty_submission_retires_timer_without_timeout_delivery() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn attachment_snapshot_preserves_draft_without_resetting_hard_cap() {
+    let timer=PendingTimer::new(request(),Arc::new(|_|panic!("test retires before deadline")));
+    let answers=BTreeMap::from([("q1".into(),QuestionAnswer{selected:vec!["A".into()],text:None})]);
+    let hard=timer.hard_deadline_at_ms();
+    timer.progress(maho_ext_api::QuestionDraft{answers:Some(answers.clone()),comment:Some("draft".into())});
+    let draft=timer.initial_draft();let deadline=timer.deadline_at_ms();let remaining=timer.remaining_ms();
+    timer.cancel(QuestionStatus::Cancelled);timer.settle().await;
+    assert_eq!(draft.answers,Some(answers));assert_eq!(draft.comment.as_deref(),Some("draft"));
+    assert_eq!(timer.hard_deadline_at_ms(),hard);assert!(deadline<=hard);assert_eq!(remaining,deadline);
+}
+
+#[tokio::test(start_paused = true)]
 async fn comment_progress_without_answers_preserves_selected_draft(){
     let (outcome,mut received)=tokio::sync::watch::channel(None);
     let timer=PendingTimer::new(request(),Arc::new(move|response|{outcome.send_replace(Some(response));}));
