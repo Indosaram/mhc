@@ -131,7 +131,7 @@ fn stable_stringify(value: &Value) -> String {
     match value {
         Value::Array(items) => format!("[{}]", items.iter().map(stable_stringify).collect::<Vec<_>>().join(",")),
         Value::Object(map) => {
-            let mut keys: Vec<_> = map.keys().collect(); keys.sort();
+            let mut keys: Vec<_> = map.keys().collect(); keys.sort_by_cached_key(|key|key.encode_utf16().collect::<Vec<_>>());
             format!("{{{}}}", keys.iter().map(|key| format!("{}:{}", Value::String((*key).clone()), stable_stringify(&map[*key]))).collect::<Vec<_>>().join(","))
         }
         Value::Number(n) if n.as_f64().is_some_and(|f| f.fract() == 0.0) => format!("{:.0}", n.as_f64().unwrap_or_default()),
