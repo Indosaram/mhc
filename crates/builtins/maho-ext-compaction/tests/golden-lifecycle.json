@@ -1,0 +1,1 @@
+{"summary":"native checkpoint","tokensBefore":30004,"lifecycle":[{"type":"compaction_start","reason":"manual"},{"type":"compaction_end","reason":"manual","accepted":true,"aborted":false}],"compactions":1,"requests":[{"roles":["user","assistant","user"]}]}

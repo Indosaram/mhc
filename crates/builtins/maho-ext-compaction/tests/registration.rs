@@ -300,6 +300,36 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     if variant=="fractional" {
         session.set_extension_runner(maho_ext_host::ExtensionRunner::from_static(vec![Box::new(LiveFractionalObserver),Box::new(maho_ext_compaction::CompactionExtension)],context())).await;
     }
+    if variant=="lifecycle" {
+        let captured=Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events=Arc::clone(&captured);
+        let _subscription=session.subscribe(Arc::new(move |event| {
+            let reason_name=|reason:&maho_ext_api::CompactionReason|match reason {
+                maho_ext_api::CompactionReason::Manual=>"manual",maho_ext_api::CompactionReason::Threshold=>"threshold",
+                maho_ext_api::CompactionReason::Overflow=>"overflow",maho_ext_api::CompactionReason::PrePrompt=>"pre-prompt",
+                maho_ext_api::CompactionReason::Branch=>"branch",maho_ext_api::CompactionReason::Extension=>"extension",
+            };
+            let value=match event {
+                maho_ext_api::AgentSessionEvent::CompactionStart {reason,..}=>Some(serde_json::json!({"type":"compaction_start","reason":reason_name(reason)})),
+                maho_ext_api::AgentSessionEvent::CompactionEnd {reason,accepted,aborted,..}=>Some(serde_json::json!({"type":"compaction_end","reason":reason_name(reason),"accepted":accepted,"aborted":aborted})),
+                _=>None,
+            };
+            if let Some(value)=value {events.lock().expect("lifecycle events").push(value);}
+        }));
+        let outcome=tokio::time::timeout(std::time::Duration::from_secs(10),session.compact(None)).await;
+        let entries=session.with_session_manager(|manager|manager.entries());
+        let requests:Vec<_>=provider.get_call_log().iter().map(|call|serde_json::json!({"roles":call.context.messages.iter().map(|message|serde_json::to_value(message).expect("request message")["role"].clone()).collect::<Vec<_>>()})).collect();
+        let events=captured.lock().expect("lifecycle events").clone();
+        let disposed=tokio::time::timeout(std::time::Duration::from_secs(10),session.dispose()).await;
+        provider.unregister();
+        assert!(disposed.is_ok(),"bounded lifecycle cleanup");
+        let result=outcome.expect("bounded lifecycle compaction").expect("lifecycle result");
+        let actual=serde_json::json!({"summary":result.summary,"tokensBefore":result.tokens_before,"lifecycle":events,"compactions":entries.iter().filter(|entry|entry["type"]=="compaction").count(),"requests":requests});
+        let reference:serde_json::Value=serde_json::from_str(include_str!("golden-lifecycle.json")).expect("source lifecycle golden");
+        assert_eq!(actual,reference);
+        println!("PASS lifecycle: pinned source events, request roles and persisted compaction agree; cleanup complete");
+        return;
+    }
     if variant=="reminder" {
         for prompt in ["first","second"] {tokio::time::timeout(std::time::Duration::from_secs(10),session.prompt(prompt,Default::default())).await.expect("bounded reminder prompt").expect("reminder prompt");}
         let calls=provider.get_call_log();assert_eq!(calls.len(),2);
@@ -395,6 +425,9 @@ async fn native_registered_remote_abort_disconnects_without_local_summary() {run
 
 #[tokio::test]
 async fn native_session_abort_cancels_registered_remote_without_late_apply() {run_native_variant(false,false,"session-abort").await;}
+
+#[tokio::test]
+async fn native_registered_compaction_matches_pinned_source_lifecycle() {run_native_variant(false,false,"lifecycle").await;}
 
 struct CancellationObserver(Arc<std::sync::Mutex<Option<AbortSignal>>>);
 struct LiveFractionalObserver;
