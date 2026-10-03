@@ -9,6 +9,7 @@ license = "MIT"
 serde_json.workspace = true
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-ext-host = { path = "../../maho-ext-host" }
+maho-tui = { path = "../../maho-tui" }
 maho-agent = { path = "../../maho-agent" }
 maho-ai = { path = "../../maho-ai" }
 maho-ext-gpt-apply-patch = { path = "../maho-ext-gpt-apply-patch" }
