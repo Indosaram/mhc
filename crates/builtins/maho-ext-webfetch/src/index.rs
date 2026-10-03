@@ -9,7 +9,7 @@ impl maho_ext_api::Extension for WebfetchExtension {
 }
 pub fn register_webfetch_extension(api:&mut maho_ext_api::ExtensionApi,enabled:bool) {
     if !enabled { return; }
-    api.register_tool(crate::webfetch::tool::create_webfetch_tool());
+    if let Err(error)=api.register_tool_with_renderers(crate::webfetch::tool::create_webfetch_tool(),crate::webfetch::renderers::renderers()) { std::panic::panic_any(error); }
     for event in [maho_ext_api::EventKind::SessionStart,maho_ext_api::EventKind::SessionShutdown] {
         api.on(event,std::sync::Arc::new(|_event,ctx|Box::pin(async move {
             if ctx.has_ui { ctx.ui.set_status("pi-webfetch",None); ctx.ui.set_widget("pi-webfetch",None,Default::default()); }

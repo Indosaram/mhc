@@ -13,6 +13,8 @@ futures = "=0.3.34"
 tokio = { version = "=1.52.3", features = ["macros", "rt", "sync", "time", "net", "io-util"] }
 maho-tools = { path = "../../maho-tools" }
 maho-ext-api = { path = "../../maho-ext-api" }
+maho-tui = { path = "../../maho-tui" }
+maho-interactive = { path = "../../maho-interactive" }
 thiserror = "=2.0.18"
 reqwest = { version = "=0.13.2", default-features = false, features = ["rustls", "stream"] }
 url = "=2.5.8"
@@ -20,3 +22,7 @@ regex = "=1.12.3"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+maho-ext-host = { path = "../../maho-ext-host" }
+tempfile = "=3.27.0"
