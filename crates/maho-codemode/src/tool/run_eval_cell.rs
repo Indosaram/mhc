@@ -72,7 +72,9 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
         Ok(kernel)=>kernel,
         Err(mut error)=>{
             if execution.timed_out() {error=super::interrupt_note::describe_timeout_state(error.as_str(),None::<std::future::Ready<(bool,Option<String>)>>).await;}
-            execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);return Err(error);
+            execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);
+            emit_early_failure(&options,&invocation,started_at,&error);
+            return Err(error);
         }
     };
     struct InvocationContextGuard(Option<Box<dyn FnOnce()+Send>>);
@@ -97,9 +99,10 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
         let busy=manager.lock().expect("cell manager lock").live_cells(Some(invocation.input.language),Some(&invocation.cell_id));
         if !busy.is_empty() {
             let error=EvalKernelResetRefusedError::new(invocation.input.language,&busy.into_iter().map(|cell|cell.cell_id).collect::<Vec<_>>()).to_string();
-            execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);return Err(error);
+            execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);
+            emit_early_failure(&options,&invocation,started_at,&error);return Err(error);
         }
-        if let Err(error)=execution.wait(kernel.reset()).await {execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);return Err(error);}
+        if let Err(error)=execution.wait(kernel.reset()).await {execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);emit_early_failure(&options,&invocation,started_at,&error);return Err(error);}
     }
     execution.set_kernel(kernel.clone());
     cell.lock().expect("managed cell lock").kernel=Some(kernel.clone());
@@ -261,4 +264,13 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
             if !invocation.signal.aborted() && steering_active.load(std::sync::atomic::Ordering::SeqCst) && manager.lock().expect("cell manager lock").detach(&cell) {execution.detach();}
         }
     }}
+}
+
+fn emit_early_failure(options:&CreateEvalToolOptions,invocation:&EvalCellInvocation,started_at:f64,error:&str) {
+    if let Some(callback)=&options.on_cell_settled {
+        let completed_at=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system clock").as_secs_f64()*1000.0;
+        callback(super::eval_execution_event::build_eval_execution_event_payload(super::eval_execution_event::BuildEvalExecutionEventOptions {
+            cell_id:&invocation.cell_id,language:invocation.input.language,started_at,completed_at,queued_ms:(completed_at-started_at).max(0.0),detached:false,metrics:&[],tool_calls:&[],state_error:Some(error),outcome:super::eval_execution_event::EvalExecutionSettleOutcome::Error(error),
+        }));
+    }
 }

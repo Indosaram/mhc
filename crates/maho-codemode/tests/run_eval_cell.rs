@@ -28,6 +28,20 @@ impl EvalKernelManager for Manager {
 }
 struct JsManager(Arc<maho_codemode::kernels::js::context_manager::JavaScriptKernel>);
 struct AcquiringManager(tokio::sync::mpsc::UnboundedSender<()>);
+struct RejectingManager;
+impl EvalKernelManager for RejectingManager {
+    fn get_kernel(&self,_:EvalLanguage)->EvalKernelFuture<'_,Arc<dyn EvalKernel>> {Box::pin(async {Err("acquisition rejected".into())})}
+}
+
+#[tokio::test]
+async fn acquisition_failure_emits_one_machine_settlement_event() {
+    let (kernel,mut options)=fixture().await;
+    kernel.close().await.unwrap();
+    let events=Arc::new(Mutex::new(Vec::new()));let recorded=events.clone();
+    let options_mut=Arc::get_mut(&mut options).unwrap();options_mut.kernel_manager=Arc::new(RejectingManager);options_mut.on_cell_settled=Some(Arc::new(move |event|recorded.lock().unwrap().push(event)));
+    assert!(run_eval_cell(options,invocation("acquire-failure","unused")).await.is_err());
+    let events=events.lock().unwrap();assert_eq!(events.len(),1);assert_eq!(events[0]["cellId"],"acquire-failure");assert_eq!(events[0]["ok"],false);
+}
 impl EvalKernelManager for AcquiringManager {
     fn get_kernel(&self,_:EvalLanguage)->EvalKernelFuture<'_,Arc<dyn EvalKernel>> {
         Box::pin(async {self.0.send(()).expect("acquisition event receiver");std::future::pending().await})
