@@ -10,6 +10,8 @@ serde_json.workspace = true
 url.workspace = true
 maho-ext-imagegen = { path = "../maho-ext-imagegen" }
 maho-ai = { path = "../../maho-ai" }
+maho-ext-api = { path = "../../maho-ext-api" }
+maho-agent = { path = "../../maho-agent" }
 
 [dev-dependencies]
 tempfile.workspace = true

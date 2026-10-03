@@ -29,7 +29,8 @@ impl maho_ext_api::Extension for Tps{
                     ExtensionEvent::AgentEnd{messages,..}=>{
                         let mut input=0.0;let mut output=0.0;let mut read=0.0;let mut write=0.0;
                         for message in messages{if let AgentMessage::Llm(Message::Assistant(message))=message{input+=message.usage.input as f64;output+=message.usage.output as f64;read+=message.usage.cache_read as f64;write+=message.usage.cache_write as f64;}}
-                        if let Some(stats)=timing.finish_turn(now,ctx.has_ui,input,output,read,write){ctx.ui.notify(&format!("TPS {:.1} tok/s. Cache hit {:.1}%, {:.1}s",stats.tokens_per_second,stats.cache_hit_rate,stats.elapsed_seconds),NotificationType::Info);}
+                        let statistics=timing.finish_turn(now,ctx.has_ui,input,output,read,write);drop(timing);
+                        if let Some(stats)=statistics{ctx.ui.notify(&format!("TPS {:.1} tok/s. Cache hit {:.1}%, {:.1}s",stats.tokens_per_second,stats.cache_hit_rate,stats.elapsed_seconds),NotificationType::Info);}
                     }
                     _=>{}
                 }

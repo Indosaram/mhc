@@ -7,3 +7,21 @@ fn costs_use_prompt_tokens_and_each_cache_rate(){let mut model=model();model.cos
 fn wait_margin_and_elapsed_time(){assert_eq!(next_delay_ms(1000.0,300.0,30.0,2000.0),269000.0);assert_eq!(next_delay_ms(1000.0,10.0,30.0,2000.0),0.0);assert_eq!(next_delay_ms(1000.0,10.0,-1.0,2000.0),9000.0);}
 #[test]
 fn only_native_anthropic_is_supported(){let mut model=model();assert!(is_warm_supported_model(&model));model.base_url="https://openrouter.ai/api/v1".into();assert!(!is_warm_supported_model(&model));}
+
+#[test]
+fn history_uses_last_assistant_not_trailing_user_or_tool() {
+    use maho_agent::types::AgentMessage;
+    use maho_ai::types::StopReason;
+    use serde_json::json;
+    let assistant = |timestamp, input, reason| serde_json::from_value::<AgentMessage>(json!({"role":"assistant","content":[],"api":"anthropic-messages","provider":"anthropic","model":"m","usage":{"input":input,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":input,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":reason,"timestamp":timestamp})).expect("assistant");
+    let user = serde_json::from_value::<AgentMessage>(json!({"role":"user","content":"next","timestamp":999})).expect("user");
+    let messages = vec![assistant(100,10,"stop"),assistant(200,20,"error"),user];
+    let (usage,reason) = last_assistant_usage(&messages).expect("usage");
+    assert_eq!(usage.input,20);
+    assert_eq!(reason,StopReason::Error);
+    assert_eq!(last_assistant_timestamp(&messages),Some(200));
+    assert!(last_assistant_usage(&[]).is_none());
+    assert!(last_assistant_timestamp(&[]).is_none());
+    assert!(last_assistant_usage(&messages[2..]).is_none());
+    assert!(last_assistant_timestamp(&messages[2..]).is_none());
+}

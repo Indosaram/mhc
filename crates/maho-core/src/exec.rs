@@ -35,6 +35,7 @@ pub async fn exec_command(command: &str, args: &[String], cwd: &str, options: &E
             process.env(key, value);
         }
     }
+    process.env_remove("__PI_INTERNAL_SPAWN");
     process.kill_on_drop(true);
 
     let child = match process.spawn() {

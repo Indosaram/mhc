@@ -292,13 +292,50 @@ pub struct ScopedModel { pub model: Model, pub thinking_level: Option<ThinkingLe
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServiceTier { Auto, Flex, Priority }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialAccountSource { Login, Import, Env }
+impl CredentialAccountSource {
+    pub const fn as_str(self) -> &'static str {
+        match self { Self::Login => "login", Self::Import => "import", Self::Env => "env" }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CredentialAccountSummary {
+    pub name: String, pub display_name: Option<String>, pub source: CredentialAccountSource,
+    pub blocked: bool, pub pinned: bool,
+}
+
 /// Host implementations adapt their owning registry, without an ext-api -> core edge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedRequestAuth {
+    pub auth: maho_ai::models::ProviderAuthResult,
+    pub extra_body: Option<serde_json::Map<String, JsonValue>>,
+    pub upstream_model_id: Option<String>,
+    pub service_tier: Option<maho_ai::types::ServiceTierPreference>,
+    pub env: Option<maho_ai::types::ProviderEnv>,
+}
+
 pub trait ModelRegistry: Send + Sync {
     fn get_all(&self) -> Vec<Model>;
     fn get_available(&self) -> Vec<Model>;
     fn find(&self, provider: &str, id: &str) -> Option<Model>;
     fn has_configured_auth(&self, model: &Model) -> bool;
     fn get_api_key_for_provider<'a>(&'a self, provider: &'a str) -> ExtensionFuture<'a, Option<String>>;
+    fn get_api_key_and_headers<'a>(&'a self, _model: &'a Model) -> ExtensionFuture<'a, ResolvedRequestAuth> {
+        Box::pin(async { Err(ExtensionFailure::new("Model request auth is not supported by this model registry")) })
+    }
+    fn get_credential_accounts<'a>(&'a self, _provider: &'a str) -> ExtensionFuture<'a, Vec<CredentialAccountSummary>> {
+        Box::pin(async { Err(ExtensionFailure::new("Credential account listing is not supported by this model registry")) })
+    }
+    fn pin_credential_account<'a>(&'a self, _provider: &'a str, _name: Option<&'a str>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async { Err(ExtensionFailure::new("Credential account pinning is not supported by this model registry")) })
+    }
+    fn remove_credential_account<'a>(&'a self, _provider: &'a str, _name: &'a str) -> ExtensionFuture<'a, ()> {
+        Box::pin(async { Err(ExtensionFailure::new("Credential account removal is not supported by this model registry")) })
+    }
+    fn rename_credential_account<'a>(&'a self, _provider: &'a str, _name: &'a str, _display_name: Option<&'a str>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async { Err(ExtensionFailure::new("Credential account renaming is not supported by this model registry")) })
+    }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionEntry { pub id: String, pub parent_id: Option<String>, pub timestamp: String, pub kind: String, pub data: JsonValue }
@@ -1023,8 +1060,9 @@ pub trait ExtensionSessionActions: Send + Sync {
 }
 
 pub type BusHandler = Arc<dyn Fn(&JsonValue) + Send + Sync>;
+type NativeBusHandler = Arc<dyn Fn(&(dyn std::any::Any + Send + Sync)) + Send + Sync>;
 #[derive(Clone, Default)]
-struct BusState { next_id: u64, handlers: BTreeMap<String, Vec<(u64, BusHandler)>> }
+struct BusState { next_id: u64, handlers: BTreeMap<String, Vec<(u64, BusHandler)>>, native_handlers: BTreeMap<String, Vec<(u64, NativeBusHandler)>> }
 #[derive(Clone, Default)]
 pub struct EventBus { state: Arc<Mutex<BusState>>, registration_stale: Arc<std::sync::atomic::AtomicBool>, runtime: Option<ExtensionRuntime>, registration_subscriptions: Arc<Mutex<Vec<u64>>> }
 pub struct BusSubscription { state: Arc<Mutex<BusState>>, channel: String, id: u64 }
@@ -1032,6 +1070,7 @@ impl Drop for BusSubscription {
     fn drop(&mut self) {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(handlers) = state.handlers.get_mut(&self.channel) { handlers.retain(|(id, _)| *id != self.id); }
+        if let Some(handlers) = state.native_handlers.get_mut(&self.channel) { handlers.retain(|(id, _)| *id != self.id); }
     }
 }
 impl EventBus {
@@ -1046,9 +1085,9 @@ impl EventBus {
     pub fn invalidate_registration(&self) {
         self.registration_stale.store(true, std::sync::atomic::Ordering::Release);
         let owned = std::mem::take(&mut *self.registration_subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        for handlers in self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.values_mut() {
-            handlers.retain(|(id, _)| !owned.contains(id));
-        }
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for handlers in state.handlers.values_mut() { handlers.retain(|(id, _)| !owned.contains(id)); }
+        for handlers in state.native_handlers.values_mut() { handlers.retain(|(id, _)| !owned.contains(id)); }
     }
     pub fn registration_checkpoint(&self) -> EventBusCheckpoint {
         EventBusCheckpoint(self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
@@ -1074,9 +1113,28 @@ impl EventBus {
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(data))).is_err() { eprintln!("Event handler error ({channel}): native handler panicked"); }
         }
     }
+    /// Subscribe to native payloads without serializing contexts or callback objects.
+    pub fn on_native<T: Send + Sync + 'static>(&self, channel: &str, handler: Arc<dyn Fn(&T) + Send + Sync>) -> BusSubscription {
+        self.assert_active_or_panic();
+        let erased: NativeBusHandler = Arc::new(move |data| { if let Some(data) = data.downcast_ref::<T>() { handler(data); } });
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let id = state.next_id; state.next_id = state.next_id.wrapping_add(1);
+        state.native_handlers.entry(channel.into()).or_default().push((id, erased));
+        self.registration_subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(id);
+        BusSubscription { state: Arc::clone(&self.state), channel: channel.into(), id }
+    }
+    /// Publish the same borrowed native object to every matching subscriber.
+    pub fn emit_native<T: Send + Sync + 'static>(&self, channel: &str, data: &T) {
+        self.assert_active_or_panic();
+        let handlers = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).native_handlers.get(channel).cloned().unwrap_or_default();
+        for (_, handler) in handlers {
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(data))).is_err() { eprintln!("Event handler error ({channel}): native handler panicked"); }
+        }
+    }
     pub fn clear(&self) {
         if self.registration_stale.load(std::sync::atomic::Ordering::Acquire) { return; }
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.clear();
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.handlers.clear(); state.native_handlers.clear();
     }
 }
 pub struct EventBusCheckpoint(BusState);
@@ -1271,7 +1329,17 @@ impl ExtensionRuntime {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_tool_renderers.get(path).map(|renderers| renderers.get(name).cloned())
     }
     pub fn extension_tool_executor(&self, path: &str, name: &str) -> Option<ExtensionToolExecutor> {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extension_tool_executors.get(&(path.into(), name.into())).cloned()
+        let execute = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extension_tool_executors.get(&(path.into(), name.into())).cloned()?;
+        let runtime = self.clone();
+        Some(Arc::new(move |id, params, signal, update, context| {
+            let execute = execute.clone(); let runtime = runtime.clone();
+            Box::pin(async move {
+                runtime.assert_active()?;
+                let result = execute(id, params, signal, update, context).await?;
+                runtime.assert_active()?;
+                Ok(result)
+            })
+        }))
     }
     pub fn register_provider(&self, registration: ProviderRegistration, path: &str) -> Result<(), ExtensionFailure> {
         self.assert_active()?;

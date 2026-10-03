@@ -5,5 +5,18 @@ edition.workspace = true
 publish.workspace = true
 license = "MIT"
 
+[dependencies]
+maho-ext-api = { path = "../../maho-ext-api" }
+maho-ext-builtin-loose = { path = "../maho-ext-builtin-loose" }
+
+[dev-dependencies]
+maho-ai = { path = "../../maho-ai" }
+maho-ext-reasoning = { path = "../maho-ext-reasoning" }
+maho-core = { path = "../../maho-core" }
+maho-ext-host = { path = "../../maho-ext-host" }
+serde_json = "=1.0.149"
+tempfile = "=3.27.0"
+tokio = { version = "=1.52.3", features = ["macros", "rt", "sync"] }
+
 [lints]
 workspace = true

@@ -7,6 +7,12 @@ license = "MIT"
 
 [dependencies]
 maho-ai = { path = "../../maho-ai" }
+maho-ext-api = { path = "../../maho-ext-api" }
+maho-core = { path = "../../maho-core" }
+maho-tui = { path = "../../maho-tui" }
+maho-interactive = { path = "../../maho-interactive" }
+maho-ext-compaction = { path = "../maho-ext-compaction" }
+serde_json.workspace = true
 tokio = { workspace = true, features = ["time", "macros", "rt", "test-util"] }
 
 [lints]

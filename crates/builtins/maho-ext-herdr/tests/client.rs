@@ -37,3 +37,40 @@ async fn retries_invalid_replies_with_same_request(){
         let client=HerdrClient::new(path.to_string_lossy().into_owned(),"pane".into(),Arc::new(||100));client.send(HerdrMethod::ReportAgent,Default::default()).await.expect("retry");let requests=server.await.expect("server");assert_eq!(requests[0],requests[1],"{failure}");
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn timeout_retries_preserve_request_and_drain_after_failure() {
+    let directory=tempfile::tempdir().expect("dir");
+    let path=directory.path().join("timeout.sock");
+    let listener=UnixListener::bind(&path).expect("listener");
+    let (seen,mut received)=tokio::sync::mpsc::unbounded_channel();
+    let (stop,mut stopped)=tokio::sync::oneshot::channel::<()>();
+    let server=tokio::spawn(async move {
+        let mut sockets=Vec::new();
+        loop {
+            tokio::select! {
+                () = async { let _closed=(&mut stopped).await; } => break,
+                connected=listener.accept() => {
+                    let (mut socket,_)=connected.expect("accept");
+                    let mut bytes=Vec::new();
+                    loop {let byte=socket.read_u8().await.expect("byte");if byte==b'\n'{break;}bytes.push(byte);}
+                    seen.send(serde_json::from_slice::<serde_json::Value>(&bytes).expect("request")).expect("request observed");
+                    sockets.push(socket);
+                }
+            }
+        }
+    });
+    let client=HerdrClient::new(path.to_string_lossy().into_owned(),"pane".into(),Arc::new(||500));
+    let send=tokio::spawn(client.send(HerdrMethod::ReportAgent,Default::default()));
+    let first=received.recv().await.expect("first attempt");
+    tokio::time::advance(std::time::Duration::from_millis(500)).await;
+    let second=received.recv().await.expect("second attempt");
+    assert_eq!(first,second);
+    tokio::time::advance(std::time::Duration::from_millis(1500)).await;
+    assert!(send.await.expect("sender task").is_err());
+    client.drain().await;
+    stop.send(()).expect("stop server");
+    server.await.expect("server teardown");
+    drop(client);
+    directory.close().expect("socket directory cleanup");
+}
