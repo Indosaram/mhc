@@ -169,6 +169,7 @@ pub fn create_agent_session_services(mut options: CreateAgentSessionServicesOpti
             providers: None,
         })
     });
+    let auth_storage = model_runtime.credentials.clone();
     let settings_manager = options
         .settings_manager
         .take()
