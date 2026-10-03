@@ -110,6 +110,12 @@ fn run() -> Result<(), String> {
         let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
             models_path: Some(agent.join("models.json")), auth_path: Some(agent.join("auth.json")), ..Default::default()
         });
+        let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+        let loaded = maho_cli::cli::extension_registry::load_native_extensions(&cwd, Default::default());
+        let providers = std::sync::Arc::new(maho_core::agent_session_runtime::ExtensionModelRuntimeActions(std::sync::Mutex::new(runtime)));
+        loaded.runtime.bind_providers(providers.clone()).map_err(|error| error.message)?;
+        let runtime = providers.0.lock().map_err(|error| error.to_string())?.clone();
+        for error in &loaded.errors { eprintln!("{}: {}", error.extension_path, error.error); }
         if runtime.get_error().is_some() { eprintln!("Warning: errors loading models.json"); }
         return output(&format!("{}\n", maho_cli::cli::list_models::list_models(&runtime, Some(search))));
     }

@@ -240,6 +240,23 @@ pub async fn mount_agent_session_runtime(
         },
     )
     .await?;
+    let hooks = created.session.with_settings_manager(|settings| super::hook_sources::build_loaded_hook_sources(config, settings));
+    created.session.set_hook_sources(Some(hooks));
+    super::omo_mount::mount_base_extensions(
+        &created.session,
+        Arc::new(super::omo_mount::NoninteractiveUi),
+        super::extension_registry::native_extension_factories(),
+    ).await?;
+    created.session.bind_extensions(maho_core::agent_session::ExtensionBindings {
+        mode: Some(match config.app_mode {
+            AppMode::Interactive => maho_ext_api::ExtensionMode::Tui,
+            AppMode::Rpc => maho_ext_api::ExtensionMode::Rpc,
+            AppMode::AppServer => maho_ext_api::ExtensionMode::AppServer,
+            AppMode::Json => maho_ext_api::ExtensionMode::Json,
+            AppMode::Print => maho_ext_api::ExtensionMode::Print,
+        }),
+        ..Default::default()
+    }).await;
     let diagnostics = created.services.diagnostics.clone();
     let model_fallback_message = created.model_fallback_message.clone();
     let runtime = AgentSessionRuntime::new(

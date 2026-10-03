@@ -32,15 +32,19 @@ fn real_rpc_entry_dispatches_message_query_and_preserves_correlation() {
         .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
         .spawn().expect("real RPC process");
     let mut input = child.stdin.take().expect("stdin");
-    input.write_all(b"{\"id\":\"query\",\"type\":\"get_messages\"}\n").expect("command");
+    input.write_all(b"{\"id\":\"query\",\"type\":\"get_messages\"}\n{\"id\":\"query-repeat\",\"type\":\"get_messages\"}\n").expect("commands");
     drop(input);
     let output = child.wait_with_output().expect("RPC exit");
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    let response: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON response");
-    assert_eq!(response["id"], "query");
-    assert_eq!(response["command"], "get_messages");
-    assert_eq!(response["success"], true);
-    assert_eq!(response["data"]["messages"], serde_json::json!([]));
+    let text = String::from_utf8(output.stdout).expect("utf8 responses");
+    let responses: Vec<serde_json::Value> = text.lines().map(|line| serde_json::from_str(line).expect("JSON response")).collect();
+    assert_eq!(responses.len(), 2);
+    for (response, id) in responses.iter().zip(["query", "query-repeat"]) {
+        assert_eq!(response["id"], id);
+        assert_eq!(response["command"], "get_messages");
+        assert_eq!(response["success"], true);
+        assert_eq!(response["data"]["messages"], serde_json::json!([]));
+    }
 }
 
 #[test]

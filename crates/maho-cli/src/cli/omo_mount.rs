@@ -104,10 +104,23 @@ pub async fn mount_base_extensions(
 ) -> Result<LoadExtensionsResult, String> {
     let cwd = session.cwd();
     let loaded = load_extensions(base, Path::new(&cwd), ExtensionSessionProfile::default());
-    let context = session.extension_context(ui);
+    bind_loaded_extensions(session, ui, &loaded, None).await?;
+    Ok(loaded)
+}
+
+pub async fn bind_loaded_extensions(
+    session: &AgentSession,
+    ui: Arc<dyn ExtensionUi>,
+    loaded: &LoadExtensionsResult,
+    omo: Option<&OmoMount>,
+) -> Result<(), String> {
+    let mut context = session.extension_context(ui);
+    if let Some(runtime) = omo.and_then(OmoMount::runtime) {
+        bind_runtime_into_context(&runtime, &mut context);
+    }
     let runner = ExtensionRunner::new(loaded.extensions.clone(), loaded.runtime.clone(), loaded.events.clone(), context);
     session.set_extension_runner(runner).await;
-    Ok(loaded)
+    Ok(())
 }
 
 pub async fn mount_native_extensions_with_omo(

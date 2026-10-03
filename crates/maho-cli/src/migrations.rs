@@ -32,7 +32,13 @@ pub fn show_deprecation_warnings(warnings: &[String]) -> std::io::Result<()> {
     println!("\x1b[2m\nPress any key to continue...\x1b[22m");
     std::io::stdout().flush()?;
     crossterm::terminal::enable_raw_mode()?;
-    let result = crossterm::event::read();
+    let result = loop {
+        match crossterm::event::read() {
+            Ok(crossterm::event::Event::Key(key)) if key.kind != crossterm::event::KeyEventKind::Release => break Ok(()),
+            Ok(_) => {},
+            Err(error) => break Err(error),
+        }
+    };
     let restored = crossterm::terminal::disable_raw_mode();
     result?;
     restored?;

@@ -24,11 +24,11 @@ pub async fn wait_for_child_process(child: &mut tokio::process::Child, options: 
                 exit = Some(status?.code());
                 idle = Some(tokio::time::Instant::now() + std::time::Duration::from_millis(250));
             }
-            read = async { stdout.as_mut().expect("stdout present").read(&mut out).await }, if stdout.is_some() => {
+            read = async { match stdout.as_mut() { Some(pipe) => pipe.read(&mut out).await, None => std::future::pending().await } }, if stdout.is_some() => {
                 let count = read?;
                 if count == 0 { stdout = None; } else { on_output(false, &out[..count]); if exit.is_some() { idle = Some(tokio::time::Instant::now() + std::time::Duration::from_millis(250)); } }
             }
-            read = async { stderr.as_mut().expect("stderr present").read(&mut err).await }, if stderr.is_some() => {
+            read = async { match stderr.as_mut() { Some(pipe) => pipe.read(&mut err).await, None => std::future::pending().await } }, if stderr.is_some() => {
                 let count = read?;
                 if count == 0 { stderr = None; } else { on_output(true, &err[..count]); if exit.is_some() { idle = Some(tokio::time::Instant::now() + std::time::Duration::from_millis(250)); } }
             }

@@ -30,10 +30,6 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
         auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")), ..Default::default()
     });
-    let scope = maho_core::model_resolver::resolve_model_scope_from_models(parsed.models.as_deref().unwrap_or_default(), &models.get_models(None));
-    let options = startup::build_session_options(&parsed, &scope.scoped_models, parsed.session.is_some() || parsed.continue_session, &models, &settings);
-    for diagnostic in &options.diagnostics { eprintln!("{}: {}", if diagnostic.error { "Error" } else { "Warning" }, diagnostic.message); }
-    if options.diagnostics.iter().any(|diagnostic| diagnostic.error) { return Err("Invalid model selection".into()); }
     let identity = Some(maho_core::session_manager::NewSessionOptions { id: parsed.session_id.clone(), ..Default::default() });
     let manager = if parsed.no_session { SessionManager::in_memory(&cwd_text, identity, None) }
         else if let Some(path) = &parsed.session { SessionManager::open(path, parsed.session_dir.as_deref(), None, identity) }
@@ -59,6 +55,16 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         },
     );
     base_factories.extend(oauth.factories);
+    if parsed.no_extensions { base_factories.retain(|factory| factory.source_info.source != "user"); }
+    let mut extensions = maho_ext_host::loader::load_extensions(base_factories, &cwd, Default::default());
+    for error in &extensions.errors { eprintln!("{}: {}", error.extension_path, error.error); }
+    let providers = Arc::new(maho_core::agent_session_runtime::ExtensionModelRuntimeActions(std::sync::Mutex::new(models)));
+    extensions.runtime.bind_providers(providers.clone()).map_err(|error| error.message)?;
+    let models = providers.0.lock().map_err(|error| error.to_string())?.clone();
+    let scope = maho_core::model_resolver::resolve_model_scope_from_models(parsed.models.as_deref().unwrap_or_default(), &models.get_models(None));
+    let options = startup::build_session_options(&parsed, &scope.scoped_models, parsed.session.is_some() || parsed.continue_session, &models, &settings);
+    for diagnostic in &options.diagnostics { eprintln!("{}: {}", if diagnostic.error { "Error" } else { "Warning" }, diagnostic.message); }
+    if options.diagnostics.iter().any(|diagnostic| diagnostic.error) { return Err("Invalid model selection".into()); }
     let created = maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
         cwd: Some(cwd_text.to_string()), agent_dir: Some(agent_dir.clone()), model_runtime: Some(models),
         settings_manager: Some(settings), session_manager: Some(manager), model: options.options.model,
@@ -90,16 +96,26 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         Ok(mount) => Some(mount),
         Err(reason) => { eprintln!("omo composition not mounted: {reason}"); None }
     };
+    if let Some(omo) = &omo_mount {
+        let factory = omo.factory();
+        let mut api = maho_ext_api::ExtensionApi::new(
+            maho_ext_api::LoadedExtension::new(&factory.path, cwd.clone(), factory.source_info),
+            Default::default(), extensions.events.registration_scope(), extensions.runtime.registration_scope(),
+        );
+        factory.extension.register(&mut api);
+        api.runtime.commit_registration().map_err(|error| error.message)?;
+        extensions.extensions.push(api.registered);
+    }
     let result = async { match mode {
         AppMode::Rpc => {
-            super::omo_mount::mount_base_extensions(&session, Arc::new(super::omo_mount::NoninteractiveUi), base_factories).await?;
+            super::omo_mount::bind_loaded_extensions(&session, Arc::new(super::omo_mount::NoninteractiveUi), &extensions, omo_mount.as_ref()).await?;
             session.bind_extensions(maho_core::agent_session::ExtensionBindings {
                 mode: Some(maho_ext_api::ExtensionMode::Rpc), ..Default::default()
             }).await;
             maho_rpc::rpc_mode::run_command_stream(&session, tokio::io::stdin(), tokio::io::stdout()).await.map_err(|error| error.to_string())
         },
         AppMode::Print | AppMode::Json => {
-            super::omo_mount::mount_base_extensions(&session, Arc::new(super::omo_mount::NoninteractiveUi), base_factories).await?;
+            super::omo_mount::bind_loaded_extensions(&session, Arc::new(super::omo_mount::NoninteractiveUi), &extensions, omo_mount.as_ref()).await?;
             session.bind_extensions(maho_core::agent_session::ExtensionBindings {
                 mode: Some(if mode == AppMode::Json { maho_ext_api::ExtensionMode::Json } else { maho_ext_api::ExtensionMode::Print }),
                 ..Default::default()
@@ -111,7 +127,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         }
         AppMode::Interactive => {
             let initial = startup::prepare_initial_message(&mut parsed, &cwd, true, None).await?;
-            super::interactive_entry::run(session.clone(), &parsed, initial, base_factories, omo_mount).await
+            super::interactive_entry::run(session.clone(), &parsed, initial, extensions, omo_mount).await
         },
         AppMode::AppServer => unreachable!("server mode rejected before session creation"),
     } }.await;

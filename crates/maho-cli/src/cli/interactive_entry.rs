@@ -38,7 +38,7 @@ pub async fn mount_shared_host(session: &maho_core::agent_session::AgentSession,
     Some(join_shared_host(binding, &agent_dir, None).await)
 }
 
-pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &super::args::Args, initial: super::initial_message::InitialMessageResult, base_factories: Vec<maho_ext_host::loader::NativeExtensionFactory>, omo: Option<super::omo_mount::OmoMount>) -> Result<(), String> {
+pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &super::args::Args, initial: super::initial_message::InitialMessageResult, extensions: maho_ext_host::loader::LoadExtensionsResult, omo: Option<super::omo_mount::OmoMount>) -> Result<(), String> {
     use maho_interactive::{interactive_mode::InteractiveMode, tui_renderer::{create_interactive_tui, InteractiveTuiOptions, TuiMode}};
     let shared_host = mount_shared_host(&session, parsed).await;
     if let Some(message) = shared_host.as_ref().and_then(SharedHostMount::warning_message) { eprintln!("{message}"); }
@@ -51,10 +51,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         mode.set_session_host(host);
     }
     mode.rebuild_history();
-    let extensions = match &omo {
-        Some(omo) => super::omo_mount::mount_native_extensions_with_omo(&session, mode.extension_ui.clone(), base_factories, omo).await?,
-        None => super::omo_mount::mount_base_extensions(&session, mode.extension_ui.clone(), base_factories).await?,
-    };
+    super::omo_mount::bind_loaded_extensions(&session, mode.extension_ui.clone(), &extensions, omo.as_ref()).await?;
     mode.bind_extensions().await;
     mode.use_registered_markdown_transformers(&extensions.extensions);
     mode.initialize_startup_header();
