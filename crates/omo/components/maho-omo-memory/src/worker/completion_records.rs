@@ -1,6 +1,6 @@
 use std::path::Path;
 use memory_core::reflection::machine::ReflectionTrigger;
-use super::{completion_contracts::ReflectionCompletionRecord, run_artifacts::{ArtifactError, read_run_json, write_run_json_atomic}};
+use super::{completion_contracts::ReflectionCompletionRecord, run_artifacts::{ArtifactError, read_run_json}};
 #[derive(Debug)]
 pub enum CompletionRecordError { Artifact(ArtifactError), InvalidRunId, Mismatch(String) }
 impl std::fmt::Display for CompletionRecordError { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { match self { Self::Artifact(error) => error.fmt(f), Self::InvalidRunId => f.write_str("runId must contain a safe identifier"), Self::Mismatch(id) => write!(f, "Reflection completion record mismatch for {id}") } } }
@@ -27,7 +27,12 @@ pub fn write_completion_record(dir: &Path, record: &ReflectionCompletionRecord) 
     let mut builder = std::fs::DirBuilder::new(); builder.recursive(true);
     #[cfg(unix)] { use std::os::unix::fs::DirBuilderExt; builder.mode(0o700); }
     builder.create(dir).map_err(ArtifactError::Io)?;
-    write_run_json_atomic(&dir.join(format!("{}.json", safe_run_id(&record.run_id)?)), record, 0o600)?;
+    let target=dir.join(format!("{}.json",safe_run_id(&record.run_id)?));
+    let temporary=target.with_file_name(format!("{}.tmp-{}",target.file_name().unwrap_or_default().to_string_lossy(),memory_core::support::random::random_uuid()));
+    let mut options=std::fs::OpenOptions::new();options.write(true).create(true).truncate(true);
+    #[cfg(unix)]{use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+    {use std::io::Write;let mut file=options.open(&temporary).map_err(ArtifactError::Io)?;file.write_all(serde_json::to_string_pretty(record).map_err(ArtifactError::Json)?.as_bytes()).map_err(ArtifactError::Io)?;file.write_all(b"\n").map_err(ArtifactError::Io)?;}
+    std::fs::rename(temporary,target).map_err(ArtifactError::Io)?;
     Ok(())
 }
 pub fn ensure_reflection_completion(dir: &Path, desired: &ReflectionCompletionRecord) -> Result<ReflectionCompletionRecord, CompletionRecordError> {
@@ -52,7 +57,7 @@ mod tests {
     #[test]
     fn mismatch_rejected_without_overwrite() { let root = tempfile::tempdir().unwrap(); ensure_reflection_completion(root.path(), &record()).unwrap(); let mut bad = record(); bad.outcome = "failed".into(); assert!(ensure_reflection_completion(root.path(), &bad).is_err()); assert_eq!(read_reflection_completion(root.path(), "run-offline").unwrap().unwrap().outcome, "merged"); }
     #[test]
-    fn offline_record_pending() { let root = tempfile::tempdir().unwrap(); assert_eq!(ensure_reflection_completion(root.path(), &record()).unwrap().delivery.status, DeliveryStatus::Pending); }
+    fn offline_record_pending() { let root = tempfile::tempdir().unwrap();let expected=record(); assert_eq!(ensure_reflection_completion(root.path(), &expected).unwrap().delivery.status, DeliveryStatus::Pending);assert_eq!(std::fs::read(root.path().join("run-offline.json")).unwrap(),format!("{}\n",serde_json::to_string_pretty(&expected).unwrap()).as_bytes());assert_eq!(std::fs::read_dir(root.path()).unwrap().count(),1); }
     #[test]
     fn corrupt_record_ignored() { let root = tempfile::tempdir().unwrap(); std::fs::write(root.path().join("bad.json"), "{").unwrap(); assert!(read_completion_record(&root.path().join("bad.json")).is_none()); }
 }
