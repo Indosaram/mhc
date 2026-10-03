@@ -14,4 +14,6 @@ pub fn last_assistant_usage(messages:&[maho_agent::types::AgentMessage])->Option
 pub fn last_assistant_timestamp(messages:&[maho_agent::types::AgentMessage])->Option<i64>{
     messages.iter().rev().find_map(|message|message.as_assistant().map(|message|message.timestamp))
 }
+pub mod extension;
+pub use extension::CacheKeepalive;
 
