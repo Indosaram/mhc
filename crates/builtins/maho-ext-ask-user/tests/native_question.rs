@@ -4,11 +4,25 @@ use maho_ai::providers::faux::{RegisterFauxProviderOptions, faux_provider, faux_
 use maho_core::agent_session::{AgentSession, AgentSessionConfig, ExtensionBindings, ExecuteToolOptions};
 use maho_ext_api::*;
 use maho_ext_host::{ExtensionRunner, loader::{NativeExtensionFactory, load_extensions}};
-use maho_ext_ask_user::{AskUser, registry::{get_pending_questions, unregister_pending_question}};
+use maho_ext_ask_user::{AskUser, AskUserAskedEvent, AskUserSettledEvent, registry::{get_pending_questions, unregister_pending_question}};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 
+struct CaptureStart(Arc<Mutex<Option<ExtensionContext>>>);
+impl Extension for CaptureStart {
+    fn register(&self, api: &mut ExtensionApi) {
+        let captured = self.0.clone();
+        api.on(EventKind::SessionStart, Arc::new(move |_, ctx| {
+            *captured.lock().expect("start context") = Some(ctx.clone());
+            Box::pin(async { Ok(EventResult::None) })
+        }));
+    }
+}
+
 async fn scenario(cancel: bool, fail_append: bool, abort: bool, timeout: bool, reload: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    scenario_order(cancel, fail_append, abort, timeout, reload, false).await
+}
+async fn scenario_order(cancel: bool, fail_append: bool, abort: bool, timeout: bool, reload: bool, late_rebind: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let root = tempfile::tempdir()?;
     let project = root.path();
     let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
@@ -43,7 +57,16 @@ async fn scenario(cancel: bool, fail_append: bool, abort: bool, timeout: bool, r
     let bus = loaded.events.clone();
     let settlements = Arc::new(Mutex::new(Vec::new()));
     let captured = settlements.clone();
-    let _subscription = bus.on("ask-user:settled", Arc::new(move |value| captured.lock().expect("settlements").push(value.clone())));
+    let _subscription = bus.on_native::<AskUserSettledEvent>("ask-user:settled", Arc::new(move |value| captured.lock().expect("settlements").push(value.clone())));
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let captured = asked.clone();
+    let _asked = bus.on_native::<AskUserAskedEvent>("ask-user:asked", Arc::new(move |value| captured.lock().expect("asked").push(value.clone())));
+    let ferryx_asked = Arc::new(Mutex::new(Vec::new()));
+    let captured = ferryx_asked.clone();
+    let _ferryx_asked = bus.on("ask-user:asked", Arc::new(move |value| captured.lock().expect("ferryx asked").push(value.clone())));
+    let legacy = Arc::new(Mutex::new(0));
+    let captured = legacy.clone();
+    let _legacy = bus.on("ask-user:settled", Arc::new(move |_| *captured.lock().expect("legacy") += 1));
     let runner = ExtensionRunner::new(loaded.extensions, loaded.runtime, loaded.events, event_context);
     session.set_extension_runner(runner).await;
     session.bind_extensions(ExtensionBindings { ui_context: Some(ui.clone() as Arc<dyn ExtensionUi>), mode: Some(ExtensionMode::Tui), ..Default::default() }).await;
@@ -62,7 +85,9 @@ async fn scenario(cancel: bool, fail_append: bool, abort: bool, timeout: bool, r
         let notifications = settlements.lock().expect("settlements").len();
         let opened = opened_rx.try_recv().is_ok();
         let failed = result.as_ref().map_or(true, |result| result.is_error == Some(true));
-        if !failed || pending != 0 || notifications != 0 || opened {
+        let asked_count = asked.lock().expect("asked").len();
+        let ferryx_count = ferryx_asked.lock().expect("ferryx asked").len();
+        if !failed || pending != 0 || notifications != 0 || asked_count != 0 || ferryx_count != 0 || opened {
             return Err(format!("failed setup receipt: failed={failed}, pending={pending}, settlements={notifications}, opened={opened}, result={result:?}").into());
         }
         return Ok(());
@@ -72,14 +97,35 @@ async fn scenario(cancel: bool, fail_append: bool, abort: bool, timeout: bool, r
     let request = tokio::time::timeout(std::time::Duration::from_secs(5), opened_rx.recv()).await?.ok_or("UI did not open")?;
     let pending = get_pending_questions(&session.session_id());
     if pending.len() != 1 { return Err(format!("Expected one pending question, got {}", pending.len()).into()); }
+    let initial_owner = pending[0].owner.borrow().clone().ok_or("Missing owner")?;
+    {
+        let events = asked.lock().expect("asked");
+        if events.len() != 1 { return Err(format!("Expected one native asked event, got {}", events.len()).into()); }
+        let event = &events[0];
+        if !Arc::ptr_eq(&event.ctx.session_manager, &initial_owner.context.session_manager)
+            || !Arc::ptr_eq(&event.ctx.model_registry, &initial_owner.context.model_registry)
+            || !Arc::ptr_eq(&event.ctx.ui, &initial_owner.context.ui)
+            || event.request != request {
+            return Err("Asked event lost owning context or complete request".into());
+        }
+        let bridge = ferryx_asked.lock().expect("ferryx asked");
+        if bridge.len() != 1 || bridge[0]["request"]["requestId"] != request.request_id
+            || bridge[0]["request"]["waitForAnswer"] != request.wait_for_answer
+            || bridge[0]["request"]["questions"][0]["header"] != request.questions[0].header {
+            return Err("Required Ferryx JSON asked bridge missing or duplicated".into());
+        }
+    }
     let callback_owner = pending[0].owner.clone();
-    let _reentrant_detach = bus.on("ask-user:settled",Arc::new(move |_| {
+    let _reentrant_detach = bus.on_native::<AskUserSettledEvent>("ask-user:settled",Arc::new(move |_| {
         callback_owner.send_replace(None);
     }));
     let mut completion = pending[0].completion.clone();
     if reload {
-        responses.send_replace(Some(QuestionResponse {status:QuestionStatus::Answered,answers:[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into(),comment:None,unanswered:vec![],auto_resolved_after_ms:None}));
+        if !late_rebind {
+            responses.send_replace(Some(QuestionResponse {status:QuestionStatus::Answered,answers:[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into(),comment:None,unanswered:vec![],auto_resolved_after_ms:None}));
+        }
         session.emit_session_shutdown(SessionReason::Reload).await;
+        if pending[0].owner.borrow().is_some() { return Err("Reload did not detach owner".into()); }
         extension_runtime.invalidate("old question runner invalidated");
     }
     if timeout {
@@ -89,27 +135,60 @@ async fn scenario(cancel: bool, fail_append: bool, abort: bool, timeout: bool, r
     } else if cancel {
         session.emit_session_shutdown(SessionReason::Quit).await;
         if !get_pending_questions(&session.session_id()).is_empty() { return Err("Shutdown left pending question".into()); }
-    } else {
+    } else if !late_rebind {
         responses.send_replace(Some(QuestionResponse {status:QuestionStatus::Answered, answers:[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into(),comment:None,unanswered:vec![],auto_resolved_after_ms:None}));
     }
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    if !late_rebind { tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop { if completion.borrow().is_some() { break; } completion.changed().await?; }
         Ok::<(), tokio::sync::watch::error::RecvError>(())
-    }).await??;
+    }).await??; }
+    let replacement_context = Arc::new(Mutex::new(None));
     let _new_subscription = if reload {
         if !settlements.lock().expect("settlements").is_empty() { return Err("Detached timeout notified old runner".into()); }
-        let loaded = load_extensions(vec![NativeExtensionFactory { path:"<ask-user-reloaded>".into(),source_info:SourceInfo::default(),extension:Box::new(AskUser) }],project,ExtensionSessionProfile::default());
+        let loaded = load_extensions(vec![NativeExtensionFactory { path:"<capture-reloaded-context>".into(),source_info:SourceInfo::default(),extension:Box::new(CaptureStart(replacement_context.clone())) }, NativeExtensionFactory { path:"<ask-user-reloaded>".into(),source_info:SourceInfo::default(),extension:Box::new(AskUser) }],project,ExtensionSessionProfile::default());
         if !loaded.errors.is_empty() { return Err(format!("Reload factory errors: {:?}",loaded.errors).into()); }
         let captured = settlements.clone();
-        let subscription = loaded.events.on("ask-user:settled",Arc::new(move |value|captured.lock().expect("settlements").push(value.clone())));
+        let subscription = loaded.events.on_native::<AskUserSettledEvent>("ask-user:settled",Arc::new(move |value|captured.lock().expect("settlements").push(value.clone())));
         let runner = ExtensionRunner::new(loaded.extensions,loaded.runtime,loaded.events,context::create(&session,ui.clone()));
         session.set_extension_runner(runner).await;
         session.bind_extensions(ExtensionBindings {ui_context:Some(ui.clone() as Arc<dyn ExtensionUi>),mode:Some(ExtensionMode::Tui),..Default::default()}).await;
         session.bind_extensions(ExtensionBindings {ui_context:Some(ui.clone() as Arc<dyn ExtensionUi>),mode:Some(ExtensionMode::Tui),..Default::default()}).await;
+        if late_rebind {
+            let reopened = tokio::time::timeout(std::time::Duration::from_secs(5), opened_rx.recv()).await?.ok_or("Replacement UI did not open")?;
+            if reopened != request || pending[0].owner.borrow().is_none() || completion.borrow().is_some() || !settlements.lock().expect("settlements").is_empty() {
+                return Err("Late publication barrier did not preserve pending reattached request".into());
+            }
+            responses.send_replace(Some(QuestionResponse {status:QuestionStatus::Answered, answers:[(request.questions[0].id.clone(),QuestionAnswer {selected:vec!["A".into()],text:None})].into(),comment:None,unanswered:vec![],auto_resolved_after_ms:None}));
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop { if completion.borrow().is_some() { break; } completion.changed().await?; }
+                Ok::<(), tokio::sync::watch::error::RecvError>(())
+            }).await??;
+        }
         Some(subscription)
     } else { None };
     let status = completion.borrow().as_ref().map(|response|response.status);
     let notification_count = settlements.lock().expect("settlements").len();
+    {
+        let events = settlements.lock().expect("settlements");
+        if let Some(event) = events.first() {
+            let replacement = replacement_context.lock().expect("replacement context");
+            let expected_context = if reload { replacement.as_ref().ok_or("Replacement start context missing")? } else { &initial_owner.context };
+            if event.ctx.session_manager.session_id() != session.session_id()
+                || !Arc::ptr_eq(&event.ctx.ui, &expected_context.ui)
+                || !Arc::ptr_eq(&event.ctx.model_registry, &expected_context.model_registry)
+                || event.request != request
+                || &event.response != completion.borrow().as_ref().ok_or("No response")? {
+                return Err("Settled event lost owning context or complete request/response".into());
+            }
+            if !reload && (!Arc::ptr_eq(&event.ctx.session_manager, &initial_owner.context.session_manager) || !Arc::ptr_eq(&event.ctx.model_registry, &initial_owner.context.model_registry)) {
+                return Err("Settled event changed owning context identity".into());
+            }
+            if reload && Arc::ptr_eq(&event.ctx.session_manager, &initial_owner.context.session_manager) {
+                return Err("Reload settlement reused old context".into());
+            }
+        }
+        if *legacy.lock().expect("legacy") != 0 { return Err("Duplicate legacy JSON notification".into()); }
+    }
     if reload {
         let entries = session.with_session_manager(|manager| manager.entries());
         let persisted = entries.iter().filter(|entry| entry["type"] == "custom" && entry["customType"] == "ask-user:settlement" && entry["data"]["requestId"] == request.request_id).count();
@@ -153,6 +232,9 @@ async fn registered_timeout_settles_once_and_unregisters_owned_question() { scen
 
 #[tokio::test(start_paused = true)]
 async fn detached_timeout_queues_outcome_once_on_new_registered_runner() { scenario(false, false, false, true, true).await.expect("registered reload timeout"); }
+
+#[tokio::test]
+async fn detached_owner_rebinds_before_late_registered_publication() { scenario_order(false, false, false, false, true, true).await.expect("registered late rebind"); }
 
 struct FailingPersistence;
 impl ExtensionActions for FailingPersistence {

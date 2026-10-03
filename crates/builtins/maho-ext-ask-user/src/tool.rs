@@ -22,7 +22,7 @@ fn publish(owner: QuestionOwner, request: &QuestionRequest, response: &QuestionR
             owner.context.ui.notify(&error.message, NotificationType::Error);
         }
     }
-    emit_notification(&owner.sender.events, request, response, variant);
+    emit_notification(&owner.sender.events, &owner.context, request, response, variant);
 }
 pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc<Mutex<AskUserState>>, sender: Arc<ExtensionApi>) {
     let params = match variant { AskUserVariant::Codex => codex_params(), AskUserVariant::Claude => claude_params() };
@@ -60,7 +60,7 @@ pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc
             let timer = Arc::new(PendingTimer::new(request.clone(), Arc::new(move |response| { callback.send_if_modified(|value| { if value.is_some() { false } else { *value = Some(response); true } }); })));
             let cancelled = terminal.clone(); let pending = timer.clone(); let cancel = cancel_signal.clone();
             register_pending_question(&session, Arc::new(PendingQuestionEntry { request: request.clone(), completion: completion.clone(), owner, publication: publication.clone(), cancel: Arc::new(move |reason| { let response = pending.cancel(reason); cancelled.send_if_modified(|value| { if value.is_some() { false } else { *value = Some(response); true } }); cancel.abort(); }) }));
-            sender.events.emit(ASK_USER_ASKED_EVENT, &json!({"requestId":id,"variant":match variant {AskUserVariant::Codex=>"codex",AskUserVariant::Claude=>"claude"}}));
+            emit_asked(&sender.events, ctx, &request, variant);
             sender.events.emit("herdr:blocked", &json!({"active":true,"id":id,"label":request.questions.first().map(|q|format!("{} — {}",q.header,q.question)).unwrap_or_default()}));
             let owner_request = request.clone();
             let work_completion = terminal_response;
