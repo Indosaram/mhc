@@ -8,8 +8,8 @@ pub async fn discard_body<S,E>(mut body:S,max_bytes:usize,signal:Option<&AbortSi
             tokio::select! { result=body.next()=>result, ()=signal.cancelled()=>None }
         } else { body.next().await };
         let Some(Ok(chunk))=result else { break; };
-        drained=drained.saturating_add(chunk.len());
-        if drained>max_bytes { break; }
+        if chunk.len()>max_bytes-drained { break; }
+        drained+=chunk.len();
     }
 }
 #[cfg(test)]

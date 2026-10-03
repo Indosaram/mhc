@@ -2601,6 +2601,7 @@ dependencies = [
  "dom_query",
  "futures",
  "html5ever",
+ "hyper",
  "maho-ext-api",
  "maho-ext-host",
  "maho-interactive",
