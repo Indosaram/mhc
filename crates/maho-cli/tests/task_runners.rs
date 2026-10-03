@@ -269,7 +269,7 @@ async fn shared_parent_tool_obeys_registered_admission_hooks() {
                 let observed_id = observed_id.clone();
                 Box::pin(async move {
                 if let maho_ext_api::ExtensionEvent::ToolCall(event) = event {
-                    *observed_id.lock().expect("observed call ID") = Some(event.tool_call_id);
+                    *observed_id.lock().expect("observed call ID") = Some(event.tool_call_id.clone());
                 }
                 Ok(maho_ext_api::EventResult::ToolCall(maho_ext_api::ToolCallEventResult {
                     block: Some(true), reason: Some("fixture admission denied".into()), ..Default::default()
