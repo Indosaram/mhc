@@ -102,7 +102,12 @@ async fn live_lifecycle(shutdown_live:bool,peer_live:bool) {
     if peer_live { let mut peer=definition.nodes[0].clone(); peer.id="two".into(); definition.nodes.push(peer); }
     let run=dag.manager.start(senpi_task::dag::manager::DagStartParams { definition,parent_session_id:"session".into(),root_session_id:"session".into() }).expect("start").snapshot.run_id;
     dispatch(&api,EventKind::SessionStart,&mut start_event(),&ctx).await;
-    let (attached,attachment)=mpsc::channel(); let subscription=senpi_task::dag::journal::subscribe_dag_journal(&dag.store,&run,Arc::new(move |event| { if matches!(event.payload,senpi_task::dag::types::DagRunEventPayload::NodeTransitioned { to:senpi_task::dag::types::DagNodeState::Running,.. }) { attached.send(()).expect("attached"); } }));
+    let (attached,attachment)=mpsc::channel(); let attachment_run=run.clone();
+    let subscription=api.events.on("senpi:extension-rpc-event",Arc::new(move |event| {
+        if event["name"]!="omo.dag.event" { return; }
+        let event:senpi_task::dag::types::DagRunEvent=serde_json::from_value(event["data"].clone()).expect("forwarded DAG event");
+        if event.run_id==attachment_run && matches!(event.payload,senpi_task::dag::types::DagRunEventPayload::NodeTransitioned { to:senpi_task::dag::types::DagNodeState::Running,.. }) { attached.send(()).expect("attached"); }
+    }));
     let scheduler=dag.scheduler(&component.engine,&run,"session").expect("scheduler"); let running=scheduler.clone(); let worker=std::thread::spawn(move || running.run());
     let mut cleanup=Cleanup { component:component.clone(),scheduler:scheduler.clone(),run:run.clone(),worker:Some(worker) };
     let child=children.recv_timeout(Duration::from_secs(10)).expect("child"); attachment.recv_timeout(Duration::from_secs(10)).expect("attachment");
@@ -145,7 +150,7 @@ async fn live_lifecycle(shutdown_live:bool,peer_live:bool) {
         assert_eq!(rpc_timers.count(),0,"live shutdown removes heartbeat, snapshot and pending activity timers");
         child.emit(); rpc_timers.fire(150); assert_eq!(activity.lock().expect("activity").len(),2,"shutdown must suppress pending and subsequent child telemetry");
     }
-    scheduler.cancel(&run,Some("test cleanup")).expect("cancel"); cleanup.worker.take().expect("worker").join().expect("worker").expect("run"); subscription();
+    scheduler.cancel(&run,Some("test cleanup")).expect("cancel"); cleanup.worker.take().expect("worker").join().expect("worker").expect("run"); drop(subscription);
     component.engine.manager.wait_for(&child.id,None,Some(Duration::from_secs(10))).expect("cancelled child settlement");
     component.sync();
     assert!(!reload_veto(&api,&ctx).await,"registered reload must allow the settled cancelled child");
