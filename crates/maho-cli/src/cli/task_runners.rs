@@ -34,6 +34,53 @@ pub fn live_parent_registry(
     }))
 }
 
+struct NativeParentTool {
+    name: String,
+    description: String,
+    parent: std::sync::Weak<maho_core::agent_session::AgentSession>,
+    executor: tokio::runtime::Handle,
+}
+
+impl senpi_task::runners::in_process::shared_tool_filter::ChildTool for NativeParentTool {
+    fn name(&self) -> &str { &self.name }
+    fn description(&self) -> &str { &self.description }
+
+    fn execute(&self, tool_call_id: &str, input: &serde_json::Value) -> Result<serde_json::Value, senpi_task::host::HostError> {
+        let failure = |message: String| senpi_task::host::HostError { message };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(failure("Synchronous child tools must execute on the task worker, not the host executor".into()));
+        }
+        let parent = self.parent.upgrade().ok_or_else(|| failure("Parent session retired".into()))?;
+        let tool = parent.get_registered_tool(&self.name)
+            .ok_or_else(|| failure(format!("Parent tool {} is no longer registered", self.name)))?;
+        let result = self.executor.block_on((tool.execute)(tool_call_id.into(), input.clone(), None, None));
+        if result.is_error == Some(true) {
+            let message = result.content.iter().filter_map(|part| match part {
+                maho_ai::types::ContentBlock::Text(text) => Some(text.text.as_str()),
+                _ => None,
+            }).collect::<Vec<_>>().join("\n");
+            return Err(failure(message));
+        }
+        serde_json::to_value(result).map_err(|error| failure(error.to_string()))
+    }
+}
+
+pub fn live_parent_tools(
+    parent: std::sync::Weak<maho_core::agent_session::AgentSession>,
+    executor: tokio::runtime::Handle,
+) -> Arc<dyn Fn() -> Vec<senpi_task::runners::in_process::shared_tool_filter::ChildToolRef> + Send + Sync> {
+    Arc::new(move || match parent.upgrade() {
+        Some(session) => session.get_all_tools().into_iter().filter_map(|tool| {
+            session.get_registered_tool(&tool.name)?;
+            Some(Arc::new(NativeParentTool {
+                name: tool.name, description: tool.description,
+                parent: parent.clone(), executor: executor.clone(),
+            }) as senpi_task::runners::in_process::shared_tool_filter::ChildToolRef)
+        }).collect(),
+        None => Vec::new(),
+    })
+}
+
 /// Both builders use the same native binary, agent home, environment and extensions.
 /// Admission retains the bounded catalog probe rather than admitting unconditionally.
 pub fn native_rpc_options(
