@@ -88,8 +88,8 @@ pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionCont
             let callback = terminal.clone();
             let timer = Arc::new(PendingTimer::new(request.clone(), Arc::new(move |response| { callback.send_if_modified(|value| { if value.is_some() { false } else { *value = Some(response); true } }); })));
             let cancelled = terminal.clone(); let pending = timer.clone(); let cancel = cancel_signal.clone();
-            let deadline=timer.clone();let created=maho_ai::utils::diagnostics::now_ms().max(0) as u64;
-            register_pending_question(&session, Arc::new(PendingQuestionEntry { request: request.clone(), completion: completion.clone(), owner, publication: publication.clone(), deadline_at_ms:Arc::new(move||created.saturating_add(deadline.deadline_at_ms())), cancel: Arc::new(move |reason| { let response = pending.cancel(reason); cancelled.send_if_modified(|value| { if value.is_some() { false } else { *value = Some(response); true } }); cancel.abort(); }) }));
+            let deadline=timer.clone();
+            register_pending_question(&session, Arc::new(PendingQuestionEntry { request: request.clone(), completion: completion.clone(), owner, publication: publication.clone(), deadline_at_ms:Arc::new(move||deadline.absolute_deadline_at_ms()), cancel: Arc::new(move |reason| { let response = pending.cancel(reason); cancelled.send_if_modified(|value| { if value.is_some() { false } else { *value = Some(response); true } }); cancel.abort(); }) }));
             if !request.wait_for_answer{emit_wake(&sender.events,&session);}
             emit_asked(&sender.events, &ctx, &request, variant);
             sender.events.emit("herdr:blocked", &json!({"active":true,"id":id,"label":request.questions.first().map(|q|format!("{} — {}",q.header,q.question)).unwrap_or_default()}));
@@ -107,6 +107,9 @@ pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionCont
                     let attachment_signal = AbortSignal::default();
                     let ui_signal = attachment_signal.clone();
                     let request = owner_request.clone();
+                    let deadline = timer.clone();
+                    let initial_draft = timer.initial_draft();
+                    let hard_deadline_at_ms = timer.absolute_hard_deadline_at_ms();
                     let question = async move {
                         match current {
                             Some(owner) => {
@@ -114,7 +117,7 @@ pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionCont
                                 owner.context.ui.question(request.clone(), QuestionOptions { dialog: ExtensionUiDialogOptions { signal: Some(ui_signal), timeout_ms: Some(remaining_ms) }, on_progress: Some(Arc::new(move |draft| {
                                     if progress_signal.is_aborted(){return;}
                                     progress.progress(draft);if !progress_request.wait_for_answer{emit_wake(&bus,&session);}
-                                })) }).await
+                                })), deliver: if request.wait_for_answer { QuestionDelivery::ToolResult } else { QuestionDelivery::UserMessage }, hard_deadline_at_ms: Some(hard_deadline_at_ms), get_deadline_at_ms: Some(Arc::new(move || deadline.absolute_deadline_at_ms())), initial_draft: Some(initial_draft) }).await
                             },
                             None => std::future::pending().await,
                         }

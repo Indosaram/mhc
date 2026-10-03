@@ -480,8 +480,19 @@ pub struct QuestionAnswer { pub selected: Vec<String>, pub text: Option<String> 
 pub struct QuestionResponse { pub status: QuestionStatus, pub answers: BTreeMap<String, QuestionAnswer>, pub comment: Option<String>, pub unanswered: Vec<String>, pub auto_resolved_after_ms: Option<u64> }
 #[derive(Clone, Debug, Default)]
 pub struct QuestionDraft { pub answers: Option<BTreeMap<String, QuestionAnswer>>, pub comment: Option<String> }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum QuestionDelivery { #[default] ToolResult, UserMessage }
 #[derive(Clone, Default)]
-pub struct QuestionOptions { pub dialog: ExtensionUiDialogOptions, pub on_progress: Option<Arc<dyn Fn(QuestionDraft) + Send + Sync>> }
+pub struct QuestionOptions {
+    pub dialog: ExtensionUiDialogOptions,
+    pub on_progress: Option<Arc<dyn Fn(QuestionDraft) + Send + Sync>>,
+    pub deliver: QuestionDelivery,
+    /// Fixed wall-clock hard cap, captured when the pending timer is created.
+    pub hard_deadline_at_ms: Option<u64>,
+    /// Authoritative live wall-clock idle deadline; UI countdowns are display-only.
+    pub get_deadline_at_ms: Option<Arc<dyn Fn() -> u64 + Send + Sync>>,
+    pub initial_draft: Option<QuestionDraft>,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThemeInfo { pub name: String, pub path: Option<PathBuf> }
 #[derive(Clone, Debug)]
