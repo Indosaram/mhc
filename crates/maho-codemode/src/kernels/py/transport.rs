@@ -9,6 +9,34 @@ pub struct PythonPreludePathOptions<'a> {
     pub environment: CodemodeRuntimeAssetEnvironment<'a>,
 }
 
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropped_startup_signals_owned_producer_to_retire_process() {
+        let root=tempfile::tempdir().unwrap();let socket=root.path().join("started.sock");
+        let listener=tokio::net::UnixListener::bind(&socket).unwrap();
+        let prelude=root.path().join("silent.py");
+        std::fs::write(&prelude,format!("import socket, signal\ns=socket.socket(socket.AF_UNIX)\ns.connect({})\ns.sendall(b'STARTED')\nwhile True: signal.pause()\n",serde_json::to_string(&socket.to_string_lossy()).unwrap())).unwrap();
+        let options=PythonTransportOptions {interpreter_path:"python3".into(),session_id:"drop-startup".into(),cwd:root.path().into(),connection:BridgeConnectionConfig {port:1,token:"test".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:None},env:None,session_env:None,startup_timeout:Duration::from_secs(30)};
+        let mut startup=Box::pin(PythonKernelTransport::start(&options,&prelude,||true));
+        let accepted=tokio::time::timeout(Duration::from_secs(5),async {tokio::select! {stream=listener.accept()=>stream.unwrap().0,result=&mut startup=>panic!("silent worker unexpectedly settled: {}",result.err().unwrap())}}).await;
+        drop(startup);
+        let mut stream=accepted.unwrap();let mut bytes=Vec::new();
+        tokio::time::timeout(Duration::from_secs(5),stream.read_to_end(&mut bytes)).await.unwrap().unwrap();
+        assert_eq!(bytes,b"STARTED");
+    }
+    #[tokio::test]
+    async fn pre_cancelled_owned_startup_rejects_admission() {
+        let root=tempfile::tempdir().unwrap();let prelude=root.path().join("silent.py");
+        std::fs::write(&prelude,"import signal\nwhile True: signal.pause()\n").unwrap();
+        let options=PythonTransportOptions {interpreter_path:"python3".into(),session_id:"silent".into(),cwd:root.path().into(),connection:BridgeConnectionConfig {port:1,token:"test".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:None},env:None,session_env:None,startup_timeout:Duration::from_secs(5)};
+        let shutdown=maho_ai::utils::abort::AbortController::new();shutdown.abort(None);
+        assert!(PythonKernelTransport::start_with_signal(&options,&prelude,||true,&shutdown.signal()).await.is_err());
+    }
+}
+
 pub fn resolve_python_prelude_path(options: PythonPreludePathOptions<'_>) -> Result<PathBuf, CodemodeRuntimeAssetMissingError> {
     require_codemode_runtime_asset(options.local_path.unwrap_or(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kernels/py/prelude.py"))), Path::new("kernels/py/prelude.py"), &options.environment)
 }
@@ -19,6 +47,7 @@ pub fn failed_python_result(cell_id: &str, message: &str, stack: Option<&str>) -
     result
 }
 
+#[derive(Clone)]
 pub struct PythonTransportOptions {
     pub interpreter_path: String,
     pub session_id: String,
@@ -63,6 +92,29 @@ pub struct PythonKernelTransport {
 
 impl PythonKernelTransport {
     pub async fn start(options: &PythonTransportOptions, prelude: &Path, is_owned: impl Fn() -> bool) -> Result<Self, PythonTransportError> {
+        Self::start_with_signal(options,prelude,is_owned,&maho_ai::utils::abort::AbortController::new().signal()).await
+    }
+    pub async fn start_with_signal(options: &PythonTransportOptions, prelude: &Path, is_owned: impl Fn() -> bool, signal:&maho_ai::utils::abort::AbortSignal) -> Result<Self, PythonTransportError> {
+        let options=options.clone();let prelude=prelude.to_owned();
+        let shutdown=maho_ai::utils::abort::AbortController::new();let cancel=shutdown.clone();
+        let listener=signal.add_abort_listener(move |reason|cancel.abort(Some(reason.clone())));
+        if signal.aborted() {shutdown.abort(signal.reason());}
+        let owner=signal.clone();let (mut sender,receiver)=tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let signal=shutdown.signal();
+            let result={
+                let startup=Self::start_owned(&options,&prelude,&signal);tokio::pin!(startup);
+                tokio::select! {result=&mut startup=>result,()=sender.closed()=>{shutdown.abort(None);startup.await}}
+            };
+            owner.remove_abort_listener(listener);
+            if let Err(Ok(mut transport))=sender.send(result) {let _=transport.retire().await;}
+        });
+        let mut transport=receiver.await.map_err(|_|PythonTransportError::Closed)??;
+        if !is_owned() {transport.retire().await?;return Err(PythonTransportError::Startup("Python kernel startup was superseded".into()));}
+        Ok(transport)
+    }
+    async fn start_owned(options: &PythonTransportOptions, prelude: &Path, signal:&maho_ai::utils::abort::AbortSignal) -> Result<Self, PythonTransportError> {
+        if signal.aborted() {return Err(PythonTransportError::Startup("Python kernel startup was cancelled".into()));}
         let mut child = spawn_python_transport(options, prelude)?;
         let input = child.stdin.take().expect("Python stdin is piped");
         let stdout = child.stdout.take().expect("Python stdout is piped");
@@ -102,10 +154,12 @@ impl PythonKernelTransport {
                     _ => {}
                 }
             }
-            if !is_owned() { return Err(PythonTransportError::Startup("Python kernel startup was superseded".into())); }
             Ok(())
         };
-        let ready = tokio::time::timeout(options.startup_timeout, startup).await.unwrap_or_else(|_| Err(PythonTransportError::Startup("Python kernel did not become ready".into())));
+        let ready = tokio::select! {
+            ()=signal.cancelled()=>Err(PythonTransportError::Startup("Python kernel startup was cancelled".into())),
+            ready=tokio::time::timeout(options.startup_timeout, startup)=>ready.unwrap_or_else(|_| Err(PythonTransportError::Startup("Python kernel did not become ready".into()))),
+        };
         if let Err(error) = ready { transport.retire().await?; return Err(error); }
         Ok(transport)
     }
@@ -146,6 +200,7 @@ impl PythonKernelTransport {
         self.active = false;
         let result = hard_kill(&mut self.child, Duration::from_millis(500)).await;
         for reader in &self.readers { reader.abort(); }
+        for reader in self.readers.drain(..) {let _=reader.await;}
         result?;
         Ok(())
     }
@@ -162,6 +217,7 @@ impl PythonKernelTransport {
             Ok::<(), PythonTransportError>(())
         }.await;
         for reader in &self.readers { reader.abort(); }
+        for reader in self.readers.drain(..) {let _=reader.await;}
         result
     }
 }

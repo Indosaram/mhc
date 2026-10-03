@@ -31,6 +31,8 @@ pub struct JavaScriptKernel {
     loader: LocalModuleLoader,
     snapshot: Arc<Mutex<Snapshot>>,
     pid: Arc<Mutex<Option<u32>>>,
+    shutdown: maho_ai::utils::abort::AbortController,
+    actor: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl JavaScriptKernel {
@@ -41,18 +43,34 @@ impl JavaScriptKernel {
         Self::start_with_names(cwd,session_id,parallel_pool_width,session_env,connection,Arc::new(||Ok((vec![],vec![])))).await
     }
     pub async fn start_with_names(cwd:&Path,session_id:&str,parallel_pool_width:u64,session_env:Option<SessionEnvironment>,connection:BridgeConnectionConfig,names:KernelToolNames)->Result<Self,ProcessError> {
+        Self::start_with_signal(cwd,session_id,parallel_pool_width,session_env,connection,names,maho_ai::utils::abort::AbortController::new()).await
+    }
+    pub async fn start_with_signal(cwd:&Path,session_id:&str,parallel_pool_width:u64,session_env:Option<SessionEnvironment>,connection:BridgeConnectionConfig,names:KernelToolNames,shutdown:maho_ai::utils::abort::AbortController)->Result<Self,ProcessError> {
         let loader=LocalModuleLoader::new(&LocalModuleLoaderOptions {cwd:cwd.into(),local_roots:connection.local_roots.clone(),artifacts_dir:connection.artifacts_dir.as_ref().map(PathBuf::from)})?;
         let options=WorkerOptions {cwd:cwd.into(),session_id:session_id.into(),width:parallel_pool_width,environment:session_env,executable:std::env::current_exe()?,connection,names};
-        let mut slot=WorkerSlot::default();
-        let names=(options.names)().map_err(ProcessError::Startup)?;
-        slot.ensure_ready(options.startup(&names),&maho_ai::utils::abort::AbortController::new().signal()).await?;
+        let startup_options=options;let startup_shutdown=shutdown.clone();
+        let (mut sender,receiver)=oneshot::channel();
+        tokio::spawn(async move {
+            let mut slot=WorkerSlot::default();
+            let signal=startup_shutdown.signal();
+            let result={
+                let ready=async {let names=(startup_options.names)().map_err(ProcessError::Startup)?;slot.ensure_ready(startup_options.startup(&names),&signal).await};
+                tokio::pin!(ready);
+                tokio::select! {result=&mut ready=>result,()=sender.closed()=>{startup_shutdown.abort(None);ready.await}}
+            };
+            match result {
+                Ok(())=>{if let Err(Ok((_,mut slot)))=sender.send(Ok((startup_options,slot))) {let _=slot.retire().await;}},
+                Err(error)=>{let _=slot.retire().await;let _=sender.send(Err(error));}
+            }
+        });
+        let (options,slot)=receiver.await.map_err(|_|ProcessError::Closed)??;
         let pid=Arc::new(Mutex::new(slot.pid()));
         let snapshot=Arc::new(Mutex::new((None,vec![])));
         let (commands,receiver)=mpsc::unbounded_channel();
         let posts=commands.downgrade();let worker_pid=pid.clone();
         let tools=Arc::new(super::kernel_tools_host::KernelToolHostPump::new(Arc::new(move |message| {if let Some(posts)=posts.upgrade() {let _=posts.send(Command::Reply(message));}}),Arc::new(move ||worker_pid.lock().expect("JS pid lock").is_some())));
-        tokio::spawn(run_actor(options,slot,receiver,snapshot.clone(),pid.clone(),tools.clone()));
-        Ok(Self {commands,tools,loader,snapshot,pid})
+        let actor=tokio::spawn(run_actor(options,slot,receiver,snapshot.clone(),pid.clone(),tools.clone(),shutdown.signal()));
+        Ok(Self {commands,tools,loader,snapshot,pid,shutdown,actor:tokio::sync::Mutex::new(Some(actor))})
     }
 
     pub async fn run(&self, input: KernelRunInput, mut on_message: impl FnMut(&Value)) -> Result<Value, ProcessError> {
@@ -92,14 +110,20 @@ impl JavaScriptKernel {
         receiver.await.map_err(|_|ProcessError::Closed)?.map_err(ProcessError::Startup)
     }
     pub async fn close(&self)->Result<(),ProcessError> {
+        self.shutdown.abort(None);
         let (sender,receiver)=oneshot::channel();
-        if self.commands.send(Command::Close(sender)).is_err() {return Ok(());}
-        receiver.await.map_err(|_|ProcessError::Closed)?.map_err(ProcessError::Startup)
+        let result=if self.commands.send(Command::Close(sender)).is_err() {Ok(())} else {match receiver.await {Ok(result)=>result.map_err(ProcessError::Startup),Err(_)=>Err(ProcessError::Closed)}};
+        if let Some(actor)=self.actor.lock().await.take() {actor.await.map_err(|error|ProcessError::Startup(error.to_string()))?;}
+        result
     }
     pub fn pid(&self)->Option<u32> {*self.pid.lock().expect("JS pid lock")}
     pub fn kernel_tool_events(&self)->tokio::sync::broadcast::Receiver<&'static str> {self.tools.events()}
     pub async fn describe_kernel_tools(&self,names:&[String])->Result<Value,super::kernel_tools_errors::KernelToolError> {self.tools.describe(names).await}
     pub async fn invoke_kernel_tool(&self,request:super::kernel_tools_types::KernelToolsInvokeRequest,options:super::kernel_tools_types::KernelToolsInvokeOptions)->Result<Value,super::kernel_tools_errors::KernelToolError> {self.tools.invoke(request,options).await}
+}
+
+impl Drop for JavaScriptKernel {
+    fn drop(&mut self) {self.shutdown.abort(None);}
 }
 
 impl maho_ext_api::ExtensionKernelTools for JavaScriptKernel {
@@ -152,14 +176,14 @@ async fn stop_active(slot:&mut WorkerSlot,runs:&mut JavaScriptRunQueue,calls:&mu
     Ok(false)
 }
 
-async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::UnboundedReceiver<Command>,snapshot:Arc<Mutex<Snapshot>>,pid:Arc<Mutex<Option<u32>>>,tools:Arc<super::kernel_tools_host::KernelToolHostPump>) {
+async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::UnboundedReceiver<Command>,snapshot:Arc<Mutex<Snapshot>>,pid:Arc<Mutex<Option<u32>>>,tools:Arc<super::kernel_tools_host::KernelToolHostPump>,shutdown:maho_ai::utils::abort::AbortSignal) {
     let mut runs=JavaScriptRunQueue::default();
     let mut calls=SubprocessRunQueue::default();
     let origin=tokio::time::Instant::now();
     let mut deadline=None;
     loop {
         if runs.active().is_none() && runs.has_waiting() {
-            let ready=async {let names=(options.names)().map_err(ProcessError::Startup)?;slot.ensure_ready(options.startup(&names),&maho_ai::utils::abort::AbortController::new().signal()).await}.await;
+            let ready=async {let names=(options.names)().map_err(ProcessError::Startup)?;slot.ensure_ready(options.startup(&names),&shutdown).await}.await;
             if let Err(error)=ready {runs.reject_waiting(&error.to_string());}
             else if let Some(run)=runs.start_next(origin.elapsed().as_secs_f64()*1000.0) {
                 deadline=run.input.timeout_ms.filter(|ms|*ms>0).map(|ms|tokio::time::Instant::now()+Duration::from_millis(ms));
@@ -197,7 +221,7 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
                 Some(Command::Reset(response))=>{
                     tools.reject_all(super::kernel_tools_errors::kernel_tool_error(super::kernel_tools_errors::KernelToolErrorCode::KernelToolStale,"JavaScript worker reset",None));
                     runs.settle_all("JS kernel reset");calls.clear_tool_calls();deadline=None;
-                    let result=async {slot.retire().await?;let names=(options.names)().map_err(ProcessError::Startup)?;slot.ensure_ready(options.startup(&names),&maho_ai::utils::abort::AbortController::new().signal()).await}.await.map_err(|error|error.to_string());
+                    let result=async {slot.retire().await?;let names=(options.names)().map_err(ProcessError::Startup)?;slot.ensure_ready(options.startup(&names),&shutdown).await}.await.map_err(|error|error.to_string());
                     let _=response.send(result);
                 }
                 Some(Command::Close(response))=>{
@@ -250,5 +274,21 @@ mod tests {
         let owners=kernel.commands.strong_count();
         kernel.close().await.unwrap();
         assert_eq!(owners,1,"only the public kernel should retain command admission");
+    }
+
+    #[tokio::test]
+    async fn cancelled_startup_does_not_admit_a_kernel() {
+        let shutdown=maho_ai::utils::abort::AbortController::new();
+        shutdown.abort(None);
+        let result=JavaScriptKernel::start_with_signal(Path::new(env!("CARGO_MANIFEST_DIR")),"cancelled-start",4,None,BridgeConnectionConfig {port:1,token:"test".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:None},Arc::new(||Ok((vec![],vec![]))),shutdown).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn close_consumes_actor_and_reaps_worker() {
+        let kernel=JavaScriptKernel::start(Path::new(env!("CARGO_MANIFEST_DIR")),"joined-close",4,None).await.unwrap();
+        kernel.close().await.unwrap();
+        assert!(kernel.actor.lock().await.is_none());
+        assert!(kernel.pid().is_none());
     }
 }

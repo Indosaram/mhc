@@ -10,7 +10,7 @@ pub struct CreateCodemodeSessionManagerOptions {
     pub cwd: PathBuf,
     pub settings: CodemodeSettings,
     pub availability: InterpreterAvailability,
-    pub local_roots: Option<HashMap<String, String>>,
+    pub local_roots: Option<crate::bridge::protocol::LocalRoots>,
     pub artifacts_dir: Option<PathBuf>,
     pub session_env: Option<SessionEnvironment>,
     pub executor: Arc<dyn OutputExecuteTool>,
@@ -25,6 +25,7 @@ pub struct CodemodeSessionManager {
     javascript: tokio::sync::Mutex<Option<Arc<crate::kernels::js::context_manager::JavaScriptKernel>>>,
     subprocesses: tokio::sync::Mutex<HashMap<EvalLanguage,Arc<SubprocessKernel>>>,
     disposed: AtomicBool,
+    javascript_shutdown: maho_ai::utils::abort::AbortController,
     dispose_result: tokio::sync::OnceCell<Result<(), String>>,
     contexts: Arc<std::sync::Mutex<HashMap<String,Arc<crate::tool::eval_tool_options::EvalInvocationContext>>>>,
 }
@@ -73,7 +74,7 @@ impl CodemodeSessionManager {
                 })
             }),
         }).await?;
-        Ok(Self { options, bridge, python:tokio::sync::Mutex::new(None), javascript:tokio::sync::Mutex::new(None), subprocesses:tokio::sync::Mutex::new(HashMap::new()), disposed:AtomicBool::new(false), dispose_result:tokio::sync::OnceCell::new(),contexts })
+        Ok(Self { options, bridge, python:tokio::sync::Mutex::new(None), javascript:tokio::sync::Mutex::new(None), subprocesses:tokio::sync::Mutex::new(HashMap::new()), disposed:AtomicBool::new(false), javascript_shutdown:maho_ai::utils::abort::AbortController::new(),dispose_result:tokio::sync::OnceCell::new(),contexts })
     }
 
     pub fn bridge_endpoint(&self) -> Result<(u16, &str), String> {
@@ -86,13 +87,13 @@ impl CodemodeSessionManager {
         let mut python = self.python.lock().await;
         if self.disposed.load(Ordering::SeqCst) { return Err("codemode session manager is disposed".into()); }
         if let Some(kernel) = &*python { return Ok(kernel.clone()); }
-        let roots = self.options.local_roots.clone().or_else(|| self.options.artifacts_dir.as_ref().map(|artifacts| HashMap::from([("local".into(), artifacts.join("local").to_string_lossy().into_owned())])));
+        let roots = self.options.local_roots.clone().or_else(|| self.options.artifacts_dir.as_ref().map(|artifacts| crate::bridge::protocol::LocalRoots::from([("local".into(), artifacts.join("local").to_string_lossy().into_owned())])));
         let width = self.options.settings.parallel_pool_width;
-        let kernel = Arc::new(PythonKernel::start(PythonKernelStartOptions {
+        let kernel = Arc::new(PythonKernel::start_with_signal(PythonKernelStartOptions {
             interpreter_path:interpreter_path.into(), session_id:self.options.session_id.clone(), cwd:self.options.cwd.clone(),
             connection:BridgeConnectionConfig { port:self.bridge.port, token:self.bridge.token.clone(), local_roots:roots, artifacts_dir:self.options.artifacts_dir.as_ref().map(|path|path.to_string_lossy().into_owned()), parallel_pool_width:Some(if width.is_finite() {width.trunc().max(1.0) as u64} else {1}) },
             env:None, session_env:self.options.session_env.clone(), startup_timeout:None, on_message:None,
-        }).await?);
+        },&self.javascript_shutdown.signal()).await?);
         if self.disposed.load(Ordering::SeqCst) { kernel.close().await?; return Err("codemode session manager is disposed".into()); }
         *python = Some(kernel.clone());
         Ok(kernel)
@@ -103,11 +104,11 @@ impl CodemodeSessionManager {
         let mut javascript=self.javascript.lock().await;
         if self.disposed.load(Ordering::SeqCst) {return Err("codemode session manager is disposed".into());}
         if let Some(kernel)=&*javascript {return Ok(kernel.clone());}
-        let roots=self.options.local_roots.clone().or_else(||self.options.artifacts_dir.as_ref().map(|root|HashMap::from([("local".into(),root.join("local").to_string_lossy().into_owned())])));
+        let roots=self.options.local_roots.clone().or_else(||self.options.artifacts_dir.as_ref().map(|root|crate::bridge::protocol::LocalRoots::from([("local".into(),root.join("local").to_string_lossy().into_owned())])));
         let width=self.options.settings.parallel_pool_width;
         let catalog=self.options.list_tools.clone();
         let names=Arc::new(move || {let host=catalog.as_ref().map(|catalog|catalog()).transpose()?.unwrap_or_default().into_iter().map(|tool|tool.name).collect();Ok((host,vec![]))});
-        let kernel=Arc::new(crate::kernels::js::context_manager::JavaScriptKernel::start_with_names(&self.options.cwd,&self.options.session_id,if width.is_finite() {width.trunc().max(1.0) as u64} else {1},self.options.session_env.clone(),BridgeConnectionConfig {port:self.bridge.port,token:self.bridge.token.clone(),local_roots:roots,artifacts_dir:self.options.artifacts_dir.as_ref().map(|path|path.to_string_lossy().into_owned()),parallel_pool_width:None},names).await.map_err(|error|error.to_string())?);
+        let kernel=Arc::new(crate::kernels::js::context_manager::JavaScriptKernel::start_with_signal(&self.options.cwd,&self.options.session_id,if width.is_finite() {width.trunc().max(1.0) as u64} else {1},self.options.session_env.clone(),BridgeConnectionConfig {port:self.bridge.port,token:self.bridge.token.clone(),local_roots:roots,artifacts_dir:self.options.artifacts_dir.as_ref().map(|path|path.to_string_lossy().into_owned()),parallel_pool_width:None},names,self.javascript_shutdown.clone()).await.map_err(|error|error.to_string())?);
         if self.disposed.load(Ordering::SeqCst) {kernel.close().await.map_err(|error|error.to_string())?;return Err("codemode session manager is disposed".into());}
         *javascript=Some(kernel.clone());Ok(kernel)
     }
@@ -118,12 +119,12 @@ impl CodemodeSessionManager {
         let mut kernels=self.subprocesses.lock().await;
         if self.disposed.load(Ordering::SeqCst) {return Err("codemode session manager is disposed".into());}
         if let Some(kernel)=kernels.get(&language) {return Ok(kernel.clone());}
-        let roots=self.options.local_roots.clone().or_else(||self.options.artifacts_dir.as_ref().map(|root|HashMap::from([("local".into(),root.join("local").to_string_lossy().into_owned())])));
+        let roots=self.options.local_roots.clone().or_else(||self.options.artifacts_dir.as_ref().map(|root|crate::bridge::protocol::LocalRoots::from([("local".into(),root.join("local").to_string_lossy().into_owned())])));
         let width=self.options.settings.parallel_pool_width;
         let options=SubprocessKernelOptions {command,args:vec![],cwd:self.options.cwd.clone(),env:None,session_env:self.options.session_env.clone(),on_message:None,session_id:self.options.session_id.clone(),connection:BridgeConnectionConfig {port:self.bridge.port,token:self.bridge.token.clone(),local_roots:roots,artifacts_dir:self.options.artifacts_dir.as_ref().map(|path|path.to_string_lossy().into_owned()),parallel_pool_width:Some(if width.is_finite() {width.trunc().max(1.0) as u64} else {1})}};
         let kernel=Arc::new(match language {
-            EvalLanguage::Rb=>RubyKernel::start(options).await,
-            EvalLanguage::Jl=>JuliaKernel::start(options).await,
+            EvalLanguage::Rb=>RubyKernel::start_with_signal(options,&self.javascript_shutdown.signal()).await,
+            EvalLanguage::Jl=>JuliaKernel::start_with_signal(options,&self.javascript_shutdown.signal()).await,
             EvalLanguage::Py|EvalLanguage::Js=>return Err("language does not use the shared subprocess registry".into()),
         }.map_err(|error|error.to_string())?);
         if self.disposed.load(Ordering::SeqCst) {kernel.close().await.map_err(|error|error.to_string())?;return Err("codemode session manager is disposed".into());}
@@ -140,6 +141,7 @@ impl CodemodeSessionManager {
 
     pub async fn dispose(&self) -> Result<(), String> {
         self.disposed.store(true, Ordering::SeqCst);
+        self.javascript_shutdown.abort(None);
         self.dispose_result.get_or_init(|| async {
             let kernel = self.python.lock().await.take();
             let result = if let Some(kernel) = kernel { kernel.close().await } else { Ok(()) };

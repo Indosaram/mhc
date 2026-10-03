@@ -20,6 +20,7 @@ pub struct WorkerStartupOptions<'a> {
 }
 
 pub async fn start_worker_with_inline_fallback(options: &WorkerStartupOptions<'_>, signal: &maho_ai::utils::abort::AbortSignal) -> Result<WorkerHost, ProcessError> {
+    if signal.aborted() { return Err(ProcessError::Startup("JavaScript worker startup was cancelled".into())); }
     let primary = resolve_js_worker_entry_path(options.worker_entry, &options.environment).map_err(|error|ProcessError::Startup(error.to_string()))
         .and_then(|entry|WorkerHost::spawn(&entry, options.cwd, options.parallel_pool_width, JavaScriptKernelMode::Worker));
     if let Ok(mut worker) = primary {

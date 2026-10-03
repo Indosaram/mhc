@@ -1,9 +1,22 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
+use maho_codemode::bridge::protocol::LocalRoots;
 use maho_codemode::kernels::js::local_module_loader::*;
 
 #[test]
+fn case_fold_collision_uses_last_inserted_root() {
+    for object in [r#"{"LOCAL":"/tmp/first","local":"/tmp/last"}"#,r#"{"local":"/tmp/first","LOCAL":"/tmp/last"}"#] {
+        let roots:LocalRoots=serde_json::from_str(object).unwrap();
+        let options=LocalModuleLoaderOptions {cwd:"/tmp".into(),local_roots:Some(roots),artifacts_dir:None};
+        assert_eq!(runtime_context(&options).unwrap()["localRootUrls"]["local"],"file:///tmp/last/");
+        let bridge=local_bridge_connection(&options);
+        let wire=serde_json::to_value(bridge).unwrap();
+        assert_eq!(wire["localRoots"]["local"],"/tmp/last");
+    }
+}
+
+#[test]
 fn context_normalizes_roots_and_preserves_explicit_local_root() {
-    let options = LocalModuleLoaderOptions {cwd:PathBuf::from("/tmp/project/../with space"), local_roots:Some(HashMap::from([("LOCAL".into(), "/tmp/explicit".into())])), artifacts_dir:Some("/tmp/artifacts".into())};
+    let options = LocalModuleLoaderOptions {cwd:PathBuf::from("/tmp/project/../with space"), local_roots:Some(LocalRoots::from([("LOCAL".into(), "/tmp/explicit".into())])), artifacts_dir:Some("/tmp/artifacts".into())};
     let context = runtime_context(&options).unwrap();
     assert_eq!(context["cwdUrl"], "file:///tmp/with%20space/");
     assert_eq!(context["localRootUrls"]["local"], "file:///tmp/explicit/");
@@ -38,7 +51,7 @@ async fn prepared_imports_execute_in_external_worker() {
 async fn local_import_rejects_encoded_traversal_and_recovers() {
     use maho_codemode::{bridge::protocol::BridgeConnectionConfig,kernels::{js::context_manager::JavaScriptKernel,shared::subprocess_contract::KernelRunInput}};
     let cwd=std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let kernel=JavaScriptKernel::start_with_connection(cwd,"local-traversal",4,None,BridgeConnectionConfig {port:1,token:"test".into(),local_roots:Some(HashMap::from([("local".into(),cwd.to_string_lossy().into_owned())])),artifacts_dir:None,parallel_pool_width:None}).await.unwrap();
+    let kernel=JavaScriptKernel::start_with_connection(cwd,"local-traversal",4,None,BridgeConnectionConfig {port:1,token:"test".into(),local_roots:Some(LocalRoots::from([("local".into(),cwd.to_string_lossy().into_owned())])),artifacts_dir:None,parallel_pool_width:None}).await.unwrap();
     let mut failures=Vec::new();
     for specifier in ["local://../outside.mjs","local://%2e%2e/outside.mjs","local:///absolute.mjs","local://%ZZ","unsupported://module.mjs"] {
         let code=format!("await import({})",serde_json::to_string(specifier).unwrap());
