@@ -7,10 +7,30 @@ impl maho_ext_api::ExtensionActions for Catalog {
     fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure>{Ok(vec![ToolInfo {name:"read_docs".into(),label:"Read documentation".into(),description:"Read documentation and API references".into(),parameters:serde_json::json!({"type":"object"}),prompt_guidelines:None,source_info:maho_ext_api::SourceInfo {path:"builtin:docs".into(),..Default::default()},exposure:maho_ext_api::ToolExposure::Search,search_text:None,search_keywords:vec!["documentation".into()],search_group:Some("docs".into()),allow_lazy_activation:true}])}
 }
 struct Search;
+struct FedSearch;
+impl maho_ext_api::Extension for FedSearch {
+    fn register(&self,api:&mut maho_ext_api::ExtensionApi){
+        let service=maho_ext_tool_search::index::ToolSearchExtension{actions:std::sync::Arc::new(Catalog),mcp_native_enabled:std::sync::Arc::new(||false)}.register_with_service(api);
+        api.on(maho_ext_api::EventKind::BeforeAgentStart,std::sync::Arc::new(move |_,_|{let service=service.clone();Box::pin(async move{
+            service.lock().expect("factory service lock").feed(vec![maho_ext_tool_search::engine::document::ToolSearchDocument{name:"mcp_docs".into(),label:"MCP docs".into(),aliases:vec![],description:Some("documentation".into()),search_text:None,keywords:vec![],source:maho_ext_tool_search::engine::document::ToolSearchSource::Mcp,group:"docs".into(),owner_label:"server".into(),registration_id:"mcp:docs".into()}],std::sync::Arc::new(|_|panic!("search must not activate matches")))?;
+            Ok(maho_ext_api::EventResult::None)
+        })}));
+    }
+}
 impl maho_ext_api::Extension for Search {
     fn register(&self,api:&mut maho_ext_api::ExtensionApi){
         maho_ext_tool_search::index::ToolSearchExtension {actions:std::sync::Arc::new(Catalog),mcp_native_enabled:std::sync::Arc::new(||false)}.register(api);
     }
+}
+#[tokio::test]
+async fn factory_returned_service_feeds_same_registered_search_executor(){
+    use maho_ai::providers::faux::{faux_assistant_message,faux_tool_call,FauxAssistantMessageOptions};
+    use maho_test_support::{faux::FauxScript,faux_session::FauxSession};
+    let session=FauxSession::new(FauxScript{name:"same-service".into(),prompt:"search".into(),responses:vec![]})
+        .with_native_extension(maho_ext_host::loader::NativeExtensionFactory{path:"builtin:tool-search".into(),source_info:maho_ext_api::SourceInfo{source:"builtin".into(),..Default::default()},extension:Box::new(FedSearch)})
+        .with_native_responses(vec![faux_assistant_message(faux_tool_call("tool_search",serde_json::from_value(serde_json::json!({"query":"documentation","source":"mcp"})).unwrap(),Some("fed-search")),FauxAssistantMessageOptions{stop_reason:Some(maho_ai::types::StopReason::ToolUse),..Default::default()}),faux_assistant_message("done",FauxAssistantMessageOptions::default())]);
+    let result=tokio::time::timeout(std::time::Duration::from_secs(10),session.run_native()).await.unwrap().unwrap();
+    let tool=result["messages"].as_array().unwrap().iter().find(|message|message["role"]=="toolResult").unwrap();assert_eq!(tool["isError"],false,"{tool}");assert_eq!(tool["details"]["matched"],serde_json::json!(["mcp_docs"]));
 }
 #[tokio::test]
 async fn native_session_searches_live_catalog_without_activating_matches() {

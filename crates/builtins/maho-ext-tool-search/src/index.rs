@@ -2,6 +2,11 @@ use crate::engine::document::{ToolSearchDocument,ToolSearchSource};
 pub struct ToolSearchExtension {pub actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,pub mcp_native_enabled:std::sync::Arc<dyn Fn()->bool+Send+Sync>}
 impl maho_ext_api::Extension for ToolSearchExtension {
     fn register(&self,api:&mut maho_ext_api::ExtensionApi) {
+        self.register_with_service(api);
+    }
+}
+impl ToolSearchExtension {
+    pub fn register_with_service(&self,api:&mut maho_ext_api::ExtensionApi)->std::sync::Arc<std::sync::Mutex<crate::service::ToolSearchService>> {
         use std::sync::{Arc,Mutex};
         let service=Arc::new(Mutex::new(crate::service::ToolSearchService::new(api.runtime.clone(),self.actions.clone())));
         let registration=Arc::new(Mutex::new(maho_ext_api::ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone())));
@@ -26,12 +31,14 @@ impl maho_ext_api::Extension for ToolSearchExtension {
                 Ok(maho_ext_api::EventResult::ProviderPayload(next))
             })
         }));
+        let response_service=service.clone();
         api.on(maho_ext_api::EventKind::AfterProviderResponse,Arc::new(move |event,_|{
-            let adapter=adapter.clone();let service=service.clone();Box::pin(async move {
+            let adapter=adapter.clone();let service=response_service.clone();Box::pin(async move {
                 if let maho_ext_api::ExtensionEvent::AfterProviderResponse {status,..}=event&&let Some(reason)=adapter.lock().unwrap_or_else(std::sync::PoisonError::into_inner).note_response_status(*status){service.lock().unwrap_or_else(std::sync::PoisonError::into_inner).note_native_injection_failure(reason.into());}
                 Ok(maho_ext_api::EventResult::None)
             })
         }));
+        service
     }
 }
 pub fn register_session_hooks(api:&mut maho_ext_api::ExtensionApi,service:std::sync::Arc<std::sync::Mutex<crate::service::ToolSearchService>>) {

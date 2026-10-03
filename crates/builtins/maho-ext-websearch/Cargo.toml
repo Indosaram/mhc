@@ -11,6 +11,7 @@ serde_json = { version = "=1.0.149", features = ["arbitrary_precision"] }
 regex = "=1.12.3"
 sha2.workspace = true
 maho-ext-api = { path = "../../maho-ext-api" }
+maho-ai = { path = "../../maho-ai" }
 maho-tools = { path = "../../maho-tools" }
 maho-tui = { path = "../../maho-tui" }
 maho-interactive = { path = "../../maho-interactive" }

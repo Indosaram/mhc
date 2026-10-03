@@ -32,11 +32,14 @@ pub fn format_search_progress_text(query:&str,provider_labels:&[String],current_
     format!("Searching \"{query}\" via {route}")
 }
 pub fn create_web_search_tool(get_config:std::sync::Arc<dyn Fn()->super::types::ConfigLoadResult+Send+Sync>)->maho_tools::definition::ToolDefinition {
+    create_web_search_tool_with_registry(get_config,None,None,std::sync::Arc::new(tokio::sync::Mutex::new((String::new(),None))))
+}
+pub type RoutingState=std::sync::Arc<tokio::sync::Mutex<(String,Option<SearchRoutingState>)>>;
+pub fn create_web_search_tool_with_registry(get_config:std::sync::Arc<dyn Fn()->super::types::ConfigLoadResult+Send+Sync>,model:Option<maho_ext_api::Model>,registry:Option<std::sync::Arc<dyn maho_ext_api::ModelRegistry>>,routing:RoutingState)->maho_tools::definition::ToolDefinition {
     use maho_tools::definition::{ToolDefinition,ToolResult,ToolContent,ToolError};
     use std::sync::Arc;
-    let routing=Arc::new(tokio::sync::Mutex::new((String::new(),None)));
     let mut tool=ToolDefinition::new("web_search","Search the web for current information and return source URLs for citation.",parameters(),Arc::new(move |call| {
-        let get_config=get_config.clone(); let routing=routing.clone();
+        let get_config=get_config.clone(); let routing=routing.clone();let model=model.clone();let registry=registry.clone();
         Box::pin(async move {
             let query=call.params["query"].as_str().ok_or_else(||ToolError::Message("query is required".into()))?.to_owned();
             let allowed:Option<Vec<String>>=call.params.get("allowed_domains").map(|value|serde_json::from_value(value.clone())).transpose()?;
@@ -50,11 +53,9 @@ pub fn create_web_search_tool(get_config:std::sync::Arc<dyn Fn()->super::types::
                 super::types::ConfigLoadResult::Ok{config,..}=>config,
                 super::types::ConfigLoadResult::Err{reason,message,..}=>return Ok(error_result(message,Some(match reason { super::types::ConfigLoadFailureReason::MissingConfig=>"missing_config",super::types::ConfigLoadFailureReason::InvalidConfig=>"invalid_config",super::types::ConfigLoadFailureReason::MissingApiKey=>"missing_api_key",super::types::ConfigLoadFailureReason::ProviderNativeBypass=>"provider_native_bypass" }))),
             };
-            if config.auto {
-                call.signal.check()?;
-                if call.context.is_some() { return Err(ToolError::Message("Native search discovery requires ModelRegistry.getApiKeyAndHeaders binding".into())); }
-            }
             let request=request_from_arguments(query.clone(),allowed.clone(),blocked.clone(),&config).map_err(ToolError::Message)?;
+            if config.auto&&call.context.is_some()&&registry.is_none(){return Err(ToolError::Message("Native search requires the registered full extension context executor".into()));}
+            let config=super::native::config_with_native_routes(config,model.as_ref(),registry.as_ref(),Some(&call.signal)).await?;
             let labels:Vec<_>=config.providers.iter().map(|entry|super::search::provider_entry_label(entry.config.provider.as_str(),entry.config.id.as_deref(),None)).collect();
             let mut progress=json!({"phase":"searching","query":query,"providerLabels":labels,"maxResults":request.max_results,"strategy":match config.strategy { RoutingStrategy::Priority=>"priority",RoutingStrategy::RoundRobin=>"round-robin",RoutingStrategy::FillFirst=>"fill-first" }});
             if let Some(allowed)=allowed { progress["allowedDomains"]=json!(allowed); }

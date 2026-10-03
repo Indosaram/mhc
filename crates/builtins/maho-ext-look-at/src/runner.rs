@@ -7,6 +7,42 @@ pub struct LookAtRunResult { pub model:String,pub sources:Vec<String>,pub mime_t
 pub async fn preflight_model_auth(registry:&dyn maho_ext_api::ModelRegistry,model:&maho_ai::model::Model)->Result<maho_ext_api::ResolvedRequestAuth,maho_ext_api::ExtensionFailure> {
     registry.get_api_key_and_headers(model).await.map_err(|error|maho_ext_api::ExtensionFailure::new(format!("look_at cannot use {}/{}: {error}. Configure credentials with /login {} and try again.",model.provider,model.id,model.provider)))
 }
+pub type StreamService=dyn Fn(&maho_ext_api::ExtensionContext,&maho_ai::model::Model,&maho_ai::types::Context,maho_ai::types::SimpleStreamOptions)->Result<maho_ai::utils::event_stream::AssistantMessageEventStream,maho_ext_api::ExtensionFailure>+Send+Sync;
+pub type StreamRunner=std::sync::Arc<StreamService>;
+pub fn create_vision_runner(stream:StreamRunner,processor:Option<crate::image_input::ImageProcessor>)->VisionModelRunner {
+    std::sync::Arc::new(move |args,ctx,store,signal|{let stream=stream.clone();let processor=processor.clone();Box::pin(async move {run_look_at(args,ctx,store,signal,stream.as_ref(),processor.as_ref()).await})})
+}
+pub async fn run_look_at(args:&NormalizedLookAtArgs,ctx:&maho_ext_api::ExtensionContext,store:&crate::settings::LookAtStore,signal:Option<maho_ai::utils::abort::AbortSignal>,stream:&StreamService,processor:Option<&crate::image_input::ImageProcessor>)->Result<LookAtRunResult,maho_ext_api::ExtensionFailure> {
+    use maho_ai::utils::abort::AbortController;
+    let check=||if signal.as_ref().is_some_and(|signal|signal.aborted()){Err(maho_ext_api::ExtensionFailure::new("look_at analysis was aborted."))}else{Ok(())};
+    check()?;
+    let settings=ctx.get_image_settings()?;
+    let branch=ctx.session_manager.get_branch().into_iter().map(|entry|entry.data).collect::<Vec<_>>();
+    let inputs=crate::image_input::load_look_at_inputs_with_processor(&crate::image_input::LookAtImageInputContext{cwd:&ctx.cwd,branch:&branch,auto_resize:settings.auto_resize,block_images:settings.block_images},&input_paths(args),&input_data(args),processor).await.map_err(maho_ext_api::ExtensionFailure::new)?;
+    let chain=crate::settings::load_chain_from_context(store,||ctx.get_look_at_settings())?;
+    let resolved=crate::model_selector::resolve_vision_model(&chain,&ctx.model_registry.get_available()).ok_or_else(||maho_ext_api::ExtensionFailure::new("No image-capable model is available. Configure a vision-capable provider and try look_at again."))?;
+    preflight_model_auth(ctx.model_registry.as_ref(),&resolved.model).await?;
+    check()?;
+    let controller=AbortController::new();let request_signal=controller.signal();
+    let link=signal.as_ref().map(|signal|{let controller=controller.clone();signal.add_abort_listener(move |reason|controller.abort(Some(reason.clone()))) });
+    struct RequestLink {parent:Option<maho_ai::utils::abort::AbortSignal>,id:Option<maho_ai::utils::abort::ListenerId>}
+    impl Drop for RequestLink {fn drop(&mut self){if let (Some(parent),Some(id))=(&self.parent,self.id){parent.remove_abort_listener(id);}}}
+    let _link=RequestLink{parent:signal.clone(),id:link};
+    if let Some(reason)=signal.as_ref().and_then(|signal|signal.reason()){controller.abort(Some(reason));}
+    let context=maho_ai::types::Context{system_prompt:Some(crate::prompts::LOOK_AT_SYSTEM_PROMPT.into()),messages:vec![maho_ai::types::Message::User(build_user_message(&args.args.goal,&inputs,std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?.as_millis() as i64))],tools:None};
+    let mut options=maho_ai::types::SimpleStreamOptions{reasoning:resolved.thinking_level,..Default::default()};options.stream.max_tokens=Some(4096);options.stream.request.signal=Some(request_signal.clone());
+    let response=async {stream(ctx,&resolved.model,&context,options)?.result().await.map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))};
+    let response=await_response(response,&controller).await;
+    let response=response.map_err(|error|if request_signal.aborted(){maho_ext_api::ExtensionFailure::new("look_at analysis was aborted.")}else{error})?;
+    run_result(&resolved.model.provider,&resolved.model.id,&inputs,&response,request_signal.aborted()).map_err(|error|maho_ext_api::ExtensionFailure::new(if request_signal.aborted(){"look_at analysis was aborted.".into()}else{error}))
+}
+async fn await_response(response:impl std::future::Future<Output=Result<AssistantMessage,maho_ext_api::ExtensionFailure>>,controller:&maho_ai::utils::abort::AbortController)->Result<AssistantMessage,maho_ext_api::ExtensionFailure>{
+    tokio::pin!(response);
+    tokio::select! {
+        result=&mut response=>result,
+        ()=tokio::time::sleep(std::time::Duration::from_millis(LOOK_AT_TIMEOUT_MS))=>{controller.abort(None);response.await},
+    }
+}
 pub fn run_result(provider:&str,model_id:&str,inputs:&[crate::image_input::LoadedLookAtInput],response:&AssistantMessage,aborted:bool)->Result<LookAtRunResult,String> {
     Ok(LookAtRunResult{model:format!("{provider}/{model_id}"),sources:inputs.iter().map(|input|input.label.clone()).collect(),mime_types:inputs.iter().map(|input|input.mime_type.clone()).collect(),text:response_text(response,aborted)?})
 }
@@ -38,4 +74,25 @@ mod tests {
     #[test] fn response_text_trim_and_empty_error() { assert_eq!(response_text(&message("stop","  extracted  "),false).unwrap(),"extracted"); assert!(response_text(&message("stop","  "),false).unwrap_err().contains("no analysis text")); }
     #[test] fn provider_error_precedes_abort() { assert!(response_text(&message("error","text"),true).unwrap_err().contains("unspecified error")); assert_eq!(response_text(&message("stop","text"),true).unwrap_err(),"look_at analysis was aborted."); }
     #[test] fn off_reasoning_is_omitted() { assert_eq!(to_stream_reasoning(Some(ModelThinkingLevel::Off)),None); assert_eq!(to_stream_reasoning(Some(ModelThinkingLevel::High)),Some(ThinkingLevel::High)); }
+    #[tokio::test(start_paused=true)] async fn request_deadline_aborts_then_awaits_signal_gated_stream_settlement(){
+        let controller=maho_ai::utils::abort::AbortController::new();
+        let start=tokio::time::Instant::now();
+        let signal=controller.signal();let observed=signal.clone();
+        let (settle,settlement)=tokio::sync::oneshot::channel();
+        let stream=maho_ai::utils::event_stream::create_assistant_message_event_stream();let completed=stream.clone();
+        let response=async{stream.result().await.map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))};
+        let request=await_response(response,&controller);tokio::pin!(request);
+        tokio::select!{biased;result=&mut request=>panic!("request settled before stream: {result:?}"),()=observed.cancelled()=>{}}
+        assert_eq!(start.elapsed(),std::time::Duration::from_millis(LOOK_AT_TIMEOUT_MS));
+        let release=async{settlement.await.expect("settlement signal");completed.end(Some(message("stop","late analysis")));};
+        settle.send(()).expect("stream still awaiting settlement");
+        let (result,())=tokio::join!(request,release);
+        let response=result.expect("timeout must not drop stream result");assert!(response_text(&response,signal.aborted()).is_err());
+    }
+    #[tokio::test(start_paused=true)] async fn successful_request_disposes_deadline(){
+        let controller=maho_ai::utils::abort::AbortController::new();
+        assert!(await_response(async{Ok(message("stop","analysis"))},&controller).await.is_ok());
+        tokio::time::advance(std::time::Duration::from_millis(LOOK_AT_TIMEOUT_MS+1)).await;
+        assert!(!controller.signal().aborted());
+    }
 }

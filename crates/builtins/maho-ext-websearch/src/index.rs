@@ -8,6 +8,23 @@ impl maho_ext_api::Extension for WebsearchExtension {
         let state=std::sync::Arc::new(std::sync::Mutex::new(ConfigLoadResult::Err{reason:ConfigLoadFailureReason::MissingConfig,message:"Missing websearch config. Create .pi/websearch.json or ~/.pi/websearch.json before starting pi.".into(),source:None}));
         let captured=state.clone(); let get_state:std::sync::Arc<dyn Fn()->ConfigLoadResult+Send+Sync>=std::sync::Arc::new(move ||captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
         if let Err(error)=api.register_tool_with_renderers(crate::websearch::tool::create_web_search_tool(get_state.clone()),crate::websearch::renderers::renderers()) {std::panic::panic_any(error);}
+        let execute_state=get_state.clone();let routing=std::sync::Arc::new(tokio::sync::Mutex::new((String::new(),None)));
+        let definition=crate::websearch::tool::create_web_search_tool(get_state.clone());let scope=api.runtime.registration_scope();
+        let mut executor_api=maho_ext_api::ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),scope.clone());
+        executor_api.register_tool_with_extension_context(definition,std::sync::Arc::new(move |id,params,signal,on_update,ctx|{
+            let state=execute_state.clone();let routing=routing.clone();Box::pin(async move {
+                let tool=crate::websearch::tool::create_web_search_tool_with_registry(state,ctx.model.clone(),Some(ctx.model_registry.clone()),routing);
+                let tool_signal=maho_ext_api::AbortSignal::default();
+                let link=signal.as_ref().map(|signal|{let target=tool_signal.clone();signal.add_abort_listener(move |_|target.abort())});
+                struct Link(Option<maho_ai::utils::abort::AbortSignal>,Option<maho_ai::utils::abort::ListenerId>);
+                impl Drop for Link{fn drop(&mut self){if let (Some(signal),Some(id))=(&self.0,self.1){signal.remove_abort_listener(id);}}}
+                let _link=Link(signal.clone(),link);if signal.as_ref().is_some_and(|signal|signal.aborted()){tool_signal.abort();}
+                let convert=|result:maho_ext_api::ToolResult|maho_ext_api::AgentToolResult{details:result.details.unwrap_or(serde_json::Value::Null),..maho_ext_api::AgentToolResult::text(result.content.iter().filter_map(|block|match block{maho_ext_api::ToolContent::Text{text,..}=>Some(text.as_str()),_=>None}).collect::<Vec<_>>().join("\n"))};
+                let update:on_update_type::Update=on_update.map(|update|std::sync::Arc::new(move |result|{update(convert(result));Ok(())}) as _);
+                let result=(tool.execute)(maho_ext_api::ToolCall{id,params,signal:tool_signal,on_update:update,context:Some(ctx)}).await.map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                Ok(convert(result))
+            })
+        })).unwrap_or_else(|error|std::panic::panic_any(error));scope.commit_registration().unwrap_or_else(|error|std::panic::panic_any(error));
         register_websearch_command(api,get_state);
         for event in [maho_ext_api::EventKind::SessionStart,maho_ext_api::EventKind::ModelSelect] {
             let state=state.clone();let home=self.home.clone();let bypass=self.provider_native_bypass.clone();
@@ -26,6 +43,7 @@ impl maho_ext_api::Extension for WebsearchExtension {
         api.on(maho_ext_api::EventKind::SessionShutdown,std::sync::Arc::new(|_,ctx|Box::pin(async move {clear_ui(ctx);Ok(maho_ext_api::EventResult::None)})));
     }
 }
+mod on_update_type {pub type Update=Option<std::sync::Arc<dyn Fn(maho_ext_api::ToolResult)->Result<(),maho_ext_api::ToolError>+Send+Sync>>;}
 fn clear_ui(ctx:&maho_ext_api::ExtensionContext) {
     if ctx.has_ui {ctx.ui.set_status("pi-websearch",None);ctx.ui.set_widget("pi-websearch",None,Default::default());}
 }
