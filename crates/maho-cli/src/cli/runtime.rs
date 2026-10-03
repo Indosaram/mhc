@@ -33,14 +33,18 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
         else if let Some(path) = &parsed.session { SessionManager::open(path, parsed.session_dir.as_deref(), None, identity) }
         else if parsed.continue_session { SessionManager::continue_recent(&cwd_text, parsed.session_dir.as_deref()) }
         else { SessionManager::create(&cwd_text, parsed.session_dir.as_deref(), identity) };
-    let created = maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
-        cwd: Some(cwd_text.to_string()), agent_dir: Some(agent_dir.clone()), model_runtime: Some(models),
+    let host_factory = maho_core::sdk::HostRuntimeFactory { model_registry: maho_core::model_registry::ModelRegistry::new(models.clone()),
+        model_runtime: models, extension_factories: Vec::new() };
+    let created = host_factory.create(maho_core::sdk::CreateAgentSessionOptions {
+        cwd: Some(cwd_text.to_string()), agent_dir: Some(agent_dir.clone()),
         settings_manager: Some(settings), session_manager: Some(manager), model: options.options.model,
         tools: options.options.tools, exclude_tools: options.options.exclude_tools, no_tools: options.options.no_tools,
         thinking_selection: options.options.thinking_selection,
+        system_prompt: parsed.system_prompt.clone(), append_system_prompt: parsed.append_system_prompt.clone(),
         scoped_models: startup::session_model_entries(options.options.scoped_models)?, ..Default::default()
     }).await?;
     let session = Arc::new(created.session);
+    session.set_context_files_enabled(!parsed.no_context_files);
     if parsed.no_skills || parsed.no_prompt_templates || !parsed.skills.is_empty() || !parsed.prompt_templates.is_empty() {
         let templates = maho_core::prompt_templates::load_prompt_templates(&maho_core::prompt_templates::LoadPromptTemplatesOptions {
             cwd: cwd_text.to_string(), agent_dir: agent_dir.clone(), prompt_paths: parsed.prompt_templates.clone(),

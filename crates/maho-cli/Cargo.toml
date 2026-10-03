@@ -14,6 +14,8 @@ maho-tools = { path = "../maho-tools" }
 maho-interactive = { path = "../maho-interactive" }
 maho-rpc = { path = "../maho-rpc" }
 maho-ext-api = { path = "../maho-ext-api" }
+maho-codemode = { path = "../maho-codemode" }
+maho-ext-gpt-apply-patch = { path = "../builtins/maho-ext-gpt-apply-patch" }
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }
 regex.workspace = true
@@ -30,6 +32,7 @@ nix = { version = "=0.28.0", features = ["signal", "process"] }
 tokio = { workspace = true, features = ["time", "macros", "rt", "process", "io-util", "io-std", "fs", "signal"] }
 
 [dev-dependencies]
+maho-ext-host = { path = "../maho-ext-host" }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 

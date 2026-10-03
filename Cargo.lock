@@ -1979,6 +1979,8 @@ dependencies = [
  "maho-ai",
  "maho-ext-api",
  "maho-ext-host",
+ "maho-ext-permission-system",
+ "maho-ext-recommended-models",
  "maho-tools",
  "maho-tui",
  "regex",

@@ -19,7 +19,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     let theme = super::startup_ui::resolve_startup_theme(theme_setting.as_deref(), std::env::var("COLORFGBG").ok().as_deref())?;
     let mut terminal = ProcessTerminal::default();
     let host = Rc::new(EditorHost { rows: Cell::new(usize::from(terminal.rows())), render: Cell::new(true) });
-    let mut mode = InteractiveMode::new(session, theme.clone(), host.clone());
+    let mut mode = InteractiveMode::new(session.clone(), theme.clone(), host.clone());
     mode.rebuild_history();
     mode.bind_extensions().await;
     let mut screen = create_interactive_tui(InteractiveTuiOptions {
@@ -38,7 +38,18 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         if let Some(text) = initial.initial_message { mode.submit(&text, maho_core::agent_session::PromptOptions { images: initial.initial_images, ..Default::default() }).await?; }
         for text in &parsed.messages { mode.submit(text, Default::default()).await?; }
         let clock = std::time::Instant::now();
+        let mut installed_native_renderers = Vec::new();
         while !mode.shutdown_requested {
+            mode.drain_events();
+            let native = session.native_tool_renderers_snapshot::<(), serde_json::Value>().await;
+            let patch = session.native_tool_renderers_snapshot::<maho_ext_gpt_apply_patch::preview_format::ApplyPatchRenderState, serde_json::Value>().await;
+            let inventory: Vec<_> = native.iter().map(|(name, renderers)| (name.clone(), Arc::as_ptr(renderers) as usize))
+                .chain(patch.iter().map(|(name, renderers)| (name.clone(), Arc::as_ptr(renderers) as usize))).collect();
+            if inventory != installed_native_renderers {
+                mode.install_native_tool_renderer_snapshot(native);
+                for (name, renderers) in patch { mode.install_native_tool_renderers(name, renderers); }
+                installed_native_renderers = inventory;
+            }
             host.rows.set(usize::from(terminal.rows()));
             let now = u64::try_from(clock.elapsed().as_millis()).map_err(|error| error.to_string())?;
             let chunks = std::mem::take(&mut *input.borrow_mut());

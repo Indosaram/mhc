@@ -17,3 +17,4 @@ pub mod runtime;
 pub mod interactive_entry;
 pub mod setup;
 pub mod startup_ui;
+pub mod codemode_services;
