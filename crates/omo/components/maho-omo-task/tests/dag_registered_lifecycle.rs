@@ -130,10 +130,11 @@ async fn live_lifecycle(shutdown_live:bool,peer_live:bool) {
     { let events=activity.lock().expect("activity"); assert_eq!(events.len(),2,"exactly one activity event per emit after rebind"); assert_eq!(events[1]["taskId"],child.id); assert_eq!(events[1]["runId"],run); }
     if let Some(peer)=&peer {
         let (terminal,transition)=mpsc::channel(); let expected=child.id.clone(); let node=dag.manager.record(&run,"session").expect("record").nodes.into_iter().find(|node| node.task_id.as_deref()==Some(expected.as_str())).expect("child node").id;
+        let terminal_run=run.clone();
         let terminal_subscription=api.events.on("senpi:extension-rpc-event",Arc::new(move |event| {
             if event["name"]!="omo.dag.event" { return; }
             let event:senpi_task::dag::types::DagRunEvent=serde_json::from_value(event["data"].clone()).expect("forwarded DAG event");
-            if matches!(&event.payload,senpi_task::dag::types::DagRunEventPayload::NodeTransitioned { node_id,to:senpi_task::dag::types::DagNodeState::Completed,.. } if node_id==&node) { terminal.send(()).expect("terminal signal"); }
+            if event.run_id==terminal_run && matches!(&event.payload,senpi_task::dag::types::DagRunEventPayload::NodeTransitioned { node_id,to:senpi_task::dag::types::DagNodeState::Completed,.. } if node_id==&node) { terminal.send(()).expect("terminal signal"); }
         }));
         child.complete(); transition.recv_timeout(Duration::from_secs(10)).expect("node terminal after owned cleanup"); drop(terminal_subscription);
         assert!(child.listeners.lock().expect("terminal listeners").len()<rebound,"forwarded terminal event follows removal of the completed node activity listener");
