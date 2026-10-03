@@ -147,6 +147,59 @@ impl ModelRuntime {
         AuthStatus {configured:maho_ai::env_api_keys::get_env_api_key(id,None).is_some(),source:Some("environment".into()),label:None}
     }
     pub async fn get_auth(&self,id:&str) -> Result<Option<AuthResolution>,ModelsError> {self.models.get_auth(id,&AuthResolutionOverrides::default()).await}
+    pub async fn get_auth_with_overrides(&self, id: &str, overrides: &AuthResolutionOverrides) -> Result<Option<AuthResolution>, ModelsError> {
+        self.models.get_auth(id, overrides).await
+    }
+    pub async fn list_credentials(&self, options: Option<maho_ai::auth::types::AuthOperationOptions>) -> Result<Vec<maho_ai::auth::types::CredentialInfo>, ModelsError> {
+        if let Some(signal) = options.and_then(|options| options.signal) {
+            signal.throw_if_aborted().map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.message))?;
+        }
+        Ok(self.credentials.list().into_iter().map(|(provider_id, kind)| maho_ai::auth::types::CredentialInfo {
+            provider_id, credential_type: match kind {
+                crate::auth_storage::CredentialKind::ApiKey => maho_ai::auth::types::CredentialType::ApiKey,
+                crate::auth_storage::CredentialKind::Oauth => maho_ai::auth::types::CredentialType::OAuth,
+            }
+        }).collect())
+    }
+    pub async fn check_auth(&self, id: &str, options: Option<maho_ai::auth::types::AuthOperationOptions>) -> Result<Option<maho_ai::auth::types::AuthCheck>, ModelsError> {
+        let signal = maho_ai::utils::abort::operation_signal(options.and_then(|options| options.signal));
+        let check = async {
+            use maho_ai::auth::types::{AuthCheck, AuthType};
+            signal.throw_if_aborted().map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.message))?;
+            if self.get_provider(id).is_none() { return Ok(None); }
+            let stored = self.credentials.get(id);
+            let extension = self.extensions.read().unwrap_or_else(|poisoned| poisoned.into_inner()).get(id).cloned();
+            let oauth = extension.as_ref().and_then(|extension| extension.oauth.clone()).or_else(|| builtin_oauth(id));
+            if stored.as_ref().and_then(crate::auth_storage::credential_kind) == Some(crate::auth_storage::CredentialKind::Oauth) {
+                let Some(oauth) = oauth else { return Ok(None); };
+                let credential = serde_json::from_value(stored.expect("stored OAuth credential"))
+                    .map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.to_string()))?;
+                let checked = oauth.check(&maho_ai::auth::context::DefaultAuthContext, Some(&credential), &signal).await
+                    .map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.to_string()))?;
+                return Ok(checked);
+            }
+            let resolution = self.get_auth_with_overrides(id, &AuthResolutionOverrides { signal: Some(signal.clone()), ..Default::default() }).await?;
+            if resolution.is_some() {
+                return Ok(Some(AuthCheck { source: self.auth_status(id).label.or_else(|| self.auth_status(id).source), auth_type: AuthType::ApiKey }));
+            }
+            if let Some(oauth) = oauth {
+                return oauth.check(&maho_ai::auth::context::DefaultAuthContext, None, &signal).await
+                    .map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.to_string()));
+            }
+            Ok(None)
+        };
+        maho_ai::utils::abort::race_with_abort_signal(check, &signal).await
+            .map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.message))?
+    }
+    pub async fn get_auth_for_model(&self, model: &Model, overrides: &AuthResolutionOverrides) -> Result<Option<AuthResolution>, ModelsError> {
+        let Some(mut resolution) = self.models.get_auth_for_model(model, overrides).await? else { return Ok(None); };
+        let mut env = resolution.env.clone().unwrap_or_default();
+        env.extend(overrides.env.clone().unwrap_or_default());
+        let headers = self.get_compatibility_request_headers(model, Some(&env)).await
+            .map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error))?;
+        if let Some(headers) = headers { resolution.auth.headers.get_or_insert_with(Default::default).extend(headers); }
+        Ok(Some(resolution))
+    }
     pub fn get_compatibility_request_config(&self,model:&Model)->crate::provider_composer::CompatibilityRequestConfig {
         let config=self.config.read().unwrap_or_else(|p|p.into_inner());let extension=self.extensions.read().unwrap_or_else(|p|p.into_inner());
         crate::provider_composer::resolve_compatibility_request_config(model,config.get_provider(&model.provider),extension.get(&model.provider))
@@ -234,6 +287,21 @@ mod tests {
     async fn runtime_auth_resolves_key_and_provider_headers() {
         let (_dir,runtime)=configured_runtime(r#"{"providers":{"p":{"api":"openai-completions","baseUrl":"http://localhost/v1","apiKey":"fixture-key","authHeader":true,"models":[{"id":"sol"}]}}}"#);
         let auth=runtime.get_auth("p").await.expect("resolve").expect("auth");assert_eq!(auth.auth.api_key.as_deref(),Some("fixture-key"));assert_eq!(auth.auth.headers.expect("headers")["Authorization"].as_deref(),Some("Bearer fixture-key"));
+    }
+    #[tokio::test]
+    async fn auth_overrides_metadata_and_preaborted_checks_use_shared_store() {
+        let (_dir, runtime) = configured_runtime(r#"{"providers":{"p":{"api":"openai-completions","baseUrl":"http://localhost/v1","models":[{"id":"sol","headers":{"x-model":"native"}}]}}}"#);
+        runtime.credentials.set("p", Some(serde_json::json!({"type":"api_key","key":"stored-fixture"}))).expect("seed");
+        let model = runtime.get_model("p", "sol").expect("model");
+        let auth = runtime.get_auth_for_model(&model, &AuthResolutionOverrides { api_key: Some("override-fixture".into()), ..Default::default() })
+            .await.expect("resolve").expect("auth");
+        assert_eq!(auth.auth.api_key.as_deref(), Some("override-fixture"));
+        assert_eq!(auth.auth.headers.expect("model headers")["x-model"].as_deref(), Some("native"));
+        let metadata = runtime.list_credentials(None).await.expect("metadata");
+        assert!(metadata.iter().any(|entry| entry.provider_id == "p" && entry.credential_type == maho_ai::auth::types::CredentialType::ApiKey));
+        let controller = maho_ai::utils::abort::AbortController::new(); controller.abort(None);
+        assert!(runtime.check_auth("p", Some(maho_ai::auth::types::AuthOperationOptions { signal: Some(controller.signal()) })).await.is_err());
+        assert!(runtime.list_credentials(Some(maho_ai::auth::types::AuthOperationOptions { signal: Some(controller.signal()) })).await.is_err());
     }
     #[test]
     fn real_models_copy_qa_when_requested() {
