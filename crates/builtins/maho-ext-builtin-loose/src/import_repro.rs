@@ -160,3 +160,38 @@ impl Extension for ImportRepro{
         })}));
     }
 }
+
+#[cfg(test)]
+mod fetch_tests{
+    use super::*;
+    use std::sync::Mutex;
+    #[tokio::test]
+    async fn gist_prefers_jsonl_and_fetches_truncated_file(){
+        let calls=Arc::new(Mutex::new(Vec::new()));let observed=calls.clone();
+        let raw="{\"type\":\"session\",\"id\":\"fixture\",\"cwd\":\"/source\"}\n";
+        let fetch:FetchText=Arc::new(move|url|{observed.lock().expect("calls").push(url.clone());Box::pin(async move{
+            if url=="https://api.github.com/gists/fixture"{Ok(serde_json::json!({"files":{"html":{"filename":"session.html","content":"not selected"},"jsonl":{"filename":"session.jsonl","content":"ignored truncated","truncated":true,"raw_url":"https://fixture.invalid/raw"}}}).to_string())}
+            else if url=="https://fixture.invalid/raw"{Ok(raw.into())}else{panic!("unexpected URL {url}")}
+        })});
+        let (header,decoded)=gist_session("fixture",&fetch).await.expect("gist");
+        assert_eq!(header["id"],"fixture");assert_eq!(decoded,raw);
+        assert_eq!(*calls.lock().expect("calls"),["https://api.github.com/gists/fixture","https://fixture.invalid/raw"]);
+    }
+    #[tokio::test]
+    async fn issue_paginates_and_uses_last_actions_link_only(){
+        let calls=Arc::new(Mutex::new(Vec::new()));let observed=calls.clone();
+        let fetch:FetchText=Arc::new(move|url|{observed.lock().expect("calls").push(url.clone());Box::pin(async move{
+            if url.ends_with("page=1"){
+                let mut comments=vec![serde_json::json!({"user":{"login":"other"},"body":"https://gist.github.com/ffffffffffffffffffff"});100];
+                comments[0]=serde_json::json!({"user":{"login":"github-actions[bot]"},"body":"https://gist.github.com/bot/aaaaaaaaaaaaaaaaaaaa"});Ok(serde_json::to_string(&comments).expect("comments"))
+            }else if url.ends_with("page=2"){Ok(serde_json::json!([{"user":{"login":"github-actions[bot]"},"body":"https://gist.github.com/bot/bbbbbbbbbbbbbbbbbbbb https://gist.github.com/cccccccccccccccccccc"}]).to_string())}else{panic!("unexpected URL {url}")}
+        })});
+        assert_eq!(issue_gist("owner","repo","42",&fetch).await.expect("gist"),"cccccccccccccccccccc");
+        assert_eq!(calls.lock().expect("calls").len(),2);
+    }
+    #[tokio::test]
+    async fn remote_fetch_error_is_not_replaced_by_empty_session(){
+        let fetch:FetchText=Arc::new(|_|Box::pin(async{Err(ExtensionFailure::new("transport failed"))}));
+        assert_eq!(gist_session("fixture",&fetch).await.expect_err("fetch error").message,"transport failed");
+    }
+}
