@@ -10804,6 +10804,13 @@ mod tests {
         let sources = maho_ext_api::ExtensionContextActions::get_loaded_hook_sources(
             &SessionExtensionActions(Arc::downgrade(&session.inner)));
         assert_eq!(sources.runtime_hook_source_paths, vec![dir.path().join("hooks.json")]);
+        session.set_hook_sources(Some(sources));
+        session.extend_discovered_resources(maho_ext_api::DiscoveredResources {
+            hook_paths: vec![entry(&dir.path().join("later-hooks.json"))], ..Default::default()
+        });
+        let combined = maho_ext_api::ExtensionContextActions::get_loaded_hook_sources(
+            &SessionExtensionActions(Arc::downgrade(&session.inner)));
+        assert_eq!(combined.runtime_hook_source_paths, vec![dir.path().join("hooks.json"), dir.path().join("later-hooks.json")]);
         std::fs::write(&prompt, "---\ndescription: updated prompt\n---\nupdated $1").expect("updated fixture");
         session.extend_discovered_resources(maho_ext_api::DiscoveredResources {
             prompt_paths: vec![entry(&prompt)], ..Default::default()
