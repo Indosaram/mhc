@@ -125,6 +125,10 @@ struct ComposedProvider { id: String, name: String, models: Vec<Model>, base: Op
 impl Provider for ComposedProvider {
     fn id(&self) -> &str { &self.id }
     fn name(&self) -> &str { &self.name }
+    fn retry_policy(&self) -> Option<&maho_ai::utils::retry_profile::types::RetryPolicyProfile> {
+        self.extension.as_ref().and_then(|extension| extension.retry_policy.as_ref())
+            .or_else(|| self.base.as_ref().and_then(|base| base.retry_policy()))
+    }
     fn get_models(&self) -> Vec<Model> {
         if self.supports_refresh() {
             let mut extension=self.extension.clone();

@@ -38,6 +38,8 @@ pub struct CreateAgentSessionOptions {
     pub settings_manager: Option<SettingsManager>,
     pub session_start_event: Option<maho_ext_api::SessionStartEvent>,
     pub auto_title_sessions: Option<bool>,
+    pub system_prompt: Option<String>,
+    pub append_system_prompt: Vec<String>,
 }
 
 /// `noTools` suppression mode.
@@ -69,9 +71,33 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     let model = options.model.take().or_else(|| context.model.as_ref().and_then(|(provider, id)| registry.find(provider, id)))
         .or_else(|| settings.get_string("defaultProvider").zip(settings.get_string("defaultModel")).and_then(|(provider,id)| registry.find(&provider,&id)))
         .or_else(|| registry.get_available().into_iter().next()).ok_or("No model available")?;
-    let thinking_level = clamp_thinking_level_to_model(options.thinking_level, Some(&model));
+    let has_thinking_entry = manager.branch(manager.leaf_id()).iter().any(|entry| entry["type"] == "thinking_level_change");
+    let configured_thinking = settings.get_value("modelThinkingLevels")
+        .and_then(|levels| levels.get(format!("{}/{}", model.provider, model.id))).and_then(serde_json::Value::as_str)
+        .and_then(ModelThinkingLevel::parse)
+        .or_else(|| settings.get_string("defaultThinkingLevel").as_deref().and_then(ModelThinkingLevel::parse));
+    let requested_thinking = options.thinking_level.map(ModelThinkingLevel::from)
+        .or_else(|| options.thinking_selection.as_ref().map(|selection| selection.level)).or_else(||
+        has_thinking_entry.then(|| ModelThinkingLevel::parse(&context.thinking_level)).flatten()).or(configured_thinking)
+        .or(Some(ModelThinkingLevel::Medium));
+    let thinking_level = match requested_thinking {
+        Some(ModelThinkingLevel::Off) => ModelThinkingLevel::Off,
+        Some(level) => clamp_thinking_level_to_model(serde_json::from_value(serde_json::Value::from(level.as_str())).ok(), Some(&model)),
+        None => clamp_thinking_level_to_model(None, Some(&model)),
+    };
+    let mut thinking_selection = options.thinking_selection.take().or_else(|| {
+        options.thinking_level.map(|_| ThinkingSelection { level: thinking_level,
+            source: maho_ai::types::ThinkingSelectionSource::Explicit, legacy_variant_id: None })
+    }).or_else(|| has_thinking_entry.then(|| context.thinking_selection.clone()).flatten()
+        .and_then(|value| serde_json::from_value(value).ok()));
+    if thinking_selection.is_none() && !has_thinking_entry && configured_thinking.is_some() {
+        thinking_selection = Some(ThinkingSelection { level: thinking_level,
+            source: maho_ai::types::ThinkingSelectionSource::Explicit, legacy_variant_id: None });
+    }
+    if let Some(selection) = thinking_selection.as_mut() { selection.level = thinking_level; }
     let mut definitions = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&cwd), Default::default());
     for definition in &options.custom_tools { definitions.insert(definition.name.clone(), definition.clone()); }
+    let registered_definitions = definitions.clone();
     let mut base_tools = BTreeMap::new();
     for (name, definition) in definitions {
         let executor = definition.execute.clone();
@@ -108,7 +134,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         .collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
     let agent = maho_agent::agent::Agent::new(maho_agent::agent::AgentOptions {
         initial_state: Some(maho_agent::agent::PartialAgentState { model: Some(model), thinking_level: Some(thinking_level),
-            thinking_selection: options.thinking_selection, messages: Some(messages), tools: Some(active_tools), ..Default::default() }),
+            thinking_selection, messages: Some(messages), tools: Some(active_tools), ..Default::default() }),
         stream_fn: Some(Arc::new(move |model, context, options| runtime_for_stream.stream_simple(model, context, options.map(|options| options.simple)))),
         get_api_key: Some(Arc::new(move |provider| { let runtime = runtime_for_auth.clone(); Box::pin(async move {
             runtime.get_auth(&provider).await.ok().flatten().and_then(|auth| auth.auth.api_key)
@@ -121,14 +147,27 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         flag_values: BTreeMap::new(), custom_tools: options.custom_tools, model_runtime: Some(runtime), model_registry: Some(registry),
         uses_default_stream_function: Some(true), initial_active_tool_names: Some(selected),
         default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: options.exclude_tools,
-        base_tools_override: Some(base_tools), session_start_event: None, auto_title_sessions: Some(false),
+        base_tools_override: Some(base_tools.clone()), session_start_event: options.session_start_event,
+        auto_title_sessions: options.auto_title_sessions,
     }).map_err(|error| error.to_string())?;
-    let templates = crate::prompt_templates::load_prompt_templates(&crate::prompt_templates::LoadPromptTemplatesOptions {
-        cwd: cwd.clone(), agent_dir: agent_dir.clone(), include_defaults: true, ..Default::default()
+    for (name, definition) in registered_definitions {
+        if let Some(tool) = base_tools.get(&name) {
+            session.register_tool_definition(definition, maho_ext_api::SourceInfo {
+                source: "sdk".to_owned(), ..Default::default()
+            }, tool.clone());
+        }
+    }
+    let (prompt_paths, skill_paths) = session.with_settings_manager(|manager| {
+        let paths = |key| manager.get_value(key).and_then(serde_json::Value::as_array).map(|values|
+            values.iter().filter_map(serde_json::Value::as_str).map(str::to_owned).collect::<Vec<_>>()).unwrap_or_default();
+        (paths("prompts"), paths("skills"))
     });
-    let skills = crate::skills::load_skills(&crate::skills::LoadSkillsOptions { cwd, agent_dir, include_defaults: true, ..Default::default() });
+    let templates = crate::prompt_templates::load_prompt_templates(&crate::prompt_templates::LoadPromptTemplatesOptions {
+        cwd: cwd.clone(), agent_dir: agent_dir.clone(), prompt_paths, include_defaults: true,
+    });
+    let skills = crate::skills::load_skills(&crate::skills::LoadSkillsOptions { cwd, agent_dir, skill_paths, include_defaults: true });
     session.set_prompt_resources(templates, skills.skills);
-    session.rebuild_system_prompt();
+    session.set_system_prompt_sources(options.system_prompt, options.append_system_prompt);
     Ok(CreateAgentSessionResult { session, model_fallback_message: None })
 }
 
@@ -199,6 +238,47 @@ mod tests {
     #[test]
     fn a_missing_model_clamps_to_off() {
         assert_eq!(clamp_thinking_level_to_model(Some(ThinkingLevel::High), None), ModelThinkingLevel::Off);
+    }
+
+    #[tokio::test]
+    async fn sdk_restores_saved_thinking_without_overriding_explicit_launch_level() {
+        let dir = tempfile::tempdir().expect("directory");
+        for explicit in [None, Some(ThinkingLevel::Low)] {
+            let mut manager = SessionManager::in_memory(&dir.path().to_string_lossy(), None, None);
+            manager.append_thinking_level_change("high", Some(serde_json::json!({"level":"high","source":"explicit"})));
+            let created = create_agent_session(CreateAgentSessionOptions {
+                cwd: Some(dir.path().to_string_lossy().into_owned()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+                model: Some(test_model()), session_manager: Some(manager), thinking_level: explicit, tools: Some(Vec::new()), ..Default::default()
+            }).await.expect("restored SDK session");
+            let expected = if explicit.is_some() { ModelThinkingLevel::Low } else { ModelThinkingLevel::High };
+            assert_eq!(created.session.thinking_level(), expected);
+            assert_eq!(created.session.thinking_selection().expect("provenance").level, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn sdk_uses_remembered_thinking_before_configured_and_shipped_defaults() {
+        let dir = tempfile::tempdir().expect("directory");
+        for (configured, remembered, expected, provenance) in [
+            (None, None, ModelThinkingLevel::Medium, false),
+            (Some("high"), None, ModelThinkingLevel::High, true),
+            (Some("high"), Some("low"), ModelThinkingLevel::Low, true),
+            (Some("high"), Some("off"), ModelThinkingLevel::Off, true),
+        ] {
+            let cwd = dir.path().to_string_lossy().into_owned();
+            let agent_dir = dir.path().join("agent").to_string_lossy().into_owned();
+            let mut settings = SettingsManager::create(&cwd, &agent_dir, &cwd, false);
+            let mut overrides = serde_json::Map::new();
+            if let Some(level) = configured { overrides.insert("defaultThinkingLevel".to_owned(), level.into()); }
+            if let Some(level) = remembered { overrides.insert("modelThinkingLevels".to_owned(), serde_json::json!({"faux/faux-1":level})); }
+            settings.apply_overrides(&overrides);
+            let created = create_agent_session(CreateAgentSessionOptions {
+                cwd: Some(cwd.clone()), agent_dir: Some(agent_dir), model: Some(test_model()), settings_manager: Some(settings),
+                session_manager: Some(SessionManager::in_memory(&cwd, None, None)), tools: Some(Vec::new()), ..Default::default()
+            }).await.expect("SDK session");
+            assert_eq!(created.session.thinking_level(), expected);
+            assert_eq!(created.session.thinking_selection().is_some(), provenance);
+        }
     }
 
     #[tokio::test]

@@ -216,6 +216,10 @@ pub trait Provider: Send + Sync {
     fn headers(&self) -> Option<&ProviderHeaders> {
         None
     }
+    /// Provider-owned retry policy; omission selects the shipped default profile.
+    fn retry_policy(&self) -> Option<&crate::utils::retry_profile::types::RetryPolicyProfile> {
+        None
+    }
     fn get_models(&self) -> Vec<Model>;
     fn supports_refresh(&self) -> bool {
         false
@@ -271,6 +275,7 @@ struct CreatedProvider {
     input: CreateProviderOptions,
     name: String,
     dynamic_models: Arc<RwLock<Vec<Model>>>,
+    retry_policy: Option<crate::utils::retry_profile::types::RetryPolicyProfile>,
 }
 
 impl CreatedProvider {
@@ -301,6 +306,10 @@ impl Provider for CreatedProvider {
 
     fn headers(&self) -> Option<&ProviderHeaders> {
         self.input.headers.as_ref()
+    }
+
+    fn retry_policy(&self) -> Option<&crate::utils::retry_profile::types::RetryPolicyProfile> {
+        self.retry_policy.as_ref()
     }
 
     fn get_models(&self) -> Vec<Model> {
@@ -398,8 +407,16 @@ impl Provider for CreatedProvider {
 }
 
 pub fn create_provider(input: CreateProviderOptions) -> Arc<dyn Provider> {
+    create_provider_with_retry_policy(input, None)
+}
+
+/// Additive constructor preserving existing provider-option struct literals.
+pub fn create_provider_with_retry_policy(
+    input: CreateProviderOptions,
+    retry_policy: Option<crate::utils::retry_profile::types::RetryPolicyProfile>,
+) -> Arc<dyn Provider> {
     let name = input.name.clone().unwrap_or_else(|| input.id.clone());
-    Arc::new(CreatedProvider { input, name, dynamic_models: Arc::new(RwLock::new(Vec::new())) })
+    Arc::new(CreatedProvider { input, name, dynamic_models: Arc::new(RwLock::new(Vec::new())), retry_policy })
 }
 
 #[derive(Clone, Default)]

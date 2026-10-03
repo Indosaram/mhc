@@ -104,9 +104,10 @@ impl AgentAbortProvenance {
     }
 
     pub fn end_agent_end(&mut self, event: &AgentEndEvent) {
-        if self.agent_end_event.as_ref() == Some(event) {
-            self.agent_end_event = None;
-            self.settling_agent_end_event = Some(event.clone());
+        if self.agent_end_event.as_ref().is_some_and(|current|
+            current.messages == event.messages && current.will_retry == event.will_retry)
+        {
+            self.settling_agent_end_event = self.agent_end_event.take();
             self.agent_end_boundary_open = true;
         }
         self.source = None;
@@ -170,6 +171,20 @@ mod tests {
         assert!(joined.user_owned);
         assert!(provenance.take_late_user_join());
         assert!(!provenance.take_late_user_join());
+    }
+
+    #[test]
+    fn user_join_during_dispatch_preserves_the_settling_boundary() {
+        let mut provenance = AgentAbortProvenance::new();
+        let event = provenance.begin_agent_end(Vec::new(), false, false);
+        assert!(provenance.join(AbortSource::User, false).user_owned);
+        provenance.end_agent_end(&event);
+        assert!(provenance.agent_end_event.is_none());
+        assert!(provenance.has_open_agent_end_boundary());
+        assert_eq!(provenance.current_source(), Some(AbortSource::User));
+        assert!(provenance.take_late_user_join());
+        provenance.close_agent_end_boundary();
+        assert!(!provenance.has_open_agent_end_boundary());
     }
 
     #[test]
