@@ -28,6 +28,7 @@ async fn run_command_process(command: &str, env: &[(String, String)]) -> Command
     for (key, value) in env {
         process.env(key, value);
     }
+    process.env_remove("__PI_INTERNAL_SPAWN");
     let mut child = match process.spawn() {
         Ok(child) => child,
         Err(error) => {

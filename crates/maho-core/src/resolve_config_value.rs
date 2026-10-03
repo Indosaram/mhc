@@ -265,6 +265,7 @@ async fn execute_command_once(command: &str, env: Option<&HashMap<String, String
             process.env(key, value);
         }
     }
+    process.env_remove("__PI_INTERNAL_SPAWN");
     process.kill_on_drop(true);
     let child = process.spawn().ok()?;
     match tokio::time::timeout(Duration::from_millis(COMMAND_TIMEOUT_MS), child.wait_with_output()).await {
