@@ -1,0 +1,12 @@
+const pin='ddf5f5d21de57ee3e80f1a6f96aff21a9dd34662';
+const response=await fetch(`https://raw.githubusercontent.com/code-yeongyu/pi-websearch/${pin}/src/websearch/providers/duckduckgo-html.ts`);
+if(!response.ok)throw new Error(`Source ${response.status}`);
+const source=await response.text();
+const functions=source.slice(source.indexOf('function htmlDecode'),source.indexOf('export const'));
+const html='<aé class="result__a" href="https://example.com/a">Boundary</a><aé class="result__snippet">Excerpt</a>';
+const script=new Bun.Transpiler({loader:'ts'}).transformSync(functions)+`\nfunction collect(xs){return xs.filter(x=>x!==null).slice(0,50)}function result(title,url,snippet){if(!title||!url)return null;return {...{title,url},...(snippet?{snippet}:{})}}console.log(JSON.stringify(normalizeDuckDuckGoHtml(${JSON.stringify(html)})));`;
+const child=Bun.spawn(['node','--input-type=module','-e',script],{stdout:'pipe',stderr:'inherit'});
+const output=await new Response(child.stdout).text();const exit=await child.exited;
+const expected=[{title:'Boundary',url:'https://example.com/a',snippet:'Excerpt'}];
+if(exit!==0||JSON.stringify(JSON.parse(output))!==JSON.stringify(expected))throw new Error('Pinned boundary mismatch');
+console.log(JSON.stringify({pin,html,result:JSON.parse(output),exit}));

@@ -1,0 +1,33 @@
+status: exited_100 exit_code: 100
+   Compiling maho-ext-pi-websearch v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-websearch)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.46s
+────────────
+ Nextest run ID 0bca1602-df22-4623-8578-2587473b3e71 with nextest profile: default
+    Starting 1 test across 12 binaries (148 tests skipped)
+        FAIL [   0.011s] (1/1) maho-ext-pi-websearch::providers duckduckgo_ascii_word_boundary_matches_source
+  stdout ───
+
+    running 1 test
+    test duckduckgo_ascii_word_boundary_matches_source ... FAILED
+
+    failures:
+
+    failures:
+        duckduckgo_ascii_word_boundary_matches_source
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'duckduckgo_ascii_word_boundary_matches_source' (4041075) panicked at crates/extensions/maho-ext-pi-websearch/tests/providers.rs:3:179:
+    assertion `left == right` failed
+      left: Array []
+     right: Array [Object {"title": String("Boundary"), "url": String("https://example.com/a"), "snippet": String("Excerpt")}]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.014s] 1 test run: 0 passed, 1 failed, 148 skipped
+        FAIL [   0.011s] (1/1) maho-ext-pi-websearch::providers duckduckgo_ascii_word_boundary_matches_source
+error: test run failed
+
+LANE39_DDG_REPRO_EXIT=100
