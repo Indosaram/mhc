@@ -1,5 +1,16 @@
 use maho_ext_pi_webfetch::webfetch::content::decode_html_entities;
 #[test]
+fn pinned_malformed_dom_and_utf16_article_threshold_match() {
+    use maho_ext_pi_webfetch::webfetch::content::{html_to_markdown, html_to_text};
+    let cases: serde_json::Value = serde_json::from_str(include_str!("fixtures/pinned-malformed-dom-delta.json")).expect("source-generated fixtures");
+    for case in cases.as_array().expect("cases") {
+        let html = case["html"].as_str().expect("html");
+        let url = case["url"].as_str().expect("url");
+        assert_eq!(html_to_markdown(html, url), case["markdown"].as_str().expect("markdown"), "{}", case["name"]);
+        assert_eq!(html_to_text(html, url), case["text"].as_str().expect("text"), "{}", case["name"]);
+    }
+}
+#[test]
 fn pinned_explicit_selector_priority_noise_and_short_candidate_match() {
     use maho_ext_pi_webfetch::webfetch::content::{html_to_markdown, html_to_text};
     let cases: serde_json::Value = serde_json::from_str(include_str!("fixtures/pinned-explicit-selector-delta.json")).expect("source-generated fixtures");

@@ -2524,8 +2524,9 @@ dependencies = [
 name = "maho-ext-pi-webfetch"
 version = "0.0.0"
 dependencies = [
- "dom_query 0.27.0",
+ "dom_query 0.28.0",
  "dom_smoothie",
+ "html5ever 0.39.0",
  "hyper",
  "maho-agent",
  "maho-ai",

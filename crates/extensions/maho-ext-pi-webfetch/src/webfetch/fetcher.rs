@@ -83,6 +83,21 @@ fn network_error(error: reqwest::Error, url: &str) -> WebfetchError {
     let mut cause = error.source();
     while let Some(source) = cause {
         if let Some(io) = source.downcast_ref::<std::io::Error>()
+            && io.kind() == std::io::ErrorKind::UnexpectedEof
+            && io.to_string() == "end of file before message length reached" {
+            return WebfetchError::NetworkMessage { name: "ResponseContentLengthMismatchError", message: "Response body length does not match content-length header".into(), cause: error };
+        }
+        if let Some(parser) = source.downcast_ref::<hyper::Error>() {
+            let detail = match parser.to_string().as_str() {
+                "invalid HTTP version parsed" if parser.is_parse() => Some("Expected HTTP/, RTSP/ or ICE/"),
+                "invalid HTTP header parsed" if parser.is_parse() => Some("Invalid header token"),
+                _ => None,
+            };
+            if let Some(detail) = detail {
+                return WebfetchError::NetworkMessage { name: "HTTPParserError", message: format!("Response does not match the HTTP/1.1 protocol ({detail})"), cause: error };
+            }
+        }
+        if let Some(io) = source.downcast_ref::<std::io::Error>()
             && io.kind() == std::io::ErrorKind::ConnectionRefused
             && let Ok(url) = url::Url::parse(url)
             && let (Some(host), Some(port)) = (url.host_str(), url.port_or_known_default()) {

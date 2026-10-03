@@ -1,5 +1,57 @@
 use maho_ext_pi_webfetch::webfetch::fetcher::*;
 use tokio::io::{AsyncReadExt,AsyncWriteExt};
+#[tokio::test]
+async fn malformed_transport_errors_preserve_pinned_undici_taxonomy() {
+    for (response, name, message) in [
+        ("NOTHTTP\r\n\r\n", "HTTPParserError", "Response does not match the HTTP/1.1 protocol (Expected HTTP/, RTSP/ or ICE/)"),
+        ("HTTP/1.1 200 OK\r\nBad Header: x\r\nContent-Length: 0\r\n\r\n", "HTTPParserError", "Response does not match the HTTP/1.1 protocol (Invalid header token)"),
+        ("HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nabc", "ResponseContentLengthMismatchError", "Response body length does not match content-length header"),
+    ] {
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("listener");let address=listener.local_addr().expect("address");
+        let mut server=tokio::spawn(async move {let(mut socket,_)=listener.accept().await.expect("accept");let mut request=Vec::new();loop{let mut buffer=[0;4096];let count=socket.read(&mut buffer).await.expect("request");assert_ne!(count,0);request.extend_from_slice(&buffer[..count]);if request.windows(4).any(|bytes|bytes==b"\r\n\r\n"){break;}}socket.write_all(response.as_bytes()).await.expect("response");socket.shutdown().await.expect("shutdown");});
+        let result=tokio::time::timeout(std::time::Duration::from_secs(5),fetch_url(&format!("http://{address}/"),WebfetchFormat::Text,Some(2.0))).await;
+        let joined=tokio::time::timeout(std::time::Duration::from_secs(5),&mut server).await;
+        if joined.is_err(){server.abort();let _=server.await;}
+        joined.expect("server deadline").expect("server");
+        let error=match result.expect("request deadline"){Err(error)=>error,Ok(_)=>panic!("expected transport failure")};
+        assert!(std::net::TcpListener::bind(address).is_ok());
+        assert_eq!(error.name(),name,"{error:?}");assert_eq!(error.to_string(),message);
+    }
+}
+#[tokio::test]
+async fn redirect_limit_returns_twentieth_redirect_response_and_releases_port() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let mut server = tokio::spawn(async move {
+        let mut paths = Vec::new();
+        for index in 0..=20 {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = Vec::new();
+            loop {
+                let mut buffer = [0; 4096];
+                let count = socket.read(&mut buffer).await.expect("request");
+                assert_ne!(count, 0);
+                request.extend_from_slice(&buffer[..count]);
+                if request.windows(4).any(|bytes| bytes == b"\r\n\r\n") { break; }
+            }
+            paths.push(String::from_utf8(request).expect("HTTP").split_whitespace().nth(1).expect("path").to_owned());
+            let body = if index == 20 { "limit body" } else { "" };
+            socket.write_all(format!("HTTP/1.1 302 Custom Redirect\r\nLocation: /{}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", index + 1, body.len()).as_bytes()).await.expect("response");
+        }
+        paths
+    });
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), fetch_url(&format!("http://{address}/0"), WebfetchFormat::Text, Some(5.0))).await;
+    let joined = tokio::time::timeout(std::time::Duration::from_secs(5), &mut server).await;
+    if joined.is_err() { server.abort(); let _ = server.await; }
+    let paths = joined.expect("server deadline").expect("server");
+    let result = result.expect("request deadline").expect("fetch");
+    assert_eq!(paths, (0..=20).map(|index| format!("/{index}")).collect::<Vec<_>>());
+    assert_eq!(result.url, format!("http://{address}/20"));
+    assert_eq!(result.status, 302);
+    assert_eq!(result.status_text, "Custom Redirect");
+    assert_eq!(result.body, b"limit body");
+    assert!(std::net::TcpListener::bind(address).is_ok());
+}
 #[tokio::test]async fn plain_http_surface(){let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let address=listener.local_addr().unwrap();let server=tokio::spawn(async move{let(mut socket,_)=listener.accept().await.unwrap();let mut bytes=Vec::new();loop{let mut buffer=[0;4096];let count=socket.read(&mut buffer).await.unwrap();assert_ne!(count,0);bytes.extend_from_slice(&buffer[..count]);if bytes.windows(4).any(|window|window==b"\r\n\r\n"){break;}}let request=String::from_utf8_lossy(&bytes).to_lowercase();assert!(request.contains("sec-fetch-mode: navigate"));socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nready").await.unwrap();});let r=fetch_url(&format!("http://{address}"),WebfetchFormat::Text,Some(7.0)).await.unwrap();assert_eq!(r.body,b"ready");assert_eq!(r.status,200);tokio::time::timeout(std::time::Duration::from_secs(5),server).await.expect("server timeout").unwrap();}
 #[tokio::test]async fn unreachable_url_error(){let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();drop(listener);let r=fetch_url(&format!("http://{address}"),WebfetchFormat::Text,Some(1.0)).await;assert!(r.is_err());}
 #[test]fn invalid_scheme(){let r=validate_url("file:///tmp/secret");assert_eq!(r.unwrap_err().to_string(),"URL must start with http:// or https://");}
