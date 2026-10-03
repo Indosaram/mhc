@@ -66,3 +66,31 @@ async fn native_factory_executes_validated_vision_runner_and_serializes_metadata
     let tool=result["messages"].as_array().unwrap().iter().find(|message|message["role"]=="toolResult").unwrap();
     assert_eq!(tool["isError"],false,"{tool}");assert_eq!(tool["details"]["model"],"faux/vision");assert_eq!(tool["details"]["sources"],json!(["base64 input"]));assert_eq!(tool["details"]["mimeTypes"],json!(["image/png"]));
 }
+#[tokio::test]
+async fn owned_runner_native_error_and_cancellation_branches(){
+    use maho_ai::providers::faux::{faux_assistant_message,faux_tool_call,FauxAssistantMessageOptions};
+    use maho_test_support::{faux::FauxScript,faux_session::FauxSession};
+    for mode in ["pre-aborted","stream-error","provider-error","tool-aborted"] {
+        let runner:maho_ext_look_at::runner::VisionModelRunner=std::sync::Arc::new(move |args,ctx,store,_|Box::pin(async move{
+            let mut ctx=ctx.clone();ctx.model_registry=std::sync::Arc::new(VisionRegistry(serde_json::from_value(serde_json::json!({"id":"vision","name":"vision","provider":"fixture","api":"faux","baseUrl":"","reasoning":false,"input":["text","image"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":4096,"maxTokens":1024})).expect("vision fixture")));
+            let parent=maho_ai::utils::abort::AbortController::new();if mode=="pre-aborted"{parent.abort(None);}
+            let abort=parent.clone();
+            let stream:maho_ext_look_at::runner::StreamRunner=std::sync::Arc::new(move |_,_,_,options|{
+                assert_ne!(mode,"pre-aborted","pre-abort must precede stream creation");
+                if mode=="stream-error"{return Err(maho_ext_api::ExtensionFailure::new("stream creation failed"));}
+                if mode=="tool-aborted"{abort.abort(None);assert!(options.stream.request.signal.as_ref().expect("request signal").aborted());}
+                let stream=maho_ai::utils::event_stream::create_assistant_message_event_stream();
+                stream.end(Some(faux_assistant_message("late response",FauxAssistantMessageOptions{stop_reason:Some(if mode=="provider-error"{maho_ai::types::StopReason::Error}else{maho_ai::types::StopReason::Stop}),..Default::default()})));Ok(stream)
+            });
+            let owned=maho_ext_look_at::runner::create_vision_runner(stream,None);
+            owned(args,&ctx,store,Some(parent.signal())).await
+        }));
+        let session=FauxSession::new(FauxScript{name:mode.into(),prompt:"inspect".into(),responses:vec![]})
+            .with_native_extension(maho_ext_host::loader::NativeExtensionFactory{path:"builtin:look-at".into(),source_info:maho_ext_api::SourceInfo{source:"builtin".into(),..Default::default()},extension:Box::new(ActiveLook(runner))})
+            .with_native_responses(vec![faux_assistant_message(faux_tool_call("look_at",serde_json::from_value(serde_json::json!({"goal":"listen","image_data":"data:audio/wav;base64,YQ=="})).expect("media args"),Some(mode)),FauxAssistantMessageOptions{stop_reason:Some(maho_ai::types::StopReason::ToolUse),..Default::default()}),faux_assistant_message("done",FauxAssistantMessageOptions::default())]);
+        let result=tokio::time::timeout(std::time::Duration::from_secs(10),session.run_native()).await.expect("session timeout").expect("native session");
+        let tool=result["messages"].as_array().expect("messages").iter().find(|message|message["role"]=="toolResult").expect("tool result");assert_eq!(tool["isError"],true,"{mode}: {tool}");
+        let text=tool["content"][0]["text"].as_str().expect("error text");
+        assert!(text.contains(match mode{"pre-aborted"|"tool-aborted"=>"look_at analysis was aborted.","stream-error"=>"stream creation failed",_=>"Vision model failed to analyze"}),"{mode}: {text}");
+    }
+}

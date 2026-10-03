@@ -21,6 +21,7 @@ tokio = { version = "=1.52.3", features = ["time", "net", "io-util", "macros", "
 [dev-dependencies]
 tempfile.workspace = true
 maho-ext-host = { path = "../../maho-ext-host" }
+maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
 
 [lints]
 workspace = true
