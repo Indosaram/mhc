@@ -3,6 +3,35 @@ use serde_json::json;
 use std::{sync::Arc,time::Duration};
 
 #[tokio::test]
+async fn failed_service_attachment_closes_handshaking_connection() {
+    use std::sync::atomic::{AtomicUsize,Ordering};
+    struct Host;
+    struct Connection(Arc<AtomicUsize>);
+    impl ServerHost for Host {
+        fn server_services(&self)->&dyn RoutedServerServiceHost {self}
+        fn resolve_session<'a>(&'a self,_:&'a str)->ServerFuture<'a,serde_json::Value> {Box::pin(async {Err(ServerError::session_not_found(None))})}
+        fn open_session(&self,_:serde_json::Value)->ServerFuture<'_,Arc<dyn RoutedSessionHandle>> {Box::pin(async {Err(ServerError::session_not_found(None))})}
+    }
+    impl RoutedServerServiceHost for Host {
+        fn attach_client(&self,_:Arc<dyn RoutedServerPresentation>)->ServerFuture<'_,Arc<dyn RoutedServerServiceAttachment>> {
+            Box::pin(async {Err(ServerError::new("internal_error","service attachment failed"))})
+        }
+    }
+    impl ByteConnection for Connection {
+        fn closed(&self)->bool {false}
+        fn send<'a>(&'a self,_:&'a [u8])->ServerFuture<'a,()> {Box::pin(async {Ok(())})}
+        fn close<'a>(&'a self,_:Option<&'a [u8]>)->ServerFuture<'a,()> {Box::pin(async move {self.0.fetch_add(1,Ordering::SeqCst);Ok(())})}
+    }
+    let closes=Arc::new(AtomicUsize::new(0));
+    let server=maho_server::server::Server::new(Arc::new(Host),"00000000-0000-4000-8000-000000000001".into(),None,None).unwrap();
+    let (sender,inbound)=tokio::sync::mpsc::channel(1);let (_shutdown,signal)=tokio::sync::watch::channel(false);
+    sender.send(Ok(maho_server::protocol::codec::encode_client_message(&json!({"type":"hello","version":8}),maho_server::protocol::framing::DEFAULT_MAX_FRAME_LENGTH).unwrap())).await.unwrap();
+    let error=server.serve(Arc::new(Connection(closes.clone())),inbound,signal).await.unwrap_err();
+    assert_eq!(error.message,"service attachment failed");
+    assert_eq!(closes.load(Ordering::SeqCst),1);
+}
+
+#[tokio::test]
 async fn failed_hello_send_releases_services_and_closes_connection() {
     use std::sync::atomic::{AtomicUsize,Ordering};
     struct Host(Arc<AtomicUsize>);

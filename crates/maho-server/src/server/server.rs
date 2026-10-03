@@ -142,11 +142,23 @@ impl Server {
             attachment: Mutex::new(None),
             max: self.max_frame_length,
         });
-        let services = self
+        let services = match self
             .host
             .server_services()
             .attach_client(presentation.clone())
-            .await?;
+            .await {
+                Ok(services)=>services,
+                Err(error)=>{
+                    if let Err(release)=presentation.detach_session().await {eprintln!("{}",release.message);}
+                    let final_frame=encode_server_message(
+                        &json!({"type":"hello_error","error":{"code":error.code,"message":error.message}}),
+                        self.max_frame_length,
+                    );
+                    if let Err(encode)=&final_frame {eprintln!("{encode}");}
+                    if let Err(close)=connection.close(final_frame.as_ref().ok().map(Vec::as_slice)).await {eprintln!("{}",close.message);}
+                    return Err(error);
+                },
+            };
         let active = Arc::new(Mutex::new(
             BTreeMap::<String, (Value, watch::Sender<bool>)>::new(),
         ));
