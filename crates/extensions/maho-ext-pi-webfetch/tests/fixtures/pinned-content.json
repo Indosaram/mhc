@@ -1,0 +1,32 @@
+[
+  {
+    "name": "tistoryFixtureHtml",
+    "html": "<!doctype html>\n\t\t<html>\n\t\t\t<head>\n\t\t\t\t<title>관리자 메뉴가 제목을 이기면 안 됨</title>\n\t\t\t\t<meta name=\"description\" content=\"티스토리 블로그 홍보 문구\">\n\t\t\t</head>\n\t\t\t<body class=\"tt-body-page\">\n\t\t\t\t<header>\n\t\t\t\t\t<a href=\"/manage\">관리자</a>\n\t\t\t\t\t<a href=\"/category\">분류 전체보기</a>\n\t\t\t\t</header>\n\t\t\t\t<section class=\"sidebar\">\n\t\t\t\t\t<h2>최근 글</h2>\n\t\t\t\t\t<p>관련 없는 사이드바 설명이 길게 들어가서 리더가 이 영역을 본문으로 착각하면 안 됩니다.</p>\n\t\t\t\t</section>\n\t\t\t\t<div id=\"content\">\n\t\t\t\t\t<h1 class=\"tit_post\">티스토리 본문을 읽어야 합니다</h1>\n\t\t\t\t\t<div class=\"entry-content contents_style\">\n\t\t\t\t\t\t<div class=\"article_view tt_article_useless_p_margin\">\n\t\t\t\t\t\t\t<p data-ke-size=\"size16\">첫 번째 본문 문장은 짧은 티스토리 글에서도 반드시 남아야 합니다.</p>\n\t\t\t\t\t\t\t<p data-ke-size=\"size16\">두 번째 본문 문장은 카테고리나 관련 글보다 우선되어야 합니다.</p>\n\t\t\t\t\t\t\t<figure data-ke-type=\"image\">\n\t\t\t\t\t\t\t\t<figcaption>본문 이미지 설명도 보존됩니다.</figcaption>\n\t\t\t\t\t\t\t</figure>\n\t\t\t\t\t\t</div>\n\t\t\t\t\t\t<div class=\"another_category\">\n\t\t\t\t\t\t\t<h4>다른 글 보기</h4>\n\t\t\t\t\t\t\t<ul>\n\t\t\t\t\t\t\t\t<li>관련 글 제목 하나</li>\n\t\t\t\t\t\t\t\t<li>관련 글 제목 둘</li>\n\t\t\t\t\t\t\t</ul>\n\t\t\t\t\t\t</div>\n\t\t\t\t\t</div>\n\t\t\t\t</div>\n\t\t\t\t<footer>구독하기 푸터와 방명록 링크</footer>\n\t\t\t\t<script>window.tistoryTracker = true;</script>\n\t\t\t</body>\n\t\t</html>",
+    "markdown": "# 티스토리 본문을 읽어야 합니다\n\n첫 번째 본문 문장은 짧은 티스토리 글에서도 반드시 남아야 합니다.\n\n두 번째 본문 문장은 카테고리나 관련 글보다 우선되어야 합니다.\n\n본문 이미지 설명도 보존됩니다.",
+    "text": "티스토리 본문을 읽어야 합니다\n\n첫 번째 본문 문장은 짧은 티스토리 글에서도 반드시 남아야 합니다.\n\n두 번째 본문 문장은 카테고리나 관련 글보다 우선되어야 합니다.\n\n본문 이미지 설명도 보존됩니다."
+  },
+  {
+    "name": "titlePriorityFixtureHtml",
+    "html": "<!doctype html>\n\t\t<html>\n\t\t\t<head>\n\t\t\t\t<title>관리자 메뉴가 제목을 이기면 안 됨</title>\n\t\t\t\t<meta name=\"description\" content=\"티스토리 블로그 홍보 문구\">\n\t\t\t</head>\n\t\t\t<body class=\"tt-body-page\">\n\t\t\t\t<header>\n\t\t\t\t\t<h1>블로그 이름</h1>\n\t\t\t\t\t<a href=\"/manage\">관리자</a>\n\t\t\t\t\t<a href=\"/category\">분류 전체보기</a>\n\t\t\t\t</header>\n\t\t\t\t<section class=\"sidebar\">\n\t\t\t\t\t<h2>최근 글</h2>\n\t\t\t\t\t<p>관련 없는 사이드바 설명이 길게 들어가서 리더가 이 영역을 본문으로 착각하면 안 됩니다.</p>\n\t\t\t\t</section>\n\t\t\t\t<div id=\"content\">\n\t\t\t\t\t<h1 class=\"tit_post\">티스토리 본문을 읽어야 합니다</h1>\n\t\t\t\t\t<div class=\"entry-content contents_style\">\n\t\t\t\t\t\t<div class=\"article_view tt_article_useless_p_margin\">\n\t\t\t\t\t\t\t<p data-ke-size=\"size16\">첫 번째 본문 문장은 짧은 티스토리 글에서도 반드시 남아야 합니다.</p>\n\t\t\t\t\t\t\t<p data-ke-size=\"size16\">두 번째 본문 문장은 카테고리나 관련 글보다 우선되어야 합니다.</p>\n\t\t\t\t\t\t</div>\n\t\t\t\t\t</div>\n\t\t\t\t</div>\n\t\t\t\t<footer>구독하기 푸터와 방명록 링크</footer>\n\t\t\t</body>\n\t\t</html>",
+    "markdown": "# 티스토리 본문을 읽어야 합니다\n\n첫 번째 본문 문장은 짧은 티스토리 글에서도 반드시 남아야 합니다.\n\n두 번째 본문 문장은 카테고리나 관련 글보다 우선되어야 합니다.",
+    "text": "티스토리 본문을 읽어야 합니다\n\n첫 번째 본문 문장은 짧은 티스토리 글에서도 반드시 남아야 합니다.\n\n두 번째 본문 문장은 카테고리나 관련 글보다 우선되어야 합니다."
+  },
+  {
+    "name": "newlineFixtureHtml",
+    "html": "<!doctype html>\n\t\t<html>\n\t\t\t<body>\n\t\t\t\t<div class=\"article_view\">\n\t\t\t\t\t<h1>줄바꿈 보존</h1>\n\t\t\t\t\t<p><span>첫 줄</span><br><span>둘째 줄</span></p>\n\t\t\t\t\t<p><span>새 문단</span> <strong>강조</strong></p>\n\t\t\t\t\t<ul>\n\t\t\t\t\t\t<li><span>첫 항목</span></li>\n\t\t\t\t\t\t<li><span>둘째 항목</span></li>\n\t\t\t\t\t</ul>\n\t\t\t\t\t<table>\n\t\t\t\t\t\t<tr><td>왼쪽 칸</td><td>오른쪽 칸</td></tr>\n\t\t\t\t\t</table>\n\t\t\t\t</div>\n\t\t\t</body>\n\t\t</html>",
+    "markdown": "# 줄바꿈 보존\n\n첫 줄\n둘째 줄\n\n새 문단 **강조**\n\n-   첫 항목\n-   둘째 항목\n\n왼쪽 칸\n\n오른쪽 칸",
+    "text": "줄바꿈 보존\n\n첫 줄\n둘째 줄\n\n새 문단 강조\n\n첫 항목\n\n둘째 항목\n\n왼쪽 칸\n오른쪽 칸"
+  },
+  {
+    "name": "literalEntityFixtureHtml",
+    "html": "<!doctype html>\n\t\t<html>\n\t\t\t<body>\n\t\t\t\t<article>\n\t\t\t\t\t<h1>Literal Entity Fixture</h1>\n\t\t\t\t\t<p>Rendered tag example: &amp;lt;custom-element&amp;gt;</p>\n\t\t\t\t\t<p>Escaped ampersand example: AT&amp;amp;T docs</p>\n\t\t\t\t</article>\n\t\t\t</body>\n\t\t</html>",
+    "markdown": "## Literal Entity Fixture\n\nRendered tag example: &lt;custom-element&gt;\n\nEscaped ampersand example: AT&amp;T docs",
+    "text": "Literal Entity Fixture\n\nRendered tag example: &lt;custom-element&gt;\n\nEscaped ampersand example: AT&amp;T docs"
+  },
+  {
+    "name": "noExplicitWrapper",
+    "html": "<html><head><title>Useful story</title></head><body><header>Subscribe now</header><nav><a href=\"/login\">Login</a></nav><main><div><h1>Useful story</h1><p>This opening paragraph has enough useful words, commas, and detailed explanations to be selected as real article content rather than navigation. It describes an important result for readers.</p><p>This second paragraph adds more useful facts about the result, including how it was verified and why it matters. It must remain in the article output.</p><p>Read <a href=\"/guide\">the guide</a> for details.</p></div></main><aside class=\"sidebar\">Sponsored sidebar</aside><footer>Privacy policy</footer></body></html>",
+    "markdown": "# Useful story\n\nThis opening paragraph has enough useful words, commas, and detailed explanations to be selected as real article content rather than navigation. It describes an important result for readers.\n\nThis second paragraph adds more useful facts about the result, including how it was verified and why it matters. It must remain in the article output.\n\nRead [the guide](http://example.test/guide) for details.",
+    "text": "Useful story\n\nThis opening paragraph has enough useful words, commas, and detailed explanations to be selected as real article content rather than navigation. It describes an important result for readers.\n\nThis second paragraph adds more useful facts about the result, including how it was verified and why it matters. It must remain in the article output.\n\nRead the guide for details."
+  }
+]
