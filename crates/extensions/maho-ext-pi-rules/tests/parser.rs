@@ -4,6 +4,7 @@ fn frontmatter(description: Option<&str>, globs: Option<PatternList>, always_app
     RuleFrontmatter { description: description.map(str::to_owned), globs, always_apply, ..RuleFrontmatter::default() }
 }
 fn single(s: &str) -> Option<PatternList> { Some(PatternList::Single(s.into())) }
+#[test]fn one_quote_scalar_is_source_empty_string(){check("---\ndescription: '\n---\nbody",frontmatter(Some(""),None,None),"body");check("---\nglobs: '\n---\nbody",frontmatter(None,single(""),None),"body");}
 fn multiple(s: &[&str]) -> Option<PatternList> { Some(PatternList::Multiple(s.iter().map(|s| (*s).into()).collect())) }
 fn check(content: &str, expected: RuleFrontmatter, body: &str) {
     let result = parse_rule(content);
