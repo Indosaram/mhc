@@ -52,18 +52,31 @@ pub fn validate_websearch_config_value(value:&Value)->Result<WebsearchConfig,(Co
     let raw=value.as_object().ok_or_else(||(ConfigLoadFailureReason::InvalidConfig,"Websearch config must be an object.".into()))?;
     if optional_enum::<RoutingStrategy>(raw.get("strategy")).is_none(){return Err((ConfigLoadFailureReason::InvalidConfig,format!("Unsupported routing strategy: {}",raw.get("strategy").and_then(Value::as_str).unwrap_or("undefined"))));}
     if raw.get("auto").and_then(Value::as_bool).is_none(){return Err((ConfigLoadFailureReason::InvalidConfig,"Websearch config auto must be a boolean.".into()));}
+    let mut direct_providers=Vec::new();
     if let Some(providers)=raw.get("providers").and_then(Value::as_array){
         for provider in providers{
             let entry=provider.as_object().ok_or_else(||(ConfigLoadFailureReason::InvalidConfig,"Invalid provider config.".into()))?;
             if optional_enum::<SearchProvider>(entry.get("provider")).is_none(){return Err((ConfigLoadFailureReason::InvalidConfig,format!("Unsupported provider: {}",entry.get("provider").and_then(Value::as_str).unwrap_or("undefined"))));}
             let mut parsed=provider_entry(entry).ok_or_else(||(ConfigLoadFailureReason::InvalidConfig,"Invalid provider config.".into()))?;
+            parsed.config.max_results=optional_number(entry.get("maxResults"));
+            for (key,field) in [("id",&mut parsed.config.id),("apiKey",&mut parsed.config.api_key),("baseUrl",&mut parsed.config.base_url),("searchEngineId",&mut parsed.config.search_engine_id),("model",&mut parsed.config.model)]{
+                *field=entry.get(key).and_then(Value::as_str).map(str::to_owned);
+            }
+            parsed.config.user_location=entry.get("userLocation").and_then(Value::as_object).map(|location|SearchUserLocation{
+                country:location.get("country").and_then(Value::as_str).map(str::to_owned),
+                region:location.get("region").and_then(Value::as_str).map(str::to_owned),
+                city:location.get("city").and_then(Value::as_str).map(str::to_owned),
+                timezone:location.get("timezone").and_then(Value::as_str).map(str::to_owned),
+            });
             // Direct validation compares explicit null to zero; file loading omits it.
             if entry.get("weight").is_some_and(Value::is_null){parsed.weight=Some(0.0);}
             if entry.get("timeoutMs").is_some_and(Value::is_null){parsed.config.timeout_ms=Some(0.0);}
-            if let ProviderValidationResult::Failure{reason,message}=validate_provider_config(parsed){return Err((match reason{ProviderValidationFailureReason::InvalidConfig=>ConfigLoadFailureReason::InvalidConfig,ProviderValidationFailureReason::MissingApiKey=>ConfigLoadFailureReason::MissingApiKey},message));}
+            if let ProviderValidationResult::Failure{reason,message}=validate_provider_config(parsed.clone()){return Err((match reason{ProviderValidationFailureReason::InvalidConfig=>ConfigLoadFailureReason::InvalidConfig,ProviderValidationFailureReason::MissingApiKey=>ConfigLoadFailureReason::MissingApiKey},message));}
+            direct_providers.push(parsed);
         }
     }
-    let config=config_from_object(raw).ok_or_else(||(ConfigLoadFailureReason::InvalidConfig,"Invalid provider config.".into()))?;
+    if !raw.get("providers").is_some_and(Value::is_array){return Err((ConfigLoadFailureReason::InvalidConfig,"Invalid provider config.".into()));}
+    let config=WebsearchConfig{strategy:optional_enum(raw.get("strategy")).unwrap_or(RoutingStrategy::Priority),fallback:raw.get("fallback").and_then(Value::as_bool).unwrap_or(true),auto:raw.get("auto").and_then(Value::as_bool).unwrap_or(true),providers:direct_providers};
     validate_websearch_config(&config)?;Ok(config)
 }
 pub fn load_websearch_config(cwd: &Path,home: &Path) -> Result<ConfigLoadResult,std::io::Error> {
