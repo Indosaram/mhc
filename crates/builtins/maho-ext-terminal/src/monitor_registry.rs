@@ -93,6 +93,7 @@ pub struct MonitorRegistry {
     transitions:tokio::sync::watch::Sender<Vec<MonitorSnapshotEntry>>,
     parked:tokio::sync::watch::Sender<bool>,
     delivery:std::sync::Arc<std::sync::Mutex<MonitorRouting>>,
+    disposed:bool,
 }
 type MonitorSink=std::sync::Arc<dyn Fn(MonitorEvent)+Send+Sync>;
 #[derive(Default)]
@@ -106,7 +107,7 @@ impl MonitorRegistry {
     pub fn new(emit:impl Fn(MonitorEvent)+Send+Sync+'static)->Self {
         let delivery=std::sync::Arc::new(std::sync::Mutex::new(MonitorRouting {sink:Some(std::sync::Arc::new(emit)),..Default::default()}));let routing=delivery.clone();
         let emit=std::sync::Arc::new(move |event:MonitorEvent| {let sink={let mut routing=routing.lock().expect("monitor routing");if let Some(sink)=&routing.sink {Some(sink.clone())}else {routing.pending.push_back(event.clone());if routing.pending.len()>100 {routing.pending.pop_front();}None}};if let Some(sink)=sink {sink(event);}});
-        Self {records:Default::default(),tasks:vec![],emit,files:Default::default(),file_snapshots:Default::default(),next_file_id:0,transitions:tokio::sync::watch::channel(vec![]).0,parked:tokio::sync::watch::channel(false).0,delivery}
+        Self {records:Default::default(),tasks:vec![],emit,files:Default::default(),file_snapshots:Default::default(),next_file_id:0,transitions:tokio::sync::watch::channel(vec![]).0,parked:tokio::sync::watch::channel(false).0,delivery,disposed:false}
     }
     pub fn detach_delivery(&self) {self.delivery.lock().expect("monitor routing").sink=None;}
     pub fn bind_delivery(&self,emit:impl Fn(MonitorEvent)+Send+Sync+'static) {
@@ -138,6 +139,7 @@ impl MonitorRegistry {
     }
     #[cfg(unix)]
     fn register_file_lifetime(&mut self,description:&str,path:&std::path::Path,event:crate::terminal_manifest_model::FileEvent,lifetime:(u64,bool),monitor_id:Option<&str>,approved_parent:Option<&std::path::Path>)->std::io::Result<(String,String)> {
+        if self.disposed {return Err(std::io::Error::other("Cannot create file monitor: monitor registry is disposed."));}
         let (timeout_ms,persistent)=lifetime;
         let id=format!("watch_{}",self.next_file_id+1);let monitor_id=match monitor_id {Some(id)=>id.to_owned(),None=>allocate_monitor_id()?};
         let file=std::sync::Arc::new(std::sync::Mutex::new(crate::file_monitor::FileMonitor::register(id.clone(),description.to_owned(),path,event,approved_parent)?));
@@ -218,6 +220,7 @@ impl MonitorRegistry {
         resumed
     }
     pub fn register(&mut self,runtime:&crate::runtime_session::TerminalRuntimeSession,mut record:CommandMonitor)->Result<(),crate::runtime_session::RuntimeError> {
+        if self.disposed {return Err(crate::runtime_session::RuntimeError::RegistryDisposed);}
         let (history,mut output)=runtime.subscribe_output()?;
         let mut exit=runtime.subscribe_exit();
         record.snapshot.started_at_ms=now_ms();
@@ -247,13 +250,20 @@ impl MonitorRegistry {
         }));
         Ok(())
     }
-    pub fn dispose(&mut self) {let mut events=vec![];for (_,(file,task)) in std::mem::take(&mut self.files) {task.abort();if let Some(event)=file.lock().expect("file monitor").stop("watcher disposed") {events.push(event);}}self.file_snapshots.lock().expect("file snapshots").clear();for task in self.tasks.drain(..) {task.abort();}self.records.lock().expect("monitor records").clear();self.publish_state();for event in events {(self.emit)(event);}}
+    pub fn dispose(&mut self) {if self.disposed {return;}self.disposed=true;let mut events=vec![];for (_,(file,task)) in std::mem::take(&mut self.files) {task.abort();if let Some(event)=file.lock().expect("file monitor").stop("watcher disposed") {events.push(event);}}self.file_snapshots.lock().expect("file snapshots").clear();for task in self.tasks.drain(..) {task.abort();}self.records.lock().expect("monitor records").clear();self.publish_state();for event in events {(self.emit)(event);}self.delivery.lock().expect("monitor routing").pending.clear();}
 }
 impl Drop for MonitorRegistry {fn drop(&mut self) {self.dispose();}}
 
 #[cfg(test)]
 mod registry_tests {
     use super::*;
+    #[tokio::test]
+    async fn disposed_registry_rejects_new_file_and_command_watches() {
+        let dir=tempfile::tempdir().unwrap();let mut registry=MonitorRegistry::new(|_|{});registry.dispose();registry.dispose();
+        assert_eq!(registry.register_file("file",&dir.path().join("file"),crate::terminal_manifest_model::FileEvent::Create,1000).unwrap_err().to_string(),"Cannot create file monitor: monitor registry is disposed.");
+        let runtime=crate::runtime_session::TerminalRuntimeSession::start("read",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("read value")).unwrap();
+        assert!(matches!(registry.register(&runtime,CommandMonitor::new(MonitorSnapshotEntry::default(),None)),Err(crate::runtime_session::RuntimeError::RegistryDisposed)));assert!(registry.snapshot().is_empty());runtime.dispose().unwrap();
+    }
     #[test]
     fn detached_delivery_bounds_and_rebinds_events_in_order() {
         let registry=MonitorRegistry::new(|_|panic!("old owner received parked event"));registry.detach_delivery();

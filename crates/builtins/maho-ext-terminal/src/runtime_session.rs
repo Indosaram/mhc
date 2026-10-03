@@ -13,6 +13,8 @@ pub enum RuntimeError {
     WaiterPanicked,
     #[error("terminal exit wait timed out")]
     WaitTimeout,
+    #[error("Cannot create command monitor: monitor registry is disposed.")]
+    RegistryDisposed,
 }
 
 #[derive(Debug,PartialEq,Eq)]
