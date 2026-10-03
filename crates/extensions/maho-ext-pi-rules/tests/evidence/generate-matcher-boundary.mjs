@@ -1,0 +1,16 @@
+import { readFile } from 'node:fs/promises';
+const root = process.env.PI_RULES_SRC ?? '/home/indo/.omo/agent/git/github.com/code-yeongyu/pi-rules';
+const pin = '12ad906f0b29e949ebbd1f89d8f85789578aa6e6';
+const response = await fetch(`https://raw.githubusercontent.com/code-yeongyu/pi-rules/${pin}/src/rules/matcher.ts`);
+if (!response.ok) throw new Error(`Source ${response.status}`);
+const source = new Bun.Transpiler({ loader: 'ts' }).transformSync(await response.text());
+const fixtures = JSON.parse(await readFile(new URL('../fixtures/pinned-matcher-boundary-delta.json', import.meta.url), 'utf8'));
+const inputs = fixtures.map(({ pattern, path }) => ({ pattern, path }));
+const script = `${source}\nconst inputs=${JSON.stringify(inputs)}; console.log(JSON.stringify(inputs.map(({pattern,path})=>({pattern,path,...matchRule({frontmatter:{globs:pattern},isSingleFile:false,pathBases:{projectRelative:path,basename:path}})})),null,2));`;
+const child = Bun.spawn(['/usr/bin/node', '--input-type=module', '-e', script], { cwd: root, stdout: 'pipe', stderr: 'inherit' });
+const output = await new Response(child.stdout).text();
+const exit = await child.exited;
+if (exit !== 0) throw new Error(`Source oracle exit ${exit}`);
+if (JSON.stringify(JSON.parse(output)) !== JSON.stringify(fixtures)) throw new Error('Pinned matcher corpus mismatch');
+console.log(output.trimEnd());
+console.log(`PASS pin=${pin}; cases=${fixtures.length}; exact matcher corpus reproduced; child exited=${exit}`);

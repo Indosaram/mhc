@@ -1,4 +1,14 @@
 use maho_ext_pi_rules::rules::{matcher::*,types::*};
+#[test]
+fn pinned_nested_brace_and_class_boundaries_match(){
+    let cases:serde_json::Value=serde_json::from_str(include_str!("fixtures/pinned-matcher-boundary-delta.json")).expect("pinned source corpus");
+    for case in cases.as_array().expect("cases"){
+        let pattern=case["pattern"].as_str().expect("pattern");let path=case["path"].as_str().expect("path");
+        let f=RuleFrontmatter{globs:Some(PatternList::Single(pattern.into())),..Default::default()};
+        let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:path,scope_relative:None,basename:path}).expect("source accepts pattern");
+        assert_eq!(result.matched,case["matched"].as_bool().expect("matched"),"{pattern}: {path}");
+    }
+}
 fn patterns(values:&[&str])->Option<PatternList>{Some(PatternList::Multiple(values.iter().map(|v|(*v).into()).collect()))}
 #[test]fn oversized_patterns_retain_source_exception(){let pattern="a".repeat(65537);let f=RuleFrontmatter{globs:patterns(&[&pattern]),..Default::default()};let error=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"a",scope_relative:None,basename:"a"}).expect_err("source rejects oversized pattern");assert_eq!(error.to_string(),"Input length: 65537, exceeds maximum allowed length: 65536");}
 #[test]fn invalid_empty_patterns_retain_source_exception(){for pattern in ["","!"]{let f=RuleFrontmatter{globs:patterns(&[pattern]),..Default::default()};let error=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"a",scope_relative:None,basename:"a"}).expect_err("source rejects empty compiled pattern");assert_eq!(error.to_string(),"Expected pattern to be a non-empty string");}}

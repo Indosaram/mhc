@@ -1,0 +1,6 @@
+Command: cd /home/indo/T9-Mac/maho-code-lanes/resume-webfetch && timeout 30 bun crates/extensions/maho-ext-pi-rules/tests/evidence/generate-matcher-boundary.mjs
+Pinned module: https://raw.githubusercontent.com/code-yeongyu/pi-rules/12ad906f0b29e949ebbd1f89d8f85789578aa6e6/src/rules/matcher.ts
+Runtime: Bun 1.4.0 Transpiler(loader=ts), /usr/bin/node --input-type=module, retained pi-rules dependency root for picomatch.
+Inputs: nested extglob/brace, POSIX digit class, exclamation class, stepped range, negative-only nested pattern, reverse class range and globstar paths.
+PASS pin=12ad906f0b29e949ebbd1f89d8f85789578aa6e6; cases=26; exact matcher corpus reproduced; child exited=0
+Exit=0. Generator compares parsed output without rewriting expected fixture; node child exit awaited, no fixture servers/sleeps.
