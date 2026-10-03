@@ -22,6 +22,7 @@ pub struct InteractiveMode {
     theme: Theme,
     pub editor: CustomEditor,
     submissions: Rc<RefCell<std::collections::VecDeque<String>>>,
+    tree_copies: Rc<RefCell<std::collections::VecDeque<Option<String>>>>,
     rename_input: Option<crate::components::extension_input::ExtensionInputComponent>,
     rename_result: Rc<RefCell<Option<Option<String>>>>,
     shortcut_overlay: bool,
@@ -34,6 +35,7 @@ pub struct InteractiveMode {
     ui_reply: Rc<RefCell<Option<tokio::sync::oneshot::Sender<Option<String>>>>>,
     header: Option<Box<dyn Component>>,
     footer: Option<Box<dyn Component>>,
+    footer_data: Arc<maho_core::footer_data_provider::FooterDataProvider>,
     widgets: Vec<(String, Box<dyn Component>, maho_ext_api::WidgetPlacement)>,
     pub terminal_title: Option<String>,
     markdown_transformers: Vec<crate::components::markdown_transform::MarkdownTransformer>,
@@ -121,7 +123,7 @@ impl InteractiveMode {
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(maho_ext_api::Theme { name: Some(theme.name.clone()), colors: theme.resolved_colors(), ..Default::default() });
         *extension_ui.theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = std::path::Path::new(&session.agent_dir()).join("themes");
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { expanded_question_widget:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)) }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), expanded_question_widget:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header: None, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)) }
     }
 
     pub fn use_registered_markdown_transformers(&mut self, extensions: &[maho_ext_api::LoadedExtension]) {
@@ -261,6 +263,16 @@ impl InteractiveMode {
     }
 
     pub async fn submit_editor(&mut self) -> Result<Option<PromptDisposition>, String> {
+        loop {
+            let copy=self.tree_copies.borrow_mut().pop_front();
+            let Some(copy)=copy else {break;};
+            if let Some(text)=copy.filter(|text|!text.is_empty()) {
+                match crate::interactive_clipboard::copy(&text).await {
+                    Ok(sequence)=>{if let Some(sequence)=sequence {maho_tui::process_stdio::stdout_write(&sequence);}self.show_status("Copied selected message to clipboard".into());}
+                    Err(error)=>self.show_status(error),
+                }
+            }else{self.show_status("Selected entry has no text to copy".into());}
+        }
         let text = self.submissions.borrow_mut().pop_front();
         let Some(text) = text else { return Ok(None); };
         self.editor.editor.add_to_history(&text);
@@ -289,6 +301,12 @@ impl InteractiveMode {
             return Ok(());
         }
         if keys.matches(data,"app.message.copy") { self.submit("/copy",Default::default()).await?;return Ok(()); }
+        if keys.matches(data,"app.clipboard.pasteImage") {
+            if let Some(text)=crate::interactive_clipboard::read_text().await {
+                if let Some(editor)=&mut self.custom_editor {editor.insert_text_at_cursor(&text);}else{self.editor.editor.insert_text_at_cursor(&text);}
+            }
+            return Ok(());
+        }
         if keys.matches(data, "app.interrupt") && !self.agent_idle { self.abort_and_restore_queue().await; return Ok(()); }
         self.handle_filtered_input_at(data, now_ms);
         Ok(())
@@ -628,11 +646,14 @@ impl InteractiveMode {
             let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone(); let session = self.session.clone();
             let filter = self.session.with_settings_manager(|settings| settings.get_value("treeFilterMode").and_then(serde_json::Value::as_str).unwrap_or("default").to_owned());
             let filter = match filter.as_str() { "no-tools" => crate::components::tree_selector::FilterMode::NoTools, "user-only" => crate::components::tree_selector::FilterMode::UserOnly, "labeled-only" => crate::components::tree_selector::FilterMode::LabeledOnly, "all" => crate::components::tree_selector::FilterMode::All, _ => crate::components::tree_selector::FilterMode::Default };
-            self.ui_dialog = Some(Box::new(crate::components::tree_selector::TreeSelectorComponent::new(&self.theme,
+            let mut selector = crate::components::tree_selector::TreeSelectorComponent::new(&self.theme,
                 Arc::new(self.keybindings()),
                 tree, leaf.as_deref(), self.editor_host.terminal_rows(),
                 Box::new(move |id| { submissions.borrow_mut().push_back(format!("/tree {id}")); selected.borrow_mut().take(); }), Box::new(move || { cancelled.borrow_mut().take(); }),
-                Some(Box::new(move |id, label| session.with_session_manager_mut(|manager| { manager.append_label(id, label); }))), None, Some(filter), std::env::var("HOME").ok())));
+                Some(Box::new(move |id, label| session.with_session_manager_mut(|manager| { manager.append_label(id, label); }))), None, Some(filter), std::env::var("HOME").ok());
+            let copies=self.tree_copies.clone();
+            selector.on_copy=Some(Box::new(move |text|copies.borrow_mut().push_back(text.map(str::to_owned))));
+            self.ui_dialog=Some(Box::new(selector));
             return Ok(true);
         }
         if text == "/fork" {
@@ -856,7 +877,8 @@ impl InteractiveMode {
             }
             UiRequest::FooterFactory(factory) => {
                 let host = crate::interactive_ui_host::InteractiveUiHost(self.editor_host.clone(),self.terminal_dimensions.clone());
-                let data = crate::interactive_ui_host::InteractiveFooterData { provider:maho_core::footer_data_provider::FooterDataProvider::new(&self.session.cwd()), statuses:self.extension_ui.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(), providers:self.session.model_registry().get_available().iter().map(|model|&model.provider).collect::<std::collections::BTreeSet<_>>().len() };
+                self.footer_data.set_available_provider_count(self.session.model_registry().get_available().iter().map(|model|&model.provider).collect::<std::collections::BTreeSet<_>>().len());
+                let data = crate::interactive_ui_host::InteractiveFooterData { provider:self.footer_data.clone(), ui:self.extension_ui.clone() };
                 self.footer = factory.map(|factory| factory(&host,&maho_ext_api::ExtensionUi::theme(self.extension_ui.as_ref()),&data));
             }
             UiRequest::CustomFactory(factory, options, reply) => {
@@ -1128,9 +1150,13 @@ impl InteractiveMode {
     }
 
     pub fn tick(&mut self, now_ms: f64) {
+        self.footer_data.set_cwd(&self.session.cwd());
+        self.footer_data.set_available_provider_count(self.session.model_registry().get_available().iter().map(|model|&model.provider).collect::<std::collections::BTreeSet<_>>().len());
+        self.footer_data.refresh_branch();
         for (id, value) in self.tool_args_reveal.tick(now_ms) { if let Some(component) = self.pending_tools.get(&id) { component.borrow_mut().update_args(value); } }
         if let Some(widget) = &mut self.async_question_widget { widget.tick(now_ms.max(0.0) as u64); }
         else if let Some(question) = &mut self.question { question.tick(now_ms.max(0.0) as u64); }
+        if let Some(widget) = &mut self.expanded_question_widget { widget.tick(now_ms.max(0.0) as u64); }
         if self.question_reply.borrow().is_none() { self.question = None; self.async_question_widget = None; self.expanded_question_widget = None; }
         for component in &self.tool_cards { let mut component = component.borrow_mut(); component.set_now_ms(now_ms); component.tick(now_ms.max(0.0) as u64); }
         if let Some(value) = self.reveal.tick(now_ms) && let Some(component) = &self.streaming { component.borrow_mut().update_content(&value, Some(true)); }

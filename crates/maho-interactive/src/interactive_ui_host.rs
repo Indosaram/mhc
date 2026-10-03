@@ -8,14 +8,13 @@ impl ExtensionTuiHost for InteractiveUiHost {
 }
 
 pub struct InteractiveFooterData {
-    pub provider: maho_core::footer_data_provider::FooterDataProvider,
-    pub statuses: BTreeMap<String,String>,
-    pub providers: usize,
+    pub provider: std::sync::Arc<maho_core::footer_data_provider::FooterDataProvider>,
+    pub ui: std::sync::Arc<crate::interactive_extension_ui::InteractiveExtensionUi>,
 }
 impl ReadonlyFooterDataProvider for InteractiveFooterData {
     fn get_git_branch(&self) -> Option<String> { self.provider.git_branch() }
-    fn get_extension_statuses(&self) -> BTreeMap<String,String> { self.statuses.clone() }
-    fn get_available_provider_count(&self) -> usize { self.providers }
+    fn get_extension_statuses(&self) -> BTreeMap<String,String> { self.ui.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() }
+    fn get_available_provider_count(&self) -> usize { self.provider.available_provider_count() }
     fn on_branch_change(&self, callback:std::sync::Arc<dyn Fn()+Send+Sync>) -> UiUnsubscribe {
         let active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let subscribed = active.clone();
@@ -45,5 +44,24 @@ impl maho_tui::tui::Component for OverlayComponent {
     fn dispose(&mut self) {
         if let Some(renderer) = self.renderer.upgrade() { renderer.borrow_mut().base_mut().hide_overlay(); }
         self.component.borrow_mut().dispose();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maho_ext_api::ExtensionUi;
+    #[test]
+    fn footer_factory_data_reads_live_statuses_and_provider_count() {
+        let (ui,_requests)=crate::interactive_extension_ui::InteractiveExtensionUi::channel(Default::default());
+        let provider=std::sync::Arc::new(maho_core::footer_data_provider::FooterDataProvider::new("/tmp"));
+        let data=InteractiveFooterData {provider:provider.clone(),ui:ui.clone()};
+        assert!(data.get_extension_statuses().is_empty());
+        ui.set_status("worker",Some("running"));
+        assert_eq!(data.get_extension_statuses().get("worker").map(String::as_str),Some("running"));
+        provider.set_available_provider_count(2);
+        assert_eq!(data.get_available_provider_count(),2);
+        ui.set_status("worker",None);
+        assert!(data.get_extension_statuses().is_empty());
     }
 }

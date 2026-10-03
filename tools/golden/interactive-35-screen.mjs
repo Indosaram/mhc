@@ -29,7 +29,9 @@ const { streamSimple } = await load("packages/ai/src/compat.ts");
 result.session.agent.streamFunction=(model,context,options)=>streamSimple(model,{...context,systemPrompt:"",tools:[]},{...options,sessionId:undefined});
 const runtime = new AgentSessionRuntime(result.session,services,async()=>{throw new Error("unexpected runtime recreation");});
 const mode = new InteractiveMode(runtime,{ tuiMode:"fullscreen" });
-const terminal = new VirtualTerminal(120,36);
+const columns=Number(process.env.GOLDEN_COLUMNS??120);
+if (![40,80,120].includes(columns)) throw new Error("unsupported golden width");
+const terminal = new VirtualTerminal(columns,36);
 const writes=[]; const write=terminal.write.bind(terminal);
 terminal.write=data=>{writes.push(data);write(data);};
 mode.renderer = createInteractiveTui({ tuiMode:"fullscreen",showHardwareCursor:false,logDirectory:agentDir,terminal,mouse:false });
@@ -44,7 +46,7 @@ await result.session.prompt(submission.text,mode.buildMainLoopPromptOptions(subm
 await Promise.race([completed,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error("faux turn did not settle")),10000);timer.unref();})]);
 mode.ui.doRender(); await terminal.flush();
 const buffer=terminal.xterm.buffer.active;
-const cells=Array.from({length:36},(_,y)=>Array.from({length:120},(_,x)=>{
+const cells=Array.from({length:36},(_,y)=>Array.from({length:columns},(_,x)=>{
  const cell=buffer.getLine(buffer.viewportY+y)?.getCell(x);
  const color=which=>{
   if (!cell || (which==="fg" ? cell.isFgDefault():cell.isBgDefault())) return "default";
@@ -56,9 +58,10 @@ const cells=Array.from({length:36},(_,y)=>Array.from({length:120},(_,x)=>{
  return { ch:cell?.getChars()??"",fg:color("fg"),bg:color("bg"),attrs };
 }));
 const out=new URL("../../.omo/evidence/task-35-faux/",import.meta.url);mkdirSync(out,{recursive:true});
-writeFileSync(new URL("senpi-hi.cells.json",out),JSON.stringify({cols:120,rows:36,cursor:terminal.getCursorPosition(),viewport:terminal.getViewport(),cells}));
-writeFileSync(new URL("senpi-hi.ansi",out),writes.join(""));
-writeFileSync(new URL("senpi-hi.txt",out),terminal.getViewport().join("\n"));
+const name=columns===120?"senpi-hi":`senpi-hi-${columns}`;
+writeFileSync(new URL(`${name}.cells.json`,out),JSON.stringify({cols:columns,rows:36,cursor:terminal.getCursorPosition(),viewport:terminal.getViewport(),cells}));
+writeFileSync(new URL(`${name}.ansi`,out),writes.join(""));
+writeFileSync(new URL(`${name}.txt`,out),terminal.getViewport().join("\n"));
 unsubscribe();mode.ui.stop();await runtime.dispose();
-console.log(`Captured pinned InteractiveMode hi at 120x36; private HOME retained at ${home}`);
+console.log(`Captured pinned InteractiveMode hi at ${columns}x36; private HOME retained at ${home}`);
 process.exit(0);

@@ -602,6 +602,19 @@ async fn dropped_async_question_removes_widget_and_keeps_composer() {
 }
 
 #[tokio::test]
+async fn expanded_nonblocking_question_keeps_original_timeout() {
+    use maho_ext_api::ExtensionUi; use maho_tui::tui::Component;
+    let (mut mode,_directory)=native_mode();let ui=mode.extension_ui.clone();
+    let request=maho_ext_api::QuestionRequest {request_id:"deadline".into(),questions:vec![maho_ext_api::Question {id:"item".into(),header:"Header".into(),question:"Choose".into(),options:vec![maho_ext_api::QuestionOption {label:"A".into(),description:None}],multi_select:false}],wait_for_answer:false,timeout_ms:1000};
+    let answer=ui.question(request,Default::default());
+    mode.render(80);mode.handle_input_at("\x1ba",0);mode.tick(2000.0);
+    let response=answer.await.expect("deadline response");
+    assert_eq!(response.status,maho_ext_api::QuestionStatus::TimedOut);
+    assert_eq!(response.unanswered,["item"]);
+    mode.handle_input_at("draft",2001);assert_eq!(mode.editor.editor.get_text(),"draft");
+}
+
+#[tokio::test]
 async fn successive_questions_do_not_replace_an_unanswered_request() {
     use maho_ext_api::ExtensionUi; use maho_tui::tui::Component;
     let (mut mode,_directory)=native_mode(); let ui=mode.extension_ui.clone();
@@ -612,6 +625,22 @@ async fn successive_questions_do_not_replace_an_unanswered_request() {
     assert_eq!(first.await.expect("first response").status,maho_ext_api::QuestionStatus::Answered);
     mode.render(80); mode.handle_input_at("1",1);
     assert_eq!(second.await.expect("second response").status,maho_ext_api::QuestionStatus::Answered);
+}
+
+#[tokio::test]
+async fn native_tree_copy_keeps_selector_open_and_does_not_prompt() {
+    use maho_tui::tui::Component;
+    let (mut mode,_directory)=native_mode();
+    mode.submit("hi",Default::default()).await.expect("seed turn");
+    mode.submit("/tree",Default::default()).await.expect("tree");
+    let before=mode.render(80);
+    mode.handle_runtime_input("\x18",0).await.expect("copy key");
+    assert!(mode.submit_editor().await.expect("copy action").is_none());
+    mode.handle_runtime_input("\x1b",1).await.expect("close tree");
+    mode.handle_input_at("draft",2);
+    assert_eq!(mode.editor.editor.get_text(),"draft");
+    assert!(!before.is_empty());
+    assert!(mode.agent_idle);
 }
 
 #[tokio::test]
@@ -787,19 +816,22 @@ struct ScreenTerminal {
 
 #[tokio::test]
 async fn faux_screen_hi_matches_pinned_interactive_cells() {
+    for (width,fixture) in [(40,"senpi-hi-40.cells.json"),(80,"senpi-hi-80.cells.json"),(120,"senpi-hi.cells.json")] {
     let (mut mode,_directory)=native_mode_at(Some("/tmp"));
     mode.handle_input_at("hi",0);mode.handle_input_at("\r",1);
     mode.submit_editor().await.expect("native hi");
     let theme=maho_interactive::theme::Theme::builtin("dark",maho_interactive::theme::ColorMode::Truecolor).expect("theme");
     let renderer=maho_interactive::tui_renderer::create_interactive_tui(maho_interactive::tui_renderer::InteractiveTuiOptions {tui_mode:maho_interactive::tui_renderer::TuiMode::Fullscreen,show_hardware_cursor:false,bottom_shortcut:String::new()},theme);
     let mut mounted=maho_interactive::interactive_terminal::InteractiveTerminal::new(mode,renderer);
-    let mut terminal=ScreenTerminal {writes:String::new(),screen:maho_test_support::vterm::VirtualTerminal::new(120,36),input:None,stopped:false};
+    let mut terminal=ScreenTerminal {writes:String::new(),screen:maho_test_support::vterm::VirtualTerminal::new(width,36),input:None,stopped:false};
     mounted.start(&mut terminal,false,false);
-    let expected:maho_test_support::vterm::Screen=serde_json::from_str(include_str!("../../../.omo/evidence/task-35-faux/senpi-hi.cells.json")).expect("pinned cells");
+    let fixture=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.omo/evidence/task-35-faux").join(fixture);
+    let expected:maho_test_support::vterm::Screen=serde_json::from_str(&std::fs::read_to_string(fixture).expect("pinned fixture")).expect("pinned cells");
     let actual=terminal.screen.snapshot();
-    println!("NATIVE_HI_ANSI={}",serde_json::to_string(&terminal.writes).expect("ANSI evidence"));
+    println!("NATIVE_HI_ANSI_{width}={}",serde_json::to_string(&terminal.writes).expect("ANSI evidence"));
     mounted.stop(&mut terminal,true).expect("restore terminal");
     assert_eq!(actual.cells,expected.cells,"native viewport: {:?}",actual.viewport);
+    }
 }
 impl maho_tui::terminal::Terminal for ScreenTerminal {
     fn start(&mut self, input:maho_tui::terminal::InputHandler, _:maho_tui::terminal::ResizeHandler) { self.input=Some(input); self.screen.start(); }
