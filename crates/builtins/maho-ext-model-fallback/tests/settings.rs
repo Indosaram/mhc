@@ -26,7 +26,7 @@ impl maho_ext_api::ModelRegistry for Models{
 #[test]
 fn display_expansion_uses_effective_model_oauth_and_selectable_models(){
     use maho_ext_model_fallback::settings::load_fallback_settings;
-    let model=|provider:&str,id:&str|maho_ext_api::Model{provider:provider.into(),id:id.into(),..Default::default()};
+    let model=|provider:&str,id:&str|serde_json::from_value::<maho_ext_api::Model>(serde_json::json!({"provider":provider,"id":id,"name":id,"api":"openai-completions","baseUrl":"https://example.invalid/v1","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":1000,"maxTokens":100})).expect("model");
     let target=model("target","main");let subscription=model("z-oauth","family");let api_key=model("anthropic","family");let unavailable=model("anthropic-subscription","family");
     let registry=Models{all:vec![target.clone(),api_key.clone(),subscription.clone(),unavailable],available:vec![target,api_key,subscription]};
     let queries=std::cell::RefCell::new(Vec::new());
