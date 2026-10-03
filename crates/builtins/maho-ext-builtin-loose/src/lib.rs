@@ -9,4 +9,5 @@ pub mod prompt_url_widget;
 pub mod files;
 pub mod import_repro;
 pub mod gpt_account;
+pub mod redraws;
 
