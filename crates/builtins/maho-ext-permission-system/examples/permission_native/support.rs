@@ -21,6 +21,9 @@ impl Extension for ProofExtension {
 }
 
 async fn execute(project: &Path, allow: bool, tool: &str, input: Value, permission: &str) -> Result<Value, Failure> {
+    execute_mode(project, allow, tool, input, permission, if allow { ExtensionMode::Tui } else { ExtensionMode::Print }).await
+}
+async fn execute_mode(project: &Path, allow: bool, tool: &str, input: Value, permission: &str, mode: ExtensionMode) -> Result<Value, Failure> {
     let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
     let model = provider.get_model(Some("faux-1")).ok_or("Missing faux model")?;
     let streams = faux_streams(provider.core.clone());
@@ -51,11 +54,11 @@ async fn execute(project: &Path, allow: bool, tool: &str, input: Value, permissi
     loaded.runtime.set_flag("permission", FlagValue::String(permission.into()));
     let mut event_context = context::create(&session);
     event_context.has_ui = allow;
-    event_context.mode = if allow { ExtensionMode::Tui } else { ExtensionMode::Print };
+    event_context.mode = mode;
     event_context.ui = Arc::new(context::DecisionUi(allow));
     let runner = ExtensionRunner::new(loaded.extensions, loaded.runtime, loaded.events, event_context);
     session.set_extension_runner(runner).await;
-    session.bind_extensions(ExtensionBindings { ui_context: allow.then(|| Arc::new(context::DecisionUi(true)) as Arc<dyn ExtensionUi>), mode: Some(if allow { ExtensionMode::Tui } else { ExtensionMode::Print }), ..Default::default() }).await;
+    session.bind_extensions(ExtensionBindings { ui_context: allow.then(|| Arc::new(context::DecisionUi(true)) as Arc<dyn ExtensionUi>), mode: Some(mode), ..Default::default() }).await;
     let active_tools = session.get_active_tool_names();
     let result = session.execute_tool(tool, input, ExecuteToolOptions::default()).await;
     let execution = match result {
@@ -66,6 +69,26 @@ async fn execute(project: &Path, allow: bool, tool: &str, input: Value, permissi
     session.dispose().await;
     let asked = telemetry.lock().expect("telemetry").clone();
     Ok(json!({"execution":execution,"asked":asked,"activeTools":active_tools}))
+}
+
+pub async fn mode_matrix() -> Result<(), Failure> {
+    let root = tempfile::tempdir()?;
+    let outcome = async {
+        for mode in [ExtensionMode::Print, ExtensionMode::Json, ExtensionMode::Rpc, ExtensionMode::AppServer] {
+            for (rule, admitted) in [("",false),("edit:mode.txt=allow",true),("edit:mode.txt=deny",false)] {
+                let project = tempfile::tempdir_in(root.path())?;
+                let result = execute_mode(project.path(),false,"apply_patch",json!({"input":"*** Begin Patch\n*** Add File: mode.txt\n+admitted\n*** End Patch"}),rule,mode).await?;
+                assert_eq!(project.path().join("mode.txt").exists(),admitted,"{mode:?} {rule}");
+                if admitted { assert_eq!(result["execution"]["blocked"],false); }
+                else { assert_eq!(result["execution"]["code"],"blocked"); }
+                assert_eq!(result["asked"].as_array().ok_or("asked")?.len(),usize::from(rule.is_empty()));
+                project.close()?;
+            }
+        }
+        Ok::<(),Failure>(())
+    }.await;
+    root.close()?;
+    outcome
 }
 
 pub async fn run() -> Result<(), Failure> {
