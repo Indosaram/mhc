@@ -47,7 +47,7 @@ pub fn register_tool(api: &mut ExtensionApi, variant: AskUserVariant, state: Arc
     })) { std::panic::panic_any(error); }
 }
 
-pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionContext, request: QuestionRequest, signal: Option<AbortSignal>, state: Arc<Mutex<AskUserState>>, variant: AskUserVariant, resuming: bool) -> Result<AgentToolResult, ExtensionFailure> {
+pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionContext, request: QuestionRequest, signal: Option<maho_ai::utils::abort::AbortSignal>, state: Arc<Mutex<AskUserState>>, variant: AskUserVariant, resuming: bool) -> Result<AgentToolResult, ExtensionFailure> {
             let id = request.request_id.clone();
             let settings = ctx.get_ask_user_settings()?;
             let unavailable_now = {
@@ -80,6 +80,7 @@ pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionCont
             sender.events.emit("herdr:blocked", &json!({"active":true,"id":id,"label":request.questions.first().map(|q|format!("{} — {}",q.header,q.question)).unwrap_or_default()}));
             let owner_request = request.clone();
             let work_completion = terminal_response;
+            let context_signal = if resuming { ctx.signal.clone() } else { None };
             let task = tokio::spawn(async move {
                 let mut completed = work_completion;
                 let mut reattached=false;
@@ -101,6 +102,7 @@ pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionCont
                         biased;
                         update = owners.changed() => { attachment_signal.abort(); reattached=true;if update.is_err() { Some(timer.cancel(QuestionStatus::Cancelled)) } else { None } },
                         () = async { if let Some(signal) = &signal { signal.cancelled().await; } else { std::future::pending::<()>().await; } } => Some(timer.cancel(QuestionStatus::Cancelled)),
+                        () = async { if let Some(signal) = &context_signal { signal.cancelled().await; } else { std::future::pending::<()>().await; } } => Some(timer.cancel(QuestionStatus::Cancelled)),
                         () = async { loop { if completed.borrow().is_some() || completed.changed().await.is_err() { break; } } } => Some(completed.borrow().clone().unwrap_or_else(|| timer.cancel(QuestionStatus::Cancelled))),
                         response = question => Some(match response { Ok(response) => response, Err(error) => {
                             let message=format!("Question UI failed: {error}");

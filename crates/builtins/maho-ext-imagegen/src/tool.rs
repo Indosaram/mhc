@@ -42,7 +42,7 @@ use maho_ext_api::*;
 use serde_json::{Value,json};
 use crate::{auth::ImageGenAuthResolution,params::{GenerateImageBase,FailureReason},paths::*};
 
-pub async fn execute_image(tool_call_id:&str,args:&Value,signal:Option<AbortSignal>,ctx:&ExtensionContext)->Result<AgentToolResult,ExtensionFailure>{
+pub async fn execute_image(tool_call_id:&str,args:&Value,signal:Option<maho_ai::utils::abort::AbortSignal>,ctx:&ExtensionContext)->Result<AgentToolResult,ExtensionFailure>{
     let model_id=args["model"].as_str().unwrap_or(crate::params::DEFAULT_IMAGE_MODEL);
     let size=args["size"].as_str().unwrap_or("auto");let quality=args["quality"].as_str().unwrap_or("auto");
     let background=args["background"].as_str().unwrap_or("auto");let format=args["output_format"].as_str().unwrap_or("png");
@@ -80,8 +80,9 @@ pub async fn execute_image(tool_call_id:&str,args:&Value,signal:Option<AbortSign
     let image_context=maho_ai::types::ImagesContext{input};
     let generation=maho_ai::images::generate_images(&model,&image_context,Some(options));
     let images=tokio::select!{
-        result=generation=>result.map_err(|error|ExtensionFailure::new(error.to_string()))?,
+        biased;
         ()=async{if let Some(signal)=signal{signal.cancelled().await}else{std::future::pending().await}}=>{controller.abort(None);return fail("Error: Image generation aborted.",FailureReason::ProviderError,&source);}
+        result=generation=>result.map_err(|error|ExtensionFailure::new(error.to_string()))?,
     };
     if images.stop_reason!=maho_ai::types::ImagesStopReason::Stop{return fail(&format!("Error: {}",images.error_message.as_deref().unwrap_or("Image generation failed.")),FailureReason::ProviderError,&source);}
     let generated=collect_images(&images.output);
