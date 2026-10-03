@@ -1,0 +1,10 @@
+const pin='6937ce1d9ae2f9c3da11041cdf953ebe01303668';
+const response=await fetch(`https://raw.githubusercontent.com/code-yeongyu/pi-goal/${pin}/src/goal/format.ts`);
+if(!response.ok)throw new Error(`Source ${response.status}`);
+const source=new Bun.Transpiler({loader:'ts'}).transformSync(await response.text()).replace(/^import .*?from .*?;\s*$/gm,'');
+const script=source+`\nconst cases=[0.75,NaN,Infinity,-Infinity];console.log(JSON.stringify(cases.map((tokensUsed,index)=>({index,response:goalToolResponse({threadId:'thread',objective:'machine',status:'active',tokensUsed,timeUsedSeconds:tokensUsed,createdAt:10,updatedAt:11})}))));`;
+const child=Bun.spawn(['node','--input-type=module','-e',script],{stdout:'pipe',stderr:'inherit'});
+const output=await new Response(child.stdout).text();const exit=await child.exited;
+const cases=JSON.parse(output);
+if(exit!==0||cases[0].response.goal.tokensUsed!==0.75||cases.slice(1).some(x=>x.response.goal.tokensUsed!==null||x.response.goal.timeUsedSeconds!==null))throw new Error('Snapshot mismatch');
+console.log(JSON.stringify({pin,cases,exit}));
