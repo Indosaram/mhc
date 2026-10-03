@@ -47,11 +47,8 @@ fn matches_path(pattern:&str,path:&str)->bool {
     matcher.is_match(path) || pattern.contains('*')&&path.strip_suffix('/').is_some_and(|path|matcher.is_match(path))
 }
 fn glob_fragment(pattern:&str)->Option<String> {
-    if let Some(start)=pattern.find('\\') && let Some(value)=pattern[start+1..].chars().next() {
-        let end=start+1+value.len_utf8();
-        return Some(format!("{}{}{}",glob_fragment(&pattern[..start])?,regex::escape(&value.to_string()),glob_fragment(&pattern[end..])?));
-    }
-    if let Some(start)=pattern.find('[') && !pattern[start..].starts_with("[[:") && let Some(offset)=pattern[start+1..].find(']') {
+    let unescaped=|index:usize|pattern[..index].chars().rev().take_while(|value|*value=='\\').count()%2==0;
+    if let Some(start)=pattern.char_indices().find_map(|(index,value)|(value=='['&&unescaped(index)).then_some(index)) && !pattern[start..].starts_with("[[:") && let Some(offset)=pattern[start+1..].find(']') {
         let end=start+1+offset; let body=&pattern[start+1..end];
         let class=format!("[{body}]");
         if regress::Regex::new(&class).is_ok() {
@@ -59,8 +56,17 @@ fn glob_fragment(pattern:&str)->Option<String> {
             return Some(format!("{}{class}{}",glob_fragment(&pattern[..start])?,glob_fragment(&pattern[end+1..])?));
         }
     }
-    if let Some(start)=pattern.find('{') && let Some(offset)=pattern[start+1..].find('}') {
+    if let Some(start)=pattern.char_indices().find_map(|(index,value)|(value=='{'&&unescaped(index)).then_some(index)) && let Some(offset)=pattern[start+1..].find('}') {
         let end=start+1+offset; let body=&pattern[start+1..end];
+        if body.contains('\\')&&body.contains(',') {
+            let mut alternatives=Vec::new(); let mut part=0; let mut escaped=false;
+            for (index,value) in body.char_indices() {
+                if escaped { escaped=false; continue; }
+                if value=='\\' { escaped=true; } else if value==',' { alternatives.push(glob_fragment(&body[part..index])?); part=index+1; }
+            }
+            alternatives.push(glob_fragment(&body[part..])?);
+            return Some(format!("{}(?:{}){}",glob_fragment(&pattern[..start])?,alternatives.join("|"),glob_fragment(&pattern[end+1..])?));
+        }
         if !body.contains("..")&&!body.contains(',') {
             return Some(format!("{}{}{}",glob_fragment(&pattern[..start])?,regex::escape(&pattern[start..=end]),glob_fragment(&pattern[end+1..])?));
         }
@@ -97,20 +103,26 @@ fn glob_fragment(pattern:&str)->Option<String> {
         };
         return Some(format!("{}{group}{}",glob_fragment(&pattern[..start])?,glob_fragment(suffix)?));
     }
-    if let Some(start)=pattern.find('(') {
-        let mut depth=1; let mut end=None;
+    if let Some(start)=pattern.char_indices().find_map(|(index,value)|(value=='('&&unescaped(index)).then_some(index)) {
+        let mut depth=1; let mut end=None; let mut escaped=false;
         for (offset,value) in pattern[start+1..].char_indices() {
-            match value { '('=>depth+=1,')'=>{ depth-=1; if depth==0 { end=Some(start+1+offset); break; } },_=>() }
+            if escaped { escaped=false; continue; }
+            match value { '\\'=>escaped=true,'('=>depth+=1,')'=>{ depth-=1; if depth==0 { end=Some(start+1+offset); break; } },_=>() }
         }
         if let Some(end)=end {
-            let body=&pattern[start+1..end]; let mut depth=0; let mut part=0; let mut alternatives=Vec::new();
+            let body=&pattern[start+1..end]; let mut depth=0; let mut part=0; let mut alternatives=Vec::new(); let mut escaped=false;
             for (index,value) in body.char_indices() {
-                match value { '('=>depth+=1,')'=>depth-=1,'|' if depth==0=>{ alternatives.push(glob_fragment(&body[part..index])?); part=index+1; },_=>() }
+                if escaped { escaped=false; continue; }
+                match value { '\\'=>escaped=true,'('=>depth+=1,')'=>depth-=1,'|' if depth==0=>{ alternatives.push(glob_fragment(&body[part..index])?); part=index+1; },_=>() }
             }
             alternatives.push(glob_fragment(&body[part..])?);
             let suffix=&pattern[end+1..]; let (quantifier,suffix)=if suffix.starts_with('+')||suffix.starts_with('?') { (&suffix[..1],&suffix[1..]) } else { ("",suffix) };
             return Some(format!("{}(?:{}){quantifier}{}",glob_fragment(&pattern[..start])?,alternatives.join("|"),glob_fragment(suffix)?));
         }
+    }
+    if let Some(start)=pattern.find('\\') && let Some(value)=pattern[start+1..].chars().next() {
+        let end=start+1+value.len_utf8();
+        return Some(format!("{}{}{}",glob_fragment(&pattern[..start])?,regex::escape(&value.to_string()),glob_fragment(&pattern[end..])?));
     }
     let glob=globset::GlobBuilder::new(pattern).literal_separator(true).empty_alternates(true).allow_unclosed_class(true).build().ok()?;
     Some(glob.regex().strip_prefix("(?-u)^")?.strip_suffix('$')?.into())
@@ -138,6 +150,11 @@ pub fn matches_scope(scope:&TtsrScope,source:TtsrStreamSource,tool_name:Option<&
 pub fn matches_path_globs(globs:&[String],paths:Option<&[String]>)->bool { globs.is_empty() || globs.iter().any(|glob|matches_any_path(glob,paths)) }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn picomatch_escaped_delimiters_inside_groups_and_classes() {
+        for (pattern,path,expected) in [(r"@(foo\|bar|baz)","foo|bar",true),(r"@(foo\|bar|baz)","foo",false),(r"@(foo\|bar|baz)","baz",true),(r"[a\-z]","-",true),(r"[a\-z]","b",false),(r"{a\,b,c}","a,b",true),(r"{a\,b,c}","a",false),(r"{a\,b,c}","c",true)] {
+            assert_eq!(matches_path(pattern,path),expected,"{pattern}: {path}");
+        }
+    }
     #[test] fn picomatch_plain_group_matrix() {
         for (pattern,path,expected) in [("(a|b).rs","a.rs",true),("(a|b).rs","b.rs",true),("(a|b).rs","c.rs",false),("(a).rs","a.rs",true),("a(b|c).rs","ac.rs",true),("(a|b)*.rs","banana.rs",true)] {
             assert_eq!(matches_path_globs(&[pattern.into()],Some(&[path.into()])),expected,"{pattern}: {path}");
