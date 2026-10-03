@@ -55,7 +55,9 @@ fn arm(state:Arc<Mutex<State>>,sender:Arc<ExtensionApi>,warm:WarmRequest)->Resul
     if !current.active{current.entries.push(json!({"phase":"started"}));current.active=true;}
     let delay=next_delay_ms(last as f64,wait,settings.margin_seconds,maho_ai::utils::diagnostics::now_ms() as f64);
     let task_state=state.clone();let task_sender=sender.clone();let next_warm=warm.clone();
+    let (start,started)=tokio::sync::oneshot::channel();
     current.work=Some(tokio::spawn(async move{
+        if started.await.is_err(){return;}
         tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
         let current_ctx={let state=task_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if state.generation!=generation{return;}state.ctx.clone()};
         let Some(ctx)=current_ctx else{return;};let Some(model)=ctx.model.clone()else{return;};
@@ -93,7 +95,13 @@ fn arm(state:Arc<Mutex<State>>,sender:Arc<ExtensionApi>,warm:WarmRequest)->Resul
         if let Err(error)=arm(task_state,task_sender,next_warm){request.2.ui.notify(&error.message,NotificationType::Error);}
     }));
     drop(current);
-    append_entries(&state,&sender)
+    if let Err(error)=append_entries(&state,&sender){
+        let mut current=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if current.generation==generation{stop(&mut current,"persistence-error",false);}
+        return Err(error);
+    }
+    let _result=start.send(());
+    Ok(())
 }
 impl Extension for CacheKeepalive{
     fn register(&self,api:&mut ExtensionApi){
