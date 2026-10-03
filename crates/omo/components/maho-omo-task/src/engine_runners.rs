@@ -36,6 +36,15 @@ pub fn build_live_in_process_runner(build: LiveInProcessRunnerBuildContext) -> s
 pub fn build_process_runner(options: senpi_task::runners::rpc_process::RpcProcessRunnerOptions) -> std::sync::Arc<dyn senpi_task::manager::types::ManagedRunner> {
     senpi_task::manager::runner::create_rpc_managed_runner(senpi_task::runners::rpc_process::RpcProcessRunner::new(options))
 }
+struct ConfiguredRpcRespawn(senpi_task::runners::rpc_process::RpcProcessRunner);
+impl senpi_task::manager::types::RpcRespawnRunner for ConfiguredRpcRespawn {
+    fn start(&self, spec: &senpi_task::runners::types::RpcRunnerSpec) -> senpi_task::manager::types::ManagedRunnerResult {
+        self.0.start(spec).map(|handle| handle as std::sync::Arc<dyn senpi_task::manager::ManagedChildHandle>).map_err(senpi_task::manager::types::ManagedRunnerError::Runner)
+    }
+}
+pub fn build_rpc_respawn_runner(options: senpi_task::runners::rpc_process::RpcProcessRunnerOptions) -> std::sync::Arc<dyn senpi_task::manager::types::RpcRespawnRunner> {
+    std::sync::Arc::new(ConfiguredRpcRespawn(senpi_task::runners::rpc_process::RpcProcessRunner::new(options)))
+}
 pub fn resolve_task_agents(config: &Value) -> BTreeMap<String, AgentDefinition> {
     let mut merged: BTreeMap<_, _> = BUILTIN_AGENT_DEFAULTS.iter().map(|definition| (definition.name.clone(), definition.clone())).collect();
     for (name, overlay) in map_omo_config_agents(config) {

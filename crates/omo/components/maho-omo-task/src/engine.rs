@@ -23,6 +23,9 @@ pub struct TaskEngine {
 }
 
 pub fn compose_task_engine(deps: ComposeTaskEngineDeps) -> TaskEngine {
+    compose_task_engine_with_rpc_respawn(deps, None)
+}
+pub fn compose_task_engine_with_rpc_respawn(deps: ComposeTaskEngineDeps, rpc_respawn: Option<Arc<dyn senpi_task::manager::types::RpcRespawnRunner>>) -> TaskEngine {
     let settings = deps.config.get("task").cloned().unwrap_or_else(|| serde_json::json!({}));
     let store = TaskRecordStore::new(&StateDirConfig { project_dir: deps.cwd.clone(), task_state_dir: settings["state_dir"].as_str().map(PathBuf::from) });
     let runtime = Arc::new(Mutex::new(TaskRuntimeContext::new(deps.cwd.clone())));
@@ -49,6 +52,7 @@ pub fn compose_task_engine(deps: ComposeTaskEngineDeps) -> TaskEngine {
         if let Err(error) = crate::category_unavailable_warning::deliver_category_warning(actions.as_ref(), ui.as_deref(), text, details) { eprintln!("task category warning failed: {error}"); }
     }));
     let mut options = TaskManagerOptions::new(store.clone(), deps.runners, planner, deps.cwd.to_string_lossy());
+    options.rpc_respawn_runner = rpc_respawn;
     options.config = ManagerConfig { max_depth: settings["max_depth"].as_u64().and_then(|depth| u32::try_from(depth).ok()).unwrap_or(1), default_execution_mode: settings["default_execution_mode"].as_str().and_then(senpi_task::manager::execution_mode::ExecutionMode::parse).unwrap_or_default(), ..ManagerConfig::default() };
     let concurrency = &deps.config["background_task"];
     options.config.concurrency = senpi_task::manager::concurrency::TaskConcurrencyConfig {

@@ -43,10 +43,11 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
     let admission=create_rpc_model_admission(RpcModelAdmissionOptions { build_spawn:Some(Arc::new(move |_| catalog.clone())),..Default::default() });
     let descriptor=RpcSpawnDescriptor { command:executable,args:vec!["--mode".into(),"rpc".into(),"--offline".into(),"--no-tools".into(),"--no-skills".into(),"--no-prompt-templates".into(),"--model".into(),"task44/native".into(),"--session".into(),session.clone()],cwd:home.clone(),env };
     let processes=Arc::new(Mutex::new(Vec::new())); let captured=processes.clone(); let cleanup=Processes(processes.clone());
-    let runner=maho_omo_task::engine_runners::build_process_runner(RpcProcessRunnerOptions {
+    let options=RpcProcessRunnerOptions {
         build_spawn:Some(Arc::new(move |_| descriptor.clone())),model_admission:Some(admission),
         spawn_child:Some(Arc::new(move |descriptor| { let child=Arc::new(RpcChildProcess::spawn(descriptor)); captured.lock().expect("processes").push(child.clone()); child })),..Default::default()
-    });
+    };
+    let runner=maho_omo_task::engine_runners::build_process_runner(options.clone());
     let (sender,receiver)=mpsc::channel(); let launching=runner.clone();
     let worker=std::thread::spawn(move || { let _=sender.send(launching.start(&ManagedStartSpec { task_id:"st_task44_native_provider".into(),prompt:"task44-launch".into(),model:Some("task44/native".into()),cwd:home,..Default::default() })); });
     let result=receiver.recv_timeout(Duration::from_secs(15));
@@ -56,8 +57,23 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
     let handle_cleanup=HandleCleanup(handle.clone());
     assert_eq!(outcome(handle.clone())?,RunnerOutcome::completed("task44-native-provider"));
     println!("RECEIPT provider launch output observed through production ManagedRunner");
-    let switched=command(handle.clone(),move |handle| handle.switch_session(&session).ok_or_else(|| "native handle lacks switch_session".to_owned())?.map_err(|error| error.to_string()))?;
-    assert!(!switched.cancelled); command(handle.clone(),|handle| handle.follow_up("task44-resumed").map_err(|error| error.to_string()))?;
+    drop(handle_cleanup);
+    for child in processes.lock().expect("processes").iter() { assert!(child.wait_exit_timeout(Duration::from_secs(5)).is_some(),"initial child must exit before reconstruction"); }
+    drop(handle);
+    let (resumed_sender,resumed_receiver)=mpsc::channel();
+    let resumed_worker=std::thread::spawn(move || {
+        let runner=maho_omo_task::engine_runners::build_rpc_respawn_runner(options);
+        let _=resumed_sender.send(runner.start(&senpi_task::runners::types::RpcRunnerSpec {
+            task_id:"st_task44_native_resumed".into(),model:Some("task44/native".into()),resume_session_path:Some(session),..Default::default()
+        }));
+    });
+    let resumed=resumed_receiver.recv_timeout(Duration::from_secs(15));
+    if resumed.is_err() { drop(cleanup); resumed_worker.join().map_err(|_| "native resume worker panicked")?; return Err("native resume exceeded bounded deadline".into()); }
+    resumed_worker.join().map_err(|_| "native resume worker panicked")?;
+    let handle=resumed?.map_err(|error| std::io::Error::other(error.to_string()))?;
+    let handle_cleanup=HandleCleanup(handle.clone());
+    assert_eq!(processes.lock().expect("processes").len(),2,"resume must construct a second native process");
+    command(handle.clone(),|handle| handle.follow_up("task44-resumed").map_err(|error| error.to_string()))?;
     assert_eq!(outcome(handle.clone())?,RunnerOutcome::completed("task44-native-resumed"));
     println!("RECEIPT actual persisted-session switch and resumed output observed");
     command(handle.clone(),|handle| handle.follow_up("task44-error").map_err(|error| error.to_string()))?;
