@@ -153,6 +153,12 @@ async fn live_lifecycle(shutdown_live:bool,peer_live:bool) {
     }
     scheduler.cancel(&run,Some("test cleanup")).expect("cancel"); cleanup.worker.take().expect("worker").join().expect("worker").expect("run"); drop(subscription);
     component.engine.manager.wait_for(&child.id,None,Some(Duration::from_secs(10))).expect("cancelled child settlement");
+    if let Some(peer)=&peer {
+        component.engine.manager.wait_for(&peer.id,None,Some(Duration::from_secs(10))).expect("cancelled peer settlement");
+        assert!(peer.listeners.lock().expect("cancelled peer listeners").is_empty(),"cancellation must release every live peer listener");
+        peer.emit(); rpc_timers.fire(150);
+        assert_eq!(activity.lock().expect("activity").len(),expected_activity,"cancelled peer must not retain activity delivery");
+    }
     component.sync();
     assert!(!reload_veto(&api,&ctx).await,"registered reload must allow the settled cancelled child");
     assert!(child.listeners.lock().expect("listeners").is_empty(),"cancelled manager child must release every child listener");
