@@ -10,13 +10,16 @@ pub enum McpServiceError {
     #[error(transparent)] OAuth(#[from] crate::auth::oauth::OAuthRequestError),
     #[error(transparent)] Artifact(#[from] std::io::Error),
 }
-pub struct McpService {pub registry:Arc<HostMcpRegistry>,pub config:Option<ResolvedMcpConfig>,pub connections:BTreeMap<String,McpSessionConnection>,owner:u64,agent_dir:Option<PathBuf>,deferred:crate::startup_race::McpDeferredAttach,pending_auth:BTreeMap<String,crate::auth::oauth_provider::McpOAuthProvider>,elicitation_ui:Option<Arc<dyn maho_ext_api::ExtensionUi>>,output_artifacts:Arc<crate::guard::output_guard::McpOutputArtifacts>}
+pub struct McpService {pub registry:Arc<HostMcpRegistry>,pub config:Option<ResolvedMcpConfig>,pub connections:BTreeMap<String,McpSessionConnection>,owner:u64,agent_dir:Option<PathBuf>,session_cwd:Option<PathBuf>,session_env:BTreeMap<String,String>,deferred:crate::startup_race::McpDeferredAttach,pending_auth:BTreeMap<String,crate::auth::oauth_provider::McpOAuthProvider>,elicitation_ui:Option<Arc<dyn maho_ext_api::ExtensionUi>>,output_artifacts:Arc<crate::guard::output_guard::McpOutputArtifacts>}
 impl McpService {
-    pub fn new(registry:Arc<HostMcpRegistry>,owner:u64)->Self {Self {registry,config:None,connections:BTreeMap::new(),owner,agent_dir:None,deferred:Default::default(),pending_auth:BTreeMap::new(),elicitation_ui:None,output_artifacts:Arc::new(Default::default())}}
+    pub fn new(registry:Arc<HostMcpRegistry>,owner:u64)->Self {Self {registry,config:None,connections:BTreeMap::new(),owner,agent_dir:None,session_cwd:None,session_env:BTreeMap::new(),deferred:Default::default(),pending_auth:BTreeMap::new(),elicitation_ui:None,output_artifacts:Arc::new(Default::default())}}
     pub fn set_elicitation_ui(&mut self,ui:Option<Arc<dyn maho_ext_api::ExtensionUi>>){self.elicitation_ui=ui;}
     pub async fn attach_session(&mut self,cwd:&Path,agent_dir:&Path,env:&BTreeMap<String,String>,project_trusted:bool,declarations:&[maho_ext_api::RegisteredMcpServerDeclaration])->Result<(),McpServiceError> {
         let mut config=load_mcp_config(LoadMcpConfigOptions {cwd,agent_dir,env,project_trusted})?;
         crate::config::merge_extension_mcp_servers(&mut config,declarations)?;
+        self.sync_from_config(config,cwd,agent_dir,env).await
+    }
+    async fn sync_from_config(&mut self,config:ResolvedMcpConfig,cwd:&Path,agent_dir:&Path,env:&BTreeMap<String,String>)->Result<(),McpServiceError> {
         let existing=self.connections.keys().cloned().collect::<Vec<_>>();
         for name in existing {
             let entry=self.connections[&name].entry.lock().await;
@@ -50,7 +53,23 @@ impl McpService {
             }
             self.connections.insert(name.clone(),connection);
         }
-        self.agent_dir=Some(agent_dir.into());self.config=Some(config);Ok(())
+        self.agent_dir=Some(agent_dir.into());self.session_cwd=Some(cwd.into());self.session_env=env.clone();self.config=Some(config);Ok(())
+    }
+    pub async fn attach_skill_mcp_servers(&mut self,declared:&crate::skills::SkillMcpDeclarations)->Result<Vec<String>,McpServiceError> {
+        let (Some(mut config),Some(cwd),Some(agent_dir))=(self.config.clone(),self.session_cwd.clone(),self.agent_dir.clone()) else{return Ok(Vec::new());};
+        let mut warnings=Vec::new();let mut changed=false;
+        for (name,decl) in &declared.servers {
+            let existing=config.servers.get(name);
+            if let Some(existing)=existing.filter(|server|server.source!=crate::config_schema::McpServerSource::Skill) {
+                warnings.push(format!("MCP server '{name}' from skill {} collides with the {} config; system config wins.",decl.source_path.display(),existing.source));continue;
+            }
+            let raw=serde_json::from_value(decl.raw.clone()).map_err(|error|McpConfigValidationError(error.to_string()))?;
+            let resolved=crate::config::resolve_skill_mcp_server(name,raw,&decl.source_path)?;
+            if existing.is_some_and(|existing|existing.config_hash==resolved.config_hash){continue;}
+            config.servers.insert(name.clone(),resolved);changed=true;
+        }
+        if changed {let env=self.session_env.clone();self.sync_from_config(config,&cwd,&agent_dir,&env).await?;}
+        Ok(warnings)
     }
     pub async fn connect_server(&self,name:&str)->Result<(),McpServiceError> {
         if !self.connections.contains_key(name){return Err(crate::errors::McpError::new(crate::errors::McpErrorKind::Connect,format!("Unknown MCP server: {name}")).into());}
@@ -145,6 +164,6 @@ impl McpService {
             dispose_entry_connection(connection,&self.registry,self.owner).await?;
         }
         self.output_artifacts.cleanup()?;
-        self.config=None;self.agent_dir=None;self.deferred.clear();self.pending_auth.clear();Ok(())
+        self.config=None;self.agent_dir=None;self.session_cwd=None;self.session_env.clear();self.deferred.clear();self.pending_auth.clear();Ok(())
     }
 }

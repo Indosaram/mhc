@@ -1,6 +1,25 @@
 use std::{sync::Arc,collections::BTreeMap};
 use maho_ext_mcp::{service::McpService,host_registry::HostMcpRegistry,service_types::{McpLifecycleState,McpUnspawnedState}};
 #[tokio::test]
+async fn skill_attachment_retains_matching_connections_and_system_precedence() {
+    use maho_ext_mcp::{skills::*,config_schema::*};
+    let root=tempfile::tempdir().unwrap();let cwd=tempfile::tempdir().unwrap();let registry=Arc::new(HostMcpRegistry::default());let mut service=McpService::new(registry.clone(),1);
+    let mut declared=SkillMcpDeclarations::default();
+    declared.servers.insert("skill".into(),SkillServerDecl {raw:serde_json::json!({"command":"/missing/lazy"}),source_path:cwd.path().join("mcp.json"),include_tools_by_skill:Default::default()});
+    assert!(service.attach_skill_mcp_servers(&declared).await.unwrap().is_empty());assert!(service.config.is_none());
+    let system=maho_ext_api::RegisteredMcpServerDeclaration {name:"system".into(),config:maho_ext_api::McpServerDeclaration {command:Some("/missing/system".into()),..Default::default()},extension_path:"extension".into(),registration_cwd:cwd.path().into()};
+    service.attach_session(cwd.path(),root.path(),&BTreeMap::from([("FIXTURE_ENV".into(),"retained".into())]),true,&[system]).await.unwrap();
+    service.attach_skill_mcp_servers(&declared).await.unwrap();
+    let physical=service.connections["skill"].entry.lock().await.connection.clone();
+    let config=service.config.as_ref().unwrap().servers["skill"].config.as_ref().unwrap();assert_eq!(config.exposure,Some(Exposure::Search));assert_eq!(config.direct_tools,Some(DirectTools::Patterns(vec![])));assert!(physical.get_root_pid().is_none());
+    service.attach_skill_mcp_servers(&declared).await.unwrap();assert!(Arc::ptr_eq(&physical,&service.connections["skill"].entry.lock().await.connection));
+    declared.servers.get_mut("skill").unwrap().raw["command"]=serde_json::json!("/missing/changed");
+    declared.servers.insert("system".into(),SkillServerDecl {raw:serde_json::json!({"command":"/missing/collision"}),source_path:cwd.path().join("mcp.json"),include_tools_by_skill:Default::default()});
+    assert_eq!(service.attach_skill_mcp_servers(&declared).await.unwrap().len(),1);
+    assert!(!Arc::ptr_eq(&physical,&service.connections["skill"].entry.lock().await.connection));assert_eq!(service.config.as_ref().unwrap().servers["system"].source,McpServerSource::Extension);
+    service.dispose().await.unwrap();registry.dispose().await.unwrap();assert_eq!(registry.size(),0);
+}
+#[tokio::test]
 async fn repeated_attach_retains_connections_and_disabled_config_detaches_them() {
     let root=tempfile::tempdir().unwrap();let cwd=tempfile::tempdir().unwrap();let registry=Arc::new(HostMcpRegistry::default());let mut service=McpService::new(registry.clone(),1);
     service.attach_session(cwd.path(),root.path(),&BTreeMap::new(),true,&[]).await.unwrap();assert!(service.server_snapshots().await.is_empty());
