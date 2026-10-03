@@ -77,21 +77,22 @@ fn arm(state:Arc<Mutex<State>>,sender:Arc<ExtensionApi>,warm:WarmRequest)->Resul
         let receipt={
             let mut state=task_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.generation!=generation{return;}
-            state.work=None;
             match result{
                 Ok(maho_ai::api::warm_prompt_cache::WarmPromptCacheResult::Supported{usage,..})=>{
                     let usage=Usage{input:usage.input,output:usage.output,cache_read:usage.cache_read,cache_write:usage.cache_write,..Default::default()};
                     let cost=actual_ping_cost(&request.0,&usage);state.cost+=cost;state.last=Some(maho_ai::utils::diagnostics::now_ms());
                     Some((json!({"iteration":request.3,"cachedTokens":usage.cache_read+usage.cache_write,"ttlSeconds":maho_ai::utils::prompt_cache_ttl::resolve_prompt_cache_ttl_seconds(&request.0,None).unwrap_or(0),"estimatedCostUsd":cost}),json!({"phase":"ping","iteration":request.3,"cacheRead":usage.cache_read,"cacheWrite":usage.cache_write,"estimatedCostUsd":cost,"cumulativeEstimatedUsd":state.cost})))
                 }
-                Ok(maho_ai::api::warm_prompt_cache::WarmPromptCacheResult::Unsupported)=>{stop(&mut state,"unsupported-model",false);None}
-                Err(_)=>{stop(&mut state,"provider-error",false);None}
+                Ok(maho_ai::api::warm_prompt_cache::WarmPromptCacheResult::Unsupported)=>{state.work=None;stop(&mut state,"unsupported-model",false);None}
+                Err(_)=>{state.work=None;stop(&mut state,"provider-error",false);None}
             }
         };
         if let Err(error)=append_entries(&task_state,&task_sender){request.2.ui.notify(&error.message,NotificationType::Error);return;}
         let Some(receipt)=receipt else{return;};
         task_sender.events.emit(CACHE_WARM_PING_EVENT,&receipt.0);
+        {let state=task_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if state.generation!=generation{return;}}
         if let Err(error)=task_sender.append_entry(CACHE_KEEPALIVE_ENTRY_TYPE,Some(receipt.1)){request.2.ui.notify(&error.message,NotificationType::Error);return;}
+        {let mut state=task_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if state.generation!=generation{return;}state.work=None;}
         if let Err(error)=arm(task_state,task_sender,next_warm){request.2.ui.notify(&error.message,NotificationType::Error);}
     }));
     drop(current);
