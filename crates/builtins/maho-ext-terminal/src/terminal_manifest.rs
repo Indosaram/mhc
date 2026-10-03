@@ -32,6 +32,10 @@ impl TerminalManifestWriter {
     pub fn durable_count(&self)->usize {self.entries.values().filter(|entry|entry.durability_class!=MonitorDurabilityClass::Ephemeral).count()}
     #[cfg(unix)]
     pub async fn restore_live(&mut self,manager:&mut crate::manager::TerminalManager,registry:&mut crate::monitor_registry::MonitorRegistry,now:f64)->crate::restore::RestoreDigest {
+        self.restore_configured_live(manager,registry,now,None,&crate::settings::TERMINAL_SETTINGS_DEFAULTS).await
+    }
+    #[cfg(unix)]
+    pub async fn restore_configured_live(&mut self,manager:&mut crate::manager::TerminalManager,registry:&mut crate::monitor_registry::MonitorRegistry,now:f64,shell:Option<&str>,settings:&crate::settings::ResolvedTerminalSettings)->crate::restore::RestoreDigest {
         use crate::restore::{RestoreDigest,RestoreOutcome};
         let mut digest=RestoreDigest::default();
         let state=match self.store.read().await {Ok(None)=>return digest,Ok(Some(value))=>match crate::restore::parse_terminal_manifest(&value,&self.session_id) {Ok(state)=>state,Err(_)=>{digest.store_error=true;return digest;}},Err(_)=>{digest.store_error=true;return digest;}};
@@ -39,7 +43,7 @@ impl TerminalManifestWriter {
             if monitor.expires_at.is_some_and(|expiry|expiry<=now) {digest.expired+=1;continue;}
             let outcome=match monitor.durability_class {
                 MonitorDurabilityClass::Ephemeral=>RestoreOutcome::Lost,
-                MonitorDurabilityClass::RestartableCommand=>crate::durable_command::restore_command(&monitor,manager,|_,runtime,record|registry.register(runtime,record)),
+                MonitorDurabilityClass::RestartableCommand=>crate::durable_command::restore_configured_command(&monitor,manager,shell,settings,|_,runtime,record|registry.register(runtime,record)),
                 MonitorDurabilityClass::CheckpointedFile=>crate::durable_file::restore_file(&monitor,registry,manager,None,now),
             };
             match outcome {RestoreOutcome::Restored=>digest.restored+=1,RestoreOutcome::Muted=>digest.muted+=1,RestoreOutcome::Lost=>digest.lost+=1,RestoreOutcome::AttachedElsewhere=>digest.attached_elsewhere+=1}
@@ -138,6 +142,14 @@ mod tests {
         let mut next=TerminalManifestWriter::new(dir.path(),"s");next.adopt_restored(entry.clone());assert!(!next.entries["mon_1"].suspended);next.record_background_start("bash_2","read",30.0,30.0).await;
         let state=crate::restore::parse_terminal_manifest(&next.store.read().await.unwrap().unwrap(),"s").unwrap();assert_eq!(state.monitors[0].expires_at,entry.expires_at);assert_eq!(state.monitors[0].created_at,10.0);
         next.observe_monitor_state(&[],40.0).await.unwrap();assert_eq!(next.durable_count(),0);
+    }
+    #[tokio::test]
+    async fn configured_store_restore_delivers_real_shell_geometry() {
+        let dir=tempfile::tempdir().unwrap();let mut writer=TerminalManifestWriter::new(dir.path(),"s");
+        writer.record_register(MonitorRegistration {monitor_id:"mon_geometry".to_owned(),spec:MonitorSpec::Command {description:"geometry".to_owned(),command:"stty -echo; stty size; printf 'shell:%s\\n' \"${BASH_VERSION:+bash}\"".to_owned(),filter:None,cwd:Some(dir.path().to_string_lossy().into_owned()),persistent:true}},1.0).await;
+        let mut next=TerminalManifestWriter::new(dir.path(),"s");let mut manager=crate::manager::TerminalManager::default();let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let mut registry=crate::monitor_registry::MonitorRegistry::new(move |event| {sender.send(event).unwrap();});let mut settings=crate::settings::TERMINAL_SETTINGS_DEFAULTS;settings.default_rows=33.0;settings.default_cols=91.0;
+        assert_eq!(next.restore_configured_live(&mut manager,&mut registry,2.0,Some("/bin/bash"),&settings).await.restored,1);
+        tokio::time::timeout(std::time::Duration::from_secs(5),async {for expected in ["33 91","shell:bash"] {assert!(matches!(events.recv().await,Some(crate::monitor_registry::MonitorEvent::Line {line,..}) if line==expected));}assert!(matches!(events.recv().await,Some(crate::monitor_registry::MonitorEvent::Summary {..})));}).await.unwrap();registry.dispose();manager.teardown().unwrap();
     }
     #[tokio::test]
     async fn missing_stable_identity_is_an_error() {let dir=tempfile::tempdir().unwrap();let mut writer=TerminalManifestWriter::new(dir.path(),"s");assert!(writer.observe_monitor_state(&[crate::monitor_registry::MonitorSnapshotEntry {id:"bash_1".to_owned(),..Default::default()}],0.0).await.is_err());}
