@@ -116,6 +116,33 @@ pub fn native_rpc_options(
     }
 }
 
+pub fn authenticated_rpc_options(
+    mut options: RpcProcessRunnerOptions,
+    parent: std::sync::Weak<maho_core::agent_session::AgentSession>,
+) -> RpcProcessRunnerOptions {
+    let catalog_admission = options.model_admission.take();
+    options.model_admission = Some(Arc::new(move |spec| {
+        let unavailable = |message| senpi_task::runners::RunnerFailure::new(
+            senpi_task::runners::RunnerFailureKind::ModelUnavailable, message);
+        let session = parent.upgrade().ok_or_else(|| unavailable("Parent session retired".to_owned()))?;
+        let reference = match spec.model.as_deref().filter(|model| !model.trim().is_empty()) {
+            Some(reference) => reference,
+            None => return Err(unavailable("Authenticated process admission requires the planner's resolved model".to_owned())),
+        };
+        let model = senpi_task::manager::parent_registry_context::find_model_reference(
+            |provider, id| session.model_registry().find(provider, id), reference,
+        ).ok_or_else(|| unavailable(format!("Task model {reference} is not registered in the live parent")))?;
+        if !session.model_registry().has_configured_auth(&model) {
+            return Err(unavailable(format!("Task model {reference} has no configured parent authentication")));
+        }
+        match &catalog_admission {
+            Some(admit) => admit(spec),
+            None => Err(unavailable("Native child catalog admission is not configured".to_owned())),
+        }
+    }));
+    options
+}
+
 fn native_profile(mut descriptor: RpcSpawnDescriptor) -> RpcSpawnDescriptor {
     // The imported builder owns member-environment filtering and isolated session paths.
     // The native host reads the MAHO spelling of that same path.

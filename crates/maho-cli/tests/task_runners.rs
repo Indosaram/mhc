@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use maho_cli::cli::task_runners::native_rpc_options;
+use maho_cli::cli::task_runners::{authenticated_rpc_options, native_rpc_options};
 use senpi_task::runners::types::RpcRunnerSpec;
 
 #[test]
@@ -51,4 +51,25 @@ fn native_rpc_spawn_removes_inherited_member_identity() {
     for name in ["SENPI_TASK_MEMBER", "SENPI_TASK_MEMBER_TASK_ID", "SENPI_TASK_TEAM_CONFIG"] {
         assert!(!descriptor.env.contains_key(name));
     }
+}
+
+#[test]
+fn retired_parent_rejects_admission_before_catalog_probe() {
+    let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = called.clone();
+    let options = senpi_task::runners::rpc_process::RpcProcessRunnerOptions {
+        model_admission: Some(std::sync::Arc::new(move |_| {
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        })),
+        ..Default::default()
+    };
+    let options = authenticated_rpc_options(options, std::sync::Weak::new());
+    let spec = RpcRunnerSpec { model: Some("provider/model".into()), ..Default::default() };
+
+    let result = options.model_admission.expect("authenticated admission")(&spec);
+
+    assert_eq!(result.expect_err("retired parent").kind,
+        senpi_task::runners::RunnerFailureKind::ModelUnavailable);
+    assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
 }
