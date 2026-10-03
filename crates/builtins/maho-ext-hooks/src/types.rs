@@ -124,6 +124,19 @@ pub struct HookTrustState {
     pub hooks: std::collections::BTreeMap<String, HookTrustEntry>,
 }
 
+macro_rules! hook_event_literal {($name:ident,$literal:literal)=>{
+    #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+    pub struct $name;
+    impl Serialize for $name {fn serialize<S:serde::Serializer>(&self,serializer:S)->Result<S::Ok,S::Error> {serializer.serialize_str($literal)}}
+    impl<'de> Deserialize<'de> for $name {fn deserialize<D:serde::Deserializer<'de>>(deserializer:D)->Result<Self,D::Error> {let value=String::deserialize(deserializer)?;if value==$literal {Ok($name)} else {Err(serde::de::Error::custom(format!("expected {}, found {}",$literal,value)))}}}
+};}
+hook_event_literal!(SessionStartEventName,"SessionStart");
+hook_event_literal!(PreToolUseEventName,"PreToolUse");
+hook_event_literal!(PostToolUseEventName,"PostToolUse");
+hook_event_literal!(PreCompactEventName,"PreCompact");
+hook_event_literal!(PostCompactEventName,"PostCompact");
+hook_event_literal!(StopEventName,"Stop");
+hook_event_literal!(NotificationEventName,"Notification");
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag="event")]
 pub enum HookInputWire {
@@ -131,13 +144,13 @@ pub enum HookInputWire {
         #[serde(rename="sessionId")] session_id:String,
         cwd:String,
         #[serde(skip_serializing_if="Option::is_none")] reason:Option<String>,
-        #[serde(flatten)] fields:SessionHookFields,
+        #[serde(flatten)] fields:SessionHookFields<SessionStartEventName>,
     },
     UserPromptSubmit {prompt:String,cwd:String,#[serde(flatten)] fields:PromptHookFields},
     PreToolUse {
         #[serde(rename="toolName")] tool_name:String,
         #[serde(rename="toolInput")] tool_input:serde_json::Value,
-        cwd:String,#[serde(flatten)] fields:PreToolHookFields,
+        cwd:String,#[serde(flatten)] fields:PreToolHookFields<PreToolUseEventName>,
     },
     PostToolUse {
         #[serde(rename="toolName")] tool_name:String,
@@ -145,18 +158,18 @@ pub enum HookInputWire {
         #[serde(rename="toolOutput")] tool_output:serde_json::Value,
         cwd:String,#[serde(flatten)] fields:PostToolHookFields,
     },
-    PreCompact {reason:String,cwd:String,#[serde(flatten)] fields:PreCompactHookFields},
-    PostCompact {reason:String,cwd:String,#[serde(flatten)] fields:PostCompactHookFields},
+    PreCompact {reason:String,cwd:String,#[serde(flatten)] fields:PreCompactHookFields<PreCompactEventName>},
+    PostCompact {reason:String,cwd:String,#[serde(flatten)] fields:PostCompactHookFields<PostCompactEventName>},
     Stop {
         #[serde(rename="stopReason",skip_serializing_if="Option::is_none")] stop_reason:Option<String>,
-        cwd:String,#[serde(flatten)] fields:SessionHookFields,
+        cwd:String,#[serde(flatten)] fields:SessionHookFields<StopEventName>,
     },
-    Notification {message:String,kind:String,cwd:String,#[serde(flatten)] fields:NotificationHookFields},
+    Notification {message:String,kind:String,cwd:String,#[serde(flatten)] fields:NotificationHookFields<NotificationEventName>},
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct SessionHookFields {
-    #[serde(skip_serializing_if="Option::is_none")] pub hook_event_name:Option<SupportedHookEvent>,
+pub struct SessionHookFields<L> {
+    #[serde(skip_serializing_if="Option::is_none")] pub hook_event_name:Option<L>,
     #[serde(skip_serializing_if="Option::is_none")] pub session_id:Option<String>,
     #[serde(skip_serializing_if="Option::is_none")] pub transcript_path:Option<String>,
 }
@@ -167,8 +180,8 @@ pub struct PromptHookFields {
     #[serde(skip_serializing_if="Option::is_none")] pub permission_mode:Option<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct PreToolHookFields {
-    #[serde(skip_serializing_if="Option::is_none")] pub hook_event_name:Option<SupportedHookEvent>,
+pub struct PreToolHookFields<L> {
+    #[serde(skip_serializing_if="Option::is_none")] pub hook_event_name:Option<L>,
     #[serde(skip_serializing_if="Option::is_none")] pub session_id:Option<String>,
     #[serde(skip_serializing_if="Option::is_none")] pub tool_name:Option<String>,
     #[serde(default,deserialize_with="present_json_value",skip_serializing_if="Option::is_none")] pub tool_input:Option<serde_json::Value>,
@@ -176,27 +189,27 @@ pub struct PreToolHookFields {
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PostToolHookFields {
-    #[serde(flatten)] pub tool:PreToolHookFields,
+    #[serde(flatten)] pub tool:PreToolHookFields<PostToolUseEventName>,
     #[serde(default,deserialize_with="present_json_value",skip_serializing_if="Option::is_none")] pub tool_response:Option<serde_json::Value>,
 }
 fn present_json_value<'de,D:serde::Deserializer<'de>>(deserializer:D)->Result<Option<serde_json::Value>,D::Error> {serde_json::Value::deserialize(deserializer).map(Some)}
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct PreCompactHookFields {
-    #[serde(flatten)] pub session:SessionHookFields,
+pub struct PreCompactHookFields<L> {
+    #[serde(flatten)] pub session:SessionHookFields<L>,
     #[serde(skip_serializing_if="Option::is_none")] pub custom_instructions:Option<String>,
     #[serde(skip_serializing_if="Option::is_none")] pub request_id:Option<String>,
     #[serde(skip_serializing_if="Option::is_none")] pub will_retry:Option<bool>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct PostCompactHookFields {
-    #[serde(flatten)] pub session:SessionHookFields,
+pub struct PostCompactHookFields<L> {
+    #[serde(flatten)] pub session:SessionHookFields<L>,
     #[serde(skip_serializing_if="Option::is_none")] pub request_id:Option<String>,
     #[serde(skip_serializing_if="Option::is_none")] pub will_retry:Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")] pub accepted:Option<bool>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct NotificationHookFields {
-    #[serde(flatten)] pub session:SessionHookFields,
+pub struct NotificationHookFields<L> {
+    #[serde(flatten)] pub session:SessionHookFields<L>,
     #[serde(skip_serializing_if="Option::is_none")] pub title:Option<String>,
     #[serde(skip_serializing_if="Option::is_none")] pub notification_source:Option<String>,
     #[serde(skip_serializing_if="Option::is_none")] pub request_id:Option<String>,
@@ -206,6 +219,12 @@ pub struct NotificationHookFields {
 #[cfg(test)]
 mod wire_tests {
     use super::*;
+    #[test]
+    fn event_specific_hook_event_name_rejects_a_mismatched_literal() {
+        assert!(serde_json::from_value::<HookInputWire>(serde_json::json!({"event":"SessionStart","cwd":"/repo","sessionId":"s","hook_event_name":"SessionStart"})).is_ok());
+        assert!(serde_json::from_value::<HookInputWire>(serde_json::json!({"event":"SessionStart","cwd":"/repo","sessionId":"s","hook_event_name":"Stop"})).is_err());
+        assert!(serde_json::from_value::<HookInputWire>(serde_json::json!({"event":"PostToolUse","cwd":"/repo","toolName":"bash","toolInput":null,"toolOutput":null,"hook_event_name":"PreToolUse"})).is_err());
+    }
     #[test]
     fn tool_wire_preserves_aliases_and_arbitrary_tool_values() {
         let input=serde_json::json!({"event":"PreToolUse","cwd":"/repo","toolName":"bash","toolInput":{"command":"pwd"},"tool_name":"bash","tool_input":{"command":"pwd"},"tool_use_id":"call","session_id":"session","hook_event_name":"PreToolUse"});

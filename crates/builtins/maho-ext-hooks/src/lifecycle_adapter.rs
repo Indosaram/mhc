@@ -38,3 +38,39 @@ pub struct NotificationHookInput<'a> {pub message:&'a str,pub kind:&'a str,pub t
 pub fn build_notification_hook_input(notification:NotificationHookInput<'_>,context:&LifecycleInputContext<'_>)->Value {let mut input=base("Notification",context);input["kind"]=json!(notification.kind);input["message"]=json!(notification.message);for (key,value) in [("title",notification.title),("notification_source",notification.source),("request_id",notification.request_id),("status",notification.status)] {if let Some(value)=value {input[key]=json!(value);}}input}
 #[cfg(test)]
 mod tests {use super::*;#[test] fn builds_lifecycle_wire_with_optional_fields() {let context=LifecycleInputContext {cwd:"/repo",session_id:"s",transcript_path:None};let start=build_session_start_hook_input("startup",&context);assert_eq!(start["sessionId"],start["session_id"]);assert!(start.get("transcript_path").is_none());let compact=build_pre_compact_hook_input("manual","r",true,Some("brief"),&context);assert_eq!(compact["will_retry"],true);assert_eq!(compact["custom_instructions"],"brief");let post=build_post_compact_hook_input("manual","r",false,true,&context);assert_eq!(post["accepted"],true);}}
+
+#[cfg(test)]
+mod adapter_tests {
+    use super::*;
+    use crate::command_runner::{CommandHookRunOptions,CommandHookRunResult,run_command_hook};
+    use crate::dispatcher::{HookDispatchDecision,HookDispatchResult,HookDispatchSummary};
+    use crate::types::{CommandHookConfig,ExecutableHookHandler,HookDiscoveryTiming,HookSourceScope,SupportedHookEvent};
+    fn handler(event:SupportedHookEvent)->ExecutableHookHandler {
+        ExecutableHookHandler {event,matcher:None,group_index:0,handler_index:0,config:CommandHookConfig {kind:"command".to_owned(),command:"exit 0".to_owned(),command_windows:None,timeout:None,status_message:None},source:HookSourceMetadata {scope:HookSourceScope::Project,source_path:"/repo/hooks.json".to_owned(),display_order:0,discovered_at:HookDiscoveryTiming::PreSession,plugin_root:None,manifest_path:None,plugin_env:None}}
+    }
+    async fn run_result(stdout:&str,stderr:&str,exit_code:i32)->CommandHookRunResult {
+        let options=CommandHookRunOptions {cwd:std::path::Path::new("/tmp"),env_passthrough:&[],output_policy:None,signal:None,source_env:None};
+        let mut result=run_command_hook(&handler(SupportedHookEvent::PostCompact),&json!({"event":"PostCompact"}),options).await.unwrap();
+        result.stdout=stdout.to_owned();result.stderr=stderr.to_owned();result.exit_code=Some(exit_code);result
+    }
+    async fn dispatch(event:SupportedHookEvent,stdout:&str,stderr:&str,exit_code:i32)->HookDispatchResult {
+        let output=serde_json::from_str::<Value>(stdout).ok().and_then(|value|value.as_object().cloned()).unwrap_or_default();
+        HookDispatchResult {decision:HookDispatchDecision::None,diagnostics:vec![],executable_handlers:vec![],matched_handlers:vec![],skipped:vec![],summaries:vec![HookDispatchSummary {completion_index:0,diagnostics:vec![],handler:handler(event),output,run:run_result(stdout,stderr,exit_code).await}]}
+    }
+    #[tokio::test]
+    async fn pre_compact_context_and_instructions_are_diagnostic_only() {
+        let result=dispatch(SupportedHookEvent::PreCompact,r#"{"hookSpecificOutput":{"hookEventName":"PreCompact","additionalContext":"ctx","customInstructions":"brief"}}"#,"",0).await;
+        let details=lifecycle_result_details("PreCompact",Some(&result));
+        assert!(details.contexts.is_empty());assert!(!details.cancel);
+        assert_eq!(details.diagnostics.iter().map(|diagnostic|diagnostic.path.clone()).collect::<Vec<_>>(),vec!["stdout.hookSpecificOutput.additionalContext".to_owned(),"stdout.hookSpecificOutput.customInstructions".to_owned()]);
+        assert!(details.diagnostics.iter().all(|diagnostic|diagnostic.code=="unsupported_field"));
+    }
+    #[tokio::test]
+    async fn post_compact_exit_two_reports_sanitized_diagnostic_without_secret_stderr() {
+        let result=dispatch(SupportedHookEvent::PostCompact,"","SECRET_TWO",2).await;
+        let details=lifecycle_result_details("PostCompact",Some(&result));
+        assert!(details.contexts.is_empty());assert!(!details.cancel);
+        assert!(details.diagnostics.iter().any(|diagnostic|diagnostic.code=="invalid_root"&&diagnostic.message.contains("exit code 2")));
+        assert!(!details.diagnostics.iter().any(|diagnostic|diagnostic.message.contains("SECRET")));
+    }
+}

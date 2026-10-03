@@ -128,4 +128,10 @@ mod tests {
     #[tokio::test] async fn last_allow_replaces_input()->std::io::Result<()> {let handlers=vec![handler("first",0),handler("second",1)];let result=dispatch_hook_event(&handlers,&json!({"event":"PreToolUse"}),&state(&handlers)?,"linux",|handler| {let output=json!({"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":handler.config.command}}}).to_string();run(handler,output)}).await?;assert!(matches!(result.decision,HookDispatchDecision::Allow {updated_input:Some(ref value),..} if value==&json!({"command":"second"})));Ok(())}
     #[tokio::test] async fn skips_untrusted_but_lists_matched()->std::io::Result<()> {let handlers=vec![handler("trusted",0),handler("untrusted",1)];let result=dispatch_hook_event(&handlers,&json!({"event":"PreToolUse"}),&state(&handlers[..1])?,"linux",|handler|run(handler,String::new())).await?;assert_eq!(result.matched_handlers.len(),2);assert_eq!(result.summaries.len(),1);assert_eq!(result.skipped[0].reason,"untrusted");Ok(())}
     #[tokio::test] async fn malformed_output_nonfatal()->std::io::Result<()> {let handlers=vec![handler("malformed",0)];let result=dispatch_hook_event(&handlers,&json!({"event":"PreToolUse"}),&state(&handlers)?,"linux",|handler|run(handler,"{not json".to_owned())).await?;assert_eq!(result.decision,HookDispatchDecision::None);assert_eq!(result.diagnostics[0].code,"invalid_root");Ok(())}
+    #[test]
+    fn status_label_falls_back_to_command_and_joins_handlers() {
+        assert_eq!(running_hook_handlers_status_label(&[handler("printf hi",0),handler("echo bye",1)],"linux"),"printf hi · echo bye");
+        let mut with_message=handler("command",0);with_message.config.status_message=Some("Check the thing".to_owned());
+        assert_eq!(running_hook_handlers_status_label(&[with_message],"linux"),"Check the thing");
+    }
 }
