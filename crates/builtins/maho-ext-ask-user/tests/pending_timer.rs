@@ -28,9 +28,10 @@ async fn cancellation_disarms_callback_before_deadline() {
     let (outcome, mut received) = tokio::sync::watch::channel(None);
     let timer = PendingTimer::new(request(), Arc::new(move |response| { outcome.send_replace(Some(response)); }));
     assert_eq!(timer.cancel(QuestionStatus::Cancelled).status, QuestionStatus::Cancelled);
-    drop(timer);
+    timer.settle().await;
     assert!(received.changed().await.is_err());
     assert!(received.borrow().is_none());
+    drop(timer);
 }
 
 #[tokio::test(start_paused = true)]

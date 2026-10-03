@@ -116,6 +116,7 @@ pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionCont
                     QuestionStatus::Answered | QuestionStatus::CommentSubmitted => { timer.submit(response.answers.clone(), response.comment.clone()); },
                     other => { timer.cancel(other); },
                 }
+                timer.settle().await;
                 cancel_signal.abort();
                 let owner = select_publication(&owners, &publication, || {
                     let request = owner_request.clone(); let outcome = response.clone();

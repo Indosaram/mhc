@@ -41,7 +41,7 @@ pub struct PendingTimer {
     pending: std::sync::Arc<std::sync::Mutex<PendingQuestion>>,
     changed: tokio::sync::watch::Sender<u64>,
     started: tokio::time::Instant,
-    task: tokio::task::JoinHandle<()>,
+    task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 impl PendingTimer {
     pub fn new(request: QuestionRequest, on_timeout: std::sync::Arc<dyn Fn(QuestionResponse) + Send + Sync>) -> Self {
@@ -74,7 +74,7 @@ impl PendingTimer {
                 }
             }
         });
-        Self { pending, changed, started, task }
+        Self { pending, changed, started, task: std::sync::Mutex::new(Some(task)) }
     }
     pub fn touch(&self, draft: Option<(BTreeMap<String, QuestionAnswer>, Option<String>)>) {
         let now = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -91,13 +91,20 @@ impl PendingTimer {
     }
     pub fn submit(&self, answers: BTreeMap<String, QuestionAnswer>, comment: Option<String>) -> Option<QuestionResponse> {
         let response = self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).submit(answers, comment);
-        if response.is_some() { self.task.abort(); }
+        if response.is_some() { self.disarm(); }
         response
     }
     pub fn cancel(&self, reason: QuestionStatus) -> QuestionResponse {
         let response = self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel(reason);
-        self.task.abort();
+        self.disarm();
         response
+    }
+    fn disarm(&self) {
+        if let Some(task) = self.task.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() { task.abort(); }
+    }
+    pub async fn settle(&self) {
+        let task = self.task.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(task) = task { let _result = task.await; }
     }
     pub fn deadline_at_ms(&self) -> u64 {
         self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).deadline_at_ms
@@ -108,5 +115,7 @@ impl PendingTimer {
     }
 }
 impl Drop for PendingTimer {
-    fn drop(&mut self) { self.task.abort(); }
+    fn drop(&mut self) {
+        if let Some(task) = self.task.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).take() { task.abort(); }
+    }
 }
