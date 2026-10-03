@@ -192,13 +192,18 @@ impl ModelRuntime {
             .map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.message))?
     }
     pub async fn get_auth_for_model(&self, model: &Model, overrides: &AuthResolutionOverrides) -> Result<Option<AuthResolution>, ModelsError> {
-        let Some(mut resolution) = self.models.get_auth_for_model(model, overrides).await? else { return Ok(None); };
-        let mut env = resolution.env.clone().unwrap_or_default();
-        env.extend(overrides.env.clone().unwrap_or_default());
-        let headers = self.get_compatibility_request_headers(model, Some(&env)).await
-            .map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error))?;
-        if let Some(headers) = headers { resolution.auth.headers.get_or_insert_with(Default::default).extend(headers); }
-        Ok(Some(resolution))
+        let signal = maho_ai::utils::abort::operation_signal(overrides.signal.clone());
+        let resolve = async {
+            let Some(mut resolution) = self.models.get_auth_for_model(model, overrides).await? else { return Ok(None); };
+            let mut env = resolution.env.clone().unwrap_or_default();
+            env.extend(overrides.env.clone().unwrap_or_default());
+            let headers = self.get_compatibility_request_headers(model, Some(&env)).await
+                .map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error))?;
+            if let Some(headers) = headers { resolution.auth.headers.get_or_insert_with(Default::default).extend(headers); }
+            Ok(Some(resolution))
+        };
+        maho_ai::utils::abort::race_with_abort_signal(resolve, &signal).await
+            .map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.message))?
     }
     pub fn get_compatibility_request_config(&self,model:&Model)->crate::provider_composer::CompatibilityRequestConfig {
         let config=self.config.read().unwrap_or_else(|p|p.into_inner());let extension=self.extensions.read().unwrap_or_else(|p|p.into_inner());
