@@ -24,6 +24,7 @@ impl Default for CacheKeepalive{
     }))}}
 }
 struct State {ctx:Option<ExtensionContext>,parked:bool,active:bool,generation:u64,attempts:u64,cost:f64,last:Option<i64>,messages:Vec<AgentMessage>,usage:Option<Usage>,work:Option<tokio::task::JoinHandle<()>>,retired:Vec<tokio::task::JoinHandle<()>>}
+async fn retire(tasks:Vec<tokio::task::JoinHandle<()>>){for task in tasks{let _result=task.await;}}
 fn stop(state:&mut State,sender:&ExtensionApi,reason:&str,force:bool)->Result<(),ExtensionFailure>{
     let append=state.active||state.work.is_some()||force;
     state.generation+=1;state.active=false;
@@ -93,8 +94,11 @@ impl Extension for CacheKeepalive{
             let state=state.clone();let sender=sender.clone();let warm=self.warm.clone();
             api.on(kind,Arc::new(move|event,ctx|{let state=state.clone();let sender=sender.clone();let warm=warm.clone();Box::pin(async move{
                 let retirement;
+                let mut rearm=matches!(kind,EventKind::SessionStart|EventKind::AgentEnd|EventKind::ModelSelect|EventKind::SessionResumed);
+                let transition;
                 {
                     let mut state=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    transition=(||->Result<(),ExtensionFailure>{
                     match event{
                         ExtensionEvent::SessionStart(_)=>{
                             stop(&mut state,&sender,"session-restart",false)?;state.ctx=Some(ctx.clone());state.attempts=0;state.cost=0.0;
@@ -103,7 +107,7 @@ impl Extension for CacheKeepalive{
                             state.messages=snapshot.messages.into_iter().map(|value|serde_json::from_value(value).map_err(|error|ExtensionFailure::new(error.to_string()))).collect::<Result<Vec<_>,_>>()?;
                             state.usage=last_assistant_usage(&state.messages).map(|(usage,_)|usage.clone());state.last=last_assistant_timestamp(&state.messages);
                         }
-                        ExtensionEvent::AgentEnd{messages,..}=>{state.ctx=Some(ctx.clone());if last_assistant_usage(messages).is_some_and(|(_,reason)|reason==maho_ai::types::StopReason::Error){stop(&mut state,&sender,"provider-error",false)?;return Ok(EventResult::None);}state.messages=messages.clone();state.usage=last_assistant_usage(messages).map(|(usage,_)|usage.clone());state.last=Some(maho_ai::utils::diagnostics::now_ms());}
+                        ExtensionEvent::AgentEnd{messages,..}=>{state.ctx=Some(ctx.clone());if last_assistant_usage(messages).is_some_and(|(_,reason)|reason==maho_ai::types::StopReason::Error){rearm=false;stop(&mut state,&sender,"provider-error",false)?;}else{state.messages=messages.clone();state.usage=last_assistant_usage(messages).map(|(usage,_)|usage.clone());state.last=Some(maho_ai::utils::diagnostics::now_ms());}}
                         ExtensionEvent::ModelSelect(_)=>{state.ctx=Some(ctx.clone());stop(&mut state,&sender,"model-changed",false)?;}
                         ExtensionEvent::SessionParked=>{state.parked=true;stop(&mut state,&sender,"session-parked",false)?;}
                         ExtensionEvent::SessionResumed=>{state.parked=false;state.ctx=Some(ctx.clone());}
@@ -112,12 +116,31 @@ impl Extension for CacheKeepalive{
                         ExtensionEvent::SessionShutdown(_)=>{stop(&mut state,&sender,"session-dispose",false)?;state.ctx=None;}
                         _=>{}
                     }
+                    Ok(())})();
                     retirement=std::mem::take(&mut state.retired);
                 }
-                for work in retirement{let _result=work.await;}
-                if matches!(kind,EventKind::SessionStart|EventKind::AgentEnd|EventKind::ModelSelect|EventKind::SessionResumed){arm(state,sender,warm)?;}
+                retire(retirement).await;
+                transition?;
+                if rearm{arm(state,sender,warm)?;}
                 Ok(EventResult::None)
             })}));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    struct Dropped(tokio::sync::oneshot::Sender<()>);
+    impl Drop for Dropped{fn drop(&mut self){let (replacement,_)=tokio::sync::oneshot::channel();let sender=std::mem::replace(&mut self.0,replacement);let _result=sender.send(());}}
+    #[tokio::test]
+    async fn retirement_waits_for_cancelled_provider_future_drop(){
+        let (entered,started)=tokio::sync::oneshot::channel();
+        let (dropped,finished)=tokio::sync::oneshot::channel();
+        let task=tokio::spawn(async move{let _owned=Dropped(dropped);let _result=entered.send(());std::future::pending::<()>().await;});
+        tokio::time::timeout(std::time::Duration::from_secs(5),started).await.expect("provider entered").expect("signal");
+        task.abort();
+        tokio::time::timeout(std::time::Duration::from_secs(5),retire(vec![task])).await.expect("retirement");
+        assert!(finished.await.is_ok());
     }
 }
