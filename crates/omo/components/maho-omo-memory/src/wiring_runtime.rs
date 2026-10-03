@@ -64,14 +64,15 @@ impl MemoryRuntimeWiring{
         self.facts.entry(identity.identity.clone()).or_insert_with(||create_memory_facts_wiring(options()))
     }
     pub fn native_facts_wiring_for(&mut self,identity:&MemoryIdentityContext,settings:std::sync::Arc<dyn Fn()->Result<serde_json::Value,String>+Send+Sync>,attempt:crate::facts_runner::NativeFactsAttemptOptions,now:std::sync::Arc<dyn Fn()->i64+Send+Sync>)->&mut MemoryFactsWiring{
-        self.facts_wiring_for(identity,||{
+        self.facts_wiring_for(identity,||Self::native_facts_options(identity,settings,attempt,now))
+    }
+    pub fn native_facts_options(identity:&MemoryIdentityContext,settings:std::sync::Arc<dyn Fn()->Result<serde_json::Value,String>+Send+Sync>,attempt:crate::facts_runner::NativeFactsAttemptOptions,now:std::sync::Arc<dyn Fn()->i64+Send+Sync>)->MemoryFactsWiringOptions{
             let runner=std::sync::Arc::new(crate::facts_runner::FactsExtractorRunner::new(crate::identity_runtime::as_memory_identity(identity),now.clone()));
             let enabled_settings=settings.clone();let enabled_identity=identity.identity.clone();let debounce_identity=identity.identity.clone();let warn=attempt.warn.clone();let enabled_warn=warn.clone();let debounce_warn=warn.clone();
             MemoryFactsWiringOptions{identity:identity.identity.clone(),identity_paths:identity.identity_paths.clone(),extractor:Some(Box::new(runner.native_extractor(attempt))),now:Some(now),warn,
                 facts_enabled:Box::new(move||match enabled_settings(){Ok(settings)=>settings["agents"][&enabled_identity]["facts"]["enabled"].as_bool().or_else(||settings["facts"]["enabled"].as_bool()).unwrap_or(true),Err(error)=>{enabled_warn(&error);false}}),
                 debounce_settles:Box::new(move||match settings(){Ok(settings)=>settings["agents"][&debounce_identity]["facts"]["debounce_settles"].as_u64().or_else(||settings["facts"]["debounce_settles"].as_u64()).unwrap_or(4) as usize,Err(error)=>{debounce_warn(&error);4}}),
             }
-        })
     }
     pub fn dream_session_by_id<'a>(&'a mut self,session:&str,settings:impl FnOnce()->Result<serde_json::Value,String>,launch:&'a mut dyn FnMut(memory_core::reflection::ReservedRun)->Result<(),String>)->Result<Option<RuntimeDreamSession<'a>>,String>{
         let Some(identity)=self.resolve_context(session).cloned()else{return Ok(None);};let runtime=self.runtime_for(&identity,settings)?;
