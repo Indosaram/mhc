@@ -52,6 +52,12 @@ pub fn last_assistant_from_entries(entries:&[maho_ext_api::SessionEntry])->Optio
 pub fn last_assistant_text_from_entries(entries:&[maho_ext_api::SessionEntry])->String {
     last_assistant_from_entries(entries).map_or_else(String::new,|message|message.content.iter().filter_map(|block|match block { ContentBlock::Text(text)=>Some(text.text.as_str()),_=>None }).collect::<Vec<_>>().join("\n"))
 }
+pub fn build_current_goal_continuation_signature(context:&ExtensionContext,goal:&Goal,last_assistant_text:&str)->String {
+    let entries=context.session_manager.get_branch().into_iter().map(|entry|entry.data).collect::<Vec<_>>();
+    let tasks=maho_ext_todotools::todo_storage::get_latest_todos_from_branch_entries(&entries);
+    let open=tasks.iter().filter(|task|matches!(task.status,maho_ext_todotools::todo_types::TodoStatus::Pending|maho_ext_todotools::todo_types::TodoStatus::InProgress)).count();
+    crate::continuation::build_goal_continuation_signature(goal,open,tasks.len(),&crate::continuation::hash_assistant_text(last_assistant_text))
+}
 pub fn is_last_turn_stuck_on_context_overflow(context:&ExtensionContext,last_assistant:Option<&maho_ai::types::AssistantMessage>)->bool {
     last_assistant.is_some_and(|message|maho_core::compaction::is_turn_stuck_on_context_overflow(message,context.model.as_ref().map_or(0,|model|model.context_window)))
 }

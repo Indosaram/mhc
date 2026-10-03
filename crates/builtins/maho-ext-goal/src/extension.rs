@@ -74,9 +74,12 @@ impl GoalExtension {
         let create=api.runtime.extension_tool_executor("goal","create_goal").unwrap();
         let update=api.runtime.extension_tool_executor("goal","update_goal").unwrap();
         create("create",serde_json::json!({"objective":"work"}),None,None,&context).await.unwrap();
+        let goal=crate::store::read_goal(&reference).unwrap().unwrap();
+        assert_eq!(crate::lifecycle_helpers::build_current_goal_continuation_signature(&context,&goal,"FIRST  output"),crate::continuation::build_goal_continuation_signature(&goal,1,1,&crate::continuation::hash_assistant_text("first output")));
         assert!(update("complete",serde_json::json!({"status":"complete"}),None,None,&context).await.is_err());
         assert_eq!(crate::store::read_goal(&reference).unwrap().unwrap().status,crate::types::GoalStatus::Active);
         branch.0.lock().unwrap()[0].data["data"]["phases"][0]["tasks"][0]["status"]="completed".into();
+        assert_eq!(crate::lifecycle_helpers::build_current_goal_continuation_signature(&context,&goal,"FIRST  output"),crate::continuation::build_goal_continuation_signature(&goal,0,1,&crate::continuation::hash_assistant_text("first output")));
         let result=update("complete",serde_json::json!({"status":"complete"}),None,None,&context).await.unwrap();
         assert_eq!(result.details["goal"]["status"],"complete");
         assert_eq!(crate::store::read_goal(&reference).unwrap().unwrap().status,crate::types::GoalStatus::Complete);
