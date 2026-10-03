@@ -189,9 +189,17 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     let mut api = support::api();
     let component = TaskComponent::register(&mut api, dag_task_engine, Default::default(), senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps { state_dir:senpi_task::store::StateDirConfig { project_dir:root.path().into(), task_state_dir:None }, team_bounds:senpi_task::team::runtime_config::TeamTaskBounds { max_members:4, max_parallel_members:2, max_wall_clock_minutes:10 }, load_runtime_state:None }, false)?.ok_or("dag component disabled")?;
     let cleanup = Cleanup(component.clone());
+    let dag_ui = Arc::new(support::Ui::default());
+    context.ui = dag_ui.clone();
+    context.mode = ExtensionMode::Tui;
     dispatch(&api, EventKind::SessionStart, &mut ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::New, initial_model_provenance:None, previous_session_file:None }), &context).await?;
     dag.register_queries(&mut api, &component)?;
     dag.register_rpc(&mut api, &component);
+    let dag_channels = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured_channels = dag_channels.clone();
+    let wake_subscription = api.events.on("wake_source_state", Arc::new(move |event| {
+        if event["source"] == "omo-dag" { captured_channels.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event.clone()); }
+    }));
     let (terminal, settled) = mpsc::channel();
     let ledger = Arc::new(Mutex::new(Vec::<u64>::new()));
     let entries = ledger.clone();
@@ -220,6 +228,17 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     assert_eq!(record.status, senpi_task::dag::types::DagRunStatus::Completed);
     assert_eq!(record.nodes.len(), 2);
     assert_eq!(record.waves.len(), 2);
+    {
+        let channels = dag_channels.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(channels.iter().any(|event| event["activeCount"].as_u64().is_some_and(|count| count > 0)), "registered DAG start did not publish a live wake channel");
+        assert_eq!(channels.last().ok_or("no DAG shutdown clear")?["activeCount"], 0);
+    }
+    drop(wake_subscription);
+    {
+        let widgets = dag_ui.widgets.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(widgets.iter().any(|(content, placement)| *placement == WidgetPlacement::BelowEditor && matches!(content, Some(WidgetContent::Lines(rows)) if rows.iter().any(|row| row.contains("native")))), "registered DAG did not render below editor");
+    }
+    println!("PASS registered DAG live wake source and shutdown clear");
     component.dispose();
     for entry in component.engine.manager.list(&senpi_task::manager::types::ListScope::All) { component.engine.manager.forget(&entry.record.task_id); }
     drop(scheduler); drop(dag); drop(component); drop(api);

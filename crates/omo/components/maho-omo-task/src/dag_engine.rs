@@ -7,6 +7,19 @@ pub struct TaskDagEngine {
     settings: senpi_task::dag::types::DagSettings,
     schedulers: Arc<Mutex<BTreeMap<String, Arc<DagSchedulerContext>>>>,
     rpc: Mutex<Option<Arc<crate::dag_rpc_bridge::DagRpcBridge>>>,
+    surfaces: Mutex<Option<Arc<DagSurfaces>>>,
+}
+struct DagSurfaces {
+    status: Arc<crate::dag_status_ui::DagStatusUi>,
+    wake: crate::dag_wake_source::DagWakeSource,
+}
+impl crate::dag_status_ui::DagStatusUiManager for DagManager {
+    fn list(&self, session: &str) -> Vec<senpi_task::dag::manager::DagRunSummary> {
+        match self.list(session, None) { Ok(runs) => runs, Err(error) => { eprintln!("DAG status list failed: {error}"); vec![] } }
+    }
+    fn snapshot(&self, run: &str, session: &str) -> Option<senpi_task::dag::types::DagRunSnapshot> {
+        match self.snapshot(&run.to_owned(), session) { Ok(snapshot) => Some(snapshot), Err(error) => { eprintln!("DAG status snapshot failed: {error}"); None } }
+    }
 }
 impl TaskDagEngine {
     pub fn register_queries(&self, api: &mut maho_ext_api::ExtensionApi, component: &crate::component::TaskComponent) -> Result<(), maho_ext_api::ExtensionFailure> {
@@ -22,7 +35,7 @@ impl TaskDagEngine {
         let store = Arc::new(senpi_task::dag::store::create_dag_file_store(&senpi_task::dag::store::DagStoreConfig { project_dir:engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).cwd().into(), task:Some(senpi_task::dag::store::DagStoreTaskConfig { state_dir:Some(engine.store.state_dir().into()), dag:Some(senpi_task::dag::store::DagSettingsOverrides { max_nodes_per_run:Some(settings.max_nodes_per_run), max_runs_per_session:Some(settings.max_runs_per_session), subscriber_ring:Some(settings.subscriber_ring), heartbeat_ms:Some(settings.heartbeat_ms), history_default_limit:Some(settings.history_default_limit), history_max_limit:Some(settings.history_max_limit), retention_days:Some(settings.retention_days), max_prompt_bytes:Some(settings.max_prompt_bytes) }) }) }, Default::default())?);
         let schedulers = Arc::new(Mutex::new(BTreeMap::<String, Arc<DagSchedulerContext>>::new()));
         let options = DagManagerOptions { store:store.clone(), new_run_id:None, now:None, materialize_skills:materialize, settings:Some(settings) };
-        Ok(Self { manager:create_dag_manager(options), store, settings, schedulers, rpc:Mutex::new(None) })
+        Ok(Self { manager:create_dag_manager(options), store, settings, schedulers, rpc:Mutex::new(None), surfaces:Mutex::new(None) })
     }
     pub fn scheduler(&self, engine: &TaskEngine, run: &str, session: &str) -> Result<Arc<DagSchedulerContext>, senpi_task::dag::manager::DagManagerError> {
         let mut schedulers = self.schedulers.lock().unwrap_or_else(PoisonError::into_inner);
@@ -33,7 +46,10 @@ impl TaskDagEngine {
     }
     pub fn register_rpc(self: &Arc<Self>, api: &mut maho_ext_api::ExtensionApi, component: &crate::component::TaskComponent) {
         let runtime = component.engine.runtime.clone();
+        let status = crate::dag_status_ui::DagStatusUi::new(Arc::new(self.manager.clone()), runtime.clone(), Arc::new(crate::timers::HostTimers::default()));
         let session: Arc<dyn Fn() -> Option<String> + Send + Sync> = Arc::new(move || runtime.lock().unwrap_or_else(PoisonError::into_inner).session_id().map(str::to_owned));
+        let surfaces = Arc::new(DagSurfaces { status, wake:crate::dag_wake_source::DagWakeSource { events:api.events.clone(), manager:Arc::new(self.manager.clone()), session_id:session.clone() } });
+        *self.surfaces.lock().unwrap_or_else(PoisonError::into_inner) = Some(surfaces.clone());
         let live = Arc::downgrade(self); let live_session = session.clone();
         let snapshots = Arc::downgrade(self); let snapshot_session = session.clone();
         let events = api.events.clone();
@@ -62,12 +78,19 @@ impl TaskDagEngine {
         *self.rpc.lock().unwrap_or_else(PoisonError::into_inner) = Some(bridge.clone());
         for kind in [maho_ext_api::EventKind::SessionStart, maho_ext_api::EventKind::SessionBeforeSwitch, maho_ext_api::EventKind::SessionShutdown] {
             let bridge = bridge.clone();
-            api.on(kind, Arc::new(move |event, _| { let bridge = bridge.clone(); Box::pin(async move {
-                match event { maho_ext_api::ExtensionEvent::SessionStart(_) => bridge.attach(), maho_ext_api::ExtensionEvent::SessionBeforeSwitch { .. } => bridge.detach(), maho_ext_api::ExtensionEvent::SessionShutdown(_) => bridge.dispose(), _ => {} }
+            let surfaces = surfaces.clone();
+            api.on(kind, Arc::new(move |event, _| { let bridge = bridge.clone(); let surfaces = surfaces.clone(); Box::pin(async move {
+                match event {
+                    maho_ext_api::ExtensionEvent::SessionStart(_) => { bridge.attach(); surfaces.status.sync_now(); },
+                    maho_ext_api::ExtensionEvent::SessionBeforeSwitch { .. } => { bridge.detach(); surfaces.status.dispose(); },
+                    maho_ext_api::ExtensionEvent::SessionShutdown(_) => { bridge.dispose(); surfaces.status.dispose(); surfaces.wake.emit_shutdown(); },
+                    _ => {}
+                }
                 Ok(maho_ext_api::EventResult::None)
             }) }));
         }
         bridge.attach();
+        surfaces.status.sync_now();
     }
     pub fn register_tool(self: &Arc<Self>, api: &mut maho_ext_api::ExtensionApi, component: Arc<crate::component::TaskComponent>) {
         let runtime = component.engine.runtime.clone();
@@ -96,6 +119,7 @@ impl TaskDagEngine {
                     if let Some(session) = session {
                         let scheduler = dag.scheduler(&component.engine, run, &session).map_err(|error| maho_ext_api::ToolError::Message(error.to_string()))?;
                         if let Some(bridge) = dag.rpc.lock().unwrap_or_else(PoisonError::into_inner).clone() { bridge.sync(); }
+                        if let Some(surfaces) = dag.surfaces.lock().unwrap_or_else(PoisonError::into_inner).clone() { surfaces.status.sync_now(); surfaces.wake.publish_live(); }
                         let cancellation = scheduler.clone();
                         let run_id = run.to_owned();
                         let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -105,6 +129,7 @@ impl TaskDagEngine {
                         }, "DAG scheduler panicked").await?;
                         let record = record.map_err(|error| maho_ext_api::ToolError::Message(error.to_string()))?;
                         component.sync();
+                        if let Some(surfaces) = dag.surfaces.lock().unwrap_or_else(PoisonError::into_inner).clone() { surfaces.status.sync_now(); surfaces.wake.publish_live(); }
                         if let Some(bridge) = dag.rpc.lock().unwrap_or_else(PoisonError::into_inner).clone() { bridge.sync(); }
                         let snapshot = dag.manager.snapshot(&record.run_id, &session).map_err(|error| maho_ext_api::ToolError::Message(error.to_string()))?;
                         return Ok(crate::tools::tool_text(format!("Completed dag run {}.", record.run_id), serde_json::json!({"kind":"started","run_id":record.run_id,"snapshot":snapshot})));
