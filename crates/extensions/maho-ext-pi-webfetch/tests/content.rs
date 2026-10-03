@@ -1,4 +1,8 @@
 use maho_ext_pi_webfetch::webfetch::content::decode_html_entities;
+#[test]fn markdown_base_compares_original_url_string_for_fragments(){use maho_ext_pi_webfetch::webfetch::content::html_to_markdown;let output=html_to_markdown("<base href='https://example.com/'><a href='#part'>Part</a>","https://example.com");assert!(output.contains("[Part](https://example.com/#part)"));}
+#[test]fn markdown_resolves_image_sources_but_text_conversion_does_not_add_urls(){use maho_ext_pi_webfetch::webfetch::content::{html_to_markdown,html_to_text};let html="<p>Caption</p><img src='image.png' alt='Image'>";assert!(html_to_markdown(html,"https://example.com/docs/").contains("![Image](https://example.com/docs/image.png)"));assert_eq!(html_to_text(html,"https://example.com/docs/"),"Caption");}
+#[test]fn markdown_normalizes_consumed_urls_and_unwraps_javascript(){use maho_ext_pi_webfetch::webfetch::content::html_to_markdown;let output=html_to_markdown("<a href='/page'>Page</a> <a href='javascript:alert(1)'>Text</a> <a href='#part'>Part</a>","https://example.com/root");assert!(output.contains("[Page](https://example.com/page)"));assert!(!output.contains("javascript:"));assert!(output.contains("Text"));assert!(output.contains("[Part](#part)"));}
+#[test]fn markdown_base_href_changes_fragment_resolution(){use maho_ext_pi_webfetch::webfetch::content::html_to_markdown;let output=html_to_markdown("<base href='/docs/'><a href='page'>Page</a> <a href='#part'>Part</a>","https://example.com/root");assert!(output.contains("[Page](https://example.com/docs/page)"));assert!(output.contains("[Part](https://example.com/docs/#part)"));}
 #[test]
 fn pinned_consumed_rawtext_and_foreign_content_match(){
     use maho_ext_pi_webfetch::webfetch::content::{html_to_markdown,html_to_text};

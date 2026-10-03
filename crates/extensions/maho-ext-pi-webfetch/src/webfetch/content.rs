@@ -70,13 +70,34 @@ pub fn extract_readable_article(html: &str, url: &str) -> Option<ReadableArticle
     Some(ReadableArticle { title, content, has_heading })
 }
 pub fn html_to_markdown(html: &str, url: &str) -> String {
+    let untouched=parse_web_document(html);
+    let original_url=url::Url::parse(url).ok();
+    let base_href=untouched.select("base[href]").first().attr("href");
+    let resolved_base=base_href.as_ref().and_then(|href|original_url.as_ref().and_then(|base|base.join(href).ok()));
+    let keep_fragments=resolved_base.as_ref().is_none_or(|base|base.as_str()==url);
+    let base_url=resolved_base.or_else(||original_url.clone());
     let Some(article) = extract_readable_article(html, url) else {
-        return normalize_markdown(&html_fragment_to_markdown(html));
+        return normalize_markdown(&markdown_with_web_urls(html,keep_fragments,base_url.as_ref()));
     };
-    let markdown = normalize_markdown(&html_fragment_to_markdown(&article.content));
+    let markdown = normalize_markdown(&markdown_with_web_urls(&article.content,keep_fragments,base_url.as_ref()));
     if article.title.is_empty() || article.has_heading || markdown.starts_with(&format!("# {}", article.title)) {
         markdown
     } else { format!("# {}\n\n{markdown}", article.title).trim().to_owned() }
+}
+fn markdown_with_web_urls(html:&str,keep_fragments:bool,base:Option<&url::Url>)->String{
+    let document=parse_web_document(html);
+    for node in document.select("a[href],img[src]").nodes(){
+        let anchor=node.node_name().is_some_and(|name|name.as_ref()=="a");
+        let attribute=if anchor{"href"}else{"src"};
+        let value=node.attr(attribute).unwrap_or_default();
+        let destination=base.and_then(|base|base.join(&value).ok());
+        if anchor&&destination.as_ref().is_some_and(|url|url.scheme()=="javascript"){node.unwrap_node();continue;}
+        if value.starts_with('#')&&keep_fragments{continue;}
+        if let Some(destination)=destination{node.set_attr(attribute,destination.as_str());}
+    }
+    let root=document.select("body").nodes()[0];
+    collapse_markdown_whitespace(root);
+    markdown_children(root,false).trim_start_matches(['\t','\r','\n']).trim_end_matches(js_whitespace).to_owned()
 }
 pub fn html_to_text(html: &str, url: &str) -> String {
     let Some(article) = extract_readable_article(html, url) else {
