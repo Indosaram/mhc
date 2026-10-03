@@ -1894,6 +1894,7 @@ dependencies = [
  "maho-ext-api",
  "maho-interactive",
  "maho-rpc",
+ "maho-senpi-task",
  "maho-tools",
  "maho-tui",
  "nix",

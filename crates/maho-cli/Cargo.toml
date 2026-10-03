@@ -14,6 +14,7 @@ maho-tools = { path = "../maho-tools" }
 maho-interactive = { path = "../maho-interactive" }
 maho-rpc = { path = "../maho-rpc" }
 maho-ext-api = { path = "../maho-ext-api" }
+maho-senpi-task = { path = "../omo/senpi-task" }
 maho-codemode = { path = "../maho-codemode" }
 maho-ext-gpt-apply-patch = { path = "../builtins/maho-ext-gpt-apply-patch" }
 serde_json.workspace = true
