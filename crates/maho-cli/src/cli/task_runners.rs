@@ -9,6 +9,31 @@ use senpi_task::runners::rpc::{
 };
 use senpi_task::runners::rpc_process::RpcProcessRunnerOptions;
 
+pub struct NativeChildModelRegistry(pub maho_core::model_registry::ModelRegistry);
+
+impl senpi_task::manager::parent_registry_context::ChildModelRegistry for NativeChildModelRegistry {
+    fn find(&self, provider: &str, model_id: &str) -> Option<senpi_task::runners::in_process::child_options::HostHandle> {
+        self.0.find(provider, model_id).map(|model| Arc::new(model) as senpi_task::runners::in_process::child_options::HostHandle)
+    }
+
+    fn auth_storage(&self) -> senpi_task::runners::in_process::child_options::HostHandle {
+        self.0.auth_storage.clone()
+    }
+
+    fn model_runtime(&self) -> Option<senpi_task::runners::in_process::child_options::HostHandle> {
+        Some(Arc::new(self.0.model_runtime.clone()))
+    }
+}
+
+pub fn live_parent_registry(
+    parent: std::sync::Weak<maho_core::agent_session::AgentSession>,
+) -> senpi_task::manager::parent_registry_context::ParentModelRegistryResolver {
+    Arc::new(move || parent.upgrade().map(|session| {
+        Arc::new(NativeChildModelRegistry(session.model_registry().clone()))
+            as Arc<dyn senpi_task::manager::parent_registry_context::ChildModelRegistry>
+    }))
+}
+
 /// Both builders use the same native binary, agent home, environment and extensions.
 /// Admission retains the bounded catalog probe rather than admitting unconditionally.
 pub fn native_rpc_options(
