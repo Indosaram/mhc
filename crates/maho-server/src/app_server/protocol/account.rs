@@ -5,10 +5,10 @@ use std::collections::BTreeMap;
 pub enum PlanType {Free,Go,Plus,Pro,Prolite,Team,SelfServeBusinessUsageBased,Business,EnterpriseCbpUsageBased,Enterprise,Edu,Unknown}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(tag="type",rename_all="camelCase",rename_all_fields="camelCase")]
-pub enum Account {ApiKey,Chatgpt {email:Option<String>,plan_type:PlanType},AmazonBedrock {uses_codex_managed_credentials:bool}}
+pub enum Account {ApiKey,Chatgpt {#[serde(deserialize_with="super::nullable::deserialize_required")]email:Option<String>,plan_type:PlanType},AmazonBedrock {uses_codex_managed_credentials:bool}}
 #[derive(Clone,Debug,Default,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct AccountReadParams {#[serde(default,skip_serializing_if="Option::is_none")]pub refresh_token:Option<bool>}
+pub struct AccountReadParams {#[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub refresh_token:Option<bool>}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct AccountReadResponse {#[serde(deserialize_with="super::nullable::deserialize_required")]pub account:Option<Account>,pub requires_openai_auth:bool}
@@ -17,7 +17,7 @@ pub struct AccountReadResponse {#[serde(deserialize_with="super::nullable::deser
 pub enum ProviderAccountSource {Login,Import,Env}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct ProviderAccount {pub name:String,pub source:ProviderAccountSource,pub blocked:bool,pub pinned:bool,#[serde(default,skip_serializing_if="Option::is_none")]pub display_name:Option<String>}
+pub struct ProviderAccount {pub name:String,pub source:ProviderAccountSource,pub blocked:bool,pub pinned:bool,#[serde(default,skip_serializing_if="Option::is_none",deserialize_with="super::nullable::deserialize_present")]pub display_name:Option<String>}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
 pub struct ProviderAccountsReadParams {pub provider:String}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]

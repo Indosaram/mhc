@@ -1,6 +1,20 @@
 use maho_server::app_server::protocol::{collaboration_mode::*,fuzzy_search::*};
 use serde_json::json;
 #[test]
+fn account_variant_requires_nullable_email_and_optional_fields_reject_null() {
+    use maho_server::app_server::protocol::account::{Account,AccountReadParams,ProviderAccount};
+    assert!(serde_json::from_value::<Account>(json!({"type":"chatgpt","planType":"free"})).is_err());
+    let account:Account=serde_json::from_value(json!({"type":"chatgpt","email":null,"planType":"free"})).unwrap();
+    assert_eq!(serde_json::to_value(account).unwrap(),json!({"type":"chatgpt","email":null,"planType":"free"}));
+    assert!(serde_json::from_value::<AccountReadParams>(json!({})).is_ok());
+    assert!(serde_json::from_value::<AccountReadParams>(json!({"refreshToken":null})).is_err());
+    let value=json!({"name":"native","source":"env","blocked":false,"pinned":false});
+    assert!(serde_json::from_value::<ProviderAccount>(value.clone()).is_ok());
+    let mut value=value;value["displayName"]=serde_json::Value::Null;
+    assert!(serde_json::from_value::<ProviderAccount>(value).is_err());
+}
+
+#[test]
 fn optional_nonnull_facade_fields_reject_null_but_allow_omission() {
     use maho_server::app_server::protocol::{base::{InitializeCapabilities,UserInput},catalogs::{SkillInterface,SkillToolDependency,SkillsListParams},config::ConfigReadParams};
     fn reject_null<T:serde::de::DeserializeOwned>(base:serde_json::Value,keys:&[&str]) {
