@@ -1,0 +1,161 @@
+[
+  {
+    "kind": "call",
+    "width": 20,
+    "args": {
+      "language": "py",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "py",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "lines": [
+      "eval py",
+      "compute a value",
+      "print(41)",
+      "42"
+    ]
+  },
+  {
+    "kind": "result",
+    "width": 20,
+    "args": {
+      "language": "py",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "py",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "py",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "py",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ eval py done ✓ ·",
+      "│  1s",
+      "│ compute a value",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ 41",
+      "│ 42",
+      "╰─"
+    ]
+  },
+  {
+    "kind": "call",
+    "width": 80,
+    "args": {
+      "language": "py",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "py",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "lines": [
+      "eval py",
+      "compute a value",
+      "print(41)",
+      "42"
+    ]
+  },
+  {
+    "kind": "result",
+    "width": 80,
+    "args": {
+      "language": "py",
+      "summary": "compute a value",
+      "code": "print(41)\n42"
+    },
+    "context": {
+      "args": {
+        "language": "py",
+        "summary": "compute a value",
+        "code": "print(41)\n42"
+      },
+      "expanded": false,
+      "hasResult": false,
+      "isError": false,
+      "now": 2000
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "41\n42"
+        }
+      ],
+      "details": {
+        "language": "py",
+        "summary": "compute a value",
+        "cells": [
+          {
+            "index": 0,
+            "language": "py",
+            "code": "print(41)\n42",
+            "summary": "compute a value",
+            "output": "41\n42",
+            "status": "complete",
+            "durationMs": 1000
+          }
+        ]
+      }
+    },
+    "lines": [
+      "╭─ eval py done ✓ · 1s",
+      "│ compute a value",
+      "│ print(41)",
+      "│ 42",
+      "├─ output",
+      "│ 41",
+      "│ 42",
+      "╰─"
+    ]
+  }
+]

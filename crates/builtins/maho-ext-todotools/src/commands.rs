@@ -1,0 +1,210 @@
+use crate::{todo_types::{TodoPhase,TodoStatus,TodoItem,DEFAULT_INIT_PHASE},markdown::phases_to_markdown};
+use crate::{todo_types::{TodoOperation,TodoOpEntry},todo_operations::apply_ops_to_phases};
+pub struct TodoCommandMutation { pub phases:Vec<TodoPhase>,pub action:String,pub notification:String,pub removed:bool }
+pub const TODO_COMMAND_USAGE:&str="Usage: /todo <verb> [args]\n  /todo                              Show current todos\n  /todo edit                         Edit todos as Markdown in an overlay\n  /todo copy                         Copy todos as Markdown to clipboard\n  /todo export [<path>]              Write todos to file (default: TODO.md)\n  /todo import [<path>]              Replace todos from file (default: TODO.md)\n  /todo append [<phase>] <task...>   Append a task; phase fuzzy-matched or created\n  /todo start  <task>                Mark task in_progress (fuzzy match)\n  /todo done   [<task|phase>]        Mark task/phase/all completed\n  /todo drop   [<task|phase>]        Mark task/phase/all abandoned\n  /todo rm     [<task|phase>]        Remove task/phase/all";
+pub type CopyTodoMarkdown=std::sync::Arc<dyn Fn(String)->maho_ext_api::ExtensionFuture<'static,()>+Send+Sync>;
+pub fn register_todo_command(api:&mut maho_ext_api::ExtensionApi,actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,accessors:std::sync::Arc<dyn crate::tools_todo::TodoAccessors>,copy_markdown:CopyTodoMarkdown) {
+    api.register_command("todo",Some("Show or edit the todo list (edit/copy/export/import/append/start/done/drop/rm)".into()),None,std::sync::Arc::new(move |args,ctx| {
+        let actions=actions.clone(); let accessors=accessors.clone(); let copy_markdown=copy_markdown.clone();
+        Box::pin(async move {
+            use maho_ext_api::NotificationType::{Info,Warning,Error};
+            let current=accessors.get_current_phases();
+            let Some((verb,rest))=split_command(args) else {
+                let text=if current.is_empty() { "No todos. Use /todo append <task> to start one.".to_owned() } else { phases_to_markdown(&current).trim_end().to_owned() };
+                ctx.ui.notify(&text,Info);
+                return Ok(());
+            };
+            let mutation=match verb.as_str() {
+                "help"|"?"=>{ctx.ui.notify(TODO_COMMAND_USAGE,Info);return Ok(());},
+                "copy"=>{
+                    if current.is_empty() { ctx.ui.notify("No todos to copy.",Warning); }
+                    else { match copy_markdown(phases_to_markdown(&current)).await { Ok(())=>ctx.ui.notify("Copied todos as Markdown to clipboard.",Info),Err(error)=>ctx.ui.notify(&error.to_string(),Error) } }
+                    return Ok(());
+                },
+                "export"=>{
+                    match export_to_file(&current,rest,&ctx.cwd).await { Ok(Some(path))=>ctx.ui.notify(&format!("Wrote todos to {}",path.display()),Info),Ok(None)=>ctx.ui.notify("No todos to export.",Warning),Err(error)=>ctx.ui.notify(&error,Error) }
+                    return Ok(());
+                },
+                "import"=>import_from_file(rest,&ctx.cwd).await.map(Some),
+                "edit"=>match edit_in_overlay(&current,ctx).await { Ok(mutation)=>Ok(mutation),Err(error)=>Err(error.to_string()) },
+                "append"=>append_command(&current,rest).map(|(phases,action,notification)|Some(TodoCommandMutation{phases,action,notification,removed:false})),
+                "start"|"done"|"drop"|"rm"=>status_command(&current,rest,match verb.as_str() {"start"=>TodoOperation::Start,"done"=>TodoOperation::Done,"drop"=>TodoOperation::Drop,_=>TodoOperation::Rm}).map(Some),
+                _=>{ctx.ui.notify(&format!("Unknown /todo verb \"{verb}\".\n{TODO_COMMAND_USAGE}"),Error);return Ok(());},
+            };
+            match mutation {
+                Ok(Some(mutation))=>{commit_command_mutation(ctx,&mutation,actions.as_ref(),accessors.as_ref())?;ctx.ui.notify(&mutation.notification,Info);},
+                Ok(None)=>ctx.ui.notify("Todos unchanged.",Info),
+                Err(error)=>ctx.ui.notify(&error,Error),
+            }
+            Ok(())
+        })
+    }));
+}
+pub fn commit_command_mutation(ctx:&dyn maho_tools::definition::ToolContext,mutation:&TodoCommandMutation,actions:&dyn maho_ext_api::ExtensionActions,accessors:&dyn crate::tools_todo::TodoAccessors)->Result<(),maho_ext_api::ExtensionFailure> {
+    accessors.set_current_phases(mutation.phases.clone());
+    actions.append_entry(crate::todo_types::TODO_STATE_ENTRY_TYPE,Some(serde_json::json!({"schema":"v2","phases":mutation.phases,"source":"user","action":mutation.action})))?;
+    accessors.sync_widget(ctx,&[])?;
+    actions.send_message(maho_ext_api::CustomMessage{custom_type:"todotools.user-edit".into(),content:vec![maho_ext_api::ToolContent::text(build_user_edit_reminder(&mutation.action,&mutation.phases,mutation.removed))],display:false,details:None},maho_ext_api::SendMessageOptions{trigger_turn:false,deliver_as:Some(maho_ext_api::DeliverAs::NextTurn)})
+}
+pub async fn edit_in_overlay(phases:&[TodoPhase],ctx:&maho_ext_api::ExtensionContext)->Result<Option<TodoCommandMutation>,maho_ext_api::ExtensionFailure> {
+    let initial=if phases.is_empty() { format!("# {DEFAULT_INIT_PHASE}\n- [ ] (replace this with your tasks)\n") } else { phases_to_markdown(phases) };
+    let edited=ctx.ui.editor("Edit todos (Markdown checklist)",Some(&initial)).await?;
+    plan_overlay_edit(phases,edited.as_deref()).map_err(maho_ext_api::ExtensionFailure::new)
+}
+pub fn plan_overlay_edit(phases:&[TodoPhase],edited:Option<&str>)->Result<Option<TodoCommandMutation>,String> {
+    let initial=if phases.is_empty() { format!("# {DEFAULT_INIT_PHASE}\n- [ ] (replace this with your tasks)\n") } else { phases_to_markdown(phases) };
+    let Some(edited)=edited.filter(|edited|*edited!=initial) else { return Ok(None); };
+    let parsed=crate::markdown::markdown_to_phases(edited);
+    if !parsed.errors.is_empty() { return Err(format!("Could not parse Markdown:\n  {}",parsed.errors.join("\n  "))); }
+    let count=parsed.phases.iter().map(|phase|phase.tasks.len()).sum::<usize>();
+    Ok(Some(TodoCommandMutation {notification:format!("Todos updated: {} phase(s), {count} task(s).",parsed.phases.len()),phases:parsed.phases,action:"/todo edit".into(),removed:false}))
+}
+pub async fn export_to_file(phases:&[TodoPhase],rest:&str,cwd:&std::path::Path)->Result<Option<std::path::PathBuf>,String> {
+    if phases.is_empty() { return Ok(None); }
+    let target=crate::markdown::resolve_todo_markdown_path(rest,cwd);
+    tokio::fs::write(&target,phases_to_markdown(phases)).await.map_err(|error|format!("Failed to write todos: {error}"))?;
+    Ok(Some(target))
+}
+pub async fn import_from_file(rest:&str,cwd:&std::path::Path)->Result<TodoCommandMutation,String> {
+    let source=crate::markdown::resolve_todo_markdown_path(rest,cwd);
+    let bytes=tokio::fs::read(&source).await.map_err(|error|format!("Failed to read todos: {error}"))?;
+    let parsed=crate::markdown::markdown_to_phases(&String::from_utf8_lossy(&bytes));
+    if !parsed.errors.is_empty() { return Err(format!("Could not parse {}:\n  {}",source.display(),parsed.errors.join("\n  "))); }
+    let tasks=parsed.phases.iter().map(|phase|phase.tasks.len()).sum::<usize>();
+    Ok(TodoCommandMutation{action:format!("/todo import {}",source.display()),notification:format!("Imported {} phase(s), {tasks} task(s) from {}.",parsed.phases.len(),source.display()),phases:parsed.phases,removed:false})
+}
+fn js_whitespace(c:char)->bool { matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}') }
+pub fn argument_completions(prefix:&str)->Option<Vec<&'static str>> {
+    let prefix=prefix.trim_matches(js_whitespace).to_lowercase();
+    let matches:Vec<_>=["edit","copy","export","import","append","start","done","drop","rm","help"].into_iter().filter(|verb|verb.starts_with(&prefix)).collect();
+    (!matches.is_empty()).then_some(matches)
+}
+pub fn split_command(args:&str)->Option<(String,&str)> {
+    let trimmed=args.trim_matches(js_whitespace); if trimmed.is_empty() { return None; }
+    match trimmed.char_indices().find(|(_,character)|js_whitespace(*character)) {
+        Some((index,character))=>Some((trimmed[..index].to_lowercase(),trimmed[index+character.len_utf8()..].trim_matches(js_whitespace))),
+        None=>Some((trimmed.to_lowercase(),"")),
+    }
+}
+pub fn status_command(phases:&[TodoPhase],rest:&str,op:TodoOperation)->Result<TodoCommandMutation,String> {
+    if op==TodoOperation::Start {
+        if rest.is_empty() { return Err("Usage: /todo start <task>".into()); }
+        if find_task_fuzzy(phases,rest).is_none() { return Err(format!("No task matched \"{rest}\". Use /todo to list current tasks.")); }
+    }
+    let trimmed=rest.trim_matches(js_whitespace);
+    let (task,phase,label)=if trimmed.is_empty() { (None,None,None) }
+    else if let Some((p,t))=find_task_fuzzy(phases,trimmed) { (Some(phases[p].tasks[t].content.clone()),None,Some(phases[p].tasks[t].content.clone())) }
+    else if op!=TodoOperation::Start { match find_phase_fuzzy(phases,trimmed) { Some(phase)=>(None,Some(phase.name.clone()),Some(phase.name.clone())),None=>return Err(format!("No task or phase matched \"{trimmed}\".")) } }
+    else { return Err(format!("No task matched \"{rest}\". Use /todo to list current tasks.")); };
+    if op==TodoOperation::Rm && trimmed.is_empty() { return Ok(TodoCommandMutation{phases:vec![],action:"/todo rm (all)".into(),notification:"Cleared all todos.".into(),removed:true}); }
+    let is_phase=phase.is_some();
+    let result=apply_ops_to_phases(phases,&[TodoOpEntry{op,list:None,task,phase,items:None}]);
+    if !result.errors.is_empty() { return Err(result.errors.join("; ")); }
+    let verb=match op { TodoOperation::Start=>"start",TodoOperation::Done=>"done",TodoOperation::Drop=>"drop",TodoOperation::Rm=>"rm",_=>unreachable!("status command accepts start/done/drop/rm") };
+    let target=if op==TodoOperation::Done { "completed" } else { "abandoned" };
+    let notification=match (op,label.as_deref(),is_phase) {
+        (TodoOperation::Start,Some(label),_)=>format!("Started: {label}"),
+        (TodoOperation::Rm,Some(label),true)=>format!("Removed phase: {label}"),
+        (TodoOperation::Rm,Some(label),false)=>format!("Removed: {label}"),
+        (_,Some(label),true)=>format!("Marked phase {label} {target}."),
+        (_,Some(label),false)=>format!("Marked {target}: {label}"),
+        _=>format!("Marked all tasks {target}."),
+    };
+    Ok(TodoCommandMutation{phases:result.phases,action:format!("/todo {verb} {}",label.as_deref().unwrap_or("(all)")),notification,removed:op==TodoOperation::Rm})
+}
+fn title_case_sentence(text:&str)->String {
+    let text=text.trim_matches(js_whitespace); let mut chars=text.chars(); match chars.next() { Some(first) if first.len_utf16()==2=>text.into(),Some(first)=>format!("{}{}",first.to_uppercase(),chars.as_str()),None=>String::new() }
+}
+pub fn append_command(phases:&[TodoPhase],rest:&str)->Result<(Vec<TodoPhase>,String,String),String> {
+    let tokens=tokenize_todo_args(rest); if tokens.is_empty() { return Err("Usage: /todo append [<phase>] <task...>".into()); }
+    let mut next=phases.to_vec();
+    let (phase_name,content)=if tokens.len()==1 { (None,tokens[0].clone()) } else { (Some(tokens[0].as_str()),tokens[1..].join(" ")) };
+    let index=if let Some(name)=phase_name {
+        if let Some(found)=find_phase_fuzzy(&next,name) { next.iter().position(|phase|std::ptr::eq(phase,found)).expect("phase belongs to list") }
+        else { next.push(TodoPhase{name:name.split(js_whitespace).filter(|word|!word.is_empty()).map(title_case_sentence).collect::<Vec<_>>().join(" "),tasks:vec![]}); next.len()-1 }
+    } else if !next.is_empty() { next.len()-1 } else { next.push(TodoPhase{name:DEFAULT_INIT_PHASE.into(),tasks:vec![]}); 0 };
+    let content=title_case_sentence(&content); next[index].tasks.push(TodoItem{content:content.clone(),status:TodoStatus::Pending});
+    let action=format!("/todo append → {}",next[index].name); let notification=format!("Appended to {}: {content}",next[index].name); Ok((next,action,notification))
+}
+pub fn build_user_edit_reminder(action:&str,phases:&[TodoPhase],removed:bool)->String {
+    let markdown=if phases.is_empty() { "(empty)".into() } else { phases_to_markdown(phases).trim_end().to_owned() };
+    let mut lines=vec!["<system-reminder>".into(),format!("The user manually modified the todo list ({action}).")];
+    if removed { lines.push(if phases.is_empty() { "The user intentionally cleared the todo list. Do NOT recreate or re-populate it unless the user explicitly asks; continue the current request without a todo list." } else { "The user intentionally removed the entries no longer shown below. Do NOT re-add them unless the user explicitly asks." }.into()); }
+    lines.extend(["Current todo list:".into(),String::new(),markdown,"</system-reminder>".into()]); lines.join("\n")
+}
+pub fn tokenize_todo_args(input:&str)->Vec<String> {
+    let mut tokens=Vec::new(); let mut current=String::new(); let mut quoted=false; let mut chars=input.chars();
+    while let Some(c)=chars.next() {
+        if c=='\\' && let Some(next)=chars.next() { current.push(next); continue; }
+        if c=='"' { quoted = !quoted; continue; }
+        if !quoted && matches!(c,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}') { if !current.is_empty() { tokens.push(std::mem::take(&mut current)); } continue; }
+        current.push(c);
+    }
+    if !current.is_empty() { tokens.push(current); } tokens
+}
+pub fn find_phase_fuzzy<'a>(phases:&'a [TodoPhase],query:&str)->Option<&'a TodoPhase> {
+    let query=query.trim_matches(js_whitespace).to_lowercase(); if query.is_empty() { return None; }
+    if let Some(phase)=phases.iter().find(|phase|phase.name.to_lowercase()==query) { return Some(phase); }
+    let mut prefix=phases.iter().filter(|phase|phase.name.to_lowercase().starts_with(&query)); let first=prefix.next(); if first.is_some() && prefix.next().is_none() { return first; }
+    let mut substring=phases.iter().filter(|phase|phase.name.to_lowercase().contains(&query)); let first=substring.next(); if substring.next().is_none() { first } else { None }
+}
+pub fn find_task_fuzzy(phases:&[TodoPhase],query:&str)->Option<(usize,usize)> {
+    let query=query.trim_matches(js_whitespace).to_lowercase(); if query.is_empty() { return None; }
+    let mut matches=Vec::new();
+    for (phase_index,phase) in phases.iter().enumerate() { for (task_index,task) in phase.tasks.iter().enumerate() { let content=task.content.to_lowercase(); if content==query { return Some((phase_index,task_index)); } else if content.contains(&query) { matches.push((phase_index,task_index)); } } }
+    if matches.len()==1 { return matches.first().copied(); }
+    let mut open=matches.into_iter().filter(|(phase,task)|matches!(phases[*phase].tasks[*task].status,TodoStatus::Pending|TodoStatus::InProgress)); let first=open.next(); if open.next().is_none() { first } else { None }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test] fn overlay_cancel_and_identical_edit_return_no_mutation() {
+        let phases=vec![TodoPhase{name:"Build".into(),tasks:vec![TodoItem{content:"Run tests".into(),status:TodoStatus::InProgress}]}];
+        assert!(plan_overlay_edit(&phases,None).unwrap().is_none());
+        assert!(plan_overlay_edit(&phases,Some(&phases_to_markdown(&phases))).unwrap().is_none());
+    }
+    #[test] fn overlay_parse_failure_returns_no_replacement() {
+        assert!(plan_overlay_edit(&[],Some("plain prose")).is_err());
+    }
+    #[test] fn overlay_can_clear_and_replace_state() {
+        let phases=vec![TodoPhase{name:"Build".into(),tasks:vec![TodoItem{content:"Run tests".into(),status:TodoStatus::InProgress}]}];
+        assert!(plan_overlay_edit(&phases,Some("")).unwrap().unwrap().phases.is_empty());
+        let next=plan_overlay_edit(&phases,Some("# Verify\n- [ ] New task\n")).unwrap().unwrap();
+        assert_eq!(next.phases[0].tasks[0].content,"New task");
+        assert_eq!(next.phases[0].tasks[0].status,TodoStatus::InProgress);
+        assert_eq!(next.action,"/todo edit"); assert!(!next.removed);
+    }
+    #[tokio::test] async fn markdown_file_commands_roundtrip_real_file_and_skip_empty_export() {
+        let directory=tempfile::tempdir().unwrap(); assert!(export_to_file(&[],"",directory.path()).await.unwrap().is_none()); assert!(!directory.path().join("TODO.md").exists());
+        let phases=vec![TodoPhase{name:"Build".into(),tasks:vec![TodoItem{content:"Run tests".into(),status:TodoStatus::InProgress}]}];
+        assert_eq!(export_to_file(&phases,"",directory.path()).await.unwrap().unwrap(),directory.path().join("TODO.md"));
+        let imported=import_from_file("",directory.path()).await.unwrap(); assert_eq!(imported.phases,phases); assert!(!imported.removed);
+    }
+    #[tokio::test] async fn malformed_import_does_not_return_mutated_phases() {
+        let directory=tempfile::tempdir().unwrap(); std::fs::write(directory.path().join("TODO.md"),"not a checklist").unwrap(); assert!(import_from_file("",directory.path()).await.is_err());
+        assert!(import_from_file("missing.md",directory.path()).await.is_err()); assert!(export_to_file(&[TodoPhase{name:"Build".into(),tasks:vec![]}],"missing/TODO.md",directory.path()).await.is_err());
+    }
+    #[test] fn command_dispatch_uses_javascript_whitespace_and_preserves_arguments() { assert_eq!(split_command(" \u{feff}APPEND\u{feff}\"two words\" "),Some(("append".into(),"\"two words\""))); assert_eq!(split_command("\u{feff}"),None); assert_eq!(split_command("help"),Some(("help".into(),""))); }
+    #[test] fn completion_preserves_source_order_and_no_match_is_absent() { assert_eq!(argument_completions("\u{feff}D"),Some(vec!["done","drop"])); assert_eq!(argument_completions("missing"),None); assert_eq!(argument_completions("").unwrap().len(),10); }
+    #[test] fn whitespace_start_is_an_unmatched_target_not_an_untargeted_operation() { let phases=vec![TodoPhase{name:"Build".into(),tasks:vec![TodoItem{content:"Run tests".into(),status:TodoStatus::Pending}]}]; assert!(status_command(&phases," \u{feff}",TodoOperation::Start).is_err()); assert_eq!(phases[0].tasks[0].status,TodoStatus::Pending); }
+    #[test] fn sentence_title_case_preserves_astral_first_code_unit() { assert_eq!(title_case_sentence("\u{10428}task"),"\u{10428}task"); assert_eq!(title_case_sentence("\u{feff}task\u{feff}"),"Task"); }
+    #[test] fn tokenizer_uses_javascript_whitespace() { assert_eq!(tokenize_todo_args("a\u{feff}b\u{0085}c"),["a","b\u{0085}c"]); }
+    #[test] fn quoted_and_escaped_tokens() { assert_eq!(tokenize_todo_args("append \"two words\" escaped\\ space end\\"),["append","two words","escaped space","end\\"]); }
+    #[test] fn empty_quotes_do_not_create_tokens() { assert_eq!(tokenize_todo_args("\"\" a"),["a"]); }
+    #[test] fn removing_all_does_not_leave_empty_phase() { let phases=vec![TodoPhase{name:"Build".into(),tasks:vec![]}]; let mutation=status_command(&phases,"",TodoOperation::Rm).unwrap(); assert!(mutation.phases.is_empty()); assert!(mutation.removed); }
+    #[test] fn status_fuzzy_task_completion_promotes_next() { let phases=vec![TodoPhase{name:"Build".into(),tasks:vec![TodoItem{content:"Write parser".into(),status:TodoStatus::InProgress},TodoItem{content:"Run tests".into(),status:TodoStatus::Pending}]}]; let mutation=status_command(&phases,"parser",TodoOperation::Done).unwrap(); assert_eq!(mutation.phases[0].tasks[0].status,TodoStatus::Completed); assert_eq!(mutation.phases[0].tasks[1].status,TodoStatus::InProgress); }
+    #[test] fn append_uses_last_phase_and_keeps_duplicate_pending_tasks() { let phases=vec![TodoPhase{name:"Build".into(),tasks:vec![]}]; let (next,_,_)=append_command(&phases,"\"write tests\"").unwrap(); let (next,_,_)=append_command(&next,"\"write tests\"").unwrap(); assert_eq!(next[0].tasks.len(),2); assert_eq!(next[0].tasks[0].content,"Write tests"); assert_eq!(next[0].tasks[0].status,TodoStatus::Pending); assert!(phases[0].tasks.is_empty()); }
+    #[test] fn append_creates_title_case_phase_and_rejects_empty_arguments() { let (next,_,_)=append_command(&[],"\"final checks\" run tests").unwrap(); assert_eq!(next[0].name,"Final Checks"); assert_eq!(next[0].tasks[0].content,"Run tests"); assert!(append_command(&[],"").is_err()); }
+    #[test] fn phase_exact_and_unique_substring() { let phases=vec![TodoPhase{name:"Build app".into(),tasks:vec![]},TodoPhase{name:"Build tests".into(),tasks:vec![]}]; assert!(find_phase_fuzzy(&phases,"build").is_none()); assert_eq!(find_phase_fuzzy(&phases,"APP").unwrap().name,"Build app"); }
+    #[test] fn task_exact_match_precedes_unique_open_substring() {
+        let phases=vec![TodoPhase{name:"Tasks".into(),tasks:vec![TodoItem{content:"Ship feature".into(),status:TodoStatus::Completed},TodoItem{content:"Ship feature docs".into(),status:TodoStatus::Pending}]}];
+        assert_eq!(find_task_fuzzy(&phases,"ship feature"),Some((0,0)));
+        assert_eq!(find_task_fuzzy(&phases,"ship"),Some((0,1)));
+    }
+    #[test] fn multiple_open_substrings_are_not_mutation_targets() {
+        let phases=vec![TodoPhase{name:"Tasks".into(),tasks:vec![TodoItem{content:"Ship feature".into(),status:TodoStatus::InProgress},TodoItem{content:"Ship feature docs".into(),status:TodoStatus::Pending}]}];
+        assert_eq!(find_task_fuzzy(&phases,"ship"),None);
+        assert!(status_command(&phases,"ship",TodoOperation::Done).is_err());
+        assert_eq!(phases[0].tasks[0].status,TodoStatus::InProgress);
+    }
+}
