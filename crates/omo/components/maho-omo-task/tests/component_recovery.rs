@@ -120,7 +120,10 @@ async fn recovery(member:bool) {
     let mut context = support::context(); context.cwd = root.path().into();
     if member { context.session_manager=Arc::new(PersistedSession); }
     let mut event = ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::Resume, initial_model_provenance: None, previous_session_file: None });
-    for handler in &api.registered.handlers[&EventKind::SessionStart] { handler(&mut event, &context).await.expect("registered start"); }
+    for handler in &api.registered.handlers[&EventKind::SessionStart] {
+        tokio::time::timeout(std::time::Duration::from_secs(5), handler(&mut event, &context))
+            .await.expect("registered start deadline").expect("registered start");
+    }
     assert_eq!(wake.lock().expect("wake").as_slice(), &[serde_json::json!({"source":"senpi-task","activeCount":0,"channels":[]})], "registered startup awaits its owned resumption snapshot");
     let messages = actions.0.lock().expect("messages");
     assert_eq!(messages.iter().filter(|message| message.custom_type == "senpi-task.completion").count(), 1);
@@ -130,7 +133,10 @@ async fn recovery(member:bool) {
     drop(messages);
     if member {
         let mut end=ExtensionEvent::AgentEnd { messages:vec![],aborted:None,will_retry:None,abort_source:None };
-        for handler in &api.registered.handlers[&EventKind::AgentEnd] { handler(&mut end,&context).await.expect("registered agent end"); }
+        for handler in &api.registered.handlers[&EventKind::AgentEnd] {
+            tokio::time::timeout(std::time::Duration::from_secs(5), handler(&mut end,&context))
+                .await.expect("registered agent end deadline").expect("registered agent end");
+        }
         assert_eq!(component.engine.store.load(&member_record.task_id).expect("member").expect("persisted member").notification.liveness_notified_epoch,Some(0));
     }
     component.dispose();
