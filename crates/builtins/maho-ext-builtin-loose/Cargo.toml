@@ -10,8 +10,11 @@ serde_json.workspace = true
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-agent = { path = "../../maho-agent" }
 maho-ai = { path = "../../maho-ai" }
+maho-ext-gpt-apply-patch = { path = "../maho-ext-gpt-apply-patch" }
 anyhow = "=1.0.104"
 async-trait = "=0.1.92"
+regex = "=1.12.3"
+base64 = "=0.22.1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

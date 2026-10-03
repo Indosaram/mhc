@@ -2076,9 +2076,12 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "maho-agent",
  "maho-ai",
  "maho-ext-api",
+ "maho-ext-gpt-apply-patch",
+ "regex",
  "serde_json",
  "tokio",
 ]
