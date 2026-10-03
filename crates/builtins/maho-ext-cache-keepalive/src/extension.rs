@@ -91,7 +91,10 @@ fn arm(state:Arc<Mutex<State>>,sender:Arc<ExtensionApi>,warm:WarmRequest)->Resul
         let Some(receipt)=receipt else{return;};
         task_sender.events.emit(CACHE_WARM_PING_EVENT,&receipt.0);
         {let state=task_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if state.generation!=generation{return;}}
-        if let Err(error)=task_sender.append_entry(CACHE_KEEPALIVE_ENTRY_TYPE,Some(receipt.1)){request.2.ui.notify(&error.message,NotificationType::Error);return;}
+        if let Err(error)=task_sender.append_entry(CACHE_KEEPALIVE_ENTRY_TYPE,Some(receipt.1)){
+            {let mut state=task_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if state.generation==generation{state.work=None;stop(&mut state,"persistence-error",false);}}
+            request.2.ui.notify(&error.message,NotificationType::Error);return;
+        }
         {let mut state=task_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if state.generation!=generation{return;}state.work=None;}
         if let Err(error)=arm(task_state,task_sender,next_warm){request.2.ui.notify(&error.message,NotificationType::Error);}
     }));
