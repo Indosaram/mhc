@@ -125,20 +125,28 @@ async fn shared_parent_tool_obeys_registered_admission_hooks() {
     runtime.register_native_provider(provider.provider.clone());
     let executions = Arc::new(AtomicUsize::new(0));
     let executed = executions.clone();
+    let admitted_id = Arc::new(std::sync::Mutex::new(None));
+    let observed_id = admitted_id.clone();
     let factory = maho_ext_host::loader::NativeAsyncExtensionFactory {
         path: "task-admission".into(), source_info: Default::default(),
         factory: Arc::new(move |api| {
             let executed = executed.clone();
+            let observed_id = observed_id.clone();
             api.register_tool(maho_ext_api::ToolDefinition::new("guarded", "guarded fixture",
                 serde_json::json!({"type":"object","properties":{}}), Arc::new(move |_| {
                     executed.fetch_add(1, Ordering::SeqCst);
                     Box::pin(async { Ok(maho_ext_api::ToolResult::text("executed")) })
                 })));
-            api.on(maho_ext_api::EventKind::ToolCall, Arc::new(|_, _| Box::pin(async {
+            api.on(maho_ext_api::EventKind::ToolCall, Arc::new(move |event, _| {
+                let observed_id = observed_id.clone();
+                Box::pin(async move {
+                if let maho_ext_api::ExtensionEvent::ToolCall(event) = event {
+                    *observed_id.lock().expect("observed call ID") = Some(event.tool_call_id);
+                }
                 Ok(maho_ext_api::EventResult::ToolCall(maho_ext_api::ToolCallEventResult {
                     block: Some(true), reason: Some("fixture admission denied".into()), ..Default::default()
                 }))
-            })));
+            }) }));
             Box::pin(async { Ok(()) })
         }),
     };
@@ -166,4 +174,5 @@ async fn shared_parent_tool_obeys_registered_admission_hooks() {
         .await.expect("bounded worker cleanup").expect("join task").expect("tool worker");
     assert!(result.expect("bounded tool admission").expect("worker result").is_err());
     assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert_eq!(admitted_id.lock().expect("observed call ID").as_deref(), Some("child-call"));
 }

@@ -1199,7 +1199,7 @@ impl maho_ext_api::ExtensionSessionActions for SessionExtensionActions {
         Box::pin(async move { let session = self.session().map_err(|error| maho_ext_api::ExecuteToolError {
             code: maho_ext_api::ExecuteToolErrorCode::Blocked, tool_name: name.to_owned(), message: error.message, active_tools: Vec::new(),
         })?;
-            session.execute_tool_with_updates(name, params, ExecuteToolOptions { signal: options.signal, activate_inactive_tool: options.activate_inactive_tool }, options.on_update).await
+            session.execute_tool_with_updates(name, params, ExecuteToolOptions { signal: options.signal, activate_inactive_tool: options.activate_inactive_tool }, options.on_update, None).await
                 .map_err(|error| maho_ext_api::ExecuteToolError { code: match error.code.as_str() {
                     "unknown_tool" => maho_ext_api::ExecuteToolErrorCode::UnknownTool, "inactive_tool" => maho_ext_api::ExecuteToolErrorCode::InactiveTool,
                     "invalid_params" => maho_ext_api::ExecuteToolErrorCode::InvalidParams, _ => maho_ext_api::ExecuteToolErrorCode::Blocked,
@@ -4492,7 +4492,19 @@ impl AgentSession {
         params: Value,
         options: ExecuteToolOptions,
     ) -> Result<AgentToolResult, ExecuteToolError> {
-        self.execute_tool_with_updates(tool_name, params, options, None).await
+        self.execute_tool_with_updates(tool_name, params, options, None, None).await
+    }
+
+    /// Execute a shared child tool without replacing its invocation identity.
+    /// Validation, permission admission and result hooks use the supplied ID.
+    pub async fn execute_tool_with_call_id(
+        &self,
+        tool_call_id: &str,
+        tool_name: &str,
+        params: Value,
+        options: ExecuteToolOptions,
+    ) -> Result<AgentToolResult, ExecuteToolError> {
+        self.execute_tool_with_updates(tool_name, params, options, None, Some(tool_call_id)).await
     }
 
     async fn execute_tool_with_updates(
@@ -4501,6 +4513,7 @@ impl AgentSession {
         params: Value,
         options: ExecuteToolOptions,
         on_update: Option<maho_agent::types::AgentToolUpdateCallback>,
+        tool_call_id: Option<&str>,
     ) -> Result<AgentToolResult, ExecuteToolError> {
         let mut active_tools = self.get_active_tool_names();
         let mut tool = self.agent.state().tools().iter().find(|candidate| candidate.name() == tool_name).cloned();
@@ -4530,7 +4543,7 @@ impl AgentSession {
             return Err(ExecuteToolError { code: code.to_owned(), tool_name: tool_name.to_owned(), message, active_tools });
         };
         let tool_call = maho_agent::types::AgentToolCall {
-            id: format!("codemode-{}", uuid::Uuid::new_v4()),
+            id: tool_call_id.map(str::to_owned).unwrap_or_else(|| format!("codemode-{}", uuid::Uuid::new_v4())),
             name: tool_name.to_owned(),
             arguments: params.as_object().cloned().unwrap_or_default(),
             ..Default::default()
