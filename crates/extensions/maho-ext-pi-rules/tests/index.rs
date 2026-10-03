@@ -1,5 +1,6 @@
 use maho_ext_api::*;
 use std::{path::Path,sync::Arc};
+#[test]fn default_rules_factory_registers_existing_hooks_and_commands(){let mut api=ExtensionApi::new(LoadedExtension::new("pi-rules",Path::new(".").into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());Extension::register(&maho_ext_pi_rules::RulesExtension,&mut api);for kind in [EventKind::SessionStart,EventKind::SessionCompact,EventKind::BeforeAgentStart,EventKind::ToolResult]{assert_eq!(api.registered.handlers[&kind].len(),1);}}
 struct Session;
 impl ToolSessionManager for Session{fn session_id(&self)->&str{"fixture"}fn session_file(&self)->Option<&Path>{None}}
 impl SessionManager for Session{fn get_entries(&self)->Vec<SessionEntry>{Vec::new()}fn get_branch(&self)->Vec<SessionEntry>{Vec::new()}fn get_leaf_id(&self)->Option<String>{None}fn get_session_name(&self)->Option<String>{None}}
