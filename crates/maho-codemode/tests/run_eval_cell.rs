@@ -27,6 +27,33 @@ struct Executor;
 impl maho_codemode::bridges::output_bridge::OutputExecuteTool for Executor {
     fn execute_tool<'a>(&'a self,_:&'a str,_:serde_json::Value,_:maho_ext_api::ExecuteToolOptions)->maho_ext_api::ExecuteToolFuture<'a> {Box::pin(async {panic!("text-only eval must not call host tools")})}
 }
+struct TranscriptExecutor(Mutex<Vec<(String,serde_json::Value)>>);
+impl maho_codemode::bridges::output_bridge::OutputExecuteTool for TranscriptExecutor {
+    fn is_tool_available(&self,name:&str)->Option<bool> {Some(name=="named_output")}
+    fn execute_tool<'a>(&'a self,name:&'a str,args:serde_json::Value,_:maho_ext_api::ExecuteToolOptions)->maho_ext_api::ExecuteToolFuture<'a> {
+        Box::pin(async move {
+            self.0.lock().expect("transcript calls").push((name.into(),args.clone()));
+            let target=args.get("task_id").or_else(||args.get("name")).and_then(serde_json::Value::as_str).expect("output target");
+            Ok(maho_ext_api::AgentToolResult::text(format!("TRANSCRIPT:{target}:{}\nsecond\nthird",args["mode"].as_str().expect("transcript mode"))))
+        })
+    }
+}
+
+#[tokio::test]
+async fn real_js_callable_output_returns_configured_transcript() {
+    let kernel=Arc::new(maho_codemode::kernels::js::context_manager::JavaScriptKernel::start(std::path::Path::new(env!("CARGO_MANIFEST_DIR")),"output-callable",4,None).await.unwrap());
+    let executor=Arc::new(TranscriptExecutor(Mutex::new(vec![])));
+    let mut settings=maho_codemode::config::settings::CodemodeSettings::default();settings.task_tools.output="named_output".into();
+    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(JsManager(kernel.clone())),executor:executor.clone(),list_tools:None,complete:None,settings,artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+    let tool=maho_codemode::tool::eval_tool::create_eval_tool(options).unwrap();
+    let result=tokio::time::timeout(std::time::Duration::from_secs(10),(tool.execute)(maho_tools::definition::ToolCall {id:"output-cell",params:json!({"language":"js","code":"await output('st_123')","summary":"transcript proof","on_timeout":"error"}),signal:Default::default(),on_update:None,context:None})).await;
+    kernel.close().await.unwrap();
+    let result=result.unwrap().unwrap();
+    assert_ne!(result.details.as_ref().unwrap()["isError"],true,"{result:?}");
+    assert!(result.details.as_ref().unwrap()["cells"][0]["output"].as_str().unwrap().contains("TRANSCRIPT:st_123:full"));
+    assert_eq!(*executor.0.lock().unwrap(),vec![("named_output".into(),json!({"task_id":"st_123","mode":"full"}))]);
+    assert_eq!(kernel.pid(),None);
+}
 async fn fixture()->(Arc<PythonKernel>,Arc<CreateEvalToolOptions>) {
     let kernel=Arc::new(PythonKernel::start(PythonKernelStartOptions {interpreter_path:"python3".into(),session_id:"eval-chain".into(),cwd:env!("CARGO_MANIFEST_DIR").into(),connection:BridgeConnectionConfig {port:1,token:"test".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:None},env:None,session_env:None,startup_timeout:None,on_message:None}).await.expect("Python fixture startup"));
     let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(Manager(kernel.clone())),executor:Arc::new(Executor),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});

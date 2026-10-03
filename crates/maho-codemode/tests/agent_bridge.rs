@@ -55,6 +55,17 @@ async fn invoke(args: Value, fixture: &Fixture) -> Result<Value, AgentBridgeErro
     let value = invoke(json!({"prompt":"x","handle":true}),&fixture).await.unwrap();
     assert_eq!(value["handle"], "agent://st_123abc"); assert_eq!(value["run_epoch"],3);
 }
+#[tokio::test] async fn integral_float_epoch_preserves_valid_task_handle() {
+    for epoch in [json!(0.0),json!(3.0)] {
+        let fixture=fixture("ok",json!({"task_id":"st_ab","run_epoch":epoch}));
+        let value=invoke(json!({"prompt":"x","handle":true}),&fixture).await.unwrap();
+        assert_eq!(value["handle"],"agent://st_ab");
+        assert_eq!(value["run_epoch"],epoch);
+    }
+    for epoch in [json!(-1.0),json!(0.5)] {
+        assert_eq!(invoke(json!({"prompt":"x","handle":true}),&fixture("ok",json!({"task_id":"st_ab","run_epoch":epoch}))).await.unwrap_err().code(),Some("invalid_task_handle"));
+    }
+}
 #[tokio::test] async fn invalid_handle_and_task_error_rejected() {
     for details in [json!({}),json!({"task_id":"st_AB","run_epoch":0}),json!({"task_id":"st_ab","run_epoch":-1}),json!({"task_id":"st_ab","run_epoch":0,"isError":true})] {
         assert_eq!(invoke(json!({"prompt":"x","handle":true}), &fixture("st_ab",details)).await.unwrap_err().code(),Some("invalid_task_handle"));
