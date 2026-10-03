@@ -10,7 +10,7 @@ pub fn settle_reflection_run(input:SettleReflectionRunInput<'_>,live:Option<&mut
     ensure_renderer();
     let finished=chrono::DateTime::from_timestamp_millis(input.now_ms).ok_or("Invalid completion timestamp")?.to_rfc3339_opts(chrono::SecondsFormat::Millis,true);
     let dir=input.identity.paths.reflection.join("completions");
-    let health=read_reflection_health(&dir,crate::status::MEMORY_HEALTH_SCAN_LIMIT,input.now_ms);
+    let health=read_reflection_health(&dir,100,input.now_ms);
     let (category,model,thinking)=match input.resolution {
         ReflectionModelResolution::Resolved{category,model,thinking,..}=> {
             let chosen=input.result.model.clone().unwrap_or_else(||model.clone());
@@ -32,7 +32,7 @@ pub fn settle_reflection_run(input:SettleReflectionRunInput<'_>,live:Option<&mut
     Ok(ReflectionRunResult{run_id:input.run.run_id.clone(),outcome:input.result.outcome,reason:input.result.reason,detail:input.result.detail,completion,launch:transition.launch})
 }
 pub fn publish_finalized_reflection_run(mut result:ReflectionRunResult,identity:&MemoryIdentity,now_ms:i64,live:Option<&mut dyn ReflectionLiveSession>,ensure_renderer:impl FnOnce(),merged_metadata:impl FnOnce(&str)->Result<(Option<String>,Option<usize>),String>,health_alert:impl FnOnce(&Path))->Result<ReflectionRunResult,String> {
-    ensure_renderer();let dir=identity.paths.reflection.join("completions");let health=read_reflection_health(&dir,crate::status::MEMORY_HEALTH_SCAN_LIMIT,now_ms);
+    ensure_renderer();let dir=identity.paths.reflection.join("completions");let health=read_reflection_health(&dir,100,now_ms);
     let started=chrono::DateTime::parse_from_rfc3339(&result.completion.started_at).map_err(|error|error.to_string())?;
     let finished=chrono::DateTime::parse_from_rfc3339(&result.completion.finished_at).map_err(|error|error.to_string())?;
     result.completion.duration_ms=Some((finished.timestamp_millis()-started.timestamp_millis()).max(0) as f64);
@@ -76,7 +76,8 @@ mod tests {
         let run=ReservedRun{run_id:"run".into(),request:memory_core::reflection::ReflectionRequest{trigger:ReflectionTrigger::Manual,origin:None,conversation_ids:vec!["one".into()],snapshots:vec![],focus:None,recent_n:None,target_doc:None},reserved_at:None,launcher_pid:None,launcher_hostname:None,launcher_process_start:None};
         let resolution=ReflectionModelResolution::Resolved{category:"quick".into(),model:"old/model".into(),thinking:Some("high".into()),source:None,fallbacks:vec![]};
         let reservation=Reservation(std::cell::Cell::new(0));let ensured=std::cell::Cell::new(false);
+        let completions=identity.paths.reflection.join("completions");std::fs::create_dir_all(&completions).unwrap();for index in 0..30{std::fs::write(completions.join(format!("old-{index}.json")),serde_json::to_vec(&serde_json::json!({"outcome":"failed","finishedAt":"1970-01-01T00:00:00Z"})).unwrap()).unwrap();}
         let result=settle_reflection_run(SettleReflectionRunInput{run:&run,result:ExecutionResult{outcome:"failed".into(),reason:Some("spawn_failed".into()),detail:None,model:Some("new/model".into()),thinking:None},started_at:"1970-01-01T00:00:00.000Z",resolution:&resolution,identity:&identity,reservation:&reservation,now_ms:1000,suppress_completion_notification:false},None,||{assert_eq!(reservation.0.get(),1);ensured.set(true);},|dir|{assert!(ensured.get());assert!(dir.join("run.json").exists());}).unwrap();
-        assert_eq!(result.completion.model.as_deref(),Some("new/model"));assert!(result.completion.thinking.is_none());assert_eq!(result.completion.duration_ms,Some(1000.0));assert_eq!(result.completion.consecutive_failures,Some(1));assert_eq!(result.completion.delivery.status,DeliveryStatus::Pending);
+        assert_eq!(result.completion.model.as_deref(),Some("new/model"));assert!(result.completion.thinking.is_none());assert_eq!(result.completion.duration_ms,Some(1000.0));assert_eq!(result.completion.consecutive_failures,Some(31));assert_eq!(result.completion.delivery.status,DeliveryStatus::Pending);
     }
 }

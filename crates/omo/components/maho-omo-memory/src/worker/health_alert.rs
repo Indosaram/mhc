@@ -16,7 +16,7 @@ pub fn register_reflection_health_renderer(api:&mut maho_ext_api::ExtensionApi,t
     }),Default::default());
 }
 pub fn emit_reflection_health_alert(completions:&Path,identity:&str,live:Option<&mut dyn ReflectionHealthLiveSession>,once:&mut dyn FnMut(&str)->bool,now:i64)->bool{
-    let Some(live)=live.filter(|live|live.has_ui())else{return false;};let health=super::health::read_reflection_health(completions,crate::status::MEMORY_HEALTH_SCAN_LIMIT,now);
+    let Some(live)=live.filter(|live|live.has_ui())else{return false;};let health=super::health::read_reflection_health(completions,100,now);
     if health.streak<3||health.fingerprint.is_empty()||health.recent_failure_fingerprints.iter().filter(|item|*item==&health.fingerprint).count()<2{return false;}
     if !once(&format!("{}:{}",live.session_id(),health.fingerprint)){return false;}
     let failure=health.last_failure;let recommendation=super::remediation::reflection_remediation(failure.as_ref().map(|failure|failure.reason.as_str()),failure.as_ref().and_then(|failure|failure.detail.as_deref())).to_owned();
@@ -25,6 +25,10 @@ pub fn emit_reflection_health_alert(completions:&Path,identity:&str,live:Option<
 }
 #[cfg(test)]mod tests{
     use super::*;
+    #[test]fn alert_reads_default_hundred_record_history_not_footer_limit(){
+        let root=tempfile::tempdir().unwrap();for index in 0..30{std::fs::write(root.path().join(format!("run-{index}.json")),serde_json::to_vec(&serde_json::json!({"runId":format!("run-{index}"),"outcome":"failed","reason":"child_exit","detail":"stable","finishedAt":"2026-08-12T00:00:00Z"})).unwrap()).unwrap();}
+        let mut session=live("session");assert!(emit_reflection_health_alert(root.path(),"agent",Some(&mut session),&mut |_|true,now()));assert_eq!(session.entries[0].streak,30);
+    }
     #[test]fn native_health_renderer_registers_and_renders_details(){
         struct Theme;
         impl super::super::entry_renderers::EntryRenderTheme for Theme{fn fg(&self,tone:&str,text:&str)->String{format!("<{tone}>{text}</{tone}>")}fn italic(&self,text:&str)->String{text.into()}}
