@@ -48,9 +48,8 @@ impl Extension for Account {
                     AccountAction::Unpin => { registry.pin_credential_account(&provider, None).await?; format!("Unpinned {provider} account.") }
                     AccountAction::Remove(name) => { registry.remove_credential_account(&provider, &name).await?; format!("Removed {provider} account '{name}'.") }
                     AccountAction::DisplayName(args) => {
-                        let command = maho_ext_builtin_loose::account_display_name::parse_display_name_command(&args).map_err(ExtensionFailure::new)?.ok_or_else(|| ExtensionFailure::new("Display name command required"))?;
-                        registry.rename_credential_account(&provider, &command.account_id, command.display_name.as_deref()).await?;
-                        format!("Account display name updated: {}.", account_label(&command.account_id, command.display_name.as_deref()))
+                        maho_ext_builtin_loose::account_display_name::account_display_name_command(ctx,&provider,&args).await;
+                        return Ok(());
                     }
                     AccountAction::Usage => return Err(ExtensionFailure::new("Usage: /account <provider> [list | pin <id> | unpin | remove <id> | rename <id> <display name...> | clear-name <id>]")),
                 };

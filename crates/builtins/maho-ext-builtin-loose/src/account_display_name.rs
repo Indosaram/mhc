@@ -32,3 +32,19 @@ pub fn parse_display_name_command(
         display_name: Some(display_name),
     }))
 }
+
+pub async fn account_display_name_command(ctx:&maho_ext_api::ExtensionContext,provider:&str,raw:&str)->bool{
+    let command=match parse_display_name_command(raw){
+        Ok(Some(command))=>command,
+        Ok(None)=>return false,
+        Err(error)=>{ctx.ui.notify(error,maho_ext_api::NotificationType::Error);return true;}
+    };
+    match ctx.model_registry.rename_credential_account(provider,&command.account_id,command.display_name.as_deref()).await{
+        Ok(())=>{
+            let label=command.display_name.as_ref().map_or_else(||command.account_id.clone(),|display|format!("{display} ({})",command.account_id));
+            ctx.ui.notify(&format!("Account display name updated: {label}."),maho_ext_api::NotificationType::Info);
+        }
+        Err(error)=>ctx.ui.notify(&error.message,maho_ext_api::NotificationType::Error),
+    }
+    true
+}
