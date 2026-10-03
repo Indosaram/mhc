@@ -50,7 +50,10 @@ impl Extension for Btw{
                 if let Some(controller)=controller{controller.abort(None);}
             }
             let current=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_ref().is_some_and(|active|active.id==id);
-            if current{match outcome{Ok(reply)=>{if let Some(active)=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_mut(){active.settled=true;}if ctx.mode!=ExtensionMode::Tui||!ctx.has_ui{ctx.ui.notify(&reply,NotificationType::Info);}else{ctx.ui.set_widget("btw",Some(panel::widget(question,&reply,true)),Default::default());}},Err(error)=>{dismiss(&state,ctx,false);ctx.ui.notify(&format!("/btw: {}",error.message),NotificationType::Error);}}}
+            if current{match outcome{Ok(reply)=>{if let Some(active)=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_mut(){active.settled=true;}if ctx.mode!=ExtensionMode::Tui||!ctx.has_ui{ctx.ui.notify(&reply,NotificationType::Info);}else{ctx.ui.set_widget("btw",Some(panel::widget(question,&reply,true)),Default::default());}},Err(error)=>{
+                if let Some(active)=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_mut(){active.settled=true;}
+                if ctx.mode==ExtensionMode::Tui&&ctx.has_ui{ctx.ui.set_widget("btw",Some(panel::error_widget(question,&error.message)),Default::default());}else{ctx.ui.notify(&format!("/btw failed: {}",error.message),NotificationType::Error);}
+            }}}
             Ok(())
         })}));
     }

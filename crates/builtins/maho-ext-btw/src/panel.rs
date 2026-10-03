@@ -26,3 +26,7 @@ pub fn widget(question:&str,answer:&str,done:bool)->WidgetContent{
     let question=question.to_owned();let answer=answer.to_owned();
     WidgetContent::Component(Arc::new(move|theme|Box::new(BtwPanel::new(&question,&answer,&if done{BtwPanelStatus::Done}else{BtwPanelStatus::Streaming},theme.clone()))))
 }
+pub fn error_widget(question:&str,message:&str)->WidgetContent{
+    let question=question.to_owned();let message=message.to_owned();
+    WidgetContent::Component(Arc::new(move|theme|Box::new(BtwPanel::new(&question,"",&BtwPanelStatus::Error(message.clone()),theme.clone()))))
+}
