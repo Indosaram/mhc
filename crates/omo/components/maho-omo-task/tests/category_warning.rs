@@ -4,6 +4,49 @@ use senpi_task::manager::types::{ChildPlanner, PlanResolutionCode, PlanResolutio
 use serde_json::{json, Value};
 pub mod support;
 
+#[tokio::test] async fn registered_engine_delivers_real_category_failure_without_starting_child() {
+    use maho_ext_api::*;
+    use maho_omo_task::{component::TaskComponent,engine::{compose_task_engine,ComposeTaskEngineDeps}};
+    use senpi_task::{host::{HostError,SenpiModelRegistry},manager::types::{ManagedRunner,ManagedRunnerResult,ManagedStartSpec,ManagedRunners,ListScope}};
+    struct EmptyRegistry;
+    impl SenpiModelRegistry for EmptyRegistry {
+        fn get_available(&self)->Result<Value,HostError> { Ok(json!([])) }
+        fn find(&self,_:&str,_:&str)->Option<Value> { None }
+    }
+    struct NeverStarts;
+    impl ManagedRunner for NeverStarts { fn start(&self,_:&ManagedStartSpec)->ManagedRunnerResult { panic!("unresolved category must never reach runner") } }
+    #[derive(Default)] struct Actions(Mutex<Vec<(CustomMessage,SendMessageOptions)>>);
+    impl ExtensionActions for Actions {
+        fn send_message(&self,message:CustomMessage,options:SendMessageOptions)->Result<(),ExtensionFailure> { self.0.lock().expect("messages").push((message,options)); Ok(()) }
+        fn send_user_message(&self,_:UserMessageContent,_:SendUserMessageOptions)->Result<(),ExtensionFailure> { panic!("unexpected user message") }
+        fn append_entry(&self,_:&str,_:Option<JsonValue>)->Result<(),ExtensionFailure> { panic!("unexpected entry") }
+        fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure> { Ok(vec![]) }
+    }
+    let root=tempfile::tempdir().expect("state"); let actions=Arc::new(Actions::default()); let runner=Arc::new(NeverStarts);
+    let engine=compose_task_engine(ComposeTaskEngineDeps { cwd:root.path().into(),config:json!({}),runners:ManagedRunners { in_process:runner.clone(),process:runner },actions:actions.clone(),coordinator:None,resolve_registry:Arc::new(|| Some(Arc::new(EmptyRegistry))) });
+    let mut api=support::api(); api.runtime.bind(actions.clone());
+    let component=TaskComponent::register(&mut api,engine,Default::default(),senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps { state_dir:senpi_task::store::StateDirConfig { project_dir:root.path().into(),task_state_dir:None },team_bounds:senpi_task::team::runtime_config::TeamTaskBounds { max_members:4,max_parallel_members:2,max_wall_clock_minutes:10 },load_runtime_state:None },false).expect("register").expect("enabled");
+    let mut context=support::context(); context.cwd=root.path().into();
+    let mut event=ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::New,initial_model_provenance:None,previous_session_file:None });
+    for handler in &api.registered.handlers[&EventKind::SessionStart] { handler(&mut event,&context).await.expect("session start"); }
+    let spec=senpi_task::manager::types::ManagerStartSpec { prompt:"work".into(),category:Some("quick".into()),parent_session_id:"session".into(),..Default::default() };
+    let senpi_task::manager::types::StartResult::PlanUnresolved(original)=component.engine.manager.start(&spec) else { panic!("expected real planner failure") };
+    assert_eq!(original.code,PlanResolutionCode::ModelUnavailable); assert_eq!(original.category.as_deref(),Some("quick")); assert!(!original.attempted_chain.as_ref().expect("chain").is_empty());
+    let task=api.registered.tools.iter().find(|tool| tool.definition.name=="task").expect("task");
+    for id in ["task44-category-failure-1","task44-category-failure-2"] {
+        let result=(task.definition.execute)(ToolCall { id,params:json!({"prompt":"work","category":"quick","run_in_background":true}),signal:Default::default(),on_update:None,context:Some(&context) }).await.expect("typed failure");
+        let details=result.details.expect("failure details");
+        assert_eq!(details["status"],"plan_error"); assert_eq!(details["task_id"],""); assert_eq!(details["reason"],original.message);
+    }
+    assert!(component.engine.manager.list(&ListScope::All).is_empty());
+    {
+        let messages=actions.0.lock().expect("messages"); let warnings=messages.iter().filter(|(message,_)| message.custom_type=="senpi-task.category-unavailable").collect::<Vec<_>>(); assert_eq!(warnings.len(),1);
+        let (message,options)=warnings[0]; assert!(message.display); assert!(!options.trigger_turn); let details=message.details.as_ref().expect("warning details"); assert_eq!(details["category"],"quick"); assert_eq!(details["reason"],"no_chain_rung_available"); assert!(!details["attempted_chain"].as_array().expect("chain").is_empty()); assert!(details["missing_providers"].as_array().expect("providers").iter().any(|provider| provider=="openai-codex"));
+    }
+    for name in ["omo.task.send","omo.task.cancel","omo.task.output"] { let response=(api.registered.rpc_handlers[name])(json!([])).await.expect("invalid request"); assert_eq!(response["kind"],"invalid_arguments"); }
+    component.dispose(); drop(api); drop(component); root.close().expect("state cleanup");
+}
+
 #[test] fn native_warning_delivery_notifies_when_captured_and_never_triggers_turn() {
     use maho_ext_api::*;
     #[derive(Default)] struct Actions(Mutex<Vec<(CustomMessage,SendMessageOptions)>>);
