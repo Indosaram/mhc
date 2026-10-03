@@ -70,7 +70,10 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
     };
     let kernel=match acquired {
         Ok(kernel)=>kernel,
-        Err(error)=>{execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);return Err(error);}
+        Err(mut error)=>{
+            if execution.timed_out() {error=super::interrupt_note::describe_timeout_state(error.as_str(),None::<std::future::Ready<(bool,Option<String>)>>).await;}
+            execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);return Err(error);
+        }
     };
     struct InvocationContextGuard(Option<Box<dyn FnOnce()+Send>>);
     impl Drop for InvocationContextGuard {fn drop(&mut self) {if let Some(clear)=self.0.take() {clear();}}}
