@@ -147,10 +147,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                     let external = context.model.as_ref().is_some_and(|model|model.provider == "anthropic-subscription");
                     let mut settings = maho_core::compaction::settings::default_compaction_settings();
                     if !external {
-                        let live = context.get_compaction_settings()?;
-                        settings.enabled = live.enabled;
-                        settings.reserve_tokens = live.reserve_tokens as i64;
-                        settings.keep_recent_tokens = live.keep_recent_tokens as i64;
+                        settings = extension_wiring::live_settings(context)?;
                     }
                     let mut job = warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     let state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -193,9 +190,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                 let result = (|| {
                     let maho_ext_api::ExtensionEvent::AgentEnd {aborted,will_retry,..} = event else {return Ok(maho_ext_api::EventResult::None);};
                     if context.model.as_ref().is_some_and(|model|model.provider == "anthropic-subscription") || !matches!(context.mode,maho_ext_api::ExtensionMode::Tui | maho_ext_api::ExtensionMode::Rpc | maho_ext_api::ExtensionMode::AppServer) {return Ok(maho_ext_api::EventResult::None);}
-                    let live = context.get_compaction_settings()?;
-                    let mut settings = maho_core::compaction::settings::default_compaction_settings();
-                    settings.enabled = live.enabled;settings.reserve_tokens = live.reserve_tokens as i64;settings.keep_recent_tokens = live.keep_recent_tokens as i64;
+                    let settings = extension_wiring::live_settings(context)?;
                     let usage = context.get_context_usage()?;
                     let state = idle_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     let decision = idle::IdleCompactionDecision {will_retry:will_retry.unwrap_or(false),aborted:aborted.unwrap_or(false),settings:&settings,tokens:usage.as_ref().and_then(|usage|usage.tokens).map(|tokens|tokens as f64),context_window:usage.as_ref().map_or_else(||context.model.as_ref().map_or(200000,|model|model.context_window),|usage|usage.context_window) as f64,breaker_tripped:circuit_breaker::is_tripped(&state,chrono::Utc::now().timestamp_millis() as f64),last_yield:state.last_yield,mode:context.mode};
@@ -257,6 +252,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                         return Ok(maho_ext_api::EventResult::None);
                     }
                     let usage = context.get_context_usage()?;
+                    let settings = extension_wiring::live_settings(context)?;
                     let window = usage.as_ref().map_or_else(||context.model.as_ref().map_or(200_000, |model|model.context_window), |usage|usage.context_window);
                     let tokens = usage.and_then(|usage|usage.tokens).map(|tokens|tokens as f64);
                     let state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -267,7 +263,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                         messages: &raw, context_window: window,
                         prompt_context_window: extension_wiring::get_prompt_context_window(window as f64, context.model.as_ref().map(|model|model.max_tokens as f64)) as u64,
                         usage_tokens: tokens, provider_native_path: openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref()),
-                        tool_admission_enabled: true, breaker_fallback, lane_owns_compaction: false,
+                        tool_admission_enabled: settings.ideal.tool_admission_enabled != Some(false), breaker_fallback, lane_owns_compaction: false,
                         emergency_prune_latch: &mut latch.lock().unwrap_or_else(std::sync::PoisonError::into_inner), reminder: None,
                         now: chrono::Utc::now().timestamp_millis(),
                     }).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
@@ -364,6 +360,7 @@ impl maho_ext_api::Extension for CompactionExtension {
         {
             let pending = std::sync::Arc::clone(&pending);
             let live_api = std::sync::Arc::clone(&live_api);
+            let restoration = std::sync::Arc::clone(&restoration);
             api.on(maho_ext_api::EventKind::SessionCompact, std::sync::Arc::new(move |event, context| {
                 if let maho_ext_api::ExtensionEvent::SessionCompact(maho_ext_api::SessionCompactEvent::Rejected { request_id, .. }) = event {
                     pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|(id, _)|id != request_id);
@@ -373,11 +370,16 @@ impl maho_ext_api::Extension for CompactionExtension {
                         let mut pending = pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         pending.iter().position(|(id, _)| id == request_id).map(|index| pending.remove(index).1)
                     };
-                    if let Some((checkpoint, todos)) = metadata {
+                    let persisted = if let Some((checkpoint, todos)) = metadata {
                         checkpoint_state::persist_checkpoint(&live_api, &checkpoint)
                             .and_then(|()| live_api.append_entry(todo_bridge::TODO_SNAPSHOT_CUSTOM_TYPE, Some(todos)))
                             .and_then(|()| todo_bridge::restore_todos_if_missing(&live_api, context))
-                    } else { Ok(()) }
+                    } else { Ok(()) };
+                    persisted.and_then(|()| {
+                        let settings = extension_wiring::live_settings(context)?;
+                        let maho_ext_api::ExtensionEvent::SessionCompact(compact) = event else { return Ok(()); };
+                        extension_wiring::prepare_accepted_restoration(&mut restoration.lock().unwrap_or_else(std::sync::PoisonError::into_inner), context, compact, &settings)
+                    })
                 } else { Ok(()) };
                 Box::pin(async move { result?; Ok(maho_ext_api::EventResult::None) })
             }));
@@ -416,9 +418,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                     let external = context.model.as_ref().is_some_and(|model|model.provider == "anthropic-subscription");
                     if external {return result;}
                     let maho_ext_api::ExtensionEvent::BeforeAgentStart(event) = event else {return result;};
-                    let live = context.get_compaction_settings()?;
-                    let mut settings = maho_core::compaction::settings::default_compaction_settings();
-                    settings.enabled=live.enabled;settings.reserve_tokens=live.reserve_tokens as i64;settings.keep_recent_tokens=live.keep_recent_tokens as i64;
+                    let settings = extension_wiring::live_settings(context)?;
                     let usage = context.get_context_usage()?;
                     let window = usage.as_ref().map_or_else(||context.model.as_ref().map_or(200000,|model|model.context_window),|usage|usage.context_window) as f64;
                     let tokens = usage.and_then(|usage|usage.tokens).map(|tokens|tokens as f64);
@@ -428,12 +428,12 @@ impl maho_ext_api::Extension for CompactionExtension {
                     let hard = policy::is_at_hard_limit(tokens,window,geometry.reserve_tokens,additional);
                     let threshold = !tripped && policy::should_trigger_compaction(tokens.map(|tokens|tokens+additional),window,&settings,last_yield);
                     let in_flight = warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_some_and(|job|!job.completed());
-                    if hard || (threshold && !orchestration::should_defer_grace_band(tokens.unwrap_or(0.)+additional,geometry,window,in_flight,None)) {
+                    if settings.enabled && (hard || (threshold && !orchestration::should_defer_grace_band(tokens.unwrap_or(0.)+additional,geometry,window,in_flight,settings.ideal.grace_band_enabled))) {
                         if let Some(job)=warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {job.controller.abort(None);}
                         let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;
                         let instructions=if hard {"EMERGENCY: hard context limit reached. Produce an aggressive recovery summary that preserves current goal, constraints, files touched, tool outcomes, and exact next steps. Prefer concise factual state over transcript detail."} else {"Proactively compact before the next agent turn."};
                         extension_wiring::apply_live_blocking_compaction(&live_api,context,next,instructions.into()).await?;
-                    } else if !tripped && !openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref()) && policy::should_start_speculative_compaction(tokens.map(|tokens|tokens+additional),window,&settings,last_yield,Some(geometry.lead_tokens)) {
+                    } else if settings.enabled && !tripped && !openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref()) && policy::should_start_speculative_compaction(tokens.map(|tokens|tokens+additional),window,&settings,last_yield,Some(geometry.lead_tokens)) {
                         let mut job=warm.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         if job.is_none() {let next=generation.fetch_add(1,std::sync::atomic::Ordering::SeqCst)+1;*job=speculative_job::start_live_speculative_job(&live_api,context,next,"Proactively compact before the next agent turn.".into())?;}
                     }
@@ -445,8 +445,8 @@ impl maho_ext_api::Extension for CompactionExtension {
                     let mut result=result?;
                     if let maho_ext_api::EventResult::BeforeAgentStart(output)=&mut result {
                         if let Some(message)=&mut output.message {
-                            if let Some(reminder)=computed {message.content.push(maho_ext_api::ToolContent::text(format!("\n\n{reminder}")));}
-                        } else {output.system_prompt=orchestration::resolve_reminder_system_prompt(&event.system_prompt,computed.as_deref(),None);}
+                            if settings.ideal.reminder_enabled != Some(false) && let Some(reminder)=computed {message.content.push(maho_ext_api::ToolContent::text(format!("\n\n{reminder}")));}
+                        } else {output.system_prompt=orchestration::resolve_reminder_system_prompt(&event.system_prompt,computed.as_deref(),settings.ideal.reminder_enabled);}
                     }
                     Ok(result)
                 })

@@ -1,5 +1,48 @@
 use serde_json::{Value,json};
 use crate::checkpoint_state::get_latest_checkpoint;
+pub fn resolved_settings(
+    legacy: &maho_ext_api::CompactionSettings,
+    resolved: Option<&maho_ext_api::ResolvedCompactionSettings>,
+) -> Result<maho_core::compaction::settings::CompactionSettings, maho_ext_api::ExtensionFailure> {
+    let mut settings = maho_core::compaction::settings::default_compaction_settings();
+    settings.enabled = legacy.enabled;
+    settings.reserve_tokens = i64::try_from(legacy.reserve_tokens).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+    settings.keep_recent_tokens = i64::try_from(legacy.keep_recent_tokens).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+    let Some(resolved) = resolved else {
+        settings.speculative_enabled = Some(false);
+        settings.idle_compaction_enabled = Some(false);
+        settings.restoration_enabled = Some(false);
+        settings.ideal.grace_band_enabled = Some(false);
+        settings.ideal.tool_admission_enabled = Some(false);
+        settings.ideal.reminder_enabled = Some(false);
+        settings.ideal.reserve_scaling_enabled = Some(false);
+        return Ok(settings);
+    };
+    let integer = |value: f64| value.to_string().parse::<i64>().map_err(|error| maho_ext_api::ExtensionFailure::new(format!("resolved compaction integer {value}: {error}")));
+    settings.enabled = resolved.enabled;
+    settings.reserve_tokens = i64::try_from(resolved.reserve_tokens).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+    settings.keep_recent_tokens = i64::try_from(resolved.keep_recent_tokens).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+    settings.speculative_enabled = Some(resolved.speculative_enabled);
+    settings.speculative_fraction = Some(resolved.speculative_fraction);
+    settings.speculative_cooldown_ms = Some(integer(resolved.speculative_cooldown_ms)?);
+    settings.restoration_enabled = Some(resolved.restoration_enabled);
+    settings.restoration_max_items = Some(integer(resolved.restoration_max_items)?);
+    settings.restoration_max_tokens_per_item = Some(integer(resolved.restoration_max_tokens_per_item)?);
+    settings.restoration_max_total_tokens = Some(integer(resolved.restoration_max_total_tokens)?);
+    settings.restoration_context_ratio = Some(resolved.restoration_context_ratio);
+    settings.idle_compaction_enabled = Some(resolved.idle_compaction_enabled);
+    settings.summarization_max_duration_ms = resolved.summarization_max_duration_ms;
+    settings.ideal = maho_core::compaction::ideal_settings::IdealCompactionSettings {
+        grace_band_enabled: Some(resolved.grace_band_enabled), tool_admission_enabled: Some(resolved.tool_admission_enabled),
+        reminder_enabled: Some(resolved.reminder_enabled), reserve_scaling_enabled: Some(resolved.reserve_scaling_enabled),
+        speculative_lead_tokens: resolved.speculative_lead_tokens.map(integer).transpose()?,
+    };
+    Ok(settings)
+}
+pub fn live_settings(context: &maho_ext_api::ExtensionContext) -> Result<maho_core::compaction::settings::CompactionSettings, maho_ext_api::ExtensionFailure> {
+    let resolved = context.get_resolved_compaction_settings()?;
+    resolved_settings(&context.get_compaction_settings()?, resolved.as_ref())
+}
 pub fn estimate_pending_prompt_tokens(prompt:Option<&str>,image_count:usize)->usize {prompt.unwrap_or_default().encode_utf16().count().div_ceil(4)+image_count*1200}
 pub fn get_prompt_context_window(window:f64,max_tokens:Option<f64>)->f64 {
     match max_tokens {Some(max) if max.is_finite() && max>0.0 && window>0.0 => window-max.min((window*0.5).floor()),_=>window}
@@ -133,10 +176,8 @@ pub async fn generate_core_route_compaction(
     let convert = |messages: &[maho_ext_api::AgentMessage]|messages.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()));
     let messages = convert(&event.preparation.messages_to_summarize)?;
     let prefix = convert(&event.preparation.turn_prefix_messages)?;
-    let mut settings = maho_core::compaction::settings::default_compaction_settings();
-    settings.enabled = event.preparation.settings.enabled;
-    settings.reserve_tokens = event.preparation.settings.reserve_tokens as i64;
-    settings.keep_recent_tokens = event.preparation.settings.keep_recent_tokens as i64;
+    let resolved = context.get_resolved_compaction_settings()?;
+    let settings = resolved_settings(&event.preparation.settings, resolved.as_ref())?;
     let preparation = maho_core::compaction::compaction::CompactionPreparation {
         first_kept_entry_id: event.preparation.first_kept_entry_id.clone(), source_messages: messages.clone(), messages_to_summarize: messages,
         turn_prefix_source_messages: prefix.clone(), is_split_turn: !prefix.is_empty(), turn_prefix_messages: prefix,

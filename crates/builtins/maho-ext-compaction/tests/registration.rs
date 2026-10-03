@@ -48,54 +48,265 @@ fn context() -> ExtensionContext {
         registered_mcp_servers: Vec::new(), update_tool_hook_status: None }
 }
 
+struct PolicyActions { settings: std::sync::Mutex<ResolvedCompactionSettings> }
+impl ExtensionSessionSettings for PolicyActions {
+    fn get_retry_fallback_settings(&self) -> RetryFallbackSettings { RetryFallbackSettings { model_fallback:false, chains:Default::default(), revert_policy:FallbackRevertPolicy::Never } }
+    fn set_fallback_chain<'a>(&'a self, _: &'a str, _: &'a [String]) -> ExtensionFuture<'a, ()> { Box::pin(async { Ok(()) }) }
+    fn remove_fallback_chain<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, ()> { Box::pin(async { Ok(()) }) }
+    fn set_model_fallback_enabled(&self, _: bool) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
+    fn set_fallback_revert_policy(&self, _: FallbackRevertPolicy) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
+    fn reload(&self) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
+    fn get_fallback_status(&self) -> Option<RetryFallbackStatus> { None }
+}
+impl ExtensionContextActions for PolicyActions {
+    fn get_model(&self) -> Option<Model> { None }
+    fn get_service_tier(&self) -> Option<ServiceTier> { None }
+    fn get_scoped_models(&self) -> Vec<ScopedModel> { Vec::new() }
+    fn get_agent_dir(&self) -> std::path::PathBuf { "/tmp/agent".into() }
+    fn is_idle(&self) -> bool { true }
+    fn is_project_trusted(&self) -> bool { true }
+    fn get_signal(&self) -> Option<AbortSignal> { None }
+    fn abort(&self, _: Option<AbortSource>) {}
+    fn has_pending_messages(&self) -> bool { false }
+    fn request_reload(&self) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
+    fn is_compacting(&self) -> bool { false }
+    fn check_reload_veto(&self) -> ExtensionFuture<'_, ReloadVetoDecision> { Box::pin(async { Ok(ReloadVetoDecision {cancelled:false,reason:None}) }) }
+    fn shutdown(&self) {}
+    fn get_context_usage(&self) -> Option<ContextUsage> { Some(ContextUsage {tokens:Some(0),context_window:100_000,percent:Some(0.)}) }
+    fn get_compaction_settings(&self) -> CompactionSettings { CompactionSettings {enabled:true,reserve_tokens:100,keep_recent_tokens:200} }
+    fn get_resolved_compaction_settings(&self) -> Option<ResolvedCompactionSettings> { Some(self.settings.lock().expect("native compaction scenario invariant").clone()) }
+    fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { None }
+    fn get_prompt_cache_goal_backstop_max_seconds(&self) -> f64 { 0. }
+    fn get_prompt_cache_keep_alive_settings(&self) -> PromptCacheKeepAliveSettings { PromptCacheKeepAliveSettings {enabled:false,max_requests_per_session:0,max_cost_usd_per_session:0.,margin_seconds:0.} }
+    fn get_look_at_settings(&self) -> LookAtSettings { LookAtSettings {enabled:false,models:None} }
+    fn get_ask_user_settings(&self) -> AskUserSettings { AskUserSettings {enabled:false,timeout_minutes:0.} }
+    fn get_image_settings(&self) -> ImageSettings { ImageSettings {auto_resize:false,block_images:false} }
+    fn session_settings(&self) -> &dyn ExtensionSessionSettings { self }
+    fn compact(&self, _: CompactOptions) {}
+    fn prepare_provider_request(&self, messages:Vec<AgentMessage>) -> ExtensionFuture<'_, ProviderRequestPreparation> {
+        Box::pin(async move { Ok(ProviderRequestPreparation {messages,transform_payload:Arc::new(|payload|Box::pin(async move {Ok(payload)})),transform_headers:Arc::new(|headers|Box::pin(async move {Ok(headers)}))}) })
+    }
+    fn begin_compaction(&self, _: BeginCompactionOptions) -> Option<AbortSignal> { Some(AbortSignal::default()) }
+    fn update_compaction(&self, _: UpdateCompactionOptions) {}
+    fn end_compaction(&self, _: EndCompactionOptions) {}
+    fn get_message_revision(&self) -> u64 { 0 }
+    fn apply_compaction(&self, _: CompactionResult, _: ApplyCompactionOptions) -> ExtensionFuture<'_, ApplyCompactionResult> { Box::pin(async {Ok(ApplyCompactionResult::Rejected)}) }
+    fn get_system_prompt(&self) -> String { "base".into() }
+    fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { Default::default() }
+    fn get_loaded_hook_sources(&self) -> LoadedHookSources { LoadedHookSources {cwd:"/tmp".into(),agent_dir:"/tmp/agent".into(),global_hooks_path:"/tmp/global".into(),project_hooks_path:"/tmp/project".into(),global_settings_hooks:None,project_settings_hooks:None,global_hook_source_paths:Vec::new(),project_hook_source_paths:Vec::new(),pre_session_hook_source_paths:Vec::new(),runtime_hook_source_paths:Vec::new()} }
+    fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools> { None }
+}
+struct PolicySession(Arc<PolicyActions>);
+impl ToolSessionManager for PolicySession {
+    fn session_id(&self) -> &str { "policy" }
+    fn session_file(&self) -> Option<&Path> { None }
+}
+impl SessionManager for PolicySession {
+    fn get_entries(&self) -> Vec<SessionEntry> { Vec::new() }
+    fn get_branch(&self) -> Vec<SessionEntry> { Vec::new() }
+    fn get_leaf_id(&self) -> Option<String> { None }
+    fn get_session_name(&self) -> Option<String> { None }
+    fn extension_context_actions(&self) -> Option<&dyn ExtensionContextActions> { Some(self.0.as_ref()) }
+}
+
+#[tokio::test]
+async fn registered_context_consumes_live_tool_admission_gate() {
+    run_policy_scenario().await;
+}
+
+async fn run_policy_scenario() {
+    let settings = policy_settings();
+    let actions=Arc::new(PolicyActions {settings:std::sync::Mutex::new(settings)});
+    let mut ctx=context();ctx.session_manager=Arc::new(PolicySession(Arc::clone(&actions)));
+    let mut api=ExtensionApi::new(LoadedExtension::new("compaction","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
+    maho_ext_compaction::CompactionExtension.register(&mut api);
+    let source=vec![serde_json::from_value(serde_json::json!({"role":"assistant","content":[{"type":"toolCall","id":"call","name":"read","arguments":{}}],"api":"faux","provider":"faux","model":"m","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":0})).expect("native compaction scenario invariant"),serde_json::from_value(serde_json::json!({"role":"toolResult","toolCallId":"call","toolName":"read","content":[{"type":"text","text":"x".repeat(30000)}],"isError":false,"timestamp":0})).expect("native compaction scenario invariant")];
+    let mut event=ExtensionEvent::Context {messages:source.clone()};
+    let result=api.registered.handlers[&EventKind::Context][0](&mut event,&ctx).await.expect("native compaction scenario invariant");
+    let EventResult::Context {messages:Some(preserved)}=result else {panic!("missing registered context")};
+    assert_eq!(serde_json::to_value(&preserved).expect("native compaction scenario invariant"),serde_json::to_value(&source).expect("native compaction scenario invariant"));
+    actions.settings.lock().expect("native compaction scenario invariant").tool_admission_enabled=true;
+    let mut event=ExtensionEvent::Context {messages:source};
+    let result=api.registered.handlers[&EventKind::Context][0](&mut event,&ctx).await.expect("native compaction scenario invariant");
+    let EventResult::Context {messages:Some(projected)}=result else {panic!("missing registered context")};
+    assert!(serde_json::to_value(projected).expect("native compaction scenario invariant")[1]["content"][0]["text"].as_str().expect("native compaction scenario invariant").len()<30000);
+}
+
+fn policy_settings() -> ResolvedCompactionSettings {
+    ResolvedCompactionSettings {enabled:true,reserve_tokens:100,keep_recent_tokens:200,speculative_enabled:false,speculative_fraction:0.42,speculative_cooldown_ms:0.,restoration_enabled:false,restoration_max_items:1.,restoration_max_tokens_per_item:100.,restoration_max_total_tokens:100.,restoration_context_ratio:0.01,idle_compaction_enabled:false,grace_band_enabled:false,tool_admission_enabled:false,reminder_enabled:false,reserve_scaling_enabled:false,speculative_lead_tokens:None,summarization_max_duration_ms:None}
+}
+
+#[tokio::test]
+async fn registered_restoration_is_bounded_accepted_only_and_once() {
+    for enabled in [false,true] {
+        let mut settings=policy_settings();settings.restoration_enabled=enabled;
+        let actions=Arc::new(PolicyActions {settings:std::sync::Mutex::new(settings)});
+        let mut ctx=context();ctx.session_manager=Arc::new(PolicySession(actions));
+        let mut api=ExtensionApi::new(LoadedExtension::new("compaction","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
+        maho_ext_compaction::CompactionExtension.register(&mut api);
+        for path in ["one.rs","two.rs"] {
+            let mut event=ExtensionEvent::ToolCall(ToolCallEvent {tool_call_id:path.into(),tool_name:"read".into(),input:serde_json::json!({"path":path})});
+            for handler in &api.registered.handlers[&EventKind::ToolCall] {handler(&mut event,&ctx).await.expect("native compaction scenario invariant");}
+        }
+        let mut rejected=ExtensionEvent::SessionCompact(SessionCompactEvent::Rejected {reason:CompactionReason::Manual,request_id:"rejected".into(),rejection_cause:CompactionRejectionCause::ExternalOwner});
+        for handler in &api.registered.handlers[&EventKind::SessionCompact] {handler(&mut rejected,&ctx).await.expect("native compaction scenario invariant");}
+        let mut before=ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {prompt:"continue".into(),images:None,system_prompt:"base".into(),system_prompt_options:Default::default()});
+        let handler=&api.registered.handlers[&EventKind::BeforeAgentStart][0];
+        let result=handler(&mut before,&ctx).await.expect("native compaction scenario invariant");
+        assert!(matches!(result,EventResult::BeforeAgentStart(BeforeAgentStartEventResult {message:None,..})));
+        let mut accepted=ExtensionEvent::SessionCompact(SessionCompactEvent::Accepted {reason:CompactionReason::Manual,request_id:"accepted".into(),compaction_entry:SessionEntry {id:"compact".into(),parent_id:None,timestamp:String::new(),kind:"compaction".into(),data:serde_json::json!({"firstKeptEntryId":"keep"})},from_extension:true,will_retry:false});
+        for handler in &api.registered.handlers[&EventKind::SessionCompact] {handler(&mut accepted,&ctx).await.expect("native compaction scenario invariant");}
+        let result=handler(&mut before,&ctx).await.expect("native compaction scenario invariant");
+        let EventResult::BeforeAgentStart(output)=result else {panic!("missing start result")};
+        assert_eq!(output.message.is_some(),enabled);
+        if let Some(message)=output.message {assert_eq!(message.details.expect("native compaction scenario invariant")["items"].as_array().expect("native compaction scenario invariant").len(),1);}
+        let result=handler(&mut before,&ctx).await.expect("native compaction scenario invariant");
+        assert!(matches!(result,EventResult::BeforeAgentStart(BeforeAgentStartEventResult {message:None,..})));
+    }
+}
+
 #[tokio::test]
 async fn provider_owned_model_selection_stands_down_before_unbound_actions() {
     let mut api = ExtensionApi::new(LoadedExtension::new("compaction","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
     maho_ext_compaction::CompactionExtension.register(&mut api);
     let mut ctx = context();
-    let model: Model = serde_json::from_value(serde_json::json!({"id":"m","name":"m","api":"anthropic-messages","provider":"anthropic-subscription","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":1000})).unwrap();
+    let model: Model = serde_json::from_value(serde_json::json!({"id":"m","name":"m","api":"anthropic-messages","provider":"anthropic-subscription","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":1000})).expect("native compaction scenario invariant");
     ctx.model=Some(model.clone());
     let mut event=ExtensionEvent::ModelSelect(ModelSelectEvent {model,previous_model:None,source:ModelSelectSource::Set,system_prompt:String::new(),system_prompt_options:Default::default()});
-    for handler in &api.registered.handlers[&EventKind::ModelSelect] {assert!(matches!(handler(&mut event,&ctx).await.unwrap(),EventResult::None));}
+    for handler in &api.registered.handlers[&EventKind::ModelSelect] {assert!(matches!(handler(&mut event,&ctx).await.expect("native compaction scenario invariant"),EventResult::None));}
 }
 
 #[tokio::test]
 async fn native_session_compaction_uses_registered_generator_and_persists_metadata() {
+    run_native_scenario(false, false).await;
+}
+
+async fn run_native_scenario(cancel: bool, threshold: bool) {
+    run_native_variant(cancel,threshold,"summary").await;
+}
+
+async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     use maho_core::agent_session::{AgentSession, AgentSessionConfig};
-    use maho_ai::providers::faux::{RegisterFauxProviderOptions, FauxAssistantMessageOptions, faux_assistant_message, register_faux_provider};
-    let temp = tempfile::tempdir().unwrap();
+    use maho_ai::providers::faux::{RegisterFauxProviderOptions, FauxAssistantMessageOptions, faux_assistant_message, register_faux_provider, faux_provider};
+    let temp = tempfile::tempdir().expect("native compaction scenario invariant");
     let cwd = temp.path().to_string_lossy().into_owned();
     let provider = register_faux_provider(RegisterFauxProviderOptions { api: Some("compaction-registration-faux".into()), tokens_per_second: Some(0.), ..Default::default() });
-    let model = provider.get_model(None).unwrap();
-    provider.set_responses(vec![faux_assistant_message(vec![ContentBlock::text("<summary>native checkpoint</summary>")], FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into()]);
+    let mut model = provider.get_model(None).expect("native compaction scenario invariant");
+    if threshold {model.context_window=40000;}
+    let (started, mut started_rx) = tokio::sync::mpsc::channel(1);
+    provider.set_responses(if cancel { vec![maho_ai::providers::faux::FauxResponseStep::Factory(Arc::new(move |_,options,_,_| {
+        let started=started.clone();
+        let signal=options.and_then(|options|options.stream.request.signal.clone()).expect("native compaction scenario invariant");
+        Box::pin(async move {started.send(()).await.expect("native compaction scenario invariant");signal.cancelled().await;faux_assistant_message(Vec::<ContentBlock>::new(),FauxAssistantMessageOptions {stop_reason:Some(maho_ai::types::StopReason::Aborted),..Default::default()})})
+    }))] } else {vec![faux_assistant_message(vec![ContentBlock::text("<summary>native checkpoint</summary>")], FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into()]});
+    if threshold {provider.append_responses(vec![faux_assistant_message(vec![ContentBlock::text("continued")],Default::default()).into()]);}
+    if variant=="overflow" {
+        provider.set_responses(vec![maho_ai::utils::lazy::setup_error_message(&model,"maximum context length exceeded").into(),faux_assistant_message(vec![ContentBlock::text("summary after shrink")],Default::default()).into(),faux_assistant_message(vec![ContentBlock::text("continued")],Default::default()).into()]);
+    } else if variant=="fallback" {
+        provider.set_responses(vec![faux_assistant_message(Vec::<ContentBlock>::new(),Default::default()).into(),faux_assistant_message(vec![ContentBlock::text("continued")],Default::default()).into()]);
+    }
     let mut credentials = maho_core::auth_storage::AuthStorage::in_memory(Default::default());
-    credentials.set_runtime_api_key(&model.provider,"faux");
+    credentials.set(&model.provider,Some(serde_json::json!({"type":"api_key","key":"faux"}))).expect("native compaction scenario invariant");
+    let native = faux_provider(RegisterFauxProviderOptions { api: Some(model.api.clone()), provider: Some(model.provider.clone()), tokens_per_second: Some(0.), ..Default::default() });
     let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
-        models_path: Some(temp.path().join("models.json")), credentials: Some(Arc::new(credentials)), ..Default::default()
+        models_path: Some(temp.path().join("models.json")), credentials: Some(Arc::new(credentials)), providers: Some(vec![native.provider]), ..Default::default()
     });
     let mut manager = maho_core::session_manager::SessionManager::in_memory(&cwd,None,None);
     manager.append_message(serde_json::json!({"role":"user","content":"old ".repeat(30000),"timestamp":0}));
     manager.append_message(serde_json::json!({"role":"assistant","content":[{"type":"text","text":"reply"}],"api":model.api,"provider":model.provider,"model":model.id,"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0}));
     manager.append_message(serde_json::json!({"role":"user","content":"continue","timestamp":0}));
+    if threshold {
+        manager.append_message(serde_json::json!({"role":"assistant","content":[{"type":"text","text":"ready"}],"api":model.api,"provider":model.provider,"model":model.id,"usage":{"input":30000,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":30000,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0}));
+    }
+    let agent=maho_agent_for_test(model);
+    if threshold {agent.set_messages(manager.build_context(manager.leaf_id()).messages.into_iter().map(|value|serde_json::from_value(value).expect("seeded native message")).collect());}
     let storage = maho_core::settings_manager::InMemorySettingsStorage::default();
     maho_core::settings_manager::SettingsStorage::with_lock(&storage, maho_core::settings_manager::SettingsScope::Global,
-        &mut |_|Some(serde_json::json!({"compaction":{"keepRecentTokens":1}}).to_string())).unwrap();
+        &mut |_|Some(serde_json::json!({"compaction":{"keepRecentTokens":1}}).to_string())).expect("native compaction scenario invariant");
     let session = AgentSession::new(AgentSessionConfig {
-        agent: maho_agent_for_test(model), session_manager: manager,
+        agent, session_manager: manager,
         settings_manager: maho_core::settings_manager::SettingsManager::from_storage(Box::new(storage),false),
         cwd: cwd.clone(), agent_dir: Some(cwd), fallback_now: Some(Arc::new(||0.)), retry_random: Some(Arc::new(||0.5)),
         scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: Default::default(), custom_tools: Vec::new(), model_runtime: Some(runtime), model_registry: None,
         uses_default_stream_function: Some(false), initial_active_tool_names: None, default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: None, base_tools_override: None, session_start_event: None, auto_title_sessions: Some(false),
-    }).unwrap();
-    session.set_extension_runner(maho_ext_host::ExtensionRunner::from_static(vec![Box::new(maho_ext_compaction::CompactionExtension)],context())).await;
-    let result = session.compact(None).await.unwrap();
-    assert_eq!(result.details.as_ref().unwrap()["origin"],"core-route");
+    }).expect("native compaction scenario invariant");
+    let observed_signal=Arc::new(std::sync::Mutex::new(None));
+    session.set_extension_runner(maho_ext_host::ExtensionRunner::from_static(vec![Box::new(CancellationObserver(Arc::clone(&observed_signal))),Box::new(maho_ext_compaction::CompactionExtension)],context())).await;
+    if cancel {
+        let operation=session.compact(None);tokio::pin!(operation);
+        tokio::time::timeout(std::time::Duration::from_secs(10),async {
+            tokio::select! { result=&mut operation=>panic!("completed before request subscription: {result:?}"), started=started_rx.recv()=>assert_eq!(started,Some(())) }
+            observed_signal.lock().expect("native compaction scenario invariant").as_ref().expect("native compaction scenario invariant").abort();
+            assert!(operation.await.is_err());
+        }).await.expect("native compaction scenario invariant");
+        assert!(!session.with_session_manager(|manager|manager.entries()).iter().any(|entry|entry["type"]=="compaction"));
+        assert_eq!(provider.get_call_log().len(),1);
+        session.dispose().await;provider.unregister();
+        println!("PASS cancellation: one subscribed request, no persisted compaction; cleanup: disposed session, unregistered faux, tempdir dropped");
+        return;
+    }
+    if threshold {
+        assert!(session.get_context_usage().and_then(|usage|usage.tokens).is_some_and(|tokens|tokens>25000),"seeded usage must exceed prompt budget");
+        tokio::time::timeout(std::time::Duration::from_secs(10),session.prompt("continue now",Default::default())).await.expect("native compaction scenario invariant").expect("native compaction scenario invariant");
+        let compactions:Vec<_>=session.with_session_manager(|manager|manager.entries()).into_iter().filter(|entry|entry["type"]=="compaction").collect();
+        let origin=if variant=="fallback" {"required-compaction-recovery"} else {"core-route"};
+        assert!(compactions.iter().any(|entry|entry["details"]["origin"]==origin),"compactions: {compactions:?}");
+    } else {
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10),session.compact(None)).await.expect("native compaction scenario invariant").expect("native compaction scenario invariant");
+        assert_eq!(result.details.as_ref().expect("native compaction scenario invariant")["origin"],if variant=="fallback" {"required-compaction-recovery"} else {"core-route"});
+    }
     let entries = session.with_session_manager(|manager|manager.entries());
     assert!(entries.iter().any(|entry|entry["customType"] == "compaction.agent-checkpoint"));
     assert!(entries.iter().any(|entry|entry["customType"] == "compaction.todo-snapshot"));
-    assert_eq!(provider.get_call_log().len(),1);
+    assert_eq!(provider.get_call_log().len(),if variant=="overflow" {3} else if threshold {2} else {1});
     session.dispose().await;
     provider.unregister();
+    println!("PASS {variant}: registered generation accepted, checkpoint and todos persisted; cleanup: disposed session, unregistered faux, tempdir dropped");
+}
+
+#[tokio::test]
+async fn native_registered_cancellation_is_subscribed_and_never_persists() {run_native_scenario(true,false).await;}
+
+#[tokio::test]
+async fn native_overthreshold_prompt_compacts_before_provider_turn() {run_native_scenario(false,true).await;}
+
+#[tokio::test]
+async fn native_overflow_shrinks_summary_request_before_continuation() {run_native_variant(false,true,"overflow").await;}
+
+#[tokio::test]
+async fn native_empty_summary_uses_required_deterministic_fallback() {run_native_variant(false,false,"fallback").await;}
+
+struct CancellationObserver(Arc<std::sync::Mutex<Option<AbortSignal>>>);
+impl Extension for CancellationObserver {
+    fn register(&self,api:&mut ExtensionApi) {
+        let observed=Arc::clone(&self.0);
+        api.on(EventKind::SessionBeforeCompact,Arc::new(move |event,_| {
+            if let ExtensionEvent::SessionBeforeCompact(event)=event {*observed.lock().expect("native compaction scenario invariant")=Some(event.signal.clone());}
+            Box::pin(async {Ok(EventResult::None)})
+        }));
+    }
+}
+
+#[tokio::test]
+async fn live_warm_claim_rejects_model_and_prefix_supersession() {
+    use maho_ext_compaction::{speculative::SpeculativeCompactionSnapshot,speculative_job::{track_speculative_job,JobSettlement,LiveSummaryFailure,claim_live_warm_job}};
+    let model:Model=serde_json::from_value(serde_json::json!({"id":"m","name":"m","api":"faux","provider":"faux","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":1000})).expect("warm model");
+    let entries=vec![serde_json::json!({"type":"message","id":"old","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old ".repeat(1000),"timestamp":0}}),serde_json::json!({"type":"message","id":"keep","parentId":"old","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"continue","timestamp":0}})];
+    let mut settings=maho_core::compaction::settings::default_compaction_settings();settings.keep_recent_tokens=1;
+    let preparation=maho_core::compaction::compaction::prepare_compaction(&entries,&settings,true,false).expect("warm preparation");
+    let snapshot=SpeculativeCompactionSnapshot {generation:1,expected_revision:0,model:model.clone(),context_window:100000,preparation:preparation.clone(),branch_entries:entries.clone(),prompt_variant:maho_ext_compaction::prompts::PromptVariant::Default,custom_instructions:None,system_prompt:None,tools:Vec::new(),origin:Some("speculative".into())};
+    let mut job=Some(track_speculative_job(1,snapshot,maho_ai::utils::abort::AbortController::new(),async {JobSettlement::<CompactionResult,LiveSummaryFailure> {result:None,error:None}},0));
+    let branch:Vec<SessionEntry>=entries.into_iter().map(|entry|SessionEntry {id:entry["id"].as_str().expect("entry id").into(),parent_id:entry["parentId"].as_str().map(str::to_owned),timestamp:String::new(),kind:"message".into(),data:entry}).collect();
+    let mut ctx=context();ctx.model=Some(model.clone());
+    let mut event=maho_ext_compaction::extension_wiring::create_live_blocking_remote_compaction_event(&ctx,CompactionPreparation {first_kept_entry_id:preparation.first_kept_entry_id,messages_to_summarize:Vec::new(),turn_prefix_messages:Vec::new(),tokens_before:0,previous_summary:None,settings:CompactionSettings {enabled:true,reserve_tokens:1,keep_recent_tokens:1}},String::new(),AbortSignal::default());
+    event.custom_instructions=None;event.branch_entries=branch;
+    ctx.model.as_mut().expect("selected model").id="other".into();
+    assert!(claim_live_warm_job(&mut job,&event,&ctx).is_none());assert!(job.is_some());
+    ctx.model=Some(model);event.branch_entries[0].id="changed".into();
+    assert!(claim_live_warm_job(&mut job,&event,&ctx).is_none());assert!(job.is_some());
+    event.branch_entries[0].id="old".into();
+    let claimed=claim_live_warm_job(&mut job,&event,&ctx).expect("matching model and anchor claim");assert!(job.is_none());
+    tokio::time::timeout(std::time::Duration::from_secs(10),claimed.settled()).await.expect("warm task cleanup");
 }
 
 fn maho_agent_for_test(model: Model) -> maho_agent::Agent {
@@ -108,17 +319,20 @@ async fn registered_lifecycle_handlers_accept_real_api_events() {
     let mut api = ExtensionApi::new(registered, ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
     maho_ext_compaction::CompactionExtension.register(&mut api);
     let ctx = context();
+    let actions = Arc::new(PolicyActions {settings:std::sync::Mutex::new(policy_settings())});
+    let mut ctx = ctx;
+    ctx.session_manager = Arc::new(PolicySession(actions));
     let mut event = ExtensionEvent::SessionCompact(SessionCompactEvent::Accepted {
         reason: CompactionReason::Extension, request_id: "request".into(),
         compaction_entry: SessionEntry { id: "compact".into(), parent_id: None, timestamp: "date".into(), kind: "compaction".into(), data: serde_json::json!({"tokensBefore":10000,"details":{"structuralYield":{"savedTokens":4000,"savingsRatio":0.4}}}) },
         from_extension: true, will_retry: false,
     });
     for handler in &api.registered.handlers[&EventKind::SessionCompact] {
-        assert!(matches!(handler(&mut event, &ctx).await.unwrap(), EventResult::None));
+        assert!(matches!(handler(&mut event, &ctx).await.expect("native compaction scenario invariant"), EventResult::None));
     }
     let mut event = ExtensionEvent::AgentEnd { messages: Vec::new(), aborted: None, will_retry: None, abort_source: None };
     for handler in &api.registered.handlers[&EventKind::AgentEnd] {
-        assert!(matches!(handler(&mut event, &ctx).await.unwrap(), EventResult::None));
+        assert!(matches!(handler(&mut event, &ctx).await.expect("native compaction scenario invariant"), EventResult::None));
     }
 }
 
@@ -136,7 +350,7 @@ async fn preaborted_compaction_does_not_read_unbound_checkpoint_actions() {
         branch_entries: Vec::new(), custom_instructions: None, signal,
     });
     for handler in &api.registered.handlers[&EventKind::SessionBeforeCompact] {
-        assert!(matches!(handler(&mut event, &context()).await.unwrap(), EventResult::None));
+        assert!(matches!(handler(&mut event, &context()).await.expect("native compaction scenario invariant"), EventResult::None));
     }
 }
 
@@ -148,7 +362,7 @@ async fn rejected_compactions_trip_registered_breaker_but_external_owner_does_no
         let ctx = context();
         for _ in 0..3 {
             let mut event = ExtensionEvent::SessionCompact(SessionCompactEvent::Rejected { reason: CompactionReason::Threshold, request_id: "request".into(), rejection_cause: cause });
-            for handler in &api.registered.handlers[&EventKind::SessionCompact] { handler(&mut event,&ctx).await.unwrap(); }
+            for handler in &api.registered.handlers[&EventKind::SessionCompact] { handler(&mut event,&ctx).await.expect("native compaction scenario invariant"); }
         }
         let mut event = ExtensionEvent::SessionBeforeCompact(SessionBeforeCompactEvent {
             reason: CompactionReason::Threshold, will_retry: false, request_id: "request".into(),
@@ -157,7 +371,7 @@ async fn rejected_compactions_trip_registered_breaker_but_external_owner_does_no
         });
         let result = api.registered.handlers[&EventKind::SessionBeforeCompact][0](&mut event,&ctx).await;
         if cause == CompactionRejectionCause::ExternalOwner { assert!(result.is_err()); }
-        else { assert!(matches!(result.unwrap(), EventResult::SessionBefore(SessionBeforeEventResult { rejection_cause: Some(CompactionRejectionCause::CircuitBreaker), .. }))); }
+        else { assert!(matches!(result.expect("native compaction scenario invariant"), EventResult::SessionBefore(SessionBeforeEventResult { rejection_cause: Some(CompactionRejectionCause::CircuitBreaker), .. }))); }
     }
 }
 
@@ -167,10 +381,10 @@ fn disabled_restoration_and_rejected_compaction_never_read_unbound_context() {
     settings.restoration_enabled = Some(false);
     let mut state = maho_ext_compaction::restoration_tracker::RestorationTrackerState::default();
     let accepted = SessionCompactEvent::Accepted { reason: CompactionReason::Manual, request_id: "r".into(), compaction_entry: SessionEntry { id:"c".into(),parent_id:None,timestamp:String::new(),kind:"compaction".into(),data:serde_json::json!({}) },from_extension:true,will_retry:false };
-    maho_ext_compaction::extension_wiring::prepare_accepted_restoration(&mut state,&context(),&accepted,&settings).unwrap();
+    maho_ext_compaction::extension_wiring::prepare_accepted_restoration(&mut state,&context(),&accepted,&settings).expect("native compaction scenario invariant");
     settings.restoration_enabled = Some(true);
     let rejected = SessionCompactEvent::Rejected { reason:CompactionReason::Manual,request_id:"r".into(),rejection_cause:CompactionRejectionCause::ExternalOwner };
-    maho_ext_compaction::extension_wiring::prepare_accepted_restoration(&mut state,&context(),&rejected,&settings).unwrap();
+    maho_ext_compaction::extension_wiring::prepare_accepted_restoration(&mut state,&context(),&rejected,&settings).expect("native compaction scenario invariant");
     assert!(state.pending_payload.is_none());
 }
 
