@@ -40,10 +40,23 @@ pub fn create_builtin_parser_registry()->ParserRegistry{
             requests
         }));
     }
+    let bash=Arc::clone(registry.parsers.get("bash").expect("bash parser registered"));
+    registry.register("monitor",Arc::new(move|input,cwd,home|{
+        if let Some(path)=string(input,&["path"]).filter(|path|!path.is_empty()){
+            let paths=vec![path.into()];return external(vec![request("read",paths.clone(),paths.clone())],&paths,(cwd,home),false);
+        }
+        bash(input,cwd,home)
+    }));
     for (name,permission) in [("edit","edit"),("write","edit"),("apply_patch","edit"),("multiedit","edit"),("read","read")]{
         registry.register(name,Arc::new(move|input,cwd,home|{
-            let Some(path)=string(input,&["path","file_path"]).filter(|path|!path.is_empty())else{return fallback(permission)};
-            let paths=vec![path.into()];external(vec![request(permission,paths.clone(),paths.clone())],&paths,(cwd,home),false)
+            let paths=if let Some(path)=string(input,&["path","file_path"]).filter(|path|!path.is_empty()){
+                vec![path.into()]
+            }else if permission=="edit"{
+                maho_ext_gpt_apply_patch::text::extract_patched_paths(string(input,&["input","patchText"]).unwrap_or_default())
+            }else{Vec::new()};
+            if paths.is_empty(){return fallback(permission);}
+            let requests=paths.iter().map(|path|request(permission,vec![path.clone()],vec![path.clone()])).collect();
+            external(requests,&paths,(cwd,home),false)
         }));
     }
     registry.register("grep",Arc::new(|input,cwd,home|{
