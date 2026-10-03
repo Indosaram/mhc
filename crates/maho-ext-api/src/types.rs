@@ -1271,7 +1271,17 @@ impl ExtensionRuntime {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_tool_renderers.get(path).map(|renderers| renderers.get(name).cloned())
     }
     pub fn extension_tool_executor(&self, path: &str, name: &str) -> Option<ExtensionToolExecutor> {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extension_tool_executors.get(&(path.into(), name.into())).cloned()
+        let execute = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extension_tool_executors.get(&(path.into(), name.into())).cloned()?;
+        let runtime = self.clone();
+        Some(Arc::new(move |id, params, signal, update, context| {
+            let execute = execute.clone(); let runtime = runtime.clone();
+            Box::pin(async move {
+                runtime.assert_active()?;
+                let result = execute(id, params, signal, update, context).await?;
+                runtime.assert_active()?;
+                Ok(result)
+            })
+        }))
     }
     pub fn register_provider(&self, registration: ProviderRegistration, path: &str) -> Result<(), ExtensionFailure> {
         self.assert_active()?;
