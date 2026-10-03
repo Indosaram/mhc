@@ -2327,7 +2327,9 @@ name = "maho-ext-openai-web-search"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-ext-host",
  "serde_json",
+ "tokio",
  "url",
 ]
 
