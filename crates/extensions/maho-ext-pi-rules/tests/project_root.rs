@@ -1,0 +1,17 @@
+use maho_ext_pi_rules::rules::project_root::find_project_root;
+use std::path::{Path,PathBuf};
+fn write(root:&Path,name:&str)->PathBuf {let p=root.join(name);let parent=p.parent().unwrap_or_else(||panic!("fixture path has no parent"));std::fs::create_dir_all(parent).unwrap_or_else(|error|panic!("fixture directory: {error}"));std::fs::write(&p,"marker").unwrap_or_else(|error|panic!("fixture file: {error}"));p}
+fn marker_case(marker:&str){let d=tempfile::tempdir().unwrap_or_else(|error|panic!("fixture tempdir: {error}"));write(d.path(),&format!("repo/{marker}"));let root=d.path().join("repo");let r=find_project_root(&root,None);assert_eq!(r,Some(root.canonicalize().unwrap_or_else(|error|panic!("fixture canonical path: {error}"))));}
+#[test] fn git_marker(){marker_case(".git");}
+#[test] fn package_marker(){marker_case("package.json");}
+#[test] fn go_marker(){marker_case("go.mod");}
+#[test] fn file_start(){let d=tempfile::tempdir().unwrap();write(d.path(),"repo/package.json");let p=write(d.path(),"repo/src/index.ts");let r=find_project_root(&p,None);assert_eq!(r,Some(d.path().join("repo").canonicalize().unwrap()));}
+#[test] fn symlink_resolves_project(){let d=tempfile::tempdir().unwrap();write(d.path(),"repo/package.json");write(d.path(),"repo/src/index.ts");std::fs::create_dir_all(d.path().join("outside")).unwrap();std::os::unix::fs::symlink(d.path().join("repo/src"),d.path().join("outside/linked-src")).unwrap();let r=find_project_root(&d.path().join("outside/linked-src/index.ts"),None);assert_eq!(r,Some(d.path().join("repo").canonicalize().unwrap()));}
+#[test] fn nearest_nested_marker(){let d=tempfile::tempdir().unwrap();write(d.path(),"outer/.git");write(d.path(),"outer/packages/inner/.git");let start=d.path().join("outer/packages/inner/src/features");std::fs::create_dir_all(&start).unwrap();let r=find_project_root(&start,None);assert_eq!(r,Some(d.path().join("outer/packages/inner").canonicalize().unwrap()));}
+#[test] fn no_markers(){let d=tempfile::tempdir().unwrap();let start=d.path().join("plain/nested");std::fs::create_dir_all(&start).unwrap();let r=find_project_root(&start,Some(&["maho-unique-nonexistent-marker"]));assert_eq!(r,None);}
+#[test] fn missing_path(){let d=tempfile::tempdir().unwrap();let r=find_project_root(&d.path().join("missing"),None);assert_eq!(r,None);}
+#[test] fn dangling_path(){let d=tempfile::tempdir().unwrap();std::os::unix::fs::symlink(d.path().join("missing"),d.path().join("dangling")).unwrap();let r=find_project_root(&d.path().join("dangling"),None);assert_eq!(r,None);}
+#[test] fn custom_marker(){let d=tempfile::tempdir().unwrap();write(d.path(),"repo/package.json");write(d.path(),"repo/packages/app/custom.marker");let start=d.path().join("repo/packages/app/src");std::fs::create_dir_all(&start).unwrap();let r=find_project_root(&start,Some(&["custom.marker"]));assert_eq!(r,Some(d.path().join("repo/packages/app").canonicalize().unwrap()));}
+#[test] fn multiple_markers_same_root(){let d=tempfile::tempdir().unwrap();write(d.path(),"repo/.git");write(d.path(),"repo/package.json");let root=d.path().join("repo");let r=find_project_root(&root,None);assert_eq!(r,Some(root.canonicalize().unwrap()));}
+#[test] fn venv_directory(){let d=tempfile::tempdir().unwrap();std::fs::create_dir_all(d.path().join("repo/.venv")).unwrap();std::fs::create_dir_all(d.path().join("repo/src")).unwrap();let r=find_project_root(&d.path().join("repo/src"),None);assert_eq!(r,Some(d.path().join("repo").canonicalize().unwrap()));}
+#[test] fn git_file_submodule(){marker_case(".git");}
