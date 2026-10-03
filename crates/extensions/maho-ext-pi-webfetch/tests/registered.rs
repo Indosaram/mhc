@@ -9,6 +9,57 @@ fn text(result: &AgentToolResult) -> &str {
     match &result.content[0] { ContentBlock::Text(text) => &text.text, _ => panic!("expected text") }
 }
 
+struct BodyPhaseSubscriber(Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
+impl tracing::Subscriber for BodyPhaseSubscriber {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool { metadata.target() == "pi_webfetch" }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id { tracing::span::Id::from_u64(1) }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        if event.metadata().target() == "pi_webfetch"
+            && let Some(sender) = self.0.lock().expect("body phase signal").take() { sender.send(()).expect("body phase receiver"); }
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+#[tokio::test]
+async fn registered_cancellation_after_headers_normalizes_reason() {
+    use tracing::instrument::WithSubscriber;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture listener");
+    let address = listener.local_addr().expect("fixture address");
+    let mut server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("fixture accept");
+        let mut bytes = [0; 4096];
+        assert!(socket.read(&mut bytes).await.expect("fixture request") > 0);
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nx").await.expect("fixture headers");
+        assert_eq!(socket.read(&mut bytes).await.expect("disconnect"), 0);
+    });
+    let (sender, body_started) = tokio::sync::oneshot::channel();
+    let controller = maho_ai::utils::abort::AbortController::new();
+    let mut request = tokio::spawn((support::registered_tool().execute)("qa".into(), json!({"url":format!("http://{address}"),"timeout":5}), Some(controller.signal()), None).with_subscriber(BodyPhaseSubscriber(Mutex::new(Some(sender)))));
+    let body_phase = tokio::time::timeout(std::time::Duration::from_secs(5), body_started).await;
+    controller.abort(Some(maho_ai::utils::abort::AbortReason::new("Error", "custom body cancellation")));
+    let request_result = tokio::time::timeout(std::time::Duration::from_secs(5), &mut request).await;
+    let request_cleanup = if request_result.is_err() {
+        request.abort();
+        Some(request.await)
+    } else { None };
+    let server_result = tokio::time::timeout(std::time::Duration::from_secs(5), &mut server).await;
+    let server_cleanup = if server_result.is_err() {
+        server.abort();
+        Some(server.await)
+    } else { None };
+    if let Some(cleanup) = request_cleanup { assert!(cleanup.is_err_and(|error| error.is_cancelled())); }
+    if let Some(cleanup) = server_cleanup { assert!(cleanup.is_err_and(|error| error.is_cancelled())); }
+    body_phase.expect("body phase deadline").expect("body phase event");
+    let result = request_result.expect("registered request deadline").expect("registered request");
+    server_result.expect("disconnect deadline").expect("fixture server");
+    assert!(std::net::TcpListener::bind(address).is_ok());
+    assert_eq!(text(&result), "Request aborted");
+    assert_eq!(result.is_error, Some(true));
+}
+
 async fn fixture(response: String) -> (String, tokio::task::JoinHandle<String>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture contract");
     let address = listener.local_addr().expect("fixture contract");
@@ -57,6 +108,17 @@ async fn registered_progress_and_metadata() {
         "contentType":"text/plain","bytes":5,"timeoutSeconds":7,"converted":false,"truncated":false,
         "outputTruncated":false,"outputBytes":5,"outputTotalBytes":5}));
     assert_eq!(updates.lock().expect("fixture contract")[0].details, json!({"phase":"fetching","url":url,"format":"text","timeoutSeconds":7}));
+}
+
+#[tokio::test]
+async fn registered_utf8_bom_matches_text_decoder() {
+    for (body, expected) in [("\u{feff}ready", "ready"), ("\u{feff}\u{feff}ready", "\u{feff}ready"), ("r\u{feff}eady", "r\u{feff}eady")] {
+        let result = fetch(body, "text/plain", "text").await;
+        assert_eq!(text(&result), expected);
+        assert_eq!(result.details["bytes"], body.len());
+        assert_eq!(result.details["outputBytes"], expected.len());
+        assert_eq!(result.details["outputTotalBytes"], expected.len());
+    }
 }
 
 #[tokio::test]
@@ -357,9 +419,11 @@ async fn registered_pinned_content_differential() {
                 maho_ext_pi_webfetch::webfetch::content::html_to_markdown(html, "http://example.test/post")
             } else { maho_ext_pi_webfetch::webfetch::content::html_to_text(html, "http://example.test/post") };
             assert_eq!(source_conversion, case[format].as_str().expect("source output"), "{} {format}", case["name"]);
-            let absolute_html = html.replace("href=\"/guide\"", "href=\"http://example.test/guide\"");
-            let result = fetch(&absolute_html, "text/html", format).await;
-            assert_eq!(text(&result), case[format].as_str().expect("source output"), "{} {format}", case["name"]);
+            let (url, server) = fixture(response(html, "text/html", "200 OK")).await;
+            let expected = case[format].as_str().expect("source output").replace("http://example.test/guide", url::Url::parse(&url).expect("fixture URL").join("/guide").expect("relative guide").as_ref());
+            let result = (support::registered_tool().execute)("qa".into(), json!({"url":url,"format":format}), None, None).await;
+            server.await.expect("fixture server");
+            assert_eq!(text(&result), expected, "{} {format}", case["name"]);
         }
     }
 }

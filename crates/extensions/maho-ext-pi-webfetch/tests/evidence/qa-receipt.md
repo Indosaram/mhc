@@ -31,7 +31,7 @@ Fixture session actions preserve the real wrapper's active-tool contract.
 - Markdown/text/HTML: local GET URLs and concrete returned bodies/details captured in acceptance.txt.
 - Redirect: original URL `/start` resolves `/final` and returns `redirected`; 21-request loop returns final 302 body in registered test.
 - Error: HTTP404 body returns normally with status metadata; invalid scheme, oversized declared/streamed body and network failures are errors.
-- Cancellation: pre-aborted custom reason `qa cancellation` preserved; after-header cancellation test waits on exact oneshot then aborts and observes socket EOF.
+- Cancellation: this historical82-test run preserved pre-aborted custom reason `qa cancellation`. Its server-header-write oneshot did not prove client body phase; independent verification correctly rejected that claim. Candidate2c6aea7a replaces it with deterministic pre-header cancellation. The pending verifier delta adds a client body-phase trace subscription, custom AbortSignal reason normalization and EOF assertions.
 - Timeout: registered timeout=1 test observes socket EOF, no fixed sleeps.
 - Cap: 80,000-byte emoji single line -> 51,200 bytes; 120,000-byte multiline -> 51,191 bytes. Both have outputTruncated=true and correct totals. Small body verbatim.
 - All fixture tasks joined. Example rebinds each port after join; no persistent QA server/process or temp fixture file remains.
@@ -43,7 +43,9 @@ webfetch.test.ts fixture strings. Source TypeScript transpiled using Bun.Transpi
 without semantic changes, then executed with `/usr/bin/node --input-type=module -e`
 using installed JSDOM, Readability and Turndown. Includes Tistory body/title priority,
 linebreak/table, literal entities and noisy no-wrapper article with relative links.
-Native direct conversion plus real registered HTTP invocation match both output formats.
+Native direct conversion matched both formats. Historical registered execution rewrote
+the relative guide link absolute first, so it did not prove fetched-URL relative-link
+resolution. Pending verifier delta serves HTML unchanged and rebinds only expected origin.
 Existing 25-case Turndown fixture matrix and six UTF8 cap tests remain intact.
 
 ## Renderer real PTY / browser proof

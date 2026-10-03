@@ -19,6 +19,7 @@ reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-
 tokio = { version = "=1.52.3", features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
 url = "=2.5.8"
 thiserror = "=2.0.18"
+tracing = "=0.1.44"
 
 [dev-dependencies]
 maho-ext-host = { path = "../../maho-ext-host" }

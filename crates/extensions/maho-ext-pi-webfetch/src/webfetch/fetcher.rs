@@ -59,6 +59,7 @@ async fn fetch_validated_url(value:&str,format:WebfetchFormat,reading_body:&std:
         }
         if response.content_length().is_some_and(|length|length>5*1024*1024){discard_body(response).await;return Err(WebfetchError::ResponseTooLarge);}
         reading_body.store(true, std::sync::atomic::Ordering::Relaxed);
+        tracing::trace!(target: "pi_webfetch", url = %current, "reading response body");
         let content_type=response.headers().get_all("content-type").iter().map(|value|value.as_bytes().iter().copied().map(char::from).collect::<String>()).collect::<Vec<_>>().join(", ");
         let mut body=Vec::new();
         while let Some(chunk)=response.chunk().await.map_err(|error| network_error(error, &current))?{if body.len()+chunk.len()>MAX_RESPONSE_SIZE_BYTES{return Err(WebfetchError::ResponseTooLarge);}body.extend_from_slice(&chunk);}

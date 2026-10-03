@@ -43,7 +43,7 @@ pub async fn execute(params: Value, signal: Option<maho_ai::utils::abort::AbortS
     }
     let fetched = super::fetcher::fetch_url_with_abort(url, format, params["timeout"].as_f64(), signal.as_ref()).await
         .map_err(|error| ExtensionFailure::new(error.to_string()))?;
-    let raw = String::from_utf8_lossy(&fetched.body);
+    let raw = String::from_utf8_lossy(fetched.body.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&fetched.body));
     let content_type = fetched.content_type.to_lowercase();
     let html = content_type.contains("text/html") || content_type.contains("application/xhtml+xml");
     let converted = html && format != super::fetcher::WebfetchFormat::Html;

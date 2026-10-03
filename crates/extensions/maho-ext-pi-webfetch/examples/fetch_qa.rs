@@ -12,6 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("text", "text", "text/html", "<h1>Hello</h1><p>Alpha<br>Beta</p>", "200 OK"),
         ("html", "html", "text/html", "<p>raw</p>", "200 OK"),
         ("error", "text", "text/plain", "missing", "404 Not Found"),
+        ("bom", "text", "text/plain", "\u{feff}ready", "200 OK"),
         ("oversized", "text", "text/plain", "", "200 OK"),
     ] {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -33,6 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "text" => assert_eq!(text, "Hello\n\nAlpha\nBeta"),
             "html" => assert_eq!(text, body),
             "error" => { assert_eq!(text, body); assert_eq!(result.details["status"], 404); },
+            "bom" => { assert_eq!(text, "ready"); assert_eq!(result.details["bytes"], 8); assert_eq!(result.details["outputBytes"], 5); },
             "oversized" => { assert_eq!(result.is_error, Some(true)); assert_eq!(text, "Response too large (exceeds 5MB limit)"); },
             _ => unreachable!(),
         }
@@ -47,6 +49,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(result.is_error, Some(true));
     assert!(matches!(&result.content[0], ContentBlock::Text(text) if text.text == "qa cancellation"));
     println!("PASS cancellation invocation=webfetch(http://127.0.0.1:1, pre-aborted reason=qa cancellation); cleanup=no socket created");
+
+    let result = (tool.execute)("qa-invalid".into(), json!({"url":"file:///fixture"}), None, None).await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(matches!(&result.content[0], ContentBlock::Text(text) if text.text == "URL must start with http:// or https://"));
+    println!("PASS invalid URL; cleanup=no socket created");
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await?;
+        let mut bytes = [0; 4096];
+        assert!(socket.read(&mut bytes).await? > 0);
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nx").await?;
+        assert_eq!(socket.read(&mut bytes).await?, 0);
+        Ok::<_, std::io::Error>(())
+    });
+    let result = (tool.execute)("qa-timeout".into(), json!({"url":format!("http://{address}/timeout"),"timeout":1}), None, None).await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(matches!(&result.content[0], ContentBlock::Text(text) if text.text == "Request aborted"));
+    tokio::time::timeout(std::time::Duration::from_secs(5), server).await???;
+    assert!(std::net::TcpListener::bind(address).is_ok());
+    println!("PASS body timeout; cleanup=joined fixture task, port {address} released");
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
