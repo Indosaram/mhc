@@ -1,4 +1,4 @@
-use crate::{errors::GoalError, persistence::{encoded_thread_id, read_goal_file, write_goal_file}, transitions::transition_goal_status, types::{Goal, GoalAccountingMode, GoalStatus, GoalStoreRef, GoalUpdate, GoalUpdateSource, TokenUsageSnapshot}, validation::{resolve_token_budget, validate_objective, validate_token_budget}};
+use crate::{errors::GoalError, persistence::{encoded_thread_id, read_goal_file, write_goal_file}, transitions::transition_goal_status, types::{Goal, GoalAccountingMode, GoalStatus, GoalStoreRef, GoalUpdate, GoalUpdateSource, TokenUsageSnapshot}, validation::{resolve_token_budget, validate_objective}};
 use maho_core::session_sidecar_store::serialize_by_key;
 use std::{fs, io::Write, path::PathBuf};
 pub use crate::persistence::goal_file_path;
@@ -12,14 +12,14 @@ pub async fn write_goal(reference: &GoalStoreRef, goal: Option<&Goal>) -> Result
 fn fresh_goal(reference: &GoalStoreRef, objective: String, status: GoalStatus, token_budget: Option<u64>, now: u64) -> Goal {
     Goal { id: uuid::Uuid::new_v4().to_string(), thread_id: reference.thread_id.clone(), objective, status, token_budget, tokens_used: 0, time_used_seconds: 0.0, consecutive_continuations: Some(0), unattended_continuations: Some(0), last_continuation_signature: None, created_at: now, updated_at: now, last_started_at: (status == GoalStatus::Active).then_some(now), blocked_reason: None, blocked_at: None, completed_at: (status == GoalStatus::Complete).then_some(now) }
 }
-pub async fn create_goal(reference: &GoalStoreRef, objective: &str, token_budget: Option<u64>, now: u64) -> Result<Goal, GoalError> {
+pub async fn create_goal(reference: &GoalStoreRef, objective: &str, token_budget: Option<f64>, now: u64) -> Result<Goal, GoalError> {
     serialize_by_key(&goal_file_path(reference).to_string_lossy(), async {
         let validated = validate_objective(objective, &objective_full_text_file_name(reference))?;
         let current = read_goal_file(reference)?;
         if current.as_ref().is_some_and(|g| g.status != GoalStatus::Complete) { return Err(GoalError::AlreadyExists("cannot create a new goal because this thread already has a goal".into())); }
         if validated.truncated { write_full_objective_text(reference, objective)?; }
         if let Some(current) = current { archive_goal(reference, &current)?; }
-        let goal = fresh_goal(reference, validated.objective, GoalStatus::Active, token_budget.map(validate_token_budget).transpose()?, now);
+        let goal = fresh_goal(reference, validated.objective, GoalStatus::Active, resolve_token_budget(None,token_budget.map(Some))?, now);
         write_goal_file(reference, Some(&goal))?;
         Ok(goal)
     }).await
