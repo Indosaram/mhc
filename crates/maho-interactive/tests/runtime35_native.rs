@@ -833,6 +833,25 @@ async fn faux_screen_hi_matches_pinned_interactive_cells() {
     assert_eq!(actual.cells,expected.cells,"native viewport: {:?}",actual.viewport);
     }
 }
+#[tokio::test]
+async fn faux_screen_slash_hotkeys_matches_pinned_cells() {
+    let (mut mode,_directory)=native_mode_at(Some("/tmp"));
+    mode.handle_input_at("hi",0);mode.handle_input_at("\r",1);
+    mode.submit_editor().await.expect("seed turn");
+    mode.handle_input_at("/hotkeys",2);mode.handle_input_at("\r",3);
+    mode.submit_editor().await.expect("hotkeys");
+    let theme=maho_interactive::theme::Theme::builtin("dark",maho_interactive::theme::ColorMode::Truecolor).expect("theme");
+    let renderer=maho_interactive::tui_renderer::create_interactive_tui(maho_interactive::tui_renderer::InteractiveTuiOptions {tui_mode:maho_interactive::tui_renderer::TuiMode::Fullscreen,show_hardware_cursor:false,bottom_shortcut:String::new()},theme);
+    let mut mounted=maho_interactive::interactive_terminal::InteractiveTerminal::new(mode,renderer);
+    let mut terminal=ScreenTerminal {writes:String::new(),screen:maho_test_support::vterm::VirtualTerminal::new(120,36),input:None,stopped:false};
+    mounted.start(&mut terminal,false,false);
+    let expected:maho_test_support::vterm::Screen=serde_json::from_str(include_str!("../../../.omo/evidence/task-35-slash/senpi-hotkeys-120.cells.json")).expect("pinned cells");
+    let actual=terminal.screen.snapshot();
+    println!("NATIVE_HOTKEYS_ANSI={}",serde_json::to_string(&terminal.writes).expect("ANSI evidence"));
+    mounted.stop(&mut terminal,true).expect("restore terminal");
+    assert_eq!(actual.cells,expected.cells,"native viewport: {:?}",actual.viewport);
+}
+
 impl maho_tui::terminal::Terminal for ScreenTerminal {
     fn start(&mut self, input:maho_tui::terminal::InputHandler, _:maho_tui::terminal::ResizeHandler) { self.input=Some(input); self.screen.start(); }
     fn stop(&mut self) -> Result<(), maho_tui::terminal::TerminalError> { self.input=None; self.stopped=true; self.screen.stop(); Ok(()) }

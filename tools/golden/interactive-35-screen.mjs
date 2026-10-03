@@ -44,6 +44,11 @@ const submission=mode.pendingUserInputs.shift();
 if (!submission) throw new Error("editor did not queue hi");
 await result.session.prompt(submission.text,mode.buildMainLoopPromptOptions(submission));
 await Promise.race([completed,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error("faux turn did not settle")),10000);timer.unref();})]);
+const command=process.env.GOLDEN_COMMAND;
+if(command){
+ if(!["hotkeys","session","import"].includes(command))throw new Error("unsupported slash fixture");
+ await mode.defaultEditor.onSubmit(`/${command}`);
+}
 mode.ui.doRender(); await terminal.flush();
 const buffer=terminal.xterm.buffer.active;
 const cells=Array.from({length:36},(_,y)=>Array.from({length:columns},(_,x)=>{
@@ -57,8 +62,8 @@ const cells=Array.from({length:36},(_,y)=>Array.from({length:columns},(_,x)=>{
  if(cell?.isBold())attrs.push("bold");if(cell?.isDim())attrs.push("dim");if(cell?.isItalic())attrs.push("italic");if(cell?.isUnderline())attrs.push("underline");if(cell?.isInverse())attrs.push("inverse");
  return { ch:cell?.getChars()??"",fg:color("fg"),bg:color("bg"),attrs };
 }));
-const out=new URL("../../.omo/evidence/task-35-faux/",import.meta.url);mkdirSync(out,{recursive:true});
-const name=columns===120?"senpi-hi":`senpi-hi-${columns}`;
+const out=new URL(command?"../../.omo/evidence/task-35-slash/":"../../.omo/evidence/task-35-faux/",import.meta.url);mkdirSync(out,{recursive:true});
+const name=command?`senpi-${command}-${columns}`:columns===120?"senpi-hi":`senpi-hi-${columns}`;
 writeFileSync(new URL(`${name}.cells.json`,out),JSON.stringify({cols:columns,rows:36,cursor:terminal.getCursorPosition(),viewport:terminal.getViewport(),cells}));
 writeFileSync(new URL(`${name}.ansi`,out),writes.join(""));
 writeFileSync(new URL(`${name}.txt`,out),terminal.getViewport().join("\n"));

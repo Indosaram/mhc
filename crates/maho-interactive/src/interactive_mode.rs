@@ -786,8 +786,103 @@ impl InteractiveMode {
             return Ok(true);
         }
         if text == "/hotkeys" {
-            let markdown = crate::help_content::build_help_markdown(&[]);
-            self.chat.add_child(Rc::new(RefCell::new(crate::components::markdown_transform::MarkdownComponent(maho_tui::components::markdown::Markdown::new(&markdown, 1, 1, get_markdown_theme(&self.theme), None, Default::default())))));
+            let keys=self.keybindings();
+            let key_display_text=|action:&str|crate::components::keybinding_hints::format_key_text(&keys.get_keys(action).join("/"),true);
+            let cursor_up=key_display_text("tui.editor.cursorUp");
+            let cursor_down=key_display_text("tui.editor.cursorDown");
+            let cursor_left=key_display_text("tui.editor.cursorLeft");
+            let cursor_right=key_display_text("tui.editor.cursorRight");
+            let cursor_word_left=key_display_text("tui.editor.cursorWordLeft");
+            let cursor_word_right=key_display_text("tui.editor.cursorWordRight");
+            let cursor_line_start=key_display_text("tui.editor.cursorLineStart");
+            let cursor_line_end=key_display_text("tui.editor.cursorLineEnd");
+            let jump_forward=key_display_text("tui.editor.jumpForward");
+            let jump_backward=key_display_text("tui.editor.jumpBackward");
+            let page_up=key_display_text("tui.editor.pageUp");
+            let page_down=key_display_text("tui.editor.pageDown");
+            let submit=key_display_text("tui.input.submit");
+            let new_line=key_display_text("tui.input.newLine");
+            let delete_word_backward=key_display_text("tui.editor.deleteWordBackward");
+            let delete_word_forward=key_display_text("tui.editor.deleteWordForward");
+            let delete_to_line_start=key_display_text("tui.editor.deleteToLineStart");
+            let delete_to_line_end=key_display_text("tui.editor.deleteToLineEnd");
+            let yank=key_display_text("tui.editor.yank");
+            let yank_pop=key_display_text("tui.editor.yankPop");
+            let undo=key_display_text("tui.editor.undo");
+            let tab=key_display_text("tui.input.tab");
+            let interrupt=key_display_text("app.interrupt");
+            let clear=key_display_text("app.clear");
+            let exit=key_display_text("app.exit");
+            let suspend=key_display_text("app.suspend");
+            let cycle_thinking_level=key_display_text("app.thinking.cycle");
+            let cycle_model_forward=key_display_text("app.model.cycleForward");
+            let select_model=key_display_text("app.model.select");
+            let expand_tools=key_display_text("app.tools.expand");
+            let toggle_thinking=key_display_text("app.thinking.toggle");
+            let external_editor=key_display_text("app.editor.external");
+            let cycle_model_backward=key_display_text("app.model.cycleBackward");
+            let copy_message=key_display_text("app.message.copy");
+            let follow_up=key_display_text("app.message.followUp");
+            let dequeue=key_display_text("app.message.dequeue");
+            let answer_question=key_display_text("app.question.answer");
+            let next_question=key_display_text("app.question.next");
+            let paste_image=key_display_text("app.clipboard.pasteImage");
+            let windows_note=if cfg!(target_os="windows") {" (Ctrl+Enter on Windows Terminal)"}else{""};
+            let markdown=format!(r#"
+**Navigation**
+| Key | Action |
+|-----|--------|
+| `{cursor_up}` / `{cursor_down}` / `{cursor_left}` / `{cursor_right}` | Move cursor / browse history |
+| `{cursor_word_left}` / `{cursor_word_right}` | Move by word |
+| `{cursor_line_start}` | Start of line |
+| `{cursor_line_end}` | End of line |
+| `{jump_forward}` | Jump forward to character |
+| `{jump_backward}` | Jump backward to character |
+| `{page_up}` / `{page_down}` | Scroll by page |
+
+**Editing**
+| Key | Action |
+|-----|--------|
+| `{submit}` | Send message |
+| `{new_line}` | New line{windows_note} |
+| `{delete_word_backward}` | Delete word backwards |
+| `{delete_word_forward}` | Delete word forwards |
+| `{delete_to_line_start}` | Delete to start of line |
+| `{delete_to_line_end}` | Delete to end of line |
+| `{yank}` | Paste the most-recently-deleted text |
+| `{yank_pop}` | Cycle through the deleted text after pasting |
+| `{undo}` | Undo |
+
+**Other**
+| Key | Action |
+|-----|--------|
+| `{tab}` | Path completion / accept autocomplete |
+| `{interrupt}` | Cancel autocomplete / abort streaming |
+| `{clear}` | Clear editor (first) / exit (second) |
+| `{exit}` | Exit (when editor is empty) |
+| `{suspend}` | Suspend to background |
+| `{cycle_thinking_level}` | Cycle thinking level |
+| `{cycle_model_forward}` / `{cycle_model_backward}` | Cycle models |
+| `{select_model}` | Open model selector |
+| `{expand_tools}` | Toggle tool output expansion |
+| `{toggle_thinking}` | Toggle thinking block visibility |
+| `{external_editor}` | Edit message in external editor |
+| `{copy_message}` | Copy last assistant message |
+| `{follow_up}` | Queue follow-up message |
+| `{dequeue}` | Restore queued messages |
+| `{answer_question}` | Open the pending question before dequeue (also: empty Enter; /answer lists requests) |
+| `{next_question}` | Cycle pending questions from an empty composer |
+| `{paste_image}` | Paste image or text from clipboard |
+| `/` | Slash commands |
+| `!` | Run bash command |
+| `!!` | Run bash command (excluded from context) |
+"#);
+            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+            self.chat.add_child(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone()))));
+            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.bold(&self.theme.fg(crate::theme::ThemeColor::Accent,"Keyboard Shortcuts")),1,0))));
+            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+            self.chat.add_child(Rc::new(RefCell::new(crate::components::markdown_transform::MarkdownComponent(maho_tui::components::markdown::Markdown::new(markdown.trim(), 1, 1, get_markdown_theme(&self.theme), None, Default::default())))));
+            self.chat.add_child(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone()))));
             return Ok(true);
         }
         if let Some(name) = text.split_whitespace().next().and_then(|word| word.strip_prefix('/'))
