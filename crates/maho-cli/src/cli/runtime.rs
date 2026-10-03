@@ -75,6 +75,7 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
         },
         AppMode::AppServer => unreachable!("server mode rejected before session creation"),
     } }.await;
+    session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;
     session.dispose().await;
     result
 }
