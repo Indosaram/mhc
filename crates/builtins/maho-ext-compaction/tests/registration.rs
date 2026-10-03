@@ -253,11 +253,12 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     let remote_failure=matches!(variant,"remote-auth"|"remote-network");
     let remote_auth=variant=="remote-auth";
     let remote_network=variant=="remote-network";
-    let remote_server = if matches!(variant,"remote-http"|"remote-sse"|"remote-cancel"|"session-abort"|"remote-auth"|"remote-network") {
+    let remote_server = if matches!(variant,"remote-http"|"remote-sse"|"remote-sse-success"|"remote-cancel"|"session-abort"|"remote-auth"|"remote-network") {
         use tokio::io::{AsyncReadExt,AsyncWriteExt};
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("local remote listener");
         model.api="openai-responses".into();model.provider="openai".into();model.base_url=format!("http://{}/v1",listener.local_addr().expect("listener address"));
-        let sse=variant=="remote-sse";
+        let sse=matches!(variant,"remote-sse"|"remote-sse-success");
+        let opaque_success=variant=="remote-sse-success";
         if sse || remote_failure {
             maho_ai::api_registry::register_builtin_api_provider("openai-responses",Arc::new(NativeResponsesStreams));
         }
@@ -265,7 +266,7 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
             model.compat=Some(maho_ai::types::ModelCompat(serde_json::Map::from_iter([("supportsRemoteCompactionV2".into(),serde_json::json!(true)),("supportsWebSocket".into(),serde_json::json!(false))])));
         }
         Some(tokio::spawn(async move {
-            for attempt in 0..if sse || remote_failure {2} else {1} {
+            for attempt in 0..if (sse && !opaque_success) || remote_failure {2} else {1} {
             let (mut socket,_)=listener.accept().await.expect("registered remote connection");
             let mut bytes=Vec::new();let mut buffer=[0;4096];
             let body=loop {
@@ -296,7 +297,8 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
             }
             if sse && attempt==0 {
                 assert_eq!(body["stream"],true);
-                let response="data: {\"type\":\"response.completed\",\"response\":{\"id\":\"sse\",\"status\":\"completed\",\"output\":[]}}\n\n";
+                assert!(body["input"].as_array().expect("SSE input").iter().any(|item|item["type"]=="compaction_trigger"));
+                let response=if opaque_success {"data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"native-checkpoint\",\"type\":\"compaction\",\"encrypted_content\":\"opaque-sse\"}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"sse\",\"status\":\"completed\",\"output\":[{\"id\":\"native-checkpoint\",\"type\":\"compaction\",\"encrypted_content\":\"opaque-sse\"}]}}\n\n"} else {"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"sse\",\"status\":\"completed\",\"output\":[]}}\n\n"};
                 socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).as_bytes()).await.expect("native SSE response");
                 continue;
             }
@@ -481,7 +483,10 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
         assert!(compactions.iter().any(|entry|entry["details"]["origin"]==origin),"compactions: {compactions:?}");
     } else {
         let result = tokio::time::timeout(std::time::Duration::from_secs(10),session.compact(None)).await.expect("native compaction scenario invariant").expect("native compaction scenario invariant");
-        if matches!(variant,"remote-http"|"remote-sse") {
+        if variant=="remote-sse-success" {
+            let details=result.details.as_ref().expect("opaque SSE details");
+            assert_eq!(details["transport"],"responses-v2");assert_eq!(details["replacementInput"][0]["encrypted_content"],"opaque-sse");
+        } else if matches!(variant,"remote-http"|"remote-sse") {
             assert_eq!(result.details.as_ref().expect("remote details")["transport"],"compact-endpoint");
         } else {assert_eq!(result.details.as_ref().expect("native compaction scenario invariant")["origin"],if variant=="fallback" {"required-compaction-recovery"} else {"core-route"},"details={:?}, calls={:?}",result.details,provider.get_call_log());}
         if remote_failure {assert_eq!(provider.get_call_log().len(),0,"fallback uses actual native Responses transport");}
@@ -493,7 +498,8 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     let entries = session.with_session_manager(|manager|manager.entries());
     assert!(entries.iter().any(|entry|entry["customType"] == "compaction.agent-checkpoint"));
     assert!(entries.iter().any(|entry|entry["customType"] == "compaction.todo-snapshot"));
-    assert_eq!(provider.get_call_log().len(),if matches!(variant,"remote-http"|"remote-sse") || remote_failure {0} else if variant=="overflow" {3} else if threshold || variant=="fallback" {2} else {1});
+    assert_eq!(provider.get_call_log().len(),if matches!(variant,"remote-http"|"remote-sse"|"remote-sse-success") || remote_failure {0} else if variant=="overflow" {3} else if threshold || variant=="fallback" {2} else {1});
+    if variant=="remote-sse-success" {assert!(entries.iter().any(|entry|entry["type"]=="compaction" && entry["details"]["replacementInput"][0]["encrypted_content"]=="opaque-sse"),"native checkpoint persisted losslessly");}
     if variant=="overflow" {
         let calls=provider.get_call_log();
         let tokens=|index:usize|calls[index].context.messages.iter().map(|message|maho_core::compaction::compaction::estimate_tokens(&serde_json::to_value(message).expect("request message"))).sum::<u64>();
@@ -546,6 +552,9 @@ async fn native_registered_idle_summary_is_superseded_by_model_change() {run_nat
 
 #[tokio::test]
 async fn native_registered_idle_retired_runner_rejects_late_apply() {run_native_variant(false,false,"idle-stale-runner").await;}
+
+#[tokio::test]
+async fn native_registered_remote_sse_persists_opaque_checkpoint() {run_native_variant(false,false,"remote-sse-success").await;}
 
 #[tokio::test(start_paused=true)]
 async fn registered_prompt_arrival_stands_down_pending_idle_retry() {

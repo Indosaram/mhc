@@ -15,6 +15,7 @@ async fn main() {
         Some("fallback") => run_native_variant(false,false,"fallback").await,
         Some("remote-http") => run_native_variant(false,false,"remote-http").await,
         Some("remote-sse") => run_native_variant(false,false,"remote-sse").await,
+        Some("remote-sse-success") => run_native_variant(false,false,"remote-sse-success").await,
         Some("remote-cancel") => run_native_variant(false,false,"remote-cancel").await,
         Some("session-abort") => run_native_variant(false,false,"session-abort").await,
         Some("lifecycle") => run_native_variant(false,false,"lifecycle").await,
