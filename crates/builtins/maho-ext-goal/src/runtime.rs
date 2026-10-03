@@ -5,6 +5,7 @@ struct State {
     context:Option<ExtensionContext>,accounting:GoalTurnAccounting,input:GoalDirectInputLifecycle,
     ticker:crate::elapsed_ticker::GoalElapsedTicker,
     subscriptions:Vec<maho_ext_api::BusSubscription>,
+    continuation_pending:bool,
 }
 pub struct GoalRuntime {
     state:tokio::sync::Mutex<State>,pub monitor:Arc<Mutex<MonitorAwareGoalContinuation>>,
@@ -14,7 +15,27 @@ pub struct GoalRuntime {
 impl GoalRuntime {
     pub fn new(reference:GoalStoreReference,now:Arc<dyn Fn()->f64+Send+Sync>)->Self {
         let render=Arc::new(|context:&ExtensionContext,goal:&Goal,elapsed:f64| { crate::ui::update_goal_ui(context,Some(goal),Some(elapsed)); Ok(()) });
-        Self { state:tokio::sync::Mutex::new(State { context:None,accounting:Default::default(),input:Default::default(),ticker:crate::elapsed_ticker::GoalElapsedTicker::new(render,now.clone()),subscriptions:Vec::new() }),monitor:Arc::new(Mutex::new(Default::default())),events:Default::default(),reference,now }
+        Self { state:tokio::sync::Mutex::new(State { context:None,accounting:Default::default(),input:Default::default(),ticker:crate::elapsed_ticker::GoalElapsedTicker::new(render,now.clone()),subscriptions:Vec::new(),continuation_pending:false }),monitor:Arc::new(Mutex::new(Default::default())),events:Default::default(),reference,now }
+    }
+    pub fn continuation_callback(self:&Arc<Self>,api:Arc<maho_ext_api::ExtensionApi>)->crate::command_registration::QueueGoalContinuation {
+        let runtime=self.clone();
+        Arc::new(move |context,goal| { let runtime=runtime.clone(); let api=api.clone(); Box::pin(async move {
+            let mut state=runtime.state.lock().await;
+            let branch=context.session_manager.get_branch();
+            let text=crate::lifecycle_helpers::last_assistant_text_from_entries(&branch);
+            let signature=crate::lifecycle_helpers::build_current_goal_continuation_signature(context,goal,&text);
+            let input=crate::continuation::GoalContinuationInput { goal:Some(goal),is_idle:context.is_idle(),has_pending_messages:context.has_pending_messages()?,path:crate::continuation::GoalContinuationPath::SessionStart,last_stop_reason:None,last_turn_was_malformed_tool_use:false,consecutive_continuations:goal.consecutive_continuations.unwrap_or(0),last_continuation_signature:goal.last_continuation_signature.as_deref(),current_signature:Some(&signature),consecutive_length_recoveries:0,recent_normalized_output_hashes:&[],toolless_continuation_streak:0,continuation_pending:state.continuation_pending,last_turn_stuck_on_context_overflow:crate::lifecycle_helpers::is_last_turn_stuck_on_context_overflow(context,crate::lifecycle_helpers::last_assistant_from_entries(&branch).as_ref()) };
+            let (recorded,verdict)=crate::lifecycle_helpers::admit_and_report_goal_continuation(&api,context,&(runtime.reference)(context),&input,((runtime.now)()/1000.0).floor() as u64).await?;
+            if recorded.is_some()&&matches!(verdict,crate::continuation::GoalContinuationVerdict::Continue { .. }) {
+                state.continuation_pending=true;
+                crate::lifecycle_helpers::queue_hidden_goal_prompt(&api,crate::prompt::build_continuation_prompt(goal))?;
+            }
+            if recorded.as_ref().is_none_or(|current|current.status!=goal.status) {
+                if let Some(current)=recorded.as_ref().filter(|current|current.status==GoalStatus::Active) { state.accounting.begin(current,(runtime.now)()); } else { state.accounting.clear(); }
+                runtime.refresh(&mut state,context,recorded.as_ref()).await?;
+            }
+            Ok(())
+        }) })
     }
     pub async fn start_channels(&self,events:&maho_ext_api::EventBus,context:&ExtensionContext)->Result<(),ExtensionFailure> {
         let mut state=self.state.lock().await; state.subscriptions.clear();
@@ -67,14 +88,14 @@ impl GoalRuntime {
         let mut goal=if matches!(event,ExtensionEvent::SessionStart(_)) { None } else { crate::store::read_goal(&reference).map_err(failure)? };
         match event {
             ExtensionEvent::SessionStart(_)=>{
-                state.accounting.clear(); state.input.reset(); state.subscriptions.clear();
+                state.accounting.clear(); state.input.reset(); state.subscriptions.clear(); state.continuation_pending=false;
                 self.monitor.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?.dispose();
                 crate::persistence::migrate_legacy_goal_file_default(&reference).map_err(failure)?;
                 goal=crate::store::read_goal(&reference).map_err(failure)?;
                 state.context=Some(context.clone());
                 if let Some(goal)=goal.as_ref().filter(|goal|goal.status==GoalStatus::Active) { state.accounting.begin(goal,now); }
             },
-            ExtensionEvent::AgentStart=>state.accounting.agent_start(goal.as_ref(),now),
+            ExtensionEvent::AgentStart=>{ state.continuation_pending=false; state.accounting.agent_start(goal.as_ref(),now); },
             ExtensionEvent::MessageStart { message:maho_agent::types::AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(message)) } if message.custom_type=="manual-continue"=>{
                 if goal.as_ref().is_some_and(|goal|goal.status==GoalStatus::Blocked) {
                     goal=Some(crate::store::update_goal(&reference,&GoalUpdate { status:Some(GoalStatus::Active),..Default::default() },GoalUpdateSource::User,seconds).await.map_err(failure)?);
@@ -178,6 +199,31 @@ impl GoalRuntime {
 fn failure(error:crate::errors::GoalError)->ExtensionFailure { ExtensionFailure::new(error.to_string()) }
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn canonical_owner_callback_records_before_hidden_transport_and_is_single_flight() {
+        use maho_ext_api::*;
+        struct Capture { reference:GoalStoreRef,sent:std::sync::atomic::AtomicUsize }
+        impl ExtensionActions for Capture {
+            fn send_message(&self,message:CustomMessage,options:SendMessageOptions)->Result<(),ExtensionFailure> {
+                assert_eq!(crate::store::read_goal(&self.reference).unwrap().unwrap().consecutive_continuations,Some(1));
+                assert_eq!(message.custom_type,"goal-continuation"); assert!(!message.display); assert!(options.trigger_turn); assert_eq!(options.deliver_as,Some(DeliverAs::FollowUp));
+                self.sent.fetch_add(1,std::sync::atomic::Ordering::SeqCst); Ok(())
+            }
+            fn send_user_message(&self,_:UserMessageContent,_:SendUserMessageOptions)->Result<(),ExtensionFailure> { Err("unexpected user transport".into()) }
+            fn append_entry(&self,_:&str,_:Option<JsonValue>)->Result<(),ExtensionFailure> { Err("unexpected entry".into()) }
+            fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure> { Ok(Vec::new()) }
+        }
+        let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+        let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap();
+        let runtime=Arc::new(GoalRuntime::new(Arc::new(move |_|stored.clone()),Arc::new(||0.0)));
+        let transport=Arc::new(Capture { reference:reference.clone(),sent:Default::default() }); let api_runtime=ExtensionRuntime::default(); api_runtime.bind(transport.clone());
+        let api=Arc::new(ExtensionApi::new(LoadedExtension::new("goal","/tmp".into(),Default::default()),Default::default(),Default::default(),api_runtime));
+        let queue=runtime.continuation_callback(api); let mut context=crate::test_context::context(); let session=crate::test_context::bind_session(&mut context);
+        queue(&context,&goal).await.unwrap(); queue(&context,&goal).await.unwrap();
+        assert_eq!(transport.sent.load(std::sync::atomic::Ordering::SeqCst),1); assert!(runtime.state.lock().await.continuation_pending);
+        assert_eq!(crate::store::read_goal(&reference).unwrap().unwrap().last_continuation_signature.as_deref(),Some(crate::lifecycle_helpers::build_current_goal_continuation_signature(&context,&goal,"").as_str()));
+        runtime.event(&ExtensionEvent::AgentStart,&context).await.unwrap(); assert!(!runtime.state.lock().await.continuation_pending);
+        runtime.event(&ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason:SessionReason::Quit,target_session_file:None,signal:None }),&context).await.unwrap(); session.dispose().await;
+    }
     #[tokio::test] async fn typed_store_change_uses_actual_context_and_awaits_owner_delivery() {
         let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
         let runtime=GoalRuntime::new(Arc::new(move |_|stored.clone()),Arc::new(||0.0));
