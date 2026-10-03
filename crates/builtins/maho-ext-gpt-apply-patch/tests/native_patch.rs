@@ -31,14 +31,43 @@ struct SessionPatchExtension;
 impl Extension for SessionPatchExtension {
     fn register(&self, api: &mut ExtensionApi) {
         maho_ext_gpt_apply_patch::extension::register_apply_patch_extension(api);
+        for (name, definition) in maho_tools::index::create_all_tool_definitions(std::path::Path::new("."), Default::default()) {
+            if ["read", "write", "edit"].contains(&name.as_str()) { api.register_tool(definition); }
+        }
         let runtime = api.runtime.clone();
-        api.on(maho_ext_api::EventKind::BeforeAgentStart, std::sync::Arc::new(move |_, _| {
+        let handlers = api.registered.handlers[&maho_ext_api::EventKind::ModelSelect].clone();
+        let activator = api.registered.lazy_tool_activators[0].clone();
+        api.on(maho_ext_api::EventKind::BeforeAgentStart, std::sync::Arc::new(move |_, context| {
             let runtime = runtime.clone();
+            let handlers = handlers.clone();
+            let activator = activator.clone();
             Box::pin(async move {
                 let actions = runtime.session_actions()?;
-                let mut active = actions.get_active_tools()?;
-                active.push("apply_patch".into());
-                actions.set_active_tools(active)?;
+                actions.set_active_tools(vec!["read".into(), "write".into(), "edit".into()])?;
+                for (api, id, freeform) in [("openai-completions", "gpt-5", false), ("openai-responses", "gpt-5", true), ("faux", "faux-1", false), ("openai-responses", "gpt-5", true)] {
+                    let mut model = context.model.clone().ok_or_else(|| maho_ext_api::ExtensionFailure::new("Fixture session has no model"))?;
+                    model.api = api.into(); model.id = id.into();
+                    let mut event = maho_ext_api::ExtensionEvent::ModelSelect(maho_ext_api::ModelSelectEvent {
+                        model, previous_model: None, source: maho_ext_api::ModelSelectSource::Set,
+                        system_prompt: String::new(), system_prompt_options: Default::default(),
+                    });
+                    for handler in &handlers { handler(&mut event, context).await?; }
+                    let names = actions.get_active_tools()?;
+                    if api == "faux" {
+                        assert_eq!(names, ["read", "write", "edit"]);
+                        assert!(!activator("apply_patch"));
+                    } else {
+                        assert_eq!(names, ["read", "apply_patch"]);
+                        let tool = runtime.live_tools("builtin:gpt-apply-patch")
+                            .and_then(|tools| tools.into_iter().find(|tool| tool.definition.name == "apply_patch"))
+                            .ok_or_else(|| maho_ext_api::ExtensionFailure::new("Wire-mode replacement did not publish apply_patch"))?;
+                        assert_eq!(tool.definition.freeform.is_some(), freeform);
+                        assert!(runtime.live_tool_renderer("builtin:gpt-apply-patch", "apply_patch").flatten().is_some());
+                        actions.set_active_tools(vec!["read".into()])?;
+                        assert!(activator("apply_patch"));
+                        assert!(!activator("apply_patch"));
+                    }
+                }
                 Ok(maho_ext_api::EventResult::None)
             })
         }));

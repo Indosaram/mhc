@@ -9,6 +9,8 @@ license = "MIT"
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-tools = { path = "../../maho-tools" }
 maho-ai = { path = "../../maho-ai" }
+maho-tui = { path = "../../maho-tui" }
+maho-interactive = { path = "../../maho-interactive" }
 tokio = { version = "=1.52.3", features = ["fs", "macros", "rt"] }
 regex = "=1.12.3"
 serde = { version = "=1.0.228", features = ["derive"] }

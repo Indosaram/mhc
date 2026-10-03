@@ -48,7 +48,10 @@ impl maho_ext_api::Extension for ApplyPatchExtension {
 fn register_native_tool(api: &mut maho_ext_api::ExtensionApi, mode: ApplyPatchWireMode) -> Result<(), maho_ext_api::ExtensionFailure> {
     let definition = crate::tool::create_apply_patch_tool_variant(mode);
     let execute = definition.execute.clone();
-    api.register_tool_with_extension_context(definition, std::sync::Arc::new(move |id, params, _, update, context| {
+    api.register_tool_with_renderers(definition.clone(), crate::render::renderers())?;
+    let scope = api.runtime.registration_scope();
+    let mut executor_api = maho_ext_api::ExtensionApi::new(api.registered.clone(), api.profile.clone(), api.events.clone(), scope.clone());
+    executor_api.register_tool_with_extension_context(definition, std::sync::Arc::new(move |id, params, _, update, context| {
         let execute = execute.clone();
         Box::pin(async move {
             let on_update = update.map(|update| std::sync::Arc::new(move |result: maho_ext_api::ToolResult| {
@@ -74,7 +77,8 @@ fn register_native_tool(api: &mut maho_ext_api::ExtensionApi, mode: ApplyPatchWi
                 details, is_error: Some(is_error), ..maho_ext_api::AgentToolResult::text("")
             })
         })
-    }))
+    }))?;
+    scope.commit_registration()
 }
 
 pub fn register_apply_patch_extension(api: &mut maho_ext_api::ExtensionApi) {
