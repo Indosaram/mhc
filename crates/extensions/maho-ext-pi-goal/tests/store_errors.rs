@@ -1,4 +1,13 @@
 use maho_ext_pi_goal::goal::{errors::GoalStoreError, store::{parse_goal_file, read_goal}, types::GoalStoreRef};
+#[test]
+fn pinned_store_object_shapes_preserve_acceptance_boundary(){
+    let cases:serde_json::Value=serde_json::from_str(include_str!("fixtures/pinned-store-shape.json")).expect("source validator");
+    for case in cases.as_array().expect("cases"){
+        let result=parse_goal_file(&serde_json::json!({"version":1,"goal":case["goal"]}).to_string());
+        assert_eq!(result.is_ok(),case["accepted"].as_bool().expect("acceptance"),"{}",case["name"]);
+        if case["accepted"]==false{assert!(matches!(result,Err(GoalStoreError::InvalidGoalStore(_))));}
+    }
+}
 
 #[test]
 fn fractional_usage_is_written_without_rounding_then_rejected_at_read_boundary() {
