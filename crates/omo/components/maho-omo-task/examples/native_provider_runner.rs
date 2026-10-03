@@ -90,6 +90,7 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
     assert_eq!(completed.status,senpi_task::state::TaskStatus::Completed);
     assert_eq!(completed.final_response.as_deref(),Some("task44-native-provider"));
     assert!(completed.spawn_spec.is_some(),"reconstruction must use actual manager-persisted spawn facts");
+    assert!(std::fs::metadata(&session)?.len()>0,"initial native launch must persist its session before reconstruction");
     let handle=engine.manager.get_resident_handle(&record.task_id).ok_or("completed native resident handle unavailable")?;
     let handle_cleanup=HandleCleanup(handle.clone());
     println!("RECEIPT provider launch output observed through actual manager scheduling and persisted record {}",record.task_id);
@@ -99,8 +100,9 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
     engine.manager.forget(&record.task_id);
     let (resumed_sender,resumed_receiver)=mpsc::channel();
     let resuming=engine.manager.clone();
+    let persisted=completed.clone();
     let resumed_worker=std::thread::spawn(move || {
-        let _=resumed_sender.send(resuming.respawn(&completed,Some(std::path::Path::new(&session))));
+        let _=resumed_sender.send(resuming.respawn(&persisted,Some(std::path::Path::new(&session))));
     });
     let resumed=resumed_receiver.recv_timeout(Duration::from_secs(15));
     if resumed.is_err() { drop(cleanup); resumed_worker.join().map_err(|_| "native resume worker panicked")?; return Err("native resume exceeded bounded deadline".into()); }
@@ -111,9 +113,18 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
     };
     let handle_cleanup=HandleCleanup(handle.clone());
     assert_eq!(processes.lock().expect("processes").len(),2,"resume must construct a second native process");
-    command(handle.clone(),|handle| handle.follow_up("task44-resumed").map_err(|error| error.to_string()))?;
-    assert_eq!(outcome(handle.clone())?,RunnerOutcome::completed("task44-native-resumed"));
-    println!("RECEIPT actual persisted-session switch and resumed output observed");
+    match engine.manager.reattach(&completed,handle.clone()) {
+        senpi_task::lifecycle::port::ReattachResult::Ok=>{},
+        senpi_task::lifecycle::port::ReattachResult::Failed { kind,reason }=>return Err(format!("native manager reattachment failed: {kind:?} {reason}").into()),
+    }
+    let continuing=engine.manager.clone(); let task_id=record.task_id.clone();
+    command(handle.clone(),move |_| continuing.continue_task(&task_id,"task44-resumed",None).map_err(|error| error.to_string()))?;
+    let resumed_record=engine.manager.wait_for(&record.task_id,None,Some(Duration::from_secs(15)))?;
+    assert_eq!(resumed_record.status,senpi_task::state::TaskStatus::Completed);
+    assert_eq!(resumed_record.final_response.as_deref(),Some("task44-native-resumed"));
+    assert!(resumed_record.notification.run_epoch>completed.notification.run_epoch,"manager continuation must advance the persisted run epoch");
+    println!("RECEIPT actual manager reattachment, continuation and persisted resumed output observed");
+    engine.manager.forget(&record.task_id);
     command(handle.clone(),|handle| handle.follow_up("task44-error").map_err(|error| error.to_string()))?;
     assert!(matches!(outcome(handle.clone())?,RunnerOutcome::Error { .. }),"real provider rejection must settle as an error");
     println!("RECEIPT deterministic provider rejection settled through production outcome");
