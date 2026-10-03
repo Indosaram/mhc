@@ -21,7 +21,12 @@ pub fn is_mcp_session_expired_error(error: &Value) -> bool {
     let text = collect_text(error).join(" ").to_lowercase();
     has_status_word(&text,&["404"]) || (text.contains("-32000") && text.contains("session")) || ["session expired","session not found","mcp-session-id"].iter().any(|s| text.contains(s))
 }
-fn number(value: Option<&Value>) -> Option<f64> { value.and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))).filter(|n| n.is_finite()) }
+fn number(value: Option<&Value>) -> Option<f64> {
+    value.and_then(|v|v.as_f64().or_else(||v.as_str().and_then(|s| {
+        let s=s.trim();let radix=if s.starts_with("0x") || s.starts_with("0X"){Some(16)}else if s.starts_with("0o") || s.starts_with("0O"){Some(8)}else if s.starts_with("0b") || s.starts_with("0B"){Some(2)}else{None};
+        if let Some(radix)=radix {let digits=&s[2..];if digits.is_empty(){return None;}digits.chars().try_fold(0.0,|value,digit|digit.to_digit(radix).map(|digit|value*f64::from(radix)+f64::from(digit)))}else{s.parse().ok()}
+    }))).filter(|n|n.is_finite())
+}
 fn numeric_signal(value: &Value, expired: bool) -> bool {
     if !value.is_object() { return false; }
     let code = number(value.get("code"));
@@ -44,4 +49,4 @@ fn collect_text(value: &Value) -> Vec<String> {
         _ => Vec::new(),
     }
 }
-pub(crate) fn has_status_word(text: &str, words: &[&str]) -> bool { text.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|part| words.contains(&part)) }
+pub(crate) fn has_status_word(text: &str, words: &[&str]) -> bool { text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(|part| words.contains(&part)) }
