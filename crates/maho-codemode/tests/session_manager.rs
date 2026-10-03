@@ -91,3 +91,34 @@ async fn persistent_python_calls_native_host_over_owned_bridge() {
     assert!(session.get_python_kernel("python3").await.is_err());
     assert!(tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err());
 }
+
+#[tokio::test]
+async fn cancelled_invocation_cleanup_preserves_readmitted_same_id_http_context() {
+    use maho_codemode::tool::{eval_tool_options::{EvalKernelManager,EvalInvocationContext},detached_cell_manager::{EvalDetachedCellManager,DetachedCellManagerOptions},types::{EvalToolInput,EvalLanguage}};
+    use tokio::io::{AsyncReadExt,AsyncWriteExt};
+    let root=tempfile::tempdir().unwrap();
+    let seen=Arc::new(Mutex::new(Vec::new()));let observed=seen.clone();
+    let session=CodemodeSessionManager::start(CreateCodemodeSessionManagerOptions {session_id:"ownership".into(),cwd:root.path().into(),settings:Default::default(),availability:[EvalLanguage::Py,EvalLanguage::Js,EvalLanguage::Rb,EvalLanguage::Jl].map(|language|(language,maho_codemode::interpreters::detect::LanguageAvailability {enabled:false,detected:maho_codemode::interpreters::detect::InterpreterDetection::Unavailable})),local_roots:None,artifacts_dir:None,session_env:None,executor:Arc::new(Fixture),list_tools:None,complete:Arc::new(move |request| {observed.lock().unwrap().push(request.context.map(|ctx|ctx.cwd));Box::pin(async {Ok(json!({}))})})}).await.unwrap();
+    let mut cells=EvalDetachedCellManager::new(DetachedCellManagerOptions::default());
+    let input=||EvalToolInput {language:EvalLanguage::Py,code:String::new(),summary:"ownership".into(),action:None,timeout:None,on_timeout:None,reset:None};
+    let old=cells.create("same-id".into(),input()).unwrap();
+    let context=|cwd:&str|EvalInvocationContext {model:None,cwd:cwd.into(),thinking_level:None,goal_store_file:None};
+    let clear_old=session.set_invocation_context("same-id",context("/A")).unwrap();
+    assert!(cells.create("same-id".into(),input()).is_err());
+    assert!(cells.cancel_without_interrupt(&old));
+    let _new=cells.create("same-id".into(),input()).unwrap();
+    let clear_new=session.set_invocation_context("same-id",context("/B")).unwrap();
+    clear_old();
+    let (port,token)=session.bridge_endpoint().unwrap();
+    let body=r#"{"prompt":"probe","cellId":"same-id"}"#;
+    let request=format!("POST /completion HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",body.len());
+    let response=tokio::time::timeout(std::time::Duration::from_secs(3),async {
+        let mut socket=tokio::net::TcpStream::connect(("127.0.0.1",port)).await.unwrap();
+        socket.write_all(request.as_bytes()).await.unwrap();
+        let mut response=Vec::new();socket.read_to_end(&mut response).await.unwrap();response
+    }).await;
+    clear_new();session.dispose().await.unwrap();
+    eprintln!("cleanup: same-ID context probe bridge disposed; response={response:?}");
+    assert!(response.is_ok());
+    assert_eq!(*seen.lock().unwrap(),vec![Some(std::path::PathBuf::from("/B"))]);
+}

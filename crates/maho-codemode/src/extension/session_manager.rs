@@ -26,7 +26,7 @@ pub struct CodemodeSessionManager {
     subprocesses: tokio::sync::Mutex<HashMap<EvalLanguage,Arc<SubprocessKernel>>>,
     disposed: AtomicBool,
     dispose_result: tokio::sync::OnceCell<Result<(), String>>,
-    contexts: Arc<std::sync::Mutex<HashMap<String,crate::tool::eval_tool_options::EvalInvocationContext>>>,
+    contexts: Arc<std::sync::Mutex<HashMap<String,Arc<crate::tool::eval_tool_options::EvalInvocationContext>>>>,
 }
 
 impl CodemodeSessionManager {
@@ -35,13 +35,13 @@ impl CodemodeSessionManager {
         let list_tools = options.list_tools.clone();
         let task_tools = options.settings.task_tools.clone();
         let agent_bridge = AgentBridge::for_executor(&executor);
-        let contexts=Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let contexts: Arc<std::sync::Mutex<HashMap<String,Arc<crate::tool::eval_tool_options::EvalInvocationContext>>>>=Arc::new(std::sync::Mutex::new(HashMap::new()));
         let completion_contexts=contexts.clone();let complete=options.complete.clone();
         let bridge = start_bridge_server(BridgeServerOptions {
             token: None, body_limit_bytes: None,
             on_emit: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             on_completion: Arc::new(move |mut request| {
-                request.context=request.cell_id.as_ref().and_then(|id|completion_contexts.lock().expect("invocation contexts").get(id).cloned());
+                request.context=request.cell_id.as_ref().and_then(|id|completion_contexts.lock().expect("invocation contexts").get(id).map(|context|context.as_ref().clone()));
                 complete(request)
             }),
             on_call: Arc::new(move |request| {
@@ -160,9 +160,13 @@ impl SessionManagerLifecycle for CodemodeSessionManager {
 
 impl EvalKernelManager for CodemodeSessionManager {
     fn set_invocation_context(&self,cell_id:&str,context:crate::tool::eval_tool_options::EvalInvocationContext) -> Option<Box<dyn FnOnce()+Send>> {
-        self.contexts.lock().expect("invocation contexts").insert(cell_id.into(),context);
+        let context=Arc::new(context);
+        self.contexts.lock().expect("invocation contexts").insert(cell_id.into(),context.clone());
         let contexts=self.contexts.clone();let cell_id=cell_id.to_owned();
-        Some(Box::new(move || {contexts.lock().expect("invocation contexts").remove(&cell_id);}))
+        Some(Box::new(move || {
+            let mut contexts=contexts.lock().expect("invocation contexts");
+            if contexts.get(&cell_id).is_some_and(|current|Arc::ptr_eq(current,&context)) {contexts.remove(&cell_id);}
+        }))
     }
     fn get_kernel(&self,language:EvalLanguage)->EvalKernelFuture<'_,Arc<dyn EvalKernel>> {
         Box::pin(async move {match language {
