@@ -31,6 +31,51 @@ pub struct QueuedResumptionChannelEmitter {
 }
 struct Completion(Option<tokio::sync::oneshot::Sender<()>>);
 impl Drop for Completion { fn drop(&mut self) { if let Some(sender) = self.0.take() { let _ = sender.send(()); } } }
+type EmissionFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+struct EmissionJob { future: EmissionFuture, completed: tokio::sync::oneshot::Sender<()> }
+struct EmissionWorker { sender: std::sync::mpsc::Sender<EmissionJob>, stop: Arc<tokio::sync::Notify>, thread: std::thread::JoinHandle<()> }
+pub struct OwnedResumptionChannels {
+    emitter: Arc<QueuedResumptionChannelEmitter>,
+    worker: std::sync::Mutex<Option<EmissionWorker>>,
+}
+impl OwnedResumptionChannels {
+    pub fn new(events: EventBus, manager: Arc<dyn ResumptionChannelManager>, session_id: Arc<dyn Fn() -> Option<String> + Send + Sync>) -> Result<Self, std::io::Error> {
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        let (sender, receiver) = std::sync::mpsc::channel::<EmissionJob>();
+        let emitter = QueuedResumptionChannelEmitter::new(events, manager, session_id);
+        let shutdown = emitter.clone(); let stop = Arc::new(tokio::sync::Notify::new()); let stopping = stop.clone();
+        let thread = std::thread::Builder::new().name("task-resumption".into()).spawn(move || {
+            for job in &receiver {
+                let completed = runtime.block_on(async { tokio::select! { () = job.future => true, () = stopping.notified() => false } });
+                if !completed { break; }
+                let _ = job.completed.send(());
+            }
+            for job in receiver.try_iter() { drop(job); }
+            runtime.block_on(shutdown.emit_shutdown());
+        })?;
+        Ok(Self { emitter, worker: std::sync::Mutex::new(Some(EmissionWorker { sender, stop, thread })) })
+    }
+    fn submit(&self, emission: Emission) -> tokio::sync::oneshot::Receiver<()> {
+        let (completed, receiver) = tokio::sync::oneshot::channel();
+        let worker = self.worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(worker) = worker.as_ref() {
+            let future = match emission { Emission::Start => self.emitter.emit_session_start(), Emission::Changed => self.emitter.emit_if_changed(), Emission::Shutdown => self.emitter.emit_shutdown() };
+            if worker.sender.send(EmissionJob { future, completed }).is_err() { eprintln!("task resumption worker stopped before emission"); }
+        }
+        receiver
+    }
+    pub async fn emit_session_start(&self) -> Result<(), String> { self.submit(Emission::Start).await.map_err(|error| error.to_string()) }
+    pub async fn emit_shutdown(&self) -> Result<(), String> { self.submit(Emission::Shutdown).await.map_err(|error| error.to_string()) }
+    pub fn emit_if_changed(&self) { drop(self.submit(Emission::Changed)); }
+    pub fn dispose(&self) {
+        let worker = self.worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(worker) = worker {
+            worker.stop.notify_one(); drop(worker.sender);
+            if worker.thread.join().is_err() { eprintln!("task resumption worker panicked"); }
+        }
+    }
+}
+impl Drop for OwnedResumptionChannels { fn drop(&mut self) { self.dispose(); } }
 impl QueuedResumptionChannelEmitter {
     pub fn new(events: EventBus, manager: Arc<dyn ResumptionChannelManager>, session_id: Arc<dyn Fn() -> Option<String> + Send + Sync>) -> Arc<Self> {
         Arc::new(Self { events, manager, session_id, active: std::sync::atomic::AtomicBool::new(false), state: std::sync::Mutex::new(QueuedState { last_count: 0, tail: None }) })

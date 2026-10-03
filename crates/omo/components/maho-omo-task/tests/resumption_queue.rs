@@ -56,3 +56,28 @@ async fn dropped_queued_operation_does_not_block_following_shutdown() {
     std::future::poll_fn(|context| { assert!(shutdown.as_mut().poll(context).is_ready()); std::task::Poll::Ready(()) }).await;
     assert_eq!(manager.calls.load(Ordering::SeqCst), 0);
 }
+
+#[tokio::test]
+async fn owned_worker_disposal_cancels_pending_resolution_and_joins_before_clear_returns() {
+    use maho_omo_task::resumption_channel_emitter::OwnedResumptionChannels;
+    struct Held { record: TaskRecord, entered: std::sync::mpsc::Sender<()> }
+    impl ResumptionChannelManager for Held {
+        fn list(&self, _: &str) -> Vec<TaskRecord> { vec![self.record.clone()] }
+        fn was_background(&self, _: &str) -> bool { false }
+        fn is_owned_team_member(&self, _: &TaskRecord, _: &str) -> bool { panic!("await ownership") }
+        fn resolve_owned_team_member<'a>(&'a self, _: &'a TaskRecord, _: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+            Box::pin(async move { self.entered.send(()).expect("entered"); std::future::pending().await })
+        }
+    }
+    let (entered, observing) = std::sync::mpsc::channel();
+    let values = Arc::new(Mutex::new(Vec::new())); let captured = values.clone(); let events = EventBus::default();
+    let subscription = events.on(RESUMPTION_CHANNEL_STATE_EVENT, Arc::new(move |event| captured.lock().expect("events").push(event.clone())));
+    let owner = OwnedResumptionChannels::new(events, Arc::new(Held { record: create_task_record(TaskRecordInput::default(), Some(1)).expect("record"), entered }), Arc::new(|| Some("session".into()))).expect("owner");
+    let mut start = Box::pin(owner.emit_session_start());
+    std::future::poll_fn(|context| { assert!(start.as_mut().poll(context).is_pending()); std::task::Poll::Ready(()) }).await;
+    observing.recv_timeout(std::time::Duration::from_secs(5)).expect("worker ownership resolution");
+    owner.dispose();
+    assert_eq!(values.lock().expect("events").as_slice(), &[serde_json::json!({"source":"senpi-task","activeCount":0,"channels":[]})]);
+    std::future::poll_fn(|context| { assert!(matches!(start.as_mut().poll(context), std::task::Poll::Ready(Err(_)))); std::task::Poll::Ready(()) }).await;
+    drop(start); drop(owner); drop(subscription);
+}

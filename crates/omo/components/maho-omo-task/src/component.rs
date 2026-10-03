@@ -1,14 +1,14 @@
 use std::{collections::BTreeMap, sync::{Arc, Mutex, PoisonError}, thread::JoinHandle};
 use maho_ext_api::{ExtensionApi, ExtensionEvent, EventKind, EventResult, FlagValue};
 use senpi_task::{completion::{CompletionRequest, ReconcileUnnotifiedNotificationsInput, TransitionReason}, manager::{AbortSignal, types::ListScope}};
-use crate::{engine::TaskEngine, resumption_channel_emitter::{ResumptionChannelEmitter, TaskResumptionChannelManager}, session_transition_bridge::SessionTransitionBridge, status_ui::TaskStatusUi, timers::HostTimers, tools::TaskToolsDeps};
+use crate::{engine::TaskEngine, resumption_channel_emitter::{OwnedResumptionChannels, TaskResumptionChannelManager}, session_transition_bridge::SessionTransitionBridge, status_ui::TaskStatusUi, timers::HostTimers, tools::TaskToolsDeps};
 
 struct CompletionWaiter { signal: AbortSignal, thread: JoinHandle<()> }
 struct TeamRuntime { service:Arc<crate::team_service::TeamService>, pollers:Arc<crate::lead_poller_lifecycle::LeadPollerLifecycle>, liveness:Arc<crate::member_liveness::TeamMemberLivenessNotifier> }
 pub struct TaskComponent {
     pub engine: TaskEngine,
     pub status: Arc<TaskStatusUi>,
-    channels: Mutex<ResumptionChannelEmitter>,
+    channels: OwnedResumptionChannels,
     transitions: Mutex<SessionTransitionBridge>,
     waiters: Mutex<BTreeMap<String, CompletionWaiter>>,
     rpc: Mutex<Option<Arc<crate::task_rpc_bridge::TaskRpcBridge>>>,
@@ -32,10 +32,10 @@ impl TaskComponent {
         if api.get_flag("omo-task") == Some(FlagValue::Boolean(false)) { return Ok(None); }
         let state = engine.runtime.clone();
         let session = Arc::new(move || state.lock().unwrap_or_else(PoisonError::into_inner).session_id().map(str::to_owned));
-        let channels = ResumptionChannelEmitter::new(api.events.clone(), Arc::new(TaskResumptionChannelManager { manager: engine.manager.clone(), ownership }), session);
+        let channels = OwnedResumptionChannels::new(api.events.clone(), Arc::new(TaskResumptionChannelManager { manager: engine.manager.clone(), ownership }), session).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
         let status = TaskStatusUi::new(engine.manager.clone(), engine.runtime.clone(), timers, Arc::new(|| chrono::Utc::now().timestamp_millis()), Arc::new(|| None));
         let transitions = SessionTransitionBridge::new(engine.runtime.clone(), engine.notifier.clone());
-        let component = Arc::new(Self { engine, status, channels: Mutex::new(channels), transitions: Mutex::new(transitions), waiters: Mutex::new(BTreeMap::new()), rpc: Mutex::new(None), terminal: Mutex::new(None), delivery: Mutex::new(()), terminal_epochs: Mutex::new(std::collections::BTreeSet::new()), team:Mutex::new(None) });
+        let component = Arc::new(Self { engine, status, channels, transitions: Mutex::new(transitions), waiters: Mutex::new(BTreeMap::new()), rpc: Mutex::new(None), terminal: Mutex::new(None), delivery: Mutex::new(()), terminal_epochs: Mutex::new(std::collections::BTreeSet::new()), team:Mutex::new(None) });
         let state = component.engine.runtime.clone();
         let events = api.events.clone();
         let rpc = crate::task_rpc_bridge::wire_task_rpc_bridge(api, component.engine.manager.clone(), Arc::new(move || state.lock().unwrap_or_else(PoisonError::into_inner).session_id().map(str::to_owned)), component.engine.store.state_dir().to_string_lossy().into_owned(), Arc::new(move |name, value| events.emit("senpi:extension-rpc-event", &serde_json::json!({"name":name,"data":value}))))?;
@@ -66,7 +66,7 @@ impl TaskComponent {
                             if let Some(record)=records.iter_mut().find(|record| record.task_id==entry.record.task_id) { *record=entry.record; } else { records.push(entry.record); }
                         }
                         for record in &records { component.notify_owned_terminal(record); }
-                        component.channels.lock().unwrap_or_else(PoisonError::into_inner).emit_session_start();
+                        component.channels.emit_session_start().await.map_err(maho_ext_api::ExtensionFailure::new)?;
                         let team=component.team.lock().unwrap_or_else(PoisonError::into_inner).clone();
                         if let Some(team)=&team { team.service.reconcile_mailbox(); }
                         let parent_state = component.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).parent_state();
@@ -78,7 +78,7 @@ impl TaskComponent {
                         if let Some(rpc) = &*component.rpc.lock().unwrap_or_else(PoisonError::into_inner) { rpc.attach(); }
                         component.sync();
                     }
-                    ExtensionEvent::SessionBeforeSwitch { .. } => { if let Some(rpc) = &*component.rpc.lock().unwrap_or_else(PoisonError::into_inner) { rpc.detach(); } component.transitions.lock().unwrap_or_else(PoisonError::into_inner).mark(TransitionReason::SessionSwitching, Some(session)); component.channels.lock().unwrap_or_else(PoisonError::into_inner).emit_shutdown(); component.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).clear_ui(); }
+                    ExtensionEvent::SessionBeforeSwitch { .. } => { if let Some(rpc) = &*component.rpc.lock().unwrap_or_else(PoisonError::into_inner) { rpc.detach(); } component.transitions.lock().unwrap_or_else(PoisonError::into_inner).mark(TransitionReason::SessionSwitching, Some(session)); component.channels.emit_shutdown().await.map_err(maho_ext_api::ExtensionFailure::new)?; component.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).clear_ui(); }
                     ExtensionEvent::SessionBeforeCompact(_) => component.transitions.lock().unwrap_or_else(PoisonError::into_inner).mark(TransitionReason::Compacting, Some(session)),
                     ExtensionEvent::SessionCompact(_) => { component.transitions.lock().unwrap_or_else(PoisonError::into_inner).resolve(Some(session)).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?; component.sync(); }
                     ExtensionEvent::SessionShutdown(shutdown) => {
@@ -103,7 +103,7 @@ impl TaskComponent {
         self.status.schedule_sync();
         let rpc = self.rpc.lock().unwrap_or_else(PoisonError::into_inner).clone();
         if let Some(rpc) = rpc { rpc.sync(); }
-        self.channels.lock().unwrap_or_else(PoisonError::into_inner).emit_if_changed();
+        self.channels.emit_if_changed();
         let mut waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);
         let finished: Vec<_> = waiters.iter().filter(|(_, waiter)| waiter.thread.is_finished()).map(|(id, _)| id.clone()).collect();
         for id in finished { if let Some(waiter) = waiters.remove(&id) && waiter.thread.join().is_err() { eprintln!("task completion waiter panicked"); } }
@@ -130,7 +130,7 @@ impl TaskComponent {
                     let delivery = component.delivery.lock().unwrap_or_else(PoisonError::into_inner);
                     if let Err(error) = component.engine.notifier.notify_terminal(&CompletionRequest { record, parent_state, run_in_background: manager.was_background(&task), tokens: None }) { eprintln!("task terminal delivery failed: {error}"); }
                     drop(delivery);
-                    component.channels.lock().unwrap_or_else(PoisonError::into_inner).emit_if_changed();
+                    component.channels.emit_if_changed();
                     component.status.schedule_sync();
                     let rpc = component.rpc.lock().unwrap_or_else(PoisonError::into_inner).clone();
                     if let Some(rpc) = rpc { rpc.sync(); }
@@ -161,6 +161,6 @@ impl TaskComponent {
         self.status.dispose();
         if let Some(rpc) = self.rpc.lock().unwrap_or_else(PoisonError::into_inner).take() { rpc.dispose(); }
         if let Some(team)=self.team.lock().unwrap_or_else(PoisonError::into_inner).clone() { team.pollers.shutdown(); }
-        self.channels.lock().unwrap_or_else(PoisonError::into_inner).emit_shutdown();
+        self.channels.dispose();
     }
 }
