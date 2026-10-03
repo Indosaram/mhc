@@ -7,6 +7,10 @@ license = "MIT"
 
 [dependencies]
 maho-ai = { path = "../../maho-ai" }
+maho-agent = { path = "../../maho-agent" }
+maho-ext-api = { path = "../../maho-ext-api" }
+maho-tui = { path = "../../maho-tui" }
+dom_smoothie = "=0.18.2"
 dom_query = "=0.27.0"
 hyper = { version = "=1.8.1", features = ["http1"] }
 serde_json = "=1.0.149"
@@ -15,6 +19,10 @@ reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-
 tokio = { version = "=1.52.3", features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
 url = "=2.5.8"
 thiserror = "=2.0.18"
+tracing = "=0.1.44"
+
+[dev-dependencies]
+maho-ext-host = { path = "../../maho-ext-host" }
 
 [lints]
 workspace = true

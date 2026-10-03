@@ -1,0 +1,90 @@
+    Checking zerofrom v0.1.6
+    Checking yoke v0.8.3
+    Checking zerovec v0.11.8
+    Checking tinystr v0.8.4
+    Checking icu_locale_core v2.3.0
+    Checking potential_utf v0.1.4
+    Checking zerotrie v0.2.5
+    Checking tokio v1.52.3
+    Checking icu_provider v2.3.1
+    Checking icu_collections v2.3.0
+   Compiling phf_macros v0.13.1
+    Checking phf v0.13.1
+   Compiling prost-derive v0.14.4
+    Checking tracing v0.1.44
+   Compiling derive_more-impl v2.1.1
+    Checking tokio-util v0.7.18
+    Checking h2 v0.4.19
+   Compiling prost v0.14.4
+    Checking derive_more v2.1.1
+    Checking icu_properties v2.3.0
+    Checking icu_normalizer v2.3.0
+    Checking hyper v1.8.1
+    Checking serde v1.0.228
+    Checking idna_adapter v1.2.1
+   Compiling prost-types v0.14.4
+    Checking hyper-util v0.1.20
+   Compiling prost-build v0.14.4
+    Checking tower v0.5.3
+    Checking web_atoms v0.2.6
+    Checking idna v1.1.0
+    Checking tokio-rustls v0.26.4
+    Checking tower-http v0.6.8
+    Checking thiserror v2.0.18
+    Checking thiserror v1.0.69
+    Checking hyper-rustls v0.27.7
+    Checking url v2.5.8
+   Compiling maho-ai v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-ai)
+    Checking serde_urlencoded v0.7.1
+    Checking serde_yaml v0.9.34+deprecated
+    Checking reqwest v0.12.28
+    Checking filedescriptor v0.8.3    Checking portable-pty v0.9.0
+    Checking icu_locale_fallback v2.3.0
+    Checking cssparser v0.37.0
+    Checking icu_segmenter v2.3.0
+    Checking maho-agent v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-agent)
+    Checking crossterm v0.29.0
+    Checking maho-pty v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/vendor/maho-pty)
+    Checking markup5ever v0.39.0
+    Checking maho-tui v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-tui)
+    Checking cssparser v0.36.0
+    Checking html5ever v0.39.0
+    Checking maho-tools v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-tools)
+    Checking selectors v0.38.0
+    Checking markup5ever v0.38.0
+    Checking dom_query v0.28.0
+    Checking html5ever v0.38.0
+    Checking maho-ext-api v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-ext-api)
+    Checking selectors v0.36.1
+    Checking dom_smoothie v0.18.2
+    Checking dom_query v0.27.0
+    Checking maho-ext-host v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-ext-host)
+    Checking maho-ext-pi-webfetch v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-webfetch)
+error: this `if` statement can be collapsed
+  --> crates/extensions/maho-ext-pi-webfetch/tests/registered.rs:19:9
+   |
+19 | /         if event.metadata().target() == "pi_webfetch" {
+20 | |             if let Some(sender) = self.0.lock().expect("body phase signal").take() { sender.send(()).expect("body phase receiver"); }
+21 | |         }
+   | |_________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#collapsible_if
+   = note: `-D clippy::collapsible-if` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+   |
+19 ~         if event.metadata().target() == "pi_webfetch"
+20 ~             && let Some(sender) = self.0.lock().expect("body phase signal").take() { sender.send(()).expect("body phase receiver"); }
+   |
+
+error: unnecessary use of `to_string`
+   --> crates/extensions/maho-ext-pi-webfetch/tests/registered.rs:410:111
+    |
+410 | ...test/guide", &url::Url::parse(&url).expect("fixture URL").join("/guide").expect("relative guide").to_string());
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: use: `url::Url::parse(&url).expect("fixture URL").join("/guide").expect("relative guide").as_ref()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.95.0/index.html#unnecessary_to_owned
+    = note: `-D clippy::unnecessary-to-owned` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::unnecessary_to_owned)]`
+
+error: could not compile `maho-ext-pi-webfetch` (test "registered") due to 2 previous errors
