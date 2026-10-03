@@ -29,6 +29,9 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
     let receipt_socket=args.next().ok_or("provider receipt Unix socket required")?;
     let receipt=std::os::unix::net::UnixStream::connect(receipt_socket)?;
     receipt.set_read_timeout(Some(Duration::from_secs(15)))?;
+    let mut receipt=std::io::BufReader::new(receipt);
+    let mut ready=String::new(); receipt.read_line(&mut ready)?;
+    assert_eq!(ready,"TASK44_PROVIDER_OBSERVER_READY\n","provider must register its observer before foreground launch");
     let env=BTreeMap::from([("HOME".into(),home.clone()),("MAHO_CODING_AGENT_DIR".into(),std::path::Path::new(&home).join("agent").to_string_lossy().into_owned()),("PATH".into(),"/usr/bin:/bin".into())]);
     let catalog=RpcSpawnDescriptor { command:executable.clone(),args:["--offline","--no-session","--no-tools","--no-skills","--no-prompt-templates","--list-models","task44"].map(str::to_owned).into(),cwd:home.clone(),env:env.clone() };
     let admission=create_rpc_model_admission(RpcModelAdmissionOptions { build_spawn:Some(Arc::new(move |_| catalog.clone())),..Default::default() });
@@ -46,7 +49,7 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
     let task=api.registered.tools.iter().find(|tool| tool.definition.name=="task").ok_or("task missing")?;
     let (ready,received)=tokio::sync::oneshot::channel();
     let provider_receipt=std::thread::spawn(move || {
-        let line=std::io::BufReader::new(receipt).lines().next().transpose();
+        let line=receipt.lines().next().transpose();
         let accepted=matches!(&line,Ok(Some(line)) if line=="TASK44_PROVIDER_HELD");
         let _=ready.send(accepted);
     });

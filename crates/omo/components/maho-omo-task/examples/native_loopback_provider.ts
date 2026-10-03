@@ -4,6 +4,7 @@ const receiptPath = process.argv[2];
 const observers = new Set<Socket>();
 const receipts = receiptPath ? createServer(socket => {
   observers.add(socket);
+  socket.write("TASK44_PROVIDER_OBSERVER_READY\n");
   socket.on("close", () => observers.delete(socket));
   socket.on("error", () => observers.delete(socket));
 }) : undefined;
