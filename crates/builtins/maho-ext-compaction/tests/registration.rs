@@ -100,7 +100,10 @@ fn context() -> ExtensionContext {
         registered_mcp_servers: Vec::new(), update_tool_hook_status: None }
 }
 
-struct PolicyActions { settings: std::sync::Mutex<ResolvedCompactionSettings> }
+struct PolicyActions { settings: std::sync::Mutex<ResolvedCompactionSettings>, usage:Option<ContextUsage>, idle_probe:Option<tokio::sync::mpsc::UnboundedSender<()>> }
+impl PolicyActions {
+    fn new(settings:ResolvedCompactionSettings)->Self {Self {settings:std::sync::Mutex::new(settings),usage:None,idle_probe:None}}
+}
 impl ExtensionSessionSettings for PolicyActions {
     fn get_retry_fallback_settings(&self) -> RetryFallbackSettings { RetryFallbackSettings { model_fallback:false, chains:Default::default(), revert_policy:FallbackRevertPolicy::Never } }
     fn set_fallback_chain<'a>(&'a self, _: &'a str, _: &'a [String]) -> ExtensionFuture<'a, ()> { Box::pin(async { Ok(()) }) }
@@ -115,7 +118,7 @@ impl ExtensionContextActions for PolicyActions {
     fn get_service_tier(&self) -> Option<ServiceTier> { None }
     fn get_scoped_models(&self) -> Vec<ScopedModel> { Vec::new() }
     fn get_agent_dir(&self) -> std::path::PathBuf { "/tmp/agent".into() }
-    fn is_idle(&self) -> bool { true }
+    fn is_idle(&self) -> bool { if let Some(probe)=&self.idle_probe {let _=probe.send(());} true }
     fn is_project_trusted(&self) -> bool { true }
     fn get_signal(&self) -> Option<AbortSignal> { None }
     fn abort(&self, _: Option<AbortSource>) {}
@@ -124,7 +127,7 @@ impl ExtensionContextActions for PolicyActions {
     fn is_compacting(&self) -> bool { false }
     fn check_reload_veto(&self) -> ExtensionFuture<'_, ReloadVetoDecision> { Box::pin(async { Ok(ReloadVetoDecision {cancelled:false,reason:None}) }) }
     fn shutdown(&self) {}
-    fn get_context_usage(&self) -> Option<ContextUsage> { Some(ContextUsage {tokens:Some(0),context_window:100_000,percent:Some(0.)}) }
+    fn get_context_usage(&self) -> Option<ContextUsage> { self.usage.clone().or(Some(ContextUsage {tokens:Some(0),context_window:100_000,percent:Some(0.)})) }
     fn get_compaction_settings(&self) -> CompactionSettings { CompactionSettings {enabled:true,reserve_tokens:100,keep_recent_tokens:200} }
     fn get_resolved_compaction_settings(&self) -> Option<ResolvedCompactionSettings> { Some(self.settings.lock().expect("native compaction scenario invariant").clone()) }
     fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { None }
@@ -168,7 +171,7 @@ async fn registered_context_consumes_live_tool_admission_gate() {
 
 async fn run_policy_scenario() {
     let settings = policy_settings();
-    let actions=Arc::new(PolicyActions {settings:std::sync::Mutex::new(settings)});
+    let actions=Arc::new(PolicyActions::new(settings));
     let mut ctx=context();ctx.session_manager=Arc::new(PolicySession(Arc::clone(&actions)));
     let mut api=ExtensionApi::new(LoadedExtension::new("compaction","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
     maho_ext_compaction::CompactionExtension.register(&mut api);
@@ -192,7 +195,7 @@ fn policy_settings() -> ResolvedCompactionSettings {
 async fn registered_restoration_is_bounded_accepted_only_and_once() {
     for enabled in [false,true] {
         let mut settings=policy_settings();settings.restoration_enabled=enabled;
-        let actions=Arc::new(PolicyActions {settings:std::sync::Mutex::new(settings)});
+        let actions=Arc::new(PolicyActions::new(settings));
         let mut ctx=context();ctx.session_manager=Arc::new(PolicySession(actions));
         let mut api=ExtensionApi::new(LoadedExtension::new("compaction","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
         maho_ext_compaction::CompactionExtension.register(&mut api);
@@ -242,6 +245,7 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     use maho_ai::providers::faux::{RegisterFauxProviderOptions, FauxAssistantMessageOptions, faux_assistant_message, register_faux_provider, faux_provider};
     let temp = tempfile::tempdir().expect("native compaction scenario invariant");
     let cwd = temp.path().to_string_lossy().into_owned();
+    let idle_variant=matches!(variant,"idle-shutdown"|"idle-model-change"|"idle-stale-runner");
     let provider = register_faux_provider(RegisterFauxProviderOptions { api: Some("compaction-registration-faux".into()), tokens_per_second: Some(0.), ..Default::default() });
     let mut model = provider.get_model(None).expect("native compaction scenario invariant");
     let (remote_started,mut remote_started_rx)=tokio::sync::mpsc::channel(1);
@@ -302,13 +306,28 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
         }))
     } else {None};
     if threshold || variant=="reminder" {model.context_window=40000;}
+    if idle_variant {model.context_window=48000;}
     let (started, mut started_rx) = tokio::sync::mpsc::channel(1);
+    let idle_started=started.clone();
     provider.set_responses(if cancel { vec![maho_ai::providers::faux::FauxResponseStep::Factory(Arc::new(move |_,options,_,_| {
         let started=started.clone();
         let signal=options.and_then(|options|options.stream.request.signal.clone()).expect("native compaction scenario invariant");
         Box::pin(async move {started.send(()).await.expect("native compaction scenario invariant");signal.cancelled().await;faux_assistant_message(Vec::<ContentBlock>::new(),FauxAssistantMessageOptions {stop_reason:Some(maho_ai::types::StopReason::Aborted),..Default::default()})})
     }))] } else {vec![faux_assistant_message(vec![ContentBlock::text("<summary>native checkpoint</summary>")], FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into()]});
     if threshold || variant=="reminder" {provider.append_responses(vec![faux_assistant_message(vec![ContentBlock::text("continued")],Default::default()).into()]);}
+    let (idle_cancelled,mut idle_cancelled_rx)=tokio::sync::mpsc::channel(1);
+    if idle_variant {
+        let response=faux_assistant_message(vec![ContentBlock::text("ready")],Default::default());
+        provider.set_responses(vec![response.into(),maho_ai::providers::faux::FauxResponseStep::Factory(Arc::new(move |_,options,_,_| {
+            let started=idle_started.clone();let cancelled=idle_cancelled.clone();
+            let signal=options.and_then(|options|options.stream.request.signal.clone()).expect("idle summary signal");
+            Box::pin(async move {
+                started.send(()).await.expect("idle request subscription");signal.cancelled().await;
+                cancelled.send(()).await.expect("idle cancellation subscription");
+                faux_assistant_message(Vec::<ContentBlock>::new(),FauxAssistantMessageOptions {stop_reason:Some(maho_ai::types::StopReason::Aborted),..Default::default()})
+            })
+        }))]);
+    }
     if variant=="overflow" {
         provider.set_responses(vec![maho_ai::utils::lazy::setup_error_message(&model,"maximum context length exceeded").into(),faux_assistant_message(vec![ContentBlock::text("summary after shrink")],Default::default()).into(),faux_assistant_message(vec![ContentBlock::text("continued")],Default::default()).into()]);
     } else if variant=="fallback" {
@@ -321,7 +340,7 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
         models_path: Some(temp.path().join("models.json")), credentials: Some(Arc::new(credentials)), providers: Some(vec![native.provider]), ..Default::default()
     });
     let mut manager = maho_core::session_manager::SessionManager::in_memory(&cwd,None,None);
-    manager.append_message(serde_json::json!({"role":"user","content":"old ".repeat(if variant=="overflow" {2000} else {30000}),"timestamp":0}));
+    manager.append_message(serde_json::json!({"role":"user","content":"old ".repeat(if variant=="overflow" {2000} else if idle_variant {25000} else {30000}),"timestamp":0}));
     manager.append_message(serde_json::json!({"role":"assistant","content":[{"type":"text","text":"reply"}],"api":model.api,"provider":model.provider,"model":model.id,"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0}));
     if variant=="overflow" {
         manager.append_message(serde_json::json!({"role":"user","content":"middle ".repeat(1000),"timestamp":0}));
@@ -333,7 +352,7 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
         manager.append_message(serde_json::json!({"role":"assistant","content":[{"type":"text","text":"ready"}],"api":model.api,"provider":model.provider,"model":model.id,"usage":{"input":input,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":input,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":0}));
     }
     let agent=maho_agent_for_test(model);
-    if threshold || variant=="reminder" {agent.set_messages(manager.build_context(manager.leaf_id()).messages.into_iter().map(|value|serde_json::from_value(value).expect("seeded native message")).collect());}
+    if threshold || variant=="reminder" || idle_variant {agent.set_messages(manager.build_context(manager.leaf_id()).messages.into_iter().map(|value|serde_json::from_value(value).expect("seeded native message")).collect());}
     let storage = maho_core::settings_manager::InMemorySettingsStorage::default();
     maho_core::settings_manager::SettingsStorage::with_lock(&storage, maho_core::settings_manager::SettingsScope::Global,
         &mut |_|Some(if variant=="fractional" {serde_json::json!({"compaction":{"keepRecentTokens":1,"reserveTokens":100,"speculativeEnabled":false,"speculativeFraction":0.42,"speculativeCooldownMs":321.5,"restorationEnabled":false,"restorationMaxItems":2.5,"restorationMaxTokensPerItem":11.5,"restorationMaxTotalTokens":22.5,"restorationContextRatio":0.03,"idleCompactionEnabled":false,"graceBandEnabled":false,"toolAdmissionEnabled":false,"reminderEnabled":false,"reserveScalingEnabled":false,"speculativeLeadTokens":12000.5,"summarizationMaxDurationMs":90000.5}})} else {serde_json::json!({"compaction":{"keepRecentTokens":1}})}.to_string())).expect("native compaction scenario invariant");
@@ -348,7 +367,45 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     if variant=="reminder" {
         session.with_settings_manager_mut(|manager|manager.set(maho_core::settings_manager::SettingsScope::Global,&serde_json::Map::from_iter([("compaction".into(),serde_json::json!({"keepRecentTokens":1,"reserveTokens":100,"speculativeEnabled":false,"idleCompactionEnabled":false,"reminderEnabled":true}))]))).expect("reminder policy");
     }
-    session.set_extension_runner(maho_ext_host::ExtensionRunner::from_static(vec![Box::new(CancellationObserver(Arc::clone(&observed_signal))),Box::new(maho_ext_compaction::CompactionExtension)],context())).await;
+    let mut runner_context=context();if idle_variant {runner_context.mode=ExtensionMode::Rpc;}
+    let retired_context=Arc::new(std::sync::Mutex::new(None));
+    session.set_extension_runner(maho_ext_host::ExtensionRunner::from_static(vec![Box::new(CancellationObserver(Arc::clone(&observed_signal))),Box::new(IdleContextObserver(Arc::clone(&retired_context))),Box::new(maho_ext_compaction::CompactionExtension)],runner_context)).await;
+    if idle_variant {
+        session.bind_extensions(maho_core::agent_session::ExtensionBindings {mode:Some(ExtensionMode::Rpc),..Default::default()}).await;
+        let prompted=tokio::time::timeout(std::time::Duration::from_secs(10),session.prompt("first",Default::default())).await;
+        let outcome=tokio::time::timeout(std::time::Duration::from_secs(10),async {
+            started_rx.recv().await.ok_or_else(||"idle request closed".to_string())?;
+            Ok::<_,String>(())
+        }).await;
+        let before=session.with_session_manager(|manager|manager.entries());
+        let superseded=if variant=="idle-model-change" {
+            let mut selected=session.model();selected.id="replacement-model".into();selected.context_window=100000;
+            Some(tokio::time::timeout(std::time::Duration::from_secs(10),session.set_session_model(selected)).await)
+        } else {None};
+        let model_cancelled=if superseded.is_some() {Some(tokio::time::timeout(std::time::Duration::from_secs(10),idle_cancelled_rx.recv()).await)} else {None};
+        let shutdown=tokio::time::timeout(std::time::Duration::from_secs(10),session.emit_session_shutdown(SessionReason::Quit)).await;
+        let disposed=tokio::time::timeout(std::time::Duration::from_secs(10),session.dispose()).await;
+        let cancelled=match model_cancelled {Some(cancelled)=>cancelled,None=>tokio::time::timeout(std::time::Duration::from_secs(10),idle_cancelled_rx.recv()).await};
+        let calls=provider.get_call_log().len();provider.unregister();
+        assert!(matches!(prompted,Ok(Ok(_))),"foreground outcome: {prompted:?}");
+        assert!(matches!(outcome,Ok(Ok(()))),"idle request outcome: {outcome:?}");
+        assert!(shutdown.is_ok(),"bounded registered shutdown dispatch");
+        if let Some(superseded)=superseded {assert!(matches!(superseded,Ok(Ok(_))),"bounded actual model change: {superseded:?}");}
+        assert!(disposed.is_ok(),"bounded idle shutdown cleanup");
+        assert!(matches!(cancelled,Ok(Some(()))),"shutdown cancels actual idle provider signal");
+        if variant=="idle-stale-runner" {
+            let retired=retired_context.lock().expect("captured idle context").clone().expect("actual agent-end context");
+            assert!(retired.get_message_revision().is_err(),"retired runner rejects reads");
+            let applied=tokio::time::timeout(std::time::Duration::from_secs(10),retired.apply_compaction(CompactionResult {summary:"late summary".into(),first_kept_entry_id:String::new(),tokens_before:25017,details:None},ApplyCompactionOptions {reason:CompactionReason::Extension,expected_revision:None,expected_warm_anchor:None,signal:None})).await;
+            assert!(matches!(applied,Ok(Err(_))),"retired runner rejects late compaction: {applied:?}");
+        }
+        assert_eq!(calls,2,"one foreground request and one idle summary, no replacement");
+        assert!(!before.iter().any(|entry|entry["type"]=="compaction"));
+        let after=session.with_session_manager(|manager|manager.entries());
+        if variant=="idle-model-change" {assert!(!after.iter().any(|entry|entry["type"]=="compaction"),"retired model job cannot apply");}
+        else {assert_eq!(after,before,"no late idle apply after shutdown");}
+        println!("PASS {variant}: real RPC-mode agent-end starts idle summary; registered supersession cancels it without late apply; cleanup complete");return;
+    }
     if variant=="fractional" {
         session.set_extension_runner(maho_ext_host::ExtensionRunner::from_static(vec![Box::new(LiveFractionalObserver),Box::new(maho_ext_compaction::CompactionExtension)],context())).await;
     }
@@ -482,6 +539,63 @@ async fn native_session_abort_cancels_registered_remote_without_late_apply() {ru
 async fn native_registered_compaction_matches_pinned_source_lifecycle() {run_native_variant(false,false,"lifecycle").await;}
 
 #[tokio::test]
+async fn native_registered_idle_summary_is_superseded_by_shutdown() {run_native_variant(false,false,"idle-shutdown").await;}
+
+#[tokio::test]
+async fn native_registered_idle_summary_is_superseded_by_model_change() {run_native_variant(false,false,"idle-model-change").await;}
+
+#[tokio::test]
+async fn native_registered_idle_retired_runner_rejects_late_apply() {run_native_variant(false,false,"idle-stale-runner").await;}
+
+#[tokio::test(start_paused=true)]
+async fn registered_prompt_arrival_stands_down_pending_idle_retry() {
+    run_idle_retry_prompt_scenario(true).await;
+}
+
+#[tokio::test(start_paused=true)]
+async fn registered_idle_retry_dispatches_without_prompt_arrival() {
+    run_idle_retry_prompt_scenario(false).await;
+}
+
+async fn run_idle_retry_prompt_scenario(prompt_arrives:bool) {
+    use maho_ai::types::ContentBlock;
+    use maho_ai::providers::faux::{register_faux_provider,RegisterFauxProviderOptions,FauxResponseStep,faux_assistant_message,FauxAssistantMessageOptions};
+    let provider=register_faux_provider(RegisterFauxProviderOptions {api:Some("compaction-pending-idle-retry".into()),tokens_per_second:Some(0.),..Default::default()});
+    let model=provider.get_model(None).expect("retry model");
+    let (started,mut starts)=tokio::sync::mpsc::unbounded_channel();
+    let (cancelled,mut cancellations)=tokio::sync::mpsc::unbounded_channel();
+    provider.set_responses(vec![maho_ai::utils::lazy::setup_error_message(&model,"upstream_stream_truncated").into(),FauxResponseStep::Factory(Arc::new(move |_,options,_,_| {
+        let started=started.clone();let cancelled=cancelled.clone();let signal=options.and_then(|options|options.stream.request.signal.clone()).expect("retry signal");
+        Box::pin(async move {started.send(()).expect("retry request subscription");signal.cancelled().await;cancelled.send(()).expect("retry cleanup subscription");faux_assistant_message(Vec::<ContentBlock>::new(),FauxAssistantMessageOptions {stop_reason:Some(maho_ai::types::StopReason::Aborted),..Default::default()})})
+    }))]);
+    let (probe,mut probes)=tokio::sync::mpsc::unbounded_channel();
+    let mut settings=policy_settings();settings.idle_compaction_enabled=true;settings.keep_recent_tokens=1;
+    let actions=Arc::new(PolicyActions {settings:std::sync::Mutex::new(settings),usage:Some(ContextUsage {tokens:Some(55000),context_window:100000,percent:Some(55.)}),idle_probe:Some(probe)});
+    let branch=vec![SessionEntry {id:"old".into(),parent_id:None,timestamp:String::new(),kind:"message".into(),data:serde_json::json!({"message":{"role":"user","content":"old ".repeat(2000),"timestamp":0}})},SessionEntry {id:"keep".into(),parent_id:Some("old".into()),timestamp:String::new(),kind:"message".into(),data:serde_json::json!({"message":{"role":"user","content":"next","timestamp":0}})}];
+    let mut ctx=context();ctx.mode=ExtensionMode::Rpc;ctx.model=Some(model);ctx.session_manager=Arc::new(AuthSession {actions,branch});
+    let mut api=ExtensionApi::new(LoadedExtension::new("compaction","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
+    maho_ext_compaction::CompactionExtension.register(&mut api);
+    let mut end=ExtensionEvent::AgentEnd {messages:Vec::new(),aborted:Some(false),will_retry:Some(false),abort_source:None};
+    for handler in &api.registered.handlers[&EventKind::AgentEnd] {handler(&mut end,&ctx).await.expect("registered idle hook");}
+    let scheduled=tokio::time::timeout(std::time::Duration::from_secs(10),probes.recv()).await;
+    if matches!(scheduled,Ok(Some(()))) && prompt_arrives {
+        let mut before=ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent {prompt:"next".into(),images:None,system_prompt:"base".into(),system_prompt_options:Default::default()});
+        for handler in &api.registered.handlers[&EventKind::BeforeAgentStart] {handler(&mut before,&ctx).await.expect("registered prompt hook");}
+    }
+    tokio::time::advance(std::time::Duration::from_millis(maho_ext_compaction::idle_retry::IDLE_WARMUP_RETRY_DELAY_MS+1)).await;
+    let retried=if prompt_arrives {None} else {Some(tokio::time::timeout(std::time::Duration::from_secs(10),starts.recv()).await)};
+    let mut shutdown=ExtensionEvent::SessionShutdown(SessionShutdownEvent {reason:SessionReason::Quit,target_session_file:None,signal:None});
+    for handler in &api.registered.handlers[&EventKind::SessionShutdown] {handler(&mut shutdown,&ctx).await.expect("retry cleanup");}
+    let cleanup=if prompt_arrives {None} else {Some(tokio::time::timeout(std::time::Duration::from_secs(10),cancellations.recv()).await)};
+    let calls=provider.get_call_log().len();provider.unregister();
+    if let Some(cleanup)=cleanup {assert!(matches!(cleanup,Ok(Some(()))),"actual retry provider cancellation: {cleanup:?}");}
+    assert!(matches!(scheduled,Ok(Some(()))),"watcher evaluates retry eligibility before prompt: {scheduled:?}");
+    if let Some(retried)=retried {assert!(matches!(retried,Ok(Some(()))),"positive control retry dispatch: {retried:?}");assert_eq!(calls,2);}
+    else {assert_eq!(calls,1,"prompt arrival cancels pending idle retry");assert!(starts.try_recv().is_err());}
+    println!("PASS idle-prompt-retry: prompt_arrives={prompt_arrives}; subscribed retry eligibility, virtual deadline, registered cleanup");
+}
+
+#[tokio::test]
 async fn registered_remote_model_auth_routes_only_to_refreshed_endpoint() {
     run_model_auth_capture(false).await;
 }
@@ -502,7 +616,7 @@ async fn run_fallback_event_capture() {
         let branch=if reason=="empty-compaction-input" {Vec::new()} else {vec![SessionEntry {id:"old".into(),parent_id:None,timestamp:String::new(),kind:"message".into(),data:serde_json::json!({"type":"message","id":"old","message":{"role":"user","content":"old","timestamp":0}})}]};
         let mut ctx=context();ctx.model=Some(model);
         ctx.model_registry=Arc::new(FallbackRegistry(if reason=="auth lookup failed" {None} else {Some(ResolvedRequestAuth {auth:maho_ai::models::ProviderAuthResult {api_key:if reason=="missing-openai-auth" {None} else {Some("fake".into())},headers:None,base_url:if reason=="missing-remote-replay-origin-provenance" {Some("invalid url".into())} else {None}},extra_body:None,upstream_model_id:Some("request-model".into()),service_tier:None,env:None})}));
-        ctx.session_manager=Arc::new(AuthSession {actions:Arc::new(PolicyActions {settings:std::sync::Mutex::new(policy_settings())}),branch});
+        ctx.session_manager=Arc::new(AuthSession {actions:Arc::new(PolicyActions::new(policy_settings())),branch});
         let captured=Arc::new(std::sync::Mutex::new(Vec::new()));let events=EventBus::default();let observed=Arc::clone(&captured);
         let _subscription=events.on(maho_ext_compaction::openai_remote::SENPI_COMPACTION_EVENT,Arc::new(move |data|observed.lock().expect("captured events").push(data.clone())));
         let runtime=ExtensionRuntime::default();runtime.bind_session_actions(Arc::new(AuthCheckpointActions));
@@ -552,7 +666,7 @@ async fn run_model_auth_capture(sse:bool) {
     let branch=vec![SessionEntry {id:"old".into(),parent_id:None,timestamp:String::new(),kind:"message".into(),data:serde_json::json!({"type":"message","id":"old","message":{"role":"user","content":"old context","timestamp":0}})}];
     let mut ctx=context();ctx.model=Some(model.clone());ctx.service_tier=Some(ServiceTier::Priority);
     ctx.model_registry=Arc::new(AuthRegistry {model,auth:ResolvedRequestAuth {auth:maho_ai::models::ProviderAuthResult {api_key:Some("refreshed-key".into()),headers:Some(std::collections::BTreeMap::from([("x-refreshed".into(),Some("live".into()))])),base_url:Some(live_base.clone())},upstream_model_id:Some("live-model".into()),extra_body:Some(serde_json::Map::from_iter([("stream_extra".into(),serde_json::json!(true))])),service_tier:Some(maho_ai::types::ServiceTierPreference::Flex),env:None}});
-    ctx.session_manager=Arc::new(AuthSession {actions:Arc::new(PolicyActions {settings:std::sync::Mutex::new(policy_settings())}),branch});
+    ctx.session_manager=Arc::new(AuthSession {actions:Arc::new(PolicyActions::new(policy_settings())),branch});
     let registered=LoadedExtension::new("compaction","/tmp".into(),SourceInfo::default());
     let runtime=ExtensionRuntime::default();runtime.bind_session_actions(Arc::new(AuthCheckpointActions));
     let mut api=ExtensionApi::new(registered,ExtensionSessionProfile::default(),EventBus::default(),runtime);
@@ -584,6 +698,16 @@ async fn run_model_auth_capture(sse:bool) {
 }
 
 struct CancellationObserver(Arc<std::sync::Mutex<Option<AbortSignal>>>);
+struct IdleContextObserver(Arc<std::sync::Mutex<Option<ExtensionContext>>>);
+impl Extension for IdleContextObserver {
+    fn register(&self,api:&mut ExtensionApi) {
+        let captured=Arc::clone(&self.0);
+        api.on(EventKind::AgentEnd,Arc::new(move |_,context| {
+            *captured.lock().expect("idle context capture")=Some(context.clone());
+            Box::pin(async {Ok(EventResult::None)})
+        }));
+    }
+}
 struct LiveFractionalObserver;
 impl Extension for LiveFractionalObserver {
     fn register(&self,api:&mut ExtensionApi) {
@@ -659,7 +783,7 @@ async fn registered_lifecycle_handlers_accept_real_api_events() {
     let mut api = ExtensionApi::new(registered, ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
     maho_ext_compaction::CompactionExtension.register(&mut api);
     let ctx = context();
-    let actions = Arc::new(PolicyActions {settings:std::sync::Mutex::new(policy_settings())});
+    let actions = Arc::new(PolicyActions::new(policy_settings()));
     let mut ctx = ctx;
     ctx.session_manager = Arc::new(PolicySession(actions));
     let mut event = ExtensionEvent::SessionCompact(SessionCompactEvent::Accepted {
