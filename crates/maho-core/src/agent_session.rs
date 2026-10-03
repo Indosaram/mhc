@@ -5151,6 +5151,14 @@ impl AgentSession {
         context
     }
 
+    pub async fn bind_loaded_extensions(&self, loaded: &maho_ext_host::loader::LoadExtensionsResult,
+        ui: Arc<dyn maho_ext_api::ExtensionUi>, loader: Arc<dyn Fn() -> Vec<maho_ext_host::loader::NativeExtensionFactory> + Send + Sync>) {
+        let mut runner = maho_ext_host::runner::ExtensionRunner::new(loaded.extensions.clone(), loaded.runtime.clone(),
+            loaded.events.clone(), self.extension_context(ui));
+        runner.bind_native_factory_loader(loader, Default::default());
+        self.set_extension_runner(runner).await;
+    }
+
     fn extend_discovered_resources(&self, mut resources: maho_ext_api::DiscoveredResources) {
         let refresh_prompts = !resources.prompt_paths.is_empty();
         let refresh_skills = !resources.skill_paths.is_empty();

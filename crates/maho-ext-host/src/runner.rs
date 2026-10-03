@@ -266,6 +266,19 @@ impl ExtensionRunner {
         runner
     }
     pub fn set_runtime_factory(&mut self, factory: RuntimeFactory) { self.runtime_factory = Some(factory); }
+    pub fn bind_native_factory_loader(&mut self, loader: Arc<dyn Fn() -> Vec<crate::loader::NativeExtensionFactory> + Send + Sync>, profile: ExtensionSessionProfile) {
+        self.set_runtime_factory(Arc::new(move |context| {
+            let loaded = crate::loader::load_extensions(loader(), &context.cwd, profile.clone());
+            let loader = loader.clone();
+            let profile = profile.clone();
+            Box::pin(async move {
+                let mut runner = Self::new(loaded.extensions, loaded.runtime, loaded.events, context);
+                runner.bind_native_factory_loader(loader, profile);
+                for error in loaded.errors { runner.emit_error(error); }
+                Ok(runner)
+            })
+        }));
+    }
     pub fn from_async_factories(factories: Vec<crate::loader::NativeAsyncExtensionFactory>, context: ExtensionContext, profile: ExtensionSessionProfile) -> ExtensionFuture<'static, Self> {
         Box::pin(async move {
             let retained = factories.clone();
