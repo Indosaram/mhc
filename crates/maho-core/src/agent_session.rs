@@ -445,6 +445,7 @@ pub struct AgentSessionInner {
     retry_random: Arc<dyn Fn() -> f64 + Send + Sync>,
     agent_subscription: Mutex<Option<maho_agent::agent::AgentSubscription>>,
     prompt_admission: tokio::sync::Mutex<()>,
+    binding_readiness: Mutex<Option<BindingPromptReadiness>>,
     retry_fallback: tokio::sync::Mutex<Option<crate::retry_fallback::controller::RetryFallbackController<SessionFallbackDeps>>>,
     work_barrier: Arc<crate::session_work_barrier::SessionWorkBarrier>,
     wake_source_subscription: Mutex<Option<maho_ext_api::BusSubscription>>,
@@ -461,6 +462,22 @@ struct SessionFallbackDeps(std::sync::Weak<AgentSessionInner>);
 struct SessionExtensionActions(std::sync::Weak<AgentSessionInner>);
 
 struct AbortSignalBridge(tokio::task::JoinHandle<()>);
+
+type BindingPromptReadiness = Arc<Mutex<Vec<tokio::sync::oneshot::Receiver<()>>>>;
+
+struct ExtensionBindingReadiness<'a> {
+    session: &'a AgentSession,
+    pending: BindingPromptReadiness,
+}
+
+impl Drop for ExtensionBindingReadiness<'_> {
+    fn drop(&mut self) {
+        let mut active = lock(&self.session.binding_readiness);
+        if active.as_ref().is_some_and(|pending| Arc::ptr_eq(pending, &self.pending)) {
+            *active = None;
+        }
+    }
+}
 
 impl Drop for AbortSignalBridge {
     fn drop(&mut self) { self.0.abort(); }
@@ -859,6 +876,11 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
                 drop(guard);
             });
         }) { return Ok(()); }
+        let readiness = lock(&session.binding_readiness).as_ref().map(|pending| {
+            let (ready, receiver) = tokio::sync::oneshot::channel();
+            lock(pending).push(receiver);
+            ready
+        });
         let (text, images) = match content {
             maho_ext_api::UserMessageContent::Text(text) => (text, Vec::new()),
             maho_ext_api::UserMessageContent::Blocks(blocks) => {
@@ -871,8 +893,8 @@ impl maho_ext_api::ExtensionActions for SessionExtensionActions {
         };
         let guard = session.work_barrier.begin();
         tokio::spawn(async move {
-            if let Err(error) = session.prompt(&text, PromptOptions { images: Some(images), source: Some(InputSource::Extension),
-                streaming_behavior: options.deliver_as, expand_prompt_templates: Some(options.expand_prompt_templates), ..Default::default() }).await
+            if let Err(error) = session.prompt_with_readiness(&text, PromptOptions { images: Some(images), source: Some(InputSource::Extension),
+                streaming_behavior: options.deliver_as, expand_prompt_templates: Some(options.expand_prompt_templates), ..Default::default() }, readiness).await
             { session.emit(AgentSessionEvent::ContinuationError { error_message: error }); }
             drop(guard);
         });
@@ -1239,6 +1261,7 @@ impl AgentSession {
             retry_random: config.retry_random.unwrap_or_else(|| Arc::new(rand_unit)),
             agent_subscription: Mutex::new(None),
             prompt_admission: tokio::sync::Mutex::new(()),
+            binding_readiness: Mutex::new(None),
             retry_fallback: tokio::sync::Mutex::new(None),
             work_barrier: Arc::new(crate::session_work_barrier::SessionWorkBarrier::new()),
             wake_source_subscription: Mutex::new(None),
@@ -1502,6 +1525,10 @@ impl AgentSession {
 
     /// Start a prompt, or explicitly queue input when a provider turn is active.
     pub async fn prompt(&self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
+        self.prompt_with_readiness(text, options, None).await
+    }
+
+    async fn prompt_with_readiness(&self, text: &str, options: PromptOptions, readiness: Option<tokio::sync::oneshot::Sender<()>>) -> Result<PromptDisposition, String> {
         if options.signal.as_ref().is_some_and(|signal| signal.aborted()) {
             return Err("Prompt cancelled".to_owned());
         }
@@ -1611,6 +1638,7 @@ impl AgentSession {
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
             input_id, disposition: maho_ext_api::InputDisposition::Started,
         }).await;
+        drop(readiness);
         self.agent.prompt(maho_agent::agent::AgentPromptInput::Messages(messages)).await;
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
@@ -4157,6 +4185,10 @@ impl AgentSession {
     }
 
     pub async fn bind_extensions(&self, bindings: ExtensionBindings) {
+        let binding_work = self.work_barrier.begin();
+        let pending = Arc::new(Mutex::new(Vec::new()));
+        *lock(&self.binding_readiness) = Some(pending.clone());
+        let readiness_scope = ExtensionBindingReadiness { session: self, pending: pending.clone() };
         {
             let mut state = self.state();
             if let Some(ui) = bindings.ui_context { state.extension_ui_context = Some(ui); }
@@ -4178,6 +4210,13 @@ impl AgentSession {
             self.set_active_tools_by_name(active);
         }
         self.extend_resources_from_extensions(reason).await;
+        drop(readiness_scope);
+        drop(binding_work);
+        let receivers = std::mem::take(&mut *lock(&pending));
+        for receiver in receivers {
+            // Sender drop signals admission or an early exit, including cancellation.
+            match receiver.await { Ok(()) | Err(_) => {} }
+        }
     }
 
     async fn extend_resources_from_extensions(&self, reason: maho_ext_api::SessionReason) {
@@ -5962,6 +6001,189 @@ mod tests {
         session.set_active_tools_by_name(vec!["read".to_owned()]);
         assert_eq!(session.system_prompt(), "turn hook override");
         assert_eq!(session.message_revision(), revision + 1);
+    }
+
+    #[tokio::test]
+    async fn binding_waits_for_startup_user_message_admission() {
+        let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("welcome", Default::default())], 0);
+        let captured = session.clone();
+        let admitted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = admitted.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:startup-admission>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionStart, vec![Arc::new(move |_, _| {
+            maho_ext_api::ExtensionActions::send_user_message(&SessionExtensionActions(Arc::downgrade(&captured.inner)),
+                maho_ext_api::UserMessageContent::Text("start".into()), Default::default()).expect("startup message");
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        extension.handlers.insert(maho_ext_api::EventKind::InputDisposition, vec![Arc::new(move |event, _| {
+            if matches!(event, maho_ext_api::ExtensionEvent::InputDisposition { disposition: maho_ext_api::InputDisposition::Started, .. }) {
+                observed.store(true, Ordering::SeqCst);
+            }
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.bind_extensions(Default::default())).await.expect("bounded binding");
+        let ready_at_return = admitted.load(Ordering::SeqCst);
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.wait_for_idle()).await.expect("cleanup turn");
+        assert!(ready_at_return, "binding returned before startup user-message admission");
+    }
+
+    #[tokio::test]
+    async fn startup_user_binding_does_not_wait_for_provider_completion() {
+        use maho_ai::providers::faux::{faux_provider, faux_streams, RegisterFauxProviderOptions};
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let started = Arc::new(Mutex::new(Some(started)));
+        let (release, released) = tokio::sync::watch::channel(false);
+        let provider = faux_provider(RegisterFauxProviderOptions {
+            tokens_per_second: Some(0.0),
+            scheduler_hook: Some(Arc::new(move || {
+                let started = started.clone();
+                let mut released = released.clone();
+                Box::pin(async move {
+                    if let Some(started) = lock(&started).take() { started.send(()).expect("provider observer"); }
+                    released.wait_for(|value| *value).await.expect("release provider");
+                })
+            })), ..Default::default()
+        });
+        provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("welcome", Default::default()).into()]);
+        let streams = faux_streams(provider.core.clone());
+        let session = test_session_with_stream_function(false);
+        session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
+        session.agent.set_stream_function(Arc::new(move |model, context, options| {
+            streams.stream_simple(model, context, options.map(|options| options.simple))
+        }));
+        let captured = session.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:startup-held>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionStart, vec![Arc::new(move |_, _| {
+            maho_ext_api::ExtensionActions::send_user_message(&SessionExtensionActions(Arc::downgrade(&captured.inner)),
+                maho_ext_api::UserMessageContent::Text("start".into()), Default::default()).expect("startup message");
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(session.bind_extensions(Default::default()), async { entered.await.expect("provider entered"); });
+            assert!(session.get_last_assistant_text().is_none(), "provider is still held");
+        }).await;
+        release.send_replace(true);
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.wait_for_idle()).await.expect("cleanup provider");
+        result.expect("binding must finish without provider completion");
+        assert_eq!(session.get_last_assistant_text().as_deref(), Some("welcome"));
+    }
+
+    #[tokio::test]
+    async fn startup_binding_releases_readiness_for_handled_input() {
+        let session = test_session();
+        let captured = session.clone();
+        let handled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = handled.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:startup-handled>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionStart, vec![Arc::new(move |_, _| {
+            maho_ext_api::ExtensionActions::send_user_message(&SessionExtensionActions(Arc::downgrade(&captured.inner)),
+                maho_ext_api::UserMessageContent::Text("handled".into()), Default::default()).expect("startup message");
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        extension.handlers.insert(maho_ext_api::EventKind::Input, vec![Arc::new(move |_, _| {
+            observed.store(true, Ordering::SeqCst);
+            Box::pin(async { Ok(maho_ext_api::EventResult::Input(maho_ext_api::InputEventResult::Handled)) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.bind_extensions(Default::default())).await.expect("handled input releases binding");
+        assert!(handled.load(Ordering::SeqCst));
+        assert!(lock(&session.binding_readiness).is_none());
+        assert!(!session.work_barrier.has_active_work());
+        assert!(session.messages().is_empty());
+    }
+
+    #[tokio::test]
+    async fn startup_binding_accepts_queued_input_during_compaction() {
+        use maho_ext_api::ExtensionContextActions;
+        let session = test_session();
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        let signal = actions.begin_compaction(maho_ext_api::BeginCompactionOptions {
+            reason: maho_ext_api::CompactionReason::Manual,
+        }).expect("active compaction");
+        let captured = session.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:startup-queued>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionStart, vec![Arc::new(move |_, _| {
+            maho_ext_api::ExtensionActions::send_user_message(&SessionExtensionActions(Arc::downgrade(&captured.inner)),
+                maho_ext_api::UserMessageContent::Text("queued startup".into()), maho_ext_api::SendUserMessageOptions {
+                    deliver_as: Some(maho_ext_api::StreamingBehavior::FollowUp), ..Default::default()
+                }).expect("startup message");
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), session.bind_extensions(Default::default())).await;
+        let queued = session.get_follow_up_messages();
+        let compacting_at_return = session.is_compacting();
+        session.clear_queue(false);
+        actions.end_compaction(maho_ext_api::EndCompactionOptions {
+            reason: maho_ext_api::CompactionReason::Manual, signal: Some(signal), aborted: Some(false), error_message: None,
+        });
+        result.expect("queued input releases binding without waiting for compaction");
+        assert!(compacting_at_return);
+        assert_eq!(queued, ["queued startup"]);
+        assert!(lock(&session.binding_readiness).is_none());
+    }
+
+    #[tokio::test]
+    async fn rejected_startup_input_releases_binding_readiness() {
+        use maho_ext_api::ExtensionContextActions;
+        let session = test_session();
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        let signal = actions.begin_compaction(maho_ext_api::BeginCompactionOptions {
+            reason: maho_ext_api::CompactionReason::Manual,
+        }).expect("active compaction");
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let observed = errors.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::ContinuationError { error_message } = event {
+                lock(&observed).push(error_message.clone());
+            }
+        }));
+        let captured = session.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:startup-rejected>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionStart, vec![Arc::new(move |_, _| {
+            maho_ext_api::ExtensionActions::send_user_message(&SessionExtensionActions(Arc::downgrade(&captured.inner)),
+                maho_ext_api::UserMessageContent::Text("no queue mode".into()), Default::default()).expect("dispatch startup");
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), session.bind_extensions(Default::default())).await;
+        actions.end_compaction(maho_ext_api::EndCompactionOptions {
+            reason: maho_ext_api::CompactionReason::Manual, signal: Some(signal), aborted: Some(false), error_message: None,
+        });
+        result.expect("rejected input releases binding");
+        assert_eq!(lock(&errors).len(), 1);
+        assert!(lock(&session.binding_readiness).is_none());
+        assert!(!session.work_barrier.has_active_work());
+    }
+
+    #[tokio::test]
+    async fn cancelled_binding_clears_its_readiness_scope() {
+        let session = test_session();
+        let (entered, observed) = tokio::sync::oneshot::channel();
+        let entered = Arc::new(Mutex::new(Some(entered)));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:cancel-binding>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionStart, vec![Arc::new(move |_, _| {
+            let entered = entered.clone();
+            Box::pin(async move {
+                lock(&entered).take().expect("single startup").send(()).expect("observer");
+                std::future::pending::<()>().await;
+                Ok(maho_ext_api::EventResult::None)
+            })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let mut binding = Box::pin(session.bind_extensions(Default::default()));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::select! {
+                () = &mut binding => panic!("startup handler must stay pending"),
+                result = observed => result.expect("startup entered"),
+            }
+        }).await.expect("bounded startup signal");
+        assert!(lock(&session.binding_readiness).is_some());
+        drop(binding);
+        assert!(lock(&session.binding_readiness).is_none());
+        assert!(!session.work_barrier.has_active_work());
     }
 
     #[tokio::test]
