@@ -39,7 +39,7 @@ fn preview(preview: &ApplyPatchPreview, cwd: &str, theme: &Theme) -> String {
             let operation = match file.operation { crate::types::ApplyPatchOperation::Add => "Added", crate::types::ApplyPatchOperation::Delete => "Deleted", crate::types::ApplyPatchOperation::Update => "Edited" };
             format!("• {operation} {path} {summary}")
         };
-        lines.push(line(&header, theme));
+        lines.push(header);
         if !file.diff.is_empty() {
             let rendered = render_tool_diff(&truncate_preview(&file.diff), Some(file.move_path.as_deref().unwrap_or(&file.file_path)), theme);
             lines.extend(rendered.split('\n').map(|line| if multiple { format!("    {line}") } else { line.into() }));
@@ -104,6 +104,16 @@ pub fn renderers() -> ToolRenderers<ApplyPatchRenderState, Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn expanded_preview_headers_remain_unstyled_for_single_and_multiple_files() {
+        let theme=theme(&ExtensionTheme {colors:[("toolTitle".into(),"#ff0000".into()),("accent".into(),"#00ff00".into())].into(),..Default::default()});
+        let file=crate::types::ApplyPatchPreviewFile {file_path:"/work/a.rs".into(),move_path:None,operation:crate::types::ApplyPatchOperation::Update,binary:None,diff:String::new(),patch:None,added:1,removed:1};
+        for files in [vec![file.clone()],vec![file.clone(),file]] {
+            let rendered=preview(&ApplyPatchPreview {files,added:2,removed:2},"/work",&theme);
+            assert!(!rendered.contains('\u{1b}'));
+            assert!(rendered.contains("a.rs"));
+        }
+    }
     #[test]
     fn expanded_preview_reuses_shared_inline_diff_and_destination_language() {
         let theme = theme(&ExtensionTheme {

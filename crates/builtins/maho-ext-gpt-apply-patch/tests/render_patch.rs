@@ -30,6 +30,7 @@ fn registered_renderer_session_draws_stream_progress_success_and_failure_at_term
         ..Default::default()
     };
     for width in [40, 80, 120] {
+        let fixture=tempfile::tempdir().unwrap();
         let context = ToolRenderContext {
             args: json!({"input":"*** Begin Patch\n*** Add File: created.rs\n+let hello = 1;\n"}),
             tool_call_id: "render-proof".into(), invalidate: std::rc::Rc::new(|| {}), last_component: None,
@@ -47,7 +48,7 @@ fn registered_renderer_session_draws_stream_progress_success_and_failure_at_term
         let success = session.render_result(&result, &theme, width).unwrap();
         session.session.context.is_error = true;
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let applied = runtime.block_on(maho_ext_gpt_apply_patch::apply::apply_patch_detailed(directory.path(), "*** Begin Patch\n*** Add File: created.rs\n+let hello = 1;\n*** Update File: missing.rs\n@@\n-old\n+new\n*** End Patch")).unwrap();
+        let applied = runtime.block_on(maho_ext_gpt_apply_patch::apply::apply_patch_detailed(fixture.path(), "*** Begin Patch\n*** Add File: created.rs\n+let hello = 1;\n*** Update File: missing.rs\n@@\n-old\n+new\n*** End Patch")).unwrap();
         let (text, details) = maho_ext_gpt_apply_patch::tool::execution_result(applied);
         result = AgentToolResult::text(text);
         result.details = serde_json::to_value(details).unwrap();
