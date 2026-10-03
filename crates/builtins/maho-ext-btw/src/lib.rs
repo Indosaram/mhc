@@ -45,6 +45,10 @@ impl Extension for Btw{
                 let collected=side_query::collect_reply(&stream,side_query::DEFAULT_ESTABLISHMENT_TIMEOUT_MS,|delta|{reply.push_str(delta);let current=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_ref().is_some_and(|active|active.id==id);if current&&owner.mode==ExtensionMode::Tui&&owner.has_ui{owner.ui.set_widget("btw",Some(panel::widget(question,&reply,false)),Default::default());}});
                 tokio::select!{result=collected=>result.map_err(ExtensionFailure::new),()=signal.cancelled()=>Err(ExtensionFailure::new("Side query cancelled"))}
             }.await;
+            if outcome.is_err(){
+                let controller=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_ref().filter(|active|active.id==id).map(|active|active.controller.clone());
+                if let Some(controller)=controller{controller.abort(None);}
+            }
             let current=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_ref().is_some_and(|active|active.id==id);
             if current{match outcome{Ok(reply)=>{if let Some(active)=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_mut(){active.settled=true;}if ctx.mode!=ExtensionMode::Tui||!ctx.has_ui{ctx.ui.notify(&reply,NotificationType::Info);}else{ctx.ui.set_widget("btw",Some(panel::widget(question,&reply,true)),Default::default());}},Err(error)=>{dismiss(&state,ctx,false);ctx.ui.notify(&format!("/btw: {}",error.message),NotificationType::Error);}}}
             Ok(())
