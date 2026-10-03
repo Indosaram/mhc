@@ -35,6 +35,8 @@ pub fn build_mcp_tool_definitions(entries:&[McpToolCatalogEntry],agent_dir:PathB
                     if let Some(ensure_connected)=&entry.ensure_connected {ensure_connected().await?;}
                     entry.client.clone().ok_or_else(||crate::errors::McpError::new(crate::errors::McpErrorKind::Connect,"MCP catalog entry has no connection"))?
                 };
+                let send=||async {
+                let client=if let Some(runtime)=&entry.runtime {runtime.connection.client()?}else{client.clone()};
                 let token=format!("native:{}:{}:{}:{}",entry.server,entry.tool,call.id,NEXT_PROGRESS_TOKEN.fetch_add(1,Ordering::Relaxed));
                 let mut notifications=client.notifications.subscribe();
                 let mut notifications_open=true;
@@ -53,8 +55,10 @@ pub fn build_mcp_tool_definitions(entries:&[McpToolCatalogEntry],agent_dir:PathB
                 }};
                 Ok::<_,crate::errors::McpError>(result)
                 };
+                if let Some(runtime)=&entry.runtime {crate::health::with_mcp_retriable_failed_send_retry(&runtime.connection,send).await}else{send().await}
+                };
                 let result=if let Some(runtime)=&entry.runtime {
-                    runtime.lifecycle.run_call(crate::health::with_mcp_session_expiry_retry(&runtime.connection,||crate::health::with_mcp_retriable_failed_send_retry(&runtime.connection,operation))).await
+                    runtime.lifecycle.run_call(crate::health::with_mcp_session_expiry_retry(&runtime.connection,operation)).await
                 }else{operation().await}.map_err(|error|ToolError::Message(format!("ToolExecError: {error}")))?;
                 mapped_guarded_result(&entry,&result,entry.agent_dir.as_deref().unwrap_or(&agent_dir),entry.artifacts.as_ref().unwrap_or(&artifacts),entry.output_guard.as_ref().or(output_guard.as_ref()))
             })
