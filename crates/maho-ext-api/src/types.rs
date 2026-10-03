@@ -306,12 +306,24 @@ pub struct CredentialAccountSummary {
 }
 
 /// Host implementations adapt their owning registry, without an ext-api -> core edge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedRequestAuth {
+    pub auth: maho_ai::models::ProviderAuthResult,
+    pub extra_body: Option<serde_json::Map<String, JsonValue>>,
+    pub upstream_model_id: Option<String>,
+    pub service_tier: Option<maho_ai::types::ServiceTierPreference>,
+    pub env: Option<maho_ai::types::ProviderEnv>,
+}
+
 pub trait ModelRegistry: Send + Sync {
     fn get_all(&self) -> Vec<Model>;
     fn get_available(&self) -> Vec<Model>;
     fn find(&self, provider: &str, id: &str) -> Option<Model>;
     fn has_configured_auth(&self, model: &Model) -> bool;
     fn get_api_key_for_provider<'a>(&'a self, provider: &'a str) -> ExtensionFuture<'a, Option<String>>;
+    fn get_api_key_and_headers<'a>(&'a self, _model: &'a Model) -> ExtensionFuture<'a, ResolvedRequestAuth> {
+        Box::pin(async { Err(ExtensionFailure::new("Model request auth is not supported by this model registry")) })
+    }
     fn get_credential_accounts<'a>(&'a self, _provider: &'a str) -> ExtensionFuture<'a, Vec<CredentialAccountSummary>> {
         Box::pin(async { Err(ExtensionFailure::new("Credential account listing is not supported by this model registry")) })
     }
