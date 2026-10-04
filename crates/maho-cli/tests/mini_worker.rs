@@ -79,6 +79,19 @@ async fn prompt_admits_an_operation_a_fresh_snapshot_reflects() {
 }
 
 #[tokio::test]
+async fn unwatch_and_close_release_watch_subscriptions() {
+    let (lane, models, settings) = fixture().await;
+    let service = build_service(lane, models, settings);
+    let watched = service.watch("presentation").await.expect("watch");
+    service.start(&watched.subscription_id).await.expect("start");
+    service.unwatch(&watched.subscription_id);
+    assert_eq!(service.start(&watched.subscription_id).await.unwrap_err(), format!("Unknown subscription: {}", watched.subscription_id));
+    let again = service.watch("presentation").await.expect("watch again");
+    service.close();
+    assert_eq!(service.start(&again.subscription_id).await.unwrap_err(), format!("Unknown subscription: {}", again.subscription_id));
+}
+
+#[tokio::test]
 async fn set_model_rejects_an_unknown_identity() {
     let (lane, models, settings) = fixture().await;
     let service = build_service(lane, models, settings);
