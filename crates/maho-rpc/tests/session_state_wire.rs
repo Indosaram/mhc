@@ -14,7 +14,7 @@ use serde_json::json;
 async fn session_in(temp: &tempfile::TempDir) -> maho_core::agent_session::AgentSession {
     let cwd = temp.path().to_string_lossy().into_owned();
     let provider = maho_ai::providers::faux::faux_provider(Default::default());
-    let model = provider.get_model(Some("faux-1")).unwrap();
+    let model = provider.get_model(Some("faux-1")).expect("the faux provider registers faux-1");
     let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
         models_path: Some(temp.path().join("models.json")),
         auth_path: Some(temp.path().join("auth.json")),
@@ -33,7 +33,7 @@ async fn session_in(temp: &tempfile::TempDir) -> maho_core::agent_session::Agent
         ..Default::default()
     })
     .await
-    .unwrap()
+    .expect("the session is created")
     .session
 }
 

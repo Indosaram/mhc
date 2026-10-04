@@ -9,12 +9,12 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::time::timeout;
 
 async fn next_record<R: tokio::io::AsyncBufRead + Unpin>(lines: &mut Lines<R>) -> Value {
-    let line = lines.next_line().await.unwrap().expect("the stream stays open");
-    serde_json::from_str(&line).unwrap()
+    let line = lines.next_line().await.expect("reading the next record line succeeds").expect("the stream stays open");
+    serde_json::from_str(&line).expect("the record is valid JSON")
 }
 
 async fn drain_to_eof<R: tokio::io::AsyncBufRead + Unpin>(lines: &mut Lines<R>) {
-    while lines.next_line().await.unwrap().is_some() {}
+    while lines.next_line().await.expect("draining to EOF reads each line").is_some() {}
 }
 
 struct Gated {
@@ -37,16 +37,15 @@ async fn gated_session(cwd: &std::path::Path, responses: Vec<String>) -> Gated {
         })),
         ..Default::default()
     });
-    let model = provider.get_model(Some("faux-1")).unwrap();
+    let model = provider.get_model(Some("faux-1")).expect("the faux provider registers faux-1");
     provider.set_responses(responses.iter().map(|content| faux_assistant_message(content.as_str(), FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into()).collect());
     let credentials = AuthStorage::in_memory(Default::default());
-    credentials.set(&model.provider, Some(serde_json::json!({"type":"api_key","key":"faux-test"}))).unwrap();
+    credentials.set(&model.provider, Some(serde_json::json!({"type":"api_key","key":"faux-test"}))).expect("the faux credential is stored");
     let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
         models_path: Some(cwd.join("models.json")),
         auth_path: Some(cwd.join("auth.json")),
         credentials: Some(Arc::new(credentials)),
         providers: Some(vec![provider.provider.clone()]),
-        ..Default::default()
     });
     let cwd = cwd.to_string_lossy().into_owned();
     let session = create_agent_session(CreateAgentSessionOptions {
@@ -54,14 +53,14 @@ async fn gated_session(cwd: &std::path::Path, responses: Vec<String>) -> Gated {
         session_manager: Some(SessionManager::in_memory(&cwd, None, None)),
         settings_manager: Some(SettingsManager::from_storage(Box::new(InMemorySettingsStorage::default()), false)),
         no_tools: Some(NoToolsMode::All), auto_title_sessions: Some(false), ..Default::default()
-    }).await.unwrap().session;
+    }).await.expect("the gated agent session is created").session;
     Gated { session, gate, model_calls }
 }
 
 async fn compactable_session(cwd: &std::path::Path) -> Gated {
     let mut gated = gated_session(cwd, vec!["x".repeat(120_000), "small".to_owned(), "summary".to_owned()]).await;
-    gated.session.prompt("first", Default::default()).await.unwrap();
-    gated.session.prompt("second", Default::default()).await.unwrap();
+    gated.session.prompt("first", Default::default()).await.expect("the first prompt completes");
+    gated.session.prompt("second", Default::default()).await.expect("the second prompt completes");
     while gated.model_calls.try_recv().is_ok() {}
     gated
 }
