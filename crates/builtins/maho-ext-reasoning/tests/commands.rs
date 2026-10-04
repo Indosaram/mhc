@@ -10,17 +10,15 @@ struct Host {
     last_on: Mutex<Option<ModelThinkingLevel>>,
     remembered: Mutex<Option<ModelThinkingLevel>>,
     global: Mutex<Option<ModelThinkingLevel>>,
-    operations: Mutex<Vec<&'static str>>,
 }
 impl Host {
     fn new(level: ModelThinkingLevel, last_on: Option<ModelThinkingLevel>, remembered: Option<ModelThinkingLevel>, global: Option<ModelThinkingLevel>) -> Self {
-        Self { level: Mutex::new(level), last_on: Mutex::new(last_on), remembered: Mutex::new(remembered), global: Mutex::new(global), operations: Mutex::new(Vec::new()) }
+        Self { level: Mutex::new(level), last_on: Mutex::new(last_on), remembered: Mutex::new(remembered), global: Mutex::new(global) }
     }
 }
 impl ReasoningHost for Host {
     fn level(&self, _: &ExtensionContext) -> Result<ModelThinkingLevel, ExtensionFailure> { Ok(*self.level.lock().expect("level")) }
     fn set_level(&self, _: &ExtensionContext, level: ModelThinkingLevel) -> Result<(), ExtensionFailure> {
-        self.operations.lock().expect("operations").push("set");
         *self.level.lock().expect("level") = level;
         *self.remembered.lock().expect("remembered") = Some(level);
         Ok(())
@@ -29,11 +27,10 @@ impl ReasoningHost for Host {
         Ok(ThinkingPreferences { last_on: *self.last_on.lock().expect("last_on"), remembered: *self.remembered.lock().expect("remembered"), global: *self.global.lock().expect("global") })
     }
     fn remember_last_on<'a>(&'a self, _: &'a ExtensionContext, _: &'a Model, level: ModelThinkingLevel) -> ExtensionFuture<'a, ()> {
-        Box::pin(async move { self.operations.lock().expect("operations").push("remember"); *self.last_on.lock().expect("last_on") = Some(level); Ok(()) })
+        Box::pin(async move { *self.last_on.lock().expect("last_on") = Some(level); Ok(()) })
     }
     fn restore_on<'a>(&'a self, _: &'a ExtensionContext, _: &'a Model, level: ThinkingLevel) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
-            self.operations.lock().expect("operations").push("restore");
             *self.level.lock().expect("level") = level.into();
             *self.remembered.lock().expect("remembered") = Some(level.into());
             *self.global.lock().expect("global") = Some(level.into());
