@@ -49,5 +49,18 @@ pub fn context() -> ExtensionContext {
         get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions { cwd: "/tmp".into(), ..Default::default() }),
         registered_mcp_servers: Vec::new(), update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None, compaction_signal: Default::default() }
 }
+#[derive(Default)]
+pub struct RecordingLogger(pub std::sync::Mutex<Vec<(String, String, Option<JsonValue>)>>);
+impl ComponentLogger for RecordingLogger {
+    fn info(&self, message: &str, details: Option<&JsonValue>) { self.0.lock().expect("log").push(("info".into(), message.into(), details.cloned())); }
+    fn warn(&self, message: &str, details: Option<&JsonValue>) { self.0.lock().expect("log").push(("warn".into(), message.into(), details.cloned())); }
+    fn error(&self, message: &str, details: Option<&JsonValue>) { self.0.lock().expect("log").push(("error".into(), message.into(), details.cloned())); }
+}
+pub fn logger_entries(logger: &RecordingLogger) -> Vec<(String, String, Option<JsonValue>)> { logger.0.lock().expect("log").clone() }
+pub fn context_with_logger(logger: Arc<RecordingLogger>) -> ExtensionContext {
+    let mut ctx = context();
+    ctx.logger = Some(logger as Arc<dyn ComponentLogger>);
+    ctx
+}
 
 
