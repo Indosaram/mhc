@@ -76,6 +76,8 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
             }) }),
             factory("compaction", maho_ext_compaction::CompactionExtension),
             factory("webfetch", maho_ext_webfetch::index::WebfetchExtension),
+            factory("rules", maho_ext_rules::Rules),
+            factory("goal", maho_ext_goal::GoalExtension::default()),
             factory("codemode", Codemode),
             factory("task", Task(parent)),
             factory("mcp", Mcp),

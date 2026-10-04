@@ -34,6 +34,8 @@ maho-ext-herdr = { path = "../builtins/maho-ext-herdr" }
 maho-ext-btw = { path = "../builtins/maho-ext-btw" }
 maho-ext-cache-keepalive = { path = "../builtins/maho-ext-cache-keepalive" }
 maho-ext-webfetch = { path = "../builtins/maho-ext-webfetch" }
+maho-ext-goal = { path = "../builtins/maho-ext-goal" }
+maho-ext-rules = { path = "../builtins/maho-ext-rules" }
 maho-ext-compaction = { path = "../builtins/maho-ext-compaction" }
 maho-ext-host = { path = "../maho-ext-host" }
 maho-ext-mcp = { path = "../builtins/maho-ext-mcp" }
@@ -49,8 +51,6 @@ maho-ext-bash-timeout = { path = "../builtins/maho-ext-bash-timeout" }
 maho-ext-terminal = { path = "../builtins/maho-ext-terminal" }
 maho-ext-tool-pair-guard = { path = "../builtins/maho-ext-tool-pair-guard" }
 maho-ext-nested-agents-md = { path = "../builtins/maho-ext-nested-agents-md" }
-maho-ext-rules = { path = "../builtins/maho-ext-rules" }
-maho-ext-goal = { path = "../builtins/maho-ext-goal" }
 maho-ext-loop = { path = "../builtins/maho-ext-loop" }
 maho-ext-ttsr = { path = "../builtins/maho-ext-ttsr" }
 maho-ext-config-reload = { path = "../builtins/maho-ext-config-reload" }

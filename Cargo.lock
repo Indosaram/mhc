@@ -1984,6 +1984,7 @@ dependencies = [
  "maho-ext-btw",
  "maho-ext-cache-keepalive",
  "maho-ext-compaction",
+ "maho-ext-goal",
  "maho-ext-gpt-apply-patch",
  "maho-ext-help",
  "maho-ext-herdr",
@@ -1997,6 +1998,7 @@ dependencies = [
  "maho-ext-openai-web-search",
  "maho-ext-permission-system",
  "maho-ext-recommended-models",
+ "maho-ext-rules",
  "maho-ext-todotools",
  "maho-ext-tool-search",
  "maho-ext-video-in",
@@ -2271,6 +2273,27 @@ dependencies = [
 [[package]]
 name = "maho-ext-goal"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "icu_collator",
+ "maho-agent",
+ "maho-ai",
+ "maho-core",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-ext-todotools",
+ "maho-test-support",
+ "maho-tui",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "maho-ext-gpt-apply-patch"
@@ -2673,10 +2696,32 @@ dependencies = [
 [[package]]
 name = "maho-ext-rule-activation"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "maho-tui",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-rules"
 version = "0.0.0"
+dependencies = [
+ "fancy-regex",
+ "globset",
+ "icu_collator",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-ext-rule-activation",
+ "maho-test-support",
+ "maho-tui",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-terminal"
