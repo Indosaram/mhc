@@ -99,10 +99,33 @@ fn anthropic_model()->Model {
 fn mcp_document()->maho_ext_tool_search::engine::document::ToolSearchDocument {
     maho_ext_tool_search::engine::document::ToolSearchDocument{name:"mcp_docs".into(),label:"MCP docs".into(),aliases:vec![],description:Some("documentation".into()),search_text:None,keywords:vec![],source:maho_ext_tool_search::engine::document::ToolSearchSource::Mcp,group:"docs".into(),owner_label:"server".into(),registration_id:"mcp:docs".into()}
 }
+#[derive(Default)]
+struct TestSessionActions {active:std::sync::Mutex<Vec<String>>}
+impl maho_ext_api::ExtensionSessionActions for TestSessionActions {
+    fn set_session_name(&self,_:&str)->Result<(),maho_ext_api::ExtensionFailure>{Err("unused".into())}
+    fn get_session_name(&self)->Result<Option<String>,maho_ext_api::ExtensionFailure>{Err("unused".into())}
+    fn set_label(&self,_:&str,_:Option<&str>)->Result<(),maho_ext_api::ExtensionFailure>{Err("unused".into())}
+    fn execute_tool<'a>(&'a self,name:&'a str,_:JsonValue,_:maho_ext_api::ExecuteToolOptions)->maho_ext_api::ExecuteToolFuture<'a>{Box::pin(async move{Err(maho_ext_api::ExecuteToolError{code:maho_ext_api::ExecuteToolErrorCode::InactiveTool,tool_name:name.into(),message:"unused".into(),active_tools:Vec::new()})})}
+    fn get_active_tools(&self)->Result<Vec<String>,maho_ext_api::ExtensionFailure>{Ok(self.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())}
+    fn set_active_tools(&self,names:Vec<String>)->Result<(),maho_ext_api::ExtensionFailure>{*self.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=names;Ok(())}
+    fn refresh_tools(&self)->Result<(),maho_ext_api::ExtensionFailure>{Ok(())}
+    fn register_removed_tool_hint(&self,_:&str,_:&str)->Result<(),maho_ext_api::ExtensionFailure>{Err("unused".into())}
+    fn register_lazy_tool_activator(&self,_:maho_ext_api::LazyToolActivator)->Result<(),maho_ext_api::ExtensionFailure>{Err("unused".into())}
+    fn get_commands(&self)->Result<Vec<maho_ext_api::SlashCommandInfo>,maho_ext_api::ExtensionFailure>{Err("unused".into())}
+    fn set_model(&self,_:Model)->ExtensionFuture<'_,bool>{Box::pin(async{Err("unused".into())})}
+    fn get_thinking_level(&self)->Result<maho_ext_api::ThinkingLevel,maho_ext_api::ExtensionFailure>{Err("unused".into())}
+    fn set_thinking_level(&self,_:maho_ext_api::ThinkingLevel)->Result<(),maho_ext_api::ExtensionFailure>{Err("unused".into())}
+    fn set_session_model(&self,_:Model)->ExtensionFuture<'_,bool>{Box::pin(async{Err("unused".into())})}
+    fn set_session_thinking_level(&self,_:maho_ext_api::ThinkingLevel)->Result<(),maho_ext_api::ExtensionFailure>{Err("unused".into())}
+    fn set_session_fast_mode(&self,_:bool)->Result<(),maho_ext_api::ExtensionFailure>{Err("unused".into())}
+    fn exec<'a>(&'a self,_:&'a str,_:&'a [String],_:&'a std::path::Path,_:maho_ext_api::ExecOptions)->ExtensionFuture<'a,maho_ext_api::ExecResult>{Box::pin(async{Err("unused".into())})}
+}
 #[tokio::test]
 async fn one_service_instance_serves_the_registered_tool_and_the_native_adapter() {
-    let service=std::sync::Arc::new(tokio::sync::Mutex::new(maho_ext_tool_search::service::ToolSearchService::new(ExtensionRuntime::default(),std::sync::Arc::new(Catalog))));
-    let mut api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("tool-search",Default::default(),maho_ext_api::SourceInfo {source:"builtin".into(),..Default::default()}),Default::default(),Default::default(),ExtensionRuntime::default());
+    let runtime=ExtensionRuntime::default();
+    runtime.bind_session_actions(std::sync::Arc::new(TestSessionActions::default()));
+    let service=std::sync::Arc::new(tokio::sync::Mutex::new(maho_ext_tool_search::service::ToolSearchService::new(runtime.clone(),std::sync::Arc::new(Catalog))));
+    let mut api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("tool-search",Default::default(),maho_ext_api::SourceInfo {source:"builtin".into(),..Default::default()}),Default::default(),Default::default(),runtime);
     maho_ext_tool_search::index::ToolSearchExtension {actions:std::sync::Arc::new(Catalog),mcp_native_enabled:std::sync::Arc::new(||true)}.register_with_service(&mut api,service.clone());
     service.lock().await.feed(vec![mcp_document()],std::sync::Arc::new(|_|Ok(()))).expect("mcp publication into the shared service");
     let handler=api.registered.handlers[&maho_ext_api::EventKind::BeforeProviderRequest][0].clone();
