@@ -32,7 +32,7 @@ impl Extension for AgentTurnGate {
             Box::pin(async move {
                 if armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
                     let _ = hit.send(());
-                    release.notified().await;
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), release.notified()).await;
                 }
                 Ok(EventResult::None)
             })
@@ -257,14 +257,15 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
         if injected{return Err("Cancelled question injected an answer frame".into());}
     }
     if timeout && !reload {
-        gate_hit_rx.recv().await.ok_or("timed-out turn never reached the provider")?;
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate_hit_rx.recv()).await.map_err(|_| "timed-out turn never reached the provider")?.ok_or("timed-out turn never reached the provider")?;
         let asked_before=asked.lock().expect("asked").len();
-        let retry=session.execute_tool(&tool,args,ExecuteToolOptions::default()).await?;
+        let retry=session.execute_tool(&tool,args.clone(),ExecuteToolOptions::default()).await;
+        gate_release.notify_one();
+        let retry=retry?;
         if retry.details["status"]!="unavailable"||retry.details["accepted"]==true||!get_pending_questions(&session.session_id()).is_empty()||asked.lock().expect("asked").len()!=asked_before||opened_rx.try_recv().is_ok(){
             return Err("Timed-out turn opened a second question".into());
         }
-        gate_release.notify_one();
-        end_rx.recv().await.ok_or("timed-out turn never ended")?;
+        tokio::time::timeout(std::time::Duration::from_secs(5), end_rx.recv()).await.map_err(|_| "timed-out turn never ended")?.ok_or("timed-out turn never ended")?;
         let next=session.execute_tool(&tool,args,ExecuteToolOptions::default()).await?;
         if next.details["accepted"]!=true||next.details["status"]!="pending" {
             return Err(format!("Next-turn question was not allowed: {next:?}").into());
