@@ -39,7 +39,7 @@ async fn gated_session(cwd: &std::path::Path, responses: Vec<String>) -> Gated {
     });
     let model = provider.get_model(Some("faux-1")).unwrap();
     provider.set_responses(responses.iter().map(|content| faux_assistant_message(content.as_str(), FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into()).collect());
-    let mut credentials = AuthStorage::in_memory(Default::default());
+    let credentials = AuthStorage::in_memory(Default::default());
     credentials.set(&model.provider, Some(serde_json::json!({"type":"api_key","key":"faux-test"}))).unwrap();
     let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
         models_path: Some(cwd.join("models.json")),
