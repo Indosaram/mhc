@@ -1,9 +1,7 @@
 //! Port of `omo-senpi/src/extension/component-list.ts`: the ordered registration list.
 
-mod support;
-
 use maho_omo::{OmoComponentOptions, OmoSenpiComponent, omo_component_names, omo_components, try_omo_components};
-use support::FakeComponent;
+use crate::support::FakeComponent;
 
 fn options() -> OmoComponentOptions {
     let dir = std::env::temp_dir();

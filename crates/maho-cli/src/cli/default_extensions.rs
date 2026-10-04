@@ -253,11 +253,13 @@ impl maho_codemode::tool::image_resize::EvalImageSdk for Images {
 }
 impl Extension for Codemode {
     fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
-        maho_codemode::register(api, maho_codemode::CodemodeExtensionOptions {
+        if let Err(error) = maho_codemode::register(api, maho_codemode::CodemodeExtensionOptions {
             image_sdk: Arc::new(Images), complete: Arc::new(|request, context| Box::pin(super::codemode_services::complete(request, context))),
             home_dir: maho_core::config::home_dir().into(), environment: std::env::vars().collect(),
             js_runtime: maho_codemode::tool::types::EvalRuntimeInfo { name: "Bun".into(), version: "1.4".into(), path: Some("bun".into()) },
-        });
+        }) {
+            std::panic::panic_any(error);
+        }
     }
 }
 impl RuntimeActions {

@@ -1,18 +1,16 @@
 //! Native extension-entry tests: the `maho-omo` flag set and the disabled short-circuit, the
 //! native half of `omo-senpi/src/extension/index.test.ts`.
 
-mod support;
-
 use maho_ext_api::Extension;
 use maho_omo::{OMO_DISABLED_FLAG, OmoSenpiComponent, OmoRuntimeOptions, RecordingLogger, component_disabled_flag, compose_omo_extension_with_options};
-use support::{FakeComponent, flag_names, manual_runtime_options, new_api, set_boolean_flag, tool_names};
+use crate::support::{FakeComponent, flag_names, manual_runtime_options, new_api, set_boolean_flag, tool_names};
 
 fn options(logger: &RecordingLogger) -> OmoRuntimeOptions {
     manual_runtime_options(std::sync::Arc::new(logger.clone()))
 }
 
 fn component(name: &'static str, tool: &'static str) -> OmoSenpiComponent {
-    OmoSenpiComponent::new(name, Box::new(FakeComponent::new(move |api| api.register_tool(support::fake_tool(tool)))))
+    OmoSenpiComponent::new(name, Box::new(FakeComponent::new(move |api| api.register_tool(crate::support::fake_tool(tool)))))
 }
 
 #[test]

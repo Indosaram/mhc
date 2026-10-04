@@ -1,14 +1,12 @@
 //! Re-registration contract: `ExtensionRunner::recreate` (agent_session reload) re-registers the
 //! same extension objects, so every slot - including a factory-built one - must register again.
 
-mod support;
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use maho_ext_api::{Extension, ExtensionApi};
 use maho_omo::{OmoExtension, OmoRuntimeOptions, OmoSenpiComponent, RecordingLogger};
-use support::{FakeComponent, command_names, manual_runtime_options, new_api};
+use crate::support::{FakeComponent, command_names, manual_runtime_options, new_api};
 
 fn options() -> OmoRuntimeOptions {
     manual_runtime_options(Arc::new(RecordingLogger::new()))

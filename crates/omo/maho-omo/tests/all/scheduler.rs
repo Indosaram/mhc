@@ -1,4 +1,3 @@
-mod support;
 use std::future::Future;
 
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
@@ -21,7 +20,7 @@ async fn deferred_pass_waits_for_the_whole_turn() {
 
 #[tokio::test]
 async fn consecutive_producers_in_one_turn_deliver_one_batch() {
-    let log = support::DeliveryLog::new();
+    let log = crate::support::DeliveryLog::new();
     let delivery = log.delivery();
     let (sender, receipt) = tokio::sync::oneshot::channel();
     let sender = std::sync::Mutex::new(Some(sender));
@@ -33,9 +32,9 @@ async fn consecutive_producers_in_one_turn_deliver_one_batch() {
     }), scheduler.clone(), scheduler);
     queue.run_in_turn(|| {
         use maho_ext_api::IdleInjectionCoordinator;
-        queue.enqueue(support::injection("ulw", IdleInjectionSource::UlwContinuation, "continue"));
+        queue.enqueue(crate::support::injection("ulw", IdleInjectionSource::UlwContinuation, "continue"));
         queue.schedule_flush();
-        queue.enqueue(support::injection("task", IdleInjectionSource::TaskCompletion, "complete"));
+        queue.enqueue(crate::support::injection("task", IdleInjectionSource::TaskCompletion, "complete"));
         assert!(log.calls().is_empty());
     });
     tokio::time::timeout(Duration::from_secs(5), receipt).await.unwrap().unwrap();

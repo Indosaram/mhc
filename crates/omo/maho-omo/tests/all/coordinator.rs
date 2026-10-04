@@ -1,12 +1,10 @@
 //! Port of `omo-senpi/src/extension/idle-injection-coordinator.test.ts` (12 cases).
 
-mod support;
-
 use std::sync::{Arc, Mutex, PoisonError};
 
 use maho_ext_api::{DeliverAs, IdleInjection, IdleInjectionCoordinator, IdleInjectionSource, JsonValue};
 use maho_omo::{DeferredScheduler, Delivery, IdleInjectionDetail, IdleInjectionMessage, TurnBarrier, WAKE_CUSTOM_TYPE};
-use support::{DeliveryLog, injection, manual_coordinator};
+use crate::support::{DeliveryLog, injection, manual_coordinator};
 
 fn inline_pair() -> (DeferredScheduler, DeferredScheduler) {
     (DeferredScheduler::manual(TurnBarrier::new()), DeferredScheduler::manual(TurnBarrier::new()))

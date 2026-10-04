@@ -1,9 +1,7 @@
 //! Port of the capture half of `omo-senpi/src/extension/tool-capture-registry.test.ts`.
 
-mod support;
-
 use maho_omo::ToolCaptureRegistry;
-use support::{fake_tool, new_api};
+use crate::support::{fake_tool, new_api};
 
 #[test]
 fn every_registered_tool_is_captured_with_its_execute_closure_in_order() {
