@@ -17,11 +17,14 @@ use crate::state::{
 
 const TOMBSTONE_SUFFIX: &str = ".json.expunging";
 
+/// The post-commit observer every manager/lifecycle clone shares.
+type MutationListener = std::sync::Arc<dyn Fn() + Send + Sync>;
+
 /// File-backed task record store rooted at the resolved state directory.
 #[derive(Clone)]
 pub struct TaskRecordStore {
     state_dir: PathBuf,
-    mutation_listener: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>>,
+    mutation_listener: std::sync::Arc<std::sync::Mutex<Option<MutationListener>>>,
 }
 
 impl std::fmt::Debug for TaskRecordStore {
@@ -48,7 +51,7 @@ impl TaskRecordStore {
     }
 
     /// All manager/lifecycle clones share the post-commit observer. Clear it during shutdown.
-    pub fn set_mutation_listener(&self, listener: Option<std::sync::Arc<dyn Fn() + Send + Sync>>) {
+    pub fn set_mutation_listener(&self, listener: Option<MutationListener>) {
         *self.mutation_listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = listener;
     }
 

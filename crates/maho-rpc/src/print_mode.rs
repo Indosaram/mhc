@@ -40,15 +40,37 @@ pub async fn run_print_session(
         session.wait_for_idle().await;Ok::<(),String>(())
     };
     tokio::pin!(prompts);
+    let mut agent_idle_seen=false;
     let result=loop{
         tokio::select!{
             result=&mut prompts=>break result,
             event=events.recv()=>if let Some((diagnostic,event))=event{
                 if let Some(diagnostic)=diagnostic{diagnostics.write_all(diagnostic.as_bytes()).await?;}
-                if json_mode{let event=event.map_err(std::io::Error::other)?;let event=crate::json_event::to_json_event(&event).map_err(std::io::Error::other)?;output.write_all(crate::jsonl::serialize_json_line(&event)?.as_bytes()).await?;}
+                if json_mode{let event=event.map_err(std::io::Error::other)?;let event=crate::json_event::to_json_event(&event).map_err(std::io::Error::other)?;if event["type"]=="agent_idle"{agent_idle_seen=true;}output.write_all(crate::jsonl::serialize_json_line(&event)?.as_bytes()).await?;}
             }
         }
     };
+    // senpi's print mode finishes after `waitForSettledSessionWork`, which covers the settlement-
+    // deferred `agent_idle` emission. That record is published by a task spawned during settlement,
+    // so it can arrive just after the prompts future settles; await that exact record (bounded)
+    // before exiting so the JSON stream carries the same terminal event as the pinned runner.
+    if json_mode&&result.is_ok()&&!agent_idle_seen{
+        let deadline=tokio::time::Instant::now()+std::time::Duration::from_secs(5);
+        loop{
+            let remaining=deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero(){break;}
+            match tokio::time::timeout(remaining,events.recv()).await{
+                Ok(Some((diagnostic,event))) => {
+                    if let Some(diagnostic)=diagnostic{diagnostics.write_all(diagnostic.as_bytes()).await?;}
+                    let event=event.map_err(std::io::Error::other)?;let event=crate::json_event::to_json_event(&event).map_err(std::io::Error::other)?;
+                    let idle=event["type"]=="agent_idle";
+                    output.write_all(crate::jsonl::serialize_json_line(&event)?.as_bytes()).await?;
+                    if idle{break;}
+                }
+                Ok(None)|Err(_)=>break,
+            }
+        }
+    }
     while let Ok((diagnostic,event))=events.try_recv(){
         if let Some(diagnostic)=diagnostic{diagnostics.write_all(diagnostic.as_bytes()).await?;}
         if json_mode{let event=event.map_err(std::io::Error::other)?;let event=crate::json_event::to_json_event(&event).map_err(std::io::Error::other)?;output.write_all(crate::jsonl::serialize_json_line(&event)?.as_bytes()).await?;}

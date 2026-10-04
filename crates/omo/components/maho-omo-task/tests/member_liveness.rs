@@ -63,7 +63,10 @@ fn deferred_liveness_rejection_retries_once_without_marking_delivery() {
         on_error: Arc::new(move |_| { rejected.fetch_add(1, Ordering::SeqCst); }),
         timers: timers.clone(), max_delivery_retries: Some(1), max_persistence_retries: None,
     });
-    notifier.notify_terminal(&record());
+    // Bind one record: `record()` takes its id from the process-wide task-id floor, so calling it
+    // twice would produce two different task ids and a second, unrelated delivery key.
+    let record = record();
+    notifier.notify_terminal(&record);
     let first = callbacks.lock().expect("callbacks")[0].clone();
     first.failed(senpi_task::host::HostError { message: "rejected wake".into() });
     first.failed(senpi_task::host::HostError { message: "duplicate".into() });
@@ -74,6 +77,6 @@ fn deferred_liveness_rejection_retries_once_without_marking_delivery() {
     assert_eq!(callbacks.lock().expect("callbacks").len(), 2);
     let second = callbacks.lock().expect("callbacks")[1].clone();
     second.delivered();
-    notifier.notify_terminal(&record());
+    notifier.notify_terminal(&record);
     assert_eq!(callbacks.lock().expect("callbacks").len(), 2);
 }

@@ -251,6 +251,9 @@ pub enum SpawnAdmission {
 }
 
 pub type AdmitResident = Arc<dyn Fn(&str) -> SpawnAdmission + Send + Sync>;
+/// A host/lifecycle admission check whose `Err` is a real failure (not a capacity denial).
+pub type FallibleAdmit =
+    Arc<dyn Fn(&str) -> Result<SpawnAdmission, crate::host::HostError> + Send + Sync>;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrustedRespawnLaunch {
@@ -301,7 +304,7 @@ pub struct TaskManagerOptions {
     pub destruction: Option<Arc<dyn DestructionPort>>,
     pub admit: Option<AdmitResident>,
     /// Host/lifecycle errors are failures, not capacity denials that DAGs may retry.
-    pub fallible_admit: Option<Arc<dyn Fn(&str) -> Result<SpawnAdmission, crate::host::HostError> + Send + Sync>>,
+    pub fallible_admit: Option<FallibleAdmit>,
     pub trusted_respawn_launch: Option<TrustedRespawnLaunchResolver>,
     pub host_pid: Option<i64>,
     pub rpc_respawn_runner: Option<Arc<dyn RpcRespawnRunner>>,

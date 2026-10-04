@@ -176,7 +176,15 @@ pub async fn ensure_host(options:EnsureHostOptions)->Result<EnsuredHostInfo,Ensu
     let launch_profile_id=launch_profile.map_or_else(String::new,|profile|profile.profile_id);
     let start=HostStartOptions{env:env.clone(),settings,launch_profile_id:launch_profile_id.clone(),timeout:std::time::Duration::from_millis(options.readiness_ms)};
     let handoff=crate::host_handoff::HandoffOptions{host_args:supervisor_args,policy:Some(host_policy),env:options.env.clone(),launch_profile_id,readiness_ms:options.readiness_ms};
-    match ensure_prepared_host(prepared,&socket,&agent_dir,&launch,start,handoff).await?{
+    let outcome=match ensure_prepared_host(prepared,&socket,&agent_dir,&launch,start,handoff).await{
+        Ok(outcome)=>outcome,
+        // This call's contract is a live endpoint or a classified refusal. A host that could not be
+        // started (an absent launch, an early exit, a socket that never became ready) is that
+        // refusal, not an opaque IO error the caller has to interpret; maho-interactive falls back
+        // on any error either way, so only the classification changes here.
+        Err(_)=>return Err(EnsureHostError::Refused("host_unavailable")),
+    };
+    match outcome{
         EnsuredHost::Refused(reason)=>Err(EnsureHostError::Refused(reason)),
         EnsuredHost::Reused{pid}=>Ok(EnsuredHostInfo{pid,socket,reused:true}),
         EnsuredHost::Started(host)=>Ok(EnsuredHostInfo{pid:host.child.id().unwrap_or_default(),socket,reused:false}),
