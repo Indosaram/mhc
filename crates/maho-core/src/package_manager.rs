@@ -125,6 +125,63 @@ fn parse_source(source: &str) -> ParsedSource {
     ParsedSource::Local(source.to_owned())
 }
 
+fn decode_git_part(value: &str) -> Option<String> {
+    let mut result = Vec::new(); let mut bytes = value.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let high = char::from(bytes.next()?).to_digit(16)?;
+            let low = char::from(bytes.next()?).to_digit(16)?;
+            result.push(u8::try_from(high * 16 + low).ok()?);
+        } else { result.push(byte); }
+    }
+    String::from_utf8(result).ok()
+}
+
+fn hosted_git_path(host: &str, path: &str, reference: Option<&str>, shortcut: bool, protocol: &str) -> Option<(String, Option<String>)> {
+    let parts: Vec<_> = path.split('/').collect();
+    let hash = reference.unwrap_or("");
+    let (user, project, reference) = if shortcut {
+        let (user, project) = path.rsplit_once('/').unwrap_or(("null", path));
+        (user, project.trim_end_matches(".git"), hash)
+    } else {
+        let accepted = match host {
+            "github.com" => matches!(protocol, "git" | "http" | "git+ssh" | "git+https" | "ssh" | "https"),
+            "gist.github.com" => matches!(protocol, "git" | "git+ssh" | "git+https" | "ssh" | "https"),
+            "git.sr.ht" => matches!(protocol, "git+ssh" | "https"),
+            "gitlab.com" | "bitbucket.org" => matches!(protocol, "git+ssh" | "git+https" | "ssh" | "https"),
+            _ => false,
+        };
+        if !accepted { return None; }
+        match host {
+            "github.com" => {
+                if parts.get(2).is_some_and(|part| !part.is_empty() && *part != "tree") { return None; }
+                (*parts.first()?, parts.get(1)?.trim_end_matches(".git"), if parts.get(2) == Some(&"tree") { parts.get(3).copied().unwrap_or("undefined") } else { hash })
+            }
+            "bitbucket.org" | "git.sr.ht" => {
+                if parts.get(2) == Some(&if host == "bitbucket.org" { "get" } else { "archive" }) { return None; }
+                (*parts.first()?, parts.get(1)?.trim_end_matches(".git"), hash)
+            }
+            "gitlab.com" => {
+                if path.contains("/-/") || path.contains("/archive.tar.gz") { return None; }
+                let (user, project) = path.rsplit_once('/')?;
+                (user, project.trim_end_matches(".git"), hash)
+            }
+            "gist.github.com" => {
+                if parts.get(2) == Some(&"raw") { return None; }
+                if parts.len() < 2 || parts[1].is_empty() { ("null", parts[0].trim_end_matches(".git"), hash) }
+                else { (parts[0], parts[1].trim_end_matches(".git"), hash) }
+            }
+            _ => return None,
+        }
+    };
+    if user.is_empty() || project.is_empty() { return None; }
+    let project = decode_git_part(project)?;
+    let project = if shortcut { project.strip_suffix(".git").unwrap_or(&project) } else { project.as_str() };
+    let path = format!("{}/{project}", decode_git_part(user)?);
+    let reference = decode_git_part(reference)?;
+    Some((path, (!reference.is_empty()).then_some(reference)))
+}
+
 fn parse_git_source(source: &str) -> Option<ParsedSource> {
     let trimmed = source.trim();
     let prefixed = trimmed.starts_with("git:");
@@ -141,14 +198,10 @@ fn parse_git_source(source: &str) -> Option<ParsedSource> {
     if let Some((host, path)) = shortcut {
         let offset = path.find(['@', '#']);
         let (path, reference) = offset.map_or((path, None), |offset| (&path[..offset], Some(path[offset + 1..].to_owned()).filter(|value| !value.is_empty())));
-        let path = path.strip_suffix(".git").unwrap_or(path);
-        let path = if host == "gist.github.com" && !path.contains('/') { format!("null/{path}") } else { path.to_owned() };
-        let mut parsed = parse_git_source(&format!("https://{host}/{path}"))?;
-        if let ParsedSource::Git { repo, reference: parsed_ref, .. } = &mut parsed {
-            *repo = format!("https://{}", url.split('@').next().unwrap_or(url));
-            *parsed_ref = reference;
-        }
-        return Some(parsed);
+        let (path, reference) = hosted_git_path(host, path, reference.as_deref(), true, "")?;
+        let decoded = decode_git_part(&path)?;
+        if [path.as_str(), decoded.as_str()].iter().any(|path| path.split('/').any(|part| part == "..") || path.contains(['\0', '\\']) || path.starts_with('/')) { return None; }
+        return Some(ParsedSource::Git { repo: format!("https://{}", url.split('@').next().unwrap_or(url)), host: host.into(), path, reference });
     }
     let path_start = if let Some(rest) = url.strip_prefix("git@") {
         rest.find(':')? + 5
@@ -165,8 +218,12 @@ fn parse_git_source(source: &str) -> Option<ParsedSource> {
         let (authority, path) = rest.split_once('/')?;
         (authority.rsplit('@').next()?.split(':').next()?, path)
     } else { repo.split_once('/')? };
-    let path = path.trim_end_matches('/');
-    let path = path.strip_suffix(".git").unwrap_or(path);
+    let path = path.split('?').next().unwrap_or(path);
+    let normalized_host = host.strip_prefix("www.").unwrap_or(host);
+    let protocol = if repo.starts_with("git@") { "git+ssh" } else { repo.split_once("://").map_or("https", |(scheme, _)| scheme) };
+    let hosted = hosted_git_path(normalized_host, path, reference.as_deref(), false, protocol);
+    let generic = path.trim_end_matches('/').trim_end_matches(".git");
+    let path = hosted.as_ref().map_or(generic, |(path, _)| path.as_str());
     if host.is_empty() || (!repo.contains("://") && !repo.starts_with("git@") && !host.contains('.') && host != "localhost") || path.split('/').count() < 2 { return None; }
     for part in [host, path] {
         // Decode percent escapes before checking managed-storage traversal.
@@ -184,16 +241,10 @@ fn parse_git_source(source: &str) -> Option<ParsedSource> {
     }
     let clone_repo = if url.contains('#') && !url[path_start..].contains('@') { url } else { repo };
     let repo = if clone_repo.contains("://") || clone_repo.starts_with("git@") { clone_repo.to_owned() } else { format!("https://{clone_repo}") };
-    let mut path = path.to_owned();
-    let mut reference = reference;
-    if host == "github.com" || host == "www.github.com" {
-        let parts: Vec<_> = path.split('/').collect();
-        if parts.get(2) == Some(&"tree") && parts.len() >= 4 {
-            reference = Some(parts[3].to_owned());
-            path = format!("{}/{}", parts[0], parts[1].trim_end_matches(".git"));
-        }
-    }
-    Some(ParsedSource::Git { repo, host: host.trim_start_matches("www.").to_owned(), path, reference })
+    let path = path.to_owned();
+    let host = if hosted.is_some() { normalized_host } else { host };
+    let reference = hosted.map_or(reference, |(_, reference)| reference);
+    Some(ParsedSource::Git { repo, host: host.to_owned(), path, reference })
 }
 
 fn join_path(root: &str, part: &str) -> String { Path::new(root).join(part).to_string_lossy().into_owned() }
@@ -911,17 +962,84 @@ fn extglob_regex(pattern: &str) -> Option<String> {
                 if body.starts_with('!') { body.replace_range(..1, "^"); }
                 result.push_str(&format!("[{body}]")); index = end;
             }
-            '{' => {
-                let end = (index + 1..chars.len()).find(|offset| chars[*offset] == '}')?;
-                let body = chars[index + 1..end].iter().collect::<String>();
-                let alternatives = body.split(',').map(extglob_regex).collect::<Option<Vec<_>>>()?;
-                result.push_str(&format!("(?:{})", alternatives.join("|"))); index = end;
-            }
             _ => result.push_str(&regex::escape(&ch.to_string())),
         }
         index += 1;
     }
     Some(result)
+}
+
+fn expand_braces(pattern: &str) -> Vec<String> {
+    fn expand(pattern: &str, depth: usize, top: bool) -> Vec<String> {
+        if depth > 1000 { return vec![pattern.to_owned()]; }
+        let mut open = None;
+        let mut level = 0;
+        let mut escaped = false;
+        let mut close = None;
+        for (index, ch) in pattern.char_indices() {
+            if escaped { escaped = false; continue; }
+            if ch == '\\' { escaped = true; continue; }
+            if ch == '{' { if level == 0 { open = Some(index); } level += 1; }
+            if ch == '}' && level > 0 { level -= 1; if level == 0 { close = Some(index); break; } }
+        }
+        let (Some(open), Some(close)) = (open, close) else { return vec![pattern.to_owned()]; };
+        let pre = &pattern[..open]; let body = &pattern[open + 1..close]; let post = &pattern[close + 1..];
+        if pre.ends_with('$') {
+            return expand(post, depth + 1, false).into_iter().map(|tail| format!("{}{}", &pattern[..close + 1], tail)).collect();
+        }
+        let sequence: Vec<_> = body.split("..").collect();
+        let numeric = sequence.len() >= 2 && sequence.len() <= 3 && sequence.iter().all(|part| {
+            let part = part.strip_prefix('-').unwrap_or(part);
+            !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+        });
+        let alpha = sequence.len() >= 2 && sequence.len() <= 3 && sequence[..2].iter().all(|part| part.len() == 1 && part.as_bytes()[0].is_ascii_alphabetic())
+            && (sequence.len() == 2 || sequence[2].parse::<i64>().is_ok());
+        let mut values = Vec::new();
+        if numeric || alpha {
+            let number = |part: &str| if numeric { part.parse::<i64>().ok() } else { part.chars().next().map(|ch| i64::from(u32::from(ch))) };
+            let (Some(mut current), Some(end)) = (number(sequence[0]), number(sequence[1])) else { return vec![pattern.to_owned()]; };
+            let step = if sequence.len() == 3 { sequence[2].parse::<i64>().ok().and_then(i64::checked_abs).unwrap_or(1).max(1) } else { 1 };
+            let step = if end < current { -step } else { step };
+            let padded = sequence.iter().any(|part| { let part = part.strip_prefix('-').unwrap_or(part); part.len() > 1 && part.starts_with('0') });
+            let width = sequence[0].len().max(sequence[1].len());
+            while (if step > 0 { current <= end } else { current >= end }) && values.len() < 100_000 {
+                let value = if alpha {
+                    let ch = u32::try_from(current).ok().and_then(char::from_u32);
+                    ch.map(|ch| if ch == '\\' { String::new() } else { ch.to_string() }).unwrap_or_default()
+                } else if padded { format!("{current:0width$}") } else { current.to_string() };
+                values.push(value);
+                let Some(next) = current.checked_add(step) else { break; }; current = next;
+            }
+        } else {
+            let mut start = 0; let mut level = 0; let mut escaped = false;
+            let mut parts = Vec::new();
+            for (index, ch) in body.char_indices() {
+                if escaped { escaped = false; continue; }
+                match ch { '\\' => escaped = true, '{' => level += 1, '}' => level -= 1,
+                    ',' if level == 0 => { parts.push(&body[start..index]); start = index + 1; }, _ => {} }
+            }
+            parts.push(&body[start..]);
+            if parts.len() == 1 {
+                if body.contains(',') {
+                    values = expand(body, depth + 1, false).into_iter().map(|value| format!("{{{value}}}")).collect();
+                } else {
+                    return expand(post, depth + 1, false).into_iter().map(|tail| format!("{}{}", &pattern[..close + 1], tail)).collect();
+                }
+            } else { for part in parts { values.extend(expand(part, depth + 1, false)); } }
+        }
+        let tails = expand(post, depth + 1, false);
+        let mut result = Vec::new(); let mut length = 0;
+        for value in values {
+            for tail in &tails {
+                let item = format!("{pre}{value}{tail}");
+                if top && !numeric && !alpha && item.is_empty() { continue; }
+                if result.len() >= 100_000 || length + item.len() > 4_000_000 { return result; }
+                length += item.len(); result.push(item);
+            }
+        }
+        result
+    }
+    expand(pattern, 0, true)
 }
 
 fn minimatch_path(candidate: &str, pattern: &str) -> bool {
@@ -944,7 +1062,8 @@ fn minimatch_path(candidate: &str, pattern: &str) -> bool {
     }
     if pattern.starts_with('#') { return false; }
     let negations = pattern.bytes().take_while(|byte| *byte == b'!').count();
-    let matched = segments(&candidate.split('/').collect::<Vec<_>>(), &pattern[negations..].split('/').collect::<Vec<_>>());
+    let matched = expand_braces(&pattern[negations..]).iter().any(|expanded|
+        segments(&candidate.split('/').collect::<Vec<_>>(), &expanded.split('/').collect::<Vec<_>>()));
     if negations % 2 == 1 { !matched } else { matched }
 }
 
