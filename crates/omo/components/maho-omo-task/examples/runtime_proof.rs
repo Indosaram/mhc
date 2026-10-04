@@ -55,18 +55,25 @@ impl ManagedRunner for ImmediateRunner {
 }
 struct Actions(mpsc::Sender<CustomMessage>);
 #[derive(Default)]
-struct SurfaceTimers { callbacks: Mutex<BTreeMap<u64, Box<dyn FnOnce() + Send>>>, next: Mutex<u64> }
+struct SurfaceTimers { callbacks: Mutex<BTreeMap<u64, Box<dyn FnOnce() + Send>>>, kinds: Mutex<BTreeMap<u64, u64>>, next: Mutex<u64> }
 impl maho_omo_task::status_ui::StatusUiTimers for SurfaceTimers {
-    fn set(&self, callback: Box<dyn FnOnce() + Send>, _: u64) -> u64 {
+    fn set(&self, callback: Box<dyn FnOnce() + Send>, delay_ms: u64) -> u64 {
         let mut next = self.next.lock().unwrap_or_else(std::sync::PoisonError::into_inner); *next += 1;
-        self.callbacks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(*next, callback); *next
+        self.callbacks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(*next, callback);
+        self.kinds.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(*next, delay_ms); *next
     }
-    fn clear(&self, handle: u64) { self.callbacks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&handle); }
+    fn clear(&self, handle: u64) {
+        self.callbacks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&handle);
+        self.kinds.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&handle);
+    }
 }
 impl SurfaceTimers {
     fn count(&self) -> usize { self.callbacks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len() }
+    // The armed timers' scheduled delays, so a count mismatch names which timer kind is live.
+    fn kinds(&self) -> Vec<u64> { self.kinds.lock().unwrap_or_else(std::sync::PoisonError::into_inner).values().copied().collect() }
     fn fire(&self) {
         let callbacks = std::mem::take(&mut *self.callbacks.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        self.kinds.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
         for callback in callbacks.into_values() { callback(); }
     }
 }
@@ -225,14 +232,14 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
         }] }, parent_session_id:context.session_manager.session_id().into(), root_session_id:context.session_manager.session_id().into(),
     })?;
     dispatch(&api, EventKind::SessionStart, &mut ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::Resume, initial_model_provenance:None, previous_session_file:None }), &context).await?;
-    assert_eq!(status_timers.count(), 1, "live registered DAG requires one refresh timer");
+    assert_eq!(status_timers.count(), 1, "live registered DAG requires one refresh timer (kinds={:?})", status_timers.kinds());
     dispatch(&api, EventKind::SessionBeforeSwitch, &mut ExtensionEvent::SessionBeforeSwitch { reason:SessionReason::Resume, target_session_file:None }, &context).await?;
-    assert_eq!(status_timers.count(), 0, "before-switch must cancel registered status timers");
+    assert_eq!(status_timers.count(), 0, "before-switch must cancel registered status timers (kinds={:?})", status_timers.kinds());
     let paints = dag_ui.widgets.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len();
     status_timers.fire();
     assert_eq!(dag_ui.widgets.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(), paints);
     dispatch(&api, EventKind::SessionStart, &mut ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::Resume, initial_model_provenance:None, previous_session_file:None }), &context).await?;
-    assert_eq!(status_timers.count(), 1, "rebind must restore exactly one refresh timer");
+    assert_eq!(status_timers.count(), 1, "rebind must restore exactly one refresh timer (kinds={:?})", status_timers.kinds());
     assert!(dag.manager.snapshot(&pending.snapshot.run_id, context.session_manager.session_id()).is_ok());
     let dag_channels = Arc::new(Mutex::new(Vec::<Value>::new()));
     let captured_channels = dag_channels.clone();
