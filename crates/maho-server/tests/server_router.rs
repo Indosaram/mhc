@@ -183,3 +183,59 @@ async fn session_removal_invalidates_all_client_leases() {
     assert_eq!(releases.load(Ordering::SeqCst), 2);
     router.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn concurrent_failed_open_shares_one_result_and_one_host_call() {
+    use maho_server::server::testing::TestServerHost;
+    let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
+    host.state.lock().await.next_open_session_error=Some(ServerError::new("internal_error","faux open failure"));
+    let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
+    let (first,second)=tokio::join!(router.attach("session-1"),router.attach("session-1"));
+    let first=first.unwrap_err();let second=second.unwrap_err();
+    assert_eq!(first,second);
+    assert_eq!(first.message,"faux open failure");
+    assert_eq!(host.state.lock().await.open_session_count,1);
+    assert!(router.close().await.is_ok());
+}
+
+#[tokio::test]
+async fn client_service_calls_serialize_on_one_attachment() {
+    use maho_server::server::testing::TestServerHost;
+    let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
+    let router=SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into());
+    let attachment=router.attach("session-1").await.unwrap();
+    let harness=host.latest_harness("session-1").await.unwrap();
+    let gate=harness.gate_next_service_call().await;
+    let (_cancel,cancelled)=tokio::sync::watch::channel(false);
+    let publish:Publisher=Arc::new(|_,_|Box::pin(async {Ok(())}));
+    let first={let attachment=attachment.clone();let context=Context {cancelled:cancelled.clone()};let publish=publish.clone();tokio::spawn(async move {attachment.invoke(json!({"n":1}),publish,context).await})};
+    gate.entered.wait().await;
+    let mut second=Box::pin(attachment.invoke(json!({"n":2}),publish.clone(),Context {cancelled:cancelled.clone()}));
+    assert!(futures_util::FutureExt::now_or_never(second.as_mut()).is_none());
+    assert_eq!(harness.state.lock().await.service_calls.len(),1);
+    gate.release.resolve(());
+    first.await.unwrap().unwrap();
+    second.await.unwrap().unwrap();
+    assert_eq!(harness.state.lock().await.service_calls.len(),2);
+    attachment.release().await.unwrap();
+    router.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn terminated_handle_invalidates_hosted_session_and_releases_leases() {
+    use maho_server::server::testing::TestServerHost;
+    let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
+    let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
+    let attachment=router.attach("session-1").await.unwrap();
+    router.watch_termination("session-1").await;
+    let harness=host.latest_harness("session-1").await.unwrap();
+    assert_eq!(harness.state.lock().await.attached_clients,1);
+    harness.terminate(ServerError::new("internal_error","session crashed")).await;
+    harness.closed.wait().await;
+    assert_eq!(harness.state.lock().await.attachment_release_count,1);
+    assert_eq!(harness.state.lock().await.attached_clients,0);
+    let (_cancel,cancelled)=tokio::sync::watch::channel(false);
+    let result=attachment.invoke(json!({}),Arc::new(|_,_|Box::pin(async {Ok(())})),Context {cancelled}).await;
+    assert_eq!(result.unwrap_err().code,"session_not_attached");
+    router.close().await.unwrap();
+}

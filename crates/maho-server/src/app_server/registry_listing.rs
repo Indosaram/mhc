@@ -1,4 +1,3 @@
-use base64::{Engine,engine::general_purpose::STANDARD};
 use maho_core::session_discovery::SessionInfo;
 use serde_json::{Value,json};
 
@@ -8,17 +7,9 @@ pub fn build_disk_thread(info: &SessionInfo) -> Value {
     json!({"id":info.id,"sessionId":info.id,"sessionPath":info.path,"cwd":info.cwd,"createdAt":info.created.to_rfc3339_opts(chrono::SecondsFormat::Millis,true),"updatedAt":modified.to_rfc3339_opts(chrono::SecondsFormat::Millis,true),"status":{"type":"notLoaded"},"preview":preview,"name":info.name})
 }
 pub fn compare_threads(left: &Value,right: &Value) -> std::cmp::Ordering {
-    right["updatedAt"].as_str().cmp(&left["updatedAt"].as_str()).then_with(||left["id"].as_str().cmp(&right["id"].as_str()))
+    let right_time = super::js_semantics::date_parse_ms(right["updatedAt"].as_str().unwrap_or_default()).unwrap_or(0);
+    let left_time = super::js_semantics::date_parse_ms(left["updatedAt"].as_str().unwrap_or_default()).unwrap_or(0);
+    right_time.cmp(&left_time).then_with(||super::js_semantics::locale_compare(left["id"].as_str().unwrap_or_default(),right["id"].as_str().unwrap_or_default()))
 }
-pub fn encode_cursor(offset: usize) -> String {STANDARD.encode(offset.to_string())}
-pub fn decode_cursor(cursor: Option<&str>) -> usize {
-    let Some(cursor) = cursor else {return 0};
-    let normalized = cursor.chars().filter(|character|character.is_ascii_alphanumeric() || matches!(character,'+'|'/'|'-'|'_')).map(|character|match character {'-'=>'+','_'=>'/',other=>other}).collect::<String>();
-    let mut normalized = normalized;
-    while normalized.len() % 4 != 0 {normalized.push('=');}
-    let Ok(decoded) = STANDARD.decode(normalized) else {return 0};
-    let text = String::from_utf8_lossy(&decoded);
-    let text = text.trim_start().strip_prefix('+').unwrap_or(text.trim_start());
-    let digits = text.chars().take_while(char::is_ascii_digit).collect::<String>();
-    digits.parse().unwrap_or(0)
-}
+pub fn encode_cursor(offset: usize) -> String {super::js_semantics::encode_cursor_number(offset as f64)}
+pub fn decode_cursor(cursor: Option<&str>) -> usize {super::js_semantics::decode_cursor_offset(cursor)}

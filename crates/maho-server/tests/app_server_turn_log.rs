@@ -78,3 +78,10 @@ fn duplicate_turn_ids_update_first_and_invalid_dates_have_null_duration() {
     assert_eq!(turns[1].status, TurnStatus::Running);
     assert_eq!(turns[0].duration_ms, None);
 }
+#[test]
+fn duration_uses_non_rfc3339_date_parse() {
+    let mut log = TurnLog::default();
+    log.record_turn("t", RecordTurnOptions { turn_id: "a".into(), started_at: "2020-01-01T00:00:00.000Z".into(), completed_at: None, error: None, status: None });
+    log.complete_turn("t", "a", CompleteTurnOptions { status: CompleteTurnStatus::Completed, completed_at: "2020-01-01 00:00:01".into(), error: None }).unwrap();
+    assert_eq!(log.read_turns("t")[0].duration_ms, Some(1000));
+}

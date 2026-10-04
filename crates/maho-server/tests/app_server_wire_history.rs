@@ -14,6 +14,15 @@ fn persisted_messages_reconstruct_turns_and_summary_views() {
     assert!(logged_turn_with_view(&turns[0],"notLoaded")["items"].as_array().unwrap().is_empty());
 }
 
+#[test]
+fn logged_turn_accepts_non_rfc3339_started_and_completed_at() {
+    use maho_server::app_server::turn_log::{LoggedTurn,TurnStatus};
+    let turn = LoggedTurn {turn_id:"t".into(),started_at:"2020-01-01".into(),completed_at:Some("2020-01-01 00:00:02".into()),duration_ms:None,error:None,status:TurnStatus::Completed,items:Vec::new()};
+    let wire = logged_turn_with_view(&turn,"full");
+    assert_eq!(wire["startedAt"],1577836800.0);
+    assert_eq!(wire["completedAt"],1577836802.0);
+}
+
 #[tokio::test]
 async fn unloaded_history_reads_disk_without_creating_a_native_session() {
     use maho_server::app_server::{archive_state::ThreadArchiveState,history_handlers::thread_history_turns,thread_registry::ThreadRegistry,turn_log::TurnLog};

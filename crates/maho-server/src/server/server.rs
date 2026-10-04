@@ -313,6 +313,7 @@ impl RoutedServerPresentation for Presentation {
                 return Ok(());
             }
             let attachment = self.router.attach(session_id).await?;
+            self.router.watch_termination(session_id).await;
             if let Some(previous) = current.take() {
                 previous.release().await?;
             }

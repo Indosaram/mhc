@@ -37,6 +37,7 @@ pub mod user_input_bridge;
 pub mod model_list;
 pub mod goal_wire;
 pub mod goal_handlers;
+pub mod js_semantics;
 pub mod websocket_auth;
 pub mod websocket_connection_handler;
 pub mod websocket;
