@@ -35,13 +35,14 @@ maho-ext-herdr = { path = "../builtins/maho-ext-herdr" }
 maho-ext-btw = { path = "../builtins/maho-ext-btw" }
 maho-ext-cache-keepalive = { path = "../builtins/maho-ext-cache-keepalive" }
 maho-ext-webfetch = { path = "../builtins/maho-ext-webfetch" }
+maho-ext-goal = { path = "../builtins/maho-ext-goal" }
+maho-ext-rules = { path = "../builtins/maho-ext-rules" }
 maho-ext-compaction = { path = "../builtins/maho-ext-compaction" }
 maho-ext-host = { path = "../maho-ext-host" }
 maho-ext-mcp = { path = "../builtins/maho-ext-mcp" }
 maho-ext-permission-system = { path = "../builtins/maho-ext-permission-system" }
 maho-ext-recommended-models = { path = "../builtins/maho-ext-recommended-models" }
 maho-omo-task = { path = "../omo/components/maho-omo-task" }
-maho-ext-gpt-apply-patch = { path = "../builtins/maho-ext-gpt-apply-patch" }
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }
 regex.workspace = true

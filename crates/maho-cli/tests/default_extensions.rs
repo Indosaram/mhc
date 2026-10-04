@@ -6,13 +6,13 @@ async fn concrete_default_factories_register_tools_and_commands() {
     let loaded = maho_ext_host::loader::load_extensions_async(factories, root.path(), Default::default()).await;
     assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
     let commands = loaded.extensions.iter().flat_map(|extension| &extension.commands).map(|command| command.name.as_str()).collect::<Vec<_>>();
-    for command in ["account", "answer", "fallback", "help", "history", "mcp", "todo"] {
+    for command in ["account", "answer", "fallback", "goal", "rules", "reload-rules", "help", "history", "mcp", "todo"] {
         assert!(commands.contains(&command), "Missing command {command}: {commands:?}");
     }
     let names = loaded.extensions.iter().map(|extension| extension.identity.path.as_str()).collect::<Vec<_>>();
-    for path in ["<builtin:codemode>", "<builtin:compaction>", "<builtin:task>", "<builtin:webfetch>", "<builtin:websearch>", "<builtin:look-at>"] {
+    for path in ["<builtin:codemode>", "<builtin:compaction>", "<builtin:task>", "<builtin:webfetch>", "<builtin:websearch>", "<builtin:rules>", "<builtin:goal>", "<builtin:look-at>"] {
         assert!(names.contains(&path), "Missing factory {path}");
     }
     let tools = loaded.extensions.iter().flat_map(|extension| &extension.tools).map(|tool| tool.definition.name.as_str()).collect::<Vec<_>>();
-    for name in ["eval", "look_at", "todo", "webfetch", "websearch"] { assert!(tools.contains(&name), "Missing tool {name}: {tools:?}"); }
+    for name in ["eval", "look_at", "todo", "webfetch", "websearch", "create_goal", "update_goal", "get_goal"] { assert!(tools.contains(&name), "Missing tool {name}: {tools:?}"); }
 }
