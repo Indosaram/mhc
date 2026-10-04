@@ -8,8 +8,8 @@ pub fn run_migrations(cwd: &Path, home: &Path, agent: &Path) -> std::io::Result<
             &home.join(".senpi/agent"), &home.join(maho_core::config::config_dir_name()),
         )?;
         if migration.migrated && !migration.copied.is_empty() {
-            println!("\x1b[32mCopied existing settings from {} to {}\x1b[39m", migration.from.display(), migration.to.display());
-            println!("\x1b[2mThe original directory is untouched; the two installs keep separate state from now on.\x1b[22m");
+            crate::cli::stdout_guard::write_line(&format!("\x1b[32mCopied existing settings from {} to {}\x1b[39m\n", migration.from.display(), migration.to.display()));
+            crate::cli::stdout_guard::write_line("\x1b[2mThe original directory is untouched; the two installs keep separate state from now on.\x1b[22m\n");
         }
     }
     let migrated_auth_providers = migrate_auth_to_auth_json(agent)?;
@@ -69,7 +69,7 @@ pub fn migrate_sessions_from_agent_root(agent: &Path) -> std::io::Result<()> {
 }
 pub fn migrate_tools_to_bin(agent: &Path) -> std::io::Result<()> {
     let mut moved = false; for binary in ["fd", "rg", "fd.exe", "rg.exe"] { let old = agent.join("tools").join(binary); if !old.exists() { continue; } let target = agent.join("bin").join(binary); fs::create_dir_all(agent.join("bin"))?; if target.exists() { fs::remove_file(old)?; } else { fs::rename(old, target)?; moved = true; } }
-    if moved { println!("Migrated managed binaries tools/ → bin/"); } Ok(())
+    if moved { crate::cli::stdout_guard::write_line("Migrated managed binaries tools/ → bin/\n"); } Ok(())
 }
 pub fn migrate_keybindings_config_file(agent: &Path) -> std::io::Result<()> {
     let path = agent.join("keybindings.json"); let Some(Value::Object(raw)) = read_json(&path) else { return Ok(()); }; let result = maho_core::keybindings::migrate_keybindings_config(&raw); if result.migrated { write_json(&path, &Value::Object(result.config), true)?; } Ok(())

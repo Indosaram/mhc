@@ -13,6 +13,8 @@ async fn run_print_entry(no_context_files: bool) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("print-entry fixture operation");
     let address = listener.local_addr().expect("print-entry fixture operation");
     let dir = tempfile::tempdir().expect("print-entry fixture operation");
+    std::fs::create_dir_all(dir.path().join(".maho")).expect("print-entry fixture operation");
+    std::fs::write(dir.path().join(".maho/onboarding-completed"), "{}\n").expect("print-entry fixture operation");
     let agent = dir.path().join("agent");
     std::fs::create_dir(&agent).expect("print-entry fixture operation");
     std::fs::create_dir(agent.join("prompts")).expect("print-entry fixture operation");

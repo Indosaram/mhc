@@ -182,6 +182,7 @@ async fn converted_child_options_drive_native_provider_and_restore_exact_transcr
         maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() });
     runtime.register_native_provider(provider.provider.clone());
     let registry = maho_core::model_registry::ModelRegistry::new(runtime.clone());
+    registry.auth_storage.set("faux", Some(serde_json::json!({"type":"api_key","key":"native-child-fixture"}))).expect("faux auth");
     let spec = ChildSpec {
         cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
         auth_storage: Some(registry.auth_storage.clone()),

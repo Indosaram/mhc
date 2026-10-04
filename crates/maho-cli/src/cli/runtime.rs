@@ -16,6 +16,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         if code != 0 { return Err(format!("app-server exited with code {code}")); }
         return Ok(());
     }
+    if mode != AppMode::Interactive { super::stdout_guard::take_over_stdout(); }
     let mut indicator = super::startup_loading_indicator::StartupLoadingIndicator::new(
         super::startup_loading_indicator::StartupLoadingIndicatorOptions::new(|text| {
             use std::io::Write;

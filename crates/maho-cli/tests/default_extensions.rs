@@ -14,7 +14,7 @@ async fn concrete_default_factories_register_tools_and_commands() {
         assert!(names.contains(&path), "Missing factory {path}");
     }
     let tools = loaded.extensions.iter().flat_map(|extension| &extension.tools).map(|tool| tool.definition.name.as_str()).collect::<Vec<_>>();
-    for name in ["eval", "look_at", "todo", "webfetch", "websearch", "create_goal", "update_goal", "get_goal"] { assert!(tools.contains(&name), "Missing tool {name}: {tools:?}"); }
+    for name in ["eval", "look_at", "todo", "webfetch", "web_search", "create_goal", "update_goal", "get_goal"] { assert!(tools.contains(&name), "Missing tool {name}: {tools:?}"); }
 }
 
 #[tokio::test]
