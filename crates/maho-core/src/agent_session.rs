@@ -6135,7 +6135,7 @@ fn user_message_text(message: &AgentMessage) -> String {
     }
 }
 
-fn session_message_to_value(message: &AgentMessage) -> Result<Value, serde_json::Error> {
+pub fn session_message_to_value(message: &AgentMessage) -> Result<Value, serde_json::Error> {
     use maho_agent::types::CustomAgentMessage;
     match message {
         AgentMessage::Llm(message) => serde_json::to_value(message),

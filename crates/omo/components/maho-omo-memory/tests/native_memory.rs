@@ -178,7 +178,7 @@ async fn native_faux_memory_projection_equals_pinned_ts() {
     let prompts=captured.lock().unwrap(); assert_eq!(prompts.len(),1);
     let block=memory_core::compile::render::mark_memory_block("prompt-agent",include_str!("golden/projection.txt"));
     assert!(prompts[0].contains(&block));
-    assert!(result["messages"].as_array().unwrap().iter().any(|message|message["Custom"]["role"]=="custom" && message["Custom"]["customType"]==MEMORY_NOTICE_CUSTOM_TYPE && message["Custom"]["display"]==false),"native result: {result}");
+    assert!(result["messages"].as_array().unwrap().iter().any(|message|message["role"]=="custom" && message["customType"]==MEMORY_NOTICE_CUSTOM_TYPE && message["display"]==false),"native result: {result}");
 }
 
 struct MemoryToolsExtension { identity:MemoryIdentityContext,notifications:Arc<Mutex<usize>> }

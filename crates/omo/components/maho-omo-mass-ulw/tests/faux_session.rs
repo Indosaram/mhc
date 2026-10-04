@@ -47,10 +47,10 @@ async fn faux_trigger_matches_reference_hidden_delivery_and_typed_prompt() {
     let custom_type = "omo-mass-ulw:skill-pointer";
     let expected = entries.iter().find(|entry| entry["customType"] == custom_type).expect("reference injection");
     let messages = actual["messages"].as_array().expect("native messages");
-    let custom = messages.iter().filter_map(|message| message.get("Custom"))
-        .find(|message| message["customType"] == custom_type).expect("native injection");
+    let custom = messages.iter()
+        .find(|message| message["role"] == "custom" && message["customType"] == custom_type).expect("native injection");
     assert_eq!(custom["display"], expected["display"]);
     assert_eq!(custom["content"][0]["text"], expected["content"]);
-    assert_eq!(messages.iter().filter(|message| message["Custom"]["customType"] == custom_type).count(), 1);
+    assert_eq!(messages.iter().filter(|message| message["customType"] == custom_type).count(), 1);
     assert_eq!(messages.iter().find(|message| message["role"] == "user").expect("native user")["content"], user["message"]["content"]);
 }
