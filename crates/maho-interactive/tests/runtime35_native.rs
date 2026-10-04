@@ -1164,7 +1164,7 @@ async fn import_command_confirms_copies_and_switches_to_the_jsonl() {
     let source = source_dir.path().join("imported.jsonl");
     let cwd = directory.path().to_string_lossy().into_owned();
     let header = serde_json::json!({"type":"session","version":3,"id":"imported","timestamp":"2026-10-03T00:00:00.000Z","cwd":cwd});
-    let message = serde_json::json!({"type":"message","id":"m1","parentId":null,"timestamp":"2026-10-03T00:00:01.000Z","message":{"role":"user","content":"imported prompt","timestamp":1790985601000}});
+    let message = serde_json::json!({"type":"message","id":"m1","parentId":null,"timestamp":"2026-10-03T00:00:01.000Z","message":{"role":"user","content":"imported prompt","timestamp":1790985601000i64}});
     std::fs::write(&source,format!("{header}\n{message}\n")).expect("fixture");
     mode.submit(&format!("/import {}",source.display()),Default::default()).await.expect("confirm dialog");
     assert!(mode.render(80).join("\n").contains("Replace current session with"),"confirmation prompt");
