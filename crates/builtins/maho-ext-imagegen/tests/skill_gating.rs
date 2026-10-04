@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used)]
 #[path = "support.rs"]
 mod support;
 

@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used)]
 #[path = "support.rs"]
 mod support;
 
@@ -131,4 +130,29 @@ async fn a_kitty_escape_key_release_is_ignored() {
 
     assert_eq!(ui.widgets.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(), 1);
     assert_eq!(ui.input_count(), 1);
+}
+
+#[tokio::test]
+async fn escape_cancels_an_in_flight_side_query() {
+    let registry = Arc::new(support::BtwRegistry::blocked());
+    let mut observed = registry.entered.subscribe();
+    let ui = Arc::new(support::BtwUi::default());
+    let ctx = support::context(ExtensionMode::Tui, true, registry.clone(), ui.clone());
+    let handler = support::command_handler();
+
+    let work = {
+        let handler = handler.clone();
+        let ctx = ctx.clone();
+        tokio::spawn(async move { handler("in-flight question", &ctx).await })
+    };
+    assert!(matches!(tokio::time::timeout(timeout(), observed.changed()).await, Ok(Ok(()))), "stream did not start");
+    let signal = observed.borrow().clone().expect("signal");
+
+    ui.feed_input("\u{1b}");
+
+    let completed = tokio::time::timeout(timeout(), work).await;
+    assert!(completed.is_ok(), "handler did not settle after Escape");
+    assert!(signal.aborted());
+    assert!(ui.widget_cleared());
+    assert_eq!(ui.input_count(), 0);
 }

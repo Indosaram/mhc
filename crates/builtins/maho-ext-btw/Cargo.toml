@@ -15,5 +15,9 @@ maho-ext-compaction = { path = "../maho-ext-compaction" }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["time", "macros", "rt", "sync", "test-util"] }
 
+[dev-dependencies]
+maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
+maho-ext-host = { path = "../../maho-ext-host" }
+
 [lints]
 workspace = true

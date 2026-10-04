@@ -1,7 +1,5 @@
 //! Offline fixture harness: no network, provider or auth call is made.
 
-#![allow(clippy::unwrap_used)]
-
 use maho_ai::types::{AssistantImages, ContentBlock, ImageContent, ImagesBackground, ImagesContext, ImagesModel, ImagesOptions, ImagesStopReason, TextContent, Usage};
 use maho_ext_api::*;
 use std::{

@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used)]
 
 use maho_ai::types::{AssistantMessage, AssistantMessageEvent, Context, DoneReason, SimpleStreamOptions};
 use maho_ai::utils::abort::AbortSignal;

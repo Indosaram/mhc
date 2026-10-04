@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used)]
 
 use maho_ai::model::Model;
 use maho_ext_imagegen::auth::{resolve_image_gen_auth, AuthFuture, Credentials, ImageGenAuthRegistry, ImageGenAuthResolution};
