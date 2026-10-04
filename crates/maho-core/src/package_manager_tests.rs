@@ -608,3 +608,51 @@ fn live_stdout_takeover_duplicates_stderr_descriptor_without_buffering() {
     assert!(OwnedFd::try_from(package_stdout(false, false).expect("stdio")).is_err());
     assert!(OwnedFd::try_from(package_stdout(true, true).expect("stdio")).is_err());
 }
+
+#[test]
+fn braces_expand_sequences_nested_sets_and_cartesian_products() {
+    for (pattern, expected) in [
+        ("p{01..05..2}.md", vec!["p01.md", "p03.md", "p05.md"]),
+        ("{-02..2..2}", vec!["-02", "000", "002"]),
+        ("{5..1..-2}", vec!["5", "3", "1"]),
+        ("{a..e..2}", vec!["a", "c", "e"]),
+        ("{a,{b,c}}{1,2}", vec!["a1", "a2", "b1", "b2", "c1", "c2"]),
+        ("x{{a,b}}y", vec!["x{a}y", "x{b}y"]),
+        ("${a,b}{1,2}", vec!["${a,b}1", "${a,b}2"]),
+        (r"x\{a,b\}", vec![r"x\{a,b\}"]),
+    ] { assert_eq!(expand_braces(pattern), expected, "{pattern}"); }
+    assert!(minimatch_path("p03.md", "@(p{01..05..2}|q{a,{b,c}}).md"));
+    assert!(minimatch_path("qc.md", "@(p{01..05..2}|q{a,{b,c}}).md"));
+    assert!(!minimatch_path("p02.md", "@(p{01..05..2}|q{a,{b,c}}).md"));
+}
+
+#[test]
+fn hosted_shortcuts_decode_identity_and_reference_before_validation() {
+    for source in ["git:github:us%65r/r%C3%A9po#feature%2Fx", "git:gitlab:us%65r/r%C3%A9po@feature%2Fx"] {
+        let Some(ParsedSource::Git { path, reference, .. }) = parse_git_source(source) else { panic!("{source}"); };
+        assert_eq!(path, "user/r\u{e9}po"); assert_eq!(reference.as_deref(), Some("feature/x"));
+    }
+    for source in ["git:github:u/%2e%2e", "git:github:u/%252e%252e", "git:github:u/%zz", "git:github:u/%FF", "git:github:u/%00"] {
+        assert!(parse_git_source(source).is_none(), "{source}");
+    }
+}
+
+#[test]
+fn hosted_provider_urls_extract_or_fall_back_like_pinned_hosts() {
+    for (source, host, path, reference) in [
+        ("https://www.github.com/us%65r/repo/tree/feature%2Fx", "github.com", "user/repo", Some("feature/x")),
+        ("https://bitbucket.org/u/repo/src/main?x=1#v%31", "bitbucket.org", "u/repo", Some("v1")),
+        ("https://git.sr.ht/~u/repo/tree/main#v%31", "git.sr.ht", "~u/repo", Some("v1")),
+        ("https://gitlab.com/group/sub/r%C3%A9po.git#v%31", "gitlab.com", "group/sub/r\u{e9}po", Some("v1")),
+        ("https://gist.github.com/abc#v%31", "gist.github.com", "null/abc", Some("v1")),
+        ("https://gist.github.com/u/abc/revision#v%31", "gist.github.com", "u/abc", Some("v1")),
+        ("https://github.com/u/repo/issues", "github.com", "u/repo/issues", None),
+        ("https://bitbucket.org/u/repo/get/main", "bitbucket.org", "u/repo/get/main", None),
+        ("https://gitlab.com/u/repo/-/tree/main", "gitlab.com", "u/repo/-/tree/main", None),
+        ("https://git.sr.ht/~u/repo/archive/main", "git.sr.ht", "~u/repo/archive/main", None),
+        ("https://gist.github.com/u/abc/raw", "gist.github.com", "u/abc/raw", None),
+    ] {
+        let Some(ParsedSource::Git { host: actual_host, path: actual_path, reference: actual_ref, .. }) = parse_git_source(source) else { panic!("{source}"); };
+        assert_eq!(actual_host, host); assert_eq!(actual_path, path); assert_eq!(actual_ref.as_deref(), reference, "{source}");
+    }
+}
