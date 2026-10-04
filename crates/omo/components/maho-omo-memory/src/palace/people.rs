@@ -6,6 +6,7 @@ use memory_core::memfs::parse_memory_file;
 use memory_core::people::{PeopleLimits, parse_people_card};
 use serde::Serialize;
 
+use super::PalaceError;
 use super::entry_collector::PalaceEntryState;
 
 pub const PRIMARY_HUMAN_SLUG: &str = "human";
@@ -76,15 +77,14 @@ pub fn collect_people(
     repo: &GitMemoryRepo,
     head: Option<&str>,
     options: &PalacePeopleOptions,
-) -> Option<PalacePeople> {
+) -> Result<Option<PalacePeople>, PalaceError> {
     if !options.enabled {
-        return None;
+        return Ok(None);
     }
 
     let committed = match head {
         Some(head) => repo
-            .ls_tree(Some(head), None)
-            .ok()?
+            .ls_tree(Some(head), None)?
             .into_iter()
             .filter(|path| is_card_path(path.as_str()))
             .collect::<Vec<_>>(),
@@ -167,11 +167,11 @@ pub fn collect_people(
             target: edge.target,
         })
         .collect();
-    Some(PalacePeople {
+    Ok(Some(PalacePeople {
         nodes,
         edges,
         diagnostics,
-    })
+    }))
 }
 
 fn parse_relationship(source: &str, content: &str) -> Option<Relationship> {
@@ -303,6 +303,10 @@ mod tests {
     use crate::palace::entry_collector::UNCOMMITTED_LABEL;
     use crate::palace::generator::{GeneratePalaceOptions, generate_palace_html};
     use crate::palace::test_support::{create_palace_fixture, inline_json};
+    use memory_core::git::{
+        GitExecOptions, GitExecResult, GitExecRuntime, GitMemoryRepoOptions, create_git_exec,
+    };
+    use std::sync::Arc;
 
     const LIMITS: PeopleLimits = PeopleLimits {
         max_entries: 40,
@@ -319,6 +323,7 @@ mod tests {
         fixture.seed_people(false);
 
         let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(true))
+            .unwrap()
             .unwrap();
 
         let mut slugs = people.nodes.iter().map(|node| node.slug.clone()).collect::<Vec<_>>();
@@ -336,6 +341,7 @@ mod tests {
         fixture.seed_people(false);
 
         let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(true))
+            .unwrap()
             .unwrap();
 
         let edges = people
@@ -367,6 +373,7 @@ mod tests {
         fixture.seed_people(false);
 
         let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(true))
+            .unwrap()
             .unwrap();
 
         assert!(!people.edges.iter().any(|edge| edge.predicate == "senior-engineer"));
@@ -383,6 +390,7 @@ mod tests {
         );
 
         let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(true))
+            .unwrap()
             .unwrap();
 
         let kim = people.nodes.iter().find(|node| node.slug == "kim-lee").unwrap();
@@ -396,6 +404,7 @@ mod tests {
         let fixture = create_palace_fixture(false);
 
         let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(true))
+            .unwrap()
             .unwrap();
 
         assert_eq!(people.nodes.iter().map(|node| node.slug.as_str()).collect::<Vec<_>>(), ["human"]);
@@ -407,9 +416,36 @@ mod tests {
         let mut fixture = create_palace_fixture(false);
         fixture.seed_people(false);
 
-        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(false));
+        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(false))
+            .unwrap();
 
         assert!(people.is_none());
+    }
+
+    #[test]
+    fn git_failure_on_ls_tree_propagates_instead_of_masking_it() {
+        let root = tempfile::tempdir().unwrap();
+        let exec = create_git_exec(GitExecRuntime {
+            platform: None,
+            run_command: Some(Arc::new(|_: &str, _: &[String], _: &GitExecOptions| {
+                Ok(GitExecResult {
+                    code: 128,
+                    stdout: String::new(),
+                    stderr: "fatal: not a git repository (or any parent up to mount point /)".to_string(),
+                })
+            })),
+        });
+        let repo = GitMemoryRepo::new(GitMemoryRepoOptions {
+            dir: root.path().to_path_buf(),
+            agent_id: "agent".to_string(),
+            exec: Some(exec),
+            install_hooks: None,
+        })
+        .unwrap();
+
+        let result = collect_people(&repo, Some("HEAD"), &limits_options(true));
+
+        assert!(matches!(result, Err(PalaceError::Git(_))));
     }
 
     #[test]
@@ -428,6 +464,7 @@ mod tests {
                 },
             },
         )
+        .unwrap()
         .unwrap();
 
         assert!(people.diagnostics.iter().any(|entry| entry.path == "people/jane-doe/card.md"));

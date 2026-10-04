@@ -96,7 +96,7 @@ pub fn collect_palace_data(
     let external = collect_external(&repo, head.as_deref())?;
     let history = collect_history(&repo)?;
     let reflection = collect_reflection(&context.identity_paths, outcome_limit)?;
-    let people = collect_people(&repo, head.as_deref(), &people);
+    let people = collect_people(&repo, head.as_deref(), &people)?;
     let tree = render_external_projection(
         &external
             .iter()
