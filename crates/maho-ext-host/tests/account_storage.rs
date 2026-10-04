@@ -4,7 +4,7 @@ use serde_json::json;
 
 fn fixture() -> (tempfile::TempDir, AuthStorage, CredentialSlotRepository) {
     let directory = tempfile::tempdir().expect("isolated account directory");
-    let mut storage = AuthStorage::create(&directory.path().join("auth.json").to_string_lossy());
+    let storage = AuthStorage::create(&directory.path().join("auth.json").to_string_lossy());
     storage.set("synthetic", Some(json!({"type":"api_key", "key":"synthetic-secret-a", "accounts":[
         {"name":"first", "key":"synthetic-secret-a", "source":"login"},
         {"name":"second", "key":"synthetic-secret-b", "source":"import", "blockReason":"auth_error"}

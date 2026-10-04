@@ -77,7 +77,7 @@ impl ModelRegistry for SyntheticRegistry {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let auth_path = directory.path().join("auth.json");
-    let mut storage = AuthStorage::create(&auth_path.to_string_lossy());
+    let storage = AuthStorage::create(&auth_path.to_string_lossy());
     storage.set("synthetic", Some(json!({"type":"api_key", "key":"synthetic-secret", "accounts":[
         {"name":"first", "key":"synthetic-secret", "source":"login"},
         {"name":"second", "key":"synthetic-secret", "source":"import"}
