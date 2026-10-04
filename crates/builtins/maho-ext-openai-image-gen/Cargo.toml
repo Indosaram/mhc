@@ -18,7 +18,7 @@ tempfile.workspace = true
 maho-ext-imagegen = { path = "../maho-ext-imagegen" }
 maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
 maho-ext-host = { path = "../../maho-ext-host" }
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 
 [lints]
 workspace = true

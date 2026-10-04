@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 #[tokio::test]
 async fn defaults_to_sunburst_and_saves_the_returned_png() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     let stub = Arc::new(support::StubImages::one());
     let result = support::run(root.path(), false, stub.clone(), "sunburst", json!({"prompt":"a red fox","output_path":"fox.png"})).await;
@@ -21,6 +22,7 @@ async fn defaults_to_sunburst_and_saves_the_returned_png() {
 
 #[tokio::test]
 async fn passes_the_selected_model_quality_and_arbitrary_size() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     for quality in ["max", "xhigh"] {
         let root = tempfile::tempdir().expect("temp");
         let stub = Arc::new(support::StubImages::one());
@@ -38,6 +40,7 @@ async fn passes_the_selected_model_quality_and_arbitrary_size() {
 
 #[tokio::test]
 async fn keeps_the_legacy_model_selectable() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     let stub = Arc::new(support::StubImages::one());
     let result = support::run(root.path(), false, stub.clone(), "legacy", json!({"prompt":"a red fox","model":"gpt-image-2","quality":"max"})).await;
@@ -51,6 +54,7 @@ async fn keeps_the_legacy_model_selectable() {
 
 #[tokio::test]
 async fn rejects_invalid_sizes_without_calling_the_provider() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     for size in ["1000x1000", "4096x2048", "512x512", "3840x3840", "3072x768"] {
         let root = tempfile::tempdir().expect("temp");
         let stub = Arc::new(support::StubImages::one());
@@ -63,6 +67,7 @@ async fn rejects_invalid_sizes_without_calling_the_provider() {
 
 #[tokio::test]
 async fn accepts_popular_sizes() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     for size in ["2048x2048", "3840x2160", "2160x3840"] {
         let root = tempfile::tempdir().expect("temp");
         let stub = Arc::new(support::StubImages::one());
@@ -73,6 +78,7 @@ async fn accepts_popular_sizes() {
 
 #[tokio::test]
 async fn sends_a_local_png_after_the_text_input() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     for absolute in [false, true] {
         let root = tempfile::tempdir().expect("temp");
         let path = root.path().join("reference.png");
@@ -100,6 +106,7 @@ async fn sends_a_local_png_after_the_text_input() {
 
 #[tokio::test]
 async fn recognizes_jpeg_and_webp_magic_bytes_rather_than_extensions() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     let jpeg = [0xff, 0xd8, 0xff, 0xe0];
     let webp = hex("524946460400000057454250");
@@ -128,6 +135,7 @@ async fn recognizes_jpeg_and_webp_magic_bytes_rather_than_extensions() {
 
 #[tokio::test]
 async fn rejects_reference_counts_outside_one_to_five() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     for count in [0usize, 6] {
         let root = tempfile::tempdir().expect("temp");
         let stub = Arc::new(support::StubImages::one());
@@ -140,6 +148,7 @@ async fn rejects_reference_counts_outside_one_to_five() {
 
 #[tokio::test]
 async fn accepts_five_references_in_order() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     std::fs::write(root.path().join("reference.png"), base64_decode(support::PNG_BASE64)).expect("reference");
     let stub = Arc::new(support::StubImages::one());
@@ -150,6 +159,7 @@ async fn accepts_five_references_in_order() {
 
 #[tokio::test]
 async fn rejects_invalid_references_and_names_them() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     std::fs::write(root.path().join("not-an-image.png"), "plain text, not a PNG").expect("text");
     std::fs::write(root.path().join("fake.webp"), hex("d2c9c6c604000000d7c5c2d0")).expect("fake");

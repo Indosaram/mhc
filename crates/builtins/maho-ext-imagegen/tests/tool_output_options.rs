@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 #[tokio::test]
 async fn defaults_to_sunburst_and_prices_from_the_static_catalog() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     let stub = Arc::new(support::StubImages::one());
     let result = support::run(root.path(), true, stub.clone(), "cost", json!({"prompt":"a red fox"})).await;
@@ -19,6 +20,7 @@ async fn defaults_to_sunburst_and_prices_from_the_static_catalog() {
 
 #[tokio::test]
 async fn forwards_background_format_compression_and_moderation() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     let stub = Arc::new(support::StubImages::one());
     let result = support::run(root.path(), true, stub.clone(), "opts", json!({"prompt":"a red fox","background":"opaque","output_format":"webp","output_compression":60,"moderation":"low","output_path":"art/fox.webp"})).await;
@@ -36,6 +38,7 @@ async fn forwards_background_format_compression_and_moderation() {
 
 #[tokio::test]
 async fn keeps_png_defaults_on_the_wire_and_in_details() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     let stub = Arc::new(support::StubImages::one());
     let result = support::run(root.path(), true, stub.clone(), "defaults", json!({"prompt":"a red fox","output_path":"fox"})).await;
@@ -53,6 +56,7 @@ async fn keeps_png_defaults_on_the_wire_and_in_details() {
 
 #[tokio::test]
 async fn derives_the_extension_for_the_requested_format() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     for (output_format, output_path, expected) in [("jpeg", "art/fox", "art/fox.jpg"), ("jpeg", "art/fox.jpeg", "art/fox.jpeg"), ("jpeg", "art/fox.JPG", "art/fox.JPG"), ("webp", "art/fox", "art/fox.webp")] {
         let root = tempfile::tempdir().expect("temp");
         let result = support::run(root.path(), true, Arc::new(support::StubImages::one()), "format", json!({"prompt":"a red fox","output_format":output_format,"output_path":output_path})).await;
@@ -63,6 +67,7 @@ async fn derives_the_extension_for_the_requested_format() {
 
 #[tokio::test]
 async fn names_an_omitted_output_path_after_the_format() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     let stub = Arc::new(support::StubImages { images: 2, ..Default::default() });
     support::run(root.path(), true, stub, "named", json!({"prompt":"a red fox","output_format":"webp","n":2})).await;
@@ -75,6 +80,7 @@ async fn names_an_omitted_output_path_after_the_format() {
 
 #[tokio::test]
 async fn rejects_an_output_path_that_mismatches_the_format() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     for (output_path, output_format, expected_extension) in [("fox.png", "webp", ".webp"), ("fox.jpg", "png", ".png"), ("fox.webp", "jpeg", ".jpg")] {
         let root = tempfile::tempdir().expect("temp");
         let stub = Arc::new(support::StubImages::one());
@@ -87,6 +93,7 @@ async fn rejects_an_output_path_that_mismatches_the_format() {
 
 #[tokio::test]
 async fn rejects_invalid_output_option_combinations_before_any_request() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     for (params, needle) in [
         (json!({"background":"transparent","output_format":"jpeg"}), "requires output_format png or webp"),
         (json!({"output_compression":50}), "requires output_format jpeg or webp"),
@@ -107,6 +114,7 @@ async fn rejects_invalid_output_option_combinations_before_any_request() {
 
 #[tokio::test]
 async fn sends_mask_image_path_and_requires_a_reference() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     std::fs::write(root.path().join("reference.png"), support::PNG_BASE64).expect("reference");
     std::fs::write(root.path().join("mask.png"), support::PNG_BASE64).expect("mask");
@@ -128,6 +136,7 @@ async fn sends_mask_image_path_and_requires_a_reference() {
 
 #[tokio::test]
 async fn rejects_a_mask_that_is_not_a_readable_image() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     std::fs::write(root.path().join("reference.png"), support::PNG_BASE64).expect("reference");
     std::fs::write(root.path().join("mask.png"), "not a png").expect("mask");
@@ -141,6 +150,7 @@ async fn rejects_a_mask_that_is_not_a_readable_image() {
 
 #[tokio::test]
 async fn renames_the_file_when_the_provider_returns_a_different_format() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     let stub = Arc::new(support::StubImages { images: 1, mime_type: Some("image/png".into()), ..Default::default() });
     let result = support::run(root.path(), true, stub, "rename", json!({"prompt":"a red fox","output_format":"webp","output_path":"art/fox.webp"})).await;
@@ -154,6 +164,7 @@ async fn renames_the_file_when_the_provider_returns_a_different_format() {
 
 #[tokio::test]
 async fn names_the_colliding_renamed_target_and_writes_nothing() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     std::fs::write(root.path().join("fox-02.png"), "occupied").expect("occupied");
     let stub = Arc::new(support::StubImages { images: 2, mime_type: Some("image/png".into()), ..Default::default() });
@@ -167,6 +178,7 @@ async fn names_the_colliding_renamed_target_and_writes_nothing() {
 
 #[tokio::test]
 async fn reports_the_providers_transparency_verdict() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     let transparent = Arc::new(support::StubImages { images: 1, background: Some(ImagesBackground::Transparent), ..Default::default() });
     let result = support::run(root.path(), true, transparent, "transparent", json!({"prompt":"a sticker","background":"transparent","output_format":"webp"})).await;

@@ -5,7 +5,6 @@ use maho_ai::node::provider_scope::{run_with_provider_scope_async, ProviderScope
 use maho_ext_api::*;
 use maho_ext_host::loader::NativeExtensionFactory;
 use maho_ext_imagegen::auth::ImageGenAuthRegistry;
-use maho_ext_imagegen::state::set_image_gen_registry_override;
 use maho_test_support::faux::{FauxResponse, FauxScript};
 use maho_test_support::faux_session::{FauxSession, NativeSession};
 use serde_json::{json, Value};
@@ -88,8 +87,7 @@ fn registry(creds: Creds) -> Arc<dyn ImageGenAuthRegistry> {
     }
 }
 
-async fn boot(creds: Creds) -> NativeSession {
-    set_image_gen_registry_override(Some(registry(creds)));
+async fn boot() -> NativeSession {
     FauxSession::new(FauxScript { name: "arbitration".into(), prompt: "draw".into(), responses: vec![FauxResponse { content: "ok".into(), stop_reason: "stop".into() }] })
         .with_native_extension(NativeExtensionFactory { path: "imagegen".into(), source_info: SourceInfo::default(), extension: Box::new(maho_ext_imagegen::ImageGen::default()) })
         .with_native_extension(NativeExtensionFactory { path: "openai-image-gen".into(), source_info: SourceInfo::default(), extension: Box::new(maho_ext_openai_image_gen::OpenAiImageGen) })
@@ -125,7 +123,8 @@ async fn execute(session: &NativeSession, stub: Arc<imagegen_support::StubImages
 #[tokio::test]
 async fn truth_table_rows_hold_across_the_session() {
     for (index, row) in table().into_iter().enumerate() {
-        let session = boot(row.creds).await;
+        let _guard = imagegen_support::GlobalStateGuard::acquire(Some(registry(row.creds))).await;
+        let session = boot().await;
         let model = model(row.model);
         let payload = session.emit_before_provider_request(request_payload(), Some(model.clone())).await.expect("payload");
         assert_eq!(native_tools(&payload), row.injection, "row {index}: injection");

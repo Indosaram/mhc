@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 #[tokio::test]
 async fn saves_image_reports_path_and_records_revised_prompts() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     let stub = Arc::new(support::StubImages {
         images: 1,
@@ -34,6 +35,7 @@ async fn saves_image_reports_path_and_records_revised_prompts() {
 
 #[tokio::test]
 async fn omitted_output_path_defaults_to_a_sanitized_generated_images_file() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     let result = support::run(root.path(), true, Arc::new(support::StubImages::one()), "safe-id", json!({"prompt":"a blue whale"})).await;
 
@@ -46,6 +48,7 @@ async fn omitted_output_path_defaults_to_a_sanitized_generated_images_file() {
 
 #[tokio::test]
 async fn no_credentials_yields_structured_missing_config_without_calling_the_provider() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     let stub = Arc::new(support::StubImages::one());
     let registry = Arc::new(support::FixtureRegistry { stored_api_key: false, provider_api_key: None, provider_headers: None, models: Vec::new() });
@@ -61,6 +64,7 @@ async fn no_credentials_yields_structured_missing_config_without_calling_the_pro
 
 #[tokio::test]
 async fn gateway_base_url_provider_and_key_thread_through_options() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     let stub = Arc::new(support::StubImages::one());
     let result = support::run(root.path(), true, stub.clone(), "gw", json!({"prompt":"a red fox","size":"1024x1536","quality":"high"})).await;
@@ -80,6 +84,7 @@ async fn gateway_base_url_provider_and_key_thread_through_options() {
 
 #[tokio::test]
 async fn blank_prompt_and_wrong_extension_are_rejected_before_the_provider() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     let stub = Arc::new(support::StubImages::one());
     let blank = support::run(root.path(), true, stub.clone(), "blank", json!({"prompt":"   "})).await;
@@ -92,6 +97,7 @@ async fn blank_prompt_and_wrong_extension_are_rejected_before_the_provider() {
 
 #[tokio::test]
 async fn extensionless_output_path_gains_a_png_extension() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     let result = support::run(root.path(), true, Arc::new(support::StubImages::one()), "ext", json!({"prompt":"a red fox","output_path":"art/fox"})).await;
 
@@ -101,6 +107,7 @@ async fn extensionless_output_path_gains_a_png_extension() {
 
 #[tokio::test]
 async fn multiple_images_are_indexed_before_the_extension() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     let stub = Arc::new(support::StubImages { images: 2, ..Default::default() });
     let result = support::run(root.path(), true, stub.clone(), "multi", json!({"prompt":"a red fox","output_path":"art/fox.png","n":2})).await;
@@ -114,6 +121,7 @@ async fn multiple_images_are_indexed_before_the_extension() {
 
 #[tokio::test]
 async fn existing_file_is_never_overwritten() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     std::fs::create_dir_all(root.path().join("art")).expect("dir");
     std::fs::write(root.path().join("art/fox.png"), "original").expect("existing");
@@ -128,6 +136,7 @@ async fn existing_file_is_never_overwritten() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_later_write_failure_removes_this_invocations_files() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     std::fs::create_dir_all(root.path().join("art")).expect("dir");
     std::os::unix::fs::symlink(root.path().join("art/missing-target"), root.path().join("art/fox-02.png")).expect("symlink");
@@ -141,6 +150,7 @@ async fn a_later_write_failure_removes_this_invocations_files() {
 
 #[tokio::test]
 async fn native_bypass_defers_without_calling_the_provider() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     set_native_bypass(true);
     let stub = Arc::new(support::StubImages::one());
@@ -153,6 +163,7 @@ async fn native_bypass_defers_without_calling_the_provider() {
 
 #[tokio::test]
 async fn provider_failure_is_reported_without_writing_files() {
+    let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
     let stub = Arc::new(support::StubImages { images: 1, error: Some("upstream refused the request".into()), ..Default::default() });
     let result = support::run(root.path(), true, stub, "failure", json!({"prompt":"a red fox","output_path":"art/fox.png"})).await;

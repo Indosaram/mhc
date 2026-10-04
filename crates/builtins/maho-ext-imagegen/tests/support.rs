@@ -2,10 +2,37 @@
 
 use maho_ai::types::{AssistantImages, ContentBlock, ImageContent, ImagesBackground, ImagesContext, ImagesModel, ImagesOptions, ImagesStopReason, TextContent, Usage};
 use maho_ext_api::*;
+use maho_ext_imagegen::auth::ImageGenAuthRegistry;
+use maho_ext_imagegen::state::{set_image_gen_registry_override, set_native_bypass};
 use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
+
+static GLOBAL_STATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Serializes every test that touches the process-global imagegen registry override or the native
+/// bypass flag, and restores both on drop. The guard is held across the whole async test body, so
+/// the lock is a tokio mutex (a std guard across `.await` is disallowed).
+pub struct GlobalStateGuard {
+    _guard: tokio::sync::MutexGuard<'static, ()>,
+}
+
+impl GlobalStateGuard {
+    pub async fn acquire(registry: Option<Arc<dyn ImageGenAuthRegistry>>) -> Self {
+        let guard = GLOBAL_STATE_LOCK.lock().await;
+        set_image_gen_registry_override(registry);
+        set_native_bypass(false);
+        Self { _guard: guard }
+    }
+}
+
+impl Drop for GlobalStateGuard {
+    fn drop(&mut self) {
+        set_image_gen_registry_override(None);
+        set_native_bypass(false);
+    }
+}
 
 pub const PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl3T2QAAAAASUVORK5CYII=";
 
