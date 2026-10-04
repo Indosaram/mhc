@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 pub fn entries(path:&str)->Vec<(String,String)> {
-    static HEADER:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^##[ \t]+(?:\[([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)\]|([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)))(?:[ \t]+-[ \t]+(\d{4}-\d{2}-\d{2}))?[ \t]*$").expect("version header"));
+    static HEADER:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^##[ \t]+(?:\[([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)\]|([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?))(?:[ \t]+-[ \t]+(\d{4}-\d{2}-\d{2}))?[ \t]*$").expect("version header"));
     static UNRELEASED:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^##[ \t]+\[?Unreleased\]?[ \t]*(?:-[ \t]+\d{4}-\d{2}-\d{2})?[ \t]*$").expect("unreleased header"));
     static FENCE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"^ {0,3}(`{3,}|~{3,})").expect("fence"));
     let Ok(content)=std::fs::read_to_string(path) else {return Vec::new();};
