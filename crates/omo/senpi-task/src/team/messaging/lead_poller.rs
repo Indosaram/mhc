@@ -187,6 +187,8 @@ impl TeamLeadPoller {
         );
 
         let state = Arc::clone(&self.state);
+        let failed_state = Arc::clone(&self.state);
+        let failed_id = message_id.clone();
         let flushed_id = message_id.clone();
         self.deps.coordinator.enqueue(LeadInjection {
             key: format!("team-message:{message_id}"),
@@ -198,6 +200,18 @@ impl TeamLeadPoller {
                     && current.phase == PendingPhase::AwaitingFlush
                 {
                     current.phase = PendingPhase::AwaitingPersistence;
+                }
+            })),
+            on_delivery_failed: Some(Box::new(move |error| {
+                let mut pending = failed_state.pending.lock().unwrap_or_else(PoisonError::into_inner);
+                let Some(delivery) = pending.get(&failed_id) else { return; };
+                if delivery.phase != PendingPhase::AwaitingFlush { return; }
+                match release_delivery_reservation(&delivery.reservation) {
+                    Ok(()) => { pending.remove(&failed_id); }
+                    Err(release_error) => {
+                        utils::logger::log("senpi-task lead reservation release failed", Some(&serde_json::json!({ "messageId": failed_id, "deliveryError": error, "error": release_error.to_string() })));
+                        if let Some(delivery) = pending.get_mut(&failed_id) { delivery.phase = PendingPhase::Recovery; }
+                    }
                 }
             })),
         });

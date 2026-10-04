@@ -43,3 +43,15 @@ pub async fn prepare_mcp_service_registration_entries(
     }
     prepared
 }
+
+pub async fn register_mcp_service_direct_tools(
+    registrar: std::sync::Arc<dyn crate::tool_registrar::McpToolRegistrar>,
+    config: &ResolvedMcpConfig,
+    entries: &[std::sync::Arc<tokio::sync::Mutex<McpConnectionEntry>>],
+    tool_search: Option<&mut maho_ext_tool_search::service::ToolSearchService>,
+    registry: &mut crate::expose::tier_b::McpTierBRegistry,
+    refresh_active_set_when_empty: bool,
+) -> Result<Option<crate::expose::session::McpSessionRegistration>, maho_ext_api::ExtensionFailure> {
+    let prepared = prepare_mcp_service_registration_entries(config, entries).await;
+    crate::expose::session::register_direct_mcp_tools(registrar, config, prepared, tool_search, registry, refresh_active_set_when_empty).await
+}

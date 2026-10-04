@@ -56,7 +56,7 @@ fn a_plain_extension_slot_registers_again_on_a_second_register() {
 }
 
 #[test]
-fn a_second_register_replaces_the_runtime_rather_than_keeping_the_stale_one() {
+fn a_second_register_retains_the_runtime_for_late_callbacks() {
     let slot = OmoSenpiComponent::new("alpha", Box::new(FakeComponent::new(|_| {})));
     let extension = OmoExtension::with_options(vec![slot], options(), Default::default());
 
@@ -66,5 +66,8 @@ fn a_second_register_replaces_the_runtime_rather_than_keeping_the_stale_one() {
     extension.register(&mut api);
     let second = extension.runtime().expect("runtime after second register");
 
-    assert!(!Arc::ptr_eq(&first, &second));
+    // `ExtensionRunner::recreate` re-registers the same extension objects; the shared queue,
+    // captured tool registry and idle coordinator must survive so late task/memory callbacks
+    // still reach the live host. Only the delivery and config accessors are rebound.
+    assert!(Arc::ptr_eq(&first, &second));
 }

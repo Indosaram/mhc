@@ -10,9 +10,10 @@ struct Search;
 struct FedSearch;
 impl maho_ext_api::Extension for FedSearch {
     fn register(&self,api:&mut maho_ext_api::ExtensionApi){
-        let service=maho_ext_tool_search::index::ToolSearchExtension{actions:std::sync::Arc::new(Catalog),mcp_native_enabled:std::sync::Arc::new(||false)}.register_with_service(api);
+        let service=std::sync::Arc::new(tokio::sync::Mutex::new(maho_ext_tool_search::service::ToolSearchService::new(api.runtime.clone(),std::sync::Arc::new(Catalog))));
+        maho_ext_tool_search::index::ToolSearchExtension{actions:std::sync::Arc::new(Catalog),mcp_native_enabled:std::sync::Arc::new(||false)}.register_with_service(api,service.clone());
         api.on(maho_ext_api::EventKind::BeforeAgentStart,std::sync::Arc::new(move |_,_|{let service=service.clone();Box::pin(async move{
-            service.lock().expect("factory service lock").feed(vec![maho_ext_tool_search::engine::document::ToolSearchDocument{name:"mcp_docs".into(),label:"MCP docs".into(),aliases:vec![],description:Some("documentation".into()),search_text:None,keywords:vec![],source:maho_ext_tool_search::engine::document::ToolSearchSource::Mcp,group:"docs".into(),owner_label:"server".into(),registration_id:"mcp:docs".into()}],std::sync::Arc::new(|_|panic!("search must not activate matches")))?;
+            service.lock().await.feed(vec![maho_ext_tool_search::engine::document::ToolSearchDocument{name:"mcp_docs".into(),label:"MCP docs".into(),aliases:vec![],description:Some("documentation".into()),search_text:None,keywords:vec![],source:maho_ext_tool_search::engine::document::ToolSearchSource::Mcp,group:"docs".into(),owner_label:"server".into(),registration_id:"mcp:docs".into()}],std::sync::Arc::new(|_|panic!("search must not activate matches")))?;
             Ok(maho_ext_api::EventResult::None)
         })}));
     }
@@ -42,4 +43,73 @@ async fn native_session_searches_live_catalog_without_activating_matches() {
     let result=tokio::time::timeout(std::time::Duration::from_secs(10),session.run_native()).await.unwrap().unwrap();
     let tool=result["messages"].as_array().unwrap().iter().find(|message|message["role"]=="toolResult").unwrap();
     assert_eq!(tool["isError"],false);assert_eq!(tool["details"]["matched"],serde_json::json!(["read_docs"]));assert_eq!(tool["details"]["query"],"documentation");
+}
+
+use maho_ext_api::{BuildSystemPromptOptions,ComponentFactory,CustomUiOptions,ExtensionContext,ExtensionEvent,ExtensionFuture,ExtensionRuntime,ExtensionUi,ExtensionUiDialogOptions,JsonValue,Model,ModelRegistry,NotificationType,SessionEntry,SessionManager,Theme,ToolSessionManager,UiFuture,WidgetContent,ExtensionWidgetOptions};
+use std::path::Path;
+struct TestSession;
+impl ToolSessionManager for TestSession {
+    fn session_id(&self)->&str{"session"}
+    fn session_file(&self)->Option<&Path>{None}
+}
+impl SessionManager for TestSession {
+    fn get_entries(&self)->Vec<SessionEntry>{Vec::new()}
+    fn get_branch(&self)->Vec<SessionEntry>{Vec::new()}
+    fn get_leaf_id(&self)->Option<String>{None}
+    fn get_session_name(&self)->Option<String>{None}
+}
+struct TestRegistry;
+impl ModelRegistry for TestRegistry {
+    fn get_all(&self)->Vec<Model>{Vec::new()}
+    fn get_available(&self)->Vec<Model>{Vec::new()}
+    fn find(&self,_:&str,_:&str)->Option<Model>{None}
+    fn has_configured_auth(&self,_:&Model)->bool{false}
+    fn get_api_key_for_provider<'a>(&'a self,_:&'a str)->ExtensionFuture<'a,Option<String>>{Box::pin(async{Ok(None)})}
+}
+struct TestUi;
+impl ExtensionUi for TestUi {
+    fn select<'a>(&'a self,_:&'a str,_:&'a [String],_:ExtensionUiDialogOptions)->UiFuture<'a,Option<String>>{Box::pin(async{None})}
+    fn confirm<'a>(&'a self,_:&'a str,_:&'a str,_:ExtensionUiDialogOptions)->UiFuture<'a,bool>{Box::pin(async{false})}
+    fn input<'a>(&'a self,_:&'a str,_:Option<&'a str>,_:ExtensionUiDialogOptions)->UiFuture<'a,Option<String>>{Box::pin(async{None})}
+    fn notify(&self,_:&str,_:NotificationType){}
+    fn set_status(&self,_:&str,_:Option<&str>){}
+    fn set_widget(&self,_:&str,_:Option<WidgetContent>,_:ExtensionWidgetOptions){}
+    fn set_header(&self,_:Option<ComponentFactory>){}
+    fn set_footer(&self,_:Option<ComponentFactory>){}
+    fn set_title(&self,_:&str){}
+    fn paste_to_editor(&self,_:&str){}
+    fn set_editor_text(&self,_:&str){}
+    fn get_editor_text(&self)->String{String::new()}
+    fn custom(&self,_:ComponentFactory,_:CustomUiOptions)->ExtensionFuture<'_,JsonValue>{Box::pin(async{Ok(serde_json::Value::Null)})}
+    fn theme(&self)->Theme{Theme::default()}
+}
+fn context()->ExtensionContext {
+    ExtensionContext { ui:std::sync::Arc::new(TestUi),mode:maho_ext_api::ExtensionMode::Print,has_ui:false,cwd:"/tmp".into(),agent_dir:"/tmp/agent".into(),
+        session_manager:std::sync::Arc::new(TestSession),model_registry:std::sync::Arc::new(TestRegistry),model:None,thinking_level:None,
+        service_tier:None,effective_service_tier:None,scoped_models:Vec::new(),goal_store_file:None,
+        loaded_extension_paths:Vec::new(),signal:None,steering_signal:None,
+        is_idle_fn:std::sync::Arc::new(||true),wait_for_idle_fn:std::sync::Arc::new(||Box::pin(async{})),is_project_trusted_fn:std::sync::Arc::new(||true),
+        is_compacting_fn:std::sync::Arc::new(||false),get_system_prompt_fn:std::sync::Arc::new(||String::new()),
+        get_system_prompt_options_fn:std::sync::Arc::new(||BuildSystemPromptOptions::default()),
+        registered_mcp_servers:Vec::new(),update_tool_hook_status:None,idle_coordinator:None,logger:None,defer_macrotask:None }
+}
+fn anthropic_model()->Model {
+    serde_json::from_value(serde_json::json!({"id":"claude-sonnet-5-0","name":"Sonnet 5","api":"anthropic-messages","provider":"anthropic","baseUrl":"https://api.anthropic.com/v1","reasoning":true,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":200000,"maxTokens":8192})).expect("anthropic model fixture")
+}
+fn mcp_document()->maho_ext_tool_search::engine::document::ToolSearchDocument {
+    maho_ext_tool_search::engine::document::ToolSearchDocument{name:"mcp_docs".into(),label:"MCP docs".into(),aliases:vec![],description:Some("documentation".into()),search_text:None,keywords:vec![],source:maho_ext_tool_search::engine::document::ToolSearchSource::Mcp,group:"docs".into(),owner_label:"server".into(),registration_id:"mcp:docs".into()}
+}
+#[tokio::test]
+async fn one_service_instance_serves_the_registered_tool_and_the_native_adapter() {
+    let service=std::sync::Arc::new(tokio::sync::Mutex::new(maho_ext_tool_search::service::ToolSearchService::new(ExtensionRuntime::default(),std::sync::Arc::new(Catalog))));
+    let mut api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("tool-search",Default::default(),maho_ext_api::SourceInfo {source:"builtin".into(),..Default::default()}),Default::default(),Default::default(),ExtensionRuntime::default());
+    maho_ext_tool_search::index::ToolSearchExtension {actions:std::sync::Arc::new(Catalog),mcp_native_enabled:std::sync::Arc::new(||true)}.register_with_service(&mut api,service.clone());
+    service.lock().await.feed(vec![mcp_document()],std::sync::Arc::new(|_|Ok(()))).expect("mcp publication into the shared service");
+    let handler=api.registered.handlers[&maho_ext_api::EventKind::BeforeProviderRequest][0].clone();
+    let mut event=ExtensionEvent::BeforeProviderRequest {payload:serde_json::json!({"tools":[]}),model:Some(anthropic_model()),headers:None};
+    let maho_ext_api::EventResult::ProviderPayload(payload)=handler(&mut event,&context()).await.expect("adapter request") else {panic!("provider request must return a payload")};
+    assert!(payload["tools"].as_array().unwrap().iter().any(|tool|tool["name"]=="mcp_docs"&&tool["defer_loading"]==serde_json::json!(true)),"adapter must read the same service: {payload}");
+    let tool=maho_ext_tool_search::tool::create_tool_search_tool(service.clone());
+    let result=(tool.execute)(maho_tools::definition::ToolCall {id:"call",params:serde_json::json!({"query":"documentation","source":"mcp"}),signal:Default::default(),on_update:None,context:None}).await.expect("tool search");
+    assert_eq!(result.details.unwrap()["matched"],serde_json::json!(["mcp_docs"]));
 }

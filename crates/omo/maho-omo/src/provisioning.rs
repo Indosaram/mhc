@@ -27,10 +27,8 @@ pub fn dag_sdk_base_dir_default() -> PathBuf {
 }
 
 fn runtime_dir(name: &str) -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|parent| parent.join("runtime").join(name)))
-        .unwrap_or_else(|| PathBuf::from("runtime").join(name))
+    std::env::var("OMO_SENPI_PLUGIN_ROOT").map(PathBuf::from)
+        .map(|root| root.join("runtime").join(name)).unwrap_or_default()
 }
 
 #[derive(Clone)]
@@ -69,7 +67,7 @@ impl ProvisioningOptions {
 pub fn provision_toolkit_path(options: &ProvisioningOptions) -> Vec<(String, Option<String>)> {
     let base_dir = options.toolkit_base_dir.clone().unwrap_or_else(toolkit_base_dir_default);
     let mut updates = Vec::new();
-    if !base_dir.is_dir() {
+    if base_dir.as_os_str().is_empty() || !base_dir.is_dir() {
         return updates;
     }
     let base = base_dir.to_string_lossy().into_owned();
@@ -90,7 +88,7 @@ pub fn provision_toolkit_path(options: &ProvisioningOptions) -> Vec<(String, Opt
 /// Upstream `createDagSdkRootProvisioning`: publish the dag sdk directory when it exists.
 pub fn provision_dag_sdk_root(options: &ProvisioningOptions) -> Vec<(String, Option<String>)> {
     let base_dir = options.dag_sdk_base_dir.clone().unwrap_or_else(dag_sdk_base_dir_default);
-    if !base_dir.is_dir() {
+    if base_dir.as_os_str().is_empty() || !base_dir.is_dir() {
         return Vec::new();
     }
     let updates = vec![(DAG_SDK_ROOT_ENV.to_owned(), Some(base_dir.to_string_lossy().into_owned()))];

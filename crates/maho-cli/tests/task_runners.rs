@@ -485,3 +485,11 @@ async fn shared_definition_normalizes_arguments_once_through_child_sdk() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(maho_ai::utils::text::content_text(&result.expect("shared execution").content, ""), "2");
 }
+
+#[test]
+fn resolved_omo_config_returns_a_live_resolved_root_not_an_envelope() {
+    let dir = tempfile::tempdir().expect("isolated config cwd");
+    let config = maho_cli::cli::task_runners::resolved_omo_config(dir.path(), &BTreeMap::new());
+    assert!(config.get("global").is_none(), "no frozen global envelope: {config}");
+    assert!(config.get("project").is_none(), "no frozen project envelope: {config}");
+}

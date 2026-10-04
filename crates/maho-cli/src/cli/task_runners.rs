@@ -11,6 +11,12 @@ use senpi_task::runners::rpc_process::RpcProcessRunnerOptions;
 
 pub struct NativeChildModelRegistry(pub maho_core::model_registry::ModelRegistry);
 
+pub fn resolved_omo_config(cwd: &std::path::Path, env: &BTreeMap<String, String>) -> serde_json::Value {
+    maho_omo_config_resolution::load_senpi_omo_config(omo_config_core::LoadOmoConfigOptions {
+        cwd: Some(cwd.to_string_lossy().into_owned()), env: Some(env.clone()), ..Default::default()
+    }).config
+}
+
 impl senpi_task::manager::parent_registry_context::ChildModelRegistry for NativeChildModelRegistry {
     fn find(&self, provider: &str, model_id: &str) -> Option<senpi_task::runners::in_process::child_options::HostHandle> {
         self.0.find(provider, model_id).map(|model| Arc::new(model) as senpi_task::runners::in_process::child_options::HostHandle)

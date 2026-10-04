@@ -19,6 +19,7 @@ pub mod hook_sources;
 pub mod oauth_providers;
 pub mod omo_mount;
 pub mod omo_shipped;
+pub mod memory_runtime;
 pub mod deferred_commands;
 pub mod grok_neo_gate;
 pub mod startup_loading_indicator;

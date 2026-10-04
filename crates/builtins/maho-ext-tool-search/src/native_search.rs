@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use serde_json::{Value,json};
 use crate::{engine::document::ToolSearchDocument,native_support::{AnthropicToolSearchTarget,supports_anthropic_native_tool_search}};
 pub const ANTHROPIC_TOOL_SEARCH_TYPE:&str="tool_search_tool_bm25_20251119";
@@ -36,18 +37,51 @@ fn transform_anthropic_native_tool_search(target:Option<&AnthropicToolSearchTarg
     let mut result=payload.clone(); result["tools"]=Value::Array(tools); Some(result)
 }
 pub fn build_tool_reference_blocks(names:&[String])->Vec<Value> { names.iter().map(|name|json!({"type":"tool_reference","tool_name":name})).collect() }
+/// Injection deps object (upstream `AnthropicNativeAdapterDeps`,
+/// `tool-search/native-search.ts:114`): the resolved provider/config gate plus the
+/// catalog accessors the adapter reads per request. It owns its data so the adapter
+/// can hold it for the session; the borrowed `AnthropicNativeInjectionConfig` is
+/// rebuilt from it on each call. The native port uses `get_catalog` (a getter, like
+/// upstream) instead of the borrowed `catalog` slice the per-call config takes.
+#[derive(Clone)]
+pub struct AnthropicNativeAdapterDeps {
+    pub search_tool_name:Option<String>,
+    pub is_deferrable:Arc<dyn Fn(&str)->bool+Send+Sync>,
+    pub get_catalog:Arc<dyn Fn()->Vec<ToolSearchDocument>+Send+Sync>,
+    pub get_tool_definition:Arc<dyn Fn(&str)->Option<NativeToolDefinition>+Send+Sync>,
+    /// Resolved provider/config gate (upstream `enabled()`).
+    pub enabled:Arc<dyn Fn()->bool+Send+Sync>,
+    /// Invoked once when a 400 forces the local-search fallback (upstream `onFallback?`).
+    pub on_fallback:Option<Arc<dyn Fn(&str)+Send+Sync>>,
+}
 #[derive(Default)]
-pub struct AnthropicNativeToolSearchAdapter { pub disabled:bool, injected_last_request:bool, pub fallback_reason:Option<String> }
+pub struct AnthropicNativeToolSearchAdapter { pub disabled:bool, injected_last_request:bool, pub fallback_reason:Option<String>, deps:Option<AnthropicNativeAdapterDeps> }
 impl AnthropicNativeToolSearchAdapter {
+    /// Upstream constructor (`new AnthropicNativeToolSearchAdapter(deps)`).
+    pub fn new(deps:AnthropicNativeAdapterDeps)->Self {Self {disabled:false,injected_last_request:false,fallback_reason:None,deps:Some(deps)}}
     pub fn apply_before_request(&mut self,target:Option<&AnthropicToolSearchTarget<'_>>,payload:&Value,enabled:bool,config:&AnthropicNativeInjectionConfig<'_>)->Value {
         self.injected_last_request=false;
         if self.disabled || !enabled { return payload.clone(); }
         let next=transform_anthropic_native_tool_search(target,payload,config);
         self.injected_last_request=next.is_some(); next.unwrap_or_else(||payload.clone())
     }
+    /// Deps-based injection (upstream `applyBeforeRequest(target, payload)`): reads
+    /// the catalog and the provider/config gate from the bound deps instead of the
+    /// per-call arguments. No-op when no deps were bound.
+    pub fn apply_before_request_with_deps(&mut self,target:Option<&AnthropicToolSearchTarget<'_>>,payload:&Value)->Value {
+        self.injected_last_request=false;
+        let Some(deps)=self.deps.clone() else {return payload.clone();};
+        if self.disabled || !(deps.enabled)() { return payload.clone(); }
+        let catalog=(deps.get_catalog)();
+        let config=AnthropicNativeInjectionConfig {search_tool_name:deps.search_tool_name.as_deref(),is_deferrable:deps.is_deferrable.as_ref(),catalog:&catalog,get_tool_definition:deps.get_tool_definition.as_ref()};
+        let next=transform_anthropic_native_tool_search(target,payload,&config);
+        self.injected_last_request=next.is_some(); next.unwrap_or_else(||payload.clone())
+    }
     pub fn note_response_status(&mut self,status:u16)->Option<&str> {
         if status!=400 || !self.injected_last_request || self.disabled { return None; }
-        self.disabled=true; self.fallback_reason=Some("Anthropic returned 400 for native tool-search; disabled it and fell back to local tool_search for this session.".into()); self.fallback_reason.as_deref()
+        self.disabled=true; self.fallback_reason=Some("Anthropic returned 400 for native tool-search; disabled it and fell back to local tool_search for this session.".into());
+        if let Some(deps)=self.deps.as_ref() && let Some(on_fallback)=&deps.on_fallback { on_fallback(self.fallback_reason.as_deref().unwrap_or_default()); }
+        self.fallback_reason.as_deref()
     }
 }
 #[cfg(test)]
@@ -86,4 +120,32 @@ mod tests {
     #[test] fn cap_is_noop() { let payload=json!({"tools":vec![json!({"name":"read"});10000]}); let config=AnthropicNativeInjectionConfig{search_tool_name:Some("tool_search"),is_deferrable:&|_|true,catalog:&[],get_tool_definition:&|_|None}; assert_eq!(add_anthropic_native_tool_search(Some(&AnthropicToolSearchTarget::Api("anthropic-messages")),&payload,&config),payload); }
     #[test] fn permanent_400_fallback() { let config=AnthropicNativeInjectionConfig{search_tool_name:None,is_deferrable:&|_|false,catalog:&[],get_tool_definition:&|_|None}; let mut adapter=AnthropicNativeToolSearchAdapter::default(); assert!(adapter.note_response_status(400).is_none()); adapter.apply_before_request(Some(&AnthropicToolSearchTarget::Api("anthropic-messages")),&json!({}),true,&config); assert!(adapter.note_response_status(400).is_some()); assert!(adapter.disabled); assert_eq!(adapter.apply_before_request(Some(&AnthropicToolSearchTarget::Api("anthropic-messages")),&json!({}),true,&config),json!({})); }
     #[test] fn references_use_tool_name() { assert_eq!(build_tool_reference_blocks(&["read".into()]),vec![json!({"type":"tool_reference","tool_name":"read"})]); }
+    fn mcp_doc()->ToolSearchDocument { ToolSearchDocument{name:"mcp_x_alpha".into(),label:"alpha".into(),aliases:vec!["alpha".into()],description:Some("alpha tool".into()),search_text:None,keywords:vec![],source:crate::engine::document::ToolSearchSource::Mcp,group:"x".into(),owner_label:"x".into(),registration_id:"mcp\u{0}x\u{0}alpha".into()} }
+    #[test] fn deps_gate_and_catalog_drive_injection_and_fallback() {
+        let catalog=vec![mcp_doc()];let gate=Arc::new(std::sync::atomic::AtomicBool::new(true));let enabled=gate.clone();
+        let fallbacks=Arc::new(std::sync::Mutex::new(Vec::<String>::new()));let observed=fallbacks.clone();
+        let deps=AnthropicNativeAdapterDeps {search_tool_name:Some("tool_search".into()),is_deferrable:Arc::new(|name|name.starts_with("mcp_")),get_catalog:Arc::new(move ||catalog.clone()),get_tool_definition:Arc::new(|name|Some(NativeToolDefinition {description:Some(format!("{name} def")),parameters:Some(json!({"type":"object"}))})),enabled:Arc::new(move ||enabled.load(std::sync::atomic::Ordering::SeqCst)),on_fallback:Some(Arc::new(move |reason|observed.lock().unwrap().push(reason.to_owned()))) };
+        let mut adapter=AnthropicNativeToolSearchAdapter::new(deps);
+        let out=adapter.apply_before_request_with_deps(Some(&AnthropicToolSearchTarget::Api("anthropic-messages")),&json!({"tools":[{"name":"tool_search"}]}));
+        assert!(out["tools"].as_array().unwrap().iter().any(|tool|tool["name"]=="mcp_x_alpha"&&tool["defer_loading"]==true));
+        gate.store(false,std::sync::atomic::Ordering::SeqCst);
+        let unchanged=json!({"tools":[]});assert_eq!(adapter.apply_before_request_with_deps(Some(&AnthropicToolSearchTarget::Api("anthropic-messages")),&unchanged),unchanged);
+        assert!(adapter.note_response_status(400).is_none());
+    }
+    #[test] fn deps_400_disables_and_notifies_fallback_once() {
+        let catalog=vec![mcp_doc()];let fallbacks=Arc::new(std::sync::Mutex::new(Vec::<String>::new()));let observed=fallbacks.clone();
+        let deps=AnthropicNativeAdapterDeps {search_tool_name:Some("tool_search".into()),is_deferrable:Arc::new(|_|true),get_catalog:Arc::new(move ||catalog.clone()),get_tool_definition:Arc::new(|_|Some(NativeToolDefinition {description:None,parameters:Some(json!({"type":"object"}))})),enabled:Arc::new(||true),on_fallback:Some(Arc::new(move |reason|observed.lock().unwrap().push(reason.to_owned()))) };
+        let mut adapter=AnthropicNativeToolSearchAdapter::new(deps);
+        adapter.apply_before_request_with_deps(Some(&AnthropicToolSearchTarget::Api("anthropic-messages")),&json!({"tools":[]}));
+        assert!(adapter.note_response_status(400).is_some());assert!(adapter.disabled);
+        assert_eq!(fallbacks.lock().unwrap().len(),1);
+        assert!(adapter.note_response_status(400).is_none());assert_eq!(fallbacks.lock().unwrap().len(),1);
+    }
+    #[test] fn deps_gate_off_leaves_payload_untouched() {
+        let deps=AnthropicNativeAdapterDeps {search_tool_name:None,is_deferrable:Arc::new(|_|true),get_catalog:Arc::new(Vec::new),get_tool_definition:Arc::new(|_|None),enabled:Arc::new(||false),on_fallback:None};
+        let mut adapter=AnthropicNativeToolSearchAdapter::new(deps);
+        let payload=json!({"tools":[{"name":"read"}]});
+        assert_eq!(adapter.apply_before_request_with_deps(Some(&AnthropicToolSearchTarget::Api("anthropic-messages")),&payload),payload);
+        assert!(adapter.note_response_status(400).is_none());
+    }
 }

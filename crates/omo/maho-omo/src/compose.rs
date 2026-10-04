@@ -85,6 +85,7 @@ pub struct OmoExtension {
     options: OmoRuntimeOptions,
     provisioning: ProvisioningOptions,
     runtime: Mutex<Option<Arc<OmoRuntime>>>,
+    retained_runtime: Mutex<Option<Arc<OmoRuntime>>>,
     environment: Mutex<std::collections::BTreeMap<String, String>>,
 }
 
@@ -94,7 +95,7 @@ impl OmoExtension {
     }
 
     pub fn with_options(components: Vec<OmoSenpiComponent>, options: OmoRuntimeOptions, provisioning: ProvisioningOptions) -> Self {
-        Self { components, options, provisioning, runtime: Mutex::new(None), environment: Mutex::new(std::collections::BTreeMap::new()) }
+        Self { components, options, provisioning, runtime: Mutex::new(None), retained_runtime: Mutex::new(None), environment: Mutex::new(std::collections::BTreeMap::new()) }
     }
 
     pub fn components(&self) -> &[OmoSenpiComponent] {
@@ -143,11 +144,20 @@ impl Extension for OmoExtension {
             return;
         }
 
-        let runtime = Arc::new(OmoRuntime::new(
-            delivery_from(api),
-            config_from(api),
-            self.options.clone(),
-        ));
+        let runtime = {
+            let mut retained = self.retained_runtime.lock().unwrap_or_else(PoisonError::into_inner);
+            match retained.as_ref() {
+                Some(runtime) => {
+                    runtime.rebind(delivery_from(api), config_from(api));
+                    Arc::clone(runtime)
+                }
+                None => {
+                    let runtime = Arc::new(OmoRuntime::new(delivery_from(api), config_from(api), self.options.clone()));
+                    *retained = Some(Arc::clone(&runtime));
+                    runtime
+                }
+            }
+        };
         *self.runtime.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&runtime));
         let _turn = runtime.enter_turn();
         let existing: std::collections::BTreeMap<_, _> = api.registered.handlers.iter()

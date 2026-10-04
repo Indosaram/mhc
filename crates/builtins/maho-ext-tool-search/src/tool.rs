@@ -39,13 +39,13 @@ pub fn renderers()->maho_ext_api::ToolRenderers<(),Value> {
     }
 }
 pub fn parameters()->Value { json!({"type":"object","properties":{"query":{"type":"string","description":"Natural-language description of the capability you need."},"source":{"anyOf":[{"const":"mcp","type":"string"},{"const":"extension","type":"string"}],"description":"Optional: restrict the search to MCP or extension tools."},"group":{"type":"string","description":"Optional: restrict the search to one catalog group."}},"required":["query"]}) }
-pub fn create_tool_search_tool(service:std::sync::Arc<std::sync::Mutex<crate::service::ToolSearchService>>)->maho_tools::definition::ToolDefinition {
+pub fn create_tool_search_tool(service:std::sync::Arc<tokio::sync::Mutex<crate::service::ToolSearchService>>)->maho_tools::definition::ToolDefinition {
     use maho_tools::definition::{ToolDefinition,ToolError,ToolResult,ToolContent,ToolExecutionMode}; use std::sync::Arc;
     let mut tool=ToolDefinition::new(TOOL_SEARCH_TOOL_NAME,"Search the catalog of deferred tools by capability. Returns matching tool names with their parameter schemas and never changes your active tool set; call a returned tool by name and it activates on that first call.",parameters(),Arc::new(move |call| {
         let service=service.clone(); Box::pin(async move {
             let query=call.params.get("query").and_then(Value::as_str).ok_or_else(||ToolError::Message("query is required".into()))?;
             let source=match call.params.get("source").and_then(Value::as_str) { Some("mcp")=>Some(ToolSearchSource::Mcp),Some("extension")=>Some(ToolSearchSource::Extension),_=>None }; let group=call.params.get("group").and_then(Value::as_str);
-            let mut service=service.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut service=service.lock().await;
             let matches=service.search(query,5,&crate::engine::bm25::Bm25SearchOptions{source,group:group.map(String::from),..Default::default()}).map_err(|error|ToolError::Message(error.to_string()))?;
             let hints=service.hidden_tool_hints(query); let mut parameters=std::collections::BTreeMap::new(); for item in &matches { parameters.insert(item.name.clone(),service.get_tool_parameters(&item.name).map_err(|error|ToolError::Message(error.to_string()))?); }
             let text=build_tool_search_result_text(query,&matches,&hints,source,group,|name|parameters.get(name).cloned().flatten());

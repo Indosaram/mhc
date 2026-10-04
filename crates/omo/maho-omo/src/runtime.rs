@@ -1,7 +1,7 @@
 //! Composition-time runtime: the native `ComponentContext` plus the shared queue, logger and
 //! deferred-macrotask scheduler (`omo-senpi/src/extension/compose.ts`, todo 47).
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use maho_ext_api::{
@@ -50,10 +50,13 @@ impl OmoComponentContext {
     }
 }
 
+#[derive(Clone)]
 pub struct OmoRuntime {
     context: OmoComponentContext,
     coordinator: IdleInjectionQueue,
     capture: ToolCaptureRegistry,
+    delivery: Arc<Mutex<IdleInjectionDelivery>>,
+    config: Arc<Mutex<ConfigAccessor>>,
 }
 
 impl OmoRuntime {
@@ -67,17 +70,33 @@ impl OmoRuntime {
             let scheduler = DeferredScheduler::runtime(Arc::clone(&barrier), None);
             Arc::new(move |task| scheduler.schedule(task))
         });
-        let coordinator = IdleInjectionQueue::new(deliver, flush, soon);
+        let delivery = Arc::new(Mutex::new(deliver));
+        let bound_delivery = Arc::clone(&delivery);
+        let coordinator = IdleInjectionQueue::new(Arc::new(move |message, mode| {
+            let deliver = bound_delivery.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            deliver(message, mode)
+        }), flush, soon);
+        let config = Arc::new(Mutex::new(config));
+        let bound_config = Arc::clone(&config);
         let capture = ToolCaptureRegistry::new();
         let captured = capture.clone();
         let context = OmoComponentContext {
             logger,
-            config,
+            config: Arc::new(move |name| {
+                let read = bound_config.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                read(name)
+            }),
             idle_coordinator: Arc::new(coordinator.clone()),
             defer_macrotask,
             get_captured_tools: Arc::new(move || captured.get_captured_tools()),
         };
-        Self { context, coordinator, capture }
+        Self { context, coordinator, capture, delivery, config }
+    }
+
+    /// Rebinds a reload's extension API without replacing the queue or captured tool registry.
+    pub fn rebind(&self, delivery: IdleInjectionDelivery, config: ConfigAccessor) {
+        *self.delivery.lock().unwrap_or_else(PoisonError::into_inner) = delivery;
+        *self.config.lock().unwrap_or_else(PoisonError::into_inner) = config;
     }
 
     pub fn context(&self) -> &OmoComponentContext {

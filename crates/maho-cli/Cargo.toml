@@ -64,6 +64,7 @@ maho-ext-orca-agent-status = { path = "../extensions/maho-ext-orca-agent-status"
 maho-ext-orca-titlebar-spinner = { path = "../extensions/maho-ext-orca-titlebar-spinner" }
 maho-omo = { path = "../omo/maho-omo" }
 maho-omo-memory = { path = "../omo/components/maho-omo-memory" }
+memory-core = { package = "maho-memory-core", path = "../omo/memory-core" }
 senpi-task = { package = "maho-senpi-task", path = "../omo/senpi-task" }
 maho-ext-anthropic-subscription = { path = "../builtins/maho-ext-anthropic-subscription" }
 maho-ext-cursor-cli-oauth = { path = "../builtins/maho-ext-cursor-cli-oauth" }

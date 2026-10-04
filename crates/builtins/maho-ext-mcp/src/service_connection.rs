@@ -19,7 +19,7 @@ fn create_session_connection(options:SessionConnectionOptions<'_>,shared_cwd:Opt
     let shared=shared_cwd.filter(|cwd|crate::sharing_policy::shareable(&config,Some(cwd))).map(|_|registry.attach_shared(key,owner,||{let connection=ServerConnection::new(name,config.clone(),env.clone(),logger.clone());if let Some(refresh)=refresh.clone(){connection.set_auth(refresh);}crate::shared_connection::SharedMcpConnection::with_idle_timeout(connection,agent_dir.into(),config_hash.into(),std::time::Duration::from_secs_f64(config.request_timeout_ms.unwrap_or(30000.0)/1000.0),std::time::Duration::from_secs_f64(config.idle_timeout_min.unwrap_or(10.0)*60.0))})).transpose()?;
     let connection=match &shared {Some(lease)=>lease.base_connection(),None=>registry.attach(key,owner,||ServerConnection::new(name,config.clone(),env,logger.clone()),false)};
     if shared.is_none() && let Some(refresh)=refresh {connection.set_auth(refresh);}
-    let entry=Arc::new(tokio::sync::Mutex::new(McpConnectionEntry {key:key.into(),name:name.into(),config_hash:config_hash.into(),connection:connection.clone(),logger,created_at_ms:chrono::Utc::now().timestamp_millis() as f64,counters:McpServerCounters::default(),agent_dir:Some(agent_dir.into()),cached_catalog:None,cache_refreshed_after_connect:false,auth_plan:plan,artifacts:None}));
+    let entry=Arc::new(tokio::sync::Mutex::new(McpConnectionEntry {key:key.into(),name:name.into(),config_hash:config_hash.into(),connection:connection.clone(),logger,created_at_ms:chrono::Utc::now().timestamp_millis() as f64,counters:McpServerCounters::default(),agent_dir:Some(agent_dir.into()),cached_catalog:None,cache_refreshed_after_connect:false,auth_plan:plan,artifacts:None,known_tool_names:None,last_list_changed_delta:None,list_changed_tasks:Vec::new(),list_changed_coalescer:None}));
     if shared.is_some(){return Ok(McpSessionConnection {entry,lifecycle:None,reconnect:None,shared});}
     let lifecycle=McpConnectionLifecycle::configure(connection.clone(),config.clone());
     let weak=Arc::downgrade(&entry);
@@ -31,6 +31,11 @@ fn create_session_connection(options:SessionConnectionOptions<'_>,shared_cwd:Opt
     Ok(McpSessionConnection {entry,lifecycle:Some(lifecycle),reconnect:Some(reconnect),shared:None})
 }
 pub async fn dispose_entry_connection(entry:&McpSessionConnection,registry:&HostMcpRegistry,owner:u64)->Result<(),crate::host_registry::RegistryDetachError> {
+    {
+        let mut entry=entry.entry.lock().await;
+        for task in entry.list_changed_tasks.drain(..) {task.abort();}
+        if let Some(coalescer)=entry.list_changed_coalescer.take() {coalescer.dispose();}
+    }
     if let Some(lease)=&entry.shared {lease.dispose();return Ok(());}
     if let Some(reconnect)=&entry.reconnect {reconnect.dispose();}
     if let Some(lifecycle)=&entry.lifecycle {lifecycle.dispose();}

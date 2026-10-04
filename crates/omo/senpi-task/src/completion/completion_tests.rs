@@ -65,7 +65,7 @@ impl ScriptedNotifier {
 }
 
 impl ParentNotifier for ScriptedNotifier {
-    fn enqueue(&self, message: &ParentNotifierMessage) -> Result<(), HostError> {
+    fn enqueue_with_callbacks(&self, message: &ParentNotifierMessage, callbacks: crate::completion::DeliveryCallbacks) -> Result<(), HostError> {
         self.attempts.fetch_add(1, Ordering::SeqCst);
         let mut remaining = self
             .remaining_failures
@@ -81,6 +81,7 @@ impl ParentNotifier for ScriptedNotifier {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(message.clone());
+        callbacks.delivered();
         Ok(())
     }
 }
@@ -199,6 +200,87 @@ fn wake() -> NotifyResult {
 
 fn assert_base_delay(delay: u64) {
     assert!((500..700).contains(&delay), "delay {delay}");
+}
+
+#[derive(Default)]
+struct DeferredParent(Mutex<Vec<DeliveryCallbacks>>);
+impl ParentNotifier for DeferredParent {
+    fn enqueue_with_callbacks(&self, _: &ParentNotifierMessage, callbacks: DeliveryCallbacks) -> Result<(), HostError> {
+        self.0.lock().expect("deliveries").push(callbacks);
+        Ok(())
+    }
+}
+
+#[test]
+fn pending_completion_is_reserved_until_actual_delivery_and_settles_once() {
+    let record = completed_record();
+    let store = MemoryStore::with([record.clone()]);
+    let parent = Arc::new(DeferredParent::default());
+    let completion = create_completion_notifier(CompletionNotifierDeps::new(parent.clone(), store.clone()));
+    assert_eq!(notify(&completion, &record, ParentState::Idle, true), NotifyResult::Pending(DeliveredDecision::Wake));
+    assert_eq!(notify(&completion, &record, ParentState::Idle, true), NotifyResult::Skipped(SkipReason::DeliveryPending));
+    assert_eq!(store.load(&record.task_id).expect("load").expect("record").notification.notified_epoch, -1);
+    let callback = parent.0.lock().expect("deliveries")[0].clone();
+    callback.delivered();
+    callback.failed(HostError { message: "late rejection".into() });
+    assert_eq!(store.load(&record.task_id).expect("load").expect("record").notification.notified_epoch, 0);
+    assert_eq!(notify(&completion, &record, ParentState::Idle, true), NotifyResult::Skipped(SkipReason::AlreadyNotified));
+}
+
+#[test]
+fn rejected_async_completion_records_failure_and_retries_without_success_receipt() {
+    let record = session_record("st_deferred");
+    let store = MemoryStore::with([record.clone()]);
+    let parent = Arc::new(DeferredParent::default());
+    let scheduler = Arc::new(FakeScheduler::default());
+    let mut deps = CompletionNotifierDeps::new(parent.clone(), store.clone());
+    deps.schedule = Some(scheduler.schedule());
+    deps.get_current_session_id = Some(Arc::new(|| Some("session-a".into())));
+    let completion = create_completion_notifier(deps);
+    notify(&completion, &record, ParentState::Idle, true);
+    let callback = parent.0.lock().expect("deliveries")[0].clone();
+    callback.failed(HostError { message: "wake rejected".into() });
+    callback.failed(HostError { message: "duplicate rejection".into() });
+    callback.delivered();
+    let fresh = store.load(&record.task_id).expect("load").expect("record");
+    assert_eq!(fresh.notification.notified_epoch, -1);
+    assert_eq!(fresh.notification.notification_failed_epoch, Some(0));
+    assert_eq!(scheduler.delays().len(), 1);
+    scheduler.run(0);
+    assert_eq!(parent.0.lock().expect("deliveries").len(), 2);
+    let retried = parent.0.lock().expect("deliveries")[1].clone();
+    retried.delivered();
+    assert_eq!(store.load(&record.task_id).expect("load").expect("record").notification.notified_epoch, 0);
+}
+
+#[test]
+fn failed_buffered_wake_restores_entries_for_later_flush() {
+    let record = completed_record();
+    let store = MemoryStore::with([record.clone()]);
+    let parent = Arc::new(DeferredParent::default());
+    let completion = create_completion_notifier(CompletionNotifierDeps::new(parent.clone(), store.clone()));
+    notify(&completion, &record, ParentState::Compacting, true);
+    assert_eq!(flush(&completion, "parent-session", false), FlushResult::Pending(1));
+    let callback = parent.0.lock().expect("deliveries")[0].clone();
+    callback.failed(HostError { message: "wake rejected".into() });
+    assert_eq!(completion.buffered_count("parent-session"), 1);
+    assert_eq!(flush(&completion, "parent-session", false), FlushResult::Pending(1));
+    let retried = parent.0.lock().expect("deliveries")[1].clone();
+    retried.delivered();
+    assert_eq!(store.load(&record.task_id).expect("load").expect("record").notification.notified_epoch, 0);
+}
+
+#[test]
+fn stale_delivery_callback_does_not_stamp_a_new_run_epoch() {
+    let record = completed_record();
+    let store = MemoryStore::with([record.clone()]);
+    let parent = Arc::new(DeferredParent::default());
+    let completion = create_completion_notifier(CompletionNotifierDeps::new(parent.clone(), store.clone()));
+    notify(&completion, &record, ParentState::Idle, true);
+    store.mutate(&record.task_id, &mut |fresh| { let mut next = fresh.clone(); next.notification.run_epoch = 1; next }).expect("new epoch");
+    let callback = parent.0.lock().expect("deliveries")[0].clone();
+    callback.delivered();
+    assert_eq!(store.load(&record.task_id).expect("load").expect("record").notification.notified_epoch, -1);
 }
 
 // ---- completion.test.ts ---------------------------------------------------------------------------

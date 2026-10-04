@@ -43,4 +43,5 @@ pub mod control_inventory;
 pub mod commands;
 pub mod service;
 pub mod service_register;
+pub mod tool_registrar;
 pub mod index;

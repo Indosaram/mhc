@@ -3,7 +3,7 @@ use maho_ext_mcp::{catalog::McpToolCatalogEntry, config_schema::*, expose::sessi
 use serde_json::json;
 
 fn entry(server: &str, tool: &str) -> McpToolCatalogEntry {
-    McpToolCatalogEntry {server: server.into(), tool: tool.into(), schema: json!({"type":"object"}), description: None, annotations: None, request_timeout: Duration::from_secs(1), client: None, runtime: None, ensure_connected: None, ensure_fresh: None, agent_dir: None, artifacts: None, output_guard: None}
+    McpToolCatalogEntry {server: server.into(), tool: tool.into(), schema: json!({"type":"object"}), description: None, annotations: None, request_timeout: Duration::from_secs(1), client: None, runtime: None, connection:None, ensure_connected: None, ensure_fresh: None, agent_dir: None, artifacts: None, output_guard: None}
 }
 fn config() -> ResolvedMcpConfig {
     ResolvedMcpConfig {settings: default_settings(), diagnostics: vec![], servers: BTreeMap::new()}

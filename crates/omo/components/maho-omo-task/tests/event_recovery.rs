@@ -4,7 +4,7 @@ use maho_ext_api::*;
 use maho_omo_task::{event_bridge::{EventBridgeDeps,wire_event_bridge},runtime_context::TaskRuntimeContext,session_transition_bridge::SessionTransitionBridge,residency_registry::ManagerResidencyRegistry,status_ui::{TaskStatusUi,StatusUiTimers},task_rpc_bridge::wire_task_rpc_bridge,lead_poller_lifecycle::{LeadPollerLifecycleDeps,create_lead_poller_lifecycle}};
 use senpi_task::{manager::{create_task_manager,types::{ManagedRunner,ManagedRunnerResult,ManagedStartSpec,ManagedRunners,TaskManagerOptions,ResolvedChildPlan}},store::{StateDirConfig,TaskRecordStore},completion::{ParentNotifier,ParentNotifierMessage,CompletionNotifierDeps,create_completion_notifier,ParentState},host::HostError,lifecycle::{create_task_lifecycle,context::LifecycleDeps,settings::TaskSettings},team::{runtime_config::{TeamTaskBounds,to_team_core_config},messaging::lead_poller_types::{LeadInjectionSink,LeadInjection}}};
 struct NoLaunch; impl ManagedRunner for NoLaunch { fn start(&self,_:&ManagedStartSpec)->ManagedRunnerResult { panic!("no launch") } }
-struct Parent; impl ParentNotifier for Parent { fn enqueue(&self,_:&ParentNotifierMessage)->Result<(),HostError> { Ok(()) } }
+struct Parent; impl ParentNotifier for Parent { fn enqueue_with_callbacks(&self,_:&ParentNotifierMessage,callbacks:senpi_task::completion::DeliveryCallbacks)->Result<(),HostError> { callbacks.delivered(); Ok(()) } }
 struct Timers; impl StatusUiTimers for Timers { fn set(&self,_:Box<dyn FnOnce()+Send>,_:u64)->u64 { 1 } fn clear(&self,_:u64) {} }
 struct Sink; impl LeadInjectionSink for Sink { fn enqueue(&self,_:LeadInjection) {} }
 struct Fixture { api:ExtensionApi,events:Arc<Mutex<Vec<String>>>,runtime:Arc<Mutex<TaskRuntimeContext>>,store:TaskRecordStore,_root:tempfile::TempDir }
