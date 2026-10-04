@@ -5436,7 +5436,10 @@ impl AgentSession {
     /// followed by `bindLiveUpdates(onWireStatusChanged)`). The live subscription is installed
     /// before the retained read, both under the same order lock as [`Self::publish_mcp_wire_status`],
     /// so a snapshot published around the bind is delivered exactly once (never missed, never
-    /// duplicated). `None` when no extension runner is bound.
+    /// duplicated). The order lock is held across the handler call to keep the retained snapshot
+    /// ahead of live updates, so the handler must not re-enter `bind_mcp_wire_status` /
+    /// `publish_mcp_wire_status` (the consumer callback only updates its holder). `None` when no
+    /// extension runner is bound.
     pub async fn bind_mcp_wire_status<T: Clone + Send + Sync + 'static>(&self, handler: Arc<dyn Fn(&T) + Send + Sync>) -> Option<maho_ext_api::BusSubscription> {
         let _order = self.mcp_wire_status_order.lock().await;
         let runner = self.extension_runner.lock().await.clone()?;
@@ -5561,6 +5564,7 @@ impl AgentSession {
         lock(&self.agent_subscription).take();
         self.state().extension_event_sender.take();
         self.state().extension_events = None;
+        self.state().mcp_wire_status = None;
         {
             let mut guard = self.extension_runner.lock().await;
             if let Some(runner) = guard.as_mut() {
@@ -7337,6 +7341,17 @@ mod tests {
         assert_eq!(lock(&second).as_slice(), [serde_json::json!({"servers":["live"]})]);
         assert_eq!(session.mcp_wire_status_snapshot::<serde_json::Value>(), Some(serde_json::json!({"servers":["live"]})));
         session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn a_disposed_session_serves_no_retained_mcp_snapshot() {
+        let session = test_session();
+        let extension = maho_ext_api::LoadedExtension::new("<inline:mcp>", session.cwd().into(), Default::default());
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        assert!(session.publish_mcp_wire_status(&serde_json::json!({"servers":["attach"]})).await);
+        assert!(session.mcp_wire_status_snapshot::<serde_json::Value>().is_some());
+        session.dispose().await;
+        assert!(session.mcp_wire_status_snapshot::<serde_json::Value>().is_none(), "a disposed session must not serve a stale snapshot");
     }
 
     #[tokio::test]
