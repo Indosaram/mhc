@@ -739,7 +739,7 @@ async fn answer_list_selection_expands_the_selected_request() {
 async fn live_deadline_does_not_use_the_fixed_attachment_timeout() {
     use maho_ext_api::ExtensionUi;
     let theme = maho_interactive::theme::Theme::builtin("dark", maho_interactive::theme::ColorMode::Truecolor).expect("theme");
-    let (ui, mut requests) = maho_interactive::interactive_extension_ui::InteractiveExtensionUi::channel(theme);
+    let (ui, mut requests) = maho_interactive::interactive_extension_ui::InteractiveExtensionUi::channel(maho_interactive::interactive_extension_ui::extension_theme(&theme));
     let signal = maho_ext_api::AbortSignal::default();
     let answer = ui.question(retained_question("live", false), maho_ext_api::QuestionOptions { dialog: maho_ext_api::ExtensionUiDialogOptions { signal: Some(signal.clone()), timeout_ms: Some(1) }, get_deadline_at_ms: Some(std::sync::Arc::new(|| 100_000)), ..Default::default() });
     let mut answer = Box::pin(answer);
@@ -1310,12 +1310,10 @@ async fn extension_header_replaces_the_built_in_header_and_restores_it() {
 
 #[tokio::test]
 async fn replacement_commands_route_through_the_mounted_session_host() {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use maho_interactive::interactive_session::{ForkOutcome, InteractiveSession, ReplacementOutcome, SessionFuture};
 
-    struct SpyHost { calls: Rc<RefCell<Vec<String>>> }
+    struct SpyHost { calls: Arc<Mutex<Vec<String>>> }
     impl InteractiveSession for SpyHost {
         fn session_id(&self) -> Option<String> { None }
         fn session_file(&self) -> Option<String> { None }
@@ -1327,32 +1325,33 @@ async fn replacement_commands_route_through_the_mounted_session_host() {
         fn request_remote_history(&self, _generation: u64, _sender: tokio::sync::mpsc::UnboundedSender<(u64, Result<Vec<serde_json::Value>, String>)>) {}
         fn new_session(&self, _parent_session: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
             let calls = self.calls.clone();
-            Box::pin(async move { calls.borrow_mut().push("new_session".into()); Ok(ReplacementOutcome::Replaced) })
+            Box::pin(async move { calls.lock().expect("calls").push("new_session".into()); Ok(ReplacementOutcome::Replaced) })
         }
         fn switch_session(&self, path: String) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
             let calls = self.calls.clone();
-            Box::pin(async move { calls.borrow_mut().push(format!("switch_session:{path}")); Ok(ReplacementOutcome::Replaced) })
+            Box::pin(async move { calls.lock().expect("calls").push(format!("switch_session:{path}")); Ok(ReplacementOutcome::Replaced) })
         }
         fn fork(&self, entry_id: String, include_entry: bool) -> SessionFuture<'_, Result<ForkOutcome, String>> {
             let calls = self.calls.clone();
-            Box::pin(async move { calls.borrow_mut().push(format!("fork:{entry_id}:{include_entry}")); Ok(ForkOutcome { outcome: ReplacementOutcome::Replaced, editor_text: Some("selected".into()) }) })
+            Box::pin(async move { calls.lock().expect("calls").push(format!("fork:{entry_id}:{include_entry}")); Ok(ForkOutcome { outcome: ReplacementOutcome::Replaced, editor_text: Some("selected".into()) }) })
         }
         fn dispose(&self) -> SessionFuture<'_, ()> { Box::pin(async {}) }
     }
 
     let (mut mode, _directory) = native_mode();
-    let calls = Rc::new(RefCell::new(Vec::new()));
+    let calls = Arc::new(Mutex::new(Vec::new()));
     mode.set_session_host(Arc::new(SpyHost { calls: calls.clone() }));
     mode.submit("/new", Default::default()).await.expect("new");
-    assert_eq!(calls.borrow().as_slice(), ["new_session"], "the mounted host receives /new instead of the local session");
+    assert_eq!(calls.lock().expect("calls").as_slice(), ["new_session"], "the mounted host receives /new instead of the local session");
     mode.submit("/fork entry-1", Default::default()).await.expect("fork");
-    assert_eq!(calls.borrow().as_slice(), ["new_session", "fork:entry-1:false"], "the mounted host receives /fork");
+    assert_eq!(calls.lock().expect("calls").as_slice(), ["new_session", "fork:entry-1:false"], "the mounted host receives /fork");
     assert_eq!(mode.editor.editor.get_text(), "selected", "the host fork's selected text prefills the editor");
 }
 
 #[tokio::test]
 async fn mounted_host_session_events_flow_into_the_mode() {
     use std::sync::{Arc, Mutex};
+    use maho_tui::tui::Component;
     use maho_interactive::interactive_host_runtime::SessionEventListener;
     use maho_interactive::interactive_session::{ForkOutcome, InteractiveSession, ReplacementOutcome, SessionFuture};
 
@@ -1386,6 +1385,7 @@ async fn mounted_host_session_events_flow_into_the_mode() {
 #[tokio::test]
 async fn mounted_host_publishes_authoritative_remote_history_without_local_fallback() {
     use std::sync::{Arc, Mutex};
+    use maho_tui::tui::Component;
     use maho_interactive::interactive_host_runtime::{SessionEventListener, SessionSubscription};
     use maho_interactive::interactive_session::{ForkOutcome, InteractiveSession, ReplacementOutcome, SessionFuture};
 
@@ -1437,6 +1437,7 @@ async fn mounted_host_publishes_authoritative_remote_history_without_local_fallb
 #[tokio::test]
 async fn stale_history_fetch_completion_is_discarded() {
     use std::sync::{Arc, Mutex};
+    use maho_tui::tui::Component;
     use maho_interactive::interactive_host_runtime::{SessionEventListener, SessionSubscription};
     use maho_interactive::interactive_session::{ForkOutcome, InteractiveSession, ReplacementOutcome, SessionFuture};
 
@@ -1475,6 +1476,7 @@ async fn stale_history_fetch_completion_is_discarded() {
 #[tokio::test]
 async fn remote_live_event_during_history_fetch_is_still_applied() {
     use std::sync::{Arc, Mutex};
+    use maho_tui::tui::Component;
     use maho_interactive::interactive_host_runtime::{SessionEventListener, SessionSubscription};
     use maho_interactive::interactive_session::{ForkOutcome, InteractiveSession, ReplacementOutcome, SessionFuture};
 
@@ -1514,7 +1516,7 @@ async fn remote_live_event_during_history_fetch_is_still_applied() {
 
 #[tokio::test]
 async fn mounting_a_host_disables_local_event_delivery() {
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use maho_interactive::interactive_host_runtime::{SessionEventListener, SessionSubscription};
     use maho_interactive::interactive_session::{ForkOutcome, InteractiveSession, ReplacementOutcome, SessionFuture};
 
@@ -1543,6 +1545,7 @@ async fn mounting_a_host_disables_local_event_delivery() {
 #[tokio::test]
 async fn mirrored_remote_state_drives_the_mode_reads() {
     use std::sync::Arc;
+    use maho_tui::tui::Component;
     use maho_interactive::interactive_host_runtime::{RemoteSessionState, SessionEventListener, SessionSubscription};
     use maho_interactive::interactive_session::{ForkOutcome, InteractiveSession, ReplacementOutcome, SessionFuture};
 
