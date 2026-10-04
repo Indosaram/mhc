@@ -18,3 +18,23 @@ fn fixture(tty: bool) -> (StartupLoadingIndicator, Arc<Mutex<Vec<String>>>) {
 #[test] fn only_interactive_tty_without_help_engages() { use maho_core::project_trust::AppMode; assert!(should_show_startup_loading_indicator(AppMode::Interactive, true, false)); for mode in [AppMode::Print, AppMode::Json, AppMode::Rpc, AppMode::AppServer] { assert!(!should_show_startup_loading_indicator(mode, true, false)); } assert!(!should_show_startup_loading_indicator(AppMode::Interactive, false, false)); assert!(!should_show_startup_loading_indicator(AppMode::Interactive, true, true)); }
 #[tokio::test] async fn prompt_results_pass_through() { let (mut indicator, _) = fixture(true); indicator.start(); assert_eq!(indicator.during_prompt(async { 42 }).await, 42); assert!(indicator.running()); }
 #[tokio::test] async fn rejected_prompt_resumes() { let (mut indicator, writes) = fixture(true); indicator.start(); let result: Result<(), ()> = indicator.during_prompt(async { Err(()) }).await; assert!(result.is_err()); assert_eq!(writes.lock().unwrap().len(), 3); }
+#[tokio::test]
+async fn other_surface_writes_never_land_inside_the_frame() {
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = events.clone();
+    let mut options = StartupLoadingIndicatorOptions::new(move |chunk| {
+        let event = if chunk.ends_with("\x1b[?25h") { "erase" } else if chunk.contains("Loading") { "frame" } else { "unexpected" };
+        sink.lock().expect("events").push(event.to_owned());
+    }, true);
+    options.frames = vec!["A".to_owned(), "B".to_owned()];
+    let mut indicator = StartupLoadingIndicator::new(options);
+    indicator.start();
+    indicator.during_surface_write(|| events.lock().expect("events").push("diagnostic".to_owned()));
+    assert_eq!(*events.lock().expect("events"), ["frame", "erase", "diagnostic", "frame"]);
+}
+#[tokio::test]
+async fn surface_writes_run_when_the_indicator_is_inert() {
+    let (mut indicator, writes) = fixture(false);
+    assert_eq!(indicator.during_surface_write(|| 7), 7);
+    assert!(writes.lock().expect("writes").is_empty());
+}

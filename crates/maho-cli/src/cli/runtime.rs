@@ -17,15 +17,18 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         return Ok(());
     }
     if mode != AppMode::Interactive { super::stdout_guard::take_over_stdout(); }
+    let stdout_is_tty = std::io::stdout().is_terminal();
     let mut indicator = super::startup_loading_indicator::StartupLoadingIndicator::new(
         super::startup_loading_indicator::StartupLoadingIndicatorOptions::new(|text| {
             use std::io::Write;
-            if let Err(error) = std::io::stderr().lock().write_all(text.as_bytes()) { eprintln!("{error}"); }
-        }, mode == AppMode::Interactive && std::io::stdout().is_terminal())
+            if let Err(error) = std::io::stdout().lock().write_all(text.as_bytes()) { eprintln!("{error}"); }
+        }, stdout_is_tty)
     );
-    indicator.start();
-    indicator.set_phase(Some("loading settings".into()));
-    let migrations = crate::migrations::run_migrations(&cwd, std::path::Path::new(&maho_core::config::home_dir()), std::path::Path::new(&agent_dir)).map_err(|error| error.to_string())?;
+    if super::startup_loading_indicator::should_show_startup_loading_indicator(mode, stdout_is_tty, parsed.help) {
+        indicator.start();
+        indicator.set_phase(Some("loading settings".into()));
+    }
+    let migrations = indicator.during_surface_write(|| crate::migrations::run_migrations(&cwd, std::path::Path::new(&maho_core::config::home_dir()), std::path::Path::new(&agent_dir))).map_err(|error| error.to_string())?;
     let settings = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), false);
     let models = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
@@ -38,7 +41,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         else { SessionManager::create(&cwd_text, parsed.session_dir.as_deref(), identity) };
     let (widget_sender, widget_requests) = tokio::sync::mpsc::unbounded_channel();
     let task_parent = Arc::new(std::sync::OnceLock::new());
-    let mut base_factories = super::default_extensions::assembled_factories(widget_sender, task_parent.clone());
+    let mut base_factories = indicator.during_surface_write(|| super::default_extensions::assembled_factories(widget_sender, task_parent.clone()));
     let environment = super::oauth_providers::environment_from_process();
     let store = super::credentials::AuthStorageCredentialStore::create(
         &std::path::Path::new(&agent_dir).join("auth.json").to_string_lossy(),
@@ -59,15 +62,15 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     );
     base_factories.extend(super::default_extensions::async_factories(oauth.factories));
     if parsed.no_extensions { base_factories.retain(|factory| factory.source_info.source != "user"); }
-    let extensions = maho_ext_host::loader::load_extensions_async(base_factories.clone(), &cwd, Default::default()).await;
+    let extensions = indicator.during_prompt(maho_ext_host::loader::load_extensions_async(base_factories.clone(), &cwd, Default::default())).await;
     let extension_snapshot = extensions.extensions.clone();
-    for error in &extensions.errors { eprintln!("{}: {}", error.extension_path, error.error); }
+    indicator.during_surface_write(|| { for error in &extensions.errors { eprintln!("{}: {}", error.extension_path, error.error); } });
     let providers = Arc::new(maho_core::agent_session_runtime::ExtensionModelRuntimeActions(std::sync::Mutex::new(models)));
     extensions.runtime.bind_providers(providers.clone()).map_err(|error| error.message)?;
     let models = providers.0.lock().map_err(|error| error.to_string())?.clone();
     let scope = maho_core::model_resolver::resolve_model_scope_from_models(parsed.models.as_deref().unwrap_or_default(), &models.get_models(None));
     let options = startup::build_session_options(&parsed, &scope.scoped_models, parsed.session.is_some() || parsed.continue_session, &models, &settings);
-    for diagnostic in &options.diagnostics { eprintln!("{}: {}", if diagnostic.error { "Error" } else { "Warning" }, diagnostic.message); }
+    indicator.during_surface_write(|| { for diagnostic in &options.diagnostics { eprintln!("{}: {}", if diagnostic.error { "Error" } else { "Warning" }, diagnostic.message); } });
     if options.diagnostics.iter().any(|diagnostic| diagnostic.error) { return Err("Invalid model selection".into()); }
     let host_factory = maho_core::sdk::HostRuntimeFactory {
         model_registry: maho_core::model_registry::ModelRegistry::new(models.clone()),
@@ -95,7 +98,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         let skills = maho_core::skills::load_skills(&maho_core::skills::LoadSkillsOptions {
             cwd: cwd_text.to_string(), agent_dir: agent_dir.clone(), skill_paths: parsed.skills.clone(), include_defaults: !parsed.no_skills,
         });
-        for diagnostic in &skills.diagnostics { eprintln!("{}", diagnostic.message); }
+        indicator.during_surface_write(|| { for diagnostic in &skills.diagnostics { eprintln!("{}", diagnostic.message); } });
         session.set_prompt_resources(templates, skills.skills);
         session.rebuild_system_prompt();
     }
