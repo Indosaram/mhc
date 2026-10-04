@@ -11,11 +11,11 @@ use std::sync::{Arc, Mutex};
 
 use maho_agent::harness::context::Context;
 use maho_agent::harness::events::{BufferedEventWatcher, HarnessEvent};
-use maho_agent::harness::runtime::lane::{AdmissionError, Lane, OperationAdmission, PromptInput, QueuedInput};
+use maho_agent::harness::runtime::lane::{Lane, NavigationOptions, PromptInput, QueuedInput};
 use maho_agent::harness::runtime::transcript::watch_lane;
 use maho_agent::harness::runtime::types::RuntimeLane;
 use maho_agent::harness::session::session::SessionError;
-use maho_agent::harness::session::types::{LaneModelRef, RunSettings};
+use maho_agent::harness::session::types::LaneModelRef;
 
 use super::runtime::ModelRuntimeHandle;
 use super::shared::protocol::{CommandResult, LaneSubscription, ModelRef, ModelsState, SessionSnapshot};
@@ -31,7 +31,6 @@ pub struct LaneServiceOptions {
     pub models: Arc<ModelRuntimeHandle>,
     pub context: Context,
     pub session: SessionIdentity,
-    pub settings: RunSettings,
     pub models_state: Arc<dyn Fn() -> ModelsState + Send + Sync>,
     pub publish: Arc<dyn Fn(&str, &str, &HarnessEvent) + Send + Sync>,
 }
@@ -104,7 +103,11 @@ impl LaneService {
 
     pub async fn prompt(&self, text: &str) -> CommandResult {
         let input = PromptInput::Text { text: text.to_owned(), images: vec![] };
-        self.admit(self.options.lane.accept_prompt(input, None, self.options.settings.clone(), &self.options.context)).await
+        self.run(self.options.lane.prompt(input, &self.options.context)).await
+    }
+
+    pub async fn skill(&self, name: &str, additional_instructions: Option<String>) -> CommandResult {
+        self.run(self.options.lane.skill(name, additional_instructions, &self.options.context)).await
     }
 
     pub async fn steer(&self, text: &str) -> CommandResult {
@@ -116,23 +119,15 @@ impl LaneService {
     }
 
     pub async fn compact(&self) -> CommandResult {
-        self.admit(self.options.lane.accept_compaction(None, None, self.options.settings.clone(), &self.options.context)).await
+        self.run(self.options.lane.compact(None, &self.options.context)).await
+    }
+
+    pub async fn navigate_tree(&self, target_id: Option<String>, options: NavigationOptions) -> CommandResult {
+        self.run(self.options.lane.navigate_tree(target_id, options, &self.options.context)).await
     }
 
     pub async fn abort(&self) -> CommandResult {
-        let operation_id = match self.options.lane.state().operation {
-            Some(operation) => operation.meta.operation_id,
-            None => return CommandResult::Error("No active operation to abort".to_owned()),
-        };
-        match self.options.lane.request_operation_abort(operation_id, &self.options.context).await {
-            Ok(Ok(_)) => CommandResult::Ok,
-            Ok(Err(mismatch)) => CommandResult::Error(format!(
-                "Operation mismatch: expected {}, current {}",
-                mismatch.expected,
-                mismatch.current_operation_id.unwrap_or_else(|| "none".to_owned())
-            )),
-            Err(error) => CommandResult::Error(error.message),
-        }
+        self.run(self.options.lane.abort(&self.options.context)).await
     }
 
     pub async fn set_model(&self, reference: &ModelRef) -> CommandResult {
@@ -154,9 +149,10 @@ impl LaneService {
         watches.clear();
     }
 
-    async fn admit<F>(&self, future: F) -> CommandResult
+    async fn run<F, O, E>(&self, future: F) -> CommandResult
     where
-        F: Future<Output = Result<Result<OperationAdmission, AdmissionError>, SessionError>>,
+        F: Future<Output = Result<Result<O, E>, SessionError>>,
+        E: std::fmt::Display,
     {
         match future.await {
             Ok(Ok(_)) => CommandResult::Ok,

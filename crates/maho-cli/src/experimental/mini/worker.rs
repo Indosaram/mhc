@@ -15,7 +15,7 @@ use maho_agent::harness::env::nodejs::NodeExecutionEnv;
 use maho_agent::harness::runtime::harness::{create_agent_harness, Harness};
 use maho_agent::harness::runtime::lane::Lane;
 use maho_agent::harness::session::jsonl::{JsonlSessionCreateOptions, JsonlSessionRepo, JsonlSessionRepoOptions};
-use maho_agent::harness::session::types::{LaneConfiguration, LaneModelRef, RunSettings, Session, ToolExecutionMode};
+use maho_agent::harness::session::types::{LaneConfiguration, LaneModelRef, Session};
 use maho_core::model_resolver::{find_initial_model, InitialModelOptions};
 use maho_core::model_runtime::{CreateModelRuntimeOptions, ModelRuntime};
 use serde_json::Value;
@@ -288,15 +288,6 @@ async fn spawn_recoveries(harness: &Harness, context: &Context) -> Result<Vec<to
     Ok(recoveries)
 }
 
-fn run_settings(harness: &Harness) -> Result<RunSettings, String> {
-    Ok(RunSettings {
-        compaction: harness.get_compaction_settings().map_err(|error| error.message)?,
-        steering_mode: harness.get_steering_mode().map_err(|error| error.message)?,
-        follow_up_mode: harness.get_follow_up_mode().map_err(|error| error.message)?,
-        tool_execution: ToolExecutionMode::Parallel,
-    })
-}
-
 pub struct SessionWorkerOptions {
     pub sessions_root: String,
     pub cwd: String,
@@ -333,7 +324,6 @@ pub async fn run_session_worker(options: SessionWorkerOptions) -> Result<(), Str
 
     let harness = open_harness(session, &model, thinking_level, &context).await?;
     let lane = lane_for(&harness, &context).await?;
-    let settings = run_settings(&harness)?;
 
     let peer = Arc::new(create_peer(tokio::io::stdin(), tokio::io::stdout(), PeerOptions::default()));
 
@@ -355,7 +345,6 @@ pub async fn run_session_worker(options: SessionWorkerOptions) -> Result<(), Str
         models: runtime.clone(),
         context: context.clone(),
         session: SessionIdentity { id: session_id.clone(), cwd: cwd.clone(), path },
-        settings,
         models_state: {
             let models = models_service.clone();
             Arc::new(move || models.state())
