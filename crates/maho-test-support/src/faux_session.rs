@@ -143,6 +143,10 @@ impl FauxSession {
         let messages = serde_json::to_value(session.messages())?;
         let entries = session.with_session_manager(|manager| manager.entries());
         let events = events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        // Canonical teardown, mirroring AgentSessionRuntime::dispose: a bare AgentSession::dispose
+        // does not emit session_shutdown, so an extension that suspends on it (e.g. the loop
+        // extension) would be left in its pre-shutdown phase.
+        session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;
         session.dispose().await;
         Ok(serde_json::json!({ "scenario": self.scenario, "events": events, "entries": entries, "messages": messages }))
     }
