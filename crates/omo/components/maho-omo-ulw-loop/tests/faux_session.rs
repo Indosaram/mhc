@@ -10,7 +10,7 @@ async fn faux_registered_component_preserves_idle_prompt_and_provider_reply() {
         NativeExtensionFactory {
             path: "<ulw-loop>".into(),
             source_info: Default::default(),
-            extension: Box::new(maho_omo_ulw_loop::index::UlwLoopComponent { bin: None, js_runtime: "bun".into(), run_command: None }),
+            extension: Box::new(maho_omo_ulw_loop::index::UlwLoopComponent { bin: None, js_runtime: "bun".into(), run_command: None, logger: None }),
         },
     );
     let actual = tokio::time::timeout(std::time::Duration::from_secs(10), session.run_native())
