@@ -61,6 +61,7 @@ pub struct MemoryRuntime {
     health_notices: Mutex<BTreeSet<String>>,
     prompt: Arc<maho_omo_memory::prompt::MemoryPromptHandler>,
     advisory_notified: Mutex<BTreeSet<String>>,
+    static_options: Mutex<Option<MemoryStaticOptions>>,
 }
 
 impl MemoryRuntime {
@@ -146,7 +147,7 @@ impl MemoryRuntime {
         Ok(Arc::new(Self { component, wiring, host, skills, current: Mutex::new(None), workers: Mutex::new(BTreeMap::new()),
             ledgers: Mutex::new(BTreeMap::new()), write_sessions: Mutex::new(BTreeMap::new()),
             nudge: Arc::new(Mutex::new(Default::default())), health_notices: Mutex::new(BTreeSet::new()),
-            prompt: Arc::new(Default::default()), advisory_notified: Mutex::new(BTreeSet::new()) }))
+            prompt: Arc::new(Default::default()), advisory_notified: Mutex::new(BTreeSet::new()), static_options: Mutex::new(None) }))
     }
 
     pub fn capture_context(&self, context: &ExtensionContext) {
@@ -247,6 +248,11 @@ impl MemoryRuntime {
     }
 
     fn static_options(self: &Arc<Self>) -> MemoryStaticOptions {
+        let mut slot = self.static_options.lock().unwrap_or_else(PoisonError::into_inner);
+        slot.get_or_insert_with(|| self.build_static_options()).clone()
+    }
+
+    fn build_static_options(self: &Arc<Self>) -> MemoryStaticOptions {
         let this = self.clone();
         let resolve: maho_omo_memory::prompt::PromptContextResolver = Arc::new(move |session| this.identity(session));
         let this = self.clone();
