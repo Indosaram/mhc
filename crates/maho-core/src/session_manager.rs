@@ -1350,21 +1350,23 @@ mod tests {
         let older = tmp.path().join("a.jsonl");
         let newer = tmp.path().join("b.jsonl");
         let other = tmp.path().join("c.jsonl");
-        // Stamp explicit mtimes: "newest" must be decided by the fixture, not by how finely the
-        // filesystem distinguishes two back-to-back writes (a sub-millisecond tie made the
-        // overall-newest pick depend on readdir order).
-        let write_at = |path: &std::path::Path, id: &str, cwd: &str, age: Duration| {
+        // Stamp explicit, ordered mtimes from ONE fixed base: "newest" must be decided by the
+        // fixture, not by how finely the filesystem distinguishes two back-to-back writes (a
+        // sub-millisecond tie made the overall-newest pick depend on readdir order), and never
+        // by the wall clock (a clock jump between writes would reorder them).
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let write_at = |path: &std::path::Path, id: &str, cwd: &str, offset: Duration| {
             std::fs::write(path, format!("{}\n", serialize_entry(&header(id, Some(3), cwd)))).expect("write");
             std::fs::File::options()
                 .write(true)
                 .open(path)
                 .expect("open")
-                .set_modified(SystemTime::now().checked_sub(age).expect("recent base"))
+                .set_modified(base + offset)
                 .expect("mtime");
         };
-        write_at(&older, "old", &dir, Duration::from_secs(30));
+        write_at(&older, "old", &dir, Duration::from_secs(10));
         write_at(&newer, "new", &dir, Duration::from_secs(20));
-        write_at(&other, "other", "/somewhere/else", Duration::from_secs(10));
+        write_at(&other, "other", "/somewhere/else", Duration::from_secs(30));
         assert_eq!(find_most_recent_session(&dir, Some(&dir)).as_deref(), Some(newer.to_string_lossy().as_ref()));
         assert_eq!(find_most_recent_session(&dir, None).as_deref(), Some(other.to_string_lossy().as_ref()));
         assert_eq!(find_most_recent_session(&dir, Some("/somewhere/else")).as_deref(), Some(other.to_string_lossy().as_ref()));
