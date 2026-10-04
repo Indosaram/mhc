@@ -6,6 +6,22 @@ pub const WIDGET_KEY: &str = "ext:nested-agents:widget";
 #[derive(Clone)]
 pub struct InjectedFileMeta { pub absolute_path: PathBuf, pub truncated: bool }
 
+pub fn update_status(ctx: &maho_ext_api::ExtensionContext, cache: &InjectionCache, session: &str, has_errors: bool) {
+    if !ctx.has_ui { return; }
+    let count = cache.cache_size(session);
+    let text = (count > 0).then(||format!("🤖 {count}{}",if has_errors { " ⚠️" } else { "" }));
+    ctx.ui.set_status(STATUS_KEY,text.as_deref());
+}
+pub fn update_widget(ctx: &maho_ext_api::ExtensionContext, visible: bool, files: &[InjectedFileMeta]) {
+    if !ctx.has_ui { return; }
+    let lines = if visible && !files.is_empty() {
+        let mut lines = vec!["Nested Context:".into()];
+        lines.extend(files.iter().map(|file|format!("  {}{}",display_path(&ctx.cwd,&file.absolute_path),if file.truncated { " (truncated)" } else { "" })));
+        Some(maho_ext_api::WidgetContent::Lines(lines))
+    } else { None };
+    ctx.ui.set_widget(WIDGET_KEY,lines,Default::default());
+}
+
 pub fn build_debug_record(cache: &InjectionCache, session: &str, files: &[InjectedFileMeta]) -> serde_json::Value {
     serde_json::json!({
         "sessionKey":session, "cacheSize":cache.cache_size(session), "injectedDirectories":cache.list_injected(session),
