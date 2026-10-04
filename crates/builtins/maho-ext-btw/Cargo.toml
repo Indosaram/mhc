@@ -13,7 +13,7 @@ maho-tui = { path = "../../maho-tui" }
 maho-interactive = { path = "../../maho-interactive" }
 maho-ext-compaction = { path = "../maho-ext-compaction" }
 serde_json.workspace = true
-tokio = { workspace = true, features = ["time", "macros", "rt", "test-util"] }
+tokio = { workspace = true, features = ["time", "macros", "rt", "sync", "test-util"] }
 
 [lints]
 workspace = true
