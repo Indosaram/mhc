@@ -1637,13 +1637,25 @@ async fn turn_and_session_mutations_route_to_the_mounted_host() {
 
 // ---- task-1 real-loop dispatch (GAP-1) --------------------------------------------------------
 
-/// A mode whose faux provider holds every streamed chunk until `gate` is released: the turn reaches
-/// `AgentStart` and then blocks, so a test can observe the live frame and steer/abort while the
-/// turn is genuinely in flight. `entered` flips once the provider is actually parked on the hold.
+/// A waker that hands a token to a channel on every wake, so an event-driven driver re-polls the
+/// turn exactly when the in-flight turn or abort future makes progress (no fixed sleeps, no
+/// state-polling spin).
+struct TurnWaker { wake: tokio::sync::mpsc::UnboundedSender<()> }
+impl std::task::Wake for TurnWaker {
+    fn wake(self: std::sync::Arc<Self>) { let _ = self.wake.send(()); }
+    fn wake_by_ref(self: &std::sync::Arc<Self>) { let _ = self.wake.send(()); }
+}
+
+/// A mode whose faux provider parks on the first streamed chunk until `gate` is released: the turn
+/// reaches `AgentStart` and then blocks, so a test can observe the live frame and steer/abort while
+/// the turn is genuinely in flight. `entered` flips once the provider is parked, and `wake`/`wake_tx`
+/// carry the turn's wakeups to the causal driver.
 struct GatedMode {
     mode: maho_interactive::interactive_mode::InteractiveMode,
     session: std::sync::Arc<maho_core::agent_session::AgentSession>,
     gate: tokio::sync::watch::Sender<bool>,
+    wake: tokio::sync::mpsc::UnboundedReceiver<()>,
+    wake_tx: tokio::sync::mpsc::UnboundedSender<()>,
     entered: std::sync::Arc<std::sync::atomic::AtomicBool>,
     _directory: tempfile::TempDir,
 }
@@ -1657,6 +1669,7 @@ fn gated_native_mode() -> GatedMode {
     let cwd = directory.path().to_string_lossy().into_owned();
     let (gate, gate_rx) = tokio::sync::watch::channel(false);
     let entered = Arc::new(AtomicBool::new(false));
+    let (wake_tx, wake) = tokio::sync::mpsc::unbounded_channel();
     let hook_entered = entered.clone();
     let hook_gate = gate_rx.clone();
     let provider = faux_provider(RegisterFauxProviderOptions {
@@ -1698,7 +1711,7 @@ fn gated_native_mode() -> GatedMode {
         session_start_event: None, auto_title_sessions: Some(false),
     }).expect("session"));
     let mode = maho_interactive::interactive_mode::InteractiveMode::new(session.clone(), maho_interactive::theme::Theme::builtin("dark", maho_interactive::theme::ColorMode::Truecolor).expect("theme"), std::rc::Rc::new(EditorHost));
-    GatedMode { mode, session, gate, entered, _directory: directory }
+    GatedMode { mode, session, gate, wake, wake_tx, entered, _directory: directory }
 }
 
 /// Capture the session's exact event stream while the mode drives the turn.
@@ -1721,29 +1734,32 @@ fn abort_count(events: &std::sync::Mutex<Vec<maho_ext_api::AgentSessionEvent>>) 
     events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().filter(|event| matches!(event, maho_ext_api::AgentSessionEvent::SessionAbort)).count()
 }
 
-/// Drive the production loop until the entered prompt has started a turn and the provider is parked
-/// on the held first delta, so the next assertion observes a live frame that cannot be explained by
-/// an already-completed reply.
-async fn drive_until_held(gated: &mut GatedMode) {
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        loop {
-            if gated.mode.working_frame(0.0).is_some() && gated.entered.load(std::sync::atomic::Ordering::SeqCst) { break; }
-            gated.mode.pump_turn().await;
-            tokio::task::yield_now().await;
-        }
-    }).await.expect("the entered prompt starts a turn and the provider holds its first delta");
+fn has_settled(events: &std::sync::Mutex<Vec<maho_ext_api::AgentSessionEvent>>) -> bool {
+    events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|event| matches!(event, maho_ext_api::AgentSessionEvent::AgentSettled))
 }
 
-/// Drive the production loop until the in-flight turn settles, releasing the held provider.
-async fn drive_to_settle(gated: &mut GatedMode) {
-    let _ = gated.gate.send(true);
+fn has_agent_start(events: &std::sync::Mutex<Vec<maho_ext_api::AgentSessionEvent>>) -> bool {
+    events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|event| matches!(event, maho_ext_api::AgentSessionEvent::Agent(maho_agent::types::AgentEvent::AgentStart)))
+}
+
+/// The causal waker over `gated`'s wake channel.
+fn turn_waker(gated: &GatedMode) -> std::task::Waker {
+    std::task::Waker::from(std::sync::Arc::new(TurnWaker { wake: gated.wake_tx.clone() }))
+}
+
+/// Drive the production loop causally: poll once, then re-poll only when the in-flight turn or
+/// abort future wakes (each wake is one token on `gated.wake`), until `predicate` holds. Bounded; a
+/// hang fails rather than passing by luck. The caller subscribes to the session event stream before
+/// the trigger, so the terminal event is captured, never inferred from polling mode state.
+async fn pump_until(gated: &mut GatedMode, predicate: impl Fn(&GatedMode) -> bool) {
+    let waker = turn_waker(gated);
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while gated.mode.has_pending_turn() {
-            let _ = gated.gate.send(true);
-            gated.mode.pump_turn().await;
-            tokio::task::yield_now().await;
+        loop {
+            gated.mode.pump_turn_with(&waker).await;
+            if predicate(gated) { return; }
+            let _ = gated.wake.recv().await;
         }
-    }).await.expect("the turn reaches its terminal event");
+    }).await.expect("the loop reaches the expected state before the bounded timeout");
 }
 
 #[tokio::test]
@@ -1753,19 +1769,22 @@ async fn real_loop_renders_live_frame_before_held_delta_then_completes() {
     let (events, _subscription) = capture_session_events(&gated.session);
     gated.mode.handle_input("hi");
     gated.mode.handle_input("\r");
-    drive_until_held(&mut gated).await;
+    pump_until(&mut gated, |gated| gated.entered.load(std::sync::atomic::Ordering::SeqCst)).await;
     assert!(gated.mode.has_pending_turn(), "the entered prompt starts a turn");
     assert!(!gated.mode.agent_idle, "the turn is in flight");
     assert!(gated.mode.working_frame(0.0).is_some(), "the live frame shows the working row while the provider holds");
+    assert!(has_agent_start(&events), "the provider-held run started before the delta");
     let frame = gated.mode.render(80).join("\n");
     assert!(!frame.contains("hello"), "no reply before the held delta is released: {frame}");
-    drive_to_settle(&mut gated).await;
+    let _ = gated.gate.send(true);
+    pump_until(&mut gated, |gated| !gated.mode.has_pending_turn()).await;
     assert!(gated.mode.agent_idle, "the turn reaches its terminal event");
     assert!(gated.mode.working_frame(0.0).is_none(), "the working row is cleared");
     let frame = gated.mode.render(80).join("\n");
     assert!(frame.contains("hello"), "the reply is rendered after the delta: {frame}");
     let captured = events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
     assert!(captured.last().is_some_and(is_terminal_session_event), "exact terminal event: {captured:?}");
+    assert!(has_settled(&events), "the run settled: {captured:?}");
     assert_eq!(abort_count(&events), 0, "a completed turn is not an abort");
 }
 
@@ -1776,18 +1795,22 @@ async fn real_loop_abort_while_provider_held_clears_busy_and_returns_usable_edit
     let (events, _subscription) = capture_session_events(&gated.session);
     gated.mode.handle_input("hi");
     gated.mode.handle_input("\r");
-    drive_until_held(&mut gated).await;
+    pump_until(&mut gated, |gated| gated.entered.load(std::sync::atomic::Ordering::SeqCst)).await;
     assert!(gated.mode.has_pending_turn());
-    // The pinned interrupt key (`app.interrupt`) requests the abort; it must not block the loop.
+    // The pinned interrupt key (`app.interrupt`) requests the abort; it must not block the loop. The
+    // provider gate stays held, so the abort itself must tear the held stream down.
     gated.mode.handle_runtime_input("\x1b", 0).await.expect("interrupt");
     assert!(gated.mode.has_pending_turn(), "the abort is requested, not awaited inline");
-    drive_to_settle(&mut gated).await;
-    assert!(gated.mode.agent_idle, "abort clears the busy state");
+    pump_until(&mut gated, |gated| !gated.mode.has_pending_turn()).await;
+    assert!(gated.mode.agent_idle, "abort clears the busy state without the provider succeeding");
     assert!(gated.mode.working_frame(0.0).is_none(), "the working row is cleared");
     let frame = gated.mode.render(80).join("\n");
     assert!(!frame.contains("hello"), "the abort beat the held delta: {frame}");
     let captured = events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
     assert!(captured.last().is_some_and(is_terminal_session_event), "exact terminal event: {captured:?}");
+    assert!(has_settled(&events), "the aborted run settles: {captured:?}");
+    let provider_succeeded = gated.session.messages().iter().filter_map(|message| message.as_assistant()).any(|message| message.stop_reason == maho_ai::types::StopReason::Stop);
+    assert!(!provider_succeeded, "the held provider never completed a successful reply");
     gated.mode.handle_input("next");
     assert_eq!(gated.mode.editor.editor.get_text(), "next", "the editor accepts input again");
 }
@@ -1798,17 +1821,38 @@ async fn real_loop_steer_while_provider_held_queues_without_replacing_the_turn()
     let mut gated = gated_native_mode();
     gated.mode.handle_input("hi");
     gated.mode.handle_input("\r");
-    drive_until_held(&mut gated).await;
+    pump_until(&mut gated, |gated| gated.entered.load(std::sync::atomic::Ordering::SeqCst)).await;
     assert!(gated.mode.has_pending_turn());
     // Type a follow-up and submit it while the turn is held: it must queue, not replace the turn.
     gated.mode.handle_input("steer-now");
     gated.mode.handle_input("\r");
-    gated.mode.pump_turn().await;
+    let waker = turn_waker(&gated);
+    gated.mode.pump_turn_with(&waker).await;
     assert!(gated.mode.has_pending_turn(), "the steer is queued into the running turn");
     assert!(!gated.mode.agent_idle, "the running turn is not replaced");
-    drive_to_settle(&mut gated).await;
+    let _ = gated.gate.send(true);
+    pump_until(&mut gated, |gated| !gated.mode.has_pending_turn()).await;
     assert!(gated.mode.agent_idle);
     let frame = gated.mode.render(80).join("\n");
     assert!(frame.contains("steered-reply"), "the queued steer ran after the held turn: {frame}");
+}
+
+#[tokio::test]
+async fn real_loop_pumps_startup_initial_prompt_without_freezing_the_first_frame() {
+    use maho_tui::tui::Component;
+    let mut gated = gated_native_mode();
+    let (events, _subscription) = capture_session_events(&gated.session);
+    // The production entry enqueues the startup prompt instead of awaiting it before the loop.
+    gated.mode.enqueue_submission("startup-hi", None);
+    pump_until(&mut gated, |gated| gated.entered.load(std::sync::atomic::Ordering::SeqCst)).await;
+    assert!(gated.mode.has_pending_turn(), "the startup prompt starts a turn inside the loop");
+    assert!(gated.mode.working_frame(0.0).is_some(), "the first frame renders while the startup turn is held");
+    assert!(!gated.mode.render(80).join("\n").contains("hello"), "no reply before the held delta");
+    let _ = gated.gate.send(true);
+    pump_until(&mut gated, |gated| !gated.mode.has_pending_turn()).await;
+    assert!(gated.mode.agent_idle);
+    assert!(gated.mode.render(80).join("\n").contains("hello"), "the startup reply renders after the delta");
+    let captured = events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    assert!(captured.last().is_some_and(is_terminal_session_event), "exact terminal event: {captured:?}");
 }
 

@@ -978,6 +978,19 @@ impl InteractiveMode {
         self.submit_start(&text, options).await.map(Some)
     }
 
+    /// Queue a submission for the production loop to start (senpi's `onSubmit` capture). Startup
+    /// uses this to hand the initial prompt(s) to the loop instead of awaiting a turn before the
+    /// first frame; order is the queue order and images are paired with their text for
+    /// `next_submission`.
+    pub fn enqueue_submission(&mut self, text: &str, images: Option<Vec<maho_ai::types::ImageContent>>) {
+        let text = text.trim();
+        if text.is_empty() { return; }
+        if let Some(images) = images.filter(|images| !images.is_empty()) {
+            self.submission_images.borrow_mut().push_back((text.to_owned(), images));
+        }
+        self.submissions.borrow_mut().push_back(text.to_owned());
+    }
+
     /// Pair an editor marker with its in-memory image payload.
     pub fn attach_image(&mut self, image: maho_ai::types::ImageContent) {
         let id = self.editor.editor.insert_image_marker();
@@ -1049,12 +1062,16 @@ impl InteractiveMode {
         self.show_status(format!("Tool output: {}", if expanded { "expanded" } else { "collapsed" }));
     }
 
-    /// senpi's main-loop step: initiate the next queued submission and drive the in-flight turn one
-    /// step, keeping the terminal loop in control. A submission error surfaces as a status line
-    /// (senpi's `showError`) instead of tearing the loop down.
-    pub async fn pump_turn(&mut self) {
-        self.poll_turn();
+    /// senpi's main-loop step: initiate the next queued submission (starting a turn or routing it
+    /// into a live one), then advance the in-flight turn one step. A submission error surfaces as a
+    /// status line (senpi's `showError`) instead of tearing the loop down.
+    pub async fn pump_turn(&mut self) { self.pump_turn_with(std::task::Waker::noop()).await; }
+
+    /// `pump_turn` with an explicit waker so an event-driven caller can re-poll exactly when the
+    /// in-flight turn (or abort future) wakes, instead of on a fixed cadence.
+    pub async fn pump_turn_with(&mut self, waker: &std::task::Waker) {
         if let Err(error) = self.dispatch_submission().await { self.show_status(error); }
+        self.poll_turn_with(waker);
     }
 
     /// senpi's awaited `session.prompt` for direct callers: start the turn, then wait it out.
@@ -1295,9 +1312,10 @@ impl InteractiveMode {
     /// Advance the in-flight abort request and turn one step so a running provider keeps producing
     /// session events, then consume those events. Never blocks: a held provider leaves the turn
     /// pending and the caller keeps rendering. The abort is polled first so its signal is set before
-    /// the run loop is advanced (an abort must beat the held delta).
-    pub fn poll_turn(&mut self) {
-        let waker = std::task::Waker::noop();
+    /// the run loop is advanced (an abort must beat the held delta). `waker` receives the turn's and
+    /// abort's wakeups, so an event-driven caller re-polls exactly when there is progress; the
+    /// production loop passes `Waker::noop()` and re-polls every frame.
+    pub fn poll_turn_with(&mut self, waker: &std::task::Waker) {
         let mut context = std::task::Context::from_waker(waker);
         let abort_done = self.pending_abort.as_mut().is_some_and(|abort| abort.as_mut().poll(&mut context).is_ready());
         if abort_done { self.pending_abort = None; }
@@ -1311,6 +1329,9 @@ impl InteractiveMode {
         }
         self.drain_events();
     }
+
+    /// One production frame step: advance the in-flight turn with a noop waker.
+    pub fn poll_turn(&mut self) { self.poll_turn_with(std::task::Waker::noop()); }
 
     /// Whether a provider turn is currently in flight.
     pub fn has_pending_turn(&self) -> bool { self.pending_turn.is_some() }

@@ -67,8 +67,8 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     screen.before_terminal_start(&mut terminal, false, false);
     terminal.start(Box::new(move |chunk| captured.borrow_mut().push(chunk.into())), Box::new(|| {}));
     let result = async {
-        if let Some(text) = initial.initial_message { mode.submit(&text, maho_core::agent_session::PromptOptions { images: initial.initial_images, ..Default::default() }).await?; }
-        for text in &parsed.messages { mode.submit(text, Default::default()).await?; }
+        if let Some(text) = initial.initial_message { mode.enqueue_submission(&text, initial.initial_images); }
+        for text in &parsed.messages { mode.enqueue_submission(text, None); }
         let clock = std::time::Instant::now();
         let mut installed_native_renderers = Vec::new();
         while !mode.shutdown_requested {
