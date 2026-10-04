@@ -1,0 +1,187 @@
+use serde::{Deserialize,Serialize};
+#[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
+pub enum ServerNotificationMethod {
+    #[serde(rename="account/login/completed")]AccountLoginCompleted,
+    #[serde(rename="account/rateLimits/updated")]AccountRateLimitsUpdated,
+    #[serde(rename="account/updated")]AccountUpdated,
+    #[serde(rename="app/list/updated")]AppListUpdated,
+    #[serde(rename="command/exec/outputDelta")]CommandExecOutputDelta,
+    #[serde(rename="configWarning")]ConfigWarning,
+    #[serde(rename="deprecationNotice")]DeprecationNotice,
+    #[serde(rename="error")]Error,
+    #[serde(rename="externalAgentConfig/import/completed")]ExternalAgentConfigImportCompleted,
+    #[serde(rename="externalAgentConfig/import/progress")]ExternalAgentConfigImportProgress,
+    #[serde(rename="fs/changed")]FsChanged,
+    #[serde(rename="fuzzyFileSearch/sessionCompleted")]FuzzyFileSearchSessionCompleted,
+    #[serde(rename="fuzzyFileSearch/sessionUpdated")]FuzzyFileSearchSessionUpdated,
+    #[serde(rename="guardianWarning")]GuardianWarning,
+    #[serde(rename="hook/completed")]HookCompleted,
+    #[serde(rename="hook/started")]HookStarted,
+    #[serde(rename="item/agentMessage/delta")]ItemAgentMessageDelta,
+    #[serde(rename="item/autoApprovalReview/completed")]ItemAutoApprovalReviewCompleted,
+    #[serde(rename="item/autoApprovalReview/started")]ItemAutoApprovalReviewStarted,
+    #[serde(rename="item/commandExecution/outputDelta")]ItemCommandExecutionOutputDelta,
+    #[serde(rename="item/commandExecution/terminalInteraction")]ItemCommandExecutionTerminalInteraction,
+    #[serde(rename="item/completed")]ItemCompleted,
+    #[serde(rename="item/fileChange/outputDelta")]ItemFileChangeOutputDelta,
+    #[serde(rename="item/fileChange/patchUpdated")]ItemFileChangePatchUpdated,
+    #[serde(rename="item/mcpToolCall/progress")]ItemMcpToolCallProgress,
+    #[serde(rename="item/plan/delta")]ItemPlanDelta,
+    #[serde(rename="item/reasoning/summaryPartAdded")]ItemReasoningSummaryPartAdded,
+    #[serde(rename="item/reasoning/summaryTextDelta")]ItemReasoningSummaryTextDelta,
+    #[serde(rename="item/reasoning/textDelta")]ItemReasoningTextDelta,
+    #[serde(rename="item/started")]ItemStarted,
+    #[serde(rename="mcpServer/oauthLogin/completed")]McpServerOauthLoginCompleted,
+    #[serde(rename="mcpServer/startupStatus/updated")]McpServerStartupStatusUpdated,
+    #[serde(rename="model/rerouted")]ModelRerouted,
+    #[serde(rename="model/safetyBuffering/updated")]ModelSafetyBufferingUpdated,
+    #[serde(rename="model/verification")]ModelVerification,
+    #[serde(rename="process/exited")]ProcessExited,
+    #[serde(rename="process/outputDelta")]ProcessOutputDelta,
+    #[serde(rename="rawResponse/completed")]RawResponseCompleted,
+    #[serde(rename="rawResponseItem/completed")]RawResponseItemCompleted,
+    #[serde(rename="remoteControl/status/changed")]RemoteControlStatusChanged,
+    #[serde(rename="serverRequest/resolved")]ServerRequestResolved,
+    #[serde(rename="skills/changed")]SkillsChanged,
+    #[serde(rename="thread/archived")]ThreadArchived,
+    #[serde(rename="thread/closed")]ThreadClosed,
+    #[serde(rename="thread/compacted")]ThreadCompacted,
+    #[serde(rename="thread/deleted")]ThreadDeleted,
+    #[serde(rename="thread/environment/connected")]ThreadEnvironmentConnected,
+    #[serde(rename="thread/environment/disconnected")]ThreadEnvironmentDisconnected,
+    #[serde(rename="thread/goal/cleared")]ThreadGoalCleared,
+    #[serde(rename="thread/goal/updated")]ThreadGoalUpdated,
+    #[serde(rename="thread/name/updated")]ThreadNameUpdated,
+    #[serde(rename="thread/realtime/closed")]ThreadRealtimeClosed,
+    #[serde(rename="thread/realtime/error")]ThreadRealtimeError,
+    #[serde(rename="thread/realtime/itemAdded")]ThreadRealtimeItemAdded,
+    #[serde(rename="thread/realtime/outputAudio/delta")]ThreadRealtimeOutputAudioDelta,
+    #[serde(rename="thread/realtime/sdp")]ThreadRealtimeSdp,
+    #[serde(rename="thread/realtime/started")]ThreadRealtimeStarted,
+    #[serde(rename="thread/realtime/transcript/delta")]ThreadRealtimeTranscriptDelta,
+    #[serde(rename="thread/realtime/transcript/done")]ThreadRealtimeTranscriptDone,
+    #[serde(rename="thread/settings/updated")]ThreadSettingsUpdated,
+    #[serde(rename="thread/started")]ThreadStarted,
+    #[serde(rename="thread/status/changed")]ThreadStatusChanged,
+    #[serde(rename="thread/tokenUsage/updated")]ThreadTokenUsageUpdated,
+    #[serde(rename="thread/unarchived")]ThreadUnarchived,
+    #[serde(rename="turn/completed")]TurnCompleted,
+    #[serde(rename="turn/diff/updated")]TurnDiffUpdated,
+    #[serde(rename="turn/moderationMetadata")]TurnModerationMetadata,
+    #[serde(rename="turn/plan/updated")]TurnPlanUpdated,
+    #[serde(rename="turn/started")]TurnStarted,
+    #[serde(rename="warning")]Warning,
+    #[serde(rename="windows/worldWritableWarning")]WindowsWorldWritableWarning,
+    #[serde(rename="windowsSandbox/setupCompleted")]WindowsSandboxSetupCompleted,
+}
+use super::{account::*,base::JsonValue,fuzzy_search::*,terminal::ErrorNotification,thread_parity::{ThreadGoal,ThreadSettings}};
+#[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct ThreadUnarchivedNotification {pub thread_id:String}
+#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct ThreadGoalUpdatedNotification {pub thread_id:String,pub turn_id:Option<String>,pub goal:ThreadGoal}
+pub type ThreadGoalClearedNotification=ThreadUnarchivedNotification;
+#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct ThreadSettingsUpdatedNotification {pub thread_id:String,pub thread_settings:ThreadSettings}
+#[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct TurnDiffUpdatedNotification {pub thread_id:String,pub turn_id:String,pub diff:String}
+#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
+#[serde(tag="method",content="params")]
+pub enum AppServerPlanNotification {
+    #[serde(rename="account/providerAccounts/updated")]ProviderAccountsUpdated(ProviderAccountsUpdatedNotification),
+    #[serde(rename="account/providerAccounts/failover")]ProviderAccountFailover(ProviderAccountFailoverNotification),
+    #[serde(rename="thread/unarchived")]ThreadUnarchived(ThreadUnarchivedNotification),
+    #[serde(rename="thread/goal/updated")]ThreadGoalUpdated(ThreadGoalUpdatedNotification),
+    #[serde(rename="thread/goal/cleared")]ThreadGoalCleared(ThreadGoalClearedNotification),
+    #[serde(rename="thread/settings/updated")]ThreadSettingsUpdated(ThreadSettingsUpdatedNotification),
+    #[serde(rename="turn/diff/updated")]TurnDiffUpdated(TurnDiffUpdatedNotification),
+    #[serde(rename="fuzzyFileSearch/sessionUpdated")]FuzzyFileSearchSessionUpdated(FuzzyFileSearchSessionUpdatedNotification),
+    #[serde(rename="fuzzyFileSearch/sessionCompleted")]FuzzyFileSearchSessionCompleted(FuzzyFileSearchSessionCompletedNotification),
+}
+#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
+#[serde(tag="method",content="params")]
+pub enum ErrorServerNotification {#[serde(rename="error")]Error(ErrorNotification)}
+#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
+#[serde(untagged)]
+pub enum TypedServerNotification {Plan(Box<AppServerPlanNotification>),Error(ErrorServerNotification)}
+#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
+pub struct UntypedServerNotification {pub method:UntypedServerNotificationMethod,#[serde(default,skip_serializing_if="Option::is_none")]pub params:Option<JsonValue>}
+#[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
+pub enum UntypedServerNotificationMethod {
+    #[serde(rename="account/login/completed")]AccountLoginCompleted,
+    #[serde(rename="account/rateLimits/updated")]AccountRateLimitsUpdated,
+    #[serde(rename="account/updated")]AccountUpdated,
+    #[serde(rename="app/list/updated")]AppListUpdated,
+    #[serde(rename="command/exec/outputDelta")]CommandExecOutputDelta,
+    #[serde(rename="configWarning")]ConfigWarning,
+    #[serde(rename="deprecationNotice")]DeprecationNotice,
+    #[serde(rename="externalAgentConfig/import/completed")]ExternalAgentConfigImportCompleted,
+    #[serde(rename="externalAgentConfig/import/progress")]ExternalAgentConfigImportProgress,
+    #[serde(rename="fs/changed")]FsChanged,
+    #[serde(rename="guardianWarning")]GuardianWarning,
+    #[serde(rename="hook/completed")]HookCompleted,
+    #[serde(rename="hook/started")]HookStarted,
+    #[serde(rename="item/agentMessage/delta")]ItemAgentMessageDelta,
+    #[serde(rename="item/autoApprovalReview/completed")]ItemAutoApprovalReviewCompleted,
+    #[serde(rename="item/autoApprovalReview/started")]ItemAutoApprovalReviewStarted,
+    #[serde(rename="item/commandExecution/outputDelta")]ItemCommandExecutionOutputDelta,
+    #[serde(rename="item/commandExecution/terminalInteraction")]ItemCommandExecutionTerminalInteraction,
+    #[serde(rename="item/completed")]ItemCompleted,
+    #[serde(rename="item/fileChange/outputDelta")]ItemFileChangeOutputDelta,
+    #[serde(rename="item/fileChange/patchUpdated")]ItemFileChangePatchUpdated,
+    #[serde(rename="item/mcpToolCall/progress")]ItemMcpToolCallProgress,
+    #[serde(rename="item/plan/delta")]ItemPlanDelta,
+    #[serde(rename="item/reasoning/summaryPartAdded")]ItemReasoningSummaryPartAdded,
+    #[serde(rename="item/reasoning/summaryTextDelta")]ItemReasoningSummaryTextDelta,
+    #[serde(rename="item/reasoning/textDelta")]ItemReasoningTextDelta,
+    #[serde(rename="item/started")]ItemStarted,
+    #[serde(rename="mcpServer/oauthLogin/completed")]McpServerOauthLoginCompleted,
+    #[serde(rename="mcpServer/startupStatus/updated")]McpServerStartupStatusUpdated,
+    #[serde(rename="model/rerouted")]ModelRerouted,
+    #[serde(rename="model/safetyBuffering/updated")]ModelSafetyBufferingUpdated,
+    #[serde(rename="model/verification")]ModelVerification,
+    #[serde(rename="process/exited")]ProcessExited,
+    #[serde(rename="process/outputDelta")]ProcessOutputDelta,
+    #[serde(rename="rawResponse/completed")]RawResponseCompleted,
+    #[serde(rename="rawResponseItem/completed")]RawResponseItemCompleted,
+    #[serde(rename="remoteControl/status/changed")]RemoteControlStatusChanged,
+    #[serde(rename="serverRequest/resolved")]ServerRequestResolved,
+    #[serde(rename="skills/changed")]SkillsChanged,
+    #[serde(rename="thread/archived")]ThreadArchived,
+    #[serde(rename="thread/closed")]ThreadClosed,
+    #[serde(rename="thread/compacted")]ThreadCompacted,
+    #[serde(rename="thread/deleted")]ThreadDeleted,
+    #[serde(rename="thread/environment/connected")]ThreadEnvironmentConnected,
+    #[serde(rename="thread/environment/disconnected")]ThreadEnvironmentDisconnected,
+    #[serde(rename="thread/name/updated")]ThreadNameUpdated,
+    #[serde(rename="thread/realtime/closed")]ThreadRealtimeClosed,
+    #[serde(rename="thread/realtime/error")]ThreadRealtimeError,
+    #[serde(rename="thread/realtime/itemAdded")]ThreadRealtimeItemAdded,
+    #[serde(rename="thread/realtime/outputAudio/delta")]ThreadRealtimeOutputAudioDelta,
+    #[serde(rename="thread/realtime/sdp")]ThreadRealtimeSdp,
+    #[serde(rename="thread/realtime/started")]ThreadRealtimeStarted,
+    #[serde(rename="thread/realtime/transcript/delta")]ThreadRealtimeTranscriptDelta,
+    #[serde(rename="thread/realtime/transcript/done")]ThreadRealtimeTranscriptDone,
+    #[serde(rename="thread/started")]ThreadStarted,
+    #[serde(rename="thread/status/changed")]ThreadStatusChanged,
+    #[serde(rename="thread/tokenUsage/updated")]ThreadTokenUsageUpdated,
+    #[serde(rename="turn/completed")]TurnCompleted,
+    #[serde(rename="turn/moderationMetadata")]TurnModerationMetadata,
+    #[serde(rename="turn/plan/updated")]TurnPlanUpdated,
+    #[serde(rename="turn/started")]TurnStarted,
+    #[serde(rename="warning")]Warning,
+    #[serde(rename="windows/worldWritableWarning")]WindowsWorldWritableWarning,
+    #[serde(rename="windowsSandbox/setupCompleted")]WindowsSandboxSetupCompleted,
+}
+#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
+#[serde(untagged)]
+pub enum ServerNotification {Typed(TypedServerNotification),Untyped(UntypedServerNotification)}
+#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct ServerNotificationEnvelope {#[serde(flatten)]pub notification:ServerNotification,#[serde(default,skip_serializing_if="Option::is_none")]pub emitted_at_ms:Option<f64>}
+#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct PopulatedServerNotificationEnvelope {#[serde(flatten)]pub notification:ServerNotification,pub emitted_at_ms:f64}
