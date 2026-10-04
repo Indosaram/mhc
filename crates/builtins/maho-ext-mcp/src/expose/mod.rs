@@ -7,3 +7,4 @@ pub mod register;
 pub mod proxy;
 pub mod session;
 pub mod tier_b;
+pub mod native_search;

@@ -25,7 +25,7 @@ pub fn build_mcp_tool_definitions(entries:&[McpToolCatalogEntry],agent_dir:PathB
                 let params=if call.params.is_object(){call.params}else{json!({})};
                 let operation=||async {
                 if let Some(ensure_fresh)=&entry.ensure_fresh && let Err(error)=ensure_fresh().await {
-                    return Err(entry.runtime.as_ref().and_then(|runtime|crate::health::mark_mcp_connection_needs_auth(&runtime.connection,&error)).unwrap_or(error));
+                    return Err(entry.runtime.as_ref().map(|runtime|&runtime.connection).or(entry.connection.as_ref()).and_then(|connection|crate::health::mark_mcp_connection_needs_auth(connection,&error)).unwrap_or(error));
                 }
                 let client=if let Some(runtime)=&entry.runtime {
                     runtime.health.ensure_connection(&runtime.connection).await?;
@@ -33,10 +33,10 @@ pub fn build_mcp_tool_definitions(entries:&[McpToolCatalogEntry],agent_dir:PathB
                     runtime.connection.client()?
                 }else{
                     if let Some(ensure_connected)=&entry.ensure_connected {ensure_connected().await?;}
-                    entry.client.clone().ok_or_else(||crate::errors::McpError::new(crate::errors::McpErrorKind::Connect,"MCP catalog entry has no connection"))?
+                    match &entry.connection {Some(connection)=>connection.client()?,None=>entry.client.clone().ok_or_else(||crate::errors::McpError::new(crate::errors::McpErrorKind::Connect,"MCP catalog entry has no connection"))?}
                 };
                 let send=||async {
-                let client=if let Some(runtime)=&entry.runtime {runtime.connection.client()?}else{client.clone()};
+                let client=if let Some(runtime)=&entry.runtime {runtime.connection.client()?}else if let Some(connection)=&entry.connection {connection.client()?}else{client.clone()};
                 let token=format!("native:{}:{}:{}:{}",entry.server,entry.tool,call.id,NEXT_PROGRESS_TOKEN.fetch_add(1,Ordering::Relaxed));
                 let mut notifications=client.notifications.subscribe();
                 let mut notifications_open=true;

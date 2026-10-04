@@ -14,6 +14,7 @@ sha1 = "=0.10.6"
 regex = "=1.12.3"
 tokio = { version = "=1.52.3", features = ["full", "test-util"] }
 maho-ext-api = { path = "../../maho-ext-api" }
+maho-ext-tool-search = { path = "../maho-ext-tool-search" }
 maho-core = { path = "../../maho-core" }
 serde_path_to_error = "=0.1.20"
 tempfile = "=3.27.0"
@@ -34,6 +35,7 @@ reqwest = { workspace = true, features = ["rustls-tls"] }
 maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
 maho-ext-host = { path = "../../maho-ext-host" }
 maho-ai = { path = "../../maho-ai" }
+maho-agent = { path = "../../maho-agent" }
 
 [lints]
 workspace = true

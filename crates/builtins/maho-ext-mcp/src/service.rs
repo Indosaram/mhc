@@ -9,10 +9,33 @@ pub enum McpServiceError {
     #[error(transparent)] Connection(#[from] crate::errors::McpError),
     #[error(transparent)] OAuth(#[from] crate::auth::oauth::OAuthRequestError),
     #[error(transparent)] Artifact(#[from] std::io::Error),
+    #[error(transparent)] Extension(#[from] maho_ext_api::ExtensionFailure),
 }
-pub struct McpService {pub registry:Arc<HostMcpRegistry>,pub config:Option<ResolvedMcpConfig>,pub connections:BTreeMap<String,McpSessionConnection>,owner:u64,agent_dir:Option<PathBuf>,session_cwd:Option<PathBuf>,session_env:BTreeMap<String,String>,deferred:crate::startup_race::McpDeferredAttach,pending_auth:BTreeMap<String,crate::auth::oauth_provider::McpOAuthProvider>,elicitation_ui:Option<Arc<dyn maho_ext_api::ExtensionUi>>,output_artifacts:Arc<crate::guard::output_guard::McpOutputArtifacts>}
+/// Native equivalent of upstream's MCP-owned `nativeToolSearch` gate. The resolved
+/// `settings.nativeToolSearch` lives behind the service's async mutex, but the shared
+/// tool-search adapter asks for it synchronously (`isMcpNativeToolSearchEnabled`), so
+/// every resolved config publishes the setting into this shared atomic. The host takes
+/// the handle off the service and binds it into the tool-search adapter it owns
+/// (upstream `installMcpNativeToolSearchGate`).
+#[derive(Clone,Debug,Default)]
+pub struct McpNativeToolSearchGate {state:Arc<std::sync::atomic::AtomicU8>}
+impl McpNativeToolSearchGate {
+    const UNSET:u8=0;
+    const DISABLED:u8=1;
+    const AUTO:u8=2;
+    const ENABLED:u8=3;
+    /// Publish the resolved `settings.nativeToolSearch` (`auto | true | false | undefined`).
+    pub fn publish(&self,setting:Option<&crate::config_schema::NativeToolSearch>) {
+        use crate::config_schema::NativeToolSearch;
+        let state=match setting {None=>Self::UNSET,Some(NativeToolSearch::Enabled(false))=>Self::DISABLED,Some(NativeToolSearch::Enabled(true))=>Self::ENABLED,Some(NativeToolSearch::Auto(_))=>Self::AUTO};
+        self.state.store(state,std::sync::atomic::Ordering::SeqCst);
+    }
+    /// Upstream `isMcpNativeToolSearchEnabled`: `setting === true || setting === "auto"`.
+    pub fn enabled(&self)->bool {matches!(self.state.load(std::sync::atomic::Ordering::SeqCst),Self::AUTO|Self::ENABLED)}
+}
+pub struct McpService {pub registry:Arc<HostMcpRegistry>,pub config:Option<ResolvedMcpConfig>,pub connections:BTreeMap<String,McpSessionConnection>,owner:u64,agent_dir:Option<PathBuf>,session_cwd:Option<PathBuf>,session_env:BTreeMap<String,String>,deferred:crate::startup_race::McpDeferredAttach,pending_auth:BTreeMap<String,crate::auth::oauth_provider::McpOAuthProvider>,elicitation_ui:Option<Arc<dyn maho_ext_api::ExtensionUi>>,output_artifacts:Arc<crate::guard::output_guard::McpOutputArtifacts>,registration:Option<crate::expose::session::McpSessionRegistration>,tier_b_registry:crate::expose::tier_b::McpTierBRegistry,native_tool_search_gate:McpNativeToolSearchGate}
 impl McpService {
-    pub fn new(registry:Arc<HostMcpRegistry>,owner:u64)->Self {Self {registry,config:None,connections:BTreeMap::new(),owner,agent_dir:None,session_cwd:None,session_env:BTreeMap::new(),deferred:Default::default(),pending_auth:BTreeMap::new(),elicitation_ui:None,output_artifacts:Arc::new(Default::default())}}
+    pub fn new(registry:Arc<HostMcpRegistry>,owner:u64)->Self {Self {registry,config:None,connections:BTreeMap::new(),owner,agent_dir:None,session_cwd:None,session_env:BTreeMap::new(),deferred:Default::default(),pending_auth:BTreeMap::new(),elicitation_ui:None,output_artifacts:Arc::new(Default::default()),registration:None,tier_b_registry:Default::default(),native_tool_search_gate:McpNativeToolSearchGate::default()}}
     pub fn set_elicitation_ui(&mut self,ui:Option<Arc<dyn maho_ext_api::ExtensionUi>>){self.elicitation_ui=ui;}
     pub async fn attach_session(&mut self,cwd:&Path,agent_dir:&Path,env:&BTreeMap<String,String>,project_trusted:bool,declarations:&[maho_ext_api::RegisteredMcpServerDeclaration])->Result<(),McpServiceError> {
         let mut config=load_mcp_config(LoadMcpConfigOptions {cwd,agent_dir,env,project_trusted})?;
@@ -53,7 +76,9 @@ impl McpService {
             }
             self.connections.insert(name.clone(),connection);
         }
-        self.agent_dir=Some(agent_dir.into());self.session_cwd=Some(cwd.into());self.session_env=env.clone();self.config=Some(config);Ok(())
+        self.agent_dir=Some(agent_dir.into());self.session_cwd=Some(cwd.into());self.session_env=env.clone();self.config=Some(config);
+        self.native_tool_search_gate.publish(self.config.as_ref().and_then(|config|config.settings.native_tool_search.as_ref()));
+        Ok(())
     }
     pub async fn attach_skill_mcp_servers(&mut self,declared:&crate::skills::SkillMcpDeclarations)->Result<Vec<String>,McpServiceError> {
         let (Some(mut config),Some(cwd),Some(agent_dir))=(self.config.clone(),self.session_cwd.clone(),self.agent_dir.clone()) else{return Ok(Vec::new());};
@@ -71,6 +96,27 @@ impl McpService {
         if changed {let env=self.session_env.clone();self.sync_from_config(config,&cwd,&agent_dir,&env).await?;}
         Ok(warnings)
     }
+    pub async fn register_session_tools(&mut self,registrar:Arc<dyn crate::tool_registrar::McpToolRegistrar>,tool_search:Option<&mut maho_ext_tool_search::service::ToolSearchService>)->Result<(),McpServiceError> {
+        let Some(config)=self.config.clone() else {return Ok(());};
+        let entries=self.connections.values().map(|connection|connection.entry.clone()).collect::<Vec<_>>();
+        let refresh_active_set_when_empty=!self.tier_b_registry.managed_names.is_empty();
+        self.registration=crate::service_register::register_mcp_service_direct_tools(registrar,&config,&entries,tool_search,&mut self.tier_b_registry,refresh_active_set_when_empty).await?;
+        if let Some(registration)=&self.registration {
+            for error in &registration.wiring_errors {self.report_registration_error(error);}
+        }
+        Ok(())
+    }
+    fn report_registration_error(&self,message:&str) {
+        if let Some(agent_dir)=&self.agent_dir && let Ok(mut logger)=crate::log::McpLogger::new("service",agent_dir,None) {let _=logger.log("error",message,None,None);}
+        eprintln!("MCP registration: {message}");
+    }
+    pub fn registration(&self)->Option<&crate::expose::session::McpSessionRegistration> {self.registration.as_ref()}
+    /// Resolved `settings.nativeToolSearch` (`auto | true | false | undefined`), the port of
+    /// upstream `getNativeToolSearchSetting`.
+    pub fn native_tool_search_setting(&self)->Option<crate::config_schema::NativeToolSearch> {self.config.as_ref().and_then(|config|config.settings.native_tool_search.clone())}
+    /// Shared gate handle the host binds into the shared tool-search adapter. Cloning keeps
+    /// every holder observing later session attachments, exactly like the upstream module gate.
+    pub fn native_tool_search_gate(&self)->McpNativeToolSearchGate {self.native_tool_search_gate.clone()}
     pub async fn connect_server(&self,name:&str)->Result<(),McpServiceError> {
         if !self.connections.contains_key(name){return Err(crate::errors::McpError::new(crate::errors::McpErrorKind::Connect,format!("Unknown MCP server: {name}")).into());}
         if let (Some(connection),Some(config))=(self.connections.get(name),self.config.as_ref().and_then(|config|config.servers.get(name)).and_then(|server|server.config.as_ref())) {
@@ -164,6 +210,6 @@ impl McpService {
             dispose_entry_connection(connection,&self.registry,self.owner).await?;
         }
         self.output_artifacts.cleanup()?;
-        self.config=None;self.agent_dir=None;self.session_cwd=None;self.session_env.clear();self.deferred.clear();self.pending_auth.clear();Ok(())
+        self.config=None;self.agent_dir=None;self.session_cwd=None;self.session_env.clear();self.deferred.clear();self.pending_auth.clear();self.registration=None;self.tier_b_registry=Default::default();self.native_tool_search_gate.publish(None);Ok(())
     }
 }

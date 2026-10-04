@@ -6,6 +6,7 @@ pub struct McpToolCatalogEntry {
     pub server:String,pub tool:String,pub schema:Value,pub description:Option<String>,pub annotations:Option<Value>,
     pub request_timeout:Duration,pub client:Option<Arc<McpClient>>,
     pub runtime:Option<Arc<McpCatalogRuntime>>,
+    pub connection:Option<Arc<crate::connection::ServerConnection>>,
     pub ensure_connected:Option<McpCatalogCallback>,pub ensure_fresh:Option<McpCatalogCallback>,
     pub agent_dir:Option<std::path::PathBuf>,pub artifacts:Option<Arc<crate::guard::output_guard::McpOutputArtifacts>>,
     pub output_guard:Option<crate::config_schema::OutputGuardSettings>,
@@ -29,8 +30,8 @@ pub async fn collect_tool_catalog(server:&str,client:Arc<McpClient>,timeout:Dura
     Ok(cached_tools_to_catalog_entries(server,&listed.items,client,timeout))
 }
 pub fn cached_tools_to_catalog_entries(server:&str,tools:&[Value],client:Arc<McpClient>,timeout:Duration)->Vec<McpToolCatalogEntry> {
-    tools.iter().map(|tool|McpToolCatalogEntry {server:server.into(),tool:tool.get("name").and_then(Value::as_str).unwrap_or("").into(),schema:tool.get("inputSchema").cloned().unwrap_or(Value::Null),description:tool.get("description").and_then(Value::as_str).map(str::to_owned),annotations:tool.get("annotations").cloned(),request_timeout:timeout,client:Some(client.clone()),runtime:None,ensure_connected:None,ensure_fresh:None,agent_dir:None,artifacts:None,output_guard:None}).collect()
+    tools.iter().map(|tool|McpToolCatalogEntry {server:server.into(),tool:tool.get("name").and_then(Value::as_str).unwrap_or("").into(),schema:tool.get("inputSchema").cloned().unwrap_or(Value::Null),description:tool.get("description").and_then(Value::as_str).map(str::to_owned),annotations:tool.get("annotations").cloned(),request_timeout:timeout,client:Some(client.clone()),runtime:None,connection:None,ensure_connected:None,ensure_fresh:None,agent_dir:None,artifacts:None,output_guard:None}).collect()
 }
 pub fn cached_mcp_catalog_entries(server:&str,catalog:&crate::catalog_cache::McpCachedServerCatalog,runtime:Arc<McpCatalogRuntime>,timeout:Duration,ensure_connected:McpCatalogCallback)->Vec<McpToolCatalogEntry> {
-    catalog.tools.iter().map(|tool|McpToolCatalogEntry {server:server.into(),tool:tool.get("name").and_then(Value::as_str).unwrap_or("").into(),schema:tool.get("inputSchema").cloned().unwrap_or(Value::Null),description:tool.get("description").and_then(Value::as_str).map(str::to_owned),annotations:tool.get("annotations").cloned(),request_timeout:timeout,client:None,runtime:Some(runtime.clone()),ensure_connected:Some(ensure_connected.clone()),ensure_fresh:None,agent_dir:None,artifacts:None,output_guard:None}).collect()
+    catalog.tools.iter().map(|tool|McpToolCatalogEntry {server:server.into(),tool:tool.get("name").and_then(Value::as_str).unwrap_or("").into(),schema:tool.get("inputSchema").cloned().unwrap_or(Value::Null),description:tool.get("description").and_then(Value::as_str).map(str::to_owned),annotations:tool.get("annotations").cloned(),request_timeout:timeout,client:None,runtime:Some(runtime.clone()),connection:None,ensure_connected:Some(ensure_connected.clone()),ensure_fresh:None,agent_dir:None,artifacts:None,output_guard:None}).collect()
 }
