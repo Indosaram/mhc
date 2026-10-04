@@ -2,9 +2,8 @@
 //!
 //! The lane, harness, and model registry stay in the worker; each presentation gets its own
 //! `lane.watch()`, whose snapshot and event stream the harness pairs with no gap and no duplicate.
-//! `HarnessLane` is a read-only adapter that lets `maho_agent::harness::runtime::transcript::watch_lane`
-//! read the real harness `Lane` (contract S1 in `.omo/evidence/residual-source/task-9-contracts.md`);
-//! it is removed when maho-agent implements `RuntimeLane for Lane`.
+//! The real harness `Lane` implements `RuntimeLane` (maho-agent, contract S1), so it is passed
+directly to `transcript::watch_lane`.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -14,38 +13,12 @@ use maho_agent::harness::context::Context;
 use maho_agent::harness::events::{BufferedEventWatcher, HarnessEvent};
 use maho_agent::harness::runtime::lane::{AdmissionError, Lane, OperationAdmission, PromptInput, QueuedInput};
 use maho_agent::harness::runtime::transcript::watch_lane;
-use maho_agent::harness::runtime::types::{LaneState, RuntimeLane};
+use maho_agent::harness::runtime::types::RuntimeLane;
 use maho_agent::harness::session::session::SessionError;
-use maho_agent::harness::session::types::{LaneModelRef, RunSettings, Session};
+use maho_agent::harness::session::types::{LaneModelRef, RunSettings};
 
 use super::runtime::ModelRuntimeHandle;
 use super::shared::protocol::{CommandResult, LaneSubscription, ModelRef, ModelsState, SessionSnapshot};
-
-pub struct HarnessLane(Arc<Lane>);
-
-impl HarnessLane {
-    pub fn new(lane: Arc<Lane>) -> Self {
-        Self(lane)
-    }
-}
-
-impl RuntimeLane for HarnessLane {
-    fn name(&self) -> &str {
-        &self.0.name
-    }
-    fn session(&self) -> &dyn Session {
-        self.0.session.as_ref()
-    }
-    fn state(&self) -> LaneState {
-        self.0.state()
-    }
-    fn publish_state(&self, _state: LaneState) {
-        // Read-only watch adapter: the harness Lane owns its state and drive never runs through here.
-    }
-    fn emit<'a>(&'a self, events: Vec<HarnessEvent>, context: &'a Context) -> maho_ai::types::BoxFuture<'a, ()> {
-        self.0.events.begin_emit_batch(events, context.clone())
-    }
-}
 
 pub struct SessionIdentity {
     pub id: String,
@@ -79,8 +52,8 @@ impl LaneService {
     }
 
     pub async fn watch(&self, presentation_id: &str) -> Result<LaneSubscription, String> {
-        let adapter: Arc<dyn RuntimeLane> = Arc::new(HarnessLane::new(self.options.lane.clone()));
-        let watcher = watch_lane(adapter, self.options.lane.events.clone(), &self.options.context, false)
+        let lane: Arc<dyn RuntimeLane> = self.options.lane.clone();
+        let watcher = watch_lane(lane, self.options.lane.events.clone(), &self.options.context, false)
             .await
             .map_err(|error| error.message)?;
         let snapshot = match watcher.snapshot() {

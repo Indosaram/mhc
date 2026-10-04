@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use maho_agent::harness::context::BACKGROUND_CONTEXT;
-use maho_agent::harness::runtime::harness::create_agent_harness;
-use maho_agent::harness::runtime::lane::Lane;
+use maho_agent::harness::runtime::harness::{create_agent_harness, Harness};
+use maho_agent::harness::runtime::lane::{Lane, PromptInput};
 use maho_agent::harness::session::types::{LaneConfiguration, LaneModelRef, RunSettings, Session, SessionMetadata, ToolExecutionMode};
 use maho_agent::harness::session::{MemoryStorage, MemoryStorageOptions, StorageBackedSession, StorageBackedSessionOptions};
 use maho_cli::experimental::mini::lane_service::{LaneService, LaneServiceOptions, SessionIdentity};
@@ -99,11 +99,47 @@ async fn abort_without_an_operation_reports_it() {
 fn wire_event_folds_through_the_shared_reducer() {
     use maho_agent::harness::events::{HarnessEvent, HarnessEventPayload};
     use maho_agent::harness::runtime::reducer::reduce_lane_snapshot;
-    use maho_cli::experimental::mini::shared::wire::harness_event_value;
     let event = HarnessEvent::new(HarnessEventPayload::RunStart { run_id: "op".into(), started_at: 7 }, Some("main".into()));
     let mut snapshot = serde_json::json!({"lane":"main","tipId":null,"operation":null,"transcript":[],"queues":[],"stats":{"messageCount":0}});
-    assert_eq!(reduce_lane_snapshot(&mut snapshot, &harness_event_value(&event)), None);
+    assert_eq!(reduce_lane_snapshot(&mut snapshot, &serde_json::Value::from(&event)), None);
     assert_eq!(snapshot["operation"]["id"], "op");
     assert_eq!(snapshot["operation"]["kind"], "run");
     assert_eq!(snapshot["operation"]["startedAt"], 7);
+}
+
+async fn harness_fixture() -> (Harness, Arc<Lane>) {
+    let session = Arc::new(StorageBackedSession::new(
+        SessionMetadata { id: "mini-open".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None },
+        Arc::new(MemoryStorage::new(MemoryStorageOptions { now: Some(Arc::new(|| 42)) })),
+        StorageBackedSessionOptions::default(),
+    ));
+    session.attach();
+    let session: Arc<dyn Session> = session;
+    let harness = create_agent_harness(
+        session,
+        LaneConfiguration { model: LaneModelRef { provider: "test".into(), model_id: "model".into() }, thinking_level: maho_ai::types::ModelThinkingLevel::Off, active_tool_names: vec![] },
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .expect("harness");
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.expect("lane");
+    (harness, lane)
+}
+
+#[tokio::test]
+async fn open_operations_reports_an_admitted_operation() {
+    let (harness, lane) = harness_fixture().await;
+    assert!(harness.open_operations().expect("open").is_empty());
+    let settings = RunSettings {
+        compaction: harness.get_compaction_settings().expect("compaction"),
+        steering_mode: harness.get_steering_mode().expect("steering"),
+        follow_up_mode: harness.get_follow_up_mode().expect("follow up"),
+        tool_execution: ToolExecutionMode::Parallel,
+    };
+    lane.accept_prompt(PromptInput::Text { text: "hello".into(), images: vec![] }, Some("op".into()), settings, &BACKGROUND_CONTEXT).await.expect("admit").expect("admission");
+    let open = harness.open_operations().expect("open");
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].operation_id, "op");
+    assert_eq!(open[0].lane, "main");
+    assert!(!open[0].aborting);
 }

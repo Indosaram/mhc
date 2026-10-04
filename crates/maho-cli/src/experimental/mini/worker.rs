@@ -25,7 +25,6 @@ use super::models_service::ModelsService;
 use super::runtime::ModelRuntimeHandle;
 use super::shared::protocol::{LaneEvent, ModelRef, ModelsEvent, WorkerDescription, LANE, MODELS, WORKER};
 use super::shared::rpc::{create_peer, Handler, PeerOptions};
-use super::shared::wire::harness_event_value;
 
 const TOOL_NAMES: [&str; 4] = ["read", "write", "edit", "bash"];
 
@@ -293,7 +292,7 @@ pub async fn run_session_worker(options: SessionWorkerOptions) -> Result<(), Str
     let publish_lane: Arc<dyn Fn(&str, &str, &maho_agent::harness::events::HarnessEvent) + Send + Sync> = {
         let peer = peer.clone();
         Arc::new(move |subscription_id: &str, to: &str, event: &maho_agent::harness::events::HarnessEvent| {
-            let payload = LaneEvent { subscription_id: subscription_id.to_owned(), event: harness_event_value(event) };
+            let payload = LaneEvent { subscription_id: subscription_id.to_owned(), event: serde_json::Value::from(event) };
             peer.emit_to(LANE, serde_json::to_value(payload).unwrap_or(Value::Null), to);
         })
     };
