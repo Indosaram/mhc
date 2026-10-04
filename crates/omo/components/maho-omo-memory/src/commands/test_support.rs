@@ -20,7 +20,7 @@ use maho_ext_api::{
 };
 use memory_core::{
     git::{
-        GitError, GitHookInstaller, GitMemoryRepo, GitMemoryRepoOptions, GitSeedFile,
+        GitError, GitExec, GitHookInstaller, GitMemoryRepo, GitMemoryRepoOptions, GitSeedFile,
         InitializeGitRepoOptions,
     },
     identity::layout::build_identity_paths,
@@ -343,6 +343,7 @@ pub struct FakeDepsOverrides {
     pub facts_sink: Option<bool>,
     pub people_ask: Option<bool>,
     pub now_ms: Option<i64>,
+    pub exec: Option<Arc<dyn GitExec>>,
 }
 
 impl Default for FakeDepsOverrides {
@@ -358,6 +359,7 @@ impl Default for FakeDepsOverrides {
             facts_sink: None,
             people_ask: None,
             now_ms: None,
+            exec: None,
         }
     }
 }
@@ -499,7 +501,7 @@ pub fn fake_deps(
         reflect,
         dream,
         facts_retry,
-        exec: None,
+        exec: overrides.exec.clone(),
         env: Some(BTreeMap::new()),
         people_ask,
         now: Some(now),

@@ -438,6 +438,44 @@ mod tests {
         );
     }
 
+    struct FailingLsTreeExec;
+
+    impl memory_core::git::GitExec for FailingLsTreeExec {
+        fn run(
+            &self,
+            argv: &[String],
+            options: &memory_core::git::GitExecOptions,
+        ) -> std::io::Result<memory_core::git::GitExecResult> {
+            if argv.first().map(String::as_str) == Some("ls-tree") {
+                return Ok(memory_core::git::GitExecResult {
+                    code: 128,
+                    stdout: String::new(),
+                    stderr: "fatal: not a git repository".to_owned(),
+                });
+            }
+            memory_core::git::system_git_exec().run(argv, options)
+        }
+    }
+
+    #[tokio::test]
+    async fn given_a_real_repo_with_a_failing_ls_tree_when_people_runs_then_it_reports_an_error_and_no_roster() {
+        let (_root, identity) = people_fixture(0);
+        let fake = fake_deps(
+            Some(identity),
+            FakeDepsOverrides {
+                exec: Some(Arc::new(FailingLsTreeExec)),
+                ..Default::default()
+            },
+        );
+        let context = fake_command_context(FakeContextOptions::default());
+
+        let response = handle_people(&fake.deps, &context.ctx, "").await;
+
+        assert_eq!(context.ui.last_level(), Some(NotifyLevel::Error));
+        assert!(!response.text.contains("# People"));
+        assert!(!response.text.is_empty());
+    }
+
     #[tokio::test]
     async fn given_an_unknown_name_when_people_runs_then_the_miss_preserves_close_slugs_and_errors() {
         let (_root, identity) = people_fixture(0);
