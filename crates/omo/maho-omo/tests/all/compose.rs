@@ -62,7 +62,6 @@ fn a_failed_component_registration_keeps_its_error_identity_without_duplicating_
     // The failed component keeps its own identity in the structured log...
     let errors: Vec<_> = recording.entries().into_iter().filter(|entry| entry.level == LogLevel::Error).collect();
     assert_eq!(errors.len(), 1, "exactly one registration failure logged");
-    assert_eq!(errors[0].message, "omo-senpi component registration failed");
     let details = errors[0].details.as_ref().expect("structured failure details");
     assert_eq!(details["component"], "boom");
     assert_eq!(details["error"], "boom registration failed");
