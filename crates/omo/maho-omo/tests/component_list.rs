@@ -14,7 +14,7 @@ fn options() -> OmoComponentOptions {
 
 fn slot(name: &'static str) -> OmoSenpiComponent {
     OmoSenpiComponent::new(name, Box::new(FakeComponent::new(move |api| {
-        api.register_command(name, Some("slot".to_owned()), None, std::sync::Arc::new(|_, _| Box::pin(async {})));
+        api.register_command(name, Some("slot".to_owned()), None, std::sync::Arc::new(|_, _| Box::pin(async { Ok(()) })));
     })))
 }
 

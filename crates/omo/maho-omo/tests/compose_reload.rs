@@ -21,7 +21,7 @@ fn a_factory_slot_registers_again_on_a_second_register() {
     let slot = OmoSenpiComponent::from_factory("memory", move || {
         counter.fetch_add(1, Ordering::SeqCst);
         Box::new(FakeComponent::new(|api: &mut ExtensionApi| {
-            api.register_command("memory_slot", Some("slot".to_owned()), None, Arc::new(|_, _| Box::pin(async {})));
+            api.register_command("memory_slot", Some("slot".to_owned()), None, Arc::new(|_, _| Box::pin(async { Ok(()) })));
         }))
     });
     let extension = OmoExtension::with_options(vec![slot], options(), Default::default());
@@ -41,7 +41,7 @@ fn a_plain_extension_slot_registers_again_on_a_second_register() {
     let slot = OmoSenpiComponent::new(
         "alpha",
         Box::new(FakeComponent::new(|api: &mut ExtensionApi| {
-            api.register_command("alpha", Some("alpha".to_owned()), None, Arc::new(|_, _| Box::pin(async {})));
+            api.register_command("alpha", Some("alpha".to_owned()), None, Arc::new(|_, _| Box::pin(async { Ok(()) })));
         })),
     );
     let extension = OmoExtension::with_options(vec![slot], options(), Default::default());

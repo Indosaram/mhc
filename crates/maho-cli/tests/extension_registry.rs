@@ -81,7 +81,7 @@ fn loop_guard_registers_the_pinned_notice_renderer() {
         .iter()
         .find(|extension| extension.identity.path == "<builtin:loop-guard>")
         .expect("loop-guard loaded");
-    assert!(loop_guard.message_renderers.contains_key(maho_ext_loop_guard::index::LOOP_GUARD_NOTICE_CUSTOM_TYPE));
+    assert!(loop_guard.message_renderers.contains_key(maho_ext_loop_guard::notice::LOOP_GUARD_NOTICE_CUSTOM_TYPE));
 }
 
 #[test]
