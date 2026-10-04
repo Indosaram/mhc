@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, fmt, future::Future, path::{Path, PathBuf}, pin
 pub use maho_agent::types::{AgentEvent, AgentMessage};
 pub use maho_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
 pub use maho_tools::tool_definition_wrapper::wrap_tool_definition;
-pub use maho_ai::{model::Model, types::{JsonValue, ThinkingLevel, Usage, ImageContent}};
+pub use maho_ai::{model::Model, types::{JsonValue, ModelThinkingLevel, ThinkingLevel, Usage, ImageContent}};
 pub use maho_ai::types::{Message, UserMessage, UserContent, AssistantMessage, ContentBlock};
 pub use maho_tools::{ToolContext, ToolDefinition, FilesystemPolicy, FilesystemPolicyChecker, FilesystemPolicyDecision, FilesystemPolicyRequest};
 pub use maho_tools::definition::{AbortSignal, ToolContent, ToolResult, ToolSessionManager, ToolExposure, ToolExecutionMode, ToolError, ToolCall};
@@ -1263,6 +1263,22 @@ pub trait ExtensionSessionActions: Send + Sync {
     fn set_thinking_level(&self, level: ThinkingLevel) -> Result<(), ExtensionFailure>;
     fn set_session_model(&self, model: Model) -> ExtensionFuture<'_, bool>;
     fn set_session_thinking_level(&self, level: ThinkingLevel) -> Result<(), ExtensionFailure>;
+    /// Off-aware session level: the effective level INCLUDING `off`.
+    ///
+    /// `ThinkingLevel` (provider effort) cannot express `off`, so a host that must implement
+    /// `/reasoning off` reads and writes `ModelThinkingLevel` here instead of guessing
+    /// `Off -> Minimal`. Defaults fail explicitly so existing implementors stay source-compatible.
+    fn get_model_thinking_level(&self) -> Result<ModelThinkingLevel, ExtensionFailure> {
+        Err(ExtensionFailure::new("Model thinking level is not supported by this session"))
+    }
+    /// Set the session level and persist it as the model's durable thinking level.
+    fn set_model_thinking_level(&self, _level: ModelThinkingLevel) -> Result<(), ExtensionFailure> {
+        Err(ExtensionFailure::new("Model thinking level is not supported by this session"))
+    }
+    /// Set the session level only, leaving the durable model level untouched.
+    fn set_session_model_thinking_level(&self, _level: ModelThinkingLevel) -> Result<(), ExtensionFailure> {
+        Err(ExtensionFailure::new("Model thinking level is not supported by this session"))
+    }
     fn set_session_fast_mode(&self, enabled: bool) -> Result<(), ExtensionFailure>;
     fn exec<'a>(&'a self, command: &'a str, args: &'a [String], cwd: &'a Path, options: ExecOptions) -> ExtensionFuture<'a, ExecResult>;
 }
@@ -1965,6 +1981,9 @@ impl ExtensionApi {
         Ok(result)
     }
     pub fn set_session_thinking_level(&self, level: ThinkingLevel) -> Result<(), ExtensionFailure> { self.runtime.session_actions()?.set_session_thinking_level(level) }
+    pub fn get_model_thinking_level(&self) -> Result<ModelThinkingLevel, ExtensionFailure> { self.runtime.session_actions()?.get_model_thinking_level() }
+    pub fn set_model_thinking_level(&self, level: ModelThinkingLevel) -> Result<(), ExtensionFailure> { self.runtime.session_actions()?.set_model_thinking_level(level) }
+    pub fn set_session_model_thinking_level(&self, level: ModelThinkingLevel) -> Result<(), ExtensionFailure> { self.runtime.session_actions()?.set_session_model_thinking_level(level) }
     pub fn set_session_fast_mode(&self, enabled: bool) -> Result<(), ExtensionFailure> { self.runtime.session_actions()?.set_session_fast_mode(enabled) }
     pub async fn execute_tool(&self, name: &str, params: JsonValue, options: ExecuteToolOptions) -> Result<maho_agent::types::AgentToolResult, ExecuteToolError> {
         let actions = self.runtime.session_actions().map_err(|error| ExecuteToolError { code: ExecuteToolErrorCode::Blocked, tool_name: name.into(), message: error.message, active_tools: Vec::new() })?;

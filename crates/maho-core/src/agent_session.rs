@@ -1258,6 +1258,9 @@ impl maho_ext_api::ExtensionSessionActions for SessionExtensionActions {
         session.set_session_model(model).await.map(|_| true).map_err(maho_ext_api::ExtensionFailure::new)
     }) }
     fn set_session_thinking_level(&self, level: ThinkingLevel) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.set_session_thinking_level(extension_thinking_level(level)); Ok(()) }
+    fn get_model_thinking_level(&self) -> Result<ModelThinkingLevel, maho_ext_api::ExtensionFailure> { Ok(self.session()?.thinking_level()) }
+    fn set_model_thinking_level(&self, level: ModelThinkingLevel) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.set_thinking_level(level); Ok(()) }
+    fn set_session_model_thinking_level(&self, level: ModelThinkingLevel) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.set_session_thinking_level(level); Ok(()) }
     fn set_session_fast_mode(&self, enabled: bool) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.set_session_fast_mode(enabled); Ok(()) }
     fn exec<'a>(&'a self, command: &'a str, args: &'a [String], cwd: &'a std::path::Path, options: maho_ext_api::ExecOptions) -> maho_ext_api::ExtensionFuture<'a, maho_ext_api::ExecResult> {
         Box::pin(async move {
