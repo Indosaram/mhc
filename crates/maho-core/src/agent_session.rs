@@ -6840,6 +6840,63 @@ mod tests {
         test_session_with_stream_function(true)
     }
 
+    fn test_session_with_manager(manager: SessionManager) -> AgentSession {
+        let runtime = ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
+            providers: Some(Vec::new()),
+            ..Default::default()
+        });
+        AgentSession::new(AgentSessionConfig {
+            agent: stub_agent(),
+            session_manager: manager,
+            settings_manager: SettingsManager::from_storage(
+                Box::new(crate::settings_manager::InMemorySettingsStorage::default()),
+                false,
+            ),
+            cwd: "/tmp".to_owned(),
+            agent_dir: Some("/tmp/maho-agent".to_owned()),
+            fallback_now: None,
+            retry_random: None,
+            scoped_models: Vec::new(),
+            favorite_models: Vec::new(),
+            flag_values: BTreeMap::new(),
+            custom_tools: Vec::new(),
+            model_runtime: Some(runtime),
+            model_registry: None,
+            uses_default_stream_function: Some(true),
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: None,
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: None,
+            auto_title_sessions: None,
+        })
+        .expect("session")
+    }
+
+    #[test]
+    fn sdk_extension_context_binds_goal_store_file_to_the_encoded_session_directory_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path().to_str().expect("utf8 dir").to_owned();
+        let session = test_session_with_manager(SessionManager::create("/workspace", Some(&dir), None));
+        let id = session.session_id();
+        assert!(!id.is_empty(), "a created session has an id");
+        let context = session.extension_context(Arc::new(TestExtensionUi));
+        let expected = temp
+            .path()
+            .join("extensions/goal")
+            .join(format!("{}.json", crate::sdk::extension_context::encode_uri_component(&id)));
+        assert_eq!(context.goal_store_file.as_deref(), Some(expected.as_path()));
+    }
+
+    #[test]
+    fn sdk_extension_context_omits_the_goal_store_file_without_a_session_directory() {
+        let session = test_session();
+        let context = session.extension_context(Arc::new(TestExtensionUi));
+        assert_eq!(context.goal_store_file, None);
+    }
+
     fn test_session_with_stream_function(uses_default_stream_function: bool) -> AgentSession {
         let runtime = ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
             providers: Some(Vec::new()),
