@@ -68,7 +68,7 @@ impl FauxSession {
         use std::sync::Mutex;
         use maho_core::agent_session::PromptOptions;
 
-        let NativeSession { session, runner: _runner, provider: _provider, script: _script, calls: _calls, temp: _temp } =
+        let NativeSession { session, runner: _runner, provider: _provider, script: _script, calls: _calls, gate: _gate, temp: _temp } =
             self.boot_native().await?;
         let events = Arc::new(Mutex::new(Vec::new()));
         let captured = events.clone();
@@ -173,7 +173,7 @@ impl FauxSession {
         } else {
             bind_native_extensions(&session, extensions).await
         };
-        Ok(NativeSession { session, runner, provider, script, calls, temp })
+        Ok(NativeSession { session, runner, provider, script, calls, gate: Arc::new(Mutex::new(None)), temp })
     }
 }
 
@@ -252,6 +252,7 @@ pub struct NativeSession {
     provider: maho_ai::providers::faux::FauxProviderHandle,
     script: Vec<maho_ai::types::AssistantMessage>,
     calls: Arc<Mutex<Vec<ProviderCall>>>,
+    gate: Arc<Mutex<Option<ResponseGate>>>,
     temp: tempfile::TempDir,
 }
 
@@ -308,6 +309,11 @@ impl NativeSession {
     }
 
     /// Scripts the next provider response to wait until the returned gate is released.
+    ///
+    /// Contract: call while no prompt is in flight (before starting the gated turn) so the
+    /// not-yet-consumed count resolves the intended next response. Both task-14 btw cases hold the
+    /// gate while idle — the first before its main prompt, the second after the first prompt has
+    /// settled — so the contract holds for both.
     pub fn hold_next_response(&self) -> ResponseGate {
         let gate = ResponseGate::new();
         let consumed = self.script.len().saturating_sub(self.provider.get_pending_response_count());
@@ -316,7 +322,22 @@ impl NativeSession {
             .map(|(index, message)| recording_step(message.clone(), self.calls.clone(), (index == consumed).then(|| gate.clone())))
             .collect();
         self.provider.set_responses(steps);
+        *self.gate.lock().unwrap_or_else(PoisonError::into_inner) = Some(gate.clone());
         gate
+    }
+
+    /// Canonical teardown: releases any held response, aborts in-flight work, then emits
+    /// `session_shutdown` and disposes (mirroring `AgentSessionRuntime::dispose`, which a bare
+    /// `AgentSession::dispose` omits). Consumes the handle so the temp cwd drops only after the
+    /// session is torn down; call it before the handle goes out of scope so a spawned `prompt` task
+    /// cannot outlive the session or its temp dir.
+    pub async fn close(self) {
+        if let Some(gate) = self.gate.lock().unwrap_or_else(PoisonError::into_inner).take() {
+            gate.release();
+        }
+        self.session.abort().await;
+        self.session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;
+        self.session.dispose().await;
     }
 
     /// Every provider call the session made, in order (context + options).
