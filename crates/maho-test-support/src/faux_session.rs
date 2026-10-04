@@ -140,7 +140,12 @@ impl FauxSession {
             }
         }));
         session.prompt(&self.script.prompt, PromptOptions::default()).await?;
-        let messages = serde_json::to_value(session.messages())?;
+        // Flat projection (senpi's message shape): the agent's messages are serialized as the
+        // flat user/assistant/custom objects, not the `Llm`/`Custom` enum wrapper that
+        // `serde_json::to_value(Vec<AgentMessage>)` produces.
+        let messages = serde_json::Value::Array(session.messages().iter()
+            .map(maho_core::agent_session::session_message_to_value)
+            .collect::<Result<Vec<_>, _>>()?);
         let entries = session.with_session_manager(|manager| manager.entries());
         let events = events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         // Canonical teardown, mirroring AgentSessionRuntime::dispose: a bare AgentSession::dispose
