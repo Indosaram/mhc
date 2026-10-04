@@ -191,7 +191,10 @@ impl MonitorRegistry {
     #[cfg(unix)]
     pub fn stop_file(&mut self,id:&str)->bool {
         let Some((file,watch))=self.files.shift_remove(id) else {return false;};watch.abort();let snapshot=self.file_snapshots.lock().expect("file snapshots").shift_remove(id);
-        let event=file.lock().expect("file monitor").stop("watcher killed");self.publish_state();if let Some(event)=event {(self.emit)(event);}if let Some(snapshot)=snapshot {emit_ended(&self.ended,&snapshot,MonitorEndedReason::Killed,None,now_ms());}true
+        let event=file.lock().expect("file monitor").stop("watcher killed");self.publish_state();
+        if let Some(event)=event {(self.emit)(event);}
+        if let Some(snapshot)=snapshot {emit_ended(&self.ended,&snapshot,MonitorEndedReason::Killed,None,now_ms());}
+        true
     }
     pub fn file_checkpoint(&self,id:&str)->Option<crate::terminal_manifest_model::TerminalManifestCheckpoint> {
         let (file,_)=self.files.get(id)?;let file=file.lock().expect("file monitor");if file.settled {None} else {Some(file.checkpoint.clone())}

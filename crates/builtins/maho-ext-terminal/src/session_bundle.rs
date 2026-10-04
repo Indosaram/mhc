@@ -135,10 +135,13 @@ mod tests {
         bundle.park();
         bundle.monitors.lock().unwrap().register(&runtime,crate::monitor_registry::CommandMonitor::new(crate::monitor_registry::MonitorSnapshotEntry {id:"bash_1".to_owned(),description:"ready".to_owned(),started_at_ms:5.0,..Default::default()},None)).unwrap();
         let mut registry_state=bundle.monitors.lock().unwrap().subscribe_state();
-        tokio::time::timeout(std::time::Duration::from_secs(5),async {loop {if registry_state.borrow_and_update().is_empty() {break;}if registry_state.changed().await.is_err() {break;}}}).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5),async {loop {
+            if registry_state.borrow_and_update().is_empty() {break;}
+            if registry_state.changed().await.is_err() {break;}
+        }}).await.unwrap();
         let sinks=TerminalEventSinks {on_monitor_event:Arc::new(|_|{}),on_monitor_state:Arc::new(move |_,transition| {state_sender.send(transition).unwrap();}),on_monitor_ended:Arc::new(move |event| {ended_sender.send(event).unwrap();}),on_background_state:Arc::new(|_|{}),on_background_exit:Arc::new(|_,_|{})};
         bundle.bind_sinks(sinks);
         let event=ended.try_recv().expect("flushed ending");assert_eq!(event.id,"bash_1");assert_eq!((event.reason,event.exit_code),(crate::monitor_registry::MonitorEndedReason::Exit,Some(0)));assert!(event.fire_count>=1);assert!(states.try_recv().is_err());
-        bundle.publish_state(&bundle.monitors.lock().unwrap().snapshot(),false);assert_eq!(states.try_recv().unwrap(),false);bundle.teardown().unwrap();runtime.dispose().unwrap();
+        bundle.publish_state(&bundle.monitors.lock().unwrap().snapshot(),false);assert!(!states.try_recv().unwrap());bundle.teardown().unwrap();runtime.dispose().unwrap();
     }
 }
