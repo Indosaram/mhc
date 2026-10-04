@@ -2,12 +2,14 @@ use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 use maho_ext_api::Extension;
 
 #[tokio::test]
-async fn native_permission_factory_rejects_provider_tool_call_before_execution() {
+async fn native_permission_factory_enforces_provider_tool_admission() {
+    for allowed in [false, true] {
     let directory = tempfile::tempdir().expect("isolated SDK");
     let cwd = directory.path().to_string_lossy().into_owned();
     let agent_dir = directory.path().join("agent");
     std::fs::create_dir(&agent_dir).expect("agent directory");
-    std::fs::write(agent_dir.join("settings.json"), r#"{"permission":{"read":"ask"}}"#).expect("permission rules");
+    std::fs::write(agent_dir.join("settings.json"), serde_json::json!({"permission":{"read":if allowed { "allow" } else { "ask" }}}).to_string())
+        .expect("permission rules");
     let path = directory.path().join("fixture.txt").to_string_lossy().into_owned();
     let provider = maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
         tokens_per_second: Some(0.0), ..Default::default()
@@ -43,27 +45,33 @@ async fn native_permission_factory_rejects_provider_tool_call_before_execution()
                 serde_json::json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}),
                 Arc::new(move |_| {
                     executed.fetch_add(1, Ordering::SeqCst);
-                    Box::pin(async { Ok(maho_ext_api::ToolResult::text("unexpected execution")) })
+                    Box::pin(async { Ok(maho_ext_api::ToolResult::text("authorized execution")) })
                 })));
             Box::pin(async { Ok(()) })
         }),
     };
-    let session = maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
+    let session = tokio::time::timeout(std::time::Duration::from_secs(5),
+        maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
         cwd: Some(cwd.clone()), agent_dir: Some(agent_dir.to_string_lossy().into_owned()),
         model: Some(provider.get_model(Some("faux-1")).expect("model")), model_runtime: Some(runtime),
         session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
-        tools: Some(Vec::new()), extension_factories: vec![factory], ..Default::default()
-    }).await.expect("SDK session").session;
+        tools: Some(vec!["read".into()]), extension_factories: vec![factory], ..Default::default()
+    })).await.expect("bounded permission factory startup").expect("SDK session").session;
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("read fixture", Default::default())).await;
     let messages = session.messages();
     session.dispose().await;
     result.expect("bounded turn").expect("provider turn");
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
-    assert_eq!(admissions.lock().expect("admission").len(), 1);
-    assert_eq!(admissions.lock().expect("admission")[0]["permission"], "read");
+    assert_eq!(calls.load(Ordering::SeqCst), usize::from(allowed));
+    assert_eq!(admissions.lock().expect("admission").len(), usize::from(!allowed));
+    if !allowed { assert_eq!(admissions.lock().expect("admission")[0]["permission"], "read"); }
     let blocked = messages.iter().find_map(|message| match message {
         maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::ToolResult(result)) => Some(result), _ => None,
-    }).expect("actual blocked provider tool result");
-    assert!(blocked.is_error);
-    assert!(maho_ai::utils::text::content_text(&blocked.content, "").contains("Permission required"));
+    }).expect("actual provider tool result");
+    assert_eq!(blocked.is_error, !allowed);
+    if allowed {
+        assert_eq!(maho_ai::utils::text::content_text(&blocked.content, ""), "authorized execution");
+    } else {
+        assert!(maho_ai::utils::text::content_text(&blocked.content, "").contains("Permission required"));
+    }
+    }
 }

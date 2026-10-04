@@ -37,7 +37,10 @@ async fn native_recommended_startup_awaits_model_switch_and_preserves_handler_or
                 Box::pin(async { Ok(maho_ext_api::EventResult::None) })
             }));
             let started = captured.clone();
-            api.on(maho_ext_api::EventKind::SessionStart, Arc::new(move |_, ctx| {
+            api.on(maho_ext_api::EventKind::SessionStart, Arc::new(move |event, ctx| {
+                let maho_ext_api::ExtensionEvent::SessionStart(event) = event else { panic!("startup event"); };
+                assert_eq!(event.initial_model_provenance.as_deref(), Some("first-available"));
+                assert_eq!(event.previous_session_file.as_deref(), Some("fixture-origin.jsonl"));
                 started.lock().expect("order").push("startup-after-switch");
                 let id = ctx.model.as_ref().expect("live model").id.clone();
                 Box::pin(async move {
@@ -52,10 +55,11 @@ async fn native_recommended_startup_awaits_model_switch_and_preserves_handler_or
         maho_core::sdk::CreateAgentSessionOptions {
             cwd: Some(cwd.clone()), agent_dir: Some(agent_dir.to_string_lossy().into_owned()),
             model: Some(models[0].clone()), model_runtime: Some(runtime),
+            initial_model_provenance: Some("first-available".into()),
             session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
             session_start_event: Some(maho_ext_api::SessionStartEvent {
                 reason: maho_ext_api::SessionReason::Startup,
-                initial_model_provenance: Some("first-available".into()), previous_session_file: None,
+                initial_model_provenance: Some("explicit".into()), previous_session_file: Some("fixture-origin.jsonl".into()),
             }), extension_factories: vec![factory], tools: Some(Vec::new()), ..Default::default()
         })).await;
     let selected = if let Ok(Ok(created)) = &result {

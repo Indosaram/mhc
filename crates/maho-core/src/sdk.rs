@@ -157,6 +157,8 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     }
     let configured_defaults: Option<Vec<String>> = settings.get_value("defaultTools").and_then(serde_json::Value::as_array)
         .map(|names| names.iter().filter_map(serde_json::Value::as_str).map(str::to_owned).collect());
+    let default_tool_names = if options.tools.is_none() && options.no_tools.is_none() { configured_defaults.clone() } else { None };
+    let allowed_tool_names = options.tools.clone().or_else(|| (options.no_tools == Some(NoToolsMode::All)).then(Vec::new));
     let mut selected = options.tools.clone().unwrap_or_else(|| if options.no_tools.is_some() { Vec::new() }
         else { configured_defaults.clone().unwrap_or_else(|| vec!["read".to_owned(),"bash".to_owned(),"edit".to_owned(),"write".to_owned(),"grep".to_owned()]) });
     if options.tools.is_none() && options.no_tools != Some(NoToolsMode::All) {
@@ -187,13 +189,23 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         }) })),
         ..Default::default()
     });
+    let session_start_event = match options.initial_model_provenance.take() {
+        Some(provenance) => {
+            let mut event = options.session_start_event.take().unwrap_or(maho_ext_api::SessionStartEvent {
+                reason: maho_ext_api::SessionReason::Startup, initial_model_provenance: None, previous_session_file: None,
+            });
+            event.initial_model_provenance = Some(provenance);
+            Some(event)
+        }
+        None => options.session_start_event.take(),
+    };
     let session = crate::agent_session::AgentSession::new(crate::agent_session::AgentSessionConfig {
         agent, session_manager: manager, settings_manager: settings, cwd: cwd.clone(), agent_dir: Some(agent_dir.clone()),
         fallback_now: None, retry_random: None, scoped_models: options.scoped_models, favorite_models: options.favorite_models,
         flag_values: BTreeMap::new(), custom_tools: options.custom_tools, model_runtime: Some(runtime), model_registry: Some(registry),
         uses_default_stream_function: Some(true), initial_active_tool_names: Some(selected),
-        default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: options.exclude_tools,
-        base_tools_override: Some(base_tools.clone()), session_start_event: options.session_start_event,
+        default_tool_names, eval_only_tool_names: None, allowed_tool_names, excluded_tool_names: options.exclude_tools,
+        base_tools_override: Some(base_tools.clone()), session_start_event,
         auto_title_sessions: options.auto_title_sessions,
     }).map_err(|error| error.to_string())?;
     if options.minimal_resources {
@@ -314,6 +326,129 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sdk_records_initial_model_and_thinking_for_resume() {
+        let dir = tempfile::tempdir().expect("directory");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let created = create_agent_session(CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+            model: Some(test_model()), thinking_level: Some(ThinkingLevel::Low),
+            session_manager: Some(SessionManager::in_memory(&cwd, None, None)),
+            tools: Some(Vec::new()), ..Default::default()
+        }).await.expect("SDK session");
+        let context = created.session.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+        let entries = created.session.with_session_manager(|manager| manager.entries());
+        created.session.dispose().await;
+        assert_eq!(context.model, Some(("faux".to_owned(), "faux-1".to_owned())));
+        assert_eq!(context.thinking_level, "low");
+        assert_eq!(context.thinking_selection, Some(serde_json::json!({"level":"low","source":"explicit"})));
+        assert_eq!(entries.iter().filter(|entry| entry["type"] == "model_change").count(), 1);
+        assert_eq!(entries.iter().filter(|entry| entry["type"] == "thinking_level_change").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn sdk_records_only_missing_thinking_metadata_for_existing_conversations() {
+        for saved_thinking in [false, true] {
+            let dir = tempfile::tempdir().expect("directory");
+            let cwd = dir.path().to_string_lossy().into_owned();
+            let mut manager = SessionManager::in_memory(&cwd, None, None);
+            manager.append_model_change("faux", "saved-model", None, None);
+            if saved_thinking { manager.append_thinking_level_change("high", None); }
+            manager.append_message(serde_json::json!({"role":"user","content":"existing task","timestamp":0}));
+            let created = create_agent_session(CreateAgentSessionOptions {
+                cwd: Some(cwd.clone()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+                model: Some(test_model()), thinking_level: Some(ThinkingLevel::Low),
+                session_manager: Some(manager), tools: Some(Vec::new()), ..Default::default()
+            }).await.expect("existing SDK conversation");
+            let context = created.session.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+            let entries = created.session.with_session_manager(|manager| manager.entries());
+            let effective = created.session.thinking_level();
+            created.session.dispose().await;
+            assert_eq!(effective, ModelThinkingLevel::Low);
+            assert_eq!(context.model, Some(("faux".to_owned(), "saved-model".to_owned())));
+            assert_eq!(context.thinking_level, if saved_thinking { "high" } else { "low" });
+            assert_eq!(entries.iter().filter(|entry| entry["type"] == "model_change").count(), 1);
+            assert_eq!(entries.iter().filter(|entry| entry["type"] == "thinking_level_change").count(), 1);
+            assert_eq!(context.messages.len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn sdk_rejects_a_fresh_model_without_startup_context_budget() {
+        let dir = tempfile::tempdir().expect("directory");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let mut model = test_model();
+        model.context_window = 1;
+        model.max_tokens = 1;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), create_agent_session(CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+            model: Some(model), session_manager: Some(SessionManager::in_memory(&cwd, None, None)),
+            tools: Some(Vec::new()), ..Default::default()
+        })).await;
+        if let Ok(Ok(created)) = &result { created.session.dispose().await; }
+        assert!(result.expect("bounded SDK startup admission").is_err(),
+            "SDK construction must reject an unusable fresh model before any prompt");
+    }
+
+    #[tokio::test]
+    async fn sdk_rejects_unrepairable_restored_context_when_compaction_is_disabled() {
+        let dir = tempfile::tempdir().expect("directory");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let agent_dir = dir.path().join("agent").to_string_lossy().into_owned();
+        let mut settings = SettingsManager::create(&cwd, &agent_dir, &cwd, false);
+        settings.apply_overrides(&serde_json::Map::from_iter([
+            ("compaction".to_owned(), serde_json::json!({"enabled":false}))
+        ]));
+        let mut manager = SessionManager::in_memory(&cwd, None, None);
+        manager.append_message(serde_json::json!({"role":"user","content":"restored context ".repeat(10000),"timestamp":0}));
+        let mut model = test_model();
+        model.context_window = 16000;
+        model.max_tokens = 1024;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), create_agent_session(CreateAgentSessionOptions {
+            cwd: Some(cwd), agent_dir: Some(agent_dir), model: Some(model),
+            session_manager: Some(manager), settings_manager: Some(settings),
+            tools: Some(Vec::new()), ..Default::default()
+        })).await;
+        if let Ok(Ok(created)) = &result { created.session.dispose().await; }
+        assert!(result.expect("bounded SDK resume admission").is_err(),
+            "disabled compaction cannot repair an oversized restored conversation");
+    }
+
+    #[tokio::test]
+    async fn sdk_reduces_oversized_resume_without_losing_transcript_messages() {
+        let dir = tempfile::tempdir().expect("directory");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let mut manager = SessionManager::in_memory(&cwd, None, None);
+        for index in 0..20 {
+            manager.append_message(serde_json::json!({"role":"user",
+                "content":[{"type":"text","text":"restored context ".repeat(2500)}],"timestamp":index}));
+        }
+        let before = manager.entries().into_iter().filter(|entry| entry["type"] == "message").collect::<Vec<_>>();
+        let live_before: u64 = manager.build_context(manager.leaf_id()).messages.iter()
+            .map(crate::compaction::compaction::estimate_tokens).sum();
+        let mut model = test_model();
+        model.context_window = 128000;
+        model.max_tokens = 4096;
+        assert!(live_before > model.context_window, "fixture crosses resume reduction boundary");
+        let created = tokio::time::timeout(std::time::Duration::from_secs(5), create_agent_session(CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+            model: Some(model.clone()), session_manager: Some(manager),
+            tools: Some(Vec::new()), ..Default::default()
+        })).await.expect("bounded oversized SDK resume").expect("repairable resume");
+        let context = created.session.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+        let entries = created.session.with_session_manager(|manager| manager.entries());
+        let live_after: u64 = context.messages.iter().map(crate::compaction::compaction::estimate_tokens).sum();
+        let admission = created.session.assert_model_usable(&model, live_after);
+        created.session.dispose().await;
+        assert!(live_after < live_before);
+        assert!(live_after <= model.context_window - model.max_tokens);
+        assert!(admission.is_ok(), "reduced resume must fit an ordinary request");
+        assert_eq!(entries.iter().filter(|entry| entry["type"] == "message").cloned().collect::<Vec<_>>(), before);
+        let reductions = entries.iter().filter(|entry| entry["type"] == "compaction").collect::<Vec<_>>();
+        assert_eq!(reductions.len(), 1);
+        assert_eq!(reductions[0]["details"]["origin"], "resume-admission");
+    }
+
+    #[tokio::test]
     async fn sdk_restores_saved_thinking_without_overriding_explicit_launch_level() {
         let dir = tempfile::tempdir().expect("directory");
         for explicit in [None, Some(ThinkingLevel::Low)] {
@@ -324,8 +459,11 @@ mod tests {
                 model: Some(test_model()), session_manager: Some(manager), thinking_level: explicit, tools: Some(Vec::new()), ..Default::default()
             }).await.expect("restored SDK session");
             let expected = if explicit.is_some() { ModelThinkingLevel::Low } else { ModelThinkingLevel::High };
-            assert_eq!(created.session.thinking_level(), expected);
-            assert_eq!(created.session.thinking_selection().expect("provenance").level, expected);
+            let level = created.session.thinking_level();
+            let selection = created.session.thinking_selection();
+            created.session.dispose().await;
+            assert_eq!(level, expected);
+            assert_eq!(selection.expect("provenance").level, expected);
         }
     }
 
@@ -349,8 +487,11 @@ mod tests {
                 cwd: Some(cwd.clone()), agent_dir: Some(agent_dir), model: Some(test_model()), settings_manager: Some(settings),
                 session_manager: Some(SessionManager::in_memory(&cwd, None, None)), tools: Some(Vec::new()), ..Default::default()
             }).await.expect("SDK session");
-            assert_eq!(created.session.thinking_level(), expected);
-            assert_eq!(created.session.thinking_selection().is_some(), provenance);
+            let level = created.session.thinking_level();
+            let has_selection = created.session.thinking_selection().is_some();
+            created.session.dispose().await;
+            assert_eq!(level, expected);
+            assert_eq!(has_selection, provenance);
         }
     }
 
@@ -362,8 +503,11 @@ mod tests {
             model: Some(test_model()), session_manager: Some(SessionManager::in_memory(&dir.path().to_string_lossy(), None, None)),
             tools: Some(vec!["bash".to_owned()]), ..Default::default()
         }).await.expect("SDK session");
-        assert_eq!(created.session.get_active_tool_names(), vec!["bash"]);
-        let result = created.session.execute_tool("bash", serde_json::json!({"command":"printf sdk"}), Default::default()).await.expect("tool");
+        let tools = created.session.get_active_tool_names();
+        let result = created.session.execute_tool("bash", serde_json::json!({"command":"printf sdk"}), Default::default()).await;
+        created.session.dispose().await;
+        assert_eq!(tools, vec!["bash"]);
+        let result = result.expect("tool");
         assert!(maho_ai::utils::text::content_text(&result.content, "").contains("sdk"));
     }
 
