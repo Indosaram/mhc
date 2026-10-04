@@ -262,12 +262,12 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     }));
     let (terminal, settled) = mpsc::channel();
     let (activity, observed_activity) = mpsc::channel();
-    let ledger = Arc::new(Mutex::new(Vec::<u64>::new()));
+    let ledger = Arc::new(Mutex::new(Vec::<(String,u64)>::new()));
     let entries = ledger.clone();
     let dag_subscription = api.events.on("senpi:extension-rpc-event", Arc::new(move |event| {
         if event["name"] == "omo.dag.activity" && let Err(error) = activity.send(event["data"].clone()) { eprintln!("DAG activity delivery failed: {error}"); }
         if event["name"] == "omo.dag.event" {
-            if let Some(seq) = event["data"]["seq"].as_u64() { entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(seq); }
+            if let (Some(run_id), Some(seq)) = (event["data"]["runId"].as_str(), event["data"]["seq"].as_u64()) { entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((run_id.to_owned(), seq)); }
             if event["data"]["type"] == "dag.run.completed" && let Err(error) = terminal.send(event["data"].clone()) { eprintln!("DAG proof terminal delivery failed: {error}"); }
         }
     }));
@@ -296,7 +296,12 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     println!("PASS registered DAG before-switch cancellation, rebind and shutdown timer cleanup");
     assert_eq!(terminal["runId"], run);
     let sequences = ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
+    // The durable sequence ledger is per run: the bridge forwards one run's events with a strictly
+    // increasing seq, and the shared subscription also sees any other live run's events. Assert
+    // every run's own ledger is strictly ascending, naming the run and its seqs on failure.
+    let mut per_run = std::collections::BTreeMap::<String, Vec<u64>>::new();
+    for (run_id, seq) in sequences.iter() { per_run.entry(run_id.clone()).or_default().push(*seq); }
+    for (run_id, seqs) in &per_run { assert!(seqs.windows(2).all(|pair| pair[0] < pair[1]), "durable events for run {run_id} must be strictly ascending: {seqs:?}"); }
     drop(sequences); drop(dag_subscription);
     assert_eq!(record.status, senpi_task::dag::types::DagRunStatus::Completed);
     assert_eq!(record.nodes.len(), 2);

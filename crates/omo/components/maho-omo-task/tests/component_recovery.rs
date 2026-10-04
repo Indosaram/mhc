@@ -100,6 +100,11 @@ async fn recovery(member:bool) {
         runners: ManagedRunners { in_process: runner.clone(), process: runner }, actions: actions.clone(),
         coordinator: None, resolve_registry: Arc::new(|| None),
     });
+    // The member task id is a FIXED fixture value (tests/fixtures/liveness-session.jsonl ->
+    // team-member-liveness:st_00000001:0). Reserve its floor BEFORE the completion's monotonic
+    // allocation so create_task_record hands the completion the next id; the two then never collide,
+    // regardless of the order other tests allocate ids in this binary.
+    senpi_task::state::sync_task_id_floor(senpi_task::state::parse_task_id("st_00000001").expect("member task id"));
     let mut record = senpi_task::state::create_task_record(senpi_task::state::TaskRecordInput {
         parent_session_id: "session".into(), root_session_id: "session".into(), ..Default::default()
     }, Some(1)).expect("record");
@@ -109,11 +114,6 @@ async fn recovery(member:bool) {
     record.notification.notified_epoch = 0;
     record.created_at = "1970-01-01T00:00:00.001Z".into();
     record.updated_at = record.created_at.clone();
-    // `create_task_record(Some(1))` takes its id from the process-wide monotonic floor, so the
-    // created id is not stable across a test binary. Pin the expired completion to an id that can
-    // never collide with the member task the fixture pins
-    // (tests/fixtures/liveness-session.jsonl -> team-member-liveness:st_00000001:0).
-    record.task_id = "st_00000000".into();
     engine.store.save(&record).expect("save expired completion");
     let mut member_record=record.clone();
     if member {
@@ -124,7 +124,6 @@ async fn recovery(member:bool) {
         member_record.notification.run_epoch=0;
         member_record.notification.notified_epoch=0;
         member_record.updated_at="9999-01-01T00:00:00.000Z".into();
-        engine.store.save(&member_record).expect("save member");
     }
     let mut api = support::api();
     let wake = Arc::new(Mutex::new(Vec::new())); let emitted = wake.clone();

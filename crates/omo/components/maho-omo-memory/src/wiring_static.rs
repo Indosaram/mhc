@@ -1,7 +1,9 @@
 use std::{path::PathBuf,sync::{Arc,Mutex}};
+/// The host registration closure the static wiring installs.
+pub type RegisterHost = Arc<dyn Fn(&mut maho_ext_api::ExtensionApi)+Send+Sync>;
 #[derive(Clone)]
 pub struct MemoryStaticOptions{
-    pub register_host:Option<Arc<dyn Fn(&mut maho_ext_api::ExtensionApi)+Send+Sync>>,
+    pub register_host:Option<RegisterHost>,
     pub skills_trackers:Option<crate::skills_usage_wiring::SkillsUsageTrackers>,
     pub prompt_handler:Option<Arc<crate::prompt::MemoryPromptHandler>>,
     pub prompt:crate::prompt::MemoryPromptInjectionOptions,

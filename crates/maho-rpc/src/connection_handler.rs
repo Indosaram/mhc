@@ -125,7 +125,7 @@ pub async fn handle_input_line_with_sink(session:&AgentSession,line:&str,sink:Op
 pub fn session_model_entry_json(entry:&maho_core::agent_session::SessionModelEntry)->serde_json::Value{
     let mut value=serde_json::json!({"model":&entry.model});
     if let Some(level)=&entry.thinking_level{value["thinkingLevel"]=serde_json::to_value(level).unwrap_or(serde_json::Value::Null);}
-    if let Some(selection)=&entry.thinking_selection{if let Ok(selection)=serde_json::to_value(selection){value["thinkingSelection"]=selection;}}
+    if let Some(selection)=&entry.thinking_selection&&let Ok(selection)=serde_json::to_value(selection){value["thinkingSelection"]=selection;}
     if let Some(tier)=entry.service_tier{value["serviceTier"]=match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority"}.into();}
     value
 }
@@ -166,7 +166,7 @@ pub fn build_rpc_session_state(session:&AgentSession,last_abort_source:Option<&s
         "favoriteModels":session.favorite_models().iter().map(session_model_entry_json).collect::<Vec<_>>(),
         "scopedModels":session.scoped_models().iter().map(session_model_entry_json).collect::<Vec<_>>(),
     });
-    if let Some(thinking_selection)=session.thinking_selection(){if let Ok(value)=serde_json::to_value(thinking_selection){state["thinkingSelection"]=value;}}
+    if let Some(thinking_selection)=session.thinking_selection()&&let Ok(value)=serde_json::to_value(thinking_selection){state["thinkingSelection"]=value;}
     if let Some(abort_source)=last_abort_source{state["lastAbortSource"]=abort_source.into();}
     if let Some(context_usage)=session.get_context_usage(){state["contextUsage"]=serde_json::json!({"tokens":context_usage.tokens,"contextWindow":context_usage.context_window,"percent":context_usage.percent});}
     // Entries are published only while the session has no file on disk yet: a client that misses
@@ -199,7 +199,8 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
                         if admitted.swap(true,std::sync::atomic::Ordering::SeqCst){return;}
                         let disposition=match disposition{maho_core::agent_session::PromptDisposition::Started=>"started",maho_core::agent_session::PromptDisposition::Queued=>"queued",maho_core::agent_session::PromptDisposition::Handled=>"handled"};
                         let mut record=serde_json::json!({"type":"response","command":"prompt","success":true,"data":{"disposition":disposition}});
-                        if let Some(id)=&id{record["id"]=id.clone().into();}if let Some(session_id)=&session_id{record["sessionId"]=session_id.clone().into();}
+                        if let Some(id)=&id{record["id"]=id.clone().into();}
+                        if let Some(session_id)=&session_id{record["sessionId"]=session_id.clone().into();}
                         sink(record);
                     }));
                 }
@@ -215,7 +216,8 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             let completed=std::future::poll_fn(|context|std::task::Poll::Ready(abort.as_mut().poll(context).is_ready())).await;
             if !completed&&let Some(sink)=sink{
                 let mut record=serde_json::json!({"type":"response","command":"abort","success":true});
-                if let Some(id)=&command.id{record["id"]=id.clone().into();}if let Some(id)=&command.session_id{record["sessionId"]=id.clone().into();}
+                if let Some(id)=&command.id{record["id"]=id.clone().into();}
+                if let Some(id)=&command.session_id{record["sessionId"]=id.clone().into();}
                 sink(record);abort.await;return None;
             }
             if !completed{abort.await;}

@@ -64,7 +64,7 @@ impl TeamMemberLivenessNotifier {
         let content = liveness_content(&details); details["deliveryKey"] = json!(key);
         let weak = Arc::downgrade(self); let failed_key = key.clone(); let failed_record = record.clone();
         let callbacks = senpi_task::completion::DeliveryCallbacks::new(move |result| {
-            if let Err(error) = result { if let Some(notifier) = weak.upgrade() { notifier.fail_delivery(&failed_key, &failed_record, error.message); } }
+            if let Err(error) = result && let Some(notifier) = weak.upgrade() { notifier.fail_delivery(&failed_key, &failed_record, error.message); }
         });
         if let Err(error) = (self.deps.deliver)(&key, CustomMessage { custom_type: TEAM_MEMBER_LIVENESS_MESSAGE_TYPE.into(), content: vec![ToolContent::text(content)], display: false, details: Some(details) }, callbacks.clone()) { callbacks.failed(senpi_task::host::HostError { message: error }); }
     }

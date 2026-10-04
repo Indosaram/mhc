@@ -3,13 +3,15 @@ use maho_ext_api::{ExtensionApi, ExtensionContext, ExtensionFailure, Notificatio
 use memory_core::reflection::ReflectionEvent;
 use crate::{context::MemoryIdentityContext, facts_wiring::FactsExtractorWork};
 
+/// The reflection runner the command layer calls.
+pub type Reflect = Arc<dyn Fn(&str, ReflectionEvent) -> Result<(String, String), String> + Send + Sync>;
 pub struct MemoryCommandDeps {
     pub resolve_context: crate::prompt::PromptContextResolver,
     pub settings: Arc<dyn Fn() -> Result<serde_json::Value, String> + Send + Sync>,
     pub actions: Arc<dyn maho_ext_api::ExtensionActions>,
     pub prompt: Arc<crate::prompt::MemoryPromptHandler>,
     pub sessions_dir: std::path::PathBuf,
-    pub reflect: Arc<dyn Fn(&str, ReflectionEvent) -> Result<(String, String), String> + Send + Sync>,
+    pub reflect: Reflect,
     pub dream: Arc<crate::dream_trigger::DreamTriggerWiring>,
     pub facts_retry: Arc<dyn Fn(String) -> FactsExtractorWork + Send + Sync>,
 }
@@ -81,9 +83,8 @@ async fn run_command(name: &str, args: &str, context: &ExtensionContext, deps: &
             let mut effective = settings.clone();
             for section in ["reflection", "nudge", "facts", "dream", "people", "soul"] {
                 if section == "reflection" { effective[section] = crate::reflection_settings::resolve_agent_reflection_settings(Some(&settings), &identity.identity)?; }
-                else if let Some(overrides) = settings["agents"][&identity.identity][section].as_object() {
-                    if let Some(values) = effective[section].as_object_mut() { values.extend(overrides.clone()); }
-                }
+                else if let Some(overrides) = settings["agents"][&identity.identity][section].as_object()
+                    && let Some(values) = effective[section].as_object_mut() { values.extend(overrides.clone()); }
             }
             serde_json::to_string_pretty(&effective).map_err(|error| error.to_string())
         },

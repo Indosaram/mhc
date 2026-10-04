@@ -5,6 +5,8 @@ use crate::{engine::TaskEngine, resumption_channel_emitter::{OwnedResumptionChan
 
 struct CompletionWaiter { signal: AbortSignal, thread: JoinHandle<()> }
 struct TeamRuntime { service:Arc<crate::team_service::TeamService>, pollers:Arc<crate::lead_poller_lifecycle::LeadPollerLifecycle>, liveness:Arc<crate::member_liveness::TeamMemberLivenessNotifier> }
+/// The bind-time suspend callback the team runtime installs (`set_before_suspend`).
+type BeforeSuspendCallback = Arc<dyn Fn(&str) -> Result<(), maho_ext_api::ExtensionFailure> + Send + Sync>;
 pub struct TaskComponent {
     pub engine: TaskEngine,
     pub status: Arc<TaskStatusUi>,
@@ -18,7 +20,7 @@ pub struct TaskComponent {
     team: Mutex<Option<Arc<TeamRuntime>>>,
     team_routing: Arc<Mutex<Option<senpi_task::tools::control::send_shutdown::TaskSendTeamRouting>>>,
     mutation_sync: Mutex<Option<u64>>,
-    before_suspend: Mutex<Option<Arc<dyn Fn(&str) -> Result<(), maho_ext_api::ExtensionFailure> + Send + Sync>>>,
+    before_suspend: Mutex<Option<BeforeSuspendCallback>>,
 }
 impl TaskComponent {
     pub fn register_with_process_sweep(api: &mut ExtensionApi, engine: TaskEngine, spawn: senpi_task::tools::task::execute_spec::TaskToolDeps, ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps, member_process: bool, sweep: crate::process_sweep::SessionStartProcessSweepOptions) -> Result<Option<Arc<Self>>, maho_ext_api::ExtensionFailure> {
@@ -159,7 +161,7 @@ impl TaskComponent {
             waiters.insert(id, CompletionWaiter { signal, thread });
         }
     }
-    pub fn set_before_suspend(&self, callback: Arc<dyn Fn(&str) -> Result<(), maho_ext_api::ExtensionFailure> + Send + Sync>) {
+    pub fn set_before_suspend(&self, callback: BeforeSuspendCallback) {
         *self.before_suspend.lock().unwrap_or_else(PoisonError::into_inner) = Some(callback);
     }
     fn notify_owned_terminal(&self, record: &senpi_task::state::TaskRecord) {

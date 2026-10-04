@@ -293,19 +293,18 @@ impl RpcClient{
     /// Wait for `agent_settled`, bounded by `timeout`.
     pub async fn wait_for_idle(&mut self,timeout:std::time::Duration)->RpcClientResult<()>{
         let listeners=self.listeners.clone();
-        let result=tokio::time::timeout(timeout,async{
+        tokio::time::timeout(timeout,async{
             loop{match self.transport()?.receive().await?{
                 Some(ClientFrame::Event(event))=>{dispatch_listeners(&listeners,event.clone());if event["type"]=="agent_settled"{return Ok(());}}
                 Some(_)=>{},
                 None=>return Err(RpcClientError::Transport(std::io::Error::new(std::io::ErrorKind::BrokenPipe,"RPC transport is gone"))),
             }}
-        }).await.map_err(|_|RpcClientError::Transport(std::io::Error::new(std::io::ErrorKind::TimedOut,"Timeout waiting for agent to become idle")))?;
-        result
+        }).await.map_err(|_|RpcClientError::Transport(std::io::Error::new(std::io::ErrorKind::TimedOut,"Timeout waiting for agent to become idle")))?
     }
     /// Collect agent events until `agent_settled`, dropping connection-level records.
     pub async fn collect_events(&mut self,timeout:std::time::Duration)->RpcClientResult<Vec<Value>>{
         let listeners=self.listeners.clone();
-        let result=tokio::time::timeout(timeout,async{
+        tokio::time::timeout(timeout,async{
             let mut events=Vec::new();
             loop{match self.transport()?.receive().await?{
                 Some(ClientFrame::Event(event))=>{dispatch_listeners(&listeners,event.clone());
@@ -314,8 +313,7 @@ impl RpcClient{
                 Some(_)=>{},
                 None=>return Err(RpcClientError::Transport(std::io::Error::new(std::io::ErrorKind::BrokenPipe,"RPC transport is gone"))),
             }}
-        }).await.map_err(|_|RpcClientError::Transport(std::io::Error::new(std::io::ErrorKind::TimedOut,"Timeout collecting events")))?;
-        result
+        }).await.map_err(|_|RpcClientError::Transport(std::io::Error::new(std::io::ErrorKind::TimedOut,"Timeout collecting events")))?
     }
     /// Send a prompt and return every event up to settle.
     pub async fn prompt_and_wait(&mut self,message:&str,images:Option<Value>,timeout:std::time::Duration)->RpcClientResult<Vec<Value>>{
