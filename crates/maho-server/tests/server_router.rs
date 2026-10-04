@@ -326,9 +326,59 @@ async fn stale_terminated_handle_cannot_invalidate_reopened_session() {
         assert_eq!(host.opens.load(Ordering::SeqCst),2,"stale termination must not invalidate the replacement");
         host.handles.lock().unwrap()[1].terminated.resolve(Some(ServerError::new("internal_error","replacement crash")));
         await_invalidation(&mut events,2).await;
-        assert_eq!(host.handles.lock().unwrap()[1].closes.load(Ordering::SeqCst),1,"current termination closes the handle");
+        assert_eq!(host.handles.lock().unwrap()[1].closes.load(Ordering::SeqCst),0,"invalidate does not close the already-terminated handle");
         let _fourth=router.attach("s").await.unwrap();
         assert_eq!(host.opens.load(Ordering::SeqCst),3,"current termination invalidates and reopens");
+        router.close().await.unwrap();
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn termination_releases_only_the_matched_handle_leases() {
+    use maho_server::server::testing::host::Deferred;
+    struct TermHandle { terminated: Deferred<Option<ServerError>>, leases: Arc<AtomicUsize> }
+    struct TermLease(Arc<AtomicUsize>);
+    struct TermHost { handles: std::sync::Mutex<Vec<Arc<TermHandle>>>, opens: AtomicUsize }
+    impl RoutedSessionAttachment for TermLease {
+        fn invoke_service<'a>(&'a self,_:Value,_:Publisher,_:Context)->ServerFuture<'a,Option<Value>> {Box::pin(async {Ok(Some(json!({"ok":true})))})}
+        fn release(&self)->ServerFuture<'_,()> {Box::pin(async move {self.0.fetch_add(1,Ordering::SeqCst);Ok(())})}
+    }
+    impl RoutedSessionHandle for TermHandle {
+        fn attach_client(&self)->ServerFuture<'_,Arc<dyn RoutedSessionAttachment>> {Box::pin(async move {Ok(Arc::new(TermLease(self.leases.clone())) as Arc<dyn RoutedSessionAttachment>)})}
+        fn terminated(&self)->Option<TerminationFuture> {let terminated=self.terminated.clone();Some(Box::pin(async move {terminated.wait().await}))}
+        fn close(&self)->ServerFuture<'_,()> {Box::pin(async {Ok(())})}
+    }
+    impl RoutedServerServiceHost for TermHost {
+        fn attach_client(&self,_:Arc<dyn RoutedServerPresentation>)->ServerFuture<'_,Arc<dyn RoutedServerServiceAttachment>> {Box::pin(async {Err(ServerError::new("internal_error","Unused"))})}
+    }
+    impl ServerHost for TermHost {
+        fn server_services(&self)->&dyn RoutedServerServiceHost {self}
+        fn resolve_session<'a>(&'a self,_:&'a str)->ServerFuture<'a,Value> {Box::pin(async {Ok(json!({"id":"s"}))})}
+        fn open_session(&self,_:Value)->ServerFuture<'_,Arc<dyn RoutedSessionHandle>> {Box::pin(async move {
+            self.opens.fetch_add(1,Ordering::SeqCst);
+            let handle=Arc::new(TermHandle {terminated:Deferred::default(),leases:Arc::new(AtomicUsize::new(0))});
+            self.handles.lock().unwrap().push(handle.clone());
+            Ok(handle as Arc<dyn RoutedSessionHandle>)
+        })}
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(2),async {
+        let host=Arc::new(TermHost {handles:std::sync::Mutex::new(Vec::new()),opens:AtomicUsize::new(0)});
+        let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
+        router.bind_self();
+        let first=router.attach("s").await.unwrap();
+        let mut events=router.invalidation_events();
+        events.borrow_and_update();
+        host.handles.lock().unwrap()[0].terminated.resolve(Some(ServerError::new("internal_error","crashed")));
+        await_invalidation(&mut events,1).await;
+        assert_eq!(host.handles.lock().unwrap()[0].leases.load(Ordering::SeqCst),1,"matched handle lease released once");
+        let (_cancel,cancelled)=tokio::sync::watch::channel(false);
+        assert_eq!(first.invoke(json!({}),Arc::new(|_,_|Box::pin(async {Ok(())})),Context {cancelled:cancelled.clone()}).await.unwrap_err().code,"session_not_attached");
+        let second=router.attach("s").await.unwrap();
+        assert_eq!(host.opens.load(Ordering::SeqCst),2);
+        assert_eq!(host.handles.lock().unwrap()[1].leases.load(Ordering::SeqCst),0,"replacement lease must not be released by the old termination");
+        assert!(second.invoke(json!({}),Arc::new(|_,_|Box::pin(async {Ok(())})),Context {cancelled}).await.is_ok(),"replacement attachment stays live");
+        assert_eq!(host.handles.lock().unwrap()[1].leases.load(Ordering::SeqCst),0);
+        second.release().await.unwrap();
         router.close().await.unwrap();
     }).await.unwrap();
 }

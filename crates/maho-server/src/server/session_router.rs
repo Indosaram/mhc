@@ -193,16 +193,20 @@ impl SessionRouter {
         self.close_result.get_or_init(||self.close_internal()).await.clone()
     }
     async fn invalidate(&self, session_id: &str, handle: &Arc<dyn RoutedSessionHandle>, error: Option<ServerError>) {
-        let removed = {
+        let leases = {
+            let mut attachments = self.attachments.lock().await;
             let mut hosted = self.hosted.lock().await;
-            if hosted.get(session_id).is_some_and(|current| Arc::ptr_eq(current, handle)) { hosted.remove(session_id); true } else { false }
+            if !hosted.get(session_id).is_some_and(|current| Arc::ptr_eq(current, handle)) {
+                None
+            } else {
+                hosted.remove(session_id);
+                Some(attachments.remove(session_id).unwrap_or_default())
+            }
         };
-        if removed {
-            let leases = self.attachments.lock().await.remove(session_id).unwrap_or_default();
+        if let Some(leases) = leases {
             for lease in leases.into_iter().filter_map(|lease| lease.upgrade()) {
                 if let Err(release) = lease.release().await { eprintln!("{}", release.message); }
             }
-            if let Err(close) = handle.close().await { eprintln!("{}", close.message); }
             if let Some(error) = error { eprintln!("{}", error.message); }
         }
         self.invalidations.send_modify(|count| *count += 1);
