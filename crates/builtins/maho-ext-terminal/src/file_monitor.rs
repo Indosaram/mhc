@@ -158,7 +158,9 @@ mod tests {
         let dir=tempfile::tempdir().unwrap();let a=dir.path().join("a");std::fs::create_dir(&a).unwrap();
         let expected=dir.path().join("b");
         assert_eq!(realpath_without_open(&a.join("..").join("b")),expected,"a/../b must resolve to b, not a/b");
-        assert_eq!(realpath_without_open(&a.join("..").join("..").join(a.file_name().unwrap())),a);
+        // `..` pops the already-resolved prefix, so `a/../../a` escapes the temp dir into its parent
+        // (upstream `resolveWithoutOpen` applies each `..` to the resolved stack, never lexically).
+        assert_eq!(realpath_without_open(&a.join("..").join("..").join(a.file_name().unwrap())),dir.path().parent().unwrap().join("a"));
     }
     #[test]
     fn a_relative_symlink_target_is_spliced_before_its_own_dot_dot() {
@@ -177,9 +179,10 @@ mod tests {
     #[test]
     fn a_target_whose_identity_changed_is_refused()->std::io::Result<()> {
         let dir=tempfile::tempdir()?;let real=dir.path().join("real");std::fs::create_dir(&real)?;let approved=std::fs::canonicalize(&real)?;
-        let parent=dir.path().join("parent");std::os::unix::fs::symlink(&real,&parent)?;
         let elsewhere=dir.path().join("elsewhere");std::fs::write(&elsewhere,b"x")?;
-        let target=dir.path().join("target");std::os::unix::fs::symlink(&elsewhere,&target)?;
+        // The watched target sits under the approved parent but is a symlink out to `elsewhere`, so
+        // its resolved identity is not the approved parent plus basename.
+        let target=real.join("target");std::os::unix::fs::symlink(&elsewhere,&target)?;
         let error=FileMonitor::register("watch_1".to_owned(),"identity".to_owned(),&target,FileEvent::Create,Some(&approved)).err().expect("register must fail").to_string();
         assert!(error.contains("target identity changed"),"{error}");Ok(())
     }
