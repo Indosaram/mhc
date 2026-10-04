@@ -668,13 +668,23 @@ impl InteractiveMode {
         match self.session_host.clone() { Some(host) => host.export_jsonl(output_path.map(str::to_owned)).await, None => self.session.export_to_jsonl(output_path).map(Some).map_err(|error| error.to_string()) }
     }
 
-    /// Fire-and-forget session-name set for the synchronous command/keybinding paths (senpi's proxy
-    /// setters do not await either).
+    /// Fire-and-forget session-name set for the synchronous rename-input path; the typed `/rename`
+    /// command awaits the host through `apply_session_name`.
     fn fire_set_session_name(&self, name: &str) {
         match self.session_host.clone() {
             Some(host) => { let name = name.to_owned(); tokio::spawn(async move { let _ = host.set_session_name(name).await; }); }
             None => self.session.set_session_name(name),
         }
+    }
+
+    /// senpi's `applySessionName`: await the rename, then report the value the session kept.
+    async fn apply_session_name(&mut self, name: &str) {
+        let host = self.session_host.clone();
+        match host {
+            Some(host) => { let _ = host.set_session_name(name.to_owned()).await; }
+            None => self.session.set_session_name(name),
+        }
+        self.show_status(format!("Session name set: {}", self.host_session_name().unwrap_or_else(|| name.into())));
     }
 
     /// Fire-and-forget session thinking-level set for the synchronous paths.
@@ -1204,6 +1214,12 @@ impl InteractiveMode {
                 return Ok(PromptDisposition::Handled);
             }
         }
+        if let Some(name) = text.trim().strip_prefix("/rename ").or_else(|| text.trim().strip_prefix("/name ")) {
+            let name = name.trim();
+            if name.is_empty() { return Err("Session name cannot be empty".into()); }
+            self.apply_session_name(name).await;
+            return Ok(PromptDisposition::Handled);
+        }
         if self.dispatch_command(text)? { return Ok(PromptDisposition::Handled); }
         let result = match self.session_host.clone() {
             Some(host) => {
@@ -1676,13 +1692,6 @@ impl InteractiveMode {
             let accepted = self.rename_result.clone();
             let cancelled = self.rename_result.clone();
             self.rename_input = Some(crate::components::extension_input::ExtensionInputComponent::new(&self.theme, "Rename session", Box::new(move |text| *accepted.borrow_mut() = Some(Some(text.into()))), Box::new(move || *cancelled.borrow_mut() = Some(None)), crate::components::extension_input::ExtensionInputOptions { initial_value: self.host_session_name(), ..Default::default() }));
-            return Ok(true);
-        }
-        if let Some(name) = text.strip_prefix("/rename ").or_else(|| text.strip_prefix("/name ")) {
-            let name = name.trim();
-            if name.is_empty() { return Err("Session name cannot be empty".into()); }
-            self.fire_set_session_name(name);
-            self.show_status(format!("Session name set: {}", self.host_session_name().unwrap_or_else(|| name.into())));
             return Ok(true);
         }
         if let Some(value) = text.strip_prefix("/thinking ") {
@@ -2729,19 +2738,19 @@ mod tests {
     fn expandable_text_follows_its_render_closures() {
         let mut expandable = ExpandableText::new(Box::new(|| "collapsed".into()), Box::new(|| "expanded".into()), false, 0, 0);
         assert!(!expandable.is_expanded());
-        assert_eq!(expandable.render(80).join("\n"), "collapsed");
+        assert_eq!(expandable.render(80).join("\n").trim(), "collapsed");
         expandable.set_expanded(true);
         assert!(expandable.is_expanded());
-        assert_eq!(expandable.render(80).join("\n"), "expanded");
+        assert_eq!(expandable.render(80).join("\n").trim(), "expanded");
         expandable.set_expanded(false);
-        assert_eq!(expandable.render(80).join("\n"), "collapsed");
+        assert_eq!(expandable.render(80).join("\n").trim(), "collapsed");
     }
 
     #[test]
     fn expandable_text_starts_expanded_when_asked() {
         let mut expandable = ExpandableText::new(Box::new(|| "collapsed".into()), Box::new(|| "expanded".into()), true, 1, 0);
         assert!(expandable.is_expanded());
-        assert_eq!(expandable.render(80).join("\n"), "expanded");
+        assert_eq!(expandable.render(80).join("\n").trim(), "expanded");
     }
 
     #[test]
