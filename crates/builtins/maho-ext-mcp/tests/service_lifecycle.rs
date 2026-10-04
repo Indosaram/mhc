@@ -114,10 +114,10 @@ async fn list_changed_reregisters_and_records_the_delta() {
     }
     assert_eq!(entry.lock().await.connection.state(), ServerConnectionState::Connected);
     handle.lock().await.handle_server_tools_changed("fx").await.unwrap();
-    let entry = entry.lock().await;
-    assert_eq!(entry.last_list_changed_delta.as_deref(), Some("no change"));
-    assert_eq!(entry.known_tool_names.as_ref().map(Vec::len), Some(2));
-    drop(entry);
+    let guard = entry.lock().await;
+    assert_eq!(guard.last_list_changed_delta.as_deref(), Some("no change"));
+    assert_eq!(guard.known_tool_names.as_ref().map(Vec::len), Some(2));
+    drop(guard);
     handle.lock().await.dispose().await.unwrap();
     assert!(entry.lock().await.list_changed_coalescer.is_none());
     assert!(entry.lock().await.list_changed_tasks.is_empty());
