@@ -10915,7 +10915,7 @@ mod tests {
             resource("global.json", crate::source_info::SourceScope::User, true),
         ], vec!["extra.json".into(), "extra.json".into()]);
         let context = crate::sdk::extension_context::create(&session);
-        let sources = context.get_loaded_hook_sources();
+        let sources = context.get_loaded_hook_sources().expect("hook sources");
         assert_eq!(sources.global_hook_source_paths.len(), 1);
         assert_eq!(sources.project_hook_source_paths.len(), 1);
         assert_eq!(sources.pre_session_hook_source_paths.len(), 1);
