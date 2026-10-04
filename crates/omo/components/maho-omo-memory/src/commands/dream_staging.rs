@@ -109,7 +109,7 @@ pub fn stage_dream_transcript(
     ));
     let existing_message_ids: BTreeSet<String> = journal
         .read_entries()
-        .unwrap_or_default()
+        .map_err(|error| error.to_string())?
         .into_iter()
         .map(|entry| entry.source_message_id().to_owned())
         .collect();
@@ -249,6 +249,28 @@ pub fn sha1_hex(input: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    fn session_jsonl() -> String {
+        [
+            serde_json::json!({
+                "type": "session",
+                "id": "source-session",
+                "timestamp": "2026-08-10T10:00:00.000Z",
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "message",
+                "id": "message-1",
+                "timestamp": "2026-08-10T10:01:00.000Z",
+                "message": {
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "remember tabs" }],
+                },
+            })
+            .to_string(),
+        ]
+        .join("\n")
+    }
+
     #[test]
     fn sha1_hex_matches_node_crypto_lowercase_hex_vectors() {
         assert_eq!(sha1_hex(b""), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
@@ -258,5 +280,39 @@ mod tests {
             "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12"
         );
         assert_eq!(sha1_hex(b"remember tabs"), "a4d561f91a91d1abb13acbb7d5629104e698c77f");
+    }
+
+    #[test]
+    fn given_an_unreadable_journal_when_staging_then_the_read_error_propagates_without_appending() {
+        let root = tempfile::tempdir().expect("root");
+        let transcripts_dir = root.path().join("transcripts");
+        std::fs::create_dir_all(&transcripts_dir).expect("transcripts dir");
+        let source = root.path().join("source.jsonl");
+        std::fs::write(&source, session_jsonl()).expect("source transcript");
+
+        let conversation_id = format!(
+            "from-transcript-{}",
+            &sha1_hex(source.to_string_lossy().as_bytes())[..12]
+        );
+        let journal_dir = transcripts_dir.join(&conversation_id);
+        // A directory where the transcript file belongs: `read_to_string` fails with a
+        // non-`NotFound` IO error, so `TranscriptJournal::read_entries` returns `Err`.
+        std::fs::create_dir_all(journal_dir.join("transcript.jsonl")).expect("blocked transcript path");
+
+        let result = stage_dream_transcript(
+            source.to_string_lossy().as_ref(),
+            &transcripts_dir,
+            root.path(),
+        );
+
+        assert!(result.is_err(), "an unreadable journal must propagate the read error");
+        assert!(
+            journal_dir.join("transcript.jsonl").is_dir(),
+            "the failed read must not replace the transcript path"
+        );
+        assert!(
+            !journal_dir.join("state.json").exists(),
+            "a failed read must not append or write journal state"
+        );
     }
 }
