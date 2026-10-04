@@ -1355,13 +1355,24 @@ mod tests {
     }
 
     #[test]
-    fn hydrate_parses_toolcall_arguments_from_each_delta() {
+    fn hydrate_retains_toolcall_arguments_and_hydrates_usage_and_partial() {
         let mut streaming = json!({"content": [{"type": "toolCall", "id": "c", "name": "read", "arguments": {}}]});
-        hydrate_message_update(
-            &json!({"type": "message_update", "assistantMessageEvent": {"type": "toolcall_delta", "contentIndex": 0, "delta": "{\"path\":\"a\"}"}}),
+        // Pinned senpi's hydrateMessageUpdate appends a toolcall delta to the JSON text of the
+        // accumulated arguments and re-parses it (`JSON.stringify(content.arguments) + delta`). A
+        // fragment appended to the `{}` seed's text is not valid JSON, so the last valid arguments
+        // are retained; the real arguments arrive with the complete toolCall at toolcall_end.
+        let hydrated = hydrate_message_update(
+            &json!({"type": "message_update", "usage": {"input": 5}, "assistantMessageEvent": {"type": "toolcall_delta", "contentIndex": 0, "delta": "{\"path\":\"a\"}"}}),
             Some(&mut streaming),
         );
-        assert_eq!(streaming["content"][0]["arguments"]["path"], "a");
+        assert_eq!(streaming["content"][0]["arguments"], json!({}), "a malformed fragment keeps the last valid arguments");
+        assert_eq!(hydrated["message"]["content"][0]["arguments"], json!({}), "the mirrored message keeps the last valid arguments");
+        assert_eq!(hydrated["assistantMessageEvent"]["partial"]["content"][0]["arguments"], json!({}), "the partial mirrors the retained arguments");
+        assert_eq!(hydrated["message"]["usage"]["input"], 5, "the delta still hydrates usage onto the mirrored message");
+        // A non-delta update (the complete toolCall, arguments included) is returned untouched: the
+        // end of the toolcall supplies the real arguments with the message, not through this helper.
+        let end = json!({"type": "message_update", "assistantMessageEvent": {"type": "toolcall_end", "contentIndex": 0}});
+        assert_eq!(hydrate_message_update(&end, Some(&mut streaming)), end, "a non-delta update is returned unchanged");
     }
 
     #[test]
