@@ -1,10 +1,13 @@
 //! Port of senpi `runtime/lane.ts`: serialized commands and durable lane publication.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 pub use super::types::{CommitDecision, ContinueOperationResult, Drive, FinishDecision, LaneCommand, LaneState, OperationCommand, ProcedureResult};
+use super::types::{Config, RuntimeDriveLane, RuntimeLane, StructuralPreparation};
 use crate::harness::context::Context;
 use crate::harness::events::{HarnessEvent, HarnessEventBus, HarnessEventPayload};
+use crate::harness::execution::effect_gate::Cancellation;
+use crate::harness::hooks::HookRegistry;
 use crate::harness::session::session::{SessionError, SessionErrorKind, session_invariant_error};
 use crate::harness::session::types::{
     Control, InboxItem, InboxItemKind, LaneConfiguration, LaneModelRef, NewEntry, Operation,
@@ -36,6 +39,17 @@ pub struct OperationAdmission {
     pub operation_id: String,
     pub started_at: i64,
     pub kind: crate::harness::session::types::OperationIntentKind,
+}
+
+impl OperationAdmission {
+    /// The pinned `admission.kind` string used in fault messages.
+    pub const fn kind_label(&self) -> &'static str {
+        match self.kind {
+            crate::harness::session::types::OperationIntentKind::Run => "run",
+            crate::harness::session::types::OperationIntentKind::Compaction => "compaction",
+            crate::harness::session::types::OperationIntentKind::Navigation => "navigation",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -76,6 +90,69 @@ pub struct OperationMismatch {
 }
 
 pub use crate::harness::agent_harness::LaneExecutionInfo;
+
+/// Pinned `SuspendedRun`: a convenience-only suspension observation returned by the run facade.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SuspendedRun {
+    pub operation_id: String,
+    pub deferred: maho_ai::types::DeferredHandle,
+}
+
+/// Pinned `OperationResultRecord | SuspendedRun` run outcome.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RunOutcome {
+    Settled(crate::harness::session::types::OperationResultRecord),
+    Suspended(SuspendedRun),
+}
+
+/// Pinned `RunResult`.
+pub type RunResult = Result<RunOutcome, AdmissionError>;
+
+/// Pinned `{ compaction, run? }`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompactionOutcome {
+    pub compaction: crate::harness::session::types::OperationResultRecord,
+    pub run: Option<RunOutcome>,
+}
+
+/// Pinned `CompactionResult`.
+pub type CompactionResult = Result<CompactionOutcome, AdmissionError>;
+
+/// Pinned `{ navigation, run? }`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NavigationOutcome {
+    pub navigation: crate::harness::session::types::OperationResultRecord,
+    pub run: Option<RunOutcome>,
+}
+
+/// Pinned `NavigationResult`.
+pub type NavigationResult = Result<NavigationOutcome, AdmissionError>;
+
+/// Pinned `{ operationId, steer, followUp }`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AbortResult {
+    pub operation_id: String,
+    pub steer: Vec<crate::types::AgentMessage>,
+    pub follow_up: Vec<crate::types::AgentMessage>,
+}
+
+/// Pinned `Result<AbortResult, NoActiveOperation | Closed>`.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum AbortError {
+    #[error("Lane {lane:?} has no active operation")]
+    NoActiveOperation { lane: String, message: String },
+    #[error("{message}")]
+    Closed { message: String },
+}
+
+/// Pinned `DriveClaim`: the outcome of one serialized attempt to install or observe a drive pass.
+#[derive(Clone)]
+enum DriveClaim {
+    Observe { drive: Arc<Drive>, installed: bool },
+    Occupied { drive: Arc<Drive> },
+    Settled { outcome: crate::harness::session::types::OperationResultRecord },
+    Mismatch { error: OperationMismatch },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancelQueuedOutcome { Cancelled, AlreadyConsumed, NotFound }
@@ -155,11 +232,21 @@ pub struct Lane {
     pub session: Arc<dyn Session>,
     pub events: HarnessEventBus,
     pub models: maho_ai::models::Models,
+    /// The process-local hook registry owned by the harness (pinned `Lane.hooks`).
+    pub hooks: Arc<HookRegistry>,
     state: Mutex<LaneState>,
     closed_error: Mutex<Option<SessionError>>,
     idle_owner: tokio::sync::RwLock<()>,
     state_change: tokio::sync::Notify,
-    pub(crate) config: Arc<Mutex<super::harness::RuntimeConfig>>,
+    /// Shared process-local drive configuration (the pinned `Config<TContext>` store).
+    pub(crate) drive_config: Arc<Mutex<Config<()>>>,
+    /// The typed built-in tools + `toolContext` for this lane (pinned `Config<TContext>`), kept as
+    /// a trait object so `Lane` stays non-generic while the tools keep their real context type.
+    pub tool_runner: Arc<dyn super::tools::ToolBatchRunner>,
+    /// Weak self, installed by `drive`/the harness so `RuntimeDriveLane` can hand out `Arc<Lane>`.
+    self_ref: Mutex<Weak<Lane>>,
+    /// The single installed drive pass for this lane (pinned `activeDrive`).
+    active_drive: Mutex<Option<Arc<Drive>>>,
 }
 
 impl Lane {
@@ -174,12 +261,48 @@ impl Lane {
             session,
             events,
             models: maho_ai::models::create_models(None),
+            hooks: Arc::new(HookRegistry::new(Arc::new(|_, _, _, _| Box::pin(async {})))),
             state: Mutex::new(state),
             closed_error: Mutex::new(None),
             idle_owner: tokio::sync::RwLock::new(()),
             state_change: tokio::sync::Notify::new(),
-            config: Arc::new(Mutex::new(super::harness::RuntimeConfig::default())),
+            drive_config: Arc::new(Mutex::new(super::harness::default_drive_config())),
+            tool_runner: Arc::new(super::tools::EmptyToolRunner),
+            self_ref: Mutex::new(Weak::new()),
+            active_drive: Mutex::new(None),
         }
+    }
+
+    /// The pinned `Lane.readConfig()`: a fresh snapshot of the shared process-local configuration.
+    pub fn read_config(&self) -> Arc<Config<()>> {
+        Arc::new(clone_drive_config(&self.drive_config.lock().unwrap_or_else(|error| error.into_inner())))
+    }
+
+    /// Pinned `Lane.emitBatch`: deliver events through the lane's own bus exactly once.
+    pub async fn emit_batch(&self, events: Vec<HarnessEvent>, context: &Context) {
+        self.events.emit_batch(events, context.clone()).await;
+    }
+
+    /// Install the weak self used by `RuntimeDriveLane` (pinned `Arc::new_cyclic`).
+    pub fn install_self(self: &Arc<Self>) {
+        *self.self_ref.lock().unwrap_or_else(|error| error.into_inner()) = Arc::downgrade(self);
+    }
+
+    fn arc(&self) -> Result<Arc<Lane>, SessionError> {
+        self.self_ref
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .upgrade()
+            .ok_or_else(|| session_invariant_error("Lane has no installed self reference"))
+    }
+
+    fn active_drive_matching(&self, operation_id: &str) -> Option<Arc<Drive>> {
+        self.active_drive
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .filter(|drive| drive.operation_id == operation_id)
+            .cloned()
     }
 
     pub fn state(&self) -> LaneState {
@@ -201,8 +324,12 @@ impl Lane {
     pub fn seal(&self, error: SessionError) {
         let mut closed = self.closed_error.lock().unwrap_or_else(|e| e.into_inner());
         if closed.is_none() {
-            *closed = Some(error);
+            *closed = Some(error.clone());
             self.state_change.notify_waiters();
+            // Pinned `seal` also closes the installed drive gate so a live observation rejects.
+            if let Some(drive) = self.active_drive.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                drive.close_gate(error.message.clone());
+            }
         }
     }
 
@@ -219,23 +346,23 @@ impl Lane {
 
     pub async fn accept_skill(&self, name: &str, additional_instructions: Option<String>, operation_id: Option<String>, context: &Context) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
         self.assert_open()?;
-        let config = self.config.lock().unwrap_or_else(|error| error.into_inner()).clone();
+        let config = self.read_config();
         let Some(skill) = config.resources.skills.as_ref().and_then(|skills| skills.iter().find(|skill| skill.name == name)) else { return Ok(Err(AdmissionError::UnknownSkill { name: name.into() })); };
         let normalized = skill.file_path.trim_end_matches(['/', '\\']);
         let separator = normalized.rfind(['/', '\\']);
         let directory = match separator { Some(2) if normalized.as_bytes().get(1) == Some(&b':') => &normalized[..3], Some(index) if index > 0 => &normalized[..index], _ => "/" };
         let mut text = format!("<skill name=\"{}\" location=\"{}\">\nReferences are relative to {}.\n\n{}\n</skill>", skill.name, skill.file_path, directory, skill.content);
         if let Some(instructions) = additional_instructions.filter(|value| !value.is_empty()) { text.push_str("\n\n"); text.push_str(&instructions); }
-        let settings = crate::harness::session::types::RunSettings { compaction: config.compaction, steering_mode: config.steering_mode, follow_up_mode: config.follow_up_mode, tool_execution: crate::harness::session::types::ToolExecutionMode::Parallel };
+        let settings = crate::harness::session::types::RunSettings { compaction: config.compaction, steering_mode: config.steering_mode, follow_up_mode: config.follow_up_mode, tool_execution: config.tool_execution };
         self.accept_prompt(PromptInput::Text { text, images: vec![] }, operation_id, settings, context).await
     }
 
     pub async fn accept_prompt_template(&self, name: &str, args: Vec<String>, operation_id: Option<String>, context: &Context) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
         self.assert_open()?;
-        let config = self.config.lock().unwrap_or_else(|error| error.into_inner()).clone();
+        let config = self.read_config();
         let Some(template) = config.resources.prompt_templates.as_ref().and_then(|templates| templates.iter().find(|template| template.name == name)) else { return Ok(Err(AdmissionError::UnknownTemplate { name: name.into() })); };
         let text = crate::harness::prompt_templates::format_prompt_template_invocation(template, &args);
-        let settings = crate::harness::session::types::RunSettings { compaction: config.compaction, steering_mode: config.steering_mode, follow_up_mode: config.follow_up_mode, tool_execution: crate::harness::session::types::ToolExecutionMode::Parallel };
+        let settings = crate::harness::session::types::RunSettings { compaction: config.compaction, steering_mode: config.steering_mode, follow_up_mode: config.follow_up_mode, tool_execution: config.tool_execution };
         self.accept_prompt(PromptInput::Text { text, images: vec![] }, operation_id, settings, context).await
     }
 
@@ -277,7 +404,8 @@ impl Lane {
             let owner = crate::harness::context::await_with_context(self.idle_owner.read(), context).await.map_err(|error| session_invariant_error(error.to_string()))?;
             self.assert_open()?;
             let mutation = self.session.begin_mutation(context).await?;
-            let idle = self.state().operation.is_none();
+            let idle = self.state().operation.is_none()
+                && self.active_drive.lock().unwrap_or_else(|error| error.into_inner()).is_none();
             mutation.end(context).await;
             drop(owner);
             if idle { return Ok(()); }
@@ -294,7 +422,8 @@ impl Lane {
             let owner = crate::harness::context::await_with_context(self.idle_owner.write(), context).await.map_err(|error| session_invariant_error(error.to_string()))?;
             self.assert_open()?;
             let mutation = self.session.begin_mutation(context).await?;
-            let idle = self.state().operation.is_none();
+            let idle = self.state().operation.is_none()
+                && self.active_drive.lock().unwrap_or_else(|error| error.into_inner()).is_none();
             mutation.end(context).await;
             if idle {
                 let result = callback(context.clone()).await;
@@ -393,9 +522,12 @@ impl Lane {
     }
 
     pub async fn request_operation_abort(&self, operation_id: String, context: &Context) -> Result<Result<AbortRequest, OperationMismatch>, SessionError> {
+        let drive = self.active_drive_matching(&operation_id);
+        let cancellation = Cancellation::new();
+        if let Some(drive) = &drive { drive.begin_abort(cancellation.clone()); }
         let name = self.name.clone();
         let read_context = context.clone();
-        self.command(move |mut state, reader| Box::pin(async move {
+        let result = self.command(move |mut state, reader| Box::pin(async move {
             let Some(mut operation) = state.operation.clone().filter(|operation| operation.meta.operation_id == operation_id) else {
                 return Ok(LaneCommand::Return { result: Err(OperationMismatch { expected: operation_id, current_operation_id: state.operation.map(|operation| operation.meta.operation_id), last_operation_id: state.last_operation_id }) });
             };
@@ -426,7 +558,275 @@ impl Lane {
                 if !removed.is_empty() { events.push(HarnessEvent::new(HarnessEventPayload::QueueUpdate { queues: queues.clone() }, Some(name.clone()))); }
                 events
             })) }, next: Box::new(state) })
-        }), context).await
+        }), context).await;
+        // Pinned `settleGate`: a newly-requested (or already-requested) abort releases the wait and
+        // pulls the admission gate; a mismatch leaves the stale drive's gate state untouched.
+        let signal = matches!(&result, Ok(Ok(_)));
+        cancellation.resolve();
+        if signal && let Some(drive) = &drive { drive.signal_abort(); }
+        result
+    }
+
+    fn mismatch(&self, expected: String, current_operation_id: Option<String>, last_operation_id: Option<String>) -> OperationMismatch {
+        OperationMismatch { expected, current_operation_id, last_operation_id }
+    }
+
+    /// Pinned `Lane.drive`: install, observe, or await the one drive pass that owns `operation_id`.
+    pub async fn drive(self: &Arc<Self>, options: crate::harness::agent_harness::DriveOptions, context: &Context) -> Result<crate::harness::agent_harness::DriveOutcome, crate::harness::agent_harness::DriveOptionsError> {
+        use crate::harness::agent_harness::{DriveOptionsError, DriveOutcome};
+        self.install_self();
+        if let Err(error) = self.assert_open() {
+            return Err(DriveOptionsError::Session(error));
+        }
+        loop {
+            let this = self.clone();
+            let operation_id = options.operation_id.clone();
+            let drive_context = context.clone();
+            let claim = self
+                .command(
+                    move |state, reader| {
+                        Box::pin(async move {
+                            if drive_context.is_aborted() {
+                                return Ok(LaneCommand::Reject { error: "The operation was aborted".into() });
+                            }
+                            if state.operation.as_ref().is_some_and(|operation| operation.meta.operation_id == operation_id) {
+                                let existing = this.active_drive.lock().unwrap_or_else(|error| error.into_inner()).clone();
+                                return match existing {
+                                    None => {
+                                        let drive = Arc::new(Drive::new(&crate::harness::agent_harness::DriveOptions { operation_id: operation_id.clone(), wait_for_retry: options.wait_for_retry, poll_deferred: options.poll_deferred }, &drive_context));
+                                        *this.active_drive.lock().unwrap_or_else(|error| error.into_inner()) = Some(drive.clone());
+                                        this.state_change.notify_waiters();
+                                        Ok(LaneCommand::Return { result: DriveClaim::Observe { drive, installed: true } })
+                                    }
+                                    Some(drive) if drive.operation_id == operation_id => Ok(LaneCommand::Return { result: DriveClaim::Observe { drive, installed: false } }),
+                                    Some(drive) => Ok(LaneCommand::Return { result: DriveClaim::Occupied { drive } }),
+                                };
+                            }
+                            let stored = reader.get_value(&operation_result(&operation_id), &drive_context).await?;
+                            Ok(match stored {
+                                Some(stored) => LaneCommand::Return { result: DriveClaim::Settled { outcome: serde_json::from_value(stored.value).map_err(|error| session_invariant_error(error.to_string()))? } },
+                                None => LaneCommand::Return { result: DriveClaim::Mismatch { error: this.mismatch(operation_id.clone(), state.operation.map(|operation| operation.meta.operation_id), state.last_operation_id) } },
+                            })
+                        })
+                    },
+                    context,
+                )
+                .await
+                .map_err(DriveOptionsError::Session)?;
+            match claim {
+                DriveClaim::Settled { outcome } => return Ok(DriveOutcome::Settled { outcome }),
+                DriveClaim::Mismatch { error } => return Err(DriveOptionsError::Mismatch(error)),
+                DriveClaim::Occupied { drive } => {
+                    let _ = drive.completion.wait().await;
+                    continue;
+                }
+                DriveClaim::Observe { drive, installed } => {
+                    if installed {
+                        let lane = self.clone();
+                        let running = drive.clone();
+                        tokio::spawn(async move {
+                            let outcome = super::drive::drive_operation(lane.as_ref(), running.as_ref()).await;
+                            {
+                                let mut active = lane.active_drive.lock().unwrap_or_else(|error| error.into_inner());
+                                if active.as_ref().is_some_and(|candidate| Arc::ptr_eq(candidate, &running)) { *active = None; }
+                            }
+                            lane.state_change.notify_waiters();
+                            match outcome {
+                                Ok(outcome) => running.settle(outcome),
+                                Err(error) => running.fail(error.message),
+                            }
+                        });
+                    }
+                    return match drive.completion.wait().await {
+                        Ok(outcome) => Ok(outcome),
+                        Err(error) => Err(DriveOptionsError::Drive(error)),
+                    };
+                }
+            }
+        }
+    }
+
+    /// Pinned `Lane.resume`: re-drive the one open operation, polling deferred handles and waiting retries.
+    pub async fn resume(self: &Arc<Self>, context: &Context) -> Result<Result<crate::harness::agent_harness::DriveOutcome, String>, SessionError> {
+        use crate::harness::agent_harness::{DriveOptions, DriveOptionsError, DriveOutcome};
+        if let Err(error) = self.assert_open() {
+            return Ok(Err(error.message));
+        }
+        let name = self.name.clone();
+        let inspected = self
+            .command(
+                move |state, _reader| {
+                    Box::pin(async move {
+                        Ok(match &state.operation {
+                            Some(operation) => LaneCommand::Return { result: Ok(operation.meta.operation_id.clone()) },
+                            None => LaneCommand::Return { result: Err(format!("Lane {:?} has no active operation to resume", name)) },
+                        })
+                    })
+                },
+                context,
+            )
+            .await?;
+        let operation_id = match inspected {
+            Ok(operation_id) => operation_id,
+            Err(message) => return Ok(Err(message)),
+        };
+        match self.drive(DriveOptions { operation_id: operation_id.clone(), wait_for_retry: Some(true), poll_deferred: Some(true) }, context).await {
+            Ok(outcome) => Ok(Ok(outcome)),
+            Err(DriveOptionsError::Session(error)) => Err(error),
+            Err(DriveOptionsError::Drive(message)) => Ok(Err(message)),
+            Err(DriveOptionsError::Mismatch(_)) => Err(session_invariant_error(format!("Operation {operation_id} no longer matches its lane"))),
+        }
+    }
+
+    /// The pinned `capturedSettings(readConfig())` captured for a run admission.
+    fn run_settings(&self) -> crate::harness::session::types::RunSettings {
+        let config = self.read_config();
+        crate::harness::session::types::RunSettings {
+            compaction: config.compaction,
+            steering_mode: config.steering_mode,
+            follow_up_mode: config.follow_up_mode,
+            tool_execution: config.tool_execution,
+        }
+    }
+
+    /// Pinned `Lane.prompt(...)`: admit a run, then drive it to settlement or suspension.
+    pub async fn prompt(self: &Arc<Self>, input: PromptInput, context: &Context) -> Result<RunResult, SessionError> {
+        let admission = self.accept_prompt(input, None, self.run_settings(), context).await?;
+        let admission = match admission {
+            Ok(admission) => admission,
+            Err(error) => return Ok(Err(error)),
+        };
+        self.drive_run(admission, context).await
+    }
+
+    /// Pinned `Lane.skill(...)`.
+    pub async fn skill(self: &Arc<Self>, name: &str, additional_instructions: Option<String>, context: &Context) -> Result<RunResult, SessionError> {
+        let admission = self.accept_skill(name, additional_instructions, None, context).await?;
+        let admission = match admission {
+            Ok(admission) => admission,
+            Err(error) => return Ok(Err(error)),
+        };
+        self.drive_run(admission, context).await
+    }
+
+    /// Pinned `Lane.promptFromTemplate(...)`.
+    pub async fn prompt_from_template(self: &Arc<Self>, name: &str, args: Vec<String>, context: &Context) -> Result<RunResult, SessionError> {
+        let admission = self.accept_prompt_template(name, args, None, context).await?;
+        let admission = match admission {
+            Ok(admission) => admission,
+            Err(error) => return Ok(Err(error)),
+        };
+        self.drive_run(admission, context).await
+    }
+
+    /// Pinned `Lane.driveRunRequest`: drive an accepted run to settlement or a suspension.
+    async fn drive_run(self: &Arc<Self>, admission: OperationAdmission, context: &Context) -> Result<RunResult, SessionError> {
+        use crate::harness::agent_harness::{DriveOptions, DriveOptionsError, DriveOutcome};
+        match self
+            .drive(DriveOptions { operation_id: admission.operation_id.clone(), wait_for_retry: Some(true), poll_deferred: None }, context)
+            .await
+        {
+            Ok(DriveOutcome::Settled { outcome }) => Ok(Ok(RunOutcome::Settled(outcome))),
+            Ok(DriveOutcome::WaitingDeferred { operation_id, deferred }) => Ok(Ok(RunOutcome::Suspended(SuspendedRun { operation_id, deferred }))),
+            Ok(DriveOutcome::WaitingRetry { .. }) => Err(session_invariant_error(format!("Run {} returned an unwaited retry", admission.operation_id))),
+            Err(DriveOptionsError::Session(error)) => Err(error),
+            Err(DriveOptionsError::Drive(message)) => Err(session_invariant_error(message)),
+            Err(DriveOptionsError::Mismatch(_)) => Err(session_invariant_error(format!("Accepted run {} no longer matches its lane", admission.operation_id))),
+        }
+    }
+
+    /// Pinned `Lane.driveStructuralAdmission`: drive a compaction/navigation admission.
+    async fn drive_structural(self: &Arc<Self>, admission: OperationAdmission, context: &Context) -> Result<Result<crate::harness::session::types::OperationResultRecord, AdmissionError>, SessionError> {
+        use crate::harness::agent_harness::{DriveOptions, DriveOptionsError, DriveOutcome};
+        match self
+            .drive(DriveOptions { operation_id: admission.operation_id.clone(), wait_for_retry: Some(true), poll_deferred: None }, context)
+            .await
+        {
+            Ok(DriveOutcome::Settled { outcome }) => Ok(Ok(outcome)),
+            Err(DriveOptionsError::Session(error)) if error.kind == SessionErrorKind::Closed => Ok(Err(AdmissionError::Closed { message: error.message })),
+            Ok(DriveOutcome::WaitingDeferred { .. }) | Ok(DriveOutcome::WaitingRetry { .. }) => Err(session_invariant_error(format!("{} {} returned an unexpected wait", admission.kind_label(), admission.operation_id))),
+            Err(error) => Err(session_invariant_error(format!("Accepted {} {} no longer matches its lane: {error}", admission.kind_label(), admission.operation_id))),
+        }
+    }
+
+    /// Pinned `Lane.compact(...)`: admit a compaction, drive it, then run the continuation window.
+    pub async fn compact(self: &Arc<Self>, custom_instructions: Option<String>, context: &Context) -> Result<CompactionResult, SessionError> {
+        let admission = self.accept_compaction(custom_instructions, None, self.run_settings(), context).await?;
+        let admission = match admission {
+            Ok(admission) => admission,
+            Err(error) => return Ok(Err(error)),
+        };
+        let record = match self.drive_structural(admission, context).await? {
+            Ok(record) => record,
+            Err(error) => return Ok(Err(error)),
+        };
+        let run = self.continue_after_structural(&record, context).await?;
+        Ok(Ok(CompactionOutcome { compaction: record, run }))
+    }
+
+    /// Pinned `Lane.navigateTree(...)`: admit a navigation, drive it, then run the continuation window.
+    pub async fn navigate_tree(self: &Arc<Self>, target_id: Option<String>, options: NavigationOptions, context: &Context) -> Result<NavigationResult, SessionError> {
+        let admission = self.accept_navigation(target_id, options, None, self.run_settings(), context).await?;
+        let admission = match admission {
+            Ok(admission) => admission,
+            Err(error) => return Ok(Err(error)),
+        };
+        let record = match self.drive_structural(admission, context).await? {
+            Ok(record) => record,
+            Err(error) => return Ok(Err(error)),
+        };
+        let run = self.continue_after_structural(&record, context).await?;
+        Ok(Ok(NavigationOutcome { navigation: record, run }))
+    }
+
+    /// Pinned `Lane.continueAfterStructural`: the post-structural continuation window.
+    async fn continue_after_structural(self: &Arc<Self>, record: &crate::harness::session::types::OperationResultRecord, context: &Context) -> Result<Option<RunOutcome>, SessionError> {
+        use crate::harness::agent_harness::{DriveOptions, DriveOptionsError, DriveOutcome};
+        use crate::harness::session::types::TerminalStatus;
+        if record.status == TerminalStatus::Aborted {
+            return Ok(None);
+        }
+        let admission = self
+            .accept_prompt(PromptInput::Text { text: String::new(), images: Vec::new() }, None, self.run_settings(), context)
+            .await?;
+        let admission = match admission {
+            Ok(admission) => admission,
+            Err(AdmissionError::Empty) | Err(AdmissionError::LaneBusy { .. }) => return Ok(None),
+            Err(AdmissionError::Closed { message }) => return Err(SessionError::new(SessionErrorKind::Closed, message)),
+            Err(error) => return Err(session_invariant_error(format!("Structural continuation acceptance returned {error}"))),
+        };
+        match self
+            .drive(DriveOptions { operation_id: admission.operation_id.clone(), wait_for_retry: Some(true), poll_deferred: None }, context)
+            .await
+        {
+            Ok(DriveOutcome::Settled { outcome }) => Ok(Some(RunOutcome::Settled(outcome))),
+            Ok(DriveOutcome::WaitingDeferred { operation_id, deferred }) => Ok(Some(RunOutcome::Suspended(SuspendedRun { operation_id, deferred }))),
+            Ok(DriveOutcome::WaitingRetry { .. }) => Err(session_invariant_error(format!("Continuation run {} returned an unwaited retry", admission.operation_id))),
+            Err(DriveOptionsError::Session(error)) if error.kind == SessionErrorKind::Closed => Err(error),
+            Err(error) => Err(session_invariant_error(format!("Continuation run {} no longer matches its lane: {error}", admission.operation_id))),
+        }
+    }
+
+    /// Pinned `Lane.abort(...)`: request cancellation and reconcile the current operation.
+    pub async fn abort(self: &Arc<Self>, context: &Context) -> Result<Result<AbortResult, AbortError>, SessionError> {
+        use crate::harness::agent_harness::{DriveOptions, DriveOptionsError};
+        let operation_id = self
+            .command(|state, _reader| Box::pin(async move { Ok(LaneCommand::Return { result: state.operation.map(|operation| operation.meta.operation_id) }) }), context)
+            .await?;
+        let Some(operation_id) = operation_id else {
+            return Ok(Err(AbortError::NoActiveOperation { lane: self.name.clone(), message: format!("Lane {:?} has no active operation", self.name) }));
+        };
+        let requested = self.request_operation_abort(operation_id.clone(), context).await?;
+        let request = match requested {
+            Ok(request) => request,
+            Err(_mismatch) => return Ok(Err(AbortError::NoActiveOperation { lane: self.name.clone(), message: format!("Lane {:?} no longer has the inspected operation", self.name) })),
+        };
+        match self.drive(DriveOptions { operation_id: operation_id.clone(), wait_for_retry: None, poll_deferred: None }, context).await {
+            Ok(_) => {}
+            Err(DriveOptionsError::Session(error)) if error.kind == SessionErrorKind::Closed => return Ok(Err(AbortError::Closed { message: error.message })),
+            Err(error) => return Err(session_invariant_error(format!("Cancelled operation {operation_id} no longer matches its lane: {error}"))),
+        }
+        Ok(Ok(AbortResult { operation_id, steer: request.steer, follow_up: request.follow_up }))
     }
 
     pub async fn accept_prompt(&self, input: PromptInput, operation_id: Option<String>, settings: crate::harness::session::types::RunSettings, context: &Context) -> Result<Result<OperationAdmission, AdmissionError>, SessionError> {
@@ -979,6 +1379,128 @@ impl Lane {
                 Ok(LaneCommand::Commit { decision: CommitDecision { writes, materialize: Arc::new(move |_| id.clone()), events: Some(Arc::new(move |_| vec![HarnessEvent::new(HarnessEventPayload::QueueUpdate { queues: queues.clone() }, Some(name.clone()))])) }, next: Box::new(state) })
             }
         }), context).await
+    }
+}
+
+/// Production `RuntimeLane` binding for the durable harness `Lane`.
+///
+/// The lane watch/snapshot and the drive procedures read a lane through this trait. `state` reads
+/// the live projection and `publish_state` writes it back after a drive commit (not a no-op);
+/// `emit` forwards through the lane's own event bus so watchers see exactly one copy.
+impl RuntimeLane for Lane {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn session(&self) -> &dyn Session {
+        self.session.as_ref()
+    }
+    fn state(&self) -> LaneState {
+        self.state()
+    }
+    fn publish_state(&self, state: LaneState) {
+        *self.state.lock().unwrap_or_else(|error| error.into_inner()) = state;
+    }
+    fn emit<'a>(&'a self, events: Vec<HarnessEvent>, context: &'a Context) -> BoxFuture<'a, ()> {
+        self.events.begin_emit_batch(events, context.clone())
+    }
+}
+
+/// Production `RuntimeDriveLane` binding for the durable harness `Lane`.
+///
+/// Every drive phase (`drive.rs`) reaches its leaf procedures through this trait. The three
+/// orchestration methods that need an owned `Arc<Lane>` (`run_tools`, `run_structural`, and the two
+/// compaction preparations) upgrade the lane's installed weak self, which `Lane::drive` and the
+/// harness set before any drive pass can start.
+impl RuntimeDriveLane for Lane {
+    fn progress_lane(&self) -> Arc<dyn RuntimeLane> {
+        self.self_ref
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .upgrade()
+            .expect("Lane drive requires an installed self reference")
+    }
+
+    fn config(&self) -> Arc<Config<()>> {
+        self.read_config()
+    }
+
+    fn hooks(&self) -> &HookRegistry {
+        self.hooks.as_ref()
+    }
+
+    fn models(&self) -> &maho_ai::models::Models {
+        &self.models
+    }
+
+    fn cancel_deferred<'a>(
+        &'a self,
+        model: &'a maho_ai::model::Model,
+        handle: &'a maho_ai::types::DeferredHandle,
+        options: maho_ai::types::ProviderRequestOptions,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        // Pinned `Models.cancelDeferred(model, handle, options)`: resolve the provider, reject an
+        // unsupported capability with the pinned message, then forward through `applyAuth` to
+        // `provider.cancelDeferred(requestModel, handle, requestOptions)`. `cancelDeferredBestEffort`
+        // swallows the returned error, so no shadow protocol sits between here and the provider.
+        let models = self.models.clone();
+        let model = model.clone();
+        let handle = handle.clone();
+        Box::pin(async move { models.cancel_deferred(&model, &handle, Some(options)).await })
+    }
+
+    fn prepare_compaction_threshold<'a>(
+        &'a self,
+        drive: &'a Drive,
+        state: &'a OperationState,
+    ) -> BoxFuture<'a, Result<ContinueOperationResult<Option<StructuralPreparation>>, SessionError>> {
+        Box::pin(async move {
+            let lane = self.arc()?;
+            super::structural::prepare_compaction_threshold(&lane, drive, state).await
+        })
+    }
+
+    fn prepare_overflow_compaction<'a>(
+        &'a self,
+        drive: &'a Drive,
+        state: &'a OperationState,
+    ) -> BoxFuture<'a, Result<Option<StructuralPreparation>, SessionError>> {
+        Box::pin(async move {
+            let lane = self.arc()?;
+            super::structural::prepare_overflow_compaction(&lane, drive, state).await
+        })
+    }
+
+    fn run_tools<'a>(&'a self, drive: &'a Drive, state: OperationState) -> BoxFuture<'a, Result<ProcedureResult, SessionError>> {
+        Box::pin(async move {
+            let lane = self.arc()?;
+            self.tool_runner.run(&lane, drive, state).await
+        })
+    }
+
+    fn run_structural<'a>(&'a self, drive: &'a Drive, state: OperationState) -> BoxFuture<'a, Result<ProcedureResult, SessionError>> {
+        Box::pin(async move {
+            let lane = self.arc()?;
+            super::structural::run_structural(&lane, drive, state).await
+        })
+    }
+}
+
+/// The pinned `Config` is not `Clone`-derived; clone its (all-`Clone`) fields field-by-field so
+/// `Lane::read_config` can hand out a fresh snapshot without touching the shared store's owner.
+fn clone_drive_config(config: &Config<()>) -> Config<()> {
+    Config {
+        tools: config.tools.clone(),
+        resources: config.resources.clone(),
+        stream_options: config.stream_options.clone(),
+        retry_policy: config.retry_policy.clone(),
+        compaction: config.compaction,
+        steering_mode: config.steering_mode,
+        follow_up_mode: config.follow_up_mode,
+        tool_execution: config.tool_execution,
+        tool_context: config.tool_context,
+        system_prompt: config.system_prompt.clone(),
+        to_provider_messages: config.to_provider_messages.clone(),
+        entry_projectors: config.entry_projectors.clone(),
     }
 }
 

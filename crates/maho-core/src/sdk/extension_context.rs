@@ -76,7 +76,7 @@ pub(crate) fn create(session: &AgentSession) -> ExtensionContext {
             file: session.session_file().map(Into::into), actions }),
         model_registry: Arc::new(crate::agent_session::ExtensionModelRegistryView::new(session, Default::default())),
         model: Some(session.model()), thinking_level: None, service_tier: session.service_tier(),
-        effective_service_tier: session.effective_service_tier(), scoped_models: Vec::new(), goal_store_file: None,
+        effective_service_tier: session.effective_service_tier(), scoped_models: Vec::new(), goal_store_file: goal_store_file(session),
         loaded_extension_paths: Vec::new(), signal: None, steering_signal: None,
         is_idle_fn: Arc::new(move || idle.is_idle()),
         wait_for_idle_fn: Arc::new(move || { let session = wait(); Box::pin(async move { if let Some(session) = session { session.wait_for_idle().await } }) }),
@@ -85,5 +85,45 @@ pub(crate) fn create(session: &AgentSession) -> ExtensionContext {
         get_system_prompt_fn: Arc::new(move || prompt.get_system_prompt()),
         get_system_prompt_options_fn: Arc::new(move || options.get_system_prompt_options()),
         registered_mcp_servers: Vec::new(), update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None, compaction_signal: Default::default(),
+    }
+}
+
+/// The pinned `goalPathsFromContext` session-directory path:
+/// `<sessionDir>/extensions/goal/<encodeURIComponent(sessionId)>.json`. The reader treats a missing
+/// file as "no goal", so this is the real path (not a session-file proxy).
+fn goal_store_file(session: &AgentSession) -> Option<std::path::PathBuf> {
+    let dir = session.with_session_manager(|manager| manager.session_dir().to_owned());
+    if dir.is_empty() {
+        return None;
+    }
+    Some(
+        std::path::Path::new(&dir)
+            .join("extensions/goal")
+            .join(format!("{}.json", encode_uri_component(&session.session_id()))),
+    )
+}
+
+/// `encodeURIComponent`: keep the unreserved set and percent-encode the rest (UTF-8 bytes).
+pub(crate) fn encode_uri_component(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_uri_component;
+
+    #[test]
+    fn encode_uri_component_keeps_the_unreserved_set_and_escapes_the_rest() {
+        assert_eq!(encode_uri_component("abc-_.!~*'()"), "abc-_.!~*'()");
+        assert_eq!(encode_uri_component("a/b c"), "a%2Fb%20c");
+        assert_eq!(encode_uri_component("세션"), "%EC%84%B8%EC%85%98");
     }
 }

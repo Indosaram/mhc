@@ -469,6 +469,21 @@ pub trait ProviderStreams: Send + Sync {
     fn supports_deferred(&self) -> bool {
         false
     }
+    /// `cancelDeferred(model, handle, options)`: the operation future, or the pinned unsupported
+    /// error. The default is genuinely unsupported (`ProviderStreams.cancelDeferred` undefined),
+    /// never a no-op success; `supports_cancel_deferred()` is the model-free presence probe.
+    fn cancel_deferred<'a>(
+        &'a self,
+        _model: &'a Model,
+        _handle: &'a DeferredHandle,
+        _options: Option<DeferredCancelOptions>,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Err("API cannot cancel deferred responses".to_owned()) })
+    }
+    /// `ProviderStreams.cancelDeferred !== undefined` (model-free capability probe).
+    fn supports_cancel_deferred(&self) -> bool {
+        false
+    }
 }
 
 pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;

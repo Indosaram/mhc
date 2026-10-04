@@ -1,5 +1,7 @@
 #[path="native_account/support.rs"]
 mod support;
+#[path="native_account/native_state.rs"]
+mod native_state;
 use maho_ext_api::*;
 use maho_ai::types::{ProviderImages,ImagesModel,ImagesContext,ImagesOptions,AssistantImages,ImagesStopReason,ImagesBackground,BoxFuture,ContentBlock,ImageContent,TextContent};
 use std::sync::{Arc,Mutex};
@@ -24,6 +26,7 @@ impl ProviderImages for Provider{
 }
 #[tokio::test]
 async fn registered_image_client_preserves_auth_and_delivered_file_format()->Result<(),Box<dyn std::error::Error>>{
+    let _guard=native_state::GlobalNativeStateGuard::acquire().await;
     let root=tempfile::tempdir()?;let scope=maho_ai::node::provider_scope::ProviderScope::new();
     let provider=Arc::new(Provider{calls:Mutex::new(vec![])});
     let outcome=maho_ai::node::provider_scope::run_with_provider_scope_async(&scope,async{

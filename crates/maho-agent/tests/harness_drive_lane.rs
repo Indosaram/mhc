@@ -9,7 +9,7 @@ use maho_agent::harness::session::{
     MemoryStorage, MemoryStorageOptions, StorageBackedSession, StorageBackedSessionOptions,
 };
 use maho_ai::types::ModelThinkingLevel;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 fn seed() -> LaneConfiguration {
     LaneConfiguration {
@@ -355,6 +355,215 @@ async fn fixture() -> Harness {
         .expect("fresh harness attaches")
 }
 
+fn faux_model() -> maho_ai::model::Model {
+    maho_ai::providers::faux::faux_provider(Default::default())
+        .get_model(None)
+        .expect("faux provider ships a model")
+}
+
+#[tokio::test]
+async fn options_constructor_seeds_lane_configuration_and_drive_config() {
+    use maho_agent::harness::agent_harness::AgentHarnessOptions;
+    use maho_agent::harness::runtime::harness::create_agent_harness_with_options;
+    use maho_agent::harness::types::{AgentHarnessResources, Skill};
+    let storage = Arc::new(MemoryStorage::new(MemoryStorageOptions { now: Some(Arc::new(|| 10)) }));
+    let session = Arc::new(StorageBackedSession::new(
+        SessionMetadata { id: "options".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None },
+        storage,
+        StorageBackedSessionOptions::default(),
+    ));
+    session.attach();
+    let model = faux_model();
+    let (harness, open) = create_agent_harness_with_options(
+        AgentHarnessOptions {
+            session,
+            models: maho_ai::models::create_models(None),
+            model: model.clone(),
+            thinking_level: Some(ModelThinkingLevel::High),
+            active_tool_names: Some(vec!["read".into()]),
+            tools: Vec::new(),
+            tool_context: None,
+            system_prompt: None,
+            resources: Some(AgentHarnessResources { skills: Some(vec![Skill { name: "review".into(), description: "Review".into(), content: "Inspect".into(), file_path: "/skills/review/SKILL.md".into(), disable_model_invocation: None }]), prompt_templates: None }),
+            stream_options: None,
+            retry: None,
+            compaction: None,
+            steering_mode: Some(maho_agent::types::QueueMode::OneAtATime),
+            follow_up_mode: None,
+            tool_execution: None,
+        },
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .expect("options constructor attaches");
+    assert!(open.is_empty());
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    assert_eq!(lane.state().configuration.thinking_level, ModelThinkingLevel::High);
+    assert_eq!(lane.state().configuration.active_tool_names, vec!["read".to_owned()]);
+    assert_eq!(lane.state().configuration.model.provider, model.provider);
+    let config = lane.read_config();
+    assert_eq!(config.steering_mode, maho_agent::types::QueueMode::OneAtATime);
+    assert_eq!(config.resources.skills.as_ref().map(Vec::len), Some(1));
+}
+
+#[tokio::test]
+async fn drive_reports_mismatch_for_an_unknown_operation() {
+    use maho_agent::harness::agent_harness::{DriveOptions, DriveOptionsError};
+    let harness = fixture().await;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let result = lane
+        .drive(DriveOptions { operation_id: "missing".into(), wait_for_retry: None, poll_deferred: None }, &BACKGROUND_CONTEXT)
+        .await;
+    assert!(matches!(result, Err(DriveOptionsError::Mismatch(_))));
+}
+
+#[tokio::test]
+async fn resume_reports_nothing_to_resume_when_idle() {
+    let harness = fixture().await;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let resumed = lane.resume(&BACKGROUND_CONTEXT).await.expect("resume does not fault when idle");
+    let message = resumed.expect_err("idle lane has nothing to resume");
+    assert!(message.contains("no active operation to resume"), "unexpected message: {message}");
+}
+
+#[tokio::test]
+async fn concurrent_drive_shares_one_installed_pass() {
+    use maho_agent::harness::agent_harness::{DriveOptions, DriveOutcome};
+    use maho_agent::harness::runtime::lane::PromptInput;
+    let harness = fixture().await;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let settings = maho_agent::harness::session::types::RunSettings {
+        compaction: maho_agent::harness::compaction::compaction::DEFAULT_COMPACTION_SETTINGS,
+        steering_mode: maho_agent::types::QueueMode::All,
+        follow_up_mode: maho_agent::types::QueueMode::All,
+        tool_execution: maho_agent::harness::session::types::ToolExecutionMode::Parallel,
+    };
+    let admission = lane
+        .accept_prompt(PromptInput::Text { text: "hello".into(), images: vec![] }, None, settings, &BACKGROUND_CONTEXT)
+        .await
+        .unwrap()
+        .unwrap();
+    let options = DriveOptions { operation_id: admission.operation_id.clone(), wait_for_retry: None, poll_deferred: None };
+    let first = lane.clone();
+    let second = lane.clone();
+    let first_options = options.clone();
+    let second_options = options.clone();
+    let (first_outcome, second_outcome) = tokio::join!(
+        async move { first.drive(first_options, &BACKGROUND_CONTEXT).await },
+        async move { second.drive(second_options, &BACKGROUND_CONTEXT).await },
+    );
+    let first_outcome = first_outcome.expect("the installing drive settles");
+    let second_outcome = second_outcome.expect("the observing drive settles");
+    assert!(matches!(first_outcome, DriveOutcome::Settled { .. }));
+    assert!(matches!(second_outcome, DriveOutcome::Settled { .. }));
+    assert_eq!(first_outcome, second_outcome);
+    assert!(lane.state().operation.is_none());
+    lane.wait_for_idle(&BACKGROUND_CONTEXT).await.unwrap();
+}
+
+struct FacadeAuth;
+
+impl maho_ai::models::ModelsAuth for FacadeAuth {
+    fn resolve<'a>(
+        &'a self,
+        _: &'a dyn maho_ai::models::Provider,
+        _: &'a maho_ai::models::AuthResolutionOverrides,
+    ) -> maho_ai::types::BoxFuture<'a, Result<Option<maho_ai::models::AuthResolution>, maho_ai::models::ModelsError>> {
+        Box::pin(async {
+            Ok(Some(maho_ai::models::AuthResolution {
+                auth: maho_ai::models::ProviderAuthResult { api_key: Some("fixture".into()), ..Default::default() },
+                env: None,
+            }))
+        })
+    }
+    fn refresh_credential<'a>(
+        &'a self,
+        _: &'a dyn maho_ai::models::Provider,
+        _: Option<&'a maho_ai::models::Credential>,
+        _: &'a maho_ai::utils::abort::AbortSignal,
+    ) -> maho_ai::types::BoxFuture<'a, Result<Option<maho_ai::models::Credential>, maho_ai::models::ModelsError>> {
+        Box::pin(async { Ok(None) })
+    }
+}
+
+async fn facade_lane() -> (Arc<maho_agent::harness::runtime::lane::Lane>, maho_ai::providers::faux::FauxProviderHandle) {
+    facade_lane_with_faux(Default::default()).await
+}
+
+fn lane_run_settings() -> maho_agent::harness::session::types::RunSettings {
+    maho_agent::harness::session::types::RunSettings {
+        compaction: maho_agent::harness::compaction::compaction::DEFAULT_COMPACTION_SETTINGS,
+        steering_mode: maho_agent::types::QueueMode::All,
+        follow_up_mode: maho_agent::types::QueueMode::All,
+        tool_execution: maho_agent::harness::session::types::ToolExecutionMode::Parallel,
+    }
+}
+
+async fn facade_lane_with_faux(options: maho_ai::providers::faux::RegisterFauxProviderOptions) -> (Arc<maho_agent::harness::runtime::lane::Lane>, maho_ai::providers::faux::FauxProviderHandle) {
+    use maho_agent::harness::session::types::{LaneConfiguration, LaneModelRef};
+    let faux = maho_ai::providers::faux::faux_provider(options);
+    let model = faux.get_model(None).expect("faux provider ships a model");
+    let models = maho_ai::models::create_models(Some(maho_ai::models::CreateModelsOptions { auth: Some(Arc::new(FacadeAuth)), ..Default::default() }));
+    models.set_provider(faux.provider.clone());
+    let session = Arc::new(StorageBackedSession::new(
+        SessionMetadata { id: "facade".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None },
+        Arc::new(MemoryStorage::new(MemoryStorageOptions { now: Some(Arc::new(|| 10)) })),
+        StorageBackedSessionOptions::default(),
+    ));
+    session.attach();
+    let configuration = LaneConfiguration {
+        model: LaneModelRef { provider: model.provider.clone(), model_id: model.id.clone() },
+        thinking_level: ModelThinkingLevel::Off,
+        active_tool_names: vec![],
+    };
+    let state = maho_agent::harness::runtime::types::LaneState { tip_id: None, configuration, inbox: vec![], last_operation_id: None, operation: None };
+    let mut lane = maho_agent::harness::runtime::lane::Lane::new("main".into(), session, state, maho_agent::harness::events::HarnessEventBus::new());
+    lane.models = models;
+    let lane = Arc::new(lane);
+    lane.install_self();
+    (lane, faux)
+}
+
+#[tokio::test]
+async fn prompt_settles_through_the_public_facade() {
+    use maho_agent::harness::runtime::lane::{PromptInput, RunOutcome};
+    use maho_agent::harness::session::types::TerminalStatus;
+    let (lane, faux) = facade_lane().await;
+    faux.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("answer", Default::default()).into()]);
+    let outcome = lane
+        .prompt(PromptInput::Text { text: "hello".into(), images: vec![] }, &BACKGROUND_CONTEXT)
+        .await
+        .expect("prompt does not fault")
+        .expect("prompt admits");
+    let RunOutcome::Settled(record) = outcome else { panic!("expected a settled run") };
+    assert_eq!(record.status, TerminalStatus::Completed);
+    assert!(lane.state().operation.is_none());
+}
+
+#[tokio::test]
+async fn compact_composes_admission_with_drive() {
+    use maho_agent::harness::session::types::TerminalStatus;
+    let (lane, faux) = facade_lane().await;
+    lane.append_message(
+        maho_agent::types::AgentMessage::from(maho_ai::types::Message::User(maho_ai::types::UserMessage { content: maho_ai::types::UserContent::Text("history".into()), timestamp: 1 })),
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .expect("append history");
+    faux.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("summary", Default::default()).into()]);
+    let outcome = lane.compact(None, &BACKGROUND_CONTEXT).await.expect("compact does not fault").expect("compact admits");
+    assert_eq!(outcome.compaction.status, TerminalStatus::Completed);
+    assert!(lane.state().operation.is_none());
+}
+
+#[tokio::test]
+async fn abort_reports_no_active_operation_when_idle() {
+    use maho_agent::harness::runtime::lane::AbortError;
+    let (lane, _faux) = facade_lane().await;
+    let outcome = lane.abort(&BACKGROUND_CONTEXT).await.expect("abort does not fault").expect_err("idle lane has no operation");
+    assert!(matches!(outcome, AbortError::NoActiveOperation { .. }));
+}
+
 #[tokio::test]
 async fn reads_and_replaces_configuration_from_owned_state() {
     let harness = fixture().await;
@@ -668,4 +877,275 @@ async fn persists_name_and_label_updates_and_deletions() {
             .unwrap(),
         None
     );
+}
+
+/// Causal regression: the typed `ExecutionToolContext.env` reaches a real tool invocation through
+/// the public `prompt` path, built through the real constructor. The lane is obtained from
+/// `create_agent_harness_with_options::<ExecutionToolContext>`, so `Config<()>.tools` (the
+/// provider-facing definition) and the lane's typed `ToolRunner` are both populated by the
+/// constructor — no hand-assigned runner. The faux provider asks `read` to read a real temp file.
+#[tokio::test]
+async fn typed_tool_context_env_reaches_a_real_read_invocation() {
+    use maho_agent::harness::agent_harness::AgentHarnessOptions;
+    use maho_agent::harness::env::nodejs::NodeExecutionEnv;
+    use maho_agent::harness::runtime::harness::create_agent_harness_with_options;
+    use maho_agent::harness::runtime::lane::{PromptInput, RunOutcome};
+    use maho_agent::harness::session::types::TerminalStatus;
+    use maho_agent::harness::tools::{create_read_tool, ExecutionToolContext, ReadToolOptions};
+    use maho_agent::harness::types::{AgentHarnessTool, ExecutionEnv};
+
+    // A real temp directory (auto-removed on drop, even on panic) the read tool must open.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let marker = "tool-context-marker";
+    std::fs::write(dir.path().join("note.txt"), marker).expect("temp file");
+
+    let faux = maho_ai::providers::faux::faux_provider(Default::default());
+    let model = faux.get_model(None).expect("faux provider ships a model");
+    let models = maho_ai::models::create_models(Some(maho_ai::models::CreateModelsOptions { auth: Some(Arc::new(FacadeAuth)), ..Default::default() }));
+    models.set_provider(faux.provider.clone());
+    let session = Arc::new(StorageBackedSession::new(
+        SessionMetadata { id: "typed-context".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None },
+        Arc::new(MemoryStorage::new(MemoryStorageOptions { now: Some(Arc::new(|| 10)) })),
+        StorageBackedSessionOptions::default(),
+    ));
+    session.attach();
+    let env: Arc<dyn ExecutionEnv> = Arc::new(NodeExecutionEnv::new(dir.path().to_string_lossy().to_string()));
+    let tools: Vec<Arc<AgentHarnessTool<ExecutionToolContext>>> = vec![Arc::new(
+        create_read_tool::<ExecutionToolContext>(ReadToolOptions { auto_resize_images: None, image_processor: None }),
+    )];
+    let (harness, _open) = create_agent_harness_with_options(
+        AgentHarnessOptions::<ExecutionToolContext> {
+            session,
+            models,
+            model: model.clone(),
+            thinking_level: None,
+            active_tool_names: None,
+            tools,
+            tool_context: Some(ExecutionToolContext { env, post_mutate: None }),
+            system_prompt: None,
+            resources: None,
+            stream_options: None,
+            retry: None,
+            compaction: None,
+            steering_mode: None,
+            follow_up_mode: None,
+            tool_execution: None,
+        },
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .expect("the constructor attaches");
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.expect("lane");
+
+    // The constructor seeded the active tool names and populated the provider-facing config.
+    assert_eq!(lane.state().configuration.active_tool_names, vec!["read".to_owned()]);
+    assert!(
+        lane.read_config().tools.iter().any(|tool| tool.name() == "read"),
+        "the constructor must project the read tool into the provider-facing Config.tools"
+    );
+
+    // One tool-call turn (read note.txt), then a follow-up text answer.
+    let arguments = serde_json::json!({"path": "note.txt"}).as_object().expect("object args").clone();
+    faux.set_responses(vec![
+        maho_ai::providers::faux::faux_assistant_message(
+            maho_ai::providers::faux::faux_tool_call("read", arguments, Some("call-read")),
+            maho_ai::providers::faux::FauxAssistantMessageOptions { stop_reason: Some(maho_ai::types::StopReason::ToolUse), ..Default::default() },
+        )
+        .into(),
+        maho_ai::providers::faux::faux_assistant_message("done", Default::default()).into(),
+    ]);
+
+    let outcome = lane
+        .prompt(PromptInput::Text { text: "read note.txt".into(), images: vec![] }, &BACKGROUND_CONTEXT)
+        .await
+        .expect("prompt does not fault")
+        .expect("prompt admits");
+    let RunOutcome::Settled(record) = outcome else { panic!("expected a settled run") };
+    assert_eq!(record.status, TerminalStatus::Completed);
+    // The tool round-trip reached the provider twice (tool-call turn + follow-up answer).
+    assert_eq!(faux.state().call_count, 2);
+
+    // The real read tool output (the temp file contents) is in the durable transcript.
+    let entries = lane.find_entries(None, &BACKGROUND_CONTEXT).await.expect("transcript");
+    let tool_result = entries
+        .iter()
+        .find_map(|entry| match entry.kind.message().and_then(|message| message.try_as_llm()) {
+            Some(maho_ai::types::Message::ToolResult(message)) => Some(message.clone()),
+            _ => None,
+        })
+        .expect("a tool result was committed");
+    assert_eq!(tool_result.tool_name, "read");
+    assert!(!tool_result.is_error, "the read tool failed: {tool_result:?}");
+    let text = tool_result
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            maho_ai::types::ContentBlock::Text(text) => Some(text.text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains(marker), "tool result did not carry the real file content: {text}");
+}
+
+/// A `Provider` that records every `cancel_deferred` call and delegates everything else to the
+/// wrapped provider. The faux provider records only the handle, so this is the recording provider
+/// that proves the auth-resolved request options actually reach the provider.
+struct RecordingProvider {
+    inner: Arc<dyn maho_ai::models::Provider>,
+    cancelled: Mutex<Vec<(maho_ai::types::DeferredHandle, Option<maho_ai::types::ProviderRequestOptions>)>>,
+}
+
+impl RecordingProvider {
+    fn new(inner: Arc<dyn maho_ai::models::Provider>) -> Self {
+        Self { inner, cancelled: Mutex::new(Vec::new()) }
+    }
+}
+
+impl maho_ai::models::Provider for RecordingProvider {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn get_models(&self) -> Vec<maho_ai::model::Model> {
+        self.inner.get_models()
+    }
+    fn stream(&self, model: &maho_ai::model::Model, context: &maho_ai::types::Context, options: Option<maho_ai::types::StreamOptions>) -> maho_ai::types::AssistantMessageEventStream {
+        self.inner.stream(model, context, options)
+    }
+    fn stream_simple(&self, model: &maho_ai::model::Model, context: &maho_ai::types::Context, options: Option<maho_ai::types::SimpleStreamOptions>) -> maho_ai::types::AssistantMessageEventStream {
+        self.inner.stream_simple(model, context, options)
+    }
+    fn fetch_deferred(&self, model: &maho_ai::model::Model, handle: &maho_ai::types::DeferredHandle, options: Option<maho_ai::types::DeferredFetchOptions>) -> Option<maho_ai::types::AssistantMessageEventStream> {
+        self.inner.fetch_deferred(model, handle, options)
+    }
+    fn cancel_deferred<'a>(
+        &'a self,
+        model: &'a maho_ai::model::Model,
+        handle: &'a maho_ai::types::DeferredHandle,
+        options: Option<maho_ai::types::ProviderRequestOptions>,
+    ) -> maho_ai::types::BoxFuture<'a, Result<(), String>> {
+        let recorded = (handle.clone(), options.clone());
+        Box::pin(async move {
+            self.cancelled.lock().unwrap_or_else(|error| error.into_inner()).push(recorded);
+            self.inner.cancel_deferred(model, handle, options).await
+        })
+    }
+    fn supports_cancel_deferred(&self) -> bool {
+        self.inner.supports_cancel_deferred()
+    }
+}
+
+/// Causal regression: aborting a deferred operation through the public lane path forwards the exact
+/// handle AND the auth-resolved request options to the real provider. The lane is built through the
+/// constructor; a recording provider captures the forwarded `(handle, options)`. The suspension
+/// event carries the handle, so the test subscribes before driving (no sleeps).
+#[tokio::test]
+async fn abort_forwards_the_deferred_handle_and_request_options_to_the_provider() {
+    use maho_agent::harness::agent_harness::{AgentHarnessOptions, DriveOptions, DriveOutcome};
+    use maho_agent::harness::events::HarnessEventPayload;
+    use maho_agent::harness::runtime::harness::create_agent_harness_with_options;
+    use maho_agent::harness::runtime::lane::PromptInput;
+    use maho_agent::harness::session::types::TerminalStatus;
+    use maho_ai::types::DeferredHandle;
+
+    let faux = maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
+        deferred: Some(maho_ai::providers::faux::FauxDeferredOptions { pending_fetches: Some(1), poll_after_ms: None }),
+        ..Default::default()
+    });
+    let model = faux.get_model(None).expect("faux provider ships a model");
+    let recorder = Arc::new(RecordingProvider::new(faux.provider.clone()));
+    let models = maho_ai::models::create_models(Some(maho_ai::models::CreateModelsOptions { auth: Some(Arc::new(FacadeAuth)), ..Default::default() }));
+    models.set_provider(recorder.clone());
+    let session = Arc::new(StorageBackedSession::new(
+        SessionMetadata { id: "abort-deferred".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None },
+        Arc::new(MemoryStorage::new(MemoryStorageOptions { now: Some(Arc::new(|| 10)) })),
+        StorageBackedSessionOptions::default(),
+    ));
+    session.attach();
+    let (harness, _open) = create_agent_harness_with_options(
+        AgentHarnessOptions::<()> {
+            session,
+            models,
+            model: model.clone(),
+            thinking_level: None,
+            active_tool_names: None,
+            tools: Vec::new(),
+            tool_context: None,
+            system_prompt: None,
+            resources: None,
+            stream_options: None,
+            retry: None,
+            compaction: None,
+            steering_mode: None,
+            follow_up_mode: None,
+            tool_execution: None,
+        },
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .expect("the constructor attaches");
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.expect("lane");
+
+    // Subscribe to the exact deferred-suspension event before driving; it carries the handle.
+    let captured: Arc<Mutex<Option<DeferredHandle>>> = Arc::new(Mutex::new(None));
+    let suspended = Arc::new(tokio::sync::Notify::new());
+    let sink = captured.clone();
+    let notify = suspended.clone();
+    let _registration = lane.events.on("run_suspend", Arc::new(move |event, _context| {
+        if let HarnessEventPayload::RunSuspend { deferred, .. } = &event.payload {
+            *sink.lock().unwrap_or_else(|error| error.into_inner()) = Some(deferred.clone());
+        }
+        let notify = notify.clone();
+        Box::pin(async move { notify.notify_one(); })
+    }));
+
+    let admission = lane
+        .accept_prompt(PromptInput::Text { text: "defer".into(), images: vec![] }, None, lane_run_settings(), &BACKGROUND_CONTEXT)
+        .await
+        .expect("accept deferred prompt")
+        .expect("admitted");
+    let outcome = lane
+        .drive(DriveOptions { operation_id: admission.operation_id.clone(), wait_for_retry: None, poll_deferred: None }, &BACKGROUND_CONTEXT)
+        .await
+        .expect("drive to suspension");
+    assert!(matches!(outcome, DriveOutcome::WaitingDeferred { .. }), "expected a deferred suspension");
+    tokio::time::timeout(std::time::Duration::from_secs(5), suspended.notified())
+        .await
+        .expect("the deferred suspension event fired");
+    let handle = captured
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+        .expect("run_suspend carried the deferred handle");
+
+    // Abort through the public path; reconciliation forwards the handle + options to the provider.
+    let requested = lane
+        .request_operation_abort(admission.operation_id.clone(), &BACKGROUND_CONTEXT)
+        .await
+        .expect("abort request")
+        .expect("operation matched");
+    assert!(requested.newly_requested);
+    let settled = lane
+        .drive(DriveOptions { operation_id: admission.operation_id.clone(), wait_for_retry: None, poll_deferred: None }, &BACKGROUND_CONTEXT)
+        .await
+        .expect("reconcile drive");
+    let DriveOutcome::Settled { outcome } = settled else { panic!("aborted drive settled") };
+    assert_eq!(outcome.status, TerminalStatus::Aborted);
+
+    // The provider received the exact handle and the auth-resolved request options.
+    let recorded = recorder.cancelled.lock().unwrap_or_else(|error| error.into_inner()).clone();
+    let (recorded_handle, recorded_options) = recorded
+        .into_iter()
+        .find(|(candidate, _)| candidate.id == handle.id)
+        .expect("the provider did not receive the cancelled handle");
+    assert_eq!(recorded_handle.provider, handle.provider);
+    let options = recorded_options.expect("cancellation options must be forwarded");
+    assert!(options.signal.is_some(), "the drive close signal must reach the provider");
+    assert_eq!(options.api_key.as_deref(), Some("fixture"), "auth-resolved options must reach the provider");
+    // The abort never polled the deferred handle.
+    assert_eq!(faux.state().deferred_fetch_count, 0, "abort must not poll the deferred handle");
+    assert_eq!(faux.state().call_count, 1, "only the initial deferred request should reach the provider");
 }

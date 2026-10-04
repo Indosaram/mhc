@@ -448,7 +448,8 @@ pub struct MemorySessionFacade {
 }
 
 impl MemorySessionFacade {
-    fn new(session: Arc<StorageBackedSession>, on_close: Arc<dyn Fn() + Send + Sync>) -> Self {
+    /// Wrap a storage-backed session so every admitted operation is drained before `on_close` runs.
+    pub fn new(session: Arc<StorageBackedSession>, on_close: Arc<dyn Fn() + Send + Sync>) -> Self {
         Self {
             session,
             on_close,

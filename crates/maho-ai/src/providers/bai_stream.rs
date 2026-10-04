@@ -1,8 +1,8 @@
 //! Port of senpi packages/ai/src/providers/bai-stream.ts.
 
 use crate::types::{
-    AssistantMessageEventStream, Context, Model, ProviderRequestMetadata, ProviderStreams, SimpleStreamOptions,
-    StreamOptions,
+    AssistantMessageEventStream, BoxFuture, Context, DeferredCancelOptions, Model, ProviderRequestMetadata,
+    ProviderStreams, SimpleStreamOptions, StreamOptions,
 };
 use crate::utils::tool_schema_compat::normalize_tool_parameters_for_openai_compat;
 use serde_json::Value;
@@ -83,6 +83,19 @@ impl ProviderStreams for BaiResponsesStreams {
 
     fn supports_deferred(&self) -> bool {
         self.inner.supports_deferred()
+    }
+
+    fn cancel_deferred<'a>(
+        &'a self,
+        model: &'a Model,
+        handle: &'a crate::types::DeferredHandle,
+        options: Option<DeferredCancelOptions>,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        self.inner.cancel_deferred(model, handle, options)
+    }
+
+    fn supports_cancel_deferred(&self) -> bool {
+        self.inner.supports_cancel_deferred()
     }
 }
 

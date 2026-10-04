@@ -978,6 +978,20 @@ impl ProviderStreams for FauxStreams {
     fn supports_deferred(&self) -> bool {
         true
     }
+
+    fn cancel_deferred<'a>(
+        &'a self,
+        model: &'a Model,
+        handle: &'a DeferredHandle,
+        options: Option<crate::types::DeferredCancelOptions>,
+    ) -> crate::types::BoxFuture<'a, Result<(), String>> {
+        let core = Arc::clone(&self.0);
+        Box::pin(async move { core.cancel_deferred_with_options(model, handle, options).await })
+    }
+
+    fn supports_cancel_deferred(&self) -> bool {
+        true
+    }
 }
 
 pub fn create_faux_core(options: &RegisterFauxProviderOptions) -> Arc<FauxCore> {

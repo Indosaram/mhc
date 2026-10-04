@@ -67,6 +67,9 @@ use crate::settings_manager::SettingsManager;
 /// Sample eval-cell call for an eval-only tool, using the argument name that tool actually takes.
 const EVAL_ONLY_TOOL_NAMES: [&str; 2] = ["workflow", "monitor"];
 
+/// Live per-session MCP wire-status channel on the extension bus (native payload, no JSON).
+pub const MCP_WIRE_STATUS_CHANGED_EVENT: &str = "senpi.rpc.mcp_wire_status.changed";
+
 #[allow(dead_code)] // consumed by the eval-only hint publisher in the tool-registry slice
 fn eval_helper_call(name: &str) -> String {
     match name {
@@ -447,11 +450,18 @@ struct AgentSessionState {
     extension_commands: Vec<maho_ext_api::SlashCommandInfo>,
     extension_command_catalog: Option<Arc<dyn Fn() -> Vec<maho_ext_api::SlashCommandInfo> + Send + Sync>>,
     extension_event_sender: Option<tokio::sync::mpsc::UnboundedSender<maho_ext_api::ExtensionEvent>>,
+    extension_events: Option<maho_ext_api::EventBus>,
+    /// Latest MCP wire-status snapshot published for this session (pinned
+    /// `mcpService.getWireStatusSnapshot(threadId)`), type-erased so maho-core needs no dependency
+    /// on the MCP crate.
+    mcp_wire_status: Option<Arc<dyn std::any::Any + Send + Sync>>,
     extension_tool_context: Option<(maho_ext_api::ExtensionRuntime, maho_ext_host::wrapper::ToolContextFactory)>,
     extension_tool_backups: BTreeMap<String, Option<(ToolDefinitionEntry, AgentTool)>>,
     extension_lazy_activators: Vec<LazyToolActivator>,
     extension_hint_backups: BTreeMap<String, Option<String>>,
     skills: Vec<crate::skills::Skill>,
+    skill_diagnostics: Vec<crate::diagnostics::ResourceDiagnostic>,
+    skills_loaded: bool,
     discovered_resources: maho_ext_api::DiscoveredResources,
     global_hook_source_paths: Vec<std::path::PathBuf>,
     project_hook_source_paths: Vec<std::path::PathBuf>,
@@ -505,6 +515,14 @@ pub struct AgentSessionInner {
     settlement_epoch: AtomicU64,
     probe_scheduler: Mutex<crate::retry_fallback::probe_scheduler::ProbeBackScheduler>,
     probe_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Serializes MCP wire-status publish against bind so a subscriber never misses or
+    /// double-receives an update (pinned subscribe-before-read ordering).
+    mcp_wire_status_order: tokio::sync::Mutex<()>,
+    /// The session's own retention subscription on the runner bus. It is installed at runner bind
+    /// (before extension attach settles), so an extension that publishes the MCP wire-status
+    /// snapshot on the shared bus reaches the session's retained snapshot without holding the
+    /// `AgentSession`.
+    mcp_wire_status_retention: Mutex<Option<maho_ext_api::BusSubscription>>,
 }
 
 struct SessionFallbackDeps(std::sync::Weak<AgentSessionInner>);
@@ -545,6 +563,7 @@ impl ExtensionModelRegistryView {
     }
     fn accounts_changed(&self, provider: &str) {
         self.events.emit("provider-accounts-changed", &serde_json::json!({"type":"accounts_changed","provider":provider}));
+        crate::provider_account_events::emit_provider_accounts_changed(provider);
     }
 }
 impl maho_ext_api::ModelRegistry for ExtensionModelRegistryView {
@@ -1258,6 +1277,9 @@ impl maho_ext_api::ExtensionSessionActions for SessionExtensionActions {
         session.set_session_model(model).await.map(|_| true).map_err(maho_ext_api::ExtensionFailure::new)
     }) }
     fn set_session_thinking_level(&self, level: ThinkingLevel) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.set_session_thinking_level(extension_thinking_level(level)); Ok(()) }
+    fn get_model_thinking_level(&self) -> Result<ModelThinkingLevel, maho_ext_api::ExtensionFailure> { Ok(self.session()?.thinking_level()) }
+    fn set_model_thinking_level(&self, level: ModelThinkingLevel) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.set_thinking_level(level); Ok(()) }
+    fn set_session_model_thinking_level(&self, level: ModelThinkingLevel) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.set_session_thinking_level(level); Ok(()) }
     fn set_session_fast_mode(&self, enabled: bool) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.set_session_fast_mode(enabled); Ok(()) }
     fn exec<'a>(&'a self, command: &'a str, args: &'a [String], cwd: &'a std::path::Path, options: maho_ext_api::ExecOptions) -> maho_ext_api::ExtensionFuture<'a, maho_ext_api::ExecResult> {
         Box::pin(async move {
@@ -1452,6 +1474,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Adapt a typed MCP wire-status handler to the erased `Arc<dyn Any>` the bus channel carries,
+/// downcasting per emission so the channel needs no concrete type from maho-core.
+fn downcast_handler<T: Send + Sync + 'static>(handler: Arc<dyn Fn(&T) + Send + Sync>) -> Arc<dyn Fn(&Arc<dyn std::any::Any + Send + Sync>) + Send + Sync> {
+    Arc::new(move |value| { if let Some(snapshot) = value.downcast_ref::<T>() { handler(snapshot); } })
+}
+
 impl AgentSession {
     /// Not yet ported from the constructor (tracked by the `agent-session.ts` ledger row): the
     /// settings source-selection subscription, `applyOverrides` for the `no-model-fallback` /
@@ -1550,11 +1578,15 @@ impl AgentSession {
             extension_commands: Vec::new(),
             extension_command_catalog: None,
             extension_event_sender: None,
+            extension_events: None,
+            mcp_wire_status: None,
             extension_tool_context: None,
             extension_tool_backups: BTreeMap::new(),
             extension_lazy_activators: Vec::new(),
             extension_hint_backups: BTreeMap::new(),
             skills: Vec::new(),
+            skill_diagnostics: Vec::new(),
+            skills_loaded: false,
             discovered_resources: maho_ext_api::DiscoveredResources::default(),
             global_hook_source_paths: Vec::new(), project_hook_source_paths: Vec::new(), pre_session_hook_source_paths: Vec::new(),
             loaded_hook_sources: None,
@@ -1597,6 +1629,8 @@ impl AgentSession {
             settlement_epoch: AtomicU64::new(0),
             probe_scheduler: Mutex::new(crate::retry_fallback::probe_scheduler::ProbeBackScheduler::default()),
             probe_task: Mutex::new(None),
+            mcp_wire_status_order: tokio::sync::Mutex::new(()),
+            mcp_wire_status_retention: Mutex::new(None),
         }) };
 
         let initial_model = session.agent.state().model;
@@ -3658,7 +3692,30 @@ impl AgentSession {
     }
 
     pub fn set_prompt_resources(&self, templates: Vec<crate::prompt_templates::PromptTemplate>, skills: Vec<crate::skills::Skill>) {
-        let mut state = self.state(); state.prompt_templates = templates; state.skills = skills;
+        self.set_prompt_resources_with_diagnostics(templates, skills, Vec::new());
+    }
+
+    /// Replace the session's prompt templates and loaded skills together with the load diagnostics
+    /// (the pinned `resourceLoader.getSkills()` result), so [`Self::loaded_skills`] can return them.
+    pub fn set_prompt_resources_with_diagnostics(&self, templates: Vec<crate::prompt_templates::PromptTemplate>, skills: Vec<crate::skills::Skill>, diagnostics: Vec<crate::diagnostics::ResourceDiagnostic>) {
+        let mut state = self.state();
+        state.prompt_templates = templates;
+        state.skills = skills;
+        state.skill_diagnostics = diagnostics;
+        state.skills_loaded = true;
+    }
+
+    /// The skills this session loaded, with their diagnostics (pinned `resourceLoader.getSkills()`).
+    ///
+    /// `None` when the session has no loaded skill cache (e.g. `minimalResources`, or before the
+    /// first load), so a consumer falls back to loading; otherwise the session's own live skills are
+    /// returned instead of a fresh process-wide `load_skills`.
+    pub fn loaded_skills(&self) -> Option<crate::skills::LoadSkillsResult> {
+        let state = self.state();
+        state.skills_loaded.then(|| crate::skills::LoadSkillsResult {
+            skills: state.skills.clone(),
+            diagnostics: state.skill_diagnostics.clone(),
+        })
     }
 
     pub fn prompt_templates(&self) -> Vec<crate::prompt_templates::PromptTemplate> { self.state().prompt_templates.clone() }
@@ -3891,7 +3948,7 @@ impl AgentSession {
         let skills = crate::skills::load_skills(&crate::skills::LoadSkillsOptions {
             cwd: self.cwd(), agent_dir: self.agent_dir(), skill_paths, include_defaults: true,
         });
-        self.set_prompt_resources(templates, skills.skills);
+        self.set_prompt_resources_with_diagnostics(templates, skills.skills, skills.diagnostics);
         self.rebuild_system_prompt();
         self.publish_eval_only_tool_hints();
         self.renew_extension_runtime(maho_ext_api::SessionReason::Reload).await?;
@@ -4860,6 +4917,14 @@ impl AgentSession {
         if let Ok(context) = runner.create_context() {
             let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
             self.state().extension_event_sender = Some(events.clone());
+            self.state().extension_events = Some(runner.events.clone());
+            // Retain MCP wire-status snapshots the moment they are published on the runner bus
+            // (the channel carries an erased `Arc<dyn Any>`), so an extension that only holds the
+            // bus reaches the session's retained snapshot. Installed here, before attach settles.
+            let retention = Arc::downgrade(&self.inner);
+            *lock(&self.mcp_wire_status_retention) = Some(runner.events.on_native::<Arc<dyn std::any::Any + Send + Sync>>(MCP_WIRE_STATUS_CHANGED_EVENT, Arc::new(move |value| {
+                if let Some(inner) = retention.upgrade() { lock(&inner.state).mcp_wire_status = Some(value.clone()); }
+            })));
             let weak = Arc::downgrade(&self.inner);
             let ui = maho_ext_host::ui::LifecycleUi::new(context.ui, runner.runtime.clone(), Arc::new(move |event| { let _ = events.send(event); }));
             if let Err(error) = runner.bind_ui(Arc::new(ui)) { self.emit(AgentSessionEvent::ContinuationError { error_message: error.message }); }
@@ -5348,8 +5413,90 @@ impl AgentSession {
     }
 
     /// Publish on the internal event bus shared by this session's extensions.
+    ///
+    /// Routed to the bound runner's bus (the pinned `resourceLoader` bus extension handlers
+    /// subscribe to) as well as the session-private bus, falling back to the private bus alone
+    /// when no runner is bound.
     pub fn emit_extension_event(&self, channel: &str, data: &Value) {
         self.event_bus.emit(channel, data);
+        if let Some(events) = self.state().extension_events.clone() { events.emit(channel, data); }
+    }
+
+    /// Publish a typed payload natively on the bound runner's bus (no serialization), so a consumer
+    /// can hand a non-JSON value such as a command context to a native subscriber.
+    pub fn emit_extension_event_typed<T: Send + Sync + 'static>(&self, channel: &str, event: &T) {
+        if let Some(events) = self.state().extension_events.clone() { events.emit_native(channel, event); }
+    }
+
+    /// The session's command context (pinned `extensionRunner.createCommandContext()`), for a
+    /// consumer that needs the typed context the runner would pass to a command handler.
+    pub async fn extension_command_context(&self) -> Option<maho_ext_api::ExtensionCommandContext> {
+        let runner = self.extension_runner.lock().await.clone()?;
+        runner.create_command_context(Arc::new(SessionExtensionActions(Arc::downgrade(&self.inner)))).ok()
+    }
+
+    /// Subscribe to live per-session MCP wire-status snapshots. `T` is the MCP extension's
+    /// `McpWireStatusSnapshot`; the channel carries an erased `Arc<dyn Any>` so maho-core needs no
+    /// dependency on the MCP crate. `None` when no extension runner is bound. Use
+    /// [`Self::bind_mcp_wire_status`] when the initial snapshot must not be missed.
+    pub async fn subscribe_mcp_wire_status<T: Clone + Send + Sync + 'static>(&self, handler: Arc<dyn Fn(&T) + Send + Sync>) -> Option<maho_ext_api::BusSubscription> {
+        let runner = self.extension_runner.lock().await.clone()?;
+        Some(runner.events.on_native::<Arc<dyn std::any::Any + Send + Sync>>(MCP_WIRE_STATUS_CHANGED_EVENT, downcast_handler(handler)))
+    }
+
+    /// The latest MCP wire-status snapshot this session retained (pinned
+    /// `mcpService.getWireStatusSnapshot(threadId)`); `None` before the first publish or on a type
+    /// mismatch. `T` is the MCP extension's `McpWireStatusSnapshot`.
+    pub fn mcp_wire_status_snapshot<T: Clone + Send + Sync + 'static>(&self) -> Option<T> {
+        self.state().mcp_wire_status.as_ref().and_then(|value| value.downcast_ref::<T>()).cloned()
+    }
+
+    /// Bind to this session's MCP wire status, delivering the retained initial snapshot first and
+    /// then every later one (pinned `createMcpWireStatusAdapter(getWireStatusSnapshot(threadId))`
+    /// followed by `bindLiveUpdates(onWireStatusChanged)`). The live subscription is installed
+    /// before the retained read, both under the same order lock as [`Self::publish_mcp_wire_status`],
+    /// so a snapshot published around the bind is delivered exactly once (never missed, never
+    /// duplicated). The order lock is held across the handler call to keep the retained snapshot
+    /// ahead of live updates, so the handler must not re-enter `bind_mcp_wire_status` /
+    /// `publish_mcp_wire_status` (the consumer callback only updates its holder). `None` when no
+    /// extension runner is bound.
+    pub async fn bind_mcp_wire_status<T: Clone + Send + Sync + 'static>(&self, handler: Arc<dyn Fn(&T) + Send + Sync>) -> Option<maho_ext_api::BusSubscription> {
+        let _order = self.mcp_wire_status_order.lock().await;
+        let runner = self.extension_runner.lock().await.clone()?;
+        let subscription = runner.events.on_native::<Arc<dyn std::any::Any + Send + Sync>>(MCP_WIRE_STATUS_CHANGED_EVENT, downcast_handler(handler.clone()));
+        let retained = self.state().mcp_wire_status.as_ref().and_then(|value| value.downcast_ref::<T>()).cloned();
+        if let Some(snapshot) = retained {
+            handler(&snapshot);
+        }
+        Some(subscription)
+    }
+
+    /// Publish a live MCP wire-status snapshot for this session; `false` when no runner is bound.
+    /// The snapshot is emitted on the runner bus as an erased `Arc<dyn Any>` (the channel contract),
+    /// which the session's retention subscription catches; retaining it lets a late subscriber read
+    /// the current inventory instead of a process fallback (pinned session-owned adapter).
+    pub async fn publish_mcp_wire_status<T: Clone + Send + Sync + 'static>(&self, snapshot: &T) -> bool {
+        let _order = self.mcp_wire_status_order.lock().await;
+        let runner = self.extension_runner.lock().await.clone();
+        let Some(runner) = runner else { return false; };
+        let erased: Arc<dyn std::any::Any + Send + Sync> = Arc::new(snapshot.clone());
+        self.state().mcp_wire_status = Some(erased.clone());
+        runner.events.emit_native::<Arc<dyn std::any::Any + Send + Sync>>(MCP_WIRE_STATUS_CHANGED_EVENT, &erased);
+        true
+    }
+
+    /// Rebind the live connection's UI into the bound extension runner, preserving the session's
+    /// extension-event forwarding (pinned `runner.setUIContext` at connection attach).
+    pub async fn rebind_extension_ui(&self, ui: Arc<dyn ExtensionUi>) -> Result<(), String> {
+        self.state().extension_ui_context = Some(ui.clone());
+        let sender = self.state().extension_event_sender.clone();
+        let mut guard = self.extension_runner.lock().await;
+        let Some(runner) = guard.as_mut() else { return Ok(()); };
+        let bound: Arc<dyn ExtensionUi> = match sender {
+            Some(events) => Arc::new(maho_ext_host::ui::LifecycleUi::new(ui, runner.runtime.clone(), Arc::new(move |event| { let _ = events.send(event); }))),
+            None => ui,
+        };
+        runner.bind_ui(bound).map_err(|error| error.message)
     }
 
     /// Append a transport-provided entry and publish it on the RPC event stream.
@@ -5438,6 +5585,9 @@ impl AgentSession {
         lock(&self.settings_source_subscription).take();
         lock(&self.agent_subscription).take();
         self.state().extension_event_sender.take();
+        self.state().extension_events = None;
+        self.state().mcp_wire_status = None;
+        lock(&self.mcp_wire_status_retention).take();
         {
             let mut guard = self.extension_runner.lock().await;
             if let Some(runner) = guard.as_mut() {
@@ -6837,6 +6987,63 @@ mod tests {
         test_session_with_stream_function(true)
     }
 
+    fn test_session_with_manager(manager: SessionManager) -> AgentSession {
+        let runtime = ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
+            providers: Some(Vec::new()),
+            ..Default::default()
+        });
+        AgentSession::new(AgentSessionConfig {
+            agent: stub_agent(),
+            session_manager: manager,
+            settings_manager: SettingsManager::from_storage(
+                Box::new(crate::settings_manager::InMemorySettingsStorage::default()),
+                false,
+            ),
+            cwd: "/tmp".to_owned(),
+            agent_dir: Some("/tmp/maho-agent".to_owned()),
+            fallback_now: None,
+            retry_random: None,
+            scoped_models: Vec::new(),
+            favorite_models: Vec::new(),
+            flag_values: BTreeMap::new(),
+            custom_tools: Vec::new(),
+            model_runtime: Some(runtime),
+            model_registry: None,
+            uses_default_stream_function: Some(true),
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: None,
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: None,
+            auto_title_sessions: None,
+        })
+        .expect("session")
+    }
+
+    #[test]
+    fn sdk_extension_context_binds_goal_store_file_to_the_encoded_session_directory_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path().to_str().expect("utf8 dir").to_owned();
+        let session = test_session_with_manager(SessionManager::create("/workspace", Some(&dir), None));
+        let id = session.session_id();
+        assert!(!id.is_empty(), "a created session has an id");
+        let context = session.extension_context(Arc::new(TestExtensionUi));
+        let expected = temp
+            .path()
+            .join("extensions/goal")
+            .join(format!("{}.json", crate::sdk::extension_context::encode_uri_component(&id)));
+        assert_eq!(context.goal_store_file.as_deref(), Some(expected.as_path()));
+    }
+
+    #[test]
+    fn sdk_extension_context_omits_the_goal_store_file_without_a_session_directory() {
+        let session = test_session();
+        let context = session.extension_context(Arc::new(TestExtensionUi));
+        assert_eq!(context.goal_store_file, None);
+    }
+
     fn test_session_with_stream_function(uses_default_stream_function: bool) -> AgentSession {
         let runtime = ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
             providers: Some(Vec::new()),
@@ -7099,6 +7306,131 @@ mod tests {
             assert!(batch.turn_claims.is_empty());
             assert_eq!(ran.load(Ordering::SeqCst), 0);
         }
+    }
+
+    #[tokio::test]
+    async fn session_extension_events_reach_the_bound_runner_bus() {
+        let session = test_session();
+        let extension = maho_ext_api::LoadedExtension::new("<inline:mcp>", session.cwd().into(), Default::default());
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let runner = session.extension_runner.lock().await.clone().expect("bound runner");
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        let _subscription = runner.events.on("goal_store_changed", Arc::new(move |value| lock(&captured).push(value.clone())));
+        session.emit_extension_event("goal_store_changed", &serde_json::json!({"threadId":"thread"}));
+        assert_eq!(lock(&observed).as_slice(), [serde_json::json!({"threadId":"thread"})]);
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn live_mcp_wire_status_is_delivered_natively_to_the_session_subscriber() {
+        let session = test_session();
+        let extension = maho_ext_api::LoadedExtension::new("<inline:mcp>", session.cwd().into(), Default::default());
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        let _subscription = session
+            .subscribe_mcp_wire_status::<serde_json::Value>(Arc::new(move |snapshot| lock(&captured).push(snapshot.clone())))
+            .await
+            .expect("bound runner");
+        assert!(session.publish_mcp_wire_status(&serde_json::json!({"servers":[]})).await);
+        assert_eq!(lock(&observed).as_slice(), [serde_json::json!({"servers":[]})]);
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn binding_mcp_wire_status_replays_the_retained_snapshot_then_delivers_live() {
+        let session = test_session();
+        let extension = maho_ext_api::LoadedExtension::new("<inline:mcp>", session.cwd().into(), Default::default());
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        // The attach inventory is published BEFORE any subscriber (the Task12 miss scenario).
+        assert!(session.publish_mcp_wire_status(&serde_json::json!({"servers":["attach"]})).await);
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        let _subscription = session
+            .bind_mcp_wire_status::<serde_json::Value>(Arc::new(move |snapshot| lock(&captured).push(snapshot.clone())))
+            .await
+            .expect("bound runner");
+        assert_eq!(lock(&observed).as_slice(), [serde_json::json!({"servers":["attach"]})], "the retained attach snapshot is replayed exactly once");
+        assert!(session.publish_mcp_wire_status(&serde_json::json!({"servers":["live"]})).await);
+        assert_eq!(lock(&observed).as_slice(), [serde_json::json!({"servers":["attach"]}), serde_json::json!({"servers":["live"]})]);
+        // A later bind reads the current retained snapshot once (no duplicate of the replay).
+        let second = Arc::new(Mutex::new(Vec::new()));
+        let captured_second = second.clone();
+        let _second = session
+            .bind_mcp_wire_status::<serde_json::Value>(Arc::new(move |snapshot| lock(&captured_second).push(snapshot.clone())))
+            .await
+            .expect("bound runner");
+        assert_eq!(lock(&second).as_slice(), [serde_json::json!({"servers":["live"]})]);
+        assert_eq!(session.mcp_wire_status_snapshot::<serde_json::Value>(), Some(serde_json::json!({"servers":["live"]})));
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn a_disposed_session_serves_no_retained_mcp_snapshot() {
+        let session = test_session();
+        let extension = maho_ext_api::LoadedExtension::new("<inline:mcp>", session.cwd().into(), Default::default());
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        assert!(session.publish_mcp_wire_status(&serde_json::json!({"servers":["attach"]})).await);
+        assert!(session.mcp_wire_status_snapshot::<serde_json::Value>().is_some());
+        session.dispose().await;
+        assert!(session.mcp_wire_status_snapshot::<serde_json::Value>().is_none(), "a disposed session must not serve a stale snapshot");
+    }
+
+    #[tokio::test]
+    async fn an_extension_bus_publication_reaches_the_session_snapshot_and_a_late_bind() {
+        let session = test_session();
+        let extension = maho_ext_api::LoadedExtension::new("<inline:mcp>", session.cwd().into(), Default::default());
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        // The MCP extension publishes on the shared runner bus WITHOUT holding the AgentSession.
+        let runner = session.extension_runner.lock().await.clone().expect("bound runner");
+        let attach = serde_json::json!({"servers":["attach"]});
+        let erased: Arc<dyn std::any::Any + Send + Sync> = Arc::new(attach.clone());
+        runner.events.emit_native::<Arc<dyn std::any::Any + Send + Sync>>(MCP_WIRE_STATUS_CHANGED_EVENT, &erased);
+        // The session retained it through the bind-time retention subscription.
+        assert_eq!(session.mcp_wire_status_snapshot::<serde_json::Value>(), Some(attach.clone()), "the extension's bus publication reached the session snapshot");
+        // A subscriber that binds afterwards receives the retained initial snapshot.
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        let _subscription = session
+            .bind_mcp_wire_status::<serde_json::Value>(Arc::new(move |snapshot| lock(&captured).push(snapshot.clone())))
+            .await
+            .expect("bound runner");
+        assert_eq!(lock(&observed).as_slice(), [attach]);
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn a_bound_runner_exposes_the_session_command_context() {
+        let session = test_session();
+        let extension = maho_ext_api::LoadedExtension::new("<inline:goal>", session.cwd().into(), Default::default());
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let context = session.extension_command_context().await.expect("command context");
+        assert!(context.runtime.assert_active().is_ok());
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn account_changes_reach_the_process_global_registry() {
+        use maho_ext_api::ModelRegistry as _;
+        let session = test_session();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        let unsubscribe = crate::provider_account_events::subscribe_provider_account_events(Arc::new(move |event| {
+            if matches!(&event, crate::provider_account_events::ProviderAccountEvent::AccountsChanged { provider } if provider == "registry-fixture") {
+                lock(&captured).push(event);
+            }
+        }));
+        session.model_registry().auth_storage.set("registry-fixture", Some(serde_json::json!({
+            "type":"api_key","key":"fixture-flat-secret",
+            "accounts":[{"name":"default","key":"fixture-first-secret","source":"login"},
+                {"name":"work","key":"fixture-second-secret","source":"import"}]
+        }))).expect("seed shared storage");
+        let mut registry = ExtensionModelRegistryView::new(&session, Default::default());
+        registry.pin_credential_account("registry-fixture", Some("work")).await.expect("pin");
+        unsubscribe();
+        session.dispose().await;
+        assert_eq!(lock(&observed).as_slice(), [crate::provider_account_events::ProviderAccountEvent::AccountsChanged { provider: "registry-fixture".to_owned() }]);
     }
 
     #[tokio::test]
@@ -10970,6 +11302,31 @@ mod tests {
         session.state().extension_command_catalog = Some(Arc::new(move || catalog.lock().unwrap().clone()));
         live.lock().unwrap().push(maho_ext_api::SlashCommandInfo { name: "late".into(), description: None, argument_hint: None, source_info: None });
         assert_eq!(session.get_commands().iter().map(|command| command.name.as_str()).collect::<Vec<_>>(), ["late", "review", "skill:guide"]);
+    }
+
+    #[tokio::test]
+    async fn loaded_skills_returns_the_session_snapshot_with_diagnostics() {
+        let session = test_session();
+        assert!(session.loaded_skills().is_none(), "no skill cache before a load");
+        session.set_prompt_resources_with_diagnostics(
+            Vec::new(),
+            vec![crate::skills::Skill {
+                name: "demo".to_owned(), description: "demo skill".to_owned(),
+                file_path: "/tmp/demo/SKILL.md".to_owned(), base_dir: "/tmp/demo".to_owned(),
+                source_info: crate::source_info::create_synthetic_source_info("/tmp/demo/SKILL.md", Default::default()),
+                disable_model_invocation: false,
+            }],
+            vec![crate::diagnostics::ResourceDiagnostic {
+                diagnostic_type: crate::diagnostics::ResourceDiagnosticType::Warning,
+                message: "warn".to_owned(), path: Some("/tmp/demo/SKILL.md".to_owned()), collision: None,
+            }],
+        );
+        let loaded = session.loaded_skills().expect("loaded skills snapshot");
+        assert_eq!(loaded.skills.len(), 1);
+        assert_eq!(loaded.skills[0].name, "demo");
+        assert_eq!(loaded.diagnostics.len(), 1);
+        assert_eq!(loaded.diagnostics[0].message, "warn");
+        session.dispose().await;
     }
 
     #[tokio::test]

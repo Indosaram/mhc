@@ -12,6 +12,8 @@ use maho_omo_memory::{composition::MemoryExtensionOptions, context::MemoryIdenti
     facts_runner::NativeFactsAttemptOptions, index::{MemoryComponent, MemoryComponentOptions},
     wiring::{MemoryWiring, create_memory_wiring}, wiring_runtime::MemoryRuntimeWiring,
     wiring_static::MemoryStaticOptions, wiring_types::{MemoryWiringOptions, NativeMemoryWiringOptions}, worker};
+use maho_omo_memory::commands::people_ask::{create_people_ask_runner, PeopleAskLauncher, PeopleAskOptions};
+use maho_omo_memory::commands::register::{DreamCommandOutcome, DreamRequestSink, ManualDreamCommandRequest, MemoryCommandDeps};
 use memory_core::{git::GitMemoryRepo, reflection::{ReflectionReservationStore, ReservedRun}};
 use serde_json::Value;
 
@@ -109,27 +111,50 @@ impl MemoryRuntime {
         // cannot be held yet. The evaluator must survive subsequent shutdowns.
         match self.wiring.try_lock(){Ok(mut wiring)=>wiring.register_shutdown_evaluator(dream.shutdown_evaluator()),Err(error)=>std::panic::panic_any(format!("memory wiring locked during static registration: {error}"))}
         let this = self.clone();
-        maho_omo_memory::commands::register::register_memory_commands(api, maho_omo_memory::commands::register::MemoryCommandDeps {
+        // Task-10 replaced the ad-hoc deps with commands::types::MemoryCommandDeps; the CLI supplies
+        // the live ports and wraps the retained dream wiring in the command-layer sink.
+        let dream_sink: Arc<dyn DreamRequestSink> = Arc::new(DreamSink(dream.clone()));
+        let command_deps = MemoryCommandDeps {
             resolve_context: {let this=this.clone();Arc::new(move |session| this.identity(session))},
+            resolve_identity: Some({let this=this.clone();Arc::new(move || this.context().and_then(|context| this.identity(context.session_manager.session_id())))}),
             settings: {let this=this.clone();Arc::new(move || this.settings())},
+            config_path: Some({let cwd=self.host.cwd.clone();let agent_dir=self.host.agent_dir.clone();Arc::new(move || {
+                cwd.ancestors().flat_map(|ancestor| [ancestor.join(".omo/omo.json"), ancestor.join(".omo/omo.jsonc")]).find(|path| path.is_file())
+                    .or_else(|| [agent_dir.join("settings.json"), agent_dir.join("settings.jsonc")].into_iter().find(|path| path.is_file()))
+                    .map(|path| path.to_string_lossy().into_owned())
+            })}),
+            full_config: {let this=this.clone();Some(Arc::new(move || (this.host.load_config)()))},
             actions: self.host.actions.clone(),
             prompt: self.prompt.clone(),
             sessions_dir: self.host.agent_dir.join("sessions"),
-            reflect: {let this=this.clone();Arc::new(move |session, event| {
+            reflect: Some({let this=this.clone();Arc::new(move |session, event| {
                 let identity=this.identity(session).ok_or("no bound memory session")?;
                 let worker=this.worker(&identity)?;
                 let result=worker.store.evaluate(session,event).map_err(|error|error.to_string())?.ok_or("reflection reservation rejected")?;
                 if result.status=="active"{this.launch(worker,result.run.clone())?;}
                 Ok((result.status,result.run.run_id))
-            })}, dream,
-            facts_retry: {let this=this.clone();Arc::new(move |identity| {
+            })}),
+            dream: Some(dream_sink),
+            facts_retry: Some({let this=this.clone();Arc::new(move |identity| {
                 let this=this.clone();Box::pin(async move {
                     let mut wiring=this.wiring.lock().await;
                     let facts=wiring.runtime.existing_facts_wiring(&identity).ok_or("facts extractor is not bound")?;
                     facts.reconcile_extractor();Ok(())
                 })
-            })},
-        });
+            })}),
+            exec: None,
+            env: Some(self.host.env.clone()),
+            people_ask: Some(create_people_ask_runner(PeopleAskOptions {
+                config: (self.host.load_config)().unwrap_or_else(|_| serde_json::json!({})),
+                registry: None,
+                env: self.host.env.clone(),
+                launcher: Some(PeopleAskLauncher { command: self.host.launcher.command.clone(), prefix_args: self.host.launcher.prefix_args.clone() }),
+                deadline_ms: None,
+            })),
+            now: Some(Arc::new(memory_core::support::time::now_millis)),
+            is_process_alive: None,
+        };
+        maho_omo_memory::commands::register::register_memory_commands(api, command_deps);
     }
 
     pub fn new(host: MemoryRuntimeHost) -> Result<Arc<Self>, String> {
@@ -478,6 +503,37 @@ impl worker::health_alert::ReflectionHealthLiveSession for LiveSession<'_> {
         }
     }
     fn notify(&mut self, message: &str, _: &str) { self.context.ui.notify(message, NotificationType::Warning); }
+}
+
+/// Adapts the retained dream trigger wiring to the command-layer `/dream` sink.
+///
+/// Maps `DreamFireOutcome` onto `DreamCommandOutcome` and a missing active session
+/// (`None`) onto the pinned `no_session` rejection string.
+struct DreamSink(Arc<maho_omo_memory::dream_trigger::DreamTriggerWiring>);
+
+impl DreamRequestSink for DreamSink {
+    fn request(&self, request: ManualDreamCommandRequest) -> maho_omo_memory::commands::types::BoxFuture<'_, Result<DreamCommandOutcome, String>> {
+        let wiring = self.0.clone();
+        Box::pin(async move {
+            let outcome = wiring.request_manual_dream(maho_omo_memory::dream_trigger::ManualDreamRequest {
+                focus: request.focus, conversation_ids: request.conversation_ids, target_doc: request.target_doc, deadline_at: None,
+            }).await?;
+            Ok(match outcome {
+                Some(maho_omo_memory::dream_trigger::DreamFireOutcome::Fired { run_id, status }) => DreamCommandOutcome::Fired { run_id, status },
+                Some(maho_omo_memory::dream_trigger::DreamFireOutcome::Rejected(rejection)) => DreamCommandOutcome::Rejected { rejection: dream_rejection_code(rejection) },
+                None => DreamCommandOutcome::Rejected { rejection: "no_session".to_owned() },
+            })
+        })
+    }
+}
+
+fn dream_rejection_code(rejection: maho_omo_memory::dream_trigger_fire::DreamFireRejection) -> String {
+    use maho_omo_memory::dream_trigger_fire::DreamFireRejection;
+    match rejection {
+        DreamFireRejection::NoUnreflectedContent => "no_unreflected_content".to_owned(),
+        DreamFireRejection::Aborted => "aborted".to_owned(),
+        DreamFireRejection::Gate(gate) => format!("{gate:?}").to_lowercase(),
+    }
 }
 
 #[cfg(test)]

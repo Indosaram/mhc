@@ -13,6 +13,7 @@ maho-omo-config-core = { path = "../../omo-config-core", version = "=0.0.0" }
 maho-senpi-task = { path = "../../senpi-task", version = "=0.0.0" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+sha1 = "=0.10.6"
 chrono = { workspace = true, features = ["std"] }
 notify = "=8.2.0"
 tokio = { version = "=1.52.3", features = ["macros", "rt", "time", "process", "io-util", "io-std", "signal", "net"] }

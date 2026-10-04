@@ -9,6 +9,7 @@ license = "MIT"
 maho-ai = { path = "../../maho-ai" }
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-ext-builtin-loose = { path = "../maho-ext-builtin-loose" }
+maho-core = { path = "../../maho-core" }
 anyhow = "=1.0.104"
 async-trait = "=0.1.92"
 serde = { version = "=1.0.228", features = ["derive"] }

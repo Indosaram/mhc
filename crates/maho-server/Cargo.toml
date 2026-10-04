@@ -18,6 +18,7 @@ maho-tui = { path = "../maho-tui" }
 maho-interactive = { path = "../maho-interactive" }
 maho-ext-mcp = { path = "../builtins/maho-ext-mcp" }
 maho-ext-ask-user = { path = "../builtins/maho-ext-ask-user" }
+maho-ext-goal = { path = "../builtins/maho-ext-goal" }
 maho-ai = { path = "../maho-ai" }
 maho-ext-host = { path = "../maho-ext-host" }
 maho-ext-api = { path = "../maho-ext-api" }

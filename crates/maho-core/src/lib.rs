@@ -92,6 +92,7 @@ pub mod package_identity;
 pub mod pi_manifest;
 pub mod project_trust;
 pub mod prompt_cache_budget;
+pub mod provider_account_events;
 pub mod provider_attribution;
 pub mod provider_concurrency;
 pub mod provider_display_names;
@@ -178,6 +179,10 @@ pub use session_title_generator::{humanize_provider_error, parse_session_title, 
 pub use prompt_templates::{
     LoadPromptTemplatesOptions, PromptTemplate, PromptTemplateExpansion, expand_prompt_template,
     expand_prompt_template_with_metadata, load_prompt_templates, parse_command_args, substitute_args,
+};
+pub use provider_account_events::{
+    ProviderAccountEvent, ProviderAccountEvents, emit_provider_account_failover,
+    emit_provider_accounts_changed, provider_account_events, subscribe_provider_account_events,
 };
 pub use source_info::{
     SourceInfo, SourceOrigin, SourceScope, SyntheticSourceInfoOptions, create_source_info,

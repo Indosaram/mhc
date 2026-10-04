@@ -1,7 +1,7 @@
 //! Port of `omo-senpi/src/extension/component-list.ts`: the ordered registration list.
 
-use maho_omo::{OmoComponentOptions, OmoSenpiComponent, omo_component_names, omo_components, try_omo_components};
-use crate::support::FakeComponent;
+use maho_omo::{OmoComponentOptions, OmoExtension, OmoSenpiComponent, RecordingLogger, omo_component_names, omo_components, try_omo_components};
+use crate::support::{FakeComponent, manual_runtime_options, new_api};
 
 fn options() -> OmoComponentOptions {
     let dir = std::env::temp_dir();
@@ -49,4 +49,29 @@ fn every_registered_component_has_a_distinct_name() {
     names.sort_unstable();
     names.dedup();
     assert_eq!(names.len(), 17);
+}
+
+#[test]
+fn the_registered_loop_component_logs_through_the_shared_runtime_logger() {
+    // An env with no omo binary makes the loop's registration path take the inactive branch,
+    // which must log through the shared runtime logger (not only in tests that inject one).
+    let loop_options = OmoComponentOptions {
+        skills_root: std::env::temp_dir().join("omo-skills"),
+        state_dir: std::env::temp_dir().join("omo-state"),
+        env: std::collections::BTreeMap::new(),
+    };
+    let loop_component = omo_components(slot("task"), slot("memory"), &loop_options)
+        .into_iter()
+        .find(|component| component.name == "ulw-loop")
+        .expect("the ulw-loop component is in the list");
+    let recording = std::sync::Arc::new(RecordingLogger::new());
+    let extension = OmoExtension::with_options(vec![loop_component], manual_runtime_options(recording.clone()), Default::default());
+
+    extension.register(&mut new_api());
+
+    assert!(
+        recording.entries().iter().any(|entry| entry.message.contains("ulw-loop inactive")),
+        "loop registration logs the inactive message through the shared logger: {:?}",
+        recording.entries()
+    );
 }

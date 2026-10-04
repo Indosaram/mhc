@@ -1,7 +1,8 @@
 //! Port of senpi packages/ai/src/providers/opencode-headers.ts.
 
 use crate::types::{
-    AssistantMessageEventStream, Context, Model, ProviderHeaders, ProviderStreams, SimpleStreamOptions, StreamOptions,
+    AssistantMessageEventStream, BoxFuture, Context, DeferredCancelOptions, DeferredHandle, Model, ProviderHeaders,
+    ProviderStreams, SimpleStreamOptions, StreamOptions,
 };
 use std::sync::Arc;
 
@@ -54,6 +55,19 @@ impl ProviderStreams for OpenCodeSessionHeaders {
 
     fn supports_deferred(&self) -> bool {
         self.inner.supports_deferred()
+    }
+
+    fn cancel_deferred<'a>(
+        &'a self,
+        model: &'a Model,
+        handle: &'a DeferredHandle,
+        options: Option<DeferredCancelOptions>,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        self.inner.cancel_deferred(model, handle, options)
+    }
+
+    fn supports_cancel_deferred(&self) -> bool {
+        self.inner.supports_cancel_deferred()
     }
 }
 
