@@ -131,7 +131,15 @@ pub fn omo_components(
     components.push(component("ultrawork", maho_omo_ultrawork::UltraworkComponent::default()));
     components.push(component("mass-ulw", maho_omo_mass_ulw::MassUlwComponent { skills_root: options.skills_root_string() }));
     components.push(component("start-work-continuation", maho_omo_start_work_continuation::StartWorkContinuationComponent::default()));
-    components.push(component("ulw-loop", maho_omo_ulw_loop::index::UlwLoopComponent::from_env(&options.env)));
+    // The loop's registration-time log has no context; bind the shared runtime logger at
+    // construction (same pattern as config-watch below) so the production path logs too.
+    let loop_env = options.env.clone();
+    components.push(OmoSenpiComponent::from_context_register("ulw-loop", move |api, runtime| {
+        use maho_ext_api::Extension;
+        let mut component = maho_omo_ulw_loop::index::UlwLoopComponent::from_env(&loop_env);
+        component.logger = Some(runtime.logger());
+        component.register(api);
+    }));
     components.push(component("todo-fanout-reminder", maho_omo_todo_fanout_reminder::TodoFanoutReminderComponent::default()));
     components.push(component("fallback-architect", maho_omo_fallback_architect::FallbackArchitectComponent::default()));
     components.push(component("comment-checker", maho_omo_comment_checker::CommentCheckerComponent::default()));
