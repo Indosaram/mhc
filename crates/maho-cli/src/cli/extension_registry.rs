@@ -17,6 +17,8 @@ use std::sync::Arc;
 use maho_ext_api::{Extension, ExtensionSessionProfile, SourceInfo};
 use maho_ext_host::loader::{load_extensions, LoadExtensionsResult, NativeExtensionFactory};
 
+use crate::cli::llama::llama;
+
 /// senpi `globalDefaultExtensionIds` (`core/extensions/builtin/index.ts`).
 pub const GLOBAL_DEFAULT_EXTENSION_IDS: [&str; 4] = ["diff", "files", "prompt-url-widget", "tps"];
 
@@ -256,8 +258,17 @@ pub fn deferred_builtin_extensions() -> &'static [DeferredExtension] {
     &DEFERRED_BUILTINS
 }
 
-/// senpi `src/extensions/index.ts` `builtInExtensions`: inline, hidden.
+/// senpi `src/extensions/index.ts` `builtInExtensions`: inline, hidden, registered beside the
+/// 43 builtin ids. The factory is the real llama.cpp provider registration.
 pub const INLINE_EXTENSION_IDS: [&str; 1] = ["llama.cpp"];
+
+static INLINE_FACTORIES: [NativeExtension; 1] = [
+    NativeExtension { id: "llama.cpp", crate_name: "maho-cli", factory: llama },
+];
+
+pub fn inline_extensions() -> &'static [NativeExtension] {
+    &INLINE_FACTORIES
+}
 
 fn ferryx_agent_state() -> Box<dyn Extension> {
     Box::new(maho_ext_ferryx_agent_state::FerryxAgentState)
@@ -317,6 +328,7 @@ pub fn assemble_extensions() -> Vec<(&'static str, &'static str, Box<dyn Extensi
         .iter()
         .map(|entry| (entry.id, "builtin", (entry.factory)()))
         .chain(USER_FACTORIES.iter().map(|entry| (entry.id, "user", (entry.factory)())))
+        .chain(INLINE_FACTORIES.iter().map(|entry| (entry.id, "inline", (entry.factory)())))
         .collect()
 }
 

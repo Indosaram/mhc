@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 
 use maho_cli::cli::extension_registry::{
     assemble_extensions, builtin_extensions, deferred_builtin_extensions, deferred_user_extensions,
-    load_native_extensions, native_extension_factories, user_extensions, BUILTIN_EXTENSION_IDS,
-    GLOBAL_DEFAULT_EXTENSION_IDS, INLINE_EXTENSION_IDS,
+    inline_extensions, load_native_extensions, native_extension_factories, user_extensions,
+    BUILTIN_EXTENSION_IDS, GLOBAL_DEFAULT_EXTENSION_IDS, INLINE_EXTENSION_IDS,
 };
 
 #[test]
@@ -67,9 +67,21 @@ fn linked_factories_register_through_the_loader() {
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(result.extensions.len(), native_extension_factories().len());
     let ids: Vec<&str> = result.extensions.iter().map(|extension| extension.identity.path.as_str()).collect();
-    for expected in ["<builtin:loop-guard>", "<builtin:hooks>", "<builtin:prompt-preset>", "<builtin:terminal>", "<builtin:goal>", "<builtin:loop>", "<builtin:websearch>", "<builtin:webfetch>", "<user:pi-ast-grep>", "<user:orca-titlebar-spinner>"] {
+    for expected in ["<builtin:loop-guard>", "<builtin:hooks>", "<builtin:prompt-preset>", "<builtin:terminal>", "<builtin:goal>", "<builtin:loop>", "<builtin:websearch>", "<builtin:webfetch>", "<user:pi-ast-grep>", "<user:orca-titlebar-spinner>", "<inline:llama.cpp>"] {
         assert!(ids.contains(&expected), "{expected} missing from {ids:?}");
     }
+}
+
+#[test]
+fn inline_llama_factory_registers_the_llama_command() {
+    let dir = tempfile::tempdir().expect("isolated cwd");
+    let result = load_native_extensions(dir.path(), maho_ext_api::ExtensionSessionProfile::default());
+    let llama = result
+        .extensions
+        .iter()
+        .find(|extension| extension.identity.path == "<inline:llama.cpp>")
+        .expect("llama.cpp inline extension loaded");
+    assert_eq!(llama.commands[0].name, "llama");
 }
 
 #[test]
@@ -119,9 +131,10 @@ fn help_factory_registers_the_keybindings_command() {
 #[test]
 fn assemble_extensions_tags_builtin_and_user_kinds() {
     let assembled = assemble_extensions();
-    assert_eq!(assembled.len(), builtin_extensions().len() + user_extensions().len());
+    assert_eq!(assembled.len(), builtin_extensions().len() + user_extensions().len() + inline_extensions().len());
     assert!(assembled.iter().any(|(id, kind, _)| *id == "hooks" && *kind == "builtin"));
     assert!(assembled.iter().any(|(id, kind, _)| *id == "pi-ast-grep" && *kind == "user"));
+    assert!(assembled.iter().any(|(id, kind, _)| *id == "llama.cpp" && *kind == "inline"));
 }
 
 #[test]
