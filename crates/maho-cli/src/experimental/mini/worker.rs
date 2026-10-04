@@ -271,6 +271,23 @@ async fn lane_for(harness: &Harness, context: &Context) -> Result<Arc<Lane>, Str
     harness.lane("main", None, context).await.map_err(|error| error.message)
 }
 
+async fn spawn_recoveries(harness: &Harness, context: &Context) -> Result<Vec<tokio::task::JoinHandle<()>>, String> {
+    let mut recoveries = Vec::new();
+    for operation in harness.open_operations().map_err(|error| error.message)? {
+        let lane = harness.lane(&operation.lane, None, context).await.map_err(|error| error.message)?;
+        let label = format!("{}/{}", operation.lane, operation.operation_id);
+        let context = context.clone();
+        recoveries.push(tokio::spawn(async move {
+            match lane.resume(&context).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => eprintln!("Failed to resume {label}: {error}"),
+                Err(error) => eprintln!("Failed to resume {label}: {}", error.message),
+            }
+        }));
+    }
+    Ok(recoveries)
+}
+
 fn run_settings(harness: &Harness) -> Result<RunSettings, String> {
     Ok(RunSettings {
         compaction: harness.get_compaction_settings().map_err(|error| error.message)?,
@@ -350,6 +367,8 @@ pub async fn run_session_worker(options: SessionWorkerOptions) -> Result<(), Str
     peer.provide(MODELS, models_handlers(models_service.clone()));
     peer.provide(WORKER, worker_handlers(session_id));
 
+    let recoveries = spawn_recoveries(&harness, &context).await?;
+
     let (closed, closure) = tokio::sync::oneshot::channel();
     let closed = Mutex::new(Some(closed));
     peer.on_close(move || {
@@ -359,6 +378,9 @@ pub async fn run_session_worker(options: SessionWorkerOptions) -> Result<(), Str
     });
     let _ = closure.await;
 
+    for recovery in recoveries {
+        let _ = recovery.await;
+    }
     lane_service.close();
     harness.close(&context).await;
     repo.close(&context).await;
