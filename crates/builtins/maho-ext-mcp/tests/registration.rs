@@ -66,6 +66,15 @@ fn registrar_with_base() -> Arc<RecordingRegistrar> {
     Arc::new(registrar)
 }
 
+/// Seed a valid on-disk catalog so the lazy server is cached and does not race at attach
+/// (upstream: `shouldRaceMcpStartup(lifecycle) || cachedCatalog === undefined`).
+fn seed_cache(agent_dir: &std::path::Path, name: &str, declaration: &maho_ext_api::RegisteredMcpServerDeclaration) {
+    let mut wire = maho_ext_mcp::config_schema::ServerConfigWire::from(&declaration.config);
+    wire.cwd.get_or_insert_with(|| declaration.registration_cwd.to_string_lossy().into_owned());
+    let hash = maho_ext_mcp::config::hash_config(&maho_ext_mcp::config::normalize_server(wire)).unwrap();
+    maho_ext_mcp::catalog_cache::write_mcp_cached_server(agent_dir, name, maho_ext_mcp::catalog_cache::McpCachedServerCatalog {config_hash: hash, fetched_at: chrono::Utc::now().timestamp_millis() as f64, tools: vec![json!({"name":"tool_1","inputSchema":{"type":"object"}})], resources: vec![], prompts: vec![], instructions: None}).unwrap();
+}
+
 #[test]
 fn direct_mode_registers_catalog_and_keeps_it_active_after_base() {
     let registrar = registrar_with_base();
@@ -196,6 +205,7 @@ async fn cached_service_registration_connects_on_first_call_and_reads_current_cl
     use maho_ext_mcp::{service::McpService,host_registry::HostMcpRegistry,catalog_cache::McpCachedServerCatalog};
     let root=tempfile::tempdir().unwrap();let registry=Arc::new(HostMcpRegistry::default());let mut service=McpService::new(registry.clone(),1);
     let declaration=maho_ext_api::RegisteredMcpServerDeclaration {name:"fx".into(),config:maho_ext_api::McpServerDeclaration {command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into(),"--tools".into(),"1".into()]),exposure:Some(maho_ext_api::McpExposure::Direct),..Default::default()},extension_path:"fixture".into(),registration_cwd:root.path().into()};
+    seed_cache(root.path(),"fx",&declaration);
     service.attach_session(root.path(),root.path(),&Default::default(),true,&[declaration]).await.unwrap();
     let entry=service.connections["fx"].entry.clone();let connection=entry.lock().await.connection.clone();
     entry.lock().await.cached_catalog=Some(McpCachedServerCatalog {config_hash:"fixture".into(),fetched_at:0.0,tools:vec![json!({"name":"tool_1","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None});

@@ -50,4 +50,13 @@ pub struct McpConnectionEntry {
     pub created_at_ms:f64,pub counters:McpServerCounters,pub agent_dir:Option<PathBuf>,pub cached_catalog:Option<McpCachedServerCatalog>,pub cache_refreshed_after_connect:bool,
     pub auth_plan:crate::auth::context::ServerAuthPlan,
     pub artifacts:Option<Arc<crate::guard::output_guard::McpOutputArtifacts>>,
+    /// Tool names seen at the last registration, for the `list_changed` diff
+    /// (upstream `McpConnectionEntry.knownToolNames`).
+    pub known_tool_names:Option<Vec<String>>,
+    /// Last `list_changed` delta summary (upstream `lastListChangedDelta`).
+    pub last_list_changed_delta:Option<String>,
+    /// Teardown for the coalesced `list_changed` re-registration subscription
+    /// (upstream `disposeListChanged`).
+    pub list_changed_tasks:Vec<tokio::task::JoinHandle<()>>,
+    pub list_changed_coalescer:Option<Arc<crate::notifications::McpListChangeCoalescer>>,
 }
