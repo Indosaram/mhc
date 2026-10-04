@@ -3337,7 +3337,7 @@ impl AgentSession {
     }
 
     async fn session_before(&self, event: maho_ext_api::ExtensionEvent) -> Result<maho_ext_api::SessionBeforeEventResult, String> {
-        let mut runner = self.extension_runner.lock().await;
+        let mut runner = self.extension_runner.lock().await.clone();
         match runner.as_mut() {
             Some(runner) => match runner.emit(event).await.map_err(|error| error.to_string())? {
                 maho_ext_api::EventResult::SessionBefore(result) => Ok(result), _ => Ok(Default::default()),
