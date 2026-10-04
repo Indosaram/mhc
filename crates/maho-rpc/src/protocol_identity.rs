@@ -15,7 +15,7 @@ pub fn host_launch_profile(argv:&[String],cwd:&str)->Result<RpcLaunchProfile,ser
     let mut index=0;
     while index<argv.len(){
         match argv[index].as_str(){
-            "--extension"=>{if let Some(value)=argv.get(index+1){extensions.push(std::path::Path::new(cwd).join(value).to_string_lossy().into_owned());}index+=2;continue;},
+            "--extension"=>{if let Some(value)=argv.get(index+1){extensions.push(resolve_extension_path(cwd,value));}index+=2;continue;},
             "--multi-session"=>{multi_session=true;},
             "--session-runtime"=>{if let Some(value)=argv.get(index+1){session_runtime=if value=="worker"{crate::host_protocol_info::SessionRuntimeKind::Worker}else{crate::host_protocol_info::SessionRuntimeKind::InProcess};}index+=2;continue;},
             _=>{}
@@ -23,6 +23,23 @@ pub fn host_launch_profile(argv:&[String],cwd:&str)->Result<RpcLaunchProfile,ser
         index+=1;
     }
     launch_profile_from_core(RpcLaunchProfileCore{extensions,multi_session,session_runtime})
+}
+/// Resolves one `--extension` value against `cwd` the way `path.resolve` does (senpi
+/// `hostLaunchProfile`): an absolute value is kept, otherwise it joins `cwd`, and `.`/`..` are
+/// resolved lexically without touching the filesystem. A plain `Path::join` leaves a literal
+/// `./`/`../` in the profile id, so the same argv would hash differently from the pinned host.
+fn resolve_extension_path(cwd:&str,value:&str)->String{
+    use std::path::{Component,Path,PathBuf};
+    let joined=if Path::new(value).is_absolute(){PathBuf::from(value)}else{Path::new(cwd).join(value)};
+    let mut resolved=PathBuf::new();
+    for component in joined.components(){
+        match component{
+            Component::CurDir=>{},
+            Component::ParentDir=>{if !resolved.pop()&&!resolved.has_root(){resolved.push("..");}},
+            other=>resolved.push(other.as_os_str()),
+        }
+    }
+    resolved.to_string_lossy().into_owned()
 }
 pub fn protocol_identity(profile:RpcLaunchProfile,env:&HashMap<String,String>)->serde_json::Value{let build=maho_core::engine_build_identity::engine_build_identity();serde_json::json!({"instanceId":host_instance_id(),"generation":host_generation(env),"engineVersion":build.text,"engineOrdinal":build.ordinal,"launch_profile":profile})}
 #[cfg(test)]

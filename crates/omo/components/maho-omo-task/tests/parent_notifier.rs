@@ -40,7 +40,10 @@ fn message()->ParentNotifierMessage { ParentNotifierMessage { custom_type:"senpi
         fn schedule_flush(&self) {} fn flush_soon(&self) {}
     }
     let coordinator=Arc::new(Settling::default()); let forwarded=DeliveryCallbacks::new(|_| {});
-    let notifier=TaskParentNotifier { actions:actions.clone(),coordinator:Some(coordinator.clone()),is_streaming:Arc::new(|| true) };
+    // A fresh collector: the direct delivery above already steered into `actions`, so only a
+    // collector used solely by the coordinated notifier can prove it takes no direct action.
+    let coordinated_actions=Arc::new(Actions::default());
+    let notifier=TaskParentNotifier { actions:coordinated_actions.clone(),coordinator:Some(coordinator.clone()),is_streaming:Arc::new(|| true) };
     notifier.enqueue_with_callbacks(&message(),forwarded.clone()).expect("coordinated enqueue"); assert_eq!(forwarded.state(),DeliveryState::Delivered);
-    assert_eq!(*coordinator.0.lock().expect("calls"),["enqueue".to_string()]); assert!(actions.0.lock().expect("messages").is_empty());
+    assert_eq!(*coordinator.0.lock().expect("calls"),["enqueue".to_string()]); assert!(coordinated_actions.0.lock().expect("messages").is_empty(),"coordinated delivery must not steer directly");
 }

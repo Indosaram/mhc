@@ -157,13 +157,15 @@ async fn live_lifecycle(shutdown_live:bool,peer_live:bool) {
     component.engine.manager.wait_for(&child.id,None,Some(Duration::from_secs(10))).expect("cancelled child settlement");
     if let Some(peer)=&peer {
         component.engine.manager.wait_for(&peer.id,None,Some(Duration::from_secs(10))).expect("cancelled peer settlement");
-        assert!(peer.listeners.lock().expect("cancelled peer listeners").is_empty(),"cancellation must release every live peer listener");
+        let peer_remaining=peer.listeners.lock().expect("cancelled peer listeners").len();
+        assert!(peer_remaining==0,"cancellation must release every live peer listener (remaining={peer_remaining})");
         peer.emit(); rpc_timers.fire(150);
         assert_eq!(activity.lock().expect("activity").len(),expected_activity,"cancelled peer must not retain activity delivery");
     }
     component.sync();
     assert!(!reload_veto(&api,&ctx).await,"registered reload must allow the settled cancelled child");
-    assert!(child.listeners.lock().expect("listeners").is_empty(),"cancelled manager child must release every child listener");
+    let child_remaining=child.listeners.lock().expect("listeners").len();
+    assert!(child_remaining==0,"cancelled manager child must release every child listener (remaining={child_remaining})");
     child.emit(); rpc_timers.fire(150); assert_eq!(activity.lock().expect("activity").len(),expected_activity,"terminal node must not retain activity delivery");
     // Terminal runs retain journal subscriptions until detach, but pending timers
     // must settle without rearming once the run has no live node.

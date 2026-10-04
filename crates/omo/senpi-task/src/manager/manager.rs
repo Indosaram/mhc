@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use serde_json::json;
-use crate::host::HostError;
 
 use crate::lifecycle::port::ReattachFailureKind;
 use crate::lifecycle::{
@@ -31,9 +30,9 @@ use crate::manager::outcome::{ErrorOutcomeInput, OutcomeTrackerPorts, track_outc
 use crate::manager::respawn::{RespawnInput, respawn_managed_task};
 use crate::manager::transcript_log::subscribe_transcript_log;
 use crate::manager::types::{
-    Clock, ListScope, ListedTask, ManagedRunner, ManagedRunnerError, ManagedStartSpec,
-    ManagerStartSpec, NoopDestruction, OwnedStartResult, ResolvedChildPlan, RpcRespawnRunner,
-    SpawnAdmission, StartFailure, StartResult, StartedTask, TaskManagerOptions,
+    Clock, FallibleAdmit, ListScope, ListedTask, ManagedRunner, ManagedRunnerError,
+    ManagedStartSpec, ManagerStartSpec, NoopDestruction, OwnedStartResult, ResolvedChildPlan,
+    RpcRespawnRunner, SpawnAdmission, StartFailure, StartResult, StartedTask, TaskManagerOptions,
 };
 use crate::run_stats::{RunStatsTracker, create_run_stats_tracker};
 use crate::runners::RunnerFailureKind;
@@ -129,7 +128,7 @@ struct Inner {
     now: Clock,
     destruction: Arc<dyn DestructionPort>,
     admit: Option<crate::manager::types::AdmitResident>,
-    fallible_admit: Option<Arc<dyn Fn(&str) -> Result<SpawnAdmission, HostError> + Send + Sync>>,
+    fallible_admit: Option<FallibleAdmit>,
     trusted_respawn_launch: Option<crate::manager::types::TrustedRespawnLaunchResolver>,
     host_pid: i64,
     rpc_respawn_runner: Arc<dyn RpcRespawnRunner>,

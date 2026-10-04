@@ -17,6 +17,16 @@ impl Extension for IdleDreamExtension{
             launch:Arc::new(move|_,_,_,_|panic!("settled hook is still busy; idle launch must be rejected")),warn:Arc::new(|error|panic!("{error}")),
         },Arc::new(move|delay|{assert_eq!(delay,1_800_000.0);let(sender,receiver)=tokio::sync::oneshot::channel();scheduled.lock().unwrap_or_else(|error|panic!("timer capture: {error}")).push(sender);let fired=fired.clone();Box::pin(async move{if receiver.await.is_ok()&&let Some(fired)=fired.lock().unwrap_or_else(|error|panic!("timer receipt: {error}")).take(){let _=fired.send(());}})}));
         dream.register(api);
+        // The settled-window idle probe reads busy only while a live wake source is published
+        // (senpi agent-session.ts: `_settlingWithBackgroundWork = wakeSources.hasActive`). Publish
+        // one over the real `wake_source_state` channel at agent_start and keep it live THROUGH the
+        // agent_settled delivery: agent_end precedes agent_settled (reference order), so releasing
+        // there would clear the source before the busy assertion runs. It is released at session
+        // shutdown, after the observation window.
+        let wake_on=api.events.clone();
+        api.on(EventKind::AgentStart,Arc::new(move|_,_|{wake_on.emit("wake_source_state",&serde_json::json!({"source":"memory-dream","activeCount":1,"channels":[]}));Box::pin(async{Ok(EventResult::None)})}));
+        let wake_off=api.events.clone();
+        api.on(EventKind::SessionShutdown,Arc::new(move|_,_|{wake_off.emit("wake_source_state",&serde_json::json!({"source":"memory-dream","activeCount":0,"channels":[]}));Box::pin(async{Ok(EventResult::None)})}));
         let reset=api.registered.handlers[&EventKind::AgentStart][0].clone();let arm=api.registered.handlers[&EventKind::AgentSettled][0].clone();
         api.on(EventKind::AgentSettled,Arc::new(move|_,context|{
             let reset=reset.clone();let arm=arm.clone();let timers=timers.clone();let receipt=receipt.clone();
