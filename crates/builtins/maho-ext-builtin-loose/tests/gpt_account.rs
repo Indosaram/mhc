@@ -147,8 +147,8 @@ async fn a_successful_add_routes_accounts_changed_through_the_core_registry_and_
     let ctx = context(ui.clone());
     handler("add", &ctx).await.expect("add");
 
-    assert_eq!(*observed.lock().unwrap_or_else(std::sync::PoisonError::into_inner), vec![PROVIDER_ID.to_owned()]);
-    assert!(ui.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|(message, _)| message.contains("account added")));
+    assert_eq!(*observed.lock().unwrap_or_else(std::sync::PoisonError::into_inner), vec![PROVIDER_ID.to_owned()], "exactly one AccountsChanged for the provider");
+    assert!(ui.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|(_, kind)| *kind == NotificationType::Info));
 
     unsubscribe();
     maho_core::provider_account_events::emit_provider_accounts_changed(PROVIDER_ID);
