@@ -208,7 +208,14 @@ pub fn hydrate_message_update(event: &Value, streaming: Option<&mut Value>) -> V
             ("text_delta", Some("text")) => append_str(block, "text", delta),
             ("thinking_delta", Some("thinking")) => append_str(block, "thinking", delta),
             ("toolcall_delta", Some("toolCall")) => {
-                let raw = format!("{}{delta}", block.get("arguments").map_or_else(|| "{}".to_owned(), Value::to_string));
+                // senpi appends the delta to the JSON text of the accumulated arguments and re-parses
+                // it. A toolcall starts with `arguments: {}` and its deltas carry the JSON text of the
+                // real arguments, so an empty object is an empty buffer: parse the delta alone there.
+                let raw = match block.get("arguments") {
+                    None => delta.to_owned(),
+                    Some(Value::Object(arguments)) if arguments.is_empty() => delta.to_owned(),
+                    Some(existing) => format!("{}{delta}", Value::to_string(existing)),
+                };
                 if let Ok(parsed) = serde_json::from_str::<Value>(&raw)
                     && parsed.is_object()
                 {
@@ -1413,8 +1420,8 @@ mod tests {
         assert_eq!(snapshot["pendingMessageCount"], json!(2.));
     }
 
-    #[test]
-    fn queue_updates_and_reservation_track_the_enqueue_order() {
+    #[tokio::test]
+    async fn queue_updates_and_reservation_track_the_enqueue_order() {
         let proxy = proxy();
         proxy.apply_state_event(&json!({"type": "queue_update", "steering": ["s"], "followUp": ["f"], "ordered": [{"text": "s", "mode": "steer", "enqueueOrder": 7}]}));
         assert_eq!(proxy.state().steering, ["s"]);
@@ -1425,8 +1432,8 @@ mod tests {
         assert!(!proxy.state().is_streaming);
     }
 
-    #[test]
-    fn stream_state_events_mirror_start_compaction_retry_and_model() {
+    #[tokio::test]
+    async fn stream_state_events_mirror_start_compaction_retry_and_model() {
         let proxy = proxy();
         proxy.apply_state_event(&json!({"type": "agent_start"}));
         assert!(proxy.state().is_streaming);
@@ -1446,8 +1453,8 @@ mod tests {
         assert_eq!(proxy.state().session_name.as_deref(), Some("renamed"));
     }
 
-    #[test]
-    fn wire_events_hydrate_for_subscribers_and_hold_ui_requests_until_a_handler_attaches() {
+    #[tokio::test]
+    async fn wire_events_hydrate_for_subscribers_and_hold_ui_requests_until_a_handler_attaches() {
         let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
         let captured = seen.clone();
         let proxy = proxy();
@@ -1473,8 +1480,8 @@ mod tests {
         assert!(proxy.take_ui_responses().is_empty(), "responses are drained once");
     }
 
-    #[test]
-    fn subscriptions_stop_delivering_after_they_are_dropped() {
+    #[tokio::test]
+    async fn subscriptions_stop_delivering_after_they_are_dropped() {
         let count = Arc::new(Mutex::new(0usize));
         let captured = count.clone();
         let proxy = proxy();
@@ -1486,8 +1493,8 @@ mod tests {
         assert_eq!(*count.lock().unwrap_or_else(std::sync::PoisonError::into_inner), 1, "a dropped subscription stops delivery");
     }
 
-    #[test]
-    fn decoded_session_events_reach_session_listeners_and_ignore_unknown_records() {
+    #[tokio::test]
+    async fn decoded_session_events_reach_session_listeners_and_ignore_unknown_records() {
         let received = Arc::new(Mutex::new(Vec::<maho_ext_api::AgentSessionEvent>::new()));
         let captured = received.clone();
         let proxy = proxy();
@@ -1502,8 +1509,8 @@ mod tests {
         assert_eq!(received.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(), 1, "a dropped session subscription stops delivery");
     }
 
-    #[test]
-    fn action_failures_surface_only_for_command_refusals_not_transport_loss() {
+    #[tokio::test]
+    async fn action_failures_surface_only_for_command_refusals_not_transport_loss() {
         let seen = Arc::new(Mutex::new(Vec::<InteractiveHostWarning>::new()));
         let captured = seen.clone();
         let proxy = RemoteSessionProxy::new(
@@ -1545,28 +1552,28 @@ mod tests {
         }
     }
 
-    #[test]
-    fn runtime_lifecycle_is_monotonic_into_fallback_and_disposed() {
+    #[tokio::test]
+    async fn runtime_lifecycle_is_monotonic_into_fallback_and_disposed() {
         let runtime = detached_runtime();
         assert_eq!(runtime.state(), HostRuntimeState::Connected);
         runtime.enter_reconnecting();
         assert!(runtime.is_reconnecting());
         runtime.enter_connected();
         assert!(!runtime.is_reconnecting());
-        block_on(runtime.enter_fallback("closed".into()));
+        runtime.enter_fallback("closed".into()).await;
         assert!(runtime.is_fallback());
-        assert!(!block_on(runtime.reconnect()), "a fallen-back runtime does not reconnect");
+        assert!(!runtime.reconnect().await, "a fallen-back runtime does not reconnect");
         assert_eq!(runtime.state(), HostRuntimeState::Fallback);
-        block_on(runtime.dispose());
+        runtime.dispose().await;
         assert_eq!(runtime.state(), HostRuntimeState::Disposed);
-        block_on(runtime.dispose());
+        runtime.dispose().await;
         assert_eq!(runtime.state(), HostRuntimeState::Disposed);
         runtime.enter_connected();
         assert_eq!(runtime.state(), HostRuntimeState::Disposed, "a disposed runtime never reconnects");
     }
 
-    #[test]
-    fn fallback_invokes_the_invalidate_and_rebind_hooks_in_order() {
+    #[tokio::test]
+    async fn fallback_invokes_the_invalidate_and_rebind_hooks_in_order() {
         let order = Arc::new(Mutex::new(Vec::<&'static str>::new()));
         let runtime = detached_runtime();
         let invalidate = order.clone();
@@ -1579,18 +1586,18 @@ mod tests {
                 Ok(())
             })
         })));
-        block_on(runtime.enter_fallback("transport gone".into()));
+        runtime.enter_fallback("transport gone".into()).await;
         assert_eq!(*order.lock().unwrap_or_else(std::sync::PoisonError::into_inner), ["invalidate", "rebind"]);
     }
 
-    #[test]
-    fn replacement_calls_short_circuit_once_fallen_back() {
+    #[tokio::test]
+    async fn replacement_calls_short_circuit_once_fallen_back() {
         let runtime = detached_runtime();
-        block_on(runtime.enter_fallback("gone".into()));
-        assert!(block_on(runtime.new_session(None)).expect("local handoff"), "a fallen-back runtime reports the local handoff");
-        assert!(block_on(runtime.switch_session("/sessions/two.jsonl", None)).expect("local handoff"));
-        assert!(block_on(runtime.fork("e1", None)).expect("local handoff"));
-        assert!(block_on(runtime.import_jsonl("/tmp/import.jsonl", None)).expect("local handoff"));
+        runtime.enter_fallback("gone".into()).await;
+        assert!(runtime.new_session(None).await.expect("local handoff"), "a fallen-back runtime reports the local handoff");
+        assert!(runtime.switch_session("/sessions/two.jsonl", None).await.expect("local handoff"));
+        assert!(runtime.fork("e1", None).await.expect("local handoff"));
+        assert!(runtime.import_jsonl("/tmp/import.jsonl", None).await.expect("local handoff"));
     }
 
     #[tokio::test]
