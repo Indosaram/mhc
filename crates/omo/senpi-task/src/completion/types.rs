@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use serde::Serialize;
 
@@ -71,10 +71,49 @@ pub struct ParentNotifierMessage {
     pub trigger_turn: Option<bool>,
 }
 
-/// Synchronous enqueue seam into the parent session. A returned error is the only observable
-/// delivery failure; delivery itself is fire-and-forget.
+/// State of one delivery attempt, independent of queue acceptance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryState { Pending, Delivered, Failed }
+
+type DeliveryCallback = Box<dyn FnOnce(Result<(), HostError>) + Send>;
+
+/// Shared, exactly-once settlement for one delivery attempt. Callbacks run outside the lock.
+#[derive(Clone)]
+pub struct DeliveryCallbacks {
+    inner: Arc<Mutex<(DeliveryState, Option<DeliveryCallback>)>>,
+}
+
+impl DeliveryCallbacks {
+    pub fn new(callback: impl FnOnce(Result<(), HostError>) + Send + 'static) -> Self {
+        Self { inner: Arc::new(Mutex::new((DeliveryState::Pending, Some(Box::new(callback))))) }
+    }
+    pub fn state(&self) -> DeliveryState {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner).0
+    }
+    pub fn delivered(&self) { self.settle(Ok(())); }
+    pub fn failed(&self, error: HostError) { self.settle(Err(error)); }
+    pub(crate) fn rejected(&self) {
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        if inner.0 == DeliveryState::Pending { inner.0 = DeliveryState::Failed; inner.1.take(); }
+    }
+    fn settle(&self, result: Result<(), HostError>) {
+        let callback = {
+            let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+            if inner.0 != DeliveryState::Pending { return; }
+            inner.0 = if result.is_ok() { DeliveryState::Delivered } else { DeliveryState::Failed };
+            inner.1.take()
+        };
+        if let Some(callback) = callback { callback(result); }
+    }
+}
+
+/// Acceptance is not delivery. Implementors settle callbacks only after the actual send resolves.
+/// A synchronous rejection returns Err without settling; the caller owns that rejection.
 pub trait ParentNotifier: Send + Sync {
-    fn enqueue(&self, message: &ParentNotifierMessage) -> Result<(), HostError>;
+    fn enqueue_with_callbacks(&self, message: &ParentNotifierMessage, callbacks: DeliveryCallbacks) -> Result<(), HostError>;
+    fn enqueue(&self, message: &ParentNotifierMessage) -> Result<(), HostError> {
+        self.enqueue_with_callbacks(message, DeliveryCallbacks::new(|_| {}))
+    }
 }
 
 /// The record store as the notifier sees it. Notification bookkeeping goes through `mutate` (locked
@@ -159,6 +198,7 @@ pub enum SkipReason {
     NonNotifyingTerminal,
     NotTerminal,
     AlreadyNotified,
+    DeliveryPending,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +211,7 @@ pub enum DeliveredDecision {
 pub enum NotifyResult {
     Skipped(SkipReason),
     Delivered(DeliveredDecision),
+    Pending(DeliveredDecision),
     Buffered(TransitionReason),
     Failed,
 }
@@ -190,6 +231,7 @@ pub struct ReconcileUnnotifiedNotificationsInput<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlushResult {
     Flushed(usize),
+    Pending(usize),
     Dropped(usize),
     Failed(usize),
     Empty,
