@@ -4,8 +4,12 @@ use crate::output_format::format_terminal_tool_output;
 use super::context::{TerminalToolResult,error_result,noticed_result};
 use super::spawn::describe_exit;
 pub fn execute_bash_output(runtime:Option<&TerminalRuntimeSession>,id:&str,filter:Option<&str>)->Result<TerminalToolResult,RuntimeError> {
+    execute_bash_output_view(runtime,id,filter,false)
+}
+pub fn execute_bash_output_view(runtime:Option<&TerminalRuntimeSession>,id:&str,filter:Option<&str>,screen:bool)->Result<TerminalToolResult,RuntimeError> {
     let Some(runtime)=runtime else {return Ok(error_result(format!("No terminal session found with id: {id}")));};
     let exit=runtime.exit_result()?;let status=match exit.as_ref() {None=>"status: running".to_owned(),Some(exit)=>{let label=describe_exit(Some(exit)).unwrap_or_else(||"exited".to_owned());match exit.exit_code {Some(code)=>format!("status: {label} exit_code: {code}"),None=>format!("status: {label}")}}};
+    if screen {return Ok(super::context::text_result(format!("{status}\n{}",runtime.snapshot()?.visible_grid.join("\n").trim_end())));}
     let delta=runtime.read_delta()?;let filtered=if let Some(regex)=filter.and_then(safe_reg_exp) {delta.text.split('\n').filter(|line|regex.is_match(line).unwrap_or(false)).collect::<Vec<_>>().join("\n")} else {delta.text};
     let formatted=format_terminal_tool_output(&filtered);let dropped_notice=if delta.dropped_chars>0 {Some(format!("[{} earlier chars dropped]",delta.dropped_chars))} else {None};let dropped=dropped_notice.as_ref().map(|notice|format!("{notice}\n")).unwrap_or_default();
     let text=format!("{status}\n{dropped}{}",if formatted.text.is_empty() {"(no new output)"} else {&formatted.text});
@@ -19,6 +23,15 @@ pub fn with_monitor_state(mut result:TerminalToolResult,id:&str,paused:bool,drop
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn screen_projection_applies_cursor_edits_without_consuming_log()->Result<(),RuntimeError> {
+        let runtime=TerminalRuntimeSession::start("screen",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'old\rnew\\033[K'").size(20,4))?;
+        runtime.wait(std::time::Duration::from_secs(5))?;
+        let result=execute_bash_output_view(Some(&runtime),"bash_1",Some("absent"),true)?;
+        assert_eq!(result.content[0].text.lines().last(),Some("new"));
+        assert_eq!(runtime.snapshot()?.visible_grid[0],"new");
+        assert_eq!(runtime.read_delta()?.text,"old\rnew\x1b[K");runtime.dispose()
+    }
     #[test]
     fn live_output_filter_consumes_delta_once_and_invalid_regex_keeps_output()->Result<(),RuntimeError> {
         let runtime=TerminalRuntimeSession::start("output",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'keep\\ndrop\\n'"))?;runtime.wait(std::time::Duration::from_secs(5))?;

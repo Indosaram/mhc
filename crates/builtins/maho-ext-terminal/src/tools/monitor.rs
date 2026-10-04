@@ -1,10 +1,13 @@
 use serde_json::{Value,json};
 use crate::{manager::TerminalManager,monitor_registry::{MonitorRegistry,CommandMonitor,MonitorSnapshotEntry,MonitorFireWindow,allocate_monitor_id},shared::*};
-use super::context::{TerminalToolResult,text_result,error_result};
+use super::context::{TerminalToolResult,text_result,error_result,resolve_terminal_id};
 
 pub const DEFAULT_MONITOR_TIMEOUT_MS:u64=300_000;
 pub const MAX_MONITOR_TIMEOUT_MS:u64=3_600_000;
 pub fn monitor_schema()->Value {json!({"type":"object","properties":{"action":{"type":"string","enum":["create","rearm"]},"description":{"type":"string","minLength":1,"maxLength":200},"command":{"type":"string"},"path":{"type":"string","minLength":1},"event":{"type":"string","enum":["create","modify"]},"filter":{"type":"string"},"timeout_ms":{"type":"number","minimum":1,"maximum":MAX_MONITOR_TIMEOUT_MS},"persistent":{"type":"boolean"},"bash_id":{"type":"string"}}})}
+pub fn execute_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistry,input:&Value,cwd:&std::path::Path,approved_parent:Option<&std::path::Path>)->TerminalToolResult {
+    execute_configured_monitor(manager,registry,input,cwd,approved_parent,None,&crate::settings::TERMINAL_SETTINGS_DEFAULTS)
+}
 /// True only for the file-watch create branch; the command and rearm branches need no file approval
 /// and must not consult the carrier.
 fn is_file_watch(call:&maho_tools::definition::ToolCall)->bool {
@@ -21,11 +24,11 @@ pub fn approved_parent_for(call:&maho_tools::definition::ToolCall)->Result<Optio
     let context=call.context.ok_or_else(||ToolError::Message("monitor file watch requires a tool context to resolve the approved parent".to_owned()))?;
     context.take_approved_monitor_parent(call.id,&call.params).map_err(|error|ToolError::Message(error.to_string()))
 }
-pub fn execute_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistry,input:&Value,cwd:&std::path::Path,approved_parent:Option<&std::path::Path>)->TerminalToolResult {
+pub fn execute_configured_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistry,input:&Value,cwd:&std::path::Path,approved_parent:Option<&std::path::Path>,shell:Option<&str>,settings:&crate::settings::ResolvedTerminalSettings)->TerminalToolResult {
     if input.get("action").and_then(Value::as_str)==Some("rearm") {
         let id=input.get("bash_id").and_then(Value::as_str).filter(|id|!id.is_empty());
         if let Some(id)=id {
-            let id=manager.resolve_id(id).unwrap_or_else(||id.to_owned());
+            let id=resolve_terminal_id(manager,id);
             if !registry.snapshot().iter().any(|record|record.id==id) {return error_result(format!("No active monitor found with id: {id}"));}
             let resumed=registry.resume(Some(std::slice::from_ref(&id)));
             return text_result(match resumed.first() {None=>format!("Monitor {id} is not paused; no action taken."),Some((_,0))=>format!("Monitor {id} re-armed."),Some((_,dropped))=>format!("Monitor {id} re-armed ({dropped} line(s) dropped while muted).")});
@@ -56,7 +59,8 @@ pub fn execute_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistr
     let persistent=input.get("persistent").and_then(Value::as_bool)==Some(true);
     let timeout=input.get("timeout_ms").and_then(Value::as_f64).unwrap_or(DEFAULT_MONITOR_TIMEOUT_MS as f64).trunc().clamp(1.0,MAX_MONITOR_TIMEOUT_MS as f64) as u64;
     let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("epoch").as_secs_f64()*1000.0;
-    let mut options=maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg(command).cwd(cwd);
+    let mut options=match super::spawn::command_options(command,Some(cwd),shell) {Ok(options)=>options,Err(error)=>return error_result(error.to_string())};
+    options=options.size(settings.default_cols as u16,settings.default_rows as u16);
     if !persistent {options=options.timeout(std::time::Duration::from_millis(timeout));}
     let monitor_id=match allocate_monitor_id() {Ok(id)=>id,Err(error)=>return error_result(error.to_string())};
     let id=match manager.create(command,options) {Ok(id)=>id,Err(error)=>return error_result(error.to_string())};
@@ -68,12 +72,12 @@ pub fn execute_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistr
 
 pub async fn execute_monitor_recorded(manager:&mut TerminalManager,registry:&mut MonitorRegistry,input:&Value,cwd:&std::path::Path,approved_parent:Option<&std::path::Path>,writer:Option<&mut crate::terminal_manifest::TerminalManifestWriter>)->TerminalToolResult {
     use crate::terminal_manifest_model::{MonitorRegistration,MonitorSpec,FileEvent};
-    let Some(writer)=writer else {return execute_monitor(manager,registry,input,cwd,approved_parent);};
+    let Some(writer)=writer else {return execute_configured_monitor(manager,registry,input,cwd,approved_parent,None,&crate::settings::TERMINAL_SETTINGS_DEFAULTS);};
     let persistent=input.get("persistent").and_then(Value::as_bool)==Some(true);
     if input.get("action").and_then(Value::as_str)!=Some("rearm")&&persistent&&writer.durable_count()>=MAX_DURABLE_MONITORS {
         return error_result(format!("Cannot start another persistent monitor: this session already holds {MAX_DURABLE_MONITORS} durable monitors (the maximum). Stop one with kill_bash first."));
     }
-    let result=execute_monitor(manager,registry,input,cwd,approved_parent);
+    let result=execute_configured_monitor(manager,registry,input,cwd,approved_parent,None,&crate::settings::TERMINAL_SETTINGS_DEFAULTS);
     let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("epoch").as_secs_f64()*1000.0;
     if result.is_error.is_none()&&input.get("action").and_then(Value::as_str)!=Some("rearm")&&let Some(details)=&result.details&&let Some(monitor_id)=details.get("monitor_id").and_then(Value::as_str) {
         let description=input["description"].as_str().expect("registered description").to_owned();
@@ -92,11 +96,11 @@ pub(crate) mod tests {
         let dir=tempfile::tempdir().unwrap();let mut manager=TerminalManager::default();let mut registry=MonitorRegistry::new(|_|{});
         let path=dir.path().join("watch");std::fs::write(&path,b"x").unwrap();
         let approved=std::fs::canonicalize(dir.path()).unwrap();
-        let ok=execute_monitor(&mut manager,&mut registry,&json!({"description":"approved","path":"watch","event":"modify"}),dir.path(),Some(&approved));
+        let ok=execute_configured_monitor(&mut manager,&mut registry,&json!({"description":"approved","path":"watch","event":"modify"}),dir.path(),Some(&approved),None,&crate::settings::TERMINAL_SETTINGS_DEFAULTS);
         assert!(ok.is_error.is_none(),"an approved parent registers the watch: {:?}",ok.content);
         let before=registry.snapshot();
         let other=tempfile::tempdir().unwrap();
-        let mismatch=execute_monitor(&mut manager,&mut registry,&json!({"description":"retarget","path":"watch","event":"modify"}),dir.path(),Some(other.path()));
+        let mismatch=execute_configured_monitor(&mut manager,&mut registry,&json!({"description":"retarget","path":"watch","event":"modify"}),dir.path(),Some(other.path()),None,&crate::settings::TERMINAL_SETTINGS_DEFAULTS);
         assert_eq!(mismatch.is_error,Some(true),"a parent that does not match the approval is refused");
         assert_eq!(registry.snapshot(),before,"a refused registration preserves the existing watch");
         registry.dispose();manager.teardown().unwrap();
@@ -138,13 +142,28 @@ pub(crate) mod tests {
         let call=maho_tools::definition::ToolCall {id:"c1",params:json!({"description":"watch","path":"file"}),signal:Default::default(),on_update:None,context:None};
         assert!(approved_parent_for(&call).is_err(),"no blanket fallback when the context is absent");
     }
-
     #[tokio::test]
     async fn recorded_file_monitor_preserves_approved_parent() {
         let dir=tempfile::tempdir().unwrap();let approved=std::fs::canonicalize(dir.path()).unwrap();let mut manager=TerminalManager::default();let mut registry=MonitorRegistry::new(|_|{});let mut writer=crate::terminal_manifest::TerminalManifestWriter::new(dir.path(),"s");
         let result=execute_monitor_recorded(&mut manager,&mut registry,&json!({"description":"approved","path":"watch","persistent":true}),dir.path(),Some(&approved),Some(&mut writer)).await;
         assert!(result.is_error.is_none());let saved=writer.store.read().await.unwrap().unwrap();let manifest=crate::restore::parse_terminal_manifest(&saved,"s").unwrap();assert_eq!(manifest.monitors.len(),1);assert_eq!(manifest.monitors[0].approved_parent.as_deref(),Some(approved.to_str().unwrap()));
         registry.dispose();manager.teardown().unwrap();
+    }
+    #[tokio::test]
+    async fn live_command_snapshot_records_registration_epoch() {
+        let mut manager=TerminalManager::default();let mut registry=MonitorRegistry::new(|_|{});
+        let before=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64()*1000.0;
+        let result=execute_monitor(&mut manager,&mut registry,&json!({"description":"live","command":"read value"}),std::path::Path::new("/tmp"),None);assert!(result.is_error.is_none());
+        let after=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64()*1000.0;
+        let snapshot=registry.snapshot();assert_eq!(snapshot.len(),1);assert!(snapshot[0].started_at_ms>=before&&snapshot[0].started_at_ms<=after);let deadline=snapshot[0].deadline_ms.unwrap();assert!(deadline>=before+DEFAULT_MONITOR_TIMEOUT_MS as f64&&deadline<=after+DEFAULT_MONITOR_TIMEOUT_MS as f64);
+        registry.dispose();manager.teardown().unwrap();
+    }
+    #[tokio::test]
+    async fn configured_monitor_geometry_reaches_real_shell() {
+        let (sender,mut events)=tokio::sync::mpsc::unbounded_channel();let mut registry=MonitorRegistry::new(move |event| {sender.send(event).unwrap();});let mut manager=TerminalManager::default();
+        let mut settings=crate::settings::TERMINAL_SETTINGS_DEFAULTS;settings.default_cols=91.0;settings.default_rows=33.0;
+        let result=execute_configured_monitor(&mut manager,&mut registry,&json!({"description":"geometry","command":"stty size","filter":"^33 91$"}),std::path::Path::new("/tmp"),None,Some("/bin/bash"),&settings);assert!(result.is_error.is_none());
+        tokio::time::timeout(std::time::Duration::from_secs(5),async {assert!(matches!(events.recv().await,Some(crate::monitor_registry::MonitorEvent::Line {line,..}) if line=="33 91"));assert!(matches!(events.recv().await,Some(crate::monitor_registry::MonitorEvent::Summary {..})));}).await.unwrap();registry.dispose();manager.teardown().unwrap();
     }
     #[tokio::test]
     async fn durable_admission_rejects_before_file_registration() {

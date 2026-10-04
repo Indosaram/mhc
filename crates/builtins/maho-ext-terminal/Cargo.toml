@@ -12,15 +12,19 @@ fancy-regex = "=0.16.2"
 serde_json = "=1.0.149"
 serde = { version = "=1.0.228", features = ["derive"] }
 regex = "=1.12.3"
+vt100 = "=0.16.2"
 maho-ai = { path = "../../maho-ai" }
 maho-tools = { path = "../../maho-tools" }
 maho-ext-api = { path = "../../maho-ext-api" }
+maho-tui = { path = "../../maho-tui" }
 maho-core = { path = "../../maho-core" }
 maho-pty = { path = "../../vendor/maho-pty" }
 thiserror = "=2.0.18"
 tokio = { version = "=1.52.3", features = ["macros", "rt", "sync", "time"] }
 
 [dev-dependencies]
+maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
+maho-ext-host = { path = "../../maho-ext-host" }
 tempfile = "=3.27.0"
 tokio = { version = "=1.52.3", features = ["test-util"] }
 

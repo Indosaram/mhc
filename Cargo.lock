@@ -2345,6 +2345,8 @@ dependencies = [
  "futures",
  "maho-core",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
  "maho-tools",
  "nix",
  "serde",
@@ -2683,8 +2685,11 @@ dependencies = [
  "maho-ai",
  "maho-core",
  "maho-ext-api",
+ "maho-ext-host",
  "maho-pty",
+ "maho-test-support",
  "maho-tools",
+ "maho-tui",
  "nix",
  "regex",
  "serde",
@@ -2693,6 +2698,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "vt100",
 ]
 
 [[package]]

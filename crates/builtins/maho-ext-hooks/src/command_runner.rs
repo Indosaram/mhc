@@ -38,17 +38,19 @@ pub async fn run_command_hook(handler:&ExecutableHookHandler,input:&serde_json::
     let stdout_limit=options.output_policy.and_then(|p|p.max_stdout_bytes).unwrap_or(DEFAULT_STDOUT_LIMIT_BYTES);
     let stderr_limit=options.output_policy.and_then(|p|p.max_stderr_bytes).unwrap_or(DEFAULT_STDERR_LIMIT_BYTES);
     let out=tokio::spawn(capture_stream(stdout,stdout_limit));let err=tokio::spawn(capture_stream(stderr,stderr_limit));
-    if let Some(mut stdin)=child.stdin.take() {
-        let write=async {stdin.write_all(&serde_json::to_vec(input).map_err(std::io::Error::other)?).await?;stdin.shutdown().await};
-        if let Err(error)=write.await && error.kind()!=std::io::ErrorKind::BrokenPipe {return Err(error);}
-    }
+    let payload=serde_json::to_vec(input).map_err(std::io::Error::other)?;
+    let mut stdin=child.stdin.take();
+    let write=async move {
+        if let Some(stdin)=stdin.as_mut() {stdin.write_all(&payload).await?;stdin.shutdown().await?;}Ok::<(),std::io::Error>(())
+    };tokio::pin!(write);let mut written=false;
     let timeout=tokio::time::sleep(Duration::try_from_secs_f64(timeout_seconds).map_err(std::io::Error::other)?);tokio::pin!(timeout);
     let cancel=async {match options.signal {Some(signal)=>signal.cancelled().await,None=>std::future::pending::<()>().await}};tokio::pin!(cancel);
-    let (status,timed_out,aborted)=tokio::select! {
-        status=child.wait()=>(status?,false,false),
-        _=&mut timeout=>{kill_child_tree(&mut child,pid).await?;(child.wait().await?,true,false)},
-        _=&mut cancel=>{kill_child_tree(&mut child,pid).await?;(child.wait().await?,false,true)},
-    };
+    let (status,timed_out,aborted)=loop {tokio::select! {
+        result=&mut write,if !written=>{written=true;if let Err(error)=result&&error.kind()!=std::io::ErrorKind::BrokenPipe {kill_child_tree(&mut child,pid).await?;child.wait().await?;return Err(error);}}
+        status=child.wait()=>break (status?,false,false),
+        _=&mut timeout=>{kill_child_tree(&mut child,pid).await?;break (child.wait().await?,true,false)},
+        _=&mut cancel=>{kill_child_tree(&mut child,pid).await?;break (child.wait().await?,false,true)},
+    }};
     let stdout=out.await.map_err(std::io::Error::other)??;let stderr=err.await.map_err(std::io::Error::other)??;
     #[cfg(unix)]
     let signal={use std::os::unix::process::ExitStatusExt;status.signal().map(|signal|nix::sys::signal::Signal::try_from(signal).map_or_else(|_|format!("SIG{signal}"),|signal|signal.as_str().to_owned()))};
@@ -94,6 +96,12 @@ mod tests {
     #[tokio::test] async fn stdin_stdout_stderr_exit_metadata()->std::io::Result<()> {let dir=tempfile::tempdir()?;let result=run_command_hook(&handler("cat; printf stderr-marker >&2; exit 7"),&json!({"event":"PreToolUse","toolName":"Bash"}),options(dir.path())).await?;assert_eq!(serde_json::from_str::<serde_json::Value>(&result.stdout).map_err(std::io::Error::other)?,json!({"event":"PreToolUse","toolName":"Bash"}));assert_eq!(result.stderr,"stderr-marker");assert_eq!(result.exit_code,Some(7));assert!(!result.aborted && !result.timed_out);Ok(())}
     #[tokio::test] async fn invalid_timeout_prevents_spawn() {let mut hook=handler("exit 0");hook.config.timeout=Some(0.0);assert!(run_command_hook(&hook,&json!({"event":"SessionStart"}),options(Path::new("/tmp"))).await.is_err());}
     #[tokio::test] async fn timeout_kills_process_group()->std::io::Result<()> {let mut hook=handler("while :; do :; done");hook.config.timeout=Some(0.02);let result=run_command_hook(&hook,&json!({"event":"SessionStart"}),options(Path::new("/tmp"))).await?;assert!(result.timed_out);assert_eq!(result.exit_code,None);Ok(())}
+    #[tokio::test]
+    async fn timeout_interrupts_a_child_that_never_reads_large_stdin()->std::io::Result<()> {
+        let mut hook=handler("while :; do :; done");hook.config.timeout=Some(0.02);
+        let result=tokio::time::timeout(Duration::from_secs(5),run_command_hook(&hook,&json!({"event":"UserPromptSubmit","prompt":"x".repeat(1_000_000)}),options(Path::new("/tmp")))).await.map_err(std::io::Error::other)??;
+        assert!(result.timed_out);assert_eq!(result.exit_code,None);Ok(())
+    }
     #[tokio::test] async fn already_aborted_never_spawns()->std::io::Result<()> {let signal=AbortSignal::default();signal.abort();let mut opts=options(Path::new("/tmp"));opts.signal=Some(&signal);let result=run_command_hook(&handler("exit 9"),&json!({"event":"SessionStart"}),opts).await?;assert!(result.aborted);assert_eq!(result.exit_code,None);Ok(())}
     #[tokio::test] async fn capture_caps_before_concatenation()->std::io::Result<()> {let captured=capture_stream(&vec![b'x';4096][..],128).await?;assert_eq!(captured.total_bytes,4096);assert_eq!(captured.kept_bytes,128);assert_eq!(captured.text.len(),128);Ok(())}
     #[test] fn windows_command_selection() {let mut hook=handler("posix");hook.config.command_windows=Some("windows".to_owned());assert_eq!(select_hook_command_for_platform(&hook,"win32"),"windows");assert_eq!(select_hook_command_for_platform(&hook,"darwin"),"posix");}

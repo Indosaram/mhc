@@ -18,11 +18,11 @@ pub struct HookDispatchSkipped {pub diagnostics:Vec<HookDiagnostic>,pub handler:
 pub struct HookDispatchResult {pub decision:HookDispatchDecision,pub diagnostics:Vec<HookDiagnostic>,pub executable_handlers:Vec<ExecutableHookHandler>,pub matched_handlers:Vec<ExecutableHookHandler>,pub skipped:Vec<HookDispatchSkipped>,pub summaries:Vec<HookDispatchSummary>}
 
 pub async fn dispatch_hook_event<F,Fut>(handlers:&[ExecutableHookHandler],input:&Value,trust_state:&HookTrustState,platform:&str,runner:F)->std::io::Result<HookDispatchResult>
-where F:Fn(ExecutableHookHandler)->Fut,Fut:std::future::Future<Output=std::io::Result<CommandHookRunResult>> {
+where F:Fn(ExecutableHookHandler)->Fut,Fut:std::future::Future<Output=std::io::Result<CommandHookRunResult>>+Send+'static {
     dispatch_hook_event_with_status(handlers,input,trust_state,platform,runner,|_|{}).await
 }
-pub async fn dispatch_hook_event_with_status<F,Fut,S>(handlers:&[ExecutableHookHandler],input:&Value,trust_state:&HookTrustState,platform:&str,runner:F,mut status:S)->std::io::Result<HookDispatchResult>
-where F:Fn(ExecutableHookHandler)->Fut,Fut:std::future::Future<Output=std::io::Result<CommandHookRunResult>>,S:FnMut(&[ExecutableHookHandler]) {
+pub async fn dispatch_hook_event_with_status<F,Fut,S>(handlers:&[ExecutableHookHandler],input:&Value,trust_state:&HookTrustState,platform:&str,runner:F,status:S)->std::io::Result<HookDispatchResult>
+where F:Fn(ExecutableHookHandler)->Fut,Fut:std::future::Future<Output=std::io::Result<CommandHookRunResult>>+Send+'static,S:FnMut(&[ExecutableHookHandler])+Send+'static {
     let event:SupportedHookEvent=serde_json::from_value(input.get("event").cloned().unwrap_or(Value::Null)).map_err(std::io::Error::other)?;
     let matched=matching_hook_handlers(HookMatcherInput {event,tool_name:input.get("toolName").and_then(Value::as_str).unwrap_or("")},handlers);
     let mut matched_handlers=matched.handlers.into_iter().cloned().collect::<Vec<_>>();
@@ -35,11 +35,24 @@ where F:Fn(ExecutableHookHandler)->Fut,Fut:std::future::Future<Output=std::io::R
         if let Some(reason)=reason {skipped.push(HookDispatchSkipped {diagnostics:if reason=="unsafe" {diagnostics} else {Vec::new()},handler:handler.clone(),reason,record});} else {executable_handlers.push(handler.clone());}
     }
     let mut pending=futures::stream::FuturesUnordered::new();
-    let mut running=Vec::new();
-    for (index,handler) in executable_handlers.iter().cloned().enumerate() {running.push((index,handler.clone()));status(&running.iter().map(|(_,handler)|handler.clone()).collect::<Vec<_>>());let future=runner(handler.clone());pending.push(async move {(index,handler,future.await)});}
+    let progress=std::sync::Arc::new(std::sync::Mutex::new((Vec::<(usize,ExecutableHookHandler)>::new(),status,0usize)));
+    let mut starts=Vec::new();
+    for (index,handler) in executable_handlers.iter().cloned().enumerate() {
+        {let mut progress=progress.lock().expect("hook progress");progress.0.push((index,handler.clone()));let running=progress.0.iter().map(|(_,handler)|handler.clone()).collect::<Vec<_>>();(progress.1)(&running);}
+        let future=runner(handler.clone());starts.push((index,handler,future));
+    }
+    for (index,handler,future) in starts {
+        let progress=progress.clone();
+        pending.push(tokio::spawn(async move {
+            let run=future.await;
+            let mut progress=progress.lock().expect("hook progress");progress.0.retain(|(running,_)|*running!=index);let running=progress.0.iter().map(|(_,handler)|handler.clone()).collect::<Vec<_>>();(progress.1)(&running);
+            let completion_index=progress.2;if run.is_ok() {progress.2+=1;}
+            (index,completion_index,handler,run)
+        }));
+    }
     use futures::StreamExt;
     let mut completed=Vec::new();
-    while let Some((declaration_index,handler,run))=pending.next().await {running.retain(|(index,_)|*index!=declaration_index);status(&running.iter().map(|(_,handler)|handler.clone()).collect::<Vec<_>>());let run=run?;let parsed=parse_hook_output(HookOutputParseInput {event,exit_code:run.exit_code.unwrap_or(1),stdout:&run.stdout,stderr:&run.stderr,source:&handler.source});let completion_index=completed.len();completed.push((declaration_index,HookDispatchSummary {completion_index,diagnostics:parsed.diagnostics,handler,output:parsed.output,run}));}
+    while let Some(settled)=pending.next().await {let (declaration_index,completion_index,handler,run)=settled.map_err(std::io::Error::other)?;let run=run?;let parsed=parse_hook_output(HookOutputParseInput {event,exit_code:run.exit_code.unwrap_or(1),stdout:&run.stdout,stderr:&run.stderr,source:&handler.source});completed.push((declaration_index,HookDispatchSummary {completion_index,diagnostics:parsed.diagnostics,handler,output:parsed.output,run}));}
     completed.sort_by_key(|(index,_)|*index);let summaries=completed.into_iter().map(|(_,summary)|summary).collect::<Vec<_>>();
     let mut diagnostics=matched.diagnostics;diagnostics.extend(skipped.iter().flat_map(|s|s.diagnostics.iter().cloned()));diagnostics.extend(summaries.iter().flat_map(|s|s.diagnostics.iter().cloned()));
     Ok(HookDispatchResult {decision:aggregate_decision(event,&summaries),diagnostics,executable_handlers,matched_handlers,skipped,summaries})
@@ -70,6 +83,22 @@ pub fn aggregate_decision(event:SupportedHookEvent,summaries:&[HookDispatchSumma
 mod tests {
     use super::*;use serde_json::json;use crate::schema::parse_hook_config;use crate::types::{HookSourceScope,HookDiscoveryTiming};use crate::trust::{create_hook_trust_entry,hook_trust_id};
     #[tokio::test]
+    async fn rejected_runner_does_not_cancel_its_started_sibling()->std::io::Result<()> {
+        let handlers=vec![handler("reject",0),handler("sibling",1)];let trust=state(&handlers)?;
+        let (release,gate)=tokio::sync::oneshot::channel();let gate=std::sync::Arc::new(std::sync::Mutex::new(Some(gate)));
+        let (finished,mut events)=tokio::sync::mpsc::unbounded_channel();let sibling=run(handlers[1].clone(),String::new()).await?;
+        let sibling=std::sync::Arc::new(std::sync::Mutex::new(Some(sibling)));
+        let result=dispatch_hook_event(&handlers,&json!({"event":"PreToolUse"}),&trust,"linux",move |handler| {
+            let gate=gate.clone();let finished=finished.clone();let sibling=sibling.clone();async move {
+                if handler.handler_index==0 {return Err(std::io::Error::other("runner rejected"));}
+                let receiver=gate.lock().unwrap().take().unwrap();receiver.await.map_err(std::io::Error::other)?;
+                finished.send(()).unwrap();Ok(sibling.lock().unwrap().take().unwrap())
+            }
+        }).await;
+        assert_eq!(result.err().unwrap().to_string(),"runner rejected");release.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5),events.recv()).await.unwrap().unwrap();Ok(())
+    }
+    #[tokio::test]
     async fn deferred_completion_keeps_declaration_order_and_deny_precedence()->std::io::Result<()> {
         let handlers=vec![handler("allow-slow",0),handler("deny-fast",1)];let trust=state(&handlers)?;let (started,mut starts)=tokio::sync::mpsc::unbounded_channel();let (status,mut transitions)=tokio::sync::mpsc::unbounded_channel();
         let (slow_sender,slow)=tokio::sync::oneshot::channel();let (fast_sender,fast)=tokio::sync::oneshot::channel();let receivers=std::sync::Arc::new(std::sync::Mutex::new(vec![Some(slow),Some(fast)]));
@@ -83,9 +112,9 @@ mod tests {
     }
     #[tokio::test]
     async fn concurrent_status_tracks_all_starts_and_each_settlement()->std::io::Result<()> {
-        let handlers=vec![handler("first",0),handler("second",1)];let mut sizes=Vec::new();
-        dispatch_hook_event_with_status(&handlers,&json!({"event":"PreToolUse"}),&state(&handlers)?,"linux",|handler|run(handler,String::new()),|running|sizes.push(running.len())).await?;
-        assert_eq!(sizes,vec![1,2,1,0]);Ok(())
+        let handlers=vec![handler("first",0),handler("second",1)];let sizes=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));let observed=sizes.clone();
+        dispatch_hook_event_with_status(&handlers,&json!({"event":"PreToolUse"}),&state(&handlers)?,"linux",|handler|run(handler,String::new()),move |running|observed.lock().unwrap().push(running.len())).await?;
+        assert_eq!(*sizes.lock().unwrap(),vec![1,2,1,0]);Ok(())
     }
     #[test]
     fn status_label_removes_control_sequences_and_bounds_utf16() {
@@ -99,4 +128,10 @@ mod tests {
     #[tokio::test] async fn last_allow_replaces_input()->std::io::Result<()> {let handlers=vec![handler("first",0),handler("second",1)];let result=dispatch_hook_event(&handlers,&json!({"event":"PreToolUse"}),&state(&handlers)?,"linux",|handler| {let output=json!({"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":handler.config.command}}}).to_string();run(handler,output)}).await?;assert!(matches!(result.decision,HookDispatchDecision::Allow {updated_input:Some(ref value),..} if value==&json!({"command":"second"})));Ok(())}
     #[tokio::test] async fn skips_untrusted_but_lists_matched()->std::io::Result<()> {let handlers=vec![handler("trusted",0),handler("untrusted",1)];let result=dispatch_hook_event(&handlers,&json!({"event":"PreToolUse"}),&state(&handlers[..1])?,"linux",|handler|run(handler,String::new())).await?;assert_eq!(result.matched_handlers.len(),2);assert_eq!(result.summaries.len(),1);assert_eq!(result.skipped[0].reason,"untrusted");Ok(())}
     #[tokio::test] async fn malformed_output_nonfatal()->std::io::Result<()> {let handlers=vec![handler("malformed",0)];let result=dispatch_hook_event(&handlers,&json!({"event":"PreToolUse"}),&state(&handlers)?,"linux",|handler|run(handler,"{not json".to_owned())).await?;assert_eq!(result.decision,HookDispatchDecision::None);assert_eq!(result.diagnostics[0].code,"invalid_root");Ok(())}
+    #[test]
+    fn status_label_falls_back_to_command_and_joins_handlers() {
+        assert_eq!(running_hook_handlers_status_label(&[handler("printf hi",0),handler("echo bye",1)],"linux"),"printf hi · echo bye");
+        let mut with_message=handler("command",0);with_message.config.status_message=Some("Check the thing".to_owned());
+        assert_eq!(running_hook_handlers_status_label(&[with_message],"linux"),"Check the thing");
+    }
 }
