@@ -49,6 +49,29 @@ async fn session_instructions_prefer_live_values_and_fall_back_only_when_disconn
     connection.bump_generation().await.unwrap();assert!(maho_ext_mcp::instructions::refresh_mcp_instructions_for_session(&service).await.contains("cached"));service.dispose().await.unwrap();service.registry.dispose().await.unwrap();
 }
 #[tokio::test]
+async fn native_tool_search_setting_and_gate_follow_the_resolved_config() {
+    use maho_ext_mcp::config_schema::NativeToolSearch;
+    let cases:[(Option<&str>,bool,Option<NativeToolSearch>);4]=[
+        (None,false,None),
+        (Some("auto"),true,Some(NativeToolSearch::Auto("auto".into()))),
+        (Some("true"),true,Some(NativeToolSearch::Enabled(true))),
+        (Some("false"),false,Some(NativeToolSearch::Enabled(false))),
+    ];
+    for (raw,expected_enabled,expected_setting) in cases {
+        let root=tempfile::tempdir().unwrap();let cwd=tempfile::tempdir().unwrap();
+        let settings=match raw {Some(value)=>serde_json::json!({"settings":{"nativeToolSearch":if value=="auto" {serde_json::json!("auto")}else {serde_json::json!(value=="true")}}}),_=>serde_json::json!({})};
+        std::fs::write(root.path().join("mcp.json"),settings.to_string()).unwrap();
+        let registry=Arc::new(HostMcpRegistry::default());let mut service=McpService::new(registry.clone(),1);
+        assert!(!service.native_tool_search_gate().enabled());
+        service.attach_session(cwd.path(),root.path(),&BTreeMap::new(),true,&[]).await.unwrap();
+        assert_eq!(service.native_tool_search_setting(),expected_setting,"setting for {raw:?}");
+        assert_eq!(service.native_tool_search_gate().enabled(),expected_enabled,"gate for {raw:?}");
+        let shared=service.native_tool_search_gate();
+        assert_eq!(shared.enabled(),expected_enabled);
+        service.dispose().await.unwrap();registry.dispose().await.unwrap();
+    }
+}
+#[tokio::test]
 async fn two_services_share_the_transport_and_detach_independently() {
     let root=tempfile::tempdir().unwrap();let cwd=tempfile::tempdir().unwrap();let registry=Arc::new(HostMcpRegistry::default());
     let mut first=McpService::new(registry.clone(),1);let mut second=McpService::new(registry.clone(),2);
