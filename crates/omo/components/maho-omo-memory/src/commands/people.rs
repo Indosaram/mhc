@@ -356,8 +356,10 @@ mod tests {
 
     #[test]
     fn given_a_collector_error_when_the_graph_is_resolved_then_the_error_propagates_instead_of_an_empty_roster() {
-        let error = resolve_people_graph(Err("git ls-tree failed".to_owned()));
-        assert_eq!(error, Err("git ls-tree failed".to_owned()));
+        match resolve_people_graph(Err("git ls-tree failed".to_owned())) {
+            Err(error) => assert_eq!(error, "git ls-tree failed"),
+            Ok(_) => panic!("expected the collector error to propagate"),
+        }
     }
 
     #[test]
