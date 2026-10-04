@@ -1464,6 +1464,31 @@ async fn handler_provider_preparation_excludes_its_owner_without_reentering_sess
     runner.emit(ExtensionEvent::AgentStart).await.unwrap();
 }
 
+#[tokio::test]
+async fn context_session_manager_identity_is_stable_across_dispatches() {
+    let mut runner = runner(vec![extension("a", EventKind::BeforeAgentStart, none())]);
+    runner.bind_context_actions(Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None), monitor: Mutex::new(None) })).unwrap();
+    let first = runner.create_context().unwrap();
+    let second = runner.create_context().unwrap();
+    assert!(Arc::ptr_eq(&first.session_manager, &second.session_manager), "one stable ctx.session_manager per runner");
+    let excluded = runner.create_context_for_extension(Some("a")).unwrap();
+    assert!(Arc::ptr_eq(&first.session_manager, &excluded.session_manager), "a per-dispatch provider exclusion must not change session_manager identity");
+}
+
+#[tokio::test]
+async fn cached_context_adapter_does_not_retain_the_runner_through_a_cycle() {
+    let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None), monitor: Mutex::new(None) });
+    let observed = Arc::downgrade(&actions);
+    let mut runner = runner(vec![extension("a", EventKind::BeforeAgentStart, none())]);
+    runner.bind_context_actions(actions.clone()).unwrap();
+    let context = runner.create_context().unwrap();
+    assert!(context.session_manager.extension_context_actions().is_some(), "the stable adapter is bound");
+    drop(context);
+    drop(actions);
+    drop(runner);
+    assert!(observed.upgrade().is_none(), "the cached adapter must not keep the runner/runtime alive through a strong cache cycle");
+}
+
 struct CommandActions(Mutex<Vec<String>>);
 impl ExtensionCommandContextActions for CommandActions {
     fn wait_for_idle(&self) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }

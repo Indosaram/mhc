@@ -65,7 +65,30 @@ async fn coalesced_reload(state: ReloadState, operation: ExtensionFuture<'static
         notified.await;
     }
 }
-struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime, compaction_signal: std::sync::Mutex<Option<AbortSignal>>, reload: ReloadState, provider_runner: Option<ExtensionRunner>, exclude_provider_path: Option<String> }
+tokio::task_local! {
+    /// The extension path whose own provider hook must be skipped while it prepares a provider
+    /// request. Upstream threads `excludeBeforeProviderRequestExtensionPath` per `createContext`
+    /// call; here it travels in a task-local so `ctx.session_manager` stays one stable adapter.
+    static PROVIDER_EXCLUDE_PATH: Option<String>;
+}
+/// Wrap a dispatch handler so its invocation carries the per-extension provider-exclusion path.
+/// Every dispatch site iterates `handlers()`, so this single wrapper keeps the path available
+/// without allocating a fresh `ctx.session_manager` per dispatch.
+///
+/// The path is scoped to the handler future, so `ctx.prepare_provider_request` awaited inside a
+/// handler resolves the same exclusion upstream captures in the `createContext` closure. A handler
+/// that hands `ctx` to a `tokio::spawn` and calls `prepare_provider_request` there loses the path
+/// (task-locals do not cross spawns); that is benign only while the owning extension registers no
+/// `context`/`before_provider_request` handler (the sole spawn caller, cache-keepalive, registers
+/// neither; compaction calls it in-task). See the runner evidence note.
+fn with_provider_exclude_path(path: String, handler: ExtensionHandler) -> ExtensionHandler {
+    Arc::new(move |event, context| {
+        let handler = handler.clone();
+        let path = path.clone();
+        Box::pin(PROVIDER_EXCLUDE_PATH.scope(Some(path), handler(event, context)))
+    })
+}
+struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime, compaction_signal: std::sync::Mutex<Option<AbortSignal>>, reload: ReloadState, provider_runner: Option<ExtensionRunner> }
 impl ContextSessionManager {
     fn active(&self) { if let Err(error) = self.runtime.assert_active() { std::panic::panic_any(error); } }
 }
@@ -161,8 +184,9 @@ impl ExtensionContextActions for ContextSessionManager {
     fn prepare_provider_request(&self, messages: Vec<AgentMessage>) -> ExtensionFuture<'_, ProviderRequestPreparation> {
         Box::pin(async move {
             self.runtime.assert_active()?;
+            let exclude = PROVIDER_EXCLUDE_PATH.try_with(|path| path.clone()).ok().flatten();
             let result = match &self.provider_runner {
-                Some(runner) => runner.prepare_provider_request(messages, self.exclude_provider_path.clone()).await?,
+                Some(runner) => runner.prepare_provider_request(messages, exclude).await?,
                 None => self.actions.prepare_provider_request(messages).await?,
             };
             self.runtime.assert_active()?;
@@ -238,6 +262,9 @@ pub struct ExtensionRunner {
     reload: ReloadState,
     shutdown_budget: Option<Arc<dyn Fn() -> (u64, u64) + Send + Sync>>,
     runtime_factory: Option<RuntimeFactory>,
+    /// One stable `ctx.session_manager` adapter per runner (session/generation); see
+    /// `create_context_for_extension`. Cleared whenever the bound context/actions change.
+    context_session_manager: Arc<std::sync::Mutex<Option<Arc<dyn SessionManager>>>>,
     factory_context: ExtensionContext,
 }
 pub type RuntimeFactory = Arc<dyn Fn(ExtensionContext) -> ExtensionFuture<'static, ExtensionRunner> + Send + Sync>;
@@ -248,7 +275,7 @@ impl Extension for SharedExtension {
 impl ExtensionRunner {
     pub fn new(extensions: Vec<LoadedExtension>, runtime: ExtensionRuntime, events: EventBus, context: ExtensionContext) -> Self {
         Self { extensions, runtime, events, factory_context: context.clone(), context, error_listeners: Vec::new(), errors: Vec::new(), warnings: Vec::new(),
-            shutdown_warn_ms: 2000, shutdown_timeout_ms: 10000, hook_observer: None, warning_listener: None, next_hook_index: 0, context_actions: None, reload: Arc::new(std::sync::Mutex::new(None)), shutdown_budget: None, runtime_factory: None }
+            shutdown_warn_ms: 2000, shutdown_timeout_ms: 10000, hook_observer: None, warning_listener: None, next_hook_index: 0, context_actions: None, reload: Arc::new(std::sync::Mutex::new(None)), shutdown_budget: None, runtime_factory: None, context_session_manager: Arc::new(std::sync::Mutex::new(None)) }
     }
     pub fn from_static(extensions: Vec<Box<dyn Extension>>, context: ExtensionContext) -> Self {
         Self::from_shared_static(extensions.into_iter().map(Arc::from).collect(), context)
@@ -322,6 +349,7 @@ impl ExtensionRunner {
     }
     pub fn bind_core(&mut self, actions: Arc<dyn ExtensionActions>, context: ExtensionContext) {
         self.runtime.bind(actions); self.context = context;
+        *self.context_session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
     pub fn bind_context_actions(&mut self, actions: Arc<dyn ExtensionContextActions>) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;
@@ -330,7 +358,8 @@ impl ExtensionRunner {
         let option_actions = Arc::clone(&actions);
         self.context.get_system_prompt_options_fn = Arc::new(move || option_actions.get_system_prompt_options());
         self.context_actions = Some(Arc::clone(&actions));
-        self.context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions, runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), reload: Arc::clone(&self.reload), provider_runner: None, exclude_provider_path: None });
+        self.context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions, runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), reload: Arc::clone(&self.reload), provider_runner: None });
+        *self.context_session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         Ok(())
     }
     pub fn bind_providers(&mut self, actions: Arc<dyn ExtensionProviderActions>) -> Result<(), ExtensionFailure> {
@@ -341,6 +370,7 @@ impl ExtensionRunner {
     pub fn bind_ui(&mut self, ui: Arc<dyn ExtensionUi>) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;
         self.context.ui = ui;
+        *self.context_session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         Ok(())
     }
     pub fn bind_session_actions(&self, actions: Arc<dyn ExtensionSessionActions>) -> Result<(), ExtensionFailure> {
@@ -432,11 +462,28 @@ impl ExtensionRunner {
     pub fn create_context(&self) -> Result<ExtensionContext, ExtensionFailure> {
         self.create_context_for_extension(None)
     }
-    pub fn create_context_for_extension(&self, exclude_path: Option<&str>) -> Result<ExtensionContext, ExtensionFailure> {
+    /// `_exclude_path` is retained for call-site parity; the provider-exclusion path now travels in
+    /// the `PROVIDER_EXCLUDE_PATH` task-local (set by `with_provider_exclude_path`), so the returned
+    /// `ctx.session_manager` can be ONE stable adapter per runner (upstream `runner.sessionManager`).
+    pub fn create_context_for_extension(&self, _exclude_path: Option<&str>) -> Result<ExtensionContext, ExtensionFailure> {
         self.runtime.assert_active()?;
         let mut context = self.context.clone();
         if let Some(actions) = &self.context_actions {
-            context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&context.session_manager), actions: Arc::clone(actions), runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), reload: Arc::clone(&self.reload), provider_runner: Some(self.clone()), exclude_provider_path: exclude_path.map(str::to_owned) });
+            // ONE stable adapter per runner (session/generation) so identity matches upstream's
+            // single `runner.sessionManager`. A single locked `get_or_insert_with` keeps concurrent
+            // dispatches from allocating distinct adapters; the closure only reads `self` (Arc clone,
+            // never re-locks the cache), so it cannot recursively lock.
+            let adapter = self.context_session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(|| {
+                // The adapter reaches the runner to re-run the nested provider dispatch, but that
+                // clone must NOT reach this cache through `context_session_manager` or the pair forms
+                // a strong cycle (`cache -> adapter -> runner -> cache`) that keeps the runner and its
+                // runtime alive forever. Detach the clone's cache so the edge never closes; the
+                // adapter still owns the clone, preserving its lifetime.
+                let mut provider_runner = self.clone();
+                provider_runner.context_session_manager = Arc::new(std::sync::Mutex::new(None));
+                Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions: Arc::clone(actions), runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), reload: Arc::clone(&self.reload), provider_runner: Some(provider_runner) }) as Arc<dyn SessionManager>
+            }).clone();
+            context.session_manager = adapter;
         }
         if let Some(actions) = context.session_manager.extension_context_actions() {
             actions.assert_active()?;
@@ -487,7 +534,7 @@ impl ExtensionRunner {
                     if seen.insert(Arc::as_ptr(&handler) as *const () as usize) { handlers.push(handler); }
                 }
             }
-            handlers.into_iter().map(|handler| (e.identity.path.clone(), handler)).collect::<Vec<_>>()
+            handlers.into_iter().map(|handler| { let path = e.identity.path.clone(); (path.clone(), with_provider_exclude_path(path, handler)) }).collect::<Vec<_>>()
         }).collect()
     }
     pub fn get_all_registered_tools(&self) -> Vec<RegisteredTool> {

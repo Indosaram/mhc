@@ -76,7 +76,7 @@ fn seed_direct_server(agent_dir: &Path) {
 #[tokio::test]
 async fn session_start_registers_direct_mode_mcp_tools_into_the_real_session() {
     use maho_ai::providers::faux::{FauxAssistantMessageOptions, RegisterFauxProviderOptions, faux_assistant_message, faux_provider, faux_streams};
-    use maho_core::agent_session::{AgentSession, AgentSessionConfig, PromptOptions};
+    use maho_core::agent_session::{AgentSession, AgentSessionConfig, ExtensionBindings, PromptOptions};
     let temp = tempfile::tempdir().unwrap();
     let cwd: PathBuf = temp.path().to_path_buf();
     seed_direct_server(&cwd);
@@ -105,6 +105,7 @@ async fn session_start_registers_direct_mode_mcp_tools_into_the_real_session() {
     }).unwrap();
     let registry = Arc::new(HostMcpRegistry::default());
     session.set_extension_runner(maho_ext_host::ExtensionRunner::from_static(vec![Box::new(McpExtension {registry: registry.clone()})], context())).await;
+    session.bind_extensions(ExtensionBindings::default()).await;
     session.prompt("hi", PromptOptions::default()).await.unwrap();
     let exposed = session.get_active_tool_names();
     assert!(exposed.iter().any(|name| name == "mcp_fx_alpha"), "expected the cached direct-mode MCP tool to be exposed through the real session, saw {exposed:?}");

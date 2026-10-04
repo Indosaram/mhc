@@ -101,14 +101,12 @@ impl McpService {
                     // matching upstream `raceMcpStartupConnect` registering through the
                     // captured `pi`. The connect task holds no other lock when the
                     // registration task takes the session lock, so `settled` is not gated.
-                    if let (Some(weak),Some(inputs))=(self_weak,registration_inputs) {
-                        if let Some(service)=weak.upgrade() {
-                            tokio::spawn(async move {
-                                let mut service=service.lock().await;
-                                let mut tool_search=match &inputs.tool_search {Some(tool_search)=>Some(tool_search.lock().await),None=>None};
-                                let _=service.register_session_tools(inputs.registrar.clone(),tool_search.as_deref_mut()).await;
-                            });
-                        }
+                    if let (Some(weak),Some(inputs))=(self_weak,registration_inputs) && let Some(service)=weak.upgrade() {
+                        tokio::spawn(async move {
+                            let mut service=service.lock().await;
+                            let mut tool_search=match &inputs.tool_search {Some(tool_search)=>Some(tool_search.lock().await),None=>None};
+                            let _=service.register_session_tools(inputs.registrar.clone(),tool_search.as_deref_mut()).await;
+                        });
                     }
                     sender.send_replace(true);
                 });

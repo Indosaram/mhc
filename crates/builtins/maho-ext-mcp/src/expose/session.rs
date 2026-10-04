@@ -78,20 +78,19 @@ async fn build_catalog(entry: &McpServiceRegistrationEntry, server: &McpServerCo
         let client = entry.connection.client().ok();
         return cached.tools.iter().map(|tool| catalog_entry(entry, server, settings, tool, timeout, client.clone())).collect();
     }
-    if entry.connection.state() == ServerConnectionState::Connected {
-        if let Ok(client) = entry.connection.client() {
-            if let Ok(collected) = crate::catalog::collect_tool_catalog(&entry.name, client, timeout).await {
-                return collected.into_iter().map(|mut collected| {
-                    collected.ensure_fresh = Some(entry.ensure_fresh.clone());
-                    collected.connection=Some(entry.connection.clone());
-                    collected.ensure_connected = Some(entry.ensure_cached_tool_connected.clone());
-                    collected.agent_dir = entry.agent_dir.clone();
-                    collected.artifacts = entry.artifacts.clone();
-                    collected.output_guard = settings.output_guard.clone();
-                    collected
-                }).collect();
-            }
-        }
+    if entry.connection.state() == ServerConnectionState::Connected
+        && let Ok(client) = entry.connection.client()
+        && let Ok(collected) = crate::catalog::collect_tool_catalog(&entry.name, client, timeout).await
+    {
+        return collected.into_iter().map(|mut collected| {
+            collected.ensure_fresh = Some(entry.ensure_fresh.clone());
+            collected.connection=Some(entry.connection.clone());
+            collected.ensure_connected = Some(entry.ensure_cached_tool_connected.clone());
+            collected.agent_dir = entry.agent_dir.clone();
+            collected.artifacts = entry.artifacts.clone();
+            collected.output_guard = settings.output_guard.clone();
+            collected
+        }).collect();
     }
     Vec::new()
 }
@@ -131,10 +130,8 @@ pub async fn register_direct_mcp_tools(
             continue;
         }
         for warning in &policy.warnings {warn(entry, warning);}
-        if let Some(cached) = &entry.cached_catalog {
-            if !cached.prompts.is_empty() {
-                prompt_servers.push(McpPromptServer {server: entry.name.clone(), connection: entry.connection.clone(), request_timeout: request_timeout(server), prompts: cached.prompts.clone()});
-            }
+        if let Some(cached) = &entry.cached_catalog && !cached.prompts.is_empty() {
+            prompt_servers.push(McpPromptServer {server: entry.name.clone(), connection: entry.connection.clone(), request_timeout: request_timeout(server), prompts: cached.prompts.clone()});
         }
         if let Some(resources) = resource_server(entry, server, &config.settings) {resource_servers.push(resources);}
         if policy.mode == Exposure::Search {search_mode = true;}

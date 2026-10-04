@@ -177,9 +177,9 @@ fn search_mode_re_registration_restores_base_and_direct_tools() {
     let registrar=registrar_with_base();let mut search=search_service(registrar.clone());let mut registry=McpTierBRegistry::default();
     let registration=register_mcp_tier_b_tools(registrar.clone(),input(vec![entry("fx","alpha")],Vec::new(),true,Vec::new()),Some(&mut search),&mut registry,None).unwrap();
     let name=registration.searchable[0].name.clone();(registration.activate)(std::slice::from_ref(&name)).unwrap();
-    assert_eq!(registrar.get_active_tools().unwrap(),vec!["base".to_owned(),name.clone()]);
+    assert_eq!(registrar.get_active_tools().unwrap(),vec!["base".to_owned(),"tool_search".to_owned(),name.clone()]);
     register_mcp_tier_b_tools(registrar.clone(),input(vec![entry("fx","alpha")],Vec::new(),true,Vec::new()),Some(&mut search),&mut registry,None).unwrap();
-    assert_eq!(registrar.get_active_tools().unwrap(),vec!["base".to_owned()]);
+    assert_eq!(registrar.get_active_tools().unwrap(),vec!["base".to_owned(),"tool_search".to_owned()]);
 }
 
 #[test]
