@@ -3309,6 +3309,15 @@ dependencies = [
 [[package]]
 name = "maho-omo-comment-checker"
 version = "0.0.0"
+dependencies = [
+ "maho-comment-checker-core",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-config-core"
@@ -3324,18 +3333,54 @@ dependencies = [
 [[package]]
 name = "maho-omo-config-resolution"
 version = "0.0.0"
+dependencies = [
+ "maho-omo-config-core",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "maho-omo-config-startup"
 version = "0.0.0"
+dependencies = [
+ "maho-config-migration",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-omo-config-core",
+ "maho-omo-config-resolution",
+ "maho-test-support",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-config-watch"
 version = "0.0.0"
+dependencies = [
+ "maho-omo-agent-home",
+ "maho-omo-config-core",
+ "maho-omo-config-resolution",
+ "sha2",
+ "tempfile",
+]
 
 [[package]]
 name = "maho-omo-fallback-architect"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-omo-config-core",
+ "maho-omo-config-resolution",
+ "maho-senpi-task",
+ "maho-test-support",
+ "maho-tui",
+ "regex",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-init-deep-advisor"
@@ -3365,6 +3410,13 @@ dependencies = [
 [[package]]
 name = "maho-omo-mass-ulw"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-memory"
@@ -3373,14 +3425,40 @@ version = "0.0.0"
 [[package]]
 name = "maho-omo-native-badge"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-onboarding"
 version = "0.0.0"
+dependencies = [
+ "jiff",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "maho-omo-start-work-continuation"
 version = "0.0.0"
+dependencies = [
+ "maho-boulder-state",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-task"
@@ -3418,14 +3496,38 @@ dependencies = [
 [[package]]
 name = "maho-omo-todo-fanout-reminder"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-omo-ultrawork",
+ "maho-test-support",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-ultrawork"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-ulw-loop"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-omo-start-work-continuation",
+ "maho-test-support",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-pty"

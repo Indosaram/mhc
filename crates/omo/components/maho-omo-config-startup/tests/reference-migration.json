@@ -1,0 +1,626 @@
+{
+ "scenario": "task42-migration",
+ "omo": true,
+ "model": "faux/faux-1",
+ "events": [
+  {
+   "type": "entry_appended",
+   "entry": {
+    "type": "custom",
+    "customType": "pi-rules.scan",
+    "data": {
+     "cwd": "<home>",
+     "reason": "startup"
+    },
+    "id": "<id>",
+    "parentId": "<id>",
+    "timestamp": "<time>"
+   }
+  },
+  {
+   "type": "entry_appended",
+   "entry": {
+    "type": "custom",
+    "customType": "senpi-memory.session-binding",
+    "data": {
+     "identity": "lane-42-e3ea8da4",
+     "repoPathHash": "c0fb777bef02a2b107ef6e9039835062aae9198d819b26b00e746e24fac44cf0",
+     "boundAt": 1790978804973
+    },
+    "id": "<id>",
+    "parentId": "<id>",
+    "timestamp": "<time>"
+   }
+  },
+  {
+   "type": "message_start",
+   "message": {
+    "role": "custom",
+    "customType": "senpi-task.usage",
+    "content": "<omo-senpi-task>\nBackground task results are automatically delivered: an idle session is always woken, and a running turn receives them at its next tool boundary.\n- /tasks shows this session's children; task_output is for one midpoint status or transcript peek (mode:\"tail\" for recent output).\n- task_send always steers a message into the addressed child, while task_cancel ends it.\n- Team mail is steered into the recipient's running turn. Use task_send for updates; team mail never queues as editable follow-up work.\nIf no independent work remains, end your turn.\n</omo-senpi-task>",
+    "display": false,
+    "details": {},
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message_end",
+   "message": {
+    "role": "custom",
+    "customType": "senpi-task.usage",
+    "content": "<omo-senpi-task>\nBackground task results are automatically delivered: an idle session is always woken, and a running turn receives them at its next tool boundary.\n- /tasks shows this session's children; task_output is for one midpoint status or transcript peek (mode:\"tail\" for recent output).\n- task_send always steers a message into the addressed child, while task_cancel ends it.\n- Team mail is steered into the recipient's running turn. Use task_send for updates; team mail never queues as editable follow-up work.\nIf no independent work remains, end your turn.\n</omo-senpi-task>",
+    "display": false,
+    "details": {},
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "entry_appended",
+   "entry": {
+    "type": "custom",
+    "customType": "omo-memory:accepted-turns",
+    "data": {
+     "version": 1,
+     "sessionId": "<id>",
+     "priorUserTurns": 1,
+     "sessionBaselineTurns": 0
+    },
+    "id": "<id>",
+    "parentId": "<id>",
+    "timestamp": "<time>"
+   }
+  },
+  {
+   "type": "agent_start"
+  },
+  {
+   "type": "turn_start"
+  },
+  {
+   "type": "message_start",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "Say hello."
+     }
+    ],
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message_end",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "Say hello."
+     }
+    ],
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message_start",
+   "message": {
+    "role": "custom",
+    "customType": "omo-memory:notice",
+    "content": "<memory_notice>\n- 5 previous messages between you and the user are stored in recall memory\n</memory_notice>",
+    "display": false,
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message_end",
+   "message": {
+    "role": "custom",
+    "customType": "omo-memory:notice",
+    "content": "<memory_notice>\n- 5 previous messages between you and the user are stored in recall memory\n</memory_notice>",
+    "display": false,
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message_start",
+   "message": {
+    "role": "assistant",
+    "content": [],
+    "api": "faux-golden",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 20022,
+     "output": 2,
+     "cacheRead": 0,
+     "cacheWrite": 20022,
+     "totalTokens": 40046,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message_update",
+   "assistantMessageEvent": {
+    "type": "text_start",
+    "contentIndex": 0,
+    "partial": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Hello."
+      }
+     ],
+     "api": "faux-golden",
+     "provider": "faux",
+     "model": "faux-1",
+     "usage": {
+      "input": 20022,
+      "output": 2,
+      "cacheRead": 0,
+      "cacheWrite": 20022,
+      "totalTokens": 40046,
+      "cost": {
+       "input": 0,
+       "output": 0,
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "total": 0
+      }
+     },
+     "stopReason": "pending",
+     "timestamp": 0
+    }
+   },
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Hello."
+     }
+    ],
+    "api": "faux-golden",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 20022,
+     "output": 2,
+     "cacheRead": 0,
+     "cacheWrite": 20022,
+     "totalTokens": 40046,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message_update",
+   "assistantMessageEvent": {
+    "type": "text_delta",
+    "contentIndex": 0,
+    "delta": "Hello.",
+    "partial": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Hello."
+      }
+     ],
+     "api": "faux-golden",
+     "provider": "faux",
+     "model": "faux-1",
+     "usage": {
+      "input": 20022,
+      "output": 2,
+      "cacheRead": 0,
+      "cacheWrite": 20022,
+      "totalTokens": 40046,
+      "cost": {
+       "input": 0,
+       "output": 0,
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "total": 0
+      }
+     },
+     "stopReason": "pending",
+     "timestamp": 0
+    }
+   },
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Hello."
+     }
+    ],
+    "api": "faux-golden",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 20022,
+     "output": 2,
+     "cacheRead": 0,
+     "cacheWrite": 20022,
+     "totalTokens": 40046,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message_update",
+   "assistantMessageEvent": {
+    "type": "text_end",
+    "contentIndex": 0,
+    "content": "Hello.",
+    "partial": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Hello."
+      }
+     ],
+     "api": "faux-golden",
+     "provider": "faux",
+     "model": "faux-1",
+     "usage": {
+      "input": 20022,
+      "output": 2,
+      "cacheRead": 0,
+      "cacheWrite": 20022,
+      "totalTokens": 40046,
+      "cost": {
+       "input": 0,
+       "output": 0,
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "total": 0
+      }
+     },
+     "stopReason": "pending",
+     "timestamp": 0
+    }
+   },
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Hello."
+     }
+    ],
+    "api": "faux-golden",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 20022,
+     "output": 2,
+     "cacheRead": 0,
+     "cacheWrite": 20022,
+     "totalTokens": 40046,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "pending",
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "message_end",
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Hello."
+     }
+    ],
+    "api": "faux-golden",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 20022,
+     "output": 2,
+     "cacheRead": 0,
+     "cacheWrite": 20022,
+     "totalTokens": 40046,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "stop",
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "turn_end",
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Hello."
+     }
+    ],
+    "api": "faux-golden",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 20022,
+     "output": 2,
+     "cacheRead": 0,
+     "cacheWrite": 20022,
+     "totalTokens": 40046,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "stop",
+    "timestamp": 0
+   },
+   "toolResults": []
+  },
+  {
+   "type": "entry_appended",
+   "entry": {
+    "type": "custom",
+    "customType": "senpi.hooks.stop-state",
+    "data": {
+     "count": 0,
+     "sessionId": "<id>",
+     "turnKey": "<id>"
+    },
+    "id": "<id>",
+    "parentId": "<id>",
+    "timestamp": "<time>"
+   }
+  },
+  {
+   "type": "agent_end",
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Say hello."
+      }
+     ],
+     "timestamp": 0
+    },
+    {
+     "role": "custom",
+     "customType": "omo-memory:notice",
+     "content": "<memory_notice>\n- 5 previous messages between you and the user are stored in recall memory\n</memory_notice>",
+     "display": false,
+     "timestamp": 0
+    },
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Hello."
+      }
+     ],
+     "api": "faux-golden",
+     "provider": "faux",
+     "model": "faux-1",
+     "usage": {
+      "input": 20022,
+      "output": 2,
+      "cacheRead": 0,
+      "cacheWrite": 20022,
+      "totalTokens": 40046,
+      "cost": {
+       "input": 0,
+       "output": 0,
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "total": 0
+      }
+     },
+     "stopReason": "stop",
+     "timestamp": 0
+    }
+   ],
+   "willRetry": false
+  },
+  {
+   "type": "agent_settled"
+  },
+  {
+   "type": "agent_idle"
+  }
+ ],
+ "entries": [
+  {
+   "type": "model_change",
+   "id": "<id>",
+   "parentId": null,
+   "timestamp": "<time>",
+   "provider": "faux",
+   "modelId": "faux-1"
+  },
+  {
+   "type": "thinking_level_change",
+   "id": "<id>",
+   "parentId": "<id>",
+   "timestamp": "<time>",
+   "thinkingLevel": "off"
+  },
+  {
+   "type": "custom",
+   "customType": "pi-rules.scan",
+   "data": {
+    "cwd": "<home>",
+    "reason": "startup"
+   },
+   "id": "<id>",
+   "parentId": "<id>",
+   "timestamp": "<time>"
+  },
+  {
+   "type": "custom",
+   "customType": "senpi-memory.session-binding",
+   "data": {
+    "identity": "lane-42-e3ea8da4",
+    "repoPathHash": "c0fb777bef02a2b107ef6e9039835062aae9198d819b26b00e746e24fac44cf0",
+    "boundAt": 1790978804973
+   },
+   "id": "<id>",
+   "parentId": "<id>",
+   "timestamp": "<time>"
+  },
+  {
+   "type": "custom_message",
+   "customType": "senpi-task.usage",
+   "content": "<omo-senpi-task>\nBackground task results are automatically delivered: an idle session is always woken, and a running turn receives them at its next tool boundary.\n- /tasks shows this session's children; task_output is for one midpoint status or transcript peek (mode:\"tail\" for recent output).\n- task_send always steers a message into the addressed child, while task_cancel ends it.\n- Team mail is steered into the recipient's running turn. Use task_send for updates; team mail never queues as editable follow-up work.\nIf no independent work remains, end your turn.\n</omo-senpi-task>",
+   "display": false,
+   "details": {},
+   "id": "<id>",
+   "parentId": "<id>",
+   "timestamp": "<time>"
+  },
+  {
+   "type": "custom",
+   "customType": "omo-memory:accepted-turns",
+   "data": {
+    "version": 1,
+    "sessionId": "<id>",
+    "priorUserTurns": 1,
+    "sessionBaselineTurns": 0
+   },
+   "id": "<id>",
+   "parentId": "<id>",
+   "timestamp": "<time>"
+  },
+  {
+   "type": "message",
+   "id": "<id>",
+   "parentId": "<id>",
+   "timestamp": "<time>",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "Say hello."
+     }
+    ],
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "custom_message",
+   "customType": "omo-memory:notice",
+   "content": "<memory_notice>\n- 5 previous messages between you and the user are stored in recall memory\n</memory_notice>",
+   "display": false,
+   "id": "<id>",
+   "parentId": "<id>",
+   "timestamp": "<time>"
+  },
+  {
+   "type": "message",
+   "id": "<id>",
+   "parentId": "<id>",
+   "timestamp": "<time>",
+   "message": {
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Hello."
+     }
+    ],
+    "api": "faux-golden",
+    "provider": "faux",
+    "model": "faux-1",
+    "usage": {
+     "input": 20022,
+     "output": 2,
+     "cacheRead": 0,
+     "cacheWrite": 20022,
+     "totalTokens": 40046,
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+     }
+    },
+    "stopReason": "stop",
+    "timestamp": 0
+   }
+  },
+  {
+   "type": "custom",
+   "customType": "senpi.hooks.stop-state",
+   "data": {
+    "count": 0,
+    "sessionId": "<id>",
+    "turnKey": "<id>"
+   },
+   "id": "<id>",
+   "parentId": "<id>",
+   "timestamp": "<time>"
+  },
+  {
+   "type": "qa_migration_document",
+   "document": {
+    "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json",
+    "codegraph": {
+     "daemon": false
+    },
+    "_migrations": [
+     "2026-07-codex-config-jsonc",
+     "2026-08-reasoning-unification"
+    ]
+   }
+  }
+ ],
+ "toolResults": []
+}
