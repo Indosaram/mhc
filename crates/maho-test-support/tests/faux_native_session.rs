@@ -86,3 +86,22 @@ async fn close_settles_a_held_prompt_and_observes_shutdown() {
     assert!(shutdown.load(std::sync::atomic::Ordering::SeqCst));
     assert!(!cwd.exists());
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn aborting_an_unpolled_prompt_does_not_leak_the_inflight_count() {
+    let session = FauxSession::new(FauxScript {
+        name: "native-abort".to_owned(),
+        prompt: "x".to_owned(),
+        responses: vec![FauxResponse { content: "never".to_owned(), stop_reason: "stop".to_owned() }],
+    });
+    let handle = session.run_native_handle().await.expect("native session");
+    let cwd = handle.cwd().to_path_buf();
+    let task = handle.prompt("x".to_owned());
+    task.abort();
+    let joined = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        .await.expect("cancelled task joins");
+    assert!(joined.is_err());
+    tokio::time::timeout(std::time::Duration::from_secs(5), handle.close())
+        .await.expect("close does not hang after an unpolled abort");
+    assert!(!cwd.exists());
+}

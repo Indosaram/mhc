@@ -304,10 +304,11 @@ impl NativeSession {
     /// prompt can start while the first is held on a scripted gate.
     pub fn prompt(&self, text: String) -> tokio::task::JoinHandle<Result<(), String>> {
         let session = self.session.clone();
-        let inflight = self.inflight.clone();
-        inflight.pending.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Construct the guard before `spawn` so it is owned by the future's captured state: an abort
+        // before the first poll drops the future (and the guard) without ever running the body.
+        let guard = InflightGuard::new(self.inflight.clone());
         tokio::spawn(async move {
-            let _guard = InflightGuard(inflight);
+            let _guard = guard;
             session.prompt(&text, maho_core::agent_session::PromptOptions::default()).await.map(|_| ())
         })
     }
@@ -378,6 +379,13 @@ impl Inflight {
 }
 
 struct InflightGuard(Arc<Inflight>);
+
+impl InflightGuard {
+    fn new(inflight: Arc<Inflight>) -> Self {
+        inflight.pending.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(inflight)
+    }
+}
 
 impl Drop for InflightGuard {
     fn drop(&mut self) {
