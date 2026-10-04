@@ -323,6 +323,14 @@ fn owns_effect(state: &crate::harness::runtime::types::LaneState, source_index: 
     })
 }
 
+/// Pinned `tool.replay ?? "never"` → the durable `ToolCallReplay` policy.
+fn replay_policy(policy: Option<crate::types::ReplayPolicy>) -> ToolCallReplay {
+    match policy {
+        Some(crate::types::ReplayPolicy::Safe) => ToolCallReplay::Safe,
+        _ => ToolCallReplay::Never,
+    }
+}
+
 fn outcome_from_finalized(finalized: FinalizedToolCall) -> ToolOutcome {
     ToolOutcome {
         message: create_tool_result_message(&finalized),
@@ -495,7 +503,7 @@ async fn perform_tool_invocation(
         let name = lane.name.clone();
         Arc::new(move |partial, options: Option<AgentHarnessToolUpdateOptions>| {
             let mut event = HarnessEvent::new(
-                HarnessEventPayload::ToolUpdate { run_id: run_id.clone(), turn_id: turn_id.clone(), tool_call_id: tool_call_id.clone(), tool_name: tool_name.clone() },
+                HarnessEventPayload::ToolUpdate { run_id: run_id.clone(), turn_id: turn_id.clone(), tool_call_id: tool_call_id.clone(), tool_name: tool_name.clone(), partial_result: partial.clone() },
                 Some(name.clone()),
             );
             event.recovery = recovery.then_some(true);
@@ -598,9 +606,8 @@ fn start_tool_invocation<'a>(
             }
             PreparedToolInvocation::Ready { cleared } => {
                 let tool_call = cleared.tool_call.clone();
-                // Pinned `cleared.tool.replay ?? "never"`: the Rust `AgentHarnessTool` carries no
-                // tool-level replay, so the pinned fallback (`never`) is the faithful value.
-                let replay = ToolCallReplay::Never;
+                // Pinned `cleared.tool.replay ?? "never"`.
+                let replay = replay_policy(cleared.tool.replay);
                 let args = serde_json::Value::Object(cleared.args.clone());
                 let effect_pending = publish_tool_intent(lane.as_ref(), call.clone(), args.clone(), replay, &drive.context).await?;
                 if let Some(event) = tool_start_event(lane, drive, &run.batch, &tool_call, recovery) {
@@ -650,9 +657,9 @@ fn recover_tool_invocation<'a>(
             _ => ToolCallReplay::Never,
         };
         let tool = tools_by_name.get(&tool_call.name).cloned();
-        // Pinned also requires the resolved tool to be replay-safe; the Rust `AgentHarnessTool`
-        // carries no tool-level replay, so the durable call's own replay flag is authoritative.
-        if !cancelled && replay == ToolCallReplay::Safe {
+        // Pinned `tool?.replay === "safe"`.
+        let tool_replay_safe = tool.as_ref().is_some_and(|tool| matches!(tool.replay, Some(crate::types::ReplayPolicy::Safe)));
+        if !cancelled && replay == ToolCallReplay::Safe && tool_replay_safe {
             let args = clear_replay_checkpoint(lane.as_ref(), drive, &run.batch, &call, &tool_call).await?;
             let args_map = match args {
                 serde_json::Value::Object(map) => map,
@@ -718,6 +725,9 @@ async fn run_parallel(
     recovery: bool,
 ) -> Result<ProcedureResult, SessionError> {
     let cancelled = matches!(run.operation.control, Control::CancelRequested { .. });
+    // Pinned `runParallel` chains one materialization after each job's completion and serializes
+    // them, so results reach durable storage incrementally instead of once at the end.
+    let chain = Arc::new(tokio::sync::Mutex::new(()));
     let mut jobs: Vec<ToolTask<'_>> = Vec::new();
     for call in run.batch.calls.clone() {
         if matches!(call, DurableCall::Completed { .. } | DurableCall::OutcomeReady { .. }) {
@@ -727,11 +737,18 @@ async fn run_parallel(
             DurableCall::Planned { .. } => start_tool_invocation(lane, drive, run, sources, call.clone(), tools, recovery),
             _ => recover_tool_invocation(lane, drive, run, sources, call.clone(), tools_by_name, cancelled),
         };
-        jobs.push(task);
+        let chain = chain.clone();
+        let run_owned = run.clone();
+        jobs.push(Box::pin(async move {
+            task.await?;
+            let _guard = chain.lock().await;
+            materialize_ready(lane.as_ref(), drive, &OperationState::Tools(run_owned), sources, recovery).await
+        }));
     }
     for result in futures::future::join_all(jobs).await {
         result?;
     }
+    let _guard = chain.lock().await;
     materialize_ready(lane.as_ref(), drive, &OperationState::Tools(run.clone()), sources, recovery).await?;
     Ok(ProcedureResult::Continue)
 }

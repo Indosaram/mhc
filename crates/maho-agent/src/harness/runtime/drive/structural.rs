@@ -774,6 +774,7 @@ async fn run_structural_decision(
             let mut invocation = HookInvocation::new(lane.name.clone(), drive.operation_id.clone());
             invocation.target_id = Some(target_id.clone());
             invocation.preparation = Some(serde_json::to_value(durable_branch_preparation(preparation)).map_err(|error| session_invariant_error(error.to_string()))?);
+            invocation.custom_instructions = deciding.task.custom_instructions.clone();
             let hook = lane.hooks.run_with_gate(HookName::BeforeNavigation, invocation, &drive.gate, &drive.context).await.map_err(|error| session_invariant_error(error.to_string()))?;
             match hook {
                 HookResult::Structural { decline: Some(true), .. } => return publish_structural_outcome(lane, drive, &deciding_state, StructuralOutcome::Declined).await,
@@ -792,6 +793,7 @@ async fn run_structural_decision(
             };
             let mut invocation = HookInvocation::new(lane.name.clone(), drive.operation_id.clone());
             invocation.preparation = Some(serde_json::to_value(durable_compaction_preparation(preparation)).map_err(|error| session_invariant_error(error.to_string()))?);
+            invocation.custom_instructions = deciding.task.custom_instructions.clone();
             let hook = lane.hooks.run_with_gate(HookName::BeforeCompaction, invocation, &drive.gate, &drive.context).await.map_err(|error| session_invariant_error(error.to_string()))?;
             match hook {
                 HookResult::Structural { decline: Some(true), .. } => return publish_structural_outcome(lane, drive, &deciding_state, StructuralOutcome::Declined).await,
@@ -879,7 +881,34 @@ impl SummaryRequest for HarnessStructuralRequest<'_> {
                 return cancelled_message(self.model);
             }
             let admitted_context = with_abort_signal(self.drive.gate.signal(), request_context);
-            let request_options = request_stream_options(options, &stream_options, &admitted_context);
+            let mut request_options = request_stream_options(options, &stream_options, &admitted_context);
+            // Pinned `before_payload` hook: the request's `onPayload` runs the gate-guarded hook.
+            {
+                let gate = self.drive.gate.clone();
+                let hook_context = self.drive.context.clone();
+                let lane_name = self.lane.name.clone();
+                let operation_id = self.drive.operation_id.clone();
+                let hooks = self.lane.hooks.clone();
+                request_options.stream.request.async_on_payload = Some(Arc::new(
+                    move |payload: serde_json::Value, model: maho_ai::model::Model, _metadata: Option<maho_ai::types::ProviderRequestMetadata>| {
+                        let gate = gate.clone();
+                        let context = hook_context.clone();
+                        let lane_name = lane_name.clone();
+                        let operation_id = operation_id.clone();
+                        let hooks = hooks.clone();
+                        Box::pin(async move {
+                            let mut invocation = HookInvocation::new(lane_name, operation_id);
+                            invocation.model = Some(model);
+                            invocation.payload = Some(payload);
+                            match hooks.run_with_gate(HookName::BeforePayload, invocation, &gate, &context).await {
+                                Ok(HookResult::BeforePayload { payload }) => Ok(Some(payload)),
+                                Ok(_) => Ok(None),
+                                Err(error) => Err(error.to_string()),
+                            }
+                        })
+                    },
+                ));
+            }
             let response = match self.lane.models.complete_simple(self.model, ai_context, Some(request_options), ModelsRequestTransforms::default()).await {
                 Ok(message) => message,
                 Err(_) => {

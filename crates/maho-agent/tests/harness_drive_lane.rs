@@ -460,6 +460,96 @@ async fn concurrent_drive_shares_one_installed_pass() {
     lane.wait_for_idle(&BACKGROUND_CONTEXT).await.unwrap();
 }
 
+struct FacadeAuth;
+
+impl maho_ai::models::ModelsAuth for FacadeAuth {
+    fn resolve<'a>(
+        &'a self,
+        _: &'a dyn maho_ai::models::Provider,
+        _: &'a maho_ai::models::AuthResolutionOverrides,
+    ) -> maho_ai::types::BoxFuture<'a, Result<Option<maho_ai::models::AuthResolution>, maho_ai::models::ModelsError>> {
+        Box::pin(async {
+            Ok(Some(maho_ai::models::AuthResolution {
+                auth: maho_ai::models::ProviderAuthResult { api_key: Some("fixture".into()), ..Default::default() },
+                env: None,
+            }))
+        })
+    }
+    fn refresh_credential<'a>(
+        &'a self,
+        _: &'a dyn maho_ai::models::Provider,
+        _: Option<&'a maho_ai::models::Credential>,
+        _: &'a maho_ai::utils::abort::AbortSignal,
+    ) -> maho_ai::types::BoxFuture<'a, Result<Option<maho_ai::models::Credential>, maho_ai::models::ModelsError>> {
+        Box::pin(async { Ok(None) })
+    }
+}
+
+async fn facade_lane() -> (Arc<maho_agent::harness::runtime::lane::Lane>, maho_ai::providers::faux::FauxProviderHandle) {
+    use maho_agent::harness::session::types::{LaneConfiguration, LaneModelRef};
+    let faux = maho_ai::providers::faux::faux_provider(Default::default());
+    let model = faux.get_model(None).expect("faux provider ships a model");
+    let models = maho_ai::models::create_models(Some(maho_ai::models::CreateModelsOptions { auth: Some(Arc::new(FacadeAuth)), ..Default::default() }));
+    models.set_provider(faux.provider.clone());
+    let session = Arc::new(StorageBackedSession::new(
+        SessionMetadata { id: "facade".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None },
+        Arc::new(MemoryStorage::new(MemoryStorageOptions { now: Some(Arc::new(|| 10)) })),
+        StorageBackedSessionOptions::default(),
+    ));
+    session.attach();
+    let configuration = LaneConfiguration {
+        model: LaneModelRef { provider: model.provider.clone(), model_id: model.id.clone() },
+        thinking_level: ModelThinkingLevel::Off,
+        active_tool_names: vec![],
+    };
+    let state = maho_agent::harness::runtime::types::LaneState { tip_id: None, configuration, inbox: vec![], last_operation_id: None, operation: None };
+    let mut lane = maho_agent::harness::runtime::lane::Lane::new("main".into(), session, state, maho_agent::harness::events::HarnessEventBus::new());
+    lane.models = models;
+    let lane = Arc::new(lane);
+    lane.install_self();
+    (lane, faux)
+}
+
+#[tokio::test]
+async fn prompt_settles_through_the_public_facade() {
+    use maho_agent::harness::runtime::lane::{PromptInput, RunOutcome};
+    use maho_agent::harness::session::types::TerminalStatus;
+    let (lane, faux) = facade_lane().await;
+    faux.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("answer", Default::default()).into()]);
+    let outcome = lane
+        .prompt(PromptInput::Text { text: "hello".into(), images: vec![] }, &BACKGROUND_CONTEXT)
+        .await
+        .expect("prompt does not fault")
+        .expect("prompt admits");
+    let RunOutcome::Settled(record) = outcome else { panic!("expected a settled run") };
+    assert_eq!(record.status, TerminalStatus::Completed);
+    assert!(lane.state().operation.is_none());
+}
+
+#[tokio::test]
+async fn compact_composes_admission_with_drive() {
+    use maho_agent::harness::session::types::TerminalStatus;
+    let (lane, faux) = facade_lane().await;
+    lane.append_message(
+        maho_agent::types::AgentMessage::from(maho_ai::types::Message::User(maho_ai::types::UserMessage { content: maho_ai::types::UserContent::Text("history".into()), timestamp: 1 })),
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .expect("append history");
+    faux.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("summary", Default::default()).into()]);
+    let outcome = lane.compact(None, &BACKGROUND_CONTEXT).await.expect("compact does not fault").expect("compact admits");
+    assert_eq!(outcome.compaction.status, TerminalStatus::Completed);
+    assert!(lane.state().operation.is_none());
+}
+
+#[tokio::test]
+async fn abort_reports_no_active_operation_when_idle() {
+    use maho_agent::harness::runtime::lane::AbortError;
+    let (lane, _faux) = facade_lane().await;
+    let outcome = lane.abort(&BACKGROUND_CONTEXT).await.expect("abort does not fault").expect_err("idle lane has no operation");
+    assert!(matches!(outcome, AbortError::NoActiveOperation { .. }));
+}
+
 #[tokio::test]
 async fn reads_and_replaces_configuration_from_owned_state() {
     let harness = fixture().await;
