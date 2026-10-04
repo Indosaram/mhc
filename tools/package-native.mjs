@@ -263,19 +263,29 @@ export async function stage(options) {
 	if (!existsSync(astGrepMcp) || !(await stat(astGrepMcp)).isFile()) {
 		throw new Error(`native ast-grep MCP server not found at ${astGrepMcp}: build the workspace bins (cargo build --workspace --bins) so ${AST_GREP_MCP_NAME} sits beside ${CLI_BINARY_NAME}, or pass --ast-grep-mcp`);
 	}
-	// Validate and clear the destination first, so a refused or failed staging run never leaves a
-	// half-written directory behind and never overwrites a non-empty one without --force.
+	// Refuse an unsafe or non-empty destination before anything is written. The destination is not
+	// removed here: every input is validated first so a rejected run leaves an existing stage intact.
 	const output = resolve(options.output);
 	if (output === sep || output === resolve(homedir())) throw new Error(`refusing to stage into ${output}`);
-	if (existsSync(output)) {
-		if ((await readdir(output)).length > 0 && !options.force) throw new Error(`staging directory is not empty: ${output} (pass --force to overwrite)`);
-		await rm(output, { recursive: true, force: true });
-	}
+	const outputExists = existsSync(output);
+	if (outputExists && (await readdir(output)).length > 0 && !options.force) throw new Error(`staging directory is not empty: ${output} (pass --force to overwrite)`);
 
+	// Resolve and validate every input before the destination is cleared, so a bad checkout, a
+	// missing skill or a missing license text refuses the run without destroying an existing stage.
+	// Only once the inputs are known good is the destination removed, so a failed run never leaves a
+	// half-written directory behind.
 	const omoRoot = resolveOmoRoot(options.omoRoot);
 	const repoRoot = resolveRepoRoot(options.repoRoot);
 	const skillNames = await parseBuiltinSkillNames(repoRoot, omoRoot);
 	const sources = await resolveSkillSources(omoRoot, skillNames);
+	const licenseSources = new Map();
+	for (const license of LICENSE_FILES) {
+		const source = join(repoRoot, license.source);
+		if (!existsSync(source)) throw new Error(`license text missing from the checkout: ${license.source}`);
+		licenseSources.set(license.name, source);
+	}
+
+	if (outputExists) await rm(output, { recursive: true, force: true });
 
 	await mkdir(join(output, SKILLS_DIR), { recursive: true });
 	await mkdir(join(output, LICENSES_DIR), { recursive: true });
@@ -288,10 +298,8 @@ export async function stage(options) {
 
 	const licenses = [];
 	for (const license of LICENSE_FILES) {
-		const source = join(repoRoot, license.source);
-		if (!existsSync(source)) throw new Error(`license text missing from the checkout: ${license.source}`);
 		const relPath = `${LICENSES_DIR}/${license.name}`;
-		await copyFile(source, join(output, relPath));
+		await copyFile(licenseSources.get(license.name), join(output, relPath));
 		licenses.push(await fileEntry(output, relPath, license.source));
 	}
 
@@ -340,8 +348,19 @@ export async function verify(directory) {
 		return { ok: false, errors: [`${MANIFEST_NAME} is not valid JSON: ${error.message}`] };
 	}
 	const errors = [];
+	if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)) {
+		return { ok: false, errors: [`${MANIFEST_NAME} is not a manifest object`], manifest };
+	}
+	// The manifest is the package proof, so verification requires its concrete identity: the exact
+	// schema version and the exact layout the runtime resolves. An empty or foreign object must not
+	// pass just because its optional arrays are absent.
+	if (manifest.schemaVersion !== SCHEMA_VERSION) errors.push(`unsupported schemaVersion: ${JSON.stringify(manifest.schemaVersion)} (expected ${SCHEMA_VERSION})`);
+	const expectedLayout = { binary: CLI_BINARY_NAME, astGrepMcp: AST_GREP_MCP_NAME, skills: SKILLS_DIR, licenses: LICENSES_DIR, manifest: MANIFEST_NAME };
+	for (const [key, value] of Object.entries(expectedLayout)) {
+		if (manifest.layout?.[key] !== value) errors.push(`layout.${key} must be ${JSON.stringify(value)} (found ${JSON.stringify(manifest.layout?.[key])})`);
+	}
 	const check = async (entry) => {
-		if (typeof entry?.path !== "string") {
+		if (entry === null || typeof entry !== "object" || typeof entry.path !== "string") {
 			errors.push("manifest entry without a path");
 			return;
 		}
@@ -351,14 +370,34 @@ export async function verify(directory) {
 			return;
 		}
 		const info = await stat(absolute);
+		if (!info.isFile()) {
+			errors.push(`not a regular file: ${entry.path}`);
+			return;
+		}
 		if (info.size !== entry.size) errors.push(`size mismatch: ${entry.path} (${info.size} != ${entry.size})`);
 		if ((await sha256(absolute)) !== entry.sha256) errors.push(`sha256 mismatch: ${entry.path}`);
+		if (modeString(info.mode) !== entry.mode) errors.push(`mode mismatch: ${entry.path} (${modeString(info.mode)} != ${entry.mode})`);
 	};
-	for (const entry of manifest.executables ?? []) await check(entry);
-	for (const entry of manifest.licenses ?? []) await check(entry);
-	for (const entry of manifest.skills?.files ?? []) await check(entry);
+	const executables = Array.isArray(manifest.executables) ? manifest.executables : [];
+	const licenses = Array.isArray(manifest.licenses) ? manifest.licenses : [];
+	const skillFiles = Array.isArray(manifest.skills?.files) ? manifest.skills.files : [];
+	for (const entry of executables) await check(entry);
+	for (const entry of licenses) await check(entry);
+	for (const entry of skillFiles) await check(entry);
+	// Required entries: the two executables the runtime resolves as binary siblings and both
+	// retained license texts must be present, so a manifest cannot omit a shipped asset.
+	for (const required of [CLI_BINARY_NAME, AST_GREP_MCP_NAME]) {
+		if (!executables.some((entry) => entry?.path === required)) errors.push(`required executable missing from the manifest: ${required}`);
+	}
+	for (const license of LICENSE_FILES) {
+		const relPath = `${LICENSES_DIR}/${license.name}`;
+		if (!licenses.some((entry) => entry?.path === relPath)) errors.push(`required license missing from the manifest: ${relPath}`);
+	}
+	const skillNames = Array.isArray(manifest.skills?.names) ? manifest.skills.names : [];
+	if (skillNames.length === 0) errors.push("manifest declares no builtin skills");
+	if (skillFiles.length === 0) errors.push("manifest declares no staged skill files");
 	const skillsDir = manifest.layout?.skills ?? SKILLS_DIR;
-	for (const name of manifest.skills?.names ?? []) {
+	for (const name of skillNames) {
 		if (!existsSync(join(directory, skillsDir, name, "SKILL.md"))) errors.push(`missing skill: ${name}`);
 	}
 	return { ok: errors.length === 0, errors, manifest };
@@ -442,6 +481,28 @@ async function selfTest() {
 		check("staged executables carry the exec bit", ((await stat(join(out, "mhc"))).mode & 0o111) !== 0 && ((await stat(join(out, "ast-grep-mcp"))).mode & 0o111) !== 0);
 		check("manifest verifies the staged tree", (await verify(out)).ok);
 
+		// Verifier negatives: the manifest is the package proof, so an empty object, an omitted
+		// required executable, or a file whose mode disagrees with the manifest must all fail.
+		const emptyManifestDir = join(root, "empty-manifest");
+		await mkdir(emptyManifestDir, { recursive: true });
+		await writeFile(join(emptyManifestDir, MANIFEST_NAME), "{}\n");
+		const emptyManifest = await verify(emptyManifestDir);
+		check("empty manifest object is rejected", !emptyManifest.ok && emptyManifest.errors.some((error) => error.includes("schemaVersion")));
+
+		const omittedExecutableDir = join(root, "omitted-executable");
+		await copyTree(out, omittedExecutableDir);
+		const omittedManifest = JSON.parse(await readFile(join(omittedExecutableDir, MANIFEST_NAME), "utf8"));
+		omittedManifest.executables = omittedManifest.executables.filter((entry) => entry.path !== AST_GREP_MCP_NAME);
+		await writeFile(join(omittedExecutableDir, MANIFEST_NAME), `${JSON.stringify(omittedManifest, null, 2)}\n`);
+		const omittedExecutable = await verify(omittedExecutableDir);
+		check("manifest omitting a required executable is rejected", !omittedExecutable.ok && omittedExecutable.errors.some((error) => error.includes("required executable missing") && error.includes(AST_GREP_MCP_NAME)));
+
+		const changedModeDir = join(root, "changed-mode");
+		await copyTree(out, changedModeDir);
+		await chmod(join(changedModeDir, CLI_BINARY_NAME), 0o644);
+		const changedMode = await verify(changedModeDir);
+		check("changed file mode fails verification", !changedMode.ok && changedMode.errors.some((error) => error.includes("mode mismatch") && error.includes(CLI_BINARY_NAME)));
+
 		const second = await stage({ binary: join(binDir, "mhc"), output: join(root, "out2"), omoRoot: omo, repoRoot: repo });
 		check("manifest is deterministic across runs", JSON.stringify(result.manifest) === JSON.stringify(second.manifest));
 
@@ -471,6 +532,12 @@ async function selfTest() {
 		await expectReject("staging into the filesystem root is refused", stage({ binary: join(binDir, "mhc"), output: "/", omoRoot: omo, repoRoot: repo }), "refusing to stage");
 		await expectReject("staging into the home directory is refused", stage({ binary: join(binDir, "mhc"), output: homedir(), omoRoot: omo, repoRoot: repo }), "refusing to stage");
 		await expectReject("missing binary is refused", stage({ binary: join(binDir, "nope"), output: join(root, "no-binary"), omoRoot: omo, repoRoot: repo }), "not a regular file");
+
+		// Rejected input must not destroy an existing stage: the skill lists are still drifted above,
+		// so a --force restage over the existing `out` must be refused and leave the staged tree intact.
+		const preserved = await readFile(join(out, CLI_BINARY_NAME));
+		await expectReject("rejected input preserves the existing stage", stage({ binary: join(binDir, "mhc"), output: out, omoRoot: omo, repoRoot: repo, force: true }), "drifted");
+		check("existing stage survives a rejected restage", existsSync(join(out, CLI_BINARY_NAME)) && (await readFile(join(out, CLI_BINARY_NAME))).equals(preserved));
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
