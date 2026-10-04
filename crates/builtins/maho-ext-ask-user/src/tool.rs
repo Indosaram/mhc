@@ -20,14 +20,12 @@ fn emit_wake(bus:&EventBus,session:&str){
 fn publish(owner: QuestionOwner, request: &QuestionRequest, response: &QuestionResponse, variant: AskUserVariant, resuming: bool) {
     if response.status == QuestionStatus::TimedOut { owner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).timed_out = true; }
     owner.sender.events.emit("herdr:blocked", &json!({"active":false,"id":request.request_id}));
-    if !request.wait_for_answer {
-        if let Err(error) = owner.sender.append_entry(ASK_USER_SETTLEMENT_ENTRY, Some(json!({"requestId":request.request_id,"status":crate::format::status_name(response.status)}))) { owner.context.ui.notify(&error.message, NotificationType::Error); }
-    }
-    if !request.wait_for_answer || resuming {
-        if response.status != QuestionStatus::Cancelled
-            && let Err(error) = owner.sender.send_user_message(UserMessageContent::Text(format_user_message(response, &request.request_id, &request.questions)), SendUserMessageOptions { deliver_as: Some(if owner.context.is_idle() { StreamingBehavior::FollowUp } else { StreamingBehavior::Steer }), expand_prompt_templates: false }) {
-            owner.context.ui.notify(&error.message, NotificationType::Error);
-        }
+    if !request.wait_for_answer
+        && let Err(error) = owner.sender.append_entry(ASK_USER_SETTLEMENT_ENTRY, Some(json!({"requestId":request.request_id,"status":crate::format::status_name(response.status)}))) { owner.context.ui.notify(&error.message, NotificationType::Error); }
+    if (!request.wait_for_answer || resuming)
+        && response.status != QuestionStatus::Cancelled
+        && let Err(error) = owner.sender.send_user_message(UserMessageContent::Text(format_user_message(response, &request.request_id, &request.questions)), SendUserMessageOptions { deliver_as: Some(if owner.context.is_idle() { StreamingBehavior::FollowUp } else { StreamingBehavior::Steer }), expand_prompt_templates: false }) {
+        owner.context.ui.notify(&error.message, NotificationType::Error);
     }
     emit_notification(&owner.sender.events, &owner.context, request, response, variant);
 }
