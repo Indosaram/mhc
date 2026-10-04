@@ -157,16 +157,27 @@ async fn live_lifecycle(shutdown_live:bool,peer_live:bool) {
     component.engine.manager.wait_for(&child.id,None,Some(Duration::from_secs(10))).expect("cancelled child settlement");
     if let Some(peer)=&peer {
         component.engine.manager.wait_for(&peer.id,None,Some(Duration::from_secs(10))).expect("cancelled peer settlement");
-        let peer_remaining=peer.listeners.lock().expect("cancelled peer listeners").len();
-        assert!(peer_remaining==0,"cancellation must release every live peer listener (remaining={peer_remaining})");
+        // Cancellation ALONE must release the DAG activity listener: a cancelled peer emits no
+        // further activity. Asserted BEFORE any lifecycle forget so a leaked activity listener
+        // cannot be masked by the forget below.
         peer.emit(); rpc_timers.fire(150);
         assert_eq!(activity.lock().expect("activity").len(),expected_activity,"cancelled peer must not retain activity delivery");
+        // Separately, the manager's per-task facts listeners (stats + transcript) are released only
+        // through lifecycle forget (manager.ts `forget`); terminal/cancel release the concurrency
+        // slot, not the listeners. This forget is the lifecycle release, not the cancellation one.
+        component.engine.manager.forget(&peer.id);
+        let peer_remaining=peer.listeners.lock().expect("cancelled peer listeners").len();
+        assert!(peer_remaining==0,"lifecycle forget releases every retained peer listener (remaining={peer_remaining})");
     }
     component.sync();
     assert!(!reload_veto(&api,&ctx).await,"registered reload must allow the settled cancelled child");
-    let child_remaining=child.listeners.lock().expect("listeners").len();
-    assert!(child_remaining==0,"cancelled manager child must release every child listener (remaining={child_remaining})");
+    // Cancellation ALONE must release the DAG activity listener: a cancelled child emits no further
+    // activity. Asserted BEFORE any lifecycle forget so a leaked activity listener cannot be masked.
     child.emit(); rpc_timers.fire(150); assert_eq!(activity.lock().expect("activity").len(),expected_activity,"terminal node must not retain activity delivery");
+    // Separately, the facts listeners (stats + transcript) are released only through lifecycle forget.
+    component.engine.manager.forget(&child.id);
+    let child_remaining=child.listeners.lock().expect("listeners").len();
+    assert!(child_remaining==0,"lifecycle forget releases every retained child listener (remaining={child_remaining})");
     // Terminal runs retain journal subscriptions until detach, but pending timers
     // must settle without rearming once the run has no live node.
     rpc_timers.fire(50); rpc_timers.fire(15000);
