@@ -185,10 +185,18 @@ async fn completion_context_refreshes_for_same_model_id_without_reinstalling_eva
     (api.registered.handlers[&EventKind::ModelSelect][0])(&mut selected,&ctx).await.unwrap();
     assert!(Arc::ptr_eq(&execute,&host.tools.lock().unwrap()[0].definition.execute));
     ctx.model.as_mut().unwrap().name="invocation-local".into();
-    let enabled=host.tools.lock().unwrap()[0].definition.parameters["properties"]["language"]["anyOf"].as_array().unwrap().iter().map(|value|value["const"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
-    assert!(!enabled.is_empty(),"eval registered no enabled language");
+    // Interpreter availability is probed independently of the eval schema (config discovery
+    // contract: a language is enabled only when its interpreter is detected). js/py/rb are always
+    // required, so a schema regression that drops any of them fails here; jl joins only when a
+    // real julia interpreter is detected, matching the product contract on any host.
+    let mut detector=maho_codemode::interpreters::detect::InterpreterDetector::new("24.1.0".into(),false);
+    let jl_detected=matches!(detector.detect(maho_codemode::tool::types::EvalLanguage::Jl).await,maho_codemode::interpreters::detect::InterpreterDetection::Detected{..});
+    let mut expected_languages=vec!["js".to_owned(),"py".to_owned(),"rb".to_owned()];
+    if jl_detected {expected_languages.push("jl".to_owned());}
+    let schema_languages=host.tools.lock().unwrap()[0].definition.parameters["properties"]["language"]["anyOf"].as_array().unwrap().iter().map(|value|value["const"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+    assert_eq!(schema_languages,expected_languages,"eval must enable js/py/rb always and jl only when the julia interpreter is detected");
     let mut results=Vec::new();
-    for language in &enabled {
+    for language in &expected_languages {
         let (id,code)=match language.as_str() {
             "js"=>("fresh-js","await completion('context')"),
             "py"=>("fresh-py","completion('context')"),
@@ -201,9 +209,9 @@ async fn completion_context_refreshes_for_same_model_id_without_reinstalling_eva
     let mut shutdown=ExtensionEvent::SessionShutdown(SessionShutdownEvent {reason:SessionReason::Quit,target_session_file:None,signal:None});
     tokio::time::timeout(std::time::Duration::from_secs(10),(api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown,&ctx)).await.unwrap().unwrap();
     for result in results {let result=result.unwrap().unwrap();assert_ne!(result.details.as_ref().unwrap()["isError"],true,"{result:?}");}
-    let expected=(0..enabled.len()).map(|_|(Some(ServiceTier::Priority),Some("invocation-local".to_owned()))).collect::<Vec<_>>();
+    let expected=(0..expected_languages.len()).map(|_|(Some(ServiceTier::Priority),Some("invocation-local".to_owned()))).collect::<Vec<_>>();
     assert_eq!(*seen.lock().unwrap(),expected);
-    eprintln!("cleanup: completion freshness managers disposed for {} enabled runtimes",enabled.len());
+    eprintln!("cleanup: completion freshness managers disposed for {} enabled runtimes",expected_languages.len());
 }
 impl ExtensionSessionActions for Host {
     fn set_session_name(&self,_:&str)->Result<(),ExtensionFailure> {Ok(())} fn get_session_name(&self)->Result<Option<String>,ExtensionFailure> {Ok(None)} fn set_label(&self,_:&str,_:Option<&str>)->Result<(),ExtensionFailure> {Ok(())}
