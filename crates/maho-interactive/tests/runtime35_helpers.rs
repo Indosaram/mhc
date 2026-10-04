@@ -84,6 +84,20 @@ fn resource_groups_preserve_package_ownership_and_scope_order() {
 }
 
 #[test]
+fn resource_display_uses_locale_order_for_accented_paths() {
+    struct Paths;
+    impl ResourceScopeGroupFormat for Paths {
+        fn format_path(&self,item:&ScopedResource)->String { item.path.clone() }
+        fn format_package_path(&self,item:&ScopedResource,_:&str)->String { item.path.clone() }
+    }
+    let items = ["zebra","éclair","apple"].into_iter().map(|path|ScopedResource {path:path.into(),source_info:None}).collect::<Vec<_>>();
+    let theme=maho_interactive::theme::Theme::builtin("dark",maho_interactive::theme::ColorMode::Truecolor).expect("theme");
+    let output=format_resource_scope_groups(&build_resource_scope_groups(&items),&Paths,&theme);
+    assert!(output.find("apple").expect("apple")<output.find("éclair").expect("accented path"));
+    assert!(output.find("éclair").expect("accented path")<output.find("zebra").expect("zebra"));
+}
+
+#[test]
 fn autocomplete_tags_cover_every_scope() {
     assert_eq!([SourceScope::User, SourceScope::Project, SourceScope::Temporary, SourceScope::System].map(get_scope_autocomplete_tag), ["u", "p", "t", "s"]);
 }

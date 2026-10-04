@@ -40,6 +40,7 @@ impl CustomEditor {
         self.editor.set_padding_x(self.prompt_padding_x);
     }
     pub fn set_working_status_indicator(&mut self, indicator: Option<Rc<RefCell<StatusIndicator>>>) { self.working_status = indicator; }
+    pub fn set_keybindings(&mut self, keybindings: Arc<KeybindingsManager>) { self.keybindings = keybindings; }
     pub fn set_reply_label(&mut self, label: Option<String>) { self.reply_label = label; }
     pub fn on_action(&mut self, action: &str, handler: Box<dyn FnMut()>) {
         if let Some((_, current)) = self.action_handlers.iter_mut().find(|(id, _)| id == action) { *current = handler; }

@@ -72,6 +72,17 @@ pub fn build_timed_out_response(
     }
 }
 
+/// senpi's `cancelled()` in `showAsyncQuestion`: the draft's answers with every unanswered id.
+pub fn build_cancelled_response(request: &QuestionRequest, draft: &QuestionDraft) -> QuestionResponse {
+    QuestionResponse {
+        status: QuestionStatus::Cancelled,
+        answers: draft.answers.clone(),
+        comment: None,
+        unanswered: unanswered_ids(request, draft),
+        auto_resolved_after_ms: None,
+    }
+}
+
 pub fn render_status_line(
     theme: &Theme,
     unanswered: usize,

@@ -2,6 +2,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use maho_tools::definition::{RenderShell, ToolResult};
 use maho_tui::tui::Component;
@@ -14,7 +15,9 @@ pub mod edit;
 pub mod find;
 pub mod grep;
 pub mod ls;
+pub mod native;
 pub mod read;
+pub mod registered;
 pub mod write;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -101,4 +104,18 @@ pub fn with_built_in_renderers(
         Some(definition) => Some(definition),
         None => create_all_tool_renderers().get(tool_name).cloned(),
     }
+}
+
+/// senpi's `askUserRenderers(toolName)`: the question pair covers the two ask-user tool names,
+/// which have no built-in renderer, so a card streamed while the registry is unbound still draws.
+pub fn ask_user_renderers(tool_name: &str) -> Option<Rc<RefCell<dyn ToolRenderers>>> {
+    maho_ext_ask_user::render::supports_tool(tool_name).then(|| {
+        Rc::new(RefCell::new(native::NativeToolRenderers::<()>::new(Arc::new(maho_ext_ask_user::render::renderers())))) as Rc<RefCell<dyn ToolRenderers>>
+    })
+}
+
+/// senpi's `getRegisteredToolDefinition` resolution order for a card: the registered definition,
+/// else the ask-user pair, else the built-in renderers for the tool name.
+pub fn card_renderers(tool_name: &str) -> Option<Rc<RefCell<dyn ToolRenderers>>> {
+    with_built_in_renderers(tool_name, ask_user_renderers(tool_name))
 }

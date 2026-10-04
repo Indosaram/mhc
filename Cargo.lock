@@ -2825,7 +2825,9 @@ dependencies = [
 name = "maho-interactive"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
+ "icu_collator",
  "maho-agent",
  "maho-ai",
  "maho-core",
