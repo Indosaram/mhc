@@ -473,9 +473,20 @@ impl ExtensionRunner {
     fn handlers(&self, kind: EventKind) -> Vec<(String, ExtensionHandler)> {
         self.extensions.iter().flat_map(|e| {
             // Load-registered handlers stay authoritative; a late runtime registration (e.g. the
-            // OMO task component at SessionStart) adds to them instead of hiding them.
-            let mut handlers = e.handlers.get(&kind).cloned().unwrap_or_default();
-            if let Some(live) = self.runtime.live_handlers(&e.identity.path, kind) { handlers.extend(live); }
+            // OMO task component at SessionStart) adds to them instead of hiding them. Dedup by
+            // handler identity: `ExtensionApi::on` re-publishes the full registered list, which can
+            // already include the load-registered handlers, so a plain extend would double-dispatch.
+            let mut seen = std::collections::BTreeSet::new();
+            let mut handlers = Vec::new();
+            for handler in e.handlers.get(&kind).cloned().unwrap_or_default() {
+                seen.insert(Arc::as_ptr(&handler) as *const () as usize);
+                handlers.push(handler);
+            }
+            if let Some(live) = self.runtime.live_handlers(&e.identity.path, kind) {
+                for handler in live {
+                    if seen.insert(Arc::as_ptr(&handler) as *const () as usize) { handlers.push(handler); }
+                }
+            }
             handlers.into_iter().map(|handler| (e.identity.path.clone(), handler)).collect::<Vec<_>>()
         }).collect()
     }

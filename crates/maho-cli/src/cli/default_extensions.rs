@@ -37,11 +37,13 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
     let fallback_parent = parent.clone();
     let mcp_gate: Arc<std::sync::Mutex<Option<maho_ext_mcp::service::McpNativeToolSearchGate>>> = Arc::new(std::sync::Mutex::new(None));
     let tool_search_gate = mcp_gate.clone();
+    let tool_search_service: Arc<std::sync::Mutex<Option<super::tool_search::SharedToolSearchService>>> = Arc::new(std::sync::Mutex::new(None));
+    let tool_search_slot = tool_search_service.clone();
     vec![
             factory("recommended-models", maho_ext_recommended_models::RecommendedModels),
             factory("permission-system", maho_ext_permission_system::PermissionSystem),
             factory("gpt-apply-patch", maho_ext_gpt_apply_patch::index::ApplyPatchExtension),
-            factory("tool-search", ToolSearch { mcp_native_enabled: Arc::new(move || tool_search_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_some_and(|gate| gate.enabled())) }),
+            factory("tool-search", ToolSearch { mcp_native_enabled: Arc::new(move || tool_search_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_some_and(|gate| gate.enabled())), service: tool_search_slot }),
             factory("todotools", Todo(widget_sender)),
             factory("websearch", maho_ext_websearch::index::WebsearchExtension { home: maho_core::config::home_dir().into(),
                 provider_native_bypass: Arc::new(|model| {
@@ -90,7 +92,7 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
             factory("rules", maho_ext_rules::Rules),
             factory("goal", maho_ext_goal::GoalExtension::default()),
             factory("codemode", Codemode),
-            factory("mcp", Mcp { gate: mcp_gate.clone() }),
+            factory("mcp", Mcp { gate: mcp_gate.clone(), tool_search: tool_search_service.clone() }),
         ].into_iter().map(|factory| {
             let extension: Arc<dyn Extension> = Arc::from(factory.extension);
             NativeAsyncExtensionFactory { path: factory.path, source_info: factory.source_info,
@@ -261,23 +263,23 @@ impl ExtensionActions for RuntimeActions {
     fn append_entry(&self, kind: &str, data: Option<maho_ext_api::JsonValue>) -> Result<(), ExtensionFailure> { self.actions()?.append_entry(kind, data) }
     fn get_all_tools(&self) -> Result<Vec<maho_ext_api::ToolInfo>, ExtensionFailure> { self.actions()?.get_all_tools() }
 }
-struct ToolSearch { mcp_native_enabled: Arc<dyn Fn() -> bool + Send + Sync> }
+struct ToolSearch { mcp_native_enabled: Arc<dyn Fn() -> bool + Send + Sync>, service: Arc<std::sync::Mutex<Option<super::tool_search::SharedToolSearchService>>> }
 impl Extension for ToolSearch {
     fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
+        // Create the ONE shared tool-search service and publish it for the MCP factory, so the
+        // tool_search tool, the MCP catalog feed, the native gate and the adapter all read it.
+        let service = Arc::new(tokio::sync::Mutex::new(maho_ext_tool_search::service::ToolSearchService::new(api.runtime.clone(), Arc::new(RuntimeActions(api.runtime.clone())))));
         maho_ext_tool_search::index::ToolSearchExtension { actions: Arc::new(RuntimeActions(api.runtime.clone())),
-            mcp_native_enabled: self.mcp_native_enabled.clone() }.register(api);
+            mcp_native_enabled: self.mcp_native_enabled.clone() }.register_with_service(api, service.clone());
+        *self.service.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(service);
     }
 }
-struct Mcp { gate: Arc<std::sync::Mutex<Option<maho_ext_mcp::service::McpNativeToolSearchGate>>> }
+struct Mcp { gate: Arc<std::sync::Mutex<Option<maho_ext_mcp::service::McpNativeToolSearchGate>>>, tool_search: Arc<std::sync::Mutex<Option<super::tool_search::SharedToolSearchService>>> }
 impl Extension for Mcp {
     fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
-        // The shared tool-search service is created from the live registration api and handed to
-        // the MCP lifecycle; the returned MCP service publishes the native tool-search gate that
-        // the tool-search extension reads through `mcp_native_enabled`.
-        let shared = super::tool_search::SharedToolSearch::new(api.runtime.clone(), Arc::new(RuntimeActions(api.runtime.clone())));
+        let tool_search = self.tool_search.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         let extension = maho_ext_mcp::index::McpExtension {
-            registry: Arc::new(maho_ext_mcp::host_registry::HostMcpRegistry::default()), owner: 1,
-            tool_search: Some(shared.into_mcp_argument()),
+            registry: Arc::new(maho_ext_mcp::host_registry::HostMcpRegistry::default()), owner: 1, tool_search,
         };
         let service = extension.register_with_service(api);
         if let Ok(service) = service.try_lock() {
