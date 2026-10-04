@@ -120,8 +120,7 @@ async fn resolve_interactive_startup_theme(
     // senpi `loadStartupThemes(settingsManager)`: package-resolved theme resources first.
     let mut theme_paths: Vec<PathBuf> = Vec::new();
     {
-        let trusted = session.with_settings_manager(|settings| settings.is_project_trusted());
-        let mut settings = maho_core::settings_manager::SettingsManager::create(&cwd, &agent_dir, &maho_core::config::home_dir(), trusted);
+        let mut settings = startup_theme_settings_manager(session);
         let manager = maho_core::package_manager::DefaultPackageManager::new(maho_core::package_manager::PackageManagerOptions {
             cwd: &cwd, agent_dir: &agent_dir, settings_manager: &mut settings,
         });
@@ -142,4 +141,67 @@ async fn resolve_interactive_startup_theme(
     diagnostics.extend(resolution.diagnostics);
     for diagnostic in &diagnostics { eprintln!("theme: {diagnostic}"); }
     Ok(resolution.theme)
+}
+
+/// senpi `loadStartupThemes` (startup-ui.ts:65-75):
+/// `SettingsManager.inMemory(settingsManager.getGlobalSettings(), { projectTrusted: false })`.
+/// The package-resolved theme paths come from the session's **live** global settings (honouring
+/// unsaved in-memory overrides), with project settings excluded.
+fn startup_theme_settings_manager(session: &maho_core::agent_session::AgentSession) -> maho_core::settings_manager::SettingsManager {
+    maho_core::settings_manager::SettingsManager::in_memory(session.with_settings_manager(|settings| settings.get_global().clone()), false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A real `AgentSession` whose settings manager holds `global` **in memory**
+    /// (`SettingsManager::in_memory`), with `agent_dir` on an isolated temp dir. Building the real
+    /// session is what makes the regression exercise the production seam instead of a wrapper.
+    fn theme_session(global: maho_core::settings_manager::Settings, agent_dir: &std::path::Path) -> maho_core::agent_session::AgentSession {
+        use std::sync::Arc;
+        use maho_core::agent_session::{AgentSession, AgentSessionConfig};
+        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() });
+        let stream_fn: maho_agent::types::StreamFn = Arc::new(|_, _, _| maho_ai::types::AssistantMessageEventStream::assistant());
+        let cwd = agent_dir.to_string_lossy().into_owned();
+        AgentSession::new(AgentSessionConfig {
+            agent: maho_agent::Agent::new(maho_agent::AgentOptions { stream_fn: Some(stream_fn), ..Default::default() }),
+            session_manager: maho_core::session_manager::SessionManager::in_memory(&cwd, None, None),
+            settings_manager: maho_core::settings_manager::SettingsManager::in_memory(global, false),
+            cwd: cwd.clone(),
+            agent_dir: Some(cwd),
+            fallback_now: None, retry_random: None,
+            scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: Default::default(), custom_tools: Vec::new(),
+            model_runtime: Some(runtime), model_registry: None, uses_default_stream_function: Some(false),
+            initial_active_tool_names: None, default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: None, base_tools_override: None,
+            session_start_event: None, auto_title_sessions: Some(false),
+        }).expect("session")
+    }
+
+    #[test]
+    fn startup_theme_settings_seam_reads_live_global_and_excludes_project() {
+        let root = tempfile::tempdir().expect("temp root");
+        let agent_dir = root.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).expect("agent dir");
+        // The disk carries a DIFFERENT global with no theme sources; the seam must not read it.
+        std::fs::write(agent_dir.join("settings.json"), r#"{"theme":"disk-theme"}"#).expect("disk settings");
+
+        let mut unsaved = maho_core::settings_manager::Settings::new();
+        unsaved.insert("theme".to_owned(), serde_json::json!("unsaved-theme"));
+        unsaved.insert("themes".to_owned(), serde_json::json!([root.path().join("global-themes").to_string_lossy()]));
+        let session = theme_session(unsaved.clone(), &agent_dir);
+
+        // The production seam behind `resolve_interactive_startup_theme`: the session's live global
+        // settings, with project scope excluded.
+        let manager = startup_theme_settings_manager(&session);
+        assert_eq!(manager.get_global(), &unsaved, "the seam resolves from the session's live global settings");
+        assert!(manager.get_global().get("themes").is_some(), "the unsaved global theme source is preserved");
+        assert!(manager.get_project().is_empty(), "project theme sources are excluded");
+        assert!(!manager.is_project_trusted(), "project scope is not trusted for startup themes");
+
+        // A disk reload drops the unsaved global, so this fails if the seam reverts to
+        // `SettingsManager::create` (it would carry the disk global, which has no theme sources).
+        let disk = maho_core::settings_manager::SettingsManager::create(&session.cwd(), &agent_dir.to_string_lossy(), &root.path().to_string_lossy(), false);
+        assert!(disk.get_global().get("themes").is_none(), "a disk-create manager cannot see the unsaved global theme source");
+    }
 }
