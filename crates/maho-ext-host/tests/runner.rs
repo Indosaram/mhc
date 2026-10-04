@@ -150,6 +150,20 @@ async fn multiple_handlers_per_extension_preserve_registration_order() {
     assert_eq!(runner(vec![ext]).emit_before_agent_start(before()).await.unwrap().unwrap().system_prompt.as_deref(), Some("base12"));
 }
 #[tokio::test]
+async fn late_runtime_registration_keeps_load_registered_handlers() {
+    let runtime = ExtensionRuntime::default();
+    let mut runner = ExtensionRunner::new(vec![extension("omo", EventKind::BeforeAgentStart, prompt("\nmemory"))], runtime.clone(), EventBus::default(), context());
+    let mut late = ExtensionApi::new(
+        LoadedExtension::new("omo", "/tmp".into(), SourceInfo { path: "omo".into(), source: "inline".into(), ..Default::default() }),
+        ExtensionSessionProfile::default(), EventBus::default(), runtime.clone(),
+    );
+    late.on(EventKind::BeforeAgentStart, prompt("\ntask"));
+
+    let merged = runner.emit_before_agent_start(before()).await.unwrap().unwrap();
+
+    assert_eq!(merged.system_prompt.as_deref(), Some("base\nmemory\ntask"));
+}
+#[tokio::test]
 async fn input_no_handlers_returns_continue() { assert_eq!(runner(vec![]).emit_input(input()).await.unwrap(), InputEventResult::Continue); }
 #[tokio::test]
 async fn input_undefined_return_continues() { assert_eq!(runner(vec![extension("a", EventKind::Input, none())]).emit_input(input()).await.unwrap(), InputEventResult::Continue); }

@@ -16,6 +16,13 @@ fn run() -> Result<(), String> {
     use std::path::PathBuf;
     maho_cli::valid_cwd::ensure_valid_cwd().map_err(|e| e.to_string())?;
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    let memory_role = argv.first().map(String::as_str);
+    if memory_role == Some("--memory-supervisor") || memory_role == Some("--child-bootstrap") {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        let args: &[String] = if memory_role == Some("--memory-supervisor") { &argv[1..] } else { &argv };
+        return runtime.block_on(maho_omo_memory::worker::memory_run_supervisor::run_entry(args, &executable, &[], memory_terminal_gate));
+    }
     use maho_cli::experimental::process::{parse_internal_process_role, InternalProcessRole, INTERNAL_PROCESS_ENV};
     if let Some(role) = parse_internal_process_role(std::env::var(INTERNAL_PROCESS_ENV).ok().as_deref())? {
         return match role {
@@ -124,6 +131,20 @@ fn run() -> Result<(), String> {
     }
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
     runtime.block_on(maho_cli::cli::runtime::run(parsed, &argv))
+}
+fn memory_terminal_gate(directory: &std::path::Path, operation: &mut dyn FnMut() -> Result<(), String>) -> Result<(), String> {
+    let record = memory_core::locks::create_lock_record("reflection-finalize", Default::default()).map_err(|error| error.to_string())?;
+    let path = directory.join("terminalization.lock");
+    loop {
+        match memory_core::locks::acquire_lock(&path, &record, &memory_core::locks::AcquireLockOptions { wait_timeout_ms: Some(60_000), ..Default::default() }) {
+            Ok(()) => break,
+            Err(memory_core::locks::AcquireLockError::Contention(_)) => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    let result = operation();
+    memory_core::locks::release_lock(&path, &record).map_err(|error| error.to_string())?;
+    result
 }
 #[cfg(unix)]
 fn run_coordinator_entry(argv: &[String]) -> Result<(), String> {

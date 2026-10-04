@@ -127,7 +127,9 @@ impl Extension for Task {
         let shared = self.runtime.clone(); let engine_slot = self.engine.clone();
         let coordinator = self.coordinator.clone(); let environment = self.environment.clone();
         let actions = Arc::new(TaskActions(parent.clone()));
-        let registration = Arc::new(std::sync::Mutex::new(maho_ext_api::ExtensionApi::new(api.registered.clone(), api.profile.clone(), api.events.clone(), api.runtime.clone())));
+        let registration = Arc::new(std::sync::Mutex::new(maho_ext_api::ExtensionApi::new(
+            maho_ext_api::LoadedExtension::new(&api.registered.identity.path, api.registered.registration_cwd.clone(), api.registered.source_info.clone()),
+            api.profile.clone(), api.events.clone(), api.runtime.clone())));
         api.on(maho_ext_api::EventKind::SessionStart, Arc::new(move |event, ctx| {
             let parent = parent.clone(); let registered = registered.clone(); let registration = registration.clone();
             let actions = actions.clone();
@@ -205,7 +207,9 @@ impl Extension for Task {
                     api.registered.handlers.get(&maho_ext_api::EventKind::SessionStart).cloned().unwrap_or_default()
                 };
                 registered.store(true, std::sync::atomic::Ordering::Release);
-                shared.capture_tools(registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner).registered.tools.iter().map(|tool| tool.definition.clone()).collect());
+                let mut captured = shared.captured_tools();
+                captured.extend(registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner).registered.tools.iter().map(|tool| tool.definition.clone()));
+                shared.capture_tools(captured);
                 for handler in handlers { handler(event, ctx).await?; }
                 Ok(maho_ext_api::EventResult::None)
             })

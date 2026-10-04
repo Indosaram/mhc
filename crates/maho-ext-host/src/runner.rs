@@ -472,17 +472,29 @@ impl ExtensionRunner {
     pub fn has_handlers(&self, kind: EventKind) -> bool { !self.handlers(kind).is_empty() }
     fn handlers(&self, kind: EventKind) -> Vec<(String, ExtensionHandler)> {
         self.extensions.iter().flat_map(|e| {
-            let handlers = self.runtime.live_handlers(&e.identity.path, kind).unwrap_or_else(|| e.handlers.get(&kind).cloned().unwrap_or_default());
+            // Load-registered handlers stay authoritative; a late runtime registration (e.g. the
+            // OMO task component at SessionStart) adds to them instead of hiding them.
+            let mut handlers = e.handlers.get(&kind).cloned().unwrap_or_default();
+            if let Some(live) = self.runtime.live_handlers(&e.identity.path, kind) { handlers.extend(live); }
             handlers.into_iter().map(|handler| (e.identity.path.clone(), handler)).collect::<Vec<_>>()
         }).collect()
     }
     pub fn get_all_registered_tools(&self) -> Vec<RegisteredTool> {
         let mut tools: Vec<RegisteredTool> = Vec::new();
-        for ext in &self.extensions { for tool in self.runtime.live_tools(&ext.identity.path).unwrap_or_else(|| ext.tools.clone()) {
-            if let Some(existing) = tools.iter_mut().find(|t| t.definition.name == tool.definition.name) {
-                if existing.source_info.source == "builtin" && tool.source_info.source != "builtin" { *existing = tool.clone(); }
-            } else { tools.push(tool.clone()); }
-        }}
+        for ext in &self.extensions {
+            let mut merged = ext.tools.clone();
+            if let Some(live) = self.runtime.live_tools(&ext.identity.path) {
+                for tool in live {
+                    if let Some(existing) = merged.iter_mut().find(|t| t.definition.name == tool.definition.name) { *existing = tool; }
+                    else { merged.push(tool); }
+                }
+            }
+            for tool in merged {
+                if let Some(existing) = tools.iter_mut().find(|t| t.definition.name == tool.definition.name) {
+                    if existing.source_info.source == "builtin" && tool.source_info.source != "builtin" { *existing = tool.clone(); }
+                } else { tools.push(tool.clone()); }
+            }
+        }
         tools
     }
     pub fn get_all_tools(&self) -> Vec<ToolInfo> { self.get_all_registered_tools().into_iter().map(|t| normalize_tool_exposure(&t.definition, t.source_info)).collect() }
