@@ -227,6 +227,15 @@ impl AttachedSession {
         self.command("models.refresh", Vec::new()).await
     }
 
+    pub async fn models_login(&self, provider_id: &str, auth_type: super::shared::protocol::AuthType) -> Result<CommandResult, String> {
+        let value = serde_json::to_value(auth_type).map_err(|error| error.to_string())?;
+        self.command("models.login", vec![json!(provider_id), value]).await
+    }
+
+    pub async fn models_logout(&self, provider_id: &str) -> Result<CommandResult, String> {
+        self.command("models.logout", vec![json!(provider_id)]).await
+    }
+
     pub async fn models_auth_reply(&self, request_id: &str, answer: Option<&str>) -> Result<(), String> {
         self.shared.peer.call("models.authReply", vec![json!(request_id), json!(answer)]).await.map(|_| ())
     }

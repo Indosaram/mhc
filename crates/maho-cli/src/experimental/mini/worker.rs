@@ -198,6 +198,43 @@ fn models_handlers(service: Arc<ModelsService>) -> HashMap<String, Handler> {
     {
         let service = service.clone();
         handlers.insert(
+            "login".to_owned(),
+            command_handler(move |args| {
+                let service = service.clone();
+                async move {
+                    let provider = args.first().and_then(Value::as_str).ok_or("models.login requires providerId")?.to_owned();
+                    let auth_type: super::shared::protocol::AuthType = serde_json::from_value(args.get(1).cloned().unwrap_or(Value::Null)).map_err(|error| error.to_string())?;
+                    serde_json::to_value(service.login(&provider, auth_type).await).map_err(|error| error.to_string())
+                }
+            }),
+        );
+    }
+    {
+        let service = service.clone();
+        handlers.insert(
+            "logout".to_owned(),
+            command_handler(move |args| {
+                let service = service.clone();
+                async move {
+                    let provider = args.first().and_then(Value::as_str).ok_or("models.logout requires providerId")?.to_owned();
+                    serde_json::to_value(service.logout(&provider).await).map_err(|error| error.to_string())
+                }
+            }),
+        );
+    }
+    {
+        let service = service.clone();
+        handlers.insert(
+            "refresh".to_owned(),
+            command_handler(move |_args| {
+                let service = service.clone();
+                async move { serde_json::to_value(service.refresh().await).map_err(|error| error.to_string()) }
+            }),
+        );
+    }
+    {
+        let service = service.clone();
+        handlers.insert(
             "authReply".to_owned(),
             command_handler(move |args| {
                 let service = service.clone();

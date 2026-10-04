@@ -6,8 +6,9 @@ use maho_agent::harness::runtime::lane::{Lane, PromptInput};
 use maho_agent::harness::session::types::{LaneConfiguration, LaneModelRef, RunSettings, Session, SessionMetadata, ToolExecutionMode};
 use maho_agent::harness::session::{MemoryStorage, MemoryStorageOptions, StorageBackedSession, StorageBackedSessionOptions};
 use maho_cli::experimental::mini::lane_service::{LaneService, LaneServiceOptions, SessionIdentity};
+use maho_cli::experimental::mini::models_service::ModelsService;
 use maho_cli::experimental::mini::runtime::ModelRuntimeHandle;
-use maho_cli::experimental::mini::shared::protocol::{CommandResult, ModelRef, ModelsState};
+use maho_cli::experimental::mini::shared::protocol::{AuthType, CommandResult, ModelRef, ModelsState};
 use maho_core::model_runtime::{CreateModelRuntimeOptions, ModelRuntime};
 
 async fn fixture() -> (Arc<Lane>, Arc<ModelRuntimeHandle>, RunSettings) {
@@ -106,6 +107,16 @@ async fn abort_without_an_operation_reports_it() {
     let service = build_service(lane, models, settings);
     assert_eq!(service.abort().await, CommandResult::Error("No active operation to abort".to_owned()));
     service.close();
+}
+
+#[tokio::test]
+async fn models_login_rejects_an_unknown_provider() {
+    let runtime = ModelRuntimeHandle::new(ModelRuntime::create(CreateModelRuntimeOptions::default()).await);
+    let service = ModelsService::new(runtime, Arc::new(|_event| {})).await;
+    match service.login("definitely-not-a-provider", AuthType::Oauth).await {
+        CommandResult::Error(message) => assert!(message.contains("Unknown provider"), "unexpected error: {message}"),
+        CommandResult::Ok => panic!("unknown provider accepted"),
+    }
 }
 
 #[test]
