@@ -120,8 +120,7 @@ async fn resolve_interactive_startup_theme(
     // senpi `loadStartupThemes(settingsManager)`: package-resolved theme resources first.
     let mut theme_paths: Vec<PathBuf> = Vec::new();
     {
-        let trusted = session.with_settings_manager(|settings| settings.is_project_trusted());
-        let mut settings = maho_core::settings_manager::SettingsManager::create(&cwd, &agent_dir, &maho_core::config::home_dir(), trusted);
+        let mut settings = startup_theme_settings_manager(session);
         let manager = maho_core::package_manager::DefaultPackageManager::new(maho_core::package_manager::PackageManagerOptions {
             cwd: &cwd, agent_dir: &agent_dir, settings_manager: &mut settings,
         });
@@ -142,4 +141,34 @@ async fn resolve_interactive_startup_theme(
     diagnostics.extend(resolution.diagnostics);
     for diagnostic in &diagnostics { eprintln!("theme: {diagnostic}"); }
     Ok(resolution.theme)
+}
+
+/// senpi `loadStartupThemes` (startup-ui.ts:65-75):
+/// `SettingsManager.inMemory(settingsManager.getGlobalSettings(), { projectTrusted: false })`.
+/// The package-resolved theme paths come from the session's **live** global settings (honouring
+/// unsaved in-memory overrides), with project settings excluded.
+fn startup_theme_settings_manager(session: &maho_core::agent_session::AgentSession) -> maho_core::settings_manager::SettingsManager {
+    in_memory_theme_settings(session.with_settings_manager(|settings| settings.get_global().clone()))
+}
+
+/// The pinned settings seam behind [`startup_theme_settings_manager`], split out so the global
+/// override preservation and project exclusion are directly regression-tested.
+fn in_memory_theme_settings(global_settings: maho_core::settings_manager::Settings) -> maho_core::settings_manager::SettingsManager {
+    maho_core::settings_manager::SettingsManager::in_memory(global_settings, false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_theme_settings_seam_preserves_global_overrides_and_excludes_project() {
+        let mut global = maho_core::settings_manager::Settings::new();
+        global.insert("theme".to_owned(), serde_json::json!("omarchy-system"));
+        global.insert("packages".to_owned(), serde_json::json!([{ "source": "/tmp/global-theme-pkg" }]));
+        let manager = in_memory_theme_settings(global.clone());
+        assert_eq!(manager.get_global(), &global, "live global overrides survive the pinned seam");
+        assert!(manager.get_project().is_empty(), "project theme sources are excluded");
+        assert!(!manager.is_project_trusted(), "project scope is not trusted for startup themes");
+    }
 }
