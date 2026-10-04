@@ -67,6 +67,6 @@ pub mod wiring_reflection_live;
 
 // Todo 45 owns these module bodies; declaring the namespaces here keeps lib.rs
 // ownership with todo 43 without adding nonfunctional command implementations.
-pub mod commands {}
+pub mod commands;
 pub mod palace {}
-pub mod bindings {}
+pub mod bindings;

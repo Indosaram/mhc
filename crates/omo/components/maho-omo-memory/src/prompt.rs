@@ -44,8 +44,10 @@ pub struct MemoryPromptInjectionOptions {
     pub resolve_soul_notice: Option<PromptSoulResolver>,
 }
 pub fn register_memory_prompt_handler(api:&mut maho_ext_api::ExtensionApi,options:MemoryPromptInjectionOptions) {
+    register_memory_prompt_handler_with_cache(api,options,std::sync::Arc::new(MemoryPromptHandler::default()));
+}
+pub fn register_memory_prompt_handler_with_cache(api:&mut maho_ext_api::ExtensionApi,options:MemoryPromptInjectionOptions,handler:std::sync::Arc<MemoryPromptHandler>) {
     use maho_ext_api::{EventKind,EventResult,ExtensionEvent,ExtensionFailure,BeforeAgentStartEventResult,CustomMessage,ToolContent};
-    let handler=std::sync::Arc::new(MemoryPromptHandler::default());
     let options=std::sync::Arc::new(options);
     api.on(EventKind::BeforeAgentStart,std::sync::Arc::new(move |event,context| {
         let handler=handler.clone(); let options=options.clone();
