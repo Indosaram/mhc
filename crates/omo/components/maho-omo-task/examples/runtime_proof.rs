@@ -71,6 +71,15 @@ impl SurfaceTimers {
     fn count(&self) -> usize { self.callbacks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len() }
     // The armed timers' scheduled delays, so a count mismatch names which timer kind is live.
     fn kinds(&self) -> Vec<u64> { self.kinds.lock().unwrap_or_else(std::sync::PoisonError::into_inner).values().copied().collect() }
+    // Fire only the timers scheduled with `delay_ms`, leaving every other timer armed.
+    fn fire_delay(&self, delay_ms: u64) {
+        let ids: Vec<u64> = self.kinds.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().filter(|(_,delay)| **delay == delay_ms).map(|(id,_)| *id).collect();
+        for id in ids {
+            let callback = self.callbacks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
+            self.kinds.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
+            if let Some(callback) = callback { callback(); }
+        }
+    }
     fn fire(&self) {
         let callbacks = std::mem::take(&mut *self.callbacks.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         self.kinds.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
@@ -232,7 +241,12 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
         }] }, parent_session_id:context.session_manager.session_id().into(), root_session_id:context.session_manager.session_id().into(),
     })?;
     dispatch(&api, EventKind::SessionStart, &mut ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::Resume, initial_model_provenance:None, previous_session_file:None }), &context).await?;
-    assert_eq!(status_timers.count(), 1, "live registered DAG requires one refresh timer (kinds={:?})", status_timers.kinds());
+    // The start's store checkpoint armed the 250ms debounce; this SessionStart's sync_now armed the
+    // 1000ms live refresh. Both live is the pinned debounce+refresh behavior, not a single timer.
+    let mut kinds=status_timers.kinds(); kinds.sort();
+    assert_eq!(kinds, vec![250,1000], "live registered DAG arms one debounce and one refresh timer");
+    status_timers.fire_delay(250);
+    assert_eq!(status_timers.count(), 1, "debounce fire leaves the live refresh armed (kinds={:?})", status_timers.kinds());
     dispatch(&api, EventKind::SessionBeforeSwitch, &mut ExtensionEvent::SessionBeforeSwitch { reason:SessionReason::Resume, target_session_file:None }, &context).await?;
     assert_eq!(status_timers.count(), 0, "before-switch must cancel registered status timers (kinds={:?})", status_timers.kinds());
     let paints = dag_ui.widgets.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len();
