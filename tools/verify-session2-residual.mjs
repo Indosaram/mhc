@@ -30,6 +30,7 @@ export const PACKAGE_SCHEMA = "session2-residual-package-manifest/v1";
 export const COMMAND_SCHEMA = "session2-residual-command-manifest/v1";
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 const RUN_IDENTITY = "run-identity.json";
 const SOURCE_IDENTITY = "source-identity.json";
 // The causal TUI fields every case must prove (own prompt, gated stream, steer, abort, resize).
@@ -53,7 +54,20 @@ const EXACT_TEST_ID = /^[A-Za-z0-9_]+(?:::[A-Za-z0-9_]+)*$/;
 const PACKAGE_ID = /^[A-Za-z0-9_-]+$/;
 // A machine-consumable template that Task 17 maintains; the verifier binds a COPY, never mutates it.
 const TEMPLATE_PATH = ".omo/evidence/residual-source/task-17/requirements-manifest.json";
-const ALLOWED_DISPOSITIONS = new Set(["resolved", "accepted-exclusion", "downstream"]);
+const ALLOWED_DISPOSITIONS = new Set(["resolved", "accepted-exclusion", "accepted-unresolved"]);
+// Post-gate scopes (reviews + integration) run AFTER this gate, so the verifier must not
+// circularly require their pre-gate disposition.
+const POST_GATE_SCOPES = new Set(["F1", "F2", "F3", "F4", "task-19", "task-20"]);
+// The fixed approved requirement IDs (G1-G14, IS-1..6, the SDK ids, the parser negative).
+const REQUIRED_REQUIREMENT_IDS = [
+	"G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G10", "G11", "G12", "G13", "G14",
+	"IS-1", "IS-2", "IS-3", "IS-4", "IS-5", "IS-6",
+	"SDK-NATIVE-SESSION", "SDK-ROW10-14", "PARSE-HIDDEN-ROW",
+];
+// The mandatory TUI matrix (independent of the manifest's own arrays).
+const TUI_GEOMETRIES = ["80x24", "120x36", "200x50"];
+const TUI_MODES = ["regular", "fullscreen"];
+const TASK8_LEDGER = "crates/maho-cli/parity.d/38.md";
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const VERIFY_COMMAND_MARKER = "verify-session2-residual.mjs --evidence";
 const REQUIRED_SCENARIOS = ["tui", "theme", "install", "mini", "server", "registry"];
@@ -99,32 +113,15 @@ export function workspaceMembers(repo) {
 		.map((member) => member.replace(/\/$/, ""));
 }
 
-function walkCargoManifests(repo) {
-	const found = [];
-	const visit = (dir, depth) => {
-		if (depth > 4) return;
-		for (const name of readdirSync(dir)) {
-			if (name === "target" || name === ".git") continue;
-			const abs = join(dir, name);
-			let isDir = false;
-			try {
-				isDir = statSync(abs).isDirectory();
-			} catch {
-				continue;
-			}
-			if (!isDir) continue;
-			const manifest = join(abs, "Cargo.toml");
-			if (existsSync(manifest)) found.push(manifest);
-			visit(abs, depth + 1);
-		}
-	};
-	visit(join(repo, "crates"), 0);
-	return found;
-}
-
+/** Package name -> manifest path, over the AUTHORITATIVE workspace membership (the root
+ *  `[workspace] members` list), never every `crates/**\/Cargo.toml` (which would include excluded
+ *  crates and misreport them as missing members). */
 export function packageManifests(repo) {
 	const map = new Map();
-	for (const manifest of walkCargoManifests(repo)) {
+	for (const member of workspaceMembers(repo)) {
+		if (member.includes("*")) throw new Error("Cargo.toml uses glob members; cargo metadata is required");
+		const manifest = join(repo, member, "Cargo.toml");
+		if (!existsSync(manifest)) continue;
 		const name = parseTomlString(readFileSync(manifest, "utf8"), "name");
 		if (name) map.set(name, manifest);
 	}
@@ -183,8 +180,8 @@ export function validateBoundManifest(evidenceDir, sha, report, repo) {
 		report.fail(`bound manifest assembled_sha ${bound} is STALE (gate SHA ${sha})`);
 	}
 	const from = manifest.bound_from;
-	if (!from || typeof from.source_path !== "string" || !FULL_SHA.test(String(from.source_sha256))) {
-		report.fail("bound manifest lacks bound_from provenance (source_path + source_sha256)");
+	if (!from || typeof from.source_path !== "string" || !SHA256_HEX.test(String(from.source_sha256))) {
+		report.fail("bound manifest lacks bound_from provenance (source_path + 64-hex sha256)");
 	}
 	if (repo && from && typeof from.source_path === "string") {
 		const templatePath = join(repo, TEMPLATE_PATH);
@@ -229,14 +226,21 @@ export function validatePackageManifest(evidenceDir, repo, sha, manifest, report
 	if (frozen.schema !== PACKAGE_SCHEMA) report.fail(`package manifest schema "${frozen.schema}" != "${PACKAGE_SCHEMA}"`);
 	if (frozen.sha !== sha) report.fail(`package manifest sha ${frozen.sha} != gate SHA ${sha}`);
 	const byName = new Map((frozen.packages ?? []).map((entry) => [entry.name, entry]));
+	// Coverage is asserted against the AUTHORITATIVE workspace membership (the root members list),
+	// not every `crates/**/Cargo.toml` (excluded/vendored crates are not members).
 	const current = packageManifests(repo);
 	for (const [name] of current) {
 		if (!byName.has(name)) report.fail(`package manifest omits workspace member ${name} (incomplete coverage)`);
 	}
 	for (const entry of frozen.packages ?? []) {
-		const manifestPath = join(repo, entry.manifest_path ?? "");
-		if (!entry.manifest_path || !existsSync(manifestPath)) {
-			report.fail(`package manifest entry ${entry.name} points at a missing manifest`);
+		if (entry.workspace_member === false) continue;
+		if (typeof entry.manifest_path !== "string" || entry.manifest_path.length === 0) {
+			report.fail(`package manifest entry ${entry.name} has no manifest_path`);
+			continue;
+		}
+		const manifestPath = resolve(repo, entry.manifest_path);
+		if (!existsSync(manifestPath)) {
+			report.fail(`package manifest entry ${entry.name} points at a missing manifest (${entry.manifest_path})`);
 			continue;
 		}
 		const live = sha256(readFileSync(manifestPath));
@@ -256,7 +260,7 @@ export function validatePackageManifest(evidenceDir, repo, sha, manifest, report
 // Command manifest (all gate commands, keep-going, real exit codes).
 // ---------------------------------------------------------------------------------------------
 
-export function validateCommandManifest(evidenceDir, sha, manifest, report) {
+export function validateCommandManifest(evidenceDir, sha, manifest, report, final = false) {
 	const path = join(evidenceDir, "command-manifest.json");
 	if (!existsSync(path)) {
 		report.fail(`command manifest missing: ${path}`);
@@ -280,17 +284,26 @@ export function validateCommandManifest(evidenceDir, sha, manifest, report) {
 			continue;
 		}
 		const self = String(template).includes(VERIFY_COMMAND_MARKER);
-		if (entry.exit_code === null || entry.exit_code === undefined) {
-			if (!self) report.fail(`gate command has no exit code: ${template}`);
+		const missing = entry.exit_code === null || entry.exit_code === undefined;
+		if (missing) {
+			// Only the still-running verifier's own entry may be null, and only in a PRE-FINAL audit.
+			// In final mode every command (including this verifier) has a completed exit code.
+			if (!self || final) report.fail(`gate command has no exit code${final ? " in the final audit" : ""}: ${template}`);
 		} else if (entry.exit_code !== 0) {
 			report.fail(`gate command exited ${entry.exit_code} (expected 0): ${template}`);
 		}
-		if (entry.log) {
-			const logPath = join(evidenceDir, entry.log);
-			if (!existsSync(logPath)) report.fail(`command log missing: ${entry.log}`);
-			else if (entry.log_sha256 && sha256(readFileSync(logPath)) !== entry.log_sha256) {
+		if (entry.log && existsSync(join(evidenceDir, entry.log))) {
+			if (entry.log_sha256 && sha256(readFileSync(join(evidenceDir, entry.log))) !== entry.log_sha256) {
 				report.fail(`command log is STALE (hash changed since capture): ${entry.log}`);
 			}
+		} else if (!missing) {
+			report.fail(`command log missing for a completed command: ${template} (log=${entry.log})`);
+		}
+	}
+	if (final) {
+		for (const entry of entries) {
+			if (entry.exit_code === null || entry.exit_code === undefined) report.fail(`final audit: command never completed: ${entry.template}`);
+			if (!entry.log) report.fail(`final audit: command has no log: ${entry.template}`);
 		}
 	}
 }
@@ -502,13 +515,15 @@ export function validateParity(evidenceDir, repo, report) {
 			}
 		}
 	}
-	const task8 = join(repo, "crates", "maho-cli", "parity.d", "38.md");
-	if (existsSync(task8)) {
-		const declared = countDeclaredRows(readFileSync(task8, "utf8"));
-		const parsed = parseFragment(readFileSync(task8, "utf8"), "crates/maho-cli/parity.d/38.md").length;
-		if (declared !== parsed) report.fail(`task-8 ledger 38.md row coverage mismatch (declared ${declared}, parsed ${parsed})`);
+	const task8 = join(repo, TASK8_LEDGER);
+	if (!existsSync(task8)) {
+		report.fail(`task-8 ledger missing: ${TASK8_LEDGER} (its rows are required coverage, not optional)`);
 	} else {
-		report.note("crates/maho-cli/parity.d/38.md not present at verification time (task-8 ledger)");
+		const text = readFileSync(task8, "utf8");
+		const declared = countDeclaredRows(text);
+		const parsed = parseFragment(text, TASK8_LEDGER).length;
+		if (declared !== parsed) report.fail(`task-8 ledger 38.md row coverage mismatch (declared ${declared}, parsed ${parsed})`);
+		if (declared === 0) report.fail(`task-8 ledger ${TASK8_LEDGER} declares no rows`);
 	}
 }
 
@@ -532,6 +547,15 @@ export function validateQa(evidenceDir, sha, manifest, report) {
 	}
 	if (summary.schema !== QA_SCHEMA) report.fail(`QA summary schema "${summary.schema}" != "${QA_SCHEMA}"`);
 	if (summary.sha !== sha) report.fail(`QA summary sha ${summary.sha} != gate SHA ${sha}`);
+	// Bind the QA to the ACTUAL staged binary artifact, not just a self-reported hash.
+	const staged = join(evidenceDir, "install", "mhc");
+	if (!SHA256_HEX.test(String(summary.binary_sha256 ?? ""))) {
+		report.fail("QA summary binary_sha256 is not a 64-hex hash");
+	} else if (existsSync(staged) && summary.binary_sha256 !== sha256(readFileSync(staged))) {
+		report.fail("QA summary binary_sha256 != the staged $E/install/mhc artifact hash");
+	} else if (!existsSync(staged)) {
+		report.fail("QA cannot bind binary_sha256: $E/install/mhc is missing");
+	}
 	for (const name of REQUIRED_SCENARIOS) {
 		const scenario = summary.scenarios?.[name];
 		if (!scenario) {
@@ -542,15 +566,31 @@ export function validateQa(evidenceDir, sha, manifest, report) {
 			report.fail(`QA scenario ${name} is not pass (status=${scenario.status}${scenario.blocker ? `; blocker=${scenario.blocker}` : ""})`);
 		}
 		if (scenario.cleanup_ok !== true) report.fail(`QA scenario ${name} has no clean cleanup receipt`);
+		if (!Array.isArray(scenario.artifacts) || scenario.artifacts.length === 0) {
+			report.fail(`QA scenario ${name} records no artifacts (proof semantics missing)`);
+		} else {
+			for (const artifact of scenario.artifacts) {
+				if (!existsSync(join(root, artifact)) && !existsSync(join(evidenceDir, artifact))) {
+					report.fail(`QA scenario ${name} artifact missing: ${artifact}`);
+				}
+			}
+		}
 	}
-	const tui = manifest?.scenarios?.tui ?? { geometries: [], modes: [] };
-	for (const geometry of tui.geometries ?? []) {
-		for (const mode of tui.modes ?? []) {
-			const dir = join(root, `tui-${geometry}-${mode}`);
-			validateTuiCase(dir, geometry, mode, report);
+	// The mandatory TUI matrix is asserted independently of the manifest's own arrays.
+	for (const geometry of TUI_GEOMETRIES) {
+		for (const mode of TUI_MODES) {
+			validateTuiCase(join(root, `tui-${geometry}-${mode}`), geometry, mode, report);
 		}
 	}
 	validateThemeCases(root, report);
+	// The frozen run-qa harness must have shown its own RPC-id and help-flag-set sentinels.
+	const runQa = join(evidenceDir, "run-qa.log");
+	if (!existsSync(runQa)) report.fail("run-qa.log missing (RPC ids + help-49 equality not proven)");
+	else {
+		const text = readFileSync(runQa, "utf8");
+		if (!text.includes("RPC_IDS_PASS")) report.fail("run-qa.log does not contain RPC_IDS_PASS");
+		if (!text.includes("HELP_FLAG_SET_MATCH")) report.fail("run-qa.log does not contain HELP_FLAG_SET_MATCH (help flag-set equality)");
+	}
 }
 
 /** The theme scenario must prove real display evidence: the custom accent rendered AND the malformed
@@ -602,6 +642,10 @@ function validateTuiCase(dir, geometry, mode, report) {
 		return;
 	}
 	const png = readFileSync(pngPath);
+	if (png.length < 24) {
+		report.fail(`${label}: terminal.png is only ${png.length} bytes (truncated)`);
+		return;
+	}
 	if (!png.subarray(0, 8).equals(PNG_SIGNATURE)) report.fail(`${label}: terminal.png has no PNG signature`);
 	const width = png.readUInt32BE(16);
 	const height = png.readUInt32BE(20);
@@ -612,11 +656,15 @@ function validateTuiCase(dir, geometry, mode, report) {
 	if (existsSync(sidecar)) {
 		const meta = readJson(sidecar);
 		if (meta.schema !== PNG_SCHEMA) report.fail(`${label}: png sidecar schema mismatch`);
+		if (meta.derived !== true) report.fail(`${label}: png sidecar is not marked derived (must not claim a literal screenshot)`);
+		if (meta.colored !== true) report.fail(`${label}: png sidecar is not color-faithful (per-cell fg/bg missing)`);
 		if (meta.cols !== cols || meta.rows !== rows) report.fail(`${label}: png sidecar geometry mismatch`);
-		if (meta.pngSha256 && meta.pngSha256 !== sha256(png)) report.fail(`${label}: terminal.png changed since the sidecar hash`);
+		if (!SHA256_HEX.test(String(meta.pngSha256 ?? ""))) report.fail(`${label}: png sidecar pngSha256 is not a 64-hex hash`);
+		else if (meta.pngSha256 !== sha256(png)) report.fail(`${label}: terminal.png changed since the sidecar hash`);
 	} else {
 		report.fail(`${label}: terminal.png.json sidecar missing`);
 	}
+	if (!existsSync(join(dir, "reply-cells.json"))) report.fail(`${label}: reply-cells.json missing (no per-cell color/position provenance)`);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -633,6 +681,8 @@ export function validateUnresolved(manifest, report) {
 		}
 	}
 	for (const entry of manifest?.not_started ?? []) {
+		// Post-gate scopes are recorded but not required pre-gate (no circular requirement).
+		if (POST_GATE_SCOPES.has(entry.id)) continue;
 		if (!ALLOWED_DISPOSITIONS.has(entry.disposition)) {
 			report.fail(`not-started scope still blocks completion: ${entry.id} (${entry.kind ?? "?"})`);
 		} else if (reasonOf(entry).trim() === "") {
@@ -647,6 +697,17 @@ export function validateUnresolved(manifest, report) {
 		} else if (reasonOf(entry).trim() === "") {
 			report.fail(`awaited-executed category ${entry.category} disposition "${entry.disposition}" has no reason`);
 		}
+	}
+	// Required-but-not-authored entries must link an exact authored+passing test, never prose.
+	for (const entry of manifest?.awaited_executed_tests?.required_but_not_authored ?? []) {
+		if (entry.authored !== true || !EXACT_TEST_ID.test(String(entry.test ?? ""))) {
+			report.fail(`required-but-not-authored entry has no exact authored test: ${JSON.stringify(entry.id ?? entry.category ?? entry)}`);
+		}
+	}
+	// Completeness against the fixed approved requirement IDs.
+	const present = new Set((manifest?.requirements ?? []).map((requirement) => requirement.id));
+	for (const id of REQUIRED_REQUIREMENT_IDS) {
+		if (!present.has(id)) report.fail(`manifest omits approved requirement id ${id} (incomplete coverage)`);
 	}
 	// A claimed pass must be backed by the evidence, never self-derived.
 	const knownScenarios = new Set(REQUIRED_SCENARIOS);
@@ -665,39 +726,43 @@ export function validateUnresolved(manifest, report) {
 /** An empty `src/lib.rs` is a silent gap unless the manifest records an approved exclusion with
  *  evidence (e.g. the quiet-model-profile bootstrap crate: no pinned source, no consumer). */
 export function validateEmptyLibExports(manifest, repo, report) {
-	const block = manifest?.empty_lib_exports;
-	if (!block) {
-		report.note("manifest has no empty_lib_exports section (skipped; add it if empty libs exist)");
-		return;
+	// Discover the ACTUAL empty (<=1 byte) `src/lib.rs` files across workspace members, so an omitted
+	// entry cannot escape: every empty lib must be recorded with an approved exclusion + evidence.
+	const recorded = new Map();
+	for (const entry of manifest?.empty_lib_exports?.remaining ?? []) {
+		if (entry.path) recorded.set(entry.path.replace(/^crates\//, "").replace(/^\/+/, ""), entry);
 	}
-	for (const entry of block.remaining ?? []) {
-		if (!entry.path) {
-			report.fail("empty_lib_exports.remaining entry has no path");
-			continue;
-		}
-		const abs = join(repo, entry.path);
-		if (!existsSync(abs)) {
-			report.fail(`empty_lib_exports entry points at a missing file: ${entry.path}`);
-			continue;
-		}
-		const size = statSync(abs).size;
-		if (size > 2) {
-			report.fail(`empty_lib_exports entry ${entry.path} is no longer empty (${size} bytes); remove the exclusion`);
-			continue;
-		}
-		if (entry.verdict !== "approved-exclusion") {
-			report.fail(`empty lib ${entry.path} has no approved exclusion verdict (unexplained silent gap)`);
-		} else if (typeof entry.evidence !== "string" || entry.evidence.trim() === "") {
-			report.fail(`empty lib ${entry.path} approved-exclusion has no evidence`);
-		}
+	const discovered = new Set();
+	for (const [name, manifestPath] of packageManifests(repo)) {
+		const lib = join(dirname(manifestPath), "src", "lib.rs");
+		if (!existsSync(lib)) continue;
+		if (statSync(lib).size <= 1) discovered.add(name);
 	}
+	for (const [name, manifestPath] of packageManifests(repo)) {
+		const lib = join(dirname(manifestPath), "src", "lib.rs");
+		if (!existsSync(lib) || statSync(lib).size > 1) continue;
+		const rel = relative(repo, lib);
+		const entry = recorded.get(rel) ?? recorded.get(rel.replace(/^crates\//, ""));
+		if (!entry) {
+			report.fail(`empty lib ${rel} is not recorded in empty_lib_exports (unexplained silent gap)`);
+			continue;
+		}
+		if (entry.verdict !== "approved-exclusion") report.fail(`empty lib ${rel} has no approved exclusion verdict`);
+		else if (typeof entry.evidence !== "string" || entry.evidence.trim() === "") report.fail(`empty lib ${rel} approved-exclusion has no evidence`);
+	}
+	for (const [path, entry] of recorded) {
+		const abs = join(repo, path.startsWith("crates/") ? path : `crates/${path}`);
+		if (existsSync(abs) && statSync(abs).size > 2) report.fail(`empty_lib_exports entry ${path} is no longer empty; remove the exclusion`);
+		if (!entry.evidence || String(entry.evidence).trim() === "") report.fail(`empty lib ${path} approved-exclusion has no evidence`);
+	}
+	if (discovered.size === 0) report.note("no empty src/lib.rs found among workspace members");
 }
 
 // ---------------------------------------------------------------------------------------------
 // Top-level verification.
 // ---------------------------------------------------------------------------------------------
 
-export function verify({ repo, evidenceDir, sha }) {
+export function verify({ repo, evidenceDir, sha, final = false }) {
 	const report = new Report();
 	if (!FULL_SHA.test(sha)) {
 		report.fail(`--sha "${sha}" is not a full 40-hex SHA`);
@@ -707,7 +772,7 @@ export function verify({ repo, evidenceDir, sha }) {
 	if (manifest) {
 		validateSourceIdentity(evidenceDir, repo, sha, report);
 		validatePackageManifest(evidenceDir, repo, sha, manifest, report);
-		validateCommandManifest(evidenceDir, sha, manifest, report);
+		validateCommandManifest(evidenceDir, sha, manifest, report, final);
 		validateNextest(evidenceDir, repo, manifest, report);
 		validateClippy(evidenceDir, report);
 		validateBuild(evidenceDir, report);
@@ -821,7 +886,7 @@ function buildValidFixture(root, sha) {
 				{ package: "maho-core", target: "lib", test: "provider_account_events::tests::the_global_registry_delivers_then_stops_after_unsubscribe", requirement: "G12" },
 			],
 		},
-		requirements: [{ id: "G7", proof: "unrun", packages: ["maho-cli"] }],
+		requirements: REQUIRED_REQUIREMENT_IDS.map((id) => ({ id, proof: "unrun", scenarios: [], packages: id === "G7" ? ["maho-cli"] : [] })),
 		awaited_executed_tests: { items: [] },
 		unresolved: [{ id: "IsInContentFullscreen", kind: "unresolved-literal", disposition: "accepted-exclusion", reason: "no located symbol in pinned senpi or Rust tree" }],
 		not_started: [{ id: "task-20", kind: "task", disposition: "downstream", reason: "post-gate integration" }],
@@ -878,47 +943,28 @@ function buildValidFixture(root, sha) {
 	put(join(evidence, "build.log"), "    Finished `dev` profile\n");
 	put(join(evidence, "parity-self-test.log"), "self-test: 42/42 passed\n");
 	put(join(evidence, "parity-all.log"), "audit: 0 problems\n");
+	put(join(evidence, "run-qa.log"), "RPC_IDS_PASS\nHELP_FLAG_SET_MATCH\nQA_ALL_EXIT=0\n");
+	// The staged binary the QA summary must bind by hash.
+	put(join(evidence, "install/mhc"), "#!/bin/sh\nfixture binary\n");
+	const stagedHash = sha256(readFileSync(join(evidence, "install/mhc")));
 	const qaScenarios = {};
-	for (const name of REQUIRED_SCENARIOS) qaScenarios[name] = { status: "pass", cleanup_ok: true, artifacts: ["fixture"] };
-	put(join(evidence, "qa/residual-qa.json"), JSON.stringify({ schema: QA_SCHEMA, sha, scenarios: qaScenarios }, null, 2));
-	const tuiDir = join(evidence, "qa/tui-80x24-regular");
-	mkdirSync(tuiDir, { recursive: true });
-	put(
-		join(tuiDir, "evidence.json"),
-		JSON.stringify(
-			{
-				geometry: "80x24",
-				mode: "regular",
-				onboarding_pre_completed: true,
-				startup_predicate: true,
-				prompt_echo_observed: true,
-				gated_stream_visible_while_held: true,
-				working_indicator_present_while_held: true,
-				steer_echoed_while_working: true,
-				abort_cleared_busy: true,
-				reply_after_prompt: true,
-				working_indicator_absent_at_reply: true,
-				resize_reflowed: true,
-				exit_code: 0,
-			},
-			null,
-			2,
-		),
-	);
-	writePng(join(tuiDir, "terminal.png"), 80 * 8, 24 * 16);
-	put(
-		join(tuiDir, "terminal.png.json"),
-		JSON.stringify(
-			{
-				schema: PNG_SCHEMA,
-				cols: 80,
-				rows: 24,
-				pngSha256: sha256(readFileSync(join(tuiDir, "terminal.png"))),
-			},
-			null,
-			2,
-		),
-	);
+	for (const name of REQUIRED_SCENARIOS) qaScenarios[name] = { status: "pass", cleanup_ok: true, artifacts: [`scenario-${name}.log`] };
+	for (const name of REQUIRED_SCENARIOS) put(join(evidence, `qa/scenario-${name}.log`), `${name} pass\n`);
+	put(join(evidence, "qa/residual-qa.json"), JSON.stringify({ schema: QA_SCHEMA, sha, binary_sha256: stagedHash, scenarios: qaScenarios }, null, 2));
+	// The mandatory TUI matrix: every geometry x mode.
+	for (const geometry of TUI_GEOMETRIES) {
+		for (const mode of TUI_MODES) {
+			const [cols, rows] = geometry.split("x").map(Number);
+			const dir = join(evidence, `qa/tui-${geometry}-${mode}`);
+			mkdirSync(dir, { recursive: true });
+			const ev = { geometry, mode, exit_code: 0 };
+			for (const field of TUI_REQUIRED_FIELDS) ev[field] = true;
+			put(join(dir, "evidence.json"), JSON.stringify(ev, null, 2));
+			writePng(join(dir, "terminal.png"), cols * 8, rows * 16);
+			put(join(dir, "terminal.png.json"), JSON.stringify({ schema: PNG_SCHEMA, cols, rows, derived: true, colored: true, pngSha256: sha256(readFileSync(join(dir, "terminal.png"))) }, null, 2));
+			put(join(dir, "reply-cells.json"), JSON.stringify({ cols, rows, cells: [{ ch: "x", fg: null, bg: null, w: 1, col: 0, row: 0 }] }));
+		}
+	}
 	put(join(evidence, "qa/theme-custom/evidence.json"), JSON.stringify({ theme_accent_rendered: true, startup_predicate: true }, null, 2));
 	put(join(evidence, "qa/theme-fallback/evidence.json"), JSON.stringify({ theme_fallback_diagnostic: true, startup_predicate: true }, null, 2));
 	return { repo, evidence };
@@ -1071,6 +1117,36 @@ export function selfTest() {
 	check("source identity mismatch rejected", mutate(({ evidence, write, join, sha }) => {
 		write(join(evidence, "source-identity.json"), JSON.stringify({ schema: "session2-residual-source-identity/v1", sha: "b".repeat(40), head: "b".repeat(40), head_matches_sha: false }));
 	}));
+	check("missing task-8 ledger rejected", mutate(({ repo, read, write, join }) => {
+		const p = join(repo, TASK8_LEDGER);
+		write(p, "");
+	}));
+	check("required-but-not-authored rejected", mutate(({ evidence, read, write, join }) => {
+		const m = JSON.parse(read(join(evidence, "requirements-manifest.json"), "utf8"));
+		m.awaited_executed_tests.required_but_not_authored = [{ id: "G12-TOOLCTX-INVOCATION", authored: false, detail: "no test drives a real typed tool" }];
+		write(join(evidence, "requirements-manifest.json"), JSON.stringify(m));
+	}));
+	check("omitted requirement id rejected", mutate(({ evidence, read, write, join }) => {
+		const m = JSON.parse(read(join(evidence, "requirements-manifest.json"), "utf8"));
+		m.requirements = m.requirements.filter((r) => r.id !== "IS-6");
+		write(join(evidence, "requirements-manifest.json"), JSON.stringify(m));
+	}));
+	check("empty lib without recorded exclusion rejected", mutate(({ evidence, read, write, join }) => {
+		const m = JSON.parse(read(join(evidence, "requirements-manifest.json"), "utf8"));
+		m.empty_lib_exports = { remaining: [] };
+		write(join(evidence, "requirements-manifest.json"), JSON.stringify(m));
+	}));
+	check("final mode rejects a null exit", (() => {
+		const root = mkdtempSync(join(tmpdir(), "verify-session2-final-"));
+		try {
+			const sha = "a".repeat(40);
+			const { repo, evidence } = buildValidFixture(root, sha);
+			const report = verify({ repo, evidenceDir: evidence, sha, final: true });
+			return { ok: report.problems.some((p) => p.includes("no exit code") || p.includes("never completed")), detail: report.problems.join("; ") };
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	})());
 	check("on-disk fixture: hidden row", (() => {
 		const path = join(FIXTURES, "parity-hidden-row.md");
 		if (!existsSync(path)) return { ok: false, detail: "fixture missing" };
@@ -1120,15 +1196,17 @@ if (import.meta.main) {
 	let evidenceDir;
 	let sha;
 	let self = false;
+	let final = false;
 	for (let i = 0; i < argv.length; i++) {
 		if (argv[i] === "--evidence") evidenceDir = argv[++i];
 		else if (argv[i] === "--sha") sha = argv[++i];
 		else if (argv[i] === "--self-test") self = true;
+		else if (argv[i] === "--final") final = true;
 		else usage(`unknown argument ${argv[i]}`);
 	}
 	if (self) process.exit(selfTest() ? 0 : 1);
 	if (!evidenceDir || !sha) usage("--evidence and --sha are both required");
-	const report = verify({ repo: REPO, evidenceDir: resolve(evidenceDir), sha });
+	const report = verify({ repo: REPO, evidenceDir: resolve(evidenceDir), sha, final });
 	for (const note of report.notes) console.log(`note: ${note}`);
 	for (const problem of report.problems) console.error(`FAIL: ${problem}`);
 	if (report.problems.length > 0) {

@@ -14,9 +14,11 @@
 // `tools/verify-session2-residual.mjs`.
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const TEMPLATE_PATH = ".omo/evidence/residual-source/task-17/requirements-manifest.json";
+const REPO_TOOLS = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_SCHEMA = "session2-residual-package-manifest/v1";
 const COMMAND_SCHEMA = "session2-residual-command-manifest/v1";
 const RUN_IDENTITY = "run-identity.json";
@@ -71,16 +73,23 @@ async function cargoMetadataPackages(repo, cargo) {
 			stderr: "pipe",
 			env: { ...process.env, CARGO_BUILD_JOBS: process.env.CARGO_BUILD_JOBS ?? "1" },
 		});
-		const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
-		if (code !== 0) return null;
+		// Drain BOTH pipes concurrently to avoid a stderr pipe-buffer deadlock on a chatty cargo.
+		const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+		if (code !== 0) {
+			if (err.trim()) console.error(`cargo metadata stderr: ${err.trim().split("\n").slice(-3).join(" | ")}`);
+			return null;
+		}
 		const meta = JSON.parse(out);
+		const members = new Set(meta.workspace_members ?? []);
 		const packages = (meta.packages ?? []).map((entry) => ({
 			name: entry.name,
-			manifest_path: entry.manifest_path,
-			workspace_member: (meta.workspace_members ?? []).includes(entry.id),
+			// Store RELATIVE to the repo so the verifier never join()s an absolute path onto the repo.
+			manifest_path: relative(repo, entry.manifest_path),
+			workspace_member: members.has(entry.id),
 		}));
 		return packages.length > 0 ? packages : null;
-	} catch {
+	} catch (error) {
+		console.error(`cargo metadata failed: ${error.message}`);
 		return null;
 	}
 }
@@ -100,7 +109,7 @@ function parseTomlMembers(repo) {
 	return members.map((member) => {
 		const manifestPath = join(repo, member, "Cargo.toml");
 		if (!existsSync(manifestPath)) throw new Error(`workspace member ${member} has no Cargo.toml`);
-		return { name: parseTomlString(readFileSync(manifestPath, "utf8"), "name") ?? member.split("/").pop(), manifest_path: manifestPath, workspace_member: true };
+		return { name: parseTomlString(readFileSync(manifestPath, "utf8"), "name") ?? member.split("/").pop(), manifest_path: `${member}/Cargo.toml`, workspace_member: true };
 	});
 }
 
@@ -115,7 +124,7 @@ async function freezePackageManifest(repo, sha, cargo) {
 		name: entry.name,
 		manifest_path: entry.manifest_path,
 		workspace_member: entry.workspace_member,
-		sha256: sha256(readFileSync(entry.manifest_path)),
+		sha256: sha256(readFileSync(resolve(repo, entry.manifest_path))),
 	}));
 	entries.sort((a, b) => a.name.localeCompare(b.name));
 	return { schema: PACKAGE_SCHEMA, sha, method, package_count: entries.length, packages: entries };
@@ -198,19 +207,41 @@ async function runCommand(command, env, logPath, cwd) {
 // main
 // ---------------------------------------------------------------------------------------------
 
-function git(repo, args) {
-	const proc = Bun.spawnSync(["git", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
-	return proc.exitCode === 0 ? proc.stdout.toString().trim() : null;
+async function git(repo, args) {
+	const proc = Bun.spawn(["git", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+	const [out, , code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+	return code === 0 ? out.trim() : null;
 }
 
-function sourceIdentity(repo, sha) {
-	const head = git(repo, ["rev-parse", "HEAD"]);
+/** Splits `git status --porcelain=v1` into entries, rejecting tracked source changes and untracked
+ *  files outside `.omo/` (which holds this run's evidence and other sessions' scratch). */
+function dirtySources(porcelain) {
+	const bad = [];
+	for (const line of (porcelain ?? "").split("\n")) {
+		if (line.length < 4) continue;
+		const code = line.slice(0, 2);
+		const path = line.slice(3).trim();
+		if (code === "??") {
+			if (!path.startsWith(".omo/")) bad.push(`untracked source: ${path}`);
+		} else {
+			bad.push(`tracked change: ${line.trim()}`);
+		}
+	}
+	return bad;
+}
+
+async function sourceIdentity(repo, sha, evidenceRel) {
+	const head = await git(repo, ["rev-parse", "HEAD"]);
+	const porcelain = await git(repo, ["status", "--porcelain=v1"]);
+	const dirty = dirtySources(porcelain).filter((entry) => !entry.includes(evidenceRel));
 	return {
 		schema: "session2-residual-source-identity/v1",
 		sha,
 		head,
 		head_matches_sha: head === sha,
-		status_porcelain: git(repo, ["status", "--porcelain=v1"]),
+		status_porcelain: porcelain,
+		dirty_sources: dirty,
+		clean: dirty.length === 0,
 	};
 }
 
@@ -234,11 +265,17 @@ async function main() {
 		process.exit(4);
 	}
 
-	// Source identity: the supplied SHA must be the actual git HEAD of the worktree.
-	const identity = sourceIdentity(repo, sha);
+	// Source identity: the supplied SHA must be the actual git HEAD and the worktree must be clean
+	// of tracked/untracked source changes (this run's own evidence root is allowed).
+	const evidenceRel = relative(repo, evidence);
+	const identity = await sourceIdentity(repo, sha, evidenceRel);
 	if (!identity.head_matches_sha) {
 		console.error(`run-session2-residual-gate: --sha ${sha} != worktree HEAD ${identity.head}; refusing to run (env SHA is not evidence).`);
 		process.exit(5);
+	}
+	if (!identity.clean) {
+		console.error(`run-session2-residual-gate: worktree is not clean; refusing to run. ${identity.dirty_sources.join("; ")}`);
+		process.exit(6);
 	}
 
 	mkdirSync(evidence, { recursive: true });
@@ -278,6 +315,28 @@ async function main() {
 	}
 
 	console.log(`run-session2-residual-gate: ${commands.length} commands, ${failed} failed`);
+
+	// End-of-run source identity: prove the gate did not mutate the worktree.
+	const endIdentity = await sourceIdentity(repo, sha, evidenceRel);
+	writeFileSync(join(evidence, "source-identity-end.json"), JSON.stringify(endIdentity, null, 2) + "\n");
+	if (!endIdentity.clean || !endIdentity.head_matches_sha) {
+		console.error(`run-session2-residual-gate: worktree changed during the gate (clean=${endIdentity.clean} head=${endIdentity.head}); failing.`);
+		failed += 1;
+	}
+
+	// Non-circular final audit: the listed verifier ran mid-list (pre-final, excluding exactly its
+	// own still-null entry). Here, every command — including the verifier — has a completed exit, so
+	// the parent/runner re-runs the verifier in final mode over the complete manifest.
+	const finalAudit = await runCommand(
+		`bun ${join(REPO_TOOLS, "verify-session2-residual.mjs")} --evidence "$E" --sha "$SHA" --final`,
+		env,
+		join(evidence, "verify-final.log"),
+		repo,
+	);
+	console.log(`run-session2-residual-gate: final verifier audit exit=${finalAudit.exit_code}`);
+	if (finalAudit.exit_code !== 0) failed += 1;
+
+	writeFileSync(join(evidence, "gate-complete.json"), JSON.stringify({ schema: "session2-residual-gate-complete/v1", sha, failed, commands: commands.length, final_audit_exit: finalAudit.exit_code }, null, 2) + "\n");
 	process.exit(failed === 0 ? 0 : 1);
 }
 

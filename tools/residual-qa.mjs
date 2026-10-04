@@ -11,6 +11,7 @@
 // (schema session2-residual-qa/v1) plus per-scenario artifacts.
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,6 +54,14 @@ const { startLoopback, writeOfflineAgent, markOnboardingComplete } = await impor
 
 const newHome = (prefix) => mkdtempSync(join(tmpdir(), prefix));
 
+/** Reads the pinned builtin skill name set from the native telemetry crate source. */
+function pinnedBuiltinSkills(repo) {
+	const src = readFileSync(join(repo, "crates", "omo", "components", "maho-omo-telemetry", "src", "product_identity.rs"), "utf8");
+	const match = src.match(/BUILTIN_SKILL_NAMES\s*:\s*&\[&str\]\s*=\s*&\[([\s\S]*?)\]/);
+	if (!match) throw new Error("could not read BUILTIN_SKILL_NAMES from product_identity.rs");
+	return [...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
+}
+
 /** Spawns a command with a hard timeout. On timeout the child is SIGKILLed and its exit is still
  *  awaited, so no process is left behind. Returns { exitCode, stdout, stderr, timedOut }. */
 async function run(command, argv, { cwd, env, timeoutMs = 120_000, stdin } = {}) {
@@ -86,6 +95,58 @@ async function run(command, argv, { cwd, env, timeoutMs = 120_000, stdin } = {})
 
 /** Renders a raw ANSI stream to a same-geometry text grid. xterm parses asynchronously, so the
  *  write callbacks are awaited before the buffer is read. */
+/** Connects to the mini unix socket and returns a minimal NDJSON client with a `call` method. */
+async function miniConnect(socketPath, timeoutMs) {
+	return await new Promise((resolvePromise, reject) => {
+		const socket = createConnection({ path: socketPath });
+		let buffer = "";
+		const pending = new Map();
+		const timer = setTimeout(() => reject(new Error("mini socket connect timeout")), timeoutMs);
+		socket.on("data", (chunk) => {
+			buffer += chunk.toString("utf8");
+			let index;
+			while ((index = buffer.indexOf("\n")) >= 0) {
+				const line = buffer.slice(0, index).trim();
+				buffer = buffer.slice(index + 1);
+				if (!line) continue;
+				let frame;
+				try {
+					frame = JSON.parse(line);
+				} catch {
+					continue;
+				}
+				if ((frame.kind === "result" || frame.kind === "error") && pending.has(frame.id)) {
+					const waiter = pending.get(frame.id);
+					pending.delete(frame.id);
+					if (frame.kind === "result") waiter.resolve(frame.result);
+					else waiter.reject(new Error(frame.error));
+				}
+			}
+		});
+		socket.once("connect", () => {
+			clearTimeout(timer);
+			resolvePromise({
+				call(id, method, args, callTimeoutMs = 60_000) {
+					return new Promise((res, rej) => {
+						const callTimer = setTimeout(() => (pending.delete(id), rej(new Error(`mini call ${method} timed out`))), callTimeoutMs);
+						pending.set(id, { resolve: (v) => (clearTimeout(callTimer), res(v)), reject: (e) => (clearTimeout(callTimer), rej(e)) });
+						socket.write(JSON.stringify({ kind: "call", id, method, args }) + "\n");
+					});
+				},
+				destroy: () => socket.destroy(),
+			});
+		});
+		socket.once("error", (error) => {
+			clearTimeout(timer);
+			reject(error);
+		});
+	});
+}
+
+async function miniCall(client, id, method, args) {
+	return await client.call(id, method, args);
+}
+
 async function renderGrid(ansiPath, cols, rows) {
 	const { Terminal } = await import(XTERM);
 	const vt = new Terminal({ cols, rows, allowProposedApi: true, scrollback: 0 });
@@ -99,10 +160,18 @@ async function renderGrid(ansiPath, cols, rows) {
 }
 
 async function renderPng(dir, cols, rows) {
+	const cellsPath = join(dir, "reply-cells.json");
 	const ansiPath = join(dir, "terminal-ansi.txt");
-	if (!existsSync(ansiPath)) return { ok: false, detail: "no terminal-ansi.txt" };
-	writeFileSync(join(dir, "grid.txt"), await renderGrid(ansiPath, cols, rows));
-	const png = await run("bun", [join(HARNESS, "png-render.mjs"), join(dir, "grid.txt"), String(cols), String(rows), join(dir, "terminal.png"), join(dir, "terminal.png.json")], {
+	let input;
+	if (existsSync(cellsPath)) {
+		input = cellsPath; // per-cell positions + colors (theme-faithful)
+	} else if (existsSync(ansiPath)) {
+		writeFileSync(join(dir, "grid.txt"), await renderGrid(ansiPath, cols, rows));
+		input = join(dir, "grid.txt");
+	} else {
+		return { ok: false, detail: "no reply-cells.json or terminal-ansi.txt" };
+	}
+	const png = await run("bun", [join(HARNESS, "png-render.mjs"), input, String(cols), String(rows), join(dir, "terminal.png"), join(dir, "terminal.png.json")], {
 		cwd: REPO,
 		env: { PATH: process.env.PATH },
 		timeoutMs: 60_000,
@@ -115,7 +184,7 @@ async function renderPng(dir, cols, rows) {
 	if (meta.cols !== cols || meta.rows !== rows || meta.pngSha256 !== sha256(pngBytes)) {
 		return { ok: false, detail: "png metadata mismatch" };
 	}
-	return { ok: true, detail: `png ${cols * 8}x${rows * 16}` };
+	return { ok: true, detail: `png ${cols * 8}x${rows * 16}${meta.colored ? " colored" : ""}` };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -256,22 +325,47 @@ async function scenarioInstall(ctx) {
 	});
 	writeFileSync(join(ctx.qaRoot, "install-verify.log"), verify.stdout + verify.stderr);
 	artifacts.push("install-verify.log", "manifest.json");
+	// Real surface (plan task 3): the staged runtime must carry ALL pinned builtin skills, and the
+	// native ast-grep MCP helper must answer an MCP initialize handshake.
+	const skillNames = pinnedBuiltinSkills(REPO);
+	const missingSkills = skillNames.filter((name) => !existsSync(join(stageDir, "skills", name, "SKILL.md")));
+	const helper = join(stageDir, "ast-grep-mcp");
+	const hadHelper = existsSync(helper);
+	let handshakeOk = false;
+	if (hadHelper) {
+		try {
+			const proc = Bun.spawn([helper], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+			proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "residual-qa", version: "1" } } })}\n`);
+			proc.stdin.end();
+			const deadline = setTimeout(() => proc.kill("SIGKILL"), 15_000);
+			const [out] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+			clearTimeout(deadline);
+			handshakeOk = out.split("\n").filter(Boolean).some((line) => {
+				try {
+					const msg = JSON.parse(line);
+					return msg.id === 1 && (msg.result !== undefined || msg.error !== undefined);
+				} catch {
+					return false;
+				}
+			});
+		} catch {
+			handshakeOk = false;
+		}
+	}
 	const scratch = newHome("residual-install-scratch-");
 	let cleanupOk = false;
 	let ok = false;
 	let detail = "";
 	try {
 		cpSync(stageDir, scratch, { recursive: true });
-		const helper = join(scratch, "ast-grep-mcp");
-		const hadHelper = existsSync(helper);
-		if (hadHelper) rmSync(helper, { force: true });
+		const scratchHelper = join(scratch, "ast-grep-mcp");
+		if (existsSync(scratchHelper)) rmSync(scratchHelper, { force: true });
 		const negative = await run("bun", [join(REPO, "tools", "package-native.mjs"), "--verify-only", scratch], { cwd: REPO, env: { PATH: process.env.PATH }, timeoutMs: 120_000 });
 		writeFileSync(join(ctx.qaRoot, "install-missing-helper.log"), negative.stdout + negative.stderr);
 		artifacts.push("install-missing-helper.log");
 		const diagnosed = negative.exitCode !== 0 && /ast-grep-mcp|missing|helper/i.test(negative.stdout + negative.stderr);
-		// The staged runtime MUST include the native helper; removing it MUST then be diagnosed.
-		ok = verify.exitCode === 0 && hadHelper && diagnosed;
-		detail = `verifyExit=${verify.exitCode} hadHelper=${hadHelper} diagnosed=${diagnosed}`;
+		ok = verify.exitCode === 0 && missingSkills.length === 0 && hadHelper && handshakeOk && diagnosed;
+		detail = `verifyExit=${verify.exitCode} skills=${skillNames.length - missingSkills.length}/${skillNames.length} helper=${hadHelper} handshake=${handshakeOk} diagnosed=${diagnosed}`;
 	} finally {
 		rmSync(scratch, { recursive: true, force: true });
 		cleanupOk = !existsSync(scratch);
@@ -288,22 +382,76 @@ async function scenarioInstall(ctx) {
 // Scenario: mini — the native mini server/attach loopback.
 // ---------------------------------------------------------------------------------------------
 
-async function scenarioMini() {
-	// The mini surface is NOT reachable from the assembled binary: main.rs dispatches no
-	// experimental/mini entry (only `experimental::cli::parse` exists, with no caller), so a real
-	// mini server/attach round-trip cannot be driven through the CLI. Its protocol is exercised by
-	// the Rust integration targets (crates/maho-cli/tests/mini_server.rs, mini_session.rs) in the
-	// nextest gate. Driving a generic `--mode rpc` request and labelling it "mini" would be a proxy
-	// false green, so it is reported blocked with the exact contract.
+async function scenarioMini(ctx) {
+	// Real mini server/attach loopback: spawn the mini server (the `__PI_INTERNAL_SPAWN=server` role
+	// the pinned `experimental/mini` main.ts uses), connect a client over its unix socket, and drive
+	// the pinned NDJSON protocol (`sessions.list` -> `sessions.attach` -> `lane.watch` -> `lane.prompt`).
+	const artifacts = [];
+	const home = newHome("residual-mini-home-");
+	const socketPath = join(home, "mini.sock");
+	const sessionsRoot = join(home, "mini-sessions");
+	let cleanupOk = false;
+	let ok = false;
+	let detail = "";
+	let server;
+	try {
+		const { server: loop, baseUrl } = startLoopback();
+		let agent;
+		try {
+			agent = writeOfflineAgent(home, baseUrl);
+			markOnboardingComplete(home);
+			server = Bun.spawn([ctx.binary, socketPath, sessionsRoot], {
+				cwd: home,
+				env: { PATH: process.env.PATH, HOME: home, MAHO_CODING_AGENT_DIR: agent, __PI_INTERNAL_SPAWN: "server" },
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const serverOut = new Response(server.stdout).text();
+			const serverErr = new Response(server.stderr).text();
+			// Wait for the socket to appear (bounded), then connect.
+			const connectDeadline = Date.now() + 15_000;
+			while (!existsSync(socketPath) && Date.now() < connectDeadline) await new Promise((r) => setTimeout(r, 50));
+			const client = await miniConnect(socketPath, 15_000);
+			let nextId = 1;
+			try {
+				const sessions = await miniCall(client, nextId++, "sessions.list", []);
+				const sessionId = await miniCall(client, nextId++, "sessions.attach", [null, home, "qa-presentation"]);
+				const watch = await miniCall(client, nextId++, "lane.watch", ["qa-presentation"]);
+				const subscriptionId = watch?.subscriptionId ?? watch?.subscription_id ?? null;
+				if (subscriptionId) await miniCall(client, nextId++, "lane.start", [subscriptionId]);
+				const promptResult = await miniCall(client, nextId++, "lane.prompt", [REPLY]);
+				const prompted = promptResult && promptResult.ok === true;
+				const listed = Array.isArray(sessions);
+				const attached = typeof sessionId === "string" && sessionId.length > 0;
+				ok = listed && attached && subscriptionId !== null && prompted;
+				detail = `list=${listed} attach=${attached} watch=${subscriptionId !== null} prompt=${prompted}`;
+				writeFileSync(join(ctx.qaRoot, "mini-protocol.log"), JSON.stringify({ sessions, sessionId, subscriptionId, promptResult }, null, 2) + "\n");
+				artifacts.push("mini-protocol.log");
+			} finally {
+				client.destroy();
+			}
+			await Promise.race([Promise.all([serverOut, serverErr]), new Promise((r) => setTimeout(r, 2000))]);
+		} finally {
+			loop.stop(true);
+		}
+	} catch (error) {
+		detail = `mini: ${error.message}`;
+	} finally {
+		if (server && server.exitCode === null) server.kill("SIGKILL");
+		// Kill any worker children that survived the server, matched by the unique socket path.
+		try {
+			await run("pkill", ["-f", socketPath], { timeoutMs: 5_000 });
+		} catch {
+			/* pkill may be absent or find nothing */
+		}
+		rmSync(home, { recursive: true, force: true });
+		cleanupOk = !existsSync(home);
+	}
 	return {
-		status: "blocked",
-		blocker:
-			"mini: no reachable CLI entry for the native mini server/attach loopback " +
-			"(main.rs does not dispatch experimental/mini::{run_server_entry,run_worker_entry,run_tui_entry}); " +
-			"the mini protocol is covered by crates/maho-cli/tests/mini_server.rs + mini_session.rs in the nextest gate. " +
-			"Owner: task 16 CLI registry/entry wiring must expose the mini entry before a real-binary mini scenario can run.",
-		artifacts: [],
-		cleanup_ok: true,
+		status: ok && cleanupOk ? "pass" : "blocked",
+		blocker: ok && cleanupOk ? null : `${detail} cleanup=${cleanupOk}`,
+		artifacts,
+		cleanup_ok: cleanupOk,
 	};
 }
 
