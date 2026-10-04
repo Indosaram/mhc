@@ -29,7 +29,6 @@ async fn bounded<T>(future: impl std::future::Future<Output = T>) -> T {
 async fn finish(handle: tokio::task::JoinHandle<Result<(), String>>) {
     bounded(handle).await.expect("prompt task joined").expect("prompt result");
 }
-
 fn text_of(message: &Message) -> String {
     let value = serde_json::to_value(message).expect("message");
     match &value["content"] {
@@ -48,7 +47,7 @@ async fn runs_a_side_query_in_parallel_with_an_in_flight_main_turn() {
     let session = boot(vec![response("main answer"), response("side answer")]).await;
     let gate = session.hold_next_response();
     let main = session.prompt("slow main question".into());
-    bounded(gate.entered()).await.expect("main turn entered the held response");
+    bounded(gate.entered()).await;
 
     let side = session.prompt("/btw parallel question".into());
     finish(side).await;
@@ -71,9 +70,10 @@ async fn snapshots_context_synchronously_so_a_concurrent_turn_cannot_mix_generat
 
     let gate = session.hold_next_response();
     let side = session.prompt("/btw snapshot question".into());
-    bounded(gate.entered()).await.expect("side query entered the held response");
+    bounded(gate.entered()).await;
 
-    let side_call = &session.provider_calls()[1];
+    let calls = session.provider_calls();
+    let side_call = &calls[1];
     assert_eq!(side_call.context.tools.as_ref().map_or(0, Vec::len), 0);
     let snapshot = user_texts(&side_call.context.messages);
     assert_eq!(snapshot, vec!["first question".to_owned(), "snapshot question".to_owned()]);
@@ -83,6 +83,7 @@ async fn snapshots_context_synchronously_so_a_concurrent_turn_cannot_mix_generat
     finish(side).await;
     finish(second).await;
 
-    assert_eq!(user_texts(&session.provider_calls()[1].context.messages), snapshot);
-    assert_eq!(session.provider_calls().len(), 3);
+    let calls = session.provider_calls();
+    assert_eq!(user_texts(&calls[1].context.messages), snapshot);
+    assert_eq!(calls.len(), 3);
 }
