@@ -58,6 +58,7 @@ async fn shared_stdio_rejects_a_second_active_transport_and_restarts_after_close
     let _guard = STDIO_TEST_LOCK.lock().await;
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
     use tokio::sync::RwLock;
+    tokio::time::timeout(std::time::Duration::from_secs(3),async {
     let core=Arc::new(RwLock::new(ServerCore::new("/tmp/home".into(),"1".into(),"Linux".into(),"test".into(),"x64".into(),"linux".into())));
     let (_first_client,first_server)=tokio::io::duplex(8192);
     let (first_input,first_output)=tokio::io::split(first_server);
@@ -82,11 +83,10 @@ async fn shared_stdio_rejects_a_second_active_transport_and_restarts_after_close
         assert_eq!(serde_json::from_slice::<serde_json::Value>(&line).unwrap()["id"],1);
         stop2.send(()).unwrap();
     };
-    tokio::time::timeout(std::time::Duration::from_secs(3),async {
-        let (result,())=tokio::join!(run_shared_stdio_until(core.clone(),restart_input,restart_output,async {shutdown2.await.unwrap()},None),restart_work);
-        result.unwrap();
-    }).await.unwrap();
+    let (result,())=tokio::join!(run_shared_stdio_until(core.clone(),restart_input,restart_output,async {shutdown2.await.unwrap()},None),restart_work);
+    result.unwrap();
     assert!(core.read().await.get_connection("stdio").is_none());
+    }).await.unwrap();
 }
 
 #[tokio::test]

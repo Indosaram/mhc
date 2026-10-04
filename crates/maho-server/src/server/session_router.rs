@@ -50,10 +50,11 @@ pub struct SessionRouter {
     attachments: Mutex<BTreeMap<String, Vec<Weak<Attachment>>>>,
     closing: AtomicBool,
     close_result: tokio::sync::OnceCell<Result<(),ServerError>>,
-    watched: Mutex<BTreeMap<String, Arc<dyn RoutedSessionHandle>>>,
+    self_weak: std::sync::Mutex<Weak<SessionRouter>>,
+    invalidations: watch::Sender<u64>,
 }
-struct OpenSlot { result: watch::Sender<Option<Result<Arc<dyn RoutedSessionHandle>, ServerError>>> }
-enum Acquire { Wait(Arc<OpenSlot>), Lead(Arc<OpenSlot>) }
+struct OpenSlot { receiver: watch::Receiver<Option<Result<Arc<dyn RoutedSessionHandle>, ServerError>>> }
+enum Acquire { Wait(Arc<OpenSlot>), Lead(watch::Sender<Option<Result<Arc<dyn RoutedSessionHandle>, ServerError>>>, Arc<OpenSlot>) }
 impl SessionRouter {
     pub fn new(host: Arc<dyn ServerHost>, server_id: String) -> Self {
         Self {
@@ -65,8 +66,12 @@ impl SessionRouter {
             attachments: Mutex::new(BTreeMap::new()),
             closing: AtomicBool::new(false),
             close_result: tokio::sync::OnceCell::new(),
-            watched: Mutex::new(BTreeMap::new()),
+            self_weak: std::sync::Mutex::new(Weak::new()),
+            invalidations: watch::channel(0).0,
         }
+    }
+    pub fn bind_self(self: &Arc<Self>) {
+        *self.self_weak.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::downgrade(self);
     }
     pub async fn attach(&self, session_id: &str) -> Result<Arc<Attachment>, ServerError> {
         let _admission=self.admissions.read().await;
@@ -107,15 +112,16 @@ impl SessionRouter {
                 match opening.get(session_id).and_then(Weak::upgrade) {
                     Some(slot) => Acquire::Wait(slot),
                     None => {
-                        let slot = Arc::new(OpenSlot { result: watch::channel(None).0 });
+                        let (sender, receiver) = watch::channel(None);
+                        let slot = Arc::new(OpenSlot { receiver });
                         opening.insert(session_id.into(), Arc::downgrade(&slot));
-                        Acquire::Lead(slot)
+                        Acquire::Lead(sender, slot)
                     }
                 }
             };
             match decision {
                 Acquire::Wait(slot) => {
-                    let mut receiver = slot.result.subscribe();
+                    let mut receiver = slot.receiver.clone();
                     loop {
                         if let Some(result) = receiver.borrow_and_update().clone() { return result; }
                         if receiver.changed().await.is_err() { break; }
@@ -125,9 +131,9 @@ impl SessionRouter {
                         opening.remove(session_id);
                     }
                 }
-                Acquire::Lead(slot) => {
+                Acquire::Lead(sender, slot) => {
                     let result = self.open(session_id).await;
-                    slot.result.send_replace(Some(result.clone()));
+                    sender.send_replace(Some(result.clone()));
                     let mut opening = self.opening.lock().await;
                     if opening.get(session_id).and_then(Weak::upgrade).is_some_and(|current| Arc::ptr_eq(&current, &slot)) {
                         opening.remove(session_id);
@@ -145,8 +151,22 @@ impl SessionRouter {
             return Err(ServerError::draining());
         }
         self.hosted.lock().await.insert(session_id.into(), handle.clone());
+        if let Some(terminated) = handle.terminated() {
+            let router = self.self_weak.lock().unwrap_or_else(std::sync::PoisonError::into_inner).upgrade();
+            if let Some(router) = router {
+                let session_id = session_id.to_owned();
+                let handle_for_task = handle.clone();
+                tokio::spawn(async move {
+                    let error = terminated.await;
+                    router.invalidate(&session_id, &handle_for_task, error).await;
+                });
+            }
+        }
         Ok(handle)
     }
+    /// Subscribe before triggering termination; the count increments once each watcher's
+    /// invalidation (including a stale no-op) has fully processed. Test/monitor support.
+    pub fn invalidation_events(&self) -> watch::Receiver<u64> { self.invalidations.subscribe() }
     pub async fn remove(&self, session_id: &str) -> Result<(), ServerError> {
         if self.closing.load(Ordering::SeqCst) {
             return Err(ServerError::draining());
@@ -172,37 +192,20 @@ impl SessionRouter {
         self.closing.store(true, Ordering::SeqCst);
         self.close_result.get_or_init(||self.close_internal()).await.clone()
     }
-    pub async fn watch_termination(self: &Arc<Self>, session_id: &str) {
-        let handle = self.hosted.lock().await.get(session_id).cloned();
-        let Some(handle) = handle else { return };
-        let Some(terminated) = handle.terminated() else { return };
-        {
-            let mut watched = self.watched.lock().await;
-            if watched.get(session_id).is_some_and(|current| Arc::ptr_eq(current, &handle)) { return; }
-            watched.insert(session_id.to_owned(), handle.clone());
-        }
-        let router = Arc::clone(self);
-        let session_id = session_id.to_owned();
-        tokio::spawn(async move {
-            let error = terminated.await;
-            router.invalidate(&session_id, &handle, error).await;
-        });
-    }
     async fn invalidate(&self, session_id: &str, handle: &Arc<dyn RoutedSessionHandle>, error: Option<ServerError>) {
-        let leases = {
+        let removed = {
             let mut hosted = self.hosted.lock().await;
-            if !hosted.get(session_id).is_some_and(|current| Arc::ptr_eq(current, handle)) { return; }
-            hosted.remove(session_id);
-            let mut watched = self.watched.lock().await;
-            if watched.get(session_id).is_some_and(|current| Arc::ptr_eq(current, handle)) { watched.remove(session_id); }
-            drop(watched);
-            self.attachments.lock().await.remove(session_id).unwrap_or_default()
+            if hosted.get(session_id).is_some_and(|current| Arc::ptr_eq(current, handle)) { hosted.remove(session_id); true } else { false }
         };
-        for lease in leases.into_iter().filter_map(|lease| lease.upgrade()) {
-            if let Err(release) = lease.release().await { eprintln!("{}", release.message); }
+        if removed {
+            let leases = self.attachments.lock().await.remove(session_id).unwrap_or_default();
+            for lease in leases.into_iter().filter_map(|lease| lease.upgrade()) {
+                if let Err(release) = lease.release().await { eprintln!("{}", release.message); }
+            }
+            if let Err(close) = handle.close().await { eprintln!("{}", close.message); }
+            if let Some(error) = error { eprintln!("{}", error.message); }
         }
-        if let Err(close) = handle.close().await { eprintln!("{}", close.message); }
-        if let Some(error) = error { eprintln!("{}", error.message); }
+        self.invalidations.send_modify(|count| *count += 1);
     }
     async fn close_internal(&self) -> Result<(), ServerError> {
         let _admissions=self.admissions.write().await;

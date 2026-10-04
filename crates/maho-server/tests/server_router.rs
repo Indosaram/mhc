@@ -2,6 +2,15 @@ use maho_server::server::{errors::ServerError, session_router::SessionRouter, ty
 use serde_json::{Value, json};
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
+async fn await_invalidation(events: &mut tokio::sync::watch::Receiver<u64>, target: u64) {
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if *events.borrow_and_update() >= target { return; }
+            events.changed().await.expect("invalidation watcher alive");
+        }
+    }).await.expect("invalidation within deadline");
+}
+
 struct Host(Arc<AtomicUsize>);
 #[tokio::test]
 async fn removal_during_attachment_acquisition_rejects_stale_reopened_handle() {
@@ -206,6 +215,27 @@ async fn concurrent_failed_open_shares_one_result_and_later_attach_retries() {
 }
 
 #[tokio::test]
+async fn cancelled_leader_releases_waiter_which_then_opens() {
+    use maho_server::server::testing::TestServerHost;
+    tokio::time::timeout(std::time::Duration::from_secs(2),async {
+        let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
+        let gate=host.gate_next_open_session().await;
+        let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
+        let leader={let router=router.clone();tokio::spawn(async move {router.attach("session-1").await})};
+        gate.entered.wait().await;
+        let mut waiter=Box::pin(router.attach("session-1"));
+        assert!(futures_util::poll!(waiter.as_mut()).is_pending());
+        leader.abort();
+        assert!(leader.await.unwrap_err().is_cancelled());
+        let attachment=waiter.await.unwrap();
+        assert_eq!(host.state.lock().await.open_session_count,2);
+        assert_eq!(host.latest_harness("session-1").await.unwrap().state.lock().await.attached_clients,1);
+        attachment.release().await.unwrap();
+        router.close().await.unwrap();
+    }).await.unwrap();
+}
+
+#[tokio::test]
 async fn client_service_calls_serialize_on_one_attachment() {
     use maho_server::server::testing::TestServerHost;
     let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
@@ -233,12 +263,15 @@ async fn terminated_handle_invalidates_hosted_session_and_releases_leases() {
     use maho_server::server::testing::TestServerHost;
     let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
     let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
+    router.bind_self();
     let attachment=router.attach("session-1").await.unwrap();
-    router.watch_termination("session-1").await;
     let harness=host.latest_harness("session-1").await.unwrap();
     assert_eq!(harness.state.lock().await.attached_clients,1);
+    let mut events=router.invalidation_events();
+    events.borrow_and_update();
     harness.terminate(ServerError::new("internal_error","session crashed")).await;
     harness.closed.wait().await;
+    await_invalidation(&mut events,1).await;
     assert_eq!(harness.state.lock().await.attachment_release_count,1);
     assert_eq!(harness.state.lock().await.attached_clients,0);
     let (_cancel,cancelled)=tokio::sync::watch::channel(false);
@@ -275,24 +308,27 @@ async fn stale_terminated_handle_cannot_invalidate_reopened_session() {
             Ok(handle as Arc<dyn RoutedSessionHandle>)
         })}
     }
-    let host=Arc::new(WatchHost {handles:std::sync::Mutex::new(Vec::new()),opens:AtomicUsize::new(0)});
-    let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
-    let _first=router.attach("s").await.unwrap();
-    router.watch_termination("s").await;
-    router.remove("s").await.unwrap();
-    let _second=router.attach("s").await.unwrap();
-    router.watch_termination("s").await;
-    assert_eq!(host.opens.load(Ordering::SeqCst),2);
-    assert_eq!(host.handles.lock().unwrap()[0].closes.load(Ordering::SeqCst),1);
-    host.handles.lock().unwrap()[0].terminated.resolve(Some(ServerError::new("internal_error","stale crash")));
-    tokio::task::yield_now().await;
-    let _third=router.attach("s").await.unwrap();
-    assert_eq!(host.opens.load(Ordering::SeqCst),2,"stale termination must not invalidate the replacement");
-    assert_eq!(host.handles.lock().unwrap()[1].closes.load(Ordering::SeqCst),0);
-    host.handles.lock().unwrap()[1].terminated.resolve(Some(ServerError::new("internal_error","replacement crash")));
-    tokio::task::yield_now().await;
-    let _fourth=router.attach("s").await.unwrap();
-    assert_eq!(host.opens.load(Ordering::SeqCst),3,"current termination invalidates and reopens");
-    assert_eq!(host.handles.lock().unwrap()[1].closes.load(Ordering::SeqCst),1);
-    router.close().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2),async {
+        let host=Arc::new(WatchHost {handles:std::sync::Mutex::new(Vec::new()),opens:AtomicUsize::new(0)});
+        let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
+        router.bind_self();
+        let _first=router.attach("s").await.unwrap();
+        router.remove("s").await.unwrap();
+        let _second=router.attach("s").await.unwrap();
+        assert_eq!(host.opens.load(Ordering::SeqCst),2);
+        assert_eq!(host.handles.lock().unwrap()[0].closes.load(Ordering::SeqCst),1);
+        let mut events=router.invalidation_events();
+        events.borrow_and_update();
+        host.handles.lock().unwrap()[0].terminated.resolve(Some(ServerError::new("internal_error","stale crash")));
+        await_invalidation(&mut events,1).await;
+        assert_eq!(host.handles.lock().unwrap()[1].closes.load(Ordering::SeqCst),0,"stale termination must not close the replacement");
+        let _third=router.attach("s").await.unwrap();
+        assert_eq!(host.opens.load(Ordering::SeqCst),2,"stale termination must not invalidate the replacement");
+        host.handles.lock().unwrap()[1].terminated.resolve(Some(ServerError::new("internal_error","replacement crash")));
+        await_invalidation(&mut events,2).await;
+        assert_eq!(host.handles.lock().unwrap()[1].closes.load(Ordering::SeqCst),1,"current termination closes the handle");
+        let _fourth=router.attach("s").await.unwrap();
+        assert_eq!(host.opens.load(Ordering::SeqCst),3,"current termination invalidates and reopens");
+        router.close().await.unwrap();
+    }).await.unwrap();
 }
