@@ -64,8 +64,12 @@ impl LeadPollerLifecycle {
         Ok(owned)
     }
     pub fn tick(&self) -> Result<(), String> {
-        if self.stopped.load(Ordering::SeqCst) || (self.deps.session_file)().is_none() { return Ok(()); }
-        let owned = self.synchronize()?; if (self.deps.session_file)().is_none() || transition((self.deps.parent_state)()) { return Ok(()); }
+        if self.stopped.load(Ordering::SeqCst) { return Ok(()); }
+        // senpi's `synchronizeOwnedPollers` calls `listTeams` before its session-file gate, so a
+        // session-start tick reconciles owned teams even before a session file exists; only poller
+        // creation and the poll itself wait for one (see the `synchronize` gate below).
+        let owned = self.synchronize()?;
+        if (self.deps.session_file)().is_none() || transition((self.deps.parent_state)()) { return Ok(()); }
         for team in owned { if let Some(poller) = self.resolve_lead_poller(&team.team_run_id) { poller.poll_once(None).map_err(|error| error.to_string())?; } } Ok(())
     }
     pub fn resolve_lead_poller(&self, run: &str) -> Option<Arc<dyn LeadPoller + Send + Sync>> {

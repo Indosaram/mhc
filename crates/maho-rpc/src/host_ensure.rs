@@ -119,6 +119,12 @@ pub async fn public_endpoint_accepts(socket:&str)->bool{
     }
 }
 pub fn host_child_argv(args:&[String])->Vec<String>{["--mode","rpc","--multi-session"].into_iter().map(str::to_owned).chain(args.iter().cloned()).collect()}
+/// Whether `start_host` failed because the spawned host never came up (senpi `ensureHost` refuses
+/// rather than reporting an opaque IO error for a host it could not bring online).
+fn is_host_start_failure(error:&std::io::Error)->bool{
+    let message=error.to_string();
+    message.starts_with("RPC socket host exited before ready")||message.starts_with("RPC socket host did not become ready")
+}
 
 /** Whether a newer build may take the socket over from the running host (senpi `HostUpgradePolicy`). */
 #[derive(Debug,Clone,Copy,PartialEq,Eq,Default)]
@@ -178,11 +184,12 @@ pub async fn ensure_host(options:EnsureHostOptions)->Result<EnsuredHostInfo,Ensu
     let handoff=crate::host_handoff::HandoffOptions{host_args:supervisor_args,policy:Some(host_policy),env:options.env.clone(),launch_profile_id,readiness_ms:options.readiness_ms};
     let outcome=match ensure_prepared_host(prepared,&socket,&agent_dir,&launch,start,handoff).await{
         Ok(outcome)=>outcome,
-        // This call's contract is a live endpoint or a classified refusal. A host that could not be
-        // started (an absent launch, an early exit, a socket that never became ready) is that
-        // refusal, not an opaque IO error the caller has to interpret; maho-interactive falls back
-        // on any error either way, so only the classification changes here.
-        Err(_)=>return Err(EnsureHostError::Refused("host_unavailable")),
+        // `start_host` reports a host that never became ready with these messages; that is the
+        // ensure's refusal (it could not produce the endpoint it was asked for), not a caller-facing
+        // IO error. Any other failure - a missing launch binary, a permission or address conflict -
+        // stays an IO error so a real resource problem is never masked as a refusal.
+        Err(error) if is_host_start_failure(&error)=>return Err(EnsureHostError::Refused("host_unavailable")),
+        Err(error)=>return Err(EnsureHostError::Io(error)),
     };
     match outcome{
         EnsuredHost::Refused(reason)=>Err(EnsureHostError::Refused(reason)),
