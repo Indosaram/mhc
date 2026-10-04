@@ -382,6 +382,7 @@ async fn options_constructor_seeds_lane_configuration_and_drive_config() {
             thinking_level: Some(ModelThinkingLevel::High),
             active_tool_names: Some(vec!["read".into()]),
             tools: Vec::new(),
+            tool_context: None,
             system_prompt: None,
             resources: Some(AgentHarnessResources { skills: Some(vec![Skill { name: "review".into(), description: "Review".into(), content: "Inspect".into(), file_path: "/skills/review/SKILL.md".into(), disable_model_invocation: None }]), prompt_templates: None }),
             stream_options: None,

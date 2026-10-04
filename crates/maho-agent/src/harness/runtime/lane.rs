@@ -240,6 +240,9 @@ pub struct Lane {
     state_change: tokio::sync::Notify,
     /// Shared process-local drive configuration (the pinned `Config<TContext>` store).
     pub(crate) drive_config: Arc<Mutex<Config<()>>>,
+    /// The typed built-in tools + `toolContext` for this lane (pinned `Config<TContext>`), kept as
+    /// a trait object so `Lane` stays non-generic while the tools keep their real context type.
+    pub tool_runner: Arc<dyn super::tools::ToolBatchRunner>,
     /// Weak self, installed by `drive`/the harness so `RuntimeDriveLane` can hand out `Arc<Lane>`.
     self_ref: Mutex<Weak<Lane>>,
     /// The single installed drive pass for this lane (pinned `activeDrive`).
@@ -264,6 +267,7 @@ impl Lane {
             idle_owner: tokio::sync::RwLock::new(()),
             state_change: tokio::sync::Notify::new(),
             drive_config: Arc::new(Mutex::new(super::harness::default_drive_config())),
+            tool_runner: Arc::new(super::tools::EmptyToolRunner),
             self_ref: Mutex::new(Weak::new()),
             active_drive: Mutex::new(None),
         }
@@ -1468,7 +1472,7 @@ impl RuntimeDriveLane for Lane {
     fn run_tools<'a>(&'a self, drive: &'a Drive, state: OperationState) -> BoxFuture<'a, Result<ProcedureResult, SessionError>> {
         Box::pin(async move {
             let lane = self.arc()?;
-            super::tools::run_tools(&lane, drive, state).await
+            self.tool_runner.run(&lane, drive, state).await
         })
     }
 

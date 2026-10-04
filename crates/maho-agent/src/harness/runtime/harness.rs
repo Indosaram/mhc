@@ -35,12 +35,16 @@ fn noop_hook_reporter() -> HookErrorReporter {
     Arc::new(|_, _, _, _| Box::pin(async {}))
 }
 
-pub struct Harness {
+pub struct Harness<TContext = ()> {
     pub session: Arc<dyn Session>,
     pub events: HarnessEventBus,
     pub models: maho_ai::models::Models,
     pub hooks: Arc<HookRegistry>,
     pub lanes_by_name: Mutex<BTreeMap<String, Arc<Lane>>>,
+    /// The typed built-in tools handed to every lane (pinned `Config.tools`).
+    tools: Vec<Arc<crate::harness::types::AgentHarnessTool<TContext>>>,
+    /// The pinned `toolContext` handed to every tool invocation.
+    tool_context: Option<TContext>,
     seed: LaneConfiguration,
     closed_error: Mutex<Option<SessionError>>,
     close_lock: tokio::sync::Mutex<()>,
@@ -59,7 +63,7 @@ pub struct OpenOperation {
     pub aborting: bool,
 }
 
-impl Harness {
+impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
     fn assert_open(&self) -> Result<(), SessionError> {
         match self
             .closed_error
@@ -195,6 +199,7 @@ impl Harness {
             lane.drive_config = self.config.clone();
             lane.models = self.models.clone();
             lane.hooks = self.hooks.clone();
+            lane.tool_runner = Arc::new(super::tools::ToolRunner::new(self.tools.clone(), self.tool_context.clone()));
             let lane = Arc::new(lane);
             lane.install_self();
             self.lanes_by_name
@@ -419,12 +424,14 @@ impl Harness {
         self.set_config(move |config| { let previous = encoded(&config.follow_up_mode)?; config.follow_up_mode = value; Ok(HarnessEventPayload::ConfigUpdate { property: "followUpMode".into(), previous, value: encoded(&value)? }) }, context).await
     }
 
-    /// Pinned `Harness.buildLane`: attach the session, models, hooks and shared config to a lane.
+    /// Pinned `Harness.buildLane`: attach the session, models, hooks, typed tools and shared
+    /// config to a lane.
     fn build_lane(&self, name: &str, state: LaneState) -> Arc<Lane> {
         let mut lane = Lane::new(name.to_owned(), self.session.clone(), state, self.events.clone());
         lane.drive_config = self.config.clone();
         lane.models = self.models.clone();
         lane.hooks = self.hooks.clone();
+        lane.tool_runner = Arc::new(super::tools::ToolRunner::new(self.tools.clone(), self.tool_context.clone()));
         let lane = Arc::new(lane);
         lane.install_self();
         lane
@@ -442,6 +449,8 @@ pub async fn create_agent_harness(
         models: maho_ai::models::create_models(None),
         hooks: Arc::new(HookRegistry::new(noop_hook_reporter())),
         lanes_by_name: Mutex::new(BTreeMap::new()),
+        tools: Vec::new(),
+        tool_context: None,
         seed,
         closed_error: Mutex::new(None),
         close_lock: tokio::sync::Mutex::new(()),
@@ -475,10 +484,10 @@ fn retry_policy_value(policy: &maho_ai::utils::retry::RetryPolicy) -> serde_json
 /// Pinned `createAgentHarness(options, context)`: attach the durable harness to one open session,
 /// installing the full process-local `Config` (tools, resources, stream options, retry, compaction,
 /// queue modes, tool execution, system prompt) and restoring every durable lane.
-pub async fn create_agent_harness_with_options(
-    options: AgentHarnessOptions,
+pub async fn create_agent_harness_with_options<TContext: Clone + Send + Sync + 'static>(
+    options: AgentHarnessOptions<TContext>,
     context: &Context,
-) -> Result<(Harness, Vec<OpenOperation>), SessionError> {
+) -> Result<(Harness<TContext>, Vec<OpenOperation>), SessionError> {
     crate::harness::config::validate_tool_names(&options.tools.iter().map(|tool| tool.name().to_owned()).collect::<Vec<_>>())
         .map_err(session_invariant_error)?;
     crate::harness::config::validate_retry_policy(&options.retry.clone().unwrap_or_else(crate::harness::config::default_retry_policy))
@@ -493,8 +502,10 @@ pub async fn create_agent_harness_with_options(
             .clone()
             .unwrap_or_else(|| options.tools.iter().map(|tool| tool.name().to_owned()).collect()),
     };
+    // The typed tools and `toolContext` live on the `Harness<TContext>` and are handed to each
+    // lane's `ToolRunner`; the context-free drive config stays `Config<()>`.
     let config = Config {
-        tools: options.tools.clone(),
+        tools: Vec::new(),
         resources: options.resources.clone().unwrap_or_default(),
         stream_options: options.stream_options.clone().unwrap_or_default(),
         retry_policy: options.retry.clone().unwrap_or_else(crate::harness::config::default_retry_policy),
@@ -515,6 +526,8 @@ pub async fn create_agent_harness_with_options(
         models: options.models.clone(),
         hooks: Arc::new(HookRegistry::new(noop_hook_reporter())),
         lanes_by_name: Mutex::new(BTreeMap::new()),
+        tools: options.tools.clone(),
+        tool_context: options.tool_context.clone(),
         seed,
         closed_error: Mutex::new(None),
         close_lock: tokio::sync::Mutex::new(()),
