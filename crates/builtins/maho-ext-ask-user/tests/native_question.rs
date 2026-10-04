@@ -19,6 +19,27 @@ impl Extension for CaptureStart {
     }
 }
 
+struct AgentTurnGate { hit: tokio::sync::mpsc::UnboundedSender<()>, release: Arc<tokio::sync::Notify>, armed: Arc<std::sync::atomic::AtomicBool> }
+impl Extension for AgentTurnGate {
+    fn register(&self, api: &mut ExtensionApi) {
+        let hit = self.hit.clone();
+        let release = self.release.clone();
+        let armed = self.armed.clone();
+        api.on(EventKind::MessageStart, Arc::new(move |_, _| {
+            let hit = hit.clone();
+            let release = release.clone();
+            let armed = armed.clone();
+            Box::pin(async move {
+                if armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    let _ = hit.send(());
+                    release.notified().await;
+                }
+                Ok(EventResult::None)
+            })
+        }));
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct Scenario { cancel: bool, fail_append: bool, abort: bool, timeout: bool, reload: bool, late_rebind: bool, recovering: bool, fail_ui: bool, empty_submission: bool }
 async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -50,7 +71,13 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
         initial_active_tool_names: None, default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None,
         excluded_tool_names: None, base_tools_override: None, session_start_event: recovering.then_some(SessionStartEvent {reason:SessionReason::Resume,initial_model_provenance:None,previous_session_file:None}), auto_title_sessions: Some(false),
     })?;
-    let loaded = load_extensions(vec![NativeExtensionFactory { path: "<ask-user-native>".into(), source_info: SourceInfo::default(), extension: Box::new(AskUser) }], project, ExtensionSessionProfile::default());
+    let (gate_hit_tx, mut gate_hit_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let gate_release = Arc::new(tokio::sync::Notify::new());
+    let gate_armed = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let loaded = load_extensions(vec![
+        NativeExtensionFactory { path: "<ask-user-native>".into(), source_info: SourceInfo::default(), extension: Box::new(AskUser) },
+        NativeExtensionFactory { path: "<agent-turn-gate>".into(), source_info: SourceInfo::default(), extension: Box::new(AgentTurnGate { hit: gate_hit_tx, release: gate_release.clone(), armed: gate_armed }) },
+    ], project, ExtensionSessionProfile::default());
     let extension_runtime = loaded.runtime.clone();
     if !loaded.errors.is_empty() { return Err(format!("Factory errors: {:?}", loaded.errors).into()); }
     let (opened, mut opened_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -75,6 +102,10 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
     let runner = ExtensionRunner::new(loaded.extensions, loaded.runtime, loaded.events, event_context);
     session.set_extension_runner(runner).await;
     session.bind_extensions(ExtensionBindings { ui_context: Some(ui.clone() as Arc<dyn ExtensionUi>), mode: Some(ExtensionMode::Tui), ..Default::default() }).await;
+    let (end_tx, mut end_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let _end_subscription = session.subscribe(Arc::new(move |event| {
+        if matches!(event, maho_ext_api::AgentSessionEvent::Agent(maho_agent::types::AgentEvent::AgentEnd { .. })) { let _ = end_tx.send(()); }
+    }));
     let controller = maho_ai::utils::abort::AbortController::new();
     let signal = controller.signal();
     let outcome = async {
@@ -226,10 +257,17 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
         if injected{return Err("Cancelled question injected an answer frame".into());}
     }
     if timeout && !reload {
+        gate_hit_rx.recv().await.ok_or("timed-out turn never reached the provider")?;
         let asked_before=asked.lock().expect("asked").len();
         let retry=session.execute_tool(&tool,args,ExecuteToolOptions::default()).await?;
         if retry.details["status"]!="unavailable"||retry.details["accepted"]==true||!get_pending_questions(&session.session_id()).is_empty()||asked.lock().expect("asked").len()!=asked_before||opened_rx.try_recv().is_ok(){
             return Err("Timed-out turn opened a second question".into());
+        }
+        gate_release.notify_one();
+        end_rx.recv().await.ok_or("timed-out turn never ended")?;
+        let next=session.execute_tool(&tool,args,ExecuteToolOptions::default()).await?;
+        if next.details["accepted"]!=true||next.details["status"]!="pending" {
+            return Err(format!("Next-turn question was not allowed: {next:?}").into());
         }
     }
     Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
