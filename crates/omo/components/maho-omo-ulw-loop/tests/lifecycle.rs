@@ -370,3 +370,37 @@ async fn cap_reached_logs_skipped_through_the_context_logger() {
     assert!(support::logger_entries(&recorder).contains(&("info".to_owned(),
         "omo-senpi ulw-loop continuation skipped".to_owned(), Some(serde_json::json!({"reason":"continuation-cap-reached","count":8})))));
 }
+
+#[tokio::test]
+async fn shell_tool_result_activates_the_footer_immediately() -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let root = tempfile::tempdir()?;
+    let goal = root.path().join("goal.json");
+    std::fs::write(&goal, r#"{"version":1,"goal":{"status":"active"}}"#)?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&calls);
+    let ui = Arc::new(support::TestUi::default());
+    let mut api = ExtensionApi::new(LoadedExtension::new("loop", root.path().into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+    maho_omo_ulw_loop::index::UlwLoopComponent { bin: Some("/toolkit".into()), js_runtime: "bun".into(), logger: None,
+        run_command: Some(Arc::new(move |_, _, _| { let n = observed.fetch_add(1, Ordering::SeqCst); Box::pin(async move {
+            Ok(maho_omo_ulw_loop::omo_command::CommandResult { code: 0, stdout: if n == 0 {
+                r#"{"ok":true,"plan":{"aggregateCompletion":{"status":"complete"},"goals":[{"status":"pending"}]}}"#.into()
+            } else { r#"{"ok":true,"plan":{"goals":[{"status":"pending"}]}}"#.into() } }) }) })) }.register(&mut api);
+    let mut ctx = support::context();
+    ctx.cwd = root.path().into();
+    ctx.has_ui = true;
+    ctx.ui = ui.clone();
+    ctx.goal_store_file = Some(goal);
+    let mut start = ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::Startup, initial_model_provenance: None, previous_session_file: None });
+    api.registered.handlers[&EventKind::SessionStart][0](&mut start, &ctx).await?;
+    let tool = |name: &str| ExtensionEvent::ToolResult(ToolResultEvent { tool_name: name.into(), tool_call_id: "id".into(), input: serde_json::json!({}), content: Vec::new(), details: None, is_error: false, usage: None });
+    let mut read = tool("read");
+    api.registered.handlers[&EventKind::ToolResult][0](&mut read, &ctx).await?;
+    let mut shell = tool("bash");
+    api.registered.handlers[&EventKind::ToolResult][0](&mut shell, &ctx).await?;
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let statuses = ui.0.lock().expect("status");
+    assert_eq!(statuses.first(), Some(&Some(maho_omo_ulw_loop::footer_status::ULW_LOOP_FOOTER_FRAMES[0].to_string())));
+    Ok(())
+}
