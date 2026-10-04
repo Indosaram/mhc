@@ -1,6 +1,9 @@
 use maho_tui::tui::Component;
 pub struct LiveComponentRenderer<C:Component>{component:C,last_lines:Option<Vec<String>>,disposed:bool,render_requested:bool}
 impl<C:Component> LiveComponentRenderer<C>{
+    /// Creates the live renderer for one component; `None` when no component was supplied
+    /// (senpi `createLiveComponentRenderer`).
+    pub fn create(component:Option<C>)->Option<Self>{component.map(Self::new)}
     pub fn new(component:C)->Self{Self{component,last_lines:None,disposed:false,render_requested:false}}
     pub fn request_render(&mut self){if !self.disposed{self.render_requested=true;}}
     pub fn take_render_request(&mut self)->bool{std::mem::take(&mut self.render_requested)}
@@ -10,6 +13,7 @@ impl<C:Component> LiveComponentRenderer<C>{
 }
 #[cfg(test)]mod tests{
     use super::*;use std::{cell::Cell,rc::Rc};struct Widget{disposed:Rc<Cell<usize>>}impl Component for Widget{fn render(&mut self,width:usize)->Vec<String>{vec![width.to_string()]}fn dispose(&mut self){self.disposed.set(self.disposed.get()+1);}}
+    #[test]fn absent_component_yields_no_renderer(){assert!(LiveComponentRenderer::<Widget>::create(None).is_none());assert!(LiveComponentRenderer::create(Some(Widget{disposed:Rc::default()})).is_some());}
     #[test]fn equal_lines_deduplicate_but_fault_forces_republication(){let mut renderer=LiveComponentRenderer::new(Widget{disposed:Rc::default()});assert_eq!(renderer.rerender(80),Some(vec!["80".into()]));assert!(renderer.rerender(80).is_none());renderer.render_fault();assert!(renderer.rerender(80).is_some());assert_eq!(renderer.rerender(40),Some(vec!["40".into()]));}
     #[test]fn requested_renders_coalesce_and_dispose_cancels_once(){let disposed=Rc::default();let mut renderer=LiveComponentRenderer::new(Widget{disposed:Rc::clone(&disposed)});renderer.request_render();renderer.request_render();assert!(renderer.take_render_request());assert!(!renderer.take_render_request());renderer.request_render();renderer.dispose();renderer.dispose();renderer.request_render();assert!(!renderer.take_render_request());assert!(renderer.rerender(80).is_none());assert_eq!(disposed.get(),1);}
 }

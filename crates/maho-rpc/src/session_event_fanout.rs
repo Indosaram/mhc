@@ -3,6 +3,88 @@ use serde_json::Value;
 pub const RENDERED_COMPONENT_RECORD:&str="__senpiRenderedComponent";
 struct Connection{id:String,capabilities:Vec<String>,registered_capabilities:bool,sessions:BTreeSet<String>}
 #[derive(Default)]pub struct ConnectionTargets{connections:Vec<Connection>}
+#[derive(Default)]pub struct SessionEventFanout{
+    pub targets:ConnectionTargets,
+    pub snapshots:SessionSnapshots,
+    actors:BTreeMap<String,crate::socket_event_fanout::SocketEventSinkActor>,
+    worker_sessions:BTreeSet<String>,
+}
+impl SessionEventFanout{
+    pub fn register(&mut self,id:&str,actor:crate::socket_event_fanout::SocketEventSinkActor){
+        self.targets.register(id);self.actors.insert(id.into(),actor);
+    }
+    pub fn unregister(&mut self,id:&str){self.targets.unregister(id);self.actors.remove(id);}
+    pub fn broadcast_host_record(&mut self,record:&Value)->Result<Option<Value>,String>{
+        if self.actors.is_empty(){return Ok(Some(record.clone()));}
+        let line=crate::jsonl::serialize_json_line(record).map_err(|error|error.to_string())?;
+        let mut failed=Vec::new();
+        for(id,actor)in &self.actors{
+            if actor.failure().is_some()||actor.enqueue(crate::socket_event_fanout::QueueEntry{line:line.clone(),key:None,demoted_line:None,on_written:None}).is_err(){failed.push(id.clone());}
+        }
+        for id in failed{self.unregister(&id);}
+        Ok(None)
+    }
+    pub fn set_session_kind(&mut self,session:&str,kind:maho_ext_api::SessionKind){if kind==maho_ext_api::SessionKind::Worker{self.worker_sessions.insert(session.into());}else{self.worker_sessions.remove(session);}}
+    pub fn forget_session(&mut self,session:&str){self.snapshots.forget(session);self.worker_sessions.remove(session);}
+    pub fn set_capabilities(&mut self,id:&str,capabilities:&[String])->Result<(),String>{
+        if !self.targets.set_capabilities(id,capabilities){return Ok(());}
+        let placeholders=capabilities.iter().any(|capability|capability==crate::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY);
+        let sessions=self.targets.connections.iter().find(|connection|connection.id==id).map(|connection|connection.sessions.clone()).unwrap_or_default();
+        if let Some(actor)=self.actors.get(id){
+            for session in sessions{
+                for record in self.snapshots.snapshots.get(&session).into_iter().flatten().filter(|record|record.rendered){
+                    let line=if placeholders{match &record.source{Some(source)=>crate::jsonl::serialize_json_line(&crate::media_placeholders::omit_inline_media(source)).map_err(|error|error.to_string())?,None=>record.line.clone()}}else{record.line.clone()};
+                    actor.enqueue(crate::socket_event_fanout::QueueEntry{line,key:None,demoted_line:None,on_written:None}).map_err(|error|error.to_string())?;
+                }
+            }
+        }
+        Ok(())
+    }
+    pub fn attach(&mut self,id:&str,session:&str,now_ms:f64)->Result<(),String>{
+        if !self.targets.attach(id,session){return Ok(());}
+        let capabilities=self.targets.capabilities(id).unwrap_or_default();
+        let rendered=capabilities.iter().any(|value|value==crate::custom_capability::RENDERED_COMPONENTS_CAPABILITY);
+        let placeholders=capabilities.iter().any(|value|value==crate::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY);
+        let lines=self.snapshots.replay(session,rendered,placeholders,now_ms).map_err(|error|error.to_string())?;
+        if let Some(actor)=self.actors.get(id){for line in lines{actor.enqueue(crate::socket_event_fanout::QueueEntry{line,key:None,demoted_line:None,on_written:None}).map_err(|error|error.to_string())?;}}
+        Ok(())
+    }
+    pub fn deliver(&mut self,session:&str,target:Option<&str>,targeted:bool,value:&Value)->Result<Vec<Value>,String>{
+        let failed=self.actors.iter().filter(|(_,actor)|actor.failure().is_some()).map(|(id,_)|id.clone()).collect::<Vec<_>>();
+        for id in failed{self.unregister(&id);}
+        let rendered=value[RENDERED_COMPONENT_RECORD]==true;
+        let mut wire=value.clone();
+        if let Some(object)=wire.as_object_mut(){object.remove(RENDERED_COMPONENT_RECORD);object.insert("sessionId".into(),session.into());}
+        let line=crate::jsonl::serialize_json_line(&wire).map_err(|error|error.to_string())?;
+        let terminal=matches!(value["type"].as_str(),Some("session_closed"|"session_parked"));
+        if terminal{self.snapshots.forget(session);}else if !targeted{
+            let mut tagged=wire.clone();
+            if rendered{tagged[RENDERED_COMPONENT_RECORD]=true.into();}
+            self.snapshots.remember(session,&tagged,line.clone(),None,Some(wire.clone()));
+        }
+        let mut failed=Vec::new();
+        let mut stdio=Vec::new();
+        let kind=if matches!(value["type"].as_str(),Some("session_closed"|"session_parked")){
+            if self.worker_sessions.contains(session){None}else{Some("session_closed")}
+        }else{value["type"].as_str()};
+        for id in self.targets.targets(session,target,targeted,rendered,kind){
+            let Some(id)=id else{stdio.push(wire.clone());continue;};
+            let Some(actor)=self.actors.get(&id)else{continue;};
+            let placeholders=self.targets.capabilities(&id).unwrap_or_default().iter().any(|capability|capability==crate::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY);
+            let selected=if placeholders{crate::media_placeholders::omit_inline_media(&wire).into_owned()}else{wire.clone()};
+            let line=if placeholders{crate::jsonl::serialize_json_line(&selected).map_err(|error|error.to_string())?}else{line.clone()};
+            let keyed=selected["type"]=="message_update"&&!selected["message"].is_null()&&matches!(selected["assistantMessageEvent"]["type"].as_str(),Some("text_delta"|"thinking_delta"|"toolcall_delta"))&&selected["assistantMessageEvent"]["contentIndex"].is_number()&&selected["assistantMessageEvent"]["delta"].is_string();
+            let demoted_line=if keyed{
+                let mut demoted=selected;demoted["message"]=Value::Null;demoted["assistantMessageEvent"]["partial"]=Value::Null;
+                Some(crate::jsonl::serialize_json_line(&demoted).map_err(|error|error.to_string())?)
+            }else{None};
+            if actor.enqueue(crate::socket_event_fanout::QueueEntry{line,key:keyed.then(||"message".into()),demoted_line,on_written:None}).is_err(){failed.push(id);}
+        }
+        for id in failed{self.unregister(&id);}
+        Ok(stdio)
+    }
+    pub async fn flush_connection(&mut self,id:&str)->Result<(),String>{if let Some(actor)=self.actors.get_mut(id){actor.flush().await?;}Ok(())}
+}
 impl ConnectionTargets{
     pub fn register(&mut self,id:&str){if let Some(connection)=self.connections.iter_mut().find(|connection|connection.id==id){*connection=Connection{id:id.into(),capabilities:vec![],registered_capabilities:false,sessions:BTreeSet::new()};}else{self.connections.push(Connection{id:id.into(),capabilities:vec![],registered_capabilities:false,sessions:BTreeSet::new()});}}
     pub fn unregister(&mut self,id:&str){self.connections.retain(|connection|connection.id!=id);}

@@ -5,6 +5,66 @@ use crate::provider_native_rendering::{format_provider_native_body,format_provid
 
 #[derive(Default,Debug,PartialEq)]
 pub struct PrintOutput { pub stdout:String,pub stderr:String,pub exit_code:i32 }
+pub async fn run_print_runtime(
+    runtime:&maho_core::agent_session_runtime::AgentSessionRuntime,
+    scope:&maho_ai::node::provider_scope::ProviderScope,
+    json_mode:bool,
+    initial:Option<(String,Vec<maho_ai::types::ImageContent>)>,
+    messages:&[String],
+    output:impl tokio::io::AsyncWrite+Unpin,
+    diagnostics:impl tokio::io::AsyncWrite+Unpin,
+)->std::io::Result<i32>{
+    let result=maho_ai::node::provider_scope::run_with_provider_scope_async(scope,run_print_session(runtime.session(),json_mode,initial,messages,output,diagnostics)).await.map_err(std::io::Error::other);
+    let disposed=crate::session_teardown::dispose_runtime(runtime,scope).await.map_err(std::io::Error::other);
+    let result=result?;
+    disposed?;
+    result
+}
+pub async fn run_print_session(
+    session:&maho_core::agent_session::AgentSession,
+    json_mode:bool,
+    initial:Option<(String,Vec<maho_ai::types::ImageContent>)>,
+    messages:&[String],
+    mut output:impl tokio::io::AsyncWrite+Unpin,
+    mut diagnostics:impl tokio::io::AsyncWrite+Unpin,
+)->std::io::Result<i32>{
+    use tokio::io::AsyncWriteExt;
+    let(sender,mut events)=tokio::sync::mpsc::unbounded_channel();
+    let _subscription=session.subscribe(std::sync::Arc::new(move|event|{let _=sender.send((fallback_diagnostic(event),crate::session_binding::session_event_record(event)));}));
+    if json_mode&&let Some(header)=session.with_session_manager(|manager|manager.header()){
+        output.write_all(crate::jsonl::serialize_json_line(&header)?.as_bytes()).await?;
+    }
+    let prompts=async{
+        if let Some((text,images))=initial{session.prompt(&text,maho_core::agent_session::PromptOptions{images:Some(images),..Default::default()}).await?;}
+        for text in messages{session.prompt(text,Default::default()).await?;}
+        session.wait_for_idle().await;Ok::<(),String>(())
+    };
+    tokio::pin!(prompts);
+    let result=loop{
+        tokio::select!{
+            result=&mut prompts=>break result,
+            event=events.recv()=>if let Some((diagnostic,event))=event{
+                if let Some(diagnostic)=diagnostic{diagnostics.write_all(diagnostic.as_bytes()).await?;}
+                if json_mode{let event=event.map_err(std::io::Error::other)?;let event=crate::json_event::to_json_event(&event).map_err(std::io::Error::other)?;output.write_all(crate::jsonl::serialize_json_line(&event)?.as_bytes()).await?;}
+            }
+        }
+    };
+    while let Ok((diagnostic,event))=events.try_recv(){
+        if let Some(diagnostic)=diagnostic{diagnostics.write_all(diagnostic.as_bytes()).await?;}
+        if json_mode{let event=event.map_err(std::io::Error::other)?;let event=crate::json_event::to_json_event(&event).map_err(std::io::Error::other)?;output.write_all(crate::jsonl::serialize_json_line(&event)?.as_bytes()).await?;}
+    }
+    let exit_code=match result{
+        Err(error)=>{diagnostics.write_all(format!("{error}\n").as_bytes()).await?;1},
+        Ok(()) if !json_mode=>{
+            let messages=session.messages();
+            let assistant=messages.iter().rev().find_map(|message|message.as_assistant());
+            let rendered=format_print_result(assistant).map_err(std::io::Error::other)?;
+            output.write_all(rendered.stdout.as_bytes()).await?;diagnostics.write_all(rendered.stderr.as_bytes()).await?;rendered.exit_code
+        },
+        Ok(())=>0
+    };
+    output.flush().await?;diagnostics.flush().await?;Ok(exit_code)
+}
 pub fn fallback_diagnostic(event:&maho_ext_api::AgentSessionEvent)->Option<String>{use maho_ext_api::AgentSessionEvent;match event{
     AgentSessionEvent::RetryFallbackApplied{from,to,reason,..}=>Some(format!("Model fallback: {from} -> {to} ({reason})\n")),
     AgentSessionEvent::RetryFallbackExhausted{chain_key,last_error}=>Some(format!("Model fallback exhausted: {chain_key} ({last_error})\n")),
@@ -33,6 +93,15 @@ pub fn format_print_result(message: Option<&AssistantMessage>) -> Result<PrintOu
         }
     }
     Ok(output)
+}
+/// Options for print mode (senpi `PrintModeOptions`).
+#[derive(Debug,Clone,Default)]
+pub struct PrintModeOptions{pub json_mode:bool,pub messages:Vec<String>,pub initial_message:Option<String>,pub initial_images:Vec<maho_ai::types::ImageContent>}
+/// Run print (single-shot) mode: send the prompts, output the result, return the exit code
+/// (senpi `runPrintMode`).
+pub async fn run_print_mode(runtime:&maho_core::agent_session_runtime::AgentSessionRuntime,scope:&maho_ai::node::provider_scope::ProviderScope,options:PrintModeOptions,output:impl tokio::io::AsyncWrite+Unpin,diagnostics:impl tokio::io::AsyncWrite+Unpin)->std::io::Result<i32>{
+    let initial=options.initial_message.map(|text|(text,options.initial_images.clone()));
+    run_print_runtime(runtime,scope,options.json_mode,initial,&options.messages,output,diagnostics).await
 }
 #[cfg(test)]
 mod tests {

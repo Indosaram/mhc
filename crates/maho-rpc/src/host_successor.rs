@@ -1,5 +1,33 @@
 use crate::{host_protocol_info::HostProtocolInfo,socket_ownership::{SocketFileIdentity,stat_socket_identity}};
 pub const DEFAULT_HANDOFF_READINESS_MS:u64=30_000;
+pub struct SuccessorLaunchOptions{pub launch:crate::host_launch::HostLaunch,pub env:std::collections::HashMap<String,String>,pub instance_id:String,pub generation:u64,pub launch_profile_id:String,pub readiness_ms:u64}
+pub struct RunningSuccessor{pub child:tokio::process::Child,pub protocol:HostProtocolInfo}
+pub async fn start_successor(context:&crate::host_handoff::HandoffContext,socket:&str,replaced:SocketFileIdentity,options:SuccessorLaunchOptions)->std::io::Result<Result<RunningSuccessor,crate::host_handoff::HandoffRefusal>>{
+    use std::os::unix::fs::OpenOptionsExt;
+    let stderr=std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&context.paths.stderr_log)?;
+    let mut child=tokio::process::Command::new(&options.launch.command).args(&options.launch.args).env_clear().envs(options.env).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(stderr).process_group(0).spawn()?;
+    let pid=child.id().ok_or_else(||std::io::Error::other("successor has no process identity"))?;
+    let result:std::io::Result<Option<HostProtocolInfo>>=async{
+        let deadline=tokio::time::Instant::now()+std::time::Duration::from_millis(options.readiness_ms);
+        loop{
+            if let Some(answer)=crate::host_probe::probe_protocol_info(socket,2000).await&&successor_answered(&context.host,&answer){
+                crate::host_daemon_registration::write_host_registration(&context.paths,&crate::host_daemon_registration::HostRegistration{pid,process_start_time:crate::host_reservations::read_process_start_time(pid),socket:socket.into(),instance_id:options.instance_id,generation:options.generation as f64,launch_profile_id:options.launch_profile_id}).map_err(|error|error.source)?;
+                crate::host_stop::signal_generation(context.owner.pid,rustix::process::Signal::USR1).map_err(std::io::Error::from)?;
+                return Ok(Some(answer));
+            }
+            if child.try_wait()?.is_some()||tokio::time::Instant::now()>=deadline{return Ok(None);}
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }.await;
+    match result{
+        Ok(Some(protocol))=>Ok(Ok(RunningSuccessor{child,protocol})),
+        result=>{
+            let _=child.kill().await;let _=child.wait().await;
+            let reason=if result.is_err(){"successor_unavailable"}else{abort_reason(std::path::Path::new(socket),replaced)};
+            Ok(Err(crate::host_handoff::HandoffRefusal{reason,upgradeable:true}))
+        }
+    }
+}
 #[derive(Debug,PartialEq,Eq)]pub struct SuccessorPreparation{pub bind_socket:String,pub replaced:SocketFileIdentity,pub argv:Vec<String>}
 #[derive(Debug,thiserror::Error)]pub enum PrepareSuccessorError{
     #[error("socket_path_too_long: {0}")]SocketPathTooLong(String),

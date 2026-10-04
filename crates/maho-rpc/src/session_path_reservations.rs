@@ -1,5 +1,9 @@
 use std::collections::HashMap;
 pub const SESSION_WORKER_RESERVATIONS:usize = 64;
+/// Wire code each denial is reported with; distinct so clients can retry only the retryable one.
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+pub struct ReservationDenialCodes{pub conflict:&'static str,pub limit:&'static str}
+pub const RESERVATION_DENIAL_CODES:ReservationDenialCodes=ReservationDenialCodes{conflict:"session_path_in_use",limit:"session_reservation_limit"};
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum SessionWriteGrant { Granted, Conflict, Limit }
 impl SessionWriteGrant {
@@ -31,6 +35,7 @@ impl SessionPathReservations {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn reservation_denial_codes_match_the_enum(){assert_eq!(SessionWriteGrant::Conflict.denial_code(),Some(RESERVATION_DENIAL_CODES.conflict));assert_eq!(SessionWriteGrant::Limit.denial_code(),Some(RESERVATION_DENIAL_CODES.limit));assert_eq!(SessionWriteGrant::Granted.denial_code(),None);}
     #[test] fn reservation_denials_distinguish_budget_from_ownership() {
         let mut reservations = SessionPathReservations::default();
         let live = (0..SESSION_WORKER_RESERVATIONS).map(|i| format!("/live/session-{i}.jsonl")).collect::<Vec<_>>();

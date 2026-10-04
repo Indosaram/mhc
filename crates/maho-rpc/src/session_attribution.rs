@@ -17,6 +17,14 @@ impl SessionActivityRegistry{
     pub fn open_span(&self,mut attribution:SessionAttribution,ambient:Option<&SessionAttribution>)->SessionAttributionSpan{if attribution.session_id.is_none(){attribution.session_id=ambient.and_then(|ambient|ambient.session_id.clone());}let mut state=self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);state.sequence+=1;let mark=state.sequence;state.open.insert(mark,attribution);SessionAttributionSpan{registry:self.clone(),mark}}
 }
 pub struct SessionAttributionSpan{registry:SessionActivityRegistry,mark:u64}
+/// Open-ended attribution for work that outlives its dispatch (senpi `openSessionAttributionSpan`).
+pub fn open_session_attribution_span(registry:&SessionActivityRegistry,attribution:SessionAttribution,ambient:Option<&SessionAttribution>)->SessionAttributionSpan{registry.open_span(attribution,ambient)}
+/// Current activity counter the watchdog samples once per tick (senpi `sessionActivityMark`).
+pub fn session_activity_mark(registry:&SessionActivityRegistry)->u64{registry.mark()}
+/// The activity to blame for work that ran after `mark` (senpi `sessionActivitySince`).
+pub fn session_activity_since(registry:&SessionActivityRegistry,mark:u64)->Option<SessionAttribution>{registry.since(mark)}
+/// Tool spans of one session, driven by the records its runtime emits (senpi `createToolAttributionSpans`).
+pub fn create_tool_attribution_spans(session_id:String,registry:SessionActivityRegistry)->ToolAttributionSpans{ToolAttributionSpans::new(session_id,registry)}
 impl SessionAttributionSpan{pub fn close(&mut self){let mut state=self.registry.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if let Some(attribution)=state.open.remove(&self.mark){state.sequence+=1;state.last_finished=Some((state.sequence,attribution));}}}
 impl Drop for SessionAttributionSpan{fn drop(&mut self){self.close();}}
 pub struct ToolAttributionSpans{session_id:String,registry:SessionActivityRegistry,spans:Vec<(String,SessionAttributionSpan)>}
