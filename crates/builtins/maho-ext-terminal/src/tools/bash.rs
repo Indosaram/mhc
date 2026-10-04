@@ -63,12 +63,10 @@ pub async fn execute_configured_bash(manager:Arc<Mutex<TerminalManager>>,call:To
         super::foreground_detach::ForegroundOutcome::TimedOut=>(None,true,true),
         super::foreground_detach::ForegroundOutcome::Detached=>(None,false,false),
     };
-    if sweep {
-        // Interrupt is "stop now": SIGKILL the whole process group in one shot (upstream). The exited
-        // session is reaped by its own exit waiter and pruned by the manager, so no blocking exit wait
-        // runs on the async runtime here (upstream never calls manager.stop on the abort path).
-        if let Ok(mut state)=manager.lock() {if let Some(runtime)=state.get(&id) {let _=runtime.kill();}}
-    }
+    // Interrupt is "stop now": SIGKILL the whole process group in one shot (upstream). The exited
+    // session is reaped by its own exit waiter and pruned by the manager, so no blocking exit wait
+    // runs on the async runtime here (upstream never calls manager.stop on the abort path).
+    if sweep && let Ok(mut state)=manager.lock() && let Some(runtime)=state.get(&id) {let _=runtime.kill();}
     let mut manager=manager.lock().map_err(|_|"terminal manager state poisoned")?;let runtime=manager.get(&id).ok_or("terminal session missing")?;
     let formatted=format_terminal_tool_output(&runtime.full_output().map_err(|error|error.to_string())?);
     if call.signal.is_aborted() {return Ok(error_result(format!("{}Command aborted",if formatted.text.is_empty() {String::new()} else {format!("{}\n\n",formatted.text)})));}

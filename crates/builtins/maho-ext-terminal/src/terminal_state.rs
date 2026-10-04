@@ -36,7 +36,11 @@ impl TerminalStateLifecycle {
         if self.lease.is_none() {return crate::restore::RestoreDigest::default();}
         self.writer.apply_restore_state(state,manager,registry,now,shell,settings)
     }
-    pub async fn record_shutdown(&mut self,now:f64) {if self.lease.is_some() {self.writer.record_shutdown(now).await;}}
+    /// Records the manifest on shutdown. Gated on the lifecycle existing (this generation is the
+    /// session's live recorder - acquired, or inherited across a reload), NOT on lease ownership: a
+    /// reload generation inherits the lease without re-acquiring it yet still records, matching
+    /// upstream `suspendAndFlushManifest`, which runs whenever the manifest writer is bound.
+    pub async fn record_shutdown(&mut self,now:f64) {self.writer.record_shutdown(now).await;}
     #[cfg(unix)]
     pub fn release(&mut self)->std::io::Result<()> {if let Some((path,pid))=self.lease.take() {crate::manifest_lease::release_terminal_lease(&path,pid)?;}Ok(())}
 }
