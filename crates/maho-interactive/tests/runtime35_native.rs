@@ -1634,3 +1634,225 @@ async fn turn_and_session_mutations_route_to_the_mounted_host() {
     assert!(recorded.iter().any(|call| call == "follow_up"), "follow_up routes to the host: {recorded:?}");
     assert!(recorded.iter().any(|call| call == "set_session_name"), "/rename routes to the host: {recorded:?}");
 }
+
+// ---- task-1 real-loop dispatch (GAP-1) --------------------------------------------------------
+
+/// A waker that hands a token to a channel on every wake, so an event-driven driver re-polls the
+/// turn exactly when the in-flight turn or abort future makes progress (no fixed sleeps, no
+/// state-polling spin).
+struct TurnWaker { wake: tokio::sync::mpsc::UnboundedSender<()> }
+impl std::task::Wake for TurnWaker {
+    fn wake(self: std::sync::Arc<Self>) { let _ = self.wake.send(()); }
+    fn wake_by_ref(self: &std::sync::Arc<Self>) { let _ = self.wake.send(()); }
+}
+
+/// A mode whose faux provider parks on the first streamed chunk until `gate` is released: the turn
+/// reaches `AgentStart` and then blocks, so a test can observe the live frame and steer/abort while
+/// the turn is genuinely in flight. `entered` flips once the provider is parked, and `wake`/`wake_tx`
+/// carry the turn's wakeups to the causal driver.
+struct GatedMode {
+    mode: maho_interactive::interactive_mode::InteractiveMode,
+    session: std::sync::Arc<maho_core::agent_session::AgentSession>,
+    gate: tokio::sync::watch::Sender<bool>,
+    wake: tokio::sync::mpsc::UnboundedReceiver<()>,
+    wake_tx: tokio::sync::mpsc::UnboundedSender<()>,
+    entered: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    _directory: tempfile::TempDir,
+}
+
+fn gated_native_mode() -> GatedMode {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use maho_ai::providers::faux::{FauxAssistantMessageOptions, RegisterFauxProviderOptions, faux_assistant_message, faux_provider, faux_streams};
+    use maho_core::agent_session::{AgentSession, AgentSessionConfig};
+    let directory = tempfile::tempdir().expect("directory");
+    let cwd = directory.path().to_string_lossy().into_owned();
+    let (gate, gate_rx) = tokio::sync::watch::channel(false);
+    let entered = Arc::new(AtomicBool::new(false));
+    let (wake_tx, wake) = tokio::sync::mpsc::unbounded_channel();
+    let hook_entered = entered.clone();
+    let hook_gate = gate_rx.clone();
+    let provider = faux_provider(RegisterFauxProviderOptions {
+        api: Some("faux".into()),
+        tokens_per_second: Some(0.0),
+        scheduler_hook: Some(Arc::new(move || {
+            let entered = hook_entered.clone();
+            let mut rx = hook_gate.clone();
+            Box::pin(async move { entered.store(true, std::sync::atomic::Ordering::SeqCst); let _ = rx.wait_for(|released| *released).await; })
+        })),
+        ..Default::default()
+    });
+    let model = provider.get_model(Some("faux-1")).expect("model");
+    provider.set_responses(vec![
+        faux_assistant_message("hello", FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into(),
+        faux_assistant_message("steered-reply", FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into(),
+    ]);
+    let streams = faux_streams(provider.core.clone());
+    let stream_fn: maho_agent::types::StreamFn = Arc::new(move |model, context, options| {
+        let mut context = context.clone();
+        context.system_prompt = context.system_prompt.filter(|prompt| !prompt.is_empty());
+        streams.stream_simple(model, &context, options.map(|options| options.simple))
+    });
+    let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
+        models_path: Some(directory.path().join("models.json")), auth_path: Some(directory.path().join("auth.json")),
+        providers: Some(vec![provider.provider.clone()]), ..Default::default()
+    });
+    let session = Arc::new(AgentSession::new(AgentSessionConfig {
+        agent: maho_agent::Agent::new(maho_agent::AgentOptions {
+            initial_state: Some(maho_agent::agent::PartialAgentState { model: Some(model), ..Default::default() }),
+            stream_fn: Some(stream_fn), ..Default::default()
+        }),
+        session_manager: maho_core::session_manager::SessionManager::in_memory(&cwd, None, None),
+        settings_manager: maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()), false),
+        cwd: cwd.clone(), agent_dir: Some(cwd), fallback_now: Some(Arc::new(|| 0.0)), retry_random: Some(Arc::new(|| 0.5)),
+        scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: Default::default(), custom_tools: Vec::new(),
+        model_runtime: Some(runtime), model_registry: None, uses_default_stream_function: Some(false), initial_active_tool_names: None,
+        default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: None, base_tools_override: None,
+        session_start_event: None, auto_title_sessions: Some(false),
+    }).expect("session"));
+    let mode = maho_interactive::interactive_mode::InteractiveMode::new(session.clone(), maho_interactive::theme::Theme::builtin("dark", maho_interactive::theme::ColorMode::Truecolor).expect("theme"), std::rc::Rc::new(EditorHost));
+    GatedMode { mode, session, gate, wake, wake_tx, entered, _directory: directory }
+}
+
+/// Capture the session's exact event stream while the mode drives the turn.
+fn capture_session_events(session: &std::sync::Arc<maho_core::agent_session::AgentSession>) -> (std::sync::Arc<std::sync::Mutex<Vec<maho_ext_api::AgentSessionEvent>>>, maho_core::agent_session::AgentSessionSubscription) {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let subscription = session.subscribe(std::sync::Arc::new(move |event| sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event.clone())));
+    (events, subscription)
+}
+
+fn is_terminal_session_event(event: &maho_ext_api::AgentSessionEvent) -> bool {
+    matches!(event,
+        maho_ext_api::AgentSessionEvent::AgentSettled
+        | maho_ext_api::AgentSessionEvent::AgentIdle
+        | maho_ext_api::AgentSessionEvent::SessionAbort)
+        || matches!(event, maho_ext_api::AgentSessionEvent::Agent(maho_agent::types::AgentEvent::AgentEnd { .. }))
+}
+
+fn abort_count(events: &std::sync::Mutex<Vec<maho_ext_api::AgentSessionEvent>>) -> usize {
+    events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().filter(|event| matches!(event, maho_ext_api::AgentSessionEvent::SessionAbort)).count()
+}
+
+fn has_settled(events: &std::sync::Mutex<Vec<maho_ext_api::AgentSessionEvent>>) -> bool {
+    events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|event| matches!(event, maho_ext_api::AgentSessionEvent::AgentSettled))
+}
+
+fn has_agent_start(events: &std::sync::Mutex<Vec<maho_ext_api::AgentSessionEvent>>) -> bool {
+    events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|event| matches!(event, maho_ext_api::AgentSessionEvent::Agent(maho_agent::types::AgentEvent::AgentStart)))
+}
+
+/// The causal waker over `gated`'s wake channel.
+fn turn_waker(gated: &GatedMode) -> std::task::Waker {
+    std::task::Waker::from(std::sync::Arc::new(TurnWaker { wake: gated.wake_tx.clone() }))
+}
+
+/// Drive the production loop causally: poll once, then re-poll only when the in-flight turn or
+/// abort future wakes (each wake is one token on `gated.wake`), until `predicate` holds. Bounded; a
+/// hang fails rather than passing by luck. The caller subscribes to the session event stream before
+/// the trigger, so the terminal event is captured, never inferred from polling mode state.
+async fn pump_until(gated: &mut GatedMode, predicate: impl Fn(&GatedMode) -> bool) {
+    let waker = turn_waker(gated);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            gated.mode.pump_turn_with(&waker).await;
+            if predicate(gated) { return; }
+            let _ = gated.wake.recv().await;
+        }
+    }).await.expect("the loop reaches the expected state before the bounded timeout");
+}
+
+#[tokio::test]
+async fn real_loop_renders_live_frame_before_held_delta_then_completes() {
+    use maho_tui::tui::Component;
+    let mut gated = gated_native_mode();
+    let (events, _subscription) = capture_session_events(&gated.session);
+    gated.mode.handle_input("hi");
+    gated.mode.handle_input("\r");
+    pump_until(&mut gated, |gated| gated.entered.load(std::sync::atomic::Ordering::SeqCst)).await;
+    assert!(gated.mode.has_pending_turn(), "the entered prompt starts a turn");
+    assert!(!gated.mode.agent_idle, "the turn is in flight");
+    assert!(gated.mode.working_frame(0.0).is_some(), "the live frame shows the working row while the provider holds");
+    assert!(has_agent_start(&events), "the provider-held run started before the delta");
+    let frame = gated.mode.render(80).join("\n");
+    assert!(!frame.contains("hello"), "no reply before the held delta is released: {frame}");
+    let _ = gated.gate.send(true);
+    pump_until(&mut gated, |gated| !gated.mode.has_pending_turn()).await;
+    assert!(gated.mode.agent_idle, "the turn reaches its terminal event");
+    assert!(gated.mode.working_frame(0.0).is_none(), "the working row is cleared");
+    let frame = gated.mode.render(80).join("\n");
+    assert!(frame.contains("hello"), "the reply is rendered after the delta: {frame}");
+    let captured = events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    assert!(captured.last().is_some_and(is_terminal_session_event), "exact terminal event: {captured:?}");
+    assert!(has_settled(&events), "the run settled: {captured:?}");
+    assert_eq!(abort_count(&events), 0, "a completed turn is not an abort");
+}
+
+#[tokio::test]
+async fn real_loop_abort_while_provider_held_clears_busy_and_returns_usable_editor() {
+    use maho_tui::tui::Component;
+    let mut gated = gated_native_mode();
+    let (events, _subscription) = capture_session_events(&gated.session);
+    gated.mode.handle_input("hi");
+    gated.mode.handle_input("\r");
+    pump_until(&mut gated, |gated| gated.entered.load(std::sync::atomic::Ordering::SeqCst)).await;
+    assert!(gated.mode.has_pending_turn());
+    // The pinned interrupt key (`app.interrupt`) requests the abort; it must not block the loop. The
+    // provider gate stays held, so the abort itself must tear the held stream down.
+    gated.mode.handle_runtime_input("\x1b", 0).await.expect("interrupt");
+    assert!(gated.mode.has_pending_turn(), "the abort is requested, not awaited inline");
+    pump_until(&mut gated, |gated| !gated.mode.has_pending_turn()).await;
+    assert!(gated.mode.agent_idle, "abort clears the busy state without the provider succeeding");
+    assert!(gated.mode.working_frame(0.0).is_none(), "the working row is cleared");
+    let frame = gated.mode.render(80).join("\n");
+    assert!(!frame.contains("hello"), "the abort beat the held delta: {frame}");
+    let captured = events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    assert!(captured.last().is_some_and(is_terminal_session_event), "exact terminal event: {captured:?}");
+    assert!(has_settled(&events), "the aborted run settles: {captured:?}");
+    let provider_succeeded = gated.session.messages().iter().filter_map(|message| message.as_assistant()).any(|message| message.stop_reason == maho_ai::types::StopReason::Stop);
+    assert!(!provider_succeeded, "the held provider never completed a successful reply");
+    gated.mode.handle_input("next");
+    assert_eq!(gated.mode.editor.editor.get_text(), "next", "the editor accepts input again");
+}
+
+#[tokio::test]
+async fn real_loop_steer_while_provider_held_queues_without_replacing_the_turn() {
+    use maho_tui::tui::Component;
+    let mut gated = gated_native_mode();
+    gated.mode.handle_input("hi");
+    gated.mode.handle_input("\r");
+    pump_until(&mut gated, |gated| gated.entered.load(std::sync::atomic::Ordering::SeqCst)).await;
+    assert!(gated.mode.has_pending_turn());
+    // Type a follow-up and submit it while the turn is held: it must queue, not replace the turn.
+    gated.mode.handle_input("steer-now");
+    gated.mode.handle_input("\r");
+    let waker = turn_waker(&gated);
+    gated.mode.pump_turn_with(&waker).await;
+    assert!(gated.mode.has_pending_turn(), "the steer is queued into the running turn");
+    assert!(!gated.mode.agent_idle, "the running turn is not replaced");
+    let _ = gated.gate.send(true);
+    pump_until(&mut gated, |gated| !gated.mode.has_pending_turn()).await;
+    assert!(gated.mode.agent_idle);
+    let frame = gated.mode.render(80).join("\n");
+    assert!(frame.contains("steered-reply"), "the queued steer ran after the held turn: {frame}");
+}
+
+#[tokio::test]
+async fn real_loop_pumps_startup_initial_prompt_without_freezing_the_first_frame() {
+    use maho_tui::tui::Component;
+    let mut gated = gated_native_mode();
+    let (events, _subscription) = capture_session_events(&gated.session);
+    // The production entry enqueues the startup prompt instead of awaiting it before the loop.
+    gated.mode.enqueue_submission("startup-hi", None);
+    pump_until(&mut gated, |gated| gated.entered.load(std::sync::atomic::Ordering::SeqCst)).await;
+    assert!(gated.mode.has_pending_turn(), "the startup prompt starts a turn inside the loop");
+    assert!(gated.mode.working_frame(0.0).is_some(), "the first frame renders while the startup turn is held");
+    assert!(!gated.mode.render(80).join("\n").contains("hello"), "no reply before the held delta");
+    let _ = gated.gate.send(true);
+    pump_until(&mut gated, |gated| !gated.mode.has_pending_turn()).await;
+    assert!(gated.mode.agent_idle);
+    assert!(gated.mode.render(80).join("\n").contains("hello"), "the startup reply renders after the delta");
+    let captured = events.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    assert!(captured.last().is_some_and(is_terminal_session_event), "exact terminal event: {captured:?}");
+}
+

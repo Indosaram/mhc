@@ -43,7 +43,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     let shared_host = mount_shared_host(&session, parsed).await;
     if let Some(message) = shared_host.as_ref().and_then(SharedHostMount::warning_message) { eprintln!("{message}"); }
     let theme_setting = parsed.use_theme.clone().or_else(|| session.with_settings_manager(|settings| settings.get_string("theme")));
-    let theme = super::startup_ui::resolve_startup_theme(theme_setting.as_deref(), std::env::var("COLORFGBG").ok().as_deref())?;
+    let theme = resolve_interactive_startup_theme(&session, parsed, theme_setting.as_deref()).await?;
     let mut terminal = ProcessTerminal::default();
     let host = Rc::new(EditorHost { rows: Cell::new(usize::from(terminal.rows())), render: Cell::new(true) });
     let mut mode = InteractiveMode::new(session.clone(), theme.clone(), host.clone());
@@ -67,8 +67,8 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     screen.before_terminal_start(&mut terminal, false, false);
     terminal.start(Box::new(move |chunk| captured.borrow_mut().push(chunk.into())), Box::new(|| {}));
     let result = async {
-        if let Some(text) = initial.initial_message { mode.submit(&text, maho_core::agent_session::PromptOptions { images: initial.initial_images, ..Default::default() }).await?; }
-        for text in &parsed.messages { mode.submit(text, Default::default()).await?; }
+        if let Some(text) = initial.initial_message { mode.enqueue_submission(&text, initial.initial_images); }
+        for text in &parsed.messages { mode.enqueue_submission(text, None); }
         let clock = std::time::Instant::now();
         let mut installed_native_renderers = Vec::new();
         while !mode.shutdown_requested {
@@ -87,6 +87,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             let now = u64::try_from(clock.elapsed().as_millis()).map_err(|error| error.to_string())?;
             let chunks = std::mem::take(&mut *input.borrow_mut());
             for chunk in chunks { mode.handle_runtime_input(&chunk, now).await?; }
+            mode.pump_turn().await;
             rendered.borrow_mut().0 = mode.render(usize::from(terminal.columns()));
             screen.base_mut().request_render(false, now);
             screen.do_render(&mut terminal);
@@ -100,4 +101,45 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     screen.after_terminal_stop(&mut terminal, false);
     drop(shared_host);
     result.and(stopped)
+}
+
+/// senpi `createStartupTui`'s theme half, owned by this interactive entry: register the
+/// package/CLI-resolved theme resources before the first frame, then resolve the configured name.
+/// The package manager is async and its `ResolvedPaths::themes` had no production consumer, so the
+/// resources are loaded here (via task-2's `startup_ui::load_theme_resources` /
+/// `resolve_startup_theme_with_registered`) instead of being dropped. Diagnostics are reported, not
+/// swallowed, and the custom themes directory keeps the native `<agent_dir>/themes` contract.
+async fn resolve_interactive_startup_theme(
+    session: &maho_core::agent_session::AgentSession,
+    parsed: &super::args::Args,
+    setting: Option<&str>,
+) -> Result<maho_interactive::theme::Theme, String> {
+    let cwd = session.cwd();
+    let agent_dir = session.agent_dir();
+    let mut diagnostics: Vec<String> = Vec::new();
+    // senpi `loadStartupThemes(settingsManager)`: package-resolved theme resources first.
+    let mut theme_paths: Vec<PathBuf> = Vec::new();
+    {
+        let trusted = session.with_settings_manager(|settings| settings.is_project_trusted());
+        let mut settings = maho_core::settings_manager::SettingsManager::create(&cwd, &agent_dir, &maho_core::config::home_dir(), trusted);
+        let manager = maho_core::package_manager::DefaultPackageManager::new(maho_core::package_manager::PackageManagerOptions {
+            cwd: &cwd, agent_dir: &agent_dir, settings_manager: &mut settings,
+        });
+        match manager.resolve(None).await {
+            Ok(paths) => theme_paths.extend(paths.themes.into_iter().filter(|resource| resource.enabled).map(|resource| PathBuf::from(resource.path))),
+            Err(error) => diagnostics.push(format!("package themes: {error}")),
+        }
+    }
+    // senpi `resolveCliPaths`: the `--theme` paths resolved against the launch cwd.
+    let runtime_config = super::host_runtime::CliRuntimeConfiguration::from_parsed(parsed, &cwd, &agent_dir, maho_core::project_trust::AppMode::Interactive);
+    theme_paths.extend(runtime_config.resolved_theme_paths().into_iter().map(PathBuf::from));
+    let (registered, theme_diagnostics) = super::startup_ui::load_theme_resources(theme_paths, maho_interactive::theme::ColorMode::Truecolor);
+    diagnostics.extend(theme_diagnostics);
+    let custom_directory = PathBuf::from(crate::config::get_custom_themes_dir());
+    let resolution = super::startup_ui::resolve_startup_theme_with_registered(
+        setting, std::env::var("COLORFGBG").ok().as_deref(), &custom_directory, registered,
+    )?;
+    diagnostics.extend(resolution.diagnostics);
+    for diagnostic in &diagnostics { eprintln!("theme: {diagnostic}"); }
+    Ok(resolution.theme)
 }
