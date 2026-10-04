@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
-use maho_ext_api::{DeliverAs, EventBus, EventKind, Extension, ExtensionApi, ExtensionRuntime, ExtensionSessionProfile, FlagValue, IdleInjection, IdleInjectionSource, LoadedExtension, SourceInfo, ToolDefinition};
+use maho_ext_api::{DeliverAs, EventBus, Extension, ExtensionApi, ExtensionRuntime, ExtensionSessionProfile, FlagValue, IdleInjection, IdleInjectionSource, LoadedExtension, SourceInfo, ToolDefinition};
 use maho_omo::{DeferredScheduler, Delivery, IdleInjectionDelivery, IdleInjectionMessage, IdleInjectionQueue, TurnBarrier};
 pub struct FakeComponent {
     register: Box<dyn Fn(&mut ExtensionApi) + Send + Sync>,
@@ -37,10 +37,6 @@ pub fn tool_names(api: &ExtensionApi) -> Vec<String> {
 
 pub fn command_names(api: &ExtensionApi) -> Vec<String> {
     api.registered.commands.iter().map(|command| command.name.clone()).collect()
-}
-
-pub fn handler_events(api: &ExtensionApi) -> Vec<EventKind> {
-    api.registered.handlers.keys().copied().collect()
 }
 
 pub fn fake_tool(name: &str) -> ToolDefinition {

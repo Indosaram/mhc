@@ -140,7 +140,7 @@ impl CredentialStore for AuthStorageCredentialStore {
             let next = f(current.clone()).await?;
             if let Some(next) = &next {
                 let encoded = Self::encode(next)?;
-                let mut guard = storage.lock().await;
+                let guard = storage.lock().await;
                 guard.set(&provider_id_owned, Some(encoded)).map_err(|error| anyhow::anyhow!("{error}"))?;
             }
             Ok(next.or(current))
@@ -152,7 +152,7 @@ impl CredentialStore for AuthStorageCredentialStore {
         let storage = Arc::clone(&self.storage);
         let provider_id_owned = provider_id.to_owned();
         let task = async move {
-            let mut guard = storage.lock().await;
+            let guard = storage.lock().await;
             guard.delete(&provider_id_owned).map_err(|error| anyhow::anyhow!("{error}"))?;
             Ok::<(), anyhow::Error>(())
         };

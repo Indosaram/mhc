@@ -1,5 +1,3 @@
-mod support;
-
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use maho_ext_api::{IdleInjectionCoordinator, IdleInjectionSource};
 use maho_omo::TaskCoordinator;
@@ -8,11 +6,11 @@ use senpi_task::{completion::ParentNotifierMessage, team::messaging::lead_poller
 
 #[test]
 fn task_team_and_continuation_share_one_delivery_and_acknowledge_after_flush() {
-    let (queue, log, scheduler) = support::manual_coordinator();
+    let (queue, log, scheduler) = crate::support::manual_coordinator();
     let bridge = TaskCoordinator(Arc::new(queue.clone()));
     let acknowledgements = Arc::new(AtomicUsize::new(0));
     let acknowledged = Arc::clone(&acknowledgements);
-    queue.enqueue(support::injection("ulw", IdleInjectionSource::UlwContinuation, "continue"));
+    queue.enqueue(crate::support::injection("ulw", IdleInjectionSource::UlwContinuation, "continue"));
     LeadInjectionCoordinator::enqueue(&bridge, LeadInjection {
         key: "team-message:1".into(), source: "team-message", content: "team ready".into(),
         on_flushed: Some(Box::new(move || { acknowledged.fetch_add(1, Ordering::SeqCst); })),
