@@ -47,6 +47,20 @@ impl senpi_task::team::runtime_types::TeamRuntimeManagerPort for TeamManager {
     }
 }
 
+pub fn configured_team_bounds(config: &serde_json::Value) -> Result<senpi_task::team::runtime_config::TeamTaskBounds, maho_ext_api::ExtensionFailure> {
+    let team = &config["task"]["team"];
+    let value = |key: &str, default| match team.get(key) {
+        None => Ok(default),
+        Some(value) => value.as_u64().filter(|value| *value > 0).ok_or_else(|| maho_ext_api::ExtensionFailure::new(format!("task.team.{key} must be a positive integer"))),
+    };
+    let bounds = senpi_task::team::runtime_config::TeamTaskBounds {
+        max_members: value("max_members", 8)?, max_parallel_members: value("max_parallel_members", 4)?,
+        max_wall_clock_minutes: value("max_wall_clock_minutes", 120)?,
+    };
+    senpi_task::team::runtime_config::to_team_core_config(&bounds, "").map_err(maho_ext_api::ExtensionFailure::new)?;
+    Ok(bounds)
+}
+
 pub fn mount_team_runtime(api: &mut maho_ext_api::ExtensionApi, component: &Arc<maho_omo_task::component::TaskComponent>, ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps, actions: Arc<dyn maho_ext_api::ExtensionActions>) -> Result<(), maho_ext_api::ExtensionFailure> {
     use maho_omo_task::{team_service::{create_team_service, TeamServiceDeps}, lead_poller_lifecycle::{create_lead_poller_lifecycle, LeadPollerLifecycleDeps, LeadMessageSink}, member_liveness::{create_team_member_liveness_notifier, TeamMemberLivenessDeps}};
     use senpi_task::tools::team::types::TeamToolsService;
@@ -57,7 +71,9 @@ pub fn mount_team_runtime(api: &mut maho_ext_api::ExtensionApi, component: &Arc<
         destruction: Arc::new(maho_omo_task::lifecycle_adapters::TaskLifecycleDestruction((*component.engine.lifecycle).clone())),
         session_id: session.clone(), state_dir: ownership.state_dir.clone(), bounds: ownership.team_bounds,
         omo_config: component.engine.config.clone(), agent_names: component.engine.agents.keys().cloned().collect(),
-        member_extension: senpi_task::team::runtime_types::TeamMemberExtensionConfig { entry_path: "builtin:task".into(), inherited_extensions: None },
+        member_extension: senpi_task::team::runtime_types::TeamMemberExtensionConfig {
+            entry_path: "builtin:task".into(), inherited_extensions: Some(senpi_task::runners::rpc::parent_extensions::parse_extension_entries(&std::env::args().collect::<Vec<_>>())),
+        },
         append_task_event: None, now: None, new_message_id: None,
     }).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?);
     let config = senpi_task::team::runtime_config::to_team_core_config(&ownership.team_bounds,
@@ -72,7 +88,7 @@ pub fn mount_team_runtime(api: &mut maho_ext_api::ExtensionApi, component: &Arc<
     let pollers = create_lead_poller_lifecycle(LeadPollerLifecycleDeps {
         list_teams: Arc::new(move || listing.list_teams().map_err(|error| error.to_string())), session_id: session, session_file: file,
         parent_state, config, runtime_dir: Arc::new(move |id| senpi_task::team::storage::team_storage_base_dir(&dirs).join("runtime").join(id)),
-        delivery_journal: None, append_event: Arc::new(move |id, event| {
+        delivery_journal: Some(Arc::new(senpi_task::team::messaging::delivery_journal::create_lead_delivery_journal(Default::default()))), append_event: Arc::new(move |id, event| {
             if let Err(error) = store.append_event(id, &senpi_task::store::PersistedTaskEvent { event_type: event.event_type, payload: event.payload }) { eprintln!("Team event persistence failed: {error}"); }
         }), sink, factory: None, timers: timers.clone(), on_error: Arc::new(|error| eprintln!("Team poll failed: {error}")),
     });

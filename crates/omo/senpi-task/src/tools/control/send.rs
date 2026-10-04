@@ -93,6 +93,7 @@ pub fn run_task_send(
             let team_run_id = match resolve_send_team_run_id(params, team_routing) {
                 SendTeamRunIdResolution::None => return Ok(not_found(manager, &reason, caller_session_id)),
                 SendTeamRunIdResolution::Error { reason } => return Ok(invalid_arguments(&reason)),
+                SendTeamRunIdResolution::Failed { reason } => return Err(TaskSendError::Routing(reason)),
                 SendTeamRunIdResolution::Resolved { team_run_id } => team_run_id,
             };
 

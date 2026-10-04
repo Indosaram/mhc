@@ -16,6 +16,7 @@ pub struct TaskComponent {
     delivery: Mutex<()>,
     terminal_epochs: Mutex<std::collections::BTreeSet<(String, i64)>>,
     team: Mutex<Option<Arc<TeamRuntime>>>,
+    team_routing: Arc<Mutex<Option<senpi_task::tools::control::send_shutdown::TaskSendTeamRouting>>>,
     mutation_sync: Mutex<Option<u64>>,
     before_suspend: Mutex<Option<Arc<dyn Fn(&str) -> Result<(), maho_ext_api::ExtensionFailure> + Send + Sync>>>,
 }
@@ -37,7 +38,7 @@ impl TaskComponent {
         let channels = OwnedResumptionChannels::new(api.events.clone(), Arc::new(TaskResumptionChannelManager { manager: engine.manager.clone(), ownership }), session).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
         let status = TaskStatusUi::new(engine.manager.clone(), engine.runtime.clone(), timers, Arc::new(|| chrono::Utc::now().timestamp_millis()), Arc::new(|| None));
         let transitions = SessionTransitionBridge::new(engine.runtime.clone(), engine.notifier.clone());
-        let component = Arc::new(Self { engine, status, channels, transitions: Mutex::new(transitions), waiters: Mutex::new(BTreeMap::new()), rpc: Mutex::new(None), terminal: Mutex::new(None), delivery: Mutex::new(()), terminal_epochs: Mutex::new(std::collections::BTreeSet::new()), team:Mutex::new(None), mutation_sync:Mutex::new(None), before_suspend:Mutex::new(None) });
+        let component = Arc::new(Self { engine, status, channels, transitions: Mutex::new(transitions), waiters: Mutex::new(BTreeMap::new()), rpc: Mutex::new(None), terminal: Mutex::new(None), delivery: Mutex::new(()), terminal_epochs: Mutex::new(std::collections::BTreeSet::new()), team:Mutex::new(None), team_routing: Arc::new(Mutex::new(None)), mutation_sync:Mutex::new(None), before_suspend:Mutex::new(None) });
         let weak = Arc::downgrade(&component);
         component.engine.store.set_mutation_listener(Some(Arc::new(move || {
             if let Some(component) = weak.upgrade() {
@@ -64,7 +65,7 @@ impl TaskComponent {
         let weak = Arc::downgrade(&component);
         crate::commands::register_task_commands_with_sync(api, component.engine.manager.clone(), Arc::new(move || { if let Some(component) = weak.upgrade() { component.sync(); } }));
         let weak = Arc::downgrade(&component);
-        crate::tools::register_task_tools_with_sync(api, TaskToolsDeps { manager: component.engine.manager.clone(), state_dir: component.engine.store.state_dir().to_string_lossy().into_owned(), omo_config: component.engine.config.clone(), agents: component.engine.agents.clone(), spawn, policy: tracker, team_routing: None }, Arc::new(move || { if let Some(component) = weak.upgrade() { component.sync(); } }));
+        crate::tools::register_task_tools_with_sync(api, TaskToolsDeps { manager: component.engine.manager.clone(), state_dir: component.engine.store.state_dir().to_string_lossy().into_owned(), omo_config: component.engine.config.clone(), agents: component.engine.agents.clone(), spawn, policy: tracker, team_routing: component.team_routing.clone() }, Arc::new(move || { if let Some(component) = weak.upgrade() { component.sync(); } }));
         crate::reload_guard::wire_reload_guard(api, component.engine.manager.clone());
         let usage = api.get_flag("omo-task-usage-hint") != Some(FlagValue::Boolean(false));
         crate::event_bridge::wire_task_usage_guidance(api, Arc::new(move || usage));
@@ -172,11 +173,29 @@ impl TaskComponent {
     }
     pub fn register_team_runtime(self: &Arc<Self>, api: &mut ExtensionApi, service: Arc<crate::team_service::TeamService>, pollers: Arc<crate::lead_poller_lifecycle::LeadPollerLifecycle>, liveness: Arc<crate::member_liveness::TeamMemberLivenessNotifier>, ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps) {
         crate::tools::register_lead_team_tools(api, service.clone());
+        let resolver = pollers.clone();
+        self.set_team_routing(Some(senpi_task::tools::control::send_shutdown::TaskSendTeamRouting {
+            service: service.clone(), from: senpi_task::team::normalize::TEAM_LEAD_SENTINEL.into(), team_run_id: None,
+            resolve_default_team_run_id: Some(Arc::new(move || {
+                use crate::lead_poller_lifecycle::DefaultTeamRunIdResolution as Owned;
+                use senpi_task::tools::control::send_shutdown::DefaultTeamRunIdResolution as Send;
+                match resolver.resolve_default_team_run_id() {
+                    Ok(Owned::Resolved(team_run_id)) => Send::Resolved { team_run_id },
+                    Ok(Owned::None) => Send::None,
+                    Ok(Owned::Ambiguous(reason)) => Send::Ambiguous { reason },
+                    Err(reason) => Send::Failed { reason },
+                }
+            })),
+        }));
         let runtime = self.engine.runtime.clone();
         *self.terminal.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(crate::owned_member_liveness::create_owned_member_liveness_notifier(ownership, Arc::new(move || runtime.lock().unwrap_or_else(PoisonError::into_inner).session_id().map(str::to_owned)), liveness.clone())));
         *self.team.lock().unwrap_or_else(PoisonError::into_inner)=Some(Arc::new(TeamRuntime { service,pollers,liveness }));
     }
+    pub fn set_team_routing(&self, routing: Option<senpi_task::tools::control::send_shutdown::TaskSendTeamRouting>) {
+        *self.team_routing.lock().unwrap_or_else(PoisonError::into_inner) = routing;
+    }
     pub fn dispose(&self) {
+        self.set_team_routing(None);
         self.engine.store.set_mutation_listener(None);
         if let Some(handle) = self.mutation_sync.lock().unwrap_or_else(PoisonError::into_inner).take() { self.status.timers.clear(handle); }
         let waiters = std::mem::take(&mut *self.waiters.lock().unwrap_or_else(PoisonError::into_inner));

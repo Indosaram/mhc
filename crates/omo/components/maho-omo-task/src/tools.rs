@@ -12,7 +12,7 @@ pub struct TaskToolsDeps {
     pub agents: BTreeMap<String, AgentDefinition>,
     pub spawn: TaskToolDeps,
     pub policy: Arc<dyn SpawnPolicyDeps + Send + Sync>,
-    pub team_routing: Option<TaskSendTeamRouting>,
+    pub team_routing: Arc<std::sync::Mutex<Option<TaskSendTeamRouting>>>,
 }
 fn native_result(result: impl Serialize) -> Result<ToolResult, ToolError> { Ok(serde_json::from_value(serde_json::to_value(result)?)?) }
 
@@ -84,7 +84,8 @@ pub fn register_task_tools_with_sync(api: &mut ExtensionApi, deps: TaskToolsDeps
         Box::pin(async move {
             let params: TaskSendInput = serde_json::from_value(call.params)?;
             let session = call.context.map(|context| context.session_manager().session_id());
-            let result = run_task_send(deps.manager.as_ref(), &params, session, deps.team_routing.as_ref()).map_err(|error| ToolError::Message(error.to_string()))?;
+            let routing = deps.team_routing.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+            let result = run_task_send(deps.manager.as_ref(), &params, session, routing.as_ref()).map_err(|error| ToolError::Message(error.to_string()))?;
             native_result(result)
         })
     })); send.label = "Task Send".into(); register_synced_tool(api, send, sync.clone());

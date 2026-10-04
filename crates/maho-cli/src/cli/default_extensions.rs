@@ -127,7 +127,7 @@ impl Extension for Task {
                     let mut api = registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     let ownership = senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps {
                         state_dir: senpi_task::store::StateDirConfig { project_dir: ctx.cwd.clone(), task_state_dir: Some(engine.store.state_dir().into()) },
-                        team_bounds: senpi_task::team::runtime_config::TeamTaskBounds { max_members: 8, max_parallel_members: 4, max_wall_clock_minutes: 60 }, load_runtime_state: None,
+                        team_bounds: super::task_session::configured_team_bounds(&engine.config)?, load_runtime_state: None,
                     };
                     let manager = engine.manager.clone();
                     let spawn = senpi_task::tools::task::execute_spec::TaskToolDeps {
@@ -153,7 +153,7 @@ impl Extension for Task {
                         state_dir: ownership.state_dir.clone(), team_bounds: ownership.team_bounds, load_runtime_state: None,
                     };
                     if let Some(component) = maho_omo_task::component::TaskComponent::register(&mut api, engine, spawn, ownership,
-                        std::env::var("OMO_TEAM_MEMBER").is_ok())? {
+                        senpi_task::team::member_extension::identity::is_team_member_process_from_env())? {
                         super::task_session::mount_team_runtime(&mut api, &component, team_ownership, actions.clone())?;
                     }
                     api.registered.handlers.get(&maho_ext_api::EventKind::SessionStart).cloned().unwrap_or_default()

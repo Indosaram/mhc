@@ -19,6 +19,7 @@ pub enum DefaultTeamRunIdResolution {
     Resolved { team_run_id: String },
     None,
     Ambiguous { reason: String },
+    Failed { reason: String },
 }
 
 impl DefaultTeamRunIdResolution {
@@ -27,6 +28,7 @@ impl DefaultTeamRunIdResolution {
             Self::Resolved { .. } => "resolved",
             Self::None => "none",
             Self::Ambiguous { .. } => "ambiguous",
+            Self::Failed { .. } => "failed",
         }
     }
 }
@@ -48,6 +50,7 @@ pub enum SendTeamRunIdResolution {
     Resolved { team_run_id: String },
     None,
     Error { reason: String },
+    Failed { reason: String },
 }
 
 impl SendTeamRunIdResolution {
@@ -56,6 +59,7 @@ impl SendTeamRunIdResolution {
             Self::Resolved { .. } => "resolved",
             Self::None => "none",
             Self::Error { .. } => "error",
+            Self::Failed { .. } => "failed",
         }
     }
 }
@@ -67,6 +71,8 @@ pub enum TaskSendError {
     Service(#[from] TeamToolServiceError),
     #[error("{0}")]
     Manager(String),
+    #[error("{0}")]
+    Routing(String),
     #[error(transparent)]
     Invariant(#[from] SendInvariantError),
 }
@@ -89,6 +95,7 @@ pub fn resolve_send_team_run_id(params: &TaskSendInput, team_routing: &TaskSendT
         DefaultTeamRunIdResolution::Resolved { team_run_id } => SendTeamRunIdResolution::Resolved { team_run_id },
         DefaultTeamRunIdResolution::None => SendTeamRunIdResolution::None,
         DefaultTeamRunIdResolution::Ambiguous { reason } => SendTeamRunIdResolution::Error { reason },
+        DefaultTeamRunIdResolution::Failed { reason } => SendTeamRunIdResolution::Failed { reason },
     }
 }
 
@@ -130,6 +137,7 @@ pub fn route_structured_message(
     let run_id = match resolve_send_team_run_id(params, team_routing) {
         SendTeamRunIdResolution::None => return Ok(invalid_arguments("not in a team")),
         SendTeamRunIdResolution::Error { reason } => return Ok(invalid_arguments(&reason)),
+        SendTeamRunIdResolution::Failed { reason } => return Err(TaskSendError::Routing(reason)),
         SendTeamRunIdResolution::Resolved { team_run_id } => team_run_id,
     };
     let service = team_routing.service.as_ref();

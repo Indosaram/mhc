@@ -5,6 +5,45 @@ use maho_omo_task::{component::TaskComponent, engine::{compose_task_engine, Comp
 use senpi_task::{manager::types::{ManagedRunner, ManagedRunnerResult, ManagedStartSpec, ManagedRunners}, store::StateDirConfig, team::{liveness_ownership::TeamMemberOwnershipDeps, runtime_config::TeamTaskBounds}};
 
 struct NoLaunch;
+#[tokio::test]
+async fn registered_send_observes_late_team_routing_and_propagates_resolver_failure() {
+    let root = tempfile::tempdir().expect("root");
+    let runner = Arc::new(NoLaunch);
+    let engine = compose_task_engine(ComposeTaskEngineDeps {
+        cwd: root.path().into(), config: serde_json::json!({}),
+        runners: ManagedRunners { in_process: runner.clone(), process: runner },
+        actions: Arc::new(Actions::default()), coordinator: None, resolve_registry: Arc::new(|| None),
+    });
+    let mut api = support::api();
+    let ownership = TeamMemberOwnershipDeps {
+        state_dir: StateDirConfig { project_dir: root.path().into(), task_state_dir: None },
+        team_bounds: TeamTaskBounds { max_members: 4, max_parallel_members: 2, max_wall_clock_minutes: 10 }, load_runtime_state: None,
+    };
+    let component = TaskComponent::register_with_status_timers(&mut api, engine, Default::default(), TeamMemberOwnershipDeps {
+        state_dir: ownership.state_dir.clone(), team_bounds: ownership.team_bounds, load_runtime_state: None,
+    }, false, Arc::new(Timers::default())).expect("register").expect("component");
+    let execute = api.registered.tools.iter().find(|tool| tool.definition.name == "task_send").expect("send").definition.execute.clone();
+    let service = Arc::new(maho_omo_task::team_service::create_team_service(maho_omo_task::team_service::TeamServiceDeps {
+        manager: component.engine.manager.clone(), member_manager: Arc::new(Members), destruction: Arc::new(Members),
+        session_id: Arc::new(|| Some("session".into())), state_dir: ownership.state_dir, bounds: ownership.team_bounds,
+        omo_config: serde_json::json!({}), agent_names: Default::default(), member_extension: Default::default(),
+        append_task_event: None, now: None, new_message_id: None,
+    }).expect("service"));
+    let params = serde_json::json!({"to":"beta","message":{"type":"shutdown_request"}});
+    let context = support::context();
+    let before = execute(ToolCall { id: "before", params: params.clone(), signal: Default::default(), on_update: None, context: Some(&context) }).await.expect("unwired result");
+    assert_eq!(before.details.expect("details")["kind"], "invalid_arguments");
+    component.set_team_routing(Some(senpi_task::tools::control::send_shutdown::TaskSendTeamRouting {
+        service, from: senpi_task::team::normalize::TEAM_LEAD_SENTINEL.into(), team_run_id: None,
+        resolve_default_team_run_id: Some(Arc::new(|| senpi_task::tools::control::send_shutdown::DefaultTeamRunIdResolution::Failed { reason: "fixture storage failure".into() })),
+    }));
+    for params in [params, serde_json::json!({"to":"beta","message":"work"})] {
+        let result = execute(ToolCall { id: "after", params, signal: Default::default(), on_update: None, context: Some(&context) }).await;
+        assert!(matches!(result, Err(maho_ext_api::ToolError::Message(reason)) if reason == "fixture storage failure"));
+    }
+    assert_eq!(api.registered.tools.iter().filter(|tool| tool.definition.name == "task_send").count(), 1);
+    component.dispose(); drop(execute); drop(api); drop(component); root.close().expect("cleanup");
+}
 struct Members;
 impl senpi_task::team::runtime_types::TeamMemberReadPort for Members { fn get(&self,_:&str)->Option<senpi_task::team::runtime_types::TeamMemberTaskRecord> { None } }
 impl senpi_task::team::runtime_types::TeamMemberCancelPort for Members { fn cancel_task(&self,_:&str,_:Option<&str>)->senpi_task::team::runtime_types::TeamCancelOutcome { panic!("unexpected cancellation") } }

@@ -4,6 +4,17 @@ use maho_cli::cli::task_runners::{authenticated_rpc_options, native_rpc_options}
 use senpi_task::runners::types::RpcRunnerSpec;
 
 #[test]
+fn team_bounds_use_configured_values_and_pinned_defaults() {
+    use maho_cli::cli::task_session::configured_team_bounds;
+    let defaults = configured_team_bounds(&serde_json::json!({})).unwrap();
+    assert_eq!(defaults.max_wall_clock_minutes, 120);
+    let configured = configured_team_bounds(&serde_json::json!({"task":{"team":{"max_members":3,"max_parallel_members":2,"max_wall_clock_minutes":17}}})).unwrap();
+    assert_eq!((configured.max_members, configured.max_parallel_members, configured.max_wall_clock_minutes), (3, 2, 17));
+    assert!(configured_team_bounds(&serde_json::json!({"task":{"team":{"max_members":9}}})).is_err());
+    assert!(configured_team_bounds(&serde_json::json!({"task":{"team":{"max_wall_clock_minutes":0}}})).is_err());
+}
+
+#[test]
 fn production_team_adapter_forwards_full_member_start_spec_to_manager() {
     use std::sync::{Arc, Mutex};
     use senpi_task::{manager::{TaskManager, types::{ManagedRunner, ManagedStartSpec, ManagedRunnerResult, ManagedRunners, TaskManagerOptions, PlanResolutionCode, PlanResolutionError}},
