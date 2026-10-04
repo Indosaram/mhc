@@ -591,15 +591,26 @@ async function scenarioMini(ctx) {
 // Scenario: server — the ported senpi app-server ndjson round-trip.
 // ---------------------------------------------------------------------------------------------
 
-/** A line-based JSON-RPC client over a child's stdio, with responses by id and a notification
- *  backlog + waiters (for `thread/goal/updated`). */
+/** A line-based JSON-RPC client over a child's stdio. Lines are processed immediately as each
+ *  stdout chunk arrives (no polling timer); the decoder is flushed at EOF; a stream error rejects
+ *  every pending response/notification waiter. The full incoming+outgoing NDJSON exchange is
+ *  retained for the evidence log. */
 function appServerClient(child) {
 	let buffer = "";
 	const responses = new Map();
 	const notifications = [];
 	const waiters = new Set();
 	const responseWaiters = new Map();
+	const exchange = [];
 	const decoder = new TextDecoder("utf8");
+	let closed = false;
+	const failAll = (error) => {
+		if (closed) return;
+		closed = true;
+		for (const [, waiter] of responseWaiters) waiter.reject(error);
+		responseWaiters.clear();
+		for (const w of waiters) (waiters.delete(w), w.reject(error));
+	};
 	const handle = (line) => {
 		let message;
 		try {
@@ -607,12 +618,13 @@ function appServerClient(child) {
 		} catch {
 			return;
 		}
+		exchange.push({ direction: "in", message });
 		if (message.id !== undefined && (message.result !== undefined || message.error !== undefined)) {
 			responses.set(message.id, message);
 			const waiter = responseWaiters.get(message.id);
 			if (waiter) {
 				responseWaiters.delete(message.id);
-				waiter(message);
+				waiter.resolve(message);
 			}
 		} else if (message.method) {
 			notifications.push(message);
@@ -620,36 +632,48 @@ function appServerClient(child) {
 		}
 	};
 	(async () => {
-		for await (const chunk of child.stdout) buffer += decoder.decode(chunk, { stream: true });
-	})();
-	const poll = setInterval(() => {
-		let index;
-		while ((index = buffer.indexOf("\n")) >= 0) {
-			const line = buffer.slice(0, index).trim();
-			buffer = buffer.slice(index + 1);
-			if (line) handle(line);
+		try {
+			for await (const chunk of child.stdout) {
+				buffer += decoder.decode(chunk, { stream: true });
+				let index;
+				while ((index = buffer.indexOf("\n")) >= 0) {
+					const line = buffer.slice(0, index).trim();
+					buffer = buffer.slice(index + 1);
+					if (line) handle(line);
+				}
+			}
+			buffer += decoder.decode();
+			const tail = buffer.trim();
+			if (tail) handle(tail);
+			failAll(new Error("app-server stream closed"));
+		} catch (error) {
+			failAll(error);
 		}
-	}, 10);
+	})();
 	return {
 		notifications,
+		exchange,
 		call(id, method, params, timeoutMs = 20_000) {
 			return new Promise((resolve, reject) => {
+				if (closed) return reject(new Error("app-server stream closed"));
 				const timer = setTimeout(() => (responseWaiters.delete(id), reject(new Error(`${method} timed out`))), timeoutMs);
-				responseWaiters.set(id, (message) => (clearTimeout(timer), resolve(message)));
-				child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+				responseWaiters.set(id, { resolve: (m) => (clearTimeout(timer), resolve(m)), reject: (e) => (clearTimeout(timer), reject(e)) });
+				const frame = { jsonrpc: "2.0", id, method, params };
+				exchange.push({ direction: "out", message: frame });
+				child.stdin.write(`${JSON.stringify(frame)}\n`);
 			});
 		},
 		waitForNotification(pred, timeoutMs) {
 			const existing = notifications.find(pred);
 			if (existing) return Promise.resolve(existing);
 			return new Promise((resolve, reject) => {
-				const w = { pred, resolve };
+				const w = { pred, resolve, reject };
 				const timer = setTimeout(() => (waiters.delete(w), reject(new Error("notification timeout"))), timeoutMs);
 				w.resolve = (v) => (clearTimeout(timer), resolve(v));
+				w.reject = (e) => (clearTimeout(timer), reject(e));
 				waiters.add(w);
 			});
 		},
-		stop: () => clearInterval(poll),
 	};
 }
 
@@ -707,30 +731,41 @@ async function scenarioServer(ctx) {
 		const threadId = started.result?.thread?.id ?? started.result?.id ?? null;
 		if (!threadId) throw new Error(`thread/start returned no thread id: ${JSON.stringify(started).slice(0, 200)}`);
 
-		// 3. thread/goal/set + thread/goal/get (task-12 goal handlers). If the method is not
-		//    assembled the error is a DEPENDENCY (blocked); a present-but-wrong result is a FAIL.
+		// 3. Subscribe to the exact `thread/goal/updated` notification for THIS thread+objective BEFORE
+		//    the action, so a fast notification cannot be missed.
+		const updatedPromise = client.waitForNotification(
+			(message) => message.method === "thread/goal/updated" && message.params?.threadId === threadId && message.params?.goal?.objective === objective,
+			15_000,
+		);
+		// 4. thread/goal/set + thread/goal/get (task-12 goal handlers). An unregistered method
+		//    (-32601 Method not found) is the EXPLICIT pre-assembly dependency -> blocked; any other
+		//    error, or a wrong round-trip, is a post-assembly runtime FAIL.
 		const setResult = await client.call(3, "thread/goal/set", { threadId, objective });
 		if (setResult.error !== undefined) {
-			status = "blocked";
-			throw new Error(`thread/goal/set unavailable: ${JSON.stringify(setResult.error).slice(0, 160)}`);
+			if (setResult.error.code === -32601) {
+				status = "blocked";
+				throw new Error(`thread/goal/set not assembled: ${JSON.stringify(setResult.error).slice(0, 160)}`);
+			}
+			throw new Error(`thread/goal/set failed: ${JSON.stringify(setResult.error).slice(0, 200)}`);
 		}
 		const getResult = await client.call(4, "thread/goal/get", { threadId });
+		if (getResult.error !== undefined) throw new Error(`thread/goal/get failed: ${JSON.stringify(getResult.error).slice(0, 200)}`);
 		const goal = getResult.result?.goal ?? null;
 		const roundTripped = goal?.objective === objective;
 		let updated = null;
 		try {
-			updated = await client.waitForNotification((message) => message.method === "thread/goal/updated", 15_000);
+			updated = await updatedPromise;
 		} catch {
 			updated = null;
 		}
 		ok = roundTripped && updated !== null;
-		detail = `initialize=${initOk} threadId=${threadId !== null} goalSet=${setResult.error === undefined} goalRoundTrip=${roundTripped} updatedNotification=${updated !== null}`;
-		writeFileSync(join(ctx.qaRoot, "server-app-server.log"), JSON.stringify({ init: init.result, started: started.result, setResult, getResult: getResult.result, notifications: client.notifications.map((n) => n.method) }, null, 2) + "\n");
+		detail = `initialize=${initOk} threadId=${threadId !== null} goalRoundTrip=${roundTripped} updatedNotification=${updated !== null}`;
 	} catch (error) {
 		detail = `server: ${error.message}`;
 	} finally {
 		clearTimeout(deadline);
-		if (client) client.stop();
+		// Record the FULL incoming/outgoing NDJSON exchange (including any error/failure path).
+		if (client) writeFileSync(join(ctx.qaRoot, "server-app-server.log"), JSON.stringify({ objective, status, detail, exchange: client.exchange }, null, 2) + "\n");
 		if (proc) {
 			try {
 				proc.stdin.end();
