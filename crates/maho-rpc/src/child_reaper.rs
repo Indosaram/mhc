@@ -48,7 +48,7 @@ impl ChildReaperHandle { pub fn stop(self) { self.task.abort(); } }
 pub fn create_child_reaper(syscalls:crate::child_reaper_syscalls::LinuxChildReaperSyscalls,min_waitable_ms:u64)->ChildReaper<crate::child_reaper_syscalls::LinuxChildReaperSyscalls>{ChildReaper::new(syscalls,min_waitable_ms)}
 /// Arms the reaper on the host loop. `None` when disabled, or the platform exposes no
 /// syscalls (the caller logs the unavailability). Mirrors senpi's `startHostChildReaper`.
-pub fn start_host_child_reaper(env:&HashMap<String,String>,platform:&str,mut log:impl FnMut(String))->Option<ChildReaperHandle>{
+pub fn start_host_child_reaper(env:&HashMap<String,String>,platform:&str,mut log:impl FnMut(String)+Send+'static)->Option<ChildReaperHandle>{
     let config=resolve_child_reaper_config(env);
     if !config.enabled{return None;}
     let Some(syscalls)=crate::child_reaper_syscalls::load_child_reaper_syscalls(platform)else{

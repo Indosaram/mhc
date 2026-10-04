@@ -29,7 +29,7 @@ pub async fn arm_host_watchdog(config:Option<HostWatchdogConfig>,mut on_supervis
     let reason=if let Some(fd)=config.fd{
         match watch_fd_for_eof(fd).await{Some(reason)=>Some(reason),None=>config.ppid.map(|pid|format!("supervisor pid {pid} is gone (ppid={})",parent_pid()))}
     }else if let Some(pid)=config.ppid{
-        Some(watch_supervisor_parent(pid,std::process::id(),||(parent_pid(),crate::host_reservations::process_is_live(pid))).await)
+        Some(watch_supervisor_parent(u32::try_from(pid).unwrap_or(u32::MAX),std::process::id(),||(parent_pid(),crate::host_reservations::process_is_live(u32::try_from(pid).unwrap_or(u32::MAX)))).await)
     }else{None};
     let Some(reason)=reason else{return;};
     let _=cleanup_watchdog_paths(&config,async{Ok::<(),String>(())}).await;

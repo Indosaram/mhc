@@ -84,8 +84,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let agent_dir = maho_core::config::get_agent_dir();
     let session_dir = if faux {Some(std::path::Path::new(&agent_dir).join("qa-sessions").display().to_string())} else {std::env::var("MAHO_SESSION_DIR").ok()};
     let runtime = AppServerRuntime::new(agent_dir,cwd,"1".into(),session_dir,faux.then(qa_factory)).await;
+    // Process entry owns the signals: the first SIGINT/SIGTERM requests a graceful shutdown and a
+    // second forces exit(1), mirroring the pinned runAppServerMode escalation.
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    run_app_server_mode(&runtime,listen,ws_auth,async move {
-        tokio::select! {_ = terminate.recv() => {}, result = tokio::signal::ctrl_c() => {if let Err(error) = result {eprintln!("app-server signal: {error}");}}}
-    }).await.map_err(Into::into)
+    // `oneshot::channel()` yields `(Sender, Receiver)`: the signal task holds the Sender, the
+    // shutdown future the process awaits is the Receiver.
+    let (shutdown_tx, shutdown) = tokio::sync::oneshot::channel::<()>();
+    let mut shutdown_tx = Some(shutdown_tx);
+    tokio::spawn(async move {
+        loop {
+            tokio::select! { _ = interrupt.recv() => {}, _ = terminate.recv() => {} }
+            match shutdown_tx.take() {
+                Some(sender) => { let _ = sender.send(()); }
+                None => std::process::exit(1),
+            }
+        }
+    });
+    run_app_server_mode(&runtime,listen,ws_auth,async move { let _ = shutdown.await; }).await.map_err(Into::into)
 }

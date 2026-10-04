@@ -135,7 +135,7 @@ pub async fn run_host_supervisor(launch:SupervisorLaunch)->std::io::Result<()>{
     let child_launch=resolve_host_child_launch(&launch,&internal.socket)?;
     let mut child_env=crate::host_successor::successor_env(env.clone(),0,&instance_id,&paths.dir.to_string_lossy(),Some(&agent_dir),&std::collections::HashMap::new());
     child_env.insert(crate::host_watchdog::HOST_PUBLIC_SOCKET_ENV.into(),public_socket.clone());
-    match &internal.dir{Some(dir)=>{child_env.insert(crate::host_watchdog::HOST_SCRATCH_DIR_ENV.into(),dir.to_string_lossy().into_owned());},None=>{}}
+    if let Some(dir)=&internal.dir{child_env.insert(crate::host_watchdog::HOST_SCRATCH_DIR_ENV.into(),dir.to_string_lossy().into_owned());}
     let stderr={
         use std::os::unix::fs::OpenOptionsExt;
         std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&paths.stderr_log)?
@@ -168,7 +168,7 @@ pub async fn run_host_supervisor(launch:SupervisorLaunch)->std::io::Result<()>{
     let turns=std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (activity_tx,activity_rx)=tokio::sync::watch::channel(HostActivity::default());
     let (draining_tx,draining_rx)=tokio::sync::watch::channel(false);
-    let (connections_tx,mut connections_rx)=tokio::sync::watch::channel(0usize);
+    let (connections_tx,connections_rx)=tokio::sync::watch::channel(0usize);
     let observer_busy=turns.clone();
     let observer_socket=internal.socket.clone();
     let observer_draining=draining_rx.clone();
@@ -188,6 +188,7 @@ pub async fn run_host_supervisor(launch:SupervisorLaunch)->std::io::Result<()>{
     let activity_draining=draining_rx.clone();
     let publisher=tokio::spawn(async move{
         let mut connections_rx=connections_rx;
+        let mut draining_watch=activity_draining.clone();
         loop{
             if *activity_draining.borrow(){return;}
             let connections=*connections_rx.borrow_and_update() as u64;
@@ -196,7 +197,7 @@ pub async fn run_host_supervisor(launch:SupervisorLaunch)->std::io::Result<()>{
             tokio::select!{
                 changed=connections_rx.changed()=>{if changed.is_err(){return;}},
                 ()=tokio::time::sleep(std::time::Duration::from_millis(250))=>{},
-                changed=activity_draining.clone().changed()=>{if changed.is_err()||*activity_draining.borrow(){return;}},
+                changed=draining_watch.changed()=>{if changed.is_err()||*activity_draining.borrow(){return;}},
             }
         }
     });

@@ -625,6 +625,42 @@ pub trait ExtensionUi: Send + Sync {
     fn theme(&self) -> Theme;
 }
 
+/// One queued idle-edge injection (upstream `IdleInjection`, idle-injection-coordinator.ts).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdleInjectionSource { TaskCompletion, TeamMessage, TeamLiveness, BoulderContinuation, UlwContinuation, DagRun }
+/// `onFlushed` callback: runs once per injection after a successful delivery.
+pub type IdleInjectionCallback = Arc<dyn Fn() + Send + Sync>;
+/// `onDeliveryFailed` callback: receives the delivery error message.
+pub type IdleInjectionFailureCallback = Arc<dyn Fn(&str) + Send + Sync>;
+#[derive(Clone)]
+pub struct IdleInjection {
+    pub key: String, pub source: IdleInjectionSource, pub custom_type: Option<String>,
+    pub content: String, pub display: Option<bool>, pub details: Option<JsonValue>,
+    pub on_flushed: Option<IdleInjectionCallback>, pub on_delivery_failed: Option<IdleInjectionFailureCallback>,
+}
+/// The single idle-edge injection queue. The concrete implementation lives in the composition
+/// (`crates/omo/maho-omo`, todo 47); ext-api defines only the contract so `ExtensionContext` can
+/// carry it without depending on that crate. `None` means "no coordinator" and every consumer
+/// falls back to a direct send, matching upstream's optional `ComponentContext.idleCoordinator`.
+pub trait IdleInjectionCoordinator: Send + Sync {
+    fn enqueue(&self, injection: IdleInjection);
+    fn schedule_flush(&self);
+    fn flush_soon(&self);
+    fn flush_on_idle(&self) -> usize;
+    fn pending_count(&self) -> usize;
+    fn remove(&self, key: &str) -> bool;
+}
+/// Structured component logger (upstream `ComponentLogger`, omo-senpi extension/types.ts:40).
+pub trait ComponentLogger: Send + Sync {
+    fn info(&self, message: &str, details: Option<&JsonValue>);
+    fn warn(&self, message: &str, details: Option<&JsonValue>);
+    fn error(&self, message: &str, details: Option<&JsonValue>);
+}
+/// Host-provided deferred scheduler (upstream `setTimeout(0)`): the host decides how the deferred
+/// task is scheduled and ordered. A `tokio::spawn`/`yield_now` is not by itself asserted equivalent
+/// to a JS macrotask; the concrete host (todo 47) must establish the ordering.
+pub type DeferredMacrotask = Arc<dyn Fn(Box<dyn FnOnce() + Send + 'static>) + Send + Sync>;
+
 /// Context actions are live host callbacks rather than frozen snapshots.
 #[derive(Clone)]
 pub struct ExtensionContext {
@@ -641,6 +677,12 @@ pub struct ExtensionContext {
     pub get_system_prompt_options_fn: Arc<dyn Fn() -> BuildSystemPromptOptions + Send + Sync>,
     pub registered_mcp_servers: Vec<RegisteredMcpServerDeclaration>,
     pub update_tool_hook_status: Option<ToolHookStatusUpdater>,
+    /// Idle-edge injection arbiter (todo 47). `None` = no coordinator; consumers send directly.
+    pub idle_coordinator: Option<Arc<dyn IdleInjectionCoordinator>>,
+    /// Structured component logger (todo 47). `None` = only `ctx.ui.notify`/`eprintln!` fallbacks.
+    pub logger: Option<Arc<dyn ComponentLogger>>,
+    /// Host deferred-macrotask scheduler (todo 47). `None` = no host macrotask entry point.
+    pub defer_macrotask: Option<DeferredMacrotask>,
 }
 impl ExtensionContext {
     fn assert_active_or_panic(&self) {
@@ -1145,6 +1187,36 @@ pub trait ExtensionSessionActions: Send + Sync {
     fn exec<'a>(&'a self, command: &'a str, args: &'a [String], cwd: &'a Path, options: ExecOptions) -> ExtensionFuture<'a, ExecResult>;
 }
 
+/// Typed companion to the upstream `config-watch:register` in-process protocol.
+/// The JSON event bus cannot carry a callable, so in-process registrations carry
+/// their `validate` callback here and are delivered to typed listeners.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigWatchTargetKind { File, Dir }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigWatchTargetSpec { pub path: PathBuf, pub kind: ConfigWatchTargetKind, pub filter_globs: Vec<String> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConfigWatchValidation { Ok, Rejected { errors: Vec<String> } }
+pub type ConfigWatchValidator = Arc<dyn Fn(&[PathBuf]) -> ConfigWatchValidation + Send + Sync>;
+#[derive(Clone)]
+pub struct RegisteredConfigWatch { pub id: String, pub display_name: String, pub targets: Vec<ConfigWatchTargetSpec>, pub validate: ConfigWatchValidator }
+/// Typed delivery listener: receives the owning extension path plus each registration.
+pub type ConfigWatchRegistrationListener = Arc<dyn Fn(&str, &RegisteredConfigWatch) + Send + Sync>;
+/// Upstream wire channel for the JSON (callable-free) registration payload.
+pub const CONFIG_WATCH_REGISTER_CHANNEL: &str = "config-watch:register";
+/// Serializes a typed registration into the upstream `config-watch:register` wire shape.
+pub fn config_watch_registration_json(registration: &RegisteredConfigWatch) -> JsonValue {
+    let targets: Vec<JsonValue> = registration.targets.iter().map(|target| JsonValue::Object([
+        (String::from("path"), JsonValue::String(target.path.to_string_lossy().into_owned())),
+        (String::from("kind"), JsonValue::String((match target.kind { ConfigWatchTargetKind::File => "file", ConfigWatchTargetKind::Dir => "dir" }).into())),
+        (String::from("filterGlobs"), JsonValue::Array(target.filter_globs.iter().cloned().map(JsonValue::String).collect())),
+    ].into_iter().collect())).collect();
+    JsonValue::Object([
+        (String::from("id"), JsonValue::String(registration.id.clone())),
+        (String::from("displayName"), JsonValue::String(registration.display_name.clone())),
+        (String::from("targets"), JsonValue::Array(targets)),
+    ].into_iter().collect())
+}
+
 pub type BusHandler = Arc<dyn Fn(&JsonValue) + Send + Sync>;
 type NativeBusHandler = Arc<dyn Fn(&(dyn std::any::Any + Send + Sync)) + Send + Sync>;
 #[derive(Clone, Default)]
@@ -1239,13 +1311,14 @@ pub struct LoadedExtension {
     pub command_context_handlers: BTreeMap<String, CommandContextHandler>,
     pub command_argument_completions: BTreeMap<String, CommandArgumentCompletions>,
     pub tool_renderers: BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>,
+    pub config_watch_registrations: Vec<RegisteredConfigWatch>,
 }
 impl LoadedExtension {
     pub fn new(path: &str, cwd: PathBuf, source_info: SourceInfo) -> Self {
         Self { identity: ExtensionIdentity { path: path.into(), resolved_path: path.into() }, source_info, registration_cwd: cwd,
             handlers: BTreeMap::new(), tools: Vec::new(), commands: Vec::new(), flags: Vec::new(), message_renderers: BTreeMap::new(),
             entry_renderers: BTreeMap::new(), entry_renderer_options: BTreeMap::new(), mcp_servers: Vec::new(), removed_tool_hints: BTreeMap::new(), filesystem_policies: Vec::new(),
-            shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new(), command_argument_completions: BTreeMap::new(), tool_renderers: BTreeMap::new() }
+            shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new(), command_argument_completions: BTreeMap::new(), tool_renderers: BTreeMap::new(), config_watch_registrations: Vec::new() }
     }
 }
 #[derive(Clone, Default)]
@@ -1665,6 +1738,15 @@ impl ExtensionApi {
         self.register_command(name, description, argument_hint, Arc::new(|_, _| Box::pin(async { Err(ExtensionFailure::new("Command requires a command-capable context")) })));
         self.registered.command_context_handlers.insert(name.into(), handler);
         self.publish_commands();
+    }
+    pub fn register_config_watch(&mut self, registration: RegisteredConfigWatch) {
+        self.runtime.assert_active_or_panic();
+        self.registered.config_watch_registrations.push(registration.clone());
+        self.events.emit(CONFIG_WATCH_REGISTER_CHANNEL, &config_watch_registration_json(&registration));
+        self.events.emit_native(CONFIG_WATCH_REGISTER_CHANNEL, &(self.registered.identity.path.clone(), registration));
+    }
+    pub fn on_config_watch_registration(&self, listener: ConfigWatchRegistrationListener) -> BusSubscription {
+        self.events.on_native::<(String, RegisteredConfigWatch)>(CONFIG_WATCH_REGISTER_CHANNEL, Arc::new(move |(path, registration)| listener(path, registration)))
     }
     pub fn register_flag(&mut self, name: &str, kind: FlagType, description: Option<String>) {
         self.runtime.assert_active_or_panic();

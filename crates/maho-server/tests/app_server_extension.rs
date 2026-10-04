@@ -115,7 +115,7 @@ fn context() -> ExtensionContext {
             ..Default::default()
         }),
         registered_mcp_servers: Vec::new(),
-        update_tool_hook_status: None,
+        update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None,
     }
 }
 

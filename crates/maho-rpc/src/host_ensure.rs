@@ -168,7 +168,7 @@ pub async fn ensure_host(options:EnsureHostOptions)->Result<EnsuredHostInfo,Ensu
     let decision_policy=match options.upgrade{HostUpgradePolicy::Never=>crate::host_decision::HostDecisionPolicy::Never,HostUpgradePolicy::IfEngineDiffers=>crate::host_decision::HostDecisionPolicy::Upgrade};
     let prepared=prepare_ensure_host(&socket,&agent_dir,client,decision_policy).await.map_err(|error|EnsureHostError::Io(std::io::Error::other(error.to_string())))?;
     let supervisor_args=ensure_supervisor_args(&socket,&agent_dir.to_string_lossy(),&options.host_args);
-    let launch=default_host_launch(&supervisor_args)?;
+    let launch=crate::host_launch::default_host_launch(&supervisor_args)?;
     let lifecycle=options.policy.clone().unwrap_or_default();
     let host_policy=crate::host_lifecycle::HostLifecyclePolicy{cold_start:lifecycle.cold_start.clone().unwrap_or_else(||"transient".into()),idle_exit_ms:lifecycle.idle_exit_ms.unwrap_or(crate::host_lifecycle::DEFAULT_HOST_IDLE_EXIT_MS)};
     let settings=crate::host_daemon_state::HostDaemonSettings{socket:socket.clone(),capabilities:crate::host_launch::PINNED_HOST_CLIENT_CAPABILITIES.iter().map(|value|(*value).into()).collect(),cold_start:host_policy.cold_start.clone(),idle_exit_ms:host_policy.idle_exit_ms,generation:generation as f64,instance_id:instance_id.clone()};

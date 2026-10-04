@@ -139,11 +139,11 @@ pub fn build_rpc_session_state(session:&AgentSession,last_abort_source:Option<&s
     // senpi's `buildRpcSessionState` consults the project-trust store directly (not the settings
     // manager's cached copy) and always publishes the session manager's accumulated usage totals.
     let project_trusted=maho_core::ProjectTrustStore::new(&session.agent_dir()).get(&session.cwd()).is_ok_and(|decision|decision==Some(true));
-    let usage_totals=session.with_session_manager(|manager|*manager.usage_totals());
+    let usage_totals=session.with_session_manager(|manager|manager.usage_totals().clone());
     let mut state=serde_json::json!({
         "model":session.model(),
         "thinkingLevel":session.thinking_level(),
-        "serviceTier":session.effective_service_tier(),
+        "serviceTier":session.effective_service_tier().map(|tier|match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority"}),
         "fastMode":session.is_fast_mode_active(),
         "isStreaming":session.is_streaming(),
         "isCompacting":session.is_compacting(),
@@ -314,8 +314,8 @@ pub struct RpcExtensionUi{
 }
 impl RpcExtensionUi{
     pub fn new(out:std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>,pending:std::sync::Arc<std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>>,questions:std::sync::Arc<std::sync::Mutex<crate::connection_question_bridge::ConnectionQuestionBridge>>,capabilities:Vec<String>)->Self{Self{out,pending,questions,capabilities}}
-    fn ask<T:'static>(&self,opts:&maho_ext_api::ExtensionUiDialogOptions,default:T,mut request:serde_json::Value,parse:impl Fn(serde_json::Value)->T+Send+'static)->maho_ext_api::UiFuture<'static,T>{
-        if opts.signal.as_ref().is_some_and(|signal|signal.aborted()){return Box::pin(async move{default});}
+    fn ask<T:'static+Send>(&self,opts:&maho_ext_api::ExtensionUiDialogOptions,default:T,mut request:serde_json::Value,parse:impl Fn(serde_json::Value)->T+Send+'static)->maho_ext_api::UiFuture<'static,T>{
+        if opts.signal.as_ref().is_some_and(|signal|signal.is_aborted()){return Box::pin(async move{default});}
         let id=uuid::Uuid::new_v4().to_string();
         let(sender,receiver)=tokio::sync::oneshot::channel();
         self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).set(id.clone(),sender);
@@ -324,10 +324,8 @@ impl RpcExtensionUi{
         let timeout=opts.timeout_ms;
         let signal=opts.signal.clone();
         let pending=self.pending.clone();
-        let listener=signal.map(|signal|{let(abort_sender,abort_receiver)=tokio::sync::oneshot::channel::<()>();let listener=signal.add_abort_listener(move|_|{let _=abort_sender.send(());});(signal,listener,abort_receiver)});
         Box::pin(async move{
-            let(signal,listener,abort)=match listener{Some((signal,listener,abort))=>(Some(signal),Some(listener),Some(abort)),None=>(None,None,None)};
-            let mut abort=abort;
+            let mut abort=signal.as_ref().map(|signal|Box::pin(signal.cancelled()));
             let response=match (abort.as_mut(),timeout){
                 (Some(abort),Some(ms))=>tokio::select!{received=receiver=>received.ok(),_=abort=>None,()=tokio::time::sleep(std::time::Duration::from_millis(ms))=>None},
                 (Some(abort),None)=>tokio::select!{received=receiver=>received.ok(),_=abort=>None},
@@ -335,8 +333,7 @@ impl RpcExtensionUi{
                 (None,None)=>receiver.await.ok(),
             };
             pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).delete(&id);
-            if let(Some(signal),Some(listener))=(signal,listener){signal.remove_abort_listener(listener);}
-            match response{Some(response)=>parse(response),None=>default}
+            match response{Some(Ok(response))=>parse(response),Some(Err(_))|None=>default}
         })
     }
 }

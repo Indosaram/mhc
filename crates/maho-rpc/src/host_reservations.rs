@@ -27,9 +27,9 @@ impl SessionPathReservations{
 /// A path-reservation set with its failure reporter bound once (senpi's factory shape).
 pub struct BoundPathReservations{inner:SessionPathReservations,report:Box<dyn FnMut(String)+Send>}
 impl BoundPathReservations{
-    pub fn claim(&mut self,session_path:&str,attached:bool)->Option<SessionPathOwner>{let mut report=&mut self.report;self.inner.claim(session_path,attached,|message|report(message))}
-    pub fn release(&mut self,session_path:&str){let mut report=&mut self.report;self.inner.release(session_path,|message|report(message));}
-    pub fn set_attached(&mut self,session_path:&str,attached:bool){let mut report=&mut self.report;self.inner.set_attached(session_path,attached,|message|report(message));}
+    pub fn claim(&mut self,session_path:&str,attached:bool)->Option<SessionPathOwner>{let report=&mut self.report;self.inner.claim(session_path,attached,report)}
+    pub fn release(&mut self,session_path:&str){let report=&mut self.report;self.inner.release(session_path,report);}
+    pub fn set_attached(&mut self,session_path:&str,attached:bool){let report=&mut self.report;self.inner.set_attached(session_path,attached,report);}
 }
 /// This endpoint's daemon directory: the claims live in it, and the pointer they are read
 /// against lives there too (senpi `createSessionPathReservations`).

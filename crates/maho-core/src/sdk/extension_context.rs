@@ -84,6 +84,6 @@ pub(super) fn create(session: &AgentSession) -> ExtensionContext {
         is_compacting_fn: Arc::new(move || compacting.is_compacting()),
         get_system_prompt_fn: Arc::new(move || prompt.get_system_prompt()),
         get_system_prompt_options_fn: Arc::new(move || options.get_system_prompt_options()),
-        registered_mcp_servers: Vec::new(), update_tool_hook_status: None,
+        registered_mcp_servers: Vec::new(), update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None,
     }
 }

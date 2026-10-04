@@ -3,7 +3,9 @@ use maho_omo_agent_home::resolve_agent_home;
 pub const OMO_CONFIG_FILE_FILTER_GLOBS:[&str;2]=["/omo.jsonc","/omo.json"];
 pub const OMO_CONFIG_DIRECTORY_FILTER_GLOBS:[&str;3]=["/.omo","/.omo/omo.jsonc","/.omo/omo.json"];
 pub const USER_OMO_CONFIG_DIRECTORY_FILTER_GLOBS:[&str;1]=["/.maho"];
+#[derive(Clone,Debug,PartialEq,Eq)]
 pub struct OmoConfigWatchTarget { pub path:PathBuf,pub kind:&'static str,pub filter_globs:Vec<String> }
+#[derive(Clone,Debug,PartialEq,Eq)]
 pub struct OmoConfigWatchTargetResolution { pub targets:Vec<OmoConfigWatchTarget>,pub user_config_creation_watched:bool,pub user_config_creation_discovery:&'static str }
 fn target(path:PathBuf,globs:&[&str])->OmoConfigWatchTarget { OmoConfigWatchTarget{path,kind:"dir",filter_globs:globs.iter().map(|s|s.to_string()).collect()} }
 fn contains(parent:&Path,child:&Path)->bool { child.strip_prefix(parent).is_ok() }

@@ -10,8 +10,9 @@ fn attributable(d:&SenpiConfigDiagnostic,changed:&[PathBuf],user:&Path)->bool {
     let path=PathBuf::from(omo_config_core::internal::posix_path::posix_resolve(&[path]));let directory=config_directory(&path,user);
     changed.iter().any(|changed| { let changed=PathBuf::from(omo_config_core::internal::posix_path::posix_resolve(&[&changed.to_string_lossy()]));path.starts_with(&changed)||(directory.is_some()&&config_directory(&changed,user)==directory) })
 }
+#[derive(Clone,Debug,PartialEq,Eq)]
 pub enum ConfigWatchValidation { Ok,Rejected{errors:Vec<String>} }
-pub type ConfigDiagnosticLoader=Box<dyn Fn(&str,&BTreeMap<String,String>)->Vec<SenpiConfigDiagnostic>>;
+pub type ConfigDiagnosticLoader=Box<dyn Fn(&str,&BTreeMap<String,String>)->Vec<SenpiConfigDiagnostic>+Send>;
 pub struct OmoConfigValidator { cwd:String,env:BTreeMap<String,String>,user:PathBuf,baseline:BTreeSet<String>,unresolved:Vec<String>,load_config:ConfigDiagnosticLoader }
 impl OmoConfigValidator {
     pub fn new(cwd:String,env:BTreeMap<String,String>)->Self {

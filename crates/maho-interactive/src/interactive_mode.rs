@@ -203,9 +203,7 @@ impl InteractiveMode {
     /// The pending startup changelog markdown (senpi `changelogMarkdown`), once loaded.
     pub fn changelog_markdown(&self) -> Option<&str> { self.changelog_markdown.as_deref() }
     /// senpi `getTipsHistory`: the recorded `tipId -> timestamp` map (the tip persistence seam).
-    pub fn tips_history(&self) -> std::collections::HashMap<String, u64> { self.session.with_settings_manager(|settings| tips_history(settings)) }
-    /// senpi's `getTipsHistory`: the recorded `tipId -> timestamp` map.
-    pub fn tips_history(&self) -> std::collections::HashMap<String, u64> { self.session.with_settings_manager(|settings| tips_history(settings)) }
+    pub fn tips_history(&self) -> std::collections::HashMap<String, u64> { self.session.with_settings_manager(tips_history) }
 
     /// senpi's `getChangelogSeen(source)`: the per-source record, or the legacy engine key.
     pub fn changelog_seen(&self, source_id: &str) -> Option<String> {
@@ -268,7 +266,7 @@ impl InteractiveMode {
 
     /// senpi's `recordShownTip`: merge `tipId -> now` into the global `tipsHistory` record.
     fn set_tip_shown(&mut self, tip_id: &str, now_ms: u64) {
-        let history = self.session.with_settings_manager(|settings| tips_history(settings));
+        let history = self.session.with_settings_manager(tips_history);
         let next = crate::tips::history_writer::record_tip_shown(&history, tip_id, now_ms);
         let values: maho_core::settings_manager::Settings = [("tipsHistory".to_owned(), serde_json::to_value(next).unwrap_or_else(|_| serde_json::json!({})))].into_iter().collect();
         let _ = self.session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values));
@@ -1216,6 +1214,16 @@ impl InteractiveMode {
             else { self.show_status(format!("Model switch pending: {reference}")); }
             return Ok(PromptDisposition::Handled);
         }
+        if text.trim().starts_with("/export ") {
+            // The host export is async, so `/export` is handled on the async `submit` path (its only
+            // reachable entry: the key handler only dispatches `/model`, `/tree`, `/fork`, `/rename`).
+            let path = get_path_command_argument(text.trim(), "/export").ok_or("Missing export path")?;
+            if path.ends_with(".jsonl") {
+                let exported = self.host_export_jsonl(Some(&path)).await?.unwrap_or_else(|| path.clone());
+                self.show_status(format!("Session exported to: {exported}"));
+                return Ok(PromptDisposition::Handled);
+            }
+        }
         if self.dispatch_command(text)? { return Ok(PromptDisposition::Handled); }
         let result = match self.session_host.clone() {
             Some(host) => {
@@ -1683,14 +1691,6 @@ impl InteractiveMode {
                 if waste.missed_tokens > 0.0 { info += &format!("\n{} {}{}", label("Cache Re-billed:"), if waste.missed_cost >= 0.0001 { format!("${:.3} ", waste.missed_cost) } else { String::new() }, label(&format!("({} tokens, {} miss{})", count(waste.missed_tokens as u64), waste.miss_count, if waste.miss_count == 1 { "" } else { "es" }))); }
             }
             self.show_status(info); return Ok(true);
-        }
-        if text.starts_with("/export ") {
-            let path = get_path_command_argument(text, "/export").ok_or("Missing export path")?;
-            if path.ends_with(".jsonl") {
-                let exported = self.host_export_jsonl(Some(&path)).await?.unwrap_or_else(|| path.clone());
-                self.show_status(format!("Session exported to: {exported}"));
-                return Ok(true);
-            }
         }
         if matches!(text, "/rename" | "/name") {
             let accepted = self.rename_result.clone();

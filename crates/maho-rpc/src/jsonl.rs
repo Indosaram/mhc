@@ -138,8 +138,7 @@ where
         use tokio::io::AsyncReadExt;
         let mut stream = stream;
         let mut chunk = [0u8; 8192];
-        loop {
-            let count = match stream.read(&mut chunk).await { Ok(count) => count, Err(_) => break };
+        while let Ok(count) = stream.read(&mut chunk).await {
             if count == 0 { break; }
             for record in reader.push(&chunk[..count]) {
                 match record { LineRecord::Line(line) => on_line(line), LineRecord::Oversized => on_oversized() }

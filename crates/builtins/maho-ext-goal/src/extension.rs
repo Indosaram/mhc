@@ -19,7 +19,7 @@ impl GoalExtension {
         let continuation=Arc::new(crate::delivery::GoalDelivery::new(runtime.clone(),self.reference.clone(),self.now.clone(),api));
         let queue=continuation.queue_callback();
         runtime.register_command(api,queue);
-        crate::cache_warm_renderer::register_cache_warm_renderer(api);
+        api.register_entry_renderer(crate::cache_warm::GOAL_CACHE_WARMUP_ENTRY_TYPE,crate::cache_warm_renderer::render_goal_cache_warmup_entry(),maho_ext_api::EntryRendererOptions { replaces:Some(crate::cache_warm_renderer::cache_warm_entry_replaces()) });
         for (name,label,description,schema) in [
             ("create_goal","Create Goal","Register a goal for work that outlives this turn: it waits on external state, or the user's requested outcome needs more than one verify-and-fix round before it is true. A single answer, lookup, or one-shot edit needs no goal.\nObjectives are limited to 4,000 characters. For longer instructions, put the full objective in a file and refer to that file.\nReplaces the current goal when it is complete and archives it; fails if an unfinished goal exists.",crate::tool_registration::create_goal_schema()),
             ("get_goal","Get Goal","Get the current goal for this thread, including status, token and elapsed-time usage.",crate::tool_registration::get_goal_schema()),

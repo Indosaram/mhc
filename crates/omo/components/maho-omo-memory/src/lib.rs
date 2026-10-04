@@ -1,6 +1,7 @@
 //! Native memory component adapter over maho-memory-core.
 pub mod binding;
 pub mod capabilities;
+pub mod composition;
 pub mod context;
 pub mod dream_scoring;
 pub mod dream_selector;

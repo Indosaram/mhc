@@ -1,4 +1,5 @@
 use std::{path::PathBuf,sync::{Arc,Mutex}};
+#[derive(Clone)]
 pub struct MemoryStaticOptions{
     pub prompt:crate::prompt::MemoryPromptInjectionOptions,
     pub nudge:Arc<Mutex<crate::nudge_wiring::MemoryNudgeWiring>>,

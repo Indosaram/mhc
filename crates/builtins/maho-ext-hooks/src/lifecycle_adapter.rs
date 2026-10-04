@@ -44,7 +44,7 @@ mod adapter_tests {
     use super::*;
     use crate::command_runner::{CommandHookRunOptions,CommandHookRunResult,run_command_hook};
     use crate::dispatcher::{HookDispatchDecision,HookDispatchResult,HookDispatchSummary};
-    use crate::types::{CommandHookConfig,ExecutableHookHandler,HookDiscoveryTiming,HookSourceScope,SupportedHookEvent};
+    use crate::types::{CommandHookConfig,ExecutableHookHandler,HookDiscoveryTiming,HookSourceMetadata,HookSourceScope,SupportedHookEvent};
     fn handler(event:SupportedHookEvent)->ExecutableHookHandler {
         ExecutableHookHandler {event,matcher:None,group_index:0,handler_index:0,config:CommandHookConfig {kind:"command".to_owned(),command:"exit 0".to_owned(),command_windows:None,timeout:None,status_message:None},source:HookSourceMetadata {scope:HookSourceScope::Project,source_path:"/repo/hooks.json".to_owned(),display_order:0,discovered_at:HookDiscoveryTiming::PreSession,plugin_root:None,manifest_path:None,plugin_env:None}}
     }
