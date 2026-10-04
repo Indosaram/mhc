@@ -134,9 +134,8 @@ async fn fixture() -> Fixture {
 #[tokio::test]
 async fn lifecycle_transcript_reports_live_bus_and_shutdown_releases_once() {
     let f = fixture().await;
-    let debug = Arc::new(Mutex::new(Vec::new()));
     let mut api = ExtensionApi::new(LoadedExtension::new("herdr", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
-    HerdrExtension { deps: deps(f.socket.clone(), debug.clone()) }.register(&mut api);
+    HerdrExtension { deps: deps(f.socket.clone(), Arc::new(Mutex::new(Vec::new()))) }.register(&mut api);
     let ctx = context(f.session.clone(), f.idle.clone(), ExtensionMode::Tui, Vec::new());
 
     dispatch(&api, EventKind::SessionStart, &mut ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::Startup, initial_model_provenance: None, previous_session_file: None }), &ctx).await;
@@ -171,9 +170,8 @@ async fn lifecycle_transcript_reports_live_bus_and_shutdown_releases_once() {
 #[tokio::test]
 async fn concurrent_shutdown_disposes_once_and_keeps_live_bus_delivery() {
     let f = fixture().await;
-    let debug = Arc::new(Mutex::new(Vec::new()));
     let mut api = ExtensionApi::new(LoadedExtension::new("herdr", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
-    HerdrExtension { deps: deps(f.socket.clone(), debug.clone()) }.register(&mut api);
+    HerdrExtension { deps: deps(f.socket.clone(), Arc::new(Mutex::new(Vec::new()))) }.register(&mut api);
     let ctx = context(f.session.clone(), f.idle.clone(), ExtensionMode::Tui, Vec::new());
 
     dispatch(&api, EventKind::SessionStart, &mut ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::Startup, initial_model_provenance: None, previous_session_file: None }), &ctx).await;
@@ -197,9 +195,8 @@ async fn defers_to_user_reporter_and_ignores_non_tui_or_missing_env() {
     let f = fixture().await;
     let user = f.directory.path().join("herdr-user.ts");
     std::fs::write(&user, "user reporter").expect("fixture");
-    let debug = Arc::new(Mutex::new(Vec::new()));
     let mut api = ExtensionApi::new(LoadedExtension::new("herdr", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
-    HerdrExtension { deps: deps(f.socket.clone(), debug.clone()) }.register(&mut api);
+    HerdrExtension { deps: deps(f.socket.clone(), Arc::new(Mutex::new(Vec::new()))) }.register(&mut api);
 
     let deferred = context(f.session.clone(), f.idle.clone(), ExtensionMode::Tui, vec![user.to_string_lossy().into_owned()]);
     dispatch(&api, EventKind::SessionStart, &mut ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::Startup, initial_model_provenance: None, previous_session_file: None }), &deferred).await;
@@ -207,7 +204,7 @@ async fn defers_to_user_reporter_and_ignores_non_tui_or_missing_env() {
     assert!(f.recorded.lock().expect("recorded").is_empty());
 
     let mut non_tui = ExtensionApi::new(LoadedExtension::new("herdr", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
-    HerdrExtension { deps: deps(f.socket.clone(), debug.clone()) }.register(&mut non_tui);
+    HerdrExtension { deps: deps(f.socket.clone(), Arc::new(Mutex::new(Vec::new()))) }.register(&mut non_tui);
     let print = context(f.session.clone(), f.idle.clone(), ExtensionMode::Print, Vec::new());
     dispatch(&non_tui, EventKind::SessionStart, &mut ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::Startup, initial_model_provenance: None, previous_session_file: None }), &print).await;
     assert!(f.recorded.lock().expect("recorded").is_empty());
