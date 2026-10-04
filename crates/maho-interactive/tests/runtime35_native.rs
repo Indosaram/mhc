@@ -1196,7 +1196,7 @@ async fn startup_changelog_notices_show_only_new_entries_and_record_the_seen_ver
     use maho_tui::tui::Component;
     let (mut mode,directory) = native_mode();
     let path = directory.path().join("CHANGELOG.md");
-    std::fs::write(&path,"## 0.82.0 - 2026-01-03\nNewest entry\n\n## 0.81.0 - 2026-01-02\nOlder entry\n").expect("changelog");
+    std::fs::write(&path,"## [0.82.0] - 2026-01-03\nNewest entry\n\n## [0.81.0] - 2026-01-02\nOlder entry\n").expect("changelog");
     let source = |version: &str| maho_core::changelog_source::ChangelogSource { id:"engine".into(), path:path.to_string_lossy().into_owned(), version:Some(version.into()), rewrite_links:false };
     // A fresh install records the version without showing anything.
     mode.load_startup_changelog_from(&source("0.81.0"));
