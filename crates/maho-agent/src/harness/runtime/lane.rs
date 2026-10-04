@@ -1438,13 +1438,14 @@ impl RuntimeDriveLane for Lane {
         handle: &'a maho_ai::types::DeferredHandle,
         options: maho_ai::types::ProviderRequestOptions,
     ) -> BoxFuture<'a, Result<(), String>> {
-        // Pinned `Models.cancelDeferred` resolves the provider and throws `API cannot cancel
-        // deferred responses` when it exposes no cancellation; `cancelDeferredBestEffort` swallows
-        // that error. The ported `maho-ai` surface exposes neither `Models::cancel_deferred` nor
-        // `Provider::cancel_deferred`, so this is the faithful no-capability branch. See the
-        // task-16 dependency note in `.omo/evidence/residual-source/task-16-drive-recovery.md`.
-        let _ = (model, handle, options);
-        Box::pin(async { Err("API cannot cancel deferred responses".to_owned()) })
+        // Pinned `Models.cancelDeferred(model, handle, options)`: resolve the provider, reject an
+        // unsupported capability with the pinned message, then forward through `applyAuth` to
+        // `provider.cancelDeferred(requestModel, handle, requestOptions)`. `cancelDeferredBestEffort`
+        // swallows the returned error, so no shadow protocol sits between here and the provider.
+        let models = self.models.clone();
+        let model = model.clone();
+        let handle = handle.clone();
+        Box::pin(async move { models.cancel_deferred(&model, &handle, Some(options)).await })
     }
 
     fn prepare_compaction_threshold<'a>(

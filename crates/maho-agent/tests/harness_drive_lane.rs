@@ -9,7 +9,7 @@ use maho_agent::harness::session::{
     MemoryStorage, MemoryStorageOptions, StorageBackedSession, StorageBackedSessionOptions,
 };
 use maho_ai::types::ModelThinkingLevel;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 fn seed() -> LaneConfiguration {
     LaneConfiguration {
@@ -487,8 +487,12 @@ impl maho_ai::models::ModelsAuth for FacadeAuth {
 }
 
 async fn facade_lane() -> (Arc<maho_agent::harness::runtime::lane::Lane>, maho_ai::providers::faux::FauxProviderHandle) {
+    facade_lane_with_faux(Default::default()).await
+}
+
+async fn facade_lane_with_faux(options: maho_ai::providers::faux::RegisterFauxProviderOptions) -> (Arc<maho_agent::harness::runtime::lane::Lane>, maho_ai::providers::faux::FauxProviderHandle) {
     use maho_agent::harness::session::types::{LaneConfiguration, LaneModelRef};
-    let faux = maho_ai::providers::faux::faux_provider(Default::default());
+    let faux = maho_ai::providers::faux::faux_provider(options);
     let model = faux.get_model(None).expect("faux provider ships a model");
     let models = maho_ai::models::create_models(Some(maho_ai::models::CreateModelsOptions { auth: Some(Arc::new(FacadeAuth)), ..Default::default() }));
     models.set_provider(faux.provider.clone());
@@ -936,4 +940,84 @@ async fn typed_tool_context_env_reaches_a_real_read_invocation() {
         .join("\n");
     assert!(text.contains(&marker), "tool result did not carry the real file content: {text}");
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Causal regression: aborting a deferred operation through the public lane path reaches the real
+/// provider with the exact handle. The suspension event carries the handle, so the test subscribes
+/// to it before driving (no sleeps); the abort drives reconciliation, which forwards the handle and
+/// options through `Models::cancel_deferred` to the faux provider, whose state records it.
+#[tokio::test]
+async fn abort_forwards_the_deferred_handle_and_options_to_the_provider() {
+    use maho_agent::harness::agent_harness::{DriveOptions, DriveOutcome};
+    use maho_agent::harness::events::HarnessEventPayload;
+    use maho_agent::harness::runtime::lane::PromptInput;
+    use maho_agent::harness::session::types::TerminalStatus;
+    use maho_ai::types::DeferredHandle;
+
+    let (lane, faux) = facade_lane_with_faux(maho_ai::providers::faux::RegisterFauxProviderOptions {
+        deferred: Some(maho_ai::providers::faux::FauxDeferredOptions { pending_fetches: Some(1), poll_after_ms: None }),
+        ..Default::default()
+    })
+    .await;
+
+    // Subscribe to the exact deferred-suspension event before driving; it carries the handle.
+    let captured: Arc<Mutex<Option<DeferredHandle>>> = Arc::new(Mutex::new(None));
+    let suspended = Arc::new(tokio::sync::Notify::new());
+    let sink = captured.clone();
+    let notify = suspended.clone();
+    let _registration = lane.events.on("run_suspend", Arc::new(move |event, _context| {
+        if let HarnessEventPayload::RunSuspend { deferred, .. } = &event.payload {
+            *sink.lock().unwrap_or_else(|error| error.into_inner()) = Some(deferred.clone());
+        }
+        let notify = notify.clone();
+        Box::pin(async move { notify.notify_one(); })
+    }));
+
+    let settings = maho_agent::harness::session::types::RunSettings {
+        compaction: maho_agent::harness::compaction::compaction::DEFAULT_COMPACTION_SETTINGS,
+        steering_mode: maho_agent::types::QueueMode::All,
+        follow_up_mode: maho_agent::types::QueueMode::All,
+        tool_execution: maho_agent::harness::session::types::ToolExecutionMode::Parallel,
+    };
+    let admission = lane
+        .accept_prompt(PromptInput::Text { text: "defer".into(), images: vec![] }, None, settings, &BACKGROUND_CONTEXT)
+        .await
+        .expect("accept deferred prompt")
+        .expect("admitted");
+    let outcome = lane
+        .drive(DriveOptions { operation_id: admission.operation_id.clone(), wait_for_retry: None, poll_deferred: None }, &BACKGROUND_CONTEXT)
+        .await
+        .expect("drive to suspension");
+    assert!(matches!(outcome, DriveOutcome::WaitingDeferred { .. }), "expected a deferred suspension");
+    tokio::time::timeout(std::time::Duration::from_secs(5), suspended.notified())
+        .await
+        .expect("the deferred suspension event fired");
+    let handle = captured
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+        .expect("run_suspend carried the deferred handle");
+
+    // Abort through the public path; reconciliation forwards the handle to the provider.
+    let requested = lane
+        .request_operation_abort(admission.operation_id.clone(), &BACKGROUND_CONTEXT)
+        .await
+        .expect("abort request")
+        .expect("operation matched");
+    assert!(requested.newly_requested);
+    let settled = lane
+        .drive(DriveOptions { operation_id: admission.operation_id.clone(), wait_for_retry: None, poll_deferred: None }, &BACKGROUND_CONTEXT)
+        .await
+        .expect("reconcile drive");
+    let DriveOutcome::Settled { outcome } = settled else { panic!("aborted drive settled") };
+    assert_eq!(outcome.status, TerminalStatus::Aborted);
+
+    // The real provider received the exact deferred handle; no fetch was issued.
+    let cancelled = faux.state().cancelled_deferred;
+    assert!(
+        cancelled.iter().any(|candidate| candidate.id == handle.id),
+        "provider did not receive the cancelled handle {handle:?}; recorded {cancelled:?}"
+    );
+    assert_eq!(faux.state().deferred_fetch_count, 0, "abort must not poll the deferred handle");
+    assert_eq!(faux.state().call_count, 1, "only the initial deferred request should reach the provider");
 }
