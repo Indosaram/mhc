@@ -11,14 +11,14 @@ pub struct HostOutcome{pub exit_code:i32,pub payload:serde_json::Value}
 pub struct EnsureRequest{pub client:crate::host_decision::HostDecisionClient,pub policy:crate::host_decision::HostDecisionPolicy,pub launch:crate::host_launch::HostLaunch,pub start:crate::host_ensure::HostStartOptions,pub handoff:crate::host_handoff::HandoffOptions,pub env_keys:Vec<String>}
 /// One host request, performed: ensure a daemon, report one, stop one, or hand one off.
 pub enum HostRequest{
-    Ensure{target:HostTarget,request:EnsureRequest},
+    Ensure{target:HostTarget,request:Box<EnsureRequest>},
     Status{target:HostTarget,include_workers:bool},
     Stop{target:HostTarget,drain:bool,force:bool},
     Handoff{target:HostTarget,options:crate::host_handoff::HandoffOptions,env_keys:Vec<String>},
 }
 pub async fn run_host_request(request:HostRequest)->std::io::Result<HostOutcome>{
     match request{
-        HostRequest::Ensure{target,request}=>ensure_outcome(&target.socket,&target.agent_dir,request).await,
+        HostRequest::Ensure{target,request}=>ensure_outcome(&target.socket,&target.agent_dir,*request).await,
         HostRequest::Status{target,include_workers}=>status_outcome(&target.socket,&target.agent_dir,include_workers).await,
         HostRequest::Stop{target,drain,force}=>stop_outcome(&target.socket,&target.agent_dir,drain,force).await,
         HostRequest::Handoff{target,options,env_keys}=>handoff_outcome(&target.socket,&target.agent_dir,options,&env_keys).await,

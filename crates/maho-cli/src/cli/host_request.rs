@@ -163,7 +163,7 @@ pub fn build_host_request(parsed: &ParsedHostArgs, socket: &str, agent_dir: &Pat
             let spec = resolve_launch_spec(parsed.spec_path.as_deref())?;
             let policy = decision_policy(&parsed.policy);
             let request = ensure_request(&target, &spec, policy)?;
-            Ok(HostRequest::Ensure { target, request })
+            Ok(HostRequest::Ensure { target, request: Box::new(request) })
         }
         HostSubcommand::Status => Ok(HostRequest::Status { target, include_workers: parsed.include_workers }),
         HostSubcommand::Stop => Ok(HostRequest::Stop { target, drain: parsed.drain, force: parsed.force }),
