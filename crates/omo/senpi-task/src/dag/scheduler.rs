@@ -63,6 +63,9 @@ enum AttachedTaskSettlement {
 }
 
 struct SchedulerState {
+    admission_stopped: std::sync::atomic::AtomicBool,
+    running: Mutex<bool>,
+    run_idle: Condvar,
     pending_errors: Mutex<BTreeMap<DagNodeId, DagNodeError>>,
     pending_terminal_results: Mutex<BTreeMap<DagNodeId, TaskRecord>>,
     attached_task_ids: Mutex<BTreeMap<DagNodeId, String>>,
@@ -94,6 +97,9 @@ pub fn create_dag_scheduler(
         .now
         .unwrap_or_else(|| Arc::new(|| i64::try_from(crate::state::system_now_ms()).unwrap_or(i64::MAX)));
     let state = Arc::new(SchedulerState {
+        admission_stopped: std::sync::atomic::AtomicBool::new(false),
+        running: Mutex::new(false),
+        run_idle: Condvar::new(),
         pending_errors: Mutex::new(BTreeMap::new()),
         pending_terminal_results: Mutex::new(BTreeMap::new()),
         attached_task_ids: Mutex::new(BTreeMap::new()),
@@ -186,6 +192,12 @@ fn apply_dag_scheduler_event_with_results(
     now: Option<&Arc<dyn Fn() -> i64 + Send + Sync>>,
 ) -> DagRunRecordV1 {
     match &event.payload {
+        DagRunEventPayload::RunPaused { .. } => DagRunRecordV1 {
+            status: crate::dag::types::DagRunStatus::Paused, updated_at:event.at.clone(), ..record.clone()
+        },
+        DagRunEventPayload::RunResumed { generation } => DagRunRecordV1 {
+            status: crate::dag::types::DagRunStatus::Running, generation:*generation, updated_at:event.at.clone(), ..record.clone()
+        },
         DagRunEventPayload::RunStarted { .. } => DagRunRecordV1 {
             status: crate::dag::types::DagRunStatus::Running,
             started_at: record.started_at.clone().or_else(|| Some(event.at.clone())),
@@ -436,12 +448,33 @@ fn artifact_ref_from(
 }
 
 impl DagSchedulerContext {
+    pub fn admission_is_stopped(&self) -> bool { admission_stopped(self) }
+    pub fn stop_admission(&self) {
+        self.state.admission_stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+        when_admission_idle(self);
+        let mut running = self.state.running.lock().unwrap_or_else(PoisonError::into_inner);
+        while *running { running = self.state.run_idle.wait(running).unwrap_or_else(PoisonError::into_inner); }
+    }
     #[cfg(test)]
     pub(crate) fn set_task_port(&self, port: Arc<dyn TestTaskPort>) {
         *self.task_port.lock().unwrap() = Some(port);
     }
 
     pub fn run(&self) -> Result<DagRunRecordV1, crate::dag::store::DagStoreError> {
+        {
+            let mut running = self.state.running.lock().unwrap_or_else(PoisonError::into_inner);
+            if *running { return Err(crate::dag::store::DagStoreError::Message("DAG scheduler is already running".into())); }
+            if admission_stopped(self) { return Ok(self.journal.snapshot()); }
+            *running = true;
+        }
+        struct RunGuard<'a>(&'a SchedulerState);
+        impl Drop for RunGuard<'_> {
+            fn drop(&mut self) {
+                *self.0.running.lock().unwrap_or_else(PoisonError::into_inner) = false;
+                self.0.run_idle.notify_all();
+            }
+        }
+        let _running = RunGuard(&self.state);
         run_waves(self)
     }
 
@@ -604,6 +637,9 @@ fn cancellation_started(context: &DagSchedulerContext) -> bool {
 }
 
 fn run_waves(context: &DagSchedulerContext) -> Result<DagRunRecordV1, crate::dag::store::DagStoreError> {
+    if admission_stopped(context) || context.journal.snapshot().status.is_terminal() {
+        return Ok(context.journal.snapshot());
+    }
     if context.journal.snapshot().status == crate::dag::types::DagRunStatus::Pending {
         let generation = context.journal.snapshot().generation;
         context
@@ -612,6 +648,7 @@ fn run_waves(context: &DagSchedulerContext) -> Result<DagRunRecordV1, crate::dag
     }
 
     for wave in context.journal.snapshot().waves.clone() {
+        if admission_stopped(context) { return Ok(context.journal.snapshot()); }
         if cancellation_started(context) {
             return Ok(cancelled_snapshot(context));
         }
@@ -634,6 +671,7 @@ fn run_waves(context: &DagSchedulerContext) -> Result<DagRunRecordV1, crate::dag
             node_ids: runnable.clone(),
         })?;
         if !admit_and_settle_wave(context, &runnable)? {
+            if admission_stopped(context) { return Ok(context.journal.snapshot()); }
             return Ok(cancelled_snapshot(context));
         }
         context.journal.append(DagRunEventPayload::WaveCompleted {
@@ -643,6 +681,7 @@ fn run_waves(context: &DagSchedulerContext) -> Result<DagRunRecordV1, crate::dag
     }
 
     apply_dependent_skip_cascade(context)?;
+    if admission_stopped(context) { return Ok(context.journal.snapshot()); }
     let snapshot = context.journal.snapshot();
     if let Some(failed) = primary_failure(&snapshot) {
         let error = failed.error.clone().unwrap_or_else(|| {
@@ -668,14 +707,15 @@ fn admit_and_settle_wave(
     let mut attached: BTreeMap<DagNodeId, AttachedTask> = BTreeMap::new();
 
     while !awaiting_admission.is_empty() {
+        if admission_stopped(context) { return Ok(false); }
         if cancellation_started(context) {
             return Ok(false);
         }
-        *context
-            .state
-            .admission_in_progress
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = true;
+        {
+            let mut in_progress = context.state.admission_in_progress.lock().unwrap_or_else(PoisonError::into_inner);
+            if admission_stopped(context) { return Ok(false); }
+            *in_progress = true;
+        }
         let results: Vec<(DagNodeId, Result<OwnedStartResult, String>)> = awaiting_admission
             .iter()
             .map(|node_id| {
@@ -687,9 +727,8 @@ fn admit_and_settle_wave(
                 )
             })
             .collect();
-        resolve_admission_idle(context);
-
         let mut denied: Vec<DagNodeId> = Vec::new();
+        let attachment_result = (|| -> Result<(), crate::dag::store::DagStoreError> {
         for (node_id, settled) in results {
             match settled {
                 Err(error) => {
@@ -713,6 +752,11 @@ fn admit_and_settle_wave(
                 }
             }
         }
+        Ok(())
+        })();
+        resolve_admission_idle(context);
+        attachment_result?;
+        if admission_stopped(context) { return Ok(false); }
         if cancellation_started(context) {
             return Ok(false);
         }
@@ -871,6 +915,7 @@ fn settle_one(
     attached: &mut BTreeMap<DagNodeId, AttachedTask>,
 ) -> Result<bool, crate::dag::store::DagStoreError> {
     loop {
+        if admission_stopped(context) { return Ok(false); }
         if cancellation_started(context) {
             return Ok(false);
         }
@@ -901,6 +946,10 @@ fn settle_one(
         }
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+fn admission_stopped(context: &DagSchedulerContext) -> bool {
+    context.state.admission_stopped.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 fn fold_task_outcome(

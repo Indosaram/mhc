@@ -147,6 +147,8 @@ async fn live_lifecycle(shutdown_live:bool,peer_live:bool) {
     if shutdown_live {
         child.emit();
         dispatch(&api,EventKind::SessionShutdown,&mut ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason:SessionReason::Quit,target_session_file:None,signal:None }),&ctx).await;
+        assert_eq!(dag.manager.record(&run,"session").expect("paused checkpoint").status,senpi_task::dag::types::DagRunStatus::Paused);
+        assert!(scheduler.admission_is_stopped());
         assert_eq!(status_timers.count(),0,"live shutdown removes status timers");
         assert_eq!(rpc_timers.count(),0,"live shutdown removes heartbeat, snapshot and pending activity timers");
         child.emit(); rpc_timers.fire(150); assert_eq!(activity.lock().expect("activity").len(),2,"shutdown must suppress pending and subsequent child telemetry");

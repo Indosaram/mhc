@@ -4,6 +4,7 @@ use crate::engine::TaskEngine;
 pub struct TaskDagEngine {
     pub manager: DagManager,
     pub store: Arc<DagFileStore>,
+    recovery: Arc<senpi_task::dag::recovery::DagRecovery>,
     settings: senpi_task::dag::types::DagSettings,
     schedulers: Arc<Mutex<BTreeMap<String, Arc<DagSchedulerContext>>>>,
     rpc: Mutex<Option<Arc<crate::dag_rpc_bridge::DagRpcBridge>>>,
@@ -116,7 +117,16 @@ impl TaskDagEngine {
         let store = Arc::new(senpi_task::dag::store::create_dag_file_store(&senpi_task::dag::store::DagStoreConfig { project_dir:engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).cwd().into(), task:Some(senpi_task::dag::store::DagStoreTaskConfig { state_dir:Some(engine.store.state_dir().into()), dag:Some(senpi_task::dag::store::DagSettingsOverrides { max_nodes_per_run:Some(settings.max_nodes_per_run), max_runs_per_session:Some(settings.max_runs_per_session), subscriber_ring:Some(settings.subscriber_ring), heartbeat_ms:Some(settings.heartbeat_ms), history_default_limit:Some(settings.history_default_limit), history_max_limit:Some(settings.history_max_limit), retention_days:Some(settings.retention_days), max_prompt_bytes:Some(settings.max_prompt_bytes) }) }) }, Default::default())?);
         let schedulers = Arc::new(Mutex::new(BTreeMap::<String, Arc<DagSchedulerContext>>::new()));
         let options = DagManagerOptions { store:store.clone(), new_run_id:None, now:None, materialize_skills:materialize, settings:Some(settings) };
-        Ok(Self { manager:create_dag_manager(options), store, settings, schedulers, rpc:Mutex::new(None), surfaces:Mutex::new(None) })
+        let stopped = schedulers.clone();
+        let recovery = Arc::new(senpi_task::dag::recovery::create_dag_recovery(senpi_task::dag::recovery::DagRecoveryOptions {
+            store:store.clone(), task_manager:engine.manager.clone(), host_pid:None, is_process_alive:None, now:None,
+            subscriber_ring:Some(settings.subscriber_ring),
+            stop_admission:Some(Arc::new(move |run| {
+                let scheduler = stopped.lock().unwrap_or_else(PoisonError::into_inner).get(run).cloned();
+                if let Some(scheduler) = scheduler { scheduler.stop_admission(); }
+            })), reattach:None,
+        }));
+        Ok(Self { manager:create_dag_manager(options), store, recovery, settings, schedulers, rpc:Mutex::new(None), surfaces:Mutex::new(None) })
     }
     pub fn scheduler(&self, engine: &TaskEngine, run: &str, session: &str) -> Result<Arc<DagSchedulerContext>, senpi_task::dag::manager::DagManagerError> {
         let mut schedulers = self.schedulers.lock().unwrap_or_else(PoisonError::into_inner);
@@ -132,6 +142,8 @@ impl TaskDagEngine {
         self.register_rpc_with_timers(api, component, timers, Arc::new(crate::timers::HostTimers::default()));
     }
     pub fn register_rpc_with_timers(self: &Arc<Self>, api: &mut maho_ext_api::ExtensionApi, component: &crate::component::TaskComponent, timers: Arc<dyn crate::status_ui::StatusUiTimers>, rpc_timers: Arc<dyn crate::status_ui::StatusUiTimers>) {
+        let recovery = self.recovery.clone();
+        component.set_before_suspend(Arc::new(move |session| recovery.try_pause_runs_for_shutdown(session).map(|_| ()).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))));
         let runtime = component.engine.runtime.clone();
         let status = crate::dag_status_ui::DagStatusUi::new(Arc::new(self.manager.clone()), runtime.clone(), timers);
         let session: Arc<dyn Fn() -> Option<String> + Send + Sync> = Arc::new(move || runtime.lock().unwrap_or_else(PoisonError::into_inner).session_id().map(str::to_owned));
@@ -174,15 +186,36 @@ impl TaskDagEngine {
             timers: rpc_timers, now: Arc::new(|| chrono::Utc::now().timestamp_millis()), heartbeat_ms:Some(self.settings.heartbeat_ms), activity_coalesce_ms:None, snapshot_debounce_ms:None,
         });
         *self.rpc.lock().unwrap_or_else(PoisonError::into_inner) = Some(bridge.clone());
+        let owner = Arc::downgrade(self);
+        self.store.set_checkpoint_listener(Some(Arc::new(move || {
+            if let Some(dag) = owner.upgrade() {
+                if let Some(bridge) = dag.rpc.lock().unwrap_or_else(PoisonError::into_inner).clone() { bridge.notify_store_mutation(); }
+                if let Some(surfaces) = dag.surfaces.lock().unwrap_or_else(PoisonError::into_inner).clone() { surfaces.status.schedule_sync(); }
+            }
+        })));
         for kind in [maho_ext_api::EventKind::SessionStart, maho_ext_api::EventKind::SessionBeforeSwitch, maho_ext_api::EventKind::SessionShutdown] {
             let bridge = bridge.clone();
             let surfaces = surfaces.clone();
             let manager = self.manager.clone(); let tasks = lifecycle_tasks.clone(); let session = session.clone();
-            api.on(kind, Arc::new(move |event, _| { let bridge = bridge.clone(); let surfaces = surfaces.clone(); let manager = manager.clone(); let tasks = tasks.clone(); let session = session.clone(); Box::pin(async move {
+            let recovery = self.recovery.clone();
+            let schedulers = self.schedulers.clone();
+            let store = self.store.clone();
+            api.on(kind, Arc::new(move |event, _| { let bridge = bridge.clone(); let surfaces = surfaces.clone(); let manager = manager.clone(); let tasks = tasks.clone(); let session = session.clone(); let recovery = recovery.clone(); let schedulers = schedulers.clone(); let store = store.clone(); Box::pin(async move {
                 match event {
-                    maho_ext_api::ExtensionEvent::SessionStart(_) => { bridge.attach(); surfaces.reconcile_activity(&manager, session().as_deref(), &tasks, &bridge).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?; surfaces.status.sync_now(); },
+                    maho_ext_api::ExtensionEvent::SessionStart(_) => {
+                        bridge.attach();
+                        if let Some(session_id) = session() {
+                            schedulers.lock().unwrap_or_else(PoisonError::into_inner).retain(|_, scheduler| !scheduler.admission_is_stopped());
+                            tokio::task::spawn_blocking(move || recovery.resume_paused_runs(&session_id)).await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                        }
+                        surfaces.reconcile_activity(&manager, session().as_deref(), &tasks, &bridge).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?; surfaces.status.sync_now();
+                    },
                     maho_ext_api::ExtensionEvent::SessionBeforeSwitch { .. } => { bridge.detach(); surfaces.clear_activity(); surfaces.status.dispose(); },
-                    maho_ext_api::ExtensionEvent::SessionShutdown(_) => { bridge.dispose(); surfaces.clear_activity(); surfaces.status.dispose(); surfaces.wake.emit_shutdown(); },
+                    maho_ext_api::ExtensionEvent::SessionShutdown(_) => {
+                        if let Some(session) = session() { recovery.try_pause_runs_for_shutdown(&session).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?; }
+                        store.set_checkpoint_listener(None);
+                        bridge.dispose(); surfaces.clear_activity(); surfaces.status.dispose(); surfaces.wake.emit_shutdown();
+                    },
                     _ => {}
                 }
                 Ok(maho_ext_api::EventResult::None)

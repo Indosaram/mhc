@@ -16,6 +16,8 @@ pub struct TaskComponent {
     delivery: Mutex<()>,
     terminal_epochs: Mutex<std::collections::BTreeSet<(String, i64)>>,
     team: Mutex<Option<Arc<TeamRuntime>>>,
+    mutation_sync: Mutex<Option<u64>>,
+    before_suspend: Mutex<Option<Arc<dyn Fn(&str) -> Result<(), maho_ext_api::ExtensionFailure> + Send + Sync>>>,
 }
 impl TaskComponent {
     pub fn register_with_process_sweep(api: &mut ExtensionApi, engine: TaskEngine, spawn: senpi_task::tools::task::execute_spec::TaskToolDeps, ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps, member_process: bool, sweep: crate::process_sweep::SessionStartProcessSweepOptions) -> Result<Option<Arc<Self>>, maho_ext_api::ExtensionFailure> {
@@ -35,7 +37,22 @@ impl TaskComponent {
         let channels = OwnedResumptionChannels::new(api.events.clone(), Arc::new(TaskResumptionChannelManager { manager: engine.manager.clone(), ownership }), session).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
         let status = TaskStatusUi::new(engine.manager.clone(), engine.runtime.clone(), timers, Arc::new(|| chrono::Utc::now().timestamp_millis()), Arc::new(|| None));
         let transitions = SessionTransitionBridge::new(engine.runtime.clone(), engine.notifier.clone());
-        let component = Arc::new(Self { engine, status, channels, transitions: Mutex::new(transitions), waiters: Mutex::new(BTreeMap::new()), rpc: Mutex::new(None), terminal: Mutex::new(None), delivery: Mutex::new(()), terminal_epochs: Mutex::new(std::collections::BTreeSet::new()), team:Mutex::new(None) });
+        let component = Arc::new(Self { engine, status, channels, transitions: Mutex::new(transitions), waiters: Mutex::new(BTreeMap::new()), rpc: Mutex::new(None), terminal: Mutex::new(None), delivery: Mutex::new(()), terminal_epochs: Mutex::new(std::collections::BTreeSet::new()), team:Mutex::new(None), mutation_sync:Mutex::new(None), before_suspend:Mutex::new(None) });
+        let weak = Arc::downgrade(&component);
+        component.engine.store.set_mutation_listener(Some(Arc::new(move || {
+            if let Some(component) = weak.upgrade() {
+                let mut pending = component.mutation_sync.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(handle) = pending.take() { component.status.timers.clear(handle); }
+                let weak = Arc::downgrade(&component);
+                *pending = Some(component.status.timers.set(Box::new(move || {
+                    if let Some(component) = weak.upgrade() {
+                        *component.mutation_sync.lock().unwrap_or_else(PoisonError::into_inner) = None;
+                        component.sync();
+                    }
+                }), 250));
+                component.channels.emit_if_changed();
+            }
+        })));
         let state = component.engine.runtime.clone();
         let events = api.events.clone();
         let rpc = crate::task_rpc_bridge::wire_task_rpc_bridge(api, component.engine.manager.clone(), Arc::new(move || state.lock().unwrap_or_else(PoisonError::into_inner).session_id().map(str::to_owned)), component.engine.store.state_dir().to_string_lossy().into_owned(), Arc::new(move |name, value| events.emit("senpi:extension-rpc-event", &serde_json::json!({"name":name,"data":value}))))?;
@@ -82,6 +99,8 @@ impl TaskComponent {
                     ExtensionEvent::SessionBeforeCompact(_) => component.transitions.lock().unwrap_or_else(PoisonError::into_inner).mark(TransitionReason::Compacting, Some(session)),
                     ExtensionEvent::SessionCompact(_) => { component.transitions.lock().unwrap_or_else(PoisonError::into_inner).resolve(Some(session)).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?; component.sync(); }
                     ExtensionEvent::SessionShutdown(shutdown) => {
+                        let before_suspend = component.before_suspend.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                        if let Some(before_suspend) = before_suspend { before_suspend(session)?; }
                         component.transitions.lock().unwrap_or_else(PoisonError::into_inner).mark(TransitionReason::SessionShutdown, Some(session));
                         component.dispose();
                         component.engine.lifecycle.suspend_on_session_shutdown(&senpi_task::lifecycle::SuspendInput { parent_session_id: session.into(), reason: match shutdown.reason { maho_ext_api::SessionReason::Startup => "startup", maho_ext_api::SessionReason::Reload => "reload", maho_ext_api::SessionReason::New => "new", maho_ext_api::SessionReason::Resume => "resume", maho_ext_api::SessionReason::Fork => "fork", maho_ext_api::SessionReason::Quit => "quit" }.into() }).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
@@ -139,6 +158,9 @@ impl TaskComponent {
             waiters.insert(id, CompletionWaiter { signal, thread });
         }
     }
+    pub fn set_before_suspend(&self, callback: Arc<dyn Fn(&str) -> Result<(), maho_ext_api::ExtensionFailure> + Send + Sync>) {
+        *self.before_suspend.lock().unwrap_or_else(PoisonError::into_inner) = Some(callback);
+    }
     fn notify_owned_terminal(&self, record: &senpi_task::state::TaskRecord) {
         if crate::member_liveness::liveness_details(record).is_none() { return; }
         let terminal = self.terminal.lock().unwrap_or_else(PoisonError::into_inner).clone();
@@ -155,6 +177,8 @@ impl TaskComponent {
         *self.team.lock().unwrap_or_else(PoisonError::into_inner)=Some(Arc::new(TeamRuntime { service,pollers,liveness }));
     }
     pub fn dispose(&self) {
+        self.engine.store.set_mutation_listener(None);
+        if let Some(handle) = self.mutation_sync.lock().unwrap_or_else(PoisonError::into_inner).take() { self.status.timers.clear(handle); }
         let waiters = std::mem::take(&mut *self.waiters.lock().unwrap_or_else(PoisonError::into_inner));
         for waiter in waiters.values() { waiter.signal.abort(); }
         for waiter in waiters.into_values() { if waiter.thread.join().is_err() { eprintln!("task completion waiter panicked"); } }

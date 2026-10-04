@@ -222,12 +222,9 @@ pub fn subscribe_dag_journal(
             })
         {
             let subscribers = &mut registry[index].2;
-            subscribers.retain(|entry| !entry.active.load(std::sync::atomic::Ordering::SeqCst));
+            subscribers.retain(|entry| entry.active.load(std::sync::atomic::Ordering::SeqCst));
             if registry[index].2.is_empty() {
                 registry.remove(index);
-            } else {
-                // Keep only the still-active removal criterion: rebuild without the retained
-                // inactive ones already pruned above.
             }
         }
     })
