@@ -83,13 +83,13 @@ impl CredentialStore for InMemoryCredentialStore {
         options: Option<AuthOperationOptions>,
     ) -> anyhow::Result<Option<Credential>> {
         let signal_opts = options.clone();
-        let current = {
-            let credentials = self.credentials.lock().unwrap_or_else(|p| p.into_inner());
-            credentials.get(provider_id).cloned()
-        };
         let credentials_lock = &self.credentials;
         let provider_id_owned = provider_id.to_string();
         let task = async move {
+            let current = {
+                let credentials = credentials_lock.lock().unwrap_or_else(|p| p.into_inner());
+                credentials.get(&provider_id_owned).cloned()
+            };
             let next = f(current.clone()).await?;
             if let Some(next) = &next {
                 let mut credentials = credentials_lock.lock().unwrap_or_else(|p| p.into_inner());
@@ -180,12 +180,15 @@ mod tests {
         let store = std::sync::Arc::new(InMemoryCredentialStore::new());
         let order = std::sync::Arc::new(Mutex::new(Vec::<u8>::new()));
         let (o1, o2) = (order.clone(), order.clone());
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
         let s1 = store.clone();
         let h1 = tokio::spawn(async move {
             s1.modify(
                 "p",
                 Box::new(move |_| box_fut(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    entered_tx.send(()).unwrap();
+                    release_rx.await.unwrap();
                     o1.lock().unwrap_or_else(|p| p.into_inner()).push(1);
                     Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("1".into()), env: None })))
                 })),
@@ -193,21 +196,22 @@ mod tests {
             )
             .await
         });
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        let s2 = store.clone();
-        let h2 = tokio::spawn(async move {
-            s2.modify(
-                "p",
-                Box::new(move |_| box_fut(async move {
-                    o2.lock().unwrap_or_else(|p| p.into_inner()).push(2);
-                    Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("2".into()), env: None })))
-                })),
-                None,
-            )
-            .await
-        });
-        h1.await.unwrap().unwrap();
-        h2.await.unwrap().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx).await.unwrap().unwrap();
+        let mut second = Box::pin(store.modify(
+            "p",
+            Box::new(move |current| box_fut(async move {
+                assert_eq!(current.and_then(|c| c.as_api_key().and_then(|c| c.key.clone())), Some("1".into()));
+                o2.lock().unwrap_or_else(|p| p.into_inner()).push(2);
+                Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some("2".into()), env: None })))
+            })),
+            None,
+        ));
+        assert!(std::future::poll_fn(|cx| std::task::Poll::Ready(second.as_mut().poll(cx))).await.is_pending());
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            h1.await.unwrap().unwrap();
+            second.await.unwrap();
+        }).await.unwrap();
         assert_eq!(*order.lock().unwrap_or_else(|p| p.into_inner()), vec![1, 2]);
     }
 }

@@ -2149,6 +2149,24 @@ dependencies = [
 [[package]]
 name = "maho-ext-anthropic-subscription"
 version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "dirs",
+ "maho-ai",
+ "maho-ext-api",
+ "maho-ext-builtin-loose",
+ "maho-ext-host",
+ "maho-test-support",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "unicode-normalization",
+]
 
 [[package]]
 name = "maho-ext-anthropic-web-search"
@@ -2259,6 +2277,25 @@ version = "0.0.0"
 [[package]]
 name = "maho-ext-cursor-cli-oauth"
 version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "maho-ai",
+ "maho-core",
+ "maho-ext-anthropic-subscription",
+ "maho-ext-api",
+ "maho-ext-builtin-loose",
+ "maho-ext-host",
+ "maho-test-support",
+ "nix",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-ferryx-agent-state"
