@@ -17,10 +17,16 @@ use crate::compose::OmoSenpiComponent;
 pub const SKILLS_ROOT_ENV: &str = "OMO_SENPI_SKILLS_ROOT";
 
 pub fn builtin_skills_root() -> PathBuf {
-    if let Ok(root) = std::env::var(SKILLS_ROOT_ENV) {
-        if !root.is_empty() {
-            return PathBuf::from(root);
-        }
+    skills_root_from(std::env::var(SKILLS_ROOT_ENV).ok())
+}
+
+/// The `OMO_SENPI_SKILLS_ROOT` contract: a set, non-empty value wins; otherwise the packaged
+/// `skills/` directory beside the executable (or a relative `skills` when the path is unknown).
+fn skills_root_from(env_root: Option<String>) -> PathBuf {
+    if let Some(root) = env_root
+        && !root.is_empty()
+    {
+        return PathBuf::from(root);
     }
     std::env::current_exe()
         .ok()
@@ -185,4 +191,21 @@ pub fn omo_component_names() -> Vec<&'static str> {
         "config-watch",
     ]
     .to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_set_non_empty_env_root_overrides_the_packaged_skills_dir() {
+        assert_eq!(skills_root_from(Some("/custom/omo/skills".to_owned())), PathBuf::from("/custom/omo/skills"));
+    }
+
+    #[test]
+    fn an_unset_or_empty_env_root_falls_back_to_the_packaged_skills_dir() {
+        let fallback = skills_root_from(None);
+        assert!(fallback.ends_with("skills"), "packaged fallback stays under a skills dir: {fallback:?}");
+        assert_eq!(skills_root_from(Some(String::new())), fallback, "an empty override is treated as unset");
+    }
 }

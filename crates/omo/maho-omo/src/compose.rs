@@ -35,6 +35,11 @@ pub fn component_disabled_flag(name: &str) -> String {
     format!("{OMO_COMPONENT_FLAG_PREFIX}{name}-disabled")
 }
 
+/// The registration callback every [`OmoSenpiComponent`] slot holds: given the shared
+/// [`ExtensionApi`] and the one retained [`OmoRuntime`], it registers the component. Named so the
+/// slot's field type stays readable instead of an inline complex closure type.
+pub type ComponentRegister = Arc<dyn Fn(&mut ExtensionApi, &OmoRuntime) + Send + Sync>;
+
 /// One entry of the registration list. Holds a register closure so a component that is not a plain
 /// `Box<dyn Extension>` (the memory component registers through `MemoryComponent::register` with
 /// hooks) can still be a list entry without an invented wrapper type.
@@ -44,7 +49,7 @@ pub fn component_disabled_flag(name: &str) -> String {
 /// [`OmoSenpiComponent::from_factory`] to get a fresh instance per register.
 pub struct OmoSenpiComponent {
     pub name: &'static str,
-    register: Arc<dyn Fn(&mut ExtensionApi, &OmoRuntime) + Send + Sync>,
+    register: ComponentRegister,
 }
 
 impl std::fmt::Debug for OmoSenpiComponent {

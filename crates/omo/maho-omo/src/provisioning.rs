@@ -31,18 +31,12 @@ fn runtime_dir(name: &str) -> PathBuf {
         .map(|root| root.join("runtime").join(name)).unwrap_or_default()
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ProvisioningOptions {
     pub toolkit_base_dir: Option<PathBuf>,
     pub dag_sdk_base_dir: Option<PathBuf>,
     pub env: Option<EnvReader>,
     pub sink: Option<EnvWriter>,
-}
-
-impl Default for ProvisioningOptions {
-    fn default() -> Self {
-        Self { toolkit_base_dir: None, dag_sdk_base_dir: None, env: None, sink: None }
-    }
 }
 
 impl ProvisioningOptions {

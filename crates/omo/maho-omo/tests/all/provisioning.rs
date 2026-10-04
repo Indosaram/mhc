@@ -137,3 +137,13 @@ fn dag_sdk_root_is_published_only_for_an_existing_directory() {
     absent.dag_sdk_base_dir = Some(absent_dir.path().join("missing"));
     assert!(provision_dag_sdk_root(&absent).is_empty());
 }
+
+#[test]
+fn default_options_leave_every_injection_unset() {
+    let options = ProvisioningOptions::default();
+
+    assert!(options.toolkit_base_dir.is_none());
+    assert!(options.dag_sdk_base_dir.is_none());
+    assert!(options.env.is_none());
+    assert!(options.sink.is_none());
+}
