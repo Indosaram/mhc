@@ -33,12 +33,12 @@ async fn real_rpc_entry_dispatches_message_query_and_preserves_correlation() {
         .kill_on_drop(true)
         .spawn().expect("real RPC process");
     let mut input = child.stdin.take().expect("stdin");
-    input.write_all(b"{\"id\":\"query\",\"type\":\"get_messages\"}\n").await.expect("command");
-    drop(input);
     let mut stdout = child.stdout.take().expect("stdout");
     let mut stderr = child.stderr.take().expect("stderr");
     let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         use tokio::io::AsyncReadExt;
+        input.write_all(b"{\"id\":\"query\",\"type\":\"get_messages\"}\n").await?;
+        drop(input);
         let mut output = Vec::new();
         let mut errors = Vec::new();
         let (status, _, _) = tokio::try_join!(child.wait(), stdout.read_to_end(&mut output), stderr.read_to_end(&mut errors))?;

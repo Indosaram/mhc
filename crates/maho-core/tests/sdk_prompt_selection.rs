@@ -46,3 +46,12 @@ fn selected_search_display_preserves_canonical_order_without_duplicate_names() {
         assert_eq!(get_tools_prompt_display(&tools), expected);
     }
 }
+
+#[test]
+fn selected_tools_without_prompt_snippets_are_not_advertised() {
+    let snippets = HashMap::from([("read".to_owned(), "fixture-read".to_owned())]);
+    let section = build_tool_section(&categorize_tools(&["read".into(), "secret_tool".into()]), &snippets, &[]);
+    let advertised = section.lines().filter_map(|line| line.strip_prefix("- ")?.split_once(':').map(|(name, _)| name))
+        .collect::<Vec<_>>();
+    assert_eq!(advertised, ["read"]);
+}
