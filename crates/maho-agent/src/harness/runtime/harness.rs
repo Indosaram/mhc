@@ -6,7 +6,7 @@ use super::types::LaneState;
 use crate::harness::context::Context;
 use crate::harness::events::{HarnessEvent, HarnessEventBus, HarnessEventPayload};
 use crate::harness::session::session::{SessionError, SessionErrorKind, session_invariant_error};
-use crate::harness::session::types::{LaneConfiguration, Operation, Session, Write};
+use crate::harness::session::types::{Control, LaneConfiguration, Operation, OperationIntentKind, Session, Write};
 use crate::harness::session::values::*;
 
 #[derive(Clone)]
@@ -35,6 +35,17 @@ pub struct Harness {
     close_lock: tokio::sync::Mutex<()>,
     config: Arc<Mutex<RuntimeConfig>>,
     session_closed: Mutex<bool>,
+}
+
+/// One lane operation left open by a previous worker, mirroring pinned `OpenOperation`
+/// (`agent-harness.ts:211-217`). `aborting` is set when the durable control is `cancel_requested`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenOperation {
+    pub lane: String,
+    pub operation_id: String,
+    pub kind: OperationIntentKind,
+    pub started_at: i64,
+    pub aborting: bool,
 }
 
 impl Harness {
@@ -206,6 +217,27 @@ impl Harness {
             .iter()
             .map(|(name, lane)| (name.clone(), lane.state()))
             .collect())
+    }
+
+    /// Every loaded lane's active operation, matching pinned `createAgentHarness`'s `open` list so a
+    /// worker can re-drive recoveries after its services are reachable.
+    pub fn open_operations(&self) -> Result<Vec<OpenOperation>, SessionError> {
+        self.assert_open()?;
+        let lanes = self.lanes_by_name.lock().unwrap_or_else(|error| error.into_inner());
+        let mut open = Vec::new();
+        for (name, lane) in lanes.iter() {
+            let state = lane.state();
+            let Some(operation) = state.operation else { continue; };
+            let aborting = matches!(operation.state.operation_scope_of().control, Control::CancelRequested { .. });
+            open.push(OpenOperation {
+                lane: name.clone(),
+                operation_id: operation.meta.operation_id,
+                kind: operation.meta.intent.kind(),
+                started_at: operation.meta.started_at,
+                aborting,
+            });
+        }
+        Ok(open)
     }
 
     pub async fn get_name(&self, context: &Context) -> Result<Option<String>, SessionError> {

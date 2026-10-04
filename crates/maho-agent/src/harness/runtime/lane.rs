@@ -982,6 +982,29 @@ impl Lane {
     }
 }
 
+/// Production `RuntimeLane` binding for the durable harness `Lane`.
+///
+/// The lane watch/snapshot and the drive procedures read a lane through this trait. `state` reads
+/// the live projection and `publish_state` writes it back after a drive commit (not a no-op);
+/// `emit` forwards through the lane's own event bus so watchers see exactly one copy.
+impl super::types::RuntimeLane for Lane {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn session(&self) -> &dyn Session {
+        self.session.as_ref()
+    }
+    fn state(&self) -> LaneState {
+        self.state()
+    }
+    fn publish_state(&self, state: LaneState) {
+        *self.state.lock().unwrap_or_else(|error| error.into_inner()) = state;
+    }
+    fn emit<'a>(&'a self, events: Vec<HarnessEvent>, context: &'a Context) -> BoxFuture<'a, ()> {
+        self.events.begin_emit_batch(events, context.clone())
+    }
+}
+
 fn queued_item(item: &InboxItem, pending: &PendingEntry) -> Result<crate::harness::events::LaneQueuedItem, SessionError> {
     let kind = match item.kind { InboxItemKind::Write => "write", InboxItemKind::Steer => "steer", InboxItemKind::FollowUp => "followUp", InboxItemKind::NextRun => "nextRun" }.to_owned();
     let (item_type, message, custom_type, data) = match pending {
