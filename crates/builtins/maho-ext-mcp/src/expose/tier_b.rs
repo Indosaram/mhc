@@ -100,7 +100,6 @@ pub fn register_mcp_tier_b_tools(registrar:Arc<dyn McpToolRegistrar>,input:McpTi
     let catalog_names:Arc<Mutex<BTreeSet<String>>>=Arc::new(Mutex::new(BTreeSet::new()));
     let stubbed:Arc<Mutex<BTreeSet<String>>>=Arc::new(Mutex::new(BTreeSet::new()));
     let promoted:Arc<Mutex<BTreeSet<String>>>=registry.promoted_names.get_or_insert_with(||Arc::new(Mutex::new(BTreeSet::new()))).clone();
-    poisoned(&promoted).retain(|name|registered_names.contains(name));
     let activate:FeederActivate={let registrar=registrar.clone();let full_by_name=full_by_name.clone();let registered_names=registered_names.clone();let catalog_names=catalog_names.clone();let stubbed=stubbed.clone();let promoted=promoted.clone();
         Arc::new(move |names:&[String]| {
             let mut seen=BTreeSet::new();
@@ -125,7 +124,6 @@ pub fn register_mcp_tier_b_tools(registrar:Arc<dyn McpToolRegistrar>,input:McpTi
         for document in service.get_catalog()? {poisoned(&catalog_names).insert(document.name);}
     }
     let reference=registrar.get_active_tools()?;
-    if input.search_mode && !stub_swap {poisoned(&promoted).extend(reference.iter().filter(|name|registered_names.contains(*name)).cloned());}
     let current_base:Vec<String>=reference.iter().filter(|name|!is_legacy_mcp_registration_name(name) && !previous_managed_names.contains(*name) && !managed_names.contains(*name)).cloned().collect();
     if !input.search_mode {
         let intended=order_active_set(&current_base.iter().cloned().chain(active_mcp_names.iter().cloned()).collect::<Vec<_>>(),&reference,&poisoned(&catalog_names));
@@ -133,7 +131,7 @@ pub fn register_mcp_tier_b_tools(registrar:Arc<dyn McpToolRegistrar>,input:McpTi
         return Ok(McpTierBRegistration {searchable,activate});
     }
     if !stub_swap {
-        let intended=order_active_set(&current_base.iter().cloned().chain(active_mcp_names.iter().cloned()).chain(poisoned(&promoted).iter().cloned()).collect::<Vec<_>>(),&reference,&poisoned(&catalog_names));
+        let intended=order_active_set(&current_base.iter().cloned().chain(active_mcp_names.iter().cloned()).collect::<Vec<_>>(),&reference,&poisoned(&catalog_names));
         register_tools_preserving_active_set_with(registrar.as_ref(),full_defs,Some(intended))?;
         return Ok(McpTierBRegistration {searchable,activate});
     }

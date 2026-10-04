@@ -33,14 +33,32 @@ impl McpNativeToolSearchGate {
     /// Upstream `isMcpNativeToolSearchEnabled`: `setting === true || setting === "auto"`.
     pub fn enabled(&self)->bool {matches!(self.state.load(std::sync::atomic::Ordering::SeqCst),Self::AUTO|Self::ENABLED)}
 }
-pub struct McpService {pub registry:Arc<HostMcpRegistry>,pub config:Option<ResolvedMcpConfig>,pub connections:BTreeMap<String,McpSessionConnection>,owner:u64,agent_dir:Option<PathBuf>,session_cwd:Option<PathBuf>,session_env:BTreeMap<String,String>,deferred:crate::startup_race::McpDeferredAttach,pending_auth:BTreeMap<String,crate::auth::oauth_provider::McpOAuthProvider>,elicitation_ui:Option<Arc<dyn maho_ext_api::ExtensionUi>>,output_artifacts:Arc<crate::guard::output_guard::McpOutputArtifacts>,registration:Option<crate::expose::session::McpSessionRegistration>,tier_b_registry:crate::expose::tier_b::McpTierBRegistry,native_tool_search_gate:McpNativeToolSearchGate}
+/// Registration seam bound by the host so `attach_session` (upstream
+/// `attachSession`), skill attach and the deferred startup-race connects
+/// (upstream `raceMcpStartupConnect`) all register tools through the same
+/// registrar and shared tool-search service.
+#[derive(Clone)]
+pub struct McpRegistrationInputs {
+    pub registrar:Arc<dyn crate::tool_registrar::McpToolRegistrar>,
+    pub tool_search:Option<Arc<tokio::sync::Mutex<maho_ext_tool_search::service::ToolSearchService>>>,
+}
+pub struct McpService {pub registry:Arc<HostMcpRegistry>,pub config:Option<ResolvedMcpConfig>,pub connections:BTreeMap<String,McpSessionConnection>,owner:u64,agent_dir:Option<PathBuf>,session_cwd:Option<PathBuf>,session_env:BTreeMap<String,String>,deferred:crate::startup_race::McpDeferredAttach,pending_auth:BTreeMap<String,crate::auth::oauth_provider::McpOAuthProvider>,elicitation_ui:Option<Arc<dyn maho_ext_api::ExtensionUi>>,output_artifacts:Arc<crate::guard::output_guard::McpOutputArtifacts>,registration:Option<crate::expose::session::McpSessionRegistration>,tier_b_registry:crate::expose::tier_b::McpTierBRegistry,native_tool_search_gate:McpNativeToolSearchGate,self_weak:Option<std::sync::Weak<tokio::sync::Mutex<McpService>>>,registration_inputs:Option<McpRegistrationInputs>}
 impl McpService {
-    pub fn new(registry:Arc<HostMcpRegistry>,owner:u64)->Self {Self {registry,config:None,connections:BTreeMap::new(),owner,agent_dir:None,session_cwd:None,session_env:BTreeMap::new(),deferred:Default::default(),pending_auth:BTreeMap::new(),elicitation_ui:None,output_artifacts:Arc::new(Default::default()),registration:None,tier_b_registry:Default::default(),native_tool_search_gate:McpNativeToolSearchGate::default()}}
+    pub fn new(registry:Arc<HostMcpRegistry>,owner:u64)->Self {Self {registry,config:None,connections:BTreeMap::new(),owner,agent_dir:None,session_cwd:None,session_env:BTreeMap::new(),deferred:Default::default(),pending_auth:BTreeMap::new(),elicitation_ui:None,output_artifacts:Arc::new(Default::default()),registration:None,tier_b_registry:Default::default(),native_tool_search_gate:McpNativeToolSearchGate::default(),self_weak:None,registration_inputs:None}}
     pub fn set_elicitation_ui(&mut self,ui:Option<Arc<dyn maho_ext_api::ExtensionUi>>){self.elicitation_ui=ui;}
+    /// Bind the service's own handle so a deferred startup-race connect can
+    /// re-register tools after the attach deadline without holding the session lock.
+    pub fn bind_self(&mut self,weak:std::sync::Weak<tokio::sync::Mutex<McpService>>){self.self_weak=Some(weak);}
+    /// Bind the registrar + shared tool-search service used by every registration
+    /// trigger (`attach_session`, skill attach, deferred startup connects).
+    pub fn bind_registration(&mut self,registrar:Arc<dyn crate::tool_registrar::McpToolRegistrar>,tool_search:Option<Arc<tokio::sync::Mutex<maho_ext_tool_search::service::ToolSearchService>>>){self.registration_inputs=Some(McpRegistrationInputs {registrar,tool_search});}
     pub async fn attach_session(&mut self,cwd:&Path,agent_dir:&Path,env:&BTreeMap<String,String>,project_trusted:bool,declarations:&[maho_ext_api::RegisteredMcpServerDeclaration])->Result<(),McpServiceError> {
         let mut config=load_mcp_config(LoadMcpConfigOptions {cwd,agent_dir,env,project_trusted})?;
         crate::config::merge_extension_mcp_servers(&mut config,declarations)?;
-        self.sync_from_config(config,cwd,agent_dir,env).await
+        self.sync_from_config(config,cwd,agent_dir,env).await?;
+        // Upstream `attachSession` registers tools once per attach when a `pi` is
+        // supplied; the host binds that seam with `bind_registration`.
+        self.register_bound_session_tools().await
     }
     async fn sync_from_config(&mut self,config:ResolvedMcpConfig,cwd:&Path,agent_dir:&Path,env:&BTreeMap<String,String>)->Result<(),McpServiceError> {
         let existing=self.connections.keys().cloned().collect::<Vec<_>>();
@@ -63,12 +81,28 @@ impl McpService {
             if let Some(cached)=crate::catalog_cache::get_valid_cached_server(&cache,name,hash,chrono::Utc::now().timestamp_millis() as f64){connection.entry.lock().await.cached_catalog=Some(cached.clone());}
             if crate::startup_race::should_race_mcp_startup(server_config.lifecycle.unwrap_or(crate::config_schema::Lifecycle::Lazy)) {
                 let entry=connection.entry.clone();let server_config=server_config.clone();let shared=connection.shared.clone();
+                let self_weak=self.self_weak.clone();let registration_inputs=self.registration_inputs.clone();
                 let timeout=crate::startup_race::resolve_mcp_startup_timeout_ms(server_config.startup_timeout_ms,env.get(crate::startup_race::MCP_STARTUP_TIMEOUT_ENV).map(String::as_str));
                 let (sender,mut settled)=tokio::sync::watch::channel(false);
-                self.deferred.track(async move {let mut entry=entry.lock().await;
+                self.deferred.track(async move {
+                    {let mut entry=entry.lock().await;
                     if let Some(shared)=shared {if let Ok(catalog)=shared.catalog().await{entry.cached_catalog=Some(catalog);entry.cache_refreshed_after_connect=true;}}
                     else if let Err(error)=crate::startup_race::connect_and_refresh_mcp_catalog(&mut entry,&server_config).await {
                         let _=entry.logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("warning",&error.to_string(),None,None);
+                    }}
+                    // A cold/lazy server whose connect outran the attach deadline lands
+                    // its catalog here; re-register so its tools reach the next turn,
+                    // matching upstream `raceMcpStartupConnect` registering through the
+                    // captured `pi`. The connect task holds no other lock when the
+                    // registration task takes the session lock, so `settled` is not gated.
+                    if let (Some(weak),Some(inputs))=(self_weak,registration_inputs) {
+                        if let Some(service)=weak.upgrade() {
+                            tokio::spawn(async move {
+                                let mut service=service.lock().await;
+                                let mut tool_search=match &inputs.tool_search {Some(tool_search)=>Some(tool_search.lock().await),None=>None};
+                                let _=service.register_session_tools(inputs.registrar.clone(),tool_search.as_deref_mut()).await;
+                            });
+                        }
                     }
                     sender.send_replace(true);
                 });
@@ -93,8 +127,13 @@ impl McpService {
             if existing.is_some_and(|existing|existing.config_hash==resolved.config_hash){continue;}
             config.servers.insert(name.clone(),resolved);changed=true;
         }
-        if changed {let env=self.session_env.clone();self.sync_from_config(config,&cwd,&agent_dir,&env).await?;}
+        if changed {let env=self.session_env.clone();self.sync_from_config(config,&cwd,&agent_dir,&env).await?;self.register_bound_session_tools().await?;}
         Ok(warnings)
+    }
+    async fn register_bound_session_tools(&mut self)->Result<(),McpServiceError> {
+        let Some(inputs)=self.registration_inputs.clone() else {return Ok(());};
+        let mut tool_search=match &inputs.tool_search {Some(tool_search)=>Some(tool_search.lock().await),None=>None};
+        self.register_session_tools(inputs.registrar.clone(),tool_search.as_deref_mut()).await
     }
     pub async fn register_session_tools(&mut self,registrar:Arc<dyn crate::tool_registrar::McpToolRegistrar>,tool_search:Option<&mut maho_ext_tool_search::service::ToolSearchService>)->Result<(),McpServiceError> {
         let Some(config)=self.config.clone() else {return Ok(());};
@@ -210,6 +249,6 @@ impl McpService {
             dispose_entry_connection(connection,&self.registry,self.owner).await?;
         }
         self.output_artifacts.cleanup()?;
-        self.config=None;self.agent_dir=None;self.session_cwd=None;self.session_env.clear();self.deferred.clear();self.pending_auth.clear();self.registration=None;self.tier_b_registry=Default::default();self.native_tool_search_gate.publish(None);Ok(())
+        self.config=None;self.agent_dir=None;self.session_cwd=None;self.session_env.clear();self.deferred.clear();self.pending_auth.clear();self.registration=None;self.tier_b_registry=Default::default();self.native_tool_search_gate.publish(None);self.registration_inputs=None;self.self_weak=None;Ok(())
     }
 }

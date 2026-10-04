@@ -160,12 +160,17 @@ fn empty_generation_removes_managed_tools_and_shared_search_feed() {
 }
 
 #[test]
-fn search_activation_survives_catalog_refresh() {
+fn search_mode_re_registration_restores_base_and_direct_tools() {
+    // Upstream `registerMcpTierBTools` does NOT retain a non-stubSwap search-mode
+    // promotion across re-registration: a catalog refresh (a raced startup connect
+    // or `list_changed`) re-derives the active set from the base tools plus the
+    // direct entries, so a previously activated tool returns to inactive.
     let registrar=registrar_with_base();let mut search=search_service(registrar.clone());let mut registry=McpTierBRegistry::default();
     let registration=register_mcp_tier_b_tools(registrar.clone(),input(vec![entry("fx","alpha")],Vec::new(),true,Vec::new()),Some(&mut search),&mut registry,None).unwrap();
     let name=registration.searchable[0].name.clone();(registration.activate)(std::slice::from_ref(&name)).unwrap();
+    assert_eq!(registrar.get_active_tools().unwrap(),vec!["base".to_owned(),name.clone()]);
     register_mcp_tier_b_tools(registrar.clone(),input(vec![entry("fx","alpha")],Vec::new(),true,Vec::new()),Some(&mut search),&mut registry,None).unwrap();
-    assert!(registrar.get_active_tools().unwrap().contains(&name));
+    assert_eq!(registrar.get_active_tools().unwrap(),vec!["base".to_owned()]);
 }
 
 #[test]

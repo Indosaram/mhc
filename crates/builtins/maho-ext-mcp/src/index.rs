@@ -30,20 +30,39 @@ pub fn register_mcp_lifecycle_with_tool_search(api:&mut ExtensionApi,registry:Ar
         };
         match result {Ok(message)=>ctx.ui.notify(&message,maho_ext_api::NotificationType::Info),Err(error)=>ctx.ui.notify(&error,maho_ext_api::NotificationType::Error)}Ok(())
     })}));
-    let start=service.clone();let start_registrar=registrar.clone();let start_search=tool_search.clone();api.on(EventKind::SessionStart,Arc::new(move |_,ctx|{let service=start.clone();let registrar=start_registrar.clone();let tool_search=start_search.clone();Box::pin(async move {
+    let start=service.clone();let start_registrar=registrar.clone();let start_search=tool_search.clone();api.on(EventKind::SessionStart,Arc::new(move |_,ctx|{let service_handle=start.clone();let registrar=start_registrar.clone();let tool_search=start_search.clone();Box::pin(async move {
         let env=std::env::vars().collect();
-        let mut service=service.lock().await;service.set_elicitation_ui(if ctx.has_ui{Some(ctx.ui.clone())}else{None});
+        let mut service=service_handle.lock().await;service.set_elicitation_ui(if ctx.has_ui{Some(ctx.ui.clone())}else{None});
+        // Bind the registration seam once; `attach_session` registers through it
+        // (upstream `attachSession`) and the deferred startup connects re-use it.
+        service.bind_self(Arc::downgrade(&service_handle));service.bind_registration(registrar,tool_search);
         service.attach_session(&ctx.cwd,&ctx.agent_dir,&env,ctx.is_project_trusted(),&ctx.registered_mcp_servers).await.map_err(|error|ExtensionFailure::new(error.to_string()))?;
-        match tool_search {Some(search)=>service.register_session_tools(registrar,Some(&mut *search.lock().await)).await,None=>service.register_session_tools(registrar,None).await}.map_err(|error|ExtensionFailure::new(error.to_string()))?;
         Ok(EventResult::None)
     })}));
     let shutdown=service.clone();api.on(EventKind::SessionShutdown,Arc::new(move |_,_|{let service=shutdown.clone();Box::pin(async move {service.lock().await.dispose().await.map_err(|error|ExtensionFailure::new(error.to_string()))?;Ok(EventResult::None)})}));
-    let before=service.clone();api.on(EventKind::BeforeAgentStart,Arc::new(move |event,_|{let service=before.clone();let registrar=registrar.clone();let tool_search=tool_search.clone();Box::pin(async move {
-        let ExtensionEvent::BeforeAgentStart(event)=event else{return Ok(EventResult::None);};let mut service=service.lock().await;
+    // Upstream `before_agent_start` only awaits the in-flight attach
+    // (`whenAttachSettled`) and injects instructions; it does NOT re-register.
+    let before=service.clone();api.on(EventKind::BeforeAgentStart,Arc::new(move |event,_|{let service=before.clone();Box::pin(async move {
+        let ExtensionEvent::BeforeAgentStart(event)=event else{return Ok(EventResult::None);};let service=service.lock().await;
         service.wait_for_deferred_attach(std::time::Duration::from_millis(crate::startup_race::MCP_ATTACH_SETTLE_TIMEOUT_MS)).await;
-        match tool_search {Some(search)=>service.register_session_tools(registrar,Some(&mut *search.lock().await)).await,None=>service.register_session_tools(registrar,None).await}.map_err(|error|ExtensionFailure::new(error.to_string()))?;
         let block=crate::instructions::refresh_mcp_instructions_for_session(&service).await;
         Ok(EventResult::BeforeAgentStart(BeforeAgentStartEventResult {message:None,system_prompt:crate::instructions::inject_mcp_instructions(&block,&event.system_prompt)}))
     })}));
     service
+}
+/// Crate-level extension factory (upstream `mcpExtension`/`createMcpExtension`).
+/// The host builds it with the shared tool-search service and reads the returned
+/// service handle to bind the native tool-search gate (`installMcpNativeToolSearchGate`).
+pub struct McpExtension {
+    pub registry:Arc<HostMcpRegistry>,
+    pub owner:u64,
+    pub tool_search:Option<Arc<tokio::sync::Mutex<maho_ext_tool_search::service::ToolSearchService>>>,
+}
+impl McpExtension {
+    pub fn register_with_service(&self,api:&mut ExtensionApi)->Arc<tokio::sync::Mutex<McpService>> {
+        register_mcp_lifecycle_with_tool_search(api,self.registry.clone(),self.owner,self.tool_search.clone())
+    }
+}
+impl maho_ext_api::Extension for McpExtension {
+    fn register(&self,api:&mut ExtensionApi) {let _=self.register_with_service(api);}
 }
