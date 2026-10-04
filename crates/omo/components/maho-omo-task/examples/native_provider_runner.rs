@@ -3,7 +3,7 @@ use senpi_task::{manager::{ManagedChildHandle, types::{ManagedRunners, ManagerSt
 
 struct Actions;
 impl maho_ext_api::ExtensionActions for Actions {
-    fn send_message(&self,message:maho_ext_api::CustomMessage,_:maho_ext_api::SendMessageOptions)->Result<(),maho_ext_api::ExtensionFailure> { println!("MESSAGE {}",serde_json::to_string(&message).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?); Ok(()) }
+    fn send_message(&self,message:maho_ext_api::CustomMessage,_:maho_ext_api::SendMessageOptions)->Result<(),maho_ext_api::ExtensionFailure> { println!("MESSAGE {}",serde_json::to_string(&serde_json::json!({"customType":message.custom_type,"content":message.content,"display":message.display,"details":message.details})).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?); Ok(()) }
     fn send_user_message(&self,_:maho_ext_api::UserMessageContent,_:maho_ext_api::SendUserMessageOptions)->Result<(),maho_ext_api::ExtensionFailure> { Err(maho_ext_api::ExtensionFailure::new("unexpected user message")) }
     fn append_entry(&self,_:&str,_:Option<maho_ext_api::JsonValue>)->Result<(),maho_ext_api::ExtensionFailure> { Err(maho_ext_api::ExtensionFailure::new("unexpected entry")) }
     fn get_all_tools(&self)->Result<Vec<maho_ext_api::ToolInfo>,maho_ext_api::ExtensionFailure> { Ok(vec![]) }
