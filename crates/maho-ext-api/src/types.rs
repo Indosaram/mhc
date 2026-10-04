@@ -744,6 +744,10 @@ pub struct ExtensionContext {
     pub logger: Option<Arc<dyn ComponentLogger>>,
     /// Host deferred-macrotask scheduler (todo 47). `None` = no host macrotask entry point.
     pub defer_macrotask: Option<DeferredMacrotask>,
+    /// Per-invocation compaction feedback signal, the port of upstream `createContext`'s
+    /// `compactionSignal` closure variable: created fresh for every context so a signal begun in one
+    /// context is never inherited by another. `ctx.session_manager` stays a shared adapter.
+    pub compaction_signal: Arc<Mutex<Option<AbortSignal>>>,
 }
 impl ExtensionContext {
     fn assert_active_or_panic(&self) {
@@ -803,11 +807,22 @@ impl ExtensionContext {
         self.actions()?;
         Ok(result)
     }
-    pub fn begin_compaction(&self, options: BeginCompactionOptions) -> Result<Option<AbortSignal>, ExtensionFailure> { Ok(self.actions()?.begin_compaction(options)) }
-    pub fn update_compaction(&self, options: UpdateCompactionOptions) -> Result<(), ExtensionFailure> { self.actions()?.update_compaction(options); Ok(()) }
-    pub fn end_compaction(&self, options: EndCompactionOptions) -> Result<(), ExtensionFailure> { self.actions()?.end_compaction(options); Ok(()) }
+    pub fn begin_compaction(&self, options: BeginCompactionOptions) -> Result<Option<AbortSignal>, ExtensionFailure> {
+        let signal = self.actions()?.begin_compaction(options);
+        *self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = signal.clone();
+        Ok(signal)
+    }
+    pub fn update_compaction(&self, mut options: UpdateCompactionOptions) -> Result<(), ExtensionFailure> {
+        options.signal = options.signal.or_else(|| self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
+        self.actions()?.update_compaction(options); Ok(())
+    }
+    pub fn end_compaction(&self, mut options: EndCompactionOptions) -> Result<(), ExtensionFailure> {
+        options.signal = options.signal.or_else(|| self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
+        self.actions()?.end_compaction(options); Ok(())
+    }
     pub fn get_message_revision(&self) -> Result<u64, ExtensionFailure> { Ok(self.actions()?.get_message_revision()) }
-    pub async fn apply_compaction(&self, result: CompactionResult, options: ApplyCompactionOptions) -> Result<ApplyCompactionResult, ExtensionFailure> {
+    pub async fn apply_compaction(&self, result: CompactionResult, mut options: ApplyCompactionOptions) -> Result<ApplyCompactionResult, ExtensionFailure> {
+        options.signal = options.signal.or_else(|| self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
         let result = self.actions()?.apply_compaction(result, options).await?;
         self.actions()?;
         Ok(result)

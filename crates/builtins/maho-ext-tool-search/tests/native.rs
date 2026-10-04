@@ -91,7 +91,7 @@ fn context()->ExtensionContext {
         is_idle_fn:std::sync::Arc::new(||true),wait_for_idle_fn:std::sync::Arc::new(||Box::pin(async{})),is_project_trusted_fn:std::sync::Arc::new(||true),
         is_compacting_fn:std::sync::Arc::new(||false),get_system_prompt_fn:std::sync::Arc::new(||String::new()),
         get_system_prompt_options_fn:std::sync::Arc::new(||BuildSystemPromptOptions::default()),
-        registered_mcp_servers:Vec::new(),update_tool_hook_status:None,idle_coordinator:None,logger:None,defer_macrotask:None }
+        registered_mcp_servers:Vec::new(),update_tool_hook_status:None,idle_coordinator:None,logger:None,defer_macrotask:None, compaction_signal: Default::default() }
 }
 fn anthropic_model()->Model {
     serde_json::from_value(serde_json::json!({"id":"claude-sonnet-5-0","name":"Sonnet 5","api":"anthropic-messages","provider":"anthropic","baseUrl":"https://api.anthropic.com/v1","reasoning":true,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":200000,"maxTokens":8192})).expect("anthropic model fixture")
@@ -110,7 +110,7 @@ impl maho_ext_api::ExtensionSessionActions for TestSessionActions {
     fn set_active_tools(&self,names:Vec<String>)->Result<(),maho_ext_api::ExtensionFailure>{*self.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=names;Ok(())}
     fn refresh_tools(&self)->Result<(),maho_ext_api::ExtensionFailure>{Ok(())}
     fn register_removed_tool_hint(&self,_:&str,_:&str)->Result<(),maho_ext_api::ExtensionFailure>{Err("unused".into())}
-    fn register_lazy_tool_activator(&self,_:maho_ext_api::LazyToolActivator)->Result<(),maho_ext_api::ExtensionFailure>{Err("unused".into())}
+    fn register_lazy_tool_activator(&self,_:maho_ext_api::LazyToolActivator)->Result<(),maho_ext_api::ExtensionFailure>{Ok(())}
     fn get_commands(&self)->Result<Vec<maho_ext_api::SlashCommandInfo>,maho_ext_api::ExtensionFailure>{Err("unused".into())}
     fn set_model(&self,_:Model)->ExtensionFuture<'_,bool>{Box::pin(async{Err("unused".into())})}
     fn get_thinking_level(&self)->Result<maho_ext_api::ThinkingLevel,maho_ext_api::ExtensionFailure>{Err("unused".into())}

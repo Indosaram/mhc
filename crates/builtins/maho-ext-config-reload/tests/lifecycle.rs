@@ -39,7 +39,7 @@ fn context(root: &Path) -> ExtensionContext {
         session_manager: Arc::new(FixtureSession), model_registry: Arc::new(FixtureRegistry), model: None, thinking_level: None,
         service_tier: None, effective_service_tier: None, scoped_models: vec![], goal_store_file: None, loaded_extension_paths: vec![], signal: None, steering_signal: None,
         is_idle_fn: Arc::new(|| true), wait_for_idle_fn: Arc::new(|| Box::pin(async {})), is_project_trusted_fn: Arc::new(|| false), is_compacting_fn: Arc::new(|| false),
-        get_system_prompt_fn: Arc::new(String::new), get_system_prompt_options_fn: Arc::new(BuildSystemPromptOptions::default), registered_mcp_servers: vec![], update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None }
+        get_system_prompt_fn: Arc::new(String::new), get_system_prompt_options_fn: Arc::new(BuildSystemPromptOptions::default), registered_mcp_servers: vec![], update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None, compaction_signal: Default::default() }
 }
 #[test]
 fn native_registration_replay_and_live_publication_use_consumer_admission() {
