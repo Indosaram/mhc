@@ -4,7 +4,7 @@ use maho_agent::harness::{context::BACKGROUND_CONTEXT, env::nodejs::NodeExecutio
 #[tokio::test]
 async fn process_worker_uses_json_pipes_and_closes_when_stopped() {
     use maho_cli::experimental::mini::server::process_worker_factory;
-    let script = "printf '%s\\n' '{\"kind\":\"announce\",\"services\":[\"worker\"]}'; while IFS= read -r line; do case \"$line\" in *'\"kind\":\"call\"'*) printf '%s\\n' '{\"kind\":\"result\",\"id\":1,\"result\":{\"sessionId\":\"child\"}}';; esac; done";
+    let script = "printf '%s\\n' '{\"kind\":\"announce\",\"services\":[\"worker\"]}'; while IFS= read -r line; do case \"$line\" in *'\"kind\":\"call\"'*) printf '{\"kind\":\"result\",\"id\":1,\"result\":{\"sessionId\":\"child\",\"role\":\"%s\"}}\\n' \"$__PI_INTERNAL_SPAWN\";; esac; done";
     let spawn = process_worker_factory("/bin/sh".into(), vec!["-c".into(), script.into(), "worker".into()], "/sessions".into());
     let worker = spawn(Some("child".into()), "/cwd".into()).await.unwrap();
     let (closed, closure) = tokio::sync::oneshot::channel();
@@ -12,6 +12,7 @@ async fn process_worker_uses_json_pipes_and_closes_when_stopped() {
     worker.peer.on_close(move || { if let Some(closed) = closed.lock().unwrap().take() { let _ = closed.send(()); } });
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), worker.peer.call("worker.describe", vec![])).await.unwrap().unwrap();
     assert_eq!(result["sessionId"], "child");
+    assert_eq!(result["role"], "session-worker");
     (worker.stop)();
     tokio::time::timeout(std::time::Duration::from_secs(5), closure).await.unwrap().unwrap();
 }
@@ -42,6 +43,54 @@ async fn worker_opens_existing_session_by_id_and_creates_without_id() {
     assert_eq!(open_session(&repo, Some(&id), "/different", &BACKGROUND_CONTEXT).await.unwrap().metadata().id, id);
     assert_eq!(open_session(&repo, Some("missing"), &cwd, &BACKGROUND_CONTEXT).await.err().unwrap(), "Unknown session: missing");
     repo.close(&BACKGROUND_CONTEXT).await;
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn failed_worker_description_cleans_the_spawned_child() {
+    use maho_cli::experimental::mini::{server::*, shared::{rpc::*, protocol::WORKER}};
+    use std::collections::HashMap;
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap(); let socket = dir.path().join("mini.sock");
+    let workers = Arc::new(std::sync::Mutex::new(Vec::<Arc<RpcPeer>>::new()));
+    let (stopped, mut stops) = tokio::sync::mpsc::unbounded_channel();
+    let kept_workers = workers.clone();
+    let spawn: SpawnWorker = Arc::new(move |_, _| {
+        let (left, right) = tokio::io::duplex(4096);
+        let (lr, lw) = tokio::io::split(left); let (rr, rw) = tokio::io::split(right);
+        let host = Arc::new(create_peer(lr, lw, PeerOptions { dead_ms: 0, ..Default::default() }));
+        let worker = Arc::new(create_peer(rr, rw, PeerOptions { dead_ms: 0, ..Default::default() }));
+        let describe: Handler = Arc::new(|_, _| Box::pin(async { Err("describe failed".to_owned()) }));
+        worker.provide(WORKER, HashMap::from([("describe".to_owned(), describe)]));
+        kept_workers.lock().expect("test workers").push(worker.clone());
+        let stopped = stopped.clone();
+        Box::pin(async move { Ok(SpawnedWorker { peer: host, stop: Box::new(move || { worker.close(); let _ = stopped.send(()); }) }) })
+    });
+    let shutdown = maho_ai::utils::abort::AbortController::new(); let signal = shutdown.signal();
+    let (ready, readiness) = tokio::sync::oneshot::channel();
+    let root = dir.path().join("sessions").to_string_lossy().into_owned();
+    let runtime = run_server(&socket, &root, dir.path().to_str().unwrap(), spawn, &signal, Some(ready));
+    let scenario = async {
+        readiness.await.unwrap();
+        let stream = tokio::net::UnixStream::connect(&socket).await.unwrap(); let (r, w) = stream.into_split();
+        let presentation = create_peer(r, w, Default::default());
+        let error = presentation.call("sessions.attach", vec![json!("same"), json!("/cwd"), json!("one")]).await.unwrap_err();
+        assert_eq!(error, "describe failed");
+        stops.recv().await.expect("failed description stops the child");
+        presentation.close(); shutdown.abort(None);
+    };
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async { tokio::join!(runtime, scenario) }).await.unwrap(); result.unwrap();
+    assert!(!socket.exists());
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn child_exit_reaps_and_closes_the_worker_peer() {
+    use maho_cli::experimental::mini::server::process_worker_factory;
+    let spawn = process_worker_factory("/bin/sh".into(), vec!["-c".into(), "exit 0".into(), "worker".into()], "/sessions".into());
+    let worker = spawn(None, "/cwd".into()).await.unwrap();
+    let (closed, closure) = tokio::sync::oneshot::channel();
+    let closed = std::sync::Mutex::new(Some(closed));
+    worker.peer.on_close(move || { if let Some(closed) = closed.lock().unwrap().take() { let _ = closed.send(()); } });
+    tokio::time::timeout(std::time::Duration::from_secs(5), closure).await.unwrap().unwrap();
 }
 #[cfg(unix)]
 #[tokio::test]

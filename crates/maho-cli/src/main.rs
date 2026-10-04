@@ -27,7 +27,8 @@ fn run() -> Result<(), String> {
     if let Some(role) = parse_internal_process_role(std::env::var(INTERNAL_PROCESS_ENV).ok().as_deref())? {
         return match role {
             InternalProcessRole::Coordinator => run_coordinator_entry(&argv),
-            InternalProcessRole::Server | InternalProcessRole::SessionWorker => Err("Experimental server and session-worker entrypoints require excluded chord runtime (D-M5)".to_owned()),
+            InternalProcessRole::Server => run_mini_server_entry(&argv),
+            InternalProcessRole::SessionWorker => run_mini_worker_entry(&argv),
         };
     }
     if maho_cli::cli::auth_command::is_auth_command_help(&argv) {
@@ -104,6 +105,10 @@ fn run() -> Result<(), String> {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
             return runtime.block_on(maho_cli::package_manager_cli::run_config_command(options));
         }
+        Some("mini") => {
+            let options = maho_cli::experimental::mini::entry::parse_tui_args(&argv[1..])?;
+            return maho_cli::experimental::mini::entry::run_tui_entry(options);
+        }
         _ => {},
     }
     let parsed = maho_cli::cli::args::parse_args(&argv, grok)?;
@@ -162,3 +167,21 @@ fn run_coordinator_entry(argv: &[String]) -> Result<(), String> {
 }
 #[cfg(not(unix))]
 fn run_coordinator_entry(_argv: &[String]) -> Result<(), String> { Err("Coordinator named-pipe transport has not been ported on this platform".to_owned()) }
+#[cfg(unix)]
+fn run_mini_server_entry(argv: &[String]) -> Result<(), String> {
+    use maho_cli::experimental::mini::{entry::{parse_server_args, run_server_entry}, server::process_worker_factory};
+    let options = parse_server_args(argv)?;
+    let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let spawn = process_worker_factory(executable, Vec::new(), options.sessions_root.clone());
+    run_server_entry(options, &cwd.to_string_lossy(), spawn)
+}
+#[cfg(not(unix))]
+fn run_mini_server_entry(_argv: &[String]) -> Result<(), String> { Err("The mini session server requires the Unix socket transport".to_owned()) }
+#[cfg(unix)]
+fn run_mini_worker_entry(argv: &[String]) -> Result<(), String> {
+    use maho_cli::experimental::mini::entry::{parse_worker_args, run_worker_entry};
+    run_worker_entry(parse_worker_args(argv)?)
+}
+#[cfg(not(unix))]
+fn run_mini_worker_entry(_argv: &[String]) -> Result<(), String> { Err("The mini session worker requires the Unix socket transport".to_owned()) }
