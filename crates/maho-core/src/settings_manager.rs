@@ -537,6 +537,20 @@ impl SettingsManager {
         SettingsManager::from_storage(Box::new(storage), project_trusted)
     }
 
+    /// Pinned `SettingsManager.inMemory(globalSettings, { projectTrusted })`: a manager backed by
+    /// in-memory storage seeded with the given GLOBAL settings and no project scope.
+    ///
+    /// Startup theme resolution (`loadStartupThemes`) builds this over the session's LIVE global
+    /// settings, so unsaved in-memory overrides are honoured instead of being lost to a fresh disk
+    /// reload; project settings stay excluded (`projectTrusted: false`).
+    pub fn in_memory(global_settings: Settings, project_trusted: bool) -> SettingsManager {
+        let storage = InMemorySettingsStorage::default();
+        if let Ok(content) = serde_json::to_string(&global_settings) {
+            let _ = storage.with_lock(SettingsScope::Global, &mut |_| Some(content));
+        }
+        SettingsManager::from_storage(Box::new(storage), project_trusted)
+    }
+
     fn try_load_from_storage(
         storage: &dyn SettingsStorage,
         scope: SettingsScope,
@@ -940,6 +954,17 @@ mod tests {
         assert_eq!(storage.content(SettingsScope::Global).as_deref(), Some("{\"a\":1}\n"));
         assert_eq!(storage.content(SettingsScope::Project), None);
         reset_self_write_tracker_for_tests();
+    }
+
+    #[test]
+    fn in_memory_seeds_global_settings_and_excludes_project() {
+        let mut global = Settings::new();
+        global.insert("theme".to_owned(), serde_json::json!("custom"));
+        let manager = SettingsManager::in_memory(global.clone(), false);
+        assert_eq!(manager.get_global(), &global);
+        assert!(manager.get_project().is_empty());
+        assert!(!manager.is_project_trusted());
+        assert_eq!(manager.get_value("theme"), Some(&serde_json::json!("custom")));
     }
 
     #[test]
