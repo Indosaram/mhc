@@ -30,12 +30,16 @@ pub fn record_skill_tool_call(trackers: &SkillsUsageTrackers, options: &SkillsUs
 
 pub fn register_skills_usage(api: &mut ExtensionApi, options: SkillsUsageOptions) -> SkillsUsageTrackers {
     let trackers = Arc::new(Mutex::new(BTreeMap::new()));
+    register_skills_usage_with_trackers(api, options, trackers.clone());
+    trackers
+}
+
+pub fn register_skills_usage_with_trackers(api: &mut ExtensionApi, options: SkillsUsageOptions, trackers: SkillsUsageTrackers) {
     let handler_trackers = Arc::clone(&trackers);
     api.on(EventKind::ToolCall, Arc::new(move |event, _| {
         if let ExtensionEvent::ToolCall(event) = event { record_skill_tool_call(&handler_trackers, &options, event); }
         Box::pin(async { Ok(EventResult::None) })
     }));
-    trackers
 }
 
 #[cfg(test)]
