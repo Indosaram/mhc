@@ -66,12 +66,12 @@ mod tests {
         owner.record_shutdown(30.0).await;
 
         let mut other=TerminalStateLifecycle::new(dir.path(),"s");
-        assert_eq!(other.acquire(dir.path(),"s",f64::from(std::process::id())+1,40.0)?,TerminalStateAdoption::AttachedElsewhere {pid:f64::from(std::process::id())});
+        assert_eq!(other.acquire(dir.path(),"s",f64::from(std::process::id())+1.0,40.0)?,TerminalStateAdoption::AttachedElsewhere {pid:f64::from(std::process::id())});
         assert!(!other.is_owner());
         assert_eq!(other.restore(&mut manager,&mut registry,45.0).await,crate::restore::RestoreDigest::default());
 
         owner.release()?;
-        assert_eq!(other.acquire(dir.path(),"s",f64::from(std::process::id())+1,50.0)?,TerminalStateAdoption::Acquired);
+        assert_eq!(other.acquire(dir.path(),"s",f64::from(std::process::id())+1.0,50.0)?,TerminalStateAdoption::Acquired);
         other.release()?;registry.dispose();manager.teardown().unwrap();Ok(())
     }
 }

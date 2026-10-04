@@ -171,7 +171,7 @@ mod tests {
         let dir=tempfile::tempdir()?;let first=dir.path().join("first");let second=dir.path().join("second");std::fs::create_dir(&first)?;std::fs::create_dir(&second)?;
         let approved=std::fs::canonicalize(&first)?;
         let parent=dir.path().join("parent");std::os::unix::fs::symlink(&second,&parent)?;
-        let error=FileMonitor::register("watch_1".to_owned(),"retarget".to_owned(),&parent.join("file"),FileEvent::Create,Some(&approved)).unwrap_err().to_string();
+        let error=FileMonitor::register("watch_1".to_owned(),"retarget".to_owned(),&parent.join("file"),FileEvent::Create,Some(&approved)).err().expect("register must fail").to_string();
         assert!(error.contains("parent directory changed during permission approval"),"{error}");Ok(())
     }
     #[test]
@@ -180,7 +180,7 @@ mod tests {
         let parent=dir.path().join("parent");std::os::unix::fs::symlink(&real,&parent)?;
         let elsewhere=dir.path().join("elsewhere");std::fs::write(&elsewhere,b"x")?;
         let target=dir.path().join("target");std::os::unix::fs::symlink(&elsewhere,&target)?;
-        let error=FileMonitor::register("watch_1".to_owned(),"identity".to_owned(),&target,FileEvent::Create,Some(&approved)).unwrap_err().to_string();
+        let error=FileMonitor::register("watch_1".to_owned(),"identity".to_owned(),&target,FileEvent::Create,Some(&approved)).err().expect("register must fail").to_string();
         assert!(error.contains("target identity changed"),"{error}");Ok(())
     }
 }

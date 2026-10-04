@@ -108,12 +108,12 @@ mod tests {
     #[test]
     fn claim_transfers_the_same_bundle_only_once() {
         let bundle=TerminalSessionBundle::new(1);let manager=bundle.manager.clone();park_bundle("bundle-claim-test",bundle).unwrap();
-        let claimed=claim_parked_bundle("bundle-claim-test").expect("parked bundle");assert!(Arc::ptr_eq(&claimed.manager,&manager));assert!(claim_parked_bundle("bundle-claim-test").is_none());claimed.teardown().unwrap();
+        let mut claimed=claim_parked_bundle("bundle-claim-test").expect("parked bundle");assert!(Arc::ptr_eq(&claimed.manager,&manager));assert!(claim_parked_bundle("bundle-claim-test").is_none());claimed.teardown().unwrap();
     }
     #[test]
     fn adopt_moves_live_state_between_generation_arcs() {
-        let source=TerminalSessionBundle::new(1);let id=source.manager.lock().unwrap().create("ready",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'ready\\n'")).unwrap();source.notify_background_start(&id,"command",1.0);
-        let target=TerminalSessionBundle::new(4);target.adopt(&source);
+        let mut source=TerminalSessionBundle::new(1);let id=source.manager.lock().unwrap().create("ready",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("stty -echo; printf 'ready\\n'")).unwrap();source.notify_background_start(&id,"command",1.0);
+        let mut target=TerminalSessionBundle::new(4);target.adopt(&source);
         assert_eq!(target.manager.lock().unwrap().size(),1);assert_eq!(target.background_snapshot()[0].id,id);assert_eq!(source.manager.lock().unwrap().size(),0);assert!(source.background_snapshot().is_empty());
         target.teardown().unwrap();
     }
