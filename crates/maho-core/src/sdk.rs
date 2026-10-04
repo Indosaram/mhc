@@ -231,7 +231,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         cwd: cwd.clone(), agent_dir: agent_dir.clone(), prompt_paths, include_defaults: true,
     });
     let skills = crate::skills::load_skills(&crate::skills::LoadSkillsOptions { cwd, agent_dir, skill_paths, include_defaults: true });
-    session.set_prompt_resources(templates, skills.skills);
+    session.set_prompt_resources_with_diagnostics(templates, skills.skills, skills.diagnostics);
     }
     session.set_hook_source_paths(options.hook_resources, options.additional_hook_paths);
     session.set_system_prompt_sources(options.system_prompt, options.append_system_prompt);

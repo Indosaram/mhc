@@ -456,6 +456,8 @@ struct AgentSessionState {
     extension_lazy_activators: Vec<LazyToolActivator>,
     extension_hint_backups: BTreeMap<String, Option<String>>,
     skills: Vec<crate::skills::Skill>,
+    skill_diagnostics: Vec<crate::diagnostics::ResourceDiagnostic>,
+    skills_loaded: bool,
     discovered_resources: maho_ext_api::DiscoveredResources,
     global_hook_source_paths: Vec<std::path::PathBuf>,
     project_hook_source_paths: Vec<std::path::PathBuf>,
@@ -1564,6 +1566,8 @@ impl AgentSession {
             extension_lazy_activators: Vec::new(),
             extension_hint_backups: BTreeMap::new(),
             skills: Vec::new(),
+            skill_diagnostics: Vec::new(),
+            skills_loaded: false,
             discovered_resources: maho_ext_api::DiscoveredResources::default(),
             global_hook_source_paths: Vec::new(), project_hook_source_paths: Vec::new(), pre_session_hook_source_paths: Vec::new(),
             loaded_hook_sources: None,
@@ -3667,7 +3671,30 @@ impl AgentSession {
     }
 
     pub fn set_prompt_resources(&self, templates: Vec<crate::prompt_templates::PromptTemplate>, skills: Vec<crate::skills::Skill>) {
-        let mut state = self.state(); state.prompt_templates = templates; state.skills = skills;
+        self.set_prompt_resources_with_diagnostics(templates, skills, Vec::new());
+    }
+
+    /// Replace the session's prompt templates and loaded skills together with the load diagnostics
+    /// (the pinned `resourceLoader.getSkills()` result), so [`Self::loaded_skills`] can return them.
+    pub fn set_prompt_resources_with_diagnostics(&self, templates: Vec<crate::prompt_templates::PromptTemplate>, skills: Vec<crate::skills::Skill>, diagnostics: Vec<crate::diagnostics::ResourceDiagnostic>) {
+        let mut state = self.state();
+        state.prompt_templates = templates;
+        state.skills = skills;
+        state.skill_diagnostics = diagnostics;
+        state.skills_loaded = true;
+    }
+
+    /// The skills this session loaded, with their diagnostics (pinned `resourceLoader.getSkills()`).
+    ///
+    /// `None` when the session has no loaded skill cache (e.g. `minimalResources`, or before the
+    /// first load), so a consumer falls back to loading; otherwise the session's own live skills are
+    /// returned instead of a fresh process-wide `load_skills`.
+    pub fn loaded_skills(&self) -> Option<crate::skills::LoadSkillsResult> {
+        let state = self.state();
+        state.skills_loaded.then(|| crate::skills::LoadSkillsResult {
+            skills: state.skills.clone(),
+            diagnostics: state.skill_diagnostics.clone(),
+        })
     }
 
     pub fn prompt_templates(&self) -> Vec<crate::prompt_templates::PromptTemplate> { self.state().prompt_templates.clone() }
@@ -3900,7 +3927,7 @@ impl AgentSession {
         let skills = crate::skills::load_skills(&crate::skills::LoadSkillsOptions {
             cwd: self.cwd(), agent_dir: self.agent_dir(), skill_paths, include_defaults: true,
         });
-        self.set_prompt_resources(templates, skills.skills);
+        self.set_prompt_resources_with_diagnostics(templates, skills.skills, skills.diagnostics);
         self.rebuild_system_prompt();
         self.publish_eval_only_tool_hints();
         self.renew_extension_runtime(maho_ext_api::SessionReason::Reload).await?;
@@ -11149,6 +11176,31 @@ mod tests {
         session.state().extension_command_catalog = Some(Arc::new(move || catalog.lock().unwrap().clone()));
         live.lock().unwrap().push(maho_ext_api::SlashCommandInfo { name: "late".into(), description: None, argument_hint: None, source_info: None });
         assert_eq!(session.get_commands().iter().map(|command| command.name.as_str()).collect::<Vec<_>>(), ["late", "review", "skill:guide"]);
+    }
+
+    #[tokio::test]
+    async fn loaded_skills_returns_the_session_snapshot_with_diagnostics() {
+        let session = test_session();
+        assert!(session.loaded_skills().is_none(), "no skill cache before a load");
+        session.set_prompt_resources_with_diagnostics(
+            Vec::new(),
+            vec![crate::skills::Skill {
+                name: "demo".to_owned(), description: "demo skill".to_owned(),
+                file_path: "/tmp/demo/SKILL.md".to_owned(), base_dir: "/tmp/demo".to_owned(),
+                source_info: crate::source_info::create_synthetic_source_info("/tmp/demo/SKILL.md", Default::default()),
+                disable_model_invocation: false,
+            }],
+            vec![crate::diagnostics::ResourceDiagnostic {
+                diagnostic_type: crate::diagnostics::ResourceDiagnosticType::Warning,
+                message: "warn".to_owned(), path: Some("/tmp/demo/SKILL.md".to_owned()), collision: None,
+            }],
+        );
+        let loaded = session.loaded_skills().expect("loaded skills snapshot");
+        assert_eq!(loaded.skills.len(), 1);
+        assert_eq!(loaded.skills[0].name, "demo");
+        assert_eq!(loaded.diagnostics.len(), 1);
+        assert_eq!(loaded.diagnostics[0].message, "warn");
+        session.dispose().await;
     }
 
     #[tokio::test]
