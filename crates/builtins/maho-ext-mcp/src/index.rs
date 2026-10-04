@@ -66,7 +66,8 @@ pub fn register_mcp_lifecycle_with_tool_search(api:&mut ExtensionApi,registry:Ar
 /// Publish a session-owned MCP wire-status snapshot on the bound extension runner bus, matching
 /// the pinned `onWireStatusChanged` producer. Native payload; no JSON round-trip.
 pub fn publish_wire_status(events:&maho_ext_api::EventBus,snapshot:&crate::service_types::McpWireStatusSnapshot) {
-    events.emit_native(maho_core::agent_session::MCP_WIRE_STATUS_CHANGED_EVENT,snapshot);
+    let erased:std::sync::Arc<dyn std::any::Any+Send+Sync>=std::sync::Arc::new(snapshot.clone());
+    events.emit_native::<std::sync::Arc<dyn std::any::Any+Send+Sync>>(maho_core::agent_session::MCP_WIRE_STATUS_CHANGED_EVENT,&erased);
 }
 /// Crate-level extension factory (upstream `mcpExtension`/`createMcpExtension`).
 /// The host builds it with the shared tool-search service and reads the returned

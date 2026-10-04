@@ -152,6 +152,15 @@ async fn session_start_attach_publishes_live_mcp_status_to_the_bound_subscriber_
     session.prompt("hi", PromptOptions::default()).await.unwrap();
     let snapshot = tokio::time::timeout(std::time::Duration::from_secs(5), receive.recv()).await.expect("attach publish within deadline").expect("subscription alive");
     assert!(snapshot.servers.iter().any(|server| server.name == "fx"), "expected the attach publisher to deliver the session snapshot, saw {:?}", snapshot.servers.iter().map(|server| server.name.clone()).collect::<Vec<_>>());
+    // The live receive proves the erased publication landed; the session's retention subscription
+    // (installed at runner bind) must also have caught the same erased Arc, so a late bind replays it.
+    let retained = session.mcp_wire_status_snapshot::<McpWireStatusSnapshot>().expect("retention caught the erased publication");
+    assert!(retained.servers.iter().any(|server| server.name == "fx"));
+    let (late_send, mut late_receive) = tokio::sync::mpsc::unbounded_channel::<McpWireStatusSnapshot>();
+    let late_subscription = session.bind_mcp_wire_status::<McpWireStatusSnapshot>(Arc::new(move |snapshot| { let _ = late_send.send(snapshot.clone()); })).await.expect("runner bound");
+    let replayed = late_receive.try_recv().expect("a late bind replays the retained snapshot synchronously");
+    assert!(replayed.servers.iter().any(|server| server.name == "fx"));
+    drop(late_subscription);
     drop(subscription);
     let _ = session.publish_mcp_wire_status(&McpWireStatusSnapshot::default()).await;
     assert!(receive.try_recv().is_err(), "an unsubscribed consumer must receive nothing");
