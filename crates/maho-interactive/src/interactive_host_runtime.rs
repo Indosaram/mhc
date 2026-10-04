@@ -208,14 +208,7 @@ pub fn hydrate_message_update(event: &Value, streaming: Option<&mut Value>) -> V
             ("text_delta", Some("text")) => append_str(block, "text", delta),
             ("thinking_delta", Some("thinking")) => append_str(block, "thinking", delta),
             ("toolcall_delta", Some("toolCall")) => {
-                // senpi appends the delta to the JSON text of the accumulated arguments and re-parses
-                // it. A toolcall starts with `arguments: {}` and its deltas carry the JSON text of the
-                // real arguments, so an empty object is an empty buffer: parse the delta alone there.
-                let raw = match block.get("arguments") {
-                    None => delta.to_owned(),
-                    Some(Value::Object(arguments)) if arguments.is_empty() => delta.to_owned(),
-                    Some(existing) => format!("{}{delta}", Value::to_string(existing)),
-                };
+                let raw = format!("{}{delta}", block.get("arguments").map_or_else(|| "{}".to_owned(), Value::to_string));
                 if let Ok(parsed) = serde_json::from_str::<Value>(&raw)
                     && parsed.is_object()
                 {
